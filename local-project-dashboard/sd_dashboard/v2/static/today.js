@@ -61,18 +61,7 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     return f;
   }
 
-  // A Work row (sd:5654): the item, its status and due date, and the same actions its row carries.
-  function showWork(r) {
-    const s = late(r) ? 'caution' : 'queued';
-    put($('details'), html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> Work item · ${late(r) ? 'overdue' : r.state}</p>
-      <h2>${r.what}</h2>
-      <dl><dt>Status</dt><dd>${r.detail}</dd>${r.due ? html`<dt>Due</dt><dd>${r.due}</dd>` : ''}<dt>Read</dt><dd><time class="rel" data-long datetime="${DOC.now}"></time></dd></dl>
-      <p><a href="${window.shell.itemHref(r.item)}">Open #${String(r.item)} on Tasks</a></p>
-      <h3>Act</h3>${shell.commands.bar(r.id)}`);
-  }
   function show(id) {
-    const w = WORK.find(x => x.id === id);
-    if (w) { mark(id); showWork(w); shell.commands.select(id); return; }
     const r = ROWS.find(x => x.id === id); if (!r) return;
     mark(id);
     const s = STATE[r.band];
@@ -127,7 +116,6 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
   // The selected row and the picked ones, marked again on the rows a redraw made.
   function mark(id) {
     $('rows').querySelectorAll('tr[data-id]').forEach(tr => { tr.setAttribute('aria-selected', tr.dataset.id === id); tr.toggleAttribute('data-picked', picked.includes(tr.dataset.id)); });
-    $('work').querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
   }
   // A band starts only while the list is in rank order.
   function nowTable() {
@@ -182,12 +170,12 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     note.textContent = dark.map(([k, why]) => `${SOURCE[k] || k} not read: ${why}`).join(' · ');
   }
 
-  // Your work (sd:3271): the items due or in progress, as `sd today` lists them. A row selects into Details (sd:5654); its
-  // title opens the item on Tasks. Overdue is a due date before the day the document was read; a read that failed is said, never empty.
+  // Your work (sd:3271): the items due or in progress, as `sd today` lists them. A row is not selectable: its title opens
+  // the item on Tasks. Overdue is a due date before the day the document was read; a read that failed is said, never empty.
   function work() {
     head('work-head', WORK_T);
     put($('work'), WORK_ERROR ? html`<tr class="empty"><td colspan="4">Work could not be read: ${WORK_ERROR}. Refresh tries again.</td></tr>`
-      : WORK.length ? html`${sorted(WORK, WORK_T).map(r => { const s = late(r) ? 'caution' : 'queued'; return html`<tr data-id="${r.id}" data-item="${r.item}">
+      : WORK.length ? html`${sorted(WORK, WORK_T).map(r => { const s = late(r) ? 'caution' : 'queued'; return html`<tr data-item="${r.item}">
         <td class="g g-${s}" title="${late(r) ? 'overdue' : 'queued'}">${GLYPH[s]}</td>
         <td class="what"><a href="${window.shell.itemHref(r.item)}">${r.what}</a></td>
         <td class="detail">${r.detail}</td>
@@ -302,7 +290,6 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     window.snooze.register(C, { page: 'today', types: [...new Set(Object.values(TYPE))], reread: () => load() });
 
     $('rows').addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
-    $('work').addEventListener('click', e => { if (e.target.closest('.rowact, a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
     document.addEventListener('shell:open', e => {
       if (ROWS.some(r => r.id === e.detail)) select(e.detail, true);
       const w = WORK.find(r => r.id === e.detail); if (w) window.shell.openItem(w.item);
