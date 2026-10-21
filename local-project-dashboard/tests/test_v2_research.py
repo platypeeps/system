@@ -59,6 +59,7 @@ COMMANDS = [
     ["experiment.refresh", "research page", "Refresh experiments", None, "safe"],
     ["experiment.attach", "research project", "Attach experiment", None, "safe"],
     ["experiment.status", "research project", "Draft status update", None, "safe"],
+    ["experiment.make", "research project", "Make experiment", None, "safe"],
     ["experiment.deck", "research project", "Draft deck", None, "safe"],
     ["experiment.apply", "research project", "Apply draft", None, "safe"],
     ["research.deck", "research experiment", "Build deck", None, "safe"],
@@ -703,6 +704,18 @@ R.lines = ['research.render', 'research.review'].map(id => [cmd(id).executes, cm
                                              [True, "cd ~/'repos/research/beta' && sd-research-kit review", None]])
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/render", {"repo": "research/beta"}],
                                                          ["/api/research/review", {"repo": "research/beta"}]])
+
+    def test_make_experiment_drafts_one_for_the_rows_project_and_is_off_when_linked(self):
+        # sd:5662: a project row and its Details turn the project into an experiment: a draft create naming the project.
+        out = self.run_page("""const beta = C.get('research/beta');
+R.row = ELS.rows.html.includes('Make experiment'); R.on = cmd('experiment.make').when(beta);
+FIELD_VALUES = { description: 'Tail sampling keeps the slow spans' }; shellRun(cmd('experiment.make'), beta); await flush();""")
+        self.assertTrue(out["R"]["on"])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/experiments/act", {"verb": "draft", "action": "create",
+                          "description": "Tail sampling keeps the slow spans", "project": "research/beta"}]])
+        linked = self.run_page("PAGE_LIST.select('research/beta'); await flush(); R.on = cmd('experiment.make').when(C.get('research/beta'));",
+                               answer=self.experiments({"link": {"page": "2" * 32, "title": "Trace budgets"}}))
+        self.assertEqual(linked["R"]["on"], "already linked to an experiment")
 
     def test_start_research_is_off_with_its_reason_shows_the_line_and_sends_nothing(self):
         out = self.run_page("""const input = ELS.shift;

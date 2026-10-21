@@ -545,6 +545,13 @@ function experimentCommands() {
       when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.link ? 'not linked: attach or create an experiment first' : true; },
       sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"status"}',
       run: o => post(o, { verb: 'draft', action: 'status' }, 'Draft') },
+    // Make experiment (sd:5662): this project as a new experiment, from its row or its Details. The link is read only for the
+    // project shown, so another row offers it too; the server refuses a project already linked (409).
+    { id: 'experiment.make', on, label: 'Make experiment', does: 'Drafts a new experiment for this project; Apply writes it after you read it.', icon: 'flask-conical', risk: 'safe', executes: true,
+      when: o => (EXP?.key !== o.key ? true : EXP.link ? 'already linked to an experiment' : EXP.running ? 'a run is going now' : EXP.problems?.source || true),
+      fields: () => [{ name: 'description', label: 'What the experiment tests', required: true, placeholder: 'One or two sentences' }],
+      sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
+      run: (o, v) => post(o, { verb: 'draft', action: 'create', description: v.description }, 'Draft') },
     { id: 'experiment.deck', on, label: 'Draft deck', does: 'Drafts a branded 6-8 slide deck; Apply builds it after you read it.', risk: 'safe', executes: true,
       when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.link ? 'not linked: attach or create an experiment first' : EXP.problems?.kit || EXP.problems?.account || true; },
       sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"deck"}',
