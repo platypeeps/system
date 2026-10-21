@@ -18,7 +18,8 @@ def view(kind: str) -> Api:
         realm = read.path.split("/")[3]
         if realm in places.RESERVED:
             return 404, {"error": f"{realm} is not a realm id"}
-        return getattr(places, kind)(read.connection, realm, now=read.now)
+        # A Reports row's Details read the jobs as the Reports page does (sd:5636).
+        return getattr(places, kind)(read.connection, realm, now=read.now, **({"jobs": read.jobs} if kind == "reports" else {}))
 
     return Api(read=read, pattern=rf"/api/place/{ID}/{kind}", example=f"/api/place/acme/{kind}")
 

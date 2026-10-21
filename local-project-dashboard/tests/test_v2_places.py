@@ -330,7 +330,7 @@ class RealmPlaces(Fixture):
         self.assertEqual((doc["state"], self.ids(doc)), ("read", sorted([self.site_brief, self.nightly_brief])))
 
     def test_reports_are_the_familys(self):
-        doc = places.reports(self.connection, "acme", now=NOW, config=self.config)
+        doc = places.reports(self.connection, "acme", now=NOW, config=self.config, jobs=self.jobs)
         self.assertEqual((doc["state"], self.ids(doc), doc["jobs"]), ("read", [self.acme_report], ["acme-nightly"]))
 
     def test_a_realm_the_list_does_not_name_is_unknown_with_the_line_to_add(self):
@@ -341,7 +341,7 @@ class RealmPlaces(Fixture):
 
     def test_a_missing_family_line_is_unknown_naming_the_line_with_the_realms_label(self):
         self.config.write_text(FAMILIES, encoding="utf-8")
-        doc = places.reports(self.connection, "acme", now=NOW, config=self.config)
+        doc = places.reports(self.connection, "acme", now=NOW, config=self.config, jobs=self.jobs)
         self.assertEqual((doc["state"], doc["rows"]), ("unknown", []))
         self.assertIn("names no family acme; add family|acme|Acme|<icon>|<job>,<job>,... to dashboard.report_families",
                       doc["reason"])
