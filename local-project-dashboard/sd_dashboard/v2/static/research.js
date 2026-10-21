@@ -1,7 +1,7 @@
 // Research (sd:2122): the design source's products/system/designs/v2/research.js at 7f50ad4, ported. Each change from the reference is
 // marked "build:". The board is /api/research (research_screen.py: collectors.collect_research, every checkout with a research.conf.py);
 // a project's ledger and claim map are /api/research/<checkout>, read when the project is selected. Never sample data. Nothing reads
-// review rounds yet, so they are unknown with the document's reason. Render and Review are copy only; Start research is off.
+// review rounds yet, so they are unknown with the document's reason. Render runs in the checkout (sd:5632); Review is copy only; Start research is off.
 const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
@@ -455,7 +455,7 @@ function showProject(key, read = true) {
     ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until the config declares its data.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
     <h3>Act</h3>${shell.commands.bar(p.key)}
-    <p class="why">Render and the mechanical review run in the checkout; neither writes outside it. The dashboard runs neither: copy the line.</p>
+    <p class="why">Render runs here as a dashboard run: the kit refuses a research.conf.py no render by hand has read. Review is a line to copy.</p>
     <section aria-live="polite">${experimentSection(p)}</section>`);
   shell.commands.select(p.key);
   if (read) loadExperiment(p.key);
@@ -606,8 +606,13 @@ tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; 
 
 // ---------- Commands (products/system/commands.md) ----------
 // Each board row is a research project. Labels are CLI verbs; the shell renders every button, menu entry and CLI line.
-// build: Render and Review are copy only (executes: false): the dashboard runs no command in a research checkout.
-const COPY = 'Copy it into a terminal: the dashboard does not run sd-research-kit';
+// build: Review is copy only (executes: false). Render (sd:5632) runs through the deck runner's lock, as a dashboard run.
+const COPY = 'Copy it into a terminal: the dashboard does not run sd-research-kit review';
+// One poll per render until it settles; done reads the board again, failed says the kit's reason.
+const followRender = (run, label) => (['done', 'failed'].includes(run.state)
+  ? (shell.toast(run.state === 'done' ? `Rendered · ${label}` : `Render failed · ${label}: ${run.reason || 'no reason recorded'}`), run.state === 'done' && load())
+  : setTimeout(() => window.shell.getJSON(`/api/research/deck/${encodeURIComponent(run.id)}`).then(next => followRender(next, label),
+    e => shell.toast(`Render ${run.id}: not read (${e.message}); whether it ended is not known`)), DECK_POLL));
 // build: Start research is off with this reason, and its risk is confirm, not undo: there is no queued run to take back.
 const START_OFF = 'the dashboard does not create items yet: copy the line into a terminal';
 // Draft experiment is a page action (toolbar): it names its project, the one shown first. The server refuses a linked one (409).
@@ -626,8 +631,9 @@ function registerCommands() {
   const C = shell.commands;
   C.put(DRAFT); C.put(PAGE);
   C.register(
-    { id: 'research.render', on: 'research project', label: 'Render', does: 'Gives the line that renders this research project again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', bulk: true, executes: false, primary: o => o.s === 'caution',
-      cli: o => `cd ${shPath(o.path)} && sd-research-kit render`, run: () => COPY },
+    { id: 'research.render', on: 'research project', label: 'Render', does: 'Renders this research project again in its checkout.', key: 'r', icon: 'rotate-ccw', risk: 'safe', executes: true, primary: o => o.s === 'caution',
+      cli: o => `cd ${shPath(o.path)} && sd-research-kit render`, sends: o => `POST /api/research/render {"repo": "${o.key}"}`,
+      run: o => window.shell.post('/api/research/render', { repo: o.key }).then(run => { followRender(run, o.label); return `Rendering ${o.label} · run ${run.id}`; }, refused) },
     { id: 'research.review', on: 'research project', label: 'Review', does: 'Gives the line that runs the research kit\'s review.', key: 'v', icon: 'shield-check', risk: 'safe', bulk: true, executes: false,
       cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, run: () => COPY },
     START,
@@ -798,6 +804,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   load();
   // A build already running when the page opens is followed too.
-  window.shell.getJSON('/api/research/deck/status').then(d => followBuild(d.run, false), e => { BUILD_UNREAD = e.message; renderExperiments(); });
+  window.shell.getJSON('/api/research/deck/status').then(d => followBuild(d.run?.id?.startsWith('render-') ? null : d.run, false), e => { BUILD_UNREAD = e.message; renderExperiments(); });
   readSlides();
 });
