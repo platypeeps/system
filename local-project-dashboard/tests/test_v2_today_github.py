@@ -97,7 +97,9 @@ class TheDocument(ScreenCase):
         self.assertEqual(found["error"], "")
         self.assertEqual(found["unread"], {})
         pulls = [(row["ref"], row["why"], row["at_what"]) for row in found["pulls"]]
-        self.assertEqual(pulls, [("upstream/tool#2", "upstream", "updated"), ("example/anvil#1", "yours", "updated"),
+        # Every open pull request in a registered repository lists, by whoever opened it, watched or not.
+        self.assertEqual(pulls, [("example/anvil#5", "opened by bo", "updated"), ("example/anvil#4", "opened by bo", "updated"),
+                                 ("upstream/tool#2", "upstream", "updated"), ("example/anvil#1", "yours", "updated"),
                                  ("example/anvil#6", "waiting on you", "updated"),
                                  ("example/anvil#3", "assigned to you", "opened")])
         issues = [(row["ref"], row["why"], row["at"], row["item"]) for row in found["issues"]]
@@ -108,7 +110,7 @@ class TheDocument(ScreenCase):
                                    ("example/anvil#10", "merged", "merged", ids["shipped"])])
         self.assertEqual(found["undated"], 1)
         self.assertEqual(found["days"], 7)
-        self.assertEqual(found["pulls"][0]["url"], f"{HUB}/upstream/tool/pull/2")
+        self.assertEqual(found["pulls"][2]["url"], f"{HUB}/upstream/tool/pull/2")
         json.dumps(found)  # the page reads it as JSON
 
     def test_a_read_that_failed_is_its_reason_never_an_empty_list(self):
@@ -124,7 +126,7 @@ class TheDocument(ScreenCase):
             found = today_github.document(self.connection, now=NOW)
         self.assertEqual(found["unread"], {"delivery": "disk I/O error"})
         self.assertEqual([row["item"] for row in found["settled"]], [None, None])
-        self.assertEqual(len(found["pulls"]), 3)
+        self.assertEqual(len(found["pulls"]), 6)
 
     def test_the_today_page_serves_the_read_in_its_own_view(self):
         page = next(page for page in pages.PAGES if page.section == "Today")

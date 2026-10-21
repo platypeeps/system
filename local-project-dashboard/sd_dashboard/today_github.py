@@ -9,9 +9,10 @@ stored (`progress.tracker_items`, which Now's pull request rows read too); the C
 `github:<owner>/<name>#N` (`sd task add --ref`) is that issue's or pull request's item.
 
 What is listed, open or settled alike: a pull request waiting on the operator (`needs_you`, as on Now), assigned to them,
-or theirs (the `filed` flag, else a `reason` of filed); an issue assigned to them or theirs; a third-party issue in a
-repository with GitHub issues on; and any GitHub row the Contributions projection holds. Theirs in a repository sd does
-not register is upstream. Watched rows and other people's pull requests stay on Trackers.
+or theirs (the `filed` flag, else a `reason` of filed); any other open pull request in a repository sd registers, by
+whoever opened it; an issue assigned to them or theirs; a third-party issue in a repository with GitHub issues on; and
+any GitHub row the Contributions projection holds. Theirs in a repository sd does not register is upstream. Watched
+rows, and other people's pull requests elsewhere or already settled, stay on Trackers.
 
 Activity is GitHub's own stamp: merged or closed for a settled row, else `updated_at`, else `created_at`. A row synced
 before those columns has none, so it says not recorded and sorts last; `last_seen` is when the collector looked, never
@@ -135,7 +136,8 @@ def document(connection: sqlite3.Connection, *, now: str) -> dict:
             why = "assigned to you"
         elif _mine(row) or contribution:
             why = "yours" if _scope(row["repo"], remotes, places) else "upstream"
-        elif row["kind"] == "issue" and str(row["repo"]).lower() in intake:
+        elif (row["kind"] == "issue" and str(row["repo"]).lower() in intake) or (
+                row["kind"] == "pull" and state == "open" and _scope(row["repo"], remotes, places)):
             why = f"opened by {row['author']}" if row.get("author") else "opened by someone else"
         else:
             continue
