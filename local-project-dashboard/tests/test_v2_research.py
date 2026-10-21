@@ -55,9 +55,9 @@ COMMANDS = [
     ["research.render", "research project", "Render", "r", "safe"],
     ["research.review", "research project", "Review", "v", "safe"],
     ["research.start", "research request", "Run", "r", "confirm"],
+    ["experiment.create", "research page", "Draft experiment", None, "safe"],
     ["experiment.refresh", "research project", "Refresh experiments", None, "safe"],
     ["experiment.attach", "research project", "Attach experiment", None, "safe"],
-    ["experiment.create", "research project", "Draft experiment", None, "safe"],
     ["experiment.status", "research project", "Draft status update", None, "safe"],
     ["experiment.deck", "research project", "Draft deck", None, "safe"],
     ["experiment.apply", "research project", "Apply draft", None, "safe"],
@@ -1131,14 +1131,13 @@ R.views = OUT.views.slice();""")
                                    "runs": [run]})
         out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
 R.section = ELS.details.html; R.on = cmd('experiment.apply').when(o); R.shows = cmd('experiment.apply').consequence(o);
-R.create = cmd('experiment.create').when(o); shellRun(cmd('experiment.apply'), o); await flush();""", answer=answer)
+shellRun(cmd('experiment.apply'), o); await flush();""", answer=answer)
         self.assertIn('href="https://example.test/x"', out["R"]["section"])
         self.assertIn("Stage</dt><dd>Running · Status Todo", out["R"]["section"])
         self.assertIn("Waiting for Apply: the status update drafted 2026-10-19 16:00 UTC", out["R"]["section"])
         self.assertTrue(out["R"]["on"])
         self.assertIn("Now: “2026-10-01 started”. After: “2026-10-19 ran the probe. 2026-10-01 started”. Status Todo becomes In Progress.",
                       out["R"]["shows"])
-        self.assertEqual(out["R"]["create"], "linked already: Attach replaces the link")
         self.assertEqual(out["confirms"], ["experiment.apply"])
         self.assertEqual(out["posts"], [["/api/research/experiments/act", {"verb": "apply", "run": run["run"], "fingerprint": "f" * 64,
                                                                        "recreate": False}, 64]])
@@ -1172,9 +1171,12 @@ R.create = cmd('experiment.apply').consequence(o);""", answer=self.experiments({
 R.section = ELS.details.html; R.status = cmd('experiment.status').when(o); R.apply = cmd('experiment.apply').when(o);
 R.options = cmd('experiment.attach').fields(o)[0].options; R.says = cmd('experiment.attach').consequence(o);
 shellRun(cmd('experiment.refresh'), o); await flush();
-FIELD_VALUES = { page: '2'.repeat(32), description: 'Tail sampling keeps the slow spans' };
-shellRun(cmd('experiment.attach'), o); await flush(); shellRun(cmd('experiment.create'), o); await flush();""", answer=answer)
-        self.assertIn("Not linked. Attach one from the list, or draft a new one.", out["R"]["section"])
+FIELD_VALUES = { page: '2'.repeat(32), project: 'research/beta', description: 'Tail sampling keeps the slow spans' };
+shellRun(cmd('experiment.attach'), o); await flush(); ELS['draft-exp'].listeners.click[0]({}); await flush();
+R.projects = cmd('experiment.create').fields(C.get('research:page'))[0].options.map(x => x.value);""", answer=answer)
+        self.assertIn("Not linked. Attach one, or use Draft experiment in the toolbar.", out["R"]["section"])
+        # Draft experiment is a page action (toolbar), not a project command; its first project is the one shown.
+        self.assertEqual(out["R"]["projects"][0], "research/beta")
         self.assertEqual(out["R"]["status"], "not linked: attach or create an experiment first")
         self.assertEqual(out["R"]["apply"], "no finished draft waits for Apply")
         self.assertEqual(out["R"]["options"], [{"value": "2" * 32, "label": "Trace budgets · Idea"}])
