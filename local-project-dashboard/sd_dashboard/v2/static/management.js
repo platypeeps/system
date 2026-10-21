@@ -307,6 +307,8 @@ function setRow(k, v, ctl = '', attrs = '') { return html`<div class="row"${attr
 const lock = w => html`<span class="lock">${I('lock')}${w}</span>`;
 // sd:3075: Move lane offers the hub, each host a row already names, and any typed name; the server checks the name.
 const laneHosts = () => ['hub', ...new Set(REPOS.map(r => r.lane).filter(h => h && h !== 'hub').sort())];
+// Turning managed on opens Standard setup (sd:5610): its yes runs the command, which asks Manage only or Apply.
+const manageSeg = r => html`<span class="segctl" role="group" aria-label="managed"><button type="button" data-cmd="repo.standard" data-obj="repo:${r.path}" aria-pressed="false">yes</button><button type="button" aria-pressed="true">no</button></span>`;
 const seg = (key, opts, cur) => html`<span class="segctl" role="group" aria-label="${key}">${opts.map(o => html`<button type="button" data-set="${key}" data-v="${o}" aria-pressed="${String(o === cur)}">${o}</button>`)}</span>`;
 // sd:3984: the daily sweep's consent for a repo outside the owner rule. The owner rule decides first, so an owner's or a
 // denied repo shows the rule and offers no toggle; an unread flag is unknown, not no.
@@ -393,7 +395,9 @@ function renderRepoPage(el) {
       ${setRow('path', r.path, lock('primary key'))}
       ${setRow('remote', r.remote || html`<span class="no">none</span>`, lock('from the checkout'))}
       ${setRow(html`<code>runner_merge</code> <button class="help" type="button" aria-label="Help: runner_merge" data-help="<b>auto</b> lets the runner queue a merge after a done author run with a reviewed head, through the exclusive merge lane. <b>manual</b> ends the item at ready_to_send for you. Every row starts at manual.">${I('circle-help')}</button>`, r.merge, seg('runner_merge', ['manual', 'auto'], r.merge), html` data-key="runner_merge"`)}
-      ${setRow(html`<code>managed</code>`, r.managed, seg('managed', ['yes', 'no'], r.managed), html` data-key="managed"`)}
+      ${setRow(html`<code>managed</code>`, r.managed, r.managed === 'no' ? manageSeg(r) : seg('managed', ['yes', 'no'], r.managed), html` data-key="managed"`)}
+      ${r.managed === 'yes' ? setRow(html`Standard setup <button class="help" type="button" aria-label="Help: standard setup" data-help="<b>The managed-repo standard</b> (sd:5610): this row, the GitHub settings and the fleet files, as <code>sd fleet standard</code> plans them. Check previews; nothing changes until you apply. Dependabot alerts you turned off stay off.">${I('circle-help')}</button>`, html`<span class="no">not checked</span>`,
+        html`<button class="btn quiet sm" type="button" data-cmd="repo.standard" data-obj="repo:${r.path}">Check</button>`, html` data-key="standard"`) : ''}
       ${setRow(html`<code>dependabot</code> <button class="help" type="button" aria-label="Help: dependabot" data-help="<b>Whether the daily Dependabot sweep may merge this repo's patch and minor bumps.</b> Every platypeeps repo is swept, except the ones ROUTINE.md denies by name; for any other owner this is the consent. The sweep reads it at its next run.">${I('circle-help')}</button>`, depShown(r), depCtl(r), html` data-key="dependabot"`)}
       ${setRow(html`<code>lane_host</code> <button class="help" type="button" aria-label="Help: lane_host" data-help="<b>The machine that runs this repo's merge lane.</b> <b>hub</b>, where every row starts, or a machine's short host name, lower-cased. Only that machine takes this repo's ship lock; every other refuses.">${I('circle-help')}</button>`, r.lane,
         html`<input class="fld" type="text" data-set="lane_host" list="lane-hosts" value="${r.lane}" aria-label="Move lane to" autocomplete="off" spellcheck="false"><datalist id="lane-hosts">${laneHosts().map(h => html`<option value="${h}"></option>`)}</datalist>`, html` data-key="lane_host"`)}
@@ -637,7 +641,12 @@ function registerCommands() {
       run: o => flipRepo('runner-merge', o), undo: undoOf },
     { id: 'repo.managed', on: 'repo', label: 'Switch managed', does: 'Switches whether sd manages this repo; Undo switches it back.', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo managed ${shq(o.path)} ${o.row.managed === 'yes' ? 'no' : 'yes'}`, executes: true,
-      run: o => flipRepo('managed', o), undo: undoOf },
+      run: o => o.row.managed === 'yes' ? flipRepo('managed', o) : sheet(() => standardRepo(o, true)), undo: undoOf },
+    // sd:5610: the managed-repo standard, previewed by `sd fleet standard` and applied with the digest the sheet showed.
+    { id: 'repo.standard', on: 'repo', label: 'Standard setup', does: 'Previews the managed-repo standard for this repo; applies it when you confirm.', icon: 'shield-check', risk: 'confirm', executes: true,
+      when: registeredWhy, cli: o => `cd ${shq(o.path)} && sd fleet standard --json`,
+      // previews: run() reads the plan and asks with it, so the shell's own confirm does not ask first.
+      previews: true, run: o => sheet(() => standardRepo(o, o.row.managed !== 'yes')) },
     // sd:3075: Move lane needs a host, so it opens the repo's settings page, where the lane_host field proposes the move.
     { id: 'repo.lane-host', on: 'repo', label: 'Move lane', does: 'Opens the repo\'s settings page, where you move its lane.', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo lane-host ${shq(o.path)} hub`,
@@ -779,6 +788,48 @@ async function landRepo(o, items) {
   const lane = out.lane || {};
   const queued = lane.status === 'not queued' ? `not queued: ${lane.error}. Land again to retry the enqueue` : `lane ${lane.status}; Queue shows it`;
   return { text: `Landed · ${o.label} · ${plural(out.commits.length, 'commit')} on ${out.branch} · ${queued}` };
+}
+// Standard setup (sd:5610): the sheet lists the preview's steps by group; Apply posts the preview's digest, so only what
+// the operator saw runs (standard.py). Turning managed on asks Manage only, the one column as before, or the standard, which
+// writes managed last. Lane history (`used_before`) picks the first option: a repo the lane used was likely managed before.
+// A 4xx ran nothing; any other failure may follow a write, so the page reads again and says Check again.
+let sheets = Promise.resolve();
+const sheet = f => (sheets = sheets.then(f, f));
+const STD_GROUPS = [['row', 'sd-db row'], ['github', 'GitHub'], ['checkout', 'checkout']];
+const stdValue = v => v == null ? 'none' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+const stdState = s => s.result || (s.state === 'change' ? `${stdValue(s.before)} → ${stdValue(s.after)}` : s.state);
+const stdBody = (p, head) => html`${head ? html`${head}<br>` : ''}${STD_GROUPS.map(([g, label]) => {
+  const steps = p.steps.filter(s => s.group === g);
+  return steps.length ? html`<b>${label}</b><br>${steps.map(s => html`${s.key} ${s.subject}: ${stdState(s)}${s.detail ? html` <span class="no">· ${s.detail}</span>` : ''}<br>`)}` : ''; })}`;
+const stdCount = (steps, of) => Object.entries(steps.reduce((n, s) => ({ ...n, [of(s)]: (n[of(s)] || 0) + 1 }), {})).map(([k, n]) => `${n} ${k}`).join(', ');
+async function standardRepo(o, manage) {
+  const p = await window.shell.getJSON(`/api/repos/standard/preview?path=${encodeURIComponent(o.path)}`);
+  const changes = p.steps.filter(s => s.state === 'change').length;
+  if (!manage && !changes) return { text: `Standard holds · ${o.label}: ${stdCount(p.steps, s => s.state)}` };
+  const only = { value: 'only', label: 'Manage only: writes managed=yes, nothing else' };
+  const apply = { value: 'apply', label: `Manage and apply standard: ${plural(changes, 'change')}, managed last` };
+  const fields = manage ? [{ name: 'run', label: 'What runs', options: p.used_before ? [only, apply] : [apply, only],
+    help: p.used_before ? 'This repo has lane history, so Manage only comes first.' : 'First manage: the standard comes first.' }] : [];
+  const { yes, values } = await window.shell.ask({ title: manage ? `Manage ${o.label}?` : `Apply standard to ${o.label}?`, body: stdBody(p),
+    ok: manage ? 'Manage' : 'Apply standard', keep: 'Keep it', danger: true, cli: `cd ${shq(o.path)} && sd fleet standard --apply --digest ${p.digest}`, fields });
+  if (!yes) return { text: `Nothing ran · ${o.label}` };
+  if (manage && values.run === 'only') {
+    await setRepo('managed', o.row, 'yes', 'no');
+    return { text: `managed yes · ${o.label}`, undo: () => setRepo('managed', REPOS.find(x => x.path === o.path) || o.row, 'no', 'yes') };
+  }
+  let out;
+  try { out = await window.shell.post('/api/repos/standard', { path: o.path, digest: p.digest }); }
+  catch (err) {
+    if (err.status >= 400 && err.status < 500) return { text: `Nothing ran · ${o.label}: ${err.message}` };
+    load();
+    return { text: `Not known how far the standard got · ${o.label}: ${err.message}. Check again before you apply.` };
+  }
+  await reread();
+  const ran = out.steps.filter(s => s.result), bad = ran.filter(s => s.result !== 'changed');
+  const again = await window.shell.ask({ title: `${bad.length ? 'Standard partly applied' : 'Standard applied'} · ${o.label}`, ok: 'Check again', keep: 'Close', danger: false,
+    body: stdBody(out, 'Health shows it after the next sd shadow sync. The nightly machine-setup installs the leak guard on a public repo.') });
+  if (again.yes) return standardRepo(o, false);
+  return { text: `${bad.length ? 'Standard partly applied' : 'Standard applied'} · ${o.label}: ${stdCount(ran, s => s.result.split(':')[0])}` };
 }
 async function service(o, action) { await window.shell.post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await reread(); }
 // A cancel's outcome (sd:3388), as Queue words a lane write (queue_screen.py): a 4xx wrote nothing and says why; any other

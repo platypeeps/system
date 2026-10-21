@@ -37,7 +37,7 @@ owned repos where that matters. The outliers' names stay out of this public file
 | G4 | `delete_branch_on_merge` | true | GitHub repo settings | none | 19/23 |
 | G5 | `has_issues` | equal to `repo.github_issues` | GitHub repo settings | none | 19/23 |
 | G6 | `has_wiki`, `has_projects` | false | GitHub repo settings | none | 19/23 each |
-| G7 | Dependabot alerts | on | `PUT repos/X/vulnerability-alerts` | none (enabled by hand on 3 repos on 2026-10-21, note #26287) | 23/23 live |
+| G7 | Dependabot alerts | read only: on, or off as the operator's kept choice (sd:5611) | `GET repos/X/vulnerability-alerts` | none; never written here | 23/23 live |
 | G8 | Secret scanning and push protection | enabled, public repos only | `security_and_analysis` | none | 2/2 public; private n/a |
 | G9 | Actions | private: off; public: either, file workflows disabled | GitHub Actions permissions | `sd_ci.actions_steps`, inside `sd ci local` | 17/21 owned |
 | F1 | Fleet files: `.claude/settings.json` deny baseline, `.gitignore` dashboard lines, `CLAUDE.local.md` block, `docs/dashboard/` | as rendered | the checkout | `sd fleet stamp` | 11/23 with no change |
@@ -101,6 +101,8 @@ does, and refuses while a ship holds it.
 - It changes no GitHub setting of a repo outside `sd.fleet_owners`; those steps read `skip: employer repository`.
 - It turns Issues off (G5) only when the repo has no open issue; otherwise `skip: N open issues; convert them to sd
   items first (sd:1670)`. Hiding issues is the one setting that loses visible data.
+- It never turns Dependabot alerts on (G7). Alerts the operator turned off are a kept choice (sd:5611): the step
+  reads `ok` with the state `off`, never `change`, and the apply makes no alerts write. A failed read is `unknown`.
 - It turns public Actions neither on nor off: a public repo's Actions may be either; only its file workflows are
   disabled (G9, as `sd_ci.actions_steps` reads it).
 - It writes tracked files only through a pull request. F1 plans against the checkout as it stands
@@ -127,7 +129,8 @@ guess costs one click, not a wrong write. No new column or store.
 
 **Where the code lives.** Recommended: a pack verb, `sd fleet standard [--apply] [--json]`, beside `sd fleet stamp`
 and `sd ci local`, whose builders it calls and whose fleet owner list it shares. The dashboard runs it the way it
-runs `sd-ship` (`land.py`), renders its JSON, and runs F2 (`local-leak-guard`, a system tool) after it. It replaces
+runs `sd-ship` (`land.py`) and renders its JSON. F2 stays with machine-setup's nightly `repos` stage, which installs
+the leak guard in every public managed clone once D1 holds; the sheet says so. It replaces
 the hand-run sweeps and per-repo `gh api` calls. Rejected: a dashboard-only module, which would put a second GitHub
 writer in system and leave the CLI without it. The new verb and the dashboard's preview route are new mechanisms; the
 operator approves them first.
@@ -138,13 +141,14 @@ The existing `managed` segment control stays the one entry point; no new button.
 
 - **no → yes** opens the Manage sheet instead of a bare proposal. It loads the preview and lists the steps in three
   groups (sd-db row, GitHub, checkout), each as `before → after`, `ok`, `pending` or `skip` with its reason. The
-  sheet's risk is `confirm`. First manage: the primary button is "Manage and apply standard", the second "Manage
-  only". Used before: the two swap, and a line says why ("this repo has lane history").
+  sheet's risk is `confirm`. A "What runs" choice offers "Manage and apply standard" and "Manage only". First
+  manage: the standard comes first. Used before: the two swap, and a line says why ("this repo has lane history").
+  The list's Switch managed command opens the same sheet when it turns managed on.
 - **yes → no** stays the one-column proposal it is today.
 - **Standard setup** row in the details pane of a managed repo: "Check" opens the same sheet with "Apply standard".
   It is the drift check for a repo managed before this change.
 - The result replaces the preview in the sheet: one line per step (`changed`, `ok`, `pending`, `skipped`,
-  `failed: <reason>; live value <x>`), and the item number when tracked fleet files were filed. Health's cells update
+  `failed: <reason>; live: <x>`, `held`), and "Check again" previews once more. Health's cells update
   at the next `sd shadow sync`; the sheet says so.
 
 ## Non-goals
@@ -157,6 +161,7 @@ The existing `managed` segment control stays the one entry point; no new button.
 ## Failure table
 
 Steps run top to bottom; D1 and D2 come last so a stop anywhere leaves the repo outside the lane.
+When any earlier step failed, the apply holds D1 and D2 (`held`) and exits 1; Apply again finishes them.
 
 | Step | State moved | Failure | Recovery | Test |
 | --- | --- | --- | --- | --- |
@@ -164,7 +169,7 @@ Steps run top to bottom; D1 and D2 come last so a stop anywhere leaves the repo 
 | Apply: identity and digest | nothing | row remote, origin and `full_name` disagree; plan changed since preview | refuse; return the new preview | mismatched origin refuses; stale digest refuses; a step the digest lacks never runs |
 | Apply on a managed repo: ship flock | the flock, held for the run | a ship holds it | refuse: "a ship is running; try again" | held flock refuses before any read-decided write |
 | G2–G6 repo PATCH | merge, issues, wiki, projects settings | 403, 422, timeout; open issues | `failed` with the live value re-read; the next run writes what is left | fake 422: later steps still run, result names it; open-issue guard skips G5 |
-| G7 alerts | vulnerability alerts | 403 or timeout | `failed`; rerun reads it first (success on, 404 off) | fake 404, PUT, then success reads `ok` |
+| G7 alerts | nothing: read only | 403 or timeout on the read | `unknown`; never written | alerts off read `ok`/`off` and apply makes no alerts write; a failed read is `unknown` |
 | G8 secret scanning (public) | `security_and_analysis` | any non-2xx | `failed` with GitHub's message; rerun reads it first | fake 422 reads `failed` and names the message |
 | G1 create | classic protection | 403, 422 (nothing created) | `failed` naming the admin token or GitHub's message; rerun tries the PUT again | fake 403 then success; the PUT body holds all four fields |
 | G1 create | classic protection | timeout after GitHub applied it | rerun reads protection and moves to the sub-object steps | fake timeout with the write applied: rerun issues no PUT |
@@ -174,7 +179,6 @@ Steps run top to bottom; D1 and D2 come last so a stop anywhere leaves the repo 
 | D4 declaration | `repo.declarations` | refusal | `failed`; rerun writes it | other review keys survive the merge |
 | D3 `ci` | `repo.ci` | refusal | `failed`; rerun writes it | stop after D4: rerun writes D3, D1, D2 only |
 | D1, D2 | `repo.managed`, `repo.runner_merge` | `HubOnly`, stale row | repo stays unmanaged; the Manage sheet offers the plan again | stop between D1 and D2: rerun writes D2 only; lane picks nothing before D2 |
-| F2 leak guard (dashboard, public) | the checkout's `pre-push` hook | a foreign hook, a failed install | `skip: hook differs` or `failed`; nightly machine-setup retries | foreign hook stays byte-identical |
 | Unmanage | `repo.managed` | stale | as today | existing tests |
 
 ## Slices

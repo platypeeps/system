@@ -112,6 +112,7 @@ COMMANDS = (
     Command(r"/api/shadow/sync", "Re-run collector", lambda match, payload: "shadow sync", run="shadow"),
     Command(r"/api/health/cleanup", "Clean up", _key("row")),
     Command(r"/api/repos/land", "Land", _key("path", "items")),
+    Command(r"/api/repos/standard", "Apply standard", _key("path")),
     Command(r"/api/claude-sessions/end", "End session", _key("id")),
     Command(r"/api/skills/intake", "Skill intake", _key("source", "scope")),
     Command(r"/api/skills/intake/tracking", "Skill tracking", _key("action", "url")),
