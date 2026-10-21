@@ -75,7 +75,10 @@ def _slides_status(read):
 def _sources(read):
     from ... import research_screen
 
-    found = research_screen.sources(read.path[len("/api/research/"):], now=read.now, connection=read.connection)
+    start = (read.parameters.get("from") or ["0"])[0]
+    if not start.isdigit():
+        return 400, {"error": "from is a count of claims to skip."}
+    found = research_screen.sources(read.path[len("/api/research/"):], now=read.now, connection=read.connection, start=int(start))
     if found is None:
         return 404, {"error": "No research checkout at this address."}
     return found
@@ -91,7 +94,7 @@ PAGE = Page(
          Api("/api/research/deck/status", _deck_last), Api("/api/research/slides", write=_slides),
          Api("/api/research/slides/status", _slides_status),
          Api(pattern=r"/api/research/deck/(deck|render|review)-[0-9TZ]+", example="/api/research/deck/deck-20261020T120000Z", read=_deck_run),
-         Api(pattern=r"/api/research/.*", example="/api/research/example", read=_sources)),
+         Api(pattern=r"/api/research/.*", example="/api/research/example", read=_sources, query=True)),
     classic={"Resources (classic)": "/operations?area=resources"},
     count="/api/research",
 )

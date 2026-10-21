@@ -408,10 +408,21 @@ function drawClaims(p, s) {
       <span class="g g-${VERDICT[x.s][1]}" title="${claimTip(c, x)}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
       <button type="button" aria-describedby="claim-type-${x.s}">${x.text}</button>
       <span class="meta"><span>${x.doc}:${x.line}</span>${x.keys.map(k => chip(s, k))}</span></li>`)}</ul>${
-    c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown: the reading passed its print bound.</p>` : ''}${unread}`);
+    c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown. ${c.moreError ? `The next claims were not read: ${c.moreError}. ` : ''}<button type="button" class="btn" data-more-claims${c.loading ? html` disabled` : ''}>${c.loading ? 'Reading…' : 'Show more'}</button></p>` : ''}${unread}`);
   document.getElementById('claims-for').textContent = `· ${p.label} · ${plural(c.total, 'claim')}`;
 }
+// Show more (past the reader's print bound): the next claims, from the count already held, appended to the cached map.
+function moreClaims() {
+  const key = selected, s = SOURCES.get(key), c = s?.claims; if (!c || c.loading) return;
+  c.loading = true; c.moreError = ''; redraw();
+  window.shell.getJSON(`${sourcesPath(key)}?from=${c.rows.length}`).then(n => {
+    const rows = n.claims?.rows || [];
+    if (!rows.length) c.moreError = n.error || 'the reader sent no further claims';
+    c.rows.push(...rows);
+  }, err => { c.moreError = err.message.replace(/\.$/, ''); }).finally(() => { c.loading = false; if (selected === key && SOURCES.get(key) === s) redraw(); });
+}
 claimsEl.addEventListener('click', e => {
+  if (e.target.closest('[data-more-claims]')) { moreClaims(); return; }
   const to = e.target.closest('[data-view]'); if (to) { shell.view.show(to.dataset.view); return; }
   const v = e.target.closest('[data-verdict]');
   if (v) { verdict = !v.dataset.verdict || verdict === v.dataset.verdict ? null : v.dataset.verdict; redraw(); claimsEl.querySelector(`[data-verdict="${v.dataset.verdict}"]`)?.focus(); return; }

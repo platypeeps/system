@@ -134,7 +134,7 @@ def _collectors():
 # -- the page side ------------------------------------------------------------
 
 
-def collect(area, key=None, *, within=None):
+def collect(area, key=None, *, within=None, start=0):
     """The child's document for `area`, read under the page's budget; a `ValueError` names why it was not."""
     if area not in AREAS or (area == "sources") != (key is not None) or (key is not None and not KEY.fullmatch(key)):
         raise ValueError("unknown research reading")
@@ -143,7 +143,7 @@ def collect(area, key=None, *, within=None):
     seconds = max(budget.seconds - MARGIN, 0.0)
     # The page's start on the shared clock, as `fleet.collect` passes it (sd:2501): the child's deadline counts from here.
     since = time.clock_gettime(time.CLOCK_MONOTONIC)
-    argv = [sys.executable, "-I", str(CHILD), area, *([key] if key else []), f"{seconds:g}", f"{since:.6f}"]
+    argv = [sys.executable, "-I", str(CHILD), area, *([key, str(int(start))] if key else []), f"{seconds:g}", f"{since:.6f}"]
     try:
         process = budget.run(argv, label=f"research {area}")
     except module.OverBudget as error:
@@ -210,8 +210,10 @@ def _attention(projects, error: str) -> dict:
                      {"caution": "render-stale projects"})
 
 
-def sources(key: str, *, now: str, backend=None, connection=None) -> dict | None:
+def sources(key: str, *, now: str, backend=None, connection=None, start: int = 0) -> dict | None:
     """One checkout's source registry, None when no research checkout has that key.
+
+    `start` skips that many claims: the page's Show more reads the next claims this way, past the print bound.
 
     With `connection`, each row's adversarial reviews too (sd:5101): `reviews` maps a row key to its briefs, newest
     first, as `adversarial.source_reviews` finds them; None with `reviews_error` when they were not read.
@@ -219,7 +221,7 @@ def sources(key: str, *, now: str, backend=None, connection=None) -> dict | None
     if not KEY.fullmatch(key):
         return None
     try:
-        found = (backend or collect)("sources", key)
+        found = (backend or collect)("sources", key, start=start) if start else (backend or collect)("sources", key)
     except (OSError, ValueError) as failure:
         return {"read": now, "key": key, "error": str(failure), "files": [], "rows": [], "total": 0, "claims": None,
                 "checkout": None, "reviews": None, "reviews_error": "the ledger was not read"}
@@ -237,7 +239,7 @@ def sources(key: str, *, now: str, backend=None, connection=None) -> dict | None
             "total": found.get("total", 0), "checkout": found.get("checkout"), "reviews": reviews,
             "reviews_error": reviews_error,
             # The claim map; None when the child sent none, so the page says unknown rather than "no claims".
-            "claims": {"rows": found["claims"], "total": found.get("claims_total", 0), "tally": found.get("tally", {}),
+            "claims": {"rows": found["claims"], "from": found.get("claims_from", 0), "total": found.get("claims_total", 0), "tally": found.get("tally", {}),
                        "graded": found.get("graded", 0), "dirs": list(CLAIM_DIRS), "read": found.get("docs_read", 0), "unread": found.get("unread", []),
                        # sd:5297: what each type means and how it is graded, and what the ledger says each grade means.
                        "types": CLAIM_TYPES, "grades": found.get("grades") if isinstance(found.get("grades"), dict) else {}}
@@ -644,7 +646,7 @@ def claims(repo: Path, rows: list[dict], time_left=None) -> dict:
     return {"claims": found, "tally": tally, "read": read, "unread": unread, "graded": sum(bool(row["grade"]) for row in rows)}
 
 
-def registry(repo: Path, time_left=None) -> dict:
+def registry(repo: Path, time_left=None, start: int = 0) -> dict:
     files, rows, grades = [], [], {}
     for name in REGISTRIES:
         path = repo / name
@@ -674,8 +676,11 @@ def registry(repo: Path, time_left=None) -> dict:
     # Cited rows are kept first, so a claim can light its sources; the rest fill to ROWS. Both stay in ledger order.
     keep = sorted(sorted(range(total), key=lambda i: not rows[i]["cited"])[:ROWS])
     rows = [rows[i] for i in keep]
-    shown = mapped["claims"][:CLAIMS]
-    out = {"found": True, "files": files, "rows": rows, "total": total, "claims": shown, "grades": grades,
+    # A later page of claims (`start`) carries no ledger rows: the page keeps the first read's, and the bytes go to claims.
+    shown = mapped["claims"][start:start + CLAIMS]
+    if start:
+        rows = []
+    out = {"found": True, "files": files, "rows": rows, "total": total, "claims": shown, "claims_from": start, "grades": grades,
            "claims_total": len(mapped["claims"]), "tally": mapped["tally"], "graded": mapped["graded"], "docs_read": mapped["read"],
            "unread": mapped["unread"]}
     # Past PRINT_BYTES, drop from the end of whichever list prints more: claims or rows.
@@ -690,10 +695,11 @@ def registry(repo: Path, time_left=None) -> dict:
 def main(argv):
     started = time.monotonic()
     number = r"\d+(\.\d+)?"
-    base = 3 if argv and argv[0] == "sources" else 2
+    base = 4 if argv and argv[0] == "sources" else 2
     if not argv or argv[0] not in AREAS or len(argv) not in (base, base + 1) \
-            or not all(re.fullmatch(number, value) for value in argv[base - 1:]):
-        print("usage: research_screen.py board <seconds> [<since>] | sources <checkout> <seconds> [<since>]", file=sys.stderr)
+            or not all(re.fullmatch(number, value) for value in argv[base - 1:]) \
+            or (base == 4 and not argv[2].isdigit()):
+        print("usage: research_screen.py board <seconds> [<since>] | sources <checkout> <from> <seconds> [<since>]", file=sys.stderr)
         return 2
     area, seconds = argv[0], float(argv[base - 1])
     if len(argv) == base + 1:
@@ -709,7 +715,7 @@ def main(argv):
             else:
                 repo = checkout(Path(collectors.REPO_ROOT), argv[1])
                 # The checkout's path, so the page side can find its adversarial reviews (sd:5101).
-                found = {**registry(repo, collectors.time_left), "checkout": str(repo)} if repo else {"found": False}
+                found = {**registry(repo, collectors.time_left, int(argv[2])), "checkout": str(repo)} if repo else {"found": False}
     except Exception as error:  # noqa: BLE001 - the page shows this reason
         print(f"research {area}: {error!r}"[:4096], file=sys.stderr)
         return 1

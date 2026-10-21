@@ -461,7 +461,7 @@ class TheReader(unittest.TestCase):
             research_screen.collect("board")
             research_screen.collect("sources", "research/alpha")
         after = time.clock_gettime(time.CLOCK_MONOTONIC)
-        self.assertEqual([a[3:-1] for a in argv], [["board", "4"], ["sources", "research/alpha", "4"]])
+        self.assertEqual([a[3:-1] for a in argv], [["board", "4"], ["sources", "research/alpha", "0", "4"]])
         self.assertTrue(all(before <= float(a[-1]) <= after for a in argv), argv)
         deadlines = []
 
@@ -994,6 +994,27 @@ pick('unverified'); R.filtered = ELS.claims.html; pick(''); R.all = ELS.claims.h
         # The filter reads as a control: All is offered, and All clears a verdict pick.
         self.assertIn('data-verdict="" aria-pressed="true">All 8</button>', claims)
         self.assertNotIn(' hidden', out["R"]["all"].split('class="claims"')[1])
+
+    def test_show_more_reads_the_claims_past_the_print_bound(self):
+        # Operator request: "150 of 193 claims shown" had no way to see the rest. A later read skips the claims held.
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        repo = claimed(root, "research/beta")
+        with mock.patch.object(research_screen, "CLAIMS", 3):
+            self.ledger = research_screen.sources("research/beta", now=NOW, backend=lambda *_: research_screen.registry(repo))
+            later = research_screen.sources("research/beta", now=NOW, start=3,
+                                            backend=lambda *_, start=0: research_screen.registry(repo, start=start))
+        self.assertEqual((len(self.ledger["claims"]["rows"]), later["claims"]["from"], later["rows"]), (3, 3, []))
+        self.assertEqual(later["claims"]["rows"], research_screen.registry(repo)["claims"][3:6])
+        answer = (f"(path) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
+                  f" : path === '/api/research/research/beta?from=3' ? [200, {json.dumps(later)}]"
+                  f" : path === '/api/research/research/beta' ? [200, {json.dumps(self.ledger)}] : [404, {{ error: 'No such' }}]")
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); R.before = ELS.claims.html;
+(ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-more-claims]' ? {} : null } })); await flush();
+R.after = ELS.claims.html;""", answer=answer)
+        self.assertIn("3 of 8 claims shown.", out["R"]["before"])
+        self.assertIn("data-more-claims>Show more</button>", out["R"]["before"])
+        self.assertIn("6 of 8 claims shown.", out["R"]["after"])
+        self.assertEqual(len(re.findall(r'<li class="claim"', out["R"]["after"])), 6)
 
     def test_the_page_has_four_views_and_the_selected_project_carries_across_them(self):
         # sd:5064 operator request: Projects | Sources | Claim map tabs, through the shell's view switch.
