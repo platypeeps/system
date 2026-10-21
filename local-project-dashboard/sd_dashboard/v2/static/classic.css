@@ -50,20 +50,20 @@
 .classic .form-result[data-error]::before { content: "■ "; }
 
 /* Buttons: the shell's .btn voice, which this server markup cannot name. One filled submit per form; a row's is quiet and small. */
-.classic .primary, .classic #command-palette button {
+.classic .primary, .classic .listing-go, .classic #command-palette button {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--space-xs);
   min-height: var(--row-touch); padding: 0 var(--space-md);
   border: var(--rule-hair) solid var(--color-ink); border-radius: var(--radius-md);
   background: var(--color-ink); color: var(--color-paper); font: 500 var(--text-sm)/1 var(--font-ui); cursor: pointer; white-space: nowrap;
 }
 .classic .primary:hover, .classic #command-palette button:hover { background: var(--color-ink-2); border-color: var(--color-ink-2); }
-.classic .primary:active, .classic #command-palette button:active { transform: translateY(1px); }
+.classic .primary:active, .classic .listing-go:active, .classic #command-palette button:active { transform: translateY(1px); }
 .classic .primary:disabled, .classic #command-palette button:disabled { background: transparent; color: var(--color-muted); border-color: var(--color-rule); cursor: not-allowed; }
-.classic .compact-form .primary, .classic #command-palette [data-palette-close], .classic #command-palette [data-palette-local] {
+.classic .compact-form .primary, .classic .listing-go, .classic #command-palette [data-palette-close], .classic #command-palette [data-palette-local] {
   background: transparent; color: var(--color-ink); border-color: var(--color-rule);
 }
 .classic .compact-form .primary { min-height: 2rem; padding: 0 var(--space-sm); font-size: var(--text-xs); }
-.classic .compact-form .primary:hover, .classic #command-palette [data-palette-close]:hover,
+.classic .compact-form .primary:hover, .classic .listing-go:hover, .classic #command-palette [data-palette-close]:hover,
 .classic #command-palette [data-palette-local]:hover { background: transparent; border-color: var(--color-ink-2); }
 
 /* Status history: one line per change, its time in the data register. */
