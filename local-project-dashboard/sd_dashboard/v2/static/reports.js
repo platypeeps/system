@@ -284,6 +284,8 @@ window.PAGE_COMMANDS = [
 // says a change landed that did not.
 let reader = null, D = null;
 const load = () => reader.load(), reload = () => reader.reread();
+// Read again (sd:5638): the shell's head button reads the reports again, as the Observed lamp does.
+window.PAGE_AGAIN = { title: 'Read the reports again', run: load };
 async function write(path, body) {
   let out;
   try { out = await window.shell.post(path, body); } catch (err) { if (err.stale) load(); throw err; }

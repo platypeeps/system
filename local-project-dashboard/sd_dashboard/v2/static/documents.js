@@ -502,6 +502,8 @@ function unselect() {
 }
 // Only the newest of overlapping loads draws; a view write rereads through `view`.
 const load = () => reading.load();
+// Read again (sd:5638): the shell's head button reads the documents again.
+window.PAGE_AGAIN = { title: 'Read the documents again', run: load };
 document.addEventListener('DOMContentLoaded', () => {
   registerCommands();
   reading = shell.read({

@@ -333,9 +333,10 @@ class TheScript(Fixture):
         out = self.run_page("R.daily = ELS.daily.html;", doc)
         self.assertIn("<b>▨ Vault not configured.</b> OBSIDIAN_VAULT is not set.", out["R"]["daily"])
 
-    def test_read_again_reads_the_week_again(self):
-        out = self.run_page("ELS.reload.listeners.click[0](); await flush();")
-        self.assertEqual(out["gets"], ["/api/notes/quick", "/api/notes", "/api/notes"])
+    def test_read_again_reads_the_week_and_the_quick_notes_again(self):
+        # sd:5638: the shell's Read again runs window.PAGE_AGAIN.
+        out = self.run_page("await window.PAGE_AGAIN.run(); await flush();")
+        self.assertEqual(out["gets"], ["/api/notes/quick", "/api/notes", "/api/notes", "/api/notes/quick"])
 
     def test_slash_writes_a_quick_note_as_the_palette_and_keys_sheet_say(self):
         """sd:3525 (review 2026-10-12, A2 F9): the palette offers / for the quick note, so the page binds it and the ? sheet lists it."""

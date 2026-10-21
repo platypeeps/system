@@ -26,4 +26,6 @@
     : realm.place ? `The open items, briefs and reports of the realm ${label}.`
     : `Not in the rail: dashboard.report_families has no family ${id}. Reports says the line to add.`;
   document.querySelectorAll('[data-place-view]').forEach(b => { b.dataset.api = `/api/place/${id}/${b.dataset.placeView}`; });
+  // Read again (sd:5638): the shell's head button reads the shown view again (places.js, which loads after this script).
+  window.PAGE_AGAIN = { title: 'Read the shown view again', run: () => window.places.again() };
 })();

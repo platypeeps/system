@@ -1539,3 +1539,64 @@ class ThePaneWithoutDetails(unittest.TestCase):
         self.assertEqual(bare, ["queue", "review", "settings"])
         self.assertIn("if (!details) { pane.querySelector('#tab-details').hidden = true; showTab('tab-chat'); }", SHELL_JS)
         self.assertIn('.pane [role="tab"][hidden] { display: none; }', (v2 / "static" / "shell.css").read_text(encoding="utf-8"))
+
+
+AGAIN = re.search(r"^  // again:start\n(.*?)^  // again:end$", SHELL_JS, re.S | re.M)
+
+
+class TheReadAgainButton(unittest.TestCase):
+    """sd:5638: the shell draws one Read again button for a page's window.PAGE_AGAIN, the same on every page."""
+
+    def run_again(self, body, slot=False):
+        self.assertIsNotNone(AGAIN, "shell.js has no again:start block")
+        script = "var window = globalThis;\n" + MARKUP_JS + r"""
+const { html, put } = window.markup;
+const ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+var OUT = { toasts: [], error: null }, R = {}, WIN = [];
+const toast = m => OUT.toasts.push(m), flush = async () => { for (let i = 0; i < 50; i++) await null; };
+function addEventListener(t, f) { WIN.push([t, f]); }
+function El(id) { const e = { id, html: '', attrs: {}, listeners: {}, setAttribute(k, v) { e.attrs[k] = v; }, removeAttribute(k) { delete e.attrs[k]; },
+  addEventListener(t, f) { (e.listeners[t] = e.listeners[t] || []).push(f); }, append(f) { e.html += f.parsed; } }; return e; }
+var HEAD = El('head'), SLOT = """ + ("El('slot')" if slot else "null") + r""", BTN = null;
+const main = { querySelector: s => s === '.head, .home-head' ? HEAD : null };
+var document = { readyState: 'loading', querySelector: s => s === '[data-again]' ? SLOT : null,
+  getElementById: id => id === 'read-again' && /id="read-again"/.test(HEAD.html + (SLOT ? SLOT.html : '')) ? (BTN = BTN || El(id)) : null,
+  createElement: () => { const t = {}; Object.defineProperty(t, 'innerHTML', { set(v) { t.content = { parsed: v }; } }); return t; } };
+const loaded = () => WIN.filter(([t]) => t === 'DOMContentLoaded').forEach(([, f]) => f());
+const click = () => BTN.listeners.click.forEach(f => f());
+(async () => { try {
+""" + body.replace("SHELL_AGAIN", AGAIN.group(1)) + r"""
+} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();
+function run() { OUT.R = R; return JSON.stringify(OUT); }
+"""
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        out = json.loads(result.stdout)
+        if out["error"]:
+            raise AssertionError(out["error"])
+        return out
+
+    def test_a_page_that_declares_it_in_its_own_load_handler_gets_the_button_at_the_end_of_its_head(self):
+        out = self.run_again("""let done; R.runs = 0;
+addEventListener('DOMContentLoaded', () => { window.PAGE_AGAIN = { title: 'Read the rows again', run: () => { R.runs++; return new Promise(f => { done = f; }); } }; });
+SHELL_AGAIN
+loaded(); R.head = HEAD.html;
+click(); await flush(); R.busy = BTN.attrs['aria-busy'];
+done(); await flush(); R.after = BTN.attrs['aria-busy'] || null;""")
+        self.assertEqual(out["R"]["head"], '<button class="btn quiet sm" type="button" id="read-again" title="Read the rows again">'
+                         '<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg><span>Read again</span></button>')
+        self.assertEqual((out["R"]["runs"], out["R"]["busy"], out["R"]["after"]), (1, "true", None))
+
+    def test_a_page_slot_holds_it_and_a_page_without_page_again_gets_none(self):
+        placed = self.run_again("window.PAGE_AGAIN = { run() {} };\nSHELL_AGAIN\nloaded(); R.head = HEAD.html; R.slot = SLOT.html;", slot=True)
+        self.assertEqual(placed["R"]["head"], "")
+        self.assertIn('id="read-again" title="Read this page again"', placed["R"]["slot"])
+        bare = self.run_again("SHELL_AGAIN\nloaded(); R.head = HEAD.html;")
+        self.assertEqual(bare["R"]["head"], "")
+
+    def test_a_run_that_fails_says_so_and_ends_busy(self):
+        out = self.run_again("""window.PAGE_AGAIN = { run: () => Promise.reject(new Error('no answer')) };
+SHELL_AGAIN
+loaded(); click(); await flush(); R.busy = BTN.attrs['aria-busy'] || null;""")
+        self.assertEqual((out["toasts"], out["R"]["busy"]), (["Not read again: no answer"], None))

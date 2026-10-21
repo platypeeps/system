@@ -441,12 +441,13 @@ def _items(connection, repo: str | None, now: str, today: date) -> dict:
     """The checkout's open items of every kind, ranked: overdue, then due within a week, then the rest; priority breaks
     ties. A report is its family's (`places.area_of`), so it is not here (sd:4959)."""
     from .places import area_of
+    from .tasks_screen import is_scheduled
 
     if repo is None:
         return {"error": "no checkout: no repo named hoa is registered", "rows": []}
     rows = []
     for item in reads.backlog_items(connection, repo=repo, now=now):
-        if item["status"] == "done" or area_of(item["repo"], item["kind"], repo) != "hoa":
+        if item["status"] == "done" or is_scheduled(item) or area_of(item["repo"], item["kind"], repo) != "hoa":
             continue
         try:
             due = (_day(item["due"]) - today).days if item["due"] else None

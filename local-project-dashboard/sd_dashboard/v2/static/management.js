@@ -1199,6 +1199,8 @@ window.PAGE_COMMANDS = [
 // reread after a write keeps the rows and says the write landed.
 let reading = null, FAILED = '';
 const load = () => reading.load();
+// Read again (sd:5638): the shell's head button reads the management document again, as the Observed lamp does.
+window.PAGE_AGAIN = { title: 'Read the management document again', run: load };
 const reread = () => reading.reread();
 function adopt(doc) {
   absorb(doc);

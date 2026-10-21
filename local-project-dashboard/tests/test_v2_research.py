@@ -948,7 +948,7 @@ FIELD_VALUES = { description: 'Tail sampling keeps the slow spans' }; shellRun(c
     def test_read_again_reads_the_board_the_ledgers_and_the_experiment_link_again(self):
         # sd:5638: a refresh on the page reads every table behind it again.
         out = self.run_page("PAGE_LIST.select('research/beta'); await flush(); const before = OUT.gets.length;"
-                            " ELS.reload.listeners.click[0]({}); await flush(); R.after = OUT.gets.slice(before);",
+                            " window.PAGE_AGAIN.run(); await flush(); R.after = OUT.gets.slice(before);",
                             answer=self.experiments({}))
         self.assertIn("/api/research", out["R"]["after"])
         self.assertTrue(any(g.startswith("/api/research/experiments?project=research%2Fbeta") for g in out["R"]["after"]))

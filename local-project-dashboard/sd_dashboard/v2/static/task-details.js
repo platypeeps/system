@@ -13,6 +13,7 @@
 //     got       a Details reading answered (Tasks' linked item, sd:5462): true selects it
 //     empty, note, foot, more   the page's lines: nothing selected, under the title, the footer, a link to Tasks
 //     landed    marks a landed write's card
+//     lead      whether the store takes a lead (tasks_screen._has_lead, pack sd:5648): the Lead field shows and writes
 (() => {
   const { html, put, plural } = window.markup;
   // build: today is the viewer's day, not the mockup's observation day.
@@ -38,7 +39,7 @@
   // ---------- Data (build) ----------
   // /api/tasks rows become the reference's task shape: p is priority, repo the short label v1 shows, key the id.
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
-    status: r.status, since: r.status_since, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
+    status: r.status, since: r.status_since, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, lead: r.recurrence_lead ?? null, opensOn: r.opens_on ?? null, scheduled: !!r.scheduled, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
     base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, realm: r.realm ?? null, issueTargets: r.issue_targets ?? null, issueLink: r.issue_link ?? null, real: true });
   const label = t => `#${t.id}`;
 
@@ -52,6 +53,7 @@
       const dueMoved = t.due !== state.item.due;
       Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence,
         anchor: state.item.recurrence_anchor ?? null, revision: state.revision, title: state.item.title ?? t.title, stage: t.base ? state.item.stage : null });
+        if ('recurrence_lead' in state.item) t.lead = state.item.recurrence_lead ?? null;
       if ('repo' in state.item && state.item.repo !== t.repo_path) Object.assign(t, { repo_path: state.item.repo,
         repo: state.item.repo ? host.rows().find(x => x.repo_path === state.item.repo)?.repo || state.item.repo.split('/').pop() : 'no repo' });
       // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
@@ -118,6 +120,14 @@
     // the library, cannot be walked: completing it ends the series. test_v2_tasks holds this set to the library's.
     const PARTS = new Set(['FREQ', 'INTERVAL', 'BYMONTH', 'BYMONTHDAY', 'BYDAY']);
     const walkable = t => String(t.recurrence || '').replace(/^RRULE:/i, '').split(';').every(p => PARTS.has(p.split('=')[0].trim().toUpperCase()));
+    // sd:5649: the Repeat field's rules, each in sd_db.recurrence.Rule.text()'s spelling, the one the store keeps, so a stored
+    // rule selects its name; test_v2_tasks parses each with the library. A rule not here shows as itself.
+    const REPEATS = [['FREQ=DAILY', 'Daily'], ['FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR', 'Weekdays'], ['FREQ=WEEKLY', 'Weekly'], ['FREQ=MONTHLY', 'Monthly'],
+      ['FREQ=MONTHLY;INTERVAL=3', 'Quarterly'], ['FREQ=YEARLY;BYMONTH=3,6,9,12;BYMONTHDAY=21', 'Seasonal'], ['FREQ=YEARLY', 'Yearly']];
+    const repeatName = rule => REPEATS.find(r => r[0] === rule)?.[1] || rule;
+    // The Lead field's days: how long before its due date a repeating task's next row opens (pack sd:5648).
+    const LEADS = [0, 1, 2, 3, 7, 14, 30];
+    const opens = t => t.scheduled && t.opensOn ? `opens ${fmt(t.opensOn)}` : '';
     // A completion that opens nothing: a rule sd cannot walk, or one whose next date workflow.next_occurrence_due says is none.
     const ends = t => !walkable(t) || t.nextDue === null;
     const cliMove = (t, to) => `sd task status ${t.id} ${to}`;
@@ -128,6 +138,8 @@
       if ('repo' in ch) a.push(ch.repo ? `--belongs-to ${window.shell.shq(ch.repo)}` : '--no-repo');
       if ('title' in ch) a.push(`--title ${window.shell.shq(ch.title)}`);
       if ('body' in ch) a.push(`--body ${window.shell.shq(ch.body)}`);
+      if ('recurrence' in ch) a.push(ch.recurrence ? `--recur ${window.shell.shq(ch.recurrence)}` : '--clear-recur');
+      if ('recurrence_lead' in ch) a.push(`--recur-lead ${ch.recurrence_lead ?? 0}`);
       return `sd task edit ${t.id} ${a.join(' ')}`;
     }
 
@@ -315,7 +327,7 @@
     // revision the edit answered. A field the row does not carry (the description) takes `before(row)`, read then too.
     // `check` asks as the edit leaves whether it still changes anything: a second one queued
     // behind the first would write nothing, and its Undo would set back what the first one changed (review, PR #46).
-    const FIELD = { anchor: 'recurrence_anchor', repo_path: 'repo' };
+    const FIELD = { anchor: 'recurrence_anchor', lead: 'recurrence_lead', repo_path: 'repo' };
     // `before` holds a field the row does not carry (the description, read with the Details).
     function editRun(t, ch, msg, { check, keep = Object.keys(ch), before = () => ({}) } = {}) {
       let was = {};
@@ -522,6 +534,7 @@
             return html`<option value="${s}"${s === t.status ? html` selected` : L.ok ? '' : html` disabled title="${L.reason}"`}>${name}</option>`; })}${SLABEL[t.status] ? '' : html`<option value="${t.status}" selected disabled>${slabel(t.status)}</option>`}</select></dd>
           <dt><label for="det-p">Priority</label></dt><dd><select id="det-p" class="fld"${dis}>${t.p ? '' : html`<option value="" selected>not recorded</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select></dd>
           <dt><label for="det-due">Due</label></dt><dd><input id="det-due" class="fld" type="date" value="${String(t.due || '')}"${dis}>${t.due || t.overdue ? html` <span class="why">${t.due ? dt : 'overdue · date not recorded'}</span>` : ''}</dd>
+          ${repeatFields(t, off)}
           <dt><label for="det-repo">Repo</label></dt><dd><select id="det-repo" class="fld"${t.kind === 'work' && !off ? html` disabled title="A work item belongs to the checkout its folder is in."` : dis}>${repoOptions(t, null)}</select></dd>
           <dt>Urgent</dt><dd>${urgent(t) ? 'yes' : 'no'} <span class="why">(derived)</span></dd>
           <dt><label for="det-q">Quadrant</label></dt><dd>${t.status === 'done' ? 'not placed' : html`<select id="det-q" class="fld"${dis}>${QUADS.map(q => html`<option value="${q[0]}"${q[0] === quadOf(t) ? html` selected` : ''}>${q[1]}</option>`)}</select>`}</dd>
@@ -541,6 +554,17 @@
         if (f && caret[0] != null) try { f.setSelectionRange(caret[0], caret[1]); } catch { /* a date or select has no caret */ }
       } else if (focused?.startsWith('det-')) document.getElementById(focused)?.focus?.();
       if (!off) window.shell.repos?.().then(list => { const r = document.getElementById('det-repo'); if (r && selected() === t.key && !r.disabled) put(r, repoOptions(t, list)); }, () => {});
+    }
+    // sd:5649: Repeat and Lead, each a select whose change is one edit with Undo (fieldChange). Repeat offers REPEATS, and a
+    // stored rule not among them as itself; Lead shows on a repeating row of a store that has a lead (host.lead).
+    function repeatFields(t, off) {
+      const why = off || (RECURS.includes(t.kind) ? '' : `a ${t.kind} item cannot recur`), dis = why ? html` disabled title="${why}"` : '';
+      const rules = t.recurrence && !REPEATS.some(r => r[0] === t.recurrence) ? [...REPEATS, [t.recurrence, t.recurrence]] : REPEATS;
+      const note = opens(t) || (!t.due && !repeats(t) && !why ? 'needs a due date' : '');
+      return html`<dt><label for="det-recur">Repeat</label></dt><dd><select id="det-recur" class="fld"${dis}><option value=""${t.recurrence ? '' : html` selected`}>Does not repeat</option>${
+        rules.map(([v, name]) => html`<option value="${v}"${v === t.recurrence ? html` selected` : ''}>${name}</option>`)}</select>${note ? html` <span class="why">${note}</span>` : ''}</dd>${
+        host.lead?.() && repeats(t) ? html`<dt><label for="det-lead">Lead</label></dt><dd><select id="det-lead" class="fld"${dis}>${
+          [...new Set([...LEADS, t.lead ?? 0])].sort((a, b) => a - b).map(n => html`<option value="${n}"${n === (t.lead ?? 0) ? html` selected` : ''}>${n ? `${plural(n, 'day')} early` : 'On the due date'}</option>`)}</select></dd>` : ''}`;
     }
     // The repos a task can move to: every registered one (the capture's list) once read, else the ones these rows name.
     function repoOptions(t, list) {
@@ -582,6 +606,13 @@
       if (id === 'det-due') { const d = v || null; if (d === t.due) return false;
         if (!d && repeats(t)) { toast(NO_CLEAR); return false; }
         commitEdit(t, { due: d }, d ? `due ${fmt(d)}` : 'due removed', { check: r => r.due !== d || 'the date is already set' }); return true; }
+      // sd:5649: --recur needs a due date; clearing the rule clears its anchor and lead, which Undo sets again.
+      if (id === 'det-recur') { const rule = v || null; if (rule === (t.recurrence || null)) return false;
+        if (rule && !t.due) { toast(`${label(t)} not changed: --recur needs a due date`); return false; }
+        commitEdit(t, { recurrence: rule }, rule ? `repeats ${repeatName(rule).toLowerCase()}` : 'no longer repeats',
+          { keep: rule ? ['recurrence'] : ['recurrence', 'anchor', ...(host.lead?.() ? ['lead'] : [])], check: r => (r.recurrence || null) !== rule || 'it repeats so already' }); return true; }
+      if (id === 'det-lead') { const n = +v; if (!host.lead?.() || !repeats(t) || n === (t.lead ?? 0)) return false;
+        commitEdit(t, { recurrence_lead: n }, `lead ${plural(t.lead ?? 0, 'day')} → ${plural(n, 'day')}`, { keep: ['lead'], check: r => (r.lead ?? 0) !== n || 'the lead is already that' }); return true; }
       if (id === 'det-repo') { const r = v || null; if (r === (t.repo_path || null)) return false;
         commitEdit(t, { repo: r }, `repo → ${r ? r.split('/').pop() : 'none'}`, { keep: ['repo_path'], check: x => (x.repo_path || null) !== r || 'it is already there' }); return true; }
       return false;
@@ -618,7 +649,7 @@
         <h3>Artifact ${src('Artifact', `sd task show ${t.id} --json · item.path`)}</h3>
         <dl><dt>Path</dt><dd>${it.path || 'none'}</dd><dt>Repo</dt><dd>${it.repo || 'none'}</dd>${it.branch ? html`<dt>Branch</dt><dd>${it.branch}</dd>` : ''}</dl>
         <h3>Recurrence ${src('Recurrence', `sd task show ${t.id} --json · item.recurrence`)}</h3>
-        <dl><dt>Repeats</dt><dd>${it.recurrence || 'no'}</dd>${it.recurrence_anchor ? html`<dt>Anchor</dt><dd>${it.recurrence_anchor}</dd>` : ''}<dt>Revision</dt><dd>${d.revision.slice(0, 12)}…</dd></dl>
+        <dl><dt>Repeats</dt><dd>${it.recurrence || 'no'}</dd>${it.recurrence_anchor ? html`<dt>Anchor</dt><dd>${it.recurrence_anchor}</dd>` : ''}${it.recurrence && 'recurrence_lead' in it ? html`<dt>Lead</dt><dd>${plural(it.recurrence_lead ?? 0, 'day')}</dd>` : ''}${opens(t) ? html`<dt>Opens</dt><dd>${t.opensOn}</dd>` : ''}<dt>Revision</dt><dd>${d.revision.slice(0, 12)}…</dd></dl>
         ${external(d)}`;
     }
     // sd:3465: where the item's work was published, each URL under its document's title; tasks_screen._published sets
@@ -773,7 +804,7 @@
       dateDlg.showModal(); (f.querySelector('[data-move]:not(:disabled)') || f.querySelector('[value="cancel"]')).focus();
     }
     document.addEventListener('adversarial:run', e => { if (e.detail.key === `task:${byKey(selected())?.id}`) renderDetails(); });
-    return { shape, label, STATUSES, SLABEL, slabel, QUADS, TODAY, plus, fmt, days, withinWeek, quadOf, dueText, legal, quadChange,
+    return { shape, label, opens, STATUSES, SLABEL, slabel, QUADS, TODAY, plus, fmt, days, withinWeek, quadOf, dueText, legal, quadChange,
       EDITABLE, repeats, DET, live, objectOf, putAll, readDet, redrawDet, adopt, write, renderDetails, fieldChange, move, toQuad, askEdit, STATUS_CMD };
   }
 

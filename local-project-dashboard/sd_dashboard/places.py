@@ -185,19 +185,21 @@ def tasks(connection, area: str, *, now: str) -> dict:
     """The area's open items: `reads.backlog_items`' unparked open rows `area_of` (or a realm's `realm_of`) places in it.
 
     Each is the Tasks page's row (`tasks_screen._rows`), read in one snapshot as `/api/tasks` is: a row's Details on the
-    place page are the Tasks page's own (sd:5635), with its revision, moves, edit capability and issue targets.
+    place page are the Tasks page's own (sd:5635), with its revision, moves, edit capability and issue targets, and `lead`
+    says whether the store takes a lead, as `/api/tasks` does. A scheduled occurrence waits until it opens (sd:5670).
     """
     owns, why, unread = _place(connection, area)
     if owns is None:
         return {**_unknown(now, area, why), **({"state": "error"} if unread else {})}
     from .operations_screen import _one_snapshot
-    from .tasks_screen import _rows
+    from .tasks_screen import _has_lead, _rows, is_scheduled
 
     with _one_snapshot(connection):
         found = [row for row in reads.backlog_items(connection, now=now)
-                 if row["status"] != "done" and owns(row["repo"], row["kind"])]
+                 if row["status"] != "done" and not is_scheduled(row) and owns(row["repo"], row["kind"])]
         rows = _rows(connection, found, realms(connection), now=now)
-    return {"read": now, "area": area, "state": "read", "reason": "", "rows": rows}
+        lead = _has_lead(connection)
+    return {"read": now, "area": area, "state": "read", "reason": "", "rows": rows, "lead": lead}
 
 
 #: How many briefs are read before the area filter: every one the store holds, in practice; a page shows `ROWS`.

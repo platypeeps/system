@@ -258,4 +258,6 @@ addEventListener('DOMContentLoaded', () => {
   });
   readURL();
   briefs.load();
+  // Read again (sd:5638): the shell's head button reads the briefs again, as the Observed lamp does.
+  window.PAGE_AGAIN = { title: 'Read the briefs again', run: () => briefs.load() };
 });

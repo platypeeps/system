@@ -54,6 +54,9 @@
 .repo::before { content: "#"; color: var(--color-muted); }
 .due.warning { color: var(--color-warning); font-weight: 500; }
 .due.caution { color: var(--color-caution); }
+/* sd:5649: the day a scheduled occurrence opens, beside its due date on a card and in the list's Due cell. */
+.opens { font: 400 var(--text-2xs)/1.3 var(--font-data); color: var(--color-muted); }
+.list td.due .opens::before { content: " · "; }
 /* A card's priority and due dropdowns (sd:3440): they read as the labels they replace until hovered or focused. */
 .card .tile-f { appearance: none; -webkit-appearance: none; background: transparent; cursor: pointer; }
 .card select.tile-f.due { font: inherit; color: inherit; border: var(--rule-hair) solid transparent; border-radius: var(--radius-sm); padding: 0 var(--space-2xs); }

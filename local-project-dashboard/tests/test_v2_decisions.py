@@ -26,7 +26,7 @@ from pathlib import Path
 from sd_db import workflow
 from sd_dashboard import decisions, v2
 
-from support import ScreenCase
+from support import NOW, ScreenCase, before_5648
 from test_v2_tasks import MARKUP_JS, SHELL, STAND_IN
 from test_v2_today import OSASCRIPT
 from test_workflow_actions import BrowserSession
@@ -109,6 +109,15 @@ class TheDocument(ScreenCase):
         self.assertEqual(row["options"], ["A pack store kind", "Workflow database rows"])
         self.assertEqual(row["revision"], workflow.item_state(self.connection, ids["item"])["revision"])
         self.assertTrue(row["asked"])
+
+    def test_a_scheduled_occurrence_asks_nothing_until_it_opens(self):
+        """sd:5670: Decisions lists questions on the items Tasks lists, so a scheduled occurrence (pack sd:5648) waits
+        until it opens. A pack before sd:5648 lists its questions as before."""
+        ids = seed(self)
+        self.schedule(ids["item"], "2026-09-09")
+        self.assertEqual(decisions.document(self.connection, now=NOW)["decisions"], [])
+        with before_5648():
+            self.assertEqual(len(decisions.document(self.connection, now=NOW)["decisions"]), 3)
 
     def test_no_decisions_is_an_empty_list(self):
         self.assertEqual(decisions.document(self.connection)["decisions"], [])

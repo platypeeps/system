@@ -1766,6 +1766,28 @@
     else if (hiddenAt && Date.now() - hiddenAt >= 5 * 60 * 1000) location.reload();
   });
 
+  // again:start
+  // Read again (sd:5638): a page sets window.PAGE_AGAIN = { title, run } on load or in its DOMContentLoaded; run reads the page's
+  // documents again and redraws, keeping the selection and the filters, and may return a promise. The shell draws one button
+  // for it, the same label and icon on every page, in the page's [data-again] element or at the end of its head, once every
+  // page's DOMContentLoaded ran (a window listener added last). It is busy while a run is pending; a run that throws says so.
+  // It collects nothing: a page whose collector can run again keeps that as its own action. test_v2_registry holds every page to it.
+  function again() {
+    const a = window.PAGE_AGAIN, at = document.querySelector('[data-again]') || main.querySelector('.head, .home-head');
+    if (!a || !at || document.getElementById('read-again')) return;
+    put(at, html`<button class="btn quiet sm" type="button" id="read-again" title="${a.title || 'Read this page again'}">${ICON('rotate-ccw')}<span>Read again</span></button>`, 'append');
+    const b = document.getElementById('read-again');
+    let runs = 0;
+    b.addEventListener('click', () => {
+      b.setAttribute('aria-busy', 'true'); runs++;
+      Promise.resolve().then(() => window.PAGE_AGAIN.run())
+        .catch(e => toast(`Not read again: ${e && e.message || e}`))
+        .finally(() => { if (!--runs) b.removeAttribute('aria-busy'); });
+    });
+  }
+  document.readyState === 'loading' ? addEventListener('DOMContentLoaded', again) : again();
+  // again:end
+
   // ---------- Selection follows the filter (design.md, Page contract) ----------
   // A list's selection is always a row the viewer can see. Call after any filter, search, page or view change.
   // rows: the list's row elements. current: the selected id (default: the row with aria-selected="true").

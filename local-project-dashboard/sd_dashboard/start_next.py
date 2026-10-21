@@ -32,6 +32,7 @@ from sd_db.errors import SdDbError
 
 from . import claude_sessions, fix_session
 from .active_sessions import Unread, _reason, elapsed
+from .tasks_screen import is_scheduled
 
 __all__ = ["CAP", "plan", "request", "run"]
 
@@ -95,7 +96,7 @@ def plan(connection, *, now: str, sessions=None, gate=None) -> dict:
     launched = {row["item"] for row in reads.launch_notes(connection, fix_session.NOTE.split("{", 1)[0])}
     eligible, skipped = [], []
     for row in reads.backlog_items(connection, status="ready", now=now):
-        if row["kind"] == "report":
+        if row["kind"] == "report" or is_scheduled(row):
             continue
         reason = ("Fix started a session for it already" if row["id"] in launched
                   else "a live Claude session works on it" if row["id"] in named else "")

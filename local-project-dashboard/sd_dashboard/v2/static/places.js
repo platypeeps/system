@@ -104,7 +104,7 @@
     const shown = () => shownView() === view ? sel[view] ?? null : null, api = () => window.PAGE_VIEWS?.find(x => x.id === view)?.api;
     const d = TD.attach({ details: details(), rows: () => T, selected: shown, read: () => RAW[view]?.read,
       render: () => { if (shown() != null) d.renderDetails(); }, reread: () => window.places.reread(view),
-      load: () => window.places.reread(view).then(() => RAW[view]?.state === 'read'), select: (key, open) => pick(key, open),
+      load: () => window.places.reread(view).then(() => RAW[view]?.state === 'read'), select: (key, open) => pick(key, open), lead: () => !!RAW[view]?.lead,
       foot: () => RAW[view]?.read ? html`Rows read <time class="rel" datetime="${RAW[view].read}"></time> from ${api()}.` : '',
       more: t => html`<p class="why"><a href="${window.shell.itemHref(t.id)}">Open on Tasks</a>: the board, the matrix and every task.</p>` });
     return { key: t => t.key, rows: doc => { T = (doc.rows || []).map(TD.shape); d.adopt(T); return T; }, objects: rows => rows.map(d.objectOf),
@@ -189,7 +189,9 @@
 
   // reread(view): read a place view again after a write its Details made (a brief's Publish, a report's Acknowledge).
   const reread = view => { const v = window.PAGE_VIEWS?.find(x => x.id === view); return v?.api ? load(v) : Promise.resolve(); };
-  window.places = { viewSwitch, place, reread };
+  // again(): Read again (sd:5638) reads the shown place view again; a view without its own read has nothing to read.
+  const again = () => reread(window.shell.view.current());
+  window.places = { viewSwitch, place, reread, again };
   // Top level: places.js loads before shell.js, which reads PAGE_VIEWS when it loads.
   if (document.body.dataset.place && !document.documentElement.hasAttribute('data-kiosk')) {
     window.PAGE_VIEWS = blocks.map(b => ({ id: b.dataset.placeView, label: b.dataset.label, ...(b.dataset.api ? { api: b.dataset.api } : {}) }));
