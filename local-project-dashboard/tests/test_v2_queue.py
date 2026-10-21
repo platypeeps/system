@@ -1027,7 +1027,10 @@ R.det = ELS.adv.html;""")
         self.assertNotIn('<li class="qrow"', out["R"]["lanes"])
         # sd:5640: idle lanes have their own view; Lanes says where they went.
         self.assertIn("No lane has a row to show. 1 idle lane is under Idle.", out["R"]["lanes"])
-        self.assertIn("<code>system</code>", out["R"]["idle"])
+        # sd:5650: the Idle table says why each lane is idle: here only ended rows.
+        self.assertIn('<td><code>system</code></td><td>', out["R"]["idle"])
+        self.assertIn(' (hub)</td>', out["R"]["idle"])
+        self.assertRegex(out["R"]["idle"], r"No active entry · \d+ landed, \d+ cancelled today")
 
     def test_the_merging_row_names_step_host_claim_age_and_lease(self):
         lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
@@ -1112,10 +1115,10 @@ R.det = ELS.adv.html;""")
         lanes = out["R"]["lanes"]
         self.assertIn('<span class="host">lane on hub</span>', lanes)
         self.assertNotIn('aria-labelledby="lane-quiet"', lanes)
-        # sd:5640: idle lanes sit in the Idle view, one group per host, hub first, each sorted by name.
+        # sd:5650: idle lanes sit in the Idle table, one row each: repository, machine, state and merge.
         self.assertNotIn("<code>quiet</code>", lanes)
-        self.assertIn('<h3 class="idle-host">Lanes on build-2 <span class="n">1</span></h3><ul class="idle-list"><li><code>quiet</code></li></ul>',
-                      out["R"]["idle"])
+        self.assertIn('<tr><td><code>quiet</code></td><td>build-2</td><td>Empty: nothing queued, gating or landed today</td>'
+                      '<td>Approve to merge</td></tr>', out["R"]["idle"])
         # sd:5524: the Lanes tab carries the busy lane count, Idle the rest; the line under the title counts the managed repositories.
         self.assertIn("2 managed repositories · read", out["R"]["subhead"])
         self.assertNotIn("lanes of", out["R"]["subhead"])
