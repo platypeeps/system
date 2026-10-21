@@ -7,12 +7,15 @@
 // read is a line naming it; a read that failed says why.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 // sd:5633: a pull request row's title, or a press on its row, opens its Details in the right pane: what the read carries,
-// a link to GitHub in a new tab, and its commands (Open on GitHub, Open item, Adversarial review, Copilot review, Merge), each a
-// command object of TYPE the shell runs. An issue row keeps its title's link to GitHub. The selection is Today's one
-// (today.js pick, sd:5654), so a Now or Work row selected after it unmarks it.
+// a link to GitHub in a new tab, and its commands (Open on GitHub, Open item, Adversarial review, Copilot review, Merge,
+// Close original), each a command object of TYPE the shell runs. An issue row keeps its title's link to GitHub. The
+// selection is Today's one (today.js pick, sd:5654), so a Now or Work row selected after it unmarks it.
 // sd:5668: Merge copies an open pull request into a worktree and enqueues it in the lane (pr_merge.py). Its run reads the
 // preview, asks with it (the pull request, its head, its author, the worktree and the item), then posts the preview's
 // revision; a 4xx moved nothing, and a 502 may follow a step that moved, so the toast says Merge again resumes.
+// sd:5669: Close original is off until the lane merged the copy (the row's landed, pr_close.landed). Its run reads the
+// preview, asks with the exact comment, then posts the preview's revision: one comment linking the lane's pull request and
+// its merge commit, then the close. A 502 may follow the comment, so the toast says Close original again resumes.
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
@@ -117,7 +120,7 @@
   function objects() {
     const C = window.shell.commands, keep = new Set();
     pulls().forEach(r => { keep.add(oid(r.key)); C.put({ id: oid(r.key), type: TYPE, label: `${r.ref} ${r.title}`.trim(), repo: r.repo,
-      number: r.number, url: r.url, state: r.state, item: r.item, checkout: r.checkout }); });
+      number: r.number, url: r.url, state: r.state, item: r.item, checkout: r.checkout, landed: r.landed || null }); });
     PUT.forEach(id => { if (!keep.has(id)) C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); });
     PUT = keep;
   }
@@ -155,6 +158,14 @@
         cli: o => `git -C ${window.shell.shq(o.checkout)} fetch origin pull/${o.number}/head && sd-ship -C <worktree> lane enqueue --item <n> --title <title> --body-file <body> --expected-head <head> --deliver`,
         sends: o => `POST /api/today/github/merge ${JSON.stringify({ repo: o.repo, number: o.number, revision: '<preview>' })}`,
         run: mergePull },
+      // sd:5669: previews, as Merge does; nothing closes without this press and its confirm.
+      { id: `${TYPE}.close-original`, on: TYPE, label: 'Close original', does: 'Comments with a link to the lane\'s merged copy, then closes this pull request.',
+        icon: 'git-pull-request', risk: 'confirm', executes: true, previews: true,
+        when: o => o.state !== 'open' ? `${closed(o)}; nothing to close`
+          : o.landed ? true : 'the lane has not merged a copy of it yet: Merge copies it, and the lane merges the copy',
+        cli: o => `gh api repos/${o.repo}/issues/${o.number}/comments --method POST -f body=<comment> && gh api repos/${o.repo}/pulls/${o.number} --method PATCH -f state=closed`,
+        sends: o => `POST /api/today/github/close ${JSON.stringify({ repo: o.repo, number: o.number, revision: '<preview>' })}`,
+        run: closePull },
     );
   }
 
@@ -183,6 +194,21 @@
     const lane = out.lane || {};
     const queued = lane.status === 'not queued' ? `not queued: ${lane.error}. Merge again to retry the enqueue` : `lane ${lane.status}; Queue shows it`;
     return { text: `Copied · ${ref} at ${out.head.slice(0, 12)} into ${out.branch} · sd:${out.item}${out.filed ? ' filed' : ''} · ${queued}` };
+  }
+
+  async function closePull(o) {
+    const ref = `${o.repo}#${o.number}`;
+    const p = await window.shell.getJSON(`/api/today/github/close/preview?repo=${encodeURIComponent(o.repo)}&number=${o.number}`);
+    const body = `Posts this comment on ${ref}, then closes it, not merged: ${p.text}`;
+    const { yes } = await window.shell.ask({ title: `Close ${ref}?`, body, ok: 'Close', keep: "Don't close", danger: true, cli: () => p.cli });
+    if (!yes) return { text: `Close original not run · ${ref}` };
+    let out;
+    try { out = await window.shell.post('/api/today/github/close', { repo: o.repo, number: o.number, revision: p.revision }); }
+    catch (err) {
+      if (err.status >= 400 && err.status < 500) throw err;
+      return { text: `Not known how far Close original got · ${ref}: ${err.message}. Close original again posts no second comment.` };
+    }
+    return { text: `Closed · ${ref}${out.commented ? ' with a comment' : '; its comment was already posted'} linking ${p.merged} · the row moves once sd shadow sync reads it` };
   }
 
   // Of overlapping reads only the newest draws.

@@ -43,8 +43,8 @@ Failure table (step, state moved, failure, recovery, test in `test_pr_merge.py`)
   whose outcome is unknown (`test_an_enqueue_that_gave_no_answer_is_unknown`). A copy the lane already merged is
   refused (`test_a_copy_the_lane_merged_is_not_enqueued_again`).
 
-Closing the original pull request with a link to the lane's once the merge is recorded is not built here:
-system sd:5669 holds it. Until then the original stays open, and the confirm says so.
+Once the lane merged the copy, Close original closes the original pull request with a link to the lane's
+(`pr_close`, sd:5669); until then the original stays open, and the confirm says so.
 """
 
 from __future__ import annotations
@@ -197,14 +197,14 @@ def _cli(facts: dict) -> str:
     return fetch + " ".join(["sd-ship", *map(shlex.quote, argv[1:])])
 
 
-def _values(repo, number) -> tuple[str, int]:
+def _values(repo, number, action: str = "Merge") -> tuple[str, int]:
     from .today_github import SLUG
 
     if isinstance(number, str) and re.fullmatch(r"[1-9][0-9]{0,7}", number):
         number = int(number)
     if (not isinstance(repo, str) or not SLUG.fullmatch(repo) or {".", ".."} & set(repo.split("/"))
             or type(number) is not int or not 1 <= number <= 10_000_000):
-        raise ValueError("Merge takes a pull request's repo, as owner/name, and its number.")
+        raise ValueError(f"{action} takes a pull request's repo, as owner/name, and its number.")
     return repo, number
 
 

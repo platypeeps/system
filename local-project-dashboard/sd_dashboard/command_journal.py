@@ -116,6 +116,7 @@ COMMANDS = (
     Command(r"/api/health/cleanup", "Clean up", _key("row")),
     Command(r"/api/repos/land", "Land", _key("path", "items")),
     Command(r"/api/today/github/merge", "Merge", _key("repo", "number")),
+    Command(r"/api/today/github/close", "Close original", _key("repo", "number")),
     Command(r"/api/repos/standard", "Apply standard", _key("path")),
     Command(r"/api/claude-sessions/end", "End session", _key("id")),
     Command(r"/api/skills/intake", "Skill intake", _key("source", "scope")),

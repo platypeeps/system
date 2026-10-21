@@ -23,6 +23,9 @@ for one Copilot review of an open pull request, once per press, through the revi
 `--copilot-review request` calls. The pull request must be one `sd shadow sync` saw open in that repository; nothing is
 recorded here, and the lane's own request count is sd-ship's. An answer that proves GitHub or gh refused is a 409; any
 other failure is a 502 that says whether Copilot was asked is not known.
+
+An open pull request carries `landed`, the lane's merge of its Merge copy (`pr_close.landed`), or None: Close original
+(sd:5669) opens only on it.
 """
 
 from __future__ import annotations
@@ -162,6 +165,11 @@ def document(connection: sqlite3.Connection, *, now: str) -> dict:
             for ref in dict.fromkeys((f"github:{entry['ref']}", f"github:{entry['ref']}".lower())):
                 held = None if entry["item"] else writes.item_by_external(connection, REF_SOURCE, ref)
                 entry["item"] = entry["item"] or (held["id"] if held is not None else None)
+        # sd:5669: an open pull request whose Merge copy the lane merged offers Close original.
+        from .pr_close import landed
+
+        for entry in found["pulls"]:
+            entry["landed"] = landed(connection, entry["repo"], entry["number"])
     except READ_ERRORS as failure:
         unread["refs"] = str(failure) or "the items filed under a GitHub ref could not be read"
     # Newest activity first; a row with no stamp last, then by address so a tie keeps one order.

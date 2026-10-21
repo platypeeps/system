@@ -19,6 +19,10 @@ registered checkout of its repository; a press opens those Details with Open on 
 sd:5668: Merge reads its preview, asks with the pull request, its head, its author, the worktree and the item, and posts
 the preview's revision once; a settled pull request or one outside a registered repository is off. The copy itself is
 `test_v2_today_github_merge`.
+
+sd:5669: Close original is off, with the reason, until the row carries its copy's merge (`landed`); then it reads its
+preview, asks with the exact comment, and posts the preview's revision once. The close itself is
+`test_v2_today_github_close`.
 """
 
 from __future__ import annotations
@@ -376,7 +380,8 @@ class ThePullRequestDetails(unittest.TestCase):
         self.assertIsNone(out["R"]["issue"])
         self.assertEqual([i for i in out["R"]["ids"] if i.startswith("github pull request.")],
                          ["github pull request.open", "github pull request.item", "github pull request.adversarial-review",
-                          "github pull request.copilot-review", "github pull request.merge"])
+                          "github pull request.copilot-review", "github pull request.merge",
+                          "github pull request.close-original"])
 
     def test_adversarial_review_starts_a_change_review_of_that_pull_request_and_only_an_open_one(self):
         out = self.page(f"C.run(cmd('github pull request.adversarial-review'), C.get('gh:{PR}'));"
@@ -448,6 +453,48 @@ class ThePullRequestDetails(unittest.TestCase):
         out = self.page(self.ASKS + f"R.got = await cmd('github pull request.merge').run(C.get('gh:{PR}'));", posts=lost)
         self.assertEqual(out["R"]["got"]["text"],
                          "Not known how far Merge got · example/anvil#1: Merge stopped part way: stopped. Merge again resumes what was copied.")
+
+    # sd:5669: Close original's preview and write, as pr_close answers them.
+    CLOSE = ("path => path.startsWith('/api/today/github/close/preview') ? [200, { repo: 'example/anvil', number: 1,"
+             " merged: 'https://github.com/example/anvil/pull/12', commit: '" + "c" * 40 + "',"
+             " text: 'Thank you. This change landed through https://github.com/example/anvil/pull/12.', revision: '" + "r" * 64 + "',"
+             " cli: 'gh api repos/example/anvil/pulls/1 --method PATCH -f state=closed' }]"
+             " : path === '/api/today/github/close' ? [200, { closed: true, commented: true }] : [500, { error: 'unexpected ' + path }]")
+    LANDED = {"item": 77, "url": f"{HUB}/example/anvil/pull/12", "commit": "c" * 40}
+
+    def test_close_original_is_off_until_the_lane_merged_the_copy(self):
+        out = self.page(f"C.run(cmd('github pull request.close-original'), C.get('gh:{PR}'));"
+                        f" C.run(cmd('github pull request.close-original'), C.get('gh:{HUB}/example/anvil/pull/3'));",
+                        posts=self.CLOSE)
+        self.assertEqual((out["gets"][1:], out["posts"]), ([], []))
+        said = [t["msg"] for t in out["toasts"]]
+        self.assertIn("off: the lane has not merged a copy of it yet: Merge copies it, and the lane merges the copy", said)
+        self.assertIn("off: the pull request is merged; nothing to close", said)
+
+    def test_close_original_asks_with_the_exact_comment_then_posts_its_revision_once(self):
+        found = doc(pulls=[entry(1, checkout="~/repos/anvil", landed=self.LANDED)])
+        out = self.page(self.ASKS + f"R.got = await cmd('github pull request.close-original').run(C.get('gh:{PR}'));",
+                        posts=self.CLOSE, found=found)
+        self.assertEqual([g for g in out["gets"] if "close" in g], ["/api/today/github/close/preview?repo=example%2Fanvil&number=1"])
+        ask = out["asks"][0]
+        self.assertEqual((ask["title"], ask["ok"], ask["keep"], ask["cli"]),
+                         ("Close example/anvil#1?", "Close", "Don't close", "gh api repos/example/anvil/pulls/1 --method PATCH -f state=closed"))
+        self.assertEqual(ask["body"], "Posts this comment on example/anvil#1, then closes it, not merged: Thank you. This change"
+                                      " landed through https://github.com/example/anvil/pull/12.")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/today/github/close", {"repo": "example/anvil", "number": 1, "revision": "r" * 64})])
+        self.assertEqual(out["R"]["got"]["text"], "Closed · example/anvil#1 with a comment linking https://github.com/example/anvil/pull/12"
+                                                  " · the row moves once sd shadow sync reads it")
+        kept = self.page(self.ASKS + f"YES = false; R.got = await cmd('github pull request.close-original').run(C.get('gh:{PR}'));",
+                         posts=self.CLOSE, found=found)
+        self.assertEqual((kept["posts"], kept["R"]["got"]["text"]), ([], "Close original not run · example/anvil#1"))
+
+    def test_a_close_the_server_could_not_finish_says_close_again_posts_no_second_comment(self):
+        lost = self.CLOSE.replace("path === '/api/today/github/close' ? [200,", "path === '/api/today/github/close' ? [502, { error: 'Commented; whether it closed is not known' }] : false ? [200,")
+        found = doc(pulls=[entry(1, checkout="~/repos/anvil", landed=self.LANDED)])
+        out = self.page(self.ASKS + f"R.got = await cmd('github pull request.close-original').run(C.get('gh:{PR}'));", posts=lost, found=found)
+        self.assertEqual(out["R"]["got"]["text"], "Not known how far Close original got · example/anvil#1: Commented; whether it closed is not known."
+                                                  " Close original again posts no second comment.")
 
     def test_a_row_a_later_read_drops_is_retired_so_no_command_runs_on_it(self):
         out = self.run_page("show(); await flush(); R.before = C.get('gh:" + PR + "').type;"

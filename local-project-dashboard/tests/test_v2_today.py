@@ -335,4 +335,5 @@ JSON.stringify({
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route = "today", "Today", "/today"
     api = ("/api/decisions", "/api/decisions/answer", "/api/today/status", "/api/today/github",
-           "/api/today/github/copilot-review", "/api/today/github/merge/preview", "/api/today/github/merge")
+           "/api/today/github/copilot-review", "/api/today/github/merge/preview", "/api/today/github/merge",
+           "/api/today/github/close/preview", "/api/today/github/close")
