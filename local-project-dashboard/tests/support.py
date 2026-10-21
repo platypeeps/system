@@ -20,6 +20,8 @@ from sd_db import (
     create_assignment,
     create_item,
     record_cost,
+    reads,
+    set_item_fields,
     transition,
     update_assignment,
     upsert_repo,
@@ -83,6 +85,12 @@ class ScreenCase(unittest.TestCase):
         )
         self.connection.commit()
 
+    def schedule(self, item: int, due: str) -> int:
+        """Make `item` a weekly occurrence due `due`: a day after NOW's is a scheduled occurrence (pack sd:5648)."""
+        set_item_fields(self.connection, item, due=due, recurrence="FREQ=WEEKLY", recurrence_anchor="schedule")
+        self.connection.commit()
+        return item
+
     def provider(self, name: str = "opus", **columns) -> str:
         """A `provider` row. `assignment.provider` is a foreign key into it."""
         self.connection.execute(
@@ -107,9 +115,21 @@ class ScreenCase(unittest.TestCase):
         return route(self.connection, path, parameters or {}, now=self.now)
 
 
+def before_5648():
+    """`reads.backlog_items` as a pack before sd:5648 reads it: rows with no `opens_on` and no `scheduled`."""
+    real = reads.backlog_items
+
+    def read(connection, **arguments):
+        return [{key: row[key] for key in row.keys() if key not in ("opens_on", "scheduled")}
+                for row in real(connection, **arguments)]
+
+    return mock.patch.object(reads, "backlog_items", read)
+
+
 __all__ = [
     "NOW",
     "ScreenCase",
+    "before_5648",
     "record_cost",
     "transition",
     "update_assignment",

@@ -187,9 +187,10 @@ def tasks(connection, area: str, *, now: str) -> dict:
     if owns is None:
         return {**_unknown(now, area, why), **({"state": "error"} if unread else {})}
     from .screens import _repo_labels
+    from .tasks_screen import is_scheduled
 
     found = [row for row in reads.backlog_items(connection, now=now)
-             if row["status"] != "done" and owns(row["repo"], row["kind"])]
+             if row["status"] != "done" and not is_scheduled(row) and owns(row["repo"], row["kind"])]
     label = _repo_labels(row["repo"] for row in found)
     rows = [{"id": row["id"], "title": row["title"], "kind": row["kind"], "status": row["status"],
              "priority": row["priority"], "due": row["due"], "repo": label(row["repo"]) if row["repo"] else None,

@@ -145,7 +145,7 @@ def _rows(connection, rows, found, *, now: str) -> list[dict]:
             # pack sd:5648: the lead in days (None is 0), and the day a scheduled occurrence opens. A store before 041 or
             # a pack before sd:5648 has neither: None and 0, and `_document`'s `lead` turns the Lead field off.
             "recurrence_lead": state["item"].get("recurrence_lead"),
-            "opens_on": _column(row, "opens_on"), "scheduled": bool(_column(row, "scheduled")),
+            "opens_on": _column(row, "opens_on"), "scheduled": is_scheduled(row),
             "assignment": live.get(row["id"]),
             # The due date a completion today gives the next occurrence, for the confirm to name before it writes.
             "next_due": workflow.next_occurrence_due(state["item"]) if row["recurrence"] else None,
@@ -173,6 +173,15 @@ def _rows(connection, rows, found, *, now: str) -> list[dict]:
 def _column(row, name: str):
     """`row[name]`, or None when the read has no such column: `reads.backlog_items` before pack sd:5648, or `item_by_id`."""
     return row[name] if name in row.keys() else None
+
+
+def is_scheduled(row) -> bool:
+    """Whether a `reads.backlog_items` row is a scheduled occurrence (pack sd:5648), which a list shows only once it opens.
+
+    Home and HOA Tasks, the HOA page, Metrics' age, Start next, Review and Decisions hide it, as Tasks does (sd:5670).
+    A pack before sd:5648 gives no `scheduled`: nothing is scheduled, and every row shows as before.
+    """
+    return bool(_column(row, "scheduled"))
 
 
 def _scheduled(row, *, now: str):

@@ -35,7 +35,7 @@ from sd_db.writes import record_skill_use
 
 from sd_dashboard import metrics_screen, server, v2
 
-from support import NOW, ScreenCase, record_cost
+from support import NOW, ScreenCase, before_5648, record_cost
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
@@ -142,6 +142,14 @@ class TheDocument(Fixture):
         self.assertEqual(sum(b["ready_to_send"] + b["other"] for b in buckets), 2)
         self.assertEqual([(b["label"], b["ready_to_send"]) for b in buckets if b["ready_to_send"]], [("3-6d", 1)])
         self.assertEqual([b["key"] for b in buckets], [b.key for b in reads.age_histogram([])])
+
+    def test_age_counts_no_scheduled_occurrence_until_it_opens(self):
+        """sd:5670: Tasks lists a scheduled occurrence (pack sd:5648) once it opens, so age counts it only then."""
+        self.schedule(self.item("Water the plants", kind="task", repo=self.repo()), "2026-09-09")
+        count = lambda: sum(b["ready_to_send"] + b["other"] for b in self.doc()["age"]["buckets"])  # noqa: E731
+        self.assertEqual(count(), 2)
+        with before_5648():
+            self.assertEqual(count(), 3)
 
     def test_a_part_that_fails_is_its_error_and_the_rest_still_answer(self):
         with mock.patch.object(reads, "scorecard", side_effect=sqlite3.OperationalError("database is locked")):

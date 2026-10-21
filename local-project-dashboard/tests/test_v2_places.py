@@ -25,7 +25,7 @@ from sd_db import reporting, routine_briefs, writes
 from sd_dashboard import hoa_screen, places, reports_screen, tasks_screen, v2
 
 import test_v2_tasks
-from support import NOW, ScreenCase
+from support import NOW, ScreenCase, before_5648
 from test_now_screen import JobsBackend
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT
@@ -111,6 +111,15 @@ class Tasks(Fixture):
         hoa = sorted(r["item"] for r in hoa_screen.document(self.connection, now=NOW)["items"]["rows"])
         self.assertEqual(hoa, self.ids(places.tasks(self.connection, "hoa", now=NOW)))
         self.assertEqual({r["id"]: r["area"] for r in rows if r["id"] == self.other_item}, {self.other_item: None})
+
+    def test_a_scheduled_occurrence_is_no_place_task_until_it_opens(self):
+        """sd:5670: as Tasks does, Home and HOA Tasks hide a scheduled occurrence (pack sd:5648) until the day it opens.
+        A pack before sd:5648 marks nothing scheduled, so the row shows as before."""
+        self.schedule(self.home_item, "2026-09-09")
+        self.assertEqual(self.ids(places.tasks(self.connection, "home", now=NOW)), [])
+        self.assertEqual(self.ids(places.tasks(self.connection, "home", now="2026-09-09T12:00:00Z")), [self.home_item])
+        with before_5648():
+            self.assertEqual(self.ids(places.tasks(self.connection, "home", now=NOW)), [self.home_item])
 
 
 class Realms(Fixture):
