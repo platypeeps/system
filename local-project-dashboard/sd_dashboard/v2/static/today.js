@@ -37,6 +37,7 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
 
   let DOC = null, ROWS = [], WORK = [], WORK_ERROR = '', SNOOZED = [], ACTIVE = null, srcFilter = null, query = '', picked = [];
   const $ = id => document.getElementById(id);
+  const row = () => new URLSearchParams(location.search).get('row'); // the selected row, any table's
 
   // Sort (sd:3455): each table draws the shell's sort header (shell.list). The order stays in memory, not the address: four
   // lists share it, and one ?sort= would name one of them. Now starts in rank order and Working now longest-running first,
@@ -61,34 +62,41 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     return f;
   }
 
-  // A Work row (sd:5654): the item, its status and due date, and the same actions its row carries.
-  function showWork(r) {
-    const s = late(r) ? 'caution' : 'queued';
-    put($('details'), html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> Work item · ${late(r) ? 'overdue' : r.state}</p>
-      <h2>${r.what}</h2>
-      <dl><dt>Status</dt><dd>${r.detail}</dd>${r.due ? html`<dt>Due</dt><dd>${r.due}</dd>` : ''}<dt>Read</dt><dd><time class="rel" data-long datetime="${DOC.now}"></time></dd></dl>
-      <p><a href="${window.shell.itemHref(r.item)}">Open #${String(r.item)} on Tasks</a></p>
-      <h3>Act</h3>${shell.commands.bar(r.id)}`);
-  }
-  function show(id) {
-    const w = WORK.find(x => x.id === id);
-    if (w) { mark(id); showWork(w); shell.commands.select(id); return; }
-    const r = ROWS.find(x => x.id === id); if (!r) return;
+  // One selection for Today's tables (sd:5654): a Now, Work or GitHub row is selected through pick(id, draw, open). It names
+  // the row in ?row=, marks it alone aria-selected in every table, puts draw()'s Details and makes it the shell's selection.
+  // today-github.js passes its own draw: its rows are not in this read.
+  function pick(id, draw, open) {
     mark(id);
+    put($('details'), draw());
+    shell.commands.select(id);
+    const u = new URL(location.href); u.searchParams.set('row', id); history.replaceState(null, '', u);
+    $('details').setAttribute('data-swap', ''); requestAnimationFrame(() => $('details').removeAttribute('data-swap'));
+    if (open) shell.openPane('tab-details');
+  }
+  window.todayPick = pick;
+  const nowRow = id => ROWS.some(r => r.id === id), workRow = id => WORK.some(r => r.id === id);
+
+  function nowDetails(r) {
     const s = STATE[r.band];
-    put($('details'), html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${KIND[r.kind] || r.kind} · ${s}</p>
+    return html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${KIND[r.kind] || r.kind} · ${s}</p>
       <h2>${r.what}</h2>
       <dl>${Object.entries(facts(r)).map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>Read</dt><dd><time class="rel" data-long datetime="${DOC.now}"></time></dd></dl>
       ${SRC[r.source] ? html`<p><a href="${SRC[r.source][2]}">Open ${SRC[r.source][0]} in ${SRC[r.source][3]}</a></p>` : ''}
-      <h3>Act</h3>${shell.commands.bar(id)}`);
-    shell.commands.select(id);
-    shell.suggest([`Why is ${r.what.split(' ')[0]} on this list?`, 'What else changed around this time?', 'Rank what I should do in the next hour']);
-    $('details').setAttribute('data-swap', ''); requestAnimationFrame(() => $('details').removeAttribute('data-swap'));
+      <h3>Act</h3>${shell.commands.bar(r.id)}`;
+  }
+  // A Work row's Details: its title opens the item on Tasks; Act is the row's own commands.
+  function workDetails(r) {
+    const s = late(r) ? 'caution' : 'queued';
+    return html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> Work item · ${late(r) ? 'overdue' : r.state}</p>
+      <h2><a href="${shell.itemHref(r.item)}">${r.what}</a></h2>
+      <dl><dt>Status</dt><dd>${r.state}</dd><dt>Due</dt><dd>${r.due || html`<span class="ph">none</span>`}</dd>
+        ${r.item_kind ? html`<dt>Kind</dt><dd>${r.item_kind}</dd>` : ''}<dt>Id</dt><dd>sd:${r.item}</dd></dl>
+      <h3>Act</h3>${shell.commands.bar(r.id)}`;
   }
   function select(id, open) {
-    show(id);
-    const u = new URL(location.href); u.searchParams.set('row', id); history.replaceState(null, '', u);
-    if (open) shell.openPane('tab-details');
+    const r = ROWS.find(x => x.id === id), w = !r && WORK.find(x => x.id === id); if (!r && !w) return;
+    pick(id, () => r ? nowDetails(r) : workDetails(w), open);
+    if (r) shell.suggest([`Why is ${r.what.split(' ')[0]} on this list?`, 'What else changed around this time?', 'Rank what I should do in the next hour']);
   }
 
   function lamps() {
@@ -124,10 +132,10 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
              item: r.item, itemKind: r.item_kind };
   }
 
-  // The selected row and the picked ones, marked again on the rows a redraw made.
+  // The selected row in every table, and the picked ones, marked again on the rows a redraw made.
   function mark(id) {
+    ['work', 'github-sections'].forEach(t => $(t)?.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id)));
     $('rows').querySelectorAll('tr[data-id]').forEach(tr => { tr.setAttribute('aria-selected', tr.dataset.id === id); tr.toggleAttribute('data-picked', picked.includes(tr.dataset.id)); });
-    $('work').querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
   }
   // A band starts only while the list is in rank order.
   function nowTable() {
@@ -182,14 +190,15 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     note.textContent = dark.map(([k, why]) => `${SOURCE[k] || k} not read: ${why}`).join(' · ');
   }
 
-  // Your work (sd:3271): the items due or in progress, as `sd today` lists them. A row selects into Details (sd:5654); its
-  // title opens the item on Tasks. Overdue is a due date before the day the document was read; a read that failed is said, never empty.
+  // Your work (sd:3271): the items due or in progress, as `sd today` lists them. A row selects as a Now row does (sd:5654);
+  // its Details title opens the item on Tasks. Overdue is a due date before the day the document was read; a read that
+  // failed is said, never empty.
   function work() {
     head('work-head', WORK_T);
     put($('work'), WORK_ERROR ? html`<tr class="empty"><td colspan="4">Work could not be read: ${WORK_ERROR}. Refresh tries again.</td></tr>`
-      : WORK.length ? html`${sorted(WORK, WORK_T).map(r => { const s = late(r) ? 'caution' : 'queued'; return html`<tr data-id="${r.id}" data-item="${r.item}">
+      : WORK.length ? html`${sorted(WORK, WORK_T).map(r => { const s = late(r) ? 'caution' : 'queued'; return html`<tr data-id="${r.id}" aria-selected="${String(r.id === row())}">
         <td class="g g-${s}" title="${late(r) ? 'overdue' : 'queued'}">${GLYPH[s]}</td>
-        <td class="what"><a href="${window.shell.itemHref(r.item)}">${r.what}</a></td>
+        <td class="what"><button type="button">${r.what}</button></td>
         <td class="detail">${r.detail}</td>
         <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`; })}`
       : html`<tr class="empty"><td colspan="4">Nothing is due and nothing is in progress.</td></tr>`);
@@ -222,8 +231,9 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     const u = new URL(location.href); u.searchParams.delete('row'); history.replaceState(null, '', u);
     put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Now could not be read.' : ROWS.length ? 'No row matches the filter, so nothing is selected. Esc clears it.' : 'Nothing is selected: Now has no rows.'}</p>`);
   }
-  const reconcile = () => shell.reconcile({ rows: $('rows').querySelectorAll('tr[data-id]'), current: new URLSearchParams(location.search).get('row'),
-    select: id => select(id, false), clear: unselect });
+  // The filter hides Now rows only: a Work or GitHub selection stays.
+  const reconcile = () => shell.reconcile({ rows: $('rows').querySelectorAll('tr[data-id]'), current: row(),
+    keep: id => workRow(id) || id.startsWith('gh:'), select: id => select(id, false), clear: unselect });
   function applyFilter() { hideRows(); reconcile(); }
 
   // ---------- Reading (build, sd:2483): shell.read reads /api/now ----------
@@ -273,6 +283,9 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
   // build (sd:3521): capture's repo default is the row's: a repo row names it in its id, a pull request as owner/name.
   window.PAGE_REPO = o => o && o.type === 'repo' ? o.id.split(':')[1] : (o && o.repo) || null;
 
+  // Read again (sd:5638): the shell's head button presses the Observed lamp, which every Today section reads again on.
+  window.PAGE_AGAIN = { title: 'Read every Today section again', run: () => $('refresh').click() };
+
   window.PAGE_COMMANDS = [
     { label: 'Clear the source filter', icon: 'filter', run: clearSource },
     { label: 'Read Now again', icon: 'rotate-ccw', run: () => load() },
@@ -281,19 +294,46 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
   document.addEventListener('DOMContentLoaded', () => {
     const C = shell.commands;
     const K = window.commands;
+    // jobs.retry (commands.js). build (sd:3386): it posts /api/jobs/<job>/retry with the revision the Now read brought, as
+    // Management does; launchd starts the run. A refused retry reads Now again; one with no answer may have started, so it
+    // says the outcome is not known.
+    const retry = K.retry({ job: o => ({ name: o.job, failed: o.failed, exit: o.exit, capability: o.capability, sends: o.retry }),
+      run: o => window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }).then(
+        out => reading.reread().then(() => K.answered(out, o.job, 'retried', `Retry started · ${o.job}`)),
+        err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether launchd started it is not known; Now is read again`); }) });
+    const open = K.openPullRequest({ pr: o => ({ repo: o.repo, number: o.number }), primary: o => !!o.repo });
+    // Fix (sd:5652): each Now row's act, routed by kind to what already addresses it: a failed or interrupted job's Run now,
+    // a pull request's Open on GitHub, the pull request collector's Re-run collector, and for every other row claude in
+    // herdr on it (fix_session.start_row: a repo ahead, dirty or pinned in its checkout; the abandoned worktrees and a dark
+    // collector here). Fix is the route's own declaration under its label, so its when, ask, line and run are the route's:
+    // a row the route is off for has Fix off with that reason, never a Fix that does nothing. The icon is the route's act.
+    const sync = K.syncCollector({ reread: () => reading.reread(), page: 'Today' });
+    const session = { label: 'Claude in herdr', does: 'Asks first, then starts claude in herdr to fix this row.', askFirst: true,
+      cli: () => 'no sd verb: the dashboard runs local-herdr/herdr.sh launch', sends: o => `POST /api/now/fix ${JSON.stringify({ row: o.id })}`,
+      consequence: o => `Opens a herdr workspace and starts claude on "${o.label}", in ${o.type === 'repo' ? 'its checkout' : 'the system checkout'}. A second Fix starts a second session: look in herdr first.`,
+      run: o => window.shell.post('/api/now/fix', { row: o.id }).then(
+        out => reading.reread().then(() => `Fix started · ${o.label} · claude in herdr workspace ${out.fix.workspace}, pane ${out.fix.pane}`),
+        err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether a session started is not known; look in herdr before you press Fix again`); }) };
+    const fix = (on, glyph, route) => {
+      const via = (k, none) => (o, v) => { const r = route(o), f = r[k]; return typeof f === 'function' ? f(o, v) : f === undefined ? none : f; };
+      return { id: `${on}.fix`, on, label: 'Fix', key: 'f', icon: glyph, risk: 'safe',
+        does: o => { const d = route(o).does; return typeof d === 'function' ? d(o) : d; },
+        when: via('when', true), askFirst: via('askFirst', false), consequence: via('consequence', ''), cli: via('cli', ''), sends: via('sends', ''),
+        primary: o => { const r = route(o); return (!r.when || r.when(o) === true) && (!r.primary || !!r.primary(o)); },
+        run: (o, v) => route(o).run(o, v) };
+    };
     C.register(
-      // jobs.retry (commands.js). build (sd:3386): it posts /api/jobs/<job>/retry with the revision the Now read brought, as
-      // Management does; launchd starts the run. A refused retry reads Now again; one with no answer may have started, so it
-      // says the outcome is not known.
-      K.retry({ job: o => ({ name: o.job, failed: o.failed, exit: o.exit, capability: o.capability, sends: o.retry }),
-        run: o => window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }).then(
-          out => reading.reread().then(() => K.answered(out, o.job, 'retried', `Retry started · ${o.job}`)),
-          err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether launchd started it is not known; Now is read again`); }) }),
+      fix('job', 'play', () => retry),
+      fix('pull request', 'arrow-up-right', () => open),
+      fix('collector', 'bot', o => o.id === 'dark:prs' ? sync : session),
+      fix('repo', 'bot', () => session),
+      fix('sessions', 'bot', () => session),
+      retry,
       // Each row kind's commands from the page that shows it in full (sd:3449): a job's log and launchd record, as Management
       // and Activity declare them; Show log opens the job on Management > Schedules.
       K.showLog({ job: o => ({ name: o.job }) }),
       K.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
-      K.openPullRequest({ pr: o => ({ repo: o.repo, number: o.number }), primary: o => !!o.repo }),
+      open,
       // Fix (sd:3456, commands.js) on a work row, with the revision the Now read gave; a refused one reads Now again.
       K.fix('work item', { item: o => o.item, report: o => o.itemKind === 'report',
         post: (o, path) => window.shell.post(path, { revision: o.revision }).then(out => reading.reread().then(() => out), err => { load(); throw err; }) }),
@@ -301,16 +341,12 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     // Snooze (sd:1896) on every row type: the row leaves Now until its time, and Unsnooze brings it back sooner.
     window.snooze.register(C, { page: 'today', types: [...new Set(Object.values(TYPE))], reread: () => load() });
 
-    $('rows').addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
-    $('work').addEventListener('click', e => { if (e.target.closest('.rowact, a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
-    document.addEventListener('shell:open', e => {
-      if (ROWS.some(r => r.id === e.detail)) select(e.detail, true);
-      const w = WORK.find(r => r.id === e.detail); if (w) window.shell.openItem(w.item);
-    });
+    ['rows', 'work'].forEach(t => $(t).addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); }));
+    document.addEventListener('shell:open', e => { if (nowRow(e.detail) || workRow(e.detail)) select(e.detail, true); });
     document.addEventListener('shell:picked', e => { picked = e.detail; $('rows').querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', picked.includes(tr.dataset.id))); });
     // A header press redraws its table only; Now marks the selection and the picks again and keeps the filter's hidden rows.
     const sortable = (id, t, redraw) => $(id).addEventListener('click', e => { if (shell.list.sortBy(e, t.st)) shell.list.keepFocus(e, () => DOC ? redraw() : head(id, t)); });
-    sortable('rows-head', NOW_T, () => { nowTable(); hideRows(); mark(new URLSearchParams(location.search).get('row')); });
+    sortable('rows-head', NOW_T, () => { nowTable(); hideRows(); mark(row()); });
     sortable('active-head', ACTIVE_T, working);
     sortable('work-head', WORK_T, work);
     head('rows-head', NOW_T); head('active-head', ACTIVE_T); head('work-head', WORK_T); // drawn before the read, so a failed one keeps the columns
@@ -331,10 +367,12 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
 
     reading = shell.read({
       source: '/api/now', what: 'the Now rows', adopt, clear, draw,
-      current: () => new URLSearchParams(location.search).get('row'),
+      current: row,
+      // A GitHub row's selection is today-github.js's: this read leaves it, and its Details, alone.
+      active: () => !String(row() || '').startsWith('gh:'),
       first: () => [...$('rows').querySelectorAll('tr[data-id]')].find(tr => !tr.hidden)?.dataset.id,
       // A row the filter hides is not selected: reconcile moves to the first row it shows, or clears.
-      select: id => (shown(id) ? select(id, false) : reconcile()),
+      select: id => (shown(id) || workRow(id) ? select(id, false) : reconcile()),
       unselect,
     });
     load();

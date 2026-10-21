@@ -91,12 +91,13 @@ ASSETS = _enumerate()
 
 def sections(badges: dict | None = None, realms: list | None = None) -> bytes:
     """`/ui/sections.js`: the rail's section map, as `SHELL_COUNTS` each page's badge from `Badges.read`, and as
-    `SHELL_REALMS` the realms the dashboard.realms row names (sd:5064), each `{id, label}`, which Tasks and Writing draw as views."""
+    `SHELL_REALMS` the realms the dashboard.realms row names (sd:5064), each `{id, label, place}`, which Tasks and Writing
+    draw as views; `place` is the icon of a realm with a report family of its id, which the rail lists as a place (sd:5663)."""
     lines = ["// The rail's section map, written by sd_dashboard/v2/__init__.py from the page registry in sd_dashboard/v2/pages/ (sd:2418),",
              "// and each page's rail badge, written on this request (sd:3446)."]
     for key, value in (("SHELL_PAGES", SECTIONS), ("SHELL_CLASSIC", CLASSIC), ("SHELL_SCREENS", SCREENS),
                        ("SHELL_COUNTS", {"pages": badges or {}}),
-                       ("SHELL_REALMS", [{"id": r["id"], "label": r["label"]} for r in realms or []])):
+                       ("SHELL_REALMS", [{"id": r["id"], "label": r["label"], "place": r.get("place")} for r in realms or []])):
         lines.append(f"window.{key} = {json.dumps(value)};")
     return ("\n".join(lines) + "\n").encode("utf-8")
 

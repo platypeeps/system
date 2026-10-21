@@ -25,6 +25,9 @@ states. A document the reader does not read is named with its reason.
 them yet, so the document says so (`ROUNDS_REASON`) and the page shows rounds
 as unknown with that reason.
 
+**Stage links** (sd:5657). The child picks each numbered directory's document from research.conf.py (`pages`); the page
+side links it at the address `/documents/<key>/<file>` serves (`linked`), or says why it has none.
+
 **One module, two roles**, as `fleet.py`: imported, it is the page side, and
 `collect` runs this same file as a child, `python3 -I research_screen.py
 <area> [<checkout>] <seconds>`, under the collectors' `Budget`. Run as that
@@ -45,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 __all__ = ["BRIEF", "BUILT", "CAP", "CLAIM_DIRS", "CLAIM_TYPES", "DECK", "DIRS", "REGISTRIES", "ROUNDS_REASON", "claims", "collect", "document", "experiment",
-           "grade_legend", "parse_registry", "project", "source_key", "sources", "stale"]
+           "grade_legend", "linked", "pages", "parse_registry", "project", "source_key", "sources", "stale"]
 
 #: The page's budget for one reading, the Resources > Research view's `VIEW_SECONDS`, and how much sooner the child
 #: stops so its reason arrives before the page's kill does (`fleet.FLEET_MARGIN`).
@@ -54,8 +57,8 @@ MARGIN = 1.0
 #: This file, run as the child; a page never supplies the path.
 CHILD = Path(__file__).resolve()
 AREAS = ("board", "sources")
-#: The research-repo standard's numbered layout, in stage order.
-DIRS = ("00-overview", "10-sources", "20-map", "30-brief", "40-docs")
+#: The research-repo standard's numbered layout, in stage order; 05-architecture holds no claims (sd:5661).
+DIRS = ("00-overview", "05-architecture", "10-sources", "20-map", "30-brief", "40-docs")
 #: Where a checkout keeps its source ledger, in the order the reader shows them.
 REGISTRIES = ("SOURCES.md", "10-sources/registry.md", "10-sources/references.md")
 #: The independent review passes a brief may take (the command pack's planning review rule).
@@ -134,7 +137,7 @@ def _collectors():
 # -- the page side ------------------------------------------------------------
 
 
-def collect(area, key=None, *, within=None):
+def collect(area, key=None, *, within=None, start=0):
     """The child's document for `area`, read under the page's budget; a `ValueError` names why it was not."""
     if area not in AREAS or (area == "sources") != (key is not None) or (key is not None and not KEY.fullmatch(key)):
         raise ValueError("unknown research reading")
@@ -143,7 +146,7 @@ def collect(area, key=None, *, within=None):
     seconds = max(budget.seconds - MARGIN, 0.0)
     # The page's start on the shared clock, as `fleet.collect` passes it (sd:2501): the child's deadline counts from here.
     since = time.clock_gettime(time.CLOCK_MONOTONIC)
-    argv = [sys.executable, "-I", str(CHILD), area, *([key] if key else []), f"{seconds:g}", f"{since:.6f}"]
+    argv = [sys.executable, "-I", str(CHILD), area, *([key, str(int(start))] if key else []), f"{seconds:g}", f"{since:.6f}"]
     try:
         process = budget.run(argv, label=f"research {area}")
     except module.OverBudget as error:
@@ -169,6 +172,7 @@ def document(*, now: str, backend=None) -> dict:
     except (OSError, ValueError) as failure:
         found, projects, error = {}, [], str(failure)
     stale(projects, now)
+    linked(projects)
     return {
         "read": now,
         "error": error,
@@ -180,6 +184,53 @@ def document(*, now: str, backend=None) -> dict:
         "rounds": {"available": False, "reason": ROUNDS_REASON},
         "attention": _attention(projects, error),
     }
+
+
+def linked(projects: list) -> None:
+    """Give each populated stage its document's address, or the reason it has none (sd:5657).
+
+    The address is the one `/documents/<key>/<file>` serves: the Documents root whose directory is this checkout's
+    `docs/dashboard`, and a file `documents.within` accepts there, as the server finds them. A page the server would
+    not serve (built under `build/`, skipped, or under a key two checkouts claim) gets no link, never a guessed one.
+    """
+    from . import documents
+
+    rows = [p for p in projects if isinstance(p, dict) and isinstance(p.get("dirs"), list)]
+    built = any(isinstance(s, dict) and s.get("state") != "not built"
+                for p in rows if isinstance(p.get("stages"), dict) for s in p["stages"].values())
+    by_dir, unread = {}, ""
+    try:
+        for root in documents.roots() if built else ():
+            try:
+                by_dir.setdefault(root.path.expanduser().resolve(strict=True), root)
+            except (OSError, RuntimeError):
+                continue
+    except (OSError, ValueError) as failure:
+        by_dir, unread = {}, f"the Documents roots were not read: {failure}"
+    for p in rows:
+        key, picks = p.get("key"), p.get("stages") if isinstance(p.get("stages"), dict) else {}
+        try:
+            root = by_dir.get((Path(documents.REPO_ROOT) / key / documents.PUBLISHED).resolve(strict=True)) \
+                if isinstance(key, str) and KEY.fullmatch(key) else None
+        except (OSError, RuntimeError):
+            root = None
+        p["stages"] = {d: _link(documents, d, picks.get(d), root, unread) for d in p["dirs"] if d in DIRS}
+
+
+def _link(documents, folder: str, pick, root, unread: str) -> dict:
+    if not isinstance(pick, dict):
+        return {"title": "", "href": "", "state": "", "why": f"research.conf.py declares no document from {folder}"}
+    title, state, name = str(pick.get("title", "")), str(pick.get("state", "")), f"{pick.get('out', '')}.html"
+    link = {"title": title, "href": "", "state": state, "why": ""}
+    if state == "not built":
+        link["why"] = f"{title} is not built: Render writes it"
+    elif unread:
+        link["why"] = unread
+    elif root is None or name in root.skip or documents.within(root.path, name) is None:
+        link["why"] = f"{title} is not served on Documents"
+    else:
+        link["href"] = f"/documents/{root.key}/{name}"
+    return link
 
 
 def stale(projects: list, now: str) -> None:
@@ -210,8 +261,10 @@ def _attention(projects, error: str) -> dict:
                      {"caution": "render-stale projects"})
 
 
-def sources(key: str, *, now: str, backend=None, connection=None) -> dict | None:
+def sources(key: str, *, now: str, backend=None, connection=None, start: int = 0) -> dict | None:
     """One checkout's source registry, None when no research checkout has that key.
+
+    `start` skips that many claims: the page's Show more reads the next claims this way, past the print bound.
 
     With `connection`, each row's adversarial reviews too (sd:5101): `reviews` maps a row key to its briefs, newest
     first, as `adversarial.source_reviews` finds them; None with `reviews_error` when they were not read.
@@ -219,7 +272,7 @@ def sources(key: str, *, now: str, backend=None, connection=None) -> dict | None
     if not KEY.fullmatch(key):
         return None
     try:
-        found = (backend or collect)("sources", key)
+        found = (backend or collect)("sources", key, start=start) if start else (backend or collect)("sources", key)
     except (OSError, ValueError) as failure:
         return {"read": now, "key": key, "error": str(failure), "files": [], "rows": [], "total": 0, "claims": None,
                 "checkout": None, "reviews": None, "reviews_error": "the ledger was not read"}
@@ -237,7 +290,7 @@ def sources(key: str, *, now: str, backend=None, connection=None) -> dict | None
             "total": found.get("total", 0), "checkout": found.get("checkout"), "reviews": reviews,
             "reviews_error": reviews_error,
             # The claim map; None when the child sent none, so the page says unknown rather than "no claims".
-            "claims": {"rows": found["claims"], "total": found.get("claims_total", 0), "tally": found.get("tally", {}),
+            "claims": {"rows": found["claims"], "from": found.get("claims_from", 0), "total": found.get("claims_total", 0), "tally": found.get("tally", {}),
                        "graded": found.get("graded", 0), "dirs": list(CLAIM_DIRS), "read": found.get("docs_read", 0), "unread": found.get("unread", []),
                        # sd:5297: what each type means and how it is graded, and what the ledger says each grade means.
                        "types": CLAIM_TYPES, "grades": found.get("grades") if isinstance(found.get("grades"), dict) else {}}
@@ -268,10 +321,26 @@ def stage(repo: Path) -> list[str] | None:
     return [name for name in present if next((repo / name).rglob("*.md"), None) is not None]
 
 
+def pages(docs: list) -> dict:
+    """Each numbered directory's document (sd:5657), in research.conf.py order: the first whose source lies in it and
+    whose page is built, else the first declared there. A directory no document comes from is absent."""
+    found = {}
+    for doc in docs:
+        folder, _, rest = posixpath.normpath(str(doc.get("src", ""))).partition("/")
+        if folder not in DIRS or not rest or (folder in found and (found[folder]["state"] != "not built" or doc.get("state") == "not built")):
+            continue
+        found[folder] = {"title": _cut(str(doc.get("title", ""))), "out": str(doc.get("out", ""))[:CELL], "state": doc.get("state", "")}
+    return found
+
+
 def render(item: dict) -> dict:
     """Render freshness from the collector's documents: a state, a phrase and a detail line."""
     if item.get("error"):
         return {"s": "unknown", "txt": "config unread", "sub": "per-document freshness needs a readable research.conf.py"}
+    if item.get("manifest") == "older":
+        # The documents came from research.json, which a render of an earlier research.conf.py wrote (pack sd:5658).
+        return {"s": "caution", "txt": "manifest from an older render",
+                "sub": "research.conf.py changed since; render again to refresh"}
     docs = item.get("docs") or []
     if not docs:
         return {"s": "unknown", "txt": "no documents declared", "sub": "research.conf.py lists none"}
@@ -360,6 +429,8 @@ def project(item: dict, root: Path, *, dirs=None) -> dict:
         "docs": [{"title": _cut(str(d.get("title", ""))), "src": _cut(str(d.get("src", ""))), "state": d.get("state", ""),
                   "updated": d.get("updated", "")} for d in docs],
         "docs_total": len(docs),
+        # Picked before the board cuts `docs`, so a cut list still links each stage (sd:5657).
+        "stages": pages(docs),
         "experiment": experiment(repo),
         "git": None if not git else {key: _cut(value) if isinstance(value := git.get(key), str) else value
                                      for key in ("branch", "dirty", "behind", "last_iso", "subject")},
@@ -644,7 +715,7 @@ def claims(repo: Path, rows: list[dict], time_left=None) -> dict:
     return {"claims": found, "tally": tally, "read": read, "unread": unread, "graded": sum(bool(row["grade"]) for row in rows)}
 
 
-def registry(repo: Path, time_left=None) -> dict:
+def registry(repo: Path, time_left=None, start: int = 0) -> dict:
     files, rows, grades = [], [], {}
     for name in REGISTRIES:
         path = repo / name
@@ -674,8 +745,11 @@ def registry(repo: Path, time_left=None) -> dict:
     # Cited rows are kept first, so a claim can light its sources; the rest fill to ROWS. Both stay in ledger order.
     keep = sorted(sorted(range(total), key=lambda i: not rows[i]["cited"])[:ROWS])
     rows = [rows[i] for i in keep]
-    shown = mapped["claims"][:CLAIMS]
-    out = {"found": True, "files": files, "rows": rows, "total": total, "claims": shown, "grades": grades,
+    # A later page of claims (`start`) carries no ledger rows: the page keeps the first read's, and the bytes go to claims.
+    shown = mapped["claims"][start:start + CLAIMS]
+    if start:
+        rows = []
+    out = {"found": True, "files": files, "rows": rows, "total": total, "claims": shown, "claims_from": start, "grades": grades,
            "claims_total": len(mapped["claims"]), "tally": mapped["tally"], "graded": mapped["graded"], "docs_read": mapped["read"],
            "unread": mapped["unread"]}
     # Past PRINT_BYTES, drop from the end of whichever list prints more: claims or rows.
@@ -690,10 +764,11 @@ def registry(repo: Path, time_left=None) -> dict:
 def main(argv):
     started = time.monotonic()
     number = r"\d+(\.\d+)?"
-    base = 3 if argv and argv[0] == "sources" else 2
+    base = 4 if argv and argv[0] == "sources" else 2
     if not argv or argv[0] not in AREAS or len(argv) not in (base, base + 1) \
-            or not all(re.fullmatch(number, value) for value in argv[base - 1:]):
-        print("usage: research_screen.py board <seconds> [<since>] | sources <checkout> <seconds> [<since>]", file=sys.stderr)
+            or not all(re.fullmatch(number, value) for value in argv[base - 1:]) \
+            or (base == 4 and not argv[2].isdigit()):
+        print("usage: research_screen.py board <seconds> [<since>] | sources <checkout> <from> <seconds> [<since>]", file=sys.stderr)
         return 2
     area, seconds = argv[0], float(argv[base - 1])
     if len(argv) == base + 1:
@@ -709,7 +784,7 @@ def main(argv):
             else:
                 repo = checkout(Path(collectors.REPO_ROOT), argv[1])
                 # The checkout's path, so the page side can find its adversarial reviews (sd:5101).
-                found = {**registry(repo, collectors.time_left), "checkout": str(repo)} if repo else {"found": False}
+                found = {**registry(repo, collectors.time_left, int(argv[2])), "checkout": str(repo)} if repo else {"found": False}
     except Exception as error:  # noqa: BLE001 - the page shows this reason
         print(f"research {area}: {error!r}"[:4096], file=sys.stderr)
         return 1

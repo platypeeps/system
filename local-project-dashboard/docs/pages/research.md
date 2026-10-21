@@ -5,7 +5,10 @@ group deep, that carries a `research.conf.py`. `GET /api/research`
 (`research_screen.document`) runs `collectors.collect_research` in a child
 under a five-second budget. Each row shows the checkout's stage (the numbered
 directories that hold Markdown), its render freshness and its last commit. A
-config the collector refuses shows as unknown with the refusal.
+config the collector cannot read without running it is read from the
+`docs/dashboard/research.json` its last render wrote (sd:5659); a manifest of an
+older config shows as caution, render again to refresh. With no manifest the
+row shows as unknown with the refusal.
 `GET /api/research/<checkout>` (`research_screen.sources`) reads that
 checkout's ledger: the Markdown tables in `SOURCES.md`,
 `10-sources/registry.md` and `10-sources/references.md`, with or without

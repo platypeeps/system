@@ -520,6 +520,8 @@ addEventListener('DOMContentLoaded', () => {
     unselect: nothing,
   });
   const load = () => reading.load(), reread = () => reading.reread();
+  // Read again (sd:5638): the shell's head button reads the table again; Refresh runs the sync first.
+  window.PAGE_AGAIN = { title: 'Read the contributions again; Refresh runs the sync first', run: load };
   registerCommands();
   load();
 });

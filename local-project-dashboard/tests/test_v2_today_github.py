@@ -15,6 +15,10 @@ sd:5633: a pull request row carries what its Details show (author, branch, dates
 registered checkout of its repository; a press opens those Details with Open on GitHub, Open item, Adversarial review
 (a change review of that pull request) and Copilot review, which asks GitHub once per press through
 `/api/today/github/copilot-review`. No test here runs gh or codex: the request takes a stand-in `run`.
+
+sd:5668: Merge reads its preview, asks with the pull request, its head, its author, the worktree and the item, and posts
+the preview's revision once; a settled pull request or one outside a registered repository is off. The copy itself is
+`test_v2_today_github_merge`.
 """
 
 from __future__ import annotations
@@ -41,6 +45,10 @@ V2 = Path(v2.__file__).resolve().parent
 SCRIPT = V2 / "static" / "today-github.js"
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 PAGE_JS = SCRIPT.read_text(encoding="utf-8") if SCRIPT.exists() else ""
+# today.js's one selection (pick, sd:5654), which today.js defines before this script: it names the row in ?row=, puts
+# the Details and makes the row the shell's selection. test_v2_today_reader runs the real one with both scripts.
+PICK = ("window.todayPick = (id, draw, open) => { location.search = '?row=' + encodeURIComponent(id);"
+        " window.markup.put(document.getElementById('details'), draw()); C.select(id); if (open) OUT.panes = (OUT.panes || 0) + 1; };\n")
 HUB = "https://github.com"
 SHA = "a" * 40
 
@@ -93,7 +101,9 @@ class TheDocument(ScreenCase):
         self.assertEqual(found["error"], "")
         self.assertEqual(found["unread"], {})
         pulls = [(row["ref"], row["why"], row["at_what"]) for row in found["pulls"]]
-        self.assertEqual(pulls, [("upstream/tool#2", "upstream", "updated"), ("example/anvil#1", "yours", "updated"),
+        # Every open pull request in a registered repository lists, by whoever opened it, watched or not.
+        self.assertEqual(pulls, [("example/anvil#5", "opened by bo", "updated"), ("example/anvil#4", "opened by bo", "updated"),
+                                 ("upstream/tool#2", "upstream", "updated"), ("example/anvil#1", "yours", "updated"),
                                  ("example/anvil#6", "waiting on you", "updated"),
                                  ("example/anvil#3", "assigned to you", "opened")])
         issues = [(row["ref"], row["why"], row["at"], row["item"]) for row in found["issues"]]
@@ -104,7 +114,7 @@ class TheDocument(ScreenCase):
                                    ("example/anvil#10", "merged", "merged", ids["shipped"])])
         self.assertEqual(found["undated"], 1)
         self.assertEqual(found["days"], 7)
-        self.assertEqual(found["pulls"][0]["url"], f"{HUB}/upstream/tool/pull/2")
+        self.assertEqual(found["pulls"][2]["url"], f"{HUB}/upstream/tool/pull/2")
         json.dumps(found)  # the page reads it as JSON
 
     def test_a_read_that_failed_is_its_reason_never_an_empty_list(self):
@@ -120,7 +130,7 @@ class TheDocument(ScreenCase):
             found = today_github.document(self.connection, now=NOW)
         self.assertEqual(found["unread"], {"delivery": "disk I/O error"})
         self.assertEqual([row["item"] for row in found["settled"]], [None, None])
-        self.assertEqual(len(found["pulls"]), 3)
+        self.assertEqual(len(found["pulls"]), 6)
 
     def test_the_today_page_serves_the_read_in_its_own_view(self):
         page = next(page for page in pages.PAGES if page.section == "Today")
@@ -250,7 +260,7 @@ class TheScript(unittest.TestCase):
 
     def run_page(self, body, answer):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + COMMANDS_JS
-                  + "\nANSWER = " + answer + ";\n" + PAGE_JS
+                  + "\nANSWER = " + answer + ";\n" + PICK + PAGE_JS
                   + "\nvar R = {};\nconst show = () => document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'github', first: true } }));\n"
                   + "const press = key => ELS['github-sections'].listeners.click[0]({ target: { closest: s => s === '[data-gh-open]'"
                     " ? { dataset: { ghOpen: key } } : null } });\n"
@@ -360,13 +370,13 @@ class ThePullRequestDetails(unittest.TestCase):
             self.assertIn(fact, details)
         self.assertIn(f'<a href="{PR}" target="_blank" rel="noopener noreferrer">Open example/anvil#1 on GitHub</a>', details)
         self.assertIn('<div class="bar"></div>', details)
-        self.assertIn(f'<tr data-key="{PR}" data-pr aria-selected="true">', out["R"]["sections"])
+        self.assertIn(f'<tr data-key="{PR}" data-id="gh:{PR}" data-pr aria-selected="true">', out["R"]["sections"])
         self.assertEqual(out["R"]["obj"]["type"], "github pull request")
         self.assertEqual((out["R"]["obj"]["checkout"], out["R"]["obj"]["number"]), ("~/repos/anvil", 1))
         self.assertIsNone(out["R"]["issue"])
         self.assertEqual([i for i in out["R"]["ids"] if i.startswith("github pull request.")],
                          ["github pull request.open", "github pull request.item", "github pull request.adversarial-review",
-                          "github pull request.copilot-review"])
+                          "github pull request.copilot-review", "github pull request.merge"])
 
     def test_adversarial_review_starts_a_change_review_of_that_pull_request_and_only_an_open_one(self):
         out = self.page(f"C.run(cmd('github pull request.adversarial-review'), C.get('gh:{PR}'));"
@@ -396,6 +406,48 @@ class ThePullRequestDetails(unittest.TestCase):
         lost = self.page(f"C.run(cmd('github pull request.copilot-review'), C.get('gh:{PR}')); await flush();",
                          posts="() => { throw new Error('Failed to fetch'); }")
         self.assertIn("no answer (Failed to fetch), so whether Copilot was asked is not known", lost["toasts"][-1]["msg"])
+
+    # sd:5668: Merge's preview and write, as pr_merge answers them; `ASKS` records each confirm and answers `YES`.
+    MERGE = ("path => path.startsWith('/api/today/github/merge/preview') ? [200, { repo: 'example/anvil', number: 1,"
+             " title: 'Fix <b>it</b>', author: 'dependabot[bot]', head: '" + "b" * 40 + "', branch: 'pr/1', mode: 'copy',"
+             " worktree: '/home/worktrees/anvil-pr-1', worktree_listed: false, item: null, ref: 'github:example/anvil#1',"
+             " item_title: 'Merge example/anvil#1: Fix it', revision: '" + "r" * 64 + "', cli: 'git fetch && sd-ship lane enqueue' }]"
+             " : path === '/api/today/github/merge' ? [200, { ok: true, head: '" + "b" * 40 + "', branch: 'pr/1', item: 77,"
+             " filed: true, lane: { status: 'pending' } }] : [500, { error: 'unexpected ' + path }]")
+    ASKS = ("OUT.asks = []; var YES = true; window.shell.ask = a => { OUT.asks.push({ title: a.title, body: String(a.body), ok: a.ok,"
+            " keep: a.keep, cli: a.cli() }); return Promise.resolve({ yes: YES, values: {} }); };\n")
+
+    def test_merge_asks_with_the_preview_then_posts_its_revision_once(self):
+        out = self.page(self.ASKS + f"R.got = await cmd('github pull request.merge').run(C.get('gh:{PR}')); R.previews = cmd('github pull request.merge').previews;",
+                        posts=self.MERGE)
+        self.assertEqual([g for g in out["gets"] if "merge" in g], ["/api/today/github/merge/preview?repo=example%2Fanvil&number=1"])
+        ask = out["asks"][0]
+        self.assertEqual((ask["title"], ask["ok"], ask["keep"], ask["cli"]),
+                         ("Merge example/anvil#1?", "Merge", "Don't merge", "git fetch && sd-ship lane enqueue"))
+        for fact in ('example/anvil#1 "Fix <b>it</b>" by dependabot[bot], head bbbbbbbbbbbb.', "pr/1",
+                     "/home/worktrees/anvil-pr-1", "Item: files a new task, Merge example/anvil#1: Fix it, under github:example/anvil#1.",
+                     "The original stays open"):
+            self.assertIn(fact, ask["body"])
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/today/github/merge", {"repo": "example/anvil", "number": 1, "revision": "r" * 64})])
+        self.assertEqual(out["R"]["got"]["text"], "Copied · example/anvil#1 at bbbbbbbbbbbb into pr/1 · sd:77 filed · lane pending; Queue shows it")
+        self.assertTrue(out["R"]["previews"])
+
+    def test_merge_kept_posts_nothing_and_a_settled_or_unregistered_pull_request_is_off(self):
+        kept = self.page(self.ASKS + f"YES = false; R.got = await cmd('github pull request.merge').run(C.get('gh:{PR}'));"
+                         f" C.run(cmd('github pull request.merge'), C.get('gh:{HUB}/example/anvil/pull/3'));", posts=self.MERGE)
+        self.assertEqual(kept["posts"], [])
+        self.assertEqual(kept["R"]["got"]["text"], "Merge not run · example/anvil#1")
+        self.assertEqual(kept["toasts"][-1]["msg"], "off: the pull request is merged; Merge copies an open one")
+        unregistered = self.page(f"C.run(cmd('github pull request.merge'), C.get('gh:{PR}'));", found=doc(pulls=[entry(1, checkout=None)]))
+        self.assertEqual((unregistered["gets"][1:], unregistered["posts"]), ([], []))
+        self.assertIn("example/anvil is not a registered repository, so the lane cannot take it", unregistered["toasts"][-1]["msg"])
+
+    def test_a_merge_the_server_could_not_finish_says_merge_again_resumes(self):
+        lost = self.MERGE.replace("path === '/api/today/github/merge' ? [200,", "path === '/api/today/github/merge' ? [502, { error: 'Merge stopped part way: stopped' }] : false ? [200,")
+        out = self.page(self.ASKS + f"R.got = await cmd('github pull request.merge').run(C.get('gh:{PR}'));", posts=lost)
+        self.assertEqual(out["R"]["got"]["text"],
+                         "Not known how far Merge got · example/anvil#1: Merge stopped part way: stopped. Merge again resumes what was copied.")
 
     def test_a_row_a_later_read_drops_is_retired_so_no_command_runs_on_it(self):
         out = self.run_page("show(); await flush(); R.before = C.get('gh:" + PR + "').type;"

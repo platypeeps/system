@@ -20,7 +20,7 @@ from pathlib import Path
 from sd_db import review, workflow
 from sd_dashboard import decisions, review_screen, v2
 
-from support import ScreenCase
+from support import ScreenCase, before_5648
 from test_v2_registry import GROUP_BLOCK, Registers
 from test_v2_tasks import MARKUP_JS, SHELL, STAND_IN
 from test_v2_today import OSASCRIPT
@@ -93,6 +93,15 @@ class TheDocument(ScreenCase):
         self.assertEqual((first["text"], first["options"], first["subject"], first["evidence"]),
                          ("Is file 1 right?\nRead it whole.", ["yes", "no"], "example.test/repo@1a2b3c4:file1.py",
                           ["diff: git show 1a2b3c4 -- file1.py"]))
+
+    def test_a_scheduled_batch_is_not_listed_until_it_opens(self):
+        """sd:5670: the row set is Tasks', so a scheduled occurrence (pack sd:5648) is out until it opens; this read takes
+        the real clock, so the due day is far off. A pack before sd:5648 lists it as before."""
+        ids = seed(self)
+        self.schedule(ids["open"], "2999-01-01")
+        self.assertNotIn(ids["open"], [b["item"] for b in review_screen.document(self.connection)["batches"]])
+        with before_5648():
+            self.assertIn(ids["open"], [b["item"] for b in review_screen.document(self.connection)["batches"]])
 
     def test_the_rail_badge_counts_every_open_question_in_a_batch_that_reads(self):
         # sd:3446: the rule every page's rail shows; the broken batch counts nothing, a blind one counts its questions.

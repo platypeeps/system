@@ -435,6 +435,9 @@ let polling = 0;
   // ---------- Reader (read.js) ----------
   let reader = null;
   const load = () => reader.load();
+  // Read again (sd:5638): the shell's head button reads /api/hoa and the shown Briefs or Reports
+  // view again. Download from Vantaca or Mission, on Data sources, starts a download.
+  window.PAGE_AGAIN = { title: 'Read the HOA readings and the shown view again', run: () => Promise.all([load(), window.places.again()]) };
   // One timer at a time; each read that still sees a running job sets the next.
   function poll() { if (!polling) polling = setTimeout(() => { polling = 0; reader.reread(); }, SRC_POLL); }
   const spec = {

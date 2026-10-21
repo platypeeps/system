@@ -7,8 +7,12 @@
 // read is a line naming it; a read that failed says why.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 // sd:5633: a pull request row's title, or a press on its row, opens its Details in the right pane: what the read carries,
-// a link to GitHub in a new tab, and its commands (Open on GitHub, Open item, Adversarial review, Copilot review), each a
-// command object of TYPE the shell runs. An issue row keeps its title's link to GitHub.
+// a link to GitHub in a new tab, and its commands (Open on GitHub, Open item, Adversarial review, Copilot review, Merge), each a
+// command object of TYPE the shell runs. An issue row keeps its title's link to GitHub. The selection is Today's one
+// (today.js pick, sd:5654), so a Now or Work row selected after it unmarks it.
+// sd:5668: Merge copies an open pull request into a worktree and enqueues it in the lane (pr_merge.py). Its run reads the
+// preview, asks with it (the pull request, its head, its author, the worktree and the item), then posts the preview's
+// revision; a 4xx moved nothing, and a 502 may follow a step that moved, so the toast says Merge again resumes.
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
@@ -22,20 +26,22 @@
   const UNREAD = { intake: 'Third-party issues in repos with GitHub issues on', delivery: 'Items of merged pull requests (delivery notes)',
     refs: 'Items filed under a GitHub ref' };
 
-  let DOC = null, failed = '', reads = 0, started = false, SELECTED = null, PUT = new Set();
+  let DOC = null, failed = '', reads = 0, started = false, PUT = new Set();
   const OPEN = new Set();
   // The command objects' type, apart from Now's 'pull request' rows: Snooze and Now's commands do not apply here.
   const TYPE = 'github pull request';
   const oid = key => `gh:${key}`;
   const pulls = () => DOC && !DOC.error ? [...DOC.pulls, ...DOC.settled.filter(r => r.kind === 'pull')] : [];
   const pullOf = key => pulls().find(r => r.key === key);
+  // The selected pull request's key: Today's one selection (today.js pick, sd:5654) names it in ?row= as its object id.
+  const chosen = () => { const id = new URLSearchParams(location.search).get('row') || ''; return id.startsWith('gh:') ? id.slice(3) : null; };
 
   const state = r => r.state !== 'open' ? 'ok' : r.why === 'waiting on you' ? 'caution' : 'queued';
   const when = r => r.at ? html`${r.at_what} <time class="rel" datetime="${r.at}"></time>` : html`<span class="ph">activity not recorded</span>`;
   const row = r => {
     const s = state(r);
     const pr = r.kind === 'pull';
-    return html`<tr data-key="${r.key}"${pr ? html` data-pr aria-selected="${String(SELECTED === r.key)}"` : ''}>
+    return html`<tr data-key="${r.key}"${pr ? html` data-id="${oid(r.key)}" data-pr aria-selected="${String(chosen() === r.key)}"` : ''}>
       <td class="g g-${s}" title="${r.state}">${GLYPH[s]}</td>
       <td class="what">${pr ? html`<button type="button" data-gh-open="${r.key}">${r.title || r.ref}</button>`
         : r.url ? html`<a href="${r.url}" rel="noopener noreferrer">${r.title || r.ref}</a>` : r.title || r.ref}<span class="repo">${KIND[r.kind]} · ${r.ref}</span></td>
@@ -88,13 +94,10 @@
   // ---------- Details (sd:5633) ----------
   // A time the read carries, or not recorded: a missing stamp is never a time.
   const stamp = v => v ? html`<time class="rel" data-long datetime="${v}"></time>` : html`<span class="ph">not recorded</span>`;
-  function details(key) {
+  function details(key, open = true) {
     const r = pullOf(key); if (!r) return;
-    SELECTED = key;
-    $('github-sections').querySelectorAll('tr[data-pr]').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.key === key)));
-    window.shell.commands.select(oid(key));
     const s = state(r), settled = r.merged_at ? ['Merged', r.merged_at] : r.closed_at ? ['Closed', r.closed_at] : null;
-    put($('details'), html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> Pull request · ${r.state}</p>
+    window.todayPick(oid(key), () => html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> Pull request · ${r.state}</p>
       <h2>${r.title || r.ref}</h2>
       <dl><dt>Repo</dt><dd>${r.repo}</dd><dt>Number</dt><dd>#${r.number}</dd><dt>State</dt><dd>${r.state} · ${r.why}</dd>
         <dt>Author</dt><dd>${r.author || html`<span class="ph">not recorded</span>`}</dd>
@@ -106,8 +109,7 @@
         <dt>Item</dt><dd>${r.item ? html`<a href="${window.shell.itemHref(r.item)}">sd:${r.item}</a>` : html`<span class="ph">none known</span>`}</dd></dl>
       ${r.url ? html`<p><a href="${r.url}" target="_blank" rel="noopener noreferrer">Open ${r.ref} on GitHub</a></p>` : ''}
       <h3>Act</h3>${window.shell.commands.bar(oid(key))}
-      ${r.checkout ? window.commands.reviewPane('change', r.checkout) : ''}`);
-    window.shell.openPane('tab-details');
+      ${r.checkout ? window.commands.reviewPane('change', r.checkout) : ''}`, open);
   }
 
   // Each read puts one command object per pull request row; a row the read no longer lists is retired, as read.js does,
@@ -118,7 +120,6 @@
       number: r.number, url: r.url, state: r.state, item: r.item, checkout: r.checkout }); });
     PUT.forEach(id => { if (!keep.has(id)) C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); });
     PUT = keep;
-    if (SELECTED && !pullOf(SELECTED)) SELECTED = null;
   }
 
   function register() {
@@ -146,7 +147,42 @@
         run: o => window.shell.post('/api/today/github/copilot-review', { repo: o.repo, number: o.number }).then(
           () => `Copilot review requested · ${o.repo}#${o.number}`,
           err => { throw err.status ? err : new Error(`no answer (${err.message}), so whether Copilot was asked is not known`); }) },
+      // sd:5668: previews: run() reads the preview and asks with it, so the shell's own confirm does not ask first.
+      { id: `${TYPE}.merge`, on: TYPE, label: 'Merge', does: 'Copies this pull request into a worktree and queues it in the lane.',
+        icon: 'git-merge', risk: 'confirm', executes: true, previews: true,
+        when: o => o.state !== 'open' ? `${closed(o)}; Merge copies an open one`
+          : o.checkout ? true : `${o.repo} is not a registered repository, so the lane cannot take it`,
+        cli: o => `git -C ${window.shell.shq(o.checkout)} fetch origin pull/${o.number}/head && sd-ship -C <worktree> lane enqueue --item <n> --title <title> --body-file <body> --expected-head <head> --deliver`,
+        sends: o => `POST /api/today/github/merge ${JSON.stringify({ repo: o.repo, number: o.number, revision: '<preview>' })}`,
+        run: mergePull },
     );
+  }
+
+  // What Merge will do, from its preview: the confirm names every fact the copy moves on.
+  const mergeText = p => [
+    `${p.repo}#${p.number} "${p.title}" by ${p.author || 'an author not recorded'}, head ${p.head.slice(0, 12)}.`,
+    p.mode === 'resume' ? `Resumes: ${p.branch} already holds this head${p.worktree_listed ? ` in ${p.worktree}` : `; Merge adds its worktree ${p.worktree}`}.`
+      : `Fetches pull/${p.number}/head into ${p.branch} and a worktree at ${p.worktree}; the commits keep their authors.`,
+    p.item ? `Item: sd:${p.item} ${p.item_title} (${p.ref}).` : `Item: files a new task, ${p.item_title}, under ${p.ref}.`,
+    'Then sd-ship lane enqueue --deliver: the lane publishes its own pull request, gates, reviews and merges it. The original stays open; close it once the lane merges.',
+  ].join(' ');
+  async function mergePull(o) {
+    const ref = `${o.repo}#${o.number}`;
+    const p = await window.shell.getJSON(`/api/today/github/merge/preview?repo=${encodeURIComponent(o.repo)}&number=${o.number}`);
+    const { yes } = await window.shell.ask({ title: `Merge ${ref}?`, body: mergeText(p), ok: 'Merge', keep: "Don't merge", danger: true, cli: () => p.cli });
+    if (!yes) return { text: `Merge not run · ${ref}` };
+    let out;
+    try { out = await window.shell.post('/api/today/github/merge', { repo: o.repo, number: o.number, revision: p.revision }); }
+    catch (err) {
+      if (err.status >= 400 && err.status < 500) throw err;
+      load();
+      return { text: `Not known how far Merge got · ${ref}: ${err.message}. Merge again resumes what was copied.` };
+    }
+    // The next read lists the row's item: the one filed under its ref.
+    load();
+    const lane = out.lane || {};
+    const queued = lane.status === 'not queued' ? `not queued: ${lane.error}. Merge again to retry the enqueue` : `lane ${lane.status}; Queue shows it`;
+    return { text: `Copied · ${ref} at ${out.head.slice(0, 12)} into ${out.branch} · sd:${out.item}${out.filed ? ' filed' : ''} · ${queued}` };
   }
 
   // Of overlapping reads only the newest draws.
@@ -162,8 +198,8 @@
     }
     objects();
     draw();
-    // The selected row's Details show this read's facts while it is still the shell's selection.
-    if (SELECTED && window.shell.commands.selected?.()?.id === oid(SELECTED)) details(SELECTED);
+    // The selected row's Details show this read's facts; a page opened with ?row=gh:… shows its row once read.
+    if (chosen() && pullOf(chosen())) details(chosen(), false);
   }
 
   document.addEventListener('shell:view', e => { if (e.detail && e.detail.id === 'github' && !started) load(); });
@@ -171,8 +207,8 @@
     $('refresh').addEventListener('click', () => { if (started) load(); });
     register();
     // A run of this view's Adversarial review draws the selected row's Details again (commands.js follows the run).
-    document.addEventListener('adversarial:run', e => { const r = SELECTED && pullOf(SELECTED);
-      if (r && r.checkout && e.detail?.key === `change:${r.checkout}` && window.shell.commands.selected?.()?.id === oid(SELECTED)) details(SELECTED); });
+    document.addEventListener('adversarial:run', e => { const key = chosen(), r = key && pullOf(key);
+      if (r && r.checkout && e.detail?.key === `change:${r.checkout}`) details(key, false); });
     document.addEventListener('shell:open', e => { const id = String(e.detail || ''); if (id.startsWith('gh:') && pullOf(id.slice(3))) details(id.slice(3)); });
     $('github-sections').addEventListener('click', e => {
       const opened = e.target.closest('[data-gh-open]'); if (opened) return details(opened.dataset.ghOpen);

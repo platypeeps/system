@@ -94,6 +94,8 @@
 }
 
 /* Trackers opens the classic Operations > Trackers: a link to another page, so it reads as a link, not a third view tab (sd:5064). */
+/* The head's tools: Trackers and the shell's Read again (sd:5638). */
+.head .tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); }
 .to-trackers { display: inline-flex; align-items: center; gap: var(--space-3xs); min-height: 2rem; color: var(--color-ink-2); font-size: var(--text-sm); text-underline-offset: 3px; }
 .to-trackers:hover { color: var(--color-ink); }
 .to-trackers:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }

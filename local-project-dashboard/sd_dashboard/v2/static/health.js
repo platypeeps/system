@@ -254,6 +254,9 @@
   // longer lists runs no command and loses its pick, and a failed read leaves no row, lamp or command from the last one.
   // Each puts and retires only its own view's rows; one for a view not open keeps its reading and draws nothing.
   const load = () => Promise.resolve(readers[VIEW] && readers[VIEW].load()).then(() => readSummary());
+  // Read again (sd:5638): the shell's head button reads the shown view and the lamps again, as
+  // the Observed lamp does. Re-run collector, on the protection collector, runs the sync first.
+  window.PAGE_AGAIN = { title: 'Read the shown view and the lamps again', run: load };
   const spec = view => ({
     source: `/api/health/${view}`, what: `the ${PAGE_VIEWS.find(v => v.id === view).label} rows`,
     // Each view's reading state sits in its own panel, and a late read of a view not open leaves the selection alone.

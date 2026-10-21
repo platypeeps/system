@@ -1,0 +1,58 @@
+<!doctype html>
+<!--
+  Places (sd:5663), at /places?realm=<id>: the place page of a realm (dashboard.realms) with a report family of its own id
+  (dashboard.report_families). It is HOA's and Home's Tasks, Briefs and Reports with no Overview: place.js names the page
+  after the realm (SHELL_REALMS, from /ui/sections.js) and points each view at /api/place/<id>/<view> (places.py), then
+  places.js reads a view when it shows. No realm is named here: the lines are the operator's. Without ?realm= the page
+  lists the realm places. A Briefs row shows its Details in the pane, the Briefs page's own (brief-details.js, sd:5620).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Places · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/places.css">
+<link rel="stylesheet" href="/ui/brief-details.css">
+</head>
+<body data-page="Places" data-scope="realm" data-scope-note="dashboard.realms">
+<script src="/ui/icons.js"></script>
+<div class="shell"><main id="main">
+  <header class="head">
+    <div>
+      <h1 id="title">Places</h1>
+      <p id="subhead">The realm places: a realm with a report family of its own id.</p>
+    </div>
+  </header>
+  <div class="toolbar" id="toolbar" data-shift>
+    <div class="place-switch" id="viewswitch" data-label="Place views"></div>
+  </div>
+  <div id="state" hidden></div>
+
+  <section class="place-view" id="view-tasks" data-place-view="tasks" data-label="Tasks" data-empty="No open item in this realm." aria-labelledby="tasks-h" hidden>
+    <div class="sec-head"><div><h2 id="tasks-h">Tasks</h2><p>Open items whose repo a glob of the realm matches (<code>dashboard.realms</code>), as Tasks' realm view.</p></div><p class="tally" id="tasks-tally"></p></div>
+    <div id="tasks-rows"></div>
+  </section>
+  <section class="place-view" id="view-briefs" data-place-view="briefs" data-label="Briefs" aria-labelledby="briefs-h" hidden>
+    <div class="sec-head"><div><h2 id="briefs-h">Briefs</h2><p>Briefs of the realm's repos, and briefs whose series names a job of its report family.</p></div><p class="tally" id="briefs-tally"></p></div>
+    <div id="briefs-rows"></div>
+  </section>
+  <section class="place-view" id="view-reports" data-place-view="reports" data-label="Reports" aria-labelledby="reports-h" hidden>
+    <div class="sec-head"><div><h2 id="reports-h">Reports</h2><p>Reports of the jobs in the realm's report family (<code>dashboard.report_families</code> on Settings), from the newest 200.</p></div><p class="tally" id="reports-tally"></p></div>
+    <div id="reports-rows"></div>
+  </section>
+</main>
+<div class="details" id="details"><p class="why">Select a brief to see its Details.</p></div></div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/read.js"></script>
+<script src="/ui/commands.js"></script>
+<script src="/ui/brief-details.js"></script>
+<script src="/ui/place.js"></script>
+<script src="/ui/places.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>

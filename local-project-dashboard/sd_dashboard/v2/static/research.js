@@ -8,7 +8,7 @@ const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: s
 // build: a path under the home folder keeps its ~ outside the quotes, so the shell still expands it.
 const shPath = p => (p.startsWith('~/') ? `~/${shq(p.slice(2))}` : shq(p));
 const GLYPH = { caution: '▲', unknown: '▨', ok: '●', queued: '◌', warning: '■' };
-let DIRS = ['00-overview', '10-sources', '20-map', '30-brief', '40-docs'];
+let DIRS = ['00-overview', '05-architecture', '10-sources', '20-map', '30-brief', '40-docs']; // until /api/research names them
 let CAP = 2;
 // build: the reference's project list, data/research-sources.js and claims were sample data. These fill from the two documents.
 let PROJECTS = [], ROUNDS = '', READ = null, CUT = 0, LOADED = false;
@@ -31,11 +31,19 @@ const PICK = () => html`<p class="why">No project is selected. <button class="li
 const STATE_WORDS = { caution: 'render-stale', unknown: 'config or render unread', ok: 'current' };
 let stateFilter = null;
 
+// build (sd:5657): a populated stage whose page Documents serves is a link to it; /api/research names the address
+// (research_screen.linked). Every other pip stays inert, and its title says why it opens nothing.
+function pip(p, d, group) {
+  const on = p.dirs.includes(d), s = on ? p.stages?.[d] : null;
+  if (s?.href) return html`<a class="pip" href="${s.href}" aria-label="Open ${d}: ${s.title}" title="${d}: ${s.title}${s.state === 'stale' ? ', stale since its source changed' : ''}"><i class="on"></i></a>`;
+  return html`<span class="pip" title="${d}${s?.why ? `: ${s.why}` : ''}"${group ? html` aria-hidden="true"` : ''}><i class="${on ? 'on' : ''}"></i></span>`;
+}
 function stageCell(p) {
-  if (!p.dirs) return html`<span class="track" aria-hidden="true">${DIRS.map(() => html`<i class="hatch"></i>`)}</span><span class="stage-lbl"><span class="g-unknown">▨</span> no numbered layout</span>`;
+  if (!p.dirs) return html`<span class="track" aria-hidden="true">${DIRS.map(() => html`<span class="pip"><i class="hatch"></i></span>`)}</span><span class="stage-lbl"><span class="g-unknown">▨</span> no numbered layout</span>`;
   const last = DIRS.filter(d => p.dirs.includes(d)).pop();
+  const group = p.dirs.some(d => p.stages?.[d]?.href);
   // build: a numbered layout with no Markdown yet says so; the reference always had a last directory.
-  return html`<span class="track" role="img" aria-label="Populated: ${p.dirs.join(', ') || 'none'}">${DIRS.map(d => html`<i class="${p.dirs.includes(d) ? 'on' : ''}" title="${d}"></i>`)}</span><span class="stage-lbl">${last ? last.slice(3) : 'no Markdown yet'}</span>`;
+  return html`<span class="track" role="${group ? 'group' : 'img'}" aria-label="Populated: ${p.dirs.join(', ') || 'none'}">${DIRS.map(d => pip(p, d, group))}</span><span class="stage-lbl">${last ? last.slice(3) : 'no Markdown yet'}</span>`;
 }
 // build: no round reader, so every project's rounds are unknown with the document's reason.
 function roundsCell() {
@@ -220,6 +228,8 @@ xpBody.addEventListener('click', e => { if (e.target.closest('a, .acts')) return
 // The board reads through shell.read (the Start block); the ledger is read here, per project.
 // build: the ledger is read per project, when it is selected, and kept for the page's life.
 const sourcesPath = key => `/api/research/${key.split('/').map(encodeURIComponent).join('/')}`;
+// A refusal for a dead page session already says to reload (sd:5664): reselecting reads with the same session.
+const retry = e => (/^Reload the page/.test(e || '') ? '' : ' Reselect the project to retry.');
 function loadSources(key) {
   if (!SOURCES.has(key)) SOURCES.set(key, window.shell.getJSON(sourcesPath(key)).then(s => (SOURCES.set(key, s), s), err => { const s = { error: err.message, files: [], rows: [], total: 0 }; SOURCES.set(key, s); return s; }));
   return Promise.resolve(SOURCES.get(key));
@@ -303,7 +313,7 @@ function drawReader(p, s) {
   const key = p.key;
   if (s.error) {
     // An error that already ends its sentence takes no second period (sd:2429).
-    put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error.replace(/\.$/, '')}. Reselect the project to retry.</p>`);
+    put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error.replace(/\.$/, '')}.${retry(s.error)}</p>`);
     SOURCES.delete(key); document.getElementById('reader-tally').textContent = 'not read'; shell.view.count('sources', null); return;
   }
   if (!s.files.length) {
@@ -367,6 +377,9 @@ function typeTip(c, v) {
   const said = (c.types?.[v]?.grades || '').split('').filter(g => defined[g]).map(g => `${g} = ${defined[g]}`);
   return `${typeWord(v)}: ${ruleOf(c, v)}.${Object.keys(defined).length ? said.map(x => ` ${x}`).join('') : ' This ledger does not define its grades.'}`;
 }
+// The legend's help button (the shell's .help popover): what each grade letter the ledger defines means.
+const gradeHelp = c => { const g = Object.entries(c.grades || {});
+  return g.length ? `<b>Source grades.</b> ${g.map(([k, v]) => `<b>${k}</b> = ${v}`).join(' ')}` : '<b>Source grades.</b> This ledger does not define its grades.'; };
 const claimTip = (c, x) => `${typeWord(x.s)}: ${ruleOf(c, x.s)}. This claim cites ${x.grades ? both(x.grades.split('')) : 'only ungraded sources'}.`;
 let verdict = null, curClaim = null, litKeys = [], litClaims = [];
 function resetClaims() { verdict = null; curClaim = null; litKeys = []; litClaims = []; }
@@ -387,7 +400,7 @@ function chip(s, key) {
 function drawClaims(p, s) {
   const c = s.claims;
   if (s.error || !c) {
-    put(claimsEl, html`<p class="unknown"><span class="g-unknown">▨</span>Claims not read for ${p.label}: ${s.error ? s.error.replace(/\.$/, '') : 'the reader sent no claim map'}. Reselect the project to retry.</p>`);
+    put(claimsEl, html`<p class="unknown"><span class="g-unknown">▨</span>Claims not read for ${p.label}: ${s.error ? s.error.replace(/\.$/, '') : 'the reader sent no claim map'}.${retry(s.error)}</p>`);
     shell.view.count('claims', null); return;
   }
   // A document the reader skipped is named, so an empty map is never mistaken for a read one.
@@ -397,20 +410,32 @@ function drawClaims(p, s) {
     put(claimsEl, html`<p class="why">No claims: no sentence in ${c.dirs.join(', ')} links a URL in the ledger. ${plural(c.read, 'document')} read.</p>${unread}`);
     return;
   }
-  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict">${['supported', 'unverified'].filter(v => c.tally[v]).map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}" title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${c.tally[v]} ${v}</button>`)}</div>
-    <p class="vlegend">${['supported', 'unverified'].map(v => html`<span title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${v}: ${ruleOf(c, v)}</span><span class="sr" id="claim-type-${v}">${typeTip(c, v)}</span>`)}${
+  // The verdict filter: All and both verdicts always, so it reads as a control; a verdict with no claims is off.
+  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict"><span class="vlabel">Show</span><button type="button" class="v-all" data-verdict="" aria-pressed="${String(!verdict)}">All ${c.total}</button>${['supported', 'unverified'].map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}"${c.tally[v] ? '' : html` disabled`} title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${c.tally[v] || 0} ${v}</button>`)}</div>
+    <p class="vlegend">${['supported', 'unverified'].map(v => html`<span title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${v}: ${ruleOf(c, v)}</span><span class="sr" id="claim-type-${v}">${typeTip(c, v)}</span>`)}<button class="help" type="button" aria-label="Help: source grades" data-help="${gradeHelp(c)}">${I('circle-help')}</button>${
       c.tally.ungraded ? html`<span>${!c.graded ? `The ledger has no grades, so all ${plural(c.tally.ungraded, 'claim')} are unverified` : `${c.tally.ungraded} of the unverified cite only ungraded sources`}</span>` : ''}</p>
     <ul class="claims">${c.rows.map((x, i) => html`<li class="claim" data-c="${i}" aria-current="${String(curClaim === i)}"${litClaims.includes(i) ? html` data-lit` : ''}${verdict && x.s !== verdict ? html` hidden` : ''}>
       <span class="g g-${VERDICT[x.s][1]}" title="${claimTip(c, x)}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
       <button type="button" aria-describedby="claim-type-${x.s}">${x.text}</button>
       <span class="meta"><span>${x.doc}:${x.line}</span>${x.keys.map(k => chip(s, k))}</span></li>`)}</ul>${
-    c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown: the reading passed its print bound.</p>` : ''}${unread}`);
+    c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown. ${c.moreError ? `The next claims were not read: ${c.moreError}. ` : ''}<button type="button" class="btn" data-more-claims${c.loading ? html` disabled` : ''}>${c.loading ? 'Reading…' : 'Show more'}</button></p>` : ''}${unread}`);
   document.getElementById('claims-for').textContent = `· ${p.label} · ${plural(c.total, 'claim')}`;
 }
+// Show more (past the reader's print bound): the next claims, from the count already held, appended to the cached map.
+function moreClaims() {
+  const key = selected, s = SOURCES.get(key), c = s?.claims; if (!c || c.loading) return;
+  c.loading = true; c.moreError = ''; redraw();
+  window.shell.getJSON(`${sourcesPath(key)}?from=${c.rows.length}`).then(n => {
+    const rows = n.claims?.rows || [];
+    if (!rows.length) c.moreError = n.error || 'the reader sent no further claims';
+    c.rows.push(...rows);
+  }, err => { c.moreError = err.message.replace(/\.$/, ''); }).finally(() => { c.loading = false; if (selected === key && SOURCES.get(key) === s) redraw(); });
+}
 claimsEl.addEventListener('click', e => {
+  if (e.target.closest('[data-more-claims]')) { moreClaims(); return; }
   const to = e.target.closest('[data-view]'); if (to) { shell.view.show(to.dataset.view); return; }
   const v = e.target.closest('[data-verdict]');
-  if (v) { verdict = verdict === v.dataset.verdict ? null : v.dataset.verdict; redraw(); claimsEl.querySelector(`[data-verdict="${v.dataset.verdict}"]`)?.focus(); return; }
+  if (v) { verdict = !v.dataset.verdict || verdict === v.dataset.verdict ? null : v.dataset.verdict; redraw(); claimsEl.querySelector(`[data-verdict="${v.dataset.verdict}"]`)?.focus(); return; }
   const li = e.target.closest('.claim[data-c]'); if (li && e.target.closest('button')) selectClaim(+li.dataset.c);
 });
 // Draw the reader and the map again from the cache, keeping what is lit.
@@ -439,6 +464,14 @@ function claimsOf(i) {
 const details = document.getElementById('details');
 function swap() { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); }
 const kindWord = s => (s === 'unknown' ? 'config or render unread' : s === 'caution' ? 'render-stale' : 'current');
+// The architecture overview (sd:5661, pack sd:5660): its page, or why there is none. Render is offered only where a render
+// changes that: the overview is declared and its page is not built or stale.
+function architecture(p) {
+  const s = p.dirs?.includes('05-architecture') ? p.stages?.['05-architecture'] : null;
+  if (!s) return 'none yet: 05-architecture/architecture.md starts from the sd-research-repo template';
+  const render = ['not built', 'stale'].includes(s.state) ? html` <button class="btn quiet sm" type="button" data-cmd="research.render" data-obj="${p.key}">Render</button>` : '';
+  return s.href ? html`<a href="${s.href}">${s.title}</a>${s.state === 'stale' ? ' · stale since its source changed' : ''}${render}` : html`${s.why}${render}`;
+}
 // read: false redraws from the experiment read already held, so the Act bar follows it without a second read.
 function showProject(key, read = true) {
   const p = PROJECTS.find(x => x.key === key); if (!p) return;
@@ -451,8 +484,9 @@ function showProject(key, read = true) {
       <dt>Stage</dt><dd>${p.dirs ? (p.dirs.join(' · ') || 'numbered layout, no Markdown yet') : 'no numbered layout'}</dd>
       <dt>Render</dt><dd>${p.render.txt}${p.render.sub ? ` · ${p.render.sub}` : ''}</dd>
       <dt>Documents</dt><dd>${plural(p.docs_total ?? p.docs.length, 'document')} in research.conf.py${p.docs.length < (p.docs_total ?? 0) ? ` · ${p.docs.length} listed: the board passed its print bound` : ''} · <a href="/documents">Documents</a></dd>
+      <dt>Architecture</dt><dd>${architecture(p)}</dd>
       <dt>Rounds</dt><dd>${ROUNDS}</dd></dl>
-    ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until the config declares its data.</p>` : ''}
+    ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until it is read.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
     <h3>Act</h3>${shell.commands.bar(p.key)}
     ${REVIEWS[p.key] ? html`<h3>Last review</h3><p class="why">${REVIEWS[p.key].state === 'done' ? 'Every check passed' : REVIEWS[p.key].reason || 'failed'} · <time class="rel" datetime="${REVIEWS[p.key].finished || ''}"></time></p>
@@ -497,7 +531,7 @@ const stampTime = s => `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.s
 const listed = page => (EXP?.cache?.rows || []).find(r => r.page === page);
 function experimentSection(p) {
   if (!EXP || EXP.key !== p.key) return html`<h3>Experiment</h3><p class="why">Reading the experiment link…</p>`;
-  if (EXP.error) return html`<h3>Experiment</h3><p class="unknown"><span class="g-unknown">▨</span>Not read: ${EXP.error.replace(/\.$/, '')}. Reselect the project to retry.</p>`;
+  if (EXP.error) return html`<h3>Experiment</h3><p class="unknown"><span class="g-unknown">▨</span>Not read: ${EXP.error.replace(/\.$/, '')}.${retry(EXP.error)}</p>`;
   const link = EXP.link, row = link && listed(link.page), c = EXP.cache, last = (EXP.runs || []).find(r => r.project === p.key || r.verb === 'list');
   const draft = pending(p.key);
   const problems = Object.entries(EXP.problems || {}).filter(([, why]) => why);
@@ -545,10 +579,11 @@ function experimentCommands() {
       when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.link ? 'not linked: attach or create an experiment first' : true; },
       sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"status"}',
       run: o => post(o, { verb: 'draft', action: 'status' }, 'Draft') },
-    // Make experiment (sd:5662): this project as a new experiment, from its row or its Details. The link is read only for the
-    // project shown, so another row offers it too; the server refuses a project already linked (409).
+    // Make experiment (sd:5662): this project as a new experiment, from its row or its Details. A project with a status
+    // brief is one already. The link is read only for the project shown, so another row offers it too; the server
+    // refuses a project already linked (409).
     { id: 'experiment.make', on, label: 'Make experiment', does: 'Drafts a new experiment for this project; Apply writes it after you read it.', icon: 'flask-conical', risk: 'safe', executes: true,
-      when: o => (EXP?.key !== o.key ? true : EXP.link ? 'already linked to an experiment' : EXP.running ? 'a run is going now' : EXP.problems?.source || true),
+      when: o => (o.experiment ? 'already an experiment: it has a status brief' : EXP?.key !== o.key ? true : EXP.link ? 'already linked to an experiment' : EXP.running ? 'a run is going now' : EXP.problems?.source || true),
       fields: () => [{ name: 'description', label: 'What the experiment tests', required: true, placeholder: 'One or two sentences' }],
       sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
       run: (o, v) => post(o, { verb: 'draft', action: 'create', description: v.description }, 'Draft') },
@@ -608,7 +643,8 @@ function selectSource(i, open) {
   document.querySelectorAll('.src[data-i]').forEach(li => li.setAttribute('aria-current', +li.dataset.i === i));
   showSource(i); if (open) shell.openPane('tab-details');
 }
-tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
+// A stage bar is a link: it opens its document, not the row's Details.
+tbody.addEventListener('click', e => { if (e.target.closest('.rowact, a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
 // ---------- Commands (products/system/commands.md) ----------
 // Each board row is a research project. Labels are CLI verbs; the shell renders every button, menu entry and CLI line.
@@ -789,8 +825,8 @@ function adopt(doc) {
   const cut = CUT ? ` ${plural(CUT, 'project')} not listed: the board passed its print bound.` : '';
   const state = doc.error ? { kind: 'error', text: `The checkouts were not read: ${doc.error}. Reload retries it.`, source: 'collectors.collect_research' }
     : !PROJECTS.length ? { kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' }
-    : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds are not read: ${ROUNDS}.${cut}`, source: '/api/research' }
-    : { kind: 'partial', title: 'No rounds read', text: `${ROUNDS}.${cut}`, source: '/api/research' };
+    : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read.${cut}`, source: '/api/research' }
+    : cut ? { kind: 'partial', text: cut.trim(), source: '/api/research' } : null; // rounds stay unread: the Details' Rounds line says why
   return { objects: [...PROJECTS, ...experimentObjects(), DRAFT], state };
 }
 function draw() {
@@ -806,6 +842,12 @@ function unselect() {
 }
 // Only the newest of overlapping loads draws; nothing on this page writes, so it never rereads.
 const load = () => board.load();
+// Read again (sd:5638): the shell's head button reads the board, the cached ledgers behind Sources and Claim map, and the
+// shown project's experiment link again.
+window.PAGE_AGAIN = { title: "Read the checkouts, the selected project's ledgers and its experiment link again", run: () => {
+  SOURCES.clear(); load();
+  if (selected) { loadExperiment(selected); readerFor(selected); renderClaims(selected); }
+} };
 document.addEventListener('DOMContentLoaded', () => {
   put(document.getElementById('rows-head'), shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   registerCommands();

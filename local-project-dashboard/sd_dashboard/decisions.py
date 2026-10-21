@@ -36,6 +36,8 @@ import re
 
 from sd_db import reads, workflow
 
+from .tasks_screen import is_scheduled
+
 __all__ = ["answer", "document", "parse", "recommended", "request"]
 
 OPTION = re.compile(r"^[ \t]*Option:[ \t]*(.*?)[ \t]*$")
@@ -80,7 +82,7 @@ def recommended(body: str, options: list[str]) -> int | None:
 
 def document(connection, *, now: str | None = None) -> dict:
     open_items = {row["id"]: row for row in reads.backlog_items(connection, include_done_days=0, now=now)
-                  if row["status"] != "done"}
+                  if row["status"] != "done" and not is_scheduled(row)}
     found, batched = [], 0
     for row in reads.brief_notes(connection, list(open_items)):
         question, options = parse(row["body"])

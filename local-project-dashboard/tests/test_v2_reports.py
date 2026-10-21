@@ -44,6 +44,7 @@ V2 = Path(v2.__file__).resolve().parent
 REPORTS_JS = (V2 / "static" / "reports.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
+REPORT_DETAILS_JS = (V2 / "static" / "report-details.js").read_text(encoding="utf-8")
 #: A family list, as the `dashboard.report_families` row or its old file holds it (sd:5109); the job names are examples.
 FAMILIES = """family|backups|Backups|hard-drive-download|db-backup-nightly,offsite-verify
 family|repos|Repos & setup|git-compare|repo-sync-nightly,brew-doctor-nightly
@@ -333,7 +334,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Reports · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "reports.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "report-details.js", "reports.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -474,7 +475,7 @@ class TheScript(ScreenCase):
         doc = doc or self.doc
         answer = answer or f"(path, body) => path === '/api/reports' ? [200, {json.dumps(doc)}] : [200, {{}}]"
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n"
-                  + SHELL + SHELL_MORE + "\n" + READ_SHELL + f"\nANSWER = {answer};\n" + prelude + "\n" + COMMANDS_JS + REPORTS_JS
+                  + SHELL + SHELL_MORE + "\n" + READ_SHELL + f"\nANSWER = {answer};\n" + prelude + "\n" + COMMANDS_JS + REPORT_DETAILS_JS + REPORTS_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION;"
@@ -845,8 +846,9 @@ TB.querySelector = () => TB.querySelectorAll()[0] || null;"""
         next(r for r in doc["reports"] if r["id"] == self.ids["failed"])["basis"] = "finding one\nfinding two"
         out = self.run_page(f"open('r{self.ids['failed']}'); R.det = ELS.details.html;", doc=doc)
         self.assertIn("<dt>Attention evidence</dt><dd>finding one\nfinding two</dd>", out["R"]["det"])
-        css = (V2 / "static" / "reports.css").read_text(encoding="utf-8")
-        self.assertRegex(css, r"(?m)^\.details dd \{[^}]*white-space: pre-line;")
+        # sd:5636: a report's Details are report-details.js's, so their CSS is report-details.css, scoped to its wrapper.
+        css = (V2 / "static" / "report-details.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"(?m)^\.report-det dd \{[^}]*white-space: pre-line;")
 
     def test_details_of_a_report_whose_fields_cannot_be_read_name_the_action_before_the_line(self):
         # sd:3716, after pack sd:3503: the sentence names what to do and why the page withholds it; the line is the copy.
@@ -1012,9 +1014,10 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
         self.assertNotIn('id="chips"', page, "the bar's tokens replace the chip row")
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
-        self.assertNotIn("innerHTML", REPORTS_JS)
-        self.assertNotIn("setAttribute('style'", REPORTS_JS)
-        self.assertNotRegex(REPORTS_JS, r"style=\\?\"")
+        for script in (REPORTS_JS, REPORT_DETAILS_JS):
+            self.assertNotIn("innerHTML", script)
+            self.assertNotIn("setAttribute('style'", script)
+            self.assertNotRegex(script, r"style=\\?\"")
         self.assertNotIn("history.replaceState", REPORTS_JS)
         self.assertNotIn("location.reload", REPORTS_JS)
         self.assertNotRegex(REPORTS_JS, r"e\.key !?== '[jk]'")

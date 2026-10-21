@@ -64,6 +64,16 @@
   const PAGES = window.SHELL_PAGES || { Today: 'today.html', Briefs: 'briefs.html', Tasks: 'tasks.html', Research: 'research.html', Documents: 'documents.html', HOA: 'hoa.html', Home: 'home.html', Skills: 'skills.html', Metrics: 'metrics.html', Activity: 'activity.html', Reports: 'reports.html', Writing: 'writing.html', Notes: 'notes.html', Contributions: 'contributions.html', Health: 'health.html', Management: 'management.html', Designs: 'designs.html' };
   // build (sd:2163): an unported section opens its old screen until its port moves it into SHELL_PAGES.
   const CLASSIC = window.SHELL_CLASSIC || {}, SCREENS = window.SHELL_SCREENS || {};
+  // places:start
+  // sd:5663: a realm with a report family of its own id is a place (SHELL_REALMS place, the family's icon, from
+  // /ui/sections.js). It joins Places with no g key, at /places?realm=<id>. A label a section holds, or one with a quote or a
+  // backslash (the rail finds an entry by [data-section="<label>"]), is left out.
+  for (const r of window.SHELL_REALMS || []) {
+    if (!r.place || !/^[a-z0-9][a-z0-9-]*$/.test(r.id) || !/^[a-z0-9-]+$/.test(r.place) || PAGES[r.label] || /["\\]/.test(r.label)) continue;
+    PAGES[r.label] = `/places?realm=${r.id}`;
+    GROUPS.find(([g]) => g === 'Places')[1].push([r.label, r.place, '']);
+  }
+  // places:end
   const hrefOf = name => PAGES[name] || CLASSIC[name];
   const classic = name => !PAGES[name] && !!CLASSIC[name];
   const body = document.body;
@@ -89,7 +99,7 @@
     <nav aria-label="Sections" id="sections">${GROUPS.map(([g, items]) => html`
       <div><span class="label">${g}</span><ul>${items.map(([name, icon, key]) => {
         const href = hrefOf(name) || '#';
-        return html`<li><a href="${href}" data-section="${name}"${name === page ? html` aria-current="page"` : ''}${hrefOf(name) ? '' : html` data-unbuilt`}${classic(name) ? html` data-classic` : ''}>${ICON(icon)}<span class="nm">${name}</span>${classic(name) ? html`<span class="classic">classic<span class="sr"> screen</span></span>` : ''}${badge(counts[name])}<kbd>g ${key}</kbd></a></li>`;
+        return html`<li><a href="${href}" data-section="${name}"${name === page ? html` aria-current="page"` : ''}${hrefOf(name) ? '' : html` data-unbuilt`}${classic(name) ? html` data-classic` : ''}>${ICON(icon)}<span class="nm">${name}</span>${classic(name) ? html`<span class="classic">classic<span class="sr"> screen</span></span>` : ''}${badge(counts[name])}${key ? html`<kbd>g ${key}</kbd>` : ''}</a></li>`;
       })}</ul></div>`)}
     </nav>
     <div class="foot">
@@ -1102,7 +1112,7 @@
       }${extra.length ? [grp('This page'), extra.map((c, i) => html`<li role="option" data-cmd="${i}">${ICON(c.icon || 'play')}<span>${c.label}</span>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</li>`)] : ''
       }${VIEW_LIST.length > 1 ? [grp('Views'), VIEW_LIST.map(v => html`<li role="option" data-pview="${v.id}">${ICON('layout-dashboard')}<span>View: ${v.label}</span><kbd>v ${viewKey(v)}</kbd></li>`)] : ''
       }${grp('Anywhere')}<li role="option" data-capture>${ICON('plus')}<span>Capture a task, followup or note</span><kbd>n</kbd></li><li role="option" data-chat>${ICON('message-square')}<span>Ask in chat</span><kbd>c</kbd></li>${
-      GROUPS.flatMap(([, items]) => items).map(([n, icon, k]) => html`<li role="option" data-go="${n}">${ICON(icon)}<span>Go to ${n}${classic(n) ? ' (classic)' : ''}</span><kbd>g ${k}</kbd></li>`)}${
+      GROUPS.flatMap(([, items]) => items).map(([n, icon, k]) => html`<li role="option" data-go="${n}">${ICON(icon)}<span>Go to ${n}${classic(n) ? ' (classic)' : ''}</span>${k ? html`<kbd>g ${k}</kbd>` : ''}</li>`)}${
       Object.keys(SCREENS).length ? [grp('Classic screens'), Object.entries(SCREENS).map(([n, href]) => html`<li role="option" data-href="${href}">${ICON('arrow-up-right')}<span>Open ${n}</span><code>${href}</code></li>`)] : ''}`);
     opts = [...palList.querySelectorAll('[role="option"]')];
     opts.forEach(x => x.addEventListener('click', () => runOpt(x)));
@@ -1277,6 +1287,39 @@
   }
   const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange, fseg, tok: ftok, fbar, count };
   // list:end
+
+  // ---------- Layout picker: one icon button and its menu (sd:5064; shared sd:5641) ----------
+  // viewpick:start
+  // build (sd:5641): the one control for a page's layouts (Tasks' List, Board, Matrix; Writing's Board, Editor); the views
+  // (PAGE_VIEWS) stay the tabs. The page writes <div class="viewpick">: a button.viewpick-btn with aria-haspopup="menu", then
+  // its <div class="actmenu viewmenu" role="menu" hidden> of menuitemradio items, each with data-view, its icon, name and v key.
+  // shell.viewPick(btn, menu, layouts, pick) wires it, layouts being { id: [icon, name] }. The menu opens on the checked item;
+  // ↑ ↓ Home End move, Esc and Tab close it, and a letter stays out of the shell's keys. A pick calls pick(id), closes the
+  // menu and focuses the button. The page's own setter calls the returned set(id): it checks the item and shows its icon.
+  function viewPick(btn, menu, layouts, pick) {
+    const items = () => [...menu.querySelectorAll('[role="menuitemradio"]')];
+    function open(on) {
+      menu.hidden = !on; btn.setAttribute('aria-expanded', String(on));
+      if (on) (items().find(b => b.getAttribute('aria-checked') === 'true') || items()[0]).focus();
+    }
+    btn.addEventListener('click', () => open(menu.hidden));
+    menu.addEventListener('keydown', e => {
+      const all = items(), i = all.indexOf(document.activeElement), last = all.length - 1;
+      const to = { ArrowDown: i >= last ? 0 : i + 1, ArrowUp: i < 1 ? last : i - 1, Home: 0, End: last }[e.key];
+      if (to !== undefined) { e.preventDefault(); all[to].focus(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); open(false); btn.focus(); return; }
+      if (e.key === 'Tab') { open(false); return; }
+      e.stopPropagation(); // a letter here is not the shell's (j, k, g); Enter and Space press the item
+    });
+    menu.addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (!b) return; pick(b.dataset.view); open(false); btn.focus(); });
+    document.addEventListener('click', e => { if (!menu.hidden && !btn.parentElement.contains(e.target)) open(false); });
+    return id => {
+      items().forEach(b => b.setAttribute('aria-checked', String(b.dataset.view === id)));
+      btn.setAttribute('aria-label', `View: ${layouts[id][1]}`);
+      put(btn, html`<svg class="i" aria-hidden="true"><use href="#i-${layouts[id][0]}"/></svg>`);
+    };
+  }
+  // viewpick:end
   // A filter dropdown in use stays open across a redraw; a press outside it or focus leaving it closes it, and so does Esc
   // (Keys, below). toggle does not bubble, so it is heard on the way down.
   document.addEventListener('toggle', e => { const d = e.target; if (d.matches?.('details.fpick')) { if (d.open) PICKS.add(d.dataset.pick); else PICKS.delete(d.dataset.pick); } }, true);
@@ -1566,7 +1609,7 @@
   // walk:end
 
   // ---------- Keys ----------
-  const CHORDS = Object.fromEntries(GROUPS.flatMap(([, items]) => items).map(([k2, , k]) => [k, k2]));
+  const CHORDS = Object.fromEntries(GROUPS.flatMap(([, items]) => items).filter(([, , k]) => k).map(([k2, , k]) => [k, k2]));
   // The key sheet (?): one table, closes on Esc or ?. It lists the shell keys; a page adds its own through window.PAGE_KEYS.
   const keys = document.createElement('dialog');
   keys.className = 'palette keys'; keys.setAttribute('aria-labelledby', 'keys-h');
@@ -1723,6 +1766,28 @@
     else if (hiddenAt && Date.now() - hiddenAt >= 5 * 60 * 1000) location.reload();
   });
 
+  // again:start
+  // Read again (sd:5638): a page sets window.PAGE_AGAIN = { title, run } on load or in its DOMContentLoaded; run reads the page's
+  // documents again and redraws, keeping the selection and the filters, and may return a promise. The shell draws one button
+  // for it, the same label and icon on every page, in the page's [data-again] element or at the end of its head, once every
+  // page's DOMContentLoaded ran (a window listener added last). It is busy while a run is pending; a run that throws says so.
+  // It collects nothing: a page whose collector can run again keeps that as its own action. test_v2_registry holds every page to it.
+  function again() {
+    const a = window.PAGE_AGAIN, at = document.querySelector('[data-again]') || main.querySelector('.head, .home-head');
+    if (!a || !at || document.getElementById('read-again')) return;
+    put(at, html`<button class="btn quiet sm" type="button" id="read-again" title="${a.title || 'Read this page again'}">${ICON('rotate-ccw')}<span>Read again</span></button>`, 'append');
+    const b = document.getElementById('read-again');
+    let runs = 0;
+    b.addEventListener('click', () => {
+      b.setAttribute('aria-busy', 'true'); runs++;
+      Promise.resolve().then(() => window.PAGE_AGAIN.run())
+        .catch(e => toast(`Not read again: ${e && e.message || e}`))
+        .finally(() => { if (!--runs) b.removeAttribute('aria-busy'); });
+    });
+  }
+  document.readyState === 'loading' ? addEventListener('DOMContentLoaded', again) : again();
+  // again:end
+
   // ---------- Selection follows the filter (design.md, Page contract) ----------
   // A list's selection is always a row the viewer can see. Call after any filter, search, page or view change.
   // rows: the list's row elements. current: the selected id (default: the row with aria-selected="true").
@@ -1776,7 +1841,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API; (view switch) so does `view`.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, shown: stillShown, list, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), ask: a => confirmAction(a).then(({ yes, values }) => ({ yes, values })), commands, capture: openCapture, fileCapture, filter, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, shown: stillShown, list, viewPick, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), ask: a => confirmAction(a).then(({ yes, values }) => ({ yes, values })), commands, capture: openCapture, fileCapture, filter, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
     // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
     railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook

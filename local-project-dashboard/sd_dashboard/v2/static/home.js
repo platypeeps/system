@@ -313,7 +313,8 @@ addEventListener('DOMContentLoaded', () => {
   load();
   // Live state (sd:3522): Read again reads /api/home now, and a visible page reads it each minute, so the wall display follows
   // Home Assistant without a reload. The minute read is quiet: a loading state above the tiles would move them each minute.
-  document.getElementById('refresh').addEventListener('click', () => load());
+  // sd:5638: it reads the shown Tasks, Briefs or Reports view again too.
+  document.getElementById('refresh').addEventListener('click', () => { load(); window.places.again(); });
   setInterval(() => { if (!document.hidden) reading.load(true); }, EVERY);
   suggest([
     'Why is binary_sensor.problems_active on?',

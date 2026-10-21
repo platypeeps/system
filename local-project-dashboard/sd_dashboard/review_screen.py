@@ -39,8 +39,10 @@ def _rows(connection):
     """The open batch items, oldest first: the Tasks row set (`reads.backlog_items`) under `review`'s ref, as Today counts."""
     from sd_db import review
 
+    from .tasks_screen import is_scheduled
+
     rows = [row for row in reads.backlog_items(connection, include_done_days=0)
-            if row["status"] != "done" and row["source"] == review.REF_SOURCE
+            if row["status"] != "done" and not is_scheduled(row) and row["source"] == review.REF_SOURCE
             and (row["external_id"] or "").startswith("review:")]
     return sorted(rows, key=lambda row: (row["created_at"], row["id"]))
 

@@ -33,7 +33,7 @@ from sd_dashboard import hoa_download, hoa_screen, server, v2
 from sd_db import SdDbError, connect, upsert_repo, workflow, writes
 from sd_db.migrate import initialise
 
-from support import NOW, ScreenCase
+from support import NOW, ScreenCase, before_5648
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
@@ -228,6 +228,13 @@ class TheDocument(Fixture):
         self.assertEqual(rows[0]["id"], f"item:{self.late}")
         self.assertEqual((rows[0]["priority"], rows[-1]["status"]), (1, "blocked"))
 
+    def test_a_scheduled_occurrence_is_no_item_until_it_opens(self):
+        """sd:5670: as Tasks does, the table hides a scheduled occurrence (pack sd:5648); a pack before it shows the row."""
+        flush = self.schedule(self.item("Flush the hydrants", kind="task", repo=str(self.hoa)), "2026-09-09")
+        self.assertNotIn(flush, [r["item"] for r in self.doc()["items"]["rows"]])
+        with before_5648():
+            self.assertIn(flush, [r["item"] for r in self.doc()["items"]["rows"]])
+
     # sd:4964: each lot carries its address and owner of record from the checkout's downloads/parcels/lots.json, joined by
     # the lot's index among base.geojson's lots, and only against the base file the lot data was made from.
     def test_each_lot_carries_its_address_and_owner_from_the_lot_data(self):
@@ -298,7 +305,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>HOA · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "brief-details.js", "hoa.js", "places.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "brief-details.js", "report-details.js", "hoa.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 

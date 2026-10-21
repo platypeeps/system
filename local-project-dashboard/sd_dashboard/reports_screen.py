@@ -425,21 +425,23 @@ def _html_folders() -> int:
     return len(documents.enumerated())
 
 
-def document(connection, *, now: str, jobs=None, tz=None, config: Path | None = None) -> dict:
+def document(connection, *, now: str, jobs=None, tz=None, config: Path | None = None, only=None) -> dict:
     """Every source the page reads, and the reason for each one that could not be read.
 
     `jobs` is the operations backend, the launchd one by default; its `cron_root` places the job logs. `tz` is the
-    zone the local days are in, the machine's by default.
+    zone the local days are in, the machine's by default. `only` names the jobs a place's Reports view reads (sd:5636):
+    the reports, jobs and cadence are those jobs' alone, and the HTML folders are not counted.
     """
     backend = jobs or operations.LaunchdBackend()
     days = local_days(now, tz=tz)
     out: dict = {"read": now, "limit": 200, "days": days, "sources": {}, "families": families(connection, config)}
     root = getattr(backend, "cron_root", None)
     logs = None if root is None else Path(root) / "logs"
-    for source, collect in (("reports", lambda: _reports(connection)),
-                            ("jobs", lambda: _jobs(connection, backend)),
+    keep = (lambda rows, key: rows) if only is None else (lambda rows, key: [row for row in rows if row[key] in only])
+    for source, collect in (("reports", lambda: keep(_reports(connection), "job")),
+                            ("jobs", lambda: keep(_jobs(connection, backend), "name")),
                             ("cadence", lambda: cadence(out["jobs"], logs, days)),
-                            ("html", _html_folders)):
+                            *((("html", _html_folders),) if only is None else ())):
         try:
             out[source] = collect()
         except FAILURES as failure:

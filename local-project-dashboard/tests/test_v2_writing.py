@@ -236,7 +236,7 @@ class TheScript(unittest.TestCase):
         return out
 
     #: The realms /ui/sections.js hands a signed-in page, and the shell's view switch with the hidden views it was told.
-    REALMS = ("""globalThis.SHELL_REALMS = [{ id: 'brand', label: 'Brand' }, { id: 'work', label: 'Work' }, { id: 'editor', label: 'Clash' }];
+    REALMS = ("""globalThis.SHELL_REALMS = [{ id: 'brand', label: 'Brand' }, { id: 'work', label: 'Work' }, { id: 'editor', label: 'Clash' }, { id: 'menu', label: 'Clash' }, { id: 'btn', label: 'Clash' }];
 var VIEW = 'personal'; OUT.hidden = {};
 window.shell.view = { current: () => VIEW, show: () => true, count: () => {}, hide: (id, on) => { OUT.hidden[id] = on; } };
 DOC.pieces.forEach(p => { p.realm = p.id === 12 ? 'brand' : 'personal'; });
@@ -244,19 +244,64 @@ DOC.pieces.forEach(p => { p.realm = p.id === 12 ? 'brand' : 'personal'; });
 
     def test_realm_views_hold_their_pieces_and_a_realm_with_none_hides(self):
         # sd:5064: Personal, the realms, All; a piece is in its repo's realm (places.realm_of), and Work, which holds no piece,
-        # hides. A realm named editor would take this page's editor panel, so it is dropped; b and e stay Writing's keys.
+        # hides. A realm named editor would take this page's editor panel, so it is dropped, and so are menu and btn, the
+        # layout menu's ids (view-menu, view-btn, sd:5641); b and e stay Writing's keys.
         out = self.run_page("""R.views = window.PAGE_VIEWS.map(v => [v.id, v.key]); R.personal = ELS['view-board'].html;
 VIEW = 'brand'; document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'brand' } })); await flush(); R.brand = ELS['view-board'].html;
 VIEW = 'all'; document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'all' } })); await flush(); R.all = ELS['view-board'].html;""",
                             prelude=self.REALMS)
         r = out["R"]
         self.assertEqual(r["views"], [["personal", "p"], ["brand", "r"], ["work", "w"], ["all", "a"]])
-        self.assertEqual(out["hidden"], {"personal": False, "brand": False, "work": True})
+        self.assertEqual(out["hidden"], {"brand": False, "work": True})  # Personal never hides (sd:5642)
         has = lambda board: ["Three Budgets" in board, "Gated Review" in board, "File Owned" in board]
         self.assertEqual((has(r["personal"]), has(r["brand"]), has(r["all"])),
                          ([True, False, True], [False, True, False], [True, True, True]))
         # Each realm reads again, so the reader's objects are the pieces the view shows.
         self.assertEqual(out["gets"], ["/api/writing"] * 3)
+
+    def test_personal_shows_with_no_piece_in_it_and_says_where_the_pieces_are(self):
+        # sd:5642: Personal is a tab for personal writing, as on Tasks: it stays when every piece's repo is in a realm line,
+        # and its empty board says why, not that no piece is registered.
+        brand = self.REALMS + "DOC.pieces.forEach(p => { p.realm = 'brand'; }); DOC.realms = { state: %s };\n"
+        out = self.run_page("", prelude=brand % "'read'")
+        self.assertEqual(out["hidden"], {"brand": False, "work": True}, "Personal was hidden, or a realm was not told")
+        self.assertEqual(out["states"][-1]["title"], "No personal pieces")
+        self.assertEqual(out["states"][-1]["text"], "Pieces from a repo a realm claims show in that realm: writing-pack under Brand."
+                         " dashboard.realms on Settings decides which repos each realm claims.")
+        # A realm list that was not read leaves each piece's realm unknown (places.realm_of None); the board says so.
+        out = self.run_page("", prelude=brand % "'error'")
+        self.assertIn("The dashboard.realms list was not read", out["states"][-1]["text"])
+
+    # sd:5641: Board and Editor are one icon button whose menu lists the two, the picker Tasks uses (shell.viewPick).
+    VIEW_MENU = r"""const items = ['board', 'editor'].map(v => { const b = El('item-' + v); b.dataset.view = v; b.attrs = {};
+  b.setAttribute = (k, x) => { b.attrs[k] = String(x); }; b.getAttribute = k => k in b.attrs ? b.attrs[k] : null; b.focus = () => { document.activeElement = b; OUT.focus.push(v); }; return b; });
+OUT.focus = []; const btn = document.getElementById('view-btn'), menu = document.getElementById('view-menu'); btn.attrs = {}; btn.setAttribute = (k, x) => { btn.attrs[k] = String(x); };
+btn.focus = () => { document.activeElement = btn; OUT.focus.push('button'); };
+menu.querySelectorAll = () => items; menu.hidden = true;
+R.wired = !!btn.listeners.click; if (!R.wired) return;
+"""
+
+    def test_the_view_menu_picks_the_layout_and_the_button_shows_its_icon(self):
+        out = self.run_page(self.VIEW_MENU + """window.writingView('board'); R.board = [btn.attrs['aria-label'], items.map(b => b.attrs['aria-checked'])];
+btn.listeners.click[0]({ target: btn }); R.open = [menu.hidden, btn.attrs['aria-expanded'], OUT.focus.slice()];
+menu.listeners.click[0]({ target: { closest: s => s === '[data-view]' ? items[1] : null } }); await flush();
+R.pick = [menu.hidden, btn.attrs['aria-label'], items.map(b => b.attrs['aria-checked']), OUT.focus.at(-1), ELS['view-editor'].hidden, ELS['view-board'].hidden];
+R.icon = btn.html;""")
+        r = out["R"]
+        self.assertTrue(r["wired"], "writing.js wires no view menu on #view-btn")
+        self.assertEqual(r["board"], ["View: Board", ["true", "false"]])
+        self.assertEqual(r["open"], [False, "true", ["board"]])
+        self.assertEqual(r["pick"], [True, "View: Editor", ["false", "true"], "button", False, True])
+        self.assertIn('<use href="#i-pen-line"/>', r["icon"])
+        self.assertEqual(out["urls"][-1], {"view": "editor"})
+
+    def test_the_view_menu_markup_is_the_tasks_picker_with_board_and_editor(self):
+        page = (V2 / "writing.html").read_text(encoding="utf-8")
+        self.assertIn('<button type="button" class="viewpick-btn" id="view-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu" aria-label="View: Board">', page)
+        self.assertIn('<div class="actmenu viewmenu" id="view-menu" role="menu" aria-label="View" hidden>', page)
+        self.assertEqual(re.findall(r'role="menuitemradio" data-view="(\w+)" aria-checked="(\w+)"><svg class="i" aria-hidden="true"><use href="#i-([\w-]+)"/></svg><span>(\w+)</span><kbd>(v \w)</kbd>', page),
+                         [("board", "true", "kanban", "Board", "v b"), ("editor", "false", "pen-line", "Editor", "v e")])
+        self.assertNotIn('class="seg" role="group" aria-label="View"', page)
 
     def test_the_design_commands_are_registered_with_their_ids_labels_keys_and_risks(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.label, c.key, c.risk, !!c.bulk]); R.exec = cmd('piece.publish').executes;")

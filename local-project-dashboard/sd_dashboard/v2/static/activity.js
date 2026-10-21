@@ -61,6 +61,8 @@ addEventListener('DOMContentLoaded', () => {
     unselect: () => unselect(),
   });
   const load = () => activity.load(), reread = () => activity.reread();
+  // Read again (sd:5638): the shell's head button reads the events again, as the Observed lamp does.
+  window.PAGE_AGAIN = { title: 'Read the events again', run: load };
 
   // ---------- State (mirrored in the URL) ----------
   const F = { kind: new Set(), repo: new Set(), state: '', q: '', hour: false, all: false }; // all: every event read, the journal's older records too; only a link sets it (palette.py)

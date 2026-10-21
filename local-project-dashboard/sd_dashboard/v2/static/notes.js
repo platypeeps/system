@@ -140,7 +140,6 @@
     $('prev').addEventListener('click', () => window.notesDay(-1));
     $('next').addEventListener('click', () => window.notesDay(1));
     $('today').addEventListener('click', () => { if (TODAY) go(TODAY); });
-    $('reload').addEventListener('click', () => reader.load());
     $('daily').addEventListener('click', e => {
       const m = e.target.closest('[data-more]');
       if (m) { const k = m.dataset.more; expanded.has(k) ? expanded.delete(k) : expanded.add(k); document.querySelectorAll('details.repo[open]').forEach(d => openRepos.add(d.dataset.repo)); render(); return; }
@@ -184,6 +183,8 @@
     qKeep.addEventListener('click', keep);
     qIn.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); keep(); } });
     paintQ(); readQ();
+    // Read again (sd:5638): the shell's button, in the date bar, reads the week and the quick notes again.
+    window.PAGE_AGAIN = { title: 'Read the week and the quick notes again', run: () => Promise.all([reader.load(), readQ()]) };
     S.suggest(['What did I merge today in system?', 'Which items reached done this week?', 'Draft this day\'s summary from its activity']);
     reader.load();
   });

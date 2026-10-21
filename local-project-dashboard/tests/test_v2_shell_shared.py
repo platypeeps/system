@@ -46,6 +46,9 @@ SHARED = (
     ".fseg { display: inline-flex; gap: 2px; padding: 2px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }",
     # sd:5529 (operator, 2026-10-20): Clear all sits right after the filters, "don't have it aligned right, but left".
     ".fsum { display: flex; align-items: center; gap: var(--space-2xs); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }",
+    # sd:5641: the layout picker Tasks and Writing share, an icon button and its menu of layouts.
+    ".viewpick { position: relative; }",
+    ".viewmenu { position: absolute; top: calc(100% + var(--space-2xs)); right: 0; width: auto; min-width: 11rem; }",
 )
 # The lamp selectors only annunciator-strip.css may style, and the ledger selectors only shell.css may. A page keeps what is
 # its own: a cell's extra class (`.cell.clock`), what sits inside a cell (`.cell kbd`) and its narrow-screen ledger cards.
@@ -355,6 +358,25 @@ class TheSharedRules(unittest.TestCase):
         for name, text in {**PAGE_CSS, **PAGE_JS, **{p.name: p.read_text(encoding="utf-8") for p in V2.glob("*.html")}}.items():
             with self.subTest(name):
                 self.assertFalse("table-layout" in text or "<colgroup" in text)
+
+
+class TheViewPicker(unittest.TestCase):
+    """sd:5641: a page's layout menu (Tasks' List, Board, Matrix; Writing's Board, Editor) is the shell's one viewPick."""
+
+    def test_each_page_with_a_view_menu_wires_it_through_the_shell(self):
+        pages = sorted(p.stem for p in V2.glob("*.html") if 'class="viewpick"' in p.read_text(encoding="utf-8"))
+        self.assertEqual(pages, ["tasks", "writing"])
+        for name in pages:
+            with self.subTest(name):
+                self.assertIn("window.shell.viewPick(", PAGE_JS[f"{name}.js"])
+        self.assertIn("  // viewpick:start\n", SHELL_JS)
+        self.assertIn("viewPick,", SHELL_JS)
+
+    def test_no_page_keeps_its_own_menu_keys(self):
+        # The menu's roving focus and Esc are the shell's; a page that reads its radio items again has copied them.
+        for name, text in PAGE_JS.items():
+            with self.subTest(name):
+                self.assertNotIn('[role="menuitemradio"]', text)
 
 
 class TheHallmarkStamp(unittest.TestCase):
@@ -1408,7 +1430,7 @@ class TheOneViewModel(unittest.TestCase):
     PAGES = {p.stem: p.read_text(encoding="utf-8") for p in V2.glob("*.html")}
     # Tasks' List, Board and Matrix and Writing's Board and Editor show one list three or two ways: a layout, not an area.
     # Their ids predate the switch; each page keeps a realm of the same id out of PAGE_VIEWS (writing.js, tasks.js).
-    LAYOUT = {"tasks": {"btn", "menu", "board", "matrix", "list"}, "writing": {"board", "editor"}}
+    LAYOUT = {"tasks": {"btn", "menu", "board", "matrix", "list"}, "writing": {"btn", "menu", "board", "editor"}}
     TAB = re.compile(r"""role=["']?tab(list|panel)?\b|'role', 'tab|class="(subviews|sv)\b|\bsv-[a-z]""")
 
     def declared(self, stem):
@@ -1517,3 +1539,64 @@ class ThePaneWithoutDetails(unittest.TestCase):
         self.assertEqual(bare, ["queue", "review", "settings"])
         self.assertIn("if (!details) { pane.querySelector('#tab-details').hidden = true; showTab('tab-chat'); }", SHELL_JS)
         self.assertIn('.pane [role="tab"][hidden] { display: none; }', (v2 / "static" / "shell.css").read_text(encoding="utf-8"))
+
+
+AGAIN = re.search(r"^  // again:start\n(.*?)^  // again:end$", SHELL_JS, re.S | re.M)
+
+
+class TheReadAgainButton(unittest.TestCase):
+    """sd:5638: the shell draws one Read again button for a page's window.PAGE_AGAIN, the same on every page."""
+
+    def run_again(self, body, slot=False):
+        self.assertIsNotNone(AGAIN, "shell.js has no again:start block")
+        script = "var window = globalThis;\n" + MARKUP_JS + r"""
+const { html, put } = window.markup;
+const ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+var OUT = { toasts: [], error: null }, R = {}, WIN = [];
+const toast = m => OUT.toasts.push(m), flush = async () => { for (let i = 0; i < 50; i++) await null; };
+function addEventListener(t, f) { WIN.push([t, f]); }
+function El(id) { const e = { id, html: '', attrs: {}, listeners: {}, setAttribute(k, v) { e.attrs[k] = v; }, removeAttribute(k) { delete e.attrs[k]; },
+  addEventListener(t, f) { (e.listeners[t] = e.listeners[t] || []).push(f); }, append(f) { e.html += f.parsed; } }; return e; }
+var HEAD = El('head'), SLOT = """ + ("El('slot')" if slot else "null") + r""", BTN = null;
+const main = { querySelector: s => s === '.head, .home-head' ? HEAD : null };
+var document = { readyState: 'loading', querySelector: s => s === '[data-again]' ? SLOT : null,
+  getElementById: id => id === 'read-again' && /id="read-again"/.test(HEAD.html + (SLOT ? SLOT.html : '')) ? (BTN = BTN || El(id)) : null,
+  createElement: () => { const t = {}; Object.defineProperty(t, 'innerHTML', { set(v) { t.content = { parsed: v }; } }); return t; } };
+const loaded = () => WIN.filter(([t]) => t === 'DOMContentLoaded').forEach(([, f]) => f());
+const click = () => BTN.listeners.click.forEach(f => f());
+(async () => { try {
+""" + body.replace("SHELL_AGAIN", AGAIN.group(1)) + r"""
+} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();
+function run() { OUT.R = R; return JSON.stringify(OUT); }
+"""
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        out = json.loads(result.stdout)
+        if out["error"]:
+            raise AssertionError(out["error"])
+        return out
+
+    def test_a_page_that_declares_it_in_its_own_load_handler_gets_the_button_at_the_end_of_its_head(self):
+        out = self.run_again("""let done; R.runs = 0;
+addEventListener('DOMContentLoaded', () => { window.PAGE_AGAIN = { title: 'Read the rows again', run: () => { R.runs++; return new Promise(f => { done = f; }); } }; });
+SHELL_AGAIN
+loaded(); R.head = HEAD.html;
+click(); await flush(); R.busy = BTN.attrs['aria-busy'];
+done(); await flush(); R.after = BTN.attrs['aria-busy'] || null;""")
+        self.assertEqual(out["R"]["head"], '<button class="btn quiet sm" type="button" id="read-again" title="Read the rows again">'
+                         '<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg><span>Read again</span></button>')
+        self.assertEqual((out["R"]["runs"], out["R"]["busy"], out["R"]["after"]), (1, "true", None))
+
+    def test_a_page_slot_holds_it_and_a_page_without_page_again_gets_none(self):
+        placed = self.run_again("window.PAGE_AGAIN = { run() {} };\nSHELL_AGAIN\nloaded(); R.head = HEAD.html; R.slot = SLOT.html;", slot=True)
+        self.assertEqual(placed["R"]["head"], "")
+        self.assertIn('id="read-again" title="Read this page again"', placed["R"]["slot"])
+        bare = self.run_again("SHELL_AGAIN\nloaded(); R.head = HEAD.html;")
+        self.assertEqual(bare["R"]["head"], "")
+
+    def test_a_run_that_fails_says_so_and_ends_busy(self):
+        out = self.run_again("""window.PAGE_AGAIN = { run: () => Promise.reject(new Error('no answer')) };
+SHELL_AGAIN
+loaded(); click(); await flush(); R.busy = BTN.attrs['aria-busy'] || null;""")
+        self.assertEqual((out["toasts"], out["R"]["busy"]), (["Not read again: no answer"], None))

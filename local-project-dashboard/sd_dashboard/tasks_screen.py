@@ -16,6 +16,9 @@ query of the store:
   matrix drop are off, with the library's reason, where the edit would fail.
   The document's `attention` is the page's rail badge (sd:3446, `_attention`).
   A vault base row (sd:3977) also carries its `base` (`fields.kind`), `stage` and `score`; every other row has None.
+  A repeating row carries its `recurrence_lead` and, from `backlog_items` (pack sd:5648), `opens_on` and `scheduled`:
+  the page lists a scheduled occurrence only under its Scheduled scope (sd:5649). The document's `lead` says whether
+  the store takes a lead; a store before schema 41 does not, and the page then shows no Lead field or column.
 - `/api/tasks/<id>` is `details`: what `sd task show <id> --json` prints
   (`item`, `notes`, `revision`, from `workflow.item_state`), split into the
   status history and the other notes as v1's item page splits them, plus the
@@ -109,6 +112,7 @@ def _document(connection, *, now: str) -> dict:
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
     ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
     return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out, "attention": _attention(out, now=now),
+            "lead": _has_lead(connection),
             "realms": {key: found[key] for key in ("state", "source", "problems")},
             # The Personal and Work views' Run sweep (sd:5096, sd:5097): each realm's last run, and whether one runs now.
             "sweeps": {realm: sweep.status(None, realm) for realm in sweep.REALMS[1:]}}
@@ -138,6 +142,10 @@ def _rows(connection, rows, found, *, now: str) -> list[dict]:
             "priority": row["priority"], "due": row["due"],
             "repo": label(row["repo"]) if row["repo"] else None, "repo_path": row["repo"],
             "recurrence": row["recurrence"], "recurrence_anchor": state["item"]["recurrence_anchor"],
+            # pack sd:5648: the lead in days (None is 0), and the day a scheduled occurrence opens. A store before 041 or
+            # a pack before sd:5648 has neither: None and 0, and `_document`'s `lead` turns the Lead field off.
+            "recurrence_lead": state["item"].get("recurrence_lead"),
+            "opens_on": _column(row, "opens_on"), "scheduled": is_scheduled(row),
             "assignment": live.get(row["id"]),
             # The due date a completion today gives the next occurrence, for the confirm to name before it writes.
             "next_due": workflow.next_occurrence_due(state["item"]) if row["recurrence"] else None,
@@ -160,6 +168,36 @@ def _rows(connection, rows, found, *, now: str) -> list[dict]:
             **_base_fields(state["item"]),
         })
     return out
+
+
+def _column(row, name: str):
+    """`row[name]`, or None when the read has no such column: `reads.backlog_items` before pack sd:5648, or `item_by_id`."""
+    return row[name] if name in row.keys() else None
+
+
+def is_scheduled(row) -> bool:
+    """Whether a `reads.backlog_items` row is a scheduled occurrence (pack sd:5648), which a list shows only once it opens.
+
+    Home and HOA Tasks, the HOA page, Metrics' age, Start next, Review and Decisions hide it, as Tasks does (sd:5670).
+    A pack before sd:5648 gives no `scheduled`: nothing is scheduled, and every row shows as before.
+    """
+    return bool(_column(row, "scheduled"))
+
+
+def _scheduled(connection, row, *, now: str):
+    """`row` with the `opens_on` `reads.item_opens_on` gives (pack sd:5648) and `scheduled`, so Details' row is the list's.
+
+    A pack before sd:5648 has no `item_opens_on`: the row as it is, which `_column` reads as not scheduled.
+    """
+    opens = getattr(reads, "item_opens_on", None)
+    opens_on = opens(connection, row["id"]) if opens else None
+    return {**dict(row), "opens_on": opens_on, "scheduled": int(opens_on > now[:10])} if opens_on else row
+
+
+def _has_lead(connection) -> bool:
+    """Whether an edit can write `recurrence_lead` (pack sd:5648): the store has the column and `edit_item` takes it."""
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(item)")}
+    return "recurrence_lead" in columns and "recurrence_lead" in getattr(workflow, "RECURRENCE_FIELDS", ())
 
 
 def _left_out(row, *, now: str) -> str | None:
@@ -194,12 +232,14 @@ def _base_fields(item) -> dict:
 def _attention(rows, *, now: str) -> dict:
     """The rail badge (sd:3446): open, unparked rows past their due day are warning, and those due within 2 days caution.
 
+    A scheduled occurrence (pack sd:5648) counts once it opens, as Tasks lists it only then.
+
     Days are calendar days in this machine's zone, as the page's row glyphs count them in the browser on the same machine.
     """
     today = datetime.fromisoformat(now.replace("Z", "+00:00")).astimezone().date()
 
     def state(row) -> str:
-        if row["status"] == "done" or row["parked"] or not row["due"]:
+        if row["status"] == "done" or row["parked"] or row.get("scheduled") or not row["due"]:
             return ""
         days = (date.fromisoformat(row["due"][:10]) - today).days
         return "warning" if days < 0 else "caution" if days <= 2 else ""
@@ -324,7 +364,8 @@ def _details(connection, item: int, *, now: str) -> dict:
         "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,
         "base": _base(state),
         "experiment": _experiment(connection, state),
-        "row": _rows(connection, [row], realms(connection), now=now)[0], "left_out": _left_out(row, now=now),
+        "row": _rows(connection, [_scheduled(connection, row, now=now)], realms(connection), now=now)[0],
+        "left_out": _left_out(row, now=now),
     }
 
 

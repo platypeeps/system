@@ -354,7 +354,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Home · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "home-kiosk.js", "icons.js", "sections.js", "read.js", "commands.js", "brief-details.js", "home.js", "places.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "home-kiosk.js", "icons.js", "sections.js", "read.js", "commands.js", "brief-details.js", "report-details.js", "home.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -1010,13 +1010,16 @@ class TheReader(TheScript):
 
     def test_the_tiles_are_read_again_each_minute_and_on_read_again(self):
         # REGRESSION sd:3522: Home read /api/home once, so a wall display kept its first state until a reload.
+        # sd:5638: Read again also reads the shown Tasks, Briefs or Reports view again (places.js, stood in here).
         out = self.run_page("""R.observed = [document.body.dataset.observed, document.body.dataset.interval];
+R.again = 0; window.places = { again: () => { R.again++; } };
 (document.getElementById('refresh').listeners.click || []).forEach(f => f()); await flush();
 const every = INTERVALS.filter(i => i[1] === 60 * 1000).map(i => i[0]);
 every.forEach(f => f()); await flush();
 document.hidden = true; every.forEach(f => f()); await flush();""")
         self.assertEqual(out["R"]["observed"], [self.doc["read"], "1"])
         self.assertEqual(out["gets"], ["/api/home"] * 3, "the first read, Read again and one minute, and none while hidden")
+        self.assertEqual(out["R"]["again"], 1, "Read again did not read the shown place view again")
 
     def test_the_minute_read_leaves_another_views_details_alone(self):
         # sd:5620: a Briefs row's Details fill the pane on Home; the tiles' minute read selects nothing while the Overview

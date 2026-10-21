@@ -32,7 +32,8 @@ row each, and the adversarial review's model and effort:
 - `dashboard.report_families`: Reports' families, one
   `family|<key>|<label>|<icon>|<job>,<job>,...` line each, such as
   `family|backups|Backups|hard-drive-download|db-backup-nightly`. Families
-  `hoa` and `home` are the HOA and Home pages' Reports and Briefs.
+  `hoa` and `home` are the HOA and Home pages' Reports and Briefs; a family
+  whose key is a realm id makes that realm a place page (sd:5663, `place.md`).
 - `dashboard.hoa_thresholds`: HOA's trend levels, one
   `<series>|below|<number>` or `<series>|above|<number>` line each, series
   `tank`, `runtime` or `aquifer`.

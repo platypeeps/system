@@ -21,6 +21,7 @@ the Shapeshift field -- is a manual check recorded on the pull request.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import itertools
@@ -34,7 +35,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_dashboard import research_screen, server, v2
+from sd_dashboard import documents, research_screen, server, v2
 
 from support import NOW, ScreenCase
 from test_v2_read import READ_SHELL
@@ -359,6 +360,14 @@ class TheReader(unittest.TestCase):
         self.assertIsNone(research_screen.stage(bare))
         laid = checkout(self.root, "group/laid", dirs=[("00-overview", True), ("10-sources", False), ("30-brief", True)])
         self.assertEqual(research_screen.stage(laid), ["00-overview", "30-brief"])
+        # sd:5661: 05-architecture is a stage of its own, between the overview and the sources.
+        self.assertEqual(research_screen.DIRS, ("00-overview", "05-architecture", "10-sources", "20-map", "30-brief", "40-docs"))
+        self.assertNotIn("05-architecture", research_screen.CLAIM_DIRS)
+        drawn = checkout(self.root, "group/drawn", dirs=[("05-architecture", True), ("20-map", True)])
+        self.assertEqual(research_screen.stage(drawn), ["05-architecture", "20-map"])
+        self.assertEqual(research_screen.pages([{"src": "05-architecture/ARCHITECTURE.md", "out": "architecture", "title": "Architecture",
+                                                 "state": "fresh"}]),
+                         {"05-architecture": {"title": "Architecture", "out": "architecture", "state": "fresh"}})
 
     def test_render_is_unknown_without_a_read_config_or_documents_and_counts_what_is_not_fresh(self):
         self.assertEqual(research_screen.render({"error": "computed"})["s"], "unknown")
@@ -441,6 +450,111 @@ class TheReader(unittest.TestCase):
         self.assertEqual([d["state"] for d in item["docs"]], ["fresh"])
         self.assertNotIn("href", item["docs"][0])
 
+    # A config that builds DOCS with code: the declared reader refuses it, and running it would write the marker.
+    COMPUTED = ("import pathlib\npathlib.Path({marker!r}).write_text('ran')\n"
+                "DOCS = [dict(src=name + '.md', out=name, title=name.title()) for name in ('index',)]\n")
+
+    def computed(self, key="group/one", manifest=None, digest=None):
+        """A checkout with a computed config and, unless `manifest` is False, the research.json a render of it wrote."""
+        self.marker = self.root / "executed"
+        repo = checkout(self.root, key, conf=self.COMPUTED.format(marker=str(self.marker)))
+        if manifest is not False:
+            source = (repo / "research.conf.py").read_bytes()
+            found = manifest or {"version": 1, "project": "One", "conf_sha256": digest or hashlib.sha256(source).hexdigest(),
+                                 "docs": [{"src": "index.md", "out": "index", "title": "Index", "stand": "One line.",
+                                           "links": [["Spec", "https://example.test/spec"]]}]}
+            (repo / "docs" / "dashboard").mkdir(parents=True)
+            (repo / "docs" / "dashboard" / "research.json").write_text(json.dumps(found), encoding="utf-8")
+        return repo
+
+    def collect(self):
+        collectors = collectors_module()
+        with mock.patch.object(collectors, "REPO_ROOT", self.root), mock.patch.object(collectors, "git_facts", return_value=None):
+            found = collectors.collect_research()
+        self.assertFalse(self.marker.exists(), "the collector executed research.conf.py")
+        return found
+
+    def test_a_computed_config_is_read_from_the_manifest_its_render_wrote(self):
+        # system sd:5659: five live configs build DOCS with code, so the board said "config unread" for each.
+        self.computed()
+        [item] = self.collect()
+        self.assertEqual((item["error"], item["manifest"], item["project"]), ("", "current", "One"))
+        self.assertEqual([(d["src"], d["out"], d["title"], d["stand"], d["state"]) for d in item["docs"]],
+                         [("index.md", "index", "Index", "One line.", "not built")])
+        self.assertEqual(item["links"], [["Spec", "https://example.test/spec"]])
+        self.assertEqual(research_screen.render(item)["txt"], "1 of 1 documents not fresh")
+
+    def test_a_manifest_of_an_older_config_is_used_and_marked_for_a_render(self):
+        self.computed(digest="0" * 64)
+        [item] = self.collect()
+        self.assertEqual((item["error"], item["manifest"], [d["out"] for d in item["docs"]]), ("", "older", ["index"]))
+        self.assertEqual(research_screen.render(item), {"s": "caution", "txt": "manifest from an older render",
+                                                        "sub": "research.conf.py changed since; render again to refresh"})
+
+    def test_with_no_manifest_the_refusal_names_the_render_that_writes_one(self):
+        self.computed(manifest=False)
+        [item] = self.collect()
+        self.assertEqual(item["error"], "research.conf.py computes its data; run sd-research-kit render once to write "
+                                        "docs/dashboard/research.json")
+        self.assertEqual(research_screen.render(item)["s"], "unknown")
+
+    def test_a_declared_config_wins_over_any_manifest(self):
+        repo = checkout(self.root, "group/one")
+        (repo / "docs" / "dashboard").mkdir(parents=True)
+        (repo / "docs" / "dashboard" / "research.json").write_text(json.dumps(
+            {"version": 1, "project": "Other", "conf_sha256": "", "docs": [{"src": "other.md", "out": "other"}]}), encoding="utf-8")
+        self.marker = self.root / "executed"
+        [item] = self.collect()
+        self.assertEqual((item["manifest"], [d["out"] for d in item["docs"]], item["project"]), ("", ["index"], "one"))
+
+    def test_a_manifest_the_declared_reader_would_refuse_is_refused(self):
+        # The manifest is checked as the declared reader checks a config: the same inventory, plus its own file guards.
+        doc = {"src": "index.md", "out": "index"}
+        cases = {
+            "version 2": ({"version": 2, "docs": [doc]}, "not a version 1 manifest"),
+            "version true": ({"version": True, "docs": [doc]}, "not a version 1 manifest"),
+            "a list": ([doc], "not a version 1 manifest"),
+            "no docs": ({"version": 1}, "inventory is invalid"),
+            "101 docs": ({"version": 1, "docs": [doc] * 101}, "inventory is invalid"),
+            "a string doc": ({"version": 1, "docs": ["index.md"]}, "research document 1 must be a declared dictionary"),
+            "no out": ({"version": 1, "docs": [{"src": "index.md"}]}, "research document 1 requires a declared non-empty string 'out'"),
+            "blank src": ({"version": 1, "docs": [{"src": " ", "out": "index"}]}, "research document 1 requires a declared non-empty string 'src'"),
+        }
+        for name, (manifest, reason) in cases.items():
+            with self.subTest(name):
+                repo = self.computed(key=f"bad/{name.replace(' ', '-')}", manifest=manifest)
+                [item] = [i for i in self.collect() if i["path"] == str(repo)]
+                self.assertIn(reason, item["error"])
+                self.assertEqual(item["docs"], [])
+
+    def test_a_linked_outside_oversized_or_unparsed_manifest_is_refused(self):
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (outside / "research.json").write_text(json.dumps({"version": 1, "docs": []}), encoding="utf-8")
+        linked = self.computed(key="g/linked", manifest=False)
+        (linked / "docs" / "dashboard").mkdir(parents=True)
+        (linked / "docs" / "dashboard" / "research.json").symlink_to(outside / "research.json")
+        away = self.computed(key="g/away", manifest=False)
+        (away / "docs").mkdir()
+        (away / "docs" / "dashboard").symlink_to(outside)
+        folder = self.computed(key="g/folder", manifest=False)
+        (folder / "docs" / "dashboard" / "research.json").mkdir(parents=True)
+        big = self.computed(key="g/big")
+        (big / "docs" / "dashboard" / "research.json").write_text(" " * (2 * 1024 * 1024 + 1), encoding="utf-8")
+        broken = self.computed(key="g/broken")
+        (broken / "docs" / "dashboard" / "research.json").write_text("{", encoding="utf-8")
+        errors = {item["name"]: item["error"] for item in self.collect()}
+        for name in ("linked", "away", "folder"):
+            self.assertIn("is linked, not a regular file, or outside its repository", errors[name], name)
+        self.assertIn("exceeds the bounded read size", errors["big"])
+        self.assertIn("is not JSON", errors["broken"])
+
+    def test_a_manifest_field_that_is_not_text_is_dropped(self):
+        self.computed(manifest={"version": 1, "project": 7, "conf_sha256": None, "docs": [
+            {"src": "index.md", "out": "index", "title": ["x"], "eyebrow": 3, "links": [["Spec", 4], ["Ok", "https://example.test/ok"], "x"]}]})
+        [item] = self.collect()
+        self.assertEqual((item["project"], item["manifest"], item["docs"][0]["title"], item["docs"][0]["eyebrow"]), ("one", "older", "index", ""))
+        self.assertEqual(item["links"], [["Ok", "https://example.test/ok"]])
+
     def test_the_child_counts_its_deadline_from_the_page_start(self):
         # sd:2501: the child counted from its own main(), so a slow interpreter start spent the margin and the page's kill won.
         argv = []
@@ -461,7 +575,7 @@ class TheReader(unittest.TestCase):
             research_screen.collect("board")
             research_screen.collect("sources", "research/alpha")
         after = time.clock_gettime(time.CLOCK_MONOTONIC)
-        self.assertEqual([a[3:-1] for a in argv], [["board", "4"], ["sources", "research/alpha", "4"]])
+        self.assertEqual([a[3:-1] for a in argv], [["board", "4"], ["sources", "research/alpha", "0", "4"]])
         self.assertTrue(all(before <= float(a[-1]) <= after for a in argv), argv)
         deadlines = []
 
@@ -505,7 +619,7 @@ class TheDocument(ScreenCase):
                          ("alpha", ["00-overview"], "caution", None, None))
         self.assertEqual(alpha["docs"], [{"title": "Index", "src": "index.md", "state": "not built", "updated": alpha["docs"][0]["updated"]}])
         self.assertEqual((beta["render"]["s"], beta["dirs"]), ("unknown", None))
-        self.assertIn("computed configuration is not executed", beta["conf"])
+        self.assertEqual(beta["conf"], "research.conf.py computes its data; run sd-research-kit render once to write docs/dashboard/research.json")
 
     def test_a_ledger_is_served_only_for_a_research_checkout(self):
         checkout(self.root, "research/alpha", registry=REGISTRY)
@@ -572,6 +686,53 @@ class TheDocument(ScreenCase):
         # A child that sends no claim map gives None, which the page reads as unknown, never as "no claims".
         bare = research_screen.sources("research/alpha", now=NOW, backend=lambda *_: {"found": True, "rows": [], "total": 0})
         self.assertIsNone(bare["claims"])
+
+    def test_each_populated_stage_links_the_page_documents_serves_for_its_first_document(self):
+        # sd:5657: a stage bar opens its document. The address is the one /documents/<key>/<file> serves for this checkout,
+        # never one built from the out name alone: a page under build/, or under a key two checkouts claim, gets no link.
+        conf = ("DOCS=[dict(src='00-overview/README.md', out='overview', title='Overview'),\n"
+                " dict(src='05-architecture/ARCHITECTURE.md', out='architecture', title='Architecture'),\n"
+                " dict(src='20-map/MAP.md', out='map', title='Map'), dict(src='./20-map/extra.md', out='extra', title='Extra'),\n"
+                " dict(src='30-brief/BRIEF.md', out='brief', title='Brief'), dict(src='40-docs/a/guide.md', out='guide', title='Guide')]\n")
+        repo = checkout(self.root, "research/alpha", conf=conf, dirs=[(d, True) for d in research_screen.DIRS])
+        for src in ("00-overview/README.md", "05-architecture/ARCHITECTURE.md", "20-map/MAP.md", "20-map/extra.md", "30-brief/BRIEF.md", "40-docs/a/guide.md"):
+            (repo / src).parent.mkdir(parents=True, exist_ok=True)
+            (repo / src).write_text("# page\n", encoding="utf-8")
+        built = repo / "docs" / "dashboard"
+        built.mkdir(parents=True)
+        for out in ("architecture", "map", "extra", "brief"):
+            (built / f"{out}.html").write_text("<p>built</p>", encoding="utf-8")
+        (repo / "build").mkdir()
+        (repo / "build" / "guide.html").write_text("<p>built</p>", encoding="utf-8")  # the old layout: nothing serves it
+        self.enterContext(mock.patch.object(documents, "REPO_ROOT", self.root))
+        self.enterContext(mock.patch.object(documents, "CONFIG", self.root / "no-documents.conf"))
+        stages = {p["key"]: p for p in research_screen.document(now=NOW)["projects"]}["research/alpha"]["stages"]
+        self.assertEqual({d: s["href"] for d, s in stages.items()},
+                         {"00-overview": "", "05-architecture": "/documents/alpha/architecture.html", "10-sources": "",
+                          "20-map": "/documents/alpha/map.html", "30-brief": "/documents/alpha/brief.html",
+                          "40-docs": ""})
+        self.assertEqual((stages["20-map"]["title"], stages["20-map"]["why"]), ("Map", ""))
+        self.assertIn("not built", stages["00-overview"]["why"])
+        self.assertIn("declares no document from 10-sources", stages["10-sources"]["why"])
+        self.assertIn("not served", stages["40-docs"]["why"])
+        # Another checkout named alpha contests the Documents key: neither is served, so neither stage links.
+        other = checkout(self.root, "other/alpha", conf=conf, dirs=[("20-map", True)])
+        (other / "docs" / "dashboard").mkdir(parents=True)
+        (other / "docs" / "dashboard" / "map.html").write_text("<p>other</p>", encoding="utf-8")
+        rows = {p["key"]: p for p in research_screen.document(now=NOW)["projects"]}
+        for key in ("research/alpha", "other/alpha"):
+            self.assertEqual(rows[key]["stages"]["20-map"]["href"], "", key)
+            self.assertIn("not served", rows[key]["stages"]["20-map"]["why"], key)
+
+    def test_a_documents_read_that_fails_links_no_stage_and_says_so(self):
+        checkout(self.root, "research/alpha", conf="DOCS=[dict(src='20-map/MAP.md', out='map', title='Map')]\n", dirs=[("20-map", True)])
+        (self.root / "research" / "alpha" / "docs" / "dashboard").mkdir(parents=True)
+        (self.root / "research" / "alpha" / "docs" / "dashboard" / "map.html").write_text("<p>built</p>", encoding="utf-8")
+        (self.root / "research" / "alpha" / "20-map" / "MAP.md").write_text("# map\n", encoding="utf-8")
+        with mock.patch.object(documents, "roots", side_effect=OSError("disk gone")):
+            [row] = research_screen.document(now=NOW)["projects"]
+        self.assertEqual(row["stages"]["20-map"]["href"], "")
+        self.assertIn("disk gone", row["stages"]["20-map"]["why"])
 
     def test_a_reader_that_fails_is_named_and_lists_nothing(self):
         def broken(*_):
@@ -676,6 +837,71 @@ class TheScript(ScreenCase):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]);")
         self.assertEqual(out["R"]["reg"], COMMANDS)
 
+    def test_a_populated_stage_bar_opens_its_document_and_a_click_on_it_selects_no_row(self):
+        # sd:5657: each populated bar with a served page is a link named for its stage and document; the rest stay inert
+        # and say why. A click on a bar opens the page, not the row's Details.
+        beta = next(p for p in self.doc["projects"] if p["key"] == "research/beta")
+        beta["dirs"] = ["00-overview", "20-map", "30-brief"]
+        beta["stages"] = {"00-overview": {"title": "Overview", "href": "", "state": "not built", "why": "Overview is not built: Render writes it"},
+                          "10-sources": {"title": "", "href": "", "state": "", "why": "research.conf.py declares no document from 10-sources"},
+                          "20-map": {"title": "Map <b>", "href": "/documents/beta/map.html", "state": "fresh", "why": ""},
+                          "30-brief": {"title": "Brief", "href": "/documents/beta/brief.html", "state": "stale", "why": ""}}
+        click = "ELS.rows.listeners.click[0]({ target: { closest: s => s === 'tr[data-id]' ? { dataset: { id: 'research/alpha' } } : %s } });"
+        out = self.run_page("R.rows = ELS.rows.html; R.before = selected;"
+                            + click % "(s.split(', ').includes('a') ? {} : null)" + " R.onBar = selected;"
+                            + click % "null" + " R.onRow = selected;")
+        row = re.search(r'<tr data-id="research/beta".*?</tr>', out["R"]["rows"], re.S).group(0)
+        links = re.findall(r'<a class="pip" href="([^"]+)" aria-label="([^"]+)" title="([^"]+)">', row)
+        self.assertEqual(links, [("/documents/beta/map.html", "Open 20-map: Map &lt;b&gt;", "20-map: Map &lt;b&gt;"),
+                                 ("/documents/beta/brief.html", "Open 30-brief: Brief", "30-brief: Brief, stale since its source changed")])
+        self.assertIn('title="00-overview: Overview is not built: Render writes it"', row)
+        self.assertIn('role="group" aria-label="Populated: 00-overview, 20-map, 30-brief"', row)
+        # Alpha has no served page, so its track stays one image.
+        alpha = re.search(r'<tr data-id="research/alpha".*?</tr>', out["R"]["rows"], re.S).group(0)
+        self.assertNotIn("<a class=\"pip\"", alpha)
+        self.assertIn('role="img" aria-label="Populated: 00-overview, 10-sources"', alpha)
+        self.assertEqual((out["R"]["before"], out["R"]["onBar"], out["R"]["onRow"]), ("research/beta", "research/beta", "research/alpha"))
+
+    def test_the_track_draws_one_bar_per_stage_and_the_architecture_bar_opens_its_document(self):
+        # sd:5661: six stages, 05-architecture second. A checkout without the folder keeps that bar inert.
+        beta = next(p for p in self.doc["projects"] if p["key"] == "research/beta")
+        beta["dirs"] = ["05-architecture", "30-brief"]
+        beta["stages"] = {"05-architecture": {"title": "Architecture", "href": "/documents/beta/architecture.html", "state": "fresh", "why": ""},
+                          "30-brief": {"title": "Brief", "href": "", "state": "not built", "why": "Brief is not built: Render writes it"}}
+        out = self.run_page("R.rows = ELS.rows.html;")
+        rows = {key: re.search(rf'<tr data-id="{key}".*?</tr>', out["R"]["rows"], re.S).group(0) for key in ("research/alpha", "research/beta", "group/gamma")}
+        for key, row in rows.items():
+            self.assertEqual(len(re.findall(r'class="pip"', row)), 6, key)
+        self.assertEqual(re.findall(r'<a class="pip" href="([^"]+)" aria-label="([^"]+)"', rows["research/beta"]),
+                         [("/documents/beta/architecture.html", "Open 05-architecture: Architecture")])
+        self.assertIn('<span class="pip" title="05-architecture"><i class=""></i></span>', rows["research/alpha"])
+        # The track's columns follow the stage count; none is pinned to five.
+        self.assertNotRegex((V2 / "static" / "research.css").read_text(encoding="utf-8"), r"\.track[^{]*\{[^}]*repeat\(5")
+
+    def test_details_name_the_architecture_overview_and_offer_render_when_its_page_is_not_current(self):
+        # sd:5661: Details carry the architecture overview: its page, or why there is none. Render is offered where a
+        # render changes that (declared, and not built or stale); never where it cannot (not declared, not served).
+        beta = next(p for p in self.doc["projects"] if p["key"] == "research/beta")
+        beta["dirs"] = ["05-architecture", "30-brief"]
+        render = '<button class="btn quiet sm" type="button" data-cmd="research.render" data-obj="research/beta">Render</button>'
+        cases = {
+            "fresh": ({"title": "Architecture", "href": "/documents/beta/architecture.html", "state": "fresh", "why": ""},
+                      '<dt>Architecture</dt><dd><a href="/documents/beta/architecture.html">Architecture</a></dd>'),
+            "stale": ({"title": "Architecture", "href": "/documents/beta/architecture.html", "state": "stale", "why": ""},
+                      '<dt>Architecture</dt><dd><a href="/documents/beta/architecture.html">Architecture</a> · stale since its source changed ' + render + '</dd>'),
+            "unbuilt": ({"title": "Architecture", "href": "", "state": "not built", "why": "Architecture is not built: Render writes it"},
+                        '<dt>Architecture</dt><dd>Architecture is not built: Render writes it ' + render + '</dd>'),
+            "undeclared": ({"title": "", "href": "", "state": "", "why": "research.conf.py declares no document from 05-architecture"},
+                           '<dt>Architecture</dt><dd>research.conf.py declares no document from 05-architecture</dd>'),
+        }
+        for name, (stage, want) in cases.items():
+            beta["stages"] = {"05-architecture": stage}
+            out = self.run_page("select('research/beta', false); R.det = ELS.details.html;")
+            self.assertIn(want, out["R"]["det"], name)
+        beta["dirs"], beta["stages"] = ["30-brief"], {}
+        out = self.run_page("select('research/beta', false); R.det = ELS.details.html;")
+        self.assertIn("<dt>Architecture</dt><dd>none yet: 05-architecture/architecture.md starts from the sd-research-repo template</dd>", out["R"]["det"])
+
     def test_a_header_sorts_the_board_and_the_url_keeps_it(self):
         # sd:3455: the shell's sort header. State is the default; its bands draw only in that order.
         head = "ELS['rows-head'].listeners.click[0]({ target: { closest: s => s === 'button[data-sort]' ? { dataset: { sort: 'what' } } : null } });"
@@ -708,14 +934,25 @@ R.lines = ['research.render', 'research.review'].map(id => [cmd(id).executes, cm
     def test_make_experiment_drafts_one_for_the_rows_project_and_is_off_when_linked(self):
         # sd:5662: a project row and its Details turn the project into an experiment: a draft create naming the project.
         out = self.run_page("""const beta = C.get('research/beta');
-R.row = ELS.rows.html.includes('Make experiment'); R.on = cmd('experiment.make').when(beta);
+R.row = ELS.rows.html.includes('Make experiment'); R.on = cmd('experiment.make').when(beta); R.brief = cmd('experiment.make').when({ ...beta, experiment: { state: 'Running' } });
 FIELD_VALUES = { description: 'Tail sampling keeps the slow spans' }; shellRun(cmd('experiment.make'), beta); await flush();""")
         self.assertTrue(out["R"]["on"])
+        # A project with a status brief is an experiment already: no Make on its row.
+        self.assertEqual(out["R"]["brief"], "already an experiment: it has a status brief")
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/experiments/act", {"verb": "draft", "action": "create",
                           "description": "Tail sampling keeps the slow spans", "project": "research/beta"}]])
         linked = self.run_page("PAGE_LIST.select('research/beta'); await flush(); R.on = cmd('experiment.make').when(C.get('research/beta'));",
                                answer=self.experiments({"link": {"page": "2" * 32, "title": "Trace budgets"}}))
         self.assertEqual(linked["R"]["on"], "already linked to an experiment")
+
+    def test_read_again_reads_the_board_the_ledgers_and_the_experiment_link_again(self):
+        # sd:5638: a refresh on the page reads every table behind it again.
+        out = self.run_page("PAGE_LIST.select('research/beta'); await flush(); const before = OUT.gets.length;"
+                            " window.PAGE_AGAIN.run(); await flush(); R.after = OUT.gets.slice(before);",
+                            answer=self.experiments({}))
+        self.assertIn("/api/research", out["R"]["after"])
+        self.assertTrue(any(g.startswith("/api/research/experiments?project=research%2Fbeta") for g in out["R"]["after"]))
+        self.assertTrue(any(g.startswith("/api/research/research/beta") for g in out["R"]["after"]))
 
     def test_start_research_is_off_with_its_reason_shows_the_line_and_sends_nothing(self):
         out = self.run_page("""const input = ELS.shift;
@@ -783,9 +1020,15 @@ R.start = ELS['shift-hint'].html;""")
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "render-stale projects"})
         self.assertEqual(out["states"][0]["kind"], "loading")
         last = out["states"][-1]
-        self.assertEqual(last["kind"], "partial", "the page did not say rounds are not read")
-        self.assertIn(research_screen.ROUNDS_REASON, last["text"])
-        self.assertNotIn("claim", last["text"])
+        # system sd:5659: the banner said rounds are not read on every load; the rows and the Details' Rounds line say it.
+        self.assertEqual(last, {"kind": "partial", "text": "1 project with a config or render the collector could not read.",
+                                "source": "/api/research"})
+
+    def test_a_board_read_whole_shows_no_banner(self):
+        self.doc["projects"] = [p for p in self.doc["projects"] if p["key"] != "group/gamma"]
+        out = self.run_page("R.det = ELS.details.html;")
+        self.assertIsNone(out["states"][-1])
+        self.assertIn(research_screen.ROUNDS_REASON, out["R"]["det"])
 
     def test_the_first_row_is_selected_and_its_ledger_is_read_and_drawn(self):
         out = self.run_page("R.reader = ELS.reader.html; R.claims = ELS.claims.html; R.det = ELS.details.html; R.tally = ELS['reader-tally'].html;")
@@ -961,8 +1204,8 @@ claimTap('5'); R.lit = ELS.reader.html; R.det = ELS.details.html;
 (ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i: '5' } } : null } })); R.unkeyed = ELS.details.html;
 (ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-cites]' ? { dataset: { cites: '1' } } : null } }));
 R.litClaims = ELS.claims.html;
-(ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-verdict]' ? { dataset: { verdict: 'unverified' } } : null } }));
-R.filtered = ELS.claims.html;""")
+const pick = verdict => (ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-verdict]' ? { dataset: { verdict } } : null } }));
+pick('unverified'); R.filtered = ELS.claims.html; pick(''); R.all = ELS.claims.html;""")
         claims = out["R"]["claims"]
         self.assertIn("● 5 supported", claims)
         self.assertIn("▨ 3 unverified", claims)
@@ -980,6 +1223,30 @@ R.filtered = ELS.claims.html;""")
         # The note's count lights the three claims that cite it.
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*data-lit', out["R"]["litClaims"]), ["1", "4", "5"])
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*hidden', out["R"]["filtered"]), ["1", "2", "4", "5", "7"])
+        # The filter reads as a control: All is offered, and All clears a verdict pick.
+        self.assertIn('data-verdict="" aria-pressed="true">All 8</button>', claims)
+        self.assertNotIn(' hidden', out["R"]["all"].split('class="claims"')[1])
+
+    def test_show_more_reads_the_claims_past_the_print_bound(self):
+        # Operator request: "150 of 193 claims shown" had no way to see the rest. A later read skips the claims held.
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        repo = claimed(root, "research/beta")
+        with mock.patch.object(research_screen, "CLAIMS", 3):
+            self.ledger = research_screen.sources("research/beta", now=NOW, backend=lambda *_: research_screen.registry(repo))
+            later = research_screen.sources("research/beta", now=NOW, start=3,
+                                            backend=lambda *_, start=0: research_screen.registry(repo, start=start))
+        self.assertEqual((len(self.ledger["claims"]["rows"]), later["claims"]["from"], later["rows"]), (3, 3, []))
+        self.assertEqual(later["claims"]["rows"], research_screen.registry(repo)["claims"][3:6])
+        answer = (f"(path) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
+                  f" : path === '/api/research/research/beta?from=3' ? [200, {json.dumps(later)}]"
+                  f" : path === '/api/research/research/beta' ? [200, {json.dumps(self.ledger)}] : [404, {{ error: 'No such' }}]")
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); R.before = ELS.claims.html;
+(ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-more-claims]' ? {} : null } })); await flush();
+R.after = ELS.claims.html;""", answer=answer)
+        self.assertIn("3 of 8 claims shown.", out["R"]["before"])
+        self.assertIn("data-more-claims>Show more</button>", out["R"]["before"])
+        self.assertIn("6 of 8 claims shown.", out["R"]["after"])
+        self.assertEqual(len(re.findall(r'<li class="claim"', out["R"]["after"])), 6)
 
     def test_the_page_has_four_views_and_the_selected_project_carries_across_them(self):
         # sd:5064 operator request: Projects | Sources | Claim map tabs, through the shell's view switch.
@@ -1123,6 +1390,18 @@ R.views = OUT.views.slice();""")
         self.assertEqual(out["R"]["counts"], {"experiments": None, "sources": None, "claims": None})
         self.assertEqual(out["R"]["views"], ["projects"])
 
+    def test_a_dead_page_session_says_reload_not_reselect(self):
+        # sd:5664: after a restart the experiment read answered 403 and the page said "Reselect the project to retry",
+        # which reads again with the same dead session. The server's refusal says to reload; the page adds nothing.
+        gone = "Reload the page to read Research: its session ended, as it does after an hour or when the dashboard restarts."
+        answer = (f"(path) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
+                  f" : path === '/api/research/research/beta' ? [403, {{ error: {json.dumps(gone)} }}]"
+                  f" : path.startsWith('/api/research/experiments') ? [403, {{ error: {json.dumps(gone)} }}] : [404, {{ error: 'No such' }}]")
+        out = self.run_page("PAGE_LIST.select('research/beta'); await flush(); R.det = ELS.details.html; R.claims = ELS.claims.html;",
+                            answer=answer)
+        self.assertIn("Reload the page to read Research", out["R"]["det"])
+        self.assertNotIn("Reselect the project", out["R"]["det"] + out["R"]["claims"])
+
     def experiments(self, doc):
         """The answer with `/api/research/experiments` for beta as `doc` (research_experiments.document's shape)."""
         base = {"read": NOW, "running": "", "source": "u", "account": "operator@example.test", "kit": "/kit/design.md",
@@ -1228,6 +1507,8 @@ R.deck = cmd('experiment.deck').when(o); R.section = ELS.details.html;""", answe
                       "U = unverified: fetch failed; lead only.")
         self.assertIn(f'<span class="sr" id="claim-type-supported">{supported}</span>', claims)
         self.assertIn(f'<span class="sr" id="claim-type-unverified">{unverified}</span>', claims)
+        # The legend's help button names every grade the ledger defines, for a hover or a tap.
+        self.assertIn('aria-label="Help: source grades" data-help="&lt;b&gt;Source grades.&lt;/b&gt; &lt;b&gt;A&lt;/b&gt; = primary source', claims)
         self.assertIn(f'<span title="{supported}" aria-describedby="claim-type-supported">● supported: cites a strong source</span>', claims)
         self.assertRegex(claims, r'<button type="button" class="v-unverified" data-verdict="unverified" aria-pressed="false"'
                                  r' title="Unverified: [^"]+" aria-describedby="claim-type-unverified">')
