@@ -282,7 +282,7 @@ addEventListener('DOMContentLoaded', () => {
     // build: the design's journal note, with this document's counts (sd:2183: the reader lists every writer's notes).
     const journal = EVENTS.filter(e => e.k === 'command'), older = journal.filter(e => !inWindow(e)).length;
     const skipped = Object.values(DOC?.journal_skipped || {}).reduce((a, n) => a + n, 0);
-    put($('journal-note'), html`Commands are the execution journal: ${plural(journal.length, 'record')} of kind exec, palette and runner runs alike.${skipped ? ` ${plural(skipped, 'exec note')} no known writer left ${skipped === 1 ? 'is' : 'are'} skipped.` : ''} All read adds the ${String(older)} older than this window.${DOC?.journal_unread ? ` The journal reads the latest ${String(DOC.journal_cap)} exec notes; ${String(DOC.journal_unread)} older are not read.` : ''}`);
+    put($('journal-note'), html`Commands are the execution journal: ${plural(journal.length, 'record')} of kind exec, palette, runner and page runs alike.${skipped ? ` ${plural(skipped, 'exec note')} no known writer left ${skipped === 1 ? 'is' : 'are'} skipped.` : ''} All read adds the ${String(older)} older than this window.${DOC?.journal_unread ? ` The journal reads the latest ${String(DOC.journal_cap)} exec notes; ${String(DOC.journal_unread)} older are not read.` : ''}`);
     const undated = DOC?.undated || [];
     $('undated').hidden = !undated.length;
     put($('undated'), undated.length ? html`${undated.join(', ')} failed or ${undated.length === 1 ? 'was' : 'were'} interrupted with no readable log time, so ${undated.length === 1 ? 'it has' : 'they have'} no place on this timeline. Management lists every job's state.` : html``);
@@ -392,8 +392,10 @@ addEventListener('DOMContentLoaded', () => {
     // /api/palette/<note>/reconcile, which observes the target and never replays the command; no sd verb does it, so it has no
     // line to copy. It is the primary act on an unfinished palette record, so it registers ahead of Show output.
     { id: 'command.reconcile', on: 'command', label: 'Reconcile', does: 'Checks how the run ended and records it; it never reruns it.', key: 'r', risk: 'safe',
-      primary: o => ev(o).source !== 'runner' && !ev(o).ended,
+      // A page's command (sd:5541) is the dashboard's to end: it reads the run, or ends it unknown when it restarts.
+      primary: o => ev(o).source === 'palette' && !ev(o).ended,
       when: o => ev(o).source === 'runner' ? "a runner record is the runner's to finish; no palette request waits on it"
+        : ev(o).source === 'dashboard' ? 'a page\'s command is the dashboard\'s to finish; it records how the run ended'
         : ev(o).ended ? 'the run ended; its outcome is recorded' : true,
       run: o => landing(reconcile(o), out => out.unknown
         || `Outcome of note ${o.note} recorded · ${out.exit_code == null ? 'no exit code' : `exit ${out.exit_code}`}`) },

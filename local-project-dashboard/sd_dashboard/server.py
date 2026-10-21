@@ -1131,10 +1131,21 @@ class Dashboard(BaseHTTPRequestHandler):
         try:
             connection = sd_db.connect(self.database)
             try:
-                from sd_db import reporting
+                from sd_db import reporting, writes
+                from . import command_journal
+
+                # A command that runs something gets its execution journal record once it answered (sd:5541). Its
+                # writes are the journal's, not the action's, so they count as no operator action.
+                journal = (self.database, connection, path.path, payload, context.principal, writes.now())
                 before = connection.total_changes
-                result = action(connection)
-                if connection.total_changes > before:
+                try:
+                    result = action(connection)
+                except BaseException as failure:
+                    command_journal.record(*journal, failure=failure)
+                    raise
+                changed = connection.total_changes > before
+                command_journal.record(*journal, result)
+                if changed:
                     reporting.observed_action(connection, path.path)
             finally:
                 connection.close()
@@ -1479,6 +1490,10 @@ def main(argv: list[str] | None = None, *, serve: bool = True) -> int:
         return 0
     kept = (options["fleet_backend"], options["metrics_backend"], options["usage_backend"])
     server.warm_up = lambda: _warm(arguments.database, kept)
+    # A run a command started before the last stop is watched again, so its journal record ends (sd:5541).
+    from . import command_journal
+
+    command_journal.resume(arguments.database)
     if arguments.config:
         # The restart probe, two steps from this checkout. First its dashboard.sh preflight, which runs
         # its bootstrap.py and runtime. Then a fresh interpreter imports the serving code, as bootstrap.py

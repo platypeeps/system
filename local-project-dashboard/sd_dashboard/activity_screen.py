@@ -26,7 +26,9 @@ keeps, so the port adds no collector:
   goes in `undated`, so the page says so rather than drop it.
 - **command**: the execution journal, `runner_exec.execution_journal`
   (v1 Operations > Commands; the design's journal, sd:2180): palette runs and
-  runner runs alike (sd:2183), with the notes no known writer left counted in
+  runner runs alike (sd:2183), and the commands the pages run, which
+  `command_journal` records in the palette's shape with scope `dashboard`
+  (sd:5541), with the notes no known writer left counted in
   `journal_skipped`. Every record it returns comes, older ones too, so the
   page's "All read" range can show them; the other kinds stay in the window.
   The read is the latest `JOURNAL_CAP` notes: `journal_unread` counts the
@@ -46,6 +48,8 @@ from pathlib import Path
 
 from sd_db import operations, reads, runner_exec
 from sd_db.errors import SdDbError
+
+from . import command_journal
 
 __all__ = ["JOURNAL_CAP", "KINDS", "WINDOW", "document", "reviews"]
 
@@ -226,7 +230,8 @@ def commands(connection, end: datetime, skipped: dict, read: dict) -> list[dict]
         outcome = "running" if row["ended"] is None else "no exit code" if code is None else f"exit {code}"
         out.append({"id": f"cmd:{row['id']}", "k": "command", "at": _iso(stamp), "s": state, "repo": None,
                     "what": f"{text} · {outcome}", "ref": f"note {row['id']}",
-                    "detail": row.get("detail") or row["title"] or "", "source": row.get("source") or "palette",
+                    "detail": row.get("detail") or row["title"] or "",
+                    "source": row.get("source") or ("dashboard" if row.get("scope") == command_journal.SCOPE else "palette"),
                     "title": row["title"], "command": text, "assignment": row.get("assignment"),
                     "note": row["id"], "item": row["item"], "exit": code, "who": row["session"],
                     "scope": row.get("scope"), "started": row["started"], "ended": row["ended"],

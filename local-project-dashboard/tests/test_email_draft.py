@@ -243,12 +243,13 @@ class TheRefusals(DraftCase):
     def test_no_gmail_account_runs_nothing_and_names_the_remedy(self):
         os.environ.pop("EMAIL_FROM")
         item = self.task()
-        before = self.snapshot()
+        before = self.unjournalled()
         status, _, answer = self.draft(item)
         self.assertEqual(status, 503)
         self.assertIn("Draft email needs the Gmail account.", answer["error"])
         self.assertIn("EMAIL_FROM", answer["error"])
-        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.unjournalled(), before)
+        self.assertEqual(self.journalled(), [(f"Draft email · sd:{item}", 1)])  # sd:5541
         self.assertFalse((self.double / "argv").exists())
 
     def test_a_second_click_from_the_same_page_is_stale_and_drafts_nothing(self):

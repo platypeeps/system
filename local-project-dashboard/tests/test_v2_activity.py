@@ -488,7 +488,7 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
         self.assertIn([None, "all"], out["urls"])
         self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["back"])
         self.assertIn("5 records", out["R"]["note"])
-        self.assertIn("palette and runner runs alike", out["R"]["note"])
+        self.assertIn("palette, runner and page runs alike", out["R"]["note"])
         self.assertIn("1 exec note no known writer left is skipped", out["R"]["note"])
         self.assertNotIn("none shows here", out["R"]["note"])
 
@@ -725,6 +725,16 @@ R.runner = r.when(C.get('cmd:{self.ids['runner']}')); R.cli = r.cli ? r.cli(C.ge
         self.assertFalse(out["R"]["endedPrimary"])
         self.assertEqual(out["R"]["runner"], "a runner record is the runner's to finish; no palette request waits on it")
         self.assertIsNone(out["R"]["cli"], "no sd verb reconciles; the line would be invented")
+
+    def test_reconcile_is_off_for_a_pages_command_the_dashboard_ends_itself(self):
+        """sd:5541: a page's command record is the dashboard's to end; no palette request waits on it."""
+        doc = self.unfinished()
+        row = next(e for e in doc["events"] if e["id"] == f"cmd:{self.ids['stopped']}")
+        row.update(source="dashboard", scope="dashboard")
+        out = self.run_page(f"""const r = cmd('command.reconcile');
+R.on = r.when(C.get('cmd:{self.ids['stopped']}')); R.primary = r.primary(C.get('cmd:{self.ids['stopped']}'));""", doc=doc)
+        self.assertEqual(out["R"]["on"], "a page's command is the dashboard's to finish; it records how the run ended")
+        self.assertFalse(out["R"]["primary"])
 
     def test_reconcile_posts_the_old_route_shows_the_outcome_and_reads_again(self):
         note = self.ids["stopped"]
