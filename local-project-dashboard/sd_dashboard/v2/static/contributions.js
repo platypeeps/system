@@ -51,7 +51,7 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Data (build: /api/contributions/page) ----------
   let DOC = null, ROWS = [], BY = new Map(), selected = null, FAILED = '', STORE = '';
   // The Hidden view draws the hidden rows on the Open table; every other view draws the rest.
-  let HIDDEN = false;
+  let HIDDEN = false, SYNC = null;
   const inView = r => r.hidden === HIDDEN;
   // The Filed view (sd:5488): its rows, by key, and whether it is the shown view.
   let FILED = [], FBY = new Map(), FILEDVIEW = false;
@@ -162,7 +162,7 @@ addEventListener('DOMContentLoaded', () => {
         cli: o => `open ${shq(o.url)}`,
         run: o => { window.open(o.url, '_blank', 'noopener'); return `Opened in ${TRACKER[o.tracker]} · ${o.ref}`; } },
       // Re-run collector (commands.js); Contributions reads again once the run ends.
-      window.commands.syncCollector({ reread: () => reread(), page: 'Contributions' }),
+      (SYNC = window.commands.syncCollector({ reread: () => reread(), page: 'Contributions' })),
     );
   }
 
@@ -471,6 +471,8 @@ addEventListener('DOMContentLoaded', () => {
   document.addEventListener('shell:view', e => onView(e.detail.id));
   onView(window.shell.view?.current?.());
   document.getElementById('source').addEventListener('click', e => { if (e.target.closest('[data-collector]')) select('collector', true); });
+  // Refresh (sd:5630): the toolbar's way to Re-run collector; the table reads again once the sync ends.
+  document.getElementById('contrib-refresh').addEventListener('click', () => { if (SYNC) window.shell.commands.run(SYNC, window.shell.commands.get('collector')); });
   [tbody, ftbody].forEach(b => b.addEventListener('click', e => { if (e.target.closest('.rowact') || e.target.closest('a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); }));
   document.addEventListener('shell:open', e => select(e.detail, true));
   document.addEventListener('shell:filter', e => { if (e.detail.q === q.value) return; q.value = e.detail.q; if (DOC) applyFilter(); });
