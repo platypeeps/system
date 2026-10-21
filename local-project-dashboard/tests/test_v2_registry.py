@@ -162,7 +162,7 @@ class TheRoutes(BrowserSession):
                 if entry.read:
                     status, _, body = self.request(path)
                     self.assertEqual(status, 403, path)
-                    self.assertEqual(json.loads(body), {"error": f"Open a dashboard page before reading {page.section}."}, path)
+                    self.assertEqual(json.loads(body), {"error": f"Reload the page to read {page.section}: its session ended, as it does after an hour or when the dashboard restarts."}, path)
 
     def test_every_api_route_that_takes_no_query_refuses_one(self):
         for page in registry().PAGES:

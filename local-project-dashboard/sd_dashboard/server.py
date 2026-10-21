@@ -78,6 +78,9 @@ STATIC_FILES = caching.STATIC_FILES
 
 DEFAULT_PORT = 8767
 SESSION_SECONDS = 3600
+#: Why a read without a valid page session is refused: a session lasts SESSION_SECONDS and a restart ends it, so the
+#: page's own fix is a reload (sd:5664); reselecting a row reads with the same dead session.
+SESSION_ENDED = "its session ended, as it does after an hour or when the dashboard restarts."
 MAX_BODY = 65536
 
 
@@ -810,14 +813,14 @@ class Dashboard(BaseHTTPRequestHandler):
 
             # sd:5064: one review run's state, from its state file; no database read.
             if not self._session(context):
-                return self._json(403, {"error": "Open a dashboard page before reading a review run."})
+                return self._json(403, {"error": f"Reload the page to read a review run: {SESSION_ENDED}"})
             return self._json(*adversarial.status(path[len("/api/adversarial/"):]))
         if path.startswith("/api/issue-runs/") and not split.query:
             from . import issue_filing
 
             # sd:5103: one issue run's draft and state, from its state file; a read that never files.
             if not self._session(context):
-                return self._json(403, {"error": "Open a dashboard page before reading an issue run."})
+                return self._json(403, {"error": f"Reload the page to read an issue run: {SESSION_ENDED}"})
             return self._json(*issue_filing.status(path[len("/api/issue-runs/"):]))
         parameters = parse_qs(split.query, keep_blank_values=True)
         try:
@@ -840,7 +843,7 @@ class Dashboard(BaseHTTPRequestHandler):
                     from sd_db import contributions
 
                     if not self._session(context):
-                        return self._json(403, {"error": "Open a dashboard page before reading contribution details."})
+                        return self._json(403, {"error": f"Reload the page to read contribution details: {SESSION_ENDED}"})
                     if split.query:
                         return self._json(400, {"error": "Contribution projection does not accept query parameters."})
                     return self._json(200, {"contributions": contributions.projection(connection)})
@@ -848,7 +851,7 @@ class Dashboard(BaseHTTPRequestHandler):
                     from sd_db import runner_exec
 
                     if not self._session(context):
-                        return self._json(403, {"error": "Open a dashboard page before reading command details."})
+                        return self._json(403, {"error": f"Reload the page to read command details: {SESSION_ENDED}"})
                     try:
                         if path == "/api/palette":
                             if set(parameters) - {"screen", "item"} or any(len(values) != 1 for values in parameters.values()):
@@ -871,7 +874,7 @@ class Dashboard(BaseHTTPRequestHandler):
                     # The fleet child, the shadow read and the launchd jobs, for
                     # a page that was opened first: the document describes this machine.
                     if not self._session(context):
-                        return self._json(403, {"error": "Open a dashboard page before reading Now."})
+                        return self._json(403, {"error": f"Reload the page to read Now: {SESSION_ENDED}"})
                     if split.query:
                         return self._json(400, {"error": "Now does not accept query parameters."})
                     # Every page's rail shows what this read carried (sd:3446); a read that raised leaves its badge unknown.
@@ -889,7 +892,7 @@ class Dashboard(BaseHTTPRequestHandler):
 
                     # The read `sd usage --json` prints, as the same bytes.
                     if not self._session(context):
-                        return self._json(403, {"error": "Open a dashboard page before reading Usage."})
+                        return self._json(403, {"error": f"Reload the page to read Usage: {SESSION_ENDED}"})
                     if set(parameters) - {"month"} or any(len(values) != 1 for values in parameters.values()):
                         return self._json(400, {"error": "Usage takes one month, YYYY-MM."})
                     try:
@@ -1029,7 +1032,7 @@ class Dashboard(BaseHTTPRequestHandler):
         from . import v2
 
         if not self._session(context):
-            return self._json(403, {"error": f"Open a dashboard page before reading {page.section}."})
+            return self._json(403, {"error": f"Reload the page to read {page.section}: {SESSION_ENDED}"})
         if split.query and not entry.query:
             return self._json(400, {"error": f"{page.section} does not accept query parameters."})
         read, ticket = self._read(connection, split.path, parameters), self.badges.ticket()
@@ -1203,7 +1206,7 @@ class Dashboard(BaseHTTPRequestHandler):
         from .research_deck import built
 
         if not self._session(context):
-            return self._send(403, error_page(403, "Open a dashboard page before downloading a deck.").encode("utf-8"),
+            return self._send(403, error_page(403, f"Reload the page to download a deck: {SESSION_ENDED}").encode("utf-8"),
                               "text/html; charset=utf-8")
         found = built(key)
         try:

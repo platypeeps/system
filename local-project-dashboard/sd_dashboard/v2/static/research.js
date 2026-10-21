@@ -228,6 +228,8 @@ xpBody.addEventListener('click', e => { if (e.target.closest('a, .acts')) return
 // The board reads through shell.read (the Start block); the ledger is read here, per project.
 // build: the ledger is read per project, when it is selected, and kept for the page's life.
 const sourcesPath = key => `/api/research/${key.split('/').map(encodeURIComponent).join('/')}`;
+// A refusal for a dead page session already says to reload (sd:5664): reselecting reads with the same session.
+const retry = e => (/^Reload the page/.test(e || '') ? '' : ' Reselect the project to retry.');
 function loadSources(key) {
   if (!SOURCES.has(key)) SOURCES.set(key, window.shell.getJSON(sourcesPath(key)).then(s => (SOURCES.set(key, s), s), err => { const s = { error: err.message, files: [], rows: [], total: 0 }; SOURCES.set(key, s); return s; }));
   return Promise.resolve(SOURCES.get(key));
@@ -311,7 +313,7 @@ function drawReader(p, s) {
   const key = p.key;
   if (s.error) {
     // An error that already ends its sentence takes no second period (sd:2429).
-    put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error.replace(/\.$/, '')}. Reselect the project to retry.</p>`);
+    put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error.replace(/\.$/, '')}.${retry(s.error)}</p>`);
     SOURCES.delete(key); document.getElementById('reader-tally').textContent = 'not read'; shell.view.count('sources', null); return;
   }
   if (!s.files.length) {
@@ -398,7 +400,7 @@ function chip(s, key) {
 function drawClaims(p, s) {
   const c = s.claims;
   if (s.error || !c) {
-    put(claimsEl, html`<p class="unknown"><span class="g-unknown">▨</span>Claims not read for ${p.label}: ${s.error ? s.error.replace(/\.$/, '') : 'the reader sent no claim map'}. Reselect the project to retry.</p>`);
+    put(claimsEl, html`<p class="unknown"><span class="g-unknown">▨</span>Claims not read for ${p.label}: ${s.error ? s.error.replace(/\.$/, '') : 'the reader sent no claim map'}.${retry(s.error)}</p>`);
     shell.view.count('claims', null); return;
   }
   // A document the reader skipped is named, so an empty map is never mistaken for a read one.
@@ -529,7 +531,7 @@ const stampTime = s => `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.s
 const listed = page => (EXP?.cache?.rows || []).find(r => r.page === page);
 function experimentSection(p) {
   if (!EXP || EXP.key !== p.key) return html`<h3>Experiment</h3><p class="why">Reading the experiment link…</p>`;
-  if (EXP.error) return html`<h3>Experiment</h3><p class="unknown"><span class="g-unknown">▨</span>Not read: ${EXP.error.replace(/\.$/, '')}. Reselect the project to retry.</p>`;
+  if (EXP.error) return html`<h3>Experiment</h3><p class="unknown"><span class="g-unknown">▨</span>Not read: ${EXP.error.replace(/\.$/, '')}.${retry(EXP.error)}</p>`;
   const link = EXP.link, row = link && listed(link.page), c = EXP.cache, last = (EXP.runs || []).find(r => r.project === p.key || r.verb === 'list');
   const draft = pending(p.key);
   const problems = Object.entries(EXP.problems || {}).filter(([, why]) => why);

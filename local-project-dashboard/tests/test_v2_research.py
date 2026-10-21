@@ -1390,6 +1390,18 @@ R.views = OUT.views.slice();""")
         self.assertEqual(out["R"]["counts"], {"experiments": None, "sources": None, "claims": None})
         self.assertEqual(out["R"]["views"], ["projects"])
 
+    def test_a_dead_page_session_says_reload_not_reselect(self):
+        # sd:5664: after a restart the experiment read answered 403 and the page said "Reselect the project to retry",
+        # which reads again with the same dead session. The server's refusal says to reload; the page adds nothing.
+        gone = "Reload the page to read Research: its session ended, as it does after an hour or when the dashboard restarts."
+        answer = (f"(path) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
+                  f" : path === '/api/research/research/beta' ? [403, {{ error: {json.dumps(gone)} }}]"
+                  f" : path.startsWith('/api/research/experiments') ? [403, {{ error: {json.dumps(gone)} }}] : [404, {{ error: 'No such' }}]")
+        out = self.run_page("PAGE_LIST.select('research/beta'); await flush(); R.det = ELS.details.html; R.claims = ELS.claims.html;",
+                            answer=answer)
+        self.assertIn("Reload the page to read Research", out["R"]["det"])
+        self.assertNotIn("Reselect the project", out["R"]["det"] + out["R"]["claims"])
+
     def experiments(self, doc):
         """The answer with `/api/research/experiments` for beta as `doc` (research_experiments.document's shape)."""
         base = {"read": NOW, "running": "", "source": "u", "account": "operator@example.test", "kit": "/kit/design.md",
