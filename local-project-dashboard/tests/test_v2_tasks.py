@@ -357,7 +357,13 @@ class TheDocuments(ScreenCase):
 
         with patch.object(reads, "backlog_items", before_5648):
             doc = tasks_screen.document(self.connection, now=NOW)
-        with patch.object(reads, "opens_on_clause", None, create=True):
+        one = reads.item_by_id
+
+        def one_before_5648(connection, item):
+            row = one(connection, item)
+            return {key: row[key] for key in row.keys() if key != "opens_on"}
+
+        with patch.object(reads, "item_by_id", one_before_5648):
             details = tasks_screen.details(self.connection, item, now=NOW)
         row = next(r for r in doc["rows"] if r["id"] == item)
         self.assertEqual((row["recurrence_lead"], row["opens_on"], row["scheduled"]), (None, None, False))
