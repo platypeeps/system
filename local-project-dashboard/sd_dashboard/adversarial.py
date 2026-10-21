@@ -95,7 +95,7 @@ TIMEOUT = 1800
 #: --effort` takes, the bound in whole minutes, and the most sub-agents the lead starts.
 DEEP = {
     "adversarial.deep.model": ("opus", r"[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}", "a claude model id or alias, such as opus"),
-    "adversarial.deep.effort": ("max", r"[a-z]{1,20}", "one lowercase word, such as max"),
+    "adversarial.deep.effort": ("max", r"low|medium|high|xhigh|max", "one of low, medium, high, xhigh or max"),
     "adversarial.deep.bound_minutes": ("90", r"[1-9][0-9]{0,3}", "whole minutes, such as 90"),
     "adversarial.deep.agents": ("8", r"[1-9]|1[0-6]", "a number of sub-agents from 1 to 16, such as 8"),
 }
