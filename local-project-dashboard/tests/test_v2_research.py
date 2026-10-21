@@ -708,9 +708,11 @@ R.lines = ['research.render', 'research.review'].map(id => [cmd(id).executes, cm
     def test_make_experiment_drafts_one_for_the_rows_project_and_is_off_when_linked(self):
         # sd:5662: a project row and its Details turn the project into an experiment: a draft create naming the project.
         out = self.run_page("""const beta = C.get('research/beta');
-R.row = ELS.rows.html.includes('Make experiment'); R.on = cmd('experiment.make').when(beta);
+R.row = ELS.rows.html.includes('Make experiment'); R.on = cmd('experiment.make').when(beta); R.brief = cmd('experiment.make').when({ ...beta, experiment: { state: 'Running' } });
 FIELD_VALUES = { description: 'Tail sampling keeps the slow spans' }; shellRun(cmd('experiment.make'), beta); await flush();""")
         self.assertTrue(out["R"]["on"])
+        # A project with a status brief is an experiment already: no Make on its row.
+        self.assertEqual(out["R"]["brief"], "already an experiment: it has a status brief")
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/experiments/act", {"verb": "draft", "action": "create",
                           "description": "Tail sampling keeps the slow spans", "project": "research/beta"}]])
         linked = self.run_page("PAGE_LIST.select('research/beta'); await flush(); R.on = cmd('experiment.make').when(C.get('research/beta'));",
