@@ -1023,9 +1023,11 @@ R.det = ELS.adv.html;""")
         self.list([entry for entry in self.entries() if entry["status"] in ("merged", "cancelled")])
         for log in self.lane.glob("gate-*.log"):
             log.unlink()
-        lanes = self.run_page("R.lanes = ELS.lanes.html;", search="")["R"]["lanes"]
-        self.assertNotIn('<li class="qrow"', lanes)
-        self.assertIn('<p class="idle">Idle: <code>system</code>', lanes)
+        out = self.run_page("R.lanes = ELS.lanes.html; R.idle = ELS.idle.html;", search="")
+        self.assertNotIn('<li class="qrow"', out["R"]["lanes"])
+        # sd:5640: idle lanes have their own view; Lanes says where they went.
+        self.assertIn("No lane has a row to show. 1 idle lane is under Idle.", out["R"]["lanes"])
+        self.assertIn("<code>system</code>", out["R"]["idle"])
 
     def test_the_merging_row_names_step_host_claim_age_and_lease(self):
         lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
@@ -1106,15 +1108,18 @@ R.det = ELS.adv.html;""")
         self.connection.commit()
         Path(f"{self.fixture}.quiet").write_text(json.dumps({"ok": True, "queue": str(
             Path(self.tmp.name) / "lanes" / "quiet" / "lane" / "queue" / "queue.json"), "entries": []}))
-        out = self.run_page("R.lanes = ELS.lanes.html; R.subhead = ELS.subhead.html;")
+        out = self.run_page("R.lanes = ELS.lanes.html; R.subhead = ELS.subhead.html; R.idle = ELS.idle.html;")
         lanes = out["R"]["lanes"]
         self.assertIn('<span class="host">lane on hub</span>', lanes)
         self.assertNotIn('aria-labelledby="lane-quiet"', lanes)
-        self.assertIn('<p class="idle">Idle: <code>quiet</code> (lane on build-2)</p>', lanes)
-        # sd:5524: the Lanes tab carries the lane count; the line under the title counts the managed repositories.
+        # sd:5640: idle lanes sit in the Idle view, one group per host, hub first, each sorted by name.
+        self.assertNotIn("<code>quiet</code>", lanes)
+        self.assertIn('<h3 class="idle-host">Lanes on build-2 <span class="n">1</span></h3><ul class="idle-list"><li><code>quiet</code></li></ul>',
+                      out["R"]["idle"])
+        # sd:5524: the Lanes tab carries the busy lane count, Idle the rest; the line under the title counts the managed repositories.
         self.assertIn("2 managed repositories · read", out["R"]["subhead"])
         self.assertNotIn("lanes of", out["R"]["subhead"])
-        self.assertEqual(out["counts"], {"lanes": 2})
+        self.assertEqual(out["counts"], {"lanes": 1, "idle": 1})
 
     def test_only_next_rows_carry_controls_and_the_ends_are_off(self):
         lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
