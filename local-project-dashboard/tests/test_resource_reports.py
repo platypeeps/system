@@ -54,8 +54,7 @@ class Resources(unittest.TestCase):
             with patch.object(collectors, "REPO_ROOT", root), patch.object(collectors, "git_facts", return_value=None):
                 rows = {row["name"]: row for row in collectors.collect_research()}
             self.assertEqual(set(rows), {"computed", "literal"})
-            self.assertIn("requires a declared non-empty string 'out'", rows["computed"]["error"])
-            self.assertIn("computed configuration is not executed", rows["computed"]["error"])
+            self.assertIn("run sd-research-kit render once to write docs/dashboard/research.json", rows["computed"]["error"])
             self.assertEqual(rows["computed"]["docs"], [])
             self.assertEqual(rows["literal"]["error"], "")
             self.assertEqual(rows["literal"]["docs"][0]["title"], "Literal document")
@@ -64,7 +63,7 @@ class Resources(unittest.TestCase):
                 html = str(reports_screen.collect("research"))
             self.assertIn("Literal document", html)
             self.assertIn("computed could not be fully observed", html)
-            self.assertIn("computed configuration is not executed", html)
+            self.assertIn("run sd-research-kit render once to write docs/dashboard/research.json", html)
             self.assertNotIn("does not run", html)
             self.assertFalse(marker.exists())
 

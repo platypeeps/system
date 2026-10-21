@@ -337,6 +337,10 @@ def render(item: dict) -> dict:
     """Render freshness from the collector's documents: a state, a phrase and a detail line."""
     if item.get("error"):
         return {"s": "unknown", "txt": "config unread", "sub": "per-document freshness needs a readable research.conf.py"}
+    if item.get("manifest") == "older":
+        # The documents came from research.json, which a render of an earlier research.conf.py wrote (pack sd:5658).
+        return {"s": "caution", "txt": "manifest from an older render",
+                "sub": "research.conf.py changed since; render again to refresh"}
     docs = item.get("docs") or []
     if not docs:
         return {"s": "unknown", "txt": "no documents declared", "sub": "research.conf.py lists none"}

@@ -21,6 +21,7 @@ the Shapeshift field -- is a manual check recorded on the pull request.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import itertools
@@ -449,6 +450,111 @@ class TheReader(unittest.TestCase):
         self.assertEqual([d["state"] for d in item["docs"]], ["fresh"])
         self.assertNotIn("href", item["docs"][0])
 
+    # A config that builds DOCS with code: the declared reader refuses it, and running it would write the marker.
+    COMPUTED = ("import pathlib\npathlib.Path({marker!r}).write_text('ran')\n"
+                "DOCS = [dict(src=name + '.md', out=name, title=name.title()) for name in ('index',)]\n")
+
+    def computed(self, key="group/one", manifest=None, digest=None):
+        """A checkout with a computed config and, unless `manifest` is False, the research.json a render of it wrote."""
+        self.marker = self.root / "executed"
+        repo = checkout(self.root, key, conf=self.COMPUTED.format(marker=str(self.marker)))
+        if manifest is not False:
+            source = (repo / "research.conf.py").read_bytes()
+            found = manifest or {"version": 1, "project": "One", "conf_sha256": digest or hashlib.sha256(source).hexdigest(),
+                                 "docs": [{"src": "index.md", "out": "index", "title": "Index", "stand": "One line.",
+                                           "links": [["Spec", "https://example.test/spec"]]}]}
+            (repo / "docs" / "dashboard").mkdir(parents=True)
+            (repo / "docs" / "dashboard" / "research.json").write_text(json.dumps(found), encoding="utf-8")
+        return repo
+
+    def collect(self):
+        collectors = collectors_module()
+        with mock.patch.object(collectors, "REPO_ROOT", self.root), mock.patch.object(collectors, "git_facts", return_value=None):
+            found = collectors.collect_research()
+        self.assertFalse(self.marker.exists(), "the collector executed research.conf.py")
+        return found
+
+    def test_a_computed_config_is_read_from_the_manifest_its_render_wrote(self):
+        # system sd:5659: five live configs build DOCS with code, so the board said "config unread" for each.
+        self.computed()
+        [item] = self.collect()
+        self.assertEqual((item["error"], item["manifest"], item["project"]), ("", "current", "One"))
+        self.assertEqual([(d["src"], d["out"], d["title"], d["stand"], d["state"]) for d in item["docs"]],
+                         [("index.md", "index", "Index", "One line.", "not built")])
+        self.assertEqual(item["links"], [["Spec", "https://example.test/spec"]])
+        self.assertEqual(research_screen.render(item)["txt"], "1 of 1 documents not fresh")
+
+    def test_a_manifest_of_an_older_config_is_used_and_marked_for_a_render(self):
+        self.computed(digest="0" * 64)
+        [item] = self.collect()
+        self.assertEqual((item["error"], item["manifest"], [d["out"] for d in item["docs"]]), ("", "older", ["index"]))
+        self.assertEqual(research_screen.render(item), {"s": "caution", "txt": "manifest from an older render",
+                                                        "sub": "research.conf.py changed since; render again to refresh"})
+
+    def test_with_no_manifest_the_refusal_names_the_render_that_writes_one(self):
+        self.computed(manifest=False)
+        [item] = self.collect()
+        self.assertEqual(item["error"], "research.conf.py computes its data; run sd-research-kit render once to write "
+                                        "docs/dashboard/research.json")
+        self.assertEqual(research_screen.render(item)["s"], "unknown")
+
+    def test_a_declared_config_wins_over_any_manifest(self):
+        repo = checkout(self.root, "group/one")
+        (repo / "docs" / "dashboard").mkdir(parents=True)
+        (repo / "docs" / "dashboard" / "research.json").write_text(json.dumps(
+            {"version": 1, "project": "Other", "conf_sha256": "", "docs": [{"src": "other.md", "out": "other"}]}), encoding="utf-8")
+        self.marker = self.root / "executed"
+        [item] = self.collect()
+        self.assertEqual((item["manifest"], [d["out"] for d in item["docs"]], item["project"]), ("", ["index"], "one"))
+
+    def test_a_manifest_the_declared_reader_would_refuse_is_refused(self):
+        # The manifest is checked as the declared reader checks a config: the same inventory, plus its own file guards.
+        doc = {"src": "index.md", "out": "index"}
+        cases = {
+            "version 2": ({"version": 2, "docs": [doc]}, "not a version 1 manifest"),
+            "version true": ({"version": True, "docs": [doc]}, "not a version 1 manifest"),
+            "a list": ([doc], "not a version 1 manifest"),
+            "no docs": ({"version": 1}, "inventory is invalid"),
+            "101 docs": ({"version": 1, "docs": [doc] * 101}, "inventory is invalid"),
+            "a string doc": ({"version": 1, "docs": ["index.md"]}, "research document 1 must be a declared dictionary"),
+            "no out": ({"version": 1, "docs": [{"src": "index.md"}]}, "research document 1 requires a declared non-empty string 'out'"),
+            "blank src": ({"version": 1, "docs": [{"src": " ", "out": "index"}]}, "research document 1 requires a declared non-empty string 'src'"),
+        }
+        for name, (manifest, reason) in cases.items():
+            with self.subTest(name):
+                repo = self.computed(key=f"bad/{name.replace(' ', '-')}", manifest=manifest)
+                [item] = [i for i in self.collect() if i["path"] == str(repo)]
+                self.assertIn(reason, item["error"])
+                self.assertEqual(item["docs"], [])
+
+    def test_a_linked_outside_oversized_or_unparsed_manifest_is_refused(self):
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (outside / "research.json").write_text(json.dumps({"version": 1, "docs": []}), encoding="utf-8")
+        linked = self.computed(key="g/linked", manifest=False)
+        (linked / "docs" / "dashboard").mkdir(parents=True)
+        (linked / "docs" / "dashboard" / "research.json").symlink_to(outside / "research.json")
+        away = self.computed(key="g/away", manifest=False)
+        (away / "docs").mkdir()
+        (away / "docs" / "dashboard").symlink_to(outside)
+        folder = self.computed(key="g/folder", manifest=False)
+        (folder / "docs" / "dashboard" / "research.json").mkdir(parents=True)
+        big = self.computed(key="g/big")
+        (big / "docs" / "dashboard" / "research.json").write_text(" " * (2 * 1024 * 1024 + 1), encoding="utf-8")
+        broken = self.computed(key="g/broken")
+        (broken / "docs" / "dashboard" / "research.json").write_text("{", encoding="utf-8")
+        errors = {item["name"]: item["error"] for item in self.collect()}
+        for name in ("linked", "away", "folder"):
+            self.assertIn("is linked, not a regular file, or outside its repository", errors[name], name)
+        self.assertIn("exceeds the bounded read size", errors["big"])
+        self.assertIn("is not JSON", errors["broken"])
+
+    def test_a_manifest_field_that_is_not_text_is_dropped(self):
+        self.computed(manifest={"version": 1, "project": 7, "conf_sha256": None, "docs": [
+            {"src": "index.md", "out": "index", "title": ["x"], "eyebrow": 3, "links": [["Spec", 4], ["Ok", "https://example.test/ok"], "x"]}]})
+        [item] = self.collect()
+        self.assertEqual((item["project"], item["manifest"], item["docs"][0]["title"], item["docs"][0]["eyebrow"]), ("one", "older", "index", ""))
+        self.assertEqual(item["links"], [["Ok", "https://example.test/ok"]])
+
     def test_the_child_counts_its_deadline_from_the_page_start(self):
         # sd:2501: the child counted from its own main(), so a slow interpreter start spent the margin and the page's kill won.
         argv = []
@@ -513,7 +619,7 @@ class TheDocument(ScreenCase):
                          ("alpha", ["00-overview"], "caution", None, None))
         self.assertEqual(alpha["docs"], [{"title": "Index", "src": "index.md", "state": "not built", "updated": alpha["docs"][0]["updated"]}])
         self.assertEqual((beta["render"]["s"], beta["dirs"]), ("unknown", None))
-        self.assertIn("computed configuration is not executed", beta["conf"])
+        self.assertEqual(beta["conf"], "research.conf.py computes its data; run sd-research-kit render once to write docs/dashboard/research.json")
 
     def test_a_ledger_is_served_only_for_a_research_checkout(self):
         checkout(self.root, "research/alpha", registry=REGISTRY)
@@ -890,9 +996,15 @@ R.start = ELS['shift-hint'].html;""")
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "render-stale projects"})
         self.assertEqual(out["states"][0]["kind"], "loading")
         last = out["states"][-1]
-        self.assertEqual(last["kind"], "partial", "the page did not say rounds are not read")
-        self.assertIn(research_screen.ROUNDS_REASON, last["text"])
-        self.assertNotIn("claim", last["text"])
+        # system sd:5659: the banner said rounds are not read on every load; the rows and the Details' Rounds line say it.
+        self.assertEqual(last, {"kind": "partial", "text": "1 project with a config or render the collector could not read.",
+                                "source": "/api/research"})
+
+    def test_a_board_read_whole_shows_no_banner(self):
+        self.doc["projects"] = [p for p in self.doc["projects"] if p["key"] != "group/gamma"]
+        out = self.run_page("R.det = ELS.details.html;")
+        self.assertIsNone(out["states"][-1])
+        self.assertIn(research_screen.ROUNDS_REASON, out["R"]["det"])
 
     def test_the_first_row_is_selected_and_its_ledger_is_read_and_drawn(self):
         out = self.run_page("R.reader = ELS.reader.html; R.claims = ELS.claims.html; R.det = ELS.details.html; R.tally = ELS['reader-tally'].html;")

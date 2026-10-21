@@ -475,7 +475,7 @@ function showProject(key, read = true) {
       <dt>Render</dt><dd>${p.render.txt}${p.render.sub ? ` · ${p.render.sub}` : ''}</dd>
       <dt>Documents</dt><dd>${plural(p.docs_total ?? p.docs.length, 'document')} in research.conf.py${p.docs.length < (p.docs_total ?? 0) ? ` · ${p.docs.length} listed: the board passed its print bound` : ''} · <a href="/documents">Documents</a></dd>
       <dt>Rounds</dt><dd>${ROUNDS}</dd></dl>
-    ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until the config declares its data.</p>` : ''}
+    ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until it is read.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
     <h3>Act</h3>${shell.commands.bar(p.key)}
     ${REVIEWS[p.key] ? html`<h3>Last review</h3><p class="why">${REVIEWS[p.key].state === 'done' ? 'Every check passed' : REVIEWS[p.key].reason || 'failed'} · <time class="rel" datetime="${REVIEWS[p.key].finished || ''}"></time></p>
@@ -814,8 +814,8 @@ function adopt(doc) {
   const cut = CUT ? ` ${plural(CUT, 'project')} not listed: the board passed its print bound.` : '';
   const state = doc.error ? { kind: 'error', text: `The checkouts were not read: ${doc.error}. Reload retries it.`, source: 'collectors.collect_research' }
     : !PROJECTS.length ? { kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' }
-    : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds are not read: ${ROUNDS}.${cut}`, source: '/api/research' }
-    : { kind: 'partial', title: 'No rounds read', text: `${ROUNDS}.${cut}`, source: '/api/research' };
+    : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read.${cut}`, source: '/api/research' }
+    : cut ? { kind: 'partial', text: cut.trim(), source: '/api/research' } : null; // rounds stay unread: the Details' Rounds line says why
   return { objects: [...PROJECTS, ...experimentObjects(), DRAFT], state };
 }
 function draw() {
