@@ -64,6 +64,16 @@
   const PAGES = window.SHELL_PAGES || { Today: 'today.html', Briefs: 'briefs.html', Tasks: 'tasks.html', Research: 'research.html', Documents: 'documents.html', HOA: 'hoa.html', Home: 'home.html', Skills: 'skills.html', Metrics: 'metrics.html', Activity: 'activity.html', Reports: 'reports.html', Writing: 'writing.html', Notes: 'notes.html', Contributions: 'contributions.html', Health: 'health.html', Management: 'management.html', Designs: 'designs.html' };
   // build (sd:2163): an unported section opens its old screen until its port moves it into SHELL_PAGES.
   const CLASSIC = window.SHELL_CLASSIC || {}, SCREENS = window.SHELL_SCREENS || {};
+  // places:start
+  // sd:5663: a realm with a report family of its own id is a place (SHELL_REALMS place, the family's icon, from
+  // /ui/sections.js). It joins Places with no g key, at /places?realm=<id>. A label a section holds, or one with a quote or a
+  // backslash (the rail finds an entry by [data-section="<label>"]), is left out.
+  for (const r of window.SHELL_REALMS || []) {
+    if (!r.place || !/^[a-z0-9][a-z0-9-]*$/.test(r.id) || !/^[a-z0-9-]+$/.test(r.place) || PAGES[r.label] || /["\\]/.test(r.label)) continue;
+    PAGES[r.label] = `/places?realm=${r.id}`;
+    GROUPS.find(([g]) => g === 'Places')[1].push([r.label, r.place, '']);
+  }
+  // places:end
   const hrefOf = name => PAGES[name] || CLASSIC[name];
   const classic = name => !PAGES[name] && !!CLASSIC[name];
   const body = document.body;
@@ -89,7 +99,7 @@
     <nav aria-label="Sections" id="sections">${GROUPS.map(([g, items]) => html`
       <div><span class="label">${g}</span><ul>${items.map(([name, icon, key]) => {
         const href = hrefOf(name) || '#';
-        return html`<li><a href="${href}" data-section="${name}"${name === page ? html` aria-current="page"` : ''}${hrefOf(name) ? '' : html` data-unbuilt`}${classic(name) ? html` data-classic` : ''}>${ICON(icon)}<span class="nm">${name}</span>${classic(name) ? html`<span class="classic">classic<span class="sr"> screen</span></span>` : ''}${badge(counts[name])}<kbd>g ${key}</kbd></a></li>`;
+        return html`<li><a href="${href}" data-section="${name}"${name === page ? html` aria-current="page"` : ''}${hrefOf(name) ? '' : html` data-unbuilt`}${classic(name) ? html` data-classic` : ''}>${ICON(icon)}<span class="nm">${name}</span>${classic(name) ? html`<span class="classic">classic<span class="sr"> screen</span></span>` : ''}${badge(counts[name])}${key ? html`<kbd>g ${key}</kbd>` : ''}</a></li>`;
       })}</ul></div>`)}
     </nav>
     <div class="foot">
@@ -1102,7 +1112,7 @@
       }${extra.length ? [grp('This page'), extra.map((c, i) => html`<li role="option" data-cmd="${i}">${ICON(c.icon || 'play')}<span>${c.label}</span>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</li>`)] : ''
       }${VIEW_LIST.length > 1 ? [grp('Views'), VIEW_LIST.map(v => html`<li role="option" data-pview="${v.id}">${ICON('layout-dashboard')}<span>View: ${v.label}</span><kbd>v ${viewKey(v)}</kbd></li>`)] : ''
       }${grp('Anywhere')}<li role="option" data-capture>${ICON('plus')}<span>Capture a task, followup or note</span><kbd>n</kbd></li><li role="option" data-chat>${ICON('message-square')}<span>Ask in chat</span><kbd>c</kbd></li>${
-      GROUPS.flatMap(([, items]) => items).map(([n, icon, k]) => html`<li role="option" data-go="${n}">${ICON(icon)}<span>Go to ${n}${classic(n) ? ' (classic)' : ''}</span><kbd>g ${k}</kbd></li>`)}${
+      GROUPS.flatMap(([, items]) => items).map(([n, icon, k]) => html`<li role="option" data-go="${n}">${ICON(icon)}<span>Go to ${n}${classic(n) ? ' (classic)' : ''}</span>${k ? html`<kbd>g ${k}</kbd>` : ''}</li>`)}${
       Object.keys(SCREENS).length ? [grp('Classic screens'), Object.entries(SCREENS).map(([n, href]) => html`<li role="option" data-href="${href}">${ICON('arrow-up-right')}<span>Open ${n}</span><code>${href}</code></li>`)] : ''}`);
     opts = [...palList.querySelectorAll('[role="option"]')];
     opts.forEach(x => x.addEventListener('click', () => runOpt(x)));
@@ -1566,7 +1576,7 @@
   // walk:end
 
   // ---------- Keys ----------
-  const CHORDS = Object.fromEntries(GROUPS.flatMap(([, items]) => items).map(([k2, , k]) => [k, k2]));
+  const CHORDS = Object.fromEntries(GROUPS.flatMap(([, items]) => items).filter(([, , k]) => k).map(([k2, , k]) => [k, k2]));
   // The key sheet (?): one table, closes on Esc or ?. It lists the shell keys; a page adds its own through window.PAGE_KEYS.
   const keys = document.createElement('dialog');
   keys.className = 'palette keys'; keys.setAttribute('aria-labelledby', 'keys-h');

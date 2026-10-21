@@ -1066,7 +1066,7 @@ class Dashboard(BaseHTTPRequestHandler):
                 connection = None
             try:
                 # The realm labels are the operator's own (dashboard.realms), so a request without a session gets none.
-                realms = places.realms(connection)["list"]
+                realms = places.realm_places(connection)
                 badges = self.badges.read(self._read(connection, "", {}), connected=connection is not None)
             finally:
                 if connection is not None:

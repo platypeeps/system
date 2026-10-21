@@ -1,4 +1,5 @@
-// Places: the HOA and Home pages' views (Overview | Tasks | Briefs | Reports; HOA adds Alarms) and Tasks' place views.
+// Places: the HOA and Home pages' views (Overview | Tasks | Briefs | Reports; HOA adds Alarms), a realm place's (sd:5663,
+// place.js: Tasks | Briefs | Reports) and Tasks' place views.
 // Data: a place view with data-api reads its own document when it is shown, /api/<place>/<view> (sd_dashboard/places.py).
 // Overview is the page's own read, and so is HOA's Tasks: hoa.js draws it from /api/hoa, which the annunciator and the badge
 // read anyway. Which rows are a place's is decided once (places.area_of): Tasks' HOA and Home views filter on the `area` each
@@ -31,7 +32,7 @@
     tasks: doc => [table([['ID', 'num'], ['What'], ['Kind', 'hide-sm'], ['Status'], ['Due', 'hide-sm']],
       doc.rows.map(r => html`<tr><td class="ref num"><a href="${window.shell.itemHref(r.id)}">sd:${r.id}</a></td><td class="what">${r.title}</td>
         <td class="hide-sm">${r.kind}</td><td>${r.status}</td><td class="hide-sm">${day(r.due) || '—'}</td></tr>`),
-      'No open item without a repo.'), ''],
+      $('view-tasks')?.dataset.empty || 'No open item without a repo.'), ''],
     // sd:5620: a brief row is selected in place; Details is the Briefs page's (brief-details.js), with a link to Briefs.
     briefs: doc => [table([['Day'], ['Brief'], ['Words', 'num hide-sm'], ['Lead', 'hide-sm']],
       doc.rows.map(r => html`<tr data-id="${r.id}" aria-selected="${String(r.id === sel.briefs)}"><td class="when">${r.day}</td><td class="what"><button type="button">${r.subj}</button></td>
@@ -122,7 +123,7 @@
     settle(view, !loaded[view]++);
   }
 
-  // A place page: <body data-place="hoa|home"> and one block per view, id="view-<id>" with data-place-view, its data-label,
+  // A place page: <body data-place="hoa|home|<realm id>"> and one block per view, id="view-<id>" with data-place-view, its data-label,
   // and data-api when the view reads its own document. A view reads each time it shows, not only the first ('shell:view'
   // first), since nothing else reads it again. The wall display (data-kiosk on the root element, home-kiosk.js) stays on
   // the Overview: it declares no views.

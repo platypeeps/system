@@ -95,6 +95,10 @@ class TheRegistry(unittest.TestCase):
 
     def test_every_section_is_a_rail_section(self):
         for page in registry().PAGES:
+            if page.section == "Places":
+                # sd:5663: the realm place page is a rail entry per realm place, which shell.js adds to the Places group.
+                self.assertIn("GROUPS.find(([g]) => g === 'Places')[1].push(", SHELL_JS)
+                continue
             self.assertIn(page.section, GROUPS, f"{page.name} names {page.section!r}, which GROUPS in shell.js does not hold")
 
     def test_every_html_file_exists_and_each_route_serves_it(self):

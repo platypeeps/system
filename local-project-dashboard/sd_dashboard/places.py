@@ -1,4 +1,5 @@
-"""Places: the HOA and Home pages' Tasks, Briefs and Reports views, and the area rule Tasks' HOA and Home views share.
+"""Places: the HOA, Home and realm place pages' Tasks, Briefs and Reports views, and the area rule Tasks' HOA and Home
+views share.
 
 Each view reads its own document: `/api/<area>/tasks`, `/api/<area>/briefs` and `/api/<area>/reports`, built here
 from readers that already exist, with no store of its own. HOA's Tasks is the exception: its rows are
@@ -14,6 +15,11 @@ from readers that already exist, with no store of its own. HOA's Tasks is the ex
   job of the area's report family (`series_job`): briefs always name a registered repo, so Home has only the second.
 - A report is the area's when its job is in the area's report family. The family is the `dashboard.report_families` line
   whose key is the area's (`reports_screen.families`).
+
+**A realm's place page (sd:5663).** A realm whose id is also a `dashboard.report_families` key is a place, at
+`/places?realm=<id>`, its views at `/api/place/<id>/<view>`. Its Tasks are the open items `realm_of` puts in it, as
+Tasks' realm view; its Briefs are those whose repo is in it or whose series is a job of its family; its Reports are its
+family's. `realm_places` says which realms are places, for the rail: a realm or family line that did not read makes none.
 
 **Which realm a row is in (sd:5064).** Tasks' Personal, Work and other realm views: the `dashboard.realms` setting row
 (sd:5109; Settings edits it) names each realm and the checkout path globs that are its (`realms`); `realm_of` gives a row the first realm whose glob matches its repo path. A
@@ -35,7 +41,8 @@ from sd_db import reads
 
 from .documents import _config_dir, pipe_lines
 
-__all__ = ["AREAS", "area_of", "briefs", "parse_realms", "realm_of", "realms", "reports", "series_job", "tasks"]
+__all__ = ["AREAS", "area_of", "briefs", "parse_realms", "realm_of", "realm_places", "realms", "reports", "series_job",
+           "tasks"]
 
 #: The places, by family key, and their labels.
 AREAS = {"hoa": "HOA", "home": "Home"}
@@ -65,6 +72,15 @@ def realms(connection, config: Path | None = None) -> dict:
         return {"state": "missing", "source": source, "problems": [], "list": []}
     found, problems = parse_realms(text)
     return {"state": "partial" if problems else "read", "source": source, "problems": problems, "list": found}
+
+
+def realm_places(connection, config: Path | None = None) -> list[dict]:
+    """The realms (`realms`), each with `place`: the icon of the report family whose key is its id, which makes it a
+    place page (sd:5663), else None. A family list that did not read gives no realm a place."""
+    from .reports_screen import families
+
+    icons = {family["key"]: family["icon"] for family in families(connection, config)["list"]}
+    return [{**realm, "place": icons.get(realm["id"])} for realm in realms(connection)["list"]]
 
 
 def parse_realms(text: str) -> tuple[list[dict], list[str]]:
@@ -125,12 +141,32 @@ def _hoa(connection) -> tuple[str | None, str]:
     return recorded, "" if recorded else "no repo named hoa is registered"
 
 
+def _place(connection, area: str):
+    """`owns(repo, kind)`, whether a row is the place's, or None; why it is None; and whether that is a read that failed.
+    HOA and Home are `area_of`'s; any other area is a realm of `realms`, and owns what `realm_of` gives it."""
+    if area == "home":
+        return lambda repo, kind: area_of(repo, kind, None) == "home", "", False
+    if area == "hoa":
+        hoa, why = _hoa(connection)
+        return None if hoa is None else (lambda repo, kind: area_of(repo, kind, hoa) == "hoa"), why, False
+    found = realms(connection)
+    if found["state"] == "error":
+        return None, f"realms {found['problems'][0]}", True
+    realm = next((r for r in found["list"] if r["id"] == area), None)
+    if realm is None:
+        line = f"add realm|{area}|<label>|<glob> to {REALMS_KEY} on Settings"
+        named = "no realms are set" if found["state"] == "missing" else f"{found['source']} names no realm {area}"
+        return None, f"not configured: {named}; {line}", False
+    return lambda repo, kind: realm_of(repo, kind, found["list"]) == area, "", False
+
+
 def _family(connection, area: str, config: Path | None) -> tuple[list[str] | None, str, bool]:
     """The jobs of the area's report family, why there are none, and whether the family list did not read (unknown)."""
     from .reports_screen import FAMILIES_KEY, families
 
     found = families(connection, config)
-    line = f"add family|{area}|{AREAS[area]}|<icon>|<job>,<job>,... to {FAMILIES_KEY} on Settings"
+    label = AREAS.get(area) or next((r["label"] for r in realms(connection)["list"] if r["id"] == area), "<label>")
+    line = f"add family|{area}|{label}|<icon>|<job>,<job>,... to {FAMILIES_KEY} on Settings"
     if found["state"] == "missing":
         return None, f"not configured: no report families are set; {line}", False
     if found["state"] == "error":
@@ -146,14 +182,14 @@ def _unknown(now: str, area: str, reason: str, **more) -> dict:
 
 
 def tasks(connection, area: str, *, now: str) -> dict:
-    """The area's open items: `reads.backlog_items`' unparked open rows `area_of` places in it."""
-    hoa, why = _hoa(connection)
-    if area == "hoa" and hoa is None:
-        return _unknown(now, area, why)
+    """The area's open items: `reads.backlog_items`' unparked open rows `area_of` (or a realm's `realm_of`) places in it."""
+    owns, why, unread = _place(connection, area)
+    if owns is None:
+        return {**_unknown(now, area, why), **({"state": "error"} if unread else {})}
     from .screens import _repo_labels
 
     found = [row for row in reads.backlog_items(connection, now=now)
-             if row["status"] != "done" and area_of(row["repo"], row["kind"], hoa) == area]
+             if row["status"] != "done" and owns(row["repo"], row["kind"])]
     label = _repo_labels(row["repo"] for row in found)
     rows = [{"id": row["id"], "title": row["title"], "kind": row["kind"], "status": row["status"],
              "priority": row["priority"], "due": row["due"], "repo": label(row["repo"]) if row["repo"] else None,
@@ -173,20 +209,25 @@ def briefs(connection, area: str, *, now: str, config: Path | None = None) -> di
     if unread:
         # The checkout's briefs could still be listed, but which series are the area's is unknown, not "none".
         return {**_unknown(now, area, unconfigured), "state": "error"}
-    repo = _hoa(connection)[0] if area == "hoa" else None
-    if jobs is None and repo is None:
-        return _unknown(now, area, unconfigured)
+    owns, why, unread = _place(connection, area)
+    if unread:
+        # The series briefs could still be listed, but which repos are the realm's is unknown, not "none".
+        return {**_unknown(now, area, why), "state": "error"}
+    if area == "home":
+        owns = None  # a brief always names a repo, and Home's rows have none: Home holds only its series' briefs
+    if jobs is None and owns is None:
+        return _unknown(now, area, "; ".join(reason for reason in (why, unconfigured) if reason))
     wanted = set(jobs or ())
 
     def reader(conn):
         got = briefs_screen._library().rows(conn, limit=BRIEF_SCAN)
-        return [raw for raw in got if (repo is not None and raw.get("repo") == repo)
+        return [raw for raw in got if (owns is not None and raw.get("repo") and owns(raw["repo"], "brief"))
                 or series_job(str((raw.get("brief") or {}).get("series") or "")) in wanted][:briefs_screen.ROWS + 1]
 
     doc = briefs_screen.document(connection, now=now, reader=reader)
     state = "error" if doc["reader"]["state"] == "error" else "read"
     # A family not configured still leaves the checkout's briefs; the reason says what else would be read.
-    return {"read": now, "area": area, "state": state, "reason": doc["reader"]["reason"] or unconfigured,
+    return {"read": now, "area": area, "state": state, "reason": doc["reader"]["reason"] or unconfigured or why,
             "rows": doc["briefs"], "reader": doc["reader"], "watchdog": doc["watchdog"]}
 
 

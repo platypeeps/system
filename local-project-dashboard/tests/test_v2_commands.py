@@ -61,7 +61,7 @@ class OneDeclaration(unittest.TestCase):
         pages["today-github.js"] = pages["today.js"]
         pages.update({f"{page.stem}.html": re.findall(r'<script src="/ui/([^"]+)"', page.read_text(encoding="utf-8"))
                       for page in V2.glob("*.html") if 'src="/ui/brief-details.js"' in page.read_text(encoding="utf-8")})
-        self.assertEqual(sorted(p for p in pages if p.endswith(".html")), ["briefs.html", "hoa.html", "home.html"])
+        self.assertEqual(sorted(p for p in pages if p.endswith(".html")), ["briefs.html", "hoa.html", "home.html", "place.html"])
         for name, scripts in pages.items():
             with self.subTest(page=name):
                 self.assertIn(SHARED, scripts)

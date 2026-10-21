@@ -272,6 +272,86 @@ class TheRowWins(Fixture):
         self.assertIn("database is locked", briefs["reason"])
 
 
+class RealmPlaces(Fixture):
+    """sd:5663: a realm whose id is also a report family key is a place page, with HOA's and Home's three views."""
+
+    def setUp(self):
+        super().setUp()
+        self.realms = self.dir / "realms.conf"
+        self.realms.write_text("realm|acme|Acme|/repos/acme-*\nrealm|lab|Lab|/repos/lab\n", encoding="utf-8")
+        self.enterContext(mock.patch.object(places, "REALMS_CONFIG", self.realms))
+        self.config.write_text(FAMILIES + "family|acme|Acme|map|acme-nightly\n", encoding="utf-8")
+        self.site = self.repo("/repos/acme-site")
+        self.acme_item = self.item("Ship the press kit", kind="task", repo=self.site)
+        self.item("A settled Acme item", kind="task", repo=self.site, status="done")
+        self.acme_report = report(self, "acme-nightly", "r4")
+        self.site_brief = brief(self, "2026-09-05 - Site Notes", self.site)
+        self.nightly_brief = brief(self, "2026-09-05 - Acme Nightly", self.other)
+
+    def refuse(self):
+        def refuse(connection, keys):
+            raise sqlite3.OperationalError("database is locked")
+
+        return mock.patch.object(writes, "read_settings", refuse)
+
+    def test_tasks_are_the_realms_open_items_the_rows_of_tasks_realm_view(self):
+        doc = places.tasks(self.connection, "acme", now=NOW)
+        self.assertEqual((doc["state"], doc["area"], self.ids(doc)), ("read", "acme", [self.acme_item]))
+        rows = tasks_screen.document(self.connection, now=NOW)["rows"]
+        self.assertEqual(sorted(r["id"] for r in rows if r["realm"] == "acme" and r["status"] != "done" and not r["parked"]),
+                         self.ids(doc))
+
+    def test_briefs_are_the_realms_repos_and_those_whose_series_names_a_family_job(self):
+        doc = places.briefs(self.connection, "acme", now=NOW, config=self.config)
+        self.assertEqual((doc["state"], self.ids(doc)), ("read", sorted([self.site_brief, self.nightly_brief])))
+
+    def test_reports_are_the_familys(self):
+        doc = places.reports(self.connection, "acme", now=NOW, config=self.config)
+        self.assertEqual((doc["state"], self.ids(doc), doc["jobs"]), ("read", [self.acme_report], ["acme-nightly"]))
+
+    def test_a_realm_the_list_does_not_name_is_unknown_with_the_line_to_add(self):
+        for read in (places.tasks, places.briefs):
+            doc = read(self.connection, "beta", now=NOW)
+            self.assertEqual((doc["state"], doc["rows"]), ("unknown", []), read.__name__)
+            self.assertIn("names no realm beta; add realm|beta|<label>|<glob> to dashboard.realms on Settings", doc["reason"])
+
+    def test_a_missing_family_line_is_unknown_naming_the_line_with_the_realms_label(self):
+        self.config.write_text(FAMILIES, encoding="utf-8")
+        doc = places.reports(self.connection, "acme", now=NOW, config=self.config)
+        self.assertEqual((doc["state"], doc["rows"]), ("unknown", []))
+        self.assertIn("names no family acme; add family|acme|Acme|<icon>|<job>,<job>,... to dashboard.report_families",
+                      doc["reason"])
+        # The realm's own repos still give its briefs, and the reason says what else would be read.
+        briefs = places.briefs(self.connection, "acme", now=NOW, config=self.config)
+        self.assertEqual((briefs["state"], self.ids(briefs)), ("read", [self.site_brief]))
+        self.assertIn("names no family acme", briefs["reason"])
+
+    def test_a_realms_row_that_does_not_read_leaves_tasks_and_briefs_error_not_empty(self):
+        with self.refuse():
+            tasks = places.tasks(self.connection, "acme", now=NOW)
+        self.assertEqual((tasks["state"], tasks["rows"]), ("error", []))
+        self.assertIn("database is locked", tasks["reason"])
+        with mock.patch.object(places, "realms", return_value={"state": "error", "source": "x", "problems": ["not read: locked"],
+                                                               "list": []}):
+            briefs = places.briefs(self.connection, "acme", now=NOW, config=self.config)
+        self.assertEqual((briefs["state"], briefs["rows"]), ("error", []))
+        self.assertIn("not read: locked", briefs["reason"])
+
+    def test_a_realm_is_a_place_only_when_a_family_has_its_id(self):
+        self.assertEqual([(r["id"], r["place"]) for r in places.realm_places(self.connection, self.config)],
+                         [("acme", "map"), ("lab", None)])
+        with self.refuse():
+            self.assertEqual(places.realm_places(self.connection, self.config), [])
+        broken = self.dir / "broken.conf"
+        broken.write_bytes(b"\xff\xfe")
+        self.assertEqual([r["place"] for r in places.realm_places(self.connection, broken)], [None, None])
+
+    def test_hoa_and_home_keep_their_rows(self):
+        self.assertEqual(self.ids(places.tasks(self.connection, "hoa", now=NOW)), [self.hoa_item])
+        self.assertEqual(self.ids(places.tasks(self.connection, "home", now=NOW)), [self.home_item])
+        self.assertEqual(self.ids(places.briefs(self.connection, "home", now=NOW, config=self.config)), [self.fun_brief])
+
+
 class TheRoutes(BrowserSession):
     def test_sections_js_names_the_realms_only_to_a_signed_in_page(self):
         """sd:5064: the realm labels are the operator's own, so a request without a session gets an empty list."""
@@ -282,9 +362,40 @@ class TheRoutes(BrowserSession):
                 signed = self.request("/ui/sections.js", headers={"Cookie": self.cookie})[2]
                 bare = self.request("/ui/sections.js")[2]
         realms = lambda body: json.loads(re.search(r"^window\.SHELL_REALMS = (.*);$", body, re.M).group(1))
-        self.assertEqual(realms(signed), [{"id": "work", "label": "Work"}])
+        self.assertEqual(realms(signed), [{"id": "work", "label": "Work", "place": None}])
         self.assertEqual(realms(bare), [])
         self.assertNotIn("example-work", signed, "a glob is a path; the page needs only the id and label")
+
+    def test_a_realm_with_a_family_of_its_id_carries_its_icon_as_place(self):
+        """sd:5663: the rail lists a realm place only when its realm and family lines both read."""
+        with tempfile.TemporaryDirectory() as folder:
+            conf, families = Path(folder) / "realms.conf", Path(folder) / "report-families.conf"
+            conf.write_text("realm|acme|Acme|/repos/acme-*\nrealm|lab|Lab|/repos/lab\n", encoding="utf-8")
+            families.write_text("family|acme|Acme|map|acme-nightly\n", encoding="utf-8")
+            with mock.patch.object(places, "REALMS_CONFIG", conf), mock.patch.object(reports_screen, "FAMILIES_CONFIG", families):
+                body = self.request("/ui/sections.js", headers={"Cookie": self.cookie})[2]
+        realms = json.loads(re.search(r"^window\.SHELL_REALMS = (.*);$", body, re.M).group(1))
+        self.assertEqual(realms, [{"id": "acme", "label": "Acme", "place": "map"}, {"id": "lab", "label": "Lab", "place": None}])
+
+    def test_a_realm_places_views_are_routes_that_need_a_session(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(places, "REALMS_CONFIG", Path(folder) / "realms.conf"), \
+                mock.patch.object(reports_screen, "FAMILIES_CONFIG", Path(folder) / "report-families.conf"):
+            for view in ("tasks", "briefs", "reports"):
+                path = f"/api/place/acme/{view}"
+                self.assertEqual(self.request(path)[0], 403, path)
+                status, _, body = self.request(path, headers={"Cookie": self.cookie})
+                doc = json.loads(body)
+                # No realm list and no family list: unknown, with the line to add, never an empty list.
+                self.assertEqual((status, doc["area"], doc["state"], doc["rows"]), (200, "acme", "unknown", []), path)
+                self.assertIn("add ", doc["reason"], path)
+                # A Tasks place view or a malformed id is not a realm.
+                for other in ("hoa", "personal", "all"):
+                    self.assertEqual(self.request(f"/api/place/{other}/{view}", headers={"Cookie": self.cookie})[0], 404)
+                self.assertEqual(self.request(f"/api/place/Acme/{view}", headers={"Cookie": self.cookie})[0], 404)
+        status, _, page = self.request("/places?realm=acme", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        self.assertIn('src="/ui/place.js', page)
 
     def test_each_view_is_its_own_route_that_needs_a_session(self):
         with tempfile.TemporaryDirectory() as folder, \
@@ -551,9 +662,97 @@ document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'home', fir
                          [(True, False), (False, True)])
 
 
+PLACE_JS = (STATIC / "place.js").read_text(encoding="utf-8")
+SHELL_PLACES = re.search(r"^  // places:start\n(.*?)^  // places:end$", (STATIC / "shell.js").read_text(encoding="utf-8"), re.S | re.M)
+
+
+class TheRealmPlaceScripts(unittest.TestCase):
+    """sd:5663: place.js names the page and its views after ?realm=, and shell.js puts each realm place in the rail."""
+
+    def run_script(self, script):
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out["error"])
+        return out["R"]
+
+    def place(self, search, realms):
+        return self.run_script(STAND_IN + MARKUP_JS + f"""
+location.search = {json.dumps(search)}; window.SHELL_REALMS = {json.dumps(realms)};
+document.documentElement = {{ hasAttribute: () => false }};
+const BLOCKS = ['tasks', 'briefs', 'reports'].map(v => Object.assign(El('view-' + v), {{ dataset: {{ placeView: v, label: v }} }}));
+document.querySelectorAll = sel => sel === '[data-place-view]' ? BLOCKS : [];
+var R = {{}};
+try {{
+{PLACE_JS}
+{PLACES_JS}
+R.page = document.body.dataset.page || null; R.place = document.body.dataset.place || null; R.title = document.title || null;
+R.h1 = ELS.title ? ELS.title.textContent : null; R.sub = ELS.subhead ? ELS.subhead.textContent : null;
+R.views = window.PAGE_VIEWS || null; R.state = window.PAGE_STATE ? [window.PAGE_STATE.title, String(window.PAGE_STATE.text.text || window.PAGE_STATE.text)] : null;
+}} catch (e) {{ OUT.error = String(e) + ' ' + e.stack; }}
+function run() {{ OUT.R = R; return JSON.stringify(OUT); }}
+""")
+
+    def test_a_realm_place_names_the_page_and_points_each_view_at_its_route(self):
+        r = self.place("?realm=acme", [{"id": "acme", "label": "Acme", "place": "map"}])
+        self.assertEqual((r["page"], r["place"], r["title"], r["h1"]), ("Acme", "acme", "Acme · system", "Acme"))
+        self.assertEqual(r["views"], [{"id": v, "label": v, "api": f"/api/place/acme/{v}"} for v in ("tasks", "briefs", "reports")])
+        self.assertIsNone(r["state"])
+
+    def test_a_realm_without_a_family_or_not_listed_keeps_its_views_and_says_why(self):
+        r = self.place("?realm=acme", [{"id": "acme", "label": "Acme", "place": None}])
+        self.assertIn("dashboard.report_families has no family acme", r["sub"])
+        self.assertEqual(len(r["views"]), 3)
+        r = self.place("?realm=acme", [])
+        self.assertEqual((r["page"], r["h1"]), ("acme", "acme"))
+        self.assertIn("dashboard.realms names no realm acme", r["sub"])
+        self.assertEqual(r["views"][0]["api"], "/api/place/acme/tasks")
+        # A label the rail could not find by [data-section="..."] is left to the id.
+        self.assertEqual(self.place("?realm=acme", [{"id": "acme", "label": 'A"cme', "place": "map"}])["page"], "acme")
+
+    def test_without_a_realm_the_page_lists_the_realm_places_and_reads_no_view(self):
+        r = self.place("", [{"id": "acme", "label": "Acme", "place": "map"}, {"id": "lab", "label": "Lab", "place": None}])
+        self.assertEqual((r["place"], r["views"], r["state"][0]), (None, None, "Pick a place"))
+        self.assertIn('href="/places?realm=acme">Acme</a>', r["state"][1])
+        self.assertNotIn("Lab", r["state"][1])
+        r = self.place("?realm=../x", [])
+        self.assertEqual((r["place"], r["state"][0]), (None, "No realm place"))
+
+    def test_the_rail_lists_each_realm_place_under_places_with_no_g_key(self):
+        self.assertIsNotNone(SHELL_PLACES, "shell.js has no places:start block")
+        realms = [{"id": "acme", "label": "Acme", "place": "map"}, {"id": "lab", "label": "Lab", "place": None},
+                  {"id": "tasks", "label": "Tasks", "place": "map"}, {"id": "q", "label": 'Q"', "place": "map"},
+                  {"id": "bad", "label": "Bad", "place": "x y"}]
+        r = self.run_script(f"""var window = globalThis, OUT = {{ error: null }}, R = {{}};
+window.SHELL_REALMS = {json.dumps(realms)};
+const PAGES = {{ Tasks: '/tasks', HOA: '/hoa', Home: '/home', Places: '/places' }};
+const GROUPS = [['Work', [['Tasks', 'list-todo', 'k']]], ['Places', [['HOA', 'droplets', 'h'], ['Home', 'house', 'o']]]];
+try {{
+{SHELL_PLACES.group(1)}
+R.places = GROUPS[1][1]; R.pages = PAGES;
+}} catch (e) {{ OUT.error = String(e) + ' ' + e.stack; }}
+function run() {{ OUT.R = R; return JSON.stringify(OUT); }}
+""")
+        self.assertEqual(r["places"], [["HOA", "droplets", "h"], ["Home", "house", "o"], ["Acme", "map", ""]])
+        self.assertEqual(r["pages"]["Acme"], "/places?realm=acme")
+        self.assertEqual(r["pages"]["Tasks"], "/tasks")
+
+    def test_place_js_sets_the_views_before_places_js_reads_them(self):
+        text = (STATIC.parent / "place.html").read_text(encoding="utf-8")
+        self.assertLess(text.index('src="/ui/sections.js"'), text.index('src="/ui/place.js"'))
+        self.assertLess(text.index('src="/ui/place.js"'), text.index('src="/ui/places.js"'))
+
+    def test_a_rail_entry_or_palette_row_without_a_key_draws_no_kbd(self):
+        shell = (STATIC / "shell.js").read_text(encoding="utf-8")
+        self.assertIn("${key ? html`<kbd>g ${key}</kbd>` : ''}", shell)
+        self.assertIn("${k ? html`<kbd>g ${k}</kbd>` : ''}", shell)
+        self.assertIn(".filter(([, , k]) => k).map(([k2, , k]) => [k, k2])", shell)
+
+
 class ThePages(unittest.TestCase):
     def test_page_views_are_declared_before_shell_js_and_each_page_has_the_switch_host(self):
-        for page, script in (("hoa", "places.js"), ("home", "places.js"), ("tasks", "tasks.js")):
+        for page, script in (("hoa", "places.js"), ("home", "places.js"), ("place", "place.js"), ("place", "places.js"),
+                             ("tasks", "tasks.js")):
             text = (STATIC.parent / f"{page}.html").read_text(encoding="utf-8")
             self.assertLess(text.index(f'src="/ui/{script}"'), text.index('src="/ui/shell.js"'), page)
             self.assertEqual(text.count('id="viewswitch"'), 1, page)
