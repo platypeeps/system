@@ -536,12 +536,14 @@ def _dependency_rows(found: list[dict], *, now: str) -> tuple[list[dict], dict]:
     managed = _managed(found)
     if not managed:
         return [_no_managed("dep", "Dependencies")], {}
-    rows, unread, clean, archived, skipped = [], [], 0, 0, set()
+    rows, unread, clean, archived, off, skipped = [], [], 0, 0, 0, set()
     for repo in managed:
         part = (repo.get("alerts") or {}).get("dependabot")
         name = repo.get("slug") or repo["repo"]
         if isinstance(part, dict) and part.get("archived"):
             archived += 1
+        elif isinstance(part, dict) and part.get("setting") == "disabled":
+            off += 1  # alerts turned off on GitHub: the operator's choice, not a failed read (sd:5611)
         elif not isinstance(part, dict) or not isinstance(part.get("open"), int):
             unread.append(_unread_reason(repo, part))
             skipped.add(repo["repo"])
@@ -567,11 +569,11 @@ def _dependency_rows(found: list[dict], *, now: str) -> tuple[list[dict], dict]:
     if unread:
         rows.append(_not_read("dep", "Dependencies", unread))
     rows += _stale("dep", "Dependencies", managed, skipped, now)
-    if clean and not any(row["type"] == "dependabot alerts" for row in rows):
+    if (clean or off) and not any(row["type"] == "dependabot alerts" for row in rows):
         rows.append({"id": "dep:ok", "state": "ok", "type": "check",
                      "what": f"No open Dependabot alert in {clean} managed {_plural(clean, 'repo', 'repos')}",
-                     "detail": f"archived repos left out: {archived}", "kind": "Dependencies",
-                     "facts": {"Clean": str(clean), "Archived": str(archived)}})
+                     "detail": f"archived repos left out: {archived} · alerts off: {off}", "kind": "Dependencies",
+                     "facts": {"Clean": str(clean), "Archived": str(archived), "Alerts off": str(off)}})
     return rows, _alert_extra(managed)
 
 

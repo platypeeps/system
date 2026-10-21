@@ -566,6 +566,17 @@ class TheDocument(Collectors, ScreenCase):
         rows = [row["id"] for row in self.area("dep", protection=protection_of([stale, ALERTED[0]]))["rows"]]
         self.assertEqual(rows, ["dep:/checkouts/alpha"])
 
+    def test_dependabot_turned_off_is_a_setting_not_a_failed_read(self):
+        """sd:5611. Alerts disabled on GitHub is the operator's choice: counted on the ok row, never "not read"."""
+        clean = {**ALERTED[0], "alerts": {"dependabot": {"open": 0, "more": False}}}
+        off = {**ALERTED[3], "alerts": {"dependabot": {"setting": "disabled"}}}
+        rows = self.area("dep", protection=protection_of([clean, off]))["rows"]
+        (row,) = [r for r in rows if r["id"] != "dep:stale"]  # the fixtures' read times differ; staleness is not under test
+        self.assertEqual((row["id"], row["state"]), ("dep:ok", "ok"))
+        self.assertEqual(row["facts"]["Alerts off"], "1")
+        (row,) = [r for r in self.area("dep", protection=protection_of([off]))["rows"] if r["id"] != "dep:stale"]
+        self.assertEqual((row["id"], row["state"], row["detail"]), ("dep:ok", "ok", "archived repos left out: 0 · alerts off: 1"))
+
     def test_no_open_alert_is_an_ok_row_and_no_managed_repo_is_unknown(self):
         clean = [{**repo, "alerts": {"dependabot": {"open": 0, "more": False}}} for repo in ALERTED[:2]]
         (row,) = self.area("dep", protection=protection_of(clean))["rows"]
