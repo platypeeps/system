@@ -172,6 +172,16 @@ class SelfUpdateOffTest(unittest.TestCase):
         self.assertNotIn("AGY_CLI_DISABLE_AUTO_UPDATE", "\n".join(
             line for line in again.stdout.splitlines() if "MISSING" in line or "DIFFERS" in line))
 
+    def test_an_env_row_appends_on_its_own_line_after_a_file_without_a_final_newline(self):
+        write_exec(self.stubs / "agy", EXIT_1_STUB)
+        env_sh = self.home / ".config/shell/env.sh"
+        env_sh.parent.mkdir(parents=True, exist_ok=True)
+        env_sh.write_text("export OTHER=1")
+
+        self.run_verb("update", "macos", "--apply")
+
+        self.assertEqual(env_sh.read_text(), "export OTHER=1\nexport AGY_CLI_DISABLE_AUTO_UPDATE=1\n")
+
     def test_an_env_row_for_a_command_not_installed_is_skipped(self):
         env_sh = self.home / ".config/shell/env.sh"
         env_sh.parent.mkdir(parents=True, exist_ok=True)

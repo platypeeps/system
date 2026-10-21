@@ -3144,7 +3144,9 @@ self_update_env() { # file key value
     echo "  MISSING $1 $2 = $3"
   fi
   run_ok mkdir -p "$(dirname "$1")" || return 0
-  try_run sh -c 'umask 077; printf "%s\n" "$1" >> "$2"' sh "$want" "$1" \
+  # A file without a final newline would glue the export onto its last line.
+  try_run sh -c 'umask 077; nl=; [ -s "$2" ] && [ -n "$(tail -c 1 "$2")" ] && nl="\n"
+    printf "$nl%s\n" "$1" >> "$2"' sh "$want" "$1" \
     || echo "  DIFFERS $1 $2 not written; add '$want' by hand"
 }
 
