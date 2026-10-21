@@ -287,6 +287,8 @@
   //   task    Enter opens Capture with the text.   ask   Enter sends the text to chat.
   // The reading is guessed from the text; → at the field's end takes the next one; Esc clears; / focuses the field.
   // shell.filter() is the shown view's filter text; shell.filter(q) sets it (a page's Clear all). The bar reads ?q= at load.
+  // A page with a bar of its own (Skills, Tasks) hands its filter text over with shell.filter(q) at each change, so the
+  // tables it does not filter itself (Skills' tracked repositories, Tasks' issues) take it as their text filter too.
   // window.PAGE_FILTER = { <view id, or '' on a page without views>: 'reports, bodies included' } says what the filter
   // covers; without it the shown tables' titles say it.
   // shift:start
@@ -305,9 +307,9 @@
   // shift:end
   const shiftRow = main.querySelector('[data-shift]');
   const SQ = {}; // the bar's text per view
-  let shiftIn = null, shiftPrev = null, shiftMode = 'filter', shiftSaid = null, shiftOn = null;
+  let shiftIn = null, shiftPrev = null, shiftMode = 'filter', shiftSaid = null, shiftOn = null, pageQ = '';
   const shiftView = () => view.current() || '';
-  const shiftQ = () => shiftIn && shiftMode === 'filter' ? shiftIn.value.trim() : '';
+  const shiftQ = () => shiftIn ? (shiftMode === 'filter' ? shiftIn.value.trim() : '') : pageQ;
   // A table's name: its heading, its aria-label, its section's heading, then its caption (often a sentence).
   function shiftName(t) {
     const id = t.getAttribute('aria-labelledby'), label = t.getAttribute('aria-label');
@@ -339,7 +341,9 @@
   function shiftSet(v, mode = shiftGuess(v.trim())) { shiftOn = shiftView(); shiftIn.value = v; SQ[shiftOn] = v; shiftMode = mode; shiftRender(); }
   // shell.filter: the shown view's filter text, or set it; a page without the bar has none.
   function filter(...a) {
-    if (a.length && shiftIn) shiftSet(String(a[0] ?? ''), 'filter');
+    const v = String(a[0] ?? '');
+    if (a.length && shiftIn) shiftSet(v, 'filter');
+    else if (a.length && v.trim() !== pageQ) { pageQ = v.trim(); if (!tq) tq = requestAnimationFrame(tscan); }
     return shiftQ();
   }
   const shiftClear = () => !!shiftIn?.value && (shiftSet(''), true);
@@ -1436,8 +1440,9 @@
       if (b.getAttribute('aria-expanded') !== String(open)) b.setAttribute('aria-expanded', String(open));
       if (!open) s.body.forEach(r => hid.add(r.tr));
     });
-    // A table the page filters takes the bar's text from the page; every other table takes it here.
-    const use = { ...st, q: ownFilter ? '' : shiftQ() }, filterOn = tchips(use).length > 0;
+    // A table the page filters takes the bar's text from the page; every other table takes it here. A page's own bar holds
+    // its text and clears it, so the text draws no chip here (shell.filter('') would leave that bar's text standing).
+    const use = { ...st, q: ownFilter ? '' : shiftQ() }, chipped = tchips(shiftIn ? use : { ...use, q: '' }), filterOn = chipped.length > 0;
     let shown = 0, total = 0;
     rows.forEach(r => {
       const out = hid.has(r.tr) || !tshows(r, use, cols);
@@ -1472,7 +1477,7 @@
     const many = !!t.dataset.toolbar && [...document.querySelectorAll(`main table[data-toolbar="${CSS.escape(t.dataset.toolbar)}"]`)].filter(x => !x.closest('[hidden]')).length > 1;
     const opts = html`<option value="">${many && bar._name ? `${bar._name}: filter by column…` : 'Filter by column…'}</option>${facets.map(c => html`<optgroup label="${c.label}">${c.values.map(v => html`<option value="${JSON.stringify([c.label, v])}">${v}</option>`)}</optgroup>`)}`;
     if (sel._t !== opts.text && document.activeElement !== sel) { put(sel, opts); sel._t = opts.text; }
-    const chipsHtml = facetOn ? list.chips(tchips(use), shown, total, 'tunfilter') : html``, slot = bar.querySelector('.tchips');
+    const chipsHtml = facetOn ? list.chips(chipped, shown, total, 'tunfilter') : html``, slot = bar.querySelector('.tchips');
     if (slot._t !== chipsHtml.text) { put(slot, chipsHtml); slot._t = chipsHtml.text; }
   }
   let tq = 0;

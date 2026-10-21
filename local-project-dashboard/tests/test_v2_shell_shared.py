@@ -606,7 +606,7 @@ class TheTableGrammar(unittest.TestCase):
         js = (STATIC / "shell.js").read_text(encoding="utf-8")
         self.assertIn("const { facet: facetOn, folds: foldsOn } = tbar(", js)
         # The text is the Shapeshift bar's (sd:5539): a table the page filters hears it as shell:filter; the shell filters the rest.
-        self.assertIn("const use = { ...st, q: ownFilter ? '' : shiftQ() }, filterOn = tchips(use).length > 0;", js)
+        self.assertIn("const use = { ...st, q: ownFilter ? '' : shiftQ() }, chipped = tchips(shiftIn ? use : { ...use, q: '' }), filterOn = chipped.length > 0;", js)
         self.assertIn("document.addEventListener('shell:filter', () => { if (!tq) tq = requestAnimationFrame(tscan); });", js)
         # A table in a hidden view keeps its parts out of the shared row, and a view change rescans.
         self.assertIn("const away = !!t.dataset.toolbar && !!t.closest('[hidden]');", js)
@@ -683,7 +683,7 @@ class TheTableGrammar(unittest.TestCase):
         js = (STATIC / "shell.js").read_text(encoding="utf-8")
         self.assertIn("const TKEY = `sd.tables.${location.pathname}`;", js)
         self.assertIn("try { localStorage.setItem(TKEY, JSON.stringify(TKEPT)); } catch", js)
-        self.assertIn("list.chips(tchips(use), shown, total, 'tunfilter')", js)
+        self.assertIn("list.chips(chipped, shown, total, 'tunfilter')", js)
         self.assertIn("tr[data-tout] { display: none !important; }", SHELL_CSS)
         self.assertIn('td > .tfold[aria-expanded="true"] > .i:first-child { transform: rotate(90deg); }', SHELL_CSS)
 
@@ -804,12 +804,6 @@ class TheToolbarStandard(unittest.TestCase):
         for name in ("health.js", "management.js"):
             self.assertNotIn('<div class="filters"', (STATIC / name).read_text(encoding="utf-8"))
 
-    # The tables a page's own Shapeshift does not reach (sd:5539): no text filter reaches them; the column filter does.
-    UNREACHED = {
-        "skills.html": {"repos-h"},  # the Intake view's tracked repositories: the bar filters the catalog alone
-        "tasks.html": {"issues-h", "place-rows"},  # Your issues; the place rows
-    }
-
     def test_every_page_with_a_table_has_one_bar_and_no_box_of_its_own(self):
         # sd:5539 (operator, 2026-10-20): one "Filter, capture or ask" bar on every page with a table, and no table-level
         # "Filter rows" box. The shell draws the bar in row 1 marked data-shift; a page whose own Shapeshift has readings of
@@ -829,11 +823,23 @@ class TheToolbarStandard(unittest.TestCase):
                 with self.subTest(page=page.name, table=key):
                     if attrs.get("data-tfilter") == "page":
                         self.assertIn(attrs.get("data-toolbar"), set(marked) | finds, "its column filter is not in the bar's row")
-                    elif own:
-                        self.assertIn(key, self.UNREACHED.get(page.name, set()),
-                                      "the page's own bar reaches it too: mark it data-tfilter=\"page\", or list it here")
-            with self.subTest(page=page.name, stale=True):
-                self.assertLessEqual(self.UNREACHED.get(page.name, set()), {k for k, _a in tables})
+
+    def test_a_page_with_its_own_bar_hands_its_text_to_every_other_table(self):
+        # sd:5539 follow-up (operator, note 25755): the tables 697344e6 left with no text filter (Skills' tracked
+        # repositories, Tasks' issues) take the page's own bar's text: the page calls shell.filter(q) at each change, and the
+        # shell keeps it as the text filter of every table the page does not filter itself.
+        for page in self.PAGES:
+            own = any("shift" in c for (_t, c, _i, _a), _u in tree(page))
+            others = [k for k, a in page_tables(page) if a.get("data-tfilter") != "page"]
+            if not own or not others:
+                continue
+            text = page.read_text(encoding="utf-8")
+            scripts = "".join((STATIC / f"{n}.js").read_text(encoding="utf-8") for n in re.findall(r'<script src="/ui/([\w-]+)\.js"', text)
+                              if n not in SHELL_SCRIPTS and (STATIC / f"{n}.js").exists())
+            with self.subTest(page=page.name, tables=others):
+                self.assertTrue(re.search(r"\bshell\.filter\((q|Q)\)", scripts), "the page's bar never hands its text to the shell")
+        self.assertIn("const shiftQ = () => shiftIn ? (shiftMode === 'filter' ? shiftIn.value.trim() : '') : pageQ;", SHELL_JS)
+        self.assertIn("else if (a.length && v.trim() !== pageQ) { pageQ = v.trim(); if (!tq) tq = requestAnimationFrame(tscan); }", SHELL_JS)
 
     def test_a_page_that_filters_its_own_rows_hears_the_bar(self):
         # One hook (sd:5539): a page-filtered table on a page with the shell's bar takes the text from shell:filter, and

@@ -118,7 +118,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   const tbody = document.getElementById('rows'), headEl = document.getElementById('rows-head'), chipsEl = document.getElementById('chips'), pagerEl = document.getElementById('pager');
   // Active filters, one chip each; each remover leaves the list to draw once, after it.
   const activeFilters = () => [filter !== 'all' && { key: 'facet', label: `Availability: ${FACETS().find(x => x[0] === filter)[1]}` }, q && { key: 'q', label: `Text: ${q}` }].filter(Boolean);
-  const UNFILTER = { facet: () => { filter = 'all'; }, q: () => { q = ''; input.value = ''; } };
+  const UNFILTER = { facet: () => { filter = 'all'; }, q: () => { q = ''; input.value = ''; window.shell.filter(''); } };
   function drawRows() {
     const had = document.activeElement?.closest?.('tr[data-id]')?.dataset.id; // keep focus on the same row across a redraw
     const list = window.shell.list, v = visible(), shown = list.pageOf(v, L);
@@ -516,6 +516,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   // on document, this page on window), so the start below also asks shell.view which view is shown.
   function onView(id) {
     VIEW = id;
+    if (input.value) sayAs();
     if (VIEW === 'intake') {
       if (!repoReader) { repoReader = window.shell.read(repoSpec()); repoReader.load(); }
       else if (REPOS && !/^(repo|source):|^track$/.test(selected || '')) { const f = repoSpec().first(); if (f) select(f, false); }
@@ -534,12 +535,18 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   let mode = 'filter';
   const guess = v => /^run\b/i.test(v) ? 'run' : /github\.com\/|^[\w.-]+\/[\w.-]+(\/|$)/.test(v) ? 'adopt' : 'filter';
   function setMode(m) { mode = m; prev.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.as === m))); render(); }
+  // The As line; a filter names the shown view's table.
+  function sayAs() {
+    const v = input.value.trim(), name = (v.match(/^run\s+([\w-]+)/i) || [])[1];
+    put(as, html`${mode === 'run' ? html`${I('play')} run ${name && byName[name] ? html`<b>${name}</b>` : html`<span>a skill name</span>`}`
+      : mode === 'adopt' ? html`${I('download')} adopt from ${v}` : html`${I('filter')} filter ${VIEW === 'intake' ? 'the tracked repositories' : 'the catalog'}`}`);
+  }
   function render() {
     const v = input.value.trim(); prev.hidden = !v; ghost.textContent = v ? `→ ${mode}` : '';
-    const name = (v.match(/^run\s+([\w-]+)/i) || [])[1];
-    put(as, html`${mode === 'run' ? html`${I('play')} run ${name && byName[name] ? html`<b>${name}</b>` : html`<span>a skill name</span>`}`
-      : mode === 'adopt' ? html`${I('download')} adopt from ${v}` : html`${I('filter')} filter the catalog`}`);
+    sayAs();
     q = mode === 'filter' ? v.toLowerCase() : ''; L.page = 1;
+    // The shell filters the tracked repositories with the same text (sd:5539); the catalog is this page's.
+    window.shell.filter(q);
     if (DOC) redraw();
   }
   input.addEventListener('input', () => setMode(guess(input.value.trim())));
@@ -614,7 +621,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   if (['path', 'trial', 'contrib', 'unused'].includes(u.get('facet'))) filter = u.get('facet');
   window.shell.list.listParams(u, L, { sorts: KEYS, size: LIST.size });
   if (/^-(n|st|u)$/.test(u.get('sort') || '')) { L.sort = u.get('sort').slice(1); L.dir = -1; } // an older link's ?sort=-key
-  if (u.get('q')) { input.value = u.get('q'); q = u.get('q').toLowerCase(); }
+  if (u.get('q')) { input.value = u.get('q'); q = u.get('q').toLowerCase(); window.shell.filter(q); }
   const reading = window.shell.read({
     source: '/api/skills', what: 'the skills', adopt, clear, draw,
     // The catalog's reads leave the Intake view's selection alone (read.js, active).

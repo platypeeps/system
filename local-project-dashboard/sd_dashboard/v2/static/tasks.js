@@ -1224,6 +1224,7 @@ addEventListener('DOMContentLoaded', () => {
     if (Q) q.set('q', Q);
     if (view === 'list') window.shell.list.listQuery(q, L, LIST);
     shell.url(q); // the shell keeps ?row=
+    shell.filter(Q); // the shell filters Your issues with the same text (sd:5539)
   }
 
   // ---------- Shapeshift: add or find ----------
