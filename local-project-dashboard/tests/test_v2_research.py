@@ -1242,6 +1242,8 @@ R.deck = cmd('experiment.deck').when(o); R.section = ELS.details.html;""", answe
                       "U = unverified: fetch failed; lead only.")
         self.assertIn(f'<span class="sr" id="claim-type-supported">{supported}</span>', claims)
         self.assertIn(f'<span class="sr" id="claim-type-unverified">{unverified}</span>', claims)
+        # The legend's help button names every grade the ledger defines, for a hover or a tap.
+        self.assertIn('aria-label="Help: source grades" data-help="&lt;b&gt;Source grades.&lt;/b&gt; &lt;b&gt;A&lt;/b&gt; = primary source', claims)
         self.assertIn(f'<span title="{supported}" aria-describedby="claim-type-supported">● supported: cites a strong source</span>', claims)
         self.assertRegex(claims, r'<button type="button" class="v-unverified" data-verdict="unverified" aria-pressed="false"'
                                  r' title="Unverified: [^"]+" aria-describedby="claim-type-unverified">')

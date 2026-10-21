@@ -367,6 +367,9 @@ function typeTip(c, v) {
   const said = (c.types?.[v]?.grades || '').split('').filter(g => defined[g]).map(g => `${g} = ${defined[g]}`);
   return `${typeWord(v)}: ${ruleOf(c, v)}.${Object.keys(defined).length ? said.map(x => ` ${x}`).join('') : ' This ledger does not define its grades.'}`;
 }
+// The legend's help button (the shell's .help popover): what each grade letter the ledger defines means.
+const gradeHelp = c => { const g = Object.entries(c.grades || {});
+  return g.length ? `<b>Source grades.</b> ${g.map(([k, v]) => `<b>${k}</b> = ${v}`).join(' ')}` : '<b>Source grades.</b> This ledger does not define its grades.'; };
 const claimTip = (c, x) => `${typeWord(x.s)}: ${ruleOf(c, x.s)}. This claim cites ${x.grades ? both(x.grades.split('')) : 'only ungraded sources'}.`;
 let verdict = null, curClaim = null, litKeys = [], litClaims = [];
 function resetClaims() { verdict = null; curClaim = null; litKeys = []; litClaims = []; }
@@ -399,7 +402,7 @@ function drawClaims(p, s) {
   }
   // The verdict filter: All and both verdicts always, so it reads as a control; a verdict with no claims is off.
   put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict"><span class="vlabel">Show</span><button type="button" class="v-all" data-verdict="" aria-pressed="${String(!verdict)}">All ${c.total}</button>${['supported', 'unverified'].map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}"${c.tally[v] ? '' : html` disabled`} title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${c.tally[v] || 0} ${v}</button>`)}</div>
-    <p class="vlegend">${['supported', 'unverified'].map(v => html`<span title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${v}: ${ruleOf(c, v)}</span><span class="sr" id="claim-type-${v}">${typeTip(c, v)}</span>`)}${
+    <p class="vlegend">${['supported', 'unverified'].map(v => html`<span title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${v}: ${ruleOf(c, v)}</span><span class="sr" id="claim-type-${v}">${typeTip(c, v)}</span>`)}<button class="help" type="button" aria-label="Help: source grades" data-help="${gradeHelp(c)}">${I('circle-help')}</button>${
       c.tally.ungraded ? html`<span>${!c.graded ? `The ledger has no grades, so all ${plural(c.tally.ungraded, 'claim')} are unverified` : `${c.tally.ungraded} of the unverified cite only ungraded sources`}</span>` : ''}</p>
     <ul class="claims">${c.rows.map((x, i) => html`<li class="claim" data-c="${i}" aria-current="${String(curClaim === i)}"${litClaims.includes(i) ? html` data-lit` : ''}${verdict && x.s !== verdict ? html` hidden` : ''}>
       <span class="g g-${VERDICT[x.s][1]}" title="${claimTip(c, x)}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
