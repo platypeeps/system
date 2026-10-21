@@ -63,6 +63,9 @@ The gate slots come from `sd gate status --json`; a failed read shows as unknown
 `/api/today/github` (`today_github.py`) reads only what is stored: `shadow`, the Contributions projection, the
 repos with GitHub issues on, sd-ship's delivery notes and items filed under a `github:` ref; it calls no collector.
 Rows sort newest GitHub activity first; a row with no stamp says not recorded. Your issues and Issue intake stay on Issues.
+A pull request row opens its details in the right pane (sd:5633), with Open on GitHub, Open item, Adversarial review
+(a codex review of the pull request at its head, in its registered checkout) and Copilot review. Copilot review asks
+GitHub once per press through `POST /api/today/github/copilot-review`, which runs `gh api` for one open pull request.
 
 **Decisions**, below Now, list the questions that wait on the operator, one button per option (sd:3012).
 Ask one with a `question` note that carries one `Option: <text>` line per choice, at least two:
