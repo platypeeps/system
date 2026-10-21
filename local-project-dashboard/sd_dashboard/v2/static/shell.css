@@ -42,6 +42,8 @@ html, body { overflow-x: clip; }
  * The OS chevron gives way to the shared one; an option takes its select's face, so a filter's list stays small. */
 @supports (appearance: base-select) {
   :where(select:not(.tile-f, [multiple], [size]:not([size="1"]))), :where(select:not(.tile-f, [multiple], [size]:not([size="1"])))::picker(select) { appearance: base-select; }
+  /* A base-select box is inline-flex with align-items normal, so its label rode the top of the pill (sd:5460). */
+  :where(select:not(.tile-f, [multiple], [size]:not([size="1"]))) { align-items: center; }
   :where(select:not(.tile-f, [multiple], [size]:not([size="1"])))::picker-icon { display: none; }
   :where(select:not(.tile-f, [multiple], [size]:not([size="1"])))::picker(select) {
     margin-block: var(--space-3xs); padding: var(--space-2xs); border: var(--rule-hair) solid var(--color-rule);
@@ -413,8 +415,8 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 /* Published copies (sd:5102, sd:5300, commands.published): one icon per configured destination, its state a fill and an edge
  * as well as a colour: a copy is filled, a queued one a dashed accent edge, a designated one with no copy a caution outline,
  * and one not read a dashed unknown edge. */
-.pub { display: inline-flex; align-items: center; gap: var(--space-3xs); margin-right: var(--space-2xs); vertical-align: middle; }
-.pub a, .pub span { display: inline-flex; align-items: center; justify-content: center; min-width: var(--row-touch); min-height: var(--row-touch); color: var(--color-ink-2); border: var(--rule-hair) solid transparent; border-radius: var(--radius-sm); }
+.pub { display: inline-flex; align-items: center; gap: 0; margin-right: var(--space-2xs); vertical-align: middle; }
+.pub a, .pub span { display: inline-flex; align-items: center; justify-content: center; min-width: 1.75rem; min-height: 1.75rem; color: var(--color-ink-2); border: var(--rule-hair) solid transparent; border-radius: var(--radius-sm); }
 .pub .has { color: var(--color-ink); background: var(--color-accent-bg); border-color: var(--color-accent); }
 .pub a:hover { color: var(--color-accent); background: var(--color-well); }
 .pub a:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
@@ -422,6 +424,10 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 .pub .missing { color: var(--color-caution); background: transparent; border-color: var(--color-caution); }
 .pub .unread { color: var(--color-unknown); background: transparent; border-style: dashed; border-color: var(--color-unknown); }
 .pub .pub-unknown { color: var(--color-muted); font-size: var(--text-xs); }
+/* sd:5485: every destination shows; one that is not the row's is dim and edgeless. Icons sit at the row's text size, each
+ * box 28px, over WCAG 2.2's 24px target. */
+.pub .off { color: var(--color-muted); opacity: .45; }
+.pub .i { width: .875rem; height: .875rem; }
 @media (forced-colors: active) { .pub .has { border-width: 2px; } }
 /* Publish to (sd:5102, commands.publishPane): each destination a checkbox button; checked is the accent, mixed (not known) is dashed. */
 .pubboxes { display: flex; flex-wrap: wrap; gap: var(--space-2xs); }
@@ -669,6 +675,8 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 .list-pager .gap { padding: 0 var(--space-3xs); }
 .list-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-xs); margin: 0 0 var(--space-sm); font-size: var(--text-xs); color: var(--color-muted); }
 .list-chips .n { font-family: var(--font-data); }
+/* In a filter bar the chips row is one item of a centred line; its own bottom margin lifted it above the chips (sd:5471). */
+:where(.filters) .list-chips { margin: 0; }
 .list-chips .chip { color: var(--color-ink); }
 .list-chips .chip .i { width: 0.8rem; height: 0.8rem; }
 @media (pointer: coarse) {
@@ -679,28 +687,21 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 }
 
 /* ---------- Table grammar: every table sorts, filters and folds (shell.tables; sd:5064) ---------- */
-/* The bar sits above its table: a filter box, a column filter, Expand all / Collapse all, then the chips on their own line. */
+/* The bar sits above its table: a column filter, Expand all / Collapse all, then the chips on their own line. Its text filter
+ * is the page's Shapeshift bar (sd:5539). */
 .tgrid { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-sm); margin: 0 0 var(--space-xs); font-size: var(--text-xs); color: var(--color-muted); }
-.tgrid .tfind { display: flex; align-items: center; gap: var(--space-xs); flex: 0 1 16rem; min-width: 0; min-height: 1.75rem; padding: 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: 999px; background: var(--color-panel); color: var(--color-muted); }
-.tgrid .tfind:hover { border-color: var(--color-ink-2); }
-.tgrid .tfind input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--color-ink); font: inherit; }
-.tgrid .tfind input::placeholder { color: var(--color-muted); }
-.tgrid .tfind:focus-within { outline: 2px solid var(--color-focus); outline-offset: 1px; }
-.tgrid .tfind input:focus-visible { outline: none; }
 .tgrid select { max-width: 14rem; }
 /* A column filter that is on wears the picked pill, as a filter dropdown does (.fpick:has(:checked)). */
 .tgrid:has(.tchips [data-tunfilter^="f:"]) select { border-color: var(--color-accent); background-color: var(--color-accent-bg); }
 /* The count: right-aligned on the table's title line, or at the end of the bar when the table has none (sd:5281). */
-.tcount { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
-.tcount[hidden] { display: none; }
 .tgrid .tfolds { display: inline-flex; gap: var(--space-sm); }
 .tgrid .tchips { flex: 1 0 100%; }
 .tgrid .tchips:empty { display: none; }
 .tgrid .list-chips { margin: 0; }
-.tgrid[hidden], .tgrid .tfind[hidden], .tgrid .tfacet[hidden], .tgrid .tfolds[hidden] { display: none; }
+.tgrid[hidden], .tgrid .tfacet[hidden], .tgrid .tfolds[hidden] { display: none; }
 
 /* ---------- The toolbar standard (sd:5281): at most two control rows on every page ---------- */
-/* Row 1, .toolbar: the views on the left (the shell's .viewswitch or a page's .vseg), then the text and column filters;
+/* Row 1, .toolbar: the views on the left (the shell's .viewswitch or a page's .vseg), then the Shapeshift bar and the column filter;
  * filter chips wrap under it at full width. Row 2, .toolbar-2: every other control, each with its visible label. A table
  * joins row 1 by naming it: <table data-toolbar="<row id>">. The count and the table's other facts sit right-aligned on its
  * title line; only a table with no title puts its count at the right of row 1 (.count). */
@@ -709,16 +710,41 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 .toolbar > .tgrid, .filters > .tgrid { display: contents; }
 .toolbar > .tgrid[hidden], .filters > .tgrid[hidden] { display: none; }
 .toolbar .viewswitch, .toolbar .vseg { margin: 0; }
-.toolbar .tcount, .toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
+.toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
 .toolbar > .count:empty { display: none; }
-/* A page's own text filter on row 1 wears the table filter's pill (.tgrid .tfind). */
-.toolbar > .tfind { display: flex; align-items: center; gap: var(--space-xs); flex: 0 1 16rem; min-width: 0; min-height: 1.75rem; padding: 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: 999px; background: var(--color-panel); color: var(--color-muted); font-size: var(--text-xs); }
-.toolbar > .tfind:hover { border-color: var(--color-ink-2); }
-.toolbar > .tfind input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--color-ink); font: inherit; }
-.toolbar > .tfind input::placeholder { color: var(--color-muted); }
-.toolbar > .tfind:focus-within { outline: 2px solid var(--color-focus); outline-offset: 1px; }
-.toolbar > .tfind input:focus-visible { outline: none; }
-.toolbar > .tfind kbd { font-size: var(--text-2xs); color: var(--color-muted); }
+/* A table's title line (sd:5463): its heading and help on the left, its tally (the count and the table's facts) on the right. */
+.sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin: 0 0 var(--space-xs); }
+.sec-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); display: flex; align-items: center; gap: var(--space-2xs); }
+.tally { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-md); margin: 0; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); }
+/* The filter bar (sd:5463): Activity's layout, drawn by shell.list.fbar into a .filters row under the table's title line.
+ * Segmented state and range, the picks, the picked filters as removable tokens, then Clear all at the right. */
+.filters { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-lg); margin: 0 0 var(--space-sm); padding: var(--space-xs) 0; border-top: var(--rule-hair) solid var(--color-rule-2); border-bottom: var(--rule-hair) solid var(--color-rule-2); }
+.fbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); min-width: 0; }
+.filters > .fbar { flex: 1 1 100%; }
+/* A labelled pick (shell.list.pick) or chip group: its label inline, before the control. */
+.fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); min-width: 0; }
+.fgroup > .label { margin-right: var(--space-2xs); }
+.fseg { display: inline-flex; gap: 2px; padding: 2px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }
+.fseg button, .tok { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-3xs); border: 0; font: 400 var(--text-xs)/1 var(--font-data); white-space: nowrap; cursor: pointer; }
+.fseg button { gap: var(--space-2xs); min-height: 1.75rem; min-width: 2rem; padding: 0 var(--space-xs); border-radius: var(--radius-sm); background: transparent; color: var(--color-ink-2); }
+.fseg button:hover { background: var(--color-well); color: var(--color-ink); }
+.fseg button[aria-pressed="true"] { background: var(--color-accent-bg); color: var(--color-ink); box-shadow: inset 0 0 0 1px var(--color-accent); }
+.fseg button[aria-disabled="true"] { color: var(--color-muted); cursor: not-allowed; }
+.fseg button[aria-disabled="true"]:hover { background: transparent; color: var(--color-muted); }
+.fseg .n, .fbar .pick .n { color: var(--color-muted); }
+.fseg button[aria-pressed="true"] .n { color: var(--color-ink-2); }
+.tok { min-height: 1.75rem; padding: 0 var(--space-3xs) 0 var(--space-xs); border: var(--rule-hair) solid var(--color-accent); border-radius: 999px; background: var(--color-accent-bg); color: var(--color-ink); max-width: 16rem; }
+.tok > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.tok .x { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 50%; color: var(--color-ink-2); }
+.tok:hover .x { background: var(--color-panel); color: var(--color-ink); }
+.fseg button:focus-visible, .tok:focus-visible { outline: var(--rule-focus) solid var(--color-focus); outline-offset: 1px; }
+.fsum { display: flex; align-items: center; gap: var(--space-2xs); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }
+.fsum:empty { display: none; }
+@media (pointer: coarse) {
+  .fseg button, .tok { min-height: var(--row-touch); }
+  .fseg button { min-width: var(--row-touch); }
+  .fsum .linkbtn { display: inline-flex; align-items: center; min-height: var(--row-touch); min-width: var(--row-touch); }
+}
 /* A view group that filters one list (HOA's alarm events: Open | Acknowledged | All): the view switch's segments, pressed
  * buttons rather than tabs, since every choice shows the same table. */
 .vseg { display: flex; gap: var(--space-3xs); width: max-content; max-width: 100%; overflow-x: auto; padding: var(--space-3xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }
@@ -728,9 +754,10 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 .vseg > button[aria-pressed="true"] { color: var(--color-ink); background: var(--color-accent-bg); box-shadow: inset 0 0 0 var(--rule-hair) var(--color-accent); }
 .vseg > button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: calc(-1 * var(--rule-focus)); }
 .vseg .n { font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); }
-@media (pointer: coarse) { .vseg > button, .toolbar > .tfind { min-height: var(--row-touch); } }
+@media (pointer: coarse) { .vseg > button { min-height: var(--row-touch); } }
 @media (forced-colors: active) { .vseg > button[aria-pressed="true"] { outline: var(--rule-focus) solid CanvasText; } }
-tr[data-tout] { display: none; }
+/* Important: a page's mobile `.ledger tbody tr { display: grid }` outranks a plain rule, and a shut fold must hide on every page (sd:5490). */
+tr[data-tout] { display: none !important; }
 /* A band row's fold: the band keeps its look; the chevron turns down while the rows under it show. */
 td > .tfold { all: unset; display: inline-flex; align-items: center; gap: var(--space-2xs); width: 100%; min-height: 1.75rem; cursor: pointer; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; }
 td > .tfold:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; border-radius: var(--radius-sm); }
@@ -738,6 +765,6 @@ td > .tfold > .i:first-child { flex: none; transition: transform var(--dur-fast)
 td > .tfold[aria-expanded="true"] > .i:first-child { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { td > .tfold > .i:first-child { transition: none; } }
 @media (pointer: coarse) {
-  .tgrid .tfind, .tgrid select, td > .tfold { min-height: var(--row-touch); }
+  .tgrid select, td > .tfold { min-height: var(--row-touch); }
   .tgrid .tfolds .linkbtn { min-height: var(--row-touch); display: inline-flex; align-items: center; }
 }

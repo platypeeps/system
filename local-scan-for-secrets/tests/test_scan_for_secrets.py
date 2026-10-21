@@ -422,6 +422,38 @@ class FixtureFingerprints(unittest.TestCase):
         self.assertTrue(kept[1].startswith("[Aa]uthorization"), kept)
 
 
+class CriticalSkipsTestFiles(unittest.TestCase):
+    """sd:5493: the weekly critical scan skips test files and fixture folders, so a new fake key in a test does
+    not fail the Monday run; the same key in source still does."""
+
+    FAKE = "hf_" + "FixtureKeyForTheScanSuite012345678"
+
+    def test_a_key_in_a_test_file_is_skipped_and_in_source_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            repo = home / "repos" / "owner" / "project"
+            files = ["tests/a.py", "tools/test_b.py", "pkg/c_test.go", "fixtures/d.json", "src/e.py"]
+            for name in files:
+                (repo / name).parent.mkdir(parents=True, exist_ok=True)
+                (repo / name).write_text(f'key = "{self.FAKE}"\n')
+            # A tests folder two levels down: an unquoted loop let the shell expand repos/**/tests to it, and the
+            # glob then no longer reached the deeper one above.
+            (home / "repos" / "owner" / "tests").mkdir()
+            (home / "repos" / "owner" / "tests" / "x.py").write_text(f'key = "{self.FAKE}"\n')
+            (home / ".zshrc").write_text(f'export KEY="{self.FAKE}"\n')
+            env = dict(os.environ, HOME=str(home), SYSTEM_TOOLS_CONFIG=str(home / "config"), JEV_SECRET_SCAN="0")
+            env.pop("S4S_CONF", None)
+            isolate_jev(env)
+            result = subprocess.run(["sh", str(SCRIPT), "critical"], cwd=home, env=env,
+                                    capture_output=True, text=True, timeout=300)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 2, out)
+        self.assertIn("repos/owner/project/src/e.py", out)
+        self.assertIn(".zshrc", out)  # the dotfiles are still globbed after the excludes
+        for name in files[:-1]:
+            self.assertNotIn(f"repos/owner/project/{name}", out)
+
+
 class Recorder(BaseHTTPRequestHandler):
     """A stub endpoint that answers a System One request and keeps each body."""
 

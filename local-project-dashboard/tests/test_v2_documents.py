@@ -68,6 +68,8 @@ COMMANDS = [
     ["root.unhide", "document root", "Unhide root", None, "undo"],
     # sd:5102: Publish to a destination and Publish now, declared in commands.js.
     ["document.publish", "document destination", "Publish to", None, "safe"],
+    # sd:5489: a ticked destination unticks: ask first, and Undo ticks it again.
+    ["document.unpublish", "document destination", "Remove copy", None, "undo"],
     ["document.publish-now", "document", "Publish now", None, "safe"],
 ]
 
@@ -576,7 +578,7 @@ shellRun(cmd('root.unhide'), C.get('root:civic')); await flush();""", answer=sel
         self.assertIn("Civic", facets.split('class="rootfold"')[1])
         self.assertEqual(out["R"]["when"], ["already hidden", "not hidden", True])
         self.assertEqual(self.view_posts(out), [{"root": "civic", "hidden": False}])
-        self.assertIn("in 2 roots", out["R"]["sub"])
+        self.assertIn("2 roots · read", out["R"]["sub"])
         self.assertIn("label|lab|Old Lab", out["R"]["det"])
         self.assertIn("not read", out["R"]["det"])
 
@@ -666,7 +668,10 @@ shellRun(r, plan); R.toast = lastToast().msg;""")
         self.assertEqual(re.findall(r'data-id="([^"]+)"', rows), ["civic/brief.html", "lab/orphan.html", "lab/plan.html", "lab/overview.html"])
         self.assertEqual(re.findall(r'class="g g-(\w+)"', rows), ["unknown", "unknown", "caution", "ok"])
         self.assertIn("▲ 1 render-stale", out["R"]["tally"])
-        self.assertIn("4 documents in 3 roots", out["R"]["sub"])
+        # sd:5524: the tab carries the count; the line under the title names only the roots.
+        self.assertIn("3 roots · read", out["R"]["sub"])
+        self.assertNotIn("documents in", out["R"]["sub"])
+        self.assertEqual(out["counts"], {"documents": 4})
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "render-stale documents"})
 
     def test_a_request_is_a_copy_only_line_and_files_nothing(self):
@@ -732,6 +737,71 @@ box('lab', true); await flush(); R.two = ELS.rows.html; R.after = ELS.facets.htm
         self.assertEqual(sorted(ids(out["R"]["two"])), ["civic/brief.html", "lab/orphan.html", "lab/overview.html", "lab/plan.html"])
         self.assertRegex(out["R"]["after"], r'<details class="fpick" data-pick="repo" open><summary[^>]*><span id="f-repo-v">2 picked</span>')
         self.assertEqual(out["R"]["picked"], ["civic", "lab"])
+
+    # sd:5484: the page's localStorage, as the browser keeps it across sessions; KEPT is what an earlier session left.
+    STORE = ("location.pathname = '/documents'; var KEPT = %s;"
+             " var localStorage = { getItem: k => k in KEPT ? KEPT[k] : null, setItem: (k, v) => { KEPT[k] = String(v); } };\n")
+    BANDS = r'<tr class="band" data-band="([^"]+)"[^>]*><td colspan="7">([^<]*)<span class="n">([^<]*)</span></td></tr>'
+
+    def test_the_list_groups_by_repo_with_one_fold_band_each(self):
+        """sd:5484: one band row per repo heads that repo's rows, with how many it holds; the shell folds a band row."""
+        self.rows_of(**{"lab/plan.html": {"pinned": True}})
+        out = self.run_page("R.rows = ELS.rows.html;")
+        rows = out["R"]["rows"]
+        self.assertEqual(re.findall(self.BANDS, rows), [("civic", "Civic", "1 document"), ("lab", "Lab", "3 documents")])
+        # Each band heads its own repo's rows; pinned first inside the band, then the sort (newest first).
+        order = re.findall(r'data-(band|id)="([^"]+)"', rows)
+        self.assertEqual(order, [("band", "civic"), ("id", "civic/brief.html"), ("band", "lab"), ("id", "lab/plan.html"),
+                                 ("id", "lab/orphan.html"), ("id", "lab/overview.html")])
+        # Sorting by repo descending turns the bands around.
+        click = self.CLICK % ("rows-head", "'button[data-sort]'", "{ sort: 'repo' }")
+        out = self.run_page(f"{click} {click} R.rows = ELS.rows.html;")
+        self.assertEqual([b[0] for b in re.findall(self.BANDS, out["R"]["rows"])], ["lab", "civic"])
+
+    def test_the_destination_filter_keeps_rows_with_a_chosen_destination_on(self):
+        """A destination is on when the row designates it or holds a copy; None keeps rows with neither."""
+        for row in self.doc["documents"]:
+            row["pub"] = {"lab/plan.html": {"choice": {"notion": True, "drive": False}, "copies": []},
+                          "lab/overview.html": {"choice": {}, "copies": [{"channel": "drive", "title": "Drive", "state": "has"}]}}.get(f"{row['key']}/{row['file']}")
+        ids = lambda out: re.findall(r'data-id="([^"]+)"', out["R"]["rows"])
+        out = self.run_page("R.rows = ELS.rows.html; R.facets = ELS.facets.html;", search="?dest=notion")
+        self.assertEqual(ids(out), ["lab/plan.html"])
+        self.assertIn('data-f="dest" data-v="none"', out["R"]["facets"])
+        self.assertEqual(sorted(ids(self.run_page("R.rows = ELS.rows.html;", search="?dest=drive,notion"))), ["lab/overview.html", "lab/plan.html"])
+        self.assertEqual(sorted(ids(self.run_page("R.rows = ELS.rows.html;", search="?dest=none"))), ["civic/brief.html", "lab/orphan.html"])
+
+    def test_chosen_repos_show_only_their_bands(self):
+        out = self.run_page("R.rows = ELS.rows.html;", search="?repo=lab")
+        self.assertEqual([b[0] for b in re.findall(self.BANDS, out["R"]["rows"])], ["lab"])
+        self.assertNotIn("civic/brief.html", out["R"]["rows"])
+
+    def test_the_filters_persist_across_sessions_and_an_address_wins(self):
+        """sd:5484: repo, kind, freshness, text, pinned, hidden, sort and size are kept per page; the next visit restores them."""
+        click = self.CLICK % ("rows-head", "'button[data-sort]'", "{ sort: 'title' }")
+        out = self.run_page(f"{click} R.kept = KEPT;", search="?repo=lab&kind=research&q=plan&page=2",
+                            shell_more=self.STORE % "{}")
+        # The page number is not kept: the next visit starts on page one.
+        self.assertEqual(out["R"]["kept"], {"sd.filters./documents": "repo=lab&kind=research&q=plan&sort=title&dir=asc"})
+        kept = json.dumps(out["R"]["kept"])
+        out = self.run_page(f"R.rows = ELS.rows.html; R.url = {self.URL}; R.input = ELS.shift.value; R.f = [[...F.repo], [...F.kind], F.text];",
+                            shell_more=self.STORE % kept)
+        self.assertEqual(re.findall(r'data-id="([^"]+)"', out["R"]["rows"]), ["lab/plan.html"])
+        self.assertEqual(out["R"]["f"], [["lab"], ["research"], "plan"])
+        self.assertEqual((out["R"]["url"], out["R"]["input"]), ("repo=lab&kind=research&q=plan&sort=title&dir=asc", "plan"))
+        # A link that names its own filters wins over what was kept, and is kept in its place.
+        out = self.run_page("R.rows = ELS.rows.html; R.kept = KEPT;", search="?repo=civic", shell_more=self.STORE % kept)
+        self.assertEqual(re.findall(r'data-id="([^"]+)"', out["R"]["rows"]), ["civic/brief.html"])
+        self.assertEqual(out["R"]["kept"], {"sd.filters./documents": "repo=civic"})
+        # A row link alone names no filter: the kept ones still apply.
+        out = self.run_page("R.f = [...F.repo];", row="'lab/plan.html'", search="?row=lab/plan.html", shell_more=self.STORE % kept)
+        self.assertEqual(out["R"]["f"], ["lab"])
+        # Clear all is kept too, and leaves the sort, which is no filter; a store that throws keeps the filters for this visit only.
+        out = self.run_page("ELS.chips.listeners.click[0]({ target: { closest: s => s === '[data-unfilter-all]' ? {} : null } }); R.kept = KEPT;",
+                            shell_more=self.STORE % kept)
+        self.assertEqual(out["R"]["kept"], {"sd.filters./documents": "sort=title&dir=asc"})
+        throws = "var localStorage = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };\n"
+        out = self.run_page("R.rows = ELS.rows.html;", search="?repo=lab", shell_more=throws)
+        self.assertNotIn("civic/brief.html", out["R"]["rows"])
 
     def test_an_unavailable_chip_stays_focusable_says_why_and_does_nothing(self):
         box = ("ELS.facets.listeners.change[0]({ currentTarget: ELS.facets, target: { dataset: { pick: 'repo' }, type: 'checkbox',"
@@ -834,7 +904,7 @@ R.rows = ELS.rows.html; R.type = C.get('lab/plan.html').type; R.att = window.PAG
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "documents", "Documents", "/documents", ("/api/documents", "/api/documents/view", "/api/documents/publish",
+    page, section, route, api = "documents", "Documents", "/documents", ("/api/documents", "/api/documents/view", "/api/documents/publish", "/api/documents/unpublish",
                                                                          "/api/documents/publish-now", "/api/documents/publish-now/drain-x-20261018T000000Z")
 
 

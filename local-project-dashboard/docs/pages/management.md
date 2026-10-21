@@ -1,8 +1,8 @@
 # Management
 
 Management is at `/management` (sd:2118): the managed repositories with their
-review, protection and runtime columns, the checkouts' git state, the lane,
-recent assignments, sessions, services and launchd jobs. `GET /api/management`
+review, protection and runtime columns, the checkouts' git state, the ship
+lane, sessions, services and launchd jobs. `GET /api/management`
 (`management_screen.document`) builds one document from reads v1 already
 makes. Each source is read on its own, so one that fails is a named reason, not
 an empty list. Nothing fetches, pulls or calls GitHub: protection is the
@@ -22,3 +22,6 @@ the item's row on Tasks. Land on a checkout's row (sd:5104, `land.py`) reads
 one commit per item, a `land/sd-<n>` branch and worktree when the checkout is on its default branch, then
 `sd-ship lane enqueue`. The classic Jobs and Repos areas were retired in
 sd:3402; Services, Sessions and Protection stay as palette screens.
+Repos, Services and Schedules filter through Activity's bar (sd:5504): their
+segments, the text as a token, then Clear all; each list's title line counts
+its rows while a filter hides some.

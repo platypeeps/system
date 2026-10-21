@@ -48,9 +48,11 @@ const FILTERS = {
 };
 const shown = r => F.hidden === r.hidden;
 const tbody = document.getElementById('rows'), details = document.getElementById('details');
-let selected = null, F = { f: '', q: '', hidden: false };
+let selected = null, F = { f: '', q: '', state: '', product: '', hidden: false };
 let pickedIds = new Set();
-const match = r => shown(r) && (!F.f || FILTERS[F.f].test(r)) && (!F.q || `${r.path || ''} ${r.title || ''} ${r.subject || ''} ${r.kind} ${r.product}`.toLowerCase().includes(F.q));
+const match = r => shown(r) && (!F.f || FILTERS[F.f].test(r)) && (!F.state || r.state === F.state) && (!F.product || r.product === F.product)
+  && (!F.q || `${r.path || ''} ${r.title || ''} ${r.subject || ''} ${r.kind} ${r.product}`.toLowerCase().includes(F.q));
+const active = () => !!(F.f || F.q || F.state || F.product);
 // Order: product, then the header's column (sd:3455) inside it. Page, the default, is the design's order: the drawn pages
 // before the skeleton and captures, then path; it also breaks a tie in the other columns.
 const KIND = { 'v2 mockup': 0, 'v1 mockup': 1, design: 2, final: 0, reference: 3, skeleton: 4, 'brief only': 5 };
@@ -97,13 +99,23 @@ function renderRows() {
     <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`;
   })}`);
   const empty = document.getElementById('empty');
-  empty.hidden = rows.length > 0; empty.textContent = F.hidden && !F.f && !F.q ? `Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a row from its actions or Details.'}` : F.f || F.q ? 'No page matches this filter. Clear it to see all pages.' : `No design pages found in ${D.root}/products.`;
+  empty.hidden = rows.length > 0; empty.textContent = F.hidden && !active() ? `Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a row from its actions or Details.'}` : active() ? 'No page matches this filter. Clear it to see all pages.' : `No design pages found in ${D.root}/products.`;
   const pages = ROWS.filter(r => r.type === 'page').length;
-  // The count on the table's title line (sd:5281): the rows this view draws, of the view's rows while a filter narrows them.
-  const all = ROWS.filter(shown).length;
-  document.getElementById('tally').textContent = rows.length === all ? markup.plural(all, 'row') : `${rows.length} of ${markup.plural(all, 'row')}`;
+  // The shown view's tab carries the rows it draws (sd:5524).
+  shell.view.count(F.hidden ? 'hidden' : 'pages', rows.length);
+  renderFilters();
   document.getElementById('sub').textContent = `${pages} pages in ${PRODUCTS.length} products`;
   document.getElementById('src').textContent = `${D.root} at ${D.head || 'no commit'}`;
+}
+// The filter bar (sd:5463), Activity's layout from shell.list: the state as a segment with its counts, the product as a
+// pick, a pressed lamp and the query as removable tokens, then Clear all. A lamp already filters by kind, so it has no chip.
+const STATES = [['caution', 'needs a look'], ['ok', 'ok'], ['queued', 'brief only']];
+function renderFilters() {
+  const n = (k, v) => ROWS.filter(r => shown(r) && r[k] === v).length, list = shell.list;
+  put(document.getElementById('filters'), list.fbar(html`${list.fseg('state', 'State', STATES.map(([s, w]) => ({ v: s, pressed: F.state === s, title: `${w}: ${n('state', s)}`,
+    label: html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span><span class="n">${String(n('state', s))}</span><span class="sr"> ${w}</span>` })))}
+    ${list.pick('product', 'Product', PRODUCTS.map(p => [p, p, n('product', p)]), F.product, { all: 'All products' })}
+    ${F.f ? list.tok('f', F.f, FILTERS[F.f].lbl) : ''}${F.q ? list.tok('q', '', `“${F.q}”`) : ''}`, { clear: active() }));
 }
 function show(id) {
   const r = ROWS.find(x => x.id === id); if (!r) return;
@@ -152,7 +164,7 @@ function reconcile() {
 // The sort joins the filter in the URL when it is not the default, as shell.list.listQuery writes it.
 function writeFilter() {
   const sort = L.sort !== LIST.sort || L.dir !== LIST.dir ? { sort: L.sort, dir: L.dir > 0 ? 'asc' : 'desc' } : {};
-  shell.url({ ...(F.f && { f: F.f }), ...(input.value.trim() && { q: input.value.trim() }), ...sort });
+  shell.url({ ...(F.f && { f: F.f }), ...(F.state && { state: F.state }), ...(F.product && { product: F.product }), ...(qText && { q: qText }), ...sort });
 }
 function update() {
   if (!D) return;
@@ -161,27 +173,22 @@ function update() {
 
 // Commands (commands.md). Opening a page is a link, not a command: the tab serves it, nothing runs.
 // build: History and Retake are copy only; the dashboard runs no git, no shots.mjs and no pager. Read brief shows the brief.
-const pageName = o => o.path.split('/').pop().slice(0, -5);
+// sd:5457: Hide or Unhide is every row's act; History and Retake stay off Details' bar (bar: false), not off the ⋯ menu,
+// their keys or the palette. Read brief is not the row's act: the row's name opens the same Details.
 const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/designs/view)';
 const view = (o, hidden) => shell.post('/api/designs/view', { id: o.id, hidden }).then(v => reading.reread().then(() => v));
-// One Hide and one Unhide for each row type, a page and a brief-only product.
+// One Hide and one Unhide for each row type, a page and a brief-only product; the row shows the one that is on.
 const hiding = on => [
-  { id: 'design.hide', on, label: 'Hide', does: 'Hides this row from the list; Undo shows it again.', key: 'h', icon: 'eye-off', risk: 'undo', bulk: true, when: o => o.hidden ? 'already hidden' : STORE || true,
+  { id: 'design.hide', on, label: 'Hide', does: 'Hides this row from the list; Undo shows it again.', key: 'h', icon: 'eye-off', risk: 'undo', bulk: true, primary: () => true, when: o => o.hidden ? 'already hidden' : STORE || true,
     cli: () => NO_CLI, run: o => view(o, true).then(() => `Hidden: ${o.label}. The Hidden view lists it.`), undo: o => view(o, false) },
-  { id: 'design.unhide', on, label: 'Unhide', does: 'Shows this row in the list again; Undo hides it.', key: 'h', icon: 'eye', risk: 'undo', bulk: true, when: o => !o.hidden ? 'not hidden' : STORE || true,
+  { id: 'design.unhide', on, label: 'Unhide', does: 'Shows this row in the list again; Undo hides it.', key: 'h', icon: 'eye', risk: 'undo', bulk: true, primary: () => true, when: o => !o.hidden ? 'not hidden' : STORE || true,
     cli: () => NO_CLI, run: o => view(o, false).then(() => `Unhidden: ${o.label}`), undo: o => view(o, true) },
 ];
 function registerCommands() {
   const C = shell.commands, REPO = () => D?.root || '~/repos/ui-design';
   C.register(
-    { id: 'design.log', on: 'page', label: 'History', does: 'Gives a git line that lists this page\'s last five commits.', key: 'l', icon: 'git-branch', risk: 'safe', executes: false,
-      cli: o => `git -C ${REPO()} log -5 --format='%h %cs %s' -- ${o.path}`, run: o => `Copy the line to see the last five commits of ${o.label}` },
-    { id: 'design.shots', on: 'page', label: 'Retake screenshots', does: 'Gives the line that retakes this page\'s screenshots at 1440 and 375.', key: 's', icon: 'eye', risk: 'safe', executes: false,
-      primary: o => { const r = ROWS.find(x => x.id === o.id); return !!r && !r.dirty && (!r.shots.length || !!shotStale(r)); },
-      when: o => o.kind === 'v2 mockup' || o.kind === 'skeleton' || 'shots.mjs draws the v2 pages only',
-      cli: o => `node ${REPO()}/products/system/designs/tools/shots.mjs ${pageName(o)}`, run: o => `Copy the line to retake ${o.label} at 1440 and 375; the dashboard does not run it` },
     // build: the brief's text comes in the ledger (designs.BRIEF_CHARS); Details shows it, the tab serving no Markdown.
-    { id: 'design.brief', on: 'brief', label: 'Read brief', does: 'Shows the product\'s design brief in Details.', key: 'b', icon: 'file-text', risk: 'safe', primary: () => true, executes: false,
+    { id: 'design.brief', on: 'brief', label: 'Read brief', does: 'Shows the product\'s design brief in Details.', key: 'b', icon: 'file-text', risk: 'safe', executes: false,
       when: o => !!o.brief || 'this product has no brief', cli: o => `less ${REPO()}/${o.brief}`, run: o => { select(o.id, true); return `Brief of ${o.product} shown in Details`; } },
     ...hiding('page'), ...hiding('brief'),
   );
@@ -197,13 +204,20 @@ document.addEventListener('click', e => {
   }
   const tr = e.target.closest?.('tr[data-id]'); if (tr && !e.target.closest('button, a, time')) select(tr.dataset.id, false);
 });
-const input = document.getElementById('shift');
-document.getElementById('rows-head').addEventListener('click', e => { if (D && shell.list.sortBy(e, L)) { shell.list.keepFocus(e, renderRows); writeFilter(); } });
-input.addEventListener('input', () => { F.q = input.value.trim().toLowerCase(); writeFilter(); update(); });
-document.addEventListener('keydown', e => {
-  if (e.target.matches?.('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-  if (e.key === '/') { e.preventDefault(); input.focus(); }
+// The text filter is the shell's Shapeshift bar (sd:5539); ?q= keeps its words as typed.
+const bar = document.getElementById('filters');
+let qText = '';
+bar.addEventListener('change', e => shell.list.pickChange(e, F, () => { writeFilter(); update(); }));
+bar.addEventListener('click', e => {
+  const b = e.target.closest('[data-fclear], [data-f]'); if (!b) return;
+  if (b.dataset.fclear != null) Object.assign(F, { f: '', q: '', state: '', product: '' });
+  else if (b.dataset.f === 'state') F.state = F.state === b.dataset.v ? '' : b.dataset.v;
+  else F[b.dataset.f] = '';
+  if (!F.q && qText) { qText = ''; shell.filter(''); }
+  writeFilter(); update();
 });
+document.getElementById('rows-head').addEventListener('click', e => { if (D && shell.list.sortBy(e, L)) { shell.list.keepFocus(e, renderRows); writeFilter(); } });
+document.addEventListener('shell:filter', e => { if (e.detail.q === qText) return; qText = e.detail.q; F.q = qText.toLowerCase(); writeFilter(); update(); });
 // The shell walks these rows on j / k and writes ?row= when show() selects.
 window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false) };
 
@@ -217,7 +231,7 @@ window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'designs not read' };
 window.PAGE_COMMANDS = [
   ...['stale', 'recent'].map(k => ({ label: `Filter: ${FILTERS[k].lbl}`, icon: 'filter', run: () => { F.f = k; writeFilter(); update(); } })),
 ];
-window.PAGE_KEYS = [['/', 'Filter pages']];
+window.PAGE_FILTER = { pages: 'pages', hidden: 'hidden pages' };
 
 // ---------- Start (build: read /api/designs through shell.read, then draw) ----------
 // The reader (read.js) holds the guards: of overlapping reads only the newest draws, a row the read no longer lists runs no
@@ -237,7 +251,7 @@ function adopt(doc) {
 function clear() {
   D = null; ROWS = []; PRODUCTS = []; STORE = ''; delete document.body.dataset.observed;
   put(document.getElementById('annunciator'), html``); shell.view.count('pages', null); shell.view.count('hidden', null); put(tbody, html``);
-  document.getElementById('tally').textContent = '';
+  put(document.getElementById('filters'), html``);
   document.getElementById('sub').textContent = 'Not read';
   document.getElementById('src').textContent = 'ui-design';
   put(details, html`<p class="why">The designs were not read. Reload retries it.</p>`);
@@ -246,8 +260,10 @@ document.addEventListener('DOMContentLoaded', () => {
   registerCommands();
   const p = new URLSearchParams(location.search);
   F.f = FILTERS[p.get('f')] ? p.get('f') : '';
+  F.state = STATES.some(([s]) => s === p.get('state')) ? p.get('state') : '';
+  F.product = p.get('product') || ''; // a product the read does not name stays a pick option, so it can be lifted
   F.hidden = shell.view.current() === 'hidden';
-  if (p.get('q')) { input.value = p.get('q'); F.q = p.get('q').trim().toLowerCase(); }
+  if (p.get('q')) { qText = p.get('q').trim(); F.q = qText.toLowerCase(); }
   shell.list.listParams(p, L, { sorts: Object.keys(BY), size: LIST.size });
   put(document.getElementById('rows-head'), shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   reading = shell.read({

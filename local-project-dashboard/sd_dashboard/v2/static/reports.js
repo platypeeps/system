@@ -42,9 +42,12 @@ const prevOf = r => { const l = byJob[r.job]; return l[l.indexOf(r) + 1] || null
 function mark(job, day) {
   const c = CAD[job], i = DAYS.indexOf(day);
   if (!c || i < 0) return ['unknown', '▨', 'not read'];
-  // build (sd:4965): a manual job is never due; a day it ran reads as any run does.
-  if (c.manual) { const [ok, bad] = c.runs[day] || [0, 0]; if (!ok && !bad) return ['none', '·', 'manual: runs when started']; }
-  else if (!c.scheduled[i]) return ['none', '·', 'not scheduled'];
+  // build (sd:4965, sd:5538): a manual job is never due, nor an unscheduled day; a day it ran reads as any run does,
+  // so a rerun after a failed scheduled run supersedes it.
+  if (c.manual || !c.scheduled[i]) {
+    const [ok, bad] = c.runs[day] || [0, 0];
+    if (!ok && !bad) return ['none', '·', c.manual ? 'manual: runs when started' : 'not scheduled'];
+  }
   if (!c.log || (c.from && day < c.from)) return ['unknown', '▨', 'no log yet'];
   // build: a cut read can begin partway through its first day, so that day is not read either (as the server's `last`);
   // a cut with no whole stamped line (no read_from) read no day at all.
@@ -144,27 +147,40 @@ function renderCad() {
   b.hidden = false; b.textContent = cadAll ? 'Show only jobs with gaps' : `Show all ${CAD_JOBS.length} jobs`; b.setAttribute('aria-expanded', String(cadAll));
   const counts = { warning: 0, caution: 0 };
   CAD_JOBS.forEach(([, j]) => { const s = lastState(j); if (s in counts) counts[s]++; });
-  put(byId('cad-tally'), html`<span class="g-warning">■ ${counts.warning} failed last run</span><span class="g-caution">▲ ${counts.caution} partial</span><span>${list.length} of ${CAD_JOBS.length} shown</span>`);
-  window.shell.view.count('cadence', CAD_JOBS.length);
+  put(byId('cad-tally'), html`<span class="g-warning">■ ${counts.warning} failed last run</span><span class="g-caution">▲ ${counts.caution} partial</span>`);
+  window.shell.view.count('cadence', list.length);
 }
 byId('cad-more').addEventListener('click', () => { cadAll = !cadAll; renderCad(); });
 byId('cad-body').addEventListener('click', e => { const tr = e.target.closest('tr[data-job]'); if (!tr) return; setJob(jobFilter === tr.dataset.job ? '' : tr.dataset.job); window.shell.view.show('reports'); byId('led-h').scrollIntoView?.({ block: 'start' }); });
 
 // Filters.
 const F = { job: '', status: '', day: '', fam: '', q: '' };
-let picks = new Set(), days = [];
+let picks = new Set(), days = [], jobs = [];
 function fillFilters() {
   // Every job the reading names, not only jobs with a report row: a cadence row sets this filter, and readURL takes ?job=
-  // only when an option has it (sd:2430). A job with no report shows "Nothing matches".
-  const jobs = [...new Set([...ROWS.map(r => r.job), ...Object.keys(JOBS), ...Object.keys(CAD)])].sort();
-  put(byId('f-job'), html`<option value="">All jobs</option>${jobs.map(j => html`<option>${j}</option>`)}`);
+  // only when the list has it (sd:2430). A job with no report shows "Nothing matches".
+  jobs = [...new Set([...ROWS.map(r => r.job), ...Object.keys(JOBS), ...Object.keys(CAD)])].sort();
   days = [...new Set(ROWS.map(r => r.at.slice(0, 10)))].sort().reverse();
-  put(byId('f-day'), html`<option value="">Any day</option>${days.map(d => html`<option value="${d}">${new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })}</option>`)}`);
-  byId('f-job').value = F.job; byId('f-day').value = F.day;
 }
-function setJob(j) { jobFilter = j; F.job = j; byId('f-job').value = j; L.page = 1; renderCad(); renderRows(); }
-byId('f-job').addEventListener('change', e => setJob(e.target.value));
-[['f-status', 'status'], ['f-day', 'day']].forEach(([id, k]) => byId(id).addEventListener('change', e => { F[k] = e.target.value; L.page = 1; renderRows(); }));
+function setJob(j) { jobFilter = j; F.job = j; L.page = 1; renderCad(); renderRows(); }
+// The filter bar (sd:5463), Activity's layout from shell.list: Status as a segment with its counts, Job and Day as picks,
+// the lamp's family and the query as removable tokens, then Clear all. The count sits on the title line.
+function renderFilters() {
+  const list = window.shell.list, n = f => ROWS.filter(f).length;
+  const st = (v, word, count, g) => ({ v, pressed: F.status === v, title: `${word}: ${count}`,
+    label: html`${g ? html`<span class="g-warning" aria-hidden="true">${g}</span>` : ''}${word} <span class="n">${String(count)}</span>` });
+  put(byId('filters'), list.fbar(html`${list.fseg('status', 'Status', [st('act', 'Needs action', n(r => r.act), '■'), st('open', 'Open', n(r => r.open)), st('done', 'Acknowledged', n(r => !r.open))])}
+    ${list.pick('job', 'Job', jobs.map(j => [j, j]), F.job, { all: 'All jobs' })}${list.pick('day', 'Day', days.map(d => [d, shortDay(d)]), F.day, { all: 'Any day' })}
+    ${F.fam ? list.tok('fam', F.fam, `Family: ${FAMILIES.find(f => f[0] === F.fam)?.[1] || F.fam}`) : ''}${F.q ? list.tok('q', '', `“${F.q}”`) : ''}`, { clear: !!activeFilters().length }));
+}
+byId('filters').addEventListener('change', e => window.shell.list.pickChange(e, F, () => { jobFilter = F.job; L.page = 1; renderCad(); renderRows(); }));
+byId('filters').addEventListener('click', e => {
+  if (e.target.closest('[data-fclear]')) return clearAll();
+  const b = e.target.closest('[data-f]'); if (!b) return;
+  const { f, v } = b.dataset;
+  if (f === 'status') { F.status = F.status === v ? '' : v; L.page = 1; return renderRows(); }
+  unfilter([f]);
+});
 byId('annunciator').addEventListener('click', e => {
   const c = e.target.closest('button.cell'); if (!c) return;
   if (c.id === 'refresh') return load(); // build: refresh reads /api/reports again, not the whole page
@@ -173,7 +189,7 @@ byId('annunciator').addEventListener('click', e => {
   L.page = 1; renderRows(); window.shell.view.show('reports'); // a lamp filters the list, so it shows the list
 });
 
-// Active filters as chips above the list (sd:2529): each one removes itself, and Clear all removes every one.
+// Active filters (sd:2529): Clear all removes every one; a token removes its own.
 // Status folds the old Needs action view in (sd:5064): act is an open report that needs attention.
 const STATUS = { act: 'Needs action', open: 'Open', done: 'Acknowledged' };
 const shortDay = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
@@ -185,18 +201,14 @@ function activeFilters() {
 }
 // Each remover leaves the list to draw once, after it.
 const UNFILTER = {
-  job: () => { jobFilter = ''; F.job = ''; byId('f-job').value = ''; renderCad(); },
-  status: () => { F.status = ''; byId('f-status').value = ''; },
-  day: () => { F.day = ''; byId('f-day').value = ''; },
+  job: () => { jobFilter = ''; F.job = ''; renderCad(); },
+  status: () => { F.status = ''; },
+  day: () => { F.day = ''; },
   fam: () => { F.fam = ''; document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', 'false')); },
-  q: () => { input.value = ''; prev.hidden = true; ghost.textContent = ''; F.q = ''; },
+  q: () => { F.q = ''; window.shell.filter(''); },
 };
 function unfilter(keys) { keys.forEach(k => UNFILTER[k]()); L.page = 1; renderRows(); }
 const clearAll = () => unfilter(activeFilters().map(f => f.key));
-byId('chips').addEventListener('click', e => {
-  const b = e.target.closest('[data-unfilter]'); if (b) return unfilter([b.dataset.unfilter]);
-  if (e.target.closest('[data-unfilter-all]')) clearAll();
-});
 
 // The list (sd:2527, sd:2528): newest first by default; every column with an order sorts; 50 a page, numbered pages.
 const RANK = { warning: 0, caution: 1, queued: 2, ok: 3, unknown: 4 };
@@ -229,10 +241,11 @@ function renderRows(read) {
   const list = window.shell.list;
   shown = ROWS.filter(matches).sort(order);
   window.shell.view.count('reports', DOC.reports ? shown.length : null);
+  window.shell.view.count('attention', DOC.reports ? ROWS.filter(r => r.act).length : null);
   const slice = list.pageOf(shown, L);
   if (started) writeURL();
   put(byId('rows-head'), list.sortHead(COLS, L));
-  put(byId('chips'), list.chips(activeFilters(), shown.length, ROWS.length));
+  renderFilters();
   // Day bands read only in time order; another sort draws the rows without them.
   const byDay = L.sort === 'at';
   let lastDay = '';
@@ -247,8 +260,6 @@ function renderRows(read) {
   // A filter that clears it leaves cleared set, so the next render with rows selects the first one again.
   if (!read && started && (sel != null || cleared)) window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: sel, select: id => { cleared = false; select(id, false); },
     clear: clearDetails });
-  const dbOpen = ROWS.filter(r => r.open);
-  put(byId('tally'), html`<span class="g-warning">■ ${dbOpen.filter(r => r.attn).length} need attention</span><span class="g-queued">◌ ${dbOpen.filter(r => !r.attn).length} open run reports</span>`);
 }
 
 // Line diff against the previous report of the same job (LCS on lines).
@@ -307,15 +318,16 @@ function show(id) {
   window.shell.suggest([`What changed in ${r.job} since its last good run?`, `Why did ${r.job} ${r.attn ? 'fail' : 'report'} this time?`, `Show every open report from ${FAMILIES.find(f => f[0] === FAM_OF[r.job])?.[1] || 'this family'}`]);
   details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap'));
 }
-// The URL carries the filters and the row, so a filtered list can be bookmarked. The dropdowns are the one filter control;
+// The URL carries the filters and the row, so a filtered list can be bookmarked. The filter bar is the one filter control;
 // an old ?act=1 link (the Needs action view and checkbox) lands on Status: Needs action (sd:5064).
 function readURL() {
   const p = new URLSearchParams(location.search);
   if (p.get('act') === '1' && !p.get('status')) p.set('status', 'act');
-  ['job', 'status', 'day'].forEach(k => { const v = p.get(k) || ''; if (!v) return; const el = byId('f-' + k); if ([...el.options].some(o => o.value === v)) { F[k] = v; el.value = v; } });
+  const offered = { job: jobs, status: Object.keys(STATUS), day: days };
+  ['job', 'status', 'day'].forEach(k => { const v = p.get(k) || ''; if (v && offered[k].includes(v)) F[k] = v; });
   if (F.job) jobFilter = F.job;
   if (FAMILIES.some(([k]) => k === p.get('fam'))) { F.fam = p.get('fam'); document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fam === F.fam))); }
-  if (p.get('q')) { F.q = p.get('q').toLowerCase(); byId('shift').value = p.get('q'); }
+  if (p.get('q')) F.q = p.get('q').toLowerCase(); // the shell's bar shows it
   window.shell.list.listParams(p, L, { sorts: Object.keys(SORTS), size: LIST.size });
   if (!p.get('page') && /^[1-9]\d*$/.test(p.get('p') || '')) L.page = +p.get('p'); // ?page= is the shared pager key that views reset; ?p= is an old link
 }
@@ -330,43 +342,23 @@ function writeURL() {
 function select(id, open) { show(id); writeURL(); if (open) window.shell.openPane('tab-details'); }
 tbody.addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
-// Shapeshift bar: filter / new task / ask, previewed before commit.
-const input = byId('shift'), prev = byId('shift-preview'), as = byId('shift-as'), ghost = byId('ghost');
-let mode = 'filter';
-function guess(v) { return /\?$|^(why|what|how|which|when|should)\b/i.test(v) ? 'ask' : /^(p[1-4]\b|todo\b|add\b)|\bdue\b/i.test(v) ? 'task' : 'filter'; }
-function setMode(m) { mode = m; prev.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.as === m))); render(); }
-function render() {
-  const v = input.value.trim();
-  prev.hidden = !v;
-  ghost.textContent = v ? `→ ${mode}` : '';
-  put(as, html`${mode === 'task' ? html`${I('list-todo')} task “${v}”` : mode === 'ask' ? html`${I('message-square')} ask chat about reports` : html`${I('filter')} filter reports, bodies included`}`);
-  F.q = mode === 'filter' ? v.toLowerCase() : ''; L.page = 1; renderRows();
-}
-input.addEventListener('input', () => { mode = guess(input.value.trim()); setMode(mode); });
-input.addEventListener('keydown', e => {
-  if (e.key === 'ArrowRight' && input.selectionStart === input.value.length && input.value) { e.preventDefault(); const order = ['filter', 'task', 'ask']; setMode(order[(order.indexOf(mode) + 1) % 3]); }
-  if (e.key === 'Enter' && input.value.trim()) {
-    e.preventDefault();
-    if (mode === 'task') { const v = input.value.trim(); input.value = ''; render(); window.shell.capture(null, v); }
-    if (mode === 'ask') { window.shell.openChat(); window.shell.send(input.value.trim()); input.value = ''; render(); }
-  }
-  if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; render(); }
-});
-prev.addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) { setMode(c.dataset.as); input.focus(); } });
-document.addEventListener('keydown', e => {
-  if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-  if (e.key === '/') { e.preventDefault(); input.focus(); }
-});
+// The shell's Shapeshift bar (sd:5539) gives the list its text, bodies included; the cadence table takes it from the shell.
+document.addEventListener('shell:filter', e => { const q = e.detail.q.toLowerCase(); if (q === F.q) return; F.q = q; L.page = 1; if (DOC) renderRows(); });
+window.PAGE_FILTER = { reports: 'reports, bodies included', attention: 'reports, bodies included' };
 // The shell's view switch (shell.js, view block): the list first, the run table second. Both read /api/reports, so neither
 // names an api of its own.
-window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'cadence', label: 'Cadence' }];
+window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'attention', label: 'Needs attention', panel: 'reports' }, { id: 'cadence', label: 'Cadence' }];
+// Needs attention is the Reports table with Status set to Needs action (sd:5461); Reports clears that value again.
+document.addEventListener('shell:view', e => {
+  const want = e.detail.id === 'attention' ? 'act' : e.detail.id === 'reports' && F.status === 'act' ? '' : F.status;
+  if (want === F.status) return;
+  F.status = want; L.page = 1; if (DOC) renderRows();
+});
 // The shell walks these rows on j / k.
-window.PAGE_KEYS = [['/', 'Filter reports, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
 window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), select: id => select(id, false), clear: () => !!activeFilters().length && (clearAll(), true) };
 
 window.PAGE_COMMANDS = [
-  { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => input.focus() },
-  { label: 'Show reports that need action', icon: 'filter', run: () => { byId('f-status').value = 'act'; F.status = 'act'; L.page = 1; renderRows(); } },
+  { label: 'Show reports that need action', icon: 'filter', run: () => { F.status = 'act'; L.page = 1; renderRows(); } },
 ];
 
 // ---------- Commands (products/system/commands.md) ----------
@@ -418,14 +410,14 @@ function registerCommands() {
     // with the library's reason, for a report an open followup holds or whose fields cannot be read.
     // The design's risk, 'undo': reporting.reopen moves the report back to the status it was acknowledged from (sd:2395). It
     // was 'confirm' while sd-db had no verb that reopens a report (operator ruling, sd:2121).
-    { id: 'report.ack', on: 'report', label: 'Acknowledge', does: 'Marks the report done; Undo puts it back.', key: 'a', risk: 'undo', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
+    { id: 'report.ack', on: 'report', label: 'Acknowledge', does: 'Marks the report done; Undo puts it back.', key: 'a', icon: 'check', risk: 'undo', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
       when: o => !o.open ? 'already acknowledged' : !o.source.fields_read ? `its fields cannot be read: sd reports acknowledge ${o.n} finishes it`
         : o.source.followups.length ? `an open followup holds it: sd note resolve ${o.source.followups[0]}` : true,
       fields: () => [{ name: 'reason', label: 'Reason (optional)', placeholder: 'why it can close', help: 'Written on the report as a comment just before it is acknowledged. Leave it empty for none.' }],
       cli: (o, v = {}) => `${v.reason ? `sd task note ${o.n} ${shq(v.reason)} && ` : ''}sd reports acknowledge ${o.n}`, run: acknowledge, undo: reopen },
     // sd:5064: an open followup holds the report; this resolves it, as sd note resolve does, so Acknowledge can follow. No
     // route reopens a note, so it asks first.
-    { id: 'report.resolve', on: 'report', label: 'Resolve followup', does: 'Resolves the followup that holds this report.', key: 'e', risk: 'confirm', journal: o => o.n, executes: true,
+    { id: 'report.resolve', on: 'report', label: 'Resolve followup', does: 'Resolves the followup that holds this report.', key: 'e', icon: 'check-check', risk: 'confirm', journal: o => o.n, executes: true,
       primary: o => o.open, when: o => !o.open ? 'already acknowledged' : !o.source.followups.length ? 'no open followup holds it' : true,
       consequence: o => `Note ${o.source.followups[0]} is resolved. No dashboard control reopens it.`,
       cli: o => `sd note resolve ${o.source.followups[0] ?? '<note>'}`, sends: o => `POST /api/notes/${o.source.followups[0]}/resolve {revision}`, run: resolveFollowup },

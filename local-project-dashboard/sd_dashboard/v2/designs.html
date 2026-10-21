@@ -5,7 +5,7 @@
   Data: /api/designs (designs.ledger: every .html the tab serves under products/<product>/, its kind, title, size and last
   commit, its screenshots and which of them are stale, the working tree's changes, and each product's brief, including a
   product with a brief and no page), read when the page opens. Each page and screenshot opens at /designs/<path>, served
-  sandboxed as drawn. History and Retake screenshots are copy only; Read brief shows a brief-only product's brief in Details, from the ledger. Hide and Unhide post /api/designs/view
+  sandboxed as drawn. Read brief shows a brief-only product's brief in Details, from the ledger. Hide and Unhide post /api/designs/view
   (sd:3447), the view state Documents' Hide writes; that is the page's one write. Pages lists unhidden rows; the Hidden view lists
   the hidden ones. Nothing here is sample data. The old
   listing was retired in sd:3402.
@@ -38,23 +38,17 @@
     <h2 class="sr">Attention</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
 
-    <!-- The toolbar standard (sd:5281): one control row, the views then the filter; the count sits on the table's title line. -->
-    <div class="toolbar" id="toolbar">
+    <!-- The toolbar standard (sd:5281): one control row, the views then the shell's Shapeshift bar (sd:5539); the count sits on the view's tab. -->
+    <div class="toolbar" id="toolbar" data-shift>
       <div id="viewswitch"></div>
-      <label class="tfind">
-        <svg class="i" aria-hidden="true"><use href="#i-filter"/></svg>
-        <span class="sr">Filter pages</span>
-        <input id="shift" type="search" placeholder="Filter pages" autocomplete="off" spellcheck="false">
-        <kbd>/</kbd>
-      </label>
     </div>
 
     <section aria-labelledby="list-h">
       <div class="sec-head">
         <h2 id="list-h">Pages <button class="help" type="button" aria-label="Help: Pages" data-help="<b>One row per drawn page,</b> grouped by product; a product with a brief and no page has one row. <b>▲</b> means the page is uncommitted, has no screenshot, or has a stale one: the page or a file it loads changed after the capture. The time is that commit. Enter opens Details, where the page is one link away.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="tally" aria-live="polite"></p>
       </div>
+      <div class="filters toolbar-2" id="filters"></div>
       <table class="ledger" aria-labelledby="list-h" data-tfilter="page" data-toolbar="toolbar">
         <thead id="rows-head"></thead>
         <tbody id="rows"></tbody>

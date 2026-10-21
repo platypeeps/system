@@ -16,12 +16,13 @@ it still reads the same: a changed or worsened problem shows again.
   status and due date (`now_screen.work_rows`). A new title does not show it again; a new status or due date does.
 
 - `split` is what `now_screen.document` and `health_screen.document` call: the
-  rows shown, and the snoozed ones, each with `until`; every row carries its
+  rows shown, and the snoozed ones, each with `until`, a time or `forever`; every row carries its
   `seen`. `sd_db.writes.snoozed` is read once per document. A read that fails
   hides nothing and says why: an unread snooze is not a snooze.
 - `request` is `POST /api/snooze`, `{"page", "row", "until", "seen"}`, which
-  both pages post: `until` is an aware ISO time, or null to show the row
-  again, and `seen` is the row's own, as the page read it.
+  both pages post: `until` is an aware ISO time, `writes.SNOOZE_FOREVER`
+  (Health's Ignore, sd:5470: no end, so only a changed problem shows the row),
+  or null to show the row again, and `seen` is the row's own, as the page read it.
   `sd_db.writes.snooze` writes it through `record_state` and judges the time.
   The row need not be listed now: a key no row has hides nothing.
 """
@@ -78,12 +79,13 @@ def request(payload: dict):
             or not isinstance(payload["row"], str) or not payload["row"].strip()
             or not (payload["until"] is None or isinstance(payload["until"], str))
             or not (payload["seen"] is None or isinstance(payload["seen"], str))):
-        raise ValueError("Send the page (today or health), the row id, the time it shows again or null to show it now, "
-                         "and the row's seen.")
+        raise ValueError("Send the page (today or health), the row id, the time it shows again, forever, or null to show "
+                         "it now, and the row's seen.")
     target = key(payload["page"], payload["row"])
 
     def write(connection):
         writes.snooze(connection, target, payload["until"], seen=payload["seen"])
-        return {"key": target, "until": payload["until"] and writes.stamp(payload["until"])}
+        until = payload["until"]
+        return {"key": target, "until": until if until in (None, writes.SNOOZE_FOREVER) else writes.stamp(until)}
 
     return write

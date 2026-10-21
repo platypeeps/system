@@ -3,7 +3,8 @@
 // started the first time the view opens; PAGE_VIEWS declares them to the shell's view switch, which owns #view=<id>. The
 // lamps, the badge and each view's count are /api/health/summary, read at start and again after a view's read; it waits on
 // no walker, so the strip draws before any view's rows. Show draws the rows that want something (warning, caution,
-// unknown) by default; All adds the ok and queued ones, and ?show=all keeps it.
+// unknown) by default; All adds the ok and queued ones, and ?show=all keeps it. Ignored (sd:5470) lists the rows Ignore hid,
+// a snooze with no end, instead of the areas' rows, each with Unignore; ?show=ignored keeps it.
 // Rows: the areas health_screen.document builds from the fleet child (worktree registrations),
 // Operations > Ports' reader (ports), protection.rows (branch protection, and the
 // alerts behind Dependencies and Security, sd:2205 and sd:2206), the nightly credentials heartbeat (sd:2203) and
@@ -11,7 +12,8 @@
 // Ported from the design source's products/system/designs/v2/health page, its stylesheet and script, at d82daa1.
 // An area with no reader shows as unknown with what it does not read, never as a clean lamp.
 // Most fixes are a CLI line for Copy; Re-check reads the document again. The writes are Re-run collector, which starts
-// the server's shadow sync (sd:2894), Snooze (sd:1896): an area's `snoozed` rows leave it, and snooze.js draws them, and
+// the server's shadow sync (sd:2894), Snooze (sd:1896): an area's `snoozed` rows leave it, and snooze.js draws them, Ignore
+// (sd:5470), the same write with no end, whose rows Show ignored lists, and
 // the cleanups (sd:3393, sd:5105) and Clean all safe, which lists every ready one first, each behind a confirm that names what goes, posting the row's revision, and a service's
 // Restart and Start (sd:3707), each a confirm that posts /api/services/<label>/<action>, `sd services`' own code.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
@@ -48,15 +50,18 @@
     { id: 'github', label: 'GitHub', api: '/api/health/github', areas: ['prot', 'dep', 'sec'] },
     { id: 'jobs', label: 'Jobs', api: '/api/health/jobs', areas: ['cred', 'mir'] },
   ];
+  // The shell's Shapeshift bar is the text filter (sd:5539): it matches a row's repo, path and branch in every view.
+  window.PAGE_FILTER = Object.fromEntries(window.PAGE_VIEWS.map(v => [v.id, 'repo, path and branch']));
 
-  let DOC = null, AREAS = [], ROWS = [], SNOOZED = [], selected = null, query = '';
+  let DOC = null, AREAS = [], ROWS = [], SNOOZED = [], IGNORED = [], selected = null, query = '';
   let SUMMARY = null, VIEW = null, showing = 'findings';
   const S = {}, readers = {}; // each view's last reading and its reader
   const F = { state: new Set(), area: new Set() };
   const byId = id => ROWS.find(r => r.id === id);
-  // Show: the rows that want something, or all of them. A filter on ok or queued names those rows, so it shows them.
+  // Show: the rows that want something, or all of them, or the ignored ones. A filter on ok or queued names those rows, so it shows them.
   const QUIET = new Set(['ok', 'queued']);
-  const drawn = r => showing === 'all' || !QUIET.has(r.state) || F.state.has(r.state);
+  const drawn = r => showing !== 'findings' || !QUIET.has(r.state) || F.state.has(r.state);
+  const listed = () => showing === 'ignored' ? IGNORED : ROWS;
   const viewOf = area => PAGE_VIEWS.find(v => v.areas.includes(area))?.id;
 
   // The design's size wording, from a count of KiB.
@@ -90,7 +95,7 @@
   const hashView = () => (/(?:^#|&)view=([a-z0-9-]+)/.exec(location.hash || '') || [])[1];
   // A view's reading becomes the page's rows; an unread view has none.
   function use(id) {
-    ({ DOC, AREAS, ROWS, SNOOZED } = S[id] || { DOC: null, AREAS: [], ROWS: [], SNOOZED: [] });
+    ({ DOC, AREAS, ROWS, SNOOZED, IGNORED } = S[id] || { DOC: null, AREAS: [], ROWS: [], SNOOZED: [], IGNORED: [] });
     if (DOC) document.body.dataset.observed = DOC.read; else delete document.body.dataset.observed;
   }
   // A view opens with its own rows, keeping only the Area values it holds; the first time, its reader starts.
@@ -102,17 +107,24 @@
     if (first) { readers[id] = shell.read(spec(id)); load(); }
   }
 
+  // sd:5504: Activity's bar (shell.list.fbar), as on Reports: Show and State as segments with their counts, Area as a pick
+  // (a lamp presses it too), the picked areas and the query as tokens, then Clear all. An area's title line counts its rows
+  // while a filter hides some of them (sd:5281).
   function filters() {
-    const grp = (key, name, opts) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l, n]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${F[key].has(v) ? 'true' : 'false'}">${l} <span class="n">${n}</span></button>`)}</div></div>`;
-    const chip = (v, l, n) => html`<button type="button" class="chip" data-show="${v}" aria-pressed="${String(showing === v)}">${l} <span class="n">${n}</span></button>`;
-    return html`<div class="filters toolbar-2" role="group" aria-label="Filters"><div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}</div></div>${grp('state', 'State', STATES.filter(s => ROWS.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, ROWS.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, a.rows.length])) : ''}</div>`;
+    const L = listed(), list = shell.list, n = f => L.filter(f).length;
+    const shows = [['findings', ROWS.filter(r => !QUIET.has(r.state)).length], ['all', ROWS.length], ['ignored', IGNORED.length]];
+    return html`<div class="filters toolbar-2">${list.fbar(html`${list.fseg('show', 'Show', shows.map(([v, c]) => ({ v, pressed: showing === v, label: html`${v} <span class="n">${String(c)}</span>` })))}${
+      list.fseg('state', 'State', STATES.filter(s => L.some(r => r.state === s)).map(s => { const c = n(r => r.state === s);
+        return { v: s, pressed: F.state.has(s), title: `${s}: ${c}`, label: html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span><span class="n">${String(c)}</span><span class="sr"> ${s}</span>` }; }))}${
+      AREAS.length > 1 ? list.pick('area', 'Area', AREAS.map(a => [a.id, a.name, n(r => r.area === a.id)]), F.area, { multi: true }) : ''}${
+      [...F.area].map(a => list.tok('area', a, AREAS.find(x => x.id === a)?.name || a))}${query ? list.tok('q', '', `“${query}”`) : ''}`, { clear: filtering() })}</div>`;
   }
 
   function areas() {
     const count = (a, s) => a.rows.filter(r => r.state === s).length;
     return html`${AREAS.filter(areaShown).map(a => { const rows = a.rows.filter(passes); return html`<section class="area" id="a-${a.id}" aria-labelledby="h-${a.id}">
       <div class="sec-head"><h2 id="h-${a.id}">${I(LOOK[a.id]?.[0] || 'circle-help')}${a.name}<button class="help" type="button" aria-label="Help: ${a.name}" data-help="${LOOK[a.id]?.[1] || ''}">${I('circle-help')}</button></h2>
-        <p class="tally">${a.read && !a.error ? STATES.filter(s => count(a, s)).map(s => html`<span class="g-${s}">${GLYPH[s]} ${count(a, s)} ${s}</span>`) : html`<span class="g-unknown">${GLYPH.unknown} not read</span>`}${a.at ? html`<span>read <time class="rel" datetime="${a.at}"></time></span>` : ''}</p></div>
+        <p class="tally">${rows.length < a.rows.filter(drawn).length ? html`<span>${shell.list.count(rows.length, a.rows.filter(drawn).length, 'row')}</span>` : ''}${a.read && !a.error ? STATES.filter(s => count(a, s)).map(s => html`<span class="g-${s}">${GLYPH[s]} ${count(a, s)} ${s}</span>`) : html`<span class="g-unknown">${GLYPH.unknown} not read</span>`}${a.at ? html`<span>read <time class="rel" datetime="${a.at}"></time></span>` : ''}</p></div>
       ${!a.read ? html`<p class="unread"><b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: ${a.missing.join(', ')}.</p>`
         : a.error ? html`<p class="unread"><b>Not read:</b> ${a.error}</p>`
         : a.missing.length ? html`<p class="unread"><b>Not read here:</b> ${a.missing.join(', ')}.</p>` : ''}
@@ -126,6 +138,19 @@
           <td class="fix">${shell.commands.rowActions(r.id)}</td></tr>`)}</tbody></table>` : ''}
       ${a.read && !a.error && quiet(a) && !filtering() ? html`<p class="quiet">${rows.length ? '' : 'Nothing wants you here. '}${plural(quiet(a), 'ok or queued row')} not shown: Show all lists ${quiet(a) === 1 ? 'it' : 'them'}.</p>` : ''}
     </section>`; })}`;
+  }
+
+  // Show ignored (sd:5470): the rows Ignore hid, which the filters narrow, in place of the areas. A row here has no Details,
+  // only Unignore, so it carries no data-id and the selection passes it by.
+  function ignored() {
+    const rows = IGNORED.filter(passes), name = id => AREAS.find(a => a.id === id)?.name;
+    return html`<section class="area" aria-labelledby="h-ignored"><div class="sec-head"><h2 id="h-ignored">${I('eye-off')}Ignored</h2>${rows.length < IGNORED.length ? html`<p class="tally">${shell.list.count(rows.length, IGNORED.length, 'row')}</p>` : ''}</div>
+      ${rows.length ? html`<table class="ledger" aria-labelledby="h-ignored" data-tfilter="page" data-toolbar="toolbar"><thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Finding</th><th scope="col">Unignore</th></tr></thead>
+        <tbody>${rows.map(r => html`<tr><td class="g g-${r.state}"><span aria-hidden="true">${GLYPH[r.state]}</span><span class="sr">${r.state}</span></td>
+          <td class="what">${r.what}<span class="detail">${name(r.area)} · ${r.detail}</span></td>
+          <td class="fix">${shell.commands.rowActions(`ignored:${r.id}`)}</td></tr>`)}</tbody></table>`
+        : html`<p class="quiet">${IGNORED.length ? 'No ignored row matches the filter.' : 'No row here is ignored. Ignore on a row hides it until its problem changes.'}</p>`}
+    </section>`;
   }
 
   // What an area draws above its ledger: v1's counts line and warnings, and for Protection the matrix and its table.
@@ -188,22 +213,19 @@
     const q = new URLSearchParams();
     ['state', 'area'].forEach(k => { if (F[k].size) q.set(k, [...F[k]].join(',')); });
     if (query) q.set('q', query);
-    if (showing === 'all') q.set('show', 'all');
+    if (showing !== 'findings') q.set('show', showing);
     shell.url(q); // the shell keeps ?row=
   }
   // The open view's panel: its filters, the filter note and its areas. Another view's panel keeps what it last drew.
   function apply() {
     if (!VIEW) return;
-    const on = filtering(), shown = ROWS.filter(passes).length;
-    const what = [F.area.size ? `${AREAS.filter(a => F.area.has(a.id)).map(a => a.name).join(', ')} only` : '', [...F.state].join(' or '), query ? `“${query}”` : ''].filter(Boolean).join(' · ');
-    const total = ROWS.filter(drawn).length;
-    put($(`body-${VIEW}`), html`${DOC ? filters() : ''}${on ? html`<p class="filtered" role="status">${shown ? `Filtered to ${what}: ${shown} of ${total} rows.` : `No row matches ${what}.`} <button class="linkbtn" type="button" data-clear>Show all rows</button></p>` : ''}${areas()}`);
+    put($(`body-${VIEW}`), html`${DOC ? filters() : ''}${DOC && showing === 'ignored' ? ignored() : areas()}`);
     // The selection is always a row the viewer can see: the first visible one, or none with the reason.
     shell.reconcile({ rows: document.querySelectorAll('.ledger tbody tr[data-id]'), current: selected, select: id => select(id, false),
-      clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : ROWS.some(drawn) ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : ROWS.length ? 'Nothing is selected: no row here wants you. Show all lists the ok rows.' : 'Nothing is selected: no area raised a row.'}</p>`); } });
+      clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : showing === 'ignored' ? 'Nothing is selected: an ignored row has Unignore only. Show findings to pick a row.' : ROWS.some(drawn) ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : ROWS.length ? 'Nothing is selected: no row here wants you. Show all lists the ok rows.' : 'Nothing is selected: no area raised a row.'}</p>`); } });
     writeURL();
   }
-  function clearFilters() { const had = filtering(); F.state.clear(); F.area.clear(); query = ''; $('q').value = ''; lamps(); apply(); return had; }
+  function clearFilters() { const had = filtering(); F.state.clear(); F.area.clear(); query = ''; shell.filter(''); lamps(); apply(); return had; }
 
   // The badge is the summary's (sd:3446, health_screen._attention over every area); the subhead says it in words.
   function attention() {
@@ -233,10 +255,12 @@
     adopt: doc => {
       const areas = doc.areas;
       // Each row carries its area: the filter reads r.area on a.rows as well as on ROWS (sd:3708).
-      areas.forEach(a => { a.rows.forEach(r => { r.area = a.id; }); a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]); });
-      S[view] = { DOC: doc, AREAS: areas, ROWS: areas.flatMap(a => a.rows), SNOOZED: areas.flatMap(a => a.snoozed) };
+      areas.forEach(a => { [...a.rows, ...a.snoozed].forEach(r => { r.area = a.id; }); a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]); });
+      // An ignored row (sd:5470) is a snooze with no end: Show ignored lists it, not the Snoozed list under the page.
+      const hidden = areas.flatMap(a => a.snoozed), forever = r => r.until === window.snooze.FOREVER;
+      S[view] = { DOC: doc, AREAS: areas, ROWS: areas.flatMap(a => a.rows), SNOOZED: hidden.filter(r => !forever(r)), IGNORED: hidden.filter(forever) };
       if (view === VIEW) use(view);
-      const { ROWS: rows, SNOOZED: snoozed } = S[view], failed = areas.filter(a => a.error || a.stale), source = `/api/health/${view}`;
+      const { ROWS: rows } = S[view], snoozed = hidden, failed = areas.filter(a => a.error || a.stale), source = `/api/health/${view}`;
       return { objects: [...rows.map(r => ({ ...r, label: r.what })), ...snoozed.map(window.snooze.object)],
         state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error || a.stale}`).join(' · ')}. The other areas are current.`, source }
           : doc.snooze_error ? window.snooze.unread(doc.snooze_error, source) : null };
@@ -310,7 +334,6 @@
   });
   const can = action => o => revised(o) === true ? (o.can[action].allowed || o.can[action].reason) : revised(o);
   window.PAGE_COMMANDS = [
-    { label: 'Filter rows', icon: 'search', key: '/', run: () => $('q').focus() },
     { label: 'Read Health again', icon: 'rotate-ccw', run: () => load() },
     { label: 'Open Sessions in Operations', icon: 'folder-x', run: () => { location.href = '/operations?area=sessions'; } },
   ];
@@ -323,16 +346,16 @@
     C.put({ id: 'collector:protection', type: 'collector', label: 'protection collector' });
     C.put({ id: 'cleanup:safe', type: 'safe cleanups', label: 'Clean all safe' });
     C.register(
-      { id: 'check.recheck', on: 'check', label: 'Re-check', does: 'Reads Health again; the line reruns this check.', key: 'e', risk: 'safe', executes: false, primary: () => true,
+      { id: 'check.recheck', on: 'check', label: 'Re-check', does: 'Reads Health again; the line reruns this check.', key: 'e', icon: 'rotate-ccw', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: () => { load(); return 'Reading Health again'; } },
-      { id: 'storage folder.du', on: 'storage folder', label: 'Show biggest', does: 'Gives the line that lists this folder\'s biggest entries.', key: 'b', risk: 'safe', executes: false, primary: () => true,
+      { id: 'storage folder.du', on: 'storage folder', label: 'Show biggest', does: 'Gives the line that lists this folder\'s biggest entries.', key: 'b', icon: 'chart-no-axes-column', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: copyOnly },
-      { id: 'build output.rm', on: 'build output', label: 'Remove build output', does: 'Deletes build output in merged, clean worktrees; this cannot be undone.', key: 'r', risk: 'confirm', executes: true, primary: () => true,
+      { id: 'build output.rm', on: 'build output', label: 'Remove build output', does: 'Deletes build output in merged, clean worktrees; this cannot be undone.', key: 'r', icon: 'folder-x', risk: 'confirm', executes: true, primary: () => true,
         when: o => revised(o) === true ? (o.remove.length ? true : 'every merged worktree has uncommitted changes: nothing is removed') : revised(o),
         cli: o => o.cli, consequence: o => `Deletes ${o.remove.length} build output folders in merged, clean worktrees: ${names(o.remove)}.`
           + (o.kept.length ? ` Keeps ${o.kept.length} with uncommitted changes: ${names(o.kept)}.` : '') + ' Each worktree is checked again first. This cannot be undone.', run: cleanup },
       // Volume rows are the build's: the design draws volumes as bars only. Its line shows the volume's use in a terminal.
-      { id: 'volume.df', on: 'volume', label: 'Show use', does: 'Gives the line that shows this volume\'s use.', key: 'b', risk: 'safe', executes: false, primary: () => true,
+      { id: 'volume.df', on: 'volume', label: 'Show use', does: 'Gives the line that shows this volume\'s use.', key: 'b', icon: 'gauge', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: copyOnly },
       { id: 'worktree registrations.prune', on: 'worktree registrations', label: 'Prune registrations', does: 'Removes registrations of worktrees whose folders are gone; cannot be undone.', key: 'p', risk: 'confirm',
         executes: true, primary: () => true, cli: CLEAN['worktree registrations'].cli, when: CLEAN['worktree registrations'].ready,
@@ -340,7 +363,7 @@
       { id: 'merged branches.delete', on: 'merged branches', label: 'Delete merged', does: 'Deletes local branches already merged; this cannot be undone.', key: 'd', risk: 'confirm', executes: true,
         primary: () => true, when: CLEAN['merged branches'].ready, cli: o => o.cli,
         consequence: o => `Deletes ${o.facts.Merged} local branches already in origin's default branch: ${names(o.branches)}. git branch -d refuses any unmerged one.`, run: cleanup },
-      { id: 'merged worktrees.remove', on: 'merged worktrees', label: 'Remove merged', does: 'Removes worktrees the lane merged, with their branches; cannot be undone.', key: 'r', risk: 'confirm',
+      { id: 'merged worktrees.remove', on: 'merged worktrees', label: 'Remove merged', does: 'Removes worktrees the lane merged, with their branches; cannot be undone.', key: 'r', icon: 'folder-x', risk: 'confirm',
         executes: true, primary: () => true, when: CLEAN['merged worktrees'].ready, cli: o => o.cli,
         consequence: o => `Removes ${o.removable.length} worktrees the lane merged, with their build output, their local branch and origin's: ${names(o.removable)}.`
           + (o.kept.length ? ` Keeps ${o.kept.length}: ${names(o.kept.map(x => `${x.name} (${x.why})`))}.` : '') + ' Each is checked again first. This cannot be undone.', run: cleanup },
@@ -353,62 +376,63 @@
     // Services (sd:3707): Restart and Start run sd services' code through Operations' route. sd_db.services protects the
     // dashboard's own service, and a restart from its page would end the request that asks, so that row is copy only.
     C.register(
-      { id: 'service.restart', on: 'service', label: 'Restart', does: 'Stops and starts the service through launchctl; connections drop.', key: 'r', risk: 'confirm', executes: true,
+      { id: 'service.restart', on: 'service', label: 'Restart', does: 'Stops and starts the service through launchctl; connections drop.', key: 'r', icon: 'rotate-ccw', risk: 'confirm', executes: true,
         primary: o => o.facts.State === 'running', when: can('restart'),
         cli: o => `sd services restart ${o.facts.Label}`,
         consequence: o => `Stops ${o.facts.Label} and starts it again through launchctl (bootout, bootstrap, kickstart). Its open connections drop.`,
         run: service('restart') },
-      { id: 'service.start', on: 'service', label: 'Start', does: 'Loads and starts the service through launchctl.', key: 's', risk: 'confirm', executes: true,
+      { id: 'service.start', on: 'service', label: 'Start', does: 'Loads and starts the service through launchctl.', key: 's', icon: 'play', risk: 'confirm', executes: true,
         primary: o => o.facts.State !== 'running', when: can('start'),
         cli: o => `sd services start ${o.facts.Label}`,
         consequence: o => `Loads ${o.facts.Label} if it is unloaded and kickstarts it through launchctl.`,
         run: service('start') },
-      { id: 'dashboard service.kickstart', on: 'dashboard service', label: 'Kickstart', does: 'Gives the line that restarts the dashboard service.', key: 'l', risk: 'safe', executes: false,
+      { id: 'dashboard service.kickstart', on: 'dashboard service', label: 'Kickstart', does: 'Gives the line that restarts the dashboard service.', key: 'l', icon: 'rocket', risk: 'safe', executes: false,
         primary: () => true, cli: o => o.kickstart, run: copyOnly },
     );
     // Ports and Protection are read-only: each line is copy only.
     C.register(
-      { id: 'port.inspect', on: 'port', label: 'Inspect listener', does: 'Gives the lsof line that shows what listens on this port.', key: 'i', risk: 'safe', primary: () => true, executes: false,
+      { id: 'port.inspect', on: 'port', label: 'Inspect listener', does: 'Gives the lsof line that shows what listens on this port.', key: 'i', icon: 'search', risk: 'safe', primary: () => true, executes: false,
         when: o => !!o.port || 'no port configured: there is nothing to inspect', cli: o => `lsof -nP -iTCP:${o.port || '<port>'} -sTCP:LISTEN`, run: copyOnly },
-      { id: 'protection.settings', on: 'branch protection', label: 'Open branch settings', does: 'Opens the repo\'s branch protection settings on GitHub.', key: 'o', risk: 'safe', primary: () => true, executes: false,
+      { id: 'protection.settings', on: 'branch protection', label: 'Open branch settings', does: 'Opens the repo\'s branch protection settings on GitHub.', key: 'o', icon: 'settings', risk: 'safe', primary: () => true, executes: false,
         when: o => !!o.slug || 'no github.com remote: there is no settings page', cli: o => `open https://github.com/${o.slug || '<owner>/<repo>'}/settings/branches`,
         run: o => { window.open(`https://github.com/${o.slug}/settings/branches`, '_blank', 'noopener'); return 'Opens in a new tab'; } },
       // Re-run collector (commands.js); Health reads again once the run ends.
       window.commands.syncCollector({ reread: () => load(), page: 'Health' }),
       // Dependencies, Security and Credentials (sd:2203, sd:2205, sd:2206) read stored rows; each line is copy only.
-      { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', does: 'Gives the line that opens the Dependabot alerts on GitHub.', key: 'o', risk: 'safe', primary: () => true,
+      { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', does: 'Gives the line that opens the Dependabot alerts on GitHub.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: () => true,
         executes: false, cli: o => o.cli, run: copyOnly },
-      { id: 'secret scanning.review', on: 'secret scanning', label: 'Review on GitHub', does: 'Gives the line that opens the secret scanning alerts on GitHub.', key: 'o', risk: 'safe', primary: () => true,
+      { id: 'secret scanning.review', on: 'secret scanning', label: 'Review on GitHub', does: 'Gives the line that opens the secret scanning alerts on GitHub.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: () => true,
         executes: false, cli: o => o.cli, run: copyOnly },
-      { id: 'credential.probe', on: 'credential', label: 'Probe again', does: 'Gives the line that probes this credential again.', key: 'r', risk: 'safe', primary: () => true, executes: false,
+      { id: 'credential.probe', on: 'credential', label: 'Probe again', does: 'Gives the line that probes this credential again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', primary: () => true, executes: false,
         cli: o => o.cli, run: copyOnly },
     );
-    // Snooze (sd:1896) on every row type; an ok row wants nothing, so it has nothing to snooze.
-    window.snooze.register(C, { page: 'health', reread: () => load(), off: o => o.state === 'ok' && 'an ok row has nothing to snooze',
+    // Snooze (sd:1896) and Ignore (sd:5470) on every row type; an ok row wants nothing, so it has nothing to snooze.
+    window.snooze.register(C, { page: 'health', ignore: true, reread: () => load(), off: o => o.state === 'ok' && 'an ok row has nothing to snooze',
       types: ['check', 'storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'merged branches', 'merged worktrees', 'port',
         'branch protection', 'dependabot alerts', 'secret scanning', 'credential', 'service', 'dashboard service', 'vault mirror'] });
 
     const u = new URLSearchParams(location.search);
     (u.get('state') || '').split(',').filter(s => STATES.includes(s)).forEach(s => F.state.add(s));
     (u.get('area') || '').split(',').filter(Boolean).forEach(a => F.area.add(a));
-    query = (u.get('q') || '').trim().toLowerCase(); $('q').value = u.get('q') || '';
-    showing = u.get('show') === 'all' ? 'all' : 'findings';
+    query = (u.get('q') || '').trim().toLowerCase(); // the shell's bar reads ?q= too
+    showing = ['all', 'ignored'].includes(u.get('show')) ? u.get('show') : 'findings';
     // An ?area= link opens that area's view unless #view= names one. The shell's first shell:view fires after this listener.
     const asked = viewOf([...F.area][0]);
     if (asked && !hashView()) { history.replaceState(null, '', `${location.pathname}${location.search}#view=${asked}`); shell.view.show(asked); }
 
-    // Each panel: its Show and filter chips, the filter note's clear, a matrix column and a row.
+    // Each panel: its filter bar (segments, tokens, Clear all), a matrix column and a row.
     PAGE_VIEWS.forEach(v => $(`view-${v.id}`).addEventListener('click', e => {
-      if (e.target.closest('[data-clear]')) { clearFilters(); return; }
-      const b = e.target.closest('[data-show]');
-      if (b) { if (b.dataset.show !== showing) { showing = b.dataset.show; apply(); } return; }
+      if (e.target.closest('[data-fclear]')) { clearFilters(); return; }
       const c = e.target.closest('[data-f]');
+      if (c && c.dataset.f === 'show') { if (c.dataset.v !== showing) { showing = c.dataset.v; apply(); } return; }
+      if (c && c.dataset.f === 'q') { query = ''; shell.filter(''); apply(); return; }
       if (c) { const set = F[c.dataset.f]; set.has(c.dataset.v) ? set.delete(c.dataset.v) : set.add(c.dataset.v); lamps(); apply(); return; }
       if (e.target.closest('.rowact') || e.target.closest('.help')) return;
       const col = e.target.closest('.pmx-col'); if (col) { select(col.dataset.row, true); return; }
       const tr = e.target.closest('tbody tr[data-id]'); if (tr) select(tr.dataset.id, true);
     }));
-    // A lamp is the Area chip for its area: pressing it adds the area to the filter, pressing it again takes it out.
+    PAGE_VIEWS.forEach(v => $(`view-${v.id}`).addEventListener('change', e => shell.list.pickChange(e, F, () => { lamps(); apply(); })));
+    // A lamp is the Area pick's value for its area: pressing it adds the area to the filter, pressing it again takes it out.
     $('annunciator').addEventListener('click', e => {
       const c = e.target.closest('button.cell'); if (!c) return;
       if (c.id === 'refresh') return load();
@@ -417,12 +441,8 @@
       F.area.has(id) ? F.area.delete(id) : F.area.add(id);
       lamps(); apply();
     });
-    $('q').addEventListener('input', () => { query = $('q').value.trim().toLowerCase(); apply(); });
-    $('q').addEventListener('keydown', e => { if (e.key === 'Escape' && $('q').value) { e.stopPropagation(); $('q').value = ''; query = ''; apply(); } });
-    document.addEventListener('keydown', e => {
-      if (e.target.matches('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]') || e.target.closest?.('.actmenu') || shell.chording()) return;
-      if (e.key === '/') { e.preventDefault(); $('q').focus(); }
-    });
+    // The text filter is the shell's Shapeshift bar (sd:5539).
+    document.addEventListener('shell:filter', e => { const q = e.detail.q.toLowerCase(); if (q !== query) { query = q; apply(); } });
     document.addEventListener('shell:open', e => { if (byId(e.detail)) select(e.detail, true); });
     document.addEventListener('shell:picked', e => { document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))); });
 

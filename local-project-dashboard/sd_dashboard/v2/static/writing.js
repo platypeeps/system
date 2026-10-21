@@ -32,7 +32,7 @@ addEventListener('DOMContentLoaded', () => {
   const STAGES = [['accepted', 'Accepted'], ['researching', 'Researching'], ['drafting', 'Drafting'], ['review', 'Review'], ['ready', 'Ready'], ['published', 'Published']];
   const SL = Object.fromEntries(STAGES);
   let D = null, pieces = [], REALM = window.shell.view?.current() || 'all';
-  const inRealm = p => REALM === 'all' || p.realm === REALM;
+  const inRealm = (p, r = REALM) => r === 'all' || p.realm === r;
   // Another realm reads again quietly, so the reader's objects and first pick follow the pieces the view shows.
   document.addEventListener('shell:view', e => { if (e.detail.id === REALM) return; REALM = e.detail.id; if (D) reading.load(true); });
   const byId = id => pieces.find(p => p.id === +id);
@@ -345,7 +345,9 @@ addEventListener('DOMContentLoaded', () => {
   function subhead() {
     const sub = document.getElementById('subhead');
     if (!D) { sub.textContent = 'The pieces were not read.'; return; }
-    sub.textContent = `${pieces.length} pieces · read ${String(D.read).slice(11, 16)} UTC · ` + (view === 'board' ? 'Pieces by stage. Four lamps per piece: draft, research, fact-check, adversarial.' : 'Focused editor: the draft on the left, its evidence on the right.');
+    // Each realm's tab carries its pieces (sd:5524).
+    (window.PAGE_VIEWS || []).forEach(v => window.shell.view?.count(v.id, (D.pieces || []).filter(p => inRealm(p, v.id)).length));
+    sub.textContent = `Read ${String(D.read).slice(11, 16)} UTC · ` + (view === 'board' ? 'Pieces by stage. Four lamps per piece: draft, research, fact-check, adversarial.' : 'Focused editor: the draft on the left, its evidence on the right.');
   }
   function setView(v) {
     view = v;
@@ -412,7 +414,7 @@ addEventListener('DOMContentLoaded', () => {
     source: '/api/writing', what: 'the pieces',
     adopt: doc => {
       (window.PAGE_VIEWS || []).forEach(v => { if (v.id !== 'all') window.shell.view?.hide(v.id, !(doc.pieces || []).some(p => p.realm === v.id)); });
-      D = doc; pieces = (doc.pieces || []).filter(inRealm);
+      D = doc; pieces = (doc.pieces || []).filter(p => inRealm(p));
       document.body.dataset.observed = D.read;
       return { objects: pieces.map(p => ({ id: String(p.id), type: 'piece', label: `#${p.id} ${p.title}` })),
         state: pieces.length ? null : { kind: 'empty', title: 'No pieces', text: 'No writing piece is registered. Import the writing collection to see its pieces here.', source: '/api/writing' } };

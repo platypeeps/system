@@ -52,7 +52,15 @@ addEventListener('DOMContentLoaded', () => {
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
     status: r.status, since: r.status_since, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
     base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, realm: r.realm ?? null, issueTargets: r.issue_targets ?? null, issueLink: r.issue_link ?? null, real: true });
-  const byKey = k => tasks.find(t => t.key === k);
+  // sd:5462: a linked item the read does not list, a quiet report or one done before the week, opens in Details all the
+  // same. PIN is that item: its key, and its row once its /api/tasks/<id> reading answers (details' `row`), marked with why
+  // the list leaves it out. The row is kept beside `tasks`, so no view, count or filter lists it; a read that lists it ends PIN.
+  let PIN = null;
+  // LINK is the ?row= the page opened at when the read lists it: a view or filter that hides it keeps it selected, with a
+  // note, until another is picked (a done report the board hid lost its selection to the first card, sd:5462).
+  let LINK = null;
+  const pinned = k => !!PIN && PIN.key === k, held = k => pinned(k) || (!!LINK && LINK === k);
+  const byKey = k => tasks.find(t => t.key === k) || (pinned(k) && PIN.row) || undefined;
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
   const listed = () => tasks.filter(t => !t.parked);
   // build (places): the PAGE_VIEWS above. A row's area is the server's (places.area_of), the rule the HOA and Home pages'
@@ -65,8 +73,8 @@ addEventListener('DOMContentLoaded', () => {
   const sweepText = w => !w ? '' : w.error ? `sweep not read: ${w.error}` : w.running ? `sweep running${w.last?.started ? ` since ${w.last.started.slice(11, 16)} UTC` : ''}`
     : !w.last || w.last.state === 'never' ? 'sweep not run yet' : w.last.state === 'done' ? `sweep done${w.last.finished ? ` ${w.last.finished.slice(0, 16).replace('T', ' ')} UTC` : ''}${w.last.gaps?.length ? ` · not read: ${w.last.gaps.join(', ')}` : ''}`
     : `sweep ${w.last.state}${w.last.exit != null ? `, exit ${w.last.exit}` : ''}${w.last.reason ? `: ${w.last.reason}` : ''}`;
-  const inPlace = t => PLACE === 'all' || (PLACE === 'hoa' || PLACE === 'home' ? t.area === PLACE : t.realm === PLACE);
-  const placed = () => listed().filter(inPlace);
+  const inPlace = (t, p = PLACE) => p === 'all' || (p === 'hoa' || p === 'home' ? t.area === p : t.realm === p);
+  const placed = () => listed().filter(t => inPlace(t));
   const label = t => `#${t.id}`;
   // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
   function absorb(key, state) {
@@ -294,11 +302,15 @@ addEventListener('DOMContentLoaded', () => {
     const gen = DET.gen[id] || 0;
     DET.reading[id] = gen; delete DET.failed[id];
     let got, err;
-    try { got = await window.shell.getJSON(`/api/tasks/${id}`); } catch (e) { err = e; }
+    try { got = await window.shell.getJSON(`/api/tasks/${encodeURIComponent(id)}`); } catch (e) { err = e; }
     if ((DET.gen[id] || 0) !== gen) return; // a write landed meanwhile; the read it started is the one that counts
     delete DET.reading[id];
     if (err) DET.failed[id] = err.message; else { DET.items[id] = got; DET.body[id] = { text: bodyText(got.item.body), rev: got.revision }; }
-    putAll(); if (byKey(selected)?.id === id) renderDetails();
+    const first = !err && pinned(String(id)) && !PIN.row && got.row;
+    if (!err && pinned(String(id)) && got.row) { PIN.row = { ...shape(got.row), unlisted: got.left_out || 'the read does not hold it' }; C.put(objectOf(PIN.row)); }
+    putAll();
+    if (first && selected === PIN.key) select(PIN.key, true);
+    else if (byKey(selected)?.id === id || (pinned(selected) && String(id) === selected)) renderDetails();
   }
   const staleDet = id => { DET.gen[id] = (DET.gen[id] || 0) + 1; delete DET.items[id]; delete DET.reading[id]; };
   // The rows' objects are the reader's (adopt below): it puts them after each read and retires a row the read stopped
@@ -361,8 +373,10 @@ addEventListener('DOMContentLoaded', () => {
       : t.nextDue === null ? 'it repeats: 5 completes it and ends the series, since its rule gives no next date'
       : 'it repeats: 5 completes it and opens the next occurrence';
     const L = legal(t, s); return L.ok || L.reason; };
+  // sd:5457: each move's icon names the status it moves to, so the row's act reads without its label.
+  const STATUS_ICON = { planning: 'notebook-pen', ready: 'flag-triangle-right', in_progress: 'play', blocked: 'ban', done: 'check' };
   const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
-    id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: 'kanban', bar: false,
+    id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: STATUS_ICON[s], bar: false,
     primary: o => view === 'list' && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
     when: o => { const t = T(o); return t ? moveOn(s, t) : 'the task is no longer listed'; },
     cli: o => rowOr(o, t => cliMove(t, s)),
@@ -377,7 +391,7 @@ addEventListener('DOMContentLoaded', () => {
   // on a key that is on, so the two `when` tests split on repeats() and never are both on. Not bulk: a picked repeating
   // row is skipped with its reason (keys below).
   const completeOn = t => { if (!repeats(t)) return 'the task does not repeat; Status → Done completes it'; const L = legal(t, 'done'); return L.ok || L.reason; };
-  const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-check', bar: false,
+  const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-clock', bar: false,
     primary: o => view === 'list' && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
     when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
     cli: o => rowOr(o, t => cliMove(t, 'done')),
@@ -689,6 +703,7 @@ addEventListener('DOMContentLoaded', () => {
   function renderDetails() {
     const t = byKey(selected), el = document.getElementById('details');
     if (!t) { detKey = null; put(el, html`<p class="note">${!READ ? 'The tasks were not read, so nothing is selected.'
+      : pinned(selected) ? (DET.failed[selected] ? `#${selected} did not open: ${DET.failed[selected]}.` : `Reading #${selected}…`)
       : tasks.some(x => !live(x.key)) ? 'The tasks were not read again after the change, so nothing is selected. Reload reads them.'
       : !tasks.length ? 'No open task, so nothing is selected.' : !visible().length ? 'No task matches these filters. Clear them to see the list.'
       : 'Select a task to see its fields and moves.'}</p>`); return; }
@@ -704,6 +719,7 @@ addEventListener('DOMContentLoaded', () => {
     detKey = t.key;
     put(el, html`<div class="kind"><span class="label">${t.kind}</span><span class="tag real">observed</span></div>
       <h2>${t.title}</h2>
+      ${t.unlisted ? html`<p class="why">The list, board and matrix leave #${t.id} out: ${t.unlisted}.</p>` : LINK === t.key && !visible().some(x => x.key === t.key) ? html`<p class="why">The view or filters hide #${t.id}; it stays selected until you pick another.</p>` : ''}
       <dl class="fields">
         <dt>Id</dt><dd>#${t.id}</dd>
         <dt><label for="det-title">Title</label></dt><dd><input id="det-title" class="fld" value="${t.title}" required${dis}></dd>
@@ -864,13 +880,14 @@ addEventListener('DOMContentLoaded', () => {
     if (view === 'board') renderBoard(); else if (view === 'matrix') renderMatrix(); else renderList();
     // design.md § Selection: a filter or view change that hides the selected task moves the selection to the first visible
     // one, so x, . and the palette never act on a hidden card (review 2026-09-29, item 10).
-    shell.reconcile({ rows: document.querySelectorAll('main [data-key]'), id: n => n.dataset.key, current: selected,
+    shell.reconcile({ rows: document.querySelectorAll('main [data-key]'), id: n => n.dataset.key, current: selected, keep: held,
       select: key => select(key, false), clear: () => { selected = null; writeURL(); } });
     renderDetails();
   }
 
   // ---------- Selection ----------
   function select(key, open) {
+    if (key !== LINK) LINK = null;
     selected = key;
     // The selected card or row is aria-current: a card holds a checkbox and buttons, so it is an article, not a listbox
     // option, whose descendants assistive technology treats as presentational (review, PR #46).
@@ -1157,7 +1174,9 @@ addEventListener('DOMContentLoaded', () => {
       ? ` · repos in no realm: ${REALMS.state === 'missing' ? 'no realm list; set dashboard.realms on Settings' : `${REALMS.source} ${REALMS.problems[0] || 'was not read'}`}` : '';
     // The Personal and Work views name their sweep's last run and carry Run sweep (sd:5096, sd:5097).
     const w = SWEEP_NAME[PLACE] && SWEEPS?.[PLACE];
-    put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}${w ? html` · <span class="sweep" data-sweep="${PLACE}">${SWEEP_NAME[PLACE]} ${sweepText(w)} ${C.rowActions('sweep:' + PLACE)}</span>` : ''}`);
+    // Each view's tab carries its tasks (sd:5524), so the line under the title counts none.
+    window.PAGE_VIEWS.forEach(v => window.shell.view.count(v.id, listed().filter(t => inPlace(t, v.id)).length));
+    put(document.getElementById('subhead'), html`${parked ? `${parked} parked · ` : ''}read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}${w ? html` · <span class="sweep" data-sweep="${PLACE}">${SWEEP_NAME[PLACE]} ${sweepText(w)} ${C.rowActions('sweep:' + PLACE)}</span>` : ''}`);
   }
   // The view menu (sd:5064): one button shows the current view's icon; its menu lists the three, one checked.
   const viewBtn = document.getElementById('view-btn'), viewMenu = document.getElementById('view-menu');
@@ -1205,6 +1224,7 @@ addEventListener('DOMContentLoaded', () => {
     if (Q) q.set('q', Q);
     if (view === 'list') window.shell.list.listQuery(q, L, LIST);
     shell.url(q); // the shell keeps ?row=
+    shell.filter(Q); // the shell filters Your issues with the same text (sd:5539)
   }
 
   // ---------- Shapeshift: add or find ----------
@@ -1300,10 +1320,10 @@ addEventListener('DOMContentLoaded', () => {
       // The address is read before the first draw: that draw's reconcile selects the first shown card and rewrites ?row=.
       drawn = true;
       const q = new URLSearchParams(location.search), row = shell.row();
-      if (row && byKey(row)) selected = row;
-      // sd:3526: a linked item the read does not list, a quiet report or one done before the week, opens on its item page
-      // rather than the first card in its place. READ is set only by a read that answered.
-      else if (row && READ) { location.replace(shell.itemPage(row)); return; }
+      if (row && byKey(row)) { selected = row; LINK = row; }
+      // sd:5462: a linked item the read does not list opens in Details (PIN above), not on its classic item page (sd:3526)
+      // and not as the first card in its place. READ is set only by a read that answered.
+      else if (row && READ) { PIN = { key: row }; selected = row; readDet(row); }
       readFilterURL();
       setView(['list', 'board', 'matrix'].includes(q.get('view')) ? q.get('view') : 'board');
     } else { subhead(); render(); }
@@ -1317,22 +1337,24 @@ addEventListener('DOMContentLoaded', () => {
       ISSUES = { issues: doc.issues || [], error: doc.issues_error || '' };
       // A row read at another revision than its cached Details changed elsewhere: they are read again (review 2026-10-12).
       tasks.forEach(t => { const d = DET.items[t.id]; if (d && d.revision !== t.revision) { staleDet(t.id); if (selected === t.key) readDet(t.id); } });
+      if (PIN && tasks.some(t => t.key === PIN.key)) PIN = null;
       const sweeps = Object.keys(SWEEP_NAME).filter(r => SWEEPS?.[r]).map(r => ({ id: `sweep:${r}`, type: 'sweep', label: `${SWEEP_NAME[r]} sweep` }));
-      return { objects: [...tasks.map(objectOf), ...sweeps], state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
-    clear: () => { tasks = []; READ = null; ATTENTION = null; ISSUES = null; SWEEPS = null; },
+      return { objects: [...tasks.map(objectOf), ...(PIN?.row ? [objectOf(PIN.row)] : []), ...sweeps], state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
+    clear: () => { tasks = []; READ = null; ATTENTION = null; ISSUES = null; SWEEPS = null; PIN = null; },
     draw,
     // draw() has already reconciled the selection against the cards the filters show, so the reader settles on that one.
     current: () => selected,
     first: () => selected,
     select: key => select(key, false),
-    unselect: () => { selected = null; renderDetails(); },
+    // The pinned item is not a row the read lists, so the reader finds no row for it: its selection stays.
+    unselect: () => { if (!held(selected)) selected = null; renderDetails(); },
   });
   function load() { return reading.load(); }
   // ---------- Run sweep (sd:5096, sd:5097) ----------
   // POST /api/tasks/sweep {realm} starts that realm's sweep in the background (sd_dashboard/sweep.py); a 409 names the run going. It asks
   // first: the run files a brief and followups and saves drafts, and takes up to an hour.
   C.register({ id: 'realm-sweep.run', on: 'sweep', label: 'Run sweep', does: 'Runs this realm\'s sweep headless: a brief, followups and drafts; sends nothing.',
-    risk: 'safe', askFirst: true, executes: true, primary: () => true,
+    icon: 'play', risk: 'safe', askFirst: true, executes: true, primary: () => true,
     when: o => { const w = sweepOf(o); return !w ? 'the sweep was not read' : w.error || (w.running ? 'a sweep is running now' : true); },
     consequence: o => `Reads the ${o.id === 'sweep:work' ? 'work mail, Drive, Notion, Jira and GitHub' : 'personal mail and My Drive'} since the last run, files a dated brief and sd followups, and saves Gmail drafts. Nothing is sent or committed. Up to 60 min.`,
     cli: o => sweepOf(o)?.command || `python3 -m sd_dashboard.realm_sweep run ${String(o.id).slice(6)}`,

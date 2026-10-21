@@ -4,9 +4,9 @@
  * dashboard can keep.
  *
  * What it does, and no more: it submits workflow forms, runs the registered
- * command picker, and keeps two keys, `/` to filter and `p` for the picker.
- * The shell's key sheet lists them from PAGE_KEYS; j, k, Enter, ? and Escape
- * are shell.js's (sd:3586). It builds no markup from a string: every node
+ * command picker, and keeps one key, `p` for the picker. The shell's key
+ * sheet lists it from PAGE_KEYS; j, k, Enter, ?, Escape and `/`, the shell's
+ * one bar (sd:5539), are shell.js's (sd:3586). It builds no markup from a string: every node
  * below is created with `createElement` and filled with `textContent`, so no
  * assignment of raw markup appears in this folder. It also reveals nothing:
  * every control on the page is rendered visible, because a hover-only or
@@ -52,17 +52,10 @@
     });
   });
 
-  // Every screen draws inside the v2 shell (sd:3586, pages.shell_page), which owns j, k, Enter, ? and Escape. This script
-  // keeps / and p, which the shell's key sheet lists from PAGE_KEYS. A key that ends a pending g-chord is the shell's.
-  window.PAGE_KEYS = [["/", "focus the notes filter"], ["p", "run a registered command"]];
-  function chording() { return !!(window.shell && window.shell.chording && window.shell.chording()); }
-
-  function typing(target) {
-    if (!target) { return false; }
-    var name = (target.tagName || "").toLowerCase();
-    return name === "input" || name === "textarea" || name === "select" ||
-      target.isContentEditable === true;
-  }
+  // Every screen draws inside the v2 shell (sd:3586, pages.shell_page), which owns j, k, Enter, ?, Escape and / (its one
+  // bar, sd:5539). This script keeps p, which the shell's key sheet lists from PAGE_KEYS. A key that ends a pending g-chord
+  // is the shell's.
+  window.PAGE_KEYS = [["p", "run a registered command"]];
 
   document.addEventListener("submit", async function (event) {
     var form = event.target;
@@ -157,12 +150,6 @@
     }
   });
 
-  document.addEventListener("keydown", function (event) {
-    if (event.metaKey || event.ctrlKey || event.altKey || event.key !== "/") { return; }
-    if (chording() || document.querySelector("dialog[open]") || typing(event.target)) { return; }
-    var field = document.querySelector("[data-listing-filter]");
-    if (field) { field.focus(); event.preventDefault(); }
-  });
 })();
 
 

@@ -10,7 +10,8 @@ window.PAGE_COMMANDS = [];
 // sd:5080: the list and the cadence strip are the shell's views (shell.js, view:start). The Range chips sit in each view's
 // head and set one range for both; a tick or a lane shows the list with that brief or that source.
 window.PAGE_VIEWS = [{ id: 'list', label: 'Briefs', key: 'b' }, { id: 'cadence', label: 'Cadence' }];
-window.PAGE_KEYS = [['/', 'Filter briefs, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
+// The shell's Shapeshift bar (sd:5539) filters the list through shell:filter, and the cadence fallback table itself.
+window.PAGE_FILTER = { list: 'subject, source and first lines' };
 addEventListener('DOMContentLoaded', () => {
   const shell = window.shell, C = shell.commands;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
@@ -127,27 +128,26 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Filters ----------
   // build (sd:5158): Source is a dropdown of checkboxes, so any sources at once, and Day a select of the days with a brief;
-  // both are shell.list.pick. The picked values show as removable chips (shell.list.chips) with the count and Clear all.
-  const activeFilters = () => [...[...F.src].map(s => ({ key: `src:${s}`, label: `Source: ${s}` })),
-    ...(F.day ? [{ key: 'day', label: `Day: ${dayLabel(F.day)}` }] : []), ...(F.q ? [{ key: 'q', label: `Text: ${F.q}` }] : [])];
+  // both are shell.list.pick. sd:5463: Activity's bar (shell.list.fbar): the picked sources and the query as removable
+  // tokens, then Clear all; the count sits once, on the title line.
   function renderFilters() {
-    const L = shell.list, all = ranged(), shown = all.filter(match).length;
+    const L = shell.list, all = ranged();
     const busy = DAYS.slice().reverse().filter(d => all.some(b => b.day === d));
-    put(document.getElementById('filters'), html`${L.pick('src', 'Source', SOURCES.map(s => [s.id, s.id, all.filter(b => b.src === s.id).length]), F.src, { multi: true })}${
+    put(document.getElementById('filters'), L.fbar(html`${L.pick('src', 'Source', SOURCES.map(s => [s.id, s.id, all.filter(b => b.src === s.id).length]), F.src, { multi: true })}${
       L.pick('day', 'Day', busy.map(d => [d, dayLabel(d), all.filter(b => b.day === d).length]), F.day, { all: 'Any day' })}${
-      active() ? L.chips(activeFilters(), shown, all.length) : html`<div class="fsum"><span>${shown} of ${all.length}</span></div>`}`);
+      [...F.src].map(s => L.tok('src', s, s))}${F.q ? L.tok('q', '', `“${F.q}”`) : ''}`, { clear: active() }));
   }
   document.getElementById('filters').addEventListener('change', e => shell.list.pickChange(e, F, () => { page = 1; update(); }));
   document.getElementById('filters').addEventListener('click', e => {
-    if (e.target.closest('[data-unfilter-all]')) return clearAll();
-    const u = e.target.closest('[data-unfilter]'); if (!u) return;
-    const [k, v] = u.dataset.unfilter.split(/:(.*)/);
+    if (e.target.closest('[data-fclear]')) return clearAll();
+    const u = e.target.closest('[data-f]'); if (!u) return;
+    const { f: k, v } = u.dataset;
     if (k === 'src') F.src.delete(v);
     if (k === 'day') F.day = '';
-    if (k === 'q') { F.q = ''; input.value = ''; prev.hidden = true; ghost.textContent = ''; }
+    if (k === 'q') { F.q = ''; shell.filter(''); }
     page = 1; update();
   });
-  function clearAll() { F.src.clear(); F.day = ''; F.q = ''; input.value = ''; prev.hidden = true; ghost.textContent = ''; page = 1; update(); }
+  function clearAll() { F.src.clear(); F.day = ''; F.q = ''; shell.filter(''); page = 1; update(); }
 
   // ---------- Ledger ----------
   const tbody = document.getElementById('rows');
@@ -175,8 +175,9 @@ addEventListener('DOMContentLoaded', () => {
     put(document.getElementById('pager'), html`<span>${a}–${z} of ${all.length}</span>
       <div class="chips" role="group" aria-label="Page">${page > 1 ? html`<button class="chip" type="button" data-p="${page - 1}">${I('chevron-left')}Previous</button>` : ''}${page < pages ? html`<button class="chip" type="button" data-p="${page + 1}">Next${I('chevron-right')}</button>` : ''}</div>
       <div class="chips" role="group" aria-label="Rows per page">${[25, 50, 100, 200].map(n => html`<button class="chip" type="button" data-size="${n}" aria-pressed="${String(n === size)}">${n}</button>`)}</div>`);
-    put(document.getElementById('tally'), html`<span>${plural(new Set(ranged().map(b => b.src)).size, 'source')}</span><span>${all.length} shown</span>`);
-    document.getElementById('sub').textContent = READER ? (capped() ? `newest ${plural(READER.shown, 'brief')} read` : `${plural(READER.shown, 'brief')}${READER.skipped ? `, ${READER.skipped} skipped` : ''}`) : 'Reading the briefs…';
+    put(document.getElementById('tally'), html`<span>${plural(new Set(ranged().map(b => b.src)).size, 'source')}</span>`);
+    shell.view.count('list', all.length);
+    document.getElementById('sub').textContent = READER ? (capped() ? `newest ${plural(READER.shown, 'brief')} read` : `All read${READER.skipped ? `, ${READER.skipped} skipped` : ''}`) : 'Reading the briefs…';
   }
   document.getElementById('pager').addEventListener('click', e => {
     const c = e.target.closest('.chip'); if (!c) return;
@@ -295,7 +296,7 @@ addEventListener('DOMContentLoaded', () => {
   function registerCommands() {
     C.register(
       // build (sd:3459): every brief is a row in the database, so Read works with or without a vault copy.
-      { id: 'brief.read', on: 'brief', label: 'Read', does: 'Opens the brief on its work item\'s page.', key: 'r', risk: 'safe', primary: () => true, executes: false,
+      { id: 'brief.read', on: 'brief', label: 'Read', does: 'Opens the brief on its work item\'s page.', key: 'r', icon: 'book-open', risk: 'safe', primary: () => true, executes: false,
         cli: o => `sd reports brief show ${shq(o.id)}`, run: o => { location.href = shell.itemPage(o.item); return `#${o.item} opens`; } },
       // build: no verb deletes a task, so no Undo: the capture form shows the line and files it only on Capture.
       { id: 'brief.task', on: 'brief', label: 'Make task', does: 'Opens Capture with the brief\'s title, to file it as a task.', key: 'k', risk: 'safe',
@@ -312,34 +313,8 @@ addEventListener('DOMContentLoaded', () => {
   }
   document.addEventListener('shell:open', e => { if (BRIEFS.some(b => b.id === e.detail)) select(e.detail, true); });
 
-  // ---------- Shapeshift bar ----------
-  const input = document.getElementById('shift'), prev = document.getElementById('shift-preview'), as = document.getElementById('shift-as'), ghost = document.getElementById('ghost');
-  let mode = 'filter';
-  function guess(v) { return /\?$|^(why|what|how|which|when|should)\b/i.test(v) ? 'ask' : /^(p[1-4]\b|todo\b|add\b)|\bdue\b/i.test(v) ? 'task' : 'filter'; }
-  function setMode(m) { mode = m; prev.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', c.dataset.as === m)); renderShift(); }
-  function renderShift() {
-    const v = input.value.trim();
-    prev.hidden = !v; ghost.textContent = v ? `→ ${mode}` : '';
-    put(as, html`${mode === 'task' ? html`${I('list-todo')} task “${v}”` : mode === 'ask' ? html`${I('message-square')} ask chat about briefs` : html`${I('filter')} filter subject, source and first lines`}`);
-    const q = mode === 'filter' ? v.toLowerCase() : '';
-    if (q !== F.q) { F.q = q; page = 1; update(); }
-  }
-  input.addEventListener('input', () => setMode(guess(input.value.trim())));
-  input.addEventListener('keydown', e => {
-    if (e.key === 'ArrowRight' && input.selectionStart === input.value.length && input.value) { e.preventDefault(); const o = ['filter', 'task', 'ask']; setMode(o[(o.indexOf(mode) + 1) % 3]); }
-    if (e.key === 'Enter' && input.value.trim()) {
-      e.preventDefault();
-      // build: a task opens the capture form with the text; the form files it (the shell's fileCapture).
-      if (mode === 'task') { const v = input.value.trim(); input.value = ''; renderShift(); shell.capture(null, v); }
-      if (mode === 'ask') { shell.openChat(); shell.send(input.value.trim()); input.value = ''; renderShift(); }
-    }
-    if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; renderShift(); }
-  });
-  prev.addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) { setMode(c.dataset.as); input.focus(); } });
-  document.addEventListener('keydown', e => {
-    if (e.target.matches?.('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-    if (e.key === '/') { e.preventDefault(); input.focus(); }
-  });
+  // ---------- Shapeshift bar (the shell's, sd:5539) ----------
+  document.addEventListener('shell:filter', e => { const q = e.detail.q.toLowerCase(); if (q !== F.q) { F.q = q; page = 1; update(); } });
   // The shell walks these rows on j / k and clears the filter on Esc.
   window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false), clear: () => !!active() && (clearAll(), true) };
 
@@ -376,7 +351,6 @@ addEventListener('DOMContentLoaded', () => {
     unselect: () => { selected = null; put(details, html`<p class="why">Select a brief to see it.</p>`); },
   });
   readURL();
-  if (F.q) input.value = F.q;
   registerCommands();
   briefs.load();
 });

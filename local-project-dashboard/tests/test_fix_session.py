@@ -107,12 +107,13 @@ class TheLaunch(FixCase):
 class TheRefusals(FixCase):
     def test_no_running_session_is_a_503_naming_herdr_sh_start_and_writes_nothing(self):
         item = self.task()
-        before = self.snapshot()
+        before = self.unjournalled()
         status, _, answer = self.fix(item)
         self.assertEqual(status, 503)
         self.assertEqual(answer["error"], "Fix failed: herdr.sh launch: session sd is not running; run herdr.sh start first")
         self.assertEqual([call[:2] for call in self.calls()], [["session", "list"]])
-        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.unjournalled(), before)
+        self.assertEqual(self.journalled(), [(f"Fix session · sd:{item}", 1)])  # sd:5541
 
     def test_herdr_not_installed_is_a_503_naming_herdr_sh_start_and_writes_nothing(self):
         bare = Path(self.tmp.name) / "bin"
@@ -121,22 +122,24 @@ class TheRefusals(FixCase):
             (bare / tool).symlink_to(shutil.which(tool))
         os.environ["PATH"] = str(bare)
         item = self.task()
-        before = self.snapshot()
+        before = self.unjournalled()
         status, _, answer = self.fix(item)
         self.assertEqual(status, 503)
         self.assertEqual(answer["error"], "Fix failed: herdr.sh launch: herdr is not installed; install it, then run herdr.sh start")
-        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.unjournalled(), before)
+        self.assertEqual(self.journalled(), [(f"Fix session · sd:{item}", 1)])  # sd:5541
 
     def test_a_refused_start_is_a_503_that_says_the_workspace_is_left(self):
         self.running()
         (self.fixture / "agent-start-fail").write_text("")
         item = self.task()
-        before = self.snapshot()
+        before = self.unjournalled()
         status, _, answer = self.fix(item)
         self.assertEqual(status, 503)
         self.assertIn("w9:p1: claude did not start", answer["error"])
         self.assertIn("left at its shell prompt", answer["error"])
-        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.unjournalled(), before)
+        self.assertEqual(self.journalled(), [(f"Fix session · sd:{item}", 1)])  # sd:5541
 
     def test_no_answer_in_time_is_a_504_that_says_the_outcome_is_not_known(self):
         self.running()
@@ -144,13 +147,14 @@ class TheRefusals(FixCase):
         hook.write_text("#!/bin/sh\nexec sleep 5\n")
         hook.chmod(0o755)
         item = self.task()
-        before = self.snapshot()
+        before = self.unjournalled()
         with patch.object(fix_session, "TIMEOUT", 1):
             status, _, answer = self.fix(item)
         self.assertEqual(status, 504)
         self.assertIn("whether a session started is not known", answer["error"])
         self.assertIn(f"workspace sd-{item}", answer["error"])
-        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.unjournalled(), before)
+        self.assertEqual(self.journalled(), [(f"Fix session · sd:{item}", -1)])  # sd:5541
 
     def test_a_note_that_cannot_be_written_after_the_launch_names_the_pane(self):
         self.running()

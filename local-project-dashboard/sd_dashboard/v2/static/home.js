@@ -81,8 +81,8 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Commands (products/system/commands.md) ----------
   // sd:4966: a tile's commands are the Home Assistant services its domain allows, as the server's allowlist (writes.services)
   // says; a domain with none is a read-only sensor. On and off run at once with Undo (the other one; Toggle undoes itself);
-  // scene, script and button run once with no Undo. Lock, alarm and cover change physical security: each asks for the entity
-  // id typed out, which the server checks, and has no Undo. Each posts /api/home/service with the tile list's digest; the
+  // scene, script and button run once with no Undo. Lock, alarm and cover run at once too, with no Undo: the operator
+  // ruled out every confirm on Home (sd:5479). Each posts /api/home/service with the tile list's digest; the
   // answer carries the tile's state read again, which the tile shows at once; any failure but a 400 reads the tiles again. The CLI line is the same REST call; it names
   // $HA_TOKEN and $HA_URL, never a value.
   const svcCli = svc => o => `curl -X POST -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/services/${svc(o).replace('.', '/')}" -d '{"entity_id":"${o.id}"}'`;
@@ -93,12 +93,11 @@ addEventListener('DOMContentLoaded', () => {
   const kindOf = id => SERVICES[domain(id)] ? domain(id) : 'sensor';
   // build: the reference read the place from sample names; the tile's configured group names it here.
   const place = o => E[o.id]?.group || 'home';
-  const security = svc => o => `This calls ${svc} on ${o.id}. It changes physical security (${place(o)}). There is no Undo.`;
   const valueOf = o => E[o.id]?.state?.value;
   // A service is off when writes are, when the allowlist no longer names it, or when the tile has no state to act from.
   const offFor = (d, svc) => o => WRITES || (!SERVICES[d]?.[svc] ? `the server does not allow ${d}.${svc}` : !E[o.id]?.state ? `no state read: ${E[o.id]?.error || REASON || 'not read'}` : true);
-  function send(o, svc, confirm) {
-    const body = { entity_id: o.id, service: svc, before: CONFIG?.editor?.digest || '', ...(confirm ? { confirm } : {}) };
+  function send(o, svc) {
+    const body = { entity_id: o.id, service: svc, before: CONFIG?.editor?.digest || '' };
     return window.shell.post('/api/home/service', body).then(out => {
       if (E[o.id] && out.state) { E[o.id].state = out.state; render(); if (selected === o.id) showDetails(o.id, false); }
       const extra = [out.reread, out.journal].filter(Boolean).join('; ');
@@ -113,12 +112,7 @@ addEventListener('DOMContentLoaded', () => {
     primary: primaryOn ? o => primaryOn.includes(valueOf(o)) : () => true, when: offFor(d, svc), cli: svcCli(() => `${d}.${svc}`) });
   const undoable = (d, svc, label, key, does, primaryOn) => ({ ...one(d, svc, label, key, does, primaryOn), risk: 'undo',
     run: o => send(o, svc), undo: o => send(o, OPPOSITE[svc]).then(() => true) });
-  const safe = (d, svc, label, key, does) => ({ ...one(d, svc, label, key, does), risk: 'safe', run: o => send(o, svc) });
-  // The typed confirm: the shell's danger dialog with one required field; OK sends what was typed and the server compares it.
-  const danger = (d, svc, label, key, does, primaryOn) => ({ ...one(d, svc, label, key, does, primaryOn), risk: 'confirm', danger: () => true,
-    consequence: security(`${d}.${svc}`),
-    fields: o => [{ name: 'confirm', label: `Type ${o.id} to confirm`, required: true, placeholder: o.id, help: 'The dashboard sends it only when this matches the entity id.' }],
-    run: (o, v) => send(o, svc, v?.confirm) });
+  const safe = (d, svc, label, key, does, primaryOn) => ({ ...one(d, svc, label, key, does, primaryOn), risk: 'safe', run: o => send(o, svc) });
   function registerCommands() {
     C.register(
       ...SWITCHES.flatMap(d => [
@@ -129,14 +123,14 @@ addEventListener('DOMContentLoaded', () => {
       safe('scene', 'turn_on', 'Activate', 'a', 'Activates the scene. No Undo: the scene keeps no prior state.'),
       safe('script', 'turn_on', 'Run', 'r', 'Runs the script through Home Assistant. No Undo.'),
       safe('button', 'press', 'Press', 'p', 'Presses the button through Home Assistant. No Undo.'),
-      danger('lock', 'unlock', 'Unlock', 'u', 'Unlocks the door. Type the entity id first; no Undo.', ['locked', 'jammed']),
-      danger('lock', 'lock', 'Lock', 'l', 'Locks the door. Type the entity id first; no Undo.', ['unlocked', 'open']),
-      danger('alarm_control_panel', 'alarm_disarm', 'Disarm', 'd', 'Disarms the alarm. Type the entity id first; no Undo.', ['armed_home', 'armed_away', 'armed_night', 'triggered']),
-      danger('alarm_control_panel', 'alarm_arm_home', 'Arm home', 'h', 'Arms the alarm for home. Type the entity id first; no Undo.', ['disarmed']),
-      danger('alarm_control_panel', 'alarm_arm_away', 'Arm away', 'w', 'Arms the alarm for away. Type the entity id first; no Undo.', []),
-      danger('alarm_control_panel', 'alarm_arm_night', 'Arm night', 'n', 'Arms the alarm for night. Type the entity id first; no Undo.', []),
-      danger('cover', 'open_cover', 'Open', 'o', 'Opens the cover or garage door. Type the entity id first; no Undo.', ['closed']),
-      danger('cover', 'close_cover', 'Close', 'x', 'Closes the cover or garage door. Type the entity id first; no Undo.', ['open']),
+      safe('lock', 'unlock', 'Unlock', 'u', 'Unlocks the door. No Undo.', ['locked', 'jammed']),
+      safe('lock', 'lock', 'Lock', 'l', 'Locks the door. No Undo.', ['unlocked', 'open']),
+      safe('alarm_control_panel', 'alarm_disarm', 'Disarm', 'd', 'Disarms the alarm. No Undo.', ['armed_home', 'armed_away', 'armed_night', 'triggered']),
+      safe('alarm_control_panel', 'alarm_arm_home', 'Arm home', 'h', 'Arms the alarm for home. No Undo.', ['disarmed']),
+      safe('alarm_control_panel', 'alarm_arm_away', 'Arm away', 'w', 'Arms the alarm for away. No Undo.', []),
+      safe('alarm_control_panel', 'alarm_arm_night', 'Arm night', 'n', 'Arms the alarm for night. No Undo.', []),
+      safe('cover', 'open_cover', 'Open', 'o', 'Opens the cover or garage door. No Undo.', ['closed']),
+      safe('cover', 'close_cover', 'Close', 'x', 'Closes the cover or garage door. No Undo.', ['open']),
       // Read-only sensors: the one command is the state read a reader makes.
       { id: 'sensor.read', on: 'sensor', label: 'Read state', key: 's', risk: 'safe', executes: false, does: 'Shows the curl line that reads this state; the dashboard does not run it.', cli: o => `curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states/${o.id}"`, run: () => 'Copy the line; it reads HA_TOKEN and HA_URL from your shell' },
     );
@@ -179,7 +173,7 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Details ----------
   const details = document.getElementById('details');
   // What the Act section's commands do, by command set (sd:4966).
-  const SECURITY = 'Changes physical security: you type the entity id to confirm, and there is no Undo.';
+  const SECURITY = 'Changes physical security; runs at once, with no Undo.';
   const ACT = { sensor: 'Read-only: Home Assistant has no service for this domain that the dashboard calls.', lock: SECURITY, alarm_control_panel: SECURITY, cover: SECURITY,
     ...Object.fromEntries(SWITCHES.map(d => [d, 'Runs at once through Home Assistant; Undo for 10 seconds.'])), once: 'Runs once through Home Assistant; no Undo.' };
   function markSelected() { document.querySelectorAll('.tile').forEach(t => t.setAttribute('aria-current', String(t.dataset.id === selected))); }

@@ -37,40 +37,15 @@
 
     <h2 class="sr">Job families</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
-    <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
-    <div class="toolbar" id="toolbar">
-      <div class="shift">
-        <label class="field">
-          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
-          <span class="sr">Filter, capture or ask</span>
-          <input id="shift" placeholder="Filter reports, capture a task, or ask" autocomplete="off" aria-describedby="shift-hint">
-          <span class="ghost" id="ghost"></span>
-          <kbd>/</kbd>
-        </label>
-        <div class="preview" id="shift-preview" hidden>
-          <p class="as"><span class="label">As</span><span id="shift-as"></span></p>
-          <div class="chips" role="group" aria-label="Interpret as">
-            <button class="chip" type="button" data-as="filter" aria-pressed="true">filter rows</button>
-            <button class="chip" type="button" data-as="task" aria-pressed="false">new task</button>
-            <button class="chip" type="button" data-as="ask" aria-pressed="false">ask chat</button>
-          </div>
-          <p class="hint" id="shift-hint">→ accepts · Enter runs · Tab moves on</p>
-        </div>
-      </div>
-    </div>
+    <!-- The toolbar standard (sd:5281): row 1, the views then the shell's Shapeshift bar (sd:5539); the count sits on the view's tab. -->
+    <div class="toolbar" id="toolbar" data-shift></div>
 
     <section id="view-reports" aria-labelledby="led-h">
       <div class="sec-head">
         <h2 id="led-h">Reports <button class="help" type="button" aria-label="Help: Reports" data-help="<b>Newest first.</b> Database reports come from sd-db, one per failed or reporting run; a repeated failure folds into one row with a count. Acknowledge closes a database report, and its Undo reopens it. Neither touches the job.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="tally"></p>
       </div>
-      <div class="filters toolbar-2" id="filters">
-        <label class="sel">Job<select id="f-job"><option value="">All jobs</option></select></label>
-        <label class="sel">Status<select id="f-status"><option value="">Any status</option><option value="act">Needs action</option><option value="open">Open</option><option value="done">Acknowledged</option></select></label>
-        <label class="sel">Day<select id="f-day"><option value="">Any day</option></select></label>
-      </div>
-      <div id="chips"></div>
+      <div class="filters toolbar-2" id="filters"></div>
       <table class="ledger" aria-labelledby="led-h" data-tfilter="page" data-toolbar="toolbar">
         <thead id="rows-head"><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Report</th><th scope="col">Detail</th><th scope="col">Recorded</th><th scope="col">Status</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
         <tbody id="rows"></tbody>

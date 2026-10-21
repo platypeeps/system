@@ -6,7 +6,10 @@
   use in the last three Monday-start weeks from skill_use, and the use records no catalog skill explains), read when the
   page opens. Try, Review, Promote and Demote ask first and post the routes the old screen posts:
   POST /api/skills/<name>/try, /review, /promote and /demote. Re-import and Evaluate post /api/skills/intake (sd:3992),
-  which runs sd skill intake; Approve asks first. Run, Schedule, Adopt and Scan are copy only. Nothing here is sample data. The old screen was retired in sd:3402.
+  which runs sd skill intake; Approve asks first. The Intake view (system sd:5478) reads /api/skills/intake/repos, the
+  repositories sd skill intake --tracked lists, and posts /api/skills/intake/tracking for Track, Refresh and Remove; a
+  refresh lists each skill's intake report and installs nothing. Run, Schedule, Adopt and Scan are copy only. Nothing here
+  is sample data. The old screen was retired in sd:3402.
 -->
 <html lang="en">
 <head>
@@ -57,7 +60,7 @@
       </div>
     </div>
 
-    <section aria-labelledby="cat-h">
+    <section id="view-catalog" aria-labelledby="cat-h">
       <div class="sec-head">
         <h2 id="cat-h">Catalog <button class="help" type="button" aria-label="Help: Catalog" data-help="<b>One row per skill in the pack.</b> Path skills install on every surface; trials last 30 days; contrib skills are available to try. Use per week comes from <code>skill_use</code>, every surface it records. Sort any column; tap a row for usage, run, schedule and review.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
@@ -74,6 +77,24 @@
       </table>
       <div id="pager"></div>
       <p class="foot-note" id="foot"></p>
+    </section>
+
+    <section id="view-intake" aria-labelledby="repos-h">
+      <div class="sec-head">
+        <h2 id="repos-h">Tracked repositories <button class="help" type="button" aria-label="Help: Tracked repositories" data-help="<b>One row per source repository.</b> Until the list is first changed, it is the repositories the installed skills came from: their Provenance, the skills CLI's lock file and linked GitHub checkouts. Refresh reads the repository's default branch and lists its new and changed skills, each with its intake report; nothing installs until you approve a report. Remove stops tracking; the installed skills stay.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <div class="tools">
+          <p class="tally" id="intake-tally"></p>
+          <button class="btn quiet sm" type="button" id="track-btn"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>Track a repository</button>
+        </div>
+      </div>
+      <div id="state-intake"></div>
+      <table class="ledger" aria-labelledby="repos-h">
+        <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Repository</th><th scope="col">Adopted</th><th scope="col">Last refresh</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+        <tbody id="intake-rows"></tbody>
+      </table>
+      <div class="untracked" id="intake-untracked"></div>
+      <p class="foot-note" id="intake-foot"></p>
     </section>
   </main>
 

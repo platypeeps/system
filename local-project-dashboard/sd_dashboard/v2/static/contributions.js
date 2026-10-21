@@ -4,13 +4,21 @@
 // row's settle date and the settled-per-day chart read the dates the shadow collector records (sd:5301). Acknowledge, Make task and
 // Dismiss run through dashboard routes and ask first: none has a verb that reverses it. Draft nudge and Open on GitHub are copy only;
 // Re-run collector asks the server to run sd shadow sync (sd:2207). The reference's Trackers view is not ported: its switch opens the classic Operations > Trackers.
+// build (sd:5486): Hide and Unhide post /api/contributions/view, the view state Designs' Hide writes, each with Undo. A hidden
+// row leaves the Open rows, the lamps, the tallies and the badge; the Hidden view lists it, on the Open table, with Unhide.
+// Hide persists until Unhide, where Dismiss ends on new activity. An unread store hides nothing and turns both commands off.
+// build (sd:5488): the Filed view lists the Jira tickets and GitHub issues you filed this year, as sd shadow sync stored them
+// (pack sd:5496), with Details and Edit, which opens one in Jira or on GitHub in a new tab; the dashboard writes nothing there.
+// A row with no created date yet is listed and says so; a tracker that did not read or is stale is named with its reason.
 const { html, put, plural, cells } = window.markup;
-// Palette "This page" group and the key sheet. shell.js reads both at start, so they are set before the shell runs.
-window.PAGE_KEYS = [['/', 'Filter contributions']];
-// The shell's view switch (shell.js, view block, sd:5064): Open, the rows acted on, first; Settled, the record, second.
-window.PAGE_VIEWS = [{ id: 'open', label: 'Open' }, { id: 'settled', label: 'Settled' }];
+// Palette "This page" group. shell.js reads it at start, so it is set before the shell runs.
+// The shell's view switch (shell.js, view block, sd:5064): Open, the rows acted on, first; Settled, the record, second;
+// Filed (sd:5488), what you filed in Jira and on GitHub this year, on its own table; Hidden (sd:5486), the rows the operator
+// hid, on the Open table, never the remembered view.
+window.PAGE_VIEWS = [{ id: 'open', label: 'Open' }, { id: 'settled', label: 'Settled' }, { id: 'filed', label: 'Filed' }, { id: 'hidden', label: 'Hidden', panel: 'open', keep: false }];
+const BY_TEXT = 'repo, title and reason';
+window.PAGE_FILTER = { open: BY_TEXT, settled: BY_TEXT, hidden: BY_TEXT, filed: 'tickets and issues' };
 window.PAGE_COMMANDS = [
-  { label: 'Filter contributions', icon: 'search', key: '/', run: () => document.getElementById('q').focus() },
   { label: 'Show the collector', icon: 'activity', run: () => document.dispatchEvent(new CustomEvent('shell:open', { detail: 'collector' })) },
   ...['all', 'internal', 'external'].map(v => ({ label: `Show ${v} repositories`, icon: 'filter', run: () => document.dispatchEvent(new CustomEvent('contributions:scope', { detail: v })) })),
 ];
@@ -30,6 +38,9 @@ addEventListener('DOMContentLoaded', () => {
   const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
     // build: only an https github.com URL becomes a link, as v1's _link allows.
   const github = u => /^https:\/\/github\.com\/[^/@\s]+\/[^/@\s]+\//.test(String(u || ''));
+  // sd:5488: an https link with a host and no credentials, for a Jira or GitHub row the Filed view opens.
+  const safeLink = u => /^https:\/\/[^/@\s]+\//.test(String(u || ''));
+  const TRACKER = { jira: 'Jira', github: 'GitHub' }, KIND = { jira: 'Jira ticket', github: 'GitHub issue' };
   const isIssue = r => /\/issues\/\d+$/.test(String(r.url || ''));
   const filed = r => r.url ? (isIssue(r) ? 'Issue' : 'Pull request') : r.has_draft ? 'Unfiled issue draft' : 'Unfiled local work';
   const num = r => r.url ? '#' + String(r.url).split('/').pop() : '';
@@ -38,16 +49,21 @@ addEventListener('DOMContentLoaded', () => {
   const settle = r => dated(r.merged_at) ? ['merged', r.merged_at] : dated(r.closed_at) ? ['closed', r.closed_at] : null;
 
   // ---------- Data (build: /api/contributions/page) ----------
-  let DOC = null, ROWS = [], BY = new Map(), selected = null, FAILED = '';
+  let DOC = null, ROWS = [], BY = new Map(), selected = null, FAILED = '', STORE = '';
+  // The Hidden view draws the hidden rows on the Open table; every other view draws the rest.
+  let HIDDEN = false;
+  const inView = r => r.hidden === HIDDEN;
+  // The Filed view (sd:5488): its rows, by key, and whether it is the shown view.
+  let FILED = [], FBY = new Map(), FILEDVIEW = false;
   const u0 = new URLSearchParams(location.search);
   let scope = SCOPES.includes(u0.get('scope')) ? u0.get('scope') : 'all';
   // The lane filter: an open lane, or `github`, the open rows GitHub already merged or closed (the fourth lamp).
   let lane = [...ORDER, 'github'].includes(u0.get('lane')) ? u0.get('lane') : null;
   const inLane = r => !lane || (lane === 'github' ? !!settle(r) : r.lane === lane);
-  const q = document.getElementById('q');
-  if (u0.get('q')) q.value = u0.get('q');
+  // The text filter is the shell's Shapeshift bar (sd:5539), which reads ?q= too.
+  const q = { value: u0.get('q') || '' };
   const inScope = r => scope === 'all' || (scope === 'internal') === !!r.internal;
-  const scoped = () => ROWS.filter(inScope);
+  const scoped = () => ROWS.filter(r => inScope(r) && inView(r));
   // build: counts come from the document's per-scope totals, which cover every open row; ROWS may be cut at OPEN_LIMIT.
   const tot = (k, sc = scope) => (sc === 'all' ? ['internal', 'external'] : [sc]).reduce((a, s) => a + ((DOC.counts || {})[s]?.[k] || 0), 0);
   const openN = sc => ORDER.reduce((a, l) => a + tot(l, sc), 0);
@@ -63,19 +79,22 @@ addEventListener('DOMContentLoaded', () => {
   // and the object becomes a type no command is on, so no stale Acknowledge can act.
   function adopt(doc) {
     DOC = doc;
-    ROWS = (doc.rows || []).filter(r => ORDER.includes(r.lane)).map(r => ({ ...r, id: r.key, type: 'contribution', label: r.title, s: STATE[r.lane],
+    ROWS = (doc.rows || []).filter(r => ORDER.includes(r.lane)).map(r => ({ ...r, id: r.key, type: 'contribution', label: r.title, s: STATE[r.lane], hidden: !!r.hidden,
       event_ids: r.event_ids || [], reasons: r.reasons || [], freshness: r.freshness || { status: 'unknown', reason: '' },
       ...Object.fromEntries(['evidence', 'dependencies', 'delivery'].map(k => [k, r[k] || { state: 'unknown', reason: 'the server sent no ' + k }])) }));
     BY = new Map(ROWS.map(r => [r.key, r]));
+    FILED = ((doc.filed || {}).rows || []).map(r => ({ ...r, id: r.key, type: 'filed', label: r.title || r.ref }));
+    FBY = new Map(FILED.map(r => [r.key, r]));
+    STORE = doc.store && !doc.store.available ? doc.store.reason || 'the view store was not read' : '';
     document.body.dataset.observed = doc.read || '';
     // Rail badge (shell.js): the read's own, the rule every page's rail shows (sd:3446, contribution_screen._attention).
     window.PAGE_ATTENTION = doc.attention || { state: 'unknown', n: 0, what: 'contributions not read' };
     window.shell.attention?.();
-    return { objects: [...ROWS, { id: 'collector', type: 'collector', label: 'contributions collector' }], state: stateOf(doc) };
+    return { objects: [...ROWS, ...FILED, { id: 'collector', type: 'collector', label: 'contributions collector' }], state: stateOf(doc) };
   }
   // A failed read clears the page: no rows, lamps or counts, and the rail claims nothing.
   function clear(err) {
-    DOC = null; ROWS = []; BY = new Map(); FAILED = err.message;
+    DOC = null; ROWS = []; BY = new Map(); FILED = []; FBY = new Map(); FAILED = err.message; STORE = '';
     window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'contributions not read' };
     window.shell.attention?.();
   }
@@ -94,15 +113,19 @@ addEventListener('DOMContentLoaded', () => {
   const linkOf = o => /^github:/.test(o.key) ? 'pull_url' : /^issue:/.test(o.key) ? 'issue_url' : null;
   const taskJson = o => JSON.stringify({ [linkOf(o)]: o.key.slice(o.key.indexOf(':') + 1) });
   const kindOf = o => isIssue(o) ? 'issue' : 'pr';
+  const NO_VIEW_CLI = 'no CLI: view state; the dashboard writes it (POST /api/contributions/view)';
+  // The row moves at once, then the page reads again; a refused write reads again with load(), as the other writes do.
+  const view = (o, hidden) => window.shell.post('/api/contributions/view', { key: o.key, hidden })
+    .then(v => { landed(o, { hidden }); reread(); return v; }, e => { load(); throw e; });
   function registerCommands() {
     C.register(
-      { id: 'contribution.ack', on: 'contribution', label: 'Acknowledge', does: 'Clears this row\'s attention events; this cannot be undone.', key: 'a', risk: 'confirm', bulk: true, primary: () => true,
+      { id: 'contribution.ack', on: 'contribution', label: 'Acknowledge', does: 'Clears this row\'s attention events; this cannot be undone.', key: 'a', icon: 'check', risk: 'confirm', bulk: true, primary: () => true,
         when: o => o.event_ids.length ? true : 'no attention event on this row',
         consequence: o => `This clears ${plural(o.event_ids.length, 'attention event')} on ${o.title}. No verb restores them; it completes no task and sends nothing.`,
         cli: ackCli,
         run: o => window.shell.post('/api/contributions/acknowledge', { key: o.key, revision: o.revision, event_ids: o.event_ids })
           .then(() => { landed(o, { event_ids: [] }); reread(); return `Acknowledged · ${o.label}`; }, e => { load(); throw e; }) },
-      { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', does: 'Gives a gh line to post a nudge; the dashboard posts nothing.', key: 'd', risk: 'safe', executes: false, primary: () => true,
+      { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', does: 'Gives a gh line to post a nudge; the dashboard posts nothing.', key: 'd', icon: 'message-square', risk: 'safe', executes: false, primary: () => true,
         when: o => !o.url ? 'not filed on GitHub' : o.lane !== 'awaiting_them' ? 'the next step is yours, not theirs' : true,
         cli: o => `gh ${isIssue(o) ? 'issue' : 'pr'} comment ${o.url} --body-file nudge.md`,
         run: () => 'Copy the line and write nudge.md: the dashboard posts nothing' },
@@ -125,6 +148,19 @@ addEventListener('DOMContentLoaded', () => {
         cli: o => `sd task contribution dismiss ${shq(o.key)} --if-revision ${o.revision}`,
         run: o => window.shell.post('/api/contributions/dismiss', { key: o.key, revision: o.revision })
           .then(() => { landed(o, { dismissed: true }); reread(); return `Dismissed · ${o.label}`; }, e => { load(); throw e; }) },
+      // build (sd:5486): Hide and Unhide, the view state Designs' Hide writes; Undo posts the other value. Nothing expires it.
+      ...[[true, 'hide', 'Hide', 'Hides this contribution from the open rows and counts; Undo shows it again.', 'eye-off', 'Hidden', '. The Hidden view lists it.'],
+        [false, 'unhide', 'Unhide', 'Shows this contribution in the open rows again; Undo hides it.', 'eye', 'Unhidden', '']].map(([hidden, id, label, does, icon, done, after]) => (
+        { id: `contribution.${id}`, on: 'contribution', label, does, key: 'h', icon, risk: 'undo',
+          when: o => o.hidden === hidden ? (hidden ? 'already hidden' : 'not hidden') : STORE ? `Hide is off: ${STORE}` : true,
+          cli: () => NO_VIEW_CLI,
+          run: o => view(o, hidden).then(() => `${done} · ${o.label}${after}`),
+          undo: o => view(o, !hidden) })),
+      // build (sd:5488): Edit opens the ticket or issue where it lives, in a new tab; nothing is posted, and the next sync reads it back.
+      { id: 'filed.edit', on: 'filed', label: 'Edit', does: 'Opens it in Jira or on GitHub in a new tab; writes nothing.', key: 'e', icon: 'arrow-up-right', risk: 'safe',
+        when: o => safeLink(o.url) || 'no https link recorded',
+        cli: o => `open ${shq(o.url)}`,
+        run: o => { window.open(o.url, '_blank', 'noopener'); return `Opened in ${TRACKER[o.tracker]} · ${o.ref}`; } },
       // Re-run collector (commands.js); Contributions reads again once the run ends.
       window.commands.syncCollector({ reread: () => reread(), page: 'Contributions' }),
     );
@@ -171,6 +207,8 @@ addEventListener('DOMContentLoaded', () => {
       : { state: 'unknown', attrs: html` data-cell="github"`, label: 'Settled on GitHub', mark: I('circle-dot'),
         val: html`<span class="ph">not recorded</span> · <span class="ph">this sd records no merge or close dates</span>`, sr: 'state unknown' };
     putKeep(document.getElementById('annunciator'), cells([...LANES.map(lamp), settledLamp]));
+    window.shell.view.count('hidden', tot('hidden'));
+    window.shell.view.count('filed', FILED.length);
     const unknown = tot('unknown');
     put(document.getElementById('source'), html`<span class="g-${unknown ? 'unknown' : 'ok'}" aria-hidden="true">${GLYPH[unknown ? 'unknown' : 'ok']}</span>
       <button class="linkish" type="button" data-collector>Collector</button>
@@ -180,7 +218,7 @@ addEventListener('DOMContentLoaded', () => {
   }
 
   // ---------- Ledger ----------
-  const tbody = document.getElementById('rows');
+  const tbody = document.getElementById('rows'), title = document.getElementById('open-title');
   function rowHtml(r) {
     const f = r.freshness;
     return html`<tr data-id="${r.key}" data-lane="${r.lane}" aria-selected="${String(r.key === selected)}">
@@ -198,9 +236,11 @@ addEventListener('DOMContentLoaded', () => {
   const settledMeta = r => { const s = settle(r); return s ? html` · GitHub ${s[0]} <time class="rel" datetime="${s[1]}"></time>` : ''; };
   // No carried row in the scope: a cut document may still count open rows there, which the limit left out (review 4, PR #72).
   function empty() {
-    const where = scope === 'all' ? 'any' : scope, left = openN(scope);
-    return left ? `${plural(left, 'open row')} in ${where} repositories ${left === 1 ? 'was' : 'were'} left out by the limit; v1 /classic/contributions lists every one.`
-      : `Nothing open in ${where} repositories`;
+    // Rows are left out only when the document says it cut some; otherwise a count from the last read may lag a write.
+    const where = scope === 'all' ? 'any' : scope, left = !DOC.truncated ? 0 : HIDDEN ? tot('hidden') : openN(scope);
+    if (HIDDEN && STORE) return `Hidden not read: ${STORE}`;
+    return left ? `${plural(left, HIDDEN ? 'hidden row' : 'open row')} in ${where} repositories ${left === 1 ? 'was' : 'were'} left out by the limit; v1 /classic/contributions lists every one.`
+      : HIDDEN ? `Nothing hidden in ${where} repositories` : `Nothing open in ${where} repositories`;
   }
   function renderRows() {
     const all = scoped(), rows = shown(), v = q.value.trim();
@@ -212,9 +252,48 @@ addEventListener('DOMContentLoaded', () => {
     const cut = DOC.truncated ? `The document lists ${n(DOC.rows.length)} of ${n(DOC.open_total)} open rows; v1 /classic/contributions lists every one.` : '';
     f.hidden = !(lane || v || cut);
     f.textContent = [lane || v ? (rows.length ? `${rows.length} of ${all.length} shown${lane ? ' · ' + LABEL[lane] : ''}${v ? ` · “${v}”` : ''}. Esc clears.` : `Nothing matches${v ? ` “${v}”` : ''}. Esc clears.`) : '', cut].filter(Boolean).join(' ');
-    put(document.getElementById('tally'), html`<span class="g-caution">▲ ${n(tot('newly_unblocked') + tot('awaiting_you'))} yours</span><span class="g-queued">◌ ${n(tot('awaiting_them'))} theirs</span><span class="g-unknown">▨ ${n(tot('unknown'))} unknown freshness</span>`);
+    title.textContent = HIDDEN ? 'Hidden' : 'Open';
+    put(document.getElementById('tally'), HIDDEN ? html`${n(tot('hidden'))} hidden`
+      : html`<span class="g-caution">▲ ${n(tot('newly_unblocked') + tot('awaiting_you'))} yours</span><span class="g-queued">◌ ${n(tot('awaiting_them'))} theirs</span><span class="g-unknown">▨ ${n(tot('unknown'))} unknown freshness</span>`);
     const sort = L.sort !== LIST.sort || L.dir !== LIST.dir ? { sort: L.sort, dir: L.dir > 0 ? 'asc' : 'desc' } : {};
     window.shell.url({ ...(scope !== 'all' && { scope }), ...(lane && { lane }), ...(v && { q: v }), ...sort });
+  }
+
+  // ---------- Filed (sd:5488) ----------
+  const ftbody = document.getElementById('filed-rows');
+  const FSTATE = { fresh: 'ok', stale: 'caution', never: 'unknown', unread: 'warning', unrecorded: 'unknown' };
+  const unread = s => s.state === 'unread' || s.state === 'unrecorded';
+  const trackerOf = t => ((DOC.filed || {}).trackers || {})[t] || { state: 'unread', reason: 'the server sent no Filed rows', filer_unknown: 0 };
+  const fwords = r => [r.ref, r.title, r.project, r.status, r.assignee, TRACKER[r.tracker]].join(' ').toLowerCase();
+  const fshown = () => { const v = q.value.trim().toLowerCase(); return FILED.filter(r => !v || fwords(r).includes(v)); };
+  const fstate = r => r.state === 'closed' ? 'ok' : r.state === 'open' ? 'queued' : 'unknown';
+  const assigned = r => r.assignee == null ? 'assignee not synced yet' : r.assignee ? `assigned to ${r.assignee}` : 'unassigned';
+  function filedRow(r) {
+    const g = fstate(r);
+    return html`<tr data-id="${r.key}" aria-selected="${String(r.key === selected)}">
+      <td class="g g-${g}"><span aria-hidden="true">${GLYPH[g]}</span><span class="sr">${r.state || 'state not recorded'}</span></td>
+      <td class="what"><button type="button">${r.title || r.ref}</button>
+        <span class="meta">${r.ref} · ${KIND[r.tracker]}${r.status ? ` · ${r.status}` : ''} · ${assigned(r)}</span></td>
+      <td class="obs">${r.created_at ? html`<time class="rel" datetime="${r.created_at}"></time>` : 'created date not synced yet'}</td>
+      <td class="act"><span class="row-acts">${C.rowActions(r.key)}</span></td></tr>`;
+  }
+  // No row is never "nothing filed" on its own: a tracker that did not read is named with its reason.
+  function filedEmpty() {
+    const year = (DOC.filed || {}).year || 'this year', bad = Object.keys(TRACKER).filter(t => unread(trackerOf(t)));
+    const why = bad.map(t => `${TRACKER[t]}: ${trackerOf(t).reason}`).join('; ');
+    if (bad.length === 2) return `Filed not read: ${why}`;
+    const read = Object.keys(TRACKER).filter(t => !bad.includes(t)).map(t => t === 'jira' ? 'in Jira' : 'on GitHub').join(' or ');
+    return `Nothing filed in ${year} ${read}, as the last sync saw it${bad.length ? `; not read: ${why}` : ''}`;
+  }
+  function renderFiled() {
+    const rows = fshown(), v = q.value.trim(), undated = FILED.filter(r => !r.created_at).length;
+    putKeep(ftbody, rows.length ? html`${rows.map(filedRow)}`
+      : html`<tr class="lane"><td colspan="4"><span class="label">${FILED.length ? `Nothing matches “${v}”` : filedEmpty()}</span></td></tr>`);
+    put(document.getElementById('filed-tally'), html`<span>${n(FILED.length)} filed in ${(DOC.filed || {}).year || 'this year'}</span>${undated ? html`<span class="g-unknown">▨ ${n(undated)} created date not synced yet</span>` : ''}`);
+    put(document.getElementById('filed-source'), html`${Object.keys(TRACKER).map(t => {
+      const s = trackerOf(t), g = FSTATE[s.state] || 'unknown', name = TRACKER[t];
+      return html`<span class="g-${g}"><span aria-hidden="true">${GLYPH[g]}</span> ${unread(s) ? `${name} not read: ${s.reason}` : `${name} sync ${s.state}`}${!unread(s) && s.last_success_at ? html`, last success <time class="rel" datetime="${s.last_success_at}"></time>` : ''}${!unread(s) && s.reason ? ` · ${s.reason}` : ''}</span>${s.filer_unknown ? html`<span>${plural(s.filer_unknown, KIND[t])}: whether you filed ${s.filer_unknown === 1 ? 'it' : 'them'} is not synced yet</span>` : ''}`;
+    })}`);
   }
 
   // ---------- Settled: per local day over 28 days, then counts per repository ----------
@@ -313,8 +392,26 @@ addEventListener('DOMContentLoaded', () => {
     C.select('collector'); swap();
     window.shell.suggest?.(['Why is the GitHub sync stale?', 'Which rows would move after a sync?']);
   }
+  function showFiled(key) {
+    const r = FBY.get(key), g = fstate(r), where = TRACKER[r.tracker];
+    selected = key; mark();
+    const facts = [['Key', r.ref], ['Status', r.status || 'not synced yet'], [r.tracker === 'jira' ? 'Project' : 'Repository', r.project || 'not recorded'],
+      ['Assignee', r.assignee == null ? 'not synced yet' : r.assignee || 'unassigned'], ['Filed by', r.author || 'you']];
+    putKeep(details, html`<p class="kind"><span class="g-${g}" aria-hidden="true">${GLYPH[g]}</span> ${KIND[r.tracker]} · filed by you</p>
+      <h2>${r.title || r.ref}</h2>
+      ${safeLink(r.url) ? html`<p><a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">Edit in ${where}${I('arrow-up-right')}</a></p>` : html`<p class="note">No https link recorded, so it opens nowhere.</p>`}
+      <dl>${facts.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}
+        <dt>Created</dt><dd>${r.created_at ? html`<time class="rel" datetime="${r.created_at}" data-long=""></time>` : 'created date not synced yet'}</dd>
+        <dt>Updated</dt><dd>${r.updated_at ? html`<time class="rel" datetime="${r.updated_at}" data-long=""></time>` : 'not synced yet'}</dd>
+        <dt>Last synced</dt><dd><time class="rel" datetime="${r.seen || ''}" data-empty="never"></time></dd></dl>
+      <h3>Act</h3>${C.bar(r.key)}
+      <p class="why">Edit opens it in ${where}; the dashboard changes nothing there, and the next sd shadow sync reads your edit back.</p>`);
+    C.select(r.key); swap();
+    return true;
+  }
   function show(key) {
     if (key === 'collector') return showCollector();
+    if (FBY.has(key)) return showFiled(key);
     const r = BY.get(key); if (!r) return false;
     selected = key; mark();
     const where = r.internal ? `internal (${r.why_internal === 'managed' ? 'sd manages it' : 'registered with sd'})` : 'external';
@@ -336,22 +433,24 @@ addEventListener('DOMContentLoaded', () => {
       : ['Why is this still open locally?', 'What would unblock this?']);
     return true;
   }
-  function mark() { tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.id === selected))); }
+  function mark() { [tbody, ftbody].forEach(b => b.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.id === selected)))); }
+  // The shown view's rows: the Filed table on Filed, the Open table otherwise.
+  const listed = () => (FILEDVIEW ? ftbody : tbody).querySelectorAll('tr[data-id]');
   function select(key, open) { if (show(key) !== false && open) window.shell.openPane('tab-details'); }
   const none = () => { selected = null; put(details, html`<p class="why">No contribution matches the filter, so nothing is selected. Esc clears it.</p>`); };
   // The reader found no row to select: the filter hides them all, the scope has none, or the read failed.
   function nothing() {
-    if (DOC && scoped().length) return none();
+    if (DOC && (FILEDVIEW ? FILED.length : scoped().length)) return none();
     selected = null; mark();
-    put(details, html`<p class="why">${DOC ? 'Nothing open is listed in this scope, so nothing is selected.' : 'The contributions were not read, so nothing is selected. Reload retries it.'}</p>`);
+    put(details, html`<p class="why">${DOC ? (FILEDVIEW ? 'Nothing filed this year is listed, so nothing is selected.' : 'Nothing open is listed in this scope, so nothing is selected.') : 'The contributions were not read, so nothing is selected. Reload retries it.'}</p>`);
   }
 
   // ---------- Filter ----------
-  const reconcile = () => window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, keep: k => k === 'collector', select: k => select(k, false), clear: none });
-  function applyFilter() { renderRows(); reconcile(); }
+  const reconcile = () => window.shell.reconcile({ rows: listed(), current: selected, keep: k => k === 'collector', select: k => select(k, false), clear: none });
+  function applyFilter() { renderRows(); renderFiled(); reconcile(); }
   function setScope(v) { if (!SCOPES.includes(v) || !DOC) return; scope = v; lane = null; renderHead(); renderSettled(); applyFilter(); }
   function setLane(v) { lane = lane === v ? null : v; renderHead(); applyFilter(); }
-  function render() { renderHead(); renderSettled(); renderRows(); }
+  function render() { renderHead(); renderSettled(); renderRows(); renderFiled(); }
 
   // ---------- Events ----------
   // A lane lamp filters the Open rows, so it shows the Open view.
@@ -360,17 +459,21 @@ addEventListener('DOMContentLoaded', () => {
   document.getElementById('rows-head').addEventListener('click', e => { if (DOC && window.shell.list.sortBy(e, L)) window.shell.list.keepFocus(e, applyFilter); });
   put(document.getElementById('rows-head'), window.shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   document.addEventListener('contributions:scope', e => setScope(e.detail));
+  // The view switch (shell.js) picks the unhidden or the hidden rows; the selection follows, as a filter change moves it.
+  // Filed (sd:5488) moves the selection to its own table the same way. The shell fires the first shell:view on the
+  // document's DOMContentLoaded, before this window listener runs, so the view the page opens on is read here too.
+  const onView = id => {
+    const was = [HIDDEN, FILEDVIEW]; HIDDEN = id === 'hidden'; FILEDVIEW = id === 'filed';
+    if (DOC && (was[0] !== HIDDEN || was[1] !== FILEDVIEW)) applyFilter();
+  };
+  document.addEventListener('shell:view', e => onView(e.detail.id));
+  onView(window.shell.view?.current?.());
   document.getElementById('source').addEventListener('click', e => { if (e.target.closest('[data-collector]')) select('collector', true); });
-  tbody.addEventListener('click', e => { if (e.target.closest('.rowact') || e.target.closest('a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
+  [tbody, ftbody].forEach(b => b.addEventListener('click', e => { if (e.target.closest('.rowact') || e.target.closest('a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); }));
   document.addEventListener('shell:open', e => select(e.detail, true));
-  q.addEventListener('input', () => DOC && applyFilter());
-  q.addEventListener('keydown', e => { if (e.key === 'Escape' && q.value) { e.stopPropagation(); q.value = ''; DOC && applyFilter(); } });
-  document.addEventListener('keydown', e => {
-    if (e.target.matches?.('input, textarea, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]') || e.target.closest?.('.actmenu')) return;
-    if (e.key === '/') { e.preventDefault(); q.focus(); }
-  });
+  document.addEventListener('shell:filter', e => { if (e.detail.q === q.value) return; q.value = e.detail.q; if (DOC) applyFilter(); });
   // The shell walks the shown rows on j / k; Esc clears the lane filter.
-  window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false), keep: k => k === 'collector',
+  window.PAGE_LIST = { rows: listed, current: () => selected, select: id => select(id, false), keep: k => k === 'collector',
     clear: () => { if (!lane) return false; lane = null; renderHead(); applyFilter(); return true; } };
 
   // ---------- Start (build: read /api/contributions/page through shell.read, then draw) ----------
@@ -389,6 +492,9 @@ addEventListener('DOMContentLoaded', () => {
     put(document.getElementById('annunciator'), html``);
     put(document.getElementById('source'), html``);
     put(tbody, html`<tr class="lane"><td colspan="4"><span class="label">Not read: ${FAILED}</span></td></tr>`);
+    put(ftbody, html`<tr class="lane"><td colspan="4"><span class="label">Not read: ${FAILED}</span></td></tr>`);
+    put(document.getElementById('filed-tally'), html``);
+    put(document.getElementById('filed-source'), html``);
     document.getElementById('filtered').hidden = true;
     put(document.getElementById('tally'), html``);
     document.getElementById('settled-tally').textContent = '';
@@ -399,12 +505,12 @@ addEventListener('DOMContentLoaded', () => {
     bars.setAttribute('aria-label', 'Settled contributions not read');
     put(bars, html``);
   }
-  const visible = id => id === 'collector' || shown().some(r => r.key === id);
+  const visible = id => id === 'collector' || (FILEDVIEW ? fshown() : shown()).some(r => r.key === id);
   const reading = window.shell.read({
     source: '/api/contributions/page', what: 'the contributions', adopt, clear,
     draw: () => (DOC ? render() : blank()),
     current: () => selected,
-    first: () => shown()[0]?.key ?? null,
+    first: () => (FILEDVIEW ? fshown() : shown())[0]?.key ?? null,
     // A ?row= or a kept selection the filter hides goes to the first shown row, as a filter change does.
     select: (id, opened) => (visible(id) ? select(id, opened) : reconcile()),
     unselect: nothing,

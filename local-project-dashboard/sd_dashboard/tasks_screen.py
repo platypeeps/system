@@ -25,6 +25,7 @@ query of the store:
   external context (`reads.item_shadow` and `progress.tracker_freshness`,
   v1's "External context" block), or `null` when the item has none. A vault base row's
   `base` is its stage moves, declared fields, body and mirror section (`_base`), or `null` for any other row.
+  `row` is the item as `/api/tasks` would list it, and `left_out` why that list does not, or `null` (sd:5462).
 - `from_backlog` is where a v1 `/backlog` address goes since sd:2356 retired
   it: the same `/tasks` view with the query v1 read, so a bookmark or an old
   link keeps its filters.
@@ -44,7 +45,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from sd_db import reads, repos, workflow
@@ -99,16 +100,33 @@ def document(connection, *, now: str) -> dict:
 
 
 def _document(connection, *, now: str) -> dict:
-    from .hoa_screen import checkout
-    from .places import area_of, realm_of, realms
-    from .screens import _repo_labels
+    from .places import realms
 
+    found = realms(connection)
     # The parked rows follow the listed ones (sd:3012): the page shows them only under its Parked chip, for Unpark.
     rows = reads.backlog_items(connection, now=now) + reads.backlog_items(connection, now=now, parked=True)
+    out = _rows(connection, rows, found, now=now)
+    # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
+    ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
+    # Your issues (sd:4628): each repo's open issues assigned to or filed by the operator, drawn under the views.
+    return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out, "attention": _attention(out, now=now),
+            "realms": {key: found[key] for key in ("state", "source", "problems")},
+            # The Personal and Work views' Run sweep (sd:5096, sd:5097): each realm's last run, and whether one runs now.
+            "sweeps": {realm: sweep.status(None, realm) for realm in sweep.REALMS[1:]}, **issues.document(connection)}
+
+
+def _rows(connection, rows, found, *, now: str) -> list[dict]:
+    """One Tasks row per item row, in order: the shape `/api/tasks` lists and `details` gives an item it leaves out.
+
+    `found` is `places.realms`, the realm rules each row's `realm` follows.
+    """
+    from .hoa_screen import checkout
+    from .places import area_of, realm_of
+    from .screens import _repo_labels
+
     label = _repo_labels(row["repo"] for row in rows)
     live = _assignment_states(connection, now=now)
     hoa = checkout(connection)[0]
-    found = realms(connection)
     rules = found["list"] if found["state"] in ("read", "partial") else None
     out = []
     filing = {}
@@ -142,13 +160,28 @@ def _document(connection, *, now: str) -> dict:
             "issue_targets": filing[row["repo"]], "issue_link": issue_filing.link_of(state["item"]),
             **_base_fields(state["item"]),
         })
-    # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
-    ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
-    # Your issues (sd:4628): each repo's open issues assigned to or filed by the operator, drawn under the views.
-    return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out, "attention": _attention(out, now=now),
-            "realms": {key: found[key] for key in ("state", "source", "problems")},
-            # The Personal and Work views' Run sweep (sd:5096, sd:5097): each realm's last run, and whether one runs now.
-            "sweeps": {realm: sweep.status(None, realm) for realm in sweep.REALMS[1:]}, **issues.document(connection)}
+    return out
+
+
+def _left_out(row, *, now: str) -> str | None:
+    """Why `/api/tasks` leaves the item out, for Details to say when a link opens it there (sd:5462); None if it lists it.
+
+    These are `reads.backlog_items`' rules: no report without `attention` (`_NOT_A_QUIET_REPORT`), nothing done before
+    the week (`include_done_days`), and no parked writing piece. `test_v2_tasks` checks them against the rows it lists.
+    """
+    if row["kind"] == "report":
+        try:
+            fields = json.loads(row["fields"] or "{}")
+        except (TypeError, ValueError):
+            fields = None
+        if not (isinstance(fields, dict) and fields.get("attention") is True):
+            return "a report that needs no attention"
+    cutoff = (datetime.fromisoformat(now.replace("Z", "+00:00")) - timedelta(days=7)).strftime("%Y-%m-%d")
+    if row["status"] == "done" and not (row["status_since"] and row["status_since"] >= cutoff):
+        return "done before the week"
+    if row["parked_at"] and row["piece"]:
+        return "a parked writing piece, which revives through its own workflow"
+    return None
 
 
 def _base_fields(item) -> dict:
@@ -252,8 +285,21 @@ def _documents(connection, state) -> list[dict]:
 
 
 def details(connection, item: int, *, now: str) -> dict:
-    """One item's Details sections. Raises `workflow.MissingItem` for an id with no item."""
+    """One item's Details sections. Raises `workflow.MissingItem` for an id with no item.
+
+    `row` is the item as `/api/tasks` would list it, and `left_out` why that list leaves it out (`_left_out`): a link to
+    an item the list leaves out opens it in Details from these (sd:5462). One read snapshot, as `document` has.
+    """
+    from .operations_screen import _one_snapshot
+
+    with _one_snapshot(connection):
+        return _details(connection, item, now=now)
+
+
+def _details(connection, item: int, *, now: str) -> dict:
     from sd_db import operations, progress
+
+    from .places import realms
 
     state = workflow.item_state(connection, item)
     row = reads.item_by_id(connection, item)
@@ -279,6 +325,7 @@ def details(connection, item: int, *, now: str) -> dict:
         "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,
         "base": _base(state),
         "experiment": _experiment(connection, state),
+        "row": _rows(connection, [row], realms(connection), now=now)[0], "left_out": _left_out(row, now=now),
     }
 
 

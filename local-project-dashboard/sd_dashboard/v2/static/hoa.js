@@ -22,6 +22,8 @@
   const srcOf = key => SRC.find(r => r.source === key);
   // sd:5095: the checkout's tools/sweep.py, as /api/hoa's `sweep` part reads it (sweep.status): running, and the last run.
   let SWEEP = null;
+  // sd:5482: the Data sources head's Refresh all command, registered on DOMContentLoaded.
+  let REFRESH = null;
 // A source's refresh job (its source-ages row's `job`) as the jobs inventory reads it: its last run, in words.
 const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
   : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
@@ -335,6 +337,17 @@ let polling = 0;
   function drawSources() {
     const C = window.shell.commands, sr = DOC?.sources;
     put($('src-body'), !DOC ? html`` : html`${drawSourceRows(C, sr)}${SWEEP ? sweepRow() : ''}`);
+    // sd:5482: Refresh all, the head's one button. aria-disabled, not disabled, so an off button keeps focus and its reason.
+    const o = C.get('sources'), w = o && REFRESH ? REFRESH.when(o) : '';
+    const icon = html`<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg>${REFRESH?.label}`;
+    put($('src-tools'), !o || !REFRESH ? html`` : w === true
+      ? html`<button class="btn quiet sm" type="button" id="src-refresh" data-tip="${REFRESH.does} Runs ${REFRESH.cli(o)}.">${icon}</button>`
+      : html`<button class="btn quiet sm" type="button" id="src-refresh" aria-disabled="true" aria-describedby="src-refresh-off" data-tip="${w}">${icon}</button><span class="sr" id="src-refresh-off">${w}</span>`);
+  }
+  // The head button and the palette entry: an off Refresh all toasts its reason, as the shell's run does not check it.
+  function refreshAll() {
+    const S = window.shell, o = S.commands.get('sources'), w = o && REFRESH ? REFRESH.when(o) : 'HOA is not read';
+    if (w === true) S.commands.run(REFRESH, o); else S.toast(w);
   }
   function drawSourceRows(C, sr) {
     return sr.error ? html`<tr><td colspan="5">${unknownBlock(sr.error)}</td></tr>`
@@ -365,7 +378,6 @@ let polling = 0;
     put($('ob-kinds'), html`${['all', ...kinds].map(k => html`<button class="chip" type="button" data-kind="${k}" aria-pressed="${String(k === kind)}">${k === 'all' ? 'All' : k} <b>${k === 'all' ? OB.length : n(k)}</b></button>`)}`);
     put($('ob-head'), window.shell.list.sortHead(OB_COLS, OB_ST));
     const rows = obRows();
-    put($('tasks-tally'), DOC && !f.error ? html`<span>${plural(rows.length, 'open item')}</span>` : html``);
     put($('ob-body'), !DOC ? html`` : f.error ? html`<tr><td colspan="7">${unknownBlock(f.error)}</td></tr>`
       : rows.length ? html`${rows.map(o => html`<tr data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}">
         <td class="id num">sd:${o.item}</td><td class="g g-${o.state}" aria-label="${o.state}">${GLYPH[o.state]}</td>
@@ -413,11 +425,13 @@ let polling = 0;
       const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, !doc.base.error && doc.lots.error && `Lots: ${doc.lots.error}`, doc.items.error && `Tasks: ${doc.items.error}`].filter(Boolean);
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
-        ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title, kind: o.kind })),
+        ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title, kind: o.kind, revision: o.revision })),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
         ...(M.dir && !srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
         // A source with a refresh job is a job row: Management's shared Retry and Show log act on it.
-        ...SRC.map(r => ({ id: `source:${r.source}`, type: r.job ? 'job' : 'source', label: r.label, source: r.source }))];
+        ...SRC.map(r => ({ id: `source:${r.source}`, type: r.job ? 'job' : 'source', label: r.label, source: r.source })),
+        // sd:5482: the Data sources head, which Refresh all acts on.
+        ...(doc.sources && !doc.sources.error ? [{ id: 'sources', type: 'sources', label: 'Data sources' }] : [])];
       SWEEP = doc.sweep || null;
       if (SWEEP) objects.push({ id: 'sweep', type: 'sweep', label: 'HOA sweep' });
       if (SRC.some(r => r.job?.state === 'running') || SWEEP?.running) poll();
@@ -442,6 +456,7 @@ let polling = 0;
   window.PAGE_COMMANDS = [
     { label: 'Read HOA again', icon: 'rotate-ccw', run: () => load() },
     { label: 'Fit the map to the HOA', icon: 'maximize-2', run: () => { center = null; zoomTo(1); } },
+    { label: 'Refresh all sources', icon: 'rotate-ccw', run: () => refreshAll() },
   ];
   // The shell walks the ledger rows on j / k; a row selects by its own click.
   window.PAGE_LIST = { rows: () => document.querySelectorAll('.ledger tbody tr[data-id]'), current: () => selected, select: id => select(id, false) };
@@ -450,14 +465,19 @@ let polling = 0;
     const S = window.shell, C = S.commands;
     reader = S.read(spec);
     // ---------- Commands (products/system/commands.md) ----------
-    // Drafting is safe: it only asks in chat. Email is never sent from the dashboard.
+    // Draft followup is Tasks' Draft email (sd:5483, email_draft): claude writes it and workspace-mcp saves it as a Gmail draft
+    // in the EMAIL_FROM account, with no recipient. Email is never sent from the dashboard.
     const openItem = o => S.openItem(o.item);
     C.register(
       // A followup's first action drafts it; any other kind's opens the item (sd:4959).
       { id: 'item.draft', on: 'item', label: 'Draft followup', key: 'd', risk: 'safe', primary: o => o.kind === 'followup',
-        run: o => { S.openChat(); S.send(`Draft a followup for sd:${o.item}: ${o.what}`); return 'Asked in chat · nothing is sent'; } },
-      { id: 'item.open', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: o => o.kind !== 'followup', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
-      { id: 'asset.ask', on: 'asset', label: 'Ask', key: 'a', risk: 'safe', primary: () => true,
+        icon: 'mail', executes: true, sends: o => `POST /api/items/${o.item}/draft-email {revision}`,
+        run: o => S.post(`/api/items/${o.item}/draft-email`, { revision: o.revision }).then(
+          v => reader.reread().then(() => `Draft saved · sd:${o.item} · "${v.draft.subject}" · in Gmail Drafts, not sent`),
+          err => { if (!err.status) throw new Error(`no answer (${err.message}), so whether a draft was saved is not known; look in Gmail Drafts before you draft again`);
+            reader.reread(); throw err; }) },
+      { id: 'item.open', on: 'item', label: 'Open item', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: o => o.kind !== 'followup', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
+      { id: 'asset.ask', on: 'asset', label: 'Ask', key: 'a', icon: 'message-square', risk: 'safe', primary: () => true,
         run: o => { S.openChat(); S.send(`What do we know about ${o.asset} (${o.name})?`); return ''; } },
     );
 
@@ -532,7 +552,7 @@ let polling = 0;
     const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/hoa/alarm)';
     C.register(
       { id: 'alarm.ack', on: 'alarm', label: 'Acknowledge', does: 'Hides the event here only; the Mission portal is not told. Undo shows it.',
-        key: 'a', risk: 'undo', bulk: true, primary: o => !o.acked, when: o => o.acked ? 'already acknowledged' : ACKS || true, cli: () => NO_CLI,
+        key: 'a', icon: 'check', risk: 'undo', bulk: true, primary: o => !o.acked, when: o => o.acked ? 'already acknowledged' : ACKS || true, cli: () => NO_CLI,
         run: o => ack(o, true).then(() => `Acknowledged: ${o.label}. The Acknowledged view lists it.`), undo: o => ack(o, false) },
       { id: 'alarm.unack', on: 'alarm', label: 'Unacknowledge', does: 'Shows the event in the list again. Undo acknowledges it again.',
         key: 'a', risk: 'undo', bulk: true, when: o => !o.acked ? 'not acknowledged' : ACKS || true, cli: () => NO_CLI,
@@ -545,20 +565,45 @@ let polling = 0;
     const facts = o => { const j = srcOf(o.source)?.job || {};
       return { name: j.name, service: j.service, failed: j.state === 'failed', exit: j.last_exit,
         capability: j.error ? { allowed: false, reason: j.error } : j.state === 'running' ? { allowed: false, reason: `${j.name} is running now` } : j.capabilities?.retry }; };
+    const kick = j => S.post(`/api/jobs/${encodeURIComponent(j.name)}/retry`, { revision: j.revision });
     const refresh = o => { const j = srcOf(o.source).job;
-      return S.post(`/api/jobs/${encodeURIComponent(j.name)}/retry`, { revision: j.revision })
-        .then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
+      return kick(j).then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
+    const retry = window.commands.retry({ job: facts, run: refresh });
     C.register(
-      { ...window.commands.retry({ job: facts, run: refresh }),
+      { ...retry,
         does: o => o.source === 'mission' ? 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.'
           : `Pulls ${o.label} once through its refresh job. Nothing to undo.` },
       window.commands.showLog({ job: facts }),
     );
+    // ---------- Refresh all (sd:5482) ----------
+    // The Data sources head's one button: Retry's post for every source row whose Retry is on, then one reread. Each source's
+    // off reason is Retry's own; the toast names what started and what did not.
+    const jobRows = () => SRC.filter(r => r.job).map(r => C.get(`source:${r.source}`)).filter(Boolean);
+    const startable = () => jobRows().filter(o => retry.when(o) === true);
+    REFRESH = { id: 'sources.refresh', on: 'sources', label: 'Refresh all', icon: 'rotate-ccw', risk: 'safe', primary: () => true, executes: true,
+      does: 'Starts every source\'s refresh job that can start, as each row\'s Run now does.',
+      when: () => { const all = jobRows(); return !all.length ? 'no source has a refresh job' : startable().length ? true : all.map(o => `${o.label}: ${retry.when(o)}`).join(' · '); },
+      askFirst: () => startable().some(o => retry.askFirst(o)),
+      consequence: () => startable().map(o => retry.consequence(o)).filter(Boolean).join(' '),
+      cli: () => (startable().length ? startable() : jobRows()).map(o => retry.cli(o)).join(' && '),
+      sends: () => startable().map(o => retry.sends(o)).filter(Boolean).join('; '),
+      run: () => { const go = startable(), rest = jobRows().filter(o => !go.includes(o));
+        // answered() gives true for a sent start, else the sentence that names the job and why.
+        return Promise.all(go.map(o => { const j = srcOf(o.source).job;
+          return kick(j).then(out => window.commands.answered(out, j.name, 'started', true),
+            err => err.status ? `${j.name} not started: ${err.message}` : `Not known whether ${j.name} was started: no answer (${err.message})`); }))
+          .then(said => reader.reread().then(() => {
+            const ok = go.filter((_, i) => said[i] === true), not = [...said.filter(s => s !== true), ...rest.map(o => `${o.label} not started: ${retry.when(o)}`)];
+            if (ok.length) poll();
+            return [ok.length ? `Refresh started · ${ok.map(o => o.label).join(', ')}` : 'Nothing started', ...not, ok.length ? 'HOA reads again until it ends' : ''].filter(Boolean).join(' · ');
+          })); } };
+    C.register(REFRESH);
+    $('src-tools').addEventListener('click', e => { if (e.target.closest('#src-refresh')) refreshAll(); });
     // ---------- Run sweep (sd:5095) ----------
     // POST /api/hoa/sweep starts the checkout's tools/sweep.py in the background (sd_dashboard/sweep.py); a 409 names the run going.
     // HOA reads again until the run ends; the row's lamp and text follow it. It asks first: the run lands a commit.
     C.register({ id: 'sweep.run', on: 'sweep', label: 'Run sweep', does: 'Runs the HOA sweep headless: drafts followups, never sends; lands through the lane.',
-      key: 'w', risk: 'safe', askFirst: true, executes: true, primary: () => true,
+      key: 'w', icon: 'play', risk: 'safe', askFirst: true, executes: true, primary: () => true,
       when: () => SWEEP?.error || (SWEEP?.running ? 'a sweep is running now' : true),
       consequence: () => 'Reviews the week, both Drives and the alias mail, updates the status and the VP brief, saves followups as Gmail drafts, and hands the commit to the lane. Up to 90 min.',
       cli: () => SWEEP?.command || 'python3 tools/sweep.py run', sends: () => 'POST /api/hoa/sweep {}',

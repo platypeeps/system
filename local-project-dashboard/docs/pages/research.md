@@ -24,8 +24,8 @@ Vault and Queues. The board reads through the
 shell's reader, `read.js` (sd:2491): only the newest read draws, a project
 the read no longer lists runs no command, and a failed read clears the board
 and the ledger. The child's deadline counts from the page's start (sd:2501).
-The page has three views on the shell's view switch (sd:5064): Projects (the board, the default), Sources and Claim
-map. The selected project carries to the other two; with none selected they link back to Projects. A tapped claim opens
+The page has four views on the shell's view switch (sd:5064): Projects (the board, the default), Sources, Claim
+map and Experiments. The selected project carries across them; with none selected Sources and Claim map link back to Projects. A tapped claim opens
 Sources with its sources lit, and a source's ◆ count opens Claim map with its claims lit.
 A project's Details hold its Experiment (sd:5296, `research_experiments.py`): the row of the team's experiments database
 in the work Notion that the checkout's repo declaration of kind `experiment` names. `GET /api/research/experiments?project=<key>`
@@ -35,3 +35,20 @@ The drafts write nothing outward. Apply asks first, shows the draft it writes, a
 refuses it when the draft, the link, the data source or the deck's account changed since. Attach writes the workflow
 database only. Draft deck needs `RESEARCH_BRAND_KIT`. The shape and the failure table are in
 `docs/work/2026-10-19-research-notion-experiments/design.md`.
+Experiments (pack sd:5525) is each checkout's status brief, `30-brief/BRIEF-status.md`, read with the board
+(`research_screen.experiment`): the State word (Running, Decided or Done ●, Waiting ▲, Blocked ■, any other ▨), the
+Updated day, stale past 7 days, the line, the first two asks with the count, the Experiment and Deck links, and whether
+`30-brief/deck.json` sits beside it. A row's Build deck (icon `file-text`) posts `/api/research/deck` with the row's
+checkout, which queues one `sd-research-kit deck` there in Publish now's run shape (`research_deck.py`): one at a time
+behind a lock, a 409 while one builds, bounded at 300 s, off with its reason when the checkout keeps no deck.json. The
+page reads `/api/research/deck/<id>` until the run settles, then reads the board again; the row links the deck it wrote,
+`docs/dashboard/deck.pptx` in the checkout, through `/research/deck/<key>`, a download that needs the page's session.
+`/api/research/deck/status` is the last run. Build deck uploads nothing.
+
+Import to Slides (#25693, option A) posts `/api/research/slides` with the row's checkout (`research_slides.py`). It sends
+the built deck as base64, with its sha256, to workspace-mcp's `import_to_google_slides` on the work Google account,
+`google.accounts.work.email`. `<state>/research-deck/slides.json` records each checkout's Slides file id, link and deck
+sha256. An unchanged deck reuses its file and calls nothing; a changed one makes a new file, because the tool cannot
+replace a Slides file's content from bytes, and the earlier file stays in Drive. `/api/research/slides/status` probes
+workspace-mcp, so the action is off with its reason when it does not answer, when no account is set, or when no deck is
+built. The row then links the Slides file and says whether it holds the current deck or an older one.

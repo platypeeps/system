@@ -13,10 +13,16 @@ of the same ledger, so the bars show the month. The window trend is the last
 use counts four Monday-start weeks (`reads.skill_use_days`).
 
 Each part is guarded on its own: one that fails is unknown with its reason,
-and the page reports a partial read. Three panels have no reader and always
-show as unknown with the reason: by model (the cost ledger has no model
-column), CI health (Actions is off and no local-gate run is stored), and flaky
-tests (no test-result store).
+and the page reports a partial read. By model has no reader and always shows
+as unknown with the reason: the cost ledger has no model column.
+
+CI health and Flaky tests read the merge lane's gate runs (sd:5473): the last
+checkpoint of each lane entry (`reads.lane_entries`) that ended in the last 7
+days. Merged or prepared passed the gate. A failed entry is a gate failure
+when its reason is sd-ship's gate refusal; a review stop or a conflict ran no
+gate and counts as stopped. A flaky head failed its gate and later passed at
+that same head in the same repository. Flakiness is per head, not per test:
+no store names the failing test.
 
 Configure and Cap write (sd:3387). They post the routes the classic Usage
 forms post, `/api/providers/configure` and `/api/bills/<bill>/cap`, with the
@@ -28,5 +34,5 @@ and both orders; a blank field keeps its value. A 400 or 409 wrote nothing;
 any other failure, or no answer, shows in Details as unknown. Both reread the
 page after every answer.
 
-Gaps from the design: no CI table, and the age chart is the design's bar list
+Gaps from the design: the CI table has no per-day bars, and the age chart is the design's bar list
 at every width.

@@ -419,6 +419,10 @@ def _items(connection, repo: str | None, now: str, today: date) -> dict:
         rows.append({"id": f"item:{item['id']}", "item": item["id"], "title": item["title"], "kind": item["kind"],
                      "status": item["status"], "priority": item["priority"], "due": item["due"] or "", "due_days": due,
                      "state": state, "since": item["status_since"] or ""})
+    # sd:5483: Draft followup posts the draft-email route, which checks the revision the page read.
+    revision = reads.revisions(connection, [row["item"] for row in rows])
+    for row in rows:
+        row["revision"] = revision[row["item"]]
     order = {"warning": 0, "caution": 1, "queued": 2}
     rows.sort(key=lambda row: (order[row["state"]], row["priority"] is None, row["priority"] or 0,
                                row["due_days"] is None, row["due_days"] or 0, row["item"]))

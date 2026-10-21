@@ -25,4 +25,5 @@ through `POST /api/items`.
 Each row shows one icon per destination holding a copy (sd:5102): Drive,
 Notion, Obsidian, from the item's `fields.published` and the vault copy. Details'
 Publish to writes `fields.publish.<channel>` on the item and queues the brief;
+Unticking asks first, queues the copy for the trash and drops the field; Undo ticks it again.
 Publish now drains its requests, as on Documents.

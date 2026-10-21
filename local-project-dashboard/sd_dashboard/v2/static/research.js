@@ -23,7 +23,8 @@ function attention() {
 }
 // The page's views (sd:5064), drawn by the shell's view switch: the board, then the selected project's ledger and claim map.
 // The selection carries across them; a claim opens Sources with its sources lit, and a source's ◆ count opens Claim map.
-window.PAGE_VIEWS = [{ id: 'projects', label: 'Projects' }, { id: 'sources', label: 'Sources' }, { id: 'claims', label: 'Claim map' }];
+window.PAGE_VIEWS = [{ id: 'projects', label: 'Projects' }, { id: 'sources', label: 'Sources' }, { id: 'claims', label: 'Claim map' },
+  { id: 'experiments', label: 'Experiments' }];
 // With no project selected, Sources and Claim map send the viewer back to the board.
 const PICK = () => html`<p class="why">No project is selected. <button class="linkbtn" type="button" data-view="projects">Pick one in Projects</button>.</p>`;
 // The tally filters the board by state; the URL carries it (?state=), and the tally's Clear or a second tap removes it.
@@ -71,6 +72,7 @@ function renderBoard() {
       <td class="last"><span class="d">${p.git?.last_iso ? html`<time class="rel" datetime="${p.git.last_iso}"></time>` : 'no commit read'}<span class="sub">${gitSub(p.git)}</span></span></td>
       <td class="acts">${shell.commands.rowActions(p.key)}</td></tr>`)}`);
   document.getElementById('empty').hidden = !!list.length || !PROJECTS.length;
+  renderExperiments();
   const n = s => PROJECTS.filter(p => p.s === s).length;
   const states = ['caution', 'unknown', 'ok'];
   put(document.getElementById('tally'), html`${states.map(s => html`<button class="chip" type="button" data-state="${s}" aria-pressed="${String(stateFilter === s)}"${n(s) || stateFilter === s ? '' : html` disabled`} aria-label="${stateFilter === s ? 'Showing' : 'Show'} ${n(s)} ${STATE_WORDS[s]}"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${n(s)} ${STATE_WORDS[s]}</button>`)}${
@@ -105,6 +107,114 @@ document.getElementById('tally').addEventListener('click', e => {
   const s = b.dataset.state; setState(stateFilter === s ? null : s);
   document.querySelector(`#tally button[data-state="${s}"]`)?.focus();
 });
+
+// ---------- Experiments (pack sd:5525) ----------
+// Each checkout's status brief (research_screen.experiment), read with the board: its State word, Updated day, line, Asks and
+// links. Over 7 days since Updated is stale (research_screen.stale). Each row's Build deck posts /api/research/deck, which runs
+// sd-research-kit deck in that checkout (research_deck.py), reads the run every 5 s until it settles, then reads the board
+// again, so the row links the deck it wrote: /research/deck/<key> downloads docs/dashboard/deck.pptx. Import to Slides
+// (#25693, option A) posts /api/research/slides, which imports that deck through workspace-mcp on the work account
+// (research_slides.py); the row then links the Slides file. /api/research/slides/status says whether it can.
+const xpBody = document.getElementById('xp-rows');
+const XP_WORDS = { ok: 'running, decided or done', caution: 'waiting', warning: 'blocked', unknown: 'state not in the standard' };
+const DECK_POLL = 5000;
+let BUILD = null, BUILD_UNREAD = '', buildTimer = 0;
+let SLIDES = null, IMPORTING = '';
+// The page's filter field reaches this ledger too, by the same words as the board.
+const briefs = () => PROJECTS.filter(p => p.experiment && (!filterText || `${p.label} ${p.key} ${p.path}`.toLowerCase().includes(filterText)));
+// Each brief is an object of its own, so its row's one action is Build deck, not the board's primary.
+const xpId = key => `xp:${key}`;
+const experimentObjects = () => PROJECTS.filter(p => p.experiment).map(p => ({ id: xpId(p.key), type: 'research experiment', label: p.label, key: p.key, path: p.path, x: p.experiment }));
+const deckHref = key => `/research/deck/${key.split('/').map(encodeURIComponent).join('/')}`;
+function updatedCell(x) {
+  if (!x.updated) return html`<span class="d"><span class="g-unknown">▨</span> no Updated day</span>`;
+  return html`<span class="d">${x.updated}${x.stale ? html`<span class="stale"><span class="g-caution" aria-hidden="true">▲</span> stale: over 7 days</span>` : ''}</span>`;
+}
+function asksCell(x) {
+  if (!x.asks.length) return html`<span class="d">none</span>`;
+  return html`<ul class="asks">${x.asks.slice(0, 2).map(a => html`<li><b>${a.who}</b>: ${a.what}</li>`)}${x.asks_total > 2 ? html`<li>${x.asks_total - 2} more in the brief</li>` : ''}</ul>`;
+}
+// The deck: the one built (a download), else whether a deck.json waits, and this row's run while it builds or once it failed.
+function deckLine(p) {
+  const x = p.experiment, r = BUILD?.repo === p.key ? BUILD : null;
+  if (r && !settled(r)) return html`<span class="d"><span class="g-queued" aria-hidden="true">◌</span> Building: run ${r.id} is ${r.state}${r.unread ? `; its state was not read: ${r.unread}` : ''}</span>`;
+  const failed = r?.state === 'failed' ? html`<span class="d"><span class="g-warning" aria-hidden="true">■</span> Last build failed: ${r.reason || 'no reason recorded'}</span>` : '';
+  if (x.built) return html`${failed}<a href="${deckHref(p.key)}" download>deck.pptx</a><span class="d">built <time class="rel" datetime="${x.built}"></time></span>`;
+  return html`${failed}<span class="d">${x.deck ? 'deck.json ●, no deck built yet' : 'no deck.json: Build deck is off'}</span>`;
+}
+const ext = (url, text) => html`<a class="ext" href="${url}" target="_blank" rel="noopener">${text} ${I('arrow-up-right')}</a>`;
+// The Slides file the deck was imported as, and whether the deck changed since.
+function slidesLine(p) {
+  if (IMPORTING === p.key) return html`<span class="d"><span class="g-queued" aria-hidden="true">◌</span> Importing to Slides</span>`;
+  const s = SLIDES?.imports?.[p.key];
+  if (!s) return '';
+  return html`${ext(s.link, 'Slides')}<span class="d">${s.built === p.experiment.built ? 'current deck' : 'an older deck: import again'}</span>`;
+}
+function linksCell(p) {
+  const x = p.experiment;
+  return html`<span class="links">${x.links.map(l => ext(l.url, l.text))}${x.deck_url ? ext(x.deck_url, 'Deck') : ''}${deckLine(p)}${slidesLine(p)}</span>`;
+}
+function renderExperiments() {
+  const list = briefs();
+  put(xpBody, html`${list.map(p => { const x = p.experiment;
+    if (x.error) return html`<tr data-id="${p.key}" aria-selected="${String(p.key === selected)}"><td class="g g-unknown"><span aria-hidden="true">▨</span><span class="sr">unknown</span></td>
+      <td class="what" colspan="3"><button type="button">${p.label}</button><span class="line">The status brief was not read: ${x.error.replace(/\.$/, '')}.</span></td>
+      <td class="lnk" data-l="Links"><span class="links">${deckLine(p)}</span></td><td class="acts">${shell.commands.rowActions(xpId(p.key))}</td></tr>`;
+    return html`<tr data-id="${p.key}" aria-selected="${String(p.key === selected)}">
+      <td class="g g-${x.tone}" title="${XP_WORDS[x.tone]}"><span aria-hidden="true">${GLYPH[x.tone]}</span><span class="sr">${XP_WORDS[x.tone]}</span></td>
+      <td class="what"><button type="button">${p.label}</button><span class="path">${x.state || 'no State row'}</span><span class="line">${x.line}</span></td>
+      <td class="upd" data-l="Updated">${updatedCell(x)}</td>
+      <td class="ask" data-l="Asks">${asksCell(x)}</td>
+      <td class="lnk" data-l="Links">${linksCell(p)}</td>
+      <td class="acts">${shell.commands.rowActions(xpId(p.key))}</td></tr>`; })}`);
+  const stale = list.filter(p => p.experiment.stale).length, asks = list.reduce((n, p) => n + (p.experiment.asks_total || 0), 0);
+  put(document.getElementById('xp-tally'), list.length ? html`<span>${plural(list.length, 'brief')}</span><span>${stale} stale</span><span>${plural(asks, 'ask')}</span>${BUILD_UNREAD ? html`<span>last deck build not read: ${BUILD_UNREAD}</span>` : ''}` : html``);
+  const empty = document.getElementById('xp-empty');
+  empty.hidden = !!list.length || !LOADED;
+  put(empty, html`${PROJECTS.some(p => p.experiment) ? 'No brief matches. Clear the filter or type another word.' : 'No checkout keeps a status brief: 30-brief/BRIEF-status.md, in the research standard\'s six sections.'}`);
+  shell.view.count('experiments', LOADED ? list.length : null);
+}
+const settled = r => !r || r.state === 'done' || r.state === 'failed';
+function followBuild(run, told) {
+  BUILD = run; BUILD_UNREAD = ''; clearTimeout(buildTimer);
+  if (settled(run)) {
+    if (told && run) shell.toast(run.state === 'done' ? `Deck built · ${run.repo}` : `Build deck failed: ${run.reason || 'no reason recorded'}`);
+    // A finished build changed the checkout's deck.pptx: the board reads it again, and the row links the new file.
+    if (told && run?.state === 'done') load(); else renderExperiments();
+    return;
+  }
+  renderExperiments();
+  // A failed read is not known, not settled: the row says so and the next poll tries again.
+  buildTimer = setTimeout(() => window.shell.getJSON(`/api/research/deck/${encodeURIComponent(run.id)}`).then(next => followBuild(next, told),
+    e => followBuild({ ...run, unread: e.message }, told)), DECK_POLL);
+}
+function deckCommand() {
+  return { id: 'research.deck', on: 'research experiment', label: 'Build deck', icon: 'file-text', risk: 'safe', executes: true, primary: () => true,
+    does: 'Builds this experiment\'s status deck from its deck.json; nothing uploads.',
+    when: o => (!o.x.deck ? 'this checkout keeps no 30-brief/deck.json' : !settled(BUILD) ? `run ${BUILD.id} is building ${BUILD.repo}'s deck` : true),
+    cli: o => `cd ${shPath(o.path)} && sd-research-kit deck`,
+    sends: o => `POST /api/research/deck {"repo": "${o.key}"}`,
+    run: o => window.shell.post('/api/research/deck', { repo: o.key }).then(run => { followBuild(run, true); return `Building ${o.label}'s deck · run ${run.id}`; }, refused) };
+}
+function readSlides() {
+  return window.shell.getJSON('/api/research/slides/status').then(d => { SLIDES = d; },
+    e => { SLIDES = { ready: false, why: `the Slides state was not read: ${e.message}`, imports: SLIDES?.imports || {} }; }).then(renderExperiments);
+}
+function slidesCommand() {
+  return { id: 'research.slides', on: 'research experiment', label: 'Import to Slides', icon: 'send', risk: 'safe', askFirst: true, executes: true,
+    does: 'Imports the built deck into Google Slides on the work account; shares nothing.',
+    when: o => (!o.x.built ? 'no deck is built: press Build deck first' : IMPORTING ? `${IMPORTING}'s deck is importing now`
+      : !SLIDES ? 'whether workspace-mcp answers is not read yet' : SLIDES.why || true),
+    cli: () => 'no sd verb: the dashboard imports the deck through workspace-mcp',
+    sends: o => `POST /api/research/slides {"repo": "${o.key}"}`,
+    consequence: o => `${o.label}'s deck.pptx goes to Google Slides on the work account. An unchanged deck reuses its Slides file; a changed one makes a new file. Nothing is shared.`,
+    run: o => { IMPORTING = o.key; renderExperiments();
+      return window.shell.post('/api/research/slides', { repo: o.key }).then(d => {
+        IMPORTING = ''; SLIDES = { ...SLIDES, imports: { ...SLIDES?.imports, [o.key]: d.slides } }; renderExperiments();
+        return d.reused ? `Slides unchanged · ${o.label}: this deck is already imported` : `Imported to Slides · ${o.label}${d.replaces ? '; the earlier Slides file stays in Drive' : ''}`;
+      }, err => { IMPORTING = ''; renderExperiments(); return refused(err); }); } };
+}
+xpBody.addEventListener('click', e => { if (e.target.closest('a, .acts')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
 // ---------- Data (build) ----------
 // The board reads through shell.read (the Start block); the ledger is read here, per project.
@@ -486,7 +596,7 @@ function showClaim(s, x) {
 function select(key, open) {
   if (!PROJECTS.some(p => p.key === key)) return;
   selected = key; curSource = null; resetClaims();
-  tbody.querySelectorAll('tr').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === key));
+  [tbody, xpBody].forEach(b => b.querySelectorAll('tr').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === key)));
   readerFor(key); renderClaims(key); showProject(key);
   writeURL();
   // Only a project the viewer opens becomes the Add source target: the board selects its first row by itself (sd:5112).
@@ -518,6 +628,8 @@ function registerCommands() {
       cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, run: () => COPY },
     START,
     ...experimentCommands(),
+    deckCommand(),
+    slidesCommand(),
     // sd:5101: codex checks the source's grade and the claims citing it against the source as the runner fetches it.
     window.commands.adversarialReview('research source', { id: 'source.adversarial-review',
       does: 'Starts a codex review of this source against the claims citing it; its brief lists fixes to pick.',
@@ -652,7 +764,7 @@ function adopt(doc) {
     : !PROJECTS.length ? { kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' }
     : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds are not read: ${ROUNDS}.${cut}`, source: '/api/research' }
     : { kind: 'partial', title: 'No rounds read', text: `${ROUNDS}.${cut}`, source: '/api/research' };
-  return { objects: [...PROJECTS, DRAFT], state };
+  return { objects: [...PROJECTS, ...experimentObjects(), DRAFT], state };
 }
 function draw() {
   renderBoard();
@@ -680,4 +792,7 @@ document.addEventListener('DOMContentLoaded', () => {
     unselect,
   });
   load();
+  // A build already running when the page opens is followed too.
+  window.shell.getJSON('/api/research/deck/status').then(d => followBuild(d.run, false), e => { BUILD_UNREAD = e.message; renderExperiments(); });
+  readSlides();
 });

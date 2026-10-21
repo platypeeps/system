@@ -1,6 +1,7 @@
 // Metrics (sd:2119): the design source's products/system/designs/pages/metrics.js, ported. Each change from the reference is
 // marked "build:". The readings are /api/metrics (metrics_screen.py), read through the shared reader; none is sample data.
 // A part that did not read, and each panel no reader covers, is unknown with its reason.
+// sd:5473: CI health and Flaky tests read the merge lane's gate runs (metrics_screen._ci), not GitHub Actions.
 // Writes (sd:3387): Cap and Configure post /api/bills/<bill>/cap and /api/providers/configure with the revision the page
 // read (controls.revision). A 400 or 409 wrote nothing; any other failure, or no answer, leaves the outcome unknown.
 // build: bars are SVG rects sized by attribute, not CSSOM widths, and the age chart is the design's bar list only.
@@ -51,15 +52,33 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
       note: scState(r) === 'caution' ? `Asked ${r.fallthrough} times and fell through every time this month.` : '', cli: 'sd providers configure --file CONFIG.json' }));
     if (!d.skills.error) {
       d.skills.weeks.forEach(w => put1(`week:${w.start}`, { kind: 'Skill use · week', title: `week of ${w.start}`, facts: [['Uses', w.uses], ['Source', 'reads.skill_use_days (Monday-start weeks)']], cli: 'sd skill list' }));
-      d.skills.top.forEach(([n, v]) => put1(`skill:${n}`, { kind: 'Skill use · this week', title: n, facts: [['Uses this week', v], ['Source', 'reads.skill_use_days']], open: window.shell?.pages?.Skills ? [`${window.shell.pages.Skills}?row=${encodeURIComponent(n)}`, 'Open in Skills'] : null, cli: 'sd skill list' }));
     }
-    if (!d.age.error) d.age.buckets.forEach(b => put1(`age:${b.lower}`, { kind: 'Age in status', title: `${b.ready_to_send + b.other} items at ${b.label}`,
-      facts: [['Ready to send', b.ready_to_send], ['Other statuses', b.other], ['Scope', 'active items, done and parked excluded']], cli: 'sd task list' }));
     if (!d.observed.error) put1('observed', { kind: 'Observed activity', title: `${d.observed.since} → ${d.observed.until}`, facts: [['Requests recorded', d.observed.recorded_requests], ['Finished review attempts', d.observed.finished_review_attempts], ['Recorded deliveries', d.observed.recorded_deliveries], ['Source', 'reporting.metrics']], note: d.observed.interpretation, cli: '—' });
+    if (!d.ci.error) {
+      const lane = 'sd-ship -C CHECKOUT lane list', src = ['Source', 'reads.lane_entries: each lane entry\'s last checkpoint'];
+      const said = f => f ? `sd:${f.item} · ${f.kind} · ${at(f.at)}` : '—';
+      d.ci.repos.forEach(r => put1(`ci:${r.repository}`, { kind: `CI · ${d.ci.days} days`, title: r.repository, s: ciState(r),
+        facts: [['Passed', r.passed], ['Gate failed', r.gate], ['Pass rate', rate(r.rate)], ['Stopped by review', r.review], ['Stopped otherwise', r.other], ['Failed, no reason kept', r.unknown],
+          ['Last failure', said(r.newest)], ['Its reason', r.newest ? r.newest.reason || '—' : '—'], ['Last gate failure', said(r.newest_gate)], src],
+        note: 'Pass rate is passed over gate runs. A review stop or a conflict ran no gate.', open: r.newest ? [window.shell.itemHref(r.newest.item), `Open sd:${r.newest.item} in Tasks`] : null, cli: lane }));
+      d.ci.flaky.forEach(f => put1(`flaky:${f.repository}:${f.head}`, { kind: 'CI · flaky head', title: `sd:${f.item} · ${f.head.slice(0, 12)}`, s: 'caution',
+        facts: [['Repository', f.repository], ['Item', f.title || '—'], ['Head', f.head], ['Gate failed', f.failed.map(at).join(' · ')], ['Passed', `${at(f.passed)} (${f.status})`], src],
+        note: 'Per head, not per test: the gate failed at this head, then passed at it with no new commit.', open: [window.shell.itemHref(f.item), `Open sd:${f.item} in Tasks`], cli: lane }));
+    }
+    put1('ci', d.ci.error ? { kind: 'CI · not read', title: 'CI health', s: 'unknown', facts: [['Reason', d.ci.error]], cli: 'sd-ship -C CHECKOUT lane list' }
+      : { kind: `CI · ${d.ci.days} days`, title: 'Gate runs through the merge lane', s: d.ci.flaky.length ? 'caution' : 'ok',
+        facts: [['Since', at(d.ci.since)], ['Repositories', d.ci.repos.length], ['Flaky heads', d.ci.flaky.length], ['Unreadable entries', d.ci.unreadable], ['Source', 'reads.lane_entries']], cli: 'sd-ship -C CHECKOUT lane list' });
     d.unread.forEach(x => put1(`unread:${x.id}`, { kind: 'Not read', title: x.name, s: 'unknown', facts: [['Reason', x.reason]], cli: '—' }));
   }
   const numText = n => n.value == null ? '—' : n.unit === 'usd' ? money(n.value) : n.unit === 'hours' ? `${(+n.value).toFixed(1)} h` : n.value % 1 ? (+n.value).toFixed(1) : String(n.value);
   const scState = r => r.fallthrough && !r.passes ? 'caution' : 'ok';
+  const at = iso => `${String(iso).slice(5, 16).replace('T', ' ')}Z`;
+  const rate = r => r == null ? '—' : `${Math.round(r * 100)}%`;
+  // A repository name may break after its owner, so a narrow table keeps every column on screen.
+  const slashed = name => { const cut = name.indexOf('/'); return cut < 0 ? name : html`${name.slice(0, cut + 1)}<wbr>${name.slice(cut + 1)}`; };
+  // A repository with a flaky head is caution, as its row in Flaky tests; a gate failure alone is the gate doing its job.
+  const flakyIn = repo => (DOC?.ci?.flaky || []).filter(f => f.repository === repo).length;
+  const ciState = r => flakyIn(r.repository) ? 'caution' : r.passed + r.gate ? 'ok' : 'unknown';
 
   // ---------- Annunciator ----------
   function readCells() {
@@ -70,7 +89,11 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
     if (!u.error) u.meter.filter(m => m.window_minutes === d.trend.window).forEach(m => out.push({ id: `w-${m.provider}`, label: `${m.provider} week`, view: 'spend', state: stale || pctState(m.used_percent), ev: `win:${m.provider}:${m.window_minutes}`,
       val: html`<b>${Math.round(m.used_percent)}%</b> used`, small: `meter ${String(m.timestamp).slice(5, 16).replace('T', ' ')}Z` }));
     if (!u.error) out.push({ id: 'bound', label: 'Estimated spend', view: 'spend', state: stale || (u.bound.length ? 'caution' : 'ok'), ev: 'bound', val: html`<b>${u.bound.length}</b> bound`, small: u.bound.length ? 'rows to check against invoices' : 'no row to check' });
-    out.push({ id: 'ci', label: 'CI 7d', view: 'ci', state: 'unknown', ev: 'unread:ci', val: html`<b>—</b> not read`, small: 'no local-gate store' });
+    // The lamp lights for a flaky head alone, as metrics_screen._attention counts it.
+    const ci = d.ci, runs = ci.error ? 0 : ci.repos.reduce((n, r) => n + r.passed + r.gate, 0), passed = ci.error ? 0 : ci.repos.reduce((n, r) => n + r.passed, 0);
+    out.push(ci.error ? { id: 'ci', label: 'CI 7d', view: 'ci', state: 'unknown', ev: 'ci', val: html`<b>—</b> not read`, small: ci.error }
+      : !runs ? { id: 'ci', label: 'CI 7d', view: 'ci', state: 'unknown', ev: 'ci', val: html`<b>—</b> no gate run`, small: `in ${ci.days} days` }
+      : { id: 'ci', label: 'CI 7d', view: 'ci', state: ci.flaky.length ? 'caution' : 'ok', ev: 'ci', val: html`<b>${rate(passed / runs)}</b> passed`, small: `${plural(runs, 'gate run')} · ${plural(ci.flaky.length, 'flaky head')}` });
     return out;
   }
   // the oldest reading on the page: a kept part (sd:4955) can be older than the request.
@@ -89,7 +112,9 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
   }
 
   // ---------- Panels ----------
-  const bar = (id, k, sub, pct, v, cls, glyph) => html`<li><button class="hbar" type="button" data-ev="${id}" aria-pressed="${id === selected ? 'true' : 'false'}"><span class="k">${k}${sub ? html`<small>${sub}</small>` : ''}</span>${track(pct, cls)}<span class="v">${glyph ? html`<span class="g-${glyph}" aria-hidden="true">${G[glyph]}</span>` : ''}${v}</span></button></li>`;
+  // A bar with an href is a link to the page that holds its row (sd:5476); the rest select their reading here.
+  const bar = (id, k, sub, pct, v, cls, glyph, href) => { const body = html`<span class="k">${k}${sub ? html`<small>${sub}</small>` : ''}</span>${track(pct, cls)}<span class="v">${glyph ? html`<span class="g-${glyph}" aria-hidden="true">${G[glyph]}</span>` : ''}${v}</span>`;
+    return href ? html`<li><a class="hbar" href="${href}">${body}</a></li>` : html`<li><button class="hbar" type="button" data-ev="${id}" aria-pressed="${id === selected ? 'true' : 'false'}">${body}</button></li>`; };
   function spend() {
     const u = DOC?.usage;
     if (!u || u.error) { put($('bills'), html`<li>${unknownBlock(u ? u.error : 'the Metrics document did not arrive')}</li>`); put($('windows'), html``); $('bills-note').textContent = ''; return; }
@@ -136,20 +161,31 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
     $('su-sub').textContent = `From skill_use, Monday-start weeks since ${s.since}${s.first ? `; the first row is ${s.first}` : '; no row yet'}.`;
     const maxW = Math.max(1, ...s.weeks.map(w => w.uses)), maxT = Math.max(1, ...s.top.map(t => t[1]));
     put($('su-weeks'), html`${s.weeks.map((w, i) => bar(`week:${w.start}`, `wk ${w.start.slice(5)}`, i ? '' : 'this week', w.uses / maxW * 100, w.uses, i ? '' : 's1'))}`);
-    put($('su-top'), s.top.length ? html`${s.top.map(([n, v]) => bar(`skill:${n}`, n, '', v / maxT * 100, v, ''))}` : html`<li class="why">No skill use this week.</li>`);
+    put($('su-top'), s.top.length ? html`${s.top.map(([n, v]) => bar(`skill:${n}`, n, '', v / maxT * 100, v, '', '', `/skills?row=${encodeURIComponent(n)}`))}` : html`<li class="why">No skill use this week.</li>`);
   }
   function age() {
     const a = DOC?.age;
     if (!a || a.error) { put($('hist'), unknownBlock(a ? a.error : 'the Metrics document did not arrive')); return; }
     const max = Math.max(1, ...a.buckets.map(b => b.ready_to_send + b.other));
     put($('hist'), html`<ul class="hbars" aria-label="Open items by days in their current status">${a.buckets.map(b => { const tot = b.ready_to_send + b.other;
-      return html`<li><button class="hbar" type="button" data-ev="age:${b.lower}" aria-pressed="${`age:${b.lower}` === selected ? 'true' : 'false'}" aria-label="${b.label}: ${tot} items, ${b.ready_to_send} ready to send"><span class="k">${b.label}<small>${b.ready_to_send ? `${b.ready_to_send} ready to send` : ''}</small></span><svg class="track" viewBox="0 0 100 1" preserveAspectRatio="none" aria-hidden="true"><rect class="fill s1" width="${(b.ready_to_send / max * 100).toFixed(1)}" height="1"/><rect class="fill" x="${(b.ready_to_send / max * 100).toFixed(1)}" width="${(b.other / max * 100).toFixed(1)}" height="1"/></svg><span class="v">${tot}</span></button></li>`; })}</ul>
+      // sd:5474: each bar opens Tasks' list at its bucket, open items only, in the All view: the scope it counts (reads.age_bucket's key).
+      return html`<li><a class="hbar" href="/tasks?view=list&age=${encodeURIComponent(b.key)}&active=1#view=all" aria-label="${b.label}: ${tot} items, ${b.ready_to_send} ready to send"><span class="k">${b.label}<small>${b.ready_to_send ? `${b.ready_to_send} ready to send` : ''}</small></span><svg class="track" viewBox="0 0 100 1" preserveAspectRatio="none" aria-hidden="true"><rect class="fill s1" width="${(b.ready_to_send / max * 100).toFixed(1)}" height="1"/><rect class="fill" x="${(b.ready_to_send / max * 100).toFixed(1)}" width="${(b.other / max * 100).toFixed(1)}" height="1"/></svg><span class="v">${tot}</span></a></li>`; })}</ul>
       <table class="sr"><caption>Open items by age in status</caption><tbody>${a.buckets.map(b => html`<tr><th scope="row">${b.label}</th><td>${b.ready_to_send} ready to send, ${b.other} other</td></tr>`)}</tbody></table>`);
+  }
+  function ci() {
+    const c = DOC?.ci;
+    if (!c || c.error) { put($('ci-state'), unknownBlock(c ? c.error : 'the Metrics document did not arrive')); put($('ci-body'), html``); put($('flaky-body'), html``); return; }
+    put($('ci-state'), c.unreadable ? html`<p class="foot-note"><span class="g-unknown" aria-hidden="true">▨</span> ${plural(c.unreadable, 'lane entry', 'lane entries')} ${c.unreadable === 1 ? 'is' : 'are'} not readable and ${c.unreadable === 1 ? 'is' : 'are'} not counted.</p>` : html``);
+    put($('ci-body'), c.repos.length ? html`${c.repos.map(r => { const st = ciState(r), stopped = r.review + r.other + r.unknown;
+      return row(`ci:${r.repository}`, html`<td class="g g-${st}">${G[st]}<span class="sr">${st === 'caution' ? 'caution: a flaky head' : st}</span></td><td class="what"><button type="button">${slashed(r.repository)}</button></td><td class="num hide-sm">${r.passed}</td><td class="num">${r.gate}</td><td class="num">${rate(r.rate)}</td><td class="num hide-sm">${stopped}</td><td class="mono hide-sm">${r.newest ? `sd:${r.newest.item} · ${r.newest.kind}` : '—'}</td>`); })}`
+      : html`<tr><td colspan="7" class="why">No lane entry ended in the last ${c.days} days.</td></tr>`);
+    put($('flaky-body'), c.flaky.length ? html`${c.flaky.map(f => row(`flaky:${f.repository}:${f.head}`, html`<td class="what"><button type="button">sd:${f.item}</button><small>${f.repository}</small></td><td class="mono">${f.head.slice(0, 12)}</td><td class="mono hide-sm">${f.failed.map(at).join(' · ')}</td><td class="mono">${at(f.passed)}</td>`))}`
+      : html`<tr><td colspan="4" class="why">No head failed its gate and then passed at that head in the last ${c.days} days.</td></tr>`);
   }
   function draw() {
     lamps(); spend(); trends(); tables(); skills(); age();
     put($('model'), unreadBlock('model'));
-    put($('ci-state'), html`${unreadBlock('ci')}<p class="sub gap">Flaky tests</p>${unreadBlock('flaky')}`);
+    ci();
     const o = DOC?.observed;
     put($('observed'), !DOC ? html`` : o.error ? unknownBlock(o.error) : html`<p class="foot-note">Observed ${o.since} → ${o.until}: ${plural(o.recorded_requests, 'request')} recorded, ${plural(o.finished_review_attempts, 'finished review attempt')}, ${plural(o.recorded_deliveries, 'recorded delivery', 'recorded deliveries')}. <button class="linkbtn" type="button" data-ev="observed">Details</button></p>`);
   }
@@ -228,9 +264,9 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
     adopt: doc => {
       DOC = doc; evidence(); CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
-      const failed = ['usage', 'trend', 'numbers', 'scorecard', 'skills', 'age', 'observed', 'controls'].filter(k => doc[k].error || doc[k].stale);
+      const failed = ['usage', 'trend', 'numbers', 'scorecard', 'skills', 'age', 'observed', 'controls', 'ci'].filter(k => doc[k].error || doc[k].stale);
       FIRST = CELLS.find(c => c.state === 'warning' || c.state === 'caution')?.ev || Object.keys(EV).find(k => k.startsWith('win:')) || null;
-      put($('subhead'), html`Spend against budget, the week, providers, skill use and the month's usage · read <time class="rel" datetime="${doc.read}"></time>`);
+      put($('subhead'), html`Spend against budget, the week, providers, CI, skill use and the month's usage · read <time class="rel" datetime="${doc.read}"></time>`);
       return { objects: Object.entries(EV).map(([id, e]) => ({ ...e, id, type: e.type || 'reading', label: e.label || e.title })),
         state: failed.length ? { kind: 'partial', text: `${failed.map(k => `${k}: ${doc[k].error || `stale since ${hhmm(doc[k].observed)}: ${doc[k].stale}`}`).join(' · ')}. The other readings are current.`, source: '/api/metrics' } : null };
     },
@@ -262,7 +298,7 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
     const offWhy = o => !o.control ? (DOC?.controls?.error ? `the provider registry was not read: ${DOC.controls.error}` : 'not in the provider registry')
       : o.revision ? true : 'the page holds no registry revision';
     C.register(
-      { id: 'providers.configure', on: 'provider', label: 'Configure', does: 'Saves the enabled providers and role orders; Undo restores the old ones.', key: 'f', risk: 'undo', executes: true, primary: () => true,
+      { id: 'providers.configure', on: 'provider', label: 'Configure', does: 'Saves the enabled providers and role orders; Undo restores the old ones.', key: 'f', icon: 'settings', risk: 'undo', executes: true, primary: () => true,
         when: offWhy, fields: configureFields, consequence: () => 'Saves the enabled choices and both automatic role orders together, as the registry reads them now.',
         cli: () => 'sd providers configure --file CONFIG.json', run: (o, v) => configure(o, v) },
       { id: 'bill.cap', on: 'bill', label: 'Cap', does: o => o.control?.write === 'clear' ? 'Clears the legacy cap on this bill; this cannot be undone.' : 'Sets a monthly cap on this bill; Undo restores the old cap.', key: 'p', risk: 'undo', executes: true, primary: () => true,

@@ -1,4 +1,6 @@
-// Review (sd:3709): the labelling queue. It loads before shell.js, which reads PAGE_LIST and PAGE_KEYS from it.
+// Review (sd:3709): the labelling queue. It loads before shell.js, which reads PAGE_VIEWS, PAGE_LIST and PAGE_KEYS from it.
+// Views (sd:5497): Questions is decisions.js on this page's Questions table; Bulk scoring is this file's queue. 1-9 and j / k
+// apply while Bulk scoring shows.
 // Rows: /api/review (review_screen.document): one lamp per open batch, one ledger row per question, nightly suggestions
 // first. A row carries its question (sd:5123): the first line and its subject and evidence, the options as numbered buttons,
 // and the whole question folded in place. No Details pane: the shell's pane opens only for Chat. One click on an option
@@ -8,6 +10,10 @@
 // a label (a skip); Enter opens or folds the selected question; u is the shell's Undo while the label's toast shows (10 s);
 // n is the shell's capture, which files a comment "On note #N: ..." on the batch; Esc clears the batch filter and Show
 // reviewed; ? lists the keys. No other digit is bound.
+// Bulk (sd:5497): the rows band by batch, one fold each (the shell's table grammar). A checkbox on each open row, one on each
+// band and Select all / Clear in the bar pick rows; the bar labels every picked row with an option they all offer, or each
+// with its own recommendation. Each is the row's write, one per question in ledger order; one toast names the rows that did
+// not land, each row says why, and those rows stay picked. Undo withdraws every label that landed.
 // Writes run one at a time, each with the batch revision the last write returned, so ten quick digits are ten labels.
 // A refused write puts its question back; a stale one (409) rereads and keeps the place; a write with no answer is unknown
 // and rereads. Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way in.
@@ -24,6 +30,8 @@
   let DOC = null, FAILED = '', READ = null, sel = null, batch = null, labelled = 0, REVIEWED = false;
   let B = new Map(), Q = [];
   const PENDING = new Map(), SKIPPED = new Set(), OPENED = new Set();
+  // PICKED holds the checked open questions; REFUSED a bulk label's refusal by note, shown on its row until the next try.
+  const PICKED = new Set(), REFUSED = new Map();
   let chain = Promise.resolve();
   const queue = f => (chain = chain.catch(() => {}).then(f));
 
@@ -33,6 +41,12 @@
   const find = note => Q.find(q => q.note === note);
   const firstLine = t => String(t || '').split('\n')[0];
   const clock = d => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' });
+
+  window.PAGE_VIEWS = [{ id: 'questions', label: 'Questions' }, { id: 'bulk', label: 'Bulk scoring', key: 'b' }];
+  // The queue's keys apply only while it shows; a page without views (a stand-in) has it always.
+  const onBulk = () => (window.shell?.view?.current?.() ?? 'bulk') === 'bulk';
+  // decisions.js tells how many questions wait; the Questions segment shows the count.
+  document.addEventListener('today:decisions', e => window.shell?.view?.count?.('questions', e.detail));
 
   // ---------- Draw ----------
   function lamps() {
@@ -60,6 +74,8 @@
     // The rail's rule is the read's (sd:3446, review_screen.document); this page keeps it current as its labels land.
     window.PAGE_ATTENTION = { state: open > 0 ? 'caution' : 'ok', n: Math.max(0, open), what: 'questions open' };
     window.shell?.attention?.();
+    window.shell?.view?.count?.('bulk', DOC ? Math.max(0, open) : null);
+    bar();
   }
 
   // The batch header, open while a lamp filters the ledger: the batch's own actions, none waiting on a selected question.
@@ -74,6 +90,9 @@
 
   // A Kev file's proposal is an evidence line (sd:4789); its digit is the accept. A blind batch shows none.
   const proposal = (q, blind) => blind ? null : ((q.evidence || []).find(e => e.startsWith('Proposed label: ')) || '').slice(16) || null;
+  const blindOf = q => ['blind', 'sealed'].includes((B.get(q.item) || {}).mode);
+  // The recommendation a bulk accept takes: the proposal, when the question offers it.
+  const recOf = q => { const p = proposal(q, blindOf(q)); return p && q.options.includes(p) ? p : null; };
 
   // One row per question: the first line and one line of context (subject, evidence) under it, then on one line the options
   // or the choice made and the whole question, folded in place (Enter, or its summary, opens it).
@@ -86,25 +105,38 @@
       : label ? html`<td class="g g-ok" title="labelled">${G.ok}<span class="sr"> labelled</span></td>`
       : html`<td class="g g-queued" title="expired">${G.queued}<span class="sr"> expired</span></td>`;
     const choose = open
-      ? html`<div class="opts" role="group" aria-label="${`Label note ${q.note}`}">${q.options.map((o, i) => html`<button type="button" class="btn quiet sm opt" data-note="${q.note}" data-i="${i}" aria-keyshortcuts="${i + 1}"><kbd>${i + 1}</kbd><span>${o}</span>${o === proposed ? html`<span class="tag">proposed</span>` : ''}</button>`)}</div>`
+      ? html`<div class="opts" role="group" aria-label="${`Label note ${q.note}`}">${q.options.map((o, i) => html`<button type="button" class="btn quiet sm opt" data-note="${q.note}" data-i="${i}" aria-keyshortcuts="${i + 1}"><kbd>${i + 1}</kbd><span>${o}</span>${o === proposed ? html`<span class="tag">recommended</span>` : ''}</button>`)}</div>`
       : html`<p class="chose">${label ? html`${PENDING.has(q.note) ? 'Labelling' : 'Labelled'} <b>${label}</b>` : 'Expired with no label'}${!PENDING.has(q.note) && q.ruling
         ? html` · <button class="linkbtn" type="button" data-withdraw="${q.note}">Withdraw label</button>` : ''}</p>`;
+    // sd:5497: the recommendation in words on every open row of a batch that shows its evidence.
+    const rec = !open || blind ? '' : proposed ? html`<p class="rec">Recommended: <b>${proposed}</b></p>` : html`<p class="rec none">No recommendation</p>`;
+    const pick = open ? html`<td class="pk"><label class="pickl"><input type="checkbox" data-pick="${q.note}" aria-label="${`Select note ${q.note}`}"${PICKED.has(q.note) ? html` checked` : ''}></label></td>` : html`<td class="pk"></td>`;
     return html`<tr data-id="${rowId(q.note)}"${open ? '' : html` data-reviewed=""`} aria-selected="${String(sel === q.note)}">
-      ${state}
-      <td class="what"><p class="ask">${firstLine(q.text)}</p>${q.subject || context.length ? html`<p class="ctx">${q.subject ? html`<span class="subject">${q.subject}</span>` : ''}${context.map((e, i) => html`${i || q.subject ? ' · ' : ''}${e}`)}</p>` : ''}
+      ${pick}${state}
+      <td class="what"><p class="ask">${firstLine(q.text)}</p>${q.subject || context.length ? html`<p class="ctx">${q.subject ? html`<span class="subject">${q.subject}</span>` : ''}${context.map((e, i) => html`${i || q.subject ? ' · ' : ''}${e}`)}</p>` : ''}${rec}${REFUSED.has(q.note) && open
+        ? html`<p class="refused" role="alert">Not labelled: ${REFUSED.get(q.note)}</p>` : ''}
         <div class="pick">${choose}
         <details class="more"${OPENED.has(q.note) ? html` open` : ''}><summary>Whole question</summary><p class="full">${q.text}</p>${blind
           ? html`<p class="why">A ${b.mode} batch: its subject and evidence stay hidden until it is exported.</p>` : ''}<dl>${q.subject ? html`<dt>Subject</dt><dd>${q.subject}</dd>` : ''}${(q.evidence || []).map(e => html`<dt>Evidence</dt><dd>${e}</dd>`)}
           <dt>Note</dt><dd>#${q.note} · <a href="${window.shell.itemHref(q.item)}">sd:${q.item}</a></dd><dt>Queue</dt><dd>${b.queue || '—'} · ${b.mode || '—'}</dd><dt>Source</dt><dd>${b.source || '—'}</dd></dl></details></div></td>
-      <td class="b">${b.title || `sd:${q.item}`}${b.nightly ? html`<span class="tag">nightly</span>` : ''}</td>
       <td class="at"><time class="rel" datetime="${q.asked}"></time></td></tr>`;
+  }
+
+  // sd:5497: one band per batch, the shell's fold (data-band keys it, so a moving count keeps it shut). Its checkbox picks
+  // every open question of the batch and stays out of the fold button (data-tkeep); a band partly picked reads as mixed.
+  function band(b, list) {
+    const open = list.filter(isOpen), on = open.filter(q => PICKED.has(q.note)).length, name = b.title || `sd:${b.item}`;
+    const state = open.length && on === open.length ? html` checked` : on ? html` data-mixed=""` : '';
+    return html`<tr class="band" data-band="${`b${b.item}`}"><td colspan="4">${name}${b.nightly ? html`<span class="tag">nightly</span>` : ''}<span class="n">${open.length} open · sd:${b.item}</span>${open.length
+      ? html`<label class="bandpick" data-tkeep=""><input type="checkbox" data-band-pick="${b.item}" aria-label="${`Select every open question in ${name}`}"${state}><span>Select batch</span></label>` : ''}</td></tr>`;
   }
 
   // A redraw replaces the buttons: focus on one comes back to the same button, else to the selected row's first option.
   function refocus(tb, was) {
     if (!was) return;
     const d = was.dataset || {}, same = d.i !== undefined ? `button[data-note="${d.note}"][data-i="${d.i}"]`
-      : d.withdraw ? `button[data-withdraw="${d.withdraw}"]` : null;
+      : d.withdraw ? `button[data-withdraw="${d.withdraw}"]` : d.pick ? `input[data-pick="${d.pick}"]`
+      : d.bandPick ? `input[data-band-pick="${d.bandPick}"]` : null;
     (same && tb.querySelector(same) || tb.querySelector(`tr[data-id="${rowId(sel)}"] .opt`))?.focus({ preventScroll: true });
   }
 
@@ -112,9 +144,28 @@
     const tb = $('rows'), list = shown(), was = tb.contains?.(document.activeElement) ? document.activeElement : null;
     if (!DOC) return put(tb, html`<tr class="empty"><td colspan="4"><span class="g-unknown" aria-hidden="true">${G.unknown}</span> Not read: ${FAILED}. Read again retries it.</td></tr>`);
     const hidden = REVIEWED ? 0 : Q.filter(q => inBatch(q) && !isOpen(q)).length;
-    put(tb, html`${list.map(row)}${list.some(isOpen) ? '' : html`<tr class="empty"><td colspan="4">${batch === null ? 'No question is open. A batch filed with sd-db review file appears here.' : 'No question is open in this batch.'}${hidden
+    const by = new Map();
+    list.forEach(q => { if (!by.has(q.item)) by.set(q.item, []); by.get(q.item).push(q); });
+    put(tb, html`${[...by].map(([item, qs]) => html`${band(B.get(item) || { item }, qs)}${qs.map(row)}`)}${list.some(isOpen) ? '' : html`<tr class="empty"><td colspan="4">${batch === null ? 'No question is open. A batch filed with sd-db review file appears here.' : 'No question is open in this batch.'}${hidden
       ? ` ${plural(hidden, 'reviewed question')} hidden: Show reviewed lists them.` : ''}</td></tr>`}`);
+    tb.querySelectorAll('input[data-mixed]').forEach(box => { box.indeterminate = true; });
     refocus(tb, was);
+  }
+
+  // The bar over the table: how many are picked, Select all and Clear, and the labels for the picked rows: each option every
+  // picked question offers, and Accept recommendation for those that carry one.
+  const picked = () => Q.filter(q => PICKED.has(q.note) && isOpen(q));
+  function bar() {
+    const el = $('bulk'); if (!el) return;
+    const list = picked(), open = shown().filter(isOpen).length;
+    const common = list.length ? list[0].options.filter(o => list.every(q => q.options.includes(o))) : [];
+    const recs = list.filter(recOf).length, off = !DOC;
+    put(el, html`<span class="count"><b>${list.length}</b> selected</span>
+      <button class="btn quiet sm" type="button" id="select-all"${off || !open ? html` disabled` : ''}>Select all <span class="n">${open}</span></button>
+      <button class="btn quiet sm" type="button" id="clear-sel"${list.length ? '' : html` disabled`}>Clear</button>${list.length ? html`
+      <span class="as">Label selected as</span>${common.length ? common.map(o => html`<button class="btn sm" type="button" data-bulk-option="${o}">${o}</button>`)
+        : html`<span class="why">No option common to the selection</span>`}
+      <button class="btn quiet sm" type="button" id="accept-rec"${recs ? '' : html` disabled`}>Accept recommendation <span class="n">${recs}</span></button>` : ''}`);
   }
 
   function draw() { lamps(); rows(); progress(); }
@@ -162,6 +213,8 @@
     writeUrl(); draw(); first();
   }
 
+  function pickAll(list, on) { list.filter(isOpen).forEach(q => on ? PICKED.add(q.note) : PICKED.delete(q.note)); rows(); progress(); }
+
   // ---------- Read ----------
   async function load() {
     // The shell's stale-response guard (shell.shown): only the newest read applies its answer.
@@ -182,11 +235,24 @@
     const at = new Map(doc.batches.map((b, i) => [b.item, i]));
     Q = doc.questions.concat(doc.reviewed || []).sort((x, y) => at.get(x.item) - at.get(y.item) || x.note - y.note);
     if (batch !== null && !B.has(batch)) batch = null;
+    // A pick or a refusal outlives a read only while its question is still open.
+    [...PICKED].forEach(n => { const q = find(n); if (!q || !isOpen(q)) PICKED.delete(n); });
+    [...REFUSED.keys()].forEach(n => { const q = find(n); if (!q || !isOpen(q)) REFUSED.delete(n); });
     window.shell.state(doc.batches.length ? null : { kind: 'empty', text: 'No batch is open. A batch filed with sd-db review file appears here.', source: '/api/review' });
     draw(); first();
   }
 
   // ---------- Write ----------
+  // The one label write, a row's or the bar's: under the batch revision the last write returned, which it then carries on.
+  async function rule(q, option) {
+    const b = B.get(q.item);
+    const out = await window.shell.post('/api/review/rule', { item: q.item, note: q.note, option, revision: b ? b.revision : '' });
+    PENDING.delete(q.note); REFUSED.delete(q.note); PICKED.delete(q.note);
+    if (b) { b.revision = out.revision; b.open -= 1; b.labels += 1; }
+    Object.assign(q, { open: false, label: option, ruling: out.ruling }); labelled += 1;
+    return out;
+  }
+
   function label(note, i, focus) {
     const q = find(note);
     if (!q || !isOpen(q) || !(i in q.options)) return;
@@ -195,12 +261,8 @@
     SKIPPED.delete(note);
     sel = null; draw(); select(next); reveal(next, focus);
     return queue(async () => {
-      const b = B.get(q.item);
       try {
-        const out = await window.shell.post('/api/review/rule', { item: q.item, note, option, revision: b ? b.revision : '' });
-        PENDING.delete(note);
-        if (b) { b.revision = out.revision; b.open -= 1; b.labels += 1; }
-        Object.assign(q, { open: false, label: option, ruling: out.ruling }); labelled += 1;
+        const out = await rule(q, option);
         draw();
         window.shell.toast(`Labelled note #${note}: ${option}`, () => undo(q, out.ruling));
       } catch (e) {
@@ -228,6 +290,51 @@
         window.shell.toast(`Not undone · note #${q.note}: ${e.message}`);
         if (e.stale || !e.status) await load();
       }
+    });
+  }
+
+  // The bar's label: every picked open question in ledger order, each with chosen(q) or skipped when that is null. Each is
+  // the row's write in turn. A batch that answers stale (409) or not at all gets no more writes this run, since its
+  // revision is no longer known; the page then reads again. One toast names each row that did not land, and its Undo
+  // withdraws every label that did.
+  function bulk(chosen, how) {
+    const list = picked(), plan = list.map(q => [q, chosen(q)]).filter(([, o]) => o != null), left = list.length - plan.length;
+    if (!plan.length) return;
+    plan.forEach(([q, o]) => { PENDING.set(q.note, o); SKIPPED.delete(q.note); REFUSED.delete(q.note); });
+    if (sel !== null && PENDING.has(sel)) { const next = neighbour(sel); sel = null; draw(); select(next); } else draw();
+    const lost = new Map(), landed = [], failed = [];
+    let reread = false;
+    return Promise.all(plan.map(([q, o]) => queue(async () => {
+      if (lost.has(q.item)) { PENDING.delete(q.note); failed.push([q, lost.get(q.item)]); return; }
+      try { landed.push([q, (await rule(q, o)).ruling]); } catch (e) {
+        PENDING.delete(q.note);
+        const why = e.stale ? 'the batch changed; read again' : !e.status ? `no answer, so not known: ${e.message}` : e.message;
+        if (e.stale || !e.status) { lost.set(q.item, e.stale ? 'not sent: the batch changed' : 'not sent: an earlier label got no answer'); reread = true; }
+        failed.push([q, why]);
+      }
+    }))).then(async () => {
+      failed.forEach(([q, why]) => REFUSED.set(q.note, why));
+      draw();
+      const not = failed.length ? ` · not labelled: ${failed.map(([q, why]) => `note #${q.note} (${why})`).join(', ')}` : '';
+      const rest = left ? ` · ${left} with no recommendation stay selected` : '';
+      window.shell.toast(`Labelled ${landed.length} of ${plan.length} as ${how}${not}${rest}`, landed.length ? () => undoAll(landed) : null);
+      if (reread) await load();
+    });
+  }
+
+  // A bulk label's Undo: each landed label withdrawn in turn, then one read; one toast names what was not withdrawn.
+  function undoAll(landed) {
+    const not = [];
+    return Promise.all(landed.map(([q, ruling]) => queue(async () => {
+      const b = B.get(q.item);
+      try {
+        const out = await window.shell.post('/api/review/withdraw', { item: q.item, ruling, revision: b ? b.revision : '' });
+        if (b && out.revision) b.revision = out.revision;
+        if (labelled > 0) labelled -= 1;
+      } catch (e) { not.push(`note #${q.note} (${e.message})`); }
+    }))).then(async () => {
+      await load();
+      window.shell.toast(`Withdrew ${landed.length - not.length} of ${landed.length} labels${not.length ? ` · not withdrawn: ${not.join(', ')}` : ''}`);
     });
   }
 
@@ -263,13 +370,13 @@
     ['j / k', 'Next / previous question, without a label (a skip)'], ['↵', 'Open or fold the whole question in its row'],
     ['u', 'Undo the last label while its toast shows'], ['n', 'Comment on the selected question'],
     ['Esc', 'Show every batch again and hide reviewed questions']];
-  window.PAGE_LIST = { rows: () => $('rows').querySelectorAll('tr[data-id]'), select: id => select(noteOf(id)),
+  window.PAGE_LIST = { rows: () => $('rows').querySelectorAll('tr[data-id]'), select: id => select(noteOf(id)), when: onBulk,
     current: () => (sel === null ? null : rowId(sel)), clear: () => (batch !== null || REVIEWED) && (filter(null, false), true) };
 
   document.addEventListener('keydown', e => {
     if (!/^[1-9]$/.test(e.key) || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target?.matches?.('input, textarea, select, [contenteditable]') || document.querySelector('dialog[open]')) return;
-    if (window.shell?.chording?.() || sel === null) return;
+    if (window.shell?.chording?.() || sel === null || !onBulk()) return;
     e.preventDefault();
     label(sel, +e.key - 1);
   });
@@ -290,6 +397,21 @@
       const note = noteOf(tr.dataset.id);
       if (s) OPENED.has(note) ? OPENED.delete(note) : OPENED.add(note);
       if (note !== sel) select(note);
+    });
+    // A row's checkbox picks its question; a band's picks every open question of its batch.
+    $('rows').addEventListener('change', e => {
+      const one = e.target.closest('input[data-pick]');
+      if (one) { const n = +one.dataset.pick; one.checked ? PICKED.add(n) : PICKED.delete(n); rows(); return void progress(); }
+      const all = e.target.closest('input[data-band-pick]');
+      if (all) pickAll(shown().filter(q => q.item === +all.dataset.bandPick), all.checked);
+    });
+    $('bulk').addEventListener('click', e => {
+      const b = e.target.closest('button[data-bulk-option]');
+      if (b && !b.disabled) return void bulk(q => q.options.includes(b.dataset.bulkOption) ? b.dataset.bulkOption : null, b.dataset.bulkOption);
+      const a = e.target.closest('#accept-rec');
+      if (a && !a.disabled) return void bulk(recOf, 'recommended');
+      if (e.target.closest('#select-all')) return void pickAll(shown(), true);
+      if (e.target.closest('#clear-sel')) { PICKED.clear(); rows(); progress(); }
     });
     $('annunciator').addEventListener('click', e => { const c = e.target.closest('button[data-batch]'); if (c) filter(batch === +c.dataset.batch ? null : +c.dataset.batch); });
     $('tally').addEventListener('click', e => {

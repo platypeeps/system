@@ -105,7 +105,10 @@ class ServicesActions(BrowserSession):
         self.assertNotIn('action="/api/services/com.example.scheduled/', page)
         for secret in ("SECRET", "HIDDEN", "--secret", "ProgramArguments"):
             self.assertNotIn(secret, page)
-        self.assertIn('name="area" value="services"', page)
+        # sd:5539: the shell's bar sets ?q= on the address, which keeps area=services; no Filter form of the list's own.
+        self.assertIn('data-listing="services" data-listing-q="q"', page)
+        self.assertIn('<div class="toolbar" id="toolbar" data-shift></div>', page)
+        self.assertNotIn('role="search"', page)
         self.assertNotIn("Age in status", page)
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.actions(), [])

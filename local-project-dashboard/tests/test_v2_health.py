@@ -399,6 +399,21 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual([(row["id"], row["state"]) for row in worse["rows"]], [("dep:/checkouts/alpha", "warning")])
         self.assertEqual(worse["snoozed"], [])
 
+    def test_an_ignored_row_stays_out_at_any_time_until_its_problem_changes(self):
+        """sd:5470: Ignore is a snooze with no end. It still binds to the problem: a worse one shows again."""
+        def alerts(severity, now=NOW):
+            found = [{**PROTECTION[0], "managed": True, "observed_at": NOW,
+                      "alerts": {"dependabot": {"open": sum(severity.values()), "severity": severity}}}]
+            return health_screen.document(self.connection, now=now, fleet=fleet_of(TREES), ports=ports_snapshot,
+                                          protection=lambda connection: found)
+        snooze(self.connection, "health:dep:/checkouts/alpha", writes.SNOOZE_FOREVER,
+               seen=self.seen("dep:/checkouts/alpha", alerts({"low": 1})), now=NOW)
+        a_year_on = alerts({"low": 1}, now="2027-09-06T12:00:00Z")["areas"][4]
+        self.assertEqual([(row["id"], row["until"]) for row in a_year_on["snoozed"]], [("dep:/checkouts/alpha", "forever")])
+        self.assertNotIn("dep:/checkouts/alpha", [row["id"] for row in a_year_on["rows"]])
+        worse = alerts({"low": 1, "critical": 1})["areas"][4]
+        self.assertEqual(([row["id"] for row in worse["rows"]], worse["snoozed"]), (["dep:/checkouts/alpha"], []))
+
     def test_a_snooze_read_that_fails_shows_every_row_and_says_why(self):
         snooze(self.connection, "health:gone:group/alpha", "2026-09-06T15:00:00Z", seen=self.seen("gone:group/alpha"), now=NOW)
         with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
@@ -1372,6 +1387,7 @@ class ThePage(Collectors, BrowserSession):
 
 # Extras the Health script reads from the shell that the Tasks stand-in does not carry.
 HEALTH_SHELL = r"""
+delete window.shell.view; // the Tasks stand-in's stub; VIEW_SHELL below brings the switch health.js meets
 window.shell.shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
 window.shell.row = () => null;
 window.shell.url = q => { OUT.url = String(q && q.toString ? q.toString() : q); };
@@ -1474,7 +1490,9 @@ class TheScript(Collectors, ScreenCase):
             ["secret scanning.review", "secret scanning", "safe", "o", False, False],
             ["credential.probe", "credential", "safe", "r", False, False],
         ] + [[f"{t}.snooze", t, "undo", "z", None, True] for t in SNOOZED_TYPES]
-          + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True]])
+          + [[f"{t}.ignore", t, "undo", "h", None, True] for t in SNOOZED_TYPES]
+          + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True],
+             ["ignored row.unignore", "ignored row", "undo", "s", None, True]])
 
     def test_an_area_with_no_reader_is_an_unknown_lamp_that_names_what_it_does_not_read(self):
         doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot, protection=protection_of(PROTECTION))
@@ -1548,8 +1566,9 @@ R.areas = BODY().html; R.lamps = ELS.annunciator.html;""")
         self.assertIn("not read", out["R"]["lamps"])
 
     def test_the_filter_finds_a_row_by_a_path_in_its_facts_or_its_list(self):
-        # The box says "repo, path, branch": a registered worktree's path is in `list`, the checkout's in `facts`.
-        out = self.run_page("""const filter = v => { ELS.q.value = v; ELS.q.listeners.input[0](); return BODY().html; };
+        # The shell's Shapeshift bar sends its text as shell:filter (sd:5539): a registered worktree's path is in `list`, the
+        # checkout's in `facts`.
+        out = self.run_page("""const filter = v => { document.dispatchEvent(new CustomEvent('shell:filter', { detail: { q: v, view: 'checkouts' } })); return BODY().html; };
 R.list = filter('/work/wt-b'); R.facts = filter('/checkouts/group/alpha'); R.none = filter('/work/nowhere');""")
         self.assertIn('data-id="gone:group/alpha"', out["R"]["list"], "a path in the row's list did not match")
         self.assertIn('data-id="gone:group/alpha"', out["R"]["facts"], "a path in the row's facts did not match")
@@ -1602,10 +1621,28 @@ R.observed = document.body.dataset.observed;""")
                             + "R.unknown = BODY().html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
-        self.assertIn("Filtered to Credentials only: 1 of 3 rows.", out["R"]["note"])
+        # sd:5504: Activity's bar (shell.list.fbar): the lamp's area is a token, Clear all ends the bar, and the bar holds no
+        # count; an area's title line counts its rows only while a filter hides some (sd:5281). No note line repeats the filter.
+        bar = re.search(r'<div class="fbar".*?<div class="fsum">.*?</div></div>', out["R"]["note"], re.S).group(0)
+        self.assertIn('class="tok" data-f="area" data-v="cred"', bar)
+        self.assertTrue(bar.endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'), bar[-160:])
+        self.assertNotRegex(re.sub(r"<[^>]+>", " ", bar), r"\b\d+ of \d+\b")
+        self.assertNotIn(" of ", re.search(r'id="a-cred".*?</p>', cred, re.S).group(0), "the lamp hides no row of its own area")
+        self.assertNotIn("Filtered to", out["R"]["note"])
         self.assertEqual(out["R"]["address"], "/fleet-health#view=jobs")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown), ["cred", "mir"])
         self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown), ["cred:none", "mir", "mir:briefs"])
+
+    def test_an_areas_title_line_counts_its_rows_while_a_filter_hides_some_and_the_bar_holds_no_count(self):
+        """sd:5504: Activity's bar on Health; the count moved from the bar's end to each area's title line (sd:5281)."""
+        out = self.run_page("R.before = BODY().html;"
+                            "PANEL().listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'state', v: 'caution' } } : null } });"
+                            "R.after = BODY().html;")
+        tallies = lambda h: re.findall(r'<p class="tally"><span>(\d+ of \d+ rows?)</span>', h)
+        self.assertEqual(tallies(out["R"]["before"]), [])
+        self.assertEqual(tallies(out["R"]["after"]), ["1 of 2 rows", "1 of 2 rows"], "caution leaves one of each area's two drawn rows")
+        bar = re.search(r'<div class="fbar".*?<div class="fsum">.*?</div></div>', out["R"]["after"], re.S).group(0)
+        self.assertNotRegex(re.sub(r"<[^>]+>", " ", bar), r"\b\d+ of \d+\b", "the bar holds no count")
 
     def test_a_second_lamp_adds_its_area_and_pressing_one_again_takes_it_out(self):
         click = "ELS.annunciator.listeners.click[0]({{ target: {{ closest: s => s === 'button.cell' ? {{ id: '', dataset: {{ area: '{a}' }} }} : null }} }});"
@@ -1621,7 +1658,7 @@ R.observed = document.body.dataset.observed;""")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["wt"]), ["wt"])
         self.assertIn('data-id="gone:group/alpha"', out["R"]["wt"], "a lamp press drew no row of its area")
         self.assertIn('data-id="unread:beta"', out["R"]["wt"])
-        self.assertIn("Filtered to Worktrees only: ", out["R"]["note"])
+        self.assertIn('data-fclear>Clear all</button>', out["R"]["note"])
 
     def test_ports_show_the_counts_line_and_warnings_and_protection_has_no_lamp(self):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = BODY().html; R.lsof = cmd('port.inspect').cli(C.get('port:svc-a:9010'));",
@@ -1824,6 +1861,46 @@ shellRun(cmd('snoozed row.unsnooze'), o); await flush(); OUT.toasts[OUT.toasts.l
                          [{"page": "health", "row": "gone:group/alpha", "until": None, "seen": seen},
                           {"page": "health", "row": "gone:group/alpha", "until": "2026-09-07T08:00:00+00:00", "seen": seen}])
         self.assertEqual(out["toasts"][-2][0], "Shows again · group/alpha: 2 worktrees registered, directory gone")
+
+    def test_ignore_posts_a_snooze_with_no_end_and_undo_clears_it(self):
+        """sd:5470: Ignore is the snooze write with `forever`, beside Snooze; the row's fingerprint goes with it."""
+        out = self.run_page("""ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : [200, { key: 'k', until: body.until }];
+var o = C.get('gone:group/alpha'); shellRun(cmd('worktree registrations.ignore'), o); await flush();
+OUT.toasts[OUT.toasts.length - 1].undo(); await flush(); R.seen = o.seen;""")
+        row = {"page": "health", "row": "gone:group/alpha", "seen": out["R"]["seen"]}
+        self.assertEqual([body for _, body, _ in out["posts"]], [{**row, "until": "forever"}, {**row, "until": None}])
+        self.assertEqual(out["toasts"][-2], ["Ignored until it changes · group/alpha: 2 worktrees registered, directory gone", True])
+        self.assertEqual(out["toasts"][-1][0], "Ignore undone · group/alpha: 2 worktrees registered, directory gone")
+
+    def test_show_ignored_lists_the_ignored_rows_instead_and_unignore_brings_one_back(self):
+        """sd:5470: an ignored row leaves its area and the Snoozed list; the Show chip "ignored" lists it, with Unignore."""
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
+                                     protection=protection_of(PROTECTION))
+        seen = {row["id"]: row["seen"] for row in doc["areas"][2]["rows"]}
+        snooze(self.connection, "health:gone:group/alpha", writes.SNOOZE_FOREVER, seen=seen["gone:group/alpha"], now=NOW)
+        snooze(self.connection, "health:unread:beta", "2026-09-07T08:00:00Z", seen=seen["unread:beta"], now=NOW)
+        out = self.run_page("""ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : [200, { key: 'k', until: body.until }];
+R.snoozed = ELS.snoozed.html; R.findings = BODY().html;
+PANEL().listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'show', v: 'ignored' } } : null } });
+R.ignored = BODY().html; var o = C.get('ignored:gone:group/alpha'); R.type = o.type;
+shellRun(cmd('ignored row.unignore'), o); await flush(); OUT.toasts[OUT.toasts.length - 1].undo(); await flush();
+window.snooze.draw(ELS.snoozed, [{ id: 'x', what: 'today row', until: 'forever', seen: 's' }]); R.today = ELS.snoozed.html;""")
+        alpha = "group/alpha: 2 worktrees registered, directory gone"
+        self.assertIn("Snoozed · 1", out["R"]["snoozed"])
+        self.assertNotIn(alpha, out["R"]["snoozed"])
+        self.assertNotIn(alpha, out["R"]["findings"])
+        self.assertRegex(out["R"]["findings"], r'data-f="show" data-v="ignored" aria-pressed="false">ignored <span class="n">1</span>')
+        self.assertIn(alpha, out["R"]["ignored"])
+        self.assertIn('data-f="show" data-v="ignored" aria-pressed="true"', out["R"]["ignored"])
+        self.assertNotIn("data-id=", out["R"]["ignored"], "the areas' rows are not drawn beside the ignored ones")
+        self.assertEqual(out["R"]["type"], "ignored row")
+        self.assertEqual([body for _, body, _ in out["posts"]],
+                         [{"page": "health", "row": "gone:group/alpha", "until": None, "seen": seen["gone:group/alpha"]},
+                          {"page": "health", "row": "gone:group/alpha", "until": "forever", "seen": seen["gone:group/alpha"]}])
+        self.assertEqual(out["toasts"][-2][0], f"Shows again · {alpha}")
+        # Today shares the list: a snooze with no end there reads as ignored, not as a time.
+        self.assertIn("ignored until it changes", out["R"]["today"])
+        self.assertNotIn("Invalid", out["R"]["today"])
 
     def test_a_snooze_read_that_failed_is_a_partial_read(self):
         with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
@@ -2038,14 +2115,14 @@ R.cur = window.shell.view.current();""", doc)
 
     def test_show_findings_hides_the_ok_rows_and_says_so_and_show_all_lists_them(self):
         out = self.run_page("""R.findings = BODY().html; R.filters = BODY().html;
-PANEL().listeners.click[0]({ target: { closest: s => s === '[data-show]' ? { dataset: { show: 'all' } } : null } });
+PANEL().listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'show', v: 'all' } } : null } });
 R.all = BODY().html;""", view="machine")
         findings, every = out["R"]["findings"], out["R"]["all"]
         ok = [i for i in re.findall(r'data-id="([^"]+)"', every) if i not in re.findall(r'data-id="([^"]+)"', findings)]
         self.assertTrue(ok)
         self.assertRegex(findings, r'<p class="quiet">[^<]*\d+ ok or queued rows? not shown: Show all lists')
         self.assertNotIn('class="quiet"', every)
-        self.assertIn('data-show="findings" aria-pressed="true"', out["R"]["filters"])
+        self.assertIn('data-f="show" data-v="findings" aria-pressed="true"', out["R"]["filters"])
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
         self.assertNotIn("innerHTML", HEALTH_JS)

@@ -1111,7 +1111,10 @@ R.det = ELS.adv.html;""")
         self.assertIn('<span class="host">lane on hub</span>', lanes)
         self.assertNotIn('aria-labelledby="lane-quiet"', lanes)
         self.assertIn('<p class="idle">Idle: <code>quiet</code> (lane on build-2)</p>', lanes)
-        self.assertIn("2 lanes of 2 managed repositories", out["R"]["subhead"])
+        # sd:5524: the Lanes tab carries the lane count; the line under the title counts the managed repositories.
+        self.assertIn("2 managed repositories · read", out["R"]["subhead"])
+        self.assertNotIn("lanes of", out["R"]["subhead"])
+        self.assertEqual(out["counts"], {"lanes": 2})
 
     def test_only_next_rows_carry_controls_and_the_ends_are_off(self):
         lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]

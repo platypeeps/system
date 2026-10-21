@@ -56,6 +56,28 @@ class BrowserSession(ScreenCase):
     def snapshot(self):
         return tuple(self.connection.iterdump())
 
+    def unjournalled(self):
+        """The snapshot less the execution journal's holder item and the records on it (sd:5541): what a command that
+        failed in the POST leaves of its own."""
+        from sd_dashboard import command_journal
+
+        db = self.connection
+        db.execute("SAVEPOINT unjournalled")
+        try:
+            held = db.execute("SELECT id FROM item WHERE source=? AND external_id=?", command_journal.HOLDER).fetchone()
+            if held:
+                db.execute("DELETE FROM note WHERE item=?", held)
+                db.execute("DELETE FROM item WHERE id=?", held)
+            return tuple(db.iterdump())
+        finally:
+            db.execute("ROLLBACK TO unjournalled")
+            db.execute("RELEASE unjournalled")
+
+    def journalled(self):
+        """The execution journal's records, oldest first, as (command, exit code)."""
+        return [tuple(row) for row in self.connection.execute(
+            "SELECT json_extract(body, '$.command'), exit_code FROM note WHERE kind='exec' ORDER BY id")]
+
 
 class BrowserActions(BrowserSession):
     def test_local_health_reports_actual_schema_without_writing(self):

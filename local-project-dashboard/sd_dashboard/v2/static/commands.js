@@ -36,7 +36,7 @@
   // not found": Retry is not the row's act, and it asks first, naming the exit, so a path fixed outside the dashboard can be
   // tested (sd:3392). run(o) is the page's write; it words the answer with answered().
   function retry({ job, run }) {
-    return { id: 'jobs.retry', on: 'job', label: 'Run now', does: 'Starts the job now; after a failure, this reruns it.', key: 't', risk: 'safe', bulk: true,
+    return { id: 'jobs.retry', on: 'job', label: 'Run now', does: 'Starts the job now; after a failure, this reruns it.', key: 't', icon: 'play', risk: 'safe', bulk: true,
       primary: o => !!job(o).failed && job(o).exit !== 127,
       when: o => { const j = job(o), c = j.capability; return !c ? (j.failed || 'no failed run to retry') : c.allowed || c.reason || 'launchd refuses a retry now'; },
       askFirst: o => job(o).exit === 127,
@@ -60,21 +60,21 @@
   // Print: launchd's whole record of the job, copy only. It is the row's act after exit 127, where Retry is not (sd:3392).
   // `job(o)` names { service, exit }.
   function printJob({ job }) {
-    return { id: 'jobs.print', on: 'job', label: 'Print', does: 'Gives the line that prints launchd\'s full record of the job.', key: 'p', risk: 'safe', executes: false, primary: o => job(o).exit === 127,
+    return { id: 'jobs.print', on: 'job', label: 'Print', does: 'Gives the line that prints launchd\'s full record of the job.', key: 'p', icon: 'terminal', risk: 'safe', executes: false, primary: o => job(o).exit === 127,
       when: o => !!job(o).service || 'the row names no launchd service', cli: o => `launchctl print ${job(o).service}`,
       run: () => 'Copy it into a terminal: the dashboard does not show the whole launchd record' };
   }
 
   // Show assignment: `sd assignments get` prints what the page's Details show, so the line is copy only. run(o) shows it.
   function showAssignment({ primary = () => true, run }) {
-    return { id: 'asg.get', on: 'assignment', label: 'Show assignment', does: 'Shows the assignment\'s record in Details.', key: 'o', risk: 'safe', primary, executes: false,
+    return { id: 'asg.get', on: 'assignment', label: 'Show assignment', does: 'Shows the assignment\'s record in Details.', key: 'o', icon: 'clipboard-list', risk: 'safe', primary, executes: false,
       cli: o => `sd assignments get ${o.n}`, run };
   }
 
   // Open a pull request on GitHub, in a new tab, from a pull request row or a review of one (`on`). `pr(o)` names
   // { repo: 'owner/name', number, url }.
   function openPullRequest({ on = 'pull request', pr, primary = () => true }) {
-    return { id: on === 'pull request' ? 'pr.open' : `${on}.open`, on, label: 'Open on GitHub', does: 'Opens the pull request on GitHub in a new tab.', key: 'o', risk: 'safe', primary,
+    return { id: on === 'pull request' ? 'pr.open' : `${on}.open`, on, label: 'Open on GitHub', does: 'Opens the pull request on GitHub in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary,
       when: o => !!(pr(o).repo && pr(o).number) || 'the row names no pull request',
       cli: o => `gh pr view ${pr(o).number} --repo ${pr(o).repo} --web`,
       run: o => { window.open(pr(o).url || `https://github.com/${pr(o).repo}/pull/${pr(o).number}`, '_blank', 'noopener'); return 'Opened on GitHub in a new tab'; } };
@@ -92,7 +92,7 @@
       const bad = s.error || s.trackers.filter(t => !t.ok && t.configured).map(t => `${t.tracker}: ${t.reason || 'failed'}`)[0];
       if (bad) window.shell.toast(`Shadow sync ended with a problem: ${bad}`);
     }, e => window.shell.toast(`The sync's state was not read: ${e.message}`)), SYNC_POLL);
-    return { id: 'collector.sync', on: 'collector', label: 'Re-run collector', does: 'Runs shadow sync now, for up to 2 minutes, then reads again.', key: 'r', risk: 'safe', primary: () => true,
+    return { id: 'collector.sync', on: 'collector', label: 'Re-run collector', does: 'Runs shadow sync now, for up to 2 minutes, then reads again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', primary: () => true,
       cli: () => 'sd shadow sync --max-seconds 120',
       run: () => window.shell.post('/api/shadow/sync', {}).then(() => { wait(); return `Shadow sync started · ${page} reads again when it ends`; }) };
   }
@@ -155,6 +155,7 @@
   const PUB_WHERE = (ch, url) => { const f = ch === 'obsidian' && /[?&]file=([^&]*)/.exec(url); return f ? decodeURIComponent(f[1]) : url; };
   function published(pub) {
     const { html } = window.markup;
+    if (!pub) return '';
     const copies = (pub && pub.copies) || [], choice = pub && pub.choice, unread = (pub && pub.unread) || '';
     const glyph = ch => html`<svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg>`;
     const mark = (cls, tip) => html`<span class="${cls}" role="img" aria-label="${tip}" title="${tip}">`;
@@ -169,7 +170,8 @@
           : html`${mark(cls, tip)}${glyph(ch)}</span>`;
       }
       const on = choice ? choice[ch] : false;
-      if (on === false || on === undefined) return '';
+      // sd:5485: every destination shows; one that is not this row's is dim, so the active ones stand out.
+      if (on === false || on === undefined) return html`${mark(`pub-${ch} off`, `${PUB_NAME[ch]}: not a destination`)}${glyph(ch)}</span>`;
       // A designated destination with no copy is missing only when every read behind it answered.
       const why = on === true ? unread : unread || choice.why || 'the channels setting was not read';
       if (why) said = true;
@@ -183,8 +185,11 @@
   // Publish to and Publish now (sd:5102), for a research document on Documents and a routine brief on Briefs. `on` is the
   // row's noun; `base` the page's API (`/api/documents`, `/api/briefs`); `payload(o)` what names the row; `cli(o, channel)`
   // the line by hand; `reread()` the page's reread. Publish to ticks one destination: POST <base>/publish adds its designation
-  // (research.conf.py for a document, the item's fields.publish for a brief) and queues it through the pack. Unticking is
-  // refused: the designation may hold the id a drain wrote. Obsidian is the repo's channels setting (Management > Publishing).
+  // (research.conf.py for a document, the item's fields.publish for a brief) and queues it through the pack. Unticking
+  // (Remove copy, sd:5489) posts <base>/unpublish: the pack queues the copy for the trash, then the designation goes; it
+  // asks first, and Undo ticks it again. A document's Obsidian box (sd:5500) writes its vault copy at once and its untick moves
+  // the copy into the vault's .trash; where pub.choice.repo_wide names why (a brief, or the vault's own repository) Obsidian
+  // is the repo's channels setting (Management > Publishing) and the box only says so.
   // Publish now posts <base>/publish-now, which starts one headless drain of the row's queued requests (publish_drain.py); the
   // page reads <base>/publish-now/<id> every 10 s until it settles, fires 'publish:run' so Details draws again, then rereads.
   const PUB_NAME = { drive: 'Google Drive', notion: 'Notion', obsidian: 'Obsidian' };
@@ -204,14 +209,29 @@
   function publishCommands(on, { base, payload, cli, reread }) {
     return [
       { id: `${on}.publish`, on: `${on} destination`, label: 'Publish to', does: 'Designates the destination and queues the copy; Publish now drains it.', icon: 'send', risk: 'safe', askFirst: true, executes: true,
-        when: o => o.channel === 'obsidian' ? 'Obsidian is the repo\'s channels setting: change it under Management > Publishing'
-          : o.set ? `already designated for ${o.name}; remove the designation by hand` : o.why || true,
+        when: o => o.channel === 'obsidian' && o.repoWide ? o.repoWide
+          : o.set ? `already designated for ${o.name}; untick it to remove the copy` : o.why || true,
         cli: o => cli(o.row, o.channel),
         sends: o => `POST ${base}/publish ${JSON.stringify({ ...payload(o.row), channel: o.channel })}`,
-        consequence: o => `Designates ${o.row.label} for ${o.name} and queues it. Nothing leaves the machine until Publish now or a drain by hand.`,
+        consequence: o => o.channel === 'obsidian' ? `Designates ${o.row.label} for Obsidian and writes its Markdown into the vault now. Nothing leaves the machine.`
+          : `Designates ${o.row.label} for ${o.name} and queues it. Nothing leaves the machine until Publish now or a drain by hand.`,
         run: o => window.shell.post(`${base}/publish`, { ...payload(o.row), channel: o.channel }).then(
-          r => reread().then(() => r.queued ? `Queued for ${o.name} · ${o.row.label}` : `${o.name} designated; not queued: ${(r.lines || []).slice(-1)[0] || 'publish said nothing'}`),
+          r => reread().then(() => r.wrote ? `Written to the vault · ${o.row.label}` : r.queued ? `Queued for ${o.name} · ${o.row.label}`
+            : `${o.name} designated; not ${o.channel === 'obsidian' ? 'written' : 'queued'}: ${(r.lines || []).slice(-1)[0] || 'publish said nothing'}`),
           err => refusal(err, 'it was designated')) },
+      { id: `${on}.unpublish`, on: `${on} destination`, label: 'Remove copy', does: 'Queues the copy for the trash, which can restore it. Undo re-ticks.', icon: 'x', risk: 'undo', askFirst: true, executes: true,
+        when: o => o.channel === 'obsidian' && o.repoWide ? o.repoWide
+          : !o.set ? `not designated for ${o.name}` : o.why || true,
+        cli: () => 'no sd verb: remove the designation by hand, then trash the copy by the publication contract',
+        sends: o => `POST ${base}/unpublish ${JSON.stringify({ ...payload(o.row), channel: o.channel })}`,
+        consequence: o => o.channel === 'obsidian' ? `Drops ${o.row.label}'s Obsidian designation and moves its vault copy into the vault's .trash now, where Obsidian restores it. Undo ticks it again and writes it back.`
+          : `Drops ${o.row.label}'s ${o.name} designation and queues its ${o.name} copy for the trash (${o.channel === 'notion' ? 'Notion\'s Trash' : 'the Drive bin'}), where it can be restored. Nothing leaves the machine until Publish now. Undo ticks it again and republishes.`,
+        run: o => window.shell.post(`${base}/unpublish`, { ...payload(o.row), channel: o.channel }).then(
+          r => reread().then(() => !r.dropped ? `Trash ${r.trash === 'trashed' ? 'done' : 'queued'}, but ${o.name} is still designated: ${(r.lines || []).slice(-1)[0] || 'no reason given'}`
+            : r.trash === 'trashed' ? `${o.name} removed · its vault copy is in the vault's .trash`
+            : r.trash === 'queued' ? `${o.name} removed · its copy is queued for the trash; Publish now drains it` : `${o.name} removed · no copy was queued or delivered`),
+          err => refusal(err, 'the trash was queued')),
+        undo: o => window.shell.post(`${base}/publish`, { ...payload(o.row), channel: o.channel }).then(() => reread()) },
       { id: `${on}.publish-now`, on, label: 'Publish now', does: 'Starts a drain that mirrors the queued copies to Notion or Drive.', icon: 'send', risk: 'safe', askFirst: true, executes: true,
         when: o => !o.pub ? `not a ${on} the dashboard publishes` : (o.pub.copies || []).some(c => c.state === 'queued') || 'nothing is queued: tick Drive or Notion under Publish to first',
         cli: () => 'no sd verb: drain the queue in a Claude session by the publication contract',
@@ -228,14 +248,14 @@
     const c = p.choice;
     const box = ch => {
       const id = `pub:${o.id}:${ch}`, set = c[ch];
-      window.shell.commands.put({ id, type: `${on} destination`, label: `${PUB_NAME[ch]} for ${o.label}`, row: o, channel: ch, name: PUB_NAME[ch], set, why: c.why });
-      return html`<button class="pubbox" type="button" role="checkbox" aria-checked="${set == null ? 'mixed' : String(!!set)}" data-cmd="${on}.publish" data-obj="${id}"><svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg><span>${PUB_NAME[ch]}</span></button>`;
+      window.shell.commands.put({ id, type: `${on} destination`, label: `${PUB_NAME[ch]} for ${o.label}`, row: o, channel: ch, name: PUB_NAME[ch], set, why: c.why, repoWide: c.repo_wide || '' });
+      return html`<button class="pubbox" type="button" role="checkbox" aria-checked="${set == null ? 'mixed' : String(!!set)}" data-cmd="${on}.${set ? 'unpublish' : 'publish'}" data-obj="${id}"><svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg><span>${PUB_NAME[ch]}</span></button>`;
     };
     const run = DRAINS.get(o.id);
     const state = !run ? '' : run.state === 'done' || run.state === 'failed' ? `Last drain ${run.state}${run.reason ? `: ${run.reason}` : ''}.`
       : `Drain ${run.id} is ${run.state}${run.unread ? `; its state was not read: ${run.unread}` : ''}. This page reads it every 10 s.`;
     return html`<section class="pubpane" aria-live="polite"><h3>Publish to</h3><div class="pubboxes">${['drive', 'notion', 'obsidian'].map(box)}</div>
-      ${c.why ? html`<p class="why">${c.why}</p>` : ''}${c.obsidian == null ? html`<p class="why">Obsidian not known: ${p.unread || 'the channels setting was not read'}.</p>` : ''}
+      ${c.why ? html`<p class="why">${c.why}</p>` : ''}${c.repo_wide ? html`<p class="why">Obsidian: ${c.repo_wide}.</p>` : ''}${c.obsidian == null ? html`<p class="why">Obsidian not known: ${p.unread || 'the channels setting was not read'}.</p>` : ''}
       ${state ? html`<p class="why">${state}</p>` : ''}</section>`;
   }
 

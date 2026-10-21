@@ -60,7 +60,10 @@ deleting it just brought it back. `-a` still scans both.
 
 Third-party checkouts and test fixtures full of sample keys are excluded
 in this mode — the generic defaults are `CRITICAL_EXCLUDE_PATHS` in the
-script. Your own additions (and extra sanctioned secrets globs) go in
+script. Test files and fixture folders under `~/repos` (`tests/`, `fixtures/`,
+`test_*.py`, `*_test.*`) are skipped in this mode too, so a new fake key in a
+test does not fail the weekly run; a real key pasted into one goes unflagged (sd:5493).
+Your own additions (and extra sanctioned secrets globs) go in
 `<config>/scan-for-secrets/scan-for-secrets.conf`, outside the checkout
 (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`): copy
 `scan-for-secrets.conf.example` there and set `S4S_EXTRA_CRITICAL_EXCLUDE_PATHS`

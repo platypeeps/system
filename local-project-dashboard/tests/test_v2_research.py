@@ -61,6 +61,8 @@ COMMANDS = [
     ["experiment.status", "research project", "Draft status update", None, "safe"],
     ["experiment.deck", "research project", "Draft deck", None, "safe"],
     ["experiment.apply", "research project", "Apply draft", None, "safe"],
+    ["research.deck", "research experiment", "Build deck", None, "safe"],
+    ["research.slides", "research experiment", "Import to Slides", None, "safe"],
     ["source.adversarial-review", "research source", "Adversarial review", None, "safe"],
 ]
 
@@ -617,15 +619,16 @@ class ThePage(BrowserSession):
 # shown and the counts put on them) and a record of fetched paths.
 SHELL_MORE = r"""
 window.shell.row = () => ROW; window.shell.setContext = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
-OUT.views = []; OUT.counts = {};
+OUT.views = []; OUT.counts = {}; function clearTimeout() {}
 window.shell.view = { show: id => OUT.views.push(id), count: (id, n) => { OUT.counts[id] = n; }, current: () => null };
 var ROW = null;
 """
 
 
 def ledger_reads(out):
-    """The page's reads less each selected project's experiment link (sd:5296), which `TheScript` tests on its own."""
-    return [path for path in out["gets"] if not path.startswith("/api/research/experiments?")]
+    """The page's reads less each selected project's experiment link (sd:5296) and the last deck run (pack sd:5525),
+    which `TheScript` tests on their own."""
+    return [path for path in out["gets"] if not path.startswith("/api/research/experiments?") and path not in ("/api/research/deck/status", "/api/research/slides/status")]
 
 
 def project(key, label, render, *, conf=None, docs=None, dirs=None):
@@ -964,10 +967,10 @@ R.filtered = ELS.claims.html;""")
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*data-lit', out["R"]["litClaims"]), ["1", "4", "5"])
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*hidden', out["R"]["filtered"]), ["1", "2", "4", "5", "7"])
 
-    def test_the_page_has_three_views_and_the_selected_project_carries_across_them(self):
+    def test_the_page_has_four_views_and_the_selected_project_carries_across_them(self):
         # sd:5064 operator request: Projects | Sources | Claim map tabs, through the shell's view switch.
         page = (V2 / "research.html").read_text(encoding="utf-8")
-        self.assertEqual(re.findall(r'<section id="view-([a-z]+)"', page), ["projects", "sources", "claims"])
+        self.assertEqual(re.findall(r'<section id="view-([a-z]+)"', page), ["projects", "sources", "claims", "experiments"])
         out = self.run_page("""R.declared = window.PAGE_VIEWS.map(v => [v.id, v.label]);
 R.start = OUT.views.slice(); PAGE_LIST.select('research/alpha'); PAGE_LIST.select('research/beta'); await flush();
 R.selecting = OUT.views.slice(); R.counts = Object.assign({}, OUT.counts); R.for = [ELS['reader-for'].textContent, ELS['claims-for'].textContent];
@@ -976,15 +979,125 @@ R.afterClaim = OUT.views.slice(); R.lit = ELS.reader.html;
 (ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-cites]' ? { dataset: { cites: '0' } } : null } }));
 R.afterSource = OUT.views.slice(); R.litClaims = ELS.claims.html;""")
         r = out["R"]
-        self.assertEqual(r["declared"], [["projects", "Projects"], ["sources", "Sources"], ["claims", "Claim map"]])
+        self.assertEqual(r["declared"], [["projects", "Projects"], ["sources", "Sources"], ["claims", "Claim map"], ["experiments", "Experiments"]])
         # Selecting a project stays on Projects; the panels name it.
         self.assertEqual((r["start"], r["selecting"]), ([], []))
         self.assertEqual(r["for"], ["· Beta", "· Beta · 2 claims"])
-        self.assertEqual(r["counts"], {"sources": 3, "claims": 2})
+        self.assertEqual(r["counts"], {"experiments": 0, "sources": 3, "claims": 2})
         self.assertEqual(r["afterClaim"], ["sources"])
         self.assertEqual(re.findall(r'<li class="src" data-i="(\d+)"[^>]*data-lit', r["lit"]), ["1"])
         self.assertEqual(r["afterSource"], ["sources", "claims"])
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*data-lit', r["litClaims"]), ["0"])
+
+    def experiment_board(self):
+        """Alpha keeps a stale brief with three asks and a deck.json, beta an unread one; gamma keeps none."""
+        rows = self.doc["projects"]
+        rows[0]["experiment"] = {"state": "Waiting on review", "tone": "caution", "updated": "2026-08-20", "stale": True,
+                                 "line": "11 pull requests are open.", "error": "", "deck": True, "deck_url": "https://example.test/deck",
+                                 "links": [{"text": "Alpha: execution", "url": "https://example.test/exp/2"}], "built": "",
+                                 "asks": [{"who": "Owners", "what": "Review #1"}, {"who": "Docs", "what": "Review #2"}, {"who": "QA", "what": "Run it"}],
+                                 "asks_total": 3}
+        rows[1]["experiment"] = {"error": "30-brief/BRIEF-status.md exceeds the bounded read size.", "deck": False, "built": ""}
+        return json.dumps(self.doc)
+
+    def test_experiments_lists_each_status_brief_with_its_state_staleness_asks_and_links(self):
+        """pack sd:5525: one row per brief; a stale Updated day and an unread brief each say so; each row has its action."""
+        doc = self.experiment_board()
+        answer = (f"(path, body) => path === '/api/research' ? [200, {doc}] : path === '/api/research/deck/status' ? [200, {{ run: null }}]"
+                  " : [404, { error: 'No research checkout at this address.' }]")
+        out = self.run_page("""window.shell.commands.rowActions = id => mk`<span data-for="${id}"></span>`; renderExperiments();
+R.rows = ELS['xp-rows'].html; R.tally = ELS['xp-tally'].html;""", answer=answer)
+        rows, r = re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), out["R"]
+        self.assertEqual(rows, ["research/alpha", "research/beta"])
+        self.assertIn('<td class="g g-caution" title="waiting">', r["rows"])
+        self.assertIn("Waiting on review", r["rows"])
+        self.assertIn("stale: over 7 days", r["rows"])
+        self.assertIn("<b>Owners</b>: Review #1", r["rows"])
+        self.assertIn("1 more in the brief", r["rows"])
+        self.assertNotIn("Run it", r["rows"])
+        self.assertIn('href="https://example.test/exp/2"', r["rows"])
+        self.assertIn('href="https://example.test/deck"', r["rows"])
+        self.assertIn("deck.json ●, no deck built yet", r["rows"])
+        self.assertIn("The status brief was not read: 30-brief/BRIEF-status.md exceeds the bounded read size.</span>", r["rows"])
+        self.assertEqual(re.findall(r'<td class="acts"><span data-for="([^"]+)">', r["rows"]), ["xp:research/alpha", "xp:research/beta"])
+        # The tally counts briefs, stale ones and asks; there is no deck count and no run line above the ledger.
+        self.assertEqual(re.findall(r"<span>([^<]+)</span>", r["tally"]), ["2 briefs", "1 stale", "3 asks"])
+        self.assertNotIn("xp-run", (V2 / "research.html").read_text(encoding="utf-8"))
+        self.assertEqual(out["counts"]["experiments"], 2)
+        # The page's filter field reaches this ledger by the board's words.
+        out = self.run_page("R.rows = ELS['xp-rows'].html;", answer=answer, search="?q=beta")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["research/beta"])
+
+    def test_build_deck_posts_the_rows_checkout_follows_the_run_and_links_the_deck_it_wrote(self):
+        """pack sd:5525: a row's Build deck queues `sd-research-kit deck` in its checkout, as Publish now queues a drain; once
+        the run is done the board is read again and the row links the built deck."""
+        doc = self.experiment_board()
+        built = json.loads(doc)
+        built["projects"][0]["experiment"]["built"] = NOW
+        run = {"id": "deck-20260906T120000Z", "state": "queued", "reason": None, "repo": "research/alpha",
+               "out": "/r/alpha/docs/dashboard/deck.pptx", "started": NOW, "finished": None}
+        done = {**run, "state": "done", "finished": NOW}
+        answer = (f"(path, body) => path === '/api/research' ? [200, (BOARDS = (typeof BOARDS === 'number' ? BOARDS : 0) + 1) > 1 ? {json.dumps(built)} : {doc}]"
+                  f" : path === '/api/research/deck' ? [202, {json.dumps(run)}] : path === '/api/research/deck/status' ? [200, {{ run: null }}]"
+                  f" : path === '/api/research/deck/{run['id']}' ? [200, {json.dumps(done)}] : [404, {{ error: 'No research checkout at this address.' }}]")
+        out = self.run_page("""const o = C.get('xp:research/alpha'), c = cmd('research.deck');
+R.when = c.when(o); R.primary = c.primary(o); R.cli = c.cli(o); R.icon = c.icon; shellRun(c, o); await flush(); await flush(); await flush();
+R.rows = ELS['xp-rows'].html; R.after = c.when(C.get('xp:research/alpha'));""", answer=answer)
+        r = out["R"]
+        self.assertEqual((r["when"], r["primary"], r["icon"]), (True, True, "file-text"))
+        self.assertEqual(r["cli"], "cd ~/'repos/research/alpha' && sd-research-kit deck")
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/deck", {"repo": "research/alpha"}]], out["toasts"])
+        self.assertIn(f"/api/research/deck/{run['id']}", out["gets"])
+        self.assertEqual(out["gets"].count("/api/research"), 2)
+        self.assertIn('<a href="/research/deck/research/alpha" download>deck.pptx</a>', r["rows"])
+        self.assertIn(["Deck built · research/alpha", False], out["toasts"])
+        self.assertIs(r["after"], True)
+
+    def test_build_deck_is_off_without_a_deck_json_and_while_a_run_builds(self):
+        # The poll's first read fails, which is not known, not settled; the stand-in's timers fire at once, so the second answers.
+        doc = self.experiment_board()
+        running = {"id": "deck-20260906T120000Z", "state": "running", "repo": "research/alpha", "out": "/x.pptx", "started": NOW}
+        answer = (f"(path, body) => path === '/api/research' ? [200, {doc}] : path === '/api/research/deck/status' ? [200, {{ run: {json.dumps(running)} }}]"
+                  f" : path !== '/api/research/deck/{running['id']}' ? [404, {{ error: 'none' }}]"
+                  f" : (POLLS = (typeof POLLS === 'number' ? POLLS : 0) + 1) < 2 ? [503, {{ error: 'unread' }}] : [200, {json.dumps({**running, 'state': 'failed', 'reason': 'the kit exited 1'})}]")
+        out = self.run_page("""R.rows = ELS['xp-rows'].html; R.beta = cmd('research.deck').when(C.get('xp:research/beta'));
+R.alpha = cmd('research.deck').when(C.get('xp:research/alpha'));""", answer=answer)
+        self.assertIn("Last build failed: the kit exited 1", out["R"]["rows"])
+        self.assertIn("no deck.json: Build deck is off", out["R"]["rows"])
+        self.assertEqual(out["gets"].count("/api/research/deck/deck-20260906T120000Z"), 2)
+        self.assertEqual(out["R"]["beta"], "this checkout keeps no 30-brief/deck.json")
+        self.assertIs(out["R"]["alpha"], True)
+        # While a run builds, every row's action is off and names it.
+        answer = f"(path, body) => path === '/api/research' ? [200, {doc}] : [200, {{ run: null }}]"
+        out = self.run_page(f"""setTimeout = () => 0; followBuild({{ ...{json.dumps(running)}, unread: 'unread' }}, false);
+R.when = cmd('research.deck').when(C.get('xp:research/alpha')); R.rows = ELS['xp-rows'].html;""", answer=answer)
+        self.assertEqual(out["R"]["when"], "run deck-20260906T120000Z is building research/alpha's deck")
+        self.assertIn("Building: run deck-20260906T120000Z is running; its state was not read: unread", out["R"]["rows"])
+
+    def test_import_to_slides_posts_the_rows_checkout_and_links_the_slides_file(self):
+        """#25693 option A: a built deck goes to Slides through workspace-mcp; the row links the file and says when the deck
+        changed since; the action is off with no built deck or while workspace-mcp does not answer."""
+        board = json.loads(self.experiment_board())
+        board["projects"][0]["experiment"]["built"] = NOW
+        ready = {"ready": True, "why": "", "imports": {}}
+        slides = {"id": "p-1", "link": "https://docs.google.com/presentation/d/p-1/edit", "built": NOW, "imported": NOW}
+        answer = (f"(path, body) => path === '/api/research' ? [200, {json.dumps(board)}] : path === '/api/research/slides/status' ? [200, {json.dumps(ready)}]"
+                  f" : path === '/api/research/slides' ? [200, {json.dumps({'slides': slides, 'reused': False, 'replaces': None})}] : [200, {{ run: null }}]")
+        out = self.run_page("""const c = cmd('research.slides'), o = C.get('xp:research/alpha');
+R.when = c.when(o); R.beta = c.when(C.get('xp:research/beta')); R.ask = c.askFirst; R.before = ELS['xp-rows'].html;
+R.said = await c.run(o); R.rows = ELS['xp-rows'].html;
+SLIDES.imports['research/alpha'] = { ...SLIDES.imports['research/alpha'], built: '2026-09-01T00:00:00Z' }; renderExperiments(); R.older = ELS['xp-rows'].html;
+SLIDES = { ready: false, why: 'workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused', imports: {} }; R.down = c.when(o);""", answer=answer)
+        r = out["R"]
+        self.assertEqual((r["when"], r["ask"]), (True, True))
+        self.assertEqual(r["beta"], "no deck is built: press Build deck first")
+        self.assertNotIn("docs.google.com", r["before"])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/slides", {"repo": "research/alpha"}]])
+        self.assertEqual(r["said"], "Imported to Slides · Alpha")
+        self.assertIn('href="https://docs.google.com/presentation/d/p-1/edit"', r["rows"])
+        self.assertIn("current deck", r["rows"])
+        self.assertIn("an older deck: import again", r["older"])
+        self.assertEqual(r["down"], "workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused")
 
     def test_sources_and_claim_map_send_the_viewer_to_projects_when_none_is_selected(self):
         out = self.run_page("""ANSWER = () => [500, { error: 'boom' }]; await load(); await flush();
@@ -993,7 +1106,7 @@ R.reader = ELS.reader.html; R.claims = ELS.claims.html; R.counts = Object.assign
 R.views = OUT.views.slice();""")
         for panel in ("reader", "claims"):
             self.assertIn('No project is selected. <button class="linkbtn" type="button" data-view="projects">Pick one in Projects</button>.', out["R"][panel])
-        self.assertEqual(out["R"]["counts"], {"sources": None, "claims": None})
+        self.assertEqual(out["R"]["counts"], {"experiments": None, "sources": None, "claims": None})
         self.assertEqual(out["R"]["views"], ["projects"])
 
     def experiments(self, doc):
@@ -1145,7 +1258,7 @@ R.det = ELS.details.html; R.lit = ELS.reader.html;""")
         empty = research_screen.document(now=NOW, backend=lambda *_: {"root": "~/repos", "projects": []})
         out = self.run_page("", answer=f"() => [200, {json.dumps(empty)}]")
         self.assertEqual((out["states"][-1]["kind"], out["states"][-1]["title"]), ("empty", "No research checkouts"))
-        self.assertEqual(out["gets"], ["/api/research"])
+        self.assertEqual(ledger_reads(out), ["/api/research"])
 
     def test_the_page_reads_its_board_through_the_shared_reader(self):
         # read.js holds the generation, retirement and failure rules (sd:2491); the ledger keeps its own per-project cache.
@@ -1214,6 +1327,7 @@ R.rows = ELS.rows.html; R.type = C.get('research/beta').type; R.reader = ELS.rea
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "research", "Research", "/research", ("/api/research", "/api/research/experiments", "/api/research/experiments/act",
+                                                                "/api/research/deck", "/api/research/deck/status", "/api/research/slides", "/api/research/slides/status", "/api/research/deck/deck-20261020T120000Z",
                                                                 "/api/research/example")
 
 

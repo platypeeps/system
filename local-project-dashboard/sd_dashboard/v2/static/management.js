@@ -16,7 +16,7 @@ const SDDB = '~/repos/platypeeps/sd-ai-command-pack/bin/sd-db';
 
 // ---------- Data (build): /api/management, read through shell.read on load and after each write ----------
 let DOC = null, READ = '';
-let REPOS = [], ALL = [], GIT = null, LANE = null, ASG = null, SESS = null, CLAUDE = null, SERVICES = [], CRON = [], SATS = null, UPLOAD = null;
+let REPOS = [], ALL = [], GIT = null, LANE = null, SESS = null, CLAUDE = null, SERVICES = [], CRON = [], SATS = null, UPLOAD = null;
 const tilde = p => { const h = GIT?.root ? GIT.root.replace(/\/repos\/?$/, '') : ''; return h && p.startsWith(h + '/') ? '~' + p.slice(h.length) : p; };
 const nameOf = p => p.replace(/^~\/(repos\/)?/, '');
 const hhmm = iso => iso ? iso.slice(11, 16) : '';
@@ -46,7 +46,7 @@ function absorb(doc) {
   // build (sd:1629): the settings columns sort on their shown words.
   ALL.forEach(r => { const rv = r.review || {}, rt = r.runtimes || {}; r.floor = rv.severity_floor || ''; r.copilot = rv.automatic_deep == null ? '' : String(rv.automatic_deep);
     r.python = rt.python?.value || ''; r.node = rt.node?.value || ''; });
-  LANE = doc.lane; ASG = doc.assignments; SESS = doc.sessions; CLAUDE = doc.claude; SERVICES = doc.services || []; SATS = doc.satellites || null; UPLOAD = doc.upload || null;
+  LANE = doc.lane; SESS = doc.sessions; CLAUDE = doc.claude; SERVICES = doc.services || []; SATS = doc.satellites || null; UPLOAD = doc.upload || null;
   CRON = (doc.jobs || []).map(j => ({ ...j, next: nextRun(j.schedule), rank: stateOf(j) }));
 }
 // Age of the last fetch at the reading, as v1 words it (repos_screen._age).
@@ -128,7 +128,7 @@ const repoParam = params.get('repo');
 // checked against the five names before anything indexes by it.
 const VIEWS = window.PAGE_VIEWS.map(v => v.id);
 let view = 'repos';
-const LIST_STATE = () => ({ repos: [RS, 'name', 1, repoCols()], lane: [LS, 'id', -1, MERGE_COLS], deploys: [DS, 'name', 1, SVC_COLS], schedules: [SS, 'rank', 1, SCHED_COLS] })[view];
+const LIST_STATE = () => ({ repos: [RS, 'name', 1, repoCols()], deploys: [DS, 'name', 1, SVC_COLS], schedules: [SS, 'rank', 1, SCHED_COLS] })[view];
 function setURL() {
   const p = new URLSearchParams();
   if (repoParam) p.set('repo', repoParam);
@@ -140,7 +140,7 @@ function setURL() {
   shell.url(p);
 }
 function readURL() {
-  if (params.get('q')) { text.q = params.get('q'); input.value = text.q; }
+  if (params.get('q')) text.q = params.get('q'); // the shell's bar reads ?q= too
   if (params.get('cols') === 'settings') RS.cols = 'settings';
   const L = LIST_STATE(); if (!L) return;
   const [st, , , cols] = L;
@@ -159,7 +159,6 @@ const unknown = (what, reason, read) => html`<div class="unknown"><span><span cl
 // ---------- Views (sd:5080: the shell's tabs) ----------
 function showView(v) {
   view = v;
-  document.getElementById('shift').placeholder = { repos: 'Filter repos, e.g. hoa or merge:auto', lane: 'Filter merges by repo', sessions: 'Filter assignments by repo or agent', deploys: 'Filter services, e.g. state:running or redis', schedules: 'Filter jobs, e.g. state:failed or backup' }[v];
   const row = shell.row(); if (row && !document.querySelector(`#view-${v} tr[data-id="${CSS.escape(row)}"]`)) shell.row(null);
   applyText();
   defaultDetails();
@@ -198,21 +197,29 @@ function lamps() {
 // ---------- Lists: sort, filter, page (shell.list, sd:2682) ----------
 // build: a page from the URL or an older reading can pass the last page; shell.list clamps it before the slice, and the URL follows.
 function pageOf(rows, st) { const was = st.page, slice = shell.list.pageOf(rows, st); if (st.page !== was) setURL(); return slice; }
-const REPO_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['lane', html`Lane<span class="sr"> host</span>`], ['branch', html`Branch<span class="sr"> and uncommitted files</span>`], ['lag', html`<span aria-hidden="true">+/−</span><span class="sr">Ahead and behind default</span>`], ['fetched', 'Fetched'], [null, html`<span class="sr">Actions</span>`, 'act']];
+const REPO_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', 'Lane merge'], ['lane', html`Lane<span class="sr"> host</span>`], ['branch', html`Branch<span class="sr"> and uncommitted files</span>`], ['lag', html`<span aria-hidden="true">+/−</span><span class="sr">Ahead and behind default</span>`], ['fetched', 'Fetched'], [null, html`<span class="sr">Actions</span>`, 'act']];
 // build (sd:1629): the condensed overview, one row per repo with its settings, swaps the git columns for these.
-const SETTING_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['lane', html`Lane<span class="sr"> host</span>`], ['floor', html`Floor<span class="sr"> (review severity floor)</span>`], ['copilot', html`Copilot<span class="sr"> automatic deep review</span>`], [null, 'Required checks'], ['python', 'Python'], ['node', 'Node'], [null, html`<span class="sr">Actions</span>`, 'act']];
+const SETTING_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', 'Lane merge'], ['lane', html`Lane<span class="sr"> host</span>`], ['floor', html`Floor<span class="sr"> (review severity floor)</span>`], ['copilot', html`Copilot<span class="sr"> automatic deep review</span>`], [null, 'Required checks'], ['python', 'Python'], ['node', 'Node'], [null, html`<span class="sr">Actions</span>`, 'act']];
 const repoCols = () => RS.cols === 'settings' ? SETTING_COLS : REPO_COLS;
-const MERGE_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['id', 'Assignment'], [null, 'Repo'], ['at', 'Ended'], [null, 'Status'], [null, html`<span class="sr">Actions</span>`, 'act']];
 // build (sd:3388): the services list sorts, filters and pages as v1 Operations > Services did.
 const SVC_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Service'], ['what', 'What'], ['state', 'State'], [null, 'PID', 'num'], [null, 'Previous exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
 const SCHED_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Job'], [null, 'Schedule'], [null, 'State'], [null, 'Last run'], ['next', 'Next run'], [null, 'Exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
-// The text filter is one chip on every list; Repos adds its managed and merge filters.
+// The text filter is one token on every list; Repos adds its managed and merge filters.
 const textChip = () => text.q ? [{ key: 'q', label: `Text: ${text.q}` }] : [];
-const repoChips = () => [RS.managed && { key: 'managed', label: `Managed: ${RS.managed}` }, RS.merge && { key: 'merge', label: `Runner merge: ${RS.merge}` }, ...textChip()].filter(Boolean);
+// sd:5504: each list's filter bar is Activity's (shell.list.fbar): its segments, the text as a token, then Clear all.
+// The count sits on the list's title line while a filter hides rows (sd:5281).
+// A segment keeps its visible label: yes and no say nothing alone. The token holds the free words only, since a pressed
+// segment already shows a managed:, merge: or state: word, and removing the token keeps those words.
+const FIELD = /^(managed|merge|state):\w+$/i;
+const filterSeg = (k, name, vals, on) => html`<div class="fgroup"><span class="label" aria-hidden="true">${name}</span>${shell.list.fseg(k, name, vals.map(v => ({ v, label: v, pressed: on === v })))}</div>`;
+const filterBar = (parts, clear) => { const free = text.q.split(/\s+/).filter(w => w && !FIELD.test(w)).join(' ');
+  return shell.list.fbar(html`${parts}${free ? shell.list.tok('q', '', `“${free}”`) : ''}`, { clear: !!clear }); };
+const hides = (n, all, noun) => n < all ? html`<span>${shell.list.count(n, all, noun)}</span>` : '';
+const repoChips = () => [RS.managed && { key: 'managed', label: `Managed: ${RS.managed}` }, RS.merge && { key: 'merge', label: `Lane merge: ${RS.merge}` }, ...textChip()].filter(Boolean);
 const text = { q: '' };
 function tokens() {
   const chips = {}, free = [];
-  text.q.split(/\s+/).filter(Boolean).forEach(w => { const m = w.match(/^(managed|merge|state|agent):(\w+)$/i); m ? chips[m[1].toLowerCase()] = m[2].toLowerCase() : free.push(w.toLowerCase()); });
+  text.q.split(/\s+/).filter(Boolean).forEach(w => { const m = w.match(/^(managed|merge|state):(\w+)$/i); m ? chips[m[1].toLowerCase()] = m[2].toLowerCase() : free.push(w.toLowerCase()); });
   return { chips, free };
 }
 
@@ -265,15 +272,11 @@ function renderRepos() {
   const rows = repoRows(), shown = pageOf(rows, RS);
   const auto = REPOS.filter(r => r.merge === 'auto').length, managed = REPOS.filter(r => r.managed === 'yes').length;
   const c = GIT?.counts || {};
+  shell.view.count('repos', rows.length);
   put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
-      <p class="tally"><span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} runner merge auto</span></p>
+      <p class="tally">${hides(rows.length, ALL.length, 'repo')}<span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} lane merge auto</span></p>
       <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${seen(GIT)}` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>
-    <div class="filters toolbar-2" aria-label="Filters">
-      <div class="fgroup" role="group" aria-label="Managed"><span class="label">Managed</span>${['yes', 'no'].map(v => html`<button class="chip" type="button" data-f="managed" data-v="${v}" aria-pressed="${String(RS.managed === v)}">${v}</button>`)}</div>
-      <div class="fgroup" role="group" aria-label="Runner merge"><span class="label">Runner merge</span>${['auto', 'manual'].map(v => html`<button class="chip" type="button" data-f="merge" data-v="${v}" aria-pressed="${String(RS.merge === v)}">${v}</button>`)}</div>
-      <div class="fgroup" role="group" aria-label="Columns"><span class="label">Columns</span>${['git', 'settings'].map(v => html`<button class="chip" type="button" data-cols="${v}" aria-pressed="${String(RS.cols === v)}">${v}</button>`)}</div>
-      ${repoChips().length ? shell.list.chips(repoChips(), rows.length, ALL.length) : html`<p class="fsum"><span>${rows.length} of ${ALL.length}</span></p>`}
-    </div>
+    <div class="filters toolbar-2">${filterBar(html`${filterSeg('managed', 'Managed', ['yes', 'no'], RS.managed)}${filterSeg('merge', 'Lane merge', ['auto', 'manual'], RS.merge)}${filterSeg('cols', 'Columns', ['git', 'settings'], RS.cols)}`, repoChips().length)}</div>
     ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(repoCols(), RS)}</thead>
       <tbody>${shown.map(r => html`<tr data-id="${'repo:' + r.path}" data-repo="${r.path}">
         <td class="g" aria-hidden="true">${I(r.registered ? 'settings' : 'folder-code')}</td>
@@ -289,10 +292,10 @@ function renderRepos() {
 }
 document.getElementById('view-repos').addEventListener('click', e => {
   if (e.target.closest('.rowact')) return;
-  const cols = e.target.closest('[data-cols]');
-  if (cols) { RS.cols = cols.dataset.cols === 'settings' ? 'settings' : 'git'; if (!repoCols().some(c => c[0] === RS.sort)) RS.sort = 'name'; renderRepos(); return setURL(); }
-  const f = e.target.closest('[data-f]'), tr = e.target.closest('tr[data-repo]');
-  if (e.target.closest('[data-clear]')) { RS.managed = RS.merge = null; text.q = ''; document.getElementById('shift').value = ''; RS.page = 1; renderRepos(); return setURL(); }
+  const cols = e.target.closest('[data-f="cols"]');
+  if (cols) { RS.cols = cols.dataset.v === 'settings' ? 'settings' : 'git'; if (!repoCols().some(c => c[0] === RS.sort)) RS.sort = 'name'; renderRepos(); return setURL(); }
+  const f = e.target.closest('[data-f="managed"], [data-f="merge"]'), tr = e.target.closest('tr[data-repo]');
+  if (e.target.closest('[data-clear]')) { RS.managed = RS.merge = null; text.q = ''; shell.filter(''); RS.page = 1; renderRepos(); return setURL(); }
   if (shell.list.sortBy(e, RS) || shell.list.paging(e, RS)) { shell.list.keepFocus(e, renderRepos); return setURL(); }
   if (f) { RS[f.dataset.f] = RS[f.dataset.f] === f.dataset.v ? null : f.dataset.v; RS.page = 1; renderRepos(); return setURL(); }
   if (tr) selectRow(tr.dataset.id, true);
@@ -591,7 +594,7 @@ function flipRepo(field, o) {
     () => setRepo(field, REPOS.find(x => x.path === o.path) || r, before, value));
 }
 const colOf = field => field === 'runner-merge' ? 'runner_merge' : 'managed';
-const asgOf = n => [...(LANE?.live || []), ...(LANE?.merges || []), ...(ASG?.latest || [])].find(a => a.id === n);
+const asgOf = n => (LANE?.live || []).find(a => a.id === n);
 
 // ---------- Commands (products/system/commands.md) ----------
 // build (sd:2485): one object per drawn row, for shell.read to put and to retire once a read stops listing it. A queue row
@@ -599,9 +602,8 @@ const asgOf = n => [...(LANE?.live || []), ...(LANE?.merges || []), ...(ASG?.lat
 // let a selection or a ?row= link survive a read. A pending proposal is the page's own and stays until it is withdrawn.
 function objects() {
   const out = ALL.map(r => ({ id: `repo:${r.path}`, type: 'repo', label: r.name, path: r.path, row: r }));
-  const asg = kind => a => out.push({ id: `${kind(a)}:${a.id}`, type: 'assignment', label: `#${a.id} ${a.title || a.role}`, n: a.id, status: a.status, repo: a.repo || 'no repo', item: a.item });
-  const byRole = a => a.role === 'merge' ? 'merge' : 'asg';
-  (LANE?.merges || []).forEach(asg(byRole)); (LANE?.live || []).forEach(asg(() => 'asg')); (ASG?.latest || []).forEach(asg(byRole));
+  const asg = a => out.push({ id: `asg:${a.id}`, type: 'assignment', label: `#${a.id} ${a.title || a.role}`, n: a.id, status: a.status, repo: a.repo || 'no repo', item: a.item });
+  (LANE?.live || []).forEach(asg);
   (LANE?.ready || []).forEach(t => out.push({ id: `ready:${t.id}`, type: 'item', label: `#${t.id} ${t.title}`, item: t.id }));
   (CLAUDE?.sessions || []).forEach(r => out.push({ id: `cs:${r.id}`, type: 'claude session', label: r.name || r.id, sid: r.id, pid: r.pid, row: r }));
   if (SESS) out.push({ id: 'wt:abandoned', type: 'worktrees', label: `${SESS.abandoned} abandoned worktrees`, n: SESS.abandoned },
@@ -630,7 +632,7 @@ function registerCommands() {
   const C = shell.commands;
   C.register(
     // Repo rows: the two sd-db verbs, each an Undo-able flip of one column. build: they post /api/repos/<verb>.
-    { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', does: 'Switches runner merge between auto and manual; Undo switches it back.', key: 'm', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
+    { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', does: 'Switches runner merge between auto and manual; Undo switches it back.', key: 'm', icon: 'git-merge', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo runner-merge ${shq(o.path)} ${o.row.merge === 'auto' ? 'manual' : 'auto'}`, executes: true,
       run: o => flipRepo('runner-merge', o), undo: undoOf },
     { id: 'repo.managed', on: 'repo', label: 'Switch managed', does: 'Switches whether sd manages this repo; Undo switches it back.', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
@@ -641,7 +643,7 @@ function registerCommands() {
       cli: o => `${SDDB} repo lane-host ${shq(o.path)} hub`,
       run: o => { location.href = `?repo=${encodeURIComponent(o.path)}#view=repos`; return `Move lane: ${o.label}'s settings page opens`; } },
     // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
-    { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
+    { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', icon: 'download', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
     // sd:5064: a codex review of the repository, in the background; the backend reviews only a registered checkout.
     window.commands.adversarialReview('repo', { payload: o => ({ kind: 'repo', target: o.path }), when: registeredWhy }),
@@ -670,12 +672,12 @@ function registerCommands() {
         return window.shell.post('/api/adversarial/settings', changed).then(async () => { await reread(); return `Deep review settings saved · ${Object.keys(changed).map(k => k.split('.').pop()).join(', ')}`; }); } },
     // Land (sd:5104): the preview first, in the confirm, then the write with the preview's revision (land.py). A changed
     // Items field previews again, so the confirm always shows what lands. build: it posts /api/repos/land.
-    { id: 'repo.land', on: 'repo', label: 'Land', does: 'Commits the work once per item and queues it; asks first with a preview.', key: 'n', risk: 'confirm', executes: true,
+    { id: 'repo.land', on: 'repo', label: 'Land', does: 'Commits the work once per item and queues it; asks first with a preview.', key: 'n', icon: 'rocket', risk: 'confirm', executes: true,
       primary: o => !!(o.row.git && (o.row.git.dirty || o.row.git.ahead)), when: landWhy,
       cli: o => `sd-ship -C ${shq(o.path)} lane enqueue --item <n> --title <title> --body-file <body> --expected-head <head> --deliver`,
       // previews: run() reads the preview and asks with it, so the shell's own confirm does not ask first.
       previews: true, run: o => landRepo(o) },
-    { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
+    { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', icon: 'play', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
         // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`) over the row the
         // write answered (sd:4632): the library keeps an inbound key the form never posts, so that row is not the posted value.
@@ -683,30 +685,30 @@ function registerCommands() {
         return landing(setRepo(o.verb, o.repo, o.value, o.before), v => `Ran locally · ${o.title}${v?.remedy ? ` · ${v.remedy}` : ''}`, undo); },
       undo: undoOf },
     // sd:5159: copy only. `sd-db repo declare` checks the value with sd-review's own validator before it writes the row.
-    { id: 'declaration.copy', on: 'declaration change', label: 'Copy', does: 'Gives the sd-db repo declare line that writes this change to the repo row.', key: 'p', risk: 'safe', primary: () => true, executes: false,
+    { id: 'declaration.copy', on: 'declaration change', label: 'Copy', does: 'Gives the sd-db repo declare line that writes this change to the repo row.', key: 'p', icon: 'copy', risk: 'safe', primary: () => true, executes: false,
       cli: o => o.cmd, run: () => 'Copy it into a terminal: the dashboard does not write declarations' },
     ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', does: 'Drops this proposal from the list; nothing was run.', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
     window.commands.showAssignment({ run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } }),
     // build: the item opens in Tasks, whose Details read it.
-    { id: 'item.show', on: 'item', label: 'Open item', does: 'Opens the work item.', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
+    { id: 'item.show', on: 'item', label: 'Open item', does: 'Opens the work item.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
       run: o => window.shell.openItem(o.item) },
     { id: 'wt.prune', on: 'worktrees', label: 'Prune', does: 'Removes records of worktrees whose folders are gone; this cannot be undone.', key: 'p', risk: 'confirm', primary: () => true, when: () => 'no dashboard route: run the CLI line', cli: () => 'sd sessions prune --abandoned',
       consequence: o => `Removes ${o.n} worktree registrations whose directories are gone. Branches and files stay.` },
     // Services on this Mac. build: each posts /api/services/<label>/<action> with the service's revision; when() is its capability.
-    { id: 'svc.restart', on: 'service', label: 'Restart', does: 'Stops and starts the service; what it serves drops for seconds.', key: 't', risk: 'confirm', primary: () => true, when: o => capWhy(o, 'restart', 'not read'), cli: o => `sd services restart ${o.name}`,
+    { id: 'svc.restart', on: 'service', label: 'Restart', does: 'Stops and starts the service; what it serves drops for seconds.', key: 't', icon: 'rotate-ccw', risk: 'confirm', primary: () => true, when: o => capWhy(o, 'restart', 'not read'), cli: o => `sd services restart ${o.name}`,
       consequence: o => `Stops and starts ${o.name}. Anything it serves drops for a few seconds.`, run: o => landing(service(o, 'restart'), () => `Restart requested · ${o.label}`) },
     { id: 'svc.stop', on: 'service', label: 'Stop', does: 'Stops the service through launchd; Start brings it back.', key: 's', risk: 'confirm', when: o => capWhy(o, 'stop', o.running || 'not running'), cli: o => `sd services stop ${o.name}`,
       consequence: o => `Stops ${o.name} through launchd. Start brings it back.`, run: o => landing(service(o, 'stop'), () => `Stop requested · ${o.label}`) },
     { id: 'svc.start', on: 'service', label: 'Start', does: 'Starts the service through launchd.', key: 'a', risk: 'safe', when: o => capWhy(o, 'start', !o.running || 'already running'), cli: o => `sd services start ${o.name}`,
       run: o => landing(service(o, 'start'), () => `Start requested · ${o.label}`) },
     // sd:5108: one request row in the hub database; each satellite's next repo-sync follow run (every 5 min) answers it.
-    { id: 'sats.refresh', on: 'satellite refresh', label: 'Refresh satellites', does: 'Asks each satellite to follow the hub\'s pins and run machine-setup update --apply.', risk: 'confirm', primary: () => true,
+    { id: 'sats.refresh', on: 'satellite refresh', label: 'Refresh satellites', does: 'Asks each satellite to follow the hub\'s pins and run machine-setup update --apply.', icon: 'rotate-ccw', risk: 'confirm', primary: () => true,
       cli: () => 'no CLI: the dashboard writes the refresh.request row', executes: true,
       consequence: () => 'Each satellite, on its next repo-sync follow run (every five minutes), drains its lanes, follows the hub\'s pins and runs machine-setup update --apply, then writes its result here.',
       run: () => landing(refreshSatellites(), v => `Refresh requested · ${v.id}`) },
     // sd:5405: local-shared-upload's signer, run by the server; the link is one setting row and the toast never holds it.
-    { id: 'upload.regenerate', on: 'upload link', label: 'Regenerate', does: 'Signs a new 7-day upload link under inbox/ and shows it here.', risk: 'confirm',
+    { id: 'upload.regenerate', on: 'upload link', label: 'Regenerate', does: 'Signs a new 7-day upload link under inbox/ and shows it here.', icon: 'link-2', risk: 'confirm',
       primary: () => true, cli: () => 'no CLI: the dashboard signs the link with local-shared-upload and keeps it as the dashboard.shared_upload_link row', executes: true,
       sends: () => 'aws configure export-credentials --profile <SHARED_UPLOAD_PROFILE>',
       consequence: () => `Signs a new link for uploads under ${UPLOAD?.prefix || 'inbox/'} that works for 7 days and shows it here in place of the current one. Links already handed out keep working until they expire.`,
@@ -717,7 +719,7 @@ function registerCommands() {
       run: o => landing(job(o, 'retry'), out => window.commands.answered(out, o.job, 'retried', `Run started · ${o.job}`)) }),
     // build (sd:3388): Cancel is `sd jobs cancel`, which sends SIGTERM to the running job through launchd. It posts
     // /api/jobs/<name>/cancel with the row's revision; the confirm names the job, since the run stops part way.
-    { id: 'jobs.cancel', on: 'job', label: 'Cancel', does: 'Stops the running job with SIGTERM; the stopped run cannot resume.', key: 'x', risk: 'confirm', primary: o => o.running,
+    { id: 'jobs.cancel', on: 'job', label: 'Cancel', does: 'Stops the running job with SIGTERM; the stopped run cannot resume.', key: 'x', icon: 'ban', risk: 'confirm', primary: o => o.running,
       when: o => capWhy(o, 'cancel', o.running || 'not running'), cli: o => `sd jobs cancel ${o.job}`, sends: o => `launchctl kill SIGTERM ${o.service}`,
       consequence: o => `Sends SIGTERM to ${o.job}${o.pid ? ` (PID ${o.pid})` : ''} through launchd. The run stops part way through; its next scheduled run still starts.`,
       run: cancelJob },
@@ -725,7 +727,7 @@ function registerCommands() {
     window.commands.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
     // sd:5126: End session sends SIGTERM to a Claude session on this Mac, so a full builder cap can be cleared. A subagent
     // runs inside its session's process, so a stalled agent ends with its session; the confirm names each agent that does.
-    { id: 'cs.end', on: 'claude session', label: 'End session', does: 'Sends SIGTERM to the Claude session; its turn and every agent under it stop.', key: 'e', risk: 'confirm',
+    { id: 'cs.end', on: 'claude session', label: 'End session', does: 'Sends SIGTERM to the Claude session; its turn and every agent under it stop.', key: 'e', icon: 'square', risk: 'confirm',
       primary: o => o.row.agents.some(a => a.state === 'stalled'), when: o => o.pid != null || 'claude agents gave no pid, so there is nothing to signal',
       cli: o => `kill -TERM ${o.pid}`, executes: true, sends: o => `POST /api/claude-sessions/end {"id":"${o.sid}","pid":${o.pid}}`,
       consequence: endWhat, run: o => landing(endSession(o), v => `${v.ended === 'already gone' ? 'Already gone' : 'End requested'} · ${o.label}`) },
@@ -802,46 +804,35 @@ document.addEventListener('shell:open', e => {
 document.addEventListener('shell:picked', e => document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
 
 // ---------- Ship lane ----------
-const LS = { sort: 'id', dir: -1, page: 1, size: 25 }; // unpaged; page and size are the shared grammar's defaults
+const ASTATE = { blocked: 'caution', queued: 'queued', running: 'queued', ending: 'queued', done: 'ok', cancelled: 'ok' };
 const asgRepo = a => (a.repo || 'no repo').replace(/^~\/repos\//, '');
 function renderLane() {
   const el = document.getElementById('view-lane');
   if (!LANE) { put(el, unknown('The lane was not read', why('lane'), 'sd assignments list')); return; }
-  const { free } = tokens();
   const queued = LANE.live.filter(a => a.status === 'queued'), running = LANE.live.filter(a => a.status !== 'queued');
-  const rows = LANE.merges.filter(m => free.every(f => (asgRepo(m) + ' ' + (m.title || '')).toLowerCase().includes(f)));
   const lease = running.filter(a => a.role === 'merge');
   put(el, html`
     <ul class="strip" aria-label="Lane state">
       <li><span class="label">Queue</span><span class="val">${queued.length} queued · ${running.length} running</span></li>
       <li><span class="label">Claim</span><span class="val">${lease.length ? `${lease.length} merge running` : 'no merge running'}</span></li>
-      <li><span class="label">Runner merge</span><span class="val">${REPOS.filter(r => r.merge === 'auto').length} repos auto</span></li>
+      <li><span class="label">Lane merge</span><span class="val">${REPOS.filter(r => r.merge === 'auto').length} repos auto</span></li>
     </ul>
     <div class="sec-head"><h2 id="queue-h">Queue <button class="help" type="button" aria-label="Help: merge lane" data-help="<b>One writer per repo.</b> A merge or serial assignment takes an exclusive lease on its repo; nothing else in that repo starts until the lease is released. The runner queues a merge only for runner_merge=auto repos, after a done author run with a reviewed head.">${I('circle-help')}</button></h2><p class="tally">assignment table · ${hhmm(READ)} UTC</p></div>
     ${LANE.live.length ? html`<table class="ledger" aria-labelledby="queue-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Assignment</th><th scope="col">Repo</th><th scope="col">Role</th><th scope="col">Since</th>${ACTH}</tr></thead>
       <tbody>${LANE.live.map(a => html`<tr data-id="asg:${a.id}"><td class="g g-queued">◌<span class="sr">${a.status}</span></td><td class="what"><button type="button">#${a.id} ${a.title || a.role}</button></td><td class="d mono" data-k="repo">${asgRepo(a)}</td><td class="d mono">${a.role} · ${a.status}</td><td class="d mono"><time class="rel" datetime="${a.started || a.queued_at || ''}"></time></td>${ACT('asg:' + a.id)}</tr>`)}</tbody></table>`
-      : html`<p class="empty"><span class="g-queued" aria-hidden="true">◌</span> Nothing queued or running.${LANE.merges[0]?.ended ? html` The last merge ended <time class="rel" datetime="${LANE.merges[0].ended}"></time>.` : ''}</p>`}
+      : html`<p class="empty"><span class="g-queued" aria-hidden="true">◌</span> Nothing queued or running.</p>`}
     <div class="sec-head"><h2 id="ready-h">Waiting on you</h2><p class="tally">${LANE.ready.length} ready_to_send · not lane candidates</p></div>
     ${LANE.ready.length ? html`<table class="ledger" aria-labelledby="ready-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Item</th><th scope="col">Repo</th>${ACTH}</tr></thead>
       <tbody>${LANE.ready.map(t => html`<tr data-id="ready:${t.id}"><td class="g g-queued">◌<span class="sr">queued</span></td><td class="what"><button type="button">#${t.id} ${t.title}</button></td><td class="d mono" data-k="repo">${asgRepo(t)}</td>${ACT('ready:' + t.id)}</tr>`)}</tbody></table>`
-      : html`<p class="empty">No item waits at ready_to_send.</p>`}
-    <div class="sec-head"><h2 id="merged-h">Recent merges</h2><p class="tally">latest ${LANE.merges.length} merge assignments</p></div>
-    ${shell.list.chips(textChip(), rows.length, LANE.merges.length)}
-    ${rows.length ? html`<table class="ledger" aria-labelledby="merged-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(MERGE_COLS, LS)}</thead>
-      <tbody>${rows.slice().sort((a, b) => (LS.sort === 'id' ? a.id - b.id : String(a.ended || '').localeCompare(String(b.ended || ''))) * LS.dir).map(m => { const st = m.status === 'done' ? 'ok' : m.status === 'blocked' ? 'caution' : 'queued'; return html`<tr data-id="merge:${m.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${st}</span></td>
-        <td class="what"><button type="button">#${m.id} ${m.title || 'merge'}</button></td><td class="d mono" data-k="repo">${asgRepo(m)}</td><td class="d mono"><time class="rel" datetime="${m.ended || ''}" data-empty="never"></time></td>
-        <td class="d mono">${m.status}</td>${ACT('merge:' + m.id)}</tr>`; })}</tbody></table>`
-      : html`<p class="empty">${LANE.merges.length ? html`No merge matches “${text.q}”. <button class="linkbtn" type="button" data-clear-q>Clear filters</button>` : 'No merge assignment has run.'}</p>`}`);
+      : html`<p class="empty">No item waits at ready_to_send.</p>`}`);
 }
 document.getElementById('view-lane').addEventListener('click', e => {
   if (e.target.closest('a')) return;
-  if (shell.list.sortBy(e, LS)) { shell.list.keepFocus(e, renderLane); return setURL(); }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
 
 // ---------- Sessions and agents ----------
-let histFilter = null;
 // build (sd:5106): each Claude session on this Mac (claude_sessions.py), the ones waiting on you first. Safe to exit is the
 // server's: yes only when nothing runs under it and no checkout it answers for holds unpushed work; a fact not read is ▨.
 const CSTATE = r => r.status === 'waiting' ? 'caution' : r.status === 'unknown' ? 'unknown' : r.status === 'busy' ? 'queued' : 'ok';
@@ -877,14 +868,8 @@ function claudeDetails(r, act) {
     <h3>Checkouts</h3>${list(r.checkouts, c => html`<span class="mono">${c.path}</span> · ${c.error ? html`<span class="g-unknown" aria-hidden="true">▨</span> ${c.error}` : `${c.branch} · ${plural(c.dirty, 'uncommitted file')} · ${plural(c.unpushed, 'unpushed commit')}`}`, 'No git checkout.')}
     <p class="why">Read from claude agents --json, the session's transcripts, ps and git. Sessions on other machines are not listed.</p>${act}`;
 }
-const ASTATE = { blocked: 'caution', queued: 'queued', running: 'queued', ending: 'queued', done: 'ok', cancelled: 'ok' };
 function renderSessions() {
   const el = document.getElementById('view-sessions');
-  const { chips, free } = tokens();
-  const latest = ASG ? ASG.latest : [];
-  const rows = latest.filter(a => (!histFilter || a.status === histFilter) && (!chips.agent || a.provider === chips.agent)
-    && free.every(f => (asgRepo(a) + ' ' + (a.provider || '') + ' ' + (a.title || '')).toLowerCase().includes(f)));
-  const hist = ASG ? Object.entries(ASG.history) : [], total = hist.reduce((s, h) => s + h[1], 0), max = Math.max(1, ...hist.map(h => h[1]));
   put(el, html`
     <div class="sec-head"><h2 id="claude-h">Claude sessions <button class="help" type="button" aria-label="Help: Claude sessions" data-help="<b>This Mac's Claude sessions.</b> From claude agents --json, each session's transcripts, ps and git. Safe to exit means idle, no agent or lane watch under it, and no unpushed work in its checkouts. A stalled or unread agent counts as running until it gives a final answer.">${I('circle-help')}</button></h2><p class="tally">${CLAUDE ? html`<span>${plural(CLAUDE.sessions.length, 'session')}</span><span>${CLAUDE.builders.running == null ? html`<span class="g-unknown" aria-hidden="true">▨</span> builders not counted` : plural(CLAUDE.builders.running, 'builder') + ' running'}</span><span>claude agents · ${hhmm(CLAUDE.read)} UTC</span>` : ''}</p></div>
     ${renderClaude()}
@@ -895,16 +880,6 @@ function renderSessions() {
       <tbody>${SESS.processes.map((p, i) => html`<tr data-id="proc:${i}"><td class="g g-ok">●<span class="sr">ok</span></td><td class="what"><button type="button">${p.command}</button></td><td class="d mono" data-k="up">${p.elapsed}</td><td class="d num">${p.pid}</td></tr>`)}</tbody></table>`
       : html`<p class="empty">${SESS.processes_error ? html`<span class="g-unknown" aria-hidden="true">▨</span> ${SESS.processes_error}` : 'No sd-* command is running.'}</p>`}
 
-    <div class="sec-head"><h2 id="runner-h">Runner assignments</h2><p class="tally">${ASG ? html`<span>${total} in history</span><span>latest ${latest.length} shown</span><span>assignment table · ${hhmm(READ)} UTC</span>` : ''}</p></div>
-    ${!ASG ? unknown('Assignments were not read', why('assignments'), 'sd assignments list') : html`
-    <div class="bars" role="group" aria-label="Assignment history by outcome. Select a bar to filter.">
-      ${hist.map(([k, n]) => html`<button class="bar" type="button" data-hist="${k}" aria-pressed="${String(histFilter === k)}"><span>${k}</span><svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><rect class="track" x="0" y="0" width="100" height="10"/><rect class="fill" x="0" y="0" width="${(n / max * 100).toFixed(1)}" height="10"/></svg><span class="n">${n}</span></button>`)}
-    </div>
-    <table class="sr"><caption>Assignment history</caption><tbody>${hist.map(([k, n]) => html`<tr><th scope="row">${k}</th><td>${n}</td></tr>`)}</tbody></table>
-    ${rows.length ? html`<table class="ledger" aria-labelledby="runner-h" data-tfilter="page" data-toolbar="toolbar"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Assignment</th><th scope="col">Repo</th><th scope="col">Agent</th><th scope="col">Ended</th>${ACTH}</tr></thead>
-      <tbody>${rows.map(a => { const st = ASTATE[a.status] || 'unknown'; return html`<tr data-id="asg:${a.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${a.status}</span></td><td class="what"><button type="button">#${a.id} ${a.title || a.role}</button></td><td class="d mono" data-k="repo">${asgRepo(a)}</td><td class="d mono" data-k="agent">${a.provider || '—'}</td><td class="d mono"><time class="rel" datetime="${a.ended || ''}" data-empty="never"></time></td>${ACT('asg:' + a.id)}</tr>`; })}</tbody></table>`
-      : html`<p class="empty">${histFilter ? `No ${histFilter} assignment among the latest ${latest.length}.` : text.q ? `No assignment matches “${text.q}”.` : 'No assignment has run.'}</p>`}`}
-
     <div class="sec-head"><h2 id="wt-h">Worktrees</h2><p class="tally">fleet sessions · ${SESS ? seen(SESS) : `${hhmm(READ)} UTC`}</p></div>
     ${SESS ? html`<table class="ledger" aria-labelledby="wt-h"><tbody>
       <tr data-id="wt:abandoned"><td class="g g-${SESS.abandoned ? 'caution' : 'ok'}">${SESS.abandoned ? '▲' : '●'}<span class="sr">${SESS.abandoned ? 'caution' : 'ok'}</span></td><td class="what"><button type="button">${SESS.abandoned} abandoned worktrees</button></td><td class="d mono">registered, directory gone</td>${ACT('wt:abandoned')}</tr>
@@ -912,7 +887,6 @@ function renderSessions() {
     </tbody></table>` : unknown('Worktrees were not read', why('sessions'))}`);
 }
 document.getElementById('view-sessions').addEventListener('click', e => {
-  const b = e.target.closest('[data-hist]'); if (b) { histFilter = histFilter === b.dataset.hist ? null : b.dataset.hist; return renderSessions(); }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
@@ -960,20 +934,18 @@ function renderDeploys() {
       ${SATS.satellites.map(x => { const st = SATSTATE(x), r = x.result || {}; return html`<tr data-id="sat:${x.host}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${x.state}</span></td><td class="what"><button type="button">${x.host}</button></td><td class="d mono">${x.state}${r.attempt > 1 ? ` · attempt ${r.attempt}` : ''}</td><td class="d mono"><time class="rel" datetime="${r.finished || r.started || ''}" data-empty="never"></time></td><td class="d num" data-k="exit">${r.exit ?? '—'}</td><td class="d mono">${x.state === 'unread' ? x.reason : r.step ? `${r.step}: ${r.line}` : '—'}</td><td class="act end"></td></tr>`; })}</tbody></table>
       ${SATS.satellites.length ? '' : html`<p class="empty">No satellite's repo-sync-follow job has reported a run yet.</p>`}`}
     ${uploadSection()}
-    <div class="sec-head"><h2 id="svc-h">Services on this Mac</h2><p class="tally">launchd · ${hhmm(READ)} UTC</p></div>
+    <div class="sec-head"><h2 id="svc-h">Services on this Mac</h2><p class="tally">${hides(rows.length, SERVICES.length, 'service')}<span>launchd · ${hhmm(READ)} UTC</span></p></div>
     ${!DOC.services ? unknown('Services were not read', why('services'), 'sd services list')
-      : html`<div class="filters toolbar-2"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span>${states.map(k => html`<button class="chip" type="button" data-svc-state="${k}" aria-pressed="${String(chips.state === k)}">${k}</button>`)}</div>
-      <p class="fsum"><span>${rows.length} of ${SERVICES.length}</span></p></div>
-    ${shell.list.chips(textChip(), rows.length, SERVICES.length)}
+      : html`<div class="filters toolbar-2">${filterBar(filterSeg('state', 'State', states, chips.state), text.q)}</div>
     ${rows.length ? html`<table class="ledger" aria-labelledby="svc-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(SVC_COLS, DS)}</thead>
       <tbody>${shown.map(s => { const st = SVCSTATE(s); return html`<tr data-id="svc:${s.label}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${s.state}</span></td><td class="what"><button type="button">${s.name}</button></td><td class="d mono">${svcWhat(s)}</td><td class="d mono">${s.state}</td><td class="d num" data-k="pid">${s.pid ?? '—'}</td><td class="d num" data-k="exit">${s.last_signal != null ? `signal ${s.last_signal}` : s.last_exit ?? '—'}</td>${ACT('svc:' + s.label)}</tr>`; })}</tbody></table>${shell.list.pager(rows.length, DS, 'services')}`
       : html`<p class="empty">${SERVICES.length ? html`No service matches. <button class="linkbtn" type="button" data-clear-q>Clear filters</button>` : 'No installed service was found.'}</p>`}`}`);
 }
 document.getElementById('view-deploys').addEventListener('click', e => {
   if (shell.list.sortBy(e, DS) || shell.list.paging(e, DS)) { shell.list.keepFocus(e, renderDeploys); return setURL(); }
-  const f = e.target.closest('[data-svc-state]');
-  if (f) { const inp = document.getElementById('shift'), word = `state:${f.dataset.svcState}`, was = inp.value.split(/\s+/).filter(Boolean);
-    inp.value = (was.includes(word) ? was.filter(w => w !== word) : [...was.filter(w => !/^state:/i.test(w)), word]).join(' '); text.q = inp.value; DS.page = 1; renderDeploys(); return setURL(); }
+  const f = e.target.closest('[data-f="state"]');
+  if (f) { const word = `state:${f.dataset.v}`, was = text.q.split(/\s+/).filter(Boolean);
+    applyText(shell.filter((was.includes(word) ? was.filter(w => w !== word) : [...was.filter(w => !/^state:/i.test(w)), word]).join(' '))); return; }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
@@ -997,10 +969,8 @@ function renderSchedules() {
   const shown = pageOf(rows, SS);
   put(el, html`
     <div class="sec-head"><h2 id="sch-h">Schedules <button class="help" type="button" aria-label="Help: Schedules" data-help="<b>launchd calendar jobs, ranked.</b> Failed first, then by next run. Last run is the cron-jobs wrapper's stamp of each run's start, end and exit. Times are this browser's clock; launchd reads the Mac's.">${I('circle-help')}</button></h2>
-      <p class="tally"><span class="g-warning">■ ${failed} failed</span><span class="g-ok">● ${CRON.length - failed} not failed</span><span>launchd · ${hhmm(READ)} UTC</span></p></div>
-    <div class="filters toolbar-2"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span><button class="chip" type="button" data-state-f="failed" aria-pressed="${String(chips.state === 'failed')}">failed</button></div>
-      <p class="fsum"><span>${rows.length} of ${CRON.length}</span><span class="g-unknown">▨ cloud routines not read</span></p></div>
-    ${shell.list.chips(textChip(), rows.length, CRON.length)}
+      <p class="tally">${hides(rows.length, CRON.length, 'job')}<span class="g-warning">■ ${failed} failed</span><span class="g-ok">● ${CRON.length - failed} not failed</span><span>launchd · ${hhmm(READ)} UTC</span><span class="g-unknown">▨ cloud routines not read</span></p></div>
+    <div class="filters toolbar-2">${filterBar(filterSeg('state', 'State', ['failed'], chips.state), text.q)}</div>
     ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(SCHED_COLS, SS)}</thead>
       <tbody>${shown.map((c, i, a) => html`<tr data-id="cron:${c.name}"${i && a[i - 1].rank !== c.rank ? html` class="band-start"` : ''}><td class="g g-${c.rank}">${GLYPH[c.rank]}<span class="sr">${c.rank}</span></td>
         <td class="what"><button type="button">${c.name}</button></td><td class="d mono">${human(c.schedule)}</td><td class="d mono">${c.state}</td><td class="d mono" data-k="last">${lastCell(c)}</td><td class="d mono" data-k="next"><time class="rel" datetime="${c.next}" data-future data-empty="never"></time></td>
@@ -1009,18 +979,18 @@ function renderSchedules() {
 }
 document.getElementById('view-schedules').addEventListener('click', e => {
   if (shell.list.sortBy(e, SS) || shell.list.paging(e, SS)) { shell.list.keepFocus(e, renderSchedules); return setURL(); }
-  const f = e.target.closest('[data-state-f]');
-  if (f) { const inp = document.getElementById('shift'); inp.value = /state:failed/.test(inp.value) ? inp.value.replace(/\s*state:failed/, '').trim() : (inp.value + ' state:failed').trim(); text.q = inp.value; SS.page = 1; renderSchedules(); return setURL(); }
+  const f = e.target.closest('[data-f="state"]');
+  if (f) { applyText(shell.filter(/state:failed/.test(text.q) ? text.q.replace(/\s*state:failed/, '').trim() : (text.q + ' state:failed').trim())); return; }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
 document.querySelector('main').addEventListener('click', e => {
-  const box = document.getElementById('shift');
-  if (e.target.closest('[data-clear-q]')) { box.value = ''; text.q = ''; applyText(); return; }
-  // A filter chip (shell.list): one removes its filter, Clear all removes every one; applyText draws the view once and writes the URL.
-  const u = e.target.closest('[data-unfilter]'), all = e.target.closest('[data-unfilter-all]'); if (!u && !all) return;
-  (all ? ['managed', 'merge', 'q'] : [u.dataset.unfilter]).forEach(k => { if (k === 'q') box.value = ''; else RS[k] = null; });
-  applyText();
+  if (e.target.closest('[data-clear-q]')) { applyText(shell.filter('')); return; }
+  // The filter bar (shell.list.fbar): the text token removes the text, Clear all every filter; applyText draws the view once
+  // and writes the URL.
+  const q = e.target.closest('[data-f="q"]'), all = e.target.closest('[data-fclear]'); if (!q && !all) return;
+  if (all) RS.managed = RS.merge = null;
+  applyText(shell.filter(all ? '' : text.q.split(/\s+/).filter(w => FIELD.test(w)).join(' ')));
 });
 
 // ---------- Details pane ----------
@@ -1078,7 +1048,7 @@ function selectRow(id, open) {
       <dt>Last request</dt><dd>${requestDetail(c.last_request)}</dd></dl>
       ${c.last_exit === 127 ? html`<p class="why">Exit 127: the shell could not find the command. A retry fails the same way until the path is fixed.</p>` : ''}${act}${logDetail(c)}`;
     shell.suggest([`Why did ${c.name} exit ${c.last_exit ?? 0}?`, `What does ${c.name} do and who reads its output?`, 'Which schedules overlap tonight?']);
-  } else if (kind === 'merge' || kind === 'asg') {
+  } else if (kind === 'asg') {
     const a = asgOf(+key); if (!a) return;
     h = asgDetails(a, act);
     shell.suggest([`Why is #${a.id} ${a.status}?`, `What else is blocked in ${asgRepo(a).split('/').pop()}?`, 'Group blocked runs by cause']);
@@ -1094,7 +1064,7 @@ function selectRow(id, open) {
         ${pw === true ? '' : html`<p class="why">No pull offered: ${pw}.</p>`}`
       : html`<h3>Git state</h3><p class="why"><span class="g-unknown" aria-hidden="true">▨</span> Not read: ${pw}.</p>`;
     h = html`<p class="kind">${I(r.registered ? 'settings' : 'folder-code')} Repo${r.registered ? '' : ' · not registered'}</p><h2>${r.name}</h2>
-      <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Runner merge</dt><dd>${r.merge}</dd></dl>
+      <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Lane merge</dt><dd>${r.merge}</dd></dl>
       ${r.registered ? html`<p><a class="btn quiet" href="?repo=${encodeURIComponent(r.path)}#view=repos">${I('settings')} Open settings</a></p>
       <p class="why">The settings page shows the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.</p>`
         : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}
@@ -1136,35 +1106,27 @@ function selectRow(id, open) {
   }
   put(details, h); swap();
   if (shell.commands.get(id)) shell.commands.select(id); else shell.setContext(details.querySelector('h2')?.textContent || '');
-  if (!['cron', 'asg', 'merge'].includes(kind)) shell.suggest(['What changed here in the last day?', 'What should I look at first on this page?', 'Explain this row']);
+  if (!['cron', 'asg'].includes(kind)) shell.suggest(['What changed here in the last day?', 'What should I look at first on this page?', 'Explain this row']);
   shell.row(id);
   if (open) shell.openPane('tab-details');
 }
 
-// ---------- Filter box ----------
-const input = document.getElementById('shift'), ghost = document.getElementById('ghost');
+// ---------- Filter: the shell's Shapeshift bar (sd:5539) ----------
+// Its text is this view's filter: free words and the managed:, merge: and state: chips. A chip control sets the bar's text.
 const RENDER = new Map([['repos', renderRepos], ['lane', renderLane], ['sessions', renderSessions], ['deploys', renderDeploys], ['schedules', renderSchedules]]);
 function render() {
   const draw = RENDER.get(view);
   if (!draw) throw new Error(`no such view: ${view}`);
   draw();
 }
-function applyText() {
-  text.q = input.value.trim();
-  const n = Object.keys(tokens().chips).length;
-  ghost.textContent = n ? `${plural(n, 'chip')}` : '';
+function applyText(q = text.q) {
+  text.q = q.trim();
   RS.page = SS.page = DS.page = 1;
   if (DOC) render();
   setURL();
 }
-input.addEventListener('input', applyText);
-input.addEventListener('keydown', e => { if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; applyText(); } });
-
-document.addEventListener('keydown', e => {
-  if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-  if (e.key === '/') { e.preventDefault(); input.focus(); }
-});
-window.PAGE_KEYS = [['/', 'Filter the open view']];
+document.addEventListener('shell:filter', e => { if (e.detail.q !== text.q) applyText(e.detail.q); });
+window.PAGE_FILTER = { repos: 'repos, e.g. merge:auto', sessions: 'Claude sessions', deploys: 'services, e.g. state:running', schedules: 'jobs, e.g. state:failed' };
 window.PAGE_LIST = { rows: () => document.querySelectorAll(`#view-${view} tbody tr[data-id]`), select: id => selectRow(id, false) };
 
 // build (sd:3521): capture's repo default is the selected repo row's.
@@ -1188,7 +1150,7 @@ function adopt(doc) {
   return { objects: objects(), state: failed.length ? { kind: 'partial', text: `Not read: ${failed.join(', ')}. Each shows why in its view.`, source: '/api/management' } : null };
 }
 function clear(err) {
-  DOC = null; READ = ''; GIT = LANE = ASG = SESS = CLAUDE = SATS = null; REPOS = []; ALL = []; SERVICES = []; CRON = [];
+  DOC = null; READ = ''; GIT = LANE = SESS = CLAUDE = SATS = null; REPOS = []; ALL = []; SERVICES = []; CRON = [];
   FAILED = err.message;
 }
 function draw() {

@@ -80,7 +80,9 @@ def shell_page(title: str, section: str, *body: object, subtitle: str, note: str
     one of `runner_exec.SCREENS` (sd:4002).
     `cli_equivalents=False` leaves out the folded list of the body's commands.
     The body keeps its server-drawn forms, which `/static/dashboard.js` submits as before; it leaves the keys to the
-    shell but `/` and `p`. `/ui/classic.css` styles that markup.
+    shell but `p`. `/ui/classic.css` styles that markup.
+    A body with a table or a list gets row 1 marked for the shell's one bar (sd:5539), which filters its tables and sets
+    each list's server-side filter.
     """
     from .palette import dialog
 
@@ -102,6 +104,8 @@ def shell_page(title: str, section: str, *body: object, subtitle: str, note: str
         tag("div", tag("div", tag("h1", title), tag("p", subtitle)),
             tag("button", "Registered commands", type="button", class_="btn quiet", data_palette_open=True,
                 aria_keyshortcuts="p"), class_="head"),
+        tag("div", class_="toolbar", id="toolbar", data_shift=True) if re.search(r"<table\b|\bdata-listing=", str(rendered_body))
+        else Markup(""),
         tag("div", id="state", hidden=True),
         dialog(screen),
         rendered_body,

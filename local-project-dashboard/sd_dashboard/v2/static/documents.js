@@ -6,6 +6,8 @@
 const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
+// One view, so the tab carries the list's count (sd:5524); the panel is the list's section, view-documents.
+window.PAGE_VIEWS = [{ id: 'documents', label: 'Documents' }];
 // build: the page claims nothing for the rail until /api/documents answers; load() sets it from the rows.
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'documents not read' };
 // build: the reading arrives by fetch, not as data/documents-data.js globals. OBSERVED is its time; ROOTS and DOCS its rows.
@@ -13,6 +15,12 @@ let OBSERVED = Date.now(), ROOTS = [], LABEL = {}, DOCS = [], STORE = '', DOC = 
 const KINDS = ['report', 'research', 'design', 'dashboard'];
 const FRESH = { today: 'modified today', week: '1–7 days', older: 'older than 7 days', stale: 'render-stale' };
 function days(iso) { return Math.floor((Date.parse(new Date(OBSERVED).toISOString().slice(0, 10)) - Date.parse(iso.slice(0, 10))) / 864e5); }
+// A destination is on when the row designates it or already holds a copy there; a row with neither is None.
+const DEST = { drive: ['Drive', 'triangle'], notion: ['Notion', 'box'], obsidian: ['Obsidian', 'gem'], none: ['None', ''] };
+function dests(d) {
+  const p = d.pub || {}, on = ['drive', 'notion', 'obsidian'].filter(ch => (p.choice && p.choice[ch]) || (p.copies || []).some(c => c.channel === ch));
+  return on.length ? on : ['none'];
+}
 function fresh(d) { const n = days(d.mod); return n <= 0 ? 'today' : n <= 7 ? 'week' : 'older'; }
 const kb = b => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024).toLocaleString()} KB`;
 const rootOf = d => ROOTS.find(x => x.key === d.key);
@@ -22,7 +30,7 @@ const shownRoots = () => ROOTS.filter(r => !r.hidden);
 const checkoutOf = d => rootOf(d).path.replace(/\/docs\/dashboard$/, '');
 
 // ---------- State ----------
-const F = { repo: new Set(), kind: new Set(), fresh: new Set(), text: '', pinned: false, hidden: false };
+const F = { repo: new Set(), kind: new Set(), fresh: new Set(), dest: new Set(), text: '', pinned: false, hidden: false };
 // The list's sort, page and size (shell.list, sd:2682): newest first, 50 a page.
 const LIST = { sort: 'mod', dir: -1, size: 50 }, L = { ...LIST, page: 1 };
 let selected = null, picked = [];
@@ -32,6 +40,7 @@ function matches(d) {
   if (F.pinned && !d.pinned) return false;
   if (F.repo.size && !F.repo.has(d.key)) return false;
   if (F.kind.size && !F.kind.has(d.kind)) return false;
+  if (F.dest.size && !dests(d).some(ch => F.dest.has(ch))) return false;
   if (F.fresh.size && !([...F.fresh].some(f => f === 'stale' ? d.stale : fresh(d) === f))) return false;
   if (F.text) { const hay = `${d.title} ${d.h1} ${d.desc} ${d.file} ${d.tags.join(' ')}`.toLowerCase(); if (!F.text.split(/\s+/).every(w => hay.includes(w))) return false; }
   return true;
@@ -41,6 +50,14 @@ function sorted(list) {
   const k = cmp[L.sort];
   return [...list].sort((a, b) => (b.pinned - a.pinned) || (k(a) < k(b) ? -1 : k(a) > k(b) ? 1 : 0) * L.dir);
 }
+// sd:5484: the list groups by repo, one band row each, and the shell's table grammar folds a band and keeps it shut across
+// sessions. Bands run by repo name, turned around while Repo sorts descending; the sort orders the rows inside each band.
+function grouped(list) {
+  const by = new Map(), name = k => (LABEL[k] || k).toLowerCase(), dir = L.sort === 'repo' ? L.dir : 1;
+  sorted(list).forEach(d => { if (!by.has(d.key)) by.set(d.key, []); by.get(d.key).push(d); });
+  return [...by.keys()].sort((a, b) => (name(a) < name(b) ? -1 : name(a) > name(b) ? 1 : 0) * dir).flatMap(k => by.get(k));
+}
+const ordered = () => grouped(DOCS.filter(matches));
 
 // ---------- Facets ----------
 const facets = document.getElementById('facets');
@@ -66,6 +83,7 @@ function renderFacets() {
     <div class="facet">${window.shell.list.pick('repo', 'Repo', shownRoots().map(r => [r.key, LABEL[r.key] || r.key, facetCount('repo', r.key), r.n === 0 ? `Nothing generated yet in ${r.path}` : '']), F.repo, { multi: true, help: hiddenRoots() })}</div>
     <div class="facet"><span class="label">Kind <button class="help" type="button" aria-label="Help: Kind" data-help="<b>Derived until the index exists.</b> A checkout with research.conf.py makes research; the rest are reports. The document index (backend work) stores kind per file.">${I('circle-help')}</button></span><div class="chips">${KINDS.map(k => chip('kind', k, k))}</div></div>
     <div class="facet"><span class="label">Freshness</span><div class="chips">${Object.entries(FRESH).map(([k, l]) => chip('fresh', k, l, k === 'stale' ? html`<span class="g-caution" aria-hidden="true">▲</span>` : ''))}</div></div>
+    <div class="facet"><span class="label">Destination</span><div class="chips">${Object.entries(DEST).map(([k, [l, i]]) => chip('dest', k, l, i ? I(i) : ''))}</div></div>
     <div class="facet"><span class="label">Show</span><div class="chips">
       <button class="chip" type="button" id="f-pinned" aria-pressed="${String(F.pinned)}">${I('pin')}Pinned only <span class="n">${DOCS.filter(d => d.pinned && !d.hidden).length}</span></button>
       <button class="chip" type="button" id="f-hidden" aria-pressed="${String(F.hidden)}">${I('eye-off')}Hidden <span class="n">${DOCS.filter(d => d.hidden).length}</span></button></div></div>`);
@@ -95,6 +113,7 @@ const COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['title', 'Docum
 function activeFilters() {
   const act = [];
   F.repo.forEach(v => act.push({ key: `repo:${v}`, label: `repo:${v}` })); F.kind.forEach(v => act.push({ key: `kind:${v}`, label: `kind:${v}` }));
+  F.dest.forEach(v => act.push({ key: `dest:${v}`, label: `dest:${v}` }));
   F.fresh.forEach(v => act.push({ key: `fresh:${v}`, label: v === 'stale' ? 'is:stale' : `age:${v}` }));
   if (F.pinned) act.push({ key: 'pinned', label: 'is:pinned' }); if (F.hidden) act.push({ key: 'hidden', label: 'is:hidden' });
   if (F.text) act.push({ key: 'q', label: `“${F.text}”` });
@@ -114,18 +133,23 @@ function row(d) {
     <td class="num">${kb(d.bytes)}</td>
     <td class="acts">${window.commands.published(d.pub)}${shell.commands.rowActions(d.id)}</td></tr>`;
 }
+// A band names its repo and how many of the filtered documents it holds; data-band keys its fold, so a count that changes
+// with a filter does not open it again.
+const band = (key, n) => html`<tr class="band" data-band="${key}" aria-hidden="true"><td colspan="${COLS.length}">${LABEL[key] || key}<span class="n">${plural(n, 'document')}</span></td></tr>`;
 // build: no request is filed (document.request is copy only), so the list has no queued request rows.
 function render() {
   renderFacets();
-  const L_ = window.shell.list, list = sorted(DOCS.filter(matches)), slice = L_.pageOf(list, L);
+  const L_ = window.shell.list, list = ordered(), slice = L_.pageOf(list, L), n = {};
+  list.forEach(d => { n[d.key] = (n[d.key] || 0) + 1; });
   put(document.getElementById('rows-head'), L_.sortHead(COLS, L));
-  put(tbody, html`${slice.map(row)}`);
+  put(tbody, html`${slice.map((d, i) => html`${i && slice[i - 1].key === d.key ? '' : band(d.key, n[d.key])}${row(d)}`)}`);
   const empty = document.getElementById('empty');
   empty.hidden = list.length > 0;
   // build: an unread store hides nothing, and the empty Hidden view says why.
   put(empty, html`${F.hidden ? html`Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a document from its row or from Details.'}` : html`No document matches these filters. <button class="linkish" type="button" data-clear>Clear filters</button>`}`);
   put(document.getElementById('chips'), L_.chips(activeFilters(), list.length, DOCS.filter(d => d.hidden === F.hidden).length));
   put(document.getElementById('pager'), L_.pager(list.length, L, 'documents'));
+  window.shell?.view.count('documents', list.length);
   // A filter that hides the selected row moves the selection to the first shown row, or clears it (design.md, Page contract).
   // No selection counts too: after an empty filter clears it, the next non-empty list selects its first row again.
   shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, select: id => show(id),
@@ -135,7 +159,7 @@ function render() {
   const nosrc = DOCS.filter(d => !d.src && !d.hidden).length;
   put(document.getElementById('tally'), html`<span class="g-caution">▲ ${stale} render-stale</span><span class="g-unknown">▨ ${nosrc} no source</span><span>${DOCS.filter(d => d.pinned).length} pinned</span>`);
   // build: the subhead names the reading's time from /api/documents, not a fixed observation.
-  put(document.getElementById('subhead'), html`${plural(DOCS.length, 'document')} in ${plural(shownRoots().length, 'root')} · read ${DOC ? html`<time class="rel" datetime="${DOC.read}"></time>` : 'not yet'}`);
+  put(document.getElementById('subhead'), html`${plural(shownRoots().length, 'root')} · read ${DOC ? html`<time class="rel" datetime="${DOC.read}"></time>` : 'not yet'}`);
 }
 document.getElementById('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, L)) window.shell.list.keepFocus(e, render); });
 document.getElementById('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) window.shell.list.keepFocus(e, render); });
@@ -146,7 +170,7 @@ document.getElementById('chips').addEventListener('click', e => {
   if (f === 'pinned' || f === 'hidden') F[f] = false; else if (f === 'q') { F.text = ''; input.value = ''; } else F[f].delete(v);
   L.page = 1; render();
 });
-function clearAll() { F.repo.clear(); F.kind.clear(); F.fresh.clear(); F.text = ''; F.pinned = false; F.hidden = false; input.value = ''; L.page = 1; renderShift(); render(); }
+function clearAll() { F.repo.clear(); F.kind.clear(); F.fresh.clear(); F.dest.clear(); F.text = ''; F.pinned = false; F.hidden = false; input.value = ''; L.page = 1; renderShift(); render(); }
 document.getElementById('main').addEventListener('click', e => {
   if (e.target.closest('[data-clear]')) return clearAll();
 });
@@ -218,7 +242,7 @@ function registerCommands() {
     // build: the document's own address on this dashboard, not a fixed host.
     { id: 'document.open', on: 'document', label: 'Open document', does: 'Opens the rendered document in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: o => !(o.stale && rootOf(o).research),
       cli: o => `open ${location.origin}${o.href}`, run: o => { window.open(o.href, '_blank', 'noopener'); return `Opened in a new tab · ${o.title}`; } },
-    { id: 'document.pin', on: 'document', label: 'Pin', does: 'Pins the document to the top of the list; Undo unpins it.', key: 'p', icon: 'pin', risk: 'undo', when: o => o.pinned ? 'already pinned' : storeOff(),
+    { id: 'document.pin', on: 'document', label: 'Pin', does: 'Pins the document to the top of its repo; Undo unpins it.', key: 'p', icon: 'pin', risk: 'undo', when: o => o.pinned ? 'already pinned' : storeOff(),
       cli: () => NO_CLI, run: o => view(o, { pinned: true }).then(() => `Pinned ${o.title}`), undo: o => view(o, { pinned: false }) },
     { id: 'document.unpin', on: 'document', label: 'Unpin', does: 'Unpins the document; Undo pins it again.', key: 'p', icon: 'pin-off', risk: 'undo', when: o => !o.pinned ? 'not pinned' : storeOff(),
       cli: () => NO_CLI, run: o => view(o, { pinned: false }).then(() => `Unpinned ${o.title}`), undo: o => view(o, { pinned: true }) },
@@ -251,7 +275,7 @@ const details = document.getElementById('details');
 function show(id) {
   const d = DOCS.find(x => x.id === id); if (!d) return;
   selected = id;
-  tbody.querySelectorAll('tr').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
+  tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
   const root = rootOf(d);
   put(details, html`<p class="kind">${d.stale ? html`<span class="g-caution" aria-hidden="true">▲</span> render-stale · ` : d.src ? '' : html`<span class="g-unknown" aria-hidden="true">▨</span> render unknown · `}${d.kind} · ${LABEL[d.key] || d.key}</p>
     <h2>${d.title}</h2>
@@ -286,12 +310,17 @@ function show(id) {
 function select(id, open) { show(id); writeURL(); if (open) shell.openPane('tab-details'); }
 // The URL carries facets, search, sort, page and the row, as on Tasks and Reports, so a filtered list can be bookmarked or sent.
 // Lists join with commas; defaults are left out. Unknown values are dropped on read.
-const SORTS = Object.keys(cmp);
+// sd:5484: the same query, less the page, is kept in localStorage per page, as the shell keeps a page's view and its folds;
+// an address with none of the page's own params opens on it. A blocked store keeps the filters for this visit only.
+const SORTS = Object.keys(cmp), KEEP = `sd.filters.${location.pathname}`;
 function readURL() {
-  const q = new URLSearchParams(location.search), list = k => (q.get(k) || '').split(',').filter(Boolean);
+  const own = new URLSearchParams(location.search); own.delete('row');
+  let kept = ''; if (!own.toString()) try { kept = localStorage.getItem(KEEP) || ''; } catch { /* blocked: nothing kept */ }
+  const q = kept ? new URLSearchParams(kept) : own, list = k => (q.get(k) || '').split(',').filter(Boolean);
   F.repo = new Set(list('repo').filter(v => ROOTS.some(r => r.key === v)));
   F.kind = new Set(list('kind').filter(v => KINDS.includes(v)));
   F.fresh = new Set(list('fresh').filter(v => v in FRESH));
+  F.dest = new Set(list('dest').filter(v => v in DEST));
   F.text = (q.get('q') || '').trim().toLowerCase(); F.pinned = q.get('pinned') === '1'; F.hidden = q.get('hidden') === '1';
   // A page is decimal digits: ?page=1.5 sliced mid-page and pressed no pager button, and Number('0x2') is 2 (sd:2427).
   window.shell.list.listParams(q, L, { sorts: SORTS, size: LIST.size });
@@ -300,9 +329,11 @@ function readURL() {
 }
 function writeURL() {
   const q = new URLSearchParams();
-  ['repo', 'kind', 'fresh'].forEach(k => { if (F[k].size) q.set(k, [...F[k]].join(',')); });
+  ['repo', 'kind', 'fresh', 'dest'].forEach(k => { if (F[k].size) q.set(k, [...F[k]].join(',')); });
   if (F.text) q.set('q', F.text); if (F.pinned) q.set('pinned', '1'); if (F.hidden) q.set('hidden', '1');
   window.shell.list.listQuery(q, L, LIST);
+  // Only once the first read has restored the filters: a draw before it would keep an empty query over the kept one.
+  if (linked) { const k = new URLSearchParams(q.toString()); k.delete('page'); try { localStorage.setItem(KEEP, k.toString()); } catch { /* blocked */ } }
   shell.url(q); // the shell keeps ?row=
 }
 // build: no proposal card. The reference drafted a documents.conf line in chat; neither line it proposed stops a render.
@@ -435,7 +466,7 @@ function attention() {
   window.PAGE_ATTENTION = DOC && DOC.attention || { state: 'unknown', n: 0, what: 'documents not read' };
   window.shell.attention?.(window.PAGE_ATTENTION);
 }
-const shownPage = () => sorted(DOCS.filter(matches)).slice((L.page - 1) * L.size, L.page * L.size);
+const shownPage = () => ordered().slice((L.page - 1) * L.size, L.page * L.size);
 let reading = null, linked = false;
 function adopt(doc) {
   DOC = doc;
@@ -450,7 +481,7 @@ function adopt(doc) {
     linked = true;
     const q = shell.row();
     readURL();
-    const at = sorted(DOCS.filter(matches)).findIndex(d => d.id === q);
+    const at = ordered().findIndex(d => d.id === q);
     if (at >= 0) { L.page = Math.floor(at / L.size) + 1; selected = q; }
   }
   const contested = DOC.contested || [];

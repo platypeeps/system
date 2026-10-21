@@ -16,8 +16,9 @@ no repository records deployments, and the operator ruled out a mail reader
 (sd:2212). A kind whose every source failed to read draws hatched, unknown
 rather than zero, with the reason. The timeline's filters are one bar: state
 and range as segmented controls, a Repo list that filters as you type, and the
-picked kinds, repos and query as removable tokens; the lamps and lanes filter
-by kind. Job retry posts the job's revision
+picked kinds, repos and query as removable tokens, then Clear all; the lamps
+and lanes filter by kind. The shell draws that bar for every table page
+(`shell.list.fbar`, sd:5463); the count sits on the Timeline title line. Job retry posts the job's revision
 and asks first after exit 127, command not found, naming the exit (sd:3392). Its toast says "Retry
 started" only when launchctl accepted the request; a refusal names launchctl's
 message, and a timeout or a lost answer says the outcome is not known, as

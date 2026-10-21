@@ -7,8 +7,11 @@
   from its 20-map, 30-brief and 40-docs sentences that cite a ledger row by URL or ID, sd:5064) per selection.
   The design's data/research-sources.js and its project list are sample data and do not ship. Nothing reads review rounds yet,
   so they say so; Render and Review are copy only, and Start research is off: nothing here writes.
-  Views: the shell's view switch (shell.js, view block) shows one panel, #view-projects (the board, first), #view-sources or
-  #view-claims; research.js declares them in window.PAGE_VIEWS. The selected project carries across all three.
+  Views: the shell's view switch (shell.js, view block) shows one panel, #view-projects (the board, first), #view-sources,
+  #view-claims or #view-experiments; research.js declares them in window.PAGE_VIEWS. The selected project carries across all four.
+  Experiments (pack sd:5525) is each checkout's status brief, 30-brief/BRIEF-status.md, read with the board; a row's Build deck
+  posts /api/research/deck and reads /api/research/deck/<id> until the run settles (research_deck.py); its Import to Slides
+  posts /api/research/slides (research_slides.py).
 -->
 <html lang="en">
 <head>
@@ -99,6 +102,18 @@
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
       </div>
       <div id="claims"></div>
+    </section>
+
+    <section id="view-experiments" aria-labelledby="xp-h">
+      <div class="sec-head">
+        <h2 id="xp-h">Experiments <button class="help" type="button" aria-label="Help: Experiments" data-help="<b>Each checkout's status brief, 30-brief/BRIEF-status.md.</b> State, Updated, the line and Asks are its Status at a glance and Asks sections. The State cell's first word sets the mark: Running, Decided or Done ●, Waiting ▲, Blocked ■, any other word ▨. A brief not updated for over 7 days is stale. A row's Build deck lays its 30-brief/deck.json out as docs/dashboard/deck.pptx in the checkout, and the row links it. Import to Slides then sends that deck to Google Slides on the work account, and the row links the Slides file.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="xp-tally"></p>
+      </div>
+      <table class="ledger xp" aria-labelledby="xp-h" data-tfilter="page" data-toolbar="toolbar">
+        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Experiment</th><th scope="col">Updated</th><th scope="col">Asks</th><th scope="col">Links</th><th scope="col" class="acts"><span class="sr">Actions</span></th></tr></thead>
+        <tbody id="xp-rows"></tbody></table>
+      <p class="empty why" id="xp-empty" hidden></p>
     </section>
   </main>
 

@@ -276,6 +276,36 @@ class TheDocuments(ScreenCase):
         with self.assertRaises(workflow.MissingItem):
             tasks_screen.details(self.connection, 9999, now=NOW)
 
+    def test_the_details_carry_the_list_row_and_why_the_list_leaves_the_item_out(self):
+        """sd:5462: a link to an item /api/tasks leaves out opens it in Details, from its row in the list's shape and the
+        reason. `left_out` is None exactly for the items the list holds, a parked task among them."""
+        from sd_db import writing
+
+        quiet = self.item("A quiet nightly run", kind="report", fields={"attention": False})
+        bare = self.item("A report with no attention field", kind="report")
+        loud = self.item("Look at the failed run", kind="report", fields={"attention": True})
+        parked = self.item("Parked by the prune", kind="task", priority=4)
+        set_item_fields(self.connection, parked, parked_at="2026-09-01T02:00:00Z")
+        root = Path(self.tmp.name) / "writing"
+        (root / "content" / "2026" / "a-piece").mkdir(parents=True)
+        (root / "content" / "2026" / "a-piece" / "index.md").write_text("---\ntitle: A piece\nstatus: review\n---\n\nWords.\n")
+        upsert_repo(self.connection, str(root), pieces_source="file")
+        piece = writing.import_piece(self.connection, str(root), "2026/a-piece", who="test")["item"]["id"]
+        set_item_fields(self.connection, piece, parked_at="2026-09-01T02:00:00Z")
+        self.connection.commit()
+        rows = {row["id"]: row for row in tasks_screen.document(self.connection, now=NOW)["rows"]}
+        every = [*self.ids.values(), quiet, bare, loud, parked, piece]
+        got = {item: tasks_screen.details(self.connection, item, now=NOW) for item in every}
+        self.assertEqual({item: got[item]["left_out"] for item in every if got[item]["left_out"]},
+                         {self.ids["old"]: "done before the week", quiet: "a report that needs no attention",
+                          bare: "a report that needs no attention",
+                          piece: "a parked writing piece, which revives through its own workflow"})
+        self.assertEqual({item for item in every if got[item]["left_out"] is None}, set(rows))
+        for item in rows:
+            self.assertEqual(got[item]["row"], rows[item], item)
+        old = got[self.ids["old"]]["row"]
+        self.assertEqual((old["id"], old["status"], old["revision"]), (self.ids["old"], "done", got[self.ids["old"]]["revision"]))
+
 
 class ThePage(BrowserSession):
     def setUp(self):
@@ -392,7 +422,10 @@ C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
 window.shell = { commands: C, post, getJSON, shown: stillShown, itemHref, itemPage, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, capture() {},
+  // The Shapeshift bar's text (shell.filter, sd:5539): a page sets it with this and hears it as shell:filter.
+  filter: q => (OUT.shift = String(q ?? '').trim()),
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
+  view: { current: () => null, show: () => true, hide() {}, count: (id, n) => { (OUT.counts = OUT.counts || {})[id] = n; } },
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 """ + LIST_JS + r"""
     return list; })() };
@@ -645,7 +678,7 @@ class TheScript(ScreenCase):
                   + f"location.search = {json.dumps(search)}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q.toString());\n"
                   + """ANSWER = (path, body) => {
   if (path === '/api/tasks') return typeof FAIL_TASKS === 'string' ? [500, { error: FAIL_TASKS }] : [200, JSON.parse(JSON.stringify(DOC))];
-  var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : [200, detailNow(m[1])];
+  var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : m[1] in DETAILS ? [200, detailNow(m[1])] : [404, { error: 'no item ' + m[1] }];
   return WRITE ? storing(WRITE(path, body)) : [404, { error: 'no answer' }];
 };\n""" + COMMANDS_JS + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
@@ -749,7 +782,8 @@ R.pick = [menu.hidden, btn.attrs['aria-label'], OUT.focus.at(-1)];""")
         self.assertIn('<select id="f-p" class="fsel" data-pick="p"><option value="" selected>All</option><option value="1">P1</option>', filters)
         self.assertIn('<option value="unset">unset</option></select>', filters)
         self.assertIn("Port the page", out["R"]["board"])
-        self.assertIn("3 tasks", out["R"]["sub"])
+        self.assertEqual(out["counts"]["all"], 3, "sd:5524: the All tab carries the count")
+        self.assertNotIn("3 tasks", out["R"]["sub"])
         # The badge is the read's own (sd:3446): at NOW the seeded due date is 3 days off, so nothing is due yet.
         self.assertEqual(out["attention"][-1], {"state": "ok", "n": 0, "what": "nothing due"})
         self.assertEqual(out["attention"][-1], self.doc["attention"])
@@ -1392,6 +1426,63 @@ C.runBulk(cmd('item.p1'), [C.get('{plan}'), C.get('{ask}')]); await flush();""",
         self.assertEqual(out["toasts"], [[f"Edit → P3 · 1 item · 1 of 2 not changed: #{ask} Answer the question (it is already P3)", True],
                                          ["Edit → P1 · 2 items", True]])
 
+    # sd:5462: every page opens an item at /tasks?row=<n>. One the read leaves out, a quiet report or one done before the
+    # week, opens in Details here with why the list leaves it out, never on its classic item page and never in a view.
+    LEFT_OUT = """const views = () => ['list', 'board', 'matrix'].map(v => { document.dispatchEvent(new CustomEvent('tasks:view', { detail: v })); return ELS['view-' + v].html; });
+R.replaced = OUT.replaced || null; R.views = views(); R.det = ELS.details.html; R.sub = ELS.subhead.html;
+const kept = []; window.shell.reconcile = a => { kept.push(a.current, !!(a.keep && a.keep(a.current))); };
+ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'kind' }, value: 'task' } }); R.kept = kept;
+ELS.main.listeners.change.forEach(f => f({ target: { dataset: { edit: 'p', key: String(ASK) }, value: '1' } })); await flush();
+R.after = ELS.details.html; R.views2 = views(); R.obj = C.get(String(ITEM)) && C.get(String(ITEM)).type; R.gets = OUT.gets;"""
+
+    def test_a_linked_item_the_view_hides_stays_selected_and_says_so(self):
+        # sd:5462: a report done this week is in the read, but the board's view hid it, so the first draw selected the first
+        # card and rewrote ?row= (seen in a real browser on 2026-10-20). The linked row stays selected until another is picked.
+        shown = self.item("A report that wants a look", kind="report", fields={"attention": True})
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        self.assertIn(shown, {row["id"] for row in self.doc["rows"]})
+        out = self.run_page(self.LEFT_OUT.replace("ASK", str(self.ids["ask"])).replace("ITEM", str(shown)), self.ECHO,
+                            search=f"?view=list&row={shown}")
+        kept = out["R"]["kept"]
+        self.assertEqual(set(zip(kept[::2], kept[1::2])), {(str(shown), True)})
+        self.assertIn(f"The view or filters hide #{shown}; it stays selected until you pick another.", out["R"]["after"])
+
+    def test_a_linked_item_the_list_leaves_out_opens_in_details_and_in_no_view(self):
+        quiet = self.item("A quiet nightly run", kind="report", fields={"attention": False})
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        self.details[str(quiet)] = tasks_screen.details(self.connection, quiet, now=NOW)
+        for item, title, why in ((self.ids["old"], "Finished long ago", "done before the week"),
+                                 (quiet, "A quiet nightly run", "a report that needs no attention")):
+            with self.subTest(item=item):
+                self.assertNotIn(item, {row["id"] for row in self.doc["rows"]})
+                out = self.run_page(self.LEFT_OUT.replace("ASK", str(self.ids["ask"])).replace("ITEM", str(item)), self.ECHO,
+                                    search=f"?view=list&row={item}")
+                self.assertIsNone(out["R"]["replaced"])
+                self.assertIn(f"<h2>{title}</h2>", out["R"]["det"])
+                self.assertIn(f"The list, board and matrix leave #{item} out: {why}.", out["R"]["det"])
+                for drawn in out["R"]["views"] + out["R"]["views2"]:
+                    self.assertNotIn(item, keys(drawn))
+                    self.assertNotIn(title, drawn)
+                self.assertTrue(out["R"]["sub"].startswith("read "), out["R"]["sub"])
+                # A filter change keeps it selected though no row shows it, and a reread after a write keeps it in Details.
+                kept = out["R"]["kept"]
+                self.assertEqual(set(zip(kept[::2], kept[1::2])), {(str(item), True)})
+                self.assertIn(f"The list, board and matrix leave #{item} out: {why}.", out["R"]["after"])
+                self.assertEqual(out["R"]["obj"], "item")
+                self.assertNotIn("not read again", out["R"]["after"])
+                self.assertEqual(out["R"]["gets"].count("/api/tasks"), 2)
+
+    def test_a_linked_id_with_no_item_says_so_and_a_failed_read_opens_nothing(self):
+        out = self.run_page("R.replaced = OUT.replaced || null; R.det = ELS.details.html;", search="?view=list&row=4242")
+        self.assertIsNone(out["R"]["replaced"])
+        self.assertIn("#4242 did not open: no item 4242.", out["R"]["det"])
+        # A read that failed lists nothing, which says nothing about the item: the page stays and says the read failed.
+        out = self.run_page("R.replaced = OUT.replaced || null; R.det = ELS.details.html; R.gets = OUT.gets;",
+                            prelude="var FAIL_TASKS = 'the store is locked';", search="?view=list&row=4242")
+        self.assertIsNone(out["R"]["replaced"])
+        self.assertEqual(out["R"]["gets"], ["/api/tasks"])
+        self.assertIn("The tasks were not read, so nothing is selected.", out["R"]["det"])
+
     def park(self):
         """A P4 task the nightly prune parked, in the store and in the documents read again."""
         parked = self.item("Parked by the prune", kind="task", priority=4)
@@ -1407,7 +1498,8 @@ C.runBulk(cmd('item.p1'), [C.get('{plan}'), C.get('{ask}')]); await flush();""",
         out = self.run_page("""R.sub = ELS.subhead.html; R.board = ELS['view-board'].html; R.filters = ELS.filters.html;
 ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'parked' }, value: '1' } });
 R.parked = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
-        self.assertIn("3 tasks · 1 parked", out["R"]["sub"])
+        self.assertIn("1 parked · read", out["R"]["sub"])
+        self.assertEqual(out["counts"]["all"], 3)
         self.assertNotIn("Parked by the prune", out["R"]["board"])
         self.assertIn("Plan the review", out["R"]["board"])
         self.assertIn('<select id="f-parked" class="fsel" data-pick="parked"><option value="" selected>Not parked</option><option value="1">parked only</option></select>', out["R"]["filters"])
@@ -2316,18 +2408,6 @@ class TheFilterAddress(ScreenCase):
         self.doc["rows"] = [self.made(1000 + n, f"row {n}", "planning", "0") for n in range(60)]
         shown, _ = self.listed("?view=list&row=1055")
         self.assertIn(1055, shown)
-
-    def test_a_linked_item_tasks_does_not_list_opens_on_its_item_page(self):
-        """sd:3526: every page opens an item at /tasks?row=<n>; Tasks lists no quiet report and nothing done before the
-        week, so such an item goes on to its item page, never to the first card in its place."""
-        for row, replaced in (("4242", "/item/4242"), ("901", None)):
-            with self.subTest(row=row):
-                out = self.run_page("R.replaced = OUT.replaced || null;", search=f"?view=list&row={row}")
-                self.assertEqual(out["R"]["replaced"], replaced)
-        # A read that failed lists nothing, which says nothing about the item: the page stays and says the read failed.
-        out = self.run_page("R.replaced = OUT.replaced || null;", prelude="var FAIL_TASKS = 'the store is locked';",
-                            search="?view=list&row=4242")
-        self.assertIsNone(out["R"]["replaced"])
 
 
 class TheOperationsBars(ScreenCase):

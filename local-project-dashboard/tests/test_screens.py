@@ -223,7 +223,7 @@ window.shell = { chording: () => STATE.chording };
 var field = { focus() { OUT.focused += 1; } };
 var document = {
   querySelectorAll: () => [],
-  querySelector: selector => selector === "[data-listing-filter]" ? field
+  querySelector: selector => /data-listing|#shift/.test(selector) ? field
     : selector === "dialog[open]" ? (STATE.dialog ? {} : null) : null,
   getElementById: () => null,
   addEventListener: (type, listener) => (LISTENERS[type] = LISTENERS[type] || []).push(listener),
@@ -246,22 +246,51 @@ JSON.stringify(OUT);
 
 
 class TheServerDrawnScreensKeys(unittest.TestCase):
-    """sd:3586 PR 6: every server-drawn screen is a shell page, so dashboard.js keeps only / and p for the shell."""
+    """sd:3586 PR 6: every server-drawn screen is a shell page, so dashboard.js keeps only p for the shell."""
 
-    def test_slash_focuses_the_filter_and_the_shell_keys_stay_the_shells(self):
+    def test_the_shell_keys_and_slash_stay_the_shells(self):
         script = (DASHBOARD / "static/dashboard.js").read_text(encoding="utf-8")
         result = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", KEYS_HARNESS.replace("SCRIPT", script)],
                                 capture_output=True, text=True, timeout=60, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
-        # j, k, Enter, ? and Escape are shell.js's: this script neither acts on them nor swallows them.
+        # j, k, Enter, ?, Escape and / are shell.js's (/ is its one bar, sd:5539): this script neither acts on them nor
+        # swallows them.
         self.assertEqual(out["afterShellKeys"], 0)
-        self.assertEqual(out["prevented"], ["/"])
-        self.assertEqual(out["afterSlash"], 1)
-        # Typing, a pending g-chord and an open dialog keep the key.
-        self.assertEqual([out["whileTyping"], out["whileChording"], out["underADialog"]], [1, 1, 1])
-        self.assertEqual(out["pageKeys"], [["/", "focus the notes filter"], ["p", "run a registered command"]])
-        self.assertNotRegex(script, r"keymap|data-active|\bshelled\b")
+        self.assertEqual(out["prevented"], [])
+        self.assertEqual([out["afterSlash"], out["whileTyping"], out["whileChording"], out["underADialog"]], [0, 0, 0, 0])
+        self.assertEqual(out["pageKeys"], [["p", "run a registered command"]])
+        self.assertNotRegex(script, r"keymap|data-active|\bshelled\b|data-listing-filter")
+
+
+class TheServerDrawnScreensBar(ScreenCase):
+    """sd:5539 (operator, note 25755): a server-drawn screen with a table or a list has the shell's one bar, not a Filter
+    form per list; Enter in the bar's filter mode loads the page with the text in each list's key."""
+
+    def test_an_item_page_marks_row_one_for_the_bar_and_draws_no_filter_form(self):
+        self.repo()
+        item = self.item("an item with notes", repo="/repos/system")
+        self.note(item, "first")
+        page = self.render(f"/item/{item}", {"q": ["first"]})
+        self.assertEqual(page.count("data-shift"), 1)
+        self.assertIn('<div class="toolbar" id="toolbar" data-shift></div>', page)
+        self.assertNotIn('role="search"', page)
+        self.assertNotIn("listing-go", page)
+        self.assertIn('data-listing-q="q"', page)
+
+    def test_a_page_with_no_table_and_no_list_has_no_bar(self):
+        from sd_dashboard.markup import tag
+        from sd_dashboard.pages import shell_page
+
+        page = shell_page("Plain", "Today", tag("p", "no rows here"), subtitle="s", note="n", screen="today")
+        self.assertNotIn("data-shift", page)
+
+    def test_the_shell_sets_every_lists_key_and_drops_its_page(self):
+        js = (DASHBOARD / "v2/static/shell.js").read_text(encoding="utf-8")
+        self.assertIn("const LISTS = [...main.querySelectorAll('[data-listing-q]')].map(el => el.dataset.listingQ);", js)
+        self.assertIn("LISTS.forEach(k => { v ? p.set(k, v) : p.delete(k); p.delete(k.replace(/q$/, 'page')); });", js)
+        self.assertIn("if (e.key === 'Enter' && shiftMode === 'filter' && LISTS.length && v !== listQ.trim()) { e.preventDefault(); listGo(v); }", js)
+        self.assertNotIn(".listing-form", js)
 
 
 class TheItemPageUnderASecondHome(ScreenCase):

@@ -803,6 +803,8 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._document(path[len("/documents/") :])
         if path.startswith("/designs/"):
             return self._design(path[len("/designs/") :])
+        if path.startswith("/research/deck/"):
+            return self._research_deck(context, path[len("/research/deck/") :])
         if path.startswith("/api/adversarial/") and not split.query:
             from . import adversarial
 
@@ -1129,10 +1131,21 @@ class Dashboard(BaseHTTPRequestHandler):
         try:
             connection = sd_db.connect(self.database)
             try:
-                from sd_db import reporting
+                from sd_db import reporting, writes
+                from . import command_journal
+
+                # A command that runs something gets its execution journal record once it answered (sd:5541). Its
+                # writes are the journal's, not the action's, so they count as no operator action.
+                journal = (self.database, connection, path.path, payload, context.principal, writes.now())
                 before = connection.total_changes
-                result = action(connection)
-                if connection.total_changes > before:
+                try:
+                    result = action(connection)
+                except BaseException as failure:
+                    command_journal.record(*journal, failure=failure)
+                    raise
+                changed = connection.total_changes > before
+                command_journal.record(*journal, result)
+                if changed:
                     reporting.observed_action(connection, path.path)
             finally:
                 connection.close()
@@ -1184,6 +1197,24 @@ class Dashboard(BaseHTTPRequestHandler):
             )
         # A `*.app.html` page gets a sandbox and its own script; every other page gets none (sd:1502).
         self._send(200, body, "text/html; charset=utf-8", policy=policy(root, name, body))
+
+    def _research_deck(self, context, key: str) -> None:
+        """One experiment's built status deck, `docs/dashboard/deck.pptx` in its checkout, as a download (pack sd:5525)."""
+        from .research_deck import built
+
+        if not self._session(context):
+            return self._send(403, error_page(403, "Open a dashboard page before downloading a deck.").encode("utf-8"),
+                              "text/html; charset=utf-8")
+        found = built(key)
+        try:
+            body = found.read_bytes() if found is not None else None
+        except OSError as problem:
+            return self._send(503, error_page(503, str(problem)).encode("utf-8"), "text/html; charset=utf-8")
+        if body is None:
+            return self._send(404, error_page(404, "No built deck at this address.").encode("utf-8"), "text/html; charset=utf-8")
+        name = key.replace("/", "-") + "-deck.pptx"
+        self._send(200, body, "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                   overrides={"Content-Disposition": f'attachment; filename="{name}"'})
 
     def _design(self, tail: str) -> None:
         """One file from the ui-design checkout, at its path in the tree.
@@ -1459,6 +1490,10 @@ def main(argv: list[str] | None = None, *, serve: bool = True) -> int:
         return 0
     kept = (options["fleet_backend"], options["metrics_backend"], options["usage_backend"])
     server.warm_up = lambda: _warm(arguments.database, kept)
+    # A run a command started before the last stop is watched again, so its journal record ends (sd:5541).
+    from . import command_journal
+
+    command_journal.resume(arguments.database)
     if arguments.config:
         # The restart probe, two steps from this checkout. First its dashboard.sh preflight, which runs
         # its bootstrap.py and runtime. Then a fresh interpreter imports the serving code, as bootstrap.py

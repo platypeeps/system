@@ -3,8 +3,8 @@
   Management (sd:2118), at /management. Built from the design source's products/system/designs/v2/management.html at d82daa1,
   with design.md and commands.md.
   Data: /api/management (management_screen.document: the sd-db repo table with each row's review declaration and its
-  protection reading and runtime pins, the fleet's git state and sessions, this Mac's Claude sessions (claude_sessions, sd:5106), the runner lane and
-  assignments, launchd services and jobs), read when the page opens and after a write. Repos' settings columns (?cols=settings,
+  protection reading and runtime pins, the fleet's git state and sessions, this Mac's Claude sessions (claude_sessions, sd:5106), the ship lane's
+  queue, launchd services and jobs), read when the page opens and after a write. Repos' settings columns (?cols=settings,
   sd:1629) are the condensed overview: one row per repo. Writes: the sd-db repo verbs, job retry and cancel, service start,
   stop and restart. Nothing here is sample data.
 -->
@@ -35,19 +35,8 @@
 
     <h2 class="sr">Areas</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
-    <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
-    <div class="toolbar" id="toolbar">
-      <div class="shift">
-        <label class="field">
-          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
-          <span class="sr">Filter this view</span>
-          <input id="shift" placeholder="Filter repos, e.g. hoa or merge:auto" autocomplete="off" spellcheck="false" aria-describedby="shift-hint">
-          <span class="ghost" id="ghost"></span>
-          <kbd>/</kbd>
-        </label>
-        <p class="hint sr" id="shift-hint">Free text filters rows. managed:yes, merge:auto, source:row and state:failed become chips. Esc clears.</p>
-      </div>
-    </div>
+    <!-- The toolbar standard (sd:5281): row 1, the views then the shell's Shapeshift bar (sd:5539); the count sits on the view's tab. -->
+    <div class="toolbar" id="toolbar" data-shift></div>
     <section id="view-repos" aria-label="Repos"></section>
     <section id="view-lane" aria-label="Ship lane" hidden></section>
     <section id="view-sessions" aria-label="Sessions" hidden></section>

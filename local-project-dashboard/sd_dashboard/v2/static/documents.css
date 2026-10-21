@@ -1,9 +1,7 @@
 /* Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4
- * Documents v2: Shapeshift search/request bar → facet rail (repo, kind, freshness, pinned, hidden) → paged ledger → Details with facts + preview.
+ * Documents v2: Shapeshift search/request bar → facet rail (repo, kind, freshness, destination, pinned, hidden) → paged ledger → Details with facts + preview.
  * Real data: 99 files from docs/dashboard roots, 2026-09-27 23:51 UTC. */
 
-.sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin: 0 0 var(--space-xs); }
-.sec-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); display: flex; align-items: center; gap: var(--space-2xs); }
 .tally { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 0; font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); }
 
 /* Facets */
@@ -31,6 +29,9 @@
 .linkish { font: inherit; color: var(--color-ink-2); background: none; border: 0; padding: 0 var(--space-2xs); text-decoration: underline; cursor: pointer; min-height: 1.75rem; }
 
 /* Ledger */
+/* sd:5484: one band per repo, as Designs bands by product; the shell's table grammar makes it a fold. */
+.ledger tr.band td { height: auto; padding: var(--space-md) var(--space-xs) var(--space-2xs); font: 600 var(--text-2xs)/1.3 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); background: transparent; border-bottom: var(--rule-hair) solid var(--color-rule); }
+.ledger tr.band .n { margin-left: var(--space-xs); font: 400 var(--text-xs)/1 var(--font-data); letter-spacing: 0; text-transform: none; color: var(--color-ink-2); }
 .ledger th[aria-sort] { color: var(--color-ink); }
 .ledger .g { width: 1.75rem; text-align: center; font-family: var(--font-data); }
 .ledger .what button { all: unset; cursor: pointer; font-weight: 500; }
@@ -87,6 +88,8 @@
   .facet > .label, .facet > .fgroup > .label { padding-top: 0; }
   .rootfold { grid-column: 1; }
   .ledger thead { display: none; }
+  .ledger tbody tr.band { display: block; padding: 0; }
+  .ledger tbody tr.band td { display: block; }
   .ledger tbody tr { display: grid; grid-template-columns: 1.75rem minmax(0, 1fr) auto; grid-template-areas: "g what acts" ". meta acts"; border-bottom: var(--rule-hair) solid var(--color-rule-2); padding: var(--space-xs) 0; }
   .ledger td { height: auto; border: 0; padding: 0 var(--space-2xs); }
   .ledger .g { grid-area: g; } .ledger .what { grid-area: what; } .ledger .acts { grid-area: acts; align-self: center; }

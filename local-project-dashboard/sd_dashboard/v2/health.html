@@ -5,7 +5,8 @@
   Data: /api/health/summary (every lamp and the badge, waiting on no walker) and /api/health/<view> (one view's areas,
   health_screen.part: Checkouts, Machine, GitHub, Jobs), each read the first time its view opens and on Refresh. Every fix is a CLI line for Copy. The two writes are
   Re-run collector: POST /api/shadow/sync starts the server's shadow sync, as Contributions' does (sd:2894), and
-  Snooze (sd:1896): /ui/snooze.js; a row's Snooze or Unsnooze posts /api/snooze, and Health reads again.
+  Snooze (sd:1896): /ui/snooze.js; a row's Snooze or Unsnooze posts /api/snooze, and Health reads again; Ignore and
+  Unignore (sd:5470) post the same route with no end.
   Nothing here is sample data.
 -->
 <html lang="en">
@@ -36,15 +37,8 @@
     <div id="state" hidden></div>
     <h2 class="sr">Areas</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
-    <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
-    <div class="toolbar" id="toolbar">
-      <label class="filter">
-        <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
-        <span class="sr">Filter rows</span>
-        <input id="q" placeholder="Filter: repo, path, branch" autocomplete="off">
-        <kbd>/</kbd>
-      </label>
-    </div>
+    <!-- The toolbar standard (sd:5281): row 1, the views then the shell's Shapeshift bar (sd:5539); the count sits on the view's tab. -->
+    <div class="toolbar" id="toolbar" data-shift></div>
     <section id="view-checkouts" aria-label="Checkouts"><div id="state-checkouts" hidden></div><div id="body-checkouts"></div></section>
     <section id="view-machine" aria-label="Machine" hidden><div id="state-machine" hidden></div><div id="body-machine"></div></section>
     <section id="view-github" aria-label="GitHub" hidden><div id="state-github" hidden></div><div id="body-github"></div></section>

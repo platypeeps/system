@@ -117,7 +117,7 @@ class ThePage(BrowserSession):
     def test_every_file_the_page_names_is_served(self):
         _, _, body = self.request("/today")
         named = re.findall(r'(?:src|href)="(/ui/[^"]+)"', body)
-        self.assertEqual(len(named), 21)  # six stylesheets, fifteen scripts
+        self.assertEqual(len(named), 22)  # seven stylesheets, fifteen scripts
         for path in named:
             status, headers, _ = self.request(path)
             self.assertEqual(status, 200, path)

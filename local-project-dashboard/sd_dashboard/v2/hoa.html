@@ -37,7 +37,7 @@
 
   <!-- The toolbar standard (sd:5281): row 1, the views. It sits outside every view panel, as on Home: picking a view hides
        the other panels, and the tabs must stay (review round 1). -->
-  <div class="toolbar" id="toolbar">
+  <div class="toolbar" id="toolbar" data-shift>
     <div class="place-switch" id="viewswitch" data-label="HOA views"></div>
   </div>
   <div id="view-overview" data-place-view="overview" data-label="Overview">
@@ -47,7 +47,8 @@
 
   <section class="panel" id="sources" aria-labelledby="src-h">
     <div class="panel-head">
-      <div><h2 id="src-h">Data sources</h2><p>How old each HOA source is, from the checkout's <code>tools/source-ages.py</code>. Refresh now starts the source's manual job, as Management's Retry does; Run sweep starts the HOA sweep.</p></div>
+      <div><h2 id="src-h">Data sources</h2><p>How old each HOA source is, from the checkout's <code>tools/source-ages.py</code>. Run now starts the source's manual job, as Management's does; Refresh all starts every one that can start; Run sweep starts the HOA sweep.</p></div>
+      <div class="tools" id="src-tools"></div>
     </div>
     <table class="ledger" id="src-table" aria-labelledby="src-h">
       <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Source</th><th scope="col" class="hide-sm">Allowed</th><th scope="col" class="hide-sm">Refresh</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
@@ -85,7 +86,7 @@
   </div>
 
   <section class="place-view" id="view-tasks" data-place-view="tasks" data-label="Tasks" aria-labelledby="tasks-h" hidden>
-    <div class="sec-head"><div><h2 id="tasks-h">Tasks</h2><p>Every open item of the hoa checkout, ranked by urgency: overdue, due within a week, the rest. Drafts go to chat; you send.</p></div><p class="tally" id="tasks-tally"></p></div>
+    <div class="sec-head"><div><h2 id="tasks-h">Tasks</h2><p>Every open item of the hoa checkout, ranked by urgency: overdue, due within a week, the rest. Drafts go to chat; you send.</p></div></div>
     <div class="toolbar" id="ob-toolbar"><div class="range" id="ob-kinds" role="group" aria-label="Kind"></div></div>
     <table class="ledger" id="ob-table" aria-labelledby="tasks-h" data-toolbar="ob-toolbar">
       <thead id="ob-head"></thead>

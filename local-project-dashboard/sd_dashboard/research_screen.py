@@ -44,8 +44,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-__all__ = ["CAP", "CLAIM_DIRS", "CLAIM_TYPES", "DIRS", "REGISTRIES", "ROUNDS_REASON", "claims", "collect", "document",
-           "grade_legend", "parse_registry", "project", "source_key", "sources"]
+__all__ = ["BRIEF", "BUILT", "CAP", "CLAIM_DIRS", "CLAIM_TYPES", "DECK", "DIRS", "REGISTRIES", "ROUNDS_REASON", "claims", "collect", "document", "experiment",
+           "grade_legend", "parse_registry", "project", "source_key", "sources", "stale"]
 
 #: The page's budget for one reading, the Resources > Research view's `VIEW_SECONDS`, and how much sooner the child
 #: stops so its reason arrives before the page's kill does (`fleet.FLEET_MARGIN`).
@@ -105,6 +105,17 @@ PRINT_BYTES = 56 * 1024
 #: Longest cell the reader keeps; the page shows a cut cell with an ellipsis.
 CELL = 200
 CONF_CHARS = 1000
+#: The status brief and the deck beside it (pack sd:5525): its glance rows and Asks table are the Experiments view.
+BRIEF = "30-brief/BRIEF-status.md"
+DECK = "30-brief/deck.json"
+#: What `sd-research-kit deck` writes from it, in the checkout.
+BUILT = "docs/dashboard/deck.pptx"
+#: The State cell's first word, as the standard names it, read as a state; any other word is unknown.
+STATES = {"running": "ok", "decided": "ok", "done": "ok", "waiting": "caution", "blocked": "warning"}
+GLANCE = ("State", "Updated", "In one line", "Experiment", "Deck")
+#: Asks and experiment links the board carries per brief, and the days after which a brief's Updated is stale.
+ASKS = 10
+STALE_DAYS = 7
 #: A checkout key: its path under REPO_ROOT, one group deep. The first character rules out `.` and `..`.
 KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,99})?")
 
@@ -157,6 +168,7 @@ def document(*, now: str, backend=None) -> dict:
             raise ValueError("research reader returned no projects")  # noqa: TRY004 - external document validation
     except (OSError, ValueError) as failure:
         found, projects, error = {}, [], str(failure)
+    stale(projects, now)
     return {
         "read": now,
         "error": error,
@@ -168,6 +180,23 @@ def document(*, now: str, backend=None) -> dict:
         "rounds": {"available": False, "reason": ROUNDS_REASON},
         "attention": _attention(projects, error),
     }
+
+
+def stale(projects: list, now: str) -> None:
+    """Mark each brief stale when its Updated day is over `STALE_DAYS` before `now`; None when either is not a day."""
+    try:
+        today = datetime.fromisoformat(now.replace("Z", "+00:00")).date()
+    except (AttributeError, ValueError):
+        today = None
+    for project in projects:
+        found = project.get("experiment") if isinstance(project, dict) else None
+        if not isinstance(found, dict):
+            continue
+        try:
+            day = datetime.strptime(found.get("updated") or "", "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            day = None
+        found["stale"] = None if today is None or day is None else (today - day).days > STALE_DAYS
 
 
 def _attention(projects, error: str) -> dict:
@@ -256,6 +285,62 @@ def render(item: dict) -> dict:
     return {"s": "ok", "txt": f"{len(docs)} of {len(docs)} fresh", "sub": f"newest source {newest}" if newest else ""}
 
 
+def _section(text: str, name: str) -> list[str]:
+    """The lines under the `##` heading `name`, lower case, its number ignored: a brief may number its sections its own way."""
+    found, inside = [], False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            inside = re.sub(r"^##\s+(?:\d+\.\s*)?", "", line).strip().lower() == name
+        elif inside:
+            found.append(line)
+    return found
+
+
+def _table(lines: list[str]) -> list[list[str]]:
+    """A section's table rows, less the separator row."""
+    rows = [_row(line) for line in lines if line.lstrip().startswith("|")]
+    return [cells for cells in rows if not all(re.fullmatch(r":?-{3,}:?|", cell) for cell in cells)]
+
+
+def experiment(repo: Path) -> dict | None:
+    """The status brief's state, Updated day, line, links and asks; None when the checkout keeps no brief."""
+    path = repo / BRIEF
+    if path.is_symlink() or not path.is_file():
+        return None
+    deck = (repo / DECK).is_file() and not (repo / DECK).is_symlink()
+    # When `sd-research-kit deck` last wrote the deck, or "" when it has not (sd:5525).
+    pptx = repo / BUILT
+    try:
+        stamp = pptx.stat().st_mtime if pptx.is_file() and not pptx.is_symlink() else None
+    except OSError:
+        stamp = None
+    built = datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if stamp is not None else ""
+    try:
+        if path.stat().st_size > REGISTRY_BYTES:
+            raise ValueError(f"{BRIEF} exceeds the bounded read size")
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError) as error:
+        return {"error": _cut(str(error)), "deck": deck, "built": built}
+    glance: dict[str, str] = {}
+    for cells in _table(_section(text, "status at a glance")):
+        if len(cells) >= 2 and (key := _cell(cells[0])) in GLANCE:
+            glance.setdefault(key, cells[1])
+    # A leading glyph, as the pilot's emoji, is not the state: the word is.
+    state = re.sub(r"^\W+", "", _cell(glance.get("State", "")))
+    word = state.split(None, 1)[0].rstrip(";:,.").lower() if state else ""
+    updated = re.search(r"\b\d{4}-\d{2}-\d{2}\b", glance.get("Updated", ""))
+    asks = [cells for cells in _table(_section(text, "asks"))[1:] if len(cells) >= 2]
+    return {
+        "state": state, "tone": STATES.get(word, "unknown"), "updated": updated.group(0) if updated else "",
+        "line": _cell(glance.get("In one line", "")),
+        "links": [{"text": _cut(label), "url": url} for label, url in LINK.findall(glance.get("Experiment", ""))
+                  if len(url) <= 400][:4],
+        "deck_url": _url([glance.get("Deck", "")]), "deck": deck, "built": built,
+        "asks": [{"who": _cell(cells[0]), "what": _cell(cells[1])} for cells in asks[:ASKS]], "asks_total": len(asks),
+        "error": "",
+    }
+
+
 def project(item: dict, root: Path, *, dirs=None) -> dict:
     """One board row from one `collect_research` item."""
     repo = Path(item["path"])
@@ -275,6 +360,7 @@ def project(item: dict, root: Path, *, dirs=None) -> dict:
         "docs": [{"title": _cut(str(d.get("title", ""))), "src": _cut(str(d.get("src", ""))), "state": d.get("state", ""),
                   "updated": d.get("updated", "")} for d in docs],
         "docs_total": len(docs),
+        "experiment": experiment(repo),
         "git": None if not git else {key: _cut(value) if isinstance(value := git.get(key), str) else value
                                      for key in ("branch", "dirty", "behind", "last_iso", "subject")},
     }

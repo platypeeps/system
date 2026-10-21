@@ -54,6 +54,8 @@ COMMANDS = [
     ["brief.adversarial-review", "brief", "Adversarial review", None, "safe"],
     # sd:5102: commands.js declares both for Briefs and Documents.
     ["brief.publish", "brief destination", "Publish to", None, "safe"],
+    # sd:5489: a ticked destination unticks: ask first, and Undo ticks it again.
+    ["brief.unpublish", "brief destination", "Remove copy", None, "undo"],
     ["brief.publish-now", "brief", "Publish now", None, "safe"],
 ]
 
@@ -359,7 +361,7 @@ R.primary = REG.filter(c => c.primary && c.primary({})).map(c => c.id); R.gated 
         self.assertEqual(out["R"]["reg"], COMMANDS)
         # Read is every row's primary action and is never off, so a row without a vault copy offers it too (the shell draws
         # the primary in each row: the browser check on the pull request).
-        self.assertEqual((out["R"]["primary"], out["R"]["gated"]), (["brief.read"], ["brief.open", "brief.adversarial-review", "brief.publish", "brief.publish-now"]))
+        self.assertEqual((out["R"]["primary"], out["R"]["gated"]), (["brief.read"], ["brief.open", "brief.adversarial-review", "brief.publish", "brief.unpublish", "brief.publish-now"]))
 
     def test_adversarial_review_on_a_brief_posts_its_item(self):
         """sd:5064: a brief row asks for {kind: brief, target: <its item>}; the run starts in the background."""
@@ -510,7 +512,7 @@ fire('click', act('reject')); await flush(); await flush();""", hold_a=False, ho
         self.assertEqual(cell_grammar(self, ann), [("div", "ok"), ("div", "unknown"), ("div", "ok"), ("button", None)])
         self.assertIn("Vault copies", ann)
         self.assertEqual(len(re.findall(r'class="lane-btn"', out["R"]["lanes"])), 3)
-        self.assertEqual(out["R"]["sub"], "5 briefs")
+        self.assertEqual(out["R"]["sub"], "All read")
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertIsNone(out["states"][-1])
         self.assertEqual(out["attention"], {"state": "unknown", "n": 0, "what": "watchdog not read"})
@@ -580,6 +582,24 @@ R.day = ELS.rows.html;""")
         self.assertEqual(len(re.findall(r'data-pick="src" value="[^"]+" checked', after)), 2)
         self.assertEqual(out["R"]["url"], [["src", "Intel Brief"], ["src", "Fun Events"]])
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["day"]), ["2026-09-04 - Intel Brief"])
+
+    def test_the_filters_are_activitys_bar_and_the_count_sits_once_on_the_title_line(self):
+        """sd:5463: the picked sources and the query are tokens, Clear all ends the bar, and the count is the title line's
+        alone: the bar said "3 of 3" beside the title's "3 shown"."""
+        click = "ELS.filters.listeners.click[0]({ target: { closest: s => s === %s ? { dataset: %s } : null } }); await flush();"
+        out = self.run_page("R.bar = ELS.filters.html; R.tally = ELS.tally.html;"
+                            + click % ("'[data-f]'", "{ f: 'src', v: 'Fun Events' }") + " R.bar2 = ELS.filters.html; R.tally2 = ELS.tally.html;"
+                            + click % ("'[data-fclear]'", "{}") + " R.bar3 = ELS.filters.html; R.tally3 = ELS.tally.html;",
+                            search="?src=Intel%20Brief&src=Fun%20Events")
+        R = out["R"]
+        self.assertTrue(R["bar"].startswith('<div class="fbar" role="group" aria-label="Filters">'), R["bar"][:80])
+        self.assertEqual(re.findall(r'class="tok" data-f="src" data-v="([^"]+)"', R["bar"]), ["Intel Brief", "Fun Events"])
+        self.assertTrue(R["bar"].endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'))
+        self.assertNotRegex(R["bar"], r"\d+ of \d+", "the bar holds no count")
+        self.assertNotRegex(R["tally"], r"briefs", "sd:5524: the Briefs tab carries the count")
+        self.assertEqual(re.findall(r'class="tok" data-f="src" data-v="([^"]+)"', R["bar2"]), ["Intel Brief"])
+        self.assertTrue(R["bar3"].endswith('<div class="fsum"></div></div>'))
+        self.assertNotRegex(R["tally3"], r"briefs")
 
     def test_a_search_from_the_address_matches_as_typing_it_does(self):
         # Review 27bec38c4a96: the address keeps the case the reader typed; the match ignores case either way.
@@ -678,7 +698,7 @@ R.cli = cmd('brief.open').cli(C.get('2026-09-06 - Intel Brief')); R.exec = cmd('
         self.assertIn("1 row skipped: not a brief.", out["states"][-1]["text"])
         self.assertNotIn("Showing the newest", out["states"][-1]["text"])
         self.assertNotIn("at least", out["R"]["ann"])
-        self.assertEqual(out["R"]["sub"], "5 briefs, 1 skipped")
+        self.assertEqual(out["R"]["sub"], "All read, 1 skipped")
 
     def test_a_failed_read_a_reader_refusal_and_a_capped_read_each_say_so(self):
         out = self.run_page("R.rows = ELS.rows.html;", answer="() => [500, { error: 'boom' }]")
@@ -798,7 +818,7 @@ class TheRecommendations(BriefCase):
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "briefs", "Briefs", "/briefs", ("/api/briefs", "/api/briefs/7/recommendations", "/api/briefs/publish",
+    page, section, route, api = "briefs", "Briefs", "/briefs", ("/api/briefs", "/api/briefs/7/recommendations", "/api/briefs/publish", "/api/briefs/unpublish",
                                                                 "/api/briefs/publish-now", "/api/briefs/publish-now/drain-x-20261018T000000Z")
 
 

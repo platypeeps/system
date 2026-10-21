@@ -18,7 +18,10 @@ Acknowledge posts v1's route with the report's revision. It is off while an
 open followup holds the report. Its Undo posts `/api/reports/<n>/reopen` with
 the revision the acknowledge answered; `reporting.reopen` moves the report back
 to the status it was acknowledged from (sd:2395). The page reads
-`/api/reports` through the shared reader, `read.js` (sd:2487). The Job filter
+`/api/reports` through the shared reader, `read.js` (sd:2487). The filters are
+Activity's bar (sd:5463): Status as a segment with its counts, Job and Day as
+picks, a lamp's family and the query as tokens, then Clear all; the count sits
+on the title line. The Job pick
 lists every job the reading names, with or without a report (sd:2430).
 The bulk bar acknowledges picked reports one by one. A clean run files no
 report since the quiet-run rule, so the page has no clean preview or batch;

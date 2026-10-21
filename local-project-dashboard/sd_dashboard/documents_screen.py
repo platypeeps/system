@@ -335,7 +335,9 @@ def _publishing(connection, checkout: Path):
     in `unread` or `choice.why`, never shown as no copy or no designation.
     """
     setting, unread = publishing.read_channels(connection, checkout)
-    obsidian = None if unread else setting is None or "obsidian" in setting
+    # sd:5500: the vault's own repository keeps Obsidian repo-wide; every other one designates it per document.
+    whole = publishing.vault_repository(checkout)
+    repo_wide = None if unread else setting is None or "obsidian" in setting
     picked = publishing.choices(checkout)
     try:
         kit = publishing.kit()
@@ -366,7 +368,8 @@ def _publishing(connection, checkout: Path):
         why = picked["why"] or ("" if chosen else f"research.conf.py has no literal entry for {out}; add the key by hand")
         found["unread"] = "; ".join(cause for cause in (found["unread"], unqueued) if cause)
         return {**found, "choice": {"notion": bool(chosen and chosen["notion"]), "drive": bool(chosen and chosen["drive"]),
-                                    "obsidian": obsidian, "why": why}}
+                                    "obsidian": repo_wide if whole else bool(chosen and chosen["obsidian"]),
+                                    "repo_wide": publishing.VAULT_REPO if whole else "", "why": why}}
 
     return pub
 

@@ -18,9 +18,9 @@ source guarded on its own so one that fails is a reason and not an empty list
 - `git`: `fleet.collect("repos")`, v1 Operations > Repos, each row with
   `repos_screen.primary`'s state, headline, detail and remedy. Nothing fetches
   or pulls.
-- `lane`: queued and running assignments, the latest merge assignments, and
-  the items waiting at `ready_to_send`.
-- `assignments`: the latest assignments and the history counted by status.
+- `lane`: queued and running assignments and the items waiting at
+  `ready_to_send`. The idle author runner's finished assignments and merge
+  assignments are not listed (sd:5472).
 - `sessions`: `fleet.collect("sessions")`, v1 Operations > Sessions:
   worktree counts and the sd-* processes it lists.
 - `claude`: `claude_sessions.document`, each Claude session on this Mac: its
@@ -80,9 +80,6 @@ from .repos_screen import primary
 
 __all__ = ["document", "job_log", "last_run", "log_tail", "set_repo"]
 
-#: How many assignments and merges the page lists; the history counts every row.
-LATEST = 40
-MERGES = 12
 FAILURES = (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error)
 #: The largest run stamp read; the wrapper writes three short lines.
 STAMP_BYTES = 512
@@ -372,14 +369,8 @@ def _assignment(connection, row) -> dict:
 
 def _lane(connection) -> dict:
     live = [_assignment(connection, row) for row in reads.assignment_ledger(connection, live=True)]
-    merges = [_assignment(connection, row) for row in reads.assignment_ledger(connection, role="merge", limit=MERGES)]
     ready = [dict(row) for row in reads.ready_to_send(connection)]
-    return {"live": live, "merges": merges, "ready": ready}
-
-
-def _assignments(connection) -> dict:
-    latest = [_assignment(connection, row) for row in reads.assignment_ledger(connection, exclude_role="merge", limit=LATEST)]
-    return {"latest": latest, "history": reads.assignment_counts(connection)}
+    return {"live": live, "ready": ready}
 
 
 def _sessions(read) -> dict:
@@ -544,7 +535,6 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
                             ("deep", lambda: adversarial.deep_settings(connection)),
                             ("git", lambda: _git(read, now)),
                             ("lane", lambda: _lane(connection)),
-                            ("assignments", lambda: _assignments(connection)),
                             ("sessions", lambda: _sessions(read)),
                             ("claude", lambda: _claude(read, connection, now, claude)),
                             ("services", lambda: _services(connection, services)),

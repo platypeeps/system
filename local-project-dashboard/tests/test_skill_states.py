@@ -1,6 +1,7 @@
 """sd:234 criterion 19, the dashboard half through HTTP: a review on a skill in
 each of the catalog's three states, a fixture reviewer's proposals on the item
-page, and one apply assignment from two accepted proposals."""
+page, and one apply assignment from two accepted proposals. A review, promote
+or demote files its item and queues no runner assignment (system sd:5477)."""
 import inspect
 import json
 import re
@@ -8,7 +9,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import registry, skills_catalog
+from sd_db import registry, runner, skills_catalog
 from sd_db.writes import upsert_repo
 from sd_dashboard import server, skills_screen
 
@@ -17,7 +18,7 @@ from .test_workflow_actions import BrowserSession
 
 
 class SkillStates(BrowserSession):
-    """The library queues intent only, so the pack checkout is a real git
+    """The library files intent only, so the pack checkout is a real git
     repository whose skill commit carries the `Authored-with:` trailer
     `skills_catalog._authorship` reads; `skills/sd-onpath` is on the `build`
     path, `contrib/sd-trial` is put on trial through the route, and
@@ -56,12 +57,13 @@ class SkillStates(BrowserSession):
         return self.post(f"/api/skills/{name}/{action}", {"revision": self.skill(name)["revision"], **payload})
 
     def reviewed(self, name):
-        """A review queued through HTTP and answered by a fixture reviewer:
-        the assignment is marked running for `claude`, and two proposals are
-        recorded the way the runner records them."""
+        """A review filed through HTTP and answered by a fixture reviewer: the
+        request queues no assignment, so the test queues one, marks it running
+        for `claude`, and records two proposals the way the runner records them."""
         status, _, state = self.act(name, "review")
         self.assertEqual(status, 200, state)
-        item, assignment = state["item"]["id"], state["assignments"][0]["id"]
+        item = state["item"]["id"]
+        assignment = runner.enqueue(self.connection, [item], role="reviewer", scope="skill-review", who="test")[0]["id"]
         registry.seed(self.connection, registry.read(connection=self.connection))
         self.connection.execute("UPDATE assignment SET status='running',provider='claude' WHERE id=?", (assignment,))
         self.connection.commit()
@@ -72,14 +74,19 @@ class SkillStates(BrowserSession):
         state = skills_catalog.record_review_proposals(self.connection, item, assignment, "claude", document)
         return item, assignment, proposals, state
 
-    def test_a_review_queues_one_reviewer_assignment_in_every_skill_state(self):
+    def assignments(self):
+        return self.connection.execute("SELECT count(*) FROM assignment").fetchone()[0]
+
+    def test_a_review_files_one_ready_item_and_queues_no_assignment_in_every_skill_state(self):
         before_git = self.git("status", "--porcelain")
         for name in ("sd-onpath", "sd-trial", "sd-contrib"):
             status, _, state = self.act(name, "review")
             self.assertEqual(status, 200, state)
             self.assertEqual(state["item"]["kind"], "skill-review", name)
             self.assertEqual(state["item"]["title"], f"Review {name}")
-            self.assertEqual([(row["role"], row["scope"]) for row in state["assignments"]], [("reviewer", "skill-review")], name)
+            self.assertEqual(state["item"]["status"], "ready", name)
+            self.assertNotIn("assignments", state, name)
+        self.assertEqual(self.assignments(), 0)
         self.assertEqual(self.git("status", "--porcelain"), before_git)
         self.assertEqual(self.connection.execute("SELECT count(*) FROM item WHERE kind='skill-review'").fetchone()[0], 3)
 
@@ -107,7 +114,7 @@ class SkillStates(BrowserSession):
         self.assertEqual(json.loads(text.split("\n\n", 1)[1]),
                          [{"note": note, "assignment": assignment, "provider": "claude", **proposal} for note, proposal in zip(notes, proposals)])
 
-    def test_promote_and_demote_refuse_the_wrong_state_and_queue_a_task_for_the_right_one(self):
+    def test_promote_and_demote_refuse_the_wrong_state_and_file_a_task_for_the_right_one(self):
         before = self.snapshot()
         status, _, result = self.act("sd-onpath", "promote", path_name="build")
         self.assertEqual((status, result.get("error")), (400, "choose a declared path for a contrib skill"))
@@ -117,10 +124,11 @@ class SkillStates(BrowserSession):
         status, _, result = self.act("sd-trial", "promote", path_name="build")
         self.assertEqual(status, 200, result)
         self.assertEqual((result["item"]["kind"], result["item"]["title"]), ("task", "Promote sd-trial"))
-        self.assertEqual([(row["role"], row["scope"]) for row in result["assignments"]], [("author", "skill-apply")])
+        self.assertNotIn("assignments", result)
         status, _, result = self.act("sd-onpath", "demote")
         self.assertEqual(status, 200, result)
         self.assertEqual((result["item"]["kind"], result["item"]["title"]), ("task", "Demote sd-onpath"))
+        self.assertEqual(self.assignments(), 0)
         self.assertEqual(self.git("status", "--porcelain"), "")
 
     def test_the_skill_arms_of_the_dashboard_call_no_git_or_gh(self):

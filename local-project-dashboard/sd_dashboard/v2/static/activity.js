@@ -1,14 +1,11 @@
 // Activity (sd:2111): the design source's products/system/designs/v2/activity.js at d82daa1, ported. Each change from the
 // reference is marked "build:". The events are /api/activity (activity_screen.py), never sample data. A command that executes
 // posts to the route v1 already answers, and its toast comes after the write lands, not before.
-// Palette "This page" group. shell.js reads it at start, so it is set before the shell runs.
 const { html, put, plural, cells } = window.markup;
-window.PAGE_COMMANDS = [
-  { label: 'Filter the timeline', icon: 'search', run: () => document.getElementById('shift').focus() },
-];
 // The shell's view switch (shell.js, view block): the Timeline first, the 24-hour lane chart second. Both read /api/activity.
 window.PAGE_VIEWS = [{ id: 'timeline', label: 'Timeline' }, { id: 'cadence', label: 'Cadence' }];
-window.PAGE_KEYS = [['/', 'Filter events, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
+// The shell's Shapeshift bar (sd:5539) filters the timeline through shell:filter, and the cadence fallback table itself.
+window.PAGE_FILTER = { timeline: 'the timeline' };
 addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest, openPane } = window.shell;
   const C = window.shell.commands;
@@ -103,7 +100,10 @@ addEventListener('DOMContentLoaded', () => {
   }
   function renderAnnunciator() {
     pageAttention();
-    const n = (k, s) => EVENTS.filter(e => e.k === k && (!s || e.s === s)).length;
+    // The lamps count the timeline's Range (1h, 24h, All): a 24-hour page said "55 in the journal" of weeks-old records.
+    const inRange = e => F.all || Date.parse(e.at) >= (since() || RANGE.from);
+    const shown = EVENTS.filter(inRange);
+    const n = (k, s) => shown.filter(e => e.k === k && (!s || e.s === s)).length;
     const worst = k => unknownWhy(k) ? 'unknown' : n(k, 'warning') ? 'warning' : n(k, 'caution') ? 'caution' : 'ok';
     // A lamp, its Kind chip and its lane button are one control (design.md § Interaction rules): pressed is F.kind.
     // build: a kind whose read failed is a lamp that cannot be pressed: it has no answer to filter.
@@ -111,12 +111,12 @@ addEventListener('DOMContentLoaded', () => {
       ? { state: 'unknown', attrs: html` data-kind="${k.id}"`, label: k.name, mark: ICON(k.icon), val: html`<span class="ph"><b>unknown</b></span> · <span class="ph">not read</span>` }
       : { button: true, state: worst(k.id), pressed: F.kind.has(k.id), attrs: html` data-kind="${k.id}"`, label: k.name, mark: ICON(k.icon), val };
     // Runs mixes two sources: a job carries `job`, an assignment carries `status`; count each by its own field.
-    const asg = EVENTS.filter(e => e.k === 'run' && e.status);
-    const jobsFailed = EVENTS.filter(e => e.k === 'run' && e.job && e.s === 'warning').length;
+    const asg = shown.filter(e => e.k === 'run' && e.status);
+    const jobsFailed = shown.filter(e => e.k === 'run' && e.job && e.s === 'warning').length;
     const VAL = {
-      merge: html`<span class="ph"><b>${n('merge')}</b> merged</span> · <span class="ph">${plural(new Set(EVENTS.filter(e => e.k === 'merge').map(e => e.repo)).size, 'repo')}</span>`,
+      merge: html`<span class="ph"><b>${n('merge')}</b> merged</span> · <span class="ph">${plural(new Set(shown.filter(e => e.k === 'merge').map(e => e.repo)).size, 'repo')}</span>`,
       run: html`<span class="ph"><b>${jobsFailed}</b> jobs failed</span> · <span class="ph">${asg.filter(e => e.status === 'blocked').length} of ${asg.length} runs blocked</span>`,
-      command: html`<span class="ph"><b>${n('command', 'warning')}</b> failed</span> · <span class="ph">${n('command')} in the journal</span>`,
+      command: html`<span class="ph"><b>${n('command', 'warning')}</b> failed</span> · <span class="ph">${n('command')} ${F.all ? 'in the journal' : F.hour ? 'in 1 h' : 'in 24 h'}</span>`,
       // build: the design's "want changes · approve" has no source; a delivery records clean or adjudicated (sd:2211).
       review: html`<span class="ph"><b>${n('review', 'caution')}</b> adjudicated</span> · <span class="ph">${n('review', 'ok')} clean</span>${DOC?.review_unrecorded ? html` · <span class="ph">${plural(DOC.review_unrecorded, 'merge')} unrecorded</span>` : ''}`,
     };
@@ -163,33 +163,33 @@ addEventListener('DOMContentLoaded', () => {
     F.kind.has(k) ? F.kind.delete(k) : F.kind.add(k); page = 1; update(); window.shell.view.show('timeline');
   });
 
-  // ---------- Filters: one bar (state, range, repo, the picked tokens, the count) ----------
+  // ---------- Filters: one bar (state, range, repo, the picked tokens, Clear all) ----------
   // A lamp and a lane already toggle each kind, so the bar draws no kind chips; a picked kind shows as a removable token.
+  // sd:5463: the shell draws the bar (shell.list.fbar), as on every table page; the count sits on the Timeline title line.
   const STATES = [['warning', '■', 'failed'], ['caution', '▲', 'caution'], ['ok', '●', 'ok']];
   const pop = $('repo-pop'), repoQ = $('repo-q'), repoList = $('repo-list');
   let cursor = 0; // the active option in the repo list, for the arrow keys and Enter
   pop.hidden = true; // the list starts closed, whatever a restored page left
-  const token = (f, v, label) => html`<button type="button" class="tok" data-f="${f}" data-v="${v}" aria-label="Remove filter: ${label}"><span>${label}</span><span class="x" aria-hidden="true">×</span></button>`;
   function renderFilters() {
     const shown = EVENTS.filter(match).length, older = EVENTS.filter(e => !inWindow(e)).length;
     const count = s => String(EVENTS.filter(e => e.s === s).length);
-    const range = (r, label, pressed, title) => html`<button type="button" data-r="${r}" aria-pressed="${String(pressed)}"${title ? html` title="${title}"` : ''}>${label}</button>`;
+    const { fseg, tok, fbar } = window.shell.list;
     // build: the document holds 24 hours and the journal's older records, so 7d and 30d stay off and say why.
-    const unread = r => html`<button type="button" data-r="${r}" aria-pressed="false" aria-disabled="true" title="${r} is not read: /api/activity holds the last 24 hours">${r}<span class="n" aria-hidden="true">▨</span></button>`;
-    put($('filters'), html`<div class="fbar" role="group" aria-label="Filters">
-      <div class="fseg" role="group" aria-label="State">${STATES.map(([s, g, w]) => html`<button type="button" data-f="state" data-v="${s}" aria-pressed="${String(F.state === s)}" title="${w}: ${count(s)}"><span class="g-${s}" aria-hidden="true">${g}</span><span class="n">${count(s)}</span><span class="sr"> ${w}</span></button>`)}</div>
-      <div class="fseg" role="group" aria-label="Range">${range('1h', '1h', F.hour)}${range('24h', '24h', !F.hour && !F.all)}${range('all', html`All <span class="n">+${String(older)}</span>`, F.all, `All read: the 24 hours and ${plural(older, 'older journal record')}`)}${unread('7d')}${unread('30d')}</div>
+    const unread = r => ({ v: r, off: true, title: `${r} is not read: /api/activity holds the last 24 hours`, label: html`${r}<span class="n" aria-hidden="true">▨</span>` });
+    put($('filters'), fbar(html`${fseg('state', 'State', STATES.map(([s, g, w]) => ({ v: s, pressed: F.state === s, title: `${w}: ${count(s)}`,
+      label: html`<span class="g-${s}" aria-hidden="true">${g}</span><span class="n">${count(s)}</span><span class="sr"> ${w}</span>` })))}
+      ${fseg('range', 'Range', [{ v: '1h', label: '1h', pressed: F.hour }, { v: '24h', label: '24h', pressed: !F.hour && !F.all },
+        { v: 'all', label: html`All <span class="n">+${String(older)}</span>`, pressed: F.all, title: `All read: the 24 hours and ${plural(older, 'older journal record')}` }, unread('7d'), unread('30d')])}
       ${REPOS.length || F.repo.size ? html`<button type="button" class="pick" id="repo-btn" aria-haspopup="listbox" aria-expanded="${String(!pop.hidden)}" aria-controls="repo-pop">Repo${F.repo.size ? html` <span class="n">· ${String(F.repo.size)}</span>` : ''}</button>` : ''}
-      ${[...F.kind].map(k => token('kind', k, kindOf(k).name))}${[...F.repo].map(r => token('repo', r, r))}${F.q ? token('q', '', `“${F.q}”`) : ''}
-      <div class="fsum"><span>${String(shown)} of ${String(EVENTS.length)}</span>${active() ? html`<button class="linkbtn" type="button" id="clear">Clear all</button>` : ''}</div>
-    </div>`);
+      ${[...F.kind].map(k => tok('kind', k, kindOf(k).name))}${[...F.repo].map(r => tok('repo', r, r))}${F.q ? tok('q', '', `“${F.q}”`) : ''}`, { clear: active() }));
+    window.shell.view.count('timeline', shown);
   }
   $('filters').addEventListener('click', e => {
-    if (e.target.closest('#clear')) return clearAll();
+    if (e.target.closest('[data-fclear]')) return clearAll();
     if (e.target.closest('#repo-btn')) return pop.hidden ? openRepos() : closeRepos(true);
-    const r = e.target.closest('[data-r]');
+    const r = e.target.closest('[data-f="range"]');
     if (r) {
-      const v = r.dataset.r;
+      const v = r.dataset.v;
       // build: the range stays where it was, which is 1h or All read as often as 24h.
       if (v === '7d' || v === '30d') return toast(`${v} is not read: /api/activity holds the last 24 hours. The range stays at ${F.hour ? '1h' : F.all ? 'All read' : '24h'}.`);
       F.hour = v === '1h'; F.all = v === 'all'; page = 1; return update();
@@ -198,10 +198,10 @@ addEventListener('DOMContentLoaded', () => {
     const { f, v } = c.dataset;
     if (f === 'kind' || f === 'repo') F[f].has(v) ? F[f].delete(v) : F[f].add(v);
     if (f === 'state') F.state = F.state === v ? '' : v;
-    if (f === 'q') { input.value = ''; prev.hidden = true; ghost.textContent = ''; F.q = ''; }
+    if (f === 'q') { F.q = ''; window.shell.filter(''); }
     page = 1; update();
   });
-  function clearAll() { F.kind.clear(); F.repo.clear(); F.state = ''; F.q = ''; F.hour = false; F.all = false; input.value = ''; prev.hidden = true; ghost.textContent = ''; page = 1; update(); }
+  function clearAll() { F.kind.clear(); F.repo.clear(); F.state = ''; F.q = ''; F.hour = false; F.all = false; window.shell.filter(''); page = 1; update(); }
 
   // The repo picker: a listbox under the Repo button, every repo with its count, most events first. Typing filters it;
   // the arrows move, Enter or a tap picks, Esc closes and gives focus back to the button. A picked repo with no events
@@ -278,13 +278,11 @@ addEventListener('DOMContentLoaded', () => {
     put($('pager'), html`<span>${a}–${z} of ${all.length}</span>
       <div class="chips" role="group" aria-label="Page">${page > 1 ? html`<button class="chip" type="button" data-p="${String(page - 1)}">${ICON('chevron-left')}Previous</button>` : ''}${page < pages ? html`<button class="chip" type="button" data-p="${String(page + 1)}">Next${ICON('chevron-right')}</button>` : ''}</div>
       <div class="chips" role="group" aria-label="Rows per page">${[25, 50, 100, 200].map(n => html`<button class="chip" type="button" data-size="${String(n)}" aria-pressed="${String(n === size)}">${n}</button>`)}</div>`);
-    const c = s => all.filter(e => e.s === s).length;
-    put($('tally'), html`<span class="g-warning">■ ${c('warning')} failed</span><span class="g-caution">▲ ${c('caution')} caution</span><span>● ${c('ok')} ok</span>`);
     put($('sub'), html`${plural(EVENTS.filter(inWindow).length, 'event')} across the fleet · last 24 hours to ${new Date(OBSERVED).toISOString().slice(11, 16)} UTC, ${new Date(OBSERVED).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' })}`);
     // build: the design's journal note, with this document's counts (sd:2183: the reader lists every writer's notes).
     const journal = EVENTS.filter(e => e.k === 'command'), older = journal.filter(e => !inWindow(e)).length;
     const skipped = Object.values(DOC?.journal_skipped || {}).reduce((a, n) => a + n, 0);
-    put($('journal-note'), html`Commands are the execution journal: ${plural(journal.length, 'record')} of kind exec, palette and runner runs alike.${skipped ? ` ${plural(skipped, 'exec note')} no known writer left ${skipped === 1 ? 'is' : 'are'} skipped.` : ''} All read adds the ${String(older)} older than this window.${DOC?.journal_unread ? ` The journal reads the latest ${String(DOC.journal_cap)} exec notes; ${String(DOC.journal_unread)} older are not read.` : ''}`);
+    put($('journal-note'), html`Commands are the execution journal: ${plural(journal.length, 'record')} of kind exec, palette, runner and page runs alike.${skipped ? ` ${plural(skipped, 'exec note')} no known writer left ${skipped === 1 ? 'is' : 'are'} skipped.` : ''} All read adds the ${String(older)} older than this window.${DOC?.journal_unread ? ` The journal reads the latest ${String(DOC.journal_cap)} exec notes; ${String(DOC.journal_unread)} older are not read.` : ''}`);
     const undated = DOC?.undated || [];
     $('undated').hidden = !undated.length;
     put($('undated'), undated.length ? html`${undated.join(', ')} failed or ${undated.length === 1 ? 'was' : 'were'} interrupted with no readable log time, so ${undated.length === 1 ? 'it has' : 'they have'} no place on this timeline. Management lists every job's state.` : html``);
@@ -394,13 +392,15 @@ addEventListener('DOMContentLoaded', () => {
     // /api/palette/<note>/reconcile, which observes the target and never replays the command; no sd verb does it, so it has no
     // line to copy. It is the primary act on an unfinished palette record, so it registers ahead of Show output.
     { id: 'command.reconcile', on: 'command', label: 'Reconcile', does: 'Checks how the run ended and records it; it never reruns it.', key: 'r', risk: 'safe',
-      primary: o => ev(o).source !== 'runner' && !ev(o).ended,
+      // A page's command (sd:5541) is the dashboard's to end: it reads the run, or ends it unknown when it restarts.
+      primary: o => ev(o).source === 'palette' && !ev(o).ended,
       when: o => ev(o).source === 'runner' ? "a runner record is the runner's to finish; no palette request waits on it"
+        : ev(o).source === 'dashboard' ? 'a page\'s command is the dashboard\'s to finish; it records how the run ended'
         : ev(o).ended ? 'the run ended; its outcome is recorded' : true,
       run: o => landing(reconcile(o), out => out.unknown
         || `Outcome of note ${o.note} recorded · ${out.exit_code == null ? 'no exit code' : `exit ${out.exit_code}`}`) },
     // The journal (sd:2180). build: output reads /api/executions/<note>, as v1 Operations > Commands does.
-    { id: 'command.output', on: 'command', label: 'Show output', does: 'Reads the run\'s saved output and shows it in Details.', key: 'o', risk: 'safe', primary: () => true,
+    { id: 'command.output', on: 'command', label: 'Show output', does: 'Reads the run\'s saved output and shows it in Details.', key: 'o', icon: 'terminal', risk: 'safe', primary: () => true,
       when: o => ev(o).source === 'runner' ? 'a runner record keeps its log in the retained clone, not in the execution log directory'
         : ev(o).expired ? `the output expired ${ev(o).expired}` : true,
       run: o => landing(readOutput(o), () => `Output of note ${o.note} shown in Details`) },
@@ -455,39 +455,12 @@ addEventListener('DOMContentLoaded', () => {
   document.addEventListener('shell:open', e => { if (EVENTS.some(v => v.id === e.detail)) select(e.detail, true); });
   document.addEventListener('shell:picked', e => tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
 
-  // ---------- Shapeshift bar ----------
-  const input = $('shift'), prev = $('shift-preview'), as = $('shift-as'), ghost = $('ghost');
-  let mode = 'filter';
-  function guess(v) { return /\?$|^(why|what|how|which|when|should)\b/i.test(v) ? 'ask' : /^(p[1-4]\b|todo\b|add\b)|\bdue\b/i.test(v) ? 'task' : 'filter'; }
-  function setMode(m) { mode = m; prev.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.as === m))); renderShift(); }
-  function renderShift() {
-    const v = input.value.trim();
-    prev.hidden = !v; ghost.textContent = v ? `→ ${mode}` : '';
-    put(as, mode === 'task' ? html`${ICON('list-todo')} task “${v}”` : mode === 'ask' ? html`${ICON('message-square')} ask chat in fleet scope` : html`${ICON('filter')} filter the timeline`);
-    const q = mode === 'filter' ? v.toLowerCase() : '';
-    if (q !== F.q) { F.q = q; page = 1; update(); }
-  }
-  input.addEventListener('input', () => setMode(guess(input.value.trim())));
-  input.addEventListener('keydown', e => {
-    if (e.key === 'ArrowRight' && input.selectionStart === input.value.length && input.value) { e.preventDefault(); const o = ['filter', 'task', 'ask']; setMode(o[(o.indexOf(mode) + 1) % 3]); }
-    if (e.key === 'Enter' && input.value.trim()) {
-      e.preventDefault();
-      // build: a task goes to the shell's capture form, which files it; ask goes to chat.
-      if (mode === 'task') { window.shell.capture(null, input.value.trim()); input.value = ''; renderShift(); }
-      if (mode === 'ask') { window.shell.openChat(); window.shell.send(input.value.trim()); input.value = ''; renderShift(); }
-    }
-    if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; renderShift(); }
-  });
-  prev.addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) { setMode(c.dataset.as); input.focus(); } });
-  document.addEventListener('keydown', e => {
-    if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-    if (e.key === '/') { e.preventDefault(); input.focus(); }
-  });
+  // ---------- Shapeshift bar (the shell's, sd:5539) ----------
+  document.addEventListener('shell:filter', e => { if (e.detail.q !== F.q) { F.q = e.detail.q; page = 1; update(); } });
   // build: the shell owns j/k, Enter, Esc and ?row= through PAGE_LIST; Esc with nothing open clears the filters.
   window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected,
     select: id => select(id, false), clear: () => { if (!active()) return false; clearAll(); return true; } };
 
   readURL();
-  if (F.q) input.value = F.q;
   load();
 });

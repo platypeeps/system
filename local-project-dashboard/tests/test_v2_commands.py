@@ -189,6 +189,34 @@ class EveryCommandSaysWhatItDoes(unittest.TestCase):
         self.assertRegex(menu, r'<span>\$\{c\.label\}[^<]*</span><small>\$\{doesOf\(c, o\)\}</small>')
 
 
+# sd:5457: a row's act shows as its icon. These primary commands keep a text button: no sprite icon says the act alone.
+TEXT_ACT = {"command.reconcile", "worktree registrations.prune", "merged branches.delete", "safe cleanups.clean", "repo.managed",
+            "wt.prune", "bill.cap"}
+SPRITE = set(re.findall(r'<symbol id="i-([a-z0-9-]+)"', SCRIPTS["icons.js"]))
+ICON = re.compile(r"\bicon:\s*'([a-z0-9-]+)'")
+HAS_ICON = re.compile(r"\bicon:")
+PRIMARY = re.compile(r"\bprimary(?:\s*:|,|\s*=)")
+
+
+class EveryRowActIsAnIcon(unittest.TestCase):
+    def test_every_primary_command_declares_an_icon_or_is_named_text_only(self):
+        missing = sorted(found for text in SCRIPTS.values() for found, body in declarations(text)
+                         if PRIMARY.search(body) and not HAS_ICON.search(body) and found not in TEXT_ACT)
+        self.assertEqual(missing, [], "give the command an icon: its row act shows as it (shell.js, rowActions)")
+
+    def test_the_text_only_list_names_only_primary_commands_without_an_icon(self):
+        found = {i: body for text in SCRIPTS.values() for i, body in declarations(text)}
+        for name in sorted(TEXT_ACT):
+            with self.subTest(command=name):
+                self.assertIn(name, found)
+                self.assertTrue(PRIMARY.search(found[name]) and not HAS_ICON.search(found[name]))
+
+    def test_every_declared_icon_is_in_the_sprite(self):
+        # A name the sprite lacks draws nothing: the row's act would be an empty button.
+        unknown = sorted(f"{name}: {icon}" for name, text in SCRIPTS.items() for icon in ICON.findall(text) if icon not in SPRITE)
+        self.assertEqual(unknown, [])
+
+
 class OneItemAddress(unittest.TestCase):
     def test_only_the_shell_builds_an_items_address(self):
         """sd:3526 (review 2026-10-12, A2 F12): Reports linked /item/<n>, Management /tasks?row=<n>, and five pages wrote

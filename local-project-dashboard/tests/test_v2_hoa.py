@@ -358,6 +358,7 @@ class TheScript(Fixture):
             ["alarm.unack", "alarm", "undo", "a"],
             ["jobs.retry", "job", "safe", "t"],
             ["jobs.log", "job", "safe", "l"],
+            ["sources.refresh", "sources", "safe", None],
             ["sweep.run", "sweep", "safe", "w"],
         ])
 
@@ -469,11 +470,21 @@ R.after = ELS.map.html;""")
 R.p = [p('item.draft', {self.late}), p('item.open', {self.late}), p('item.draft', {self.task}), p('item.open', {self.task})];""")
         self.assertEqual(out["R"]["p"], [True, False, False, True])
 
+    def test_draft_followup_saves_a_gmail_draft_through_the_draft_email_route(self):
+        # sd:5483: the chat is read-only and saved no draft; Draft followup posts Tasks' Draft email with the row's revision.
+        doc = self.doc()
+        row = next(r for r in doc["items"]["rows"] if r["item"] == self.late)
+        self.assertTrue(row["revision"])
+        out = self.run_page(f"""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [200, {{ draft: {{ subject: 'Gate quote', id: 'd1' }} }}];
+C.run(cmd('item.draft'), OBJ.get('item:{self.late}')); await flush();""", doc)
+        self.assertEqual([p[:2] for p in out["posts"]], [[f"/api/items/{self.late}/draft-email", {"revision": row["revision"]}]])
+        self.assertIn('Draft saved · sd:%d · "Gate quote" · in Gmail Drafts, not sent' % self.late, out["toasts"][-1][0])
+
     def test_one_followup_one_task_and_one_blocked_task_show_and_kind_narrows(self):
         kind = "ELS['ob-kinds'].listeners.click[0]({ target: { closest: s => s === 'button[data-kind]' ? { dataset: { kind: 'K' } } : null } }); "
         rows = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"item:(\\d+)\"/g)].map(m => +m[1]); "
         out = self.run_page(rows + "R.all = re(); R.chips = ELS['ob-kinds'].html; " + kind.replace("K", "task") + "R.task = re(); "
-                            + kind.replace("K", "followup") + "R.followup = re(); " + kind.replace("K", "all") + "R.again = re(); R.tally = ELS['tasks-tally'].html;")
+                            + kind.replace("K", "followup") + "R.followup = re(); " + kind.replace("K", "all") + "R.again = re(); R.tally = ELS['tasks-tally'];")
         everything = [self.late, self.soon, self.later, self.task, self.blocked]
         self.assertEqual(out["R"]["all"], everything)
         self.assertEqual(out["R"]["task"], [self.task, self.blocked])
@@ -481,7 +492,8 @@ R.p = [p('item.draft', {self.late}), p('item.open', {self.late}), p('item.draft'
         self.assertEqual(out["R"]["again"], everything)
         self.assertEqual(re.findall(r'data-kind="(\w+)" aria-pressed="(\w+)"', out["R"]["chips"]),
                          [("all", "true"), ("followup", "false"), ("task", "false")])
-        self.assertIn("5 open items", out["R"]["tally"])
+        # sd:5524: the Tasks tab carries the count (shell.view.auto); the page draws no tally.
+        self.assertIsNone(out["R"].get("tally"))
 
     def test_a_lot_shows_its_address_as_its_label_and_its_owner_in_details(self):
         tap = "ELS.map.listeners.click[0]({ target: { closest: s => s === '[data-lot]' ? { dataset: { lot: '1' } } : null } }); "
@@ -985,6 +997,56 @@ C.run(c, m); await flush(); R.timers = TIMERS;""", doc,
         self.assertEqual(out["gets"], ["/api/hoa", "/api/hoa"])
         # and once more after SRC_POLL, in case launchd had not marked the job running yet.
         self.assertEqual(out["R"]["timers"], [15000])
+
+    # sd:5482: one Refresh all button on the Data sources head starts every source's refresh job through the same route.
+    REFRESH_ALL = """ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' }, job: {} }];
+const c = cmd('sources.refresh'), o = OBJ.get('sources');
+R.when = c.when(o); R.cli = c.cli(o); R.tools = ELS['src-tools'].html;
+R.page = window.PAGE_COMMANDS.map(p => p.label);
+ELS['src-tools'].listeners.click[0]({ target: { closest: s => s === '#src-refresh' ? {} : null } }); await flush(); R.timers = TIMERS;"""
+
+    def test_refresh_all_starts_the_mission_and_vantaca_jobs_through_the_jobs_route(self):
+        self.script()
+        self.jobs.jobs.update({"hoa-mission-export": ("failed", 3), "hoa-vantaca-pull": ("idle", 0)})
+        doc = self.doc()
+        rev = {r["job"]["name"]: r["job"]["revision"] for r in doc["sources"]["rows"] if "job" in r}
+        out = self.run_page(self.REFRESH_ALL, doc,
+                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
+        self.assertIs(out["R"]["when"], True)
+        self.assertEqual(out["R"]["cli"], "sd jobs retry hoa-mission-export && sd jobs retry hoa-vantaca-pull")
+        self.assertIn('id="src-refresh"', out["R"]["tools"])
+        self.assertNotIn('aria-disabled', out["R"]["tools"])
+        self.assertIn("Refresh all sources", out["R"]["page"])
+        self.assertEqual([p[:2] for p in out["posts"]],
+                         [["/api/jobs/hoa-mission-export/retry", {"revision": rev["hoa-mission-export"]}],
+                          ["/api/jobs/hoa-vantaca-pull/retry", {"revision": rev["hoa-vantaca-pull"]}]])
+        self.assertIn("Refresh started · Mission export, Vantaca invoices", out["toasts"][0][0])
+        # One reread for both starts, then the poll.
+        self.assertEqual(out["gets"], ["/api/hoa", "/api/hoa"])
+        self.assertEqual(out["R"]["timers"], [15000])
+
+    def test_refresh_all_starts_the_job_that_can_and_names_the_one_that_cannot(self):
+        self.script()
+        self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("running", None)})
+        out = self.run_page(self.REFRESH_ALL,
+                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
+        self.assertEqual([p[0] for p in out["posts"]], ["/api/jobs/hoa-mission-export/retry"])
+        self.assertIn("Refresh started · Mission export · Vantaca invoices not started: hoa-vantaca-pull is running now",
+                      out["toasts"][0][0])
+
+    def test_refresh_all_is_off_with_each_reason_when_no_job_can_start(self):
+        self.script()
+        doc = self.doc()
+        out = self.run_page(self.REFRESH_ALL, doc,
+                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
+        why = (f"Mission export: {doc['sources']['rows'][0]['job']['error']} · "
+               f"Vantaca invoices: {doc['sources']['rows'][2]['job']['error']}")
+        self.assertEqual(out["R"]["when"], why)
+        self.assertIn('aria-disabled="true"', out["R"]["tools"])
+        self.assertIn(why, out["R"]["tools"])
+        self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"][0][0], why)
 
     def test_a_refused_start_is_named(self):
         self.script()

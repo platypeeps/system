@@ -30,8 +30,12 @@ which owns `#view=<id>`; each view's reader starts the first time it opens. Each
 view counts the rows that want you, from the summary; a view with an area not
 read shows no count. With no view named the page opens the view an `?area=`
 value names, else Checkouts. A lamp of another view opens that view with its
-area alone. Show findings (the default) leaves out ok and queued rows and
-says how many; Show all (`?show=all`) lists them. A finding's detail is one line
+area alone. The filters are Activity's bar (sd:5504): Show and State as
+segments, Area as a pick, the picked areas and the query as tokens, then Clear
+all; an area's title line counts its rows while a filter hides some. Show
+findings (the default) leaves out ok and queued rows and
+says how many; Show all (`?show=all`) lists them; Show ignored (`?show=ignored`)
+lists the ignored rows instead of the areas. A finding's detail is one line
 in the table; Details carries the row in full.
 
 Dependencies, Security and Credentials read rows nightly jobs stored; the page
@@ -140,3 +144,7 @@ Snooze, on every row that is not ok, hides the row until the next 08:00, for
 row waits under Snoozed with its time and an Unsnooze until then. A snooze
 holds only while the row reads as it did: more alerts, a worse state or another
 count shows it again. A snooze read that fails hides nothing and says so.
+
+Ignore, beside Snooze, is a snooze with no end (sd:5470): it posts `until`
+`forever`, so only a changed problem or Unignore shows the row again. An
+ignored row is not under Snoozed; Show ignored lists it, with its Unignore.

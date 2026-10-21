@@ -228,6 +228,25 @@ class TodaysDecisions(ScreenCase):
 
 
 class ThePage(unittest.TestCase):
+    def test_the_page_has_a_questions_view_and_a_bulk_scoring_view(self):
+        # sd:5497: Questions lists the decisions Today lists, through decisions.js; Bulk scoring is the labelling queue.
+        page = (V2 / "review.html").read_text(encoding="utf-8")
+        self.assertIn("window.PAGE_VIEWS = [{ id: 'questions', label: 'Questions' }, { id: 'bulk', label: 'Bulk scoring', key: 'b' }];", PAGE_JS)
+        questions, bulk = page.index('id="view-questions"'), page.index('id="view-bulk"')
+        self.assertLess(questions, page.index('<tbody id="decisions">'))
+        self.assertLess(page.index('<tbody id="decisions">'), bulk)
+        self.assertLess(bulk, page.index('<tbody id="rows">'))
+        self.assertLess(bulk, page.index('id="annunciator"'))
+        self.assertLess(bulk, page.index('id="bulk"'))
+        scripts = re.findall(r'<script src="/ui/([^"?]+)', page)
+        self.assertLess(scripts.index("decisions.js"), scripts.index("shell.js"))
+        self.assertIn('<link rel="stylesheet" href="/ui/decisions.css">', page)
+        today = (V2 / "today.html").read_text(encoding="utf-8")
+        self.assertIn('<link rel="stylesheet" href="/ui/decisions.css">', today)
+        # One home for the decision rows' look: Today's sheet no longer carries them.
+        self.assertNotIn(".decisions .choices", (STATIC / "today.css").read_text(encoding="utf-8"))
+        self.assertIn(".decisions .choices", (STATIC / "decisions.css").read_text(encoding="utf-8"))
+
     def test_the_page_has_no_details_pane_and_docks_no_side_pane(self):
         # sd:5123: the row carries the question; the shell's pane opens only for Chat (c), as the sheet it is below 1240px.
         page = (V2 / "review.html").read_text(encoding="utf-8")
@@ -263,10 +282,10 @@ def doc_with(n=3, **batch_changes):
 class TheScript(unittest.TestCase):
     """review.js against a stand-in page: the lamps, the rows, the digits, Undo and the failed read."""
 
-    def run_page(self, body, answer, search="", doc=None):
+    def run_page(self, body, answer, search="", doc=None, prefix=""):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL
                   + "\nlocation.search = " + json.dumps(search) + ";\nvar DOC = " + json.dumps(doc) + ";\nANSWER = " + answer + ";\n"
-                  + "window.shell.commands.select = id => { OUT.selected = id; };\n"
+                  + "window.shell.commands.select = id => { OUT.selected = id; };\n" + prefix
                   + "var BareEl = El; El = id => { const e = BareEl(id); e.click = () => { (OUT.saved = OUT.saved || []).push(e.download); }; return e; };\n"
                   + PAGE_JS
                   + "\nvar R = {};\nconst key = k => (DOC_LISTENERS.keydown || []).forEach(f => f({ key: k, target: { matches: () => false }, preventDefault() {} }));\n"
@@ -315,14 +334,19 @@ class TheScript(unittest.TestCase):
         self.assertIn('<details class="more"><summary>Whole question</summary><p class="full">Question 10?\nmore</p>', rows)
 
     def test_the_row_marks_the_proposed_option_in_an_open_batch_only(self):
-        # A Kev file's proposal is an evidence line (sd:4789); its digit is the accept.
+        # A Kev file's proposal is an evidence line (sd:4789); its digit is the accept. sd:5497: the row says it plainly too.
         for mode, marked in (("open", True), ("blind", False)):
             doc = doc_with(1, mode=mode)
             doc["questions"][0]["evidence"] = ["Proposed label: Reject"]
             out = self.run_page("R.rows = ELS.rows.html;", "(path, body) => [200, DOC]", doc=doc)
             with self.subTest(mode):
-                self.assertEqual('<span>Reject</span><span class="tag">proposed</span>' in out["R"]["rows"], marked)
-                self.assertEqual(out["R"]["rows"].count('class="tag">proposed'), int(marked))
+                self.assertEqual('<span>Reject</span><span class="tag">recommended</span>' in out["R"]["rows"], marked)
+                self.assertEqual(out["R"]["rows"].count('class="tag">recommended'), int(marked))
+                self.assertEqual('<p class="rec">Recommended: <b>Reject</b></p>' in out["R"]["rows"], marked)
+
+    def test_a_row_with_no_proposal_says_it_has_no_recommendation(self):
+        out = self.run_page("R.rows = ELS.rows.html;", "(path, body) => [200, DOC]", doc=doc_with(1))
+        self.assertIn('<p class="rec none">No recommendation</p>', out["R"]["rows"])
 
     # A click on a row's option: the event's target is the button, whose data-note and data-i name the question and option.
     CLICK = ("const click = (sel, data) => ELS.rows.listeners.click.forEach(f => f({ target: { closest: s => s === sel"
@@ -509,6 +533,145 @@ class TheScript(unittest.TestCase):
         out = self.run_page("R.keys = window.PAGE_KEYS.map(k => k[0]);", "(path, body) => [200, { batches: [], questions: [] }]")
         self.assertEqual(out["R"]["keys"], ["1 – 9", "j / k", "↵", "u", "n", "Esc"])
         self.assertEqual(out["states"][-1]["kind"], "empty")
+
+
+def two_batches():
+    """Batch 11 (nightly, Approve / Reject / Later) and batch 12 (Approve / Reject / Skip), with a proposal on two rows."""
+    doc = doc_with(3)
+    doc["batches"].append({**doc["batches"][0], "item": 12, "title": "Label: C1", "nightly": False, "queue": "labels",
+                           "revision": "e" * 64, "questions": 2, "open": 2})
+    doc["questions"] += [question(30, item=12, options=["Approve", "Reject", "Skip"]), question(31, item=12, options=["Approve", "Reject", "Skip"])]
+    doc["questions"][0]["evidence"] = ["Proposed label: Reject"]
+    doc["questions"][3]["evidence"] = ["Proposed label: Skip"]
+    return doc
+
+
+class TheBulkView(unittest.TestCase):
+    """sd:5497: the queue bands by batch; a checkbox per open row, select and clear all, and labels for every selected row."""
+
+    run_page = TheScript.run_page
+
+    PICK = ("const change = data => ELS.rows.listeners.change.forEach(f => f({ target: { closest: s => s === 'input[data-pick]' && data.pick"
+            " ? { dataset: data, checked: data.checked } : s === 'input[data-band-pick]' && data.bandPick ? { dataset: data, checked: data.checked } : null } }));\n"
+            "const settle = async () => { for (let i = 0; i < 10; i++) await flush(); };\n"
+            "const bar = (sel, data) => ELS.bulk.listeners.click.forEach(f => f({ target: { closest: s => s === sel ? { dataset: data || {}, disabled: false } : null } }));\n")
+    BULK_RULE = """(path, body) => path === '/api/review' ? [200, JSON.parse(JSON.stringify(DOC))]
+      : path === '/api/review/rule' ? (body.note === REFUSE ? [400, { error: 'sd:' + body.item + ' is closed' }]
+          : body.note === STALE ? [409, { error: 'item changed; reload it', reload: true }]
+          : body.note === LOST ? (() => { throw new Error('connection reset'); })()
+          : [200, { item: body.item, note: body.note, revision: String(body.note).padStart(64, '0'), ruling: 100 + body.note }])
+      : [200, { item: body.item, revision: String(body.ruling).padStart(64, '9'), withdrawal: 500 + body.ruling }]"""
+
+    def bulk_page(self, body, refuse=0, stale=0, lost=0, doc=None):
+        return self.run_page(self.PICK + f"globalThis.REFUSE = {refuse}; globalThis.STALE = {stale}; globalThis.LOST = {lost};\n" + body,
+                             self.BULK_RULE, doc=doc or two_batches())
+
+    def test_rows_group_under_one_band_per_batch_that_the_shell_folds(self):
+        out = self.bulk_page("R.rows = ELS.rows.html;")
+        rows = out["R"]["rows"]
+        self.assertEqual(rows.count('<tr class="band"'), 2)
+        self.assertLess(rows.index('data-band="b11"'), rows.index('data-id="q10"'))
+        self.assertLess(rows.index('data-id="q12"'), rows.index('data-band="b12"'))
+        self.assertLess(rows.index('data-band="b12"'), rows.index('data-id="q30"'))
+        # The band is one cell across the table, the shell's fold grammar; its checkbox stays out of the fold button.
+        self.assertIn('<tr class="band" data-band="b11"><td colspan="4">Nightly review', rows)
+        self.assertIn('<label class="bandpick" data-tkeep="">', rows)
+        self.assertIn('data-band-pick="11"', rows)
+        self.assertEqual(rows.count('data-pick="'), 5)
+
+    def test_select_all_and_clear_all_toggle_every_checkbox_and_the_bar_count(self):
+        out = self.bulk_page("R.before = ELS.bulk.html; bar('#select-all'); R.rows = ELS.rows.html; R.bar = ELS.bulk.html;"
+                             " bar('#clear-sel'); R.cleared = ELS.rows.html; R.after = ELS.bulk.html;")
+        self.assertIn("<b>0</b> selected", out["R"]["before"])
+        self.assertEqual(out["R"]["rows"].count(" checked"), 5 + 2)  # five rows and both bands
+        self.assertIn("<b>5</b> selected", out["R"]["bar"])
+        self.assertEqual(out["R"]["cleared"].count(" checked"), 0)
+        self.assertIn("<b>0</b> selected", out["R"]["after"])
+
+    def test_a_band_checkbox_selects_its_batch_alone_and_a_row_box_one_row(self):
+        out = self.bulk_page("change({ bandPick: '12', checked: true }); R.bar = ELS.bulk.html; R.first = ELS.rows.html;"
+                             " change({ pick: '10', checked: true }); R.more = ELS.bulk.html; R.rows = ELS.rows.html;"
+                             " change({ bandPick: '12', checked: false }); R.less = ELS.bulk.html;")
+        self.assertIn("<b>2</b> selected", out["R"]["bar"])
+        self.assertIn('data-pick="30" aria-label="Select note 30" checked', out["R"]["first"])
+        self.assertNotIn('data-pick="10" aria-label="Select note 10" checked', out["R"]["first"])
+        self.assertIn("<b>3</b> selected", out["R"]["more"])
+        self.assertIn("<b>1</b> selected", out["R"]["less"])
+        # One row of batch 11 picked: that band reads as partly selected; batch 12 whole, as selected.
+        self.assertIn('data-band-pick="11" aria-label="Select every open question in Nightly review" data-mixed=""', out["R"]["rows"])
+        self.assertIn('data-band-pick="12" aria-label="Select every open question in Label: C1" checked', out["R"]["rows"])
+
+    def test_the_bar_offers_the_options_every_selected_question_shares(self):
+        out = self.bulk_page("bar('#select-all'); R.all = ELS.bulk.html; bar('#clear-sel'); change({ bandPick: '12', checked: true }); R.one = ELS.bulk.html;")
+        self.assertIn('data-bulk-option="Approve"', out["R"]["all"])
+        self.assertIn('data-bulk-option="Reject"', out["R"]["all"])
+        self.assertNotIn('data-bulk-option="Skip"', out["R"]["all"])
+        self.assertNotIn("Later", out["R"]["all"])
+        self.assertIn('data-bulk-option="Skip"', out["R"]["one"])
+        # Two of the five carry a recommendation.
+        self.assertIn('id="accept-rec">Accept recommendation <span class="n">2</span></button>', out["R"]["all"])
+
+    def test_label_selected_posts_one_rule_per_question_in_turn_and_undo_withdraws_each(self):
+        out = self.bulk_page("bar('#select-all'); bar('button[data-bulk-option]', { bulkOption: 'Reject' }); await settle();"
+                             " R.rows = ELS.rows.html; R.bar = ELS.bulk.html; OUT.toasts[OUT.toasts.length - 1].undo(); await settle();")
+        rules = [p[1] for p in out["posts"] if p[0] == "/api/review/rule"]
+        self.assertEqual([(r["item"], r["note"], r["option"]) for r in rules],
+                         [(11, 10, "Reject"), (11, 11, "Reject"), (11, 12, "Reject"), (12, 30, "Reject"), (12, 31, "Reject")])
+        # The same write the row buttons make, each with the revision the one before it in its batch returned.
+        self.assertEqual([r["revision"] for r in rules], ["a" * 64, "10".zfill(64), "11".zfill(64), "e" * 64, "30".zfill(64)])
+        self.assertIn("No question is open", out["R"]["rows"])
+        self.assertIn("<b>0</b> selected", out["R"]["bar"])
+        self.assertIn(["Labelled 5 of 5 as Reject", True], out["toasts"])
+        withdraws = [p[1] for p in out["posts"] if p[0] == "/api/review/withdraw"]
+        self.assertEqual(sorted(w["ruling"] for w in withdraws), [110, 111, 112, 130, 131])
+        self.assertEqual(out["toasts"][-1], ["Withdrew 5 of 5 labels", False])
+
+    def test_accept_recommendation_labels_each_with_its_own_proposal_and_keeps_the_rest_selected(self):
+        out = self.bulk_page("bar('#select-all'); bar('#accept-rec'); await settle(); R.bar = ELS.bulk.html; R.rows = ELS.rows.html;")
+        rules = [(p[1]["note"], p[1]["option"]) for p in out["posts"] if p[0] == "/api/review/rule"]
+        self.assertEqual(rules, [(10, "Reject"), (30, "Skip")])
+        self.assertIn("<b>3</b> selected", out["R"]["bar"])
+        self.assertIn(["Labelled 2 of 2 as recommended · 3 with no recommendation stay selected", True], out["toasts"])
+
+    def test_a_partial_failure_is_reported_by_row_and_that_row_stays_selected(self):
+        out = self.bulk_page("bar('#select-all'); bar('button[data-bulk-option]', { bulkOption: 'Approve' }); await settle();"
+                             " R.rows = ELS.rows.html; R.bar = ELS.bulk.html;", refuse=11)
+        rules = [p[1]["note"] for p in out["posts"] if p[0] == "/api/review/rule"]
+        self.assertEqual(rules, [10, 11, 12, 30, 31])
+        self.assertIn(["Labelled 4 of 5 as Approve · not labelled: note #11 (sd:11 is closed)", True], out["toasts"])
+        rows = out["R"]["rows"]
+        self.assertIn('<p class="refused" role="alert">Not labelled: sd:11 is closed</p>', rows)
+        self.assertIn('data-pick="11" aria-label="Select note 11" checked', rows)
+        self.assertIn("<b>1</b> selected", out["R"]["bar"])
+
+    def test_a_stale_reply_sends_nothing_more_to_that_batch_and_rereads(self):
+        out = self.bulk_page("bar('#select-all'); bar('button[data-bulk-option]', { bulkOption: 'Approve' }); await settle();", stale=11)
+        rules = [p[1]["note"] for p in out["posts"] if p[0] == "/api/review/rule"]
+        self.assertEqual(rules, [10, 11, 30, 31])
+        self.assertEqual(out["gets"], ["/api/review", "/api/review"])
+        self.assertIn(["Labelled 3 of 5 as Approve · not labelled: note #11 (the batch changed; read again), note #12 (not sent: the batch changed)", True],
+                      out["toasts"])
+
+    def test_a_label_with_no_answer_is_unknown_sends_nothing_more_to_that_batch_and_rereads(self):
+        out = self.bulk_page("bar('#select-all'); bar('button[data-bulk-option]', { bulkOption: 'Approve' }); await settle(); R.rows = ELS.rows.html;", lost=10)
+        self.assertEqual([p[1]["note"] for p in out["posts"] if p[0] == "/api/review/rule"], [10, 30, 31])
+        self.assertEqual(out["gets"], ["/api/review", "/api/review"])
+        self.assertIn("note #10 (no answer, so not known: connection reset)", out["toasts"][-1][0])
+        self.assertIn("note #11 (not sent: an earlier label got no answer)", out["toasts"][-1][0])
+
+    def test_digits_label_only_while_the_bulk_view_shows(self):
+        out = self.bulk_page("window.shell.view = { current: () => 'questions', count() {} }; key('1'); await settle();"
+                             " R.when = window.PAGE_LIST.when();")
+        self.assertEqual(out["posts"], [])
+        self.assertFalse(out["R"]["when"])
+        out = self.bulk_page("window.shell.view = { current: () => 'bulk', count() {} }; key('1'); await settle();")
+        self.assertEqual([p[1]["note"] for p in out["posts"]], [10])
+
+    def test_the_view_segments_count_the_open_questions_and_the_waiting_decisions(self):
+        prefix = "var COUNTS = {}; window.shell.view = { current: () => 'bulk', count: (id, n) => { COUNTS[id] = n; } };\n"
+        out = self.run_page("document.dispatchEvent(new CustomEvent('today:decisions', { detail: 4 })); R.counts = COUNTS;",
+                            "(path, body) => [200, DOC]", doc=two_batches(), prefix=prefix)
+        self.assertEqual(out["R"]["counts"], {"bulk": 5, "questions": 4})
 
 
 if __name__ == "__main__":

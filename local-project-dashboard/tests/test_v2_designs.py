@@ -67,8 +67,7 @@ DOC["attention"] = designs._attention(DOC)
 
 #: The design's commands (design source products/system/designs/pages/designs.js): id, object type, label, key, risk.
 COMMANDS = [
-    ["design.log", "page", "History", "l", "safe"],
-    ["design.shots", "page", "Retake screenshots", "s", "safe"],
+    # sd:5530 (operator, 2026-10-20): History and Retake screenshots are gone from the row menu, and so from the page.
     ["design.brief", "brief", "Read brief", "b", "safe"],
     # sd:3447: Hide and Unhide, the view state Documents' Hide writes, on each row type.
     ["design.hide", "page", "Hide", "h", "undo"], ["design.unhide", "page", "Unhide", "h", "undo"],
@@ -178,17 +177,17 @@ class TheScript(unittest.TestCase):
         return out
 
     def test_the_design_commands_are_registered_and_each_is_copy_only(self):
-        out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]); R.exec = REG.map(c => c.executes);"
-                            " R.cli = cmd('design.log').cli(C.get('" + PAGES + "/today.html'));")
+        out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]); R.exec = REG.map(c => c.executes);")
         self.assertEqual(out["R"]["reg"], COMMANDS)
-        # The three design commands are copy only; Hide and Unhide (sd:3447) write view state, as Documents' do.
-        self.assertEqual(out["R"]["exec"], [False, False, False, None, None, None, None])
-        self.assertEqual(out["R"]["cli"], f"git -C ~/repos/example/ui-design log -5 --format='%h %cs %s' -- {PAGES}/today.html")
+        # Read brief is copy only; Hide and Unhide (sd:3447) write view state, as Documents' do.
+        self.assertEqual(out["R"]["exec"], [False, None, None, None, None])
 
-    def test_the_copy_only_commands_post_nothing_and_say_so(self):
-        out = self.run_page(f"shellRun(cmd('design.shots'), C.get('{PAGES}/tasks.html')); await flush();")
-        self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"], ["Copy the line to retake designs/pages/tasks.html at 1440 and 375; the dashboard does not run it"])
+    def test_hide_and_unhide_are_the_rows_act(self):
+        # sd:5457: the row shows Hide (or Unhide, on the Hidden view) on every page and brief row.
+        rows = {"page": f"{PAGES}/tasks.html", "brief": "product:brand"}
+        out = self.run_page(f"const ROWS_ = {json.dumps(rows)};"
+                            " R.primary = Object.fromEntries(Object.entries(ROWS_).map(([t, id]) => [t, REG.filter(c => c.on === t && c.primary?.(C.get(id))).map(c => c.id)]));")
+        self.assertEqual(out["R"]["primary"], {"page": ["design.hide", "design.unhide"], "brief": ["design.hide", "design.unhide"]})
 
     def test_read_brief_shows_the_brief_in_details(self):
         # Tuning: Read brief only toasted "Copy the line", its line folded shut, so it seemed to do nothing. It now selects
@@ -205,10 +204,6 @@ class TheScript(unittest.TestCase):
         doc["products"][0]["briefCut"] = True
         out = self.run_page("open('product:brand'); R.details = ELS.details.html;", answer=f"(path) => [200, {json.dumps(doc)}]")
         self.assertIn("The rest is in products/brand/README.md.", out["R"]["details"])
-
-    def test_retake_is_off_for_a_page_shots_mjs_does_not_draw(self):
-        out = self.run_page("R.off = cmd('design.shots').when(C.get('products/system/designs/v1-today.html'));")
-        self.assertEqual(out["R"]["off"], "shots.mjs draws the v2 pages only")
 
     def test_rows_lamps_and_the_badge_come_from_the_ledger(self):
         out = self.run_page("")
@@ -311,6 +306,38 @@ class TheScript(unittest.TestCase):
         out = self.run_page("R.rows = ELS.rows.html;", search="?f=brief")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["product:brand"])
 
+    def test_the_filters_are_activitys_bar_with_state_product_tokens_and_clear_all(self):
+        """sd:5463: Activity's layout from shell.list.fbar: the state as a segment with its counts, the product as a pick,
+        the pressed lamp and the query as tokens, then Clear all; the count stays once, on the title line."""
+        bar = "ELS.filters.listeners.%s[0]({ target: %s });"
+        out = self.run_page("R.bar = ELS.filters.html; R.tally = OUT.counts.pages;"
+                            + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { f: 'q', v: '' } } : null }")
+                            + " R.bar2 = ELS.filters.html; R.url2 = OUT.urls[OUT.urls.length - 1]; R.input = (OUT.shift ?? null);"
+                            + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { f: 'state', v: 'ok' } } : null }")
+                            + " R.url3 = OUT.urls[OUT.urls.length - 1];"
+                            + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { fclear: '' } } : null }")
+                            + " R.bar4 = ELS.filters.html; R.url4 = OUT.urls[OUT.urls.length - 1]; R.tally4 = OUT.counts.pages;"
+                            + bar % ("change", "{ dataset: { pick: 'product' }, type: 'select-one', value: 'brand' }")
+                            + " R.rows5 = ELS.rows.html; R.url5 = OUT.urls[OUT.urls.length - 1];",
+                            search="?f=stale&q=tasks")
+        R = out["R"]
+        self.assertTrue(R["bar"].startswith('<div class="fbar" role="group" aria-label="Filters"><div class="fseg" role="group" aria-label="State">'), R["bar"][:120])
+        self.assertEqual(re.findall(r'data-f="state" data-v="(\w+)" aria-pressed="false" title="[^"]*: (\d+)"', R["bar"]),
+                         [("caution", "3"), ("ok", "1"), ("queued", "1")])
+        self.assertIn('<select id="f-product" class="fsel" data-pick="product"><option value="" selected>All products</option>'
+                      '<option value="system">system · 4</option><option value="brand">brand · 1</option></select>', R["bar"])
+        self.assertEqual(re.findall(r'class="tok" data-f="(\w+)"', R["bar"]), ["f", "q"])
+        self.assertTrue(R["bar"].endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'))
+        self.assertEqual(R["tally"], 1, "sd:5524: the Pages tab carries the rows shown")
+        self.assertEqual((R["url2"], R["input"]), ({"f": "stale"}, ""))
+        self.assertEqual(re.findall(r'class="tok" data-f="(\w+)"', R["bar2"]), ["f"])
+        self.assertEqual(R["url3"], {"f": "stale", "state": "ok"})
+        self.assertEqual(R["url4"], {})
+        self.assertTrue(R["bar4"].endswith('<div class="fsum"></div></div>'))
+        self.assertEqual(R["tally4"], 5)
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', R["rows5"]), ["product:brand"])
+        self.assertEqual(R["url5"], {"product": "brand"})
+
     def test_details_open_the_page_and_its_screenshot_where_the_tab_serves_them(self):
         out = self.run_page(f"open('{PAGES}/today.html'); R.page = ELS.details.html; open('product:brand'); R.brief = ELS.details.html;")
         self.assertIn(f'<a class="open" href="/designs/{PAGES}/today.html">', out["R"]["page"])
@@ -344,17 +371,18 @@ class TheRegistration(Registers, unittest.TestCase):
 
 
 class TheToolbar(unittest.TestCase):
-    """sd:5281: the Designs page's top controls are one toolbar row: the views, the filter, then the count at the right."""
+    """sd:5281: the Designs page's top controls are one toolbar row: the views, then the shell's Shapeshift bar (sd:5539)."""
 
     HTML = (V2 / "designs.html").read_text(encoding="utf-8")
 
-    def test_the_views_then_the_filter_share_one_row_and_the_count_sits_on_the_title_line(self):
-        row = re.search(r'<div class="toolbar" id="toolbar">(.*?)\n    </div>', self.HTML, re.S)
-        self.assertIsNotNone(row, "designs.html has no toolbar row")
-        self.assertLess(row.group(1).index('id="viewswitch"'), row.group(1).index('id="shift"'))
+    def test_the_views_then_the_filter_share_one_row_and_no_count_sits_on_the_title_line(self):
+        row = re.search(r'<div class="toolbar" id="toolbar" data-shift>(.*?)\n    </div>', self.HTML, re.S)
+        self.assertIsNotNone(row, "designs.html has no toolbar row the shell draws its bar in")
+        self.assertIn('id="viewswitch"', row.group(1))
+        self.assertNotIn("<input", row.group(1), "the page draws a text box of its own beside the shell's bar")
         self.assertNotIn('id="tally"', row.group(1))
         title = re.search(r'<div class="sec-head">(.*?)\n      </div>', self.HTML, re.S).group(1)
-        self.assertIn('<p class="tally" id="tally"', title)
+        self.assertNotIn('id="tally"', title, "sd:5524: the Pages tab carries the count")
 
     def test_the_head_keeps_no_control_of_its_own(self):
         head = re.search(r'<header class="head">(.*?)</header>', self.HTML, re.S).group(1)
