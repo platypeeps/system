@@ -4,6 +4,7 @@
   Data: /api/now, the document now_screen.document builds for v1 Today's Now section, read when the page opens and on Refresh.
   Snooze (sd:1896): /ui/snooze.js; a row's Snooze or Unsnooze posts /api/snooze, and Now reads again.
   Your work (sd:3271): the items `sd today` lists, from the same document (work); the Snooze control is Now's, keyed today:item:<id>.
+  A Work row selects into Details as a Now or GitHub row does: one selection, today.js pick (sd:5654).
   Working now (sd:3466): each open item's live sessions, from the same document (active, active_sessions.document).
   Your issues (sd:4628): each repo's issues assigned to or filed by the operator, from the same document (issues); issues.js draws them.
   The Issues view is the tab after Now (sd:5645): Your issues moved here from Tasks, so issues assigned to the operator sit near the top.
@@ -125,7 +126,7 @@
       </section>
       <section aria-labelledby="work-h">
         <div class="sec-head">
-          <h2 id="work-h">Your work <button class="help" type="button" aria-label="Help: Your work" data-help="&lt;b&gt;Items due or in progress.&lt;/b&gt; The same list as &lt;code&gt;sd today&lt;/code&gt;, finished-unsent items first. Snooze hides an item until a time; it shows again early if its status or due date changes. &lt;code&gt;sd today&lt;/code&gt; still lists a snoozed item.">
+          <h2 id="work-h">Your work <button class="help" type="button" aria-label="Help: Your work" data-help="&lt;b&gt;Items due or in progress.&lt;/b&gt; The same list as &lt;code&gt;sd today&lt;/code&gt;, finished-unsent items first. Snooze hides an item until a time; it shows again early if its status or due date changes. &lt;code&gt;sd today&lt;/code&gt; still lists a snoozed item. Press a row for its details and actions; its title there opens it on Tasks.">
             <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
           <p class="tally" id="work-tally"></p>
         </div>

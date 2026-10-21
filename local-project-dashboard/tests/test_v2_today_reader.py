@@ -18,6 +18,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 from sd_dashboard import now_screen, v2
 
@@ -80,10 +81,10 @@ class TheReader(ScreenCase):
                                        fleet=lambda area: fleet_document(area, repos=[repo("pushy", ahead=1)]))
         self.assertEqual([row["id"] for row in self.doc["rows"]], ["job:nightly-sync:7", "ahead:pushy:1"])
 
-    def run_page(self, body, search=""):
+    def run_page(self, body, search="", after=""):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + SHELL_MORE + READ_SHELL
                   + f"\nconst DOC0 = {json.dumps(self.doc)};\nlocation.search = {json.dumps(search)};\n"
-                  + "ANSWER = () => [200, DOC0];\n" + SNOOZE_JS + COMMANDS_JS + TODAY_JS
+                  + "ANSWER = () => [200, DOC0];\n" + SNOOZE_JS + COMMANDS_JS + TODAY_JS + after
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
@@ -288,13 +289,59 @@ R.primary = REG.filter(c => c.on === 'snoozed row').map(c => c.id);""")
 R.work = ELS.work.html; R.tally = ELS['work-tally'].html; R.obj = C.get('item:7');
 FIELD_VALUES.until = 'snooze-hour'; shellRun(cmd('work item.snooze'), C.get('item:7')); await flush();""")
         self.assertIn("Write the brief", out["R"]["work"])
-        self.assertIn('href="/tasks?row=7"', out["R"]["work"])
+        self.assertIn('<tr data-id="item:7" aria-selected="false">', out["R"]["work"])
         self.assertIn("in_progress · due 2026-09-05", out["R"]["work"])
         self.assertIn("1 overdue", out["R"]["tally"])
         self.assertEqual((out["R"]["obj"]["type"], out["R"]["obj"]["seen"]), ("work item", "0123456789abcdef"))
         self.assertEqual([(path, body["page"], body["row"], body["seen"]) for path, body, _ in out["posts"]],
                          [("/api/snooze", "today", "item:7", "0123456789abcdef")])
         self.assertEqual(out["gets"], ["/api/now", "/api/now"])
+
+    # A press on a row of a table: the click its tbody listens for, as the browser's closest() answers it.
+    PRESS = "const press = (t, id) => ELS[t].listeners.click[0]({ target: { closest: s => s === 'tr[data-id]' ? { dataset: { id } } : null } });\n"
+    SPY = "const SEL = []; C.select = id => SEL.push(id); R.panes = []; window.shell.openPane = p => R.panes.push(p);\n"
+
+    def test_a_work_row_selects_into_the_details_as_a_now_row_does(self):
+        """sd:5654: a press on a Work row selects it: ?row=, the shell's selection, its Details and the pane; a read keeps it."""
+        self.doc["work"], self.doc["work_error"] = [{**self.ITEM, "item_kind": "task"}], ""
+        out = self.run_page(self.PRESS + self.SPY + """press('work', 'item:7'); await flush();
+R.details = ELS.details.html; R.row = location.search; R.sel = SEL.slice();
+refresh(); await flush(); R.work = ELS.work.html; R.again = ELS.details.html; R.now = selected(); R.row2 = location.search;""")
+        details = out["R"]["details"]
+        self.assertIn('<h2><a href="/tasks?row=7">#7 Write the brief</a></h2>', details)
+        for fact in ("Work item · overdue", "<dt>Status</dt><dd>in_progress</dd>", "<dt>Due</dt><dd>2026-09-05</dd>",
+                     "<dt>Kind</dt><dd>task</dd>", "<dt>Id</dt><dd>sd:7</dd>", '<h3>Act</h3><div class="bar"></div>'):
+            self.assertIn(fact, details)
+        self.assertEqual((out["R"]["row"], out["R"]["sel"], out["R"]["panes"]), ("?row=item%3A7", ["item:7"], ["tab-details"]))
+        # The read again keeps the Work row: no Now row takes the selection, and the redraw marks the row.
+        self.assertIn('<tr data-id="item:7" aria-selected="true">', out["R"]["work"])
+        self.assertIn("#7 Write the brief", out["R"]["again"])
+        self.assertEqual((out["R"]["now"], out["R"]["row2"]), ([], "?row=item%3A7"))
+
+    def test_one_selection_spans_now_work_and_github_rows(self):
+        """sd:5654: Now, Work and GitHub rows share today.js pick: selecting one unmarks the others, and Now's read keeps a
+        GitHub selection."""
+        from test_v2_today_github import PAGE_JS as GITHUB_JS, doc as gh_doc, entry
+        pr = entry(1, checkout="~/repos/anvil")
+        self.doc["work"], self.doc["work_error"] = [self.ITEM], ""
+        out = self.run_page(self.PRESS + self.SPY + f"""ANSWER = path => path === '/api/today/github' ? [200, {json.dumps(gh_doc(pulls=[pr]))}] : [200, DOC0];
+const gh = () => ELS['github-sections'].listeners.click[0]({{ target: {{ closest: s => s === '[data-gh-open]' ? {{ dataset: {{ ghOpen: {json.dumps(pr["key"])} }} }} : null }} }});
+const more = () => ELS['github-sections'].listeners.click[0]({{ target: {{ closest: s => s === 'button[data-gh-more]' ? {{ dataset: {{ ghMore: 'pulls' }} }} : null }} }});
+document.dispatchEvent(new CustomEvent('shell:view', {{ detail: {{ id: 'github' }} }})); await flush();
+gh(); refresh(); await flush(); R.kept = ELS.details.html; R.row = location.search; R.now = selected();
+press('rows', 'job:nightly-sync:7'); more(); R.gh = ELS['github-sections'].html; R.now2 = selected();
+const sortWork = () => ELS['work-head'].listeners.click[0]({{ target: {{ closest: s => s === 'button[data-sort]' ? {{ dataset: {{ sort: 'what' }} }} : null }} }});
+press('work', 'item:7'); more(); sortWork(); R.gh2 = ELS['github-sections'].html; R.now3 = selected(); R.work = ELS.work.html;
+gh(); sortWork(); R.work2 = ELS.work.html; R.sel = SEL.slice();""", after=GITHUB_JS)
+        self.assertIn("Pull request · open", out["R"]["kept"], "Now's read took the GitHub row's selection")
+        self.assertEqual((out["R"]["now"], out["R"]["row"]), ([], "?row=" + quote("gh:" + pr["key"], safe="")))
+        self.assertEqual(out["R"]["now2"], ["job:nightly-sync:7"])
+        self.assertIn('data-pr aria-selected="false"', out["R"]["gh"])
+        self.assertIn('data-pr aria-selected="false"', out["R"]["gh2"])
+        self.assertEqual(out["R"]["now3"], [])
+        self.assertIn('<tr data-id="item:7" aria-selected="true">', out["R"]["work"])
+        self.assertIn('<tr data-id="item:7" aria-selected="false">', out["R"]["work2"])
+        self.assertEqual(out["R"]["sel"][-4:], ["gh:" + pr["key"], "job:nightly-sync:7", "item:7", "gh:" + pr["key"]])
 
     def test_a_work_read_that_failed_says_so_and_is_not_an_empty_list(self):
         self.doc["work"], self.doc["work_error"] = [], "database is locked"
@@ -460,7 +507,7 @@ class TheSort(TheReader):
         self.assertNotIn("band-start", out["R"]["now"])
         self.assertEqual((out["R"]["sel"], out["R"]["sel2"]), (["job:nightly-sync:7"], ["job:nightly-sync:7"]))
         self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["active"]), ["6", "5"])
-        self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["work"]), ["9", "7"])
+        self.assertEqual(re.findall(r'<tr data-id="item:(\d+)"', out["R"]["work"]), ["9", "7"])
         self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["decisions"]), ["12", "3012"])
         self.assertNotIn("sort=", out["R"]["url"])
 

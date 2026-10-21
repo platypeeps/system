@@ -41,6 +41,10 @@ V2 = Path(v2.__file__).resolve().parent
 SCRIPT = V2 / "static" / "today-github.js"
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 PAGE_JS = SCRIPT.read_text(encoding="utf-8") if SCRIPT.exists() else ""
+# today.js's one selection (pick, sd:5654), which today.js defines before this script: it names the row in ?row=, puts
+# the Details and makes the row the shell's selection. test_v2_today_reader runs the real one with both scripts.
+PICK = ("window.todayPick = (id, draw, open) => { location.search = '?row=' + encodeURIComponent(id);"
+        " window.markup.put(document.getElementById('details'), draw()); C.select(id); if (open) OUT.panes = (OUT.panes || 0) + 1; };\n")
 HUB = "https://github.com"
 SHA = "a" * 40
 
@@ -250,7 +254,7 @@ class TheScript(unittest.TestCase):
 
     def run_page(self, body, answer):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + COMMANDS_JS
-                  + "\nANSWER = " + answer + ";\n" + PAGE_JS
+                  + "\nANSWER = " + answer + ";\n" + PICK + PAGE_JS
                   + "\nvar R = {};\nconst show = () => document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'github', first: true } }));\n"
                   + "const press = key => ELS['github-sections'].listeners.click[0]({ target: { closest: s => s === '[data-gh-open]'"
                     " ? { dataset: { ghOpen: key } } : null } });\n"
@@ -360,7 +364,7 @@ class ThePullRequestDetails(unittest.TestCase):
             self.assertIn(fact, details)
         self.assertIn(f'<a href="{PR}" target="_blank" rel="noopener noreferrer">Open example/anvil#1 on GitHub</a>', details)
         self.assertIn('<div class="bar"></div>', details)
-        self.assertIn(f'<tr data-key="{PR}" data-pr aria-selected="true">', out["R"]["sections"])
+        self.assertIn(f'<tr data-key="{PR}" data-id="gh:{PR}" data-pr aria-selected="true">', out["R"]["sections"])
         self.assertEqual(out["R"]["obj"]["type"], "github pull request")
         self.assertEqual((out["R"]["obj"]["checkout"], out["R"]["obj"]["number"]), ("~/repos/anvil", 1))
         self.assertIsNone(out["R"]["issue"])
