@@ -826,7 +826,8 @@
   }
   // confirm:end
   // The act a confirm names: the label when it already names its object ("Remove worktree"), else the label and the type
-  // ("Cancel job"). The OK button repeats it; Keep says what not doing it means, never a second "Cancel" (review item 13).
+  // ("Cancel job"). The OK button repeats it. The other button is Cancel (sd:5614), or Keep it when the act itself begins
+  // with Cancel, so a dialog never shows two buttons that both say Cancel (review item 13).
   const actOf = (c, o) => /\s/.test(c.label.trim()) ? c.label : `${c.label} ${o.type}`;
   function run(c, o) {
     const go = v => {
@@ -846,7 +847,7 @@
     const fields = c.fields ? c.fields(o) : [];
     if (c.previews || (c.risk !== 'confirm' && !asksFirst(c, o) && !fields.length)) return go();
     const act = actOf(c, o);
-    confirmAction({ title: `${act}: ${o.label}?`, body: c.consequence ? c.consequence(o) : '', cli: v => { const s = cliOf(c, o, v); return noCli(s) ? '' : s; }, ok: act, keep: `Don't ${c.label.toLowerCase()}`, danger: c.danger ? !!c.danger(o) : c.risk === 'confirm', fields })
+    confirmAction({ title: `${act}: ${o.label}?`, body: c.consequence ? c.consequence(o) : '', cli: v => { const s = cliOf(c, o, v); return noCli(s) ? '' : s; }, ok: act, keep: /^cancel\b/i.test(act) ? 'Keep it' : 'Cancel', danger: c.danger ? !!c.danger(o) : c.risk === 'confirm', fields })
       .then(({ yes, from, values }) => { if (!yes) return; go(values); const a = document.activeElement; if (!a || a === body) refocus(from); });
   }
 

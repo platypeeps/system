@@ -275,7 +275,7 @@ function renderRepos() {
   shell.view.count('repos', rows.length);
   put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
       <p class="tally">${hides(rows.length, ALL.length, 'repo')}<span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} lane merge auto</span></p>
-      <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${seen(GIT)}` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>
+      <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${seen(GIT)}` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`} <button class="btn quiet sm" type="button" data-refresh-repos>${I('rotate-ccw')}<span>Refresh</span></button></p></div>
     <div class="filters toolbar-2">${filterBar(html`${filterSeg('managed', 'Managed', ['yes', 'no'], RS.managed)}${filterSeg('merge', 'Lane merge', ['auto', 'manual'], RS.merge)}${filterSeg('cols', 'Columns', ['git', 'settings'], RS.cols)}`, repoChips().length)}</div>
     ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(repoCols(), RS)}</thead>
       <tbody>${shown.map(r => html`<tr data-id="${'repo:' + r.path}" data-repo="${r.path}">
@@ -287,11 +287,14 @@ function renderRepos() {
         ${RS.cols === 'settings' ? settingCells(r) : gitCells(r)}
         <td class="act end">${shell.commands.rowActions('repo:' + r.path)}</td></tr>`)}</tbody></table>${shell.list.pager(rows.length, RS, 'repos')}`
       : html`<p class="empty">No repo matches ${text.q ? `“${text.q}”` : 'these filters'}. <button class="linkbtn" type="button" data-clear>Clear filters</button></p>`}
-    ${RS.cols === 'settings' ? html`<p class="note">Managed and Merge switch from a row's actions, each one sd-db repo verb on the hub. Floor and Copilot are read-only here: they change through the row's review declaration, drafted from its ${I('settings')} settings page. Required checks are the nightly protection reading; Python and Node are the versions the checkout pins.</p>`
-      : html`<p class="note">${I('settings')} opens a registered repo's settings. Owner and status source sit in Details. Git state is as read at ${hhmm(GIT?.observed || READ)} UTC; nothing here fetches.</p>`}`);
+    ${RS.cols === 'settings' ? html`<p class="note">Managed and Merge switch from a row's actions, each one sd-db repo verb on the hub. Floor and Copilot are read-only here: they change through the row's review declaration, drafted from its ${I('settings')} settings page. Required checks are the nightly protection reading; Python and Node are the versions the checkout pins.</p>` : ''}`);
 }
+// Refresh (sd:5614): the post writes nothing, but an answered post makes the next read wait for a new git reading (sd:4955).
+const refreshRepos = () => window.shell.post('/api/repos/refresh', {}).then(reread)
+  .then(() => shell.toast('Repos refreshed'), e => shell.toast(`Not refreshed: ${e.message || e}`));
 document.getElementById('view-repos').addEventListener('click', e => {
   if (e.target.closest('.rowact')) return;
+  if (e.target.closest('[data-refresh-repos]')) return void refreshRepos();
   const cols = e.target.closest('[data-f="cols"]');
   if (cols) { RS.cols = cols.dataset.v === 'settings' ? 'settings' : 'git'; if (!repoCols().some(c => c[0] === RS.sort)) RS.sort = 'name'; renderRepos(); return setURL(); }
   const f = e.target.closest('[data-f="managed"], [data-f="merge"]'), tr = e.target.closest('tr[data-repo]');
@@ -620,9 +623,14 @@ const registeredWhy = o => o.row.registered || 'not registered in sd-db: sd-db r
 // sd:5100: the repo's open pull requests as `sd shadow sync` last saw them, keyed by its lower-cased GitHub slug.
 const pullsOf = o => (o.row.slug && DOC?.pulls?.[o.row.slug.toLowerCase()]) || [];
 // sd:5109: the Deep review's settings as the document read them (management_screen's `deep` source).
-const DEEP_FIELDS = [['model', 'Model', 'a claude model id or alias, such as opus'], ['effort', 'Effort', 'one lowercase word, such as max'],
+// Model and effort are choices (sd:5614): the claude CLI's model aliases and its --effort levels.
+const DEEP_FIELDS = [['model', 'Model', 'a claude model alias', ['opus', 'fable', 'sonnet', 'haiku']],
+  ['effort', 'Effort', 'how hard claude thinks', ['low', 'medium', 'high', 'xhigh', 'max']],
   ['bound_minutes', 'Bound in minutes', 'whole minutes, such as 90'], ['agents', 'Sub-agents at most', 'from 1 to 16, such as 8']];
 const deepOf = k => DOC?.deep?.[`adversarial.deep.${k}`]?.value ?? '?';
+// A choice opens on the held value, first, so an untouched select sends nothing; a held value not in the list stays offered.
+const deepField = ([k, label, help, choices]) => !choices ? { name: k, label, help, value: deepOf(k) }
+  : { name: k, label, help, options: [deepOf(k), ...choices.filter(c => c !== deepOf(k))].map(v => ({ value: v, label: v })) };
 // Only the fields the operator changed are sent; an emptied field clears its row.
 const deepChanged = v => Object.fromEntries(DEEP_FIELDS.filter(([k]) => k in v && v[k] !== deepOf(k)).map(([k]) => [`adversarial.deep.${k}`, v[k]]));
 const deepLine = () => (DOC?.deep ? html`<p class="why">Deep review settings: ${DEEP_FIELDS.map(([k, label], i) => html`${i ? ' · ' : ''}${label.toLowerCase()} <b>${deepOf(k)}</b>${DOC.deep[`adversarial.deep.${k}`].from === 'default' ? ' (default)' : ''}`)}. Deep review settings changes them for every repository.</p>`
@@ -665,7 +673,7 @@ function registerCommands() {
     // sd:5109: the Deep review's settings are fleet-wide setting rows; an emptied field clears its row, so the default applies.
     { id: 'repo.deep-settings', on: 'repo', label: 'Deep review settings', does: 'Sets the Deep review\'s model, effort, bound and sub-agent cap for every repository.', risk: 'safe', executes: true, icon: 'settings',
       when: () => !!DOC?.deep || `settings not read: ${why('deep') || 'the reading carries none'}`,
-      fields: () => DEEP_FIELDS.map(([k, label, help]) => ({ name: k, label, help, value: deepOf(k) })),
+      fields: () => DEEP_FIELDS.map(deepField),
       cli: () => 'no sd verb: the dashboard writes the adversarial.deep.* setting rows',
       sends: (o, v) => `POST /api/adversarial/settings ${JSON.stringify(deepChanged(v || {}))}`,
       run: (o, v) => { const changed = deepChanged(v || {}); if (!Object.keys(changed).length) return 'Nothing changed';

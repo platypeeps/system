@@ -464,6 +464,12 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
                     "restart": services.restart_service}[action]
         return lambda connection: mutation(connection, label, backend=services_backend,
             expected_revision=values["revision"], who="dashboard")
+    if path == "/api/repos/refresh":
+        # sd:5614: Repos' Refresh writes nothing; any answered post invalidates the fleet snapshot (sd:4955), so the
+        # page's next read waits for a git reading begun after it.
+        if values:
+            raise ValueError("Refresh repos takes no values.")
+        return lambda connection: {"refreshed": True}
     if path == "/api/satellites/refresh":
         from .management_screen import refresh_satellites
 
