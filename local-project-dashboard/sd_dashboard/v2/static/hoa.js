@@ -29,6 +29,10 @@
   let ACK_ALL = null;
   // sd:5671: a Tasks row's Details and commands, the Tasks page's (task-details.js), attached on DOMContentLoaded.
   let TD = null;
+  // sd:5752: OB is the open items, which the annunciator and the badge count; OBD the week's done ones (/api/hoa's
+  // items.done). Tasks shows OB, or both with All (obShow, the URL's ?tasks=all); each row's act is Done (view 'place').
+  let OBD = [], obShow = new URLSearchParams(location.search).get('tasks') === 'all' ? 'all' : 'open';
+  const TASKS = () => [...OB, ...OBD];
   // Whether the pane is HOA's: Briefs and Reports draw their own Details there (places.js).
   const own = () => !['briefs', 'reports'].includes(window.shell.view?.current?.());
 // A source's refresh job (its source-ages row's `job`) as the jobs inventory reads it: its last run, in words.
@@ -211,7 +215,7 @@ let polling = 0;
   }
   // sd:5671: a task's Details are the Tasks page's (task-details.js), drawn into this pane; its key is the item number.
   function selectTask(key, open) {
-    const o = OB.find(x => x.key === key); if (!o || !TD) return;
+    const o = TASKS().find(x => x.key === key); if (!o || !TD) return;
     selected = key; mark(); drawMap();
     window.shell.commands.select(key); TD.readDet(o.id); TD.renderDetails();
     if (open) window.shell.openPane('tab-details');
@@ -266,7 +270,7 @@ let polling = 0;
   function select(id, open) {
     if (!id) return;
     if (id.startsWith('asset:')) selectAsset(id, open);
-    else if (OB.some(o => o.key === id)) selectTask(id, open);
+    else if (TASKS().some(o => o.key === id)) selectTask(id, open);
     else if (id.startsWith('lot:')) selectLot(id.slice(4), open);
     else if (id.startsWith('alarm:')) { if (window.shell.view?.current() !== 'alarms') window.shell.view?.show('alarms'); selectAlarm(id, open); }
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
@@ -398,16 +402,18 @@ let polling = 0;
   let kind = 'all';
   const OB_COLS = [['item', 'ID', 'num'], ['rank', html`<span class="sr">Urgency</span>`], ['title', 'What'], ['kind', 'Kind', 'hide-sm'],
     ['due', 'Due', 'hide-sm'], ['status', 'Status', 'hide-sm'], ['', html`<span class="sr">Actions</span>`]];
-  const OB_BY = { item: o => o.id, rank: o => OB.indexOf(o), title: o => o.title.toLowerCase(), kind: o => o.kind, due: o => o.due_days ?? Infinity, status: o => o.status };
+  const OB_BY = { item: o => o.id, rank: o => TASKS().indexOf(o), title: o => o.title.toLowerCase(), kind: o => o.kind, due: o => o.due_days ?? Infinity, status: o => o.status };
   function obRows() {
-    const rows = OB.filter(o => kind === 'all' || o.kind === kind), by = OB_BY[OB_ST.sort];
+    const rows = (obShow === 'all' ? TASKS() : OB).filter(o => kind === 'all' || o.kind === kind), by = OB_BY[OB_ST.sort];
     return by ? rows.sort((a, b) => { const x = by(a), y = by(b); return (x < y ? -1 : x > y ? 1 : 0) * OB_ST.dir; }) : rows;
   }
   function drawTasks() {
-    const C = window.shell.commands, f = DOC?.items, n = k => OB.filter(o => o.kind === k).length;
-    const kinds = [...new Set([...KINDS, ...OB.map(o => o.kind)])].filter(n);
+    const C = window.shell.commands, f = DOC?.items, shown = obShow === 'all' ? TASKS() : OB, n = k => shown.filter(o => o.kind === k).length;
+    const kinds = [...new Set([...KINDS, ...shown.map(o => o.kind)])].filter(n);
     if (!kinds.includes(kind)) kind = 'all';
-    put($('ob-kinds'), html`${['all', ...kinds].map(k => html`<button class="chip" type="button" data-kind="${k}" aria-pressed="${String(k === kind)}">${k === 'all' ? 'All' : k} <b>${k === 'all' ? OB.length : n(k)}</b></button>`)}`);
+    const seg = (v, word, count) => ({ v, pressed: obShow === v, title: `${word}: ${count}`, label: html`${word} <span class="n">${String(count)}</span>` });
+    put($('ob-show'), DOC && !f.error ? window.shell.list.fseg('tasks', 'Tasks shown', [seg('open', 'Open', OB.length), seg('all', 'All', TASKS().length)]) : html``);
+    put($('ob-kinds'), html`${['all', ...kinds].map(k => html`<button class="chip" type="button" data-kind="${k}" aria-pressed="${String(k === kind)}">${k === 'all' ? 'All' : k} <b>${k === 'all' ? shown.length : n(k)}</b></button>`)}`);
     put($('ob-head'), window.shell.list.sortHead(OB_COLS, OB_ST));
     const rows = obRows();
     put($('ob-body'), !DOC ? html`` : f.error ? html`<tr><td colspan="7">${unknownBlock(f.error)}</td></tr>`
@@ -416,7 +422,7 @@ let polling = 0;
         <td class="what"><button type="button">${o.title}</button>${o.p == null ? '' : html` <span class="tag real">P${o.p}</span>`}<div class="detail">${dueText(o)}</div></td>
         <td class="hide-sm">${o.kind}</td><td class="detail hide-sm">${dueText(o)}</td><td class="src hide-sm">${o.status}</td>
         <td class="act">${C.rowActions(o.key)}</td></tr>`)}`
-      : html`<tr><td colspan="7" class="why">No open item in the checkout.</td></tr>`);
+      : html`<tr><td colspan="7" class="why">No open item in the checkout.${obShow === 'open' && OBD.length ? ` All lists the ${plural(OBD.length, 'item')} done this week.` : ''}</td></tr>`);
   }
 
   // ---------- Alarm ledger ----------
@@ -458,7 +464,8 @@ let polling = 0;
       ASSETS = doc.assets.features; LOTS = doc.base.features;
       // sd:5671: each item is an /api/tasks row (hoa_screen._items) in task-details.js's task shape, with HOA's due state.
       OB = doc.items.rows.map(r => Object.assign(TD.shape(r), { state: r.state, due_days: r.due_days }));
-      TD.adopt(OB);
+      OBD = (doc.items.done || []).map(r => Object.assign(TD.shape(r), { state: r.state, due_days: r.due_days }));
+      TD.adopt(TASKS());
       // An event's id is its datetime and text, the server's view key (hoa_screen.alarm_key), so it holds across reads.
       AL = M.alarms.slice().reverse().map(a => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime} ${a.event}`, st, why }; });
       ACKS = M.acks && !M.acks.available ? `Acknowledge is off: ${M.acks.reason}` : '';
@@ -472,7 +479,7 @@ let polling = 0;
       const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, !doc.base.error && doc.lots.error && `Lots: ${doc.lots.error}`, doc.items.error && `Tasks: ${doc.items.error}`].filter(Boolean);
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
-        ...OB.map(TD.objectOf),
+        ...TASKS().map(TD.objectOf),
         // sd:5621: the Alarms toolbar, which Acknowledge all acts on; its label is the count the confirm names.
         ...(M.error ? [] : [{ id: 'alarms', type: 'alarms', label: plural(AL.filter(a => !a.acked).length, 'alarm') }]),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
@@ -490,7 +497,7 @@ let polling = 0;
       return { objects, state: st };
     },
     clear: () => {
-      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = []; SRC = []; SWEEP = null; DL = {};
+      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; OBD = []; AL = []; P = null; CELLS = []; SRC = []; SWEEP = null; DL = {};
       delete document.body.dataset.observed;
       put($('subhead'), html`The HOA readings could not be read.`);
       window.shell.attention({ state: 'unknown', n: 0, what: 'HOA not read' });
@@ -520,8 +527,8 @@ let polling = 0;
     // A task's Details, commands, writes and dialogs are the Tasks page's (task-details.js), as on Home and the realm places.
     // HOA gives it the rows, the selection and the read; its due line; a link to Tasks; and Draft email (sd:3463, which
     // HOA's Draft followup posted too) as a followup's first action. Email is never sent from the dashboard.
-    TD = window.taskDetails.attach({ details: $('details'), rows: () => OB, selected: () => own() ? selected : null, read: () => DOC?.read,
-      render: () => { drawTasks(); if (own() && OB.some(o => o.key === selected)) TD.renderDetails(); }, reread: () => reader.reread(), load: () => reader.load(),
+    TD = window.taskDetails.attach({ details: $('details'), rows: TASKS, selected: () => own() ? selected : null, read: () => DOC?.read, view: () => 'place',
+      render: () => { drawTasks(); if (own() && TASKS().some(o => o.key === selected)) TD.renderDetails(); }, reread: () => reader.reread(), load: () => reader.load(),
       select: (key, open) => select(key, open), draftFirst: t => t.kind === 'followup',
       note: t => html`<p class="why"><span class="g-${t.state}" aria-hidden="true">${GLYPH[t.state]}</span> ${t.due ? `${t.due.slice(0, 10)} · ${dueText(t)}` : 'no due date'}</p>`,
       foot: () => DOC ? html`Rows read <time class="rel" datetime="${DOC.read}"></time> from /api/hoa.` : '',
@@ -688,6 +695,14 @@ let polling = 0;
       run: () => S.post('/api/hoa/sweep', {}).then(
         out => reader.reread().then(() => { poll(); return `Sweep started ${String(out.started).slice(11, 16)} UTC · HOA reads again until it ends`; }),
         err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether a sweep started is not known`); }) });
+    // sd:5752: Open | All on Tasks; the URL keeps All as ?tasks=all, and Open leaves none.
+    $('ob-show').addEventListener('click', e => {
+      const b = e.target.closest('[data-f="tasks"]'); if (!b || b.dataset.v === obShow || !['open', 'all'].includes(b.dataset.v)) return;
+      obShow = b.dataset.v;
+      const p = new URLSearchParams(location.search);
+      if (obShow === 'all') p.set('tasks', 'all'); else p.delete('tasks');
+      S.url(p); drawTasks();
+    });
     $('al-show').addEventListener('click', e => {
       const b = e.target.closest('[data-alview]'); if (!b || b.dataset.alview === alView) return;
       alView = b.dataset.alview; drawLedgers();

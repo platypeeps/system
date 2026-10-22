@@ -251,7 +251,9 @@ class TheTools(Case):
                 self.assertIn("Bash", denied)
                 self.assertNotIn("Edit", allowed)
                 # Read and Write reach the run folder; a draft also reads its checkout; only the deck draft the kit.
-                self.assertIn("Write(//state/runs/x/**)", allowed)
+                # Claude Code matches only Edit(path) rules for Write; it ignores a Write(path) rule (sd:5751).
+                self.assertIn("Edit(//state/runs/x/**)", allowed)
+                self.assertEqual([t for t in allowed if t.startswith("Write")], [])
                 self.assertEqual("Read(//repos/research/alpha/**)" in allowed, verb == "draft")
                 self.assertEqual(f"Read(/{self.kit})" in allowed, (verb, action) == ("draft", "deck"))
         allowed, denied = rx.tools({"verb": "draft", "action": "deck", "checkout": "/c", "kit": str(self.kit)}, folder)
@@ -264,11 +266,17 @@ class TheTools(Case):
         self.assertIn("mcp__notion__notion-create-pages", denied)
         self.assertIn("mcp__notion__notion-move-pages", denied)
 
-    def test_only_the_deck_apply_loads_workspace_mcp_alone(self):
-        argv = rx.claude_argv({"verb": "apply", "action": "deck"}, Path("/s/runs/x"), "p")
-        self.assertIn("--strict-mcp-config", argv)
-        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
-        self.assertNotIn("--strict-mcp-config", rx.claude_argv({"verb": "list", "action": None}, Path("/s/runs/x"), "p"))
+    def test_each_run_loads_its_one_server_alone(self):
+        # The deck apply loads workspace-mcp, every other run notion; strict, so no claude.ai connector competes
+        # with the granted tools: the first draft called the claude.ai Notion fetch and was refused (sd:5751).
+        for verb, action in rx.MCP:
+            argv = rx.claude_argv({"verb": verb, "action": action, "checkout": "/c", "kit": str(self.kit)},
+                                  Path("/s/runs/x"), "p")
+            with self.subTest(run=(verb, action)):
+                self.assertIn("--strict-mcp-config", argv)
+                self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+                servers = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
+                self.assertEqual(list(servers), ["workspace-mcp" if (verb, action) == ("apply", "deck") else "notion"])
 
 
 class TheStart(Case):

@@ -101,7 +101,7 @@ function reconcile() {
 function clearSelection() {
   selected = null; curSource = null; shownProject = null; resetClaims(); shell.commands.select(null);
   ['reader-for', 'reader-tally', 'claims-for'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = ''; });
-  put(reader, PICK()); put(claimsEl, PICK());
+  put(reader, PICK()); put(claimsEl, PICK()); drawPickers();
   shell.view.count('sources', null); shell.view.count('claims', null);
 }
 function writeURL() {
@@ -130,9 +130,7 @@ let BUILD = null, BUILD_UNREAD = '', buildTimer = 0;
 let SLIDES = null, IMPORTING = '';
 // The page's filter field reaches this ledger too, by the same words as the board.
 const briefs = () => PROJECTS.filter(p => p.experiment && (!filterText || `${p.label} ${p.key} ${p.path}`.toLowerCase().includes(filterText)));
-// Each brief is an object of its own, so its row's one action is Build deck, not the board's primary.
-const xpId = key => `xp:${key}`;
-const experimentObjects = () => PROJECTS.filter(p => p.experiment).map(p => ({ id: xpId(p.key), type: 'research experiment', label: p.label, key: p.key, path: p.path, x: p.experiment }));
+// A brief's row acts on its research project, as Details do (sd:5747): one object, so the row's icons and Details match.
 const deckHref = key => `/research/deck/${key.split('/').map(encodeURIComponent).join('/')}`;
 function updatedCell(x) {
   if (!x.updated) return html`<span class="d"><span class="g-unknown">▨</span> no Updated day</span>`;
@@ -162,19 +160,21 @@ function linksCell(p) {
   const x = p.experiment;
   return html`<span class="links">${x.links.map(l => ext(l.url, l.text))}${x.deck_url ? ext(x.deck_url, 'Deck') : ''}${deckLine(p)}${slidesLine(p)}</span>`;
 }
+// The selected experiment's Details carry its deck line and Act bar (sd:5747), so they redraw with the row.
 function renderExperiments() {
+  if (shownProject && shownProject === selected && PROJECTS.find(p => p.key === shownProject)?.experiment) showProject(shownProject, false);
   const list = briefs();
   put(xpBody, html`${list.map(p => { const x = p.experiment;
     if (x.error) return html`<tr data-id="${p.key}" aria-selected="${String(p.key === selected)}"><td class="g g-unknown"><span aria-hidden="true">▨</span><span class="sr">unknown</span></td>
       <td class="what" colspan="3"><button type="button">${p.label}</button><span class="line">The status brief was not read: ${x.error.replace(/\.$/, '')}.</span></td>
-      <td class="lnk" data-l="Links"><span class="links">${deckLine(p)}</span></td><td class="acts">${shell.commands.rowActions(xpId(p.key))}</td></tr>`;
+      <td class="lnk" data-l="Links"><span class="links">${deckLine(p)}</span></td><td class="acts">${shell.commands.rowActions(p.key, { icons: true })}</td></tr>`;
     return html`<tr data-id="${p.key}" aria-selected="${String(p.key === selected)}">
       <td class="g g-${x.tone}" title="${XP_WORDS[x.tone]}"><span aria-hidden="true">${GLYPH[x.tone]}</span><span class="sr">${XP_WORDS[x.tone]}</span></td>
       <td class="what"><button type="button">${p.label}</button><span class="path">${x.state || 'no State row'}</span><span class="line">${x.line}</span></td>
       <td class="upd" data-l="Updated">${updatedCell(x)}</td>
       <td class="ask" data-l="Asks">${asksCell(x)}</td>
       <td class="lnk" data-l="Links">${linksCell(p)}</td>
-      <td class="acts">${shell.commands.rowActions(xpId(p.key))}</td></tr>`; })}`);
+      <td class="acts">${shell.commands.rowActions(p.key, { icons: true })}</td></tr>`; })}`);
   const stale = list.filter(p => p.experiment.stale).length, asks = list.reduce((n, p) => n + (p.experiment.asks_total || 0), 0);
   put(document.getElementById('xp-tally'), list.length ? html`<span>${plural(list.length, 'brief')}</span><span>${stale} stale</span><span>${plural(asks, 'ask')}</span>${BUILD_UNREAD ? html`<span>last deck build not read: ${BUILD_UNREAD}</span>` : ''}` : html``);
   const empty = document.getElementById('xp-empty');
@@ -196,10 +196,11 @@ function followBuild(run, told) {
   buildTimer = setTimeout(() => window.shell.getJSON(`/api/research/deck/${encodeURIComponent(run.id)}`).then(next => followBuild(next, told),
     e => followBuild({ ...run, unread: e.message }, told)), DECK_POLL);
 }
+const NO_BRIEF = 'this project keeps no status brief (30-brief/BRIEF-status.md)';
 function deckCommand() {
-  return { id: 'research.deck', on: 'research experiment', label: 'Build deck', icon: 'file-text', risk: 'safe', executes: true, primary: () => true,
+  return { id: 'research.deck', on: 'research project', label: 'Build deck', icon: 'file-text', risk: 'safe', executes: true,
     does: 'Builds this experiment\'s status deck from its deck.json; nothing uploads.',
-    when: o => (!o.x.deck ? 'this checkout keeps no 30-brief/deck.json' : !settled(BUILD) ? `run ${BUILD.id} is building ${BUILD.repo}'s deck` : true),
+    when: o => (!o.experiment ? NO_BRIEF : !o.experiment.deck ? 'this checkout keeps no 30-brief/deck.json' : !settled(BUILD) ? `run ${BUILD.id} is building ${BUILD.repo}'s deck` : true),
     cli: o => `cd ${shPath(o.path)} && sd-research-kit deck`,
     sends: o => `POST /api/research/deck {"repo": "${o.key}"}`,
     run: o => window.shell.post('/api/research/deck', { repo: o.key }).then(run => { followBuild(run, true); return `Building ${o.label}'s deck · run ${run.id}`; }, refused) };
@@ -209,9 +210,9 @@ function readSlides() {
     e => { SLIDES = { ready: false, why: `the Slides state was not read: ${e.message}`, imports: SLIDES?.imports || {} }; }).then(renderExperiments);
 }
 function slidesCommand() {
-  return { id: 'research.slides', on: 'research experiment', label: 'Import to Slides', icon: 'send', risk: 'safe', askFirst: true, executes: true,
+  return { id: 'research.slides', on: 'research project', label: 'Import to Slides', icon: 'send', risk: 'safe', askFirst: true, executes: true,
     does: 'Imports the built deck into Google Slides on the work account; shares nothing.',
-    when: o => (!o.x.built ? 'no deck is built: press Build deck first' : IMPORTING ? `${IMPORTING}'s deck is importing now`
+    when: o => (!o.experiment ? NO_BRIEF : !o.experiment.built ? 'no deck is built: press Build deck first' : IMPORTING ? `${IMPORTING}'s deck is importing now`
       : !SLIDES ? 'whether workspace-mcp answers is not read yet' : SLIDES.why || true),
     cli: () => 'no sd verb: the dashboard imports the deck through workspace-mcp',
     sends: o => `POST /api/research/slides {"repo": "${o.key}"}`,
@@ -301,7 +302,7 @@ const reader = document.getElementById('reader');
 let curSource = null;
 async function readerFor(key) {
   const p = PROJECTS.find(x => x.key === key);
-  document.getElementById('reader-for').textContent = p ? `· ${p.label}` : '';
+  document.getElementById('reader-for').textContent = '';
   document.getElementById('reader-tally').textContent = '';
   if (!p) return;
   if (!(SOURCES.has(key) && !SOURCES.get(key).then)) put(reader, html`<p class="why">Reading the ledger in ${p.path}…</p>`);
@@ -385,7 +386,7 @@ let verdict = null, curClaim = null, litKeys = [], litClaims = [];
 function resetClaims() { verdict = null; curClaim = null; litKeys = []; litClaims = []; }
 async function renderClaims(key) {
   const p = PROJECTS.find(x => x.key === key);
-  document.getElementById('claims-for').textContent = p ? `· ${p.label}` : '';
+  document.getElementById('claims-for').textContent = '';
   if (!p) { put(claimsEl, PICK()); return; }
   if (!(SOURCES.has(key) && !SOURCES.get(key).then)) put(claimsEl, html`<p class="why">Reading the claims in ${p.path}…</p>`);
   const s = await loadSources(key);
@@ -419,7 +420,7 @@ function drawClaims(p, s) {
       <button type="button" aria-describedby="claim-type-${x.s}">${x.text}</button>
       <span class="meta"><span>${x.doc}:${x.line}</span>${x.keys.map(k => chip(s, k))}</span></li>`)}</ul>${
     c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown. ${c.moreError ? `The next claims were not read: ${c.moreError}. ` : ''}<button type="button" class="btn" data-more-claims${c.loading ? html` disabled` : ''}>${c.loading ? 'Reading…' : 'Show more'}</button></p>` : ''}${unread}`);
-  document.getElementById('claims-for').textContent = `· ${p.label} · ${plural(c.total, 'claim')}`;
+  document.getElementById('claims-for').textContent = `· ${plural(c.total, 'claim')}`;
 }
 // Show more (past the reader's print bound): the next claims, from the count already held, appended to the cached map.
 function moreClaims() {
@@ -489,9 +490,10 @@ function showProject(key, read = true) {
     ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until it is read.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
     <h3>Act</h3>${shell.commands.bar(p.key)}
+    ${p.experiment ? html`<h3>Deck</h3><p class="links">${deckLine(p)}${slidesLine(p)}</p>` : ''}
     ${REVIEWS[p.key] ? html`<h3>Last review</h3><p class="why">${REVIEWS[p.key].state === 'done' ? 'Every check passed' : REVIEWS[p.key].reason || 'failed'} · <time class="rel" datetime="${REVIEWS[p.key].finished || ''}"></time></p>
       <details class="report"><summary>Report</summary><pre>${REVIEWS[p.key].output || 'It printed nothing.'}</pre></details>` : ''}
-    <p class="why">Render and Review run here as dashboard runs, one at a time: the kit refuses a research.conf.py no render by hand has read.</p>
+    <p class="why">Render, Review and Build deck run one at a time. The kit runs research.conf.py only after you run sd-research-kit render once by hand in this checkout.</p>
     <section aria-live="polite">${experimentSection(p)}</section>`);
   shell.commands.select(p.key);
   if (read) loadExperiment(p.key);
@@ -538,7 +540,7 @@ function experimentSection(p) {
   return html`<h3>Experiment</h3>${EXP.link_error ? html`<p class="unknown"><span class="g-unknown">▨</span>The link was not read: ${EXP.link_error.replace(/\.$/, '')}.</p>`
     : link ? html`<dl><dt>Linked</dt><dd>${link.url ? html`<a class="ext" href="${link.url}" target="_blank" rel="noopener">${link.title || link.page} ${I('arrow-up-right')}</a>` : link.title || link.page}</dd>${
       row ? html`<dt>Stage</dt><dd>${row.stage || 'none'} · Status ${row.status || 'none'}</dd>` : ''}</dl>`
-    : html`<p class="why">Not linked. Attach one, or use Draft experiment in the toolbar.</p>`}
+    : html`<p class="why">Not linked. Attach one, or use Draft experiment on the Experiments tab.</p>`}
     <p class="why">${c ? html`List: ${plural(c.rows.length, 'experiment')}, read <time class="rel" datetime="${c.read}"></time>${c.current ? '' : ' from another data source: refresh it before you attach'}.` : 'List: never read. Refresh experiments, in the toolbar, reads it.'}${EXP.cache_error ? ` The list did not read: ${EXP.cache_error}.` : ''}</p>
     ${problems.map(([k, why]) => html`<p class="unknown"><span class="g-unknown">▨</span>${why.replace(/\.$/, '')}.${k === 'kit' ? ' The deck is off until then.' : ''}</p>`)}
     ${draft ? html`<p class="why">Waiting for Apply: the ${ACTION_WORD[draft.action]} drafted ${stampTime(draft.run)}${draft.unknown ? ', whose last apply found no trace of its write' : ''}. Apply shows it first.</p>` : ''}
@@ -629,9 +631,18 @@ function showClaim(s, x) {
       return html`<li class="claim"><span class="g" aria-hidden="true">${r ? r.id : '?'}</span><span>${r ? r.title : `${k}: past the rows shown`}</span></li>`; })}</ul>`);
   shell.setContext(x.text.slice(0, 40)); swap();
 }
+// Sources and Claim map name their project in a picker in their heads (sd:5747), so either picks another without Projects.
+function drawPickers() {
+  for (const id of ['reader-pick', 'claims-pick']) {
+    const el = document.getElementById(id);
+    put(el, html`${selected ? '' : html`<option value="" selected>Pick a project</option>`}${PROJECTS.map(p => html`<option value="${p.key}"${p.key === selected ? html` selected` : ''}>${p.label}</option>`)}`);
+    el.value = selected || '';
+  }
+}
+['reader-pick', 'claims-pick'].forEach(id => document.getElementById(id).addEventListener('change', e => { if (e.target.value) select(e.target.value, false); }));
 function select(key, open) {
   if (!PROJECTS.some(p => p.key === key)) return;
-  selected = key; curSource = null; resetClaims();
+  selected = key; curSource = null; resetClaims(); drawPickers();
   [tbody, xpBody].forEach(b => b.querySelectorAll('tr').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === key)));
   readerFor(key); renderClaims(key); showProject(key);
   writeURL();
@@ -660,7 +671,7 @@ const followRun = (run, o, verb) => (['done', 'failed'].includes(run.state)
     e => shell.toast(`${verb === 'review' ? 'Review' : 'Render'} ${run.id}: not read (${e.message}); whether it ended is not known`)), DECK_POLL));
 // build: Start research is off with this reason, and its risk is confirm, not undo: there is no queued run to take back.
 const START_OFF = 'the dashboard does not create items yet: copy the line into a terminal';
-// Draft experiment is a page action (toolbar, sd:5631): it names its project, the one shown first. The server refuses a linked one (409).
+// Draft experiment is a page action (the Experiments tab's header, sd:5631): it names its project, the one shown first. The server refuses a linked one (409).
 const PAGE = { id: 'research:page', type: 'research page', label: 'Research' };
 const CREATE = { id: 'experiment.create', on: 'research page', label: 'Draft experiment', does: 'Drafts a new experiment from a description; Apply writes it after you read it.', risk: 'safe', executes: true,
   when: () => PROJECTS.length ? true : 'no research project to draft for',
@@ -827,7 +838,7 @@ function adopt(doc) {
     : !PROJECTS.length ? { kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' }
     : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read.${cut}`, source: '/api/research' }
     : cut ? { kind: 'partial', text: cut.trim(), source: '/api/research' } : null; // rounds stay unread: the Details' Rounds line says why
-  return { objects: [...PROJECTS, ...experimentObjects(), DRAFT], state };
+  return { objects: [...PROJECTS, DRAFT], state };
 }
 function draw() {
   renderBoard();

@@ -9,7 +9,8 @@
 //     selected  the selected task's key      read      the read's stamp, for the due rule
 //     render    redraws the page's rows and the Details after a write folds into its row
 //     reread    reads the rows again after a landed write; load reads them after a refused one and answers whether it read
-//     select    selects a task (File issue)  view      'list', 'board' or 'matrix', which a row's primary move follows
+//     select    selects a task (File issue)  view      'list', 'board' or 'matrix', which a row's primary move follows;
+//               'place' on a place page, where Done is every row's primary act, its acknowledge (sd:5752)
 //     got       a Details reading answered (Tasks' linked item, sd:5462): true selects it
 //     draftFirst  a task whose first action is Draft email, not its next status (HOA's followups, sd:5671)
 //     empty, note, foot, more   the page's lines: nothing selected, under the title, the footer, a link to Tasks
@@ -291,9 +292,11 @@
       const L = legal(t, s); return L.ok || L.reason; };
     // sd:5457: each move's icon names the status it moves to, so the row's act reads without its label.
     const STATUS_ICON = { planning: 'notebook-pen', ready: 'flag-triangle-right', in_progress: 'play', blocked: 'ban', done: 'check' };
+    // sd:5752: on a place page Done, or Done → next occurrence for a repeating task, is the row's act whatever its status.
+    const nextIs = (o, s) => view() === 'place' ? s === 'done' : view() === 'list' && NEXT[T(o)?.status] === s;
     const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
       id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: STATUS_ICON[s], bar: false,
-      primary: o => view() === 'list' && !draftFirst(T(o)) && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
+      primary: o => !draftFirst(T(o)) && nextIs(o, s) && !(s === 'done' && repeats(T(o))),
       when: o => { const t = T(o); return t ? moveOn(s, t) : 'the task is no longer listed'; },
       cli: o => rowOr(o, t => cliMove(t, s)),
       run: o => { const t = must(o); let from = t.status;
@@ -308,7 +311,7 @@
     // row is skipped with its reason (keys below).
     const completeOn = t => { if (!repeats(t)) return 'the task does not repeat; Status → Done completes it'; const L = legal(t, 'done'); return L.ok || L.reason; };
     const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-clock', bar: false,
-      primary: o => view() === 'list' && !draftFirst(T(o)) && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
+      primary: o => !draftFirst(T(o)) && nextIs(o, 'done') && repeats(T(o)),
       when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
       cli: o => rowOr(o, t => cliMove(t, 'done')),
       // build: next_due is workflow.next_occurrence_due, the date the completion computes. null is its "none": the

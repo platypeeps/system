@@ -277,11 +277,12 @@ def adder(realm: str, followups: str) -> str:
 
 
 def allowed_tools(realm: str, folder: Path, followups: str = "") -> list[str]:
-    """The run's exact allowlist: reads, the run folder, the realm's sd verbs and the one Gmail draft tool."""
+    """The run's exact allowlist: reads, the run folder, the realm's sd verbs and the one Gmail draft tool. Write's
+    grant is an `Edit(path)` rule: Claude Code checks every file write against Edit rules and ignores `Write(path)`."""
     add = adder(realm, followups)
     servers = ("workspace-mcp",) if realm == "personal" else tuple(MCP_READS)
     return [
-        f"Read(/{folder}/**)", f"Write(/{folder}/**)",
+        f"Read(/{folder}/**)", f"Edit(/{folder}/**)",
         "Bash(sd store items:*)", "Bash(sd task show:*)", "Bash(sd task note:*)", f"Bash({add}:*)",
         *(f"mcp__{server}__{name}" for server in servers for name in MCP_READS[server]),
         f"mcp__workspace-mcp__{DRAFT}",
