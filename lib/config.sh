@@ -59,6 +59,20 @@ st_obsidian_vault() {
     unset _st_vault
 }
 
+# st_shell_env: what a headless claude needs from ~/.config/shell/env.sh,
+# loaded in the shell that execs it. The file is sourced quietly when it
+# exists. It exports the setup token as CUSTOM_CLAUDE_CODE_OAUTH_TOKEN, so a
+# day-to-day claude keeps its own login (sd:5786); this exports it as
+# CLAUDE_CODE_OAUTH_TOKEN when that is unset or empty (sd:5791). The token
+# goes in no argv, file or log. Returns 0.
+st_shell_env() {
+    # shellcheck source=/dev/null
+    [ ! -f "$HOME/.config/shell/env.sh" ] || . "$HOME/.config/shell/env.sh" >/dev/null 2>&1
+    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
+        export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
+    return 0
+}
+
 # st_config_dir <tool>: the tool's config directory. It may not exist.
 st_config_dir() {
     printf '%s/%s\n' "$SYSTEM_TOOLS_CONFIG" "$1"

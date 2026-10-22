@@ -59,6 +59,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -133,9 +134,9 @@ TOLD = (
     "treating that source as unreachable."
 )
 RUN_ENV_DEFAULTS = {"MCP_CONNECT_TIMEOUT_MS": "60000", "MCP_TOOL_TIMEOUT": "600000"}
-# Claude Code strips CLAUDE_CODE_OAUTH_TOKEN from a session's shell, and the dashboard server under launchd never had
-# it, so the run sources the file that holds it, as local-cron-jobs does. A machine without the file runs on.
-WITH_TOKEN = ('[ ! -f "$HOME/.config/shell/env.sh" ] || . "$HOME/.config/shell/env.sh" >/dev/null 2>&1; exec "$@"')
+# The dashboard server under launchd has no token. env.sh holds it as CUSTOM_CLAUDE_CODE_OAUTH_TOKEN, so lib/config.sh's
+# st_shell_env sources env.sh and maps it (sd:5791). A machine without the file runs on.
+WITH_TOKEN = f'. {shlex.quote(str(Path(__file__).resolve().parents[2] / "lib" / "config.sh"))}; st_shell_env; exec "$@"'
 RESULT_OK = re.compile(r"^RESULT: ok\s*$")
 #: The reply's line naming the sources it read in full, as `READ: mail, drive`.
 READ_LINE = re.compile(r"^READ:(.*)$")

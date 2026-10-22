@@ -312,6 +312,58 @@ class CronJobDirs(unittest.TestCase):
         self.assertEqual(stc.cron_job_dirs(env), [self.jobs / short.lower(), self.jobs])
 
 
+class ShellEnv(unittest.TestCase):
+    """st_shell_env: env.sh for a headless claude, its CUSTOM_ token mapped (sd:5791)."""
+
+    #: What a child process sees, never the value itself: `same`, `other` or `unset`.
+    SEEN = ('case "${CLAUDE_CODE_OAUTH_TOKEN-unset}" in unset) echo unset ;; "$WANT") echo same ;; '
+            '*) echo other ;; esac')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+
+    def env_sh(self, text):
+        (self.home / ".config/shell").mkdir(parents=True, exist_ok=True)
+        (self.home / ".config/shell/env.sh").write_text(text)
+
+    def seen(self, want, **extra):
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home), "WANT": want, **extra}
+        return shell(f"st_shell_env; echo rc=$?; sh -c '{self.SEEN}'", env)
+
+    def test_the_custom_token_becomes_claude_code_oauth_token(self):
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\necho noise\n")
+        result = self.seen("tok-custom")
+        self.assertEqual(result.stdout, "rc=0\nsame\n", result.stderr)
+        self.assertEqual(result.stderr, "")
+
+    def test_a_token_already_set_wins(self):
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        self.assertEqual(self.seen("tok-own", CLAUDE_CODE_OAUTH_TOKEN="tok-own").stdout, "rc=0\nsame\n")
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\nexport CLAUDE_CODE_OAUTH_TOKEN=tok-file\n")
+        self.assertEqual(self.seen("tok-file").stdout, "rc=0\nsame\n")
+
+    def test_an_empty_token_takes_the_custom_one(self):
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        self.assertEqual(self.seen("tok-custom", CLAUDE_CODE_OAUTH_TOKEN="").stdout, "rc=0\nsame\n")
+
+    def test_no_custom_token_exports_nothing(self):
+        self.env_sh("export OTHER=1\n")
+        self.assertEqual(self.seen("").stdout, "rc=0\nunset\n")
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=\n")
+        self.assertEqual(self.seen("").stdout, "rc=0\nunset\n")
+
+    def test_no_env_sh_still_maps_an_exported_custom_token(self):
+        self.assertEqual(self.seen("tok-x", CUSTOM_CLAUDE_CODE_OAUTH_TOKEN="tok-x").stdout, "rc=0\nsame\n")
+        self.assertEqual(self.seen("").stdout, "rc=0\nunset\n")
+
+    def test_it_runs_under_set_e(self):
+        self.env_sh("export OTHER=1\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        self.assertEqual(shell("set -e; st_shell_env; echo after", env).stdout, "after\n")
+
+
 #: `<environ>.get(X) or <file values>.get(X)`, the same name on both sides: an
 #: exported empty value is falsy, so the file wins where the shell keeps it.
 HAND_ROLLED = re.compile(r'\.get\(\s*("[A-Za-z_]\w*"|[A-Za-z_]\w*)(?=[\s,)])[^()]*\)\s*or\s*'

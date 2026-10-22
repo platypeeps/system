@@ -34,6 +34,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -53,7 +54,8 @@ DRIVE = ("search_drive_files", "list_drive_items", "get_doc_content", "create_dr
          "create_doc", "batch_update_doc", "modify_doc_text", "insert_doc_elements")
 #: What a trash request adds, for that drain only (sd:5489): each moves one copy to the trash, where it can be restored.
 TRASH_TOOLS = ("mcp__notion__notion-delete-pages", "mcp__workspace-mcp__update_drive_file")
-CLAUDE = ('f="$HOME/.config/shell/env.sh"; [ ! -f "$f" ] || . "$f" >/dev/null 2>&1; '
+#: lib/config.sh's st_shell_env sources ~/.config/shell/env.sh and maps its CUSTOM_ token (sd:5791).
+CLAUDE = (f'. {shlex.quote(str(Path(__file__).resolve().parents[2] / "lib" / "config.sh"))}; st_shell_env; '
           'ulimit -S -n 65536 2>/dev/null; '
           'exec "${CLAUDE_BIN:-$(command -v claude || echo "$HOME/.local/bin/claude")}" -p --model sonnet '
           '--restricted --no-session-persistence --tools "Read,Edit,Bash" --add-dir "$1" "$2" "$3" --allowedTools "$4"')

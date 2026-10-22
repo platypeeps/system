@@ -33,6 +33,7 @@ import signal
 import sqlite3
 import subprocess
 import threading
+from pathlib import Path
 from urllib.parse import quote
 
 from sd_db import workflow
@@ -66,9 +67,10 @@ def command(tools: str, *, bound: int | None = None) -> str:
     launchd gives the dashboard 256 open files, and claude aborts below that need (local-cron-jobs raises it too);
     the LaunchAgent's PATH lacks ~/.local/bin, where the native installer puts claude. With `bound`, the run carries
     its own alarm, which survives the exec: it ends after `bound` seconds even when no dashboard is waiting for it.
+    lib/config.sh's st_shell_env sources ~/.config/shell/env.sh and maps its CUSTOM_ token (sd:5791).
     """
     alarm = f"perl -e 'alarm shift; exec @ARGV' {int(bound)} " if bound else ""
-    return ('f="$HOME/.config/shell/env.sh"; [ ! -f "$f" ] || . "$f" >/dev/null 2>&1; '
+    return (f'. {shlex.quote(str(Path(__file__).resolve().parents[2] / "lib" / "config.sh"))}; st_shell_env; '
             'ulimit -S -n 65536 2>/dev/null; '
             f'exec {alarm}"${{CLAUDE_BIN:-$(command -v claude || echo "$HOME/.local/bin/claude")}}" -p --model sonnet '
             f'--restricted --strict-mcp-config --tools {tools} --no-session-persistence')

@@ -75,7 +75,9 @@ checkout instead of `codex exec` (sd:5100). claude prints its answer on stdout, 
 denies anything else, `--restricted` ignores user and project settings, and
 `--strict-mcp-config` loads no MCP server. `tests/test_deep.py` fails a tool outside that
 read-only list. `CLAUDE_BIN` names the binary, else `claude` on PATH, else `~/.local/bin/claude`;
-`~/.config/shell/env.sh`, when present, is sourced in claude's own shell for its token.
+`~/.config/shell/env.sh`, when present, is sourced in claude's own shell for its token, by
+`st_shell_env` in `lib/config.sh`, which maps `CUSTOM_CLAUDE_CODE_OAUTH_TOKEN` to
+`CLAUDE_CODE_OAUTH_TOKEN`.
 
 `lenses/deep.md` has the lead read the rules, split the tree into at most `{AGENTS}` areas, start
 one sub-agent per area on correctness, secrets, simplification, test gaps and document drift, and
