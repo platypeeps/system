@@ -13,6 +13,9 @@
 // band and Select all / Clear in the bar pick rows; the bar labels every picked row with an option they all offer, or each
 // with its own recommendation. Each is the row's write, one per question in ledger order; one toast names the rows that did
 // not land, each row says why, and those rows stay picked. Undo withdraws every label that landed.
+// Context (sd:5759): each band carries its batch's purpose, rubric and what the labels feed. A question's recommendation
+// shows with its reason; a blind or sealed batch's arrives only with the label's reply or a ruled row, and a ruled row says
+// whether the label matched it.
 // Writes run one at a time, each with the batch revision the last write returned, so ten quick digits are ten labels.
 // A refused write puts its question back; a stale one (409) rereads and keeps the place; a write with no answer is unknown
 // and rereads. Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way in.
@@ -84,14 +87,17 @@
   // A Kev file's proposal is an evidence line (sd:4789); its digit is the accept. A blind batch shows none.
   const proposal = (q, blind) => blind ? null : ((q.evidence || []).find(e => e.startsWith('Proposed label: ')) || '').slice(16) || null;
   const blindOf = q => ['blind', 'sealed'].includes((B.get(q.item) || {}).mode);
-  // The recommendation a bulk accept takes: the proposal, when the question offers it.
-  const recOf = q => { const p = proposal(q, blindOf(q)); return p && q.options.includes(p) ? p : null; };
+  // The recommendation (sd:5759): the one the server sends, which a blind batch holds back until the question is ruled,
+  // else the proposal, with no reason.
+  const adviceOf = (q, blind) => q.recommendation || (proposal(q, blind) ? { option: proposal(q, blind), reason: null } : null);
+  // The recommendation a bulk accept takes, when the question offers it.
+  const recOf = q => { const a = adviceOf(q, blindOf(q)); return a && q.options.includes(a.option) ? a.option : null; };
 
   // One row per question: the first line and one line of context (subject, evidence) under it, then on one line the options
   // or the choice made and the whole question, folded in place (Enter, or its summary, opens it).
   function row(q) {
     const b = B.get(q.item) || {}, blind = b.mode === 'blind' || b.mode === 'sealed', open = isOpen(q);
-    const proposed = proposal(q, blind);
+    const advice = adviceOf(q, blind), proposed = advice && advice.option;
     const context = (q.evidence || []).filter(e => !e.startsWith('Proposed label: '));
     const label = PENDING.get(q.note) || q.label;
     const state = open ? html`<td class="g g-caution" title="open">${G.caution}<span class="sr"> open</span></td>`
@@ -101,8 +107,11 @@
       ? html`<div class="opts" role="group" aria-label="${`Label note ${q.note}`}">${q.options.map((o, i) => html`<button type="button" class="btn quiet sm opt" data-note="${q.note}" data-i="${i}" aria-keyshortcuts="${i + 1}"><kbd>${i + 1}</kbd><span>${o}</span>${o === proposed ? html`<span class="tag">recommended</span>` : ''}</button>`)}</div>`
       : html`<p class="chose">${label ? html`${PENDING.has(q.note) ? 'Labelling' : 'Labelled'} <b>${label}</b>` : 'Expired with no label'}${!PENDING.has(q.note) && q.ruling
         ? html` · <button class="linkbtn" type="button" data-withdraw="${q.note}">Withdraw label</button>` : ''}</p>`;
-    // sd:5497: the recommendation in words on every open row of a batch that shows its evidence.
-    const rec = !open || blind ? '' : proposed ? html`<p class="rec">Recommended: <b>${proposed}</b></p>` : html`<p class="rec none">No recommendation</p>`;
+    // sd:5497: the recommendation in words on every open row of a batch that shows its evidence. sd:5759: its reason, and on
+    // a labelled row whether the label matched it.
+    const matched = !open && label && advice ? html` · <span class="agree">${label === advice.option ? 'matches' : 'differs from'} your label</span>` : '';
+    const rec = advice && (open || label) ? html`<p class="rec">Recommended: <b>${advice.option}</b>${advice.reason ? html` · ${advice.reason}` : ''}${matched}</p>`
+      : open && !blind ? html`<p class="rec none">No recommendation</p>` : '';
     const pick = open ? html`<td class="pk"><label class="pickl"><input type="checkbox" data-pick="${q.note}" aria-label="${`Select note ${q.note}`}"${PICKED.has(q.note) ? html` checked` : ''}></label></td>` : html`<td class="pk"></td>`;
     return html`<tr data-id="${rowId(q.note)}"${open ? '' : html` data-reviewed=""`} aria-selected="${String(sel === q.note)}">
       ${pick}${state}
@@ -121,7 +130,16 @@
     const open = list.filter(isOpen), on = open.filter(q => PICKED.has(q.note)).length, name = b.title || `sd:${b.item}`;
     const state = open.length && on === open.length ? html` checked` : on ? html` data-mixed=""` : '';
     return html`<tr class="band" data-band="${`b${b.item}`}"><td colspan="4">${name}${b.nightly ? html`<span class="tag">nightly</span>` : ''}<span class="n">${open.length} open · sd:${b.item}</span>${open.length
-      ? html`<label class="bandpick" data-tkeep=""><input type="checkbox" data-band-pick="${b.item}" aria-label="${`Select every open question in ${name}`}"${state}><span>Select batch</span></label>` : ''}</td></tr>`;
+      ? html`<label class="bandpick" data-tkeep=""><input type="checkbox" data-band-pick="${b.item}" aria-label="${`Select every open question in ${name}`}"${state}><span>Select batch</span></label>` : ''}${brief(b.context)}</td></tr>`;
+  }
+
+  // sd:5759: the batch's context under its band, above its questions. It stays out of the fold button (data-tkeep), as the
+  // batch checkbox does, and a shut fold hides it (review.css).
+  function brief(c) {
+    if (!c) return '';
+    const rubric = c.rubric || [];
+    return html`<dl class="brief" data-tkeep="">${c.purpose ? html`<dt>Purpose</dt><dd>${c.purpose}</dd>` : ''}${rubric.length
+      ? html`<dt>Rubric</dt><dd><ul>${rubric.map(r => html`<li>${r}</li>`)}</ul></dd>` : ''}${c.feeds ? html`<dt>Feeds</dt><dd>${c.feeds}</dd>` : ''}</dl>`;
   }
 
   // A redraw replaces the buttons: focus on one comes back to the same button, else to the selected row's first option.
@@ -242,7 +260,8 @@
     const out = await window.shell.post('/api/review/rule', { item: q.item, note: q.note, option, revision: b ? b.revision : '' });
     PENDING.delete(q.note); REFUSED.delete(q.note); PICKED.delete(q.note);
     if (b) { b.revision = out.revision; b.open -= 1; b.labels += 1; }
-    Object.assign(q, { open: false, label: option, ruling: out.ruling }); labelled += 1;
+    // The reply names the recommendation now that the label is in (sd:5759), so a blind row shows it at once.
+    Object.assign(q, { open: false, label: option, ruling: out.ruling }, out.recommendation ? { recommendation: out.recommendation } : {}); labelled += 1;
     return out;
   }
 
@@ -257,7 +276,8 @@
       try {
         const out = await rule(q, option);
         draw();
-        window.shell.toast(`Labelled note #${note}: ${option}`, () => undo(q, out.ruling));
+        const said = out.recommendation && blindOf(q) ? ` · recommended ${out.recommendation.option}` : '';
+        window.shell.toast(`Labelled note #${note}: ${option}${said}`, () => undo(q, out.ruling));
       } catch (e) {
         PENDING.delete(note);
         if (e.stale) { window.shell.toast(`${G.caution} The batch changed; reread. Note #${note} was not labelled.`); return load(); }

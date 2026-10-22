@@ -4,8 +4,10 @@
   ui-design products/system/design.md (Rail: Review, g l; Keys: digits 1-9 on Review) and foundation/.
   Data: /api/review (review_screen.document: each open batch and its questions, open or reviewed; a blind or sealed batch
   sends text, options and label only), read when the page opens, on Read again and after a failed or stale write.
-  Bulk scoring bands its rows by batch, a fold each; each row carries its question, context, recommendation, option
-  buttons and a checkbox (sd:5123, sd:5497); the bar over the table labels every selected row. The page has no Details pane.
+  Bulk scoring bands its rows by batch, a fold each, under which the batch's purpose, rubric and feeds show (sd:5759); each
+  row carries its question, context, recommendation, option buttons and a checkbox (sd:5123, sd:5497); a blind or sealed
+  batch's recommendation shows only once its question is ruled. The bar over the table labels every selected row. The page
+  has no Details pane.
   Writes: /api/review/rule (a label, one per question, from a row or the bar) and /api/review/withdraw (its Undo, or a
   reviewed row's Withdraw label), each sd_db.review, the code sd-db review runs;
   a comment (n) posts the shell capture's note route on the batch as "On note #N: ...". Download reads
