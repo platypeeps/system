@@ -487,6 +487,25 @@ class TheScript(ScreenCase):
         out = self.run_page("R.head = ELS['rows-head'].html;", search="?sort=size.asc")
         self.assertEqual(re.findall(sorted_th, out["R"]["head"]), [("ascending", "size")])
 
+    def test_the_legend_under_the_table_lists_exactly_the_marks_a_row_draws(self):
+        """sd:5731: the help line under the table means each mark a row draws: every render state, the pin and every publish
+        fill, read from the maps the rows draw from, so a state cannot reach a row without its meaning."""
+        out = self.run_page("R.help = String(ELS['list-help'].html); R.render = Object.values(RENDER);"
+                            " R.pub = Object.entries(window.commands.PUB_STATE);")
+        keys = re.findall(r'<span class="key">(.*?)</span>(?=<span class="key">|</p>)', out["R"]["help"])
+        meanings = [re.search(r"</span> ([^<]+)$", k).group(1) for k in keys]
+        self.assertEqual(meanings, [w for _, _, w in out["R"]["render"]] + ["pinned"] + [w for _, w in out["R"]["pub"]])
+        for cls, glyph, word in out["R"]["render"]:
+            self.assertIn(f'<span class="g-{cls}" aria-hidden="true">{glyph}</span> {word}', keys)
+        self.assertEqual([k for k, _ in out["R"]["pub"]], ["has", "queued", "missing", "unread", "off"])
+        for state, word in out["R"]["pub"]:
+            self.assertRegex(out["R"]["help"], rf'<span class="pub-notion {state}"[^>]*>.*?</span></span> {word}</span>')
+        # The rows draw from the same maps: no glyph or publish-state word is spelled out a second time.
+        row = re.search(r"^function row\(d\) \{\n(.*?)^\}", DOCUMENTS_JS, re.S | re.M).group(1)
+        self.assertIn("RENDER[", row)
+        self.assertNotRegex(row, "[▲●▨]")
+        self.assertNotIn("designated, no copy yet`", COMMANDS_JS)
+
     def test_the_pager_numbers_pages_and_keeps_page_and_size_in_the_url(self):
         self.many(60)
         out = self.run_page("R.pager = ELS.pager.html;" + self.CLICK % ("pager", "'.list-pager [data-page]'", "{ page: '3' }")

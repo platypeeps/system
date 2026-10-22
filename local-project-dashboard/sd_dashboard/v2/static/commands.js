@@ -152,12 +152,18 @@
   // a dashed unknown edge naming why: unknown is not "no copy". The hover names the destination and its link or vault path.
   // A copy with a URL is a link that opens it in a new tab. Briefs and Documents both draw it, so shell.css styles it once.
   const PUB_ICON = { drive: 'triangle', notion: 'box', obsidian: 'gem' };
+  // What each fill says (sd:5731): published() draws its tips from it and the Documents legend lists it, so the two agree.
+  const PUB_STATE = { has: 'published', queued: 'copy queued', missing: 'designated, no copy yet', unread: 'not read', off: 'not a destination' };
+  const pubGlyph = ch => window.markup.html`<svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg>`;
+  // One sample mark per fill, as a table's help line takes it (shell.list.help): [[mark, meaning]].
+  const pubLegend = () => Object.entries(PUB_STATE).map(([k, w]) =>
+    [window.markup.html`<span class="pub"><span class="pub-notion ${k}" aria-hidden="true">${pubGlyph('notion')}</span></span>`, w]);
   const PUB_WHERE = (ch, url) => { const f = ch === 'obsidian' && /[?&]file=([^&]*)/.exec(url); return f ? decodeURIComponent(f[1]) : url; };
   function published(pub) {
     const { html } = window.markup;
     if (!pub) return '';
     const copies = (pub && pub.copies) || [], choice = pub && pub.choice, unread = (pub && pub.unread) || '';
-    const glyph = ch => html`<svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg>`;
+    const glyph = pubGlyph;
     const mark = (cls, tip) => html`<span class="${cls}" role="img" aria-label="${tip}" title="${tip}">`;
     let said = false;
     const marks = Object.keys(PUB_ICON).map(ch => {
@@ -171,12 +177,12 @@
       }
       const on = choice ? choice[ch] : false;
       // sd:5485: every destination shows; one that is not this row's is dim, so the active ones stand out.
-      if (on === false || on === undefined) return html`${mark(`pub-${ch} off`, `${PUB_NAME[ch]}: not a destination`)}${glyph(ch)}</span>`;
+      if (on === false || on === undefined) return html`${mark(`pub-${ch} off`, `${PUB_NAME[ch]}: ${PUB_STATE.off}`)}${glyph(ch)}</span>`;
       // A designated destination with no copy is missing only when every read behind it answered.
       const why = on === true ? unread : unread || choice.why || 'the channels setting was not read';
       if (why) said = true;
-      return why ? html`${mark(`pub-${ch} unread`, `${PUB_NAME[ch]}: not read · ${why}`)}${glyph(ch)}</span>`
-        : html`${mark(`pub-${ch} missing`, `${PUB_NAME[ch]}: designated, no copy yet`)}${glyph(ch)}</span>`;
+      return why ? html`${mark(`pub-${ch} unread`, `${PUB_NAME[ch]}: ${PUB_STATE.unread} · ${why}`)}${glyph(ch)}</span>`
+        : html`${mark(`pub-${ch} missing`, `${PUB_NAME[ch]}: ${PUB_STATE.missing}`)}${glyph(ch)}</span>`;
     }).filter(Boolean);
     const lone = unread && !said ? html`<span class="pub-unknown" role="img" aria-label="${unread}" title="${unread}">▨</span>` : '';
     return marks.length || lone ? html`<span class="pub">${marks}${lone}</span>` : '';
@@ -259,5 +265,5 @@
       ${state ? html`<p class="why">${state}</p>` : ''}</section>`;
   }
 
-  window.commands = { answered, fix, retry, showLog, logLine, printJob, showAssignment, openPullRequest, syncCollector, adversarialReview, reviewPane, published, publishCommands, publishPane };
+  window.commands = { answered, fix, retry, showLog, logLine, printJob, showAssignment, openPullRequest, syncCollector, adversarialReview, reviewPane, published, PUB_STATE, pubLegend, publishCommands, publishPane };
 })();
