@@ -879,7 +879,9 @@ class TheDocument(Collectors, ScreenCase):
 
     MOUNT = ("/dev/disk3s5 on / (apfs, local, journaled)\n"
              "//guest@nas.example.test/share on /Volumes/share (smbfs, nodev, nosuid, mounted by guest)\n"
-             "nas.example.test:/export on /mnt/export type nfs4 (rw,relatime)\n")
+             "nas.example.test:/export on /mnt/export type nfs4 (rw,relatime)\n"
+             # Linux writes a space in a mount point as \\040.
+             "nas.example.test:/other on /mnt/my\\040share type cifs (rw)\n")
 
     def network_scan(self, mount):
         """The real reader on stub mount, df and du; du leaves a marker for each folder it walks."""
@@ -887,7 +889,8 @@ class TheDocument(Collectors, ScreenCase):
         (store / "big").mkdir(parents=True)
         (store / "big" / "data").write_bytes(b"x" * 64 * 1024)
         walked = Path(self.tmp.name) / "walked"
-        listed = (f"storage|/Volumes/share/repo-storage\nstorage|/mnt/export/data\nstorage|{store}\n", "<config>/project-dashboard/disk.conf", "")
+        listed = (f"storage|/Volumes/share/repo-storage\nstorage|/mnt/export/data\nstorage|/mnt/my share/data\nstorage|{store}\n",
+                  "<config>/project-dashboard/disk.conf", "")
         self.stub("mount", mount)
         self.stub("du", f'echo "$4" >> {walked}\nprintf "64\\t$4/big\\n70\\t$4\\n"\n')
         stub = self.stub("df", 'if [ "$1" = -kP ]; then printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
@@ -900,8 +903,9 @@ class TheDocument(Collectors, ScreenCase):
     def test_a_folder_on_a_network_mount_gets_the_shares_df_and_no_du(self):
         """sd:5726: du -k -d 1 on the SMB share ran past 120 s against the 8 s Disk budget."""
         scan, walked, store = self.network_scan(f"cat <<'EOF'\n{self.MOUNT}EOF\n")
-        share, export, local = scan["storage"]
+        share, export, spaced, local = scan["storage"]
         self.assertEqual(walked, [str(store)], "du walked a folder on a network mount")
+        self.assertEqual((spaced["error"], spaced["network"]["type"]), ("", "cifs"))
         self.assertEqual((share["error"], share["folders"]), ("", []))
         self.assertEqual(share["network"], {"type": "smbfs", "mount": "/Volumes/share", "size_kb": 4000000000,
                                             "used_kb": 3000000000, "avail_kb": 1000000000})
@@ -909,13 +913,12 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual([Path(folder["path"]).name for folder in local["folders"]], ["big"])
         self.assertNotIn("network", local)
 
-    def test_a_mount_table_that_did_not_answer_leaves_each_folder_to_its_bounded_du(self):
-        # No type is known, so no folder counts as a share: each gets the reading it had before sd:5726.
-        scan, walked, store = self.network_scan("exit 1\n")
-        share, export, local = scan["storage"]
-        self.assertEqual(walked, [str(store)])
-        self.assertEqual((share["error"], export["error"]), ("the folder does not exist or is not mounted",) * 2)
-        self.assertEqual([Path(folder["path"]).name for folder in local["folders"]], ["big"])
+    def test_a_mount_table_that_did_not_answer_measures_no_folder(self):
+        # No type is known, so no folder is known to be local: a stat or du on a share that does not answer is the hang.
+        scan, walked, _ = self.network_scan("exit 1\n")
+        self.assertEqual(walked, [])
+        self.assertEqual({entry["error"] for entry in scan["storage"]},
+                         {"not measured: mount gave no table, so a network folder cannot be told from a local one"})
 
     def test_a_network_mount_row_shows_the_shares_use_and_says_its_folders_are_not_measured(self):
         share = {"root": "/Volumes/share/repo-storage", "folders": [], "error": "",

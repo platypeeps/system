@@ -32,8 +32,8 @@ no answer is a reason to stay, never a pass.
   that says so, not a refusal of the area. A folder on a network mount
   (sd:5726: smbfs, nfs, afp, webdav, by one `mount`) gets no `du`, which
   ran past 120 s on an SMB share: one `df -kP <folder>` gives the share's
-  use instead. A mount table that did not answer leaves each folder to its
-  bounded `du`, as before;
+  use instead. A mount table that did not answer measures no folder: none
+  is known to be local;
 - registered worktrees whose `HEAD` is in `origin/HEAD` and that still hold
   `target/`, `node_modules/` or `.venv/` (the 2026-09-25 rule: delete build
   output once the PR merges). Presence only: sizing build output needs a
@@ -404,7 +404,8 @@ def _mounts(walk: Walk) -> dict[str, str] | None:
     for line in done.stdout.splitlines():
         m = MOUNT_LINE.match(line)
         if m:
-            found[m.group(1)] = m.group(2) or m.group(3)
+            # Linux writes a space or a tab in a mount point as an octal escape (\040); macOS writes it as it is.
+            found[re.sub(r"\\([0-7]{3})", lambda o: chr(int(o.group(1), 8)), m.group(1))] = m.group(2) or m.group(3)
     return found or None
 
 
@@ -439,15 +440,16 @@ def _storage(walk: Walk, roots: list[Path]) -> list[dict]:
     for root in roots:
         entry = {"root": str(root), "folders": [], "error": ""}
         mount = _network(mounts, root)
-        if walk.left() <= 0 and mount:
+        # A stat (is_dir) or du on a share that does not answer is the hang sd:5726 ends, so neither runs on a folder
+        # not known to be local; df is bounded, and names a missing folder.
+        if walk.left() <= 0:
             entry["error"] = "not measured: the Disk budget was spent before this folder"
+        elif mounts is None:
+            entry["error"] = "not measured: mount gave no table, so a network folder cannot be told from a local one"
         elif mount:
-            # No is_dir either: a stat on a share that does not answer is not bounded; df is, and names a missing folder.
             entry = _share(walk, root, mount)
         elif not root.is_dir():
             entry["error"] = "the folder does not exist or is not mounted"
-        elif walk.left() <= 0:
-            entry["error"] = "not measured: the Disk budget was spent before this folder"
         else:
             done = walk.run(["du", "-k", "-d", "1", str(root)], spare=True)
             if done is None:
