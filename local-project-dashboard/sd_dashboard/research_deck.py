@@ -1,4 +1,5 @@
 """Build deck (pack sd:5525): one experiment's status deck, `sd-research-kit deck` in its checkout, queued as a drain is.
+Render (sd:5632) runs `sd-research-kit render` the same way, under the same lock, as a dashboard-triggered run.
 
 An Experiments row posts `/api/research/deck` with `{"repo": "<key>"}`. `start` runs in the POST, in `publish_drain`'s run
 shape, and answers 202 at once:
@@ -41,7 +42,9 @@ __all__ = ["DECK_SECONDS", "STARTUP", "built", "latest", "request", "run", "star
 DECK_SECONDS = 300
 #: How long a queued run may wait for its runner to say it started before it reads as failed.
 STARTUP = 60
-RUN_ID = re.compile(r"deck-[0-9]{8}T[0-9]{6}Z")
+#: What a review run keeps of its report for the page (sd:5655): the tail, where the checklist ends.
+REPORT_CHARS = 20000
+RUN_ID = re.compile(r"(deck|render|review)-[0-9]{8}T[0-9]{6}Z")
 
 
 def state_dir() -> Path:
@@ -64,8 +67,8 @@ def built(key: str, root: Path | None = None) -> Path | None:
     return path if path is not None and path.is_file() and not path.is_symlink() else None
 
 
-def start(key: str, root: Path, *, now: datetime.datetime | None = None, spawn=subprocess.Popen):
-    """Steps 1 to 4 above: `(202, run)`, or `(409, {"error"})` while a build holds the lock."""
+def start(key: str, root: Path, *, verb: str = "deck", now: datetime.datetime | None = None, spawn=subprocess.Popen):
+    """Steps 1 to 4 above: `(202, run)`, or `(409, {"error"})` while a build holds the lock. `verb` is deck, render or review."""
     from . import pack_bin, research_screen
 
     now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -78,20 +81,22 @@ def start(key: str, root: Path, *, now: datetime.datetime | None = None, spawn=s
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             handle.seek(0)
-            return 409, {"error": f"A deck is already building (run {handle.read().strip() or 'unknown'}); one builds at "
-                                  f"a time. Wait for it to finish, then press Build deck again."}
+            return 409, {"error": f"A deck build or render is already running (run {handle.read().strip() or 'unknown'}); "
+                                  f"one runs at a time. Wait for it to finish, then press it again."}
         repo = research_screen.checkout(root, key)
         if repo is None:
             raise ValueError("No research checkout at this address.")
         deck = repo / research_screen.DECK
-        if not deck.is_file() or deck.is_symlink():
+        if verb == "deck" and (not deck.is_file() or deck.is_symlink()):
             raise ValueError(f"{key} keeps no {research_screen.DECK}: add one beside its status brief.")
-        run_id = f"deck-{now.astimezone(datetime.timezone.utc):%Y%m%dT%H%M%SZ}"
+        run_id = f"{verb}-{now.astimezone(datetime.timezone.utc):%Y%m%dT%H%M%SZ}"
         record = runs / f"{run_id}.json"
         if record.exists():
-            return 409, {"error": f"Run {run_id} started this second; press Build deck again in a moment."}
-        argv = [sys.executable, str(pack_bin() / "sd-research-kit"), "deck"]
-        document = {"id": run_id, "state": "queued", "reason": None, "repo": key, "out": str(repo / research_screen.BUILT),
+            return 409, {"error": f"Run {run_id} started this second; press it again in a moment."}
+        argv = [sys.executable, str(pack_bin() / "sd-research-kit"), verb]
+        # A render writes many files, so its outcome is the exit alone (out None).
+        out = str(repo / research_screen.BUILT) if verb == "deck" else None
+        document = {"id": run_id, "verb": verb, "state": "queued", "reason": None, "repo": key, "out": out,
                     "argv": argv, "cwd": str(repo), "timeout": DECK_SECONDS, "started": _iso(now), "finished": None,
                     "pid": None}
         _write(record, document)
@@ -114,13 +119,13 @@ def start(key: str, root: Path, *, now: datetime.datetime | None = None, spawn=s
         handle.close()
 
 
-def request(values: dict):
+def request(values: dict, verb: str = "deck"):
     """The POST's checks: one field, `repo`, a checkout key; the start as a write."""
     if set(values) != {"repo"} or not isinstance(values["repo"], str):
         raise ValueError('Send {"repo": "<checkout key>"}: the experiment whose deck to build.')
 
     def write(connection):
-        return start(values["repo"], _root())
+        return start(values["repo"], _root(), verb=verb)
 
     return write
 
@@ -181,8 +186,10 @@ def run(record: Path, lock: int | None = None) -> int:
     # some file systems keep them.
     since = float(int(datetime.datetime.now(datetime.timezone.utc).timestamp()))
     with open(log, "w", encoding="utf-8") as sink:
+        # A render nobody typed: the kit then executes only a research.conf.py a render by hand recorded as read.
+        env = dict(os.environ, SD_RESEARCH_TRIGGER="dashboard") if document.get("verb") == "render" else None
         child = subprocess.Popen(document["argv"], stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT,
-                                 cwd=document["cwd"], start_new_session=True)
+                                 cwd=document["cwd"], start_new_session=True, env=env)
         try:
             code = child.wait(timeout=document["timeout"])
         except subprocess.TimeoutExpired:
@@ -194,10 +201,13 @@ def run(record: Path, lock: int | None = None) -> int:
     told = [line for line in said if line.startswith(("sd-research-kit", "usage:"))][:1] or said[-1:]
     if code is None:
         reason = f"the build did not end within {document['timeout']} s; its process group was killed"
-    elif code or not _wrote(Path(document["out"]), since):
-        reason = f"sd-research-kit deck exited {code}" + (f": {told[0][:300]}" if told else "")
+    elif code or (document["out"] and not _wrote(Path(document["out"]), since)):
+        reason = f"sd-research-kit {document.get('verb', 'deck')} exited {code}" + (f": {told[0][:300]}" if told else "")
     else:
         reason = None
+    if document.get("verb") == "review":
+        # The report is the run's point, pass or fail: the checks and the checklist no script can do.
+        document["output"] = log.read_text(encoding="utf-8", errors="replace")[-REPORT_CHARS:]
     document.update(state="failed" if reason else "done", reason=reason,
                     finished=_iso(datetime.datetime.now(datetime.timezone.utc)))
     if lock is not None:

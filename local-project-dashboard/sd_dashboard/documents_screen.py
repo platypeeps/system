@@ -19,9 +19,13 @@ of 0 and says why.
 **Render-stale.** A research document is render-stale when its source
 Markdown changed after the file in the root. `_sources` finds the source: the
 checkout's `research.conf.py` (`src` and `out`, read with the collectors'
-`read_research_config`, which never runs repository code), else one `.md`
+`read_research_inventory`, which never runs repository code), else one `.md`
 with the page's name. A file with no source has an unknown render state, and
-the page says so.
+the page says so. A config that computes its data is read from the
+`docs/dashboard/research.json` its last render wrote, as Research reads it
+(sd:5666, sd:5659). Each research root says the refusal in `conf`, which names
+`sd-research-kit render` when no manifest was written, and in `manifest`
+whether it read `current` or `older` (a render of an earlier config).
 
 **View state.** Pin, Hide and Tag are the workflow database's `view` state
 (sd:3428, the pack's `sd_db.writes.set_view` and `views`), one row per file
@@ -138,7 +142,7 @@ def facts(path: Path) -> dict:
 
 
 def _collectors():
-    # `read_research_config` lives in the collectors this dashboard owns, read by path as `ports_screen.py` reads them.
+    # `read_research_inventory` lives in the collectors this dashboard owns, read by path as `ports_screen.py` reads them.
     path = Path(__file__).resolve().parents[1] / "collectors.py"
     spec = importlib.util.spec_from_file_location("sd_dashboard_document_collectors", path)
     if spec is None or spec.loader is None:
@@ -155,20 +159,25 @@ def _checkout(root: documents.Root) -> Path | None:
     return path.parents[len(parts) - 1] if path.parts[-len(parts):] == parts else None
 
 
-def _sources(checkout: Path, names: list[str]) -> dict[str, Path]:
+def _inventory(checkout: Path) -> tuple[dict, str, str]:
+    """research.conf.py's PROJECT and DOCS as Research reads them (sd:5666), the refusal, and "", "current" or "older"."""
+    try:
+        config, manifest = _collectors().read_research_inventory(checkout / "research.conf.py")
+    except Exception as refused:  # noqa: BLE001 - the name match still answers; the root says why
+        return {}, str(refused), ""
+    return config, "", manifest
+
+
+def _sources(checkout: Path, config: dict, names: list[str]) -> dict[str, Path]:
     """Each file name -> the source Markdown it renders from, for the names that have one.
 
-    research.conf.py first: an entry's `out` names the page and its `src` the source, when that is a file. Then, for a
+    The config's DOCS first: an entry's `out` names the page and its `src` the source, when that is a file. Then, for a
     name the config did not give, a `.md` whose stem is the page's stem in any case (`40-docs/PLAN-local-poc.md` for
     `plan-local-poc.html`), when exactly one does anywhere in the checkout outside `SKIP_FOLDERS`, dot folders and the
-    published root (sd:2417: a depth cap hid a unique deeper match, and a deeper twin could not make a match ambiguous). A config the reader refuses (computed data) leaves the name match, and is not a failure of the page.
+    published root (sd:2417: a depth cap hid a unique deeper match, and a deeper twin could not make a match ambiguous). A config the reader refused is empty and leaves the name match, and is not a failure of the page.
     """
     base = checkout.resolve()
     found: dict[str, Path] = {}
-    try:
-        config = _collectors().read_research_config(checkout / "research.conf.py")
-    except Exception:  # noqa: BLE001 - the name match below still answers
-        config = {}
     for entry in config.get("DOCS", []):
         source = checkout / entry["src"]
         name = f"{Path(entry['out']).name}.html"
@@ -288,15 +297,17 @@ def document(connection=None, *, now: str, config_path: Path | None = None, repo
     for root in documents.roots(config_path, repo_root):
         checkout = _checkout(root)
         research = bool(checkout and (checkout / "research.conf.py").is_file())
+        config, conf, manifest = _inventory(checkout) if research else ({}, "", "")
         found = documents.documents(root)
         own = kept.get(root.key, {})
         listed.append({"key": root.key, "label": own.get("label") or root.label, "derived": root.label,
                        "set": own.get("label"), "hidden": bool(own.get("hidden")), "file_label": file_labels.get(root.key),
-                       "path": _tilde(root.path.expanduser()), "n": len(found), "research": research})
+                       "path": _tilde(root.path.expanduser()), "n": len(found), "research": research,
+                       "conf": conf, "manifest": manifest})
         if own.get("hidden"):
             continue
-        sources = _sources(checkout, [entry["name"] for entry in found]) if research else {}
-        publish = _publishing(connection, checkout) if research else None
+        sources = _sources(checkout, config, [entry["name"] for entry in found]) if research else {}
+        publish = _publishing(connection, checkout, config) if research else None
         for entry in found:
             source = sources.get(entry["name"])
             try:
@@ -328,7 +339,7 @@ def document(connection=None, *, now: str, config_path: Path | None = None, repo
     }
 
 
-def _publishing(connection, checkout: Path):
+def _publishing(connection, checkout: Path, config: dict):
     """One research root's `pub` reader (sd:5102): each page's published copies and its Publish to choice.
 
     The channels setting, the designations, the queue and the vault are read once per root. A read that fails is named
@@ -351,10 +362,7 @@ def _publishing(connection, checkout: Path):
         vault = publishing._vault_name()
     except Exception:  # noqa: BLE001 - no vault name is no vault link; the other copies still show
         vault = None
-    try:
-        config = _collectors().read_research_config(checkout / "research.conf.py")
-    except Exception:  # noqa: BLE001 - computed data: no item= is read, the receipts still answer
-        config = {}
+    # A refused config is empty, and a manifest carries no item=: the receipts still answer.
     outs = {f"{Path(e['out']).name}.html": e["out"] for e in config.get("DOCS", [])}
     outs.update({f"{Path(out).name}.html": out for out in picked["docs"]})
     items = {e["out"]: e.get("item") for e in config.get("DOCS", []) if type(e.get("item")) is int}

@@ -14,7 +14,7 @@ from unittest.mock import patch
 from sd_db import workflow
 from sd_dashboard import fix_session, start_next
 
-from support import NOW, ScreenCase
+from support import NOW, ScreenCase, before_5648
 
 
 def sessions(running=0, named=(), why=""):
@@ -59,6 +59,14 @@ class StartNext(ScreenCase):
         seams.setdefault("sessions", sessions())
         seams.setdefault("gate", gate())
         return start_next.run(self.connection, now=NOW, items=items, who="dashboard", **seams)
+
+    def test_a_scheduled_occurrence_is_not_started_until_it_opens(self):
+        """sd:5670: a ready occurrence that is scheduled (pack sd:5648) is off Tasks, so Start next leaves it out too."""
+        later = self.schedule(self.ready("Water the plants"), "2026-09-09")
+        ids = lambda out: [row["id"] for row in out["eligible"] + out["skipped"]]  # noqa: E731
+        self.assertEqual(ids(self.plan()), [])
+        with before_5648():
+            self.assertEqual(ids(self.plan()), [later])
 
     def test_the_plan_names_the_next_ready_items_with_their_revisions_and_why_others_are_left_out(self):
         first, second = self.ready("First"), self.ready("Second")

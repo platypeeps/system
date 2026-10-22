@@ -15,6 +15,10 @@
 .panel-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); }
 .panel-head p { margin: 0; font-size: var(--text-sm); color: var(--color-muted); }
 .panel-head .tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); }
+/* sd:5621: the Alarms toolbar's Acknowledge all sits right of the views, as the count does on other tables. */
+.toolbar > .tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); margin-left: auto; }
+.toolbar > .tools:empty { display: none; }
+.toolbar .tools .btn .n { color: var(--color-muted); font-family: var(--font-data); }
 
 /* ---------- Map ---------- */
 .mapwrap { position: relative; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); overflow: hidden; }
@@ -33,6 +37,8 @@
 .legend .sep { flex-basis: 100%; height: 0; }
 .legend .status { display: inline-flex; align-items: center; gap: var(--space-2xs); font-size: var(--text-xs); color: var(--color-muted); padding: 0 var(--space-xs); min-height: 2rem; }
 .legend .status i { width: 0.7rem; height: 0.7rem; border-radius: 50%; background: var(--color-series-1); display: inline-block; }
+.legend .status i.own { border-radius: 2px; background: var(--color-accent); opacity: 0.4; }
+.legend .status i.mark { margin-left: var(--space-xs); background: var(--color-accent-bg); border: 2px solid var(--color-accent); }
 .legend .status i.out { background: transparent; border: 1.5px solid var(--color-muted); }
 .legend .status i.unk { background: var(--color-unknown); outline: 1.5px dashed var(--color-unknown); outline-offset: 1px; }
 .btn[aria-disabled="true"] { background: transparent; color: var(--color-muted); border-color: var(--color-rule); cursor: not-allowed; }
@@ -112,6 +118,9 @@ main { container-type: inline-size; }
 #map svg.map:active { cursor: grabbing; }
 .lot { fill: var(--color-panel); stroke: var(--color-rule); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .lot.k-tract { fill: var(--color-series-3); fill-opacity: 0.35; cursor: pointer; }
+/* sd:5623: a common tract is the HOA's; accent, with a ring (.hoa-mark) on one too small to see at the zoom. */
+.lot.k-tract[data-owned] { fill: var(--color-accent); fill-opacity: 0.4; stroke: var(--color-accent); stroke-width: 1.5; }
+.hoa-mark { fill: var(--color-accent-bg); fill-opacity: 0.5; stroke: var(--color-accent); stroke-width: 2; vector-effect: non-scaling-stroke; cursor: pointer; }
 /* sd:4964: a lot is a tap target; its address label lets the tap through to it. */
 .lot.k-lot { cursor: pointer; }
 .lot.k-lot[aria-current="true"] { fill: var(--color-accent); fill-opacity: 0.25; }
@@ -133,5 +142,5 @@ main { container-type: inline-size; }
 @media (pointer: coarse) {
   .range .chip { min-width: var(--row-touch); justify-content: center; }
   .legend button, .legend .status { min-height: var(--row-touch); }
-  .panel-head .help, .panel-head .tools .btn { display: inline-grid; place-items: center; min-width: var(--row-touch); min-height: var(--row-touch); }
+  .panel-head .help, .panel-head .tools .btn, .toolbar > .tools .btn { display: inline-grid; place-items: center; min-width: var(--row-touch); min-height: var(--row-touch); }
 }

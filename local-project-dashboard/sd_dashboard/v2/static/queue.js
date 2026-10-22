@@ -1,7 +1,7 @@
-// One view, so the tab carries the lane count (sd:5524); the panel is view-lanes.
-window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }];
+// Each tab carries its lane count (sd:5524): Lanes the lanes with a row to show, Idle the rest (sd:5640).
+window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle' }];
 // Queue (sd:2585): /api/queue (queue_screen.py), one section per managed repository's lane, one row per item in its state:
-// merging, next, building, blocked, cancelled, landed. A lane with no row shares one Idle line, each with its host (sd:3284). Up, down, top, hold, release and cancel post /api/queue/move with the lane's
+// merging, next, building, blocked, cancelled, landed. A lane with no row goes to the Idle table (sd:3284, sd:5640, sd:5650). Up, down, top, hold, release and cancel post /api/queue/move with the lane's
 // revision; the server runs sd-ship lane move|hold|release|cancel|retry, refuses a stale revision, and the page reads again.
 // Cancel asks first (sd:3012). A cancelled row offers Re-queue (sd:3398) when the installed pack's retry takes a cancelled
 // entry (DOC.requeue, pack sd:3389): it posts action `requeue` with the head the row showed, and the server runs
@@ -16,7 +16,7 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }];
 // the new entry back. Approve asks first: it grants the runner the merge to the default branch, which nothing takes back.
 // Show draws the active rows by default: merging, next (a held one keeps its place), building and blocked, each still
 // waiting on the runner, a builder or the operator. All adds the ended ones, cancelled and landed; ?show=all keeps it.
-// The badge and each lane's counts read every row, whatever Show draws; a lane with no row to draw joins the Idle line.
+// The badge and each lane's counts read every row, whatever Show draws; a lane with no row to draw goes to the Idle view.
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
@@ -89,11 +89,20 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }];
     $('edits').textContent = DOC.edits;
     const every = DOC.lanes.flatMap(l => l.rows), chip = (v, n) => html`<button type="button" class="chip" data-show="${v}" aria-pressed="${String(show === v)}">${v} <span class="n">${String(n)}</span></button>`;
     put($('show'), html`<span class="label">Show</span><div class="chips">${chip('active', every.filter(r => ACTIVE.includes(r.state)).length)}${chip('all', every.length)}</div>`);
-    // A lane with nothing to show (and no write result) folds into one line: the calm screen stays calm.
+    // A lane with nothing to show (and no write result) goes to the Idle view (sd:5640).
     const busyLanes = DOC.lanes.filter(l => drawn(l).length || said[l.path]), idle = DOC.lanes.filter(l => !busyLanes.includes(l));
-    put($('lanes'), html`${DOC.problems.map(p => html`<p class="fail" role="alert">▨ ${p.repo}: lane not read. ${p.error}</p>`)}${busyLanes.map(lane)}${idle.length
-      ? html`<p class="idle">Idle: ${idle.map((l, i) => html`${i ? ' · ' : ''}<code>${l.repo}</code> (lane on ${l.host})`)}</p>`
-      : DOC.lanes.length ? '' : html`<p class="done">No managed repository's lane was read. sd-db repo managed PATH yes adds one.</p>`}`);
+    put($('lanes'), html`${DOC.problems.map(p => html`<p class="fail" role="alert">▨ ${p.repo}: lane not read. ${p.error}</p>`)}${busyLanes.map(lane)}${
+      !DOC.lanes.length ? html`<p class="done">No managed repository's lane was read. sd-db repo managed PATH yes adds one.</p>`
+      : busyLanes.length ? '' : html`<p class="done">No lane has a row to show. ${plural(idle.length, 'idle lane')} ${idle.length === 1 ? 'is' : 'are'} under Idle.</p>`}`);
+    // The Idle table (sd:5650): one row per lane, hub first then by name, naming the machine, why it is idle and who merges.
+    const machine = l => l.host === 'hub' ? `${DOC.hub || 'hub'} (hub)` : l.host;
+    const why = l => { const n = st => l.rows.filter(r => r.state === st).length;
+      return l.rows.length ? `No active entry · ${n('landed')} landed, ${n('cancelled')} cancelled today` : 'Empty: nothing queued, gating or landed today'; };
+    const order = [...idle].sort((a, b) => (b.host === 'hub') - (a.host === 'hub') || a.host.localeCompare(b.host) || a.repo.localeCompare(b.repo));
+    put($('idle'), idle.length ? html`<table class="ledger idle"><thead><tr><th scope="col">Repository</th><th scope="col">Machine</th><th scope="col">State</th><th scope="col">Merge</th></tr></thead>
+      <tbody>${order.map(l => html`<tr><td><code>${l.repo}</code></td><td>${machine(l)}</td><td>${why(l)}</td><td>${l.runner_merge === 'manual' ? 'Approve to merge' : 'Runner merges'}</td></tr>`)}</tbody></table>`
+      : html`<p class="done">Every lane has a row to show.</p>`);
+    window.shell?.view.count('lanes', busyLanes.length); window.shell?.view.count('idle', idle.length);
   }
 
   async function load() {
@@ -102,7 +111,6 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }];
     try {
       DOC = await S.getJSON('/api/queue');
       S.state(DOC.problems.length ? { kind: 'partial', text: `${plural(DOC.problems.length, 'lane')} not read; the others are current.`, source: '/api/queue' } : null);
-      window.shell?.view.count('lanes', DOC.lanes.length);
       put($('subhead'), html`${plural(DOC.managed, 'managed repository', 'managed repositories')} · read ${at(DOC.read)}`);
       // The badge is the read's own (sd:3446, queue_screen._attention): blocked rows in every lane.
       S.attention(DOC.attention || { state: 'unknown', n: 0, what: 'lanes not read' });
@@ -178,7 +186,8 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }];
     window.shell.commands.register(window.commands.adversarialReview('entry', {
       payload: o => ({ kind: 'change', target: o.worktree, item: o.item }),
       when: o => !!o.worktree || 'the lane recorded no worktree for this entry' }));
-    $('reload').addEventListener('click', load);
+    // Read again (sd:5638): the shell's head button reads the lanes again.
+    window.PAGE_AGAIN = { title: 'Read the lanes again', run: load };
     show = new URLSearchParams(location.search).get('show') === 'all' ? 'all' : 'active';
     $('show').addEventListener('click', e => {
       const b = e.target.closest('button[data-show]'); if (!b || b.dataset.show === show) return;

@@ -1048,12 +1048,13 @@ class TheScript(PageScript):
         self.assertEqual(out["R"]["reg"], [
             ["repo.runner-merge", "repo", "undo", "m", True, True],
             ["repo.managed", "repo", "undo", "g", True, True],
+            ["repo.standard", "repo", "confirm", None, True, False],
             ["repo.lane-host", "repo", "safe", "h", False, False],
             ["repo.pull", "repo", "safe", "l", False, False],
             ["repo.adversarial-review", "repo", "safe", None, True, False],
             ["repo.adversarial-pr", "repo", "safe", None, True, False],
             ["repo.deep-review", "repo", "safe", None, True, False],
-            ["repo.deep-settings", "repo", "safe", None, True, False],
+            ["repo.deep-settings", "deep review settings", "safe", None, True, False],
             ["repo.land", "repo", "confirm", "n", True, False],
             ["sddb.run", "sd-db change", "undo", "u", True, True],
             ["declaration.copy", "declaration change", "safe", "p", False, False],
@@ -1094,6 +1095,74 @@ R.got = await cmd('repo.land').run(o); R.previews = cmd('repo.land').previews;""
         self.assertEqual(posted, [{"path": posted[0]["path"], "items": "7; 8: lib/", "revision": "r-7; 8: lib/", "claim": "deliver"}])
         self.assertIn("lane pending", out["R"]["got"]["text"])
         self.assertTrue(out["R"]["previews"])
+
+    # Standard setup (sd:5610): a preview answer with one GitHub change and one checkout pending, and the answer the
+    # apply gives with each step's result. `used` is the preview's lane history, which picks the sheet's first option.
+    def standard_answer(self, used=False, apply="[200, { ...PLAN, applied: true, steps: PLAN.steps.map(s => s.state === 'change' ? { ...s, result: 'changed' } : s) }]"):
+        return """(() => { const PLAN = { digest: '%s', used_before: %s, managed: false, steps: [
+  { key: 'D1', group: 'row', subject: 'managed', state: 'change', detail: '', before: 'no', after: 'yes' },
+  { key: 'G4', group: 'github', subject: 'Delete head branches', state: 'change', detail: '', before: false, after: true },
+  { key: 'G7', group: 'github', subject: 'Dependabot alerts', state: 'ok', detail: 'off: a kept choice (sd:5611); never turned on here', before: 'off', after: 'off' },
+  { key: 'F1', group: 'checkout', subject: 'tracked fleet files', state: 'pending', detail: '.gitignore: a pull request carries them', before: null, after: '.gitignore' }] };
+  return (path, body) => {
+    if (path.startsWith('/api/repos/standard/preview')) return [200, PLAN];
+    if (path === '/api/repos/standard') return %s;
+    return [200, {}]; }; })()""" % ("d" * 64, "true" if used else "false", apply)
+
+    ASKS = """OUT.asks = []; var PICK = [];
+window.shell.ask = a => { OUT.asks.push({ title: a.title, body: String(a.body), ok: a.ok, keep: a.keep,
+  options: (a.fields || []).map(f => (f.options || []).map(x => x.value)) });
+  const next = PICK.shift() || { yes: false, values: {} }; return Promise.resolve(next); };"""
+
+    def test_turning_managed_on_previews_the_standard_by_group_and_applies_the_digest_it_showed(self):
+        """sd:5610: first manage leads with the standard; the post carries the preview's digest; the result lists each step."""
+        path = self.ids["checkout"]
+        out = self.run_page(f"""R.page = ELS['view-repos'].html; PICK = [{{ yes: true, values: {{ run: 'apply' }} }}];
+R.got = await cmd('repo.standard').run(C.get('repo:{path}'));""", search=f"?repo={path}",
+                            answer=self.standard_answer(), extra=self.ASKS)
+        managed = out["R"]["page"].split('data-key="managed"')[1].split('<div class="row"')[0]
+        self.assertIn('data-cmd="repo.standard"', managed)
+        sheet, result = out["asks"]
+        self.assertEqual(sheet["options"], [["apply", "only"]])
+        self.assertEqual(sheet["title"], f"Manage {path}?")
+        for line in ("sd-db row", "D1 managed: no → yes", "GitHub", "G4 Delete head branches: false → true",
+                     "G7 Dependabot alerts: ok", "checkout", "F1 tracked fleet files: pending"):
+            self.assertIn(line, sheet["body"])
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/repos/standard", {"path": path, "digest": "d" * 64})])
+        self.assertIn("G4 Delete head branches: changed", result["body"])
+        self.assertEqual(result["ok"], "Check again")
+        self.assertEqual(out["R"]["got"]["text"], f"Standard applied · {path}: 2 changed")
+
+    def test_a_repo_with_lane_history_leads_with_manage_only_which_writes_the_one_column(self):
+        path = self.ids["checkout"]
+        out = self.run_page(f"""PICK = [{{ yes: true, values: {{ run: 'only' }} }}];
+R.got = await cmd('repo.managed').run(C.get('repo:{path}'));""", answer=self.standard_answer(used=True), extra=self.ASKS)
+        self.assertEqual(out["asks"][0]["options"], [["only", "apply"]])
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/repos/managed", {"path": path, "value": "yes", "before": "no"})])
+        self.assertEqual(out["R"]["got"]["text"], f"managed yes · {path}")
+
+    def test_a_managed_repo_checks_the_standard_and_a_refused_apply_says_nothing_ran(self):
+        path = self.ids["checkout"]
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["repos"] if r["path"] == path)["managed"] = "yes"
+        out = self.run_page(f"""R.page = ELS['view-repos'].html; PICK = [{{ yes: true, values: {{}} }}];
+R.got = await cmd('repo.standard').run(C.get('repo:{path}'));""", doc=doc, search=f"?repo={path}", extra=self.ASKS,
+                            answer=self.standard_answer(apply="[409, { error: 'sd fleet standard: a ship is running; try again' }]"))
+        row = out["R"]["page"].split('data-key="standard"')[1].split('<div class="row"')[0]
+        self.assertIn('data-cmd="repo.standard"', row)
+        self.assertEqual(len(out["asks"]), 1)
+        self.assertEqual((out["asks"][0]["ok"], out["asks"][0]["options"]), ("Apply standard", []))
+        self.assertEqual(out["R"]["got"]["text"], f"Nothing ran · {path}: sd fleet standard: a ship is running; try again")
+
+    def test_a_plan_with_nothing_to_change_asks_nothing(self):
+        path = self.ids["checkout"]
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["repos"] if r["path"] == path)["managed"] = "yes"
+        answer = """(path, body) => path.startsWith('/api/repos/standard/preview')
+  ? [200, { digest: 'e', used_before: true, steps: [{ key: 'G4', group: 'github', subject: 'x', state: 'ok' }, { key: 'G1', group: 'github', subject: 'y', state: 'skip' }] }] : [200, {}]"""
+        out = self.run_page(f"R.got = await cmd('repo.standard').run(C.get('repo:{path}'));", doc=doc, answer=answer, extra=self.ASKS)
+        self.assertEqual(out["asks"], [])
+        self.assertEqual(out["R"]["got"]["text"], f"Standard holds · {path}: 1 ok, 1 skip")
 
     def test_the_page_reads_the_document_and_draws_repos_with_git_state(self):
         out = self.run_page("R.repos = ELS['view-repos'].html; R.sched = ELS['view-schedules'].html;")
@@ -1391,13 +1460,15 @@ selectRow('repo:{path}'); C.run(c, o); await flush(); await flush(); R.end = ELS
         doc = json.loads(json.dumps(self.doc))
         doc["deep"]["adversarial.deep.model"] = {"value": "fable", "from": "database"}
         answer = """(p, b) => p === '/api/adversarial/settings' ? [200, { saved: b }] : [404, { error: 'no' }]"""
-        out = self.run_page(f"""const o = C.get('repo:{path}'), c = cmd('repo.deep-settings');
+        # sd:5656: the settings are every repository's, so the command is on the page's own object, run from the Repos heading.
+        out = self.run_page(f"""const o = C.get('deep:settings'), c = cmd('repo.deep-settings'); R.button = ELS['view-repos'].html.includes('data-deep-settings');
 selectRow('repo:{path}'); R.det = ELS.details.html; R.fields = c.fields(o).map(f => [f.name, f.value ?? f.options[0].value]); R.on = c.when(o);
 FIELD_VALUES = {{ model: '', effort: 'max', bound_minutes: '120', agents: '8' }}; C.run(c, o); await flush(); await flush();""",
                             answer=answer, doc=doc)
         self.assertIn("Deep review settings: model <b>fable</b> · effort <b>max</b> (default)", out["R"]["det"])
         self.assertIn("sub-agents at most <b>8</b> (default)", out["R"]["det"])
         self.assertEqual(out["R"]["on"], True)
+        self.assertTrue(out["R"]["button"])
         self.assertEqual(out["R"]["fields"], [["model", "fable"], ["effort", "max"], ["bound_minutes", "90"], ["agents", "8"]])
         self.assertEqual(out["posts"], [["/api/adversarial/settings", {"adversarial.deep.model": "",
                                                                        "adversarial.deep.bound_minutes": "120"}, 64]])
@@ -1418,7 +1489,7 @@ FIELD_VALUES = {{ model: '', effort: 'max', bound_minutes: '120', agents: '8' }}
     def test_deep_review_settings_are_off_when_the_settings_were_not_read(self):
         path = self.ids["checkout"]
         doc = dict(self.doc, deep=None, sources=dict(self.doc["sources"], deep="the setting adversarial.deep.agents wants x"))
-        out = self.run_page(f"R.why = cmd('repo.deep-settings').when(C.get('repo:{path}')); selectRow('repo:{path}'); R.det = ELS.details.html;", doc=doc)
+        out = self.run_page(f"R.why = cmd('repo.deep-settings').when(C.get('deep:settings')); selectRow('repo:{path}'); R.det = ELS.details.html;", doc=doc)
         self.assertEqual(out["R"]["why"], "settings not read: the setting adversarial.deep.agents wants x")
         self.assertIn("Deep review settings not read: the setting adversarial.deep.agents wants x.", out["R"]["det"])
 
@@ -1662,10 +1733,13 @@ C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; aw
             self.assertNotIn('data-set="dependabot"', cell)
 
     def test_a_refused_write_says_why_and_reads_again(self):
+        # Turning managed off is the one-column flip; turning it on opens Standard setup (sd:5610).
         path = self.ids["checkout"]
-        out = self.run_page(f"C.run(cmd('repo.managed'), C.get('repo:{path}')); await flush();",
-                            answer="(p, b) => [409, {error: 'managed is yes now, not no'}]")
-        self.assertEqual(out["toasts"][-1], [f"{path} not changed: managed is yes now, not no", False])
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["repos"] if r["path"] == path)["managed"] = "yes"
+        out = self.run_page(f"C.run(cmd('repo.managed'), C.get('repo:{path}')); await flush();", doc=doc,
+                            answer="(p, b) => [409, {error: 'managed is no now, not yes'}]")
+        self.assertEqual(out["toasts"][-1], [f"{path} not changed: managed is no now, not yes", False])
         self.assertEqual(out["gets"], ["/api/management", "/api/management"])
 
     def test_a_failed_job_and_an_idle_one_run_through_their_routes(self):
@@ -2297,4 +2371,4 @@ class TheSharedUpload(PageScript):
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = ("management", "Management", "/management",
                                  ("/api/management", "/api/repos/land/preview", "/api/repos/land",
-                                  "/api/claude-sessions/end"))
+                                  "/api/repos/standard/preview", "/api/repos/standard", "/api/claude-sessions/end"))

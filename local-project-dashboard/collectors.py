@@ -91,6 +91,7 @@ nothing. It had both while it was a program.
 import ast
 import contextlib
 import datetime
+import hashlib
 import ipaddress
 import json
 import os
@@ -825,7 +826,11 @@ def read_research_config(path):
                 return left + right
         raise ValueError("research configuration uses computed data that cannot be read safely")
 
-    result = {key: value(expressions[key]) for key in ("PROJECT", "DOCS") if key in expressions}
+    return research_inventory({key: value(expressions[key]) for key in ("PROJECT", "DOCS") if key in expressions})
+
+
+def research_inventory(result):
+    """`result` when its DOCS is a list of at most 100 dicts, each with a non-empty string src and out; else ValueError."""
     if not isinstance(result.get("DOCS", []), list) or len(result.get("DOCS", [])) > 100:
         raise ValueError("research document inventory is invalid or oversized")
     for index, document in enumerate(result.get("DOCS", []), 1):
@@ -835,6 +840,62 @@ def read_research_config(path):
             if not isinstance(document.get(field), str) or not document[field].strip():
                 raise ValueError(f"research document {index} requires a declared non-empty string {field!r}; computed configuration is not executed")
     return result
+
+
+# What `sd-research-kit render` writes beside its pages (pack sd:5658): the PROJECT and DOCS it executed, and the sha256 of
+# the research.conf.py bytes it ran. A config this reader refuses is read from here; nothing here runs repository code.
+RESEARCH_MANIFEST = "docs/dashboard/research.json"
+RESEARCH_MANIFEST_BYTES = 2 * 1024 * 1024
+COMPUTED_FIX = "research.conf.py computes its data; run sd-research-kit render once to write docs/dashboard/research.json"
+
+
+def read_research_manifest(repo):
+    """The manifest's PROJECT and DOCS and whether an older research.conf.py wrote it; None when there is no manifest."""
+    path = repo / RESEARCH_MANIFEST
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(repo.resolve()):
+        raise ValueError(f"{RESEARCH_MANIFEST} is linked, not a regular file, or outside its repository")
+    with path.open("rb") as handle:
+        data = handle.read(RESEARCH_MANIFEST_BYTES + 1)
+    if len(data) > RESEARCH_MANIFEST_BYTES:
+        raise ValueError(f"{RESEARCH_MANIFEST} exceeds the bounded read size")
+    try:
+        manifest = json.loads(data)
+    except ValueError:
+        raise ValueError(f"{RESEARCH_MANIFEST} is not JSON; run sd-research-kit render to rewrite it") from None
+    if not isinstance(manifest, dict) or type(manifest.get("version")) is not int or manifest["version"] != 1:
+        raise ValueError(f"{RESEARCH_MANIFEST} is not a version 1 manifest")
+    result = {"DOCS": manifest.get("docs")}
+    if isinstance(manifest.get("project"), str):
+        result["PROJECT"] = manifest["project"]
+    research_inventory(result)
+
+    def text(document):
+        # The render writes strings only; anything else is dropped, so the board's cells and links stay text.
+        links = document.get("links") if isinstance(document.get("links"), list) else []
+        return {key: value for key, value in document.items() if isinstance(value, str)} | {
+            "links": [link for link in links if isinstance(link, list) and len(link) == 2 and all(isinstance(part, str) for part in link)]}
+
+    result["DOCS"] = [text(document) for document in result["DOCS"]]
+    with (repo / "research.conf.py").open("rb") as handle:
+        current = hashlib.file_digest(handle, "sha256").hexdigest()
+    return result, manifest.get("conf_sha256") != current
+
+
+def read_research_inventory(conf):
+    """PROJECT and DOCS, and where they came from: "" declared in research.conf.py, "current" or "older" a manifest.
+
+    The manifest is read only when the declared reader refuses the config: a config that declares its data is read
+    as written, whatever an earlier render left.
+    """
+    try:
+        return read_research_config(conf), ""
+    except ValueError as refused:
+        found = read_research_manifest(conf.parent)
+        if found is None:
+            raise ValueError(COMPUTED_FIX if "computed" in str(refused) else str(refused)) from None
+        return found[0], "older" if found[1] else "current"
 
 
 def collect_research():
@@ -851,7 +912,7 @@ def collect_research():
                 continue
             seen.add(repo)
             try:
-                ns = read_research_config(conf)
+                ns, manifest = read_research_inventory(conf)
             except Exception as e:  # a broken conf is a finding, not a crash
                 items.append({"name": repo.name, "path": str(repo), "error": str(e),
                               "docs": [], "git": git_facts(repo), "links": []})
@@ -890,7 +951,7 @@ def collect_research():
                 "project": ns.get("PROJECT", repo.name), "docs": docs,
                 "links": [list(l) for l in dict.fromkeys(tuple(l) for l in links)],
                 "notion": [list(n) for n in notion[:6]],
-                "git": git_facts(repo), "error": "",
+                "git": git_facts(repo), "error": "", "manifest": manifest,
             })
     items.sort(key=lambda i: (i["git"] or {}).get("last_iso", ""), reverse=True)
     return items

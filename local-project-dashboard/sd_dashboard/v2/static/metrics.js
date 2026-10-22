@@ -259,6 +259,8 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
   // ---------- Reader (read.js) ----------
   let reader = null;
   const load = () => reader.load();
+  // Read again (sd:5638): the shell's head button reads the Metrics readings again, as the Observed lamp does.
+  window.PAGE_AGAIN = { title: 'Read the Metrics readings again', run: load };
   const spec = {
     source: '/api/metrics', what: 'the Metrics readings',
     adopt: doc => {

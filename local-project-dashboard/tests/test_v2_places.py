@@ -25,7 +25,8 @@ from sd_db import reporting, routine_briefs, writes
 from sd_dashboard import hoa_screen, places, reports_screen, tasks_screen, v2
 
 import test_v2_tasks
-from support import NOW, ScreenCase
+from support import NOW, ScreenCase, before_5648
+from test_now_screen import JobsBackend
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT
 from test_workflow_actions import BrowserSession
@@ -33,6 +34,10 @@ from test_workflow_actions import BrowserSession
 STATIC = Path(v2.__file__).resolve().parent / "static"
 PLACES_JS = (STATIC / "places.js").read_text(encoding="utf-8")
 MARKUP_JS = (STATIC / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (STATIC / "commands.js").read_text(encoding="utf-8")
+BRIEF_DETAILS_JS = (STATIC / "brief-details.js").read_text(encoding="utf-8")
+REPORT_DETAILS_JS = (STATIC / "report-details.js").read_text(encoding="utf-8")
+TASK_DETAILS_JS = (STATIC / "task-details.js").read_text(encoding="utf-8")
 
 FAMILIES = ("family|hoa|HOA|house|hoa-mission-alarms,hoa-morning-digest\n"
             "family|home|Home|house|ha-backups-prune,fun-events-nightly\n")
@@ -72,6 +77,9 @@ class Fixture(ScreenCase):
         self.digest = brief(self, "2026-09-05 - HOA Morning Digest", self.other)
         self.fun_brief = brief(self, "2026-09-05 - Fun Events Nightly", self.other)
         self.system_brief = brief(self, "2026-09-05 - Daily Intel Brief", self.other)
+        # The operations backend a Reports view reads its jobs through (sd:5636); weekly-scan is in no place's family.
+        self.jobs = JobsBackend(self.dir, jobs=[("hoa-mission-alarms", "failed", 1, None), ("fun-events-nightly", "idle", 0, None),
+                                                ("weekly-scan", "idle", 0, None)])
 
     def ids(self, doc):
         return sorted(row["item"] if "item" in row else row["id"] for row in doc["rows"])
@@ -101,9 +109,30 @@ class Tasks(Fixture):
             tasks = sorted(r["id"] for r in rows if r["area"] == area and r["status"] != "done" and not r["parked"])
             self.assertEqual(tasks, self.ids(places.tasks(self.connection, area, now=NOW)), area)
         # The HOA page draws its Tasks view from /api/hoa's items: the same rows, in urgency order.
-        hoa = sorted(r["item"] for r in hoa_screen.document(self.connection, now=NOW)["items"]["rows"])
+        hoa = sorted(r["id"] for r in hoa_screen.document(self.connection, now=NOW)["items"]["rows"])
         self.assertEqual(hoa, self.ids(places.tasks(self.connection, "hoa", now=NOW)))
         self.assertEqual({r["id"]: r["area"] for r in rows if r["id"] == self.other_item}, {self.other_item: None})
+
+    def test_a_places_tasks_rows_are_the_tasks_pages_rows(self):
+        # sd:5635: a Tasks row's Details on Home, HOA and a realm place are the Tasks page's own, so the view lists the
+        # /api/tasks rows (tasks_screen._rows), with the revision, allowed moves, edit capability and issue targets.
+        # Its `lead` is /api/tasks' too (pack sd:5648), so Details show the Lead field where Tasks does.
+        page = tasks_screen.document(self.connection, now=NOW)
+        listed = {r["id"]: r for r in page["rows"]}
+        for area in places.AREAS:
+            doc = places.tasks(self.connection, area, now=NOW)
+            self.assertTrue(doc["rows"], area)
+            self.assertEqual(doc["rows"], [listed[r["id"]] for r in doc["rows"]], area)
+            self.assertEqual(doc["lead"], page["lead"], area)
+
+    def test_a_scheduled_occurrence_is_no_place_task_until_it_opens(self):
+        """sd:5670: as Tasks does, Home and HOA Tasks hide a scheduled occurrence (pack sd:5648) until the day it opens.
+        A pack before sd:5648 marks nothing scheduled, so the row shows as before."""
+        self.schedule(self.home_item, "2026-09-09")
+        self.assertEqual(self.ids(places.tasks(self.connection, "home", now=NOW)), [])
+        self.assertEqual(self.ids(places.tasks(self.connection, "home", now="2026-09-09T12:00:00Z")), [self.home_item])
+        with before_5648():
+            self.assertEqual(self.ids(places.tasks(self.connection, "home", now=NOW)), [self.home_item])
 
 
 class Realms(Fixture):
@@ -195,25 +224,44 @@ class Briefs(Fixture):
 
 class Reports(Fixture):
     def test_hoa_reports_are_the_hoa_familys(self):
-        doc = places.reports(self.connection, "hoa", now=NOW, config=self.config)
+        doc = places.reports(self.connection, "hoa", now=NOW, config=self.config, jobs=self.jobs)
         self.assertEqual((doc["state"], self.ids(doc), doc["jobs"]),
                          ("read", [self.alarm], ["hoa-mission-alarms", "hoa-morning-digest"]))
         self.assertTrue(doc["rows"][0]["attention"])
 
     def test_home_reports_are_the_home_familys(self):
-        doc = places.reports(self.connection, "home", now=NOW, config=self.config)
+        doc = places.reports(self.connection, "home", now=NOW, config=self.config, jobs=self.jobs)
         self.assertEqual((doc["state"], self.ids(doc)), ("read", [self.fun]))
 
     def test_a_missing_family_list_is_unknown_naming_the_setting_never_an_empty_list(self):
-        doc = places.reports(self.connection, "home", now=NOW, config=self.dir / "absent.conf")
+        doc = places.reports(self.connection, "home", now=NOW, config=self.dir / "absent.conf", jobs=self.jobs)
         self.assertEqual((doc["state"], doc["rows"]), ("unknown", []))
         self.assertIn("dashboard.report_families on Settings", doc["reason"])
 
     def test_a_file_without_the_family_is_unknown_naming_the_line_to_add(self):
         self.config.write_text(FAMILIES.splitlines()[0] + "\n", encoding="utf-8")
-        doc = places.reports(self.connection, "home", now=NOW, config=self.config)
+        doc = places.reports(self.connection, "home", now=NOW, config=self.config, jobs=self.jobs)
         self.assertEqual(doc["state"], "unknown")
         self.assertIn("names no family home", doc["reason"])
+
+    def test_a_reports_details_are_the_reports_pages_document_for_the_familys_jobs_alone(self):
+        # sd:5636: a Reports row's Details on HOA and Home are the Reports page's own, so the view carries that page's
+        # document (reports_screen.document) for the family's jobs: their reports with bodies, installed jobs and cadence.
+        doc = places.reports(self.connection, "hoa", now=NOW, config=self.config, jobs=self.jobs)
+        details = doc["details"]
+        self.assertEqual([r["id"] for r in details["reports"]], [self.alarm])
+        self.assertEqual(details["reports"][0]["body"], "ran\n")
+        self.assertEqual([j["name"] for j in details["jobs"]], ["hoa-mission-alarms"])
+        self.assertEqual(list(details["cadence"]), ["hoa-mission-alarms"])
+        self.assertEqual((details["sources"], details["attention"]["n"]), ({"reports": "", "jobs": "", "cadence": ""}, 1))
+        self.assertNotIn("html", details, "a place reads no HTML folder count")
+
+    def test_a_jobs_read_that_fails_leaves_the_reports_and_names_what_was_not_read(self):
+        # sd:5636: without the job list there is no Run now and no cadence; the view says so, never "no job".
+        jobs = JobsBackend(self.dir, refuse="launchctl refused")
+        doc = places.reports(self.connection, "hoa", now=NOW, config=self.config, jobs=jobs)
+        self.assertEqual((doc["state"], self.ids(doc), doc["details"]["jobs"], doc["details"]["cadence"]), ("read", [self.alarm], None, None))
+        self.assertEqual(doc["reason"], "Not read: jobs (launchctl refused), cadence (the job list was not read, so no job log was).")
 
 
 class TheRowWins(Fixture):
@@ -258,16 +306,96 @@ class TheRowWins(Fixture):
 
     def test_a_families_row_wins_over_the_file(self):
         writes.set_setting(self.connection, "dashboard.report_families", "family|home|Home|house|weekly-scan\n")
-        doc = places.reports(self.connection, "home", now=NOW, config=self.config)
+        doc = places.reports(self.connection, "home", now=NOW, config=self.config, jobs=self.jobs)
         self.assertEqual((doc["state"], doc["jobs"], self.ids(doc)), ("read", ["weekly-scan"], [self.stray]))
 
     def test_a_families_row_that_does_not_read_leaves_reports_and_briefs_unknown(self):
         with self.refuse():
-            reports = places.reports(self.connection, "hoa", now=NOW, config=self.config)
+            reports = places.reports(self.connection, "hoa", now=NOW, config=self.config, jobs=self.jobs)
             briefs = places.briefs(self.connection, "hoa", now=NOW, config=self.config)
         # The hoa checkout's own briefs could be listed, but which series are HOA's is unknown, not "none".
         self.assertEqual((reports["state"], reports["rows"], briefs["state"], briefs["rows"]), ("error", [], "error", []))
         self.assertIn("database is locked", briefs["reason"])
+
+
+class RealmPlaces(Fixture):
+    """sd:5663: a realm whose id is also a report family key is a place page, with HOA's and Home's three views."""
+
+    def setUp(self):
+        super().setUp()
+        self.realms = self.dir / "realms.conf"
+        self.realms.write_text("realm|acme|Acme|/repos/acme-*\nrealm|lab|Lab|/repos/lab\n", encoding="utf-8")
+        self.enterContext(mock.patch.object(places, "REALMS_CONFIG", self.realms))
+        self.config.write_text(FAMILIES + "family|acme|Acme|map|acme-nightly\n", encoding="utf-8")
+        self.site = self.repo("/repos/acme-site")
+        self.acme_item = self.item("Ship the press kit", kind="task", repo=self.site)
+        self.item("A settled Acme item", kind="task", repo=self.site, status="done")
+        self.acme_report = report(self, "acme-nightly", "r4")
+        self.site_brief = brief(self, "2026-09-05 - Site Notes", self.site)
+        self.nightly_brief = brief(self, "2026-09-05 - Acme Nightly", self.other)
+
+    def refuse(self):
+        def refuse(connection, keys):
+            raise sqlite3.OperationalError("database is locked")
+
+        return mock.patch.object(writes, "read_settings", refuse)
+
+    def test_tasks_are_the_realms_open_items_the_rows_of_tasks_realm_view(self):
+        doc = places.tasks(self.connection, "acme", now=NOW)
+        self.assertEqual((doc["state"], doc["area"], self.ids(doc)), ("read", "acme", [self.acme_item]))
+        rows = tasks_screen.document(self.connection, now=NOW)["rows"]
+        self.assertEqual(sorted(r["id"] for r in rows if r["realm"] == "acme" and r["status"] != "done" and not r["parked"]),
+                         self.ids(doc))
+
+    def test_briefs_are_the_realms_repos_and_those_whose_series_names_a_family_job(self):
+        doc = places.briefs(self.connection, "acme", now=NOW, config=self.config)
+        self.assertEqual((doc["state"], self.ids(doc)), ("read", sorted([self.site_brief, self.nightly_brief])))
+
+    def test_reports_are_the_familys(self):
+        doc = places.reports(self.connection, "acme", now=NOW, config=self.config, jobs=self.jobs)
+        self.assertEqual((doc["state"], self.ids(doc), doc["jobs"]), ("read", [self.acme_report], ["acme-nightly"]))
+
+    def test_a_realm_the_list_does_not_name_is_unknown_with_the_line_to_add(self):
+        for read in (places.tasks, places.briefs):
+            doc = read(self.connection, "beta", now=NOW)
+            self.assertEqual((doc["state"], doc["rows"]), ("unknown", []), read.__name__)
+            self.assertIn("names no realm beta; add realm|beta|<label>|<glob> to dashboard.realms on Settings", doc["reason"])
+
+    def test_a_missing_family_line_is_unknown_naming_the_line_with_the_realms_label(self):
+        self.config.write_text(FAMILIES, encoding="utf-8")
+        doc = places.reports(self.connection, "acme", now=NOW, config=self.config, jobs=self.jobs)
+        self.assertEqual((doc["state"], doc["rows"]), ("unknown", []))
+        self.assertIn("names no family acme; add family|acme|Acme|<icon>|<job>,<job>,... to dashboard.report_families",
+                      doc["reason"])
+        # The realm's own repos still give its briefs, and the reason says what else would be read.
+        briefs = places.briefs(self.connection, "acme", now=NOW, config=self.config)
+        self.assertEqual((briefs["state"], self.ids(briefs)), ("read", [self.site_brief]))
+        self.assertIn("names no family acme", briefs["reason"])
+
+    def test_a_realms_row_that_does_not_read_leaves_tasks_and_briefs_error_not_empty(self):
+        with self.refuse():
+            tasks = places.tasks(self.connection, "acme", now=NOW)
+        self.assertEqual((tasks["state"], tasks["rows"]), ("error", []))
+        self.assertIn("database is locked", tasks["reason"])
+        with mock.patch.object(places, "realms", return_value={"state": "error", "source": "x", "problems": ["not read: locked"],
+                                                               "list": []}):
+            briefs = places.briefs(self.connection, "acme", now=NOW, config=self.config)
+        self.assertEqual((briefs["state"], briefs["rows"]), ("error", []))
+        self.assertIn("not read: locked", briefs["reason"])
+
+    def test_a_realm_is_a_place_only_when_a_family_has_its_id(self):
+        self.assertEqual([(r["id"], r["place"]) for r in places.realm_places(self.connection, self.config)],
+                         [("acme", "map"), ("lab", None)])
+        with self.refuse():
+            self.assertEqual(places.realm_places(self.connection, self.config), [])
+        broken = self.dir / "broken.conf"
+        broken.write_bytes(b"\xff\xfe")
+        self.assertEqual([r["place"] for r in places.realm_places(self.connection, broken)], [None, None])
+
+    def test_hoa_and_home_keep_their_rows(self):
+        self.assertEqual(self.ids(places.tasks(self.connection, "hoa", now=NOW)), [self.hoa_item])
+        self.assertEqual(self.ids(places.tasks(self.connection, "home", now=NOW)), [self.home_item])
+        self.assertEqual(self.ids(places.briefs(self.connection, "home", now=NOW, config=self.config)), [self.fun_brief])
 
 
 class TheRoutes(BrowserSession):
@@ -280,9 +408,40 @@ class TheRoutes(BrowserSession):
                 signed = self.request("/ui/sections.js", headers={"Cookie": self.cookie})[2]
                 bare = self.request("/ui/sections.js")[2]
         realms = lambda body: json.loads(re.search(r"^window\.SHELL_REALMS = (.*);$", body, re.M).group(1))
-        self.assertEqual(realms(signed), [{"id": "work", "label": "Work"}])
+        self.assertEqual(realms(signed), [{"id": "work", "label": "Work", "place": None}])
         self.assertEqual(realms(bare), [])
         self.assertNotIn("example-work", signed, "a glob is a path; the page needs only the id and label")
+
+    def test_a_realm_with_a_family_of_its_id_carries_its_icon_as_place(self):
+        """sd:5663: the rail lists a realm place only when its realm and family lines both read."""
+        with tempfile.TemporaryDirectory() as folder:
+            conf, families = Path(folder) / "realms.conf", Path(folder) / "report-families.conf"
+            conf.write_text("realm|acme|Acme|/repos/acme-*\nrealm|lab|Lab|/repos/lab\n", encoding="utf-8")
+            families.write_text("family|acme|Acme|map|acme-nightly\n", encoding="utf-8")
+            with mock.patch.object(places, "REALMS_CONFIG", conf), mock.patch.object(reports_screen, "FAMILIES_CONFIG", families):
+                body = self.request("/ui/sections.js", headers={"Cookie": self.cookie})[2]
+        realms = json.loads(re.search(r"^window\.SHELL_REALMS = (.*);$", body, re.M).group(1))
+        self.assertEqual(realms, [{"id": "acme", "label": "Acme", "place": "map"}, {"id": "lab", "label": "Lab", "place": None}])
+
+    def test_a_realm_places_views_are_routes_that_need_a_session(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(places, "REALMS_CONFIG", Path(folder) / "realms.conf"), \
+                mock.patch.object(reports_screen, "FAMILIES_CONFIG", Path(folder) / "report-families.conf"):
+            for view in ("tasks", "briefs", "reports"):
+                path = f"/api/place/acme/{view}"
+                self.assertEqual(self.request(path)[0], 403, path)
+                status, _, body = self.request(path, headers={"Cookie": self.cookie})
+                doc = json.loads(body)
+                # No realm list and no family list: unknown, with the line to add, never an empty list.
+                self.assertEqual((status, doc["area"], doc["state"], doc["rows"]), (200, "acme", "unknown", []), path)
+                self.assertIn("add ", doc["reason"], path)
+                # A Tasks place view or a malformed id is not a realm.
+                for other in ("hoa", "personal", "all"):
+                    self.assertEqual(self.request(f"/api/place/{other}/{view}", headers={"Cookie": self.cookie})[0], 404)
+                self.assertEqual(self.request(f"/api/place/Acme/{view}", headers={"Cookie": self.cookie})[0], 404)
+        status, _, page = self.request("/places?realm=acme", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        self.assertIn('src="/ui/place.js', page)
 
     def test_each_view_is_its_own_route_that_needs_a_session(self):
         with tempfile.TemporaryDirectory() as folder, \
@@ -324,7 +483,7 @@ const shown = () => SECTIONS.filter(x => !x.hidden).map(x => x.dataset.placeView
 let VIEW = VIEWS[0][0];
 window.shell.view = { current: () => VIEW, show: () => true, count: () => {} };
 const go = async hash => { VIEW = hash.replace('#view=', ''); document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: VIEW } })); await flush(); };
-""" + PLACES_JS + "\nvar R = {};\n(async () => { try {\n" + setup + "\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
+""" + COMMANDS_JS + BRIEF_DETAILS_JS + REPORT_DETAILS_JS + TASK_DETAILS_JS + PLACES_JS + "\nvar R = {};\n(async () => { try {\n" + setup + "\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
@@ -335,7 +494,8 @@ const go = async hash => { VIEW = hash.replace('#view=', ''); document.dispatchE
         return out
 
     def docs(self, area="hoa"):
-        return {f"/api/{area}/{view}": [200, getattr(places, view)(self.connection, area, now=NOW, **({} if view == "tasks" else {"config": self.config}))]
+        more = {"tasks": {}, "briefs": {"config": self.config}, "reports": {"config": self.config, "jobs": self.jobs}}
+        return {f"/api/{area}/{view}": [200, getattr(places, view)(self.connection, area, now=NOW, **more[view])]
                 for view in ("tasks", "briefs", "reports")}
 
     def test_a_click_on_a_row_opens_what_its_link_opens(self):
@@ -346,6 +506,143 @@ const click = (onLink, more = {}) => (DOC_LISTENERS['click'] || []).forEach(f =>
 click(false); click(true); click(false, { metaKey: true });""", self.docs())
         self.assertEqual(out["R"]["went"], ["/tasks?row=5"])
 
+    #: A Briefs row as the click handler sees it: its id, and the link the row used to follow.
+    BRIEF_CLICK = """const clickRow = id => { const tr = { dataset: { id }, querySelector: () => ({ href: '/briefs?row=' + encodeURIComponent(id) }) };
+  (DOC_LISTENERS['click'] || []).forEach(f => f({ button: 0, target: { closest: sel => sel === '.place-rows tbody tr' ? tr : null } })); };
+R.went = []; location.assign = h => R.went.push(h); globalThis.getSelection = () => ({ toString: () => '' });
+R.panes = []; window.shell.openPane = p => R.panes.push(p);
+"""
+
+    def test_a_briefs_row_shows_its_details_in_the_pane_and_the_page_stays(self):
+        # sd:5620: a Briefs row on HOA or Home fills Details with the Briefs page's own Details and commands, rather than
+        # opening Briefs; a link in Details still opens it there.
+        for place, stem in (("hoa", "2026-09-05 - Board Notes"), ("home", "2026-09-05 - Fun Events Nightly")):
+            out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=briefs'); R.rows = ELS['briefs-rows'].html;
+clickRow({json.dumps(stem)}); await flush();
+R.det = document.getElementById('details').html || ''; R.reg = REG.map(c => c.id); R.obj = (C.get({json.dumps(stem)}) || {{}}).type;""", self.docs(place), place=place)
+            r = out["R"]
+            self.assertEqual(r["went"], [], place)
+            self.assertEqual(r["panes"], ["tab-details"], place)
+            self.assertIn(f'<tr data-id="{stem}" aria-selected="false">', r["rows"], place)
+            self.assertIn("Brief · ", r["det"], place)
+            self.assertIn(f"<h2>{stem}</h2>", r["det"], place)
+            self.assertIn(f'href="/briefs?row={stem.replace(" ", "%20")}"', r["det"], place)
+            self.assertEqual(r["obj"], "brief", place)
+            for command in ("brief.read", "brief.task", "brief.open", "brief.adversarial-review", "brief.publish"):
+                self.assertIn(command, r["reg"], place)
+
+    def test_j_k_and_enter_walk_the_briefs_rows_through_the_shells_list(self):
+        # sd:5620: the shell's grammar (shell.js walk): j / k select a row, Details follows without opening the pane, and
+        # Enter (shell:open) opens it.
+        board, digest = "2026-09-05 - Board Notes", "2026-09-05 - HOA Morning Digest"
+        out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=briefs');
+window.PAGE_LIST.select({json.dumps(digest)}); await flush();
+R.cur = window.PAGE_LIST.current(); R.det = ELS.details.html || ''; R.quiet = R.panes.slice();
+open({json.dumps(board)}); await flush(); R.cur2 = window.PAGE_LIST.current(); R.det2 = ELS.details.html || '';""", self.docs())
+        r = out["R"]
+        self.assertEqual((r["cur"], r["quiet"]), (digest, []))
+        self.assertIn(f"<h2>{digest}</h2>", r["det"])
+        self.assertEqual((r["cur2"], r["panes"]), (board, ["tab-details"]))
+        self.assertIn(f"<h2>{board}</h2>", r["det2"])
+
+    def test_a_reports_row_shows_the_reports_pages_details_in_the_pane_and_the_page_stays(self):
+        # sd:5636: a Reports row on HOA or Home fills Details with the Reports page's own Details and commands, rather than
+        # opening Reports; a link in Details still opens it there.
+        for place, n, job in (("hoa", self.alarm, "hoa-mission-alarms"), ("home", self.fun, "fun-events-nightly")):
+            out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=reports'); R.rows = ELS['reports-rows'].html;
+clickRow('r{n}'); await flush();
+R.det = ELS.details.html || ''; R.reg = REG.map(c => c.id); R.obj = (C.get('r{n}') || {{}}).type; R.job = (C.get('job:{job}') || {{}}).type;""", self.docs(place), place=place)
+            r = out["R"]
+            self.assertEqual(r["went"], [], place)
+            self.assertEqual(r["panes"], ["tab-details"], place)
+            self.assertIn(f'<tr data-id="r{n}" aria-selected="false">', r["rows"], place)
+            self.assertIn(f"Database report #{n} · ", r["det"], place)
+            for part in ("<h3>Report source</h3>", "<h3>Last 7 days</h3>", "Since the previous report", f"<h3>Job · {job}</h3>",
+                         f'href="/reports?row=r{n}"'):
+                self.assertIn(part, r["det"], place)
+            self.assertEqual((r["obj"], r["job"]), ("report", "report-job"), place)
+            for command in ("report.ack", "report.resolve", "report.show", "report.log", "report.task", "report.fix", "report-job.retry"):
+                self.assertIn(command, r["reg"], place)
+
+    def test_a_reports_run_now_is_its_own_beside_hoas_source_jobs(self):
+        # sd:5636: HOA's source rows are 'job' objects with HOA's own Run now (hoa.js, jobs.retry); a report's job is another
+        # type, so neither page's Run now runs on the other's object, and a report's posts its job's retry route.
+        setup = "C.register({ id: 'jobs.retry', on: 'job', run: () => { throw new Error('HOA source handler'); } });"
+        docs = self.docs()
+        docs["/api/jobs/hoa-mission-alarms/retry"] = [200, {"answered": True}]
+        out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=reports'); clickRow('r{self.alarm}'); await flush();
+R.ids = REG.map(c => c.id); const job = C.get('job:hoa-mission-alarms');
+R.on = REG.filter(c => c.on === job.type).map(c => c.id);
+shellRun(cmd('report-job.retry'), job); await flush();""", docs, setup=setup)
+        r = out["R"]
+        self.assertEqual(len(r["ids"]), len(set(r["ids"])), "each command id is registered once")
+        self.assertEqual(r["on"], ["report-job.retry"])
+        self.assertEqual([p[0] for p in out["posts"]], ["/api/jobs/hoa-mission-alarms/retry"])
+
+    def test_a_reread_that_fails_keeps_the_report_selected_and_says_it_is_not_known(self):
+        # sd:5636: a failed read is unknown, not "gone": Details say why, no command runs (its pick is dropped, as read.js
+        # drops one), and the next read selects it again.
+        out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=reports'); clickRow('r{self.fun}'); await flush();
+R.unpicked = []; C.pick = id => R.unpicked.push(id); document.dispatchEvent(new CustomEvent('shell:picked', {{ detail: ['r{self.fun}'] }}));
+const ok = DOCS['/api/home/reports']; DOCS['/api/home/reports'] = [503, {{ error: 'store busy' }}];
+await window.places.reread('reports'); await flush(); R.det = ELS.details.html || ''; R.cur = window.PAGE_LIST.current(); R.type = C.get('r{self.fun}').type;
+DOCS['/api/home/reports'] = ok; await window.places.reread('reports'); await flush(); R.det2 = ELS.details.html || ''; R.type2 = C.get('r{self.fun}').type;""", self.docs("home"), place="home")
+        r = out["R"]
+        self.assertIn("The reports were not read again, so the selected row is not known: /api/home/reports did not answer", r["det"])
+        self.assertEqual((r["cur"], r["type"], r["type2"], r["unpicked"]), (f"r{self.fun}", "not listed", "report", [f"r{self.fun}"]))
+        self.assertIn(f"Database report #{self.fun} · ", r["det2"])
+
+    def test_acknowledge_in_a_reports_details_posts_the_reports_route_and_reads_the_view_again(self):
+        # sd:5636: the command is the Reports page's (report-details.js), with the report's revision; the view reads again,
+        # and Details show the report as the new read lists it. (HOA's alarm report waits on its followup: Acknowledge is off.)
+        docs = self.docs("home")
+        revision = docs["/api/home/reports"][1]["details"]["reports"][0]["revision"]
+        docs[f"/api/reports/{self.fun}/acknowledge"] = [200, {"revision": "after-ack"}]
+        out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=reports'); clickRow('r{self.fun}'); await flush();
+shellRun(cmd('report.ack'), C.get('r{self.fun}')); await flush(); R.det = ELS.details.html || '';""", docs, place="home")
+        self.assertEqual(out["posts"], [[f"/api/reports/{self.fun}/acknowledge", {"revision": revision}, 64]])
+        self.assertEqual(out["gets"], ["/api/home/reports", "/api/home/reports"])
+        self.assertEqual(out["toasts"][-1]["msg"], f"Acknowledged · #{self.fun}")
+        self.assertIn(f"Database report #{self.fun} · ", out["R"]["det"])
+
+    def task_docs(self):
+        docs = self.docs("home")
+        docs[f"/api/tasks/{self.home_item}"] = [200, tasks_screen.details(self.connection, self.home_item, now=NOW)]
+        return docs
+
+    def test_a_tasks_row_shows_the_tasks_pages_details_in_the_pane_and_the_page_stays(self):
+        # sd:5635: a Tasks row on Home fills Details with the Tasks page's own Details and commands, rather than opening
+        # Tasks; a link in Details still opens it there. HOA's Tasks rows are hoa.js's, which attaches it itself (sd:5671).
+        n = self.home_item
+        out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=tasks'); R.rows = ELS['tasks-rows'].html;
+clickRow('{n}'); await flush();
+R.det = ELS.details.html || ''; R.reg = REG.map(c => c.id); R.obj = (C.get('{n}') || {{}}).type; R.cur = window.PAGE_LIST.current();""",
+                            self.task_docs(), place="home")
+        r = out["R"]
+        self.assertEqual((r["went"], r["panes"], r["cur"], r["obj"]), ([], ["tab-details"], str(n), "item"))
+        self.assertIn(f'<tr data-id="{n}" aria-selected="false">', r["rows"])
+        self.assertIn(f"/api/tasks/{n}", out["gets"])
+        for part in ("<h2>Clean the gutters</h2>", '<dl class="fields">', f"<dd>#{n}</dd>", '<select id="det-status" class="fld">',
+                     "<h3>Status history", f'href="/tasks?row={n}">Open on Tasks</a>', "from /api/home/tasks."):
+            self.assertIn(part, r["det"])
+        for command in ("item.status.done", "item.edit", "item.note"):
+            self.assertIn(command, r["reg"])
+        hoa = self.run_page("await go('#view=tasks'); R.reg = REG.map(c => c.id);", self.docs())
+        self.assertEqual([c for c in hoa["R"]["reg"] if c.startswith("item.")], [])
+
+    def test_a_status_move_in_a_tasks_details_posts_the_item_route_and_reads_the_view_again(self):
+        # sd:5635: the move is the Tasks page's (task-details.js), with the row's revision; the view reads again.
+        n, docs = self.home_item, self.task_docs()
+        row = docs["/api/home/tasks"][1]["rows"][0]
+        to = next(s for s in row["allowed"] if s != row["status"])
+        docs[f"/api/items/{n}/status"] = [200, {"revision": "after-move", "item": {"status": to, "priority": row["priority"], "due": row["due"],
+                                                                                    "recurrence": row["recurrence"], "title": row["title"]}}]
+        out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=tasks'); clickRow('{n}'); await flush();
+shellRun(cmd('item.status.{to}'), C.get('{n}')); await flush(); R.det = ELS.details.html || '';""", docs, place="home")
+        self.assertEqual([p[:2] for p in out["posts"]], [[f"/api/items/{n}/status", {"status": to, "revision": row["revision"]}]])
+        self.assertEqual(out["gets"].count("/api/home/tasks"), 2)
+        self.assertIn("<h2>Clean the gutters</h2>", out["R"]["det"])
+
     def test_the_overview_reads_no_view_and_each_view_reads_its_own_document_when_shown(self):
         out = self.run_page("""R.first = shown(); R.gets0 = OUT.gets.slice();
 await go('#view=tasks'); R.second = shown(); R.gets1 = OUT.gets.slice();
@@ -353,7 +650,7 @@ await go('#view=reports'); R.reports = ELS['reports-rows'].html; R.third = shown
         r = out["R"]
         self.assertEqual([r["gets0"], r["first"], r["second"], r["gets1"], r["third"]], [[], ["overview"], ["tasks"], [], ["reports"]])
         self.assertEqual(out["gets"], ["/api/hoa/reports"])
-        self.assertIn(f'href="/reports?row=r{self.alarm}"', r["reports"])
+        self.assertIn(f'<tr data-id="r{self.alarm}" aria-selected="false">', r["reports"])
 
     def test_the_page_declares_its_views_for_the_shell_before_shell_js(self):
         # places.js loads before shell.js, which reads window.PAGE_VIEWS when it loads (shell.js view:start).
@@ -371,7 +668,7 @@ R.second = shown(); R.reports = ELS['reports-rows'].html;""", self.docs(), setup
         self.assertFalse(r["sw"])
         self.assertEqual([r["first"], r["gets0"], r["second"], out["gets"]],
                          [["briefs"], ["/api/hoa/briefs"], ["reports"], ["/api/hoa/briefs", "/api/hoa/reports"]])
-        self.assertIn(f'href="/reports?row=r{self.alarm}"', r["reports"])
+        self.assertIn(f'<tr data-id="r{self.alarm}" aria-selected="false">', r["reports"])
 
     def test_a_view_reads_again_each_time_it_shows(self):
         out = self.run_page("""await go('#view=briefs'); await go('#view=overview'); await go('#view=briefs');""", self.docs())
@@ -381,7 +678,7 @@ R.second = shown(); R.reports = ELS['reports-rows'].html;""", self.docs(), setup
         out = self.run_page("""await go('#view=tasks'); R.tasks = ELS['tasks-rows'].html; R.tally = ELS['tasks-tally'].html;""",
                             self.docs("home"), place="home")
         self.assertEqual(out["gets"], ["/api/home/tasks"])
-        self.assertIn(f'href="/tasks?row={self.home_item}">sd:{self.home_item}</a>', out["R"]["tasks"])
+        self.assertIn(f'<tr data-id="{self.home_item}" aria-selected="false"><td class="ref num">sd:{self.home_item}</td>', out["R"]["tasks"])
         self.assertNotIn("Fix the valve log", out["R"]["tasks"])
         self.assertEqual("", out["R"]["tally"], "sd:5524: the Tasks tab carries the count")
 
@@ -394,6 +691,14 @@ await go('#view=reports'); R.reports = ELS['reports-rows'].html;""", docs)
         self.assertIn("▨ Not read.</b> not configured: no report families are set", out["R"]["briefs"].replace("&lt;", "<").replace("&gt;", ">"))
         self.assertNotIn("<table", out["R"]["briefs"])
         self.assertIn("▨ Not read.</b> /api/hoa/reports did not answer: the server failed", out["R"]["reports"])
+
+    def test_read_again_reads_the_shown_view_again_and_a_view_without_a_read_reads_nothing(self):
+        # sd:5638: the shell's Read again on HOA, Home and a realm place reads the shown place view's document again.
+        out = self.run_page("""await go('#view=briefs'); let before = OUT.gets.length;
+await window.places.again(); await flush(); R.briefs = OUT.gets.slice(before);
+await go('#view=overview'); before = OUT.gets.length;
+await window.places.again(); await flush(); R.overview = OUT.gets.slice(before);""", self.docs())
+        self.assertEqual((out["R"]["briefs"], out["R"]["overview"]), (["/api/hoa/briefs"], []))
 
 
 class TheTasksSwitch(Fixture):
@@ -426,10 +731,11 @@ for (const v of ['work', 'hoa', 'home', 'all']) { document.dispatchEvent(new Cus
         self.assertEqual([t in r["all"] for t in titles], [True, True, True])
 
     def test_a_realm_named_after_a_layout_panel_is_kept_out_of_the_views(self):
-        """sd:5114: a realm named list, board or matrix would make the shell hide that layout panel (view-<id>)."""
+        """sd:5114: a realm named list, board or matrix would make the shell hide that layout panel (view-<id>); one named
+        btn or menu, the layout menu's view-btn and view-menu (sd:5641)."""
         self.doc, self.details = self.realm_doc(), {}
         prelude = ("globalThis.SHELL_REALMS = [{ id: 'list', label: 'List' }, { id: 'board', label: 'Board' },"
-                   " { id: 'matrix', label: 'Matrix' }, { id: 'work', label: 'Work' }];\n")
+                   " { id: 'matrix', label: 'Matrix' }, { id: 'btn', label: 'Btn' }, { id: 'menu', label: 'Menu' }, { id: 'work', label: 'Work' }];\n")
         out = test_v2_tasks.TheScript.run_page(self, "R.views = window.PAGE_VIEWS.map(v => v.id);", prelude=prelude)
         self.assertEqual(out["R"]["views"], ["personal", "work", "hoa", "home", "all"])
 
@@ -510,9 +816,98 @@ document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'home', fir
                          [(True, False), (False, True)])
 
 
+PLACE_JS = (STATIC / "place.js").read_text(encoding="utf-8")
+SHELL_PLACES = re.search(r"^  // places:start\n(.*?)^  // places:end$", (STATIC / "shell.js").read_text(encoding="utf-8"), re.S | re.M)
+
+
+class TheRealmPlaceScripts(unittest.TestCase):
+    """sd:5663: place.js names the page and its views after ?realm=, and shell.js puts each realm place in the rail."""
+
+    def run_script(self, script):
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out["error"])
+        return out["R"]
+
+    def place(self, search, realms):
+        return self.run_script(STAND_IN + MARKUP_JS + f"""
+location.search = {json.dumps(search)}; window.SHELL_REALMS = {json.dumps(realms)};
+document.documentElement = {{ hasAttribute: () => false }};
+const BLOCKS = ['tasks', 'briefs', 'reports'].map(v => Object.assign(El('view-' + v), {{ dataset: {{ placeView: v, label: v }} }}));
+document.querySelectorAll = sel => sel === '[data-place-view]' ? BLOCKS : [];
+var R = {{}};
+try {{
+{PLACE_JS}
+{PLACES_JS}
+R.page = document.body.dataset.page || null; R.place = document.body.dataset.place || null; R.title = document.title || null;
+R.h1 = ELS.title ? ELS.title.textContent : null; R.sub = ELS.subhead ? ELS.subhead.textContent : null;
+R.again = !!window.PAGE_AGAIN; R.views = window.PAGE_VIEWS || null; R.state = window.PAGE_STATE ? [window.PAGE_STATE.title, String(window.PAGE_STATE.text.text || window.PAGE_STATE.text)] : null;
+}} catch (e) {{ OUT.error = String(e) + ' ' + e.stack; }}
+function run() {{ OUT.R = R; return JSON.stringify(OUT); }}
+""")
+
+    def test_a_realm_place_names_the_page_and_points_each_view_at_its_route(self):
+        r = self.place("?realm=acme", [{"id": "acme", "label": "Acme", "place": "map"}])
+        self.assertEqual((r["page"], r["place"], r["title"], r["h1"]), ("Acme", "acme", "Acme · system", "Acme"))
+        self.assertEqual(r["views"], [{"id": v, "label": v, "api": f"/api/place/acme/{v}"} for v in ("tasks", "briefs", "reports")])
+        self.assertIsNone(r["state"])
+        self.assertTrue(r["again"], "a realm place declares no Read again (sd:5638)")
+
+    def test_a_realm_without_a_family_or_not_listed_keeps_its_views_and_says_why(self):
+        r = self.place("?realm=acme", [{"id": "acme", "label": "Acme", "place": None}])
+        self.assertIn("dashboard.report_families has no family acme", r["sub"])
+        self.assertEqual(len(r["views"]), 3)
+        r = self.place("?realm=acme", [])
+        self.assertEqual((r["page"], r["h1"]), ("acme", "acme"))
+        self.assertIn("dashboard.realms names no realm acme", r["sub"])
+        self.assertEqual(r["views"][0]["api"], "/api/place/acme/tasks")
+        # A label the rail could not find by [data-section="..."] is left to the id.
+        self.assertEqual(self.place("?realm=acme", [{"id": "acme", "label": 'A"cme', "place": "map"}])["page"], "acme")
+
+    def test_without_a_realm_the_page_lists_the_realm_places_and_reads_no_view(self):
+        r = self.place("", [{"id": "acme", "label": "Acme", "place": "map"}, {"id": "lab", "label": "Lab", "place": None}])
+        self.assertEqual((r["place"], r["views"], r["state"][0], r["again"]), (None, None, "Pick a place", False))
+        self.assertIn('href="/places?realm=acme">Acme</a>', r["state"][1])
+        self.assertNotIn("Lab", r["state"][1])
+        r = self.place("?realm=../x", [])
+        self.assertEqual((r["place"], r["state"][0]), (None, "No realm place"))
+
+    def test_the_rail_lists_each_realm_place_under_places_with_no_g_key(self):
+        self.assertIsNotNone(SHELL_PLACES, "shell.js has no places:start block")
+        realms = [{"id": "acme", "label": "Acme", "place": "map"}, {"id": "lab", "label": "Lab", "place": None},
+                  {"id": "tasks", "label": "Tasks", "place": "map"}, {"id": "q", "label": 'Q"', "place": "map"},
+                  {"id": "bad", "label": "Bad", "place": "x y"}]
+        r = self.run_script(f"""var window = globalThis, OUT = {{ error: null }}, R = {{}};
+window.SHELL_REALMS = {json.dumps(realms)};
+const PAGES = {{ Tasks: '/tasks', HOA: '/hoa', Home: '/home', Places: '/places' }};
+const GROUPS = [['Work', [['Tasks', 'list-todo', 'k']]], ['Places', [['HOA', 'droplets', 'h'], ['Home', 'house', 'o']]]];
+try {{
+{SHELL_PLACES.group(1)}
+R.places = GROUPS[1][1]; R.pages = PAGES;
+}} catch (e) {{ OUT.error = String(e) + ' ' + e.stack; }}
+function run() {{ OUT.R = R; return JSON.stringify(OUT); }}
+""")
+        self.assertEqual(r["places"], [["HOA", "droplets", "h"], ["Home", "house", "o"], ["Acme", "map", ""]])
+        self.assertEqual(r["pages"]["Acme"], "/places?realm=acme")
+        self.assertEqual(r["pages"]["Tasks"], "/tasks")
+
+    def test_place_js_sets_the_views_before_places_js_reads_them(self):
+        text = (STATIC.parent / "place.html").read_text(encoding="utf-8")
+        self.assertLess(text.index('src="/ui/sections.js"'), text.index('src="/ui/place.js"'))
+        self.assertLess(text.index('src="/ui/place.js"'), text.index('src="/ui/places.js"'))
+
+    def test_a_rail_entry_or_palette_row_without_a_key_draws_no_kbd(self):
+        shell = (STATIC / "shell.js").read_text(encoding="utf-8")
+        self.assertIn("${key ? html`<kbd>g ${key}</kbd>` : ''}", shell)
+        self.assertIn("${k ? html`<kbd>g ${k}</kbd>` : ''}", shell)
+        self.assertIn(".filter(([, , k]) => k).map(([k2, , k]) => [k, k2])", shell)
+
+
 class ThePages(unittest.TestCase):
     def test_page_views_are_declared_before_shell_js_and_each_page_has_the_switch_host(self):
-        for page, script in (("hoa", "places.js"), ("home", "places.js"), ("tasks", "tasks.js")):
+        for page, script in (("hoa", "places.js"), ("home", "places.js"), ("place", "place.js"), ("place", "places.js"),
+                             ("tasks", "tasks.js")):
             text = (STATIC.parent / f"{page}.html").read_text(encoding="utf-8")
             self.assertLess(text.index(f'src="/ui/{script}"'), text.index('src="/ui/shell.js"'), page)
             self.assertEqual(text.count('id="viewswitch"'), 1, page)

@@ -1,6 +1,7 @@
 """Management (sd:2118): one reading of v1's repo table, fleet, runner, services and jobs reads. The classic Jobs and
 Repos areas were retired in sd:3402; Services, Sessions and Protection stay as shared palette screens. The page reads
 each job's log and cancels a running job, and filters and pages services (sd:3388); it has no pull and no gap matrix. Land (sd:5104) commits a checkout's work per item and enqueues it.
+Standard setup (sd:5610) previews and applies the managed-repo standard.
 End session (sd:5126) ends a Claude session on this Mac."""
 
 from __future__ import annotations
@@ -26,6 +27,18 @@ def _land(payload, principal):
     return land.request(payload)
 
 
+def _standard_preview(read):
+    from ... import standard
+
+    return standard.preview(read.connection, read.parameters)
+
+
+def _standard(payload, principal):
+    from ... import standard
+
+    return standard.request(payload)
+
+
 def _end_session(payload, principal):
     from ... import claude_sessions
 
@@ -40,6 +53,9 @@ PAGE = Page(
     api=(Api("/api/management", _read),
          # Land (sd:5104): the GET previews, the POST lands; `land` checks the preview's revision before anything moves.
          Api("/api/repos/land/preview", read=_land_preview, query=True), Api("/api/repos/land", write=_land),
+         # Standard setup (sd:5610): the GET previews `sd fleet standard`, the POST applies the plan with its digest.
+         Api("/api/repos/standard/preview", read=_standard_preview, query=True),
+         Api("/api/repos/standard", write=_standard),
          # End session (sd:5126): SIGTERM to a Claude session on this Mac, once claude agents and ps still name its pid.
          Api("/api/claude-sessions/end", write=_end_session)),
     count="/api/management",

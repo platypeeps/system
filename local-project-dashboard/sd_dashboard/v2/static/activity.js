@@ -61,9 +61,11 @@ addEventListener('DOMContentLoaded', () => {
     unselect: () => unselect(),
   });
   const load = () => activity.load(), reread = () => activity.reread();
+  // Read again (sd:5638): the shell's head button reads the events again, as the Observed lamp does.
+  window.PAGE_AGAIN = { title: 'Read the events again', run: load };
 
   // ---------- State (mirrored in the URL) ----------
-  const F = { kind: new Set(), repo: new Set(), state: '', q: '', hour: false, all: false }; // all: every event read, the journal's older records too
+  const F = { kind: new Set(), repo: new Set(), state: '', q: '', hour: false, all: false }; // all: every event read, the journal's older records too; only a link sets it (palette.py)
   let page = 1, size = 50, selected = null;
   function readURL() {
     const p = new URLSearchParams(location.search);
@@ -171,17 +173,14 @@ addEventListener('DOMContentLoaded', () => {
   let cursor = 0; // the active option in the repo list, for the arrow keys and Enter
   pop.hidden = true; // the list starts closed, whatever a restored page left
   function renderFilters() {
-    const shown = EVENTS.filter(match).length, older = EVENTS.filter(e => !inWindow(e)).length;
+    const shown = EVENTS.filter(match).length;
     const count = s => String(EVENTS.filter(e => e.s === s).length);
     const { fseg, tok, fbar } = window.shell.list;
-    // build: the document holds 24 hours and the journal's older records, so 7d and 30d stay off and say why.
-    const unread = r => ({ v: r, off: true, title: `${r} is not read: /api/activity holds the last 24 hours`, label: html`${r}<span class="n" aria-hidden="true">▨</span>` });
     put($('filters'), fbar(html`${fseg('state', 'State', STATES.map(([s, g, w]) => ({ v: s, pressed: F.state === s, title: `${w}: ${count(s)}`,
       label: html`<span class="g-${s}" aria-hidden="true">${g}</span><span class="n">${count(s)}</span><span class="sr"> ${w}</span>` })))}
-      ${fseg('range', 'Range', [{ v: '1h', label: '1h', pressed: F.hour }, { v: '24h', label: '24h', pressed: !F.hour && !F.all },
-        { v: 'all', label: html`All <span class="n">+${String(older)}</span>`, pressed: F.all, title: `All read: the 24 hours and ${plural(older, 'older journal record')}` }, unread('7d'), unread('30d')])}
+      ${fseg('range', 'Range', [{ v: '1h', label: '1h', pressed: F.hour }, { v: '24h', label: '24h', pressed: !F.hour && !F.all }])}
       ${REPOS.length || F.repo.size ? html`<button type="button" class="pick" id="repo-btn" aria-haspopup="listbox" aria-expanded="${String(!pop.hidden)}" aria-controls="repo-pop">Repo${F.repo.size ? html` <span class="n">· ${String(F.repo.size)}</span>` : ''}</button>` : ''}
-      ${[...F.kind].map(k => tok('kind', k, kindOf(k).name))}${[...F.repo].map(r => tok('repo', r, r))}${F.q ? tok('q', '', `“${F.q}”`) : ''}`, { clear: active() }));
+      ${[...F.kind].map(k => tok('kind', k, kindOf(k).name))}${[...F.repo].map(r => tok('repo', r, r))}${F.q ? tok('q', '', `“${F.q}”`) : ''}${F.all ? tok('range', 'all', 'Older journal records') : ''}`, { clear: active() }));
     window.shell.view.count('timeline', shown);
   }
   $('filters').addEventListener('click', e => {
@@ -190,9 +189,8 @@ addEventListener('DOMContentLoaded', () => {
     const r = e.target.closest('[data-f="range"]');
     if (r) {
       const v = r.dataset.v;
-      // build: the range stays where it was, which is 1h or All read as often as 24h.
-      if (v === '7d' || v === '30d') return toast(`${v} is not read: /api/activity holds the last 24 hours. The range stays at ${F.hour ? '1h' : F.all ? 'All read' : '24h'}.`);
-      F.hour = v === '1h'; F.all = v === 'all'; page = 1; return update();
+      // The All token removes itself to 24h.
+      F.hour = v === '1h'; F.all = false; page = 1; return update();
     }
     const c = e.target.closest('[data-f]'); if (!c) return;
     const { f, v } = c.dataset;
@@ -279,10 +277,10 @@ addEventListener('DOMContentLoaded', () => {
       <div class="chips" role="group" aria-label="Page">${page > 1 ? html`<button class="chip" type="button" data-p="${String(page - 1)}">${ICON('chevron-left')}Previous</button>` : ''}${page < pages ? html`<button class="chip" type="button" data-p="${String(page + 1)}">Next${ICON('chevron-right')}</button>` : ''}</div>
       <div class="chips" role="group" aria-label="Rows per page">${[25, 50, 100, 200].map(n => html`<button class="chip" type="button" data-size="${String(n)}" aria-pressed="${String(n === size)}">${n}</button>`)}</div>`);
     put($('sub'), html`${plural(EVENTS.filter(inWindow).length, 'event')} across the fleet · last 24 hours to ${new Date(OBSERVED).toISOString().slice(11, 16)} UTC, ${new Date(OBSERVED).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' })}`);
-    // build: the design's journal note, with this document's counts (sd:2183: the reader lists every writer's notes).
-    const journal = EVENTS.filter(e => e.k === 'command'), older = journal.filter(e => !inWindow(e)).length;
+    // The journal note shows only what the timeline misses: skipped exec notes and ones past the read cap (sd:2183).
     const skipped = Object.values(DOC?.journal_skipped || {}).reduce((a, n) => a + n, 0);
-    put($('journal-note'), html`Commands are the execution journal: ${plural(journal.length, 'record')} of kind exec, palette, runner and page runs alike.${skipped ? ` ${plural(skipped, 'exec note')} no known writer left ${skipped === 1 ? 'is' : 'are'} skipped.` : ''} All read adds the ${String(older)} older than this window.${DOC?.journal_unread ? ` The journal reads the latest ${String(DOC.journal_cap)} exec notes; ${String(DOC.journal_unread)} older are not read.` : ''}`);
+    $('journal-note').hidden = !skipped && !DOC?.journal_unread;
+    put($('journal-note'), html`${skipped ? `${plural(skipped, 'exec note')} no known writer left ${skipped === 1 ? 'is' : 'are'} skipped.` : ''}${skipped && DOC?.journal_unread ? ' ' : ''}${DOC?.journal_unread ? `The journal reads the latest ${String(DOC.journal_cap)} exec notes; ${String(DOC.journal_unread)} older are not read.` : ''}`);
     const undated = DOC?.undated || [];
     $('undated').hidden = !undated.length;
     put($('undated'), undated.length ? html`${undated.join(', ')} failed or ${undated.length === 1 ? 'was' : 'were'} interrupted with no readable log time, so ${undated.length === 1 ? 'it has' : 'they have'} no place on this timeline. Management lists every job's state.` : html``);

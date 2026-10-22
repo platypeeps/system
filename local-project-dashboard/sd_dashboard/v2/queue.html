@@ -31,18 +31,18 @@
       <h1>Queue</h1>
       <p id="subhead">Reading the lanes…</p>
     </div>
-    <button class="btn quiet sm" type="button" id="reload">Read again</button>
   </header>
   <div id="state" hidden></div>
   <dl class="readings" id="readings" aria-label="Machine readings"></dl>
   <p class="edits" id="edits">Edits take effect at the next item boundary.</p>
-  <!-- The toolbar standard (sd:5281): row 1, the Show views. -->
-  <div class="toolbar" id="toolbar">
+  <!-- The toolbar standard (sd:5281): row 1, the Show views, then the shell's Shapeshift bar, which filters the Idle table (sd:5539, sd:5650). -->
+  <div class="toolbar" id="toolbar" data-shift>
     <div class="fgroup" id="show" role="group" aria-label="Show"></div>
   </div>
   <div id="view-lanes"><div id="lanes"></div></div>
+  <div id="view-idle"><div id="idle"></div></div>
+  <div id="adv"></div>
 </main>
-<div class="details" id="details"><p class="note">Up, down, top, hold, release and cancel run sd-ship lane on the lane you pick; Release on a running row runs lane cancel on the claim the row showed. Cancel, Release and Approve ask first. Adversarial review starts a codex review of an entry's worktree in the background; nothing else writes here.</p><div id="adv"></div></div>
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>

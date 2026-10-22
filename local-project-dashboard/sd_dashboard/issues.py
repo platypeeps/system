@@ -1,4 +1,4 @@
-"""Your issues (sd:4628): each repo's Jira and GitHub issues assigned to or filed by the operator, on Today and Tasks.
+"""Your issues (sd:4628): each repo's Jira and GitHub issues assigned to or filed by the operator, on Today (sd:5645).
 
 The rows are `sd_db.repos.mine_issues` (pack sd:4636): the open `shadow` issues whose tracker and repo match a repo's issue
 sources (`jira=KEY`, `github=owner/name`, sd:3461) and whose `reason` is `assigned` or `filed`. Watched rows, and rows

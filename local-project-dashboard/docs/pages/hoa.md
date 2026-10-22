@@ -41,6 +41,18 @@ behind the Show acknowledged chip and leave the Alarms today lamp. The write
 reads the export again, so an event it no longer holds is refused (409) by
 name. Nothing reaches the Mission portal.
 
+Acknowledge all (sd:5621) is the Alarms toolbar's button, right of the Open |
+Acknowledged | All views, and a palette entry. It asks first, naming the count
+("Acknowledge all: 7 alarms?"), then posts every unacknowledged key once to
+`/api/hoa/alarms` (`{"keys", "acked"}`), which writes each as the single route
+does, in one transaction with the export read once. The answer lists the keys
+that landed (`acked`) and those that did not (`failed`, each with its reason: an
+event the export dropped, or a refused write); the toast says how many landed
+and names the rest, and HOA reads again. Undo posts back only the landed keys.
+When no key is listed any more the route answers 409 and writes nothing. The
+button is off, with its reason, when no event is unacknowledged or the store did
+not read.
+
 Data sources (sd:4965) shows one age lamp per source the checkout's
 `python3 tools/source-ages.py --json` lists (Mission export, CORE, Vantaca,
 TMT), run with a 10-second bound (`SOURCE_SECONDS`). A script that is missing,
@@ -54,9 +66,18 @@ inventory gives the job's state, its off reason (not installed, running, or a
 start launchd refuses) and the last line of its log; while it runs, the page
 reads again every 15 seconds (`SRC_POLL`).
 
-Refresh all, the panel head's button and the palette's "Refresh all sources" (sd:5482), posts the same route
-for each row whose Run now is on, then reads HOA once. Its toast names each source that started and each
-that did not, with the reason. With no row able to start, it is off and names every row's reason.
+Download from Vantaca and Download from Mission (sd:5626), the panel head's buttons and palette entries, post
+`/api/hoa/download {"source"}`. That starts `sd_dashboard/hoa_download.py` detached through the sweep's
+`spawn`, holding `<state>/system/hoa-download/<source>/lock`: a second post while it runs is a 409. The run opens
+the portal in a Claude Chrome session (`claude -p --chrome`, Chrome tools only, no form tool). On a login page the
+source row shows "waiting for you to log in" while the session reads the page every 30 seconds, up to 15 minutes; it
+never types. Once signed in, it runs the checkout's own download, `tools/vantaca-pull.py` or
+`tools/mission/mission.sh export`; their prompts name the portal address (section 2). `/api/hoa`'s `downloads`
+part reads each source's `last.json`: running and its phase, or done, unavailable or failed with the reason. A
+checkout without the script or prompt turns that button off, naming the file. A button shows only while its source
+row does, so Vantaca's leaves with its row after its end date.
+On a row with a Download, Run now runs that Download (sd:5678), and Show log puts the end of its `start.log` in
+the row's Details, or why there is none (sd:5680); a row without one keeps its job's Run now and Show log.
 
 The last Data sources row is the HOA sweep (sd:5095). Run sweep asks first,
 then posts `/api/hoa/sweep`, which starts the checkout's `tools/sweep.py run`
@@ -71,11 +92,12 @@ its own reads failed, naming `start.log`.
 
 Gaps from the design: the map is one SVG of the files' vectors with Fit, zoom
 and drag, not Leaflet, so there are no asset clusters and no aerial button.
-Draft followup asks the chat, which has no backend yet; nothing is sent.
 
 Views (`places.js`, `places.py`): Overview is the page above. Tasks is one
 table of `/api/hoa`'s items, ranked by urgency: the id is its own first column,
 every column sorts (a third click returns to the rank), and Kind narrows the rows.
+A row is the Tasks page's row, and its Details and commands are Tasks' (`task-details.js`, sd:5671);
+a followup's first action is Draft email, which saves a Gmail draft and never sends.
 Briefs and Reports each read their own document, `GET /api/hoa/briefs` and
 `/reports`, only when shown, and the address keeps the view as `#view=<id>`.
 A brief is hoa's when its series, lower-cased with spaces as hyphens,
@@ -84,3 +106,10 @@ is hoa's when its job is in that family. A missing checkout, family or file
 makes the view unknown with the reason and the line to add, never an empty list.
 The views are `window.PAGE_VIEWS`, set from the markup before `shell.js`; the shell's view switch draws
 them in `#viewswitch`, and until that shell lands `places.js` draws a segmented control there (`viewSwitch`).
+
+HOA-owned tracts (sd:5623): every `tract` outline whose county land use (`luc`)
+is `TRCT` is the association's common land, drawn in the accent colour; the road
+parcel (`ROAD`) is not. A tract whose longest side is under 12 px at the current
+zoom gets a ring marker, which goes once the zoom shows the tract. The legend
+counts them. No parcel number is kept in this repository; the outlines and their
+land use come from the checkout's `base.geojson`.

@@ -41,6 +41,7 @@ from sd_db import provider_controls, reads, registry, reporting, usage
 from sd_db.errors import SdDbError
 
 from .operations_screen import BILL_NAME
+from .tasks_screen import is_scheduled
 
 __all__ = ["CI_DAYS", "GATE_CODES", "GATE_FAILED", "SKILL_WEEKS", "SLOW", "TREND_DAYS", "UNREAD", "WINDOW", "document", "slow"]
 
@@ -145,7 +146,7 @@ def _skills(connection, today):
 
 
 def _age(connection, now):
-    rows = [row for row in reads.backlog_items(connection, now=now) if row["status"] != "done"]
+    rows = [row for row in reads.backlog_items(connection, now=now) if row["status"] != "done" and not is_scheduled(row)]
     return {"error": "", "buckets": [{"key": b.key, "label": b.label, "lower": b.lower, "upper": b.upper, "ready_to_send": b.counts["ready_to_send"],
                                       "other": b.counts["other"]} for b in reads.age_histogram(rows, now=now)]}
 

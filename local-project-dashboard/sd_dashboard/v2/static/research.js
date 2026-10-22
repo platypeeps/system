@@ -1,14 +1,14 @@
 // Research (sd:2122): the design source's products/system/designs/v2/research.js at 7f50ad4, ported. Each change from the reference is
 // marked "build:". The board is /api/research (research_screen.py: collectors.collect_research, every checkout with a research.conf.py);
 // a project's ledger and claim map are /api/research/<checkout>, read when the project is selected. Never sample data. Nothing reads
-// review rounds yet, so they are unknown with the document's reason. Render and Review are copy only; Start research is off.
+// review rounds yet, so they are unknown with the document's reason. Render runs in the checkout (sd:5632); Review is copy only; Start research is off.
 const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
 // build: a path under the home folder keeps its ~ outside the quotes, so the shell still expands it.
 const shPath = p => (p.startsWith('~/') ? `~/${shq(p.slice(2))}` : shq(p));
 const GLYPH = { caution: '▲', unknown: '▨', ok: '●', queued: '◌', warning: '■' };
-let DIRS = ['00-overview', '10-sources', '20-map', '30-brief', '40-docs'];
+let DIRS = ['00-overview', '05-architecture', '10-sources', '20-map', '30-brief', '40-docs']; // until /api/research names them
 let CAP = 2;
 // build: the reference's project list, data/research-sources.js and claims were sample data. These fill from the two documents.
 let PROJECTS = [], ROUNDS = '', READ = null, CUT = 0, LOADED = false;
@@ -31,11 +31,19 @@ const PICK = () => html`<p class="why">No project is selected. <button class="li
 const STATE_WORDS = { caution: 'render-stale', unknown: 'config or render unread', ok: 'current' };
 let stateFilter = null;
 
+// build (sd:5657): a populated stage whose page Documents serves is a link to it; /api/research names the address
+// (research_screen.linked). Every other pip stays inert, and its title says why it opens nothing.
+function pip(p, d, group) {
+  const on = p.dirs.includes(d), s = on ? p.stages?.[d] : null;
+  if (s?.href) return html`<a class="pip" href="${s.href}" aria-label="Open ${d}: ${s.title}" title="${d}: ${s.title}${s.state === 'stale' ? ', stale since its source changed' : ''}"><i class="on"></i></a>`;
+  return html`<span class="pip" title="${d}${s?.why ? `: ${s.why}` : ''}"${group ? html` aria-hidden="true"` : ''}><i class="${on ? 'on' : ''}"></i></span>`;
+}
 function stageCell(p) {
-  if (!p.dirs) return html`<span class="track" aria-hidden="true">${DIRS.map(() => html`<i class="hatch"></i>`)}</span><span class="stage-lbl"><span class="g-unknown">▨</span> no numbered layout</span>`;
+  if (!p.dirs) return html`<span class="track" aria-hidden="true">${DIRS.map(() => html`<span class="pip"><i class="hatch"></i></span>`)}</span><span class="stage-lbl"><span class="g-unknown">▨</span> no numbered layout</span>`;
   const last = DIRS.filter(d => p.dirs.includes(d)).pop();
+  const group = p.dirs.some(d => p.stages?.[d]?.href);
   // build: a numbered layout with no Markdown yet says so; the reference always had a last directory.
-  return html`<span class="track" role="img" aria-label="Populated: ${p.dirs.join(', ') || 'none'}">${DIRS.map(d => html`<i class="${p.dirs.includes(d) ? 'on' : ''}" title="${d}"></i>`)}</span><span class="stage-lbl">${last ? last.slice(3) : 'no Markdown yet'}</span>`;
+  return html`<span class="track" role="${group ? 'group' : 'img'}" aria-label="Populated: ${p.dirs.join(', ') || 'none'}">${DIRS.map(d => pip(p, d, group))}</span><span class="stage-lbl">${last ? last.slice(3) : 'no Markdown yet'}</span>`;
 }
 // build: no round reader, so every project's rounds are unknown with the document's reason.
 function roundsCell() {
@@ -220,6 +228,8 @@ xpBody.addEventListener('click', e => { if (e.target.closest('a, .acts')) return
 // The board reads through shell.read (the Start block); the ledger is read here, per project.
 // build: the ledger is read per project, when it is selected, and kept for the page's life.
 const sourcesPath = key => `/api/research/${key.split('/').map(encodeURIComponent).join('/')}`;
+// A refusal for a dead page session already says to reload (sd:5664): reselecting reads with the same session.
+const retry = e => (/^Reload the page/.test(e || '') ? '' : ' Reselect the project to retry.');
 function loadSources(key) {
   if (!SOURCES.has(key)) SOURCES.set(key, window.shell.getJSON(sourcesPath(key)).then(s => (SOURCES.set(key, s), s), err => { const s = { error: err.message, files: [], rows: [], total: 0 }; SOURCES.set(key, s); return s; }));
   return Promise.resolve(SOURCES.get(key));
@@ -303,7 +313,7 @@ function drawReader(p, s) {
   const key = p.key;
   if (s.error) {
     // An error that already ends its sentence takes no second period (sd:2429).
-    put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error.replace(/\.$/, '')}. Reselect the project to retry.</p>`);
+    put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error.replace(/\.$/, '')}.${retry(s.error)}</p>`);
     SOURCES.delete(key); document.getElementById('reader-tally').textContent = 'not read'; shell.view.count('sources', null); return;
   }
   if (!s.files.length) {
@@ -367,6 +377,9 @@ function typeTip(c, v) {
   const said = (c.types?.[v]?.grades || '').split('').filter(g => defined[g]).map(g => `${g} = ${defined[g]}`);
   return `${typeWord(v)}: ${ruleOf(c, v)}.${Object.keys(defined).length ? said.map(x => ` ${x}`).join('') : ' This ledger does not define its grades.'}`;
 }
+// The legend's help button (the shell's .help popover): what each grade letter the ledger defines means.
+const gradeHelp = c => { const g = Object.entries(c.grades || {});
+  return g.length ? `<b>Source grades.</b> ${g.map(([k, v]) => `<b>${k}</b> = ${v}`).join(' ')}` : '<b>Source grades.</b> This ledger does not define its grades.'; };
 const claimTip = (c, x) => `${typeWord(x.s)}: ${ruleOf(c, x.s)}. This claim cites ${x.grades ? both(x.grades.split('')) : 'only ungraded sources'}.`;
 let verdict = null, curClaim = null, litKeys = [], litClaims = [];
 function resetClaims() { verdict = null; curClaim = null; litKeys = []; litClaims = []; }
@@ -387,7 +400,7 @@ function chip(s, key) {
 function drawClaims(p, s) {
   const c = s.claims;
   if (s.error || !c) {
-    put(claimsEl, html`<p class="unknown"><span class="g-unknown">▨</span>Claims not read for ${p.label}: ${s.error ? s.error.replace(/\.$/, '') : 'the reader sent no claim map'}. Reselect the project to retry.</p>`);
+    put(claimsEl, html`<p class="unknown"><span class="g-unknown">▨</span>Claims not read for ${p.label}: ${s.error ? s.error.replace(/\.$/, '') : 'the reader sent no claim map'}.${retry(s.error)}</p>`);
     shell.view.count('claims', null); return;
   }
   // A document the reader skipped is named, so an empty map is never mistaken for a read one.
@@ -397,20 +410,32 @@ function drawClaims(p, s) {
     put(claimsEl, html`<p class="why">No claims: no sentence in ${c.dirs.join(', ')} links a URL in the ledger. ${plural(c.read, 'document')} read.</p>${unread}`);
     return;
   }
-  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict">${['supported', 'unverified'].filter(v => c.tally[v]).map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}" title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${c.tally[v]} ${v}</button>`)}</div>
-    <p class="vlegend">${['supported', 'unverified'].map(v => html`<span title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${v}: ${ruleOf(c, v)}</span><span class="sr" id="claim-type-${v}">${typeTip(c, v)}</span>`)}${
+  // The verdict filter: All and both verdicts always, so it reads as a control; a verdict with no claims is off.
+  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict"><span class="vlabel">Show</span><button type="button" class="v-all" data-verdict="" aria-pressed="${String(!verdict)}">All ${c.total}</button>${['supported', 'unverified'].map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}"${c.tally[v] ? '' : html` disabled`} title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${c.tally[v] || 0} ${v}</button>`)}</div>
+    <p class="vlegend">${['supported', 'unverified'].map(v => html`<span title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${v}: ${ruleOf(c, v)}</span><span class="sr" id="claim-type-${v}">${typeTip(c, v)}</span>`)}<button class="help" type="button" aria-label="Help: source grades" data-help="${gradeHelp(c)}">${I('circle-help')}</button>${
       c.tally.ungraded ? html`<span>${!c.graded ? `The ledger has no grades, so all ${plural(c.tally.ungraded, 'claim')} are unverified` : `${c.tally.ungraded} of the unverified cite only ungraded sources`}</span>` : ''}</p>
     <ul class="claims">${c.rows.map((x, i) => html`<li class="claim" data-c="${i}" aria-current="${String(curClaim === i)}"${litClaims.includes(i) ? html` data-lit` : ''}${verdict && x.s !== verdict ? html` hidden` : ''}>
       <span class="g g-${VERDICT[x.s][1]}" title="${claimTip(c, x)}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
       <button type="button" aria-describedby="claim-type-${x.s}">${x.text}</button>
       <span class="meta"><span>${x.doc}:${x.line}</span>${x.keys.map(k => chip(s, k))}</span></li>`)}</ul>${
-    c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown: the reading passed its print bound.</p>` : ''}${unread}`);
+    c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown. ${c.moreError ? `The next claims were not read: ${c.moreError}. ` : ''}<button type="button" class="btn" data-more-claims${c.loading ? html` disabled` : ''}>${c.loading ? 'Reading…' : 'Show more'}</button></p>` : ''}${unread}`);
   document.getElementById('claims-for').textContent = `· ${p.label} · ${plural(c.total, 'claim')}`;
 }
+// Show more (past the reader's print bound): the next claims, from the count already held, appended to the cached map.
+function moreClaims() {
+  const key = selected, s = SOURCES.get(key), c = s?.claims; if (!c || c.loading) return;
+  c.loading = true; c.moreError = ''; redraw();
+  window.shell.getJSON(`${sourcesPath(key)}?from=${c.rows.length}`).then(n => {
+    const rows = n.claims?.rows || [];
+    if (!rows.length) c.moreError = n.error || 'the reader sent no further claims';
+    c.rows.push(...rows);
+  }, err => { c.moreError = err.message.replace(/\.$/, ''); }).finally(() => { c.loading = false; if (selected === key && SOURCES.get(key) === s) redraw(); });
+}
 claimsEl.addEventListener('click', e => {
+  if (e.target.closest('[data-more-claims]')) { moreClaims(); return; }
   const to = e.target.closest('[data-view]'); if (to) { shell.view.show(to.dataset.view); return; }
   const v = e.target.closest('[data-verdict]');
-  if (v) { verdict = verdict === v.dataset.verdict ? null : v.dataset.verdict; redraw(); claimsEl.querySelector(`[data-verdict="${v.dataset.verdict}"]`)?.focus(); return; }
+  if (v) { verdict = !v.dataset.verdict || verdict === v.dataset.verdict ? null : v.dataset.verdict; redraw(); claimsEl.querySelector(`[data-verdict="${v.dataset.verdict}"]`)?.focus(); return; }
   const li = e.target.closest('.claim[data-c]'); if (li && e.target.closest('button')) selectClaim(+li.dataset.c);
 });
 // Draw the reader and the map again from the cache, keeping what is lit.
@@ -439,6 +464,14 @@ function claimsOf(i) {
 const details = document.getElementById('details');
 function swap() { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); }
 const kindWord = s => (s === 'unknown' ? 'config or render unread' : s === 'caution' ? 'render-stale' : 'current');
+// The architecture overview (sd:5661, pack sd:5660): its page, or why there is none. Render is offered only where a render
+// changes that: the overview is declared and its page is not built or stale.
+function architecture(p) {
+  const s = p.dirs?.includes('05-architecture') ? p.stages?.['05-architecture'] : null;
+  if (!s) return 'none yet: 05-architecture/architecture.md starts from the sd-research-repo template';
+  const render = ['not built', 'stale'].includes(s.state) ? html` <button class="btn quiet sm" type="button" data-cmd="research.render" data-obj="${p.key}">Render</button>` : '';
+  return s.href ? html`<a href="${s.href}">${s.title}</a>${s.state === 'stale' ? ' · stale since its source changed' : ''}${render}` : html`${s.why}${render}`;
+}
 // read: false redraws from the experiment read already held, so the Act bar follows it without a second read.
 function showProject(key, read = true) {
   const p = PROJECTS.find(x => x.key === key); if (!p) return;
@@ -451,11 +484,14 @@ function showProject(key, read = true) {
       <dt>Stage</dt><dd>${p.dirs ? (p.dirs.join(' · ') || 'numbered layout, no Markdown yet') : 'no numbered layout'}</dd>
       <dt>Render</dt><dd>${p.render.txt}${p.render.sub ? ` · ${p.render.sub}` : ''}</dd>
       <dt>Documents</dt><dd>${plural(p.docs_total ?? p.docs.length, 'document')} in research.conf.py${p.docs.length < (p.docs_total ?? 0) ? ` · ${p.docs.length} listed: the board passed its print bound` : ''} · <a href="/documents">Documents</a></dd>
+      <dt>Architecture</dt><dd>${architecture(p)}</dd>
       <dt>Rounds</dt><dd>${ROUNDS}</dd></dl>
-    ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until the config declares its data.</p>` : ''}
+    ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until it is read.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
     <h3>Act</h3>${shell.commands.bar(p.key)}
-    <p class="why">Render and the mechanical review run in the checkout; neither writes outside it. The dashboard runs neither: copy the line.</p>
+    ${REVIEWS[p.key] ? html`<h3>Last review</h3><p class="why">${REVIEWS[p.key].state === 'done' ? 'Every check passed' : REVIEWS[p.key].reason || 'failed'} · <time class="rel" datetime="${REVIEWS[p.key].finished || ''}"></time></p>
+      <details class="report"><summary>Report</summary><pre>${REVIEWS[p.key].output || 'It printed nothing.'}</pre></details>` : ''}
+    <p class="why">Render and Review run here as dashboard runs, one at a time: the kit refuses a research.conf.py no render by hand has read.</p>
     <section aria-live="polite">${experimentSection(p)}</section>`);
   shell.commands.select(p.key);
   if (read) loadExperiment(p.key);
@@ -495,15 +531,15 @@ const stampTime = s => `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.s
 const listed = page => (EXP?.cache?.rows || []).find(r => r.page === page);
 function experimentSection(p) {
   if (!EXP || EXP.key !== p.key) return html`<h3>Experiment</h3><p class="why">Reading the experiment link…</p>`;
-  if (EXP.error) return html`<h3>Experiment</h3><p class="unknown"><span class="g-unknown">▨</span>Not read: ${EXP.error.replace(/\.$/, '')}. Reselect the project to retry.</p>`;
+  if (EXP.error) return html`<h3>Experiment</h3><p class="unknown"><span class="g-unknown">▨</span>Not read: ${EXP.error.replace(/\.$/, '')}.${retry(EXP.error)}</p>`;
   const link = EXP.link, row = link && listed(link.page), c = EXP.cache, last = (EXP.runs || []).find(r => r.project === p.key || r.verb === 'list');
   const draft = pending(p.key);
   const problems = Object.entries(EXP.problems || {}).filter(([, why]) => why);
   return html`<h3>Experiment</h3>${EXP.link_error ? html`<p class="unknown"><span class="g-unknown">▨</span>The link was not read: ${EXP.link_error.replace(/\.$/, '')}.</p>`
     : link ? html`<dl><dt>Linked</dt><dd>${link.url ? html`<a class="ext" href="${link.url}" target="_blank" rel="noopener">${link.title || link.page} ${I('arrow-up-right')}</a>` : link.title || link.page}</dd>${
       row ? html`<dt>Stage</dt><dd>${row.stage || 'none'} · Status ${row.status || 'none'}</dd>` : ''}</dl>`
-    : html`<p class="why">Not linked. Attach one from the list, or draft a new one.</p>`}
-    <p class="why">${c ? html`List: ${plural(c.rows.length, 'experiment')}, read <time class="rel" datetime="${c.read}"></time>${c.current ? '' : ' from another data source: refresh it before you attach'}.` : 'List: never read. Refresh experiments reads it.'}${EXP.cache_error ? ` The list did not read: ${EXP.cache_error}.` : ''}</p>
+    : html`<p class="why">Not linked. Attach one, or use Draft experiment in the toolbar.</p>`}
+    <p class="why">${c ? html`List: ${plural(c.rows.length, 'experiment')}, read <time class="rel" datetime="${c.read}"></time>${c.current ? '' : ' from another data source: refresh it before you attach'}.` : 'List: never read. Refresh experiments, in the toolbar, reads it.'}${EXP.cache_error ? ` The list did not read: ${EXP.cache_error}.` : ''}</p>
     ${problems.map(([k, why]) => html`<p class="unknown"><span class="g-unknown">▨</span>${why.replace(/\.$/, '')}.${k === 'kit' ? ' The deck is off until then.' : ''}</p>`)}
     ${draft ? html`<p class="why">Waiting for Apply: the ${ACTION_WORD[draft.action]} drafted ${stampTime(draft.run)}${draft.unknown ? ', whose last apply found no trace of its write' : ''}. Apply shows it first.</p>` : ''}
     ${EXP.running ? html`<p class="why">A run is going, started ${EXP.running}. This reads again until it ends.</p>`
@@ -525,7 +561,7 @@ function applyText(o) {
 const shapeText = e => [`${e.shape} at ${e.x},${e.y} ${e.w}x${e.h}`, e.text && `“${e.text}”`, e.fill && `fill ${e.fill}`,
   e.color && `text ${e.color}`, e.size && `${e.size}pt`, e.font, e.bold && 'bold'].filter(Boolean).join(' ');
 // The answer to a start, as a toast: a refusal names its reason; no answer means the outcome is not known.
-const started = (what, key) => out => loadExperiment(key).then(() => (out.linked ? `Linked to ${out.linked.title || out.linked.page}` : `${what} started · this reads again until it ends`));
+const started = (what, key) => out => (key ? loadExperiment(key) : Promise.resolve()).then(() => (out.linked ? `Linked to ${out.linked.title || out.linked.page}` : `${what} started · this reads again until it ends`));
 const refused = err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether it started is not known`); };
 const expPost = (body, what, key) => window.shell.post('/api/research/experiments/act', body).then(started(what, key), refused);
 const expOff = o => (EXP?.key !== o.key ? 'the experiment link is not read yet' : EXP.error ? `not read: ${EXP.error}` : EXP.running ? 'a run is going now' : EXP.problems?.source || true);
@@ -533,24 +569,24 @@ function experimentCommands() {
   const on = 'research project', post = (o, body, what) => expPost({ ...body, project: o.key }, what, o.key);
   const linkedOff = o => { const w = expOff(o); return w !== true ? w : EXP.link_error ? `the link was not read: ${EXP.link_error}` : true; };
   return [
-    { id: 'experiment.refresh', on, label: 'Refresh experiments', does: 'Reads the team\'s experiments list from Notion; writes nothing there.', risk: 'safe', executes: true,
-      when: expOff, sends: () => 'POST /api/research/experiments/act {"verb":"list"}',
-      run: o => expPost({ verb: 'list' }, 'Refresh', o.key) },
     { id: 'experiment.attach', on, label: 'Attach experiment', does: 'Links this project to a listed experiment, in the workflow database only.', risk: 'safe', executes: true,
       when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.cache?.current ? 'refresh the experiments list first' : !EXP.cache.rows.length ? 'the list holds no experiments' : true; },
       fields: () => [{ name: 'page', label: 'Experiment', options: (EXP?.cache?.rows || []).map(r => ({ value: r.page, label: `${r.title} · ${r.stage || 'no stage'}` })) }],
       consequence: o => `Links ${o.label} to the chosen experiment in the workflow database${EXP?.link ? `, in place of ${EXP.link.title || EXP.link.page}` : ''}. Notion is not written.`,
       sends: () => 'POST /api/research/experiments/act {"verb":"attach"}',
       run: (o, v) => post(o, { verb: 'attach', page: v.page, replaces: EXP?.link?.page ?? null }, 'Attach') },
-    { id: 'experiment.create', on, label: 'Draft experiment', does: 'Drafts a new experiment from a description; Apply writes it after you read it.', risk: 'safe', executes: true,
-      when: o => { const w = linkedOff(o); return w !== true ? w : EXP.link ? 'linked already: Attach replaces the link' : true; },
-      fields: () => [{ name: 'description', label: 'What the experiment tests', required: true, placeholder: 'One or two sentences' }],
-      sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
-      run: (o, v) => post(o, { verb: 'draft', action: 'create', description: v.description }, 'Draft') },
     { id: 'experiment.status', on, label: 'Draft status update', does: 'Drafts a dated status entry; Apply writes it after you read it.', risk: 'safe', executes: true,
       when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.link ? 'not linked: attach or create an experiment first' : true; },
       sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"status"}',
       run: o => post(o, { verb: 'draft', action: 'status' }, 'Draft') },
+    // Make experiment (sd:5662): this project as a new experiment, from its row or its Details. A project with a status
+    // brief is one already. The link is read only for the project shown, so another row offers it too; the server
+    // refuses a project already linked (409).
+    { id: 'experiment.make', on, label: 'Make experiment', does: 'Drafts a new experiment for this project; Apply writes it after you read it.', icon: 'flask-conical', risk: 'safe', executes: true,
+      when: o => (o.experiment ? 'already an experiment: it has a status brief' : EXP?.key !== o.key ? true : EXP.link ? 'already linked to an experiment' : EXP.running ? 'a run is going now' : EXP.problems?.source || true),
+      fields: () => [{ name: 'description', label: 'What the experiment tests', required: true, placeholder: 'One or two sentences' }],
+      sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
+      run: (o, v) => post(o, { verb: 'draft', action: 'create', description: v.description }, 'Draft') },
     { id: 'experiment.deck', on, label: 'Draft deck', does: 'Drafts a branded 6-8 slide deck; Apply builds it after you read it.', risk: 'safe', executes: true,
       when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.link ? 'not linked: attach or create an experiment first' : EXP.problems?.kit || EXP.problems?.account || true; },
       sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"deck"}',
@@ -607,26 +643,53 @@ function selectSource(i, open) {
   document.querySelectorAll('.src[data-i]').forEach(li => li.setAttribute('aria-current', +li.dataset.i === i));
   showSource(i); if (open) shell.openPane('tab-details');
 }
-tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
+// A stage bar is a link: it opens its document, not the row's Details.
+tbody.addEventListener('click', e => { if (e.target.closest('.rowact, a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
 // ---------- Commands (products/system/commands.md) ----------
 // Each board row is a research project. Labels are CLI verbs; the shell renders every button, menu entry and CLI line.
-// build: Render and Review are copy only (executes: false): the dashboard runs no command in a research checkout.
-const COPY = 'Copy it into a terminal: the dashboard does not run sd-research-kit';
+// Render (sd:5632) and Review (sd:5655) run through the deck runner's lock, as dashboard runs.
+// One poll per run until it settles; a render that is done reads the board again, a failed one says the kit's reason.
+// A review keeps its report, pass or fail, and the project's Details show it under Last review.
+const REVIEWS = {};
+const followRun = (run, o, verb) => (['done', 'failed'].includes(run.state)
+  ? (verb === 'review' ? (REVIEWS[o.key] = run, shownProject === o.key && showProject(o.key, false),
+      shell.toast(run.state === 'done' ? `Reviewed · ${o.label}: every check passed` : `Review · ${o.label}: ${run.reason || 'no reason recorded'}`))
+    : (shell.toast(run.state === 'done' ? `Rendered · ${o.label}` : `Render failed · ${o.label}: ${run.reason || 'no reason recorded'}`), run.state === 'done' && load()))
+  : setTimeout(() => window.shell.getJSON(`/api/research/deck/${encodeURIComponent(run.id)}`).then(next => followRun(next, o, verb),
+    e => shell.toast(`${verb === 'review' ? 'Review' : 'Render'} ${run.id}: not read (${e.message}); whether it ended is not known`)), DECK_POLL));
 // build: Start research is off with this reason, and its risk is confirm, not undo: there is no queued run to take back.
 const START_OFF = 'the dashboard does not create items yet: copy the line into a terminal';
+// Draft experiment is a page action (toolbar, sd:5631): it names its project, the one shown first. The server refuses a linked one (409).
+const PAGE = { id: 'research:page', type: 'research page', label: 'Research' };
+const CREATE = { id: 'experiment.create', on: 'research page', label: 'Draft experiment', does: 'Drafts a new experiment from a description; Apply writes it after you read it.', risk: 'safe', executes: true,
+  when: () => PROJECTS.length ? true : 'no research project to draft for',
+  fields: () => [{ name: 'project', label: 'Project', options: [...PROJECTS].sort((a, b) => (b.key === selected) - (a.key === selected)).map(p => ({ value: p.key, label: p.label })) },
+    { name: 'description', label: 'What the experiment tests', required: true, placeholder: 'One or two sentences' }],
+  sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
+  run: (o, v) => { select(v.project, true); return expPost({ verb: 'draft', action: 'create', description: v.description, project: v.project }, 'Draft', v.project); } };
+document.getElementById('draft-exp').addEventListener('click', () => shell.commands.run(CREATE, PAGE));
+// Refresh experiments reads the one team list every project shares (sd:5656): a page action, so it needs no selection.
+const REFRESH = { id: 'experiment.refresh', on: 'research page', label: 'Refresh experiments', does: 'Reads the team\'s experiments list from Notion; writes nothing there.', risk: 'safe', executes: true,
+  when: () => (EXP?.running ? 'a run is going now' : EXP?.problems?.source || true), sends: () => 'POST /api/research/experiments/act {"verb":"list"}',
+  run: () => expPost({ verb: 'list' }, 'Refresh', selected) };
+document.getElementById('refresh-exp').addEventListener('click', () => shell.commands.run(REFRESH, PAGE));
 const DRAFT = { id: 'draft:research', type: 'research request', label: 'new research', q: '', cmd: '' };
 const START = { id: 'research.start', on: 'research request', label: 'Run', does: 'Gives the line that files this research request; the dashboard files nothing.', key: 'r', icon: 'flask-conical', risk: 'confirm', executes: false, primary: () => true,
   when: o => (!o.q ? 'type the question first' : !o.repo ? 'name the project: add repo:<name>' : START_OFF), cli: o => o.cmd, run: () => START_OFF };
 function registerCommands() {
   const C = shell.commands;
-  C.put(DRAFT);
+  C.put(DRAFT); C.put(PAGE);
   C.register(
-    { id: 'research.render', on: 'research project', label: 'Render', does: 'Gives the line that renders this research project again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', bulk: true, executes: false, primary: o => o.s === 'caution',
-      cli: o => `cd ${shPath(o.path)} && sd-research-kit render`, run: () => COPY },
-    { id: 'research.review', on: 'research project', label: 'Review', does: 'Gives the line that runs the research kit\'s review.', key: 'v', icon: 'shield-check', risk: 'safe', bulk: true, executes: false,
-      cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, run: () => COPY },
+    { id: 'research.render', on: 'research project', label: 'Render', does: 'Renders this research project again in its checkout.', key: 'r', icon: 'rotate-ccw', risk: 'safe', executes: true, primary: o => o.s === 'caution',
+      cli: o => `cd ${shPath(o.path)} && sd-research-kit render`, sends: o => `POST /api/research/render {"repo": "${o.key}"}`,
+      run: o => window.shell.post('/api/research/render', { repo: o.key }).then(run => { followRun(run, o, 'render'); return `Rendering ${o.label} · run ${run.id}`; }, refused) },
+    { id: 'research.review', on: 'research project', label: 'Review', does: 'Runs the research kit\'s mechanical pre-publication checks here; Details show the report.', key: 'v', icon: 'shield-check', risk: 'safe', executes: true,
+      cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, sends: o => `POST /api/research/review {"repo": "${o.key}"}`,
+      run: o => window.shell.post('/api/research/review', { repo: o.key }).then(run => { followRun(run, o, 'review'); return `Reviewing ${o.label} · run ${run.id}`; }, refused) },
     START,
+    CREATE,
+    REFRESH,
     ...experimentCommands(),
     deckCommand(),
     slidesCommand(),
@@ -762,8 +825,8 @@ function adopt(doc) {
   const cut = CUT ? ` ${plural(CUT, 'project')} not listed: the board passed its print bound.` : '';
   const state = doc.error ? { kind: 'error', text: `The checkouts were not read: ${doc.error}. Reload retries it.`, source: 'collectors.collect_research' }
     : !PROJECTS.length ? { kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' }
-    : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds are not read: ${ROUNDS}.${cut}`, source: '/api/research' }
-    : { kind: 'partial', title: 'No rounds read', text: `${ROUNDS}.${cut}`, source: '/api/research' };
+    : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read.${cut}`, source: '/api/research' }
+    : cut ? { kind: 'partial', text: cut.trim(), source: '/api/research' } : null; // rounds stay unread: the Details' Rounds line says why
   return { objects: [...PROJECTS, ...experimentObjects(), DRAFT], state };
 }
 function draw() {
@@ -779,6 +842,12 @@ function unselect() {
 }
 // Only the newest of overlapping loads draws; nothing on this page writes, so it never rereads.
 const load = () => board.load();
+// Read again (sd:5638): the shell's head button reads the board, the cached ledgers behind Sources and Claim map, and the
+// shown project's experiment link again.
+window.PAGE_AGAIN = { title: "Read the checkouts, the selected project's ledgers and its experiment link again", run: () => {
+  SOURCES.clear(); load();
+  if (selected) { loadExperiment(selected); readerFor(selected); renderClaims(selected); }
+} };
 document.addEventListener('DOMContentLoaded', () => {
   put(document.getElementById('rows-head'), shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   registerCommands();
@@ -793,6 +862,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   load();
   // A build already running when the page opens is followed too.
-  window.shell.getJSON('/api/research/deck/status').then(d => followBuild(d.run, false), e => { BUILD_UNREAD = e.message; renderExperiments(); });
+  window.shell.getJSON('/api/research/deck/status').then(d => followBuild(/^(render|review)-/.test(d.run?.id || '') ? null : d.run, false), e => { BUILD_UNREAD = e.message; renderExperiments(); });
   readSlides();
 });

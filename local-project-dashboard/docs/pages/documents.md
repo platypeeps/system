@@ -8,7 +8,11 @@ h1 and stand line, its kind and its render state. A checkout with
 reports. A research document is render-stale when its source Markdown changed
 after the page. The source is the one `research.conf.py` names, else the one
 `.md` with the page's name anywhere in the checkout, outside dot folders and
-build, node_modules, dist and storage (sd:2417). Open document opens the served page. Render is
+build, node_modules, dist and storage (sd:2417). A `research.conf.py` that
+computes its data is read from the `docs/dashboard/research.json` its last
+render wrote, as on Research (sd:5666); with no manifest, or one from an older
+config, Details and the state slot say so and name `sd-research-kit render`.
+Open document opens the served page. Render is
 copy only. Request a document is copy only: the page files no item. Pin, hide
 and tag (sd:3428) are the workflow database's `view` state, keyed
 `<root key>/<file>`: each row carries `pinned`, `hidden` and `tags`, and each

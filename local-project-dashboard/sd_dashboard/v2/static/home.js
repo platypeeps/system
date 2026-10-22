@@ -263,6 +263,8 @@ addEventListener('DOMContentLoaded', () => {
   const reading = window.shell.read({
     source: '/api/home', what: 'the tiles', adopt, clear, draw: render, unselect,
     current: () => selected, first: () => null,
+    // sd:5620: another view's row (a brief) may fill Details; the minute read selects a tile only while the Overview shows.
+    active: () => (window.shell.view?.current?.() || 'overview') === 'overview',
     // The wall display opens no Details, so a ?row= tile is not selected there.
     select: (id, opened) => { if (root.hasAttribute('data-kiosk')) unselect(); else showDetails(id, opened); },
   });
@@ -311,7 +313,8 @@ addEventListener('DOMContentLoaded', () => {
   load();
   // Live state (sd:3522): Read again reads /api/home now, and a visible page reads it each minute, so the wall display follows
   // Home Assistant without a reload. The minute read is quiet: a loading state above the tiles would move them each minute.
-  document.getElementById('refresh').addEventListener('click', () => load());
+  // sd:5638: it reads the shown Tasks, Briefs or Reports view again too.
+  document.getElementById('refresh').addEventListener('click', () => { load(); window.places.again(); });
   setInterval(() => { if (!document.hidden) reading.load(true); }, EVERY);
   suggest([
     'Why is binary_sensor.problems_active on?',

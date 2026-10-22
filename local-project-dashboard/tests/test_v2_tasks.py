@@ -38,6 +38,8 @@ from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 TASKS_JS = (V2 / "static" / "tasks.js").read_text(encoding="utf-8")
+# A task's Details, commands and dialogs (sd:5635): tasks.js attaches task-details.js, which the page loads first.
+TASK_DETAILS_JS = (V2 / "static" / "task-details.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
@@ -51,6 +53,9 @@ FETCH_JS = re.search(r"^  // fetch:start\n(.*?)^  // fetch:end$", SHELL_JS, re.S
 ITEM_JS = re.search(r"^  // item:start\n(.*?)^  // item:end$", SHELL_JS, re.S | re.M).group(1)
 # The list grammar, as shell.js has it (sd:2527, sd:2528, sd:2529): sort header, pager and filter chips.
 LIST_JS = re.search(r"^  // list:start\n(.*?)^  // list:end$", SHELL_JS, re.S | re.M).group(1)
+# The layout picker, as shell.js has it (sd:5641): Tasks and Writing wire their view menu through shell.viewPick.
+VIEWPICK = re.search(r"^  // viewpick:start\n(.*?)^  // viewpick:end$", SHELL_JS, re.S | re.M)
+VIEWPICK_JS = VIEWPICK.group(1) if VIEWPICK else "function viewPick() { throw new Error('shell.js has no viewpick block'); }\n"
 
 
 def seed(case):
@@ -306,6 +311,60 @@ class TheDocuments(ScreenCase):
         old = got[self.ids["old"]]["row"]
         self.assertEqual((old["id"], old["status"], old["revision"]), (self.ids["old"], "done", got[self.ids["old"]]["revision"]))
 
+    def repeating(self, title, due, lead):
+        """A weekly task due `due` with a lead of `lead` days, in the store."""
+        item = self.item(title, kind="task", due=due)
+        set_item_fields(self.connection, item, recurrence="FREQ=WEEKLY", recurrence_anchor="schedule", recurrence_lead=lead)
+        self.connection.commit()
+        return item
+
+    def test_a_repeating_row_carries_its_lead_and_the_day_it_opens(self):
+        """sd:5649: each row carries `recurrence_lead`, and `opens_on` and `scheduled` from `backlog_items` (pack sd:5648).
+        NOW is 2026-09-06: due 09-09 less 2 days opens 09-07, so it is scheduled; less 3 days opens today, so it is open."""
+        later = self.repeating("Water the plants", "2026-09-09", 2)
+        now = self.repeating("Pay the rent", "2026-09-09", 3)
+        doc = tasks_screen.document(self.connection, now=NOW)
+        rows = {row["id"]: row for row in doc["rows"]}
+        self.assertTrue(doc["lead"])
+        pick = lambda row: (row["recurrence_lead"], row["opens_on"], row["scheduled"])  # noqa: E731
+        self.assertEqual(pick(rows[later]), (2, "2026-09-07", True))
+        self.assertEqual(pick(rows[now]), (3, "2026-09-06", False))
+        self.assertEqual(pick(rows[self.ids["plan"]]), (None, None, False))
+        # Details' row is the list's row, scheduled or not.
+        for item in (later, now):
+            self.assertEqual(tasks_screen.details(self.connection, item, now=NOW)["row"], rows[item])
+
+    def test_a_scheduled_row_lights_no_badge_until_it_opens(self):
+        """sd:5649: a scheduled occurrence due tomorrow is not on the Tasks list, so it is not caution on the rail either."""
+        self.repeating("Take out the bins", "2026-09-07", 0)
+        self.assertEqual(tasks_screen.document(self.connection, now=NOW)["attention"], {"state": "ok", "n": 0, "what": "nothing due"})
+        self.assertEqual(tasks_screen.document(self.connection, now="2026-09-07T12:00:00Z")["attention"]["state"], "caution")
+
+    def test_a_store_before_041_reads_no_lead_and_does_not_break(self):
+        """sd:5649: the live store may be at schema 40, without `recurrence_lead`, and a pack before sd:5648 gives rows
+        without `opens_on` and `scheduled`. Each read answers: no lead, `lead` off, nothing scheduled the read did not say."""
+        item = self.repeating("Water the plants", "2026-09-09", 2)
+        self.connection.execute("ALTER TABLE item DROP COLUMN recurrence_lead")
+        self.connection.commit()
+        doc = tasks_screen.document(self.connection, now=NOW)
+        row = next(r for r in doc["rows"] if r["id"] == item)
+        self.assertFalse(doc["lead"])
+        # Without a lead the occurrence opens on its due date, 09-09: the pack's rule for a store before 041.
+        self.assertEqual((row["recurrence_lead"], row["opens_on"], row["scheduled"]), (None, "2026-09-09", True))
+        self.assertEqual(tasks_screen.details(self.connection, item, now=NOW)["row"], row)
+        real = reads.backlog_items
+
+        def before_5648(connection, **arguments):
+            return [{key: row[key] for key in row.keys() if key not in ("opens_on", "scheduled")} for row in real(connection, **arguments)]
+
+        with patch.object(reads, "backlog_items", before_5648):
+            doc = tasks_screen.document(self.connection, now=NOW)
+        with patch.object(reads, "item_opens_on", None, create=True):
+            details = tasks_screen.details(self.connection, item, now=NOW)
+        row = next(r for r in doc["rows"] if r["id"] == item)
+        self.assertEqual((row["recurrence_lead"], row["opens_on"], row["scheduled"]), (None, None, False))
+        self.assertEqual((details["row"]["opens_on"], details["row"]["scheduled"]), (None, False))
+
 
 class ThePage(BrowserSession):
     def setUp(self):
@@ -320,7 +379,7 @@ class ThePage(BrowserSession):
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "issues.js", "tasks.js", "places.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "task-details.js", "tasks.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -426,6 +485,9 @@ window.shell = { commands: C, post, getJSON, shown: stillShown, itemHref, itemPa
   filter: q => (OUT.shift = String(q ?? '').trim()),
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
   view: { current: () => null, show: () => true, hide() {}, count: (id, n) => { (OUT.counts = OUT.counts || {})[id] = n; } },
+  viewPick: (() => { const { html, put } = window.markup;
+""" + VIEWPICK_JS + r"""
+    return viewPick; })(),
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 """ + LIST_JS + r"""
     return list; })() };
@@ -441,7 +503,7 @@ TASKS_SHELL = """window.shell.row = () => new URLSearchParams(location.search).g
 # A landed write's readback moves the stored row with it, as the server's next read lists it: the page rereads after each
 # landed write, and a reread that brought back the row as it was before would undo the write on the page.
 STORED = r"""
-const STORED_FIELDS = ['status', 'priority', 'due', 'recurrence', 'recurrence_anchor'];
+const STORED_FIELDS = ['status', 'priority', 'due', 'recurrence', 'recurrence_anchor', 'recurrence_lead'];
 function stored(a) {
   const body = a && a[0] < 300 && a[1], row = body && body.item && body.revision && DOC.rows.find(r => r.id === body.item.id);
   if (row) { STORED_FIELDS.forEach(k => { if (k in body.item) row[k] = body.item[k]; }); row.revision = body.revision; }
@@ -685,7 +747,7 @@ class TheScript(ScreenCase):
   if (path === '/api/tasks') return typeof FAIL_TASKS === 'string' ? [500, { error: FAIL_TASKS }] : [200, JSON.parse(JSON.stringify(DOC))];
   var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : m[1] in DETAILS ? [200, detailNow(m[1])] : [404, { error: 'no item ' + m[1] }];
   return WRITE ? storing(WRITE(path, body)) : [404, { error: 'no answer' }];
-};\n""" + COMMANDS_JS + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+};\n""" + COMMANDS_JS + TASK_DETAILS_JS + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
@@ -714,7 +776,7 @@ class TheScript(ScreenCase):
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.fix", "item", "safe", "f", True, True, False],
             ["item.adversarial-review", "item", "safe", None, True, True, False],
-            ["item.email", "item", "safe", None, True, True, False],
+            ["item.email", "item", "safe", "d", True, True, False],
             ["item.file-github-issue", "item", "safe", None, True, True, False],
             ["item.file-jira-issue", "item", "safe", None, True, True, False],
             ["issue.file", "issue draft", "confirm", None, True, True, False],
@@ -802,6 +864,16 @@ pick('p', ''); R.url2 = OUT.urls[OUT.urls.length - 1];""", search="?kind=task,wo
         self.assertIn('<option value="" disabled selected>2 picked</option>', out["R"]["one"])
         self.assertIn("p=1", out["R"]["url"])
         self.assertNotIn("p=", out["R"]["url2"])
+
+    def test_kind_holds_the_plugin_kinds_and_an_old_base_address_still_filters(self):
+        # sd:5644: Kind and Base were two filters over one question; Base's plugin kinds are Kind's last options now.
+        self.doc["rows"] = [*self.doc["rows"], {**self.doc["rows"][0], "id": 901, "title": "A blog idea", "base": "blog-idea"}]
+        out = self.run_page("R.filters = ELS.filters.html; R.board = ELS['view-board'].html;", search="?base=blog-idea")
+        filters = out["R"]["filters"]
+        self.assertNotIn('data-pick="base"', filters)
+        self.assertIn('<option value="base:blog-idea" selected>blog-idea (plugin kind)</option></select>', filters)
+        self.assertIn("A blog idea", out["R"]["board"])
+        self.assertNotIn("Port the page", out["R"]["board"])
 
     def test_repo_is_a_multiselect_dropdown_and_two_repos_show_their_union(self):
         """sd:5158: Repo is a menu of checkboxes; two picks show the tasks of both, and the address names both."""
@@ -1501,16 +1573,19 @@ R.after = ELS.details.html; R.views2 = views(); R.obj = C.get(String(ITEM)) && C
     def test_a_parked_row_shows_only_under_the_parked_chip(self):
         self.park()
         out = self.run_page("""R.sub = ELS.subhead.html; R.board = ELS['view-board'].html; R.filters = ELS.filters.html;
-ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'parked' }, value: '1' } });
+ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'active' }, value: 'parked' } });
 R.parked = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
         self.assertIn("1 parked · read", out["R"]["sub"])
         self.assertEqual(out["counts"]["all"], 3)
         self.assertNotIn("Parked by the prune", out["R"]["board"])
         self.assertIn("Plan the review", out["R"]["board"])
-        self.assertIn('<select id="f-parked" class="fsel" data-pick="parked"><option value="" selected>Not parked</option><option value="1">parked only</option></select>', out["R"]["filters"])
+        # sd:5643: Scope and Parked are one dropdown, each option starting with a capital; sd:5649 adds Scheduled only.
+        self.assertIn('<select id="f-active" class="fsel" data-pick="active"><option value="" selected>Open and done</option><option value="1">Open only</option>'
+                      '<option value="parked">Parked only</option><option value="scheduled">Scheduled only</option></select>', out["R"]["filters"])
+        self.assertNotIn('f-parked', out["R"]["filters"])
         self.assertIn("Parked by the prune", out["R"]["parked"])
         self.assertNotIn("Plan the review", out["R"]["parked"])
-        self.assertIn("parked=1", out["R"]["url"])
+        self.assertIn("active=parked", out["R"]["url"])
         self.assertEqual(out["attention"][-1], self.doc["attention"])
 
     def test_the_parked_chip_is_read_from_the_address(self):
@@ -1535,6 +1610,127 @@ C.runBulk(cmd('item.unpark'), [C.get('{parked}'), C.get('{other}')]); await flus
                                         [f"/api/items/{other}", {"parked_at": None, "revision": revisions[other]}, 64]])
         self.assertEqual(out["bulkCli"], f"sd task edit {parked} --unpark && sd task edit {other} --unpark")
         self.assertEqual(out["toasts"], [["Unpark · 2 items", False]])
+
+    # sd:5649: Repeat and Lead in Details, Scope's Scheduled only, and the Lead (days) column the Columns menu shows.
+    def schedule_plan(self, lead):
+        """Make `plan` (due 2026-09-09, read at NOW 2026-09-06) weekly with `lead` days, and read the documents again."""
+        set_item_fields(self.connection, self.ids["plan"], recurrence="FREQ=WEEKLY", recurrence_anchor="schedule", recurrence_lead=lead)
+        self.connection.commit()
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        self.details = {str(i): tasks_screen.details(self.connection, i, now=NOW) for i in self.ids.values()}
+
+    RECUR_ECHO = """(path, body) => { const row = DOC.rows.find(r => path.startsWith('/api/items/' + r.id)); window.WROTE = (window.WROTE || 0) + 1;
+  const ruled = 'recurrence' in body, item = { id: row.id, status: row.status, priority: row.priority, due: row.due, title: row.title, repo: row.repo_path,
+    recurrence: ruled ? body.recurrence : row.recurrence, recurrence_anchor: 'recurrence_anchor' in body ? body.recurrence_anchor : ruled ? (body.recurrence ? 'schedule' : null) : row.recurrence_anchor,
+    recurrence_lead: 'recurrence_lead' in body ? body.recurrence_lead : ruled && !body.recurrence ? null : row.recurrence_lead };
+  return [200, { item, notes: [], revision: String(window.WROTE % 10).repeat(64) }]; }"""
+
+    @staticmethod
+    def options(html, field):
+        select = re.search(rf'<select id="{field}"[^>]*>(.*?)</select>', html, re.S).group(1)
+        return re.findall(r'<option value="([^"]*)"( selected)?>([^<]*)</option>', select)
+
+    def test_a_scheduled_row_shows_only_under_scheduled_only_with_the_day_it_opens(self):
+        self.schedule_plan(2)
+        out = self.run_page("""R.sub = ELS.subhead.html; R.board = ELS['view-board'].html;
+ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'active' }, value: 'scheduled' } });
+R.scheduled = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1]; R.chips = ELS.filters.html;
+document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'list' })); await flush(); R.list = ELS['view-list'].html;""")
+        self.assertIn("1 scheduled · read", out["R"]["sub"])
+        self.assertEqual(out["counts"]["all"], 2, "a scheduled row is counted on a view's tab")
+        self.assertNotIn("Plan the review", out["R"]["board"])
+        self.assertIn("Plan the review", out["R"]["scheduled"])
+        self.assertIn('<span class="opens">opens Sep 7</span>', out["R"]["scheduled"])
+        self.assertNotIn("Port the page", out["R"]["scheduled"])
+        self.assertIn("active=scheduled", out["R"]["url"])
+        self.assertIn("Scope: Scheduled only", out["R"]["chips"])
+        self.assertIn('<small class="opens">opens Sep 7</small>', out["R"]["list"])
+
+    def test_scheduled_only_is_read_from_the_address(self):
+        self.schedule_plan(2)
+        out = self.run_page("R.board = ELS['view-board'].html;", search="?active=scheduled")
+        self.assertIn("Plan the review", out["R"]["board"])
+        self.assertNotIn("Answer the question", out["R"]["board"])
+
+    def test_the_repeat_field_offers_the_rules_and_writes_each_with_undo(self):
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        out = self.run_page(self.CHANGE + f"""open({plan}); await flush(); R.html = ELS.details.html;
+change('det-recur', 'FREQ=MONTHLY;INTERVAL=3'); await flush(); lastUndo().undo(); await flush();
+open({ask}); await flush(); R.ask = ELS.details.html; change('det-recur', 'FREQ=DAILY'); await flush();""", self.RECUR_ECHO)
+        self.assertEqual(self.options(out["R"]["html"], "det-recur"), [
+            ("", " selected", "Does not repeat"), ("FREQ=DAILY", "", "Daily"), ("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "", "Weekdays"),
+            ("FREQ=WEEKLY", "", "Weekly"), ("FREQ=MONTHLY", "", "Monthly"), ("FREQ=MONTHLY;INTERVAL=3", "", "Quarterly"),
+            ("FREQ=YEARLY;BYMONTH=3,6,9,12;BYMONTHDAY=21", "", "Seasonal"), ("FREQ=YEARLY", "", "Yearly")])
+        self.assertNotIn('id="det-lead"', out["R"]["html"], "a task that does not repeat has no lead")
+        self.assertIn('<span class="why">needs a due date</span>', out["R"]["ask"])
+        bodies = [(p[0], {k: v for k, v in p[1].items() if k != "revision"}) for p in out["posts"]]
+        self.assertEqual(bodies, [(f"/api/items/{plan}", {"recurrence": "FREQ=MONTHLY;INTERVAL=3"}), (f"/api/items/{plan}", {"recurrence": None})])
+        msgs = [t[0] for t in out["toasts"]]
+        self.assertIn(f"#{plan} repeats quarterly · sd task edit {plan} --recur 'FREQ=MONTHLY;INTERVAL=3'", msgs)
+        self.assertIn(f"#{ask} not changed: --recur needs a due date", msgs)
+
+    def test_the_lead_field_writes_recur_lead_and_stop_repeating_undo_sets_the_lead_again(self):
+        plan = self.ids["plan"]
+        self.schedule_plan(2)
+        out = self.run_page(self.CHANGE + f"""open({plan}); await flush(); R.html = ELS.details.html;
+change('det-lead', '7'); await flush(); lastUndo().undo(); await flush();
+change('det-recur', ''); await flush(); lastUndo().undo(); await flush();""", self.RECUR_ECHO)
+        html = out["R"]["html"]
+        self.assertIn(("FREQ=WEEKLY", " selected", "Weekly"), self.options(html, "det-recur"))
+        self.assertEqual(self.options(html, "det-lead"), [
+            ("0", "", "On the due date"), ("1", "", "1 day early"), ("2", " selected", "2 days early"), ("3", "", "3 days early"),
+            ("7", "", "7 days early"), ("14", "", "14 days early"), ("30", "", "30 days early")])
+        self.assertIn('<span class="why">opens Sep 7</span>', html)
+        self.assertIn("<dt>Lead</dt><dd>2 days</dd><dt>Opens</dt><dd>2026-09-07</dd>", html)
+        bodies = [{k: v for k, v in p[1].items() if k != "revision"} for p in out["posts"]]
+        self.assertEqual(bodies, [{"recurrence_lead": 7}, {"recurrence_lead": 2}, {"recurrence": None},
+                                  {"recurrence": "FREQ=WEEKLY", "recurrence_anchor": "schedule", "recurrence_lead": 2}])
+        msgs = [t[0] for t in out["toasts"]]
+        self.assertIn(f"#{plan} lead 2 days → 7 days · sd task edit {plan} --recur-lead 7", msgs)
+        self.assertIn(f"#{plan} no longer repeats · sd task edit {plan} --clear-recur", msgs)
+
+    def test_a_store_without_a_lead_shows_no_lead_field_or_column_and_writes_none(self):
+        """sd:5649: the live store may be at schema 40 (tasks_screen `lead` false): Repeat stays, Lead goes quietly, and
+        stopping a series sets back only the rule and anchor on Undo."""
+        plan = self.ids["plan"]
+        self.schedule_plan(3)
+        self.doc["lead"] = False
+        out = self.run_page(self.CHANGE + f"""open({plan}); await flush(); R.html = ELS.details.html; R.filters = ELS.filters.html; R.list = ELS['view-list'].html;
+change('det-recur', ''); await flush(); lastUndo().undo(); await flush();""", self.RECUR_ECHO, search="?view=list&cols=lead")
+        self.assertIn('id="det-recur"', out["R"]["html"])
+        self.assertNotIn('id="det-lead"', out["R"]["html"])
+        self.assertNotIn('data-pick="cols"', out["R"]["filters"])
+        self.assertNotIn("Lead (days)", out["R"]["list"])
+        self.assertEqual([{k: v for k, v in p[1].items() if k != "revision"} for p in out["posts"]],
+                         [{"recurrence": None}, {"recurrence": "FREQ=WEEKLY", "recurrence_anchor": "schedule"}])
+
+    def test_the_lead_column_is_hidden_until_the_columns_menu_shows_it(self):
+        # A lead of 3 opens plan at NOW, so it is listed.
+        self.schedule_plan(3)
+        box = "const box = (v, on) => ELS.filters.listeners.change[0]({ currentTarget: ELS.filters, target: { dataset: { pick: 'cols' }, type: 'checkbox', value: v, checked: on, getAttribute: () => null } });\n"
+        out = self.run_page(box + """R.board = ELS.filters.html; document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'list' })); await flush();
+R.before = ELS['view-list'].html; R.filters = ELS.filters.html; box('lead', true); R.after = ELS['view-list'].html; R.url = OUT.urls[OUT.urls.length - 1];
+R.chips = ELS.filters.html;""")
+        self.assertNotIn('data-pick="cols"', out["R"]["board"], "Columns is the list's alone")
+        self.assertNotIn("Lead (days)", out["R"]["before"])
+        self.assertIn('<details class="fpick" data-pick="cols"><summary aria-labelledby="f-cols-l f-cols-v"><span id="f-cols-v">Default</span>', out["R"]["filters"])
+        self.assertIn('data-sort="lead" title="Sort ascending">Lead (days)', out["R"]["after"])
+        self.assertIn('<td class="mono lead">3</td>', out["R"]["after"])
+        self.assertIn('<td class="mono lead"></td>', out["R"]["after"], "a row that does not repeat has no lead")
+        self.assertIn("cols=lead", out["R"]["url"])
+        self.assertNotIn("list-chips", out["R"]["chips"], "a shown column is not a filter")
+        again = self.run_page("R.list = ELS['view-list'].html;", search="?view=list&cols=lead")
+        self.assertIn('<td class="mono lead">3</td>', again["R"]["list"])
+
+    def test_the_repeat_rules_are_the_ones_sd_db_recurrence_stores(self):
+        """Each Repeat rule is spelled as `Rule.text()` stores it, so a stored rule selects its name (sd:5649)."""
+        from sd_db import recurrence
+
+        block = re.search(r"const REPEATS = \[(.*?)\];", TASK_DETAILS_JS, re.S).group(1)
+        rules = re.findall(r"\['([A-Z0-9=;,]+)', '(\w+)'\]", block)
+        self.assertEqual([name for _, name in rules], ["Daily", "Weekdays", "Weekly", "Monthly", "Quarterly", "Seasonal", "Yearly"])
+        for rule, name in rules:
+            self.assertEqual(recurrence.parse(rule).text(), rule, name)
 
     def test_fix_asks_first_posts_the_row_revision_and_names_the_session(self):
         """sd:3456. Fix asks first, naming a builder session for a task; the post carries only the row's revision."""
@@ -2199,7 +2395,7 @@ R.undated = [cmd('item.complete').consequence(o), cmd('item.complete').danger(o)
     def test_the_rule_parts_the_page_walks_are_the_librarys(self):
         from sd_db import recurrence
 
-        parts = re.search(r"const PARTS = new Set\(\[([^\]]*)\]\)", TASKS_JS)
+        parts = re.search(r"const PARTS = new Set\(\[([^\]]*)\]\)", TASK_DETAILS_JS)
         self.assertIsNotNone(parts)
         self.assertEqual(tuple(re.findall(r"'([A-Z]+)'", parts.group(1))), recurrence.PARTS)
         # The shell's confirm colour asks the command where it declares danger(o).
@@ -2286,18 +2482,21 @@ R.list = ELS['view-list'].html;""")
     def test_the_script_has_no_branch_for_a_row_without_an_sd_id(self):
         # sd:3289: /api/tasks rows are item rows, each with an id (TheDocuments), so the mockup's id-less job rows are gone
         # and with them the "no sd id" reasons and the `ops` kind, which item.kind does not allow.
-        self.assertNotIn("no sd id", TASKS_JS)
-        self.assertNotRegex(TASKS_JS, r"kind [!=]== 'ops'")
-        self.assertNotIn("'no id'", TASKS_JS)
+        for text in (TASKS_JS, TASK_DETAILS_JS):
+            self.assertNotIn("no sd id", text)
+            self.assertNotRegex(text, r"kind [!=]== 'ops'")
+            self.assertNotIn("'no id'", text)
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
-        self.assertNotIn("innerHTML", TASKS_JS)
-        self.assertNotIn("createElement('style')", TASKS_JS)
-        self.assertNotIn("setAttribute('style'", TASKS_JS)
-        self.assertNotRegex(TASKS_JS, r"style=\\?\"")
-        self.assertEqual(re.findall(r"window\.markup\b", re.sub(r"const \{ [\w, ]+ \} = window\.markup;", "", TASKS_JS)), [])
-        # A page-level j/k or Escape handler is drift (the shell owns them through PAGE_LIST).
-        self.assertNotRegex(TASKS_JS, r"e\.key === '[jk]'")
+        # task-details.js holds the Details tasks.js drew (sd:5635), so the rule holds for both.
+        for text in (TASKS_JS, TASK_DETAILS_JS):
+            self.assertNotIn("innerHTML", text)
+            self.assertNotIn("createElement('style')", text)
+            self.assertNotIn("setAttribute('style'", text)
+            self.assertNotRegex(text, r"style=\\?\"")
+            self.assertEqual(re.findall(r"window\.markup\b", re.sub(r"const \{ [\w, ]+ \} = window\.markup;", "", text)), [])
+            # A page-level j/k or Escape handler is drift (the shell owns them through PAGE_LIST).
+            self.assertNotRegex(text, r"e\.key === '[jk]'")
 
 
 def keys(fragment: str) -> set[int]:
@@ -2533,8 +2732,8 @@ class TheDocumentLinks(ScreenCase):
         self.assertEqual([doc["path"] for doc in got], [str(self.outside)])
 
     def test_the_panel_renders_the_documents_section(self):
-        self.assertIn("<h3>Documents ${src(", TASKS_JS)
-        self.assertIn("d.documents", TASKS_JS)
+        self.assertIn("<h3>Documents ${src(", TASK_DETAILS_JS)
+        self.assertIn("d.documents", TASK_DETAILS_JS)
 
 
 if __name__ == "__main__":

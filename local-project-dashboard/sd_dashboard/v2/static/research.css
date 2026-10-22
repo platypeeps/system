@@ -28,11 +28,20 @@
 .ledger tbody tr[data-picked] td { background: var(--color-accent-bg); }
 .ledger tbody tr[data-picked] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-focus); }
 
-/* Stage track: five pips, one per numbered directory */
-.track { display: inline-grid; grid-template-columns: repeat(5, 1.5rem); gap: 2px; vertical-align: middle; }
+/* Stage track: one pip per numbered directory, as many as /api/research names (sd:5661).
+ * build (sd:5657): each pip sits in a 24px cell, so a populated stage that links its document has a target; 44px on touch. */
+.track { display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1.5rem; gap: 2px; vertical-align: middle; }
+.track .pip { display: block; padding-block: 0.5rem; }
 .track i { display: block; height: 0.5rem; border: var(--rule-hair) solid var(--color-rule); border-radius: 1px; }
 .track i.on { background: var(--color-series-1); border-color: var(--color-series-1); }
 .track i.hatch { background: repeating-linear-gradient(135deg, transparent 0 3px, var(--color-hatch) 3px 4px); }
+.track a.pip:is(:hover, :active) i { background: var(--color-accent); border-color: var(--color-accent); }
+.track a.pip:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 0; }
+@media (pointer: coarse) {
+  /* six 44px cells outgrow a 320px row: a cell gives back width, never under the 24px target. */
+  .track[role="group"] { max-width: 100%; grid-auto-columns: minmax(1.5rem, var(--row-touch)); }
+  .track[role="group"] .pip { padding-block: calc((var(--row-touch) - 0.5rem) / 2); }
+}
 .stage-lbl { display: block; margin-top: var(--space-3xs); }
 
 /* Rounds meter */
@@ -68,6 +77,9 @@
 .vbar { display: flex; height: 1.75rem; margin: 0 0 var(--space-2xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); overflow: hidden; }
 .vbar button { all: unset; box-sizing: border-box; flex: 1; display: grid; place-items: center; min-width: 2.75rem; cursor: pointer; font: 500 var(--text-xs)/1 var(--font-data); border-right: var(--rule-hair) solid var(--color-rule); }
 .vbar button:last-child { border-right: 0; }
+.vbar .vlabel { display: grid; place-items: center; padding: 0 var(--space-xs); font: 500 var(--text-xs)/1 var(--font-data); color: var(--color-ink-2); border-right: var(--rule-hair) solid var(--color-rule); }
+.vbar .v-all { background: var(--color-panel); color: var(--color-ink); }
+.vbar button:disabled { cursor: default; opacity: .45; }
 .vbar button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
 .vbar button[aria-pressed="true"] { box-shadow: inset 0 calc(-1 * var(--rule-lamp)) 0 var(--color-accent); }
 .vbar .v-supported { background: var(--color-panel); color: var(--color-ok); }
@@ -162,3 +174,5 @@
   .ledger.xp tbody tr { grid-template-columns: 1.75rem minmax(0, 1fr) auto; grid-template-areas: "g what acts" ". upd upd" ". asks asks" ". links links"; }
   .ledger.xp .upd { grid-area: upd; } .ledger.xp .ask { grid-area: asks; } .ledger.xp .lnk { grid-area: links; }
 }
+/* Last review (sd:5655): the kit's report, folded; long lines wrap, a long report scrolls inside the pane. */
+.report pre { max-height: 24rem; overflow: auto; margin: var(--space-2xs) 0 0; padding: var(--space-xs); background: var(--color-well); font: 400 var(--text-xs)/1.4 var(--font-data); white-space: pre-wrap; overflow-wrap: anywhere; }

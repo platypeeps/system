@@ -28,12 +28,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_dashboard import hoa_screen, server, v2
+from sd_dashboard import hoa_download, hoa_screen, places, server, v2
 
-from sd_db import connect, upsert_repo, workflow, writes
+from sd_db import SdDbError, connect, upsert_repo, workflow, writes
 from sd_db.migrate import initialise
 
-from support import NOW, ScreenCase
+from support import NOW, ScreenCase, before_5648
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
@@ -44,6 +44,7 @@ from test_v2_shell_shared import cell_grammar
 V2 = Path(v2.__file__).resolve().parent
 HOA_JS = (V2 / "static" / "hoa.js").read_text(encoding="utf-8")
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
+TASK_DETAILS_JS = (V2 / "static" / "task-details.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
 #: NOW is 2026-09-06; the export below ends the day before, so it is current and has no row for today.
@@ -99,6 +100,12 @@ def checkout(root: Path, *, analog=ANALOG, pump=PUMP, alarms=ALARMS, base=BASE, 
     return root
 
 
+def hoa_reads(out) -> list[str]:
+    """The page's reads less a task's Details reading, /api/tasks/<id> (task-details.js, sd:5671): the first read selects
+    the first task, and its Details read it."""
+    return [path for path in out["gets"] if not path.startswith("/api/tasks/")]
+
+
 class HoaJobs:
     """An operations backend double: `names` and `inspect`, the shape `operations.job_state` reads, and the `cron_root`
     whose `logs/` holds each job's log. A job not in `jobs` is not installed, refused as `LaunchdBackend` refuses it.
@@ -133,6 +140,10 @@ class Fixture(ScreenCase):
         # Never this machine's levels: a test that wants one writes this file.
         self.levels = self.root / "hoa-thresholds.conf"
         patch = mock.patch.object(hoa_screen, "THRESHOLDS", self.levels)
+        patch.start()
+        self.addCleanup(patch.stop)
+        # Never this machine's downloads (sd:5626): each source's state folder is the test's own.
+        patch = mock.patch.object(hoa_download, "state_dir", lambda source: self.root / "downloads" / source)
         patch.start()
         self.addCleanup(patch.stop)
         # Never this machine's launchd: a test that wants a refresh job installed names it here.
@@ -217,12 +228,29 @@ class TheDocument(Fixture):
     def test_items_are_the_checkouts_open_items_of_every_kind_ranked_by_urgency(self):
         # sd:4959: one table of every open hoa item; a report is its family's, so it is not here.
         rows = self.doc()["items"]["rows"]
-        self.assertEqual([(r["item"], r["kind"], r["state"], r["due_days"]) for r in rows],
+        self.assertEqual([(r["id"], r["kind"], r["state"], r["due_days"]) for r in rows],
                          [(self.late, "followup", "warning", -5), (self.soon, "followup", "caution", 4),
                           (self.later, "followup", "queued", 54), (self.task, "task", "queued", 14),
                           (self.blocked, "task", "queued", None)])
-        self.assertEqual(rows[0]["id"], f"item:{self.late}")
         self.assertEqual((rows[0]["priority"], rows[-1]["status"]), (1, "blocked"))
+
+    def test_a_scheduled_occurrence_is_no_item_until_it_opens(self):
+        """sd:5670: as Tasks does, the table hides a scheduled occurrence (pack sd:5648); a pack before it shows the row."""
+        flush = self.schedule(self.item("Flush the hydrants", kind="task", repo=str(self.hoa)), "2026-09-09")
+        self.assertNotIn(flush, [r["id"] for r in self.doc()["items"]["rows"]])
+        with before_5648():
+            self.assertIn(flush, [r["id"] for r in self.doc()["items"]["rows"]])
+
+    def test_each_item_is_the_tasks_pages_row_with_its_due_state(self):
+        # sd:5671: an item's Details on HOA are the Tasks page's (task-details.js), so each item is the /api/tasks row
+        # (tasks_screen._rows, as places.tasks reads it), with its revision, moves, edit capability and issue targets.
+        listed = {r["id"]: r for r in places.tasks(self.connection, "hoa", now=NOW)["rows"]}
+        rows = self.doc()["items"]["rows"]
+        self.assertEqual(sorted(r["id"] for r in rows), sorted(listed))
+        for row in rows:
+            self.assertEqual({key: row[key] for key in listed[row["id"]]}, listed[row["id"]])
+            self.assertEqual(set(row) - set(listed[row["id"]]), {"state", "due_days"})
+        self.assertEqual(rows[0]["allowed"], listed[self.late]["allowed"])
 
     # sd:4964: each lot carries its address and owner of record from the checkout's downloads/parcels/lots.json, joined by
     # the lot's index among base.geojson's lots, and only against the base file the lot data was made from.
@@ -294,7 +322,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>HOA · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "hoa.js", "places.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "brief-details.js", "report-details.js", "task-details.js", "hoa.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -327,7 +355,7 @@ class TheScript(Fixture):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + HOA_SHELL + READ_SHELL
                   + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status};\n"
                   + "ANSWER = (path, body) => path === '/api/hoa' ? [STATUS, DOC] : [404, { error: 'no answer' }];\n"
-                  + pre + "\n" + COMMANDS_JS + HOA_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
+                  + pre + "\n" + COMMANDS_JS + TASK_DETAILS_JS + HOA_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
                   + "(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
@@ -342,25 +370,44 @@ class TheScript(Fixture):
         # Retry and Show log are spread from commands.js, which test_v2_commands' scan cannot read, so HOA checks its
         # registered commands here, a per-row text once for each source.
         from test_v2_commands import WORDS
-        out = self.run_page("""R.d = REG.filter(c => c.does).flatMap(c => typeof c.does === 'function'
+        # A task's commands are task-details.js's, which test_v2_tasks runs against task rows.
+        out = self.run_page("""R.d = REG.filter(c => c.does && !['item', 'note', 'assignment', 'issue draft'].includes(c.on)).flatMap(c => typeof c.does === 'function'
   ? [['vantaca', 'Vantaca invoices'], ['mission', 'Mission export']].map(([source, label]) => [c.id, c.does({ source, label })])
   : [[c.id, c.does]]);""")
         long = [f"{command}: {does}" for command, does in out["R"]["d"] if len(does.split()) > WORDS]
         self.assertEqual(long, [], f"a does line over {WORDS} words")
 
     def test_every_command_is_registered_with_the_design_id_risk_and_key(self):
+        # sd:5671: an item's commands are the Tasks page's (task-details.js), registered once, first; HOA adds no item
+        # command of its own, and its Draft followup is Tasks' Draft email, with HOA's key d.
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.risk, c.key || null]);")
-        self.assertEqual(out["R"]["reg"], [
-            ["item.draft", "item", "safe", "d"],
-            ["item.open", "item", "safe", "o"],
+        reg = out["R"]["reg"]
+        tasks = [c for c in reg if c[1] in ("item", "note", "assignment", "issue draft")]
+        self.assertEqual(reg[:len(tasks)], tasks)
+        self.assertEqual(len({c[0] for c in reg}), len(reg))
+        self.assertIn(["item.email", "item", "safe", "d"], tasks)
+        self.assertEqual([c[0] for c in tasks if c[0] in ("item.draft", "item.open")], [])
+        self.assertEqual(reg[len(tasks):], [
             ["asset.ask", "asset", "safe", "a"],
             ["alarm.ack", "alarm", "undo", "a"],
             ["alarm.unack", "alarm", "undo", "a"],
+            ["alarms.ack", "alarms", "undo", None],
             ["jobs.retry", "job", "safe", "t"],
             ["jobs.log", "job", "safe", "l"],
-            ["sources.refresh", "sources", "safe", None],
+            ["download.vantaca", "vantaca download", "safe", None],
+            ["download.mission", "mission download", "safe", None],
             ["sweep.run", "sweep", "safe", "w"],
         ])
+
+    def test_a_read_in_the_briefs_or_reports_view_leaves_their_details_alone(self):
+        # sd:5620: a Briefs row's Details fill the pane (places.js); Read HOA again then selects no HOA row over them,
+        # and does again once an HOA view shows.
+        out = self.run_page("""const read = () => window.PAGE_COMMANDS.find(p => p.label === 'Read HOA again').run();
+for (const v of ['briefs', 'reports']) { window.shell.view.current = () => v; window.markup.put(ELS.details, mk`<h2>A brief</h2>`); read(); await flush(); R[v] = ELS.details.html; }
+window.shell.view.current = () => 'tasks'; read(); await flush(); R.tasks = ELS.details.html;""")
+        self.assertEqual(hoa_reads(out), ["/api/hoa"] * 4)
+        self.assertEqual((out["R"]["briefs"], out["R"]["reports"]), ("<h2>A brief</h2>", "<h2>A brief</h2>"))
+        self.assertNotEqual(out["R"]["tasks"], "<h2>A brief</h2>")
 
     def test_every_lamp_says_what_it_measures_and_its_source_on_hover_and_focus(self):
         # sd:5287: the shell's tip (data-tip) on each lamp: what it measures, then its source.
@@ -373,13 +420,13 @@ class TheScript(Fixture):
 
     def test_each_cell_is_a_reading_or_unknown_with_its_reason(self):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.sub = ELS.subhead.html;")
-        self.assertEqual(out["gets"], ["/api/hoa"])
+        self.assertEqual(hoa_reads(out), ["/api/hoa"])
         lamps = out["R"]["lamps"]
         self.assertRegex(lamps, r'data-cell="water" data-state="unknown".*?no live reader')
         self.assertRegex(lamps, r'data-cell="tank" data-open="day:2026-09-05" data-state="ok".*?<b>16.1</b> ft mean')
         self.assertRegex(lamps, r'data-cell="pumps" data-open="day:2026-09-04" data-state="ok".*?<b>16.9</b> h A2.*?0 starts · 91,119 gal · 09-04')
         self.assertRegex(lamps, r'data-cell="alarms"[^>]*data-state="unknown".*?the export ends 2026-09-05.*?2 alarms in 30 d · 1 generator test')
-        self.assertRegex(lamps, rf'data-cell="tasks" data-open="item:{self.late}" data-state="warning".*?Tasks.*?<b>1</b> overdue.*?5 open · 1 due within a week')
+        self.assertRegex(lamps, rf'data-cell="tasks" data-open="{self.late}" data-state="warning".*?Tasks.*?<b>1</b> overdue.*?5 open · 1 due within a week')
         self.assertRegex(lamps, r'data-cell="mission" data-open="source:mission" data-state="ok".*?<b>1 d</b> old')
         self.assertEqual(cell_grammar(self, lamps)[-1], ("button", None))
         self.assertIn("3 mapped assets, 4 lot and tract outlines; Mission export through 2026-09-05", out["R"]["sub"])
@@ -427,10 +474,40 @@ R.after = ELS.map.html;""")
         self.assertIn("Valves <b>1</b>", out["R"]["legend"])
         self.assertEqual(re.findall(r'data-asset="([^"]+)"', out["R"]["after"]), ["TANK-01", "WELL-A2"])
 
+    def tract_doc(self):
+        """The fixture's base plus a common tract, a tiny common tract and a road parcel: synthetic AINs, as the county prints land use."""
+        doc = self.doc()
+        square = lambda x, y, side: [[[x, y], [x + side, y], [x + side, y + side], [x, y + side], [x, y]]]  # noqa: E731
+        doc["base"]["features"] = [f | ({"luc": "TRCT"} if f["kind"] == "tract" else {}) for f in doc["base"]["features"]] + [
+            {"kind": "tract", "ain": "0002", "label": "", "luc": "TRCT", "acres": 0.02, "rings": square(10.0015, 50.0005, 0.00001)},
+            {"kind": "tract", "ain": "0003", "label": "", "luc": "ROAD", "acres": 0.03, "rings": square(10.0018, 50.0018, 0.0001)}]
+        return doc
+
+    def test_the_hoa_owned_tracts_are_highlighted_and_a_tiny_one_gets_a_marker(self):
+        # sd:5623: every TRCT tract is the HOA's; the road parcel is not. A tract too small to see at the scale gets a ring.
+        out = self.run_page("R.map = ELS.map.html; R.legend = ELS.legend.html;", self.tract_doc())
+        paths = re.findall(r'<path class="lot k-tract"([^>]*)>', out["R"]["map"])
+        owned = {re.search(r'data-tract="([^"]+)"', p).group(1) for p in paths if " data-owned" in p}
+        self.assertEqual((owned, len(paths)), ({"0001", "0002"}, 3))
+        self.assertEqual(re.findall(r'<circle class="hoa-mark" data-tract="([^"]+)"', out["R"]["map"]), ["0002"])
+        self.assertRegex(out["R"]["legend"], r'class="status"><i class="own" aria-hidden="true"></i>HOA-owned tracts <b class="data">2</b>')
+
+    def test_the_marker_goes_when_the_zoom_makes_the_tract_visible(self):
+        out = self.run_page("""R.far = ELS.map.html;
+for (let i = 0; i < 3; i++) ELS['zoom-in'].listeners.click[0]();
+R.near = ELS.map.html;""", self.tract_doc())
+        self.assertEqual(len(re.findall(r'class="hoa-mark"', out["R"]["far"])), 1)
+        self.assertEqual(len(re.findall(r'class="hoa-mark"', out["R"]["near"])), 0)
+        self.assertEqual(len(re.findall(r'<path class="lot k-tract" data-tract="[^"]+" data-owned', out["R"]["near"])), 2)
+
+    def test_no_tract_means_no_hoa_legend_entry(self):
+        out = self.run_page("R.legend = ELS.legend.html;")
+        self.assertNotIn("HOA-owned", out["R"]["legend"])
+
     def test_the_tasks_are_ranked_rows_with_their_due_state(self):
         out = self.run_page("R.ob = ELS['ob-body'].html; R.al = ELS['al-body'].html; R.det = ELS.details.html;")
         ob = out["R"]["ob"]
-        self.assertEqual(re.findall(r'<tr data-id="item:(\d+)"', ob), [str(i) for i in (self.late, self.soon, self.later, self.task, self.blocked)])
+        self.assertEqual(re.findall(r'<tr data-id="(\d+)"', ob), [str(i) for i in (self.late, self.soon, self.later, self.task, self.blocked)])
         self.assertIn("overdue 5 days", ob)
         self.assertIn("in 4 days", ob)
         self.assertRegex(ob, r'g g-warning" aria-label="warning">■')
@@ -456,33 +533,60 @@ R.after = ELS.map.html;""")
 
     def test_the_id_sorts_by_number_and_a_third_click_returns_to_the_rank(self):
         doc = self.doc()
-        nine, ten = (dict(doc["items"]["rows"][0], id=f"item:{n}", item=n) for n in (9, 10))
+        nine, ten = (dict(doc["items"]["rows"][0], id=n) for n in (9, 10))
         doc["items"]["rows"] = [ten, nine]
-        ids = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"item:(\\d+)\"/g)].map(m => +m[1]); "
+        ids = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"(\\d+)\"/g)].map(m => +m[1]); "
         out = self.run_page(ids + "R.rank = re(); " + self.sort("item") + "R.up = re(); R.cell = ELS['ob-body'].html; "
                             + self.sort("item") + "R.down = re(); " + self.sort("item") + "R.back = re(); R.head = ELS['ob-head'].html;", doc)
         self.assertEqual((out["R"]["rank"], out["R"]["up"], out["R"]["down"], out["R"]["back"]), ([10, 9], [9, 10], [10, 9], [10, 9]))
         self.assertIn('<td class="id num">sd:9</td>', out["R"]["cell"])
         self.assertNotIn("aria-sort", out["R"]["head"])
 
-    def test_a_followups_row_action_drafts_and_any_other_kinds_opens_the_item(self):
-        out = self.run_page(f"""const p = (id, o) => !!REG.find(c => c.id === id).primary(OBJ.get('item:' + o));
-R.p = [p('item.draft', {self.late}), p('item.open', {self.late}), p('item.draft', {self.task}), p('item.open', {self.task})];""")
-        self.assertEqual(out["R"]["p"], [True, False, False, True])
+    def test_a_tasks_details_read_that_answers_in_briefs_leaves_their_details_alone(self):
+        # sd:5671: a task's Details reading answers late; once Briefs fills the pane (places.js), it draws nothing there.
+        out = self.run_page(f"""const late = []; const answer = ANSWER;
+ANSWER = (path, body) => path.startsWith('/api/tasks/') ? new Promise(done => late.push(() => done(answer(path, body)))) : answer(path, body);
+ELS['ob-body'].listeners.click[0]({{ target: {{ closest: s => s === 'tr[data-id]' ? {{ dataset: {{ id: '{self.task}' }} }} : null }} }}); await flush();
+window.shell.view.current = () => 'briefs'; window.markup.put(ELS.details, mk`<h2>A brief</h2>`);
+late.forEach(f => f()); await flush(); R.det = ELS.details.html;""")
+        self.assertEqual(out["R"]["det"], "<h2>A brief</h2>")
 
-    def test_draft_followup_saves_a_gmail_draft_through_the_draft_email_route(self):
-        # sd:5483: the chat is read-only and saved no draft; Draft followup posts Tasks' Draft email with the row's revision.
+    def test_a_followups_first_action_is_draft_email_and_any_other_kinds_its_next_status(self):
+        # sd:5671: HOA's Draft followup was a followup's row action; merged into Tasks' Draft email, it stays the first
+        # action of a followup on HOA, and any other kind's is the Tasks list's next status move.
+        out = self.run_page(f"""const first = n => {{ const o = OBJ.get(String(n)); return REG.filter(c => c.on === o.type).find(c => c.primary?.(o) && (!c.when || c.when(o) === true))?.id; }};
+R.p = [first({self.late}), first({self.task}), first({self.blocked})];""")
+        self.assertEqual(out["R"]["p"], ["item.email", "item.status.ready", "item.status.ready"])
+
+    def test_draft_email_asks_first_and_saves_a_gmail_draft_through_the_draft_email_route(self):
+        # sd:5483, sd:5671: Draft email posts the draft-email route with the row's revision, as on Tasks, and asks first.
         doc = self.doc()
-        row = next(r for r in doc["items"]["rows"] if r["item"] == self.late)
+        row = next(r for r in doc["items"]["rows"] if r["id"] == self.late)
         self.assertTrue(row["revision"])
-        out = self.run_page(f"""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [200, {{ draft: {{ subject: 'Gate quote', id: 'd1' }} }}];
-C.run(cmd('item.draft'), OBJ.get('item:{self.late}')); await flush();""", doc)
+        out = self.run_page(f"""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : path.endsWith('/draft-email')
+  ? [200, {{ item: {{ id: {self.late}, status: 'planning', priority: 1, due: '2026-09-01', recurrence: null }}, notes: [], revision: 'e'.repeat(64),
+      draft: {{ subject: 'Gate quote', id: 'd1' }} }}] : [404, {{ error: 'no answer' }}];
+shellRun(cmd('item.email'), OBJ.get('{self.late}')); await flush();""", doc)
+        self.assertEqual(out["confirms"], ["item.email"])
         self.assertEqual([p[:2] for p in out["posts"]], [[f"/api/items/{self.late}/draft-email", {"revision": row["revision"]}]])
-        self.assertIn('Draft saved · sd:%d · "Gate quote" · in Gmail Drafts, not sent' % self.late, out["toasts"][-1][0])
+        self.assertIn('Draft saved · #%d · "Gate quote" · in Gmail Drafts, not sent' % self.late, out["toasts"][-1][0])
+        self.assertEqual(out["gets"].count("/api/hoa"), 2)
+
+    def test_a_tasks_row_shows_the_tasks_pages_details_in_the_pane(self):
+        # sd:5671: a row is selected in place; Details are the Tasks page's (task-details.js), with HOA's due line and a
+        # link that opens the task on Tasks.
+        click = f"ELS['ob-body'].listeners.click[0]({{ target: {{ closest: s => s === 'tr[data-id]' ? {{ dataset: {{ id: '{self.task}' }} }} : null }} }}); "
+        out = self.run_page(click + "await flush(); R.det = ELS.details.html; R.cur = window.PAGE_LIST.current();")
+        r = out["R"]
+        self.assertEqual(r["cur"], str(self.task))
+        self.assertIn(f"/api/tasks/{self.task}", out["gets"])
+        for part in ("<h2>Paint the pump house</h2>", '<dl class="fields">', f"<dd>#{self.task}</dd>", '<select id="det-status" class="fld">',
+                     "2026-09-20 · in 14 days", f'href="/tasks?row={self.task}">Open on Tasks</a>', "from /api/hoa."):
+            self.assertIn(part, r["det"])
 
     def test_one_followup_one_task_and_one_blocked_task_show_and_kind_narrows(self):
         kind = "ELS['ob-kinds'].listeners.click[0]({ target: { closest: s => s === 'button[data-kind]' ? { dataset: { kind: 'K' } } : null } }); "
-        rows = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"item:(\\d+)\"/g)].map(m => +m[1]); "
+        rows = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"(\\d+)\"/g)].map(m => +m[1]); "
         out = self.run_page(rows + "R.all = re(); R.chips = ELS['ob-kinds'].html; " + kind.replace("K", "task") + "R.task = re(); "
                             + kind.replace("K", "followup") + "R.followup = re(); " + kind.replace("K", "all") + "R.again = re(); R.tally = ELS['tasks-tally'];")
         everything = [self.late, self.soon, self.later, self.task, self.blocked]
@@ -540,18 +644,12 @@ C.run(cmd('item.draft'), OBJ.get('item:{self.late}')); await flush();""", doc)
 DOC = { error: 'Open a dashboard page before reading HOA.' }; STATUS = 403;
 ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: 'refresh', dataset: {} } : null } }); await flush();
 R.ob = ELS['ob-body'].html; R.lamps = ELS.annunciator.html;""")
-        self.assertEqual(out["gets"], ["/api/hoa", "/api/hoa"])
+        self.assertEqual(hoa_reads(out), ["/api/hoa", "/api/hoa"])
         self.assertIn("data-id=", out["R"]["before"])
         self.assertEqual(out["states"][-1]["kind"], "error")
         self.assertNotIn("data-id=", out["R"]["ob"])
         self.assertNotIn("data-cell=", out["R"]["lamps"])
         self.assertEqual(out["attention"][-1], {"state": "unknown", "n": 0, "what": "HOA not read"})
-
-    def test_the_open_command_names_the_item_and_opens_it_in_tasks(self):
-        out = self.run_page(f"""var o = OBJ.get('item:{self.late}'); var c = REG.find(x => x.id === 'item.open');
-R.cli = c.cli(o); R.run = c.run(o); R.href = location.href;""")
-        self.assertEqual(out["R"]["cli"], f"sd task show {self.late}")
-        self.assertEqual(out["R"]["href"], f"/tasks?row={self.late}")
 
     def test_the_page_keeps_the_shells_keys_and_reads_through_the_shared_reader(self):
         self.assertIn("S.read(spec)", HOA_JS)
@@ -716,6 +814,57 @@ class TheAcknowledgement(Fixture):
             with self.assertRaises(ValueError):
                 hoa_screen.acknowledge(payload)
 
+    def ack_many(self, keys, acked=True):
+        result = hoa_screen.acknowledge_many({"keys": keys, "acked": acked})(self.connection)
+        self.connection.commit()
+        return result
+
+    def test_acknowledge_many_writes_each_listed_event_in_one_call_and_undo_writes_them_back(self):
+        keys = [k for k in self.alarms()]
+        result = self.ack_many(keys)
+        self.assertEqual([x["key"] for x in result["acked"]], keys)
+        self.assertEqual(result["failed"], [])
+        self.assertTrue(all(self.alarms().values()))
+        self.ack_many(keys, False)
+        self.assertFalse(any(self.alarms().values()))
+
+    def test_acknowledge_many_names_a_key_the_export_no_longer_holds_and_writes_the_rest(self):
+        gone = "hoa-alarm/2026-09-05 06:00:00 Tank High Alarm"
+        result = self.ack_many([TANK_LOW, gone])
+        self.assertEqual([x["key"] for x in result["acked"]], [TANK_LOW])
+        self.assertEqual([x["key"] for x in result["failed"]], [gone])
+        self.assertIn("holds no alarm event 2026-09-05 06:00:00 Tank High Alarm", result["failed"][0]["error"])
+        self.assertEqual([k for k, acked in self.alarms().items() if acked], [TANK_LOW])
+
+    def test_acknowledge_many_refuses_as_stale_when_no_key_is_listed_and_writes_nothing(self):
+        before = writes.views(self.connection)
+        with self.assertRaises(workflow.StaleItem) as caught:
+            self.ack_many(["hoa-alarm/2026-09-05 06:00:00 Tank High Alarm"])
+        self.assertIn("Nothing was acknowledged", str(caught.exception))
+        self.assertEqual(writes.views(self.connection), before)
+
+    def test_acknowledge_many_reports_a_key_the_store_refuses_and_writes_the_rest(self):
+        real = writes.set_view
+
+        def refuse_one(connection, key, **fields):
+            if key == TANK_LOW:
+                raise SdDbError("the view store refused it")
+            return real(connection, key, **fields)
+
+        other = "hoa-alarm/2026-09-01 10:00:00 A2 VSD Alarm"
+        with mock.patch.object(writes, "set_view", side_effect=refuse_one):
+            result = self.ack_many([TANK_LOW, other])
+        self.assertEqual([x["key"] for x in result["acked"]], [other])
+        self.assertEqual(result["failed"], [{"key": TANK_LOW, "error": "the view store refused it"}])
+        self.assertEqual([k for k, acked in self.alarms().items() if acked], [other])
+
+    def test_acknowledge_many_refuses_a_bad_request_before_a_write(self):
+        for payload in ({"keys": [TANK_LOW]}, {"keys": [], "acked": True}, {"keys": TANK_LOW, "acked": True},
+                        {"keys": [TANK_LOW, TANK_LOW], "acked": True}, {"keys": ["designs/x.html"], "acked": True},
+                        {"keys": [TANK_LOW], "acked": "yes"}, {"keys": [TANK_LOW], "acked": True, "extra": 1}):
+            with self.assertRaises(ValueError):
+                hoa_screen.acknowledge_many(payload)
+
     def test_an_acknowledged_alarm_today_leaves_the_lamp_and_the_badge(self):
         checkout(self.hoa, alarms=ALARMS + "2026-09-06 07:00:00,other,A2 VSD Alarm,N,2\n")
         doc = self.doc()
@@ -764,12 +913,13 @@ press('all'); R.all = ELS['al-body'].html;""", self.acked_doc())
         self.assertIn('data-alview="acked" aria-pressed="true"', out["R"]["segAcked"])
         self.assertNotIn("Show acknowledged", out["R"]["seg"])
 
-    def test_the_alarm_ledger_is_its_own_view_after_tasks(self):
+    def test_the_alarm_ledger_is_its_own_view_right_of_reports(self):
         page = (V2 / "hoa.html").read_text(encoding="utf-8")
         overview = re.search(r'<div id="view-overview".*?\n  </div>\n', page, re.S).group(0)
         self.assertNotIn('id="al-table"', overview)
         views = re.findall(r'data-place-view="([a-z]+)"', page)
-        self.assertEqual(views[:3], ["overview", "tasks", "alarms"])
+        # sd:5622: the switch and its arrow keys follow this order (places.js builds PAGE_VIEWS from the blocks).
+        self.assertEqual(views, ["overview", "tasks", "briefs", "reports", "alarms"])
         self.assertRegex(page, r'<table class="ledger" id="al-table" aria-labelledby="al-h" data-toolbar="al-toolbar">')
 
     def test_every_event_acknowledged_says_so_instead_of_an_empty_table(self):
@@ -791,7 +941,7 @@ OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
         self.assertIn("Acknowledged: 09-05 06:00 Tank Low Alarm. The Acknowledged view lists it.", out["toasts"][0][0])
         self.assertTrue(out["toasts"][0][1])
         # Each landed write reads HOA again.
-        self.assertEqual(out["gets"], ["/api/hoa"] * 3)
+        self.assertEqual(hoa_reads(out), ["/api/hoa"] * 3)
 
     def test_a_refused_event_is_named_in_the_toast(self):
         out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
@@ -806,6 +956,73 @@ C.runBulk(cmd('alarm.ack'), ['alarm:2026-09-05 06:00:00 Tank Low Alarm', 'alarm:
 await flush();""")
         self.assertIs(out["R"]["bulk"], True)
         self.assertEqual(sorted(p[1]["key"] for p in out["posts"]), ["hoa-alarm/2026-09-01 10:00:00 A2 VSD Alarm", TANK_LOW])
+
+    def test_acknowledge_all_is_a_button_in_the_toolbar_naming_the_open_count(self):
+        out = self.run_page("R.tools = ELS['al-tools'].html;", self.acked_doc())
+        self.assertRegex(out["R"]["tools"], r'<button[^>]*id="al-ack-all"[^>]*>.*Acknowledge all <span class="n">3</span>')
+        self.assertNotIn('aria-disabled="true"', out["R"]["tools"])
+        page = (V2 / "hoa.html").read_text(encoding="utf-8")
+        self.assertRegex(page, r'<div class="toolbar" id="al-toolbar">.*?<div class="tools" id="al-tools"></div></div>')
+
+    def test_acknowledge_all_is_off_with_its_reason_when_nothing_is_unacknowledged(self):
+        doc = self.doc()
+        for row in doc["mission"]["alarms"]:
+            row["acked"] = True
+        out = self.run_page("R.tools = ELS['al-tools'].html; R.when = cmd('alarms.ack').when(OBJ.get('alarms'));", doc)
+        self.assertIn('aria-disabled="true"', out["R"]["tools"])
+        self.assertEqual(out["R"]["when"], "no alarm event is unacknowledged")
+
+    def test_acknowledge_all_asks_first_and_names_the_count(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [200, { acked: [], failed: [] }];
+const c = cmd('alarms.ack'), o = OBJ.get('alarms');
+R.ask = c.askFirst; R.label = o.label; R.says = c.consequence(o); R.risk = c.risk;
+C.run(c, o); await flush();""", self.acked_doc())
+        self.assertEqual((out["R"]["ask"], out["R"]["label"], out["R"]["risk"]), (True, "3 alarms", "undo"))
+        self.assertIn("Hides 3 unacknowledged alarm events", out["R"]["says"])
+        self.assertEqual(out["confirms"], ["alarms.ack"])
+
+    def test_acknowledge_all_posts_every_open_key_once_and_reads_again(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [200, { acked: body.keys.map(key => ({ key, hidden: body.acked })), failed: [] }];
+C.run(cmd('alarms.ack'), OBJ.get('alarms')); await flush();""", self.acked_doc())
+        self.assertEqual(len(out["posts"]), 1)
+        path, body = out["posts"][0][:2]
+        self.assertEqual(path, "/api/hoa/alarms")
+        self.assertEqual((sorted(body["keys"]), body["acked"]), (sorted((
+            "hoa-alarm/2026-08-20 09:00:00 Generator Running", "hoa-alarm/2026-09-01 10:00:00 A2 VSD Alarm",
+            "hoa-alarm/2026-09-01 10:30:00 A2 VSD Normal")), True))
+        self.assertNotIn(TANK_LOW, body["keys"])
+        self.assertEqual(hoa_reads(out), ["/api/hoa"] * 2)
+        self.assertEqual(out["toasts"][-1], ["Acknowledged 3 alarms. The Acknowledged view lists them.", True])
+
+    def test_acknowledge_all_names_the_events_that_did_not_land(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [200, { acked: body.keys.slice(1).map(key => ({ key, hidden: true })),
+            failed: [{ key: body.keys[0], error: 'alarm-events.csv holds no alarm event ' + body.keys[0].slice(10) }] }];
+C.run(cmd('alarms.ack'), OBJ.get('alarms')); await flush();""")
+        toast = out["toasts"][-1][0]
+        self.assertRegex(toast, r"^Acknowledged 3 of 4 alarms\. 1 not acknowledged: ")
+        self.assertIn("holds no alarm event 2026-09-05 06:00:00 Tank Low Alarm", toast)
+
+    def test_acknowledge_all_undo_posts_only_the_landed_keys_back(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [200, { acked: body.keys.slice(1).map(key => ({ key, hidden: body.acked })), failed: body.acked ? [{ key: body.keys[0], error: 'refused' }] : [] }];
+C.run(cmd('alarms.ack'), OBJ.get('alarms')); await flush();
+OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
+        self.assertEqual([p[1]["acked"] for p in out["posts"]], [True, False])
+        # The first key was refused on the way in, so the way back sends the other three only.
+        self.assertEqual(out["posts"][1][1]["keys"], out["posts"][0][1]["keys"][1:])
+        self.assertIn("Acknowledge all undone", out["toasts"][-1][0])
+
+    def test_a_refused_acknowledge_all_is_the_toast(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [409, { error: 'alarm-events.csv holds none of the 4 alarm events. Nothing was acknowledged. Read HOA again.', reload: true }];
+C.run(cmd('alarms.ack'), OBJ.get('alarms')); await flush();""")
+        self.assertTrue(any("Nothing was acknowledged" in t[0] for t in out["toasts"]), out["toasts"])
+
+    def test_acknowledge_all_is_in_the_palette(self):
+        out = self.run_page("R.labels = window.PAGE_COMMANDS.map(c => c.label);")
+        self.assertIn("Acknowledge all alarms", out["R"]["labels"])
 
     def test_an_unread_store_turns_both_commands_off_with_its_reason(self):
         doc = self.doc()
@@ -864,6 +1081,21 @@ class TheAcknowledgeRoute(BrowserSession):
         status, _, body = self.request("/api/hoa", headers={"Cookie": self.cookie})
         self.assertEqual([r["key"] for r in json.loads(body)["mission"]["alarms"] if r["acked"]], [TANK_LOW])
 
+    def test_the_batch_route_writes_the_listed_events_names_the_rest_and_is_409_when_none_is_listed(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        hoa = checkout(Path(tmp.name) / "hoa")
+        self.repo(str(hoa))
+        gone = "hoa-alarm/2026-09-05 06:00:00 Tank High Alarm"
+        status, _, body = self.post("/api/hoa/alarms", {"keys": [gone], "acked": True})
+        self.assertEqual(status, 409)
+        self.assertTrue(body["reload"])
+        status, _, body = self.post("/api/hoa/alarms", {"keys": [TANK_LOW, gone], "acked": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(([x["key"] for x in body["acked"]], [x["key"] for x in body["failed"]]), ([TANK_LOW], [gone]))
+        status, _, body = self.request("/api/hoa", headers={"Cookie": self.cookie})
+        self.assertEqual([r["key"] for r in json.loads(body)["mission"]["alarms"] if r["acked"]], [TANK_LOW])
+
 
 def source_row(source, label, latest, age, allowed, state, ends=None, refresh=None, error=None, **job):
     """One row as hoa's tools/source-ages.py --json prints it; without `job=`, as a checkout before hoa sd:5279 printed it."""
@@ -891,6 +1123,13 @@ class TheSourceAges(Fixture):
         text = body or (f"import json, sys\nprint(json.dumps({{'repo': '.', 'today': '2026-09-06', 'sources': {rows!r}}}))\n"
                         f"sys.stderr.write({stderr!r})\nsys.exit({code})\n")
         (tools / "source-ages.py").write_text(text, encoding="utf-8")
+
+    def job_doc(self):
+        """The document with no Download entry, as a source outside `hoa_download.SOURCES` has: its row's Run now is the
+        job's own (sd:5678)."""
+        doc = self.doc()
+        doc["downloads"] = {}
+        return doc
 
     def test_the_lamps_are_every_row_of_the_script_in_its_order(self):
         self.script()
@@ -973,7 +1212,7 @@ R.type = a.type; R.cli = c.cli(a); R.does = c.does(a); R.vantaca = OBJ.get('sour
     def test_retry_starts_the_sources_manual_job_through_the_jobs_route(self):
         self.script()
         self.jobs.jobs.update({"hoa-mission-export": ("failed", 3), "hoa-vantaca-pull": ("idle", 0)})
-        doc = self.doc()
+        doc = self.job_doc()
         revision = doc["sources"]["rows"][0]["job"]["revision"]
         out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
   : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' }, job: {} }];
@@ -994,66 +1233,167 @@ C.run(c, m); await flush(); R.timers = TIMERS;""", doc,
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/jobs/hoa-mission-export/retry", {"revision": revision}]])
         self.assertIn("Mission export refresh started · hoa-mission-export", out["toasts"][0][0])
         # The landed start reads HOA again, and the lamps with it,
-        self.assertEqual(out["gets"], ["/api/hoa", "/api/hoa"])
+        self.assertEqual(hoa_reads(out), ["/api/hoa", "/api/hoa"])
         # and once more after SRC_POLL, in case launchd had not marked the job running yet.
         self.assertEqual(out["R"]["timers"], [15000])
 
-    # sd:5482: one Refresh all button on the Data sources head starts every source's refresh job through the same route.
-    REFRESH_ALL = """ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
-  : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' }, job: {} }];
-const c = cmd('sources.refresh'), o = OBJ.get('sources');
-R.when = c.when(o); R.cli = c.cli(o); R.tools = ELS['src-tools'].html;
-R.page = window.PAGE_COMMANDS.map(p => p.label);
-ELS['src-tools'].listeners.click[0]({ target: { closest: s => s === '#src-refresh' ? {} : null } }); await flush(); R.timers = TIMERS;"""
+    # sd:5626: Refresh all is gone; the head holds Download from Vantaca and Download from Mission, each one start of
+    # hoa_download through POST /api/hoa/download, and the source row follows that run.
+    DOWNLOAD = """ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [202, { started: '2026-09-06T08:00:00+00:00', repo: '/hoa', command: 'x' }];
+const c = cmd('download.vantaca'), o = OBJ.get('download:vantaca');
+R.when = c.when(o); R.cli = c.cli(o); R.tools = ELS['src-tools'].html; R.src = ELS['src-body'].html;
+R.page = window.PAGE_COMMANDS.map(p => p.label); R.reg = REG.map(c => c.id);
+ELS['src-tools'].listeners.click[0]({ target: { closest: s => s === '[data-download]' ? { dataset: { download: 'vantaca' } } : null } });
+await flush(); R.timers = TIMERS;"""
 
-    def test_refresh_all_starts_the_mission_and_vantaca_jobs_through_the_jobs_route(self):
+    def download_doc(self, **vantaca):
         self.script()
-        self.jobs.jobs.update({"hoa-mission-export": ("failed", 3), "hoa-vantaca-pull": ("idle", 0)})
         doc = self.doc()
-        rev = {r["job"]["name"]: r["job"]["revision"] for r in doc["sources"]["rows"] if "job" in r}
-        out = self.run_page(self.REFRESH_ALL, doc,
-                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
+        never = {"running": False, "state": "never", "phase": "", "reason": "", "started": "", "finished": "", "exit": None,
+                 "log": "/state/start.log", "error": ""}
+        doc["downloads"] = {"vantaca": never | {"source": "vantaca", "label": "Vantaca", "command": "python3 tools/vantaca-pull.py"} | vantaca,
+                            "mission": never | {"source": "mission", "label": "Mission", "command": "sh tools/mission/mission.sh export"}}
+        return doc
+
+    def test_refresh_all_is_gone_and_each_download_button_posts_its_source(self):
+        out = self.run_page(self.DOWNLOAD, self.download_doc(), pre=TIMERS)
         self.assertIs(out["R"]["when"], True)
-        self.assertEqual(out["R"]["cli"], "sd jobs retry hoa-mission-export && sd jobs retry hoa-vantaca-pull")
-        self.assertIn('id="src-refresh"', out["R"]["tools"])
-        self.assertNotIn('aria-disabled', out["R"]["tools"])
-        self.assertIn("Refresh all sources", out["R"]["page"])
-        self.assertEqual([p[:2] for p in out["posts"]],
-                         [["/api/jobs/hoa-mission-export/retry", {"revision": rev["hoa-mission-export"]}],
-                          ["/api/jobs/hoa-vantaca-pull/retry", {"revision": rev["hoa-vantaca-pull"]}]])
-        self.assertIn("Refresh started · Mission export, Vantaca invoices", out["toasts"][0][0])
-        # One reread for both starts, then the poll.
-        self.assertEqual(out["gets"], ["/api/hoa", "/api/hoa"])
+        self.assertEqual(out["R"]["cli"], "python3 tools/vantaca-pull.py")
+        self.assertEqual(re.findall(r'data-download="(\w+)"', out["R"]["tools"]), ["mission", "vantaca"])
+        self.assertIn("Download from Vantaca", out["R"]["tools"])
+        self.assertIn("Download from Mission", out["R"]["tools"])
+        self.assertNotIn("aria-disabled", out["R"]["tools"])
+        self.assertNotIn("Refresh all", out["R"]["tools"] + " ".join(out["R"]["page"]))
+        self.assertNotIn("sources.refresh", out["R"]["reg"])
+        self.assertIn("Download from Vantaca", out["R"]["page"])
+        self.assertIn("Download from Mission", out["R"]["page"])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/download", {"source": "vantaca"}]])
+        self.assertIn("Vantaca download started 08:00 UTC", out["toasts"][-1][0])
+        # The start reads HOA again, then again every SRC_POLL until the run ends.
+        self.assertEqual(hoa_reads(out), ["/api/hoa", "/api/hoa"])
         self.assertEqual(out["R"]["timers"], [15000])
 
-    def test_refresh_all_starts_the_job_that_can_and_names_the_one_that_cannot(self):
-        self.script()
-        self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("running", None)})
-        out = self.run_page(self.REFRESH_ALL,
-                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
-        self.assertEqual([p[0] for p in out["posts"]], ["/api/jobs/hoa-mission-export/retry"])
-        self.assertIn("Refresh started · Mission export · Vantaca invoices not started: hoa-vantaca-pull is running now",
-                      out["toasts"][0][0])
-
-    def test_refresh_all_is_off_with_each_reason_when_no_job_can_start(self):
-        self.script()
-        doc = self.doc()
-        out = self.run_page(self.REFRESH_ALL, doc,
-                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
-        why = (f"Mission export: {doc['sources']['rows'][0]['job']['error']} · "
-               f"Vantaca invoices: {doc['sources']['rows'][2]['job']['error']}")
-        self.assertEqual(out["R"]["when"], why)
-        self.assertIn('aria-disabled="true"', out["R"]["tools"])
-        self.assertIn(why, out["R"]["tools"])
+    def test_the_row_says_waiting_for_you_to_log_in_and_the_button_is_off_while_it_waits(self):
+        doc = self.download_doc(running=True, state="running", phase="waiting", started="2026-09-06T08:00:00+00:00")
+        out = self.run_page(self.DOWNLOAD, doc, pre=TIMERS)
+        self.assertRegex(out["R"]["src"], re.compile(r'data-id="source:vantaca".*?17 d old · waiting for you to log in</div>', re.S))
+        self.assertRegex(out["R"]["src"], re.compile(r'data-id="source:vantaca".*?class="detail hide-sm">waiting for you to log in<', re.S))
+        self.assertEqual(out["R"]["when"], "a Vantaca download is running now: waiting for you to log in")
+        self.assertRegex(out["R"]["tools"], r'data-download="vantaca" aria-disabled="true"')
         self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"][0][0], why)
+        self.assertEqual(out["toasts"][-1][0], "a Vantaca download is running now: waiting for you to log in")
+        # A running download reads HOA again, so the row follows the session to the download and its end.
+        self.assertEqual(out["R"]["timers"], [15000])
+
+    # sd:5678: Run now on a source row with a Download is that Download: its job exits 3 on a login page, the Download
+    # waits for the login. The same off reason, CLI line and post, so the download's lock refuses both alike.
+    RUN_NOW = """const c = cmd('jobs.retry'), d = cmd('download.vantaca'), v = OBJ.get('source:vantaca'), o = OBJ.get('download:vantaca');
+R.when = [c.when(v), d.when(o)]; R.cli = [c.cli(v), d.cli(o)]; R.sends = c.sends(v); R.does = c.does(v);
+C.run(c, v); await flush(); R.timers = TIMERS;"""
+
+    def test_run_now_on_a_source_with_a_download_signs_in_through_the_download(self):
+        self.script()
+        self.jobs.jobs.update({"hoa-mission-export": ("failed", 3), "hoa-vantaca-pull": ("failed", 3)})
+        doc = self.download_doc()
+        doc["sources"] = self.doc()["sources"]
+        out = self.run_page("ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [202, { started: '2026-09-06T08:00:00+00:00', repo: '/hoa', command: 'x' }];\n"
+                            + self.RUN_NOW, doc, pre=TIMERS)
+        self.assertEqual(out["R"]["when"], [True, True])
+        self.assertEqual(out["R"]["cli"], ["python3 tools/vantaca-pull.py"] * 2)
+        self.assertEqual(out["R"]["sends"], 'POST /api/hoa/download {"source": "vantaca"}')
+        self.assertIn("waits for your login", out["R"]["does"])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/download", {"source": "vantaca"}]])
+        self.assertIn("Vantaca download started 08:00 UTC", out["toasts"][-1][0])
+        self.assertEqual(out["R"]["timers"], [15000])
+
+    def test_run_now_while_a_download_runs_is_refused_with_the_downloads_reason(self):
+        doc = self.download_doc(running=True, state="running", phase="waiting", started="2026-09-06T08:00:00+00:00")
+        out = self.run_page(self.RUN_NOW, doc, pre=TIMERS)
+        self.assertEqual(out["R"]["when"], ["a Vantaca download is running now: waiting for you to log in"] * 2)
+        self.assertEqual(out["posts"], [])
+        # The server's lock is the same route's: its 409 is the Run now's toast as it is the Download's.
+        doc = self.download_doc()
+        out = self.run_page("ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [409, { error: 'A Vantaca download is already running.' }];\n"
+                            + self.RUN_NOW, doc, pre=TIMERS)
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/download", {"source": "vantaca"}]])
+        self.assertIn("A Vantaca download is already running.", out["toasts"][-1][0])
+
+    # sd:5680: Show log on a source row with a Download is the download's start.log, in Details, as Run now is the
+    # Download; a row without one keeps its job's log on Management.
+    SHOW_LOG = """const c = cmd('jobs.log'), v = OBJ.get('source:vantaca'), m = OBJ.get('source:mission');
+R.cli = [c.cli(v), c.cli(m)]; R.does = c.does(v);
+C.run(c, v); await flush(); R.vantaca = ELS.details.html;
+C.run(c, m); await flush(); R.mission = ELS.details.html;"""
+
+    def test_show_log_on_a_source_with_a_download_shows_its_start_log(self):
+        tail = {"state": "read", "text": "opening Vantaca\nSTATUS: waiting for login\n", "cut": False, "reason": ""}
+        doc = self.download_doc(log="/state/vantaca/start.log", tail=tail)
+        doc["downloads"]["mission"]["tail"] = {"state": "none", "text": "", "cut": False,
+                                               "reason": "no log: the Mission download has not run on this machine"}
+        out = self.run_page(self.SHOW_LOG, doc)
+        self.assertEqual(out["R"]["cli"], ["cat '/state/vantaca/start.log'", "cat '/state/start.log'"])
+        self.assertIn("download", out["R"]["does"])
+        self.assertIn("STATUS: waiting for login", out["R"]["vantaca"])
+        self.assertIn("/state/vantaca/start.log", out["R"]["vantaca"])
+        self.assertIn("no log: the Mission download has not run on this machine", out["R"]["mission"])
+        self.assertEqual([t[0] for t in out["toasts"]], ["Vantaca download log is in Details", "Mission download log is in Details"])
+        # A log that did not read is unknown with its reason, never an empty log.
+        doc["downloads"]["mission"]["tail"] = {"state": "unread", "text": "", "cut": False, "reason": "the log is not a regular file"}
+        out = self.run_page(self.SHOW_LOG, doc)
+        self.assertIn("<b>▨ Not read.</b> the log is not a regular file", out["R"]["mission"])
+        self.assertNotIn("The log is empty", out["R"]["mission"])
+
+    def test_show_log_on_a_row_without_a_download_opens_its_jobs_log(self):
+        self.script()
+        self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("idle", 0)})
+        out = self.run_page("""const c = cmd('jobs.log'), m = OBJ.get('source:mission');
+window.shell.pages = { Management: '/management' }; R.cli = c.cli(m); C.run(c, m); await flush(); R.to = location.href;""", self.job_doc())
+        self.assertEqual(out["R"]["cli"], "local-cron-jobs/cron-jobs.sh logs hoa-mission-export")
+        self.assertEqual(out["toasts"][-1][0], "hoa-mission-export opens in Management > Schedules")
+        self.assertEqual(out["R"]["to"], "/management?q=hoa-mission-export&row=cron%3Ahoa-mission-export#view=schedules")
+
+    def test_the_document_carries_each_downloads_log_or_why_it_has_none(self):
+        self.script()
+        (self.root / "downloads" / "vantaca").mkdir(parents=True)
+        (self.root / "downloads" / "vantaca" / "start.log").write_text("opening Vantaca\nRESULT: signed in\n", encoding="utf-8")
+        (self.root / "downloads" / "mission" / "start.log").mkdir(parents=True)
+        got = self.doc()["downloads"]
+        self.assertEqual(got["vantaca"]["tail"], {"state": "read", "text": "opening Vantaca\nRESULT: signed in\n", "cut": False, "reason": ""})
+        self.assertEqual(got["mission"]["tail"], {"state": "unread", "text": "", "cut": False, "reason": "the log is not a regular file"})
+        (self.root / "downloads" / "mission" / "start.log").rmdir()
+        self.assertEqual(self.doc()["downloads"]["mission"]["tail"]["state"], "none")
+        self.assertIn("no log", self.doc()["downloads"]["mission"]["tail"]["reason"])
+
+    def test_a_finished_download_is_the_rows_refresh_text_and_a_missing_procedure_turns_its_button_off(self):
+        doc = self.download_doc(state="failed", reason="python3 tools/vantaca-pull.py exited 1: boom",
+                                error="tools/vantaca-pull.py is not in the hoa checkout /hoa, so the Vantaca download has no procedure there")
+        out = self.run_page(self.DOWNLOAD, doc, pre=TIMERS)
+        self.assertRegex(out["R"]["src"], re.compile(r'data-id="source:vantaca".*?class="detail hide-sm">last download failed: python3 tools/vantaca-pull.py exited 1: boom<', re.S))
+        self.assertNotRegex(out["R"]["src"], re.compile(r'data-id="source:vantaca".*?17 d old · ', re.S))
+        self.assertEqual(out["R"]["when"], doc["downloads"]["vantaca"]["error"])
+        self.assertEqual(out["posts"], [])
+
+    def test_a_retired_source_has_no_download_button(self):
+        doc = self.download_doc()
+        doc["sources"]["rows"] = [r for r in doc["sources"]["rows"] if r["source"] != "vantaca"]
+        out = self.run_page("R.tools = ELS['src-tools'].html; R.obj = !!OBJ.get('download:vantaca');", doc)
+        self.assertEqual(re.findall(r'data-download="(\w+)"', out["R"]["tools"]), ["mission"])
+        self.assertFalse(out["R"]["obj"])
+
+    def test_the_document_carries_each_sources_download_state(self):
+        self.script()
+        got = self.doc()["downloads"]
+        self.assertEqual(sorted(got), ["mission", "vantaca"])
+        self.assertEqual((got["mission"]["state"], got["mission"]["running"]), ("never", False))
+        # The fixture checkout holds neither procedure, so each download names the file it lacks.
+        self.assertIn("tools/mission/export-prompt.md is not in the hoa checkout", got["mission"]["error"])
 
     def test_a_refused_start_is_named(self):
         self.script()
         self.jobs.jobs["hoa-mission-export"] = ("failed", 3)
         out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
   : [200, { request: { status: 'failed', message: 'job changed before dispatch; no action was sent' }, job: {} }];
-C.run(cmd('jobs.retry'), OBJ.get('source:mission')); await flush();""",
+C.run(cmd('jobs.retry'), OBJ.get('source:mission')); await flush();""", self.job_doc(),
                             pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
         self.assertIn("hoa-mission-export not started: job changed before dispatch; no action was sent", out["toasts"][0][0])
 
@@ -1062,13 +1402,13 @@ C.run(cmd('jobs.retry'), OBJ.get('source:mission')); await flush();""",
         self.script()
         self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("running", None)})
         out = self.run_page("""const c = cmd('jobs.retry');
-R.when = ['mission', 'vantaca'].map(k => c.when(OBJ.get(`source:${k}`)));""",
+R.when = ['mission', 'vantaca'].map(k => c.when(OBJ.get(`source:${k}`)));""", self.job_doc(),
                             pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
         self.assertEqual(out["R"]["when"], [True, "hoa-vantaca-pull is running now"])
 
     def test_a_job_that_is_not_installed_turns_retry_off_and_says_how_to_install_it(self):
         self.script()
-        doc = self.doc()
+        doc = self.job_doc()
         self.assertEqual(doc["sources"]["rows"][0]["job"], {
             "name": "hoa-mission-export",
             "error": "hoa-mission-export is not an installed job (job is not supported: installed configuration is "
@@ -1101,8 +1441,8 @@ R.when = ['mission', 'vantaca'].map(k => c.when(OBJ.get(`source:${k}`)));""",
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa", "/api/hoa/alarm", "/api/hoa/sweep",
-                                              "/api/hoa/sweep/status", "/api/hoa/briefs",
+    page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa", "/api/hoa/alarm", "/api/hoa/alarms", "/api/hoa/sweep",
+                                              "/api/hoa/sweep/status", "/api/hoa/download", "/api/hoa/briefs",
                                               "/api/hoa/reports")
 
 

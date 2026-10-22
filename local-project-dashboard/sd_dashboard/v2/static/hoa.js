@@ -22,8 +22,15 @@
   const srcOf = key => SRC.find(r => r.source === key);
   // sd:5095: the checkout's tools/sweep.py, as /api/hoa's `sweep` part reads it (sweep.status): running, and the last run.
   let SWEEP = null;
-  // sd:5482: the Data sources head's Refresh all command, registered on DOMContentLoaded.
-  let REFRESH = null;
+  // sd:5626: each portal download's last run (/api/hoa's `downloads`, hoa_download.status), and its head command.
+  let DL = {};
+  const DOWNLOADS = {};
+  // sd:5621: the Alarms toolbar's Acknowledge all command, registered on DOMContentLoaded.
+  let ACK_ALL = null;
+  // sd:5671: a Tasks row's Details and commands, the Tasks page's (task-details.js), attached on DOMContentLoaded.
+  let TD = null;
+  // Whether the pane is HOA's: Briefs and Reports draw their own Details there (places.js).
+  const own = () => !['briefs', 'reports'].includes(window.shell.view?.current?.());
 // A source's refresh job (its source-ages row's `job`) as the jobs inventory reads it: its last run, in words.
 const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
   : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
@@ -32,6 +39,10 @@ const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.sta
 const sweepText = w => !w || w.error ? '' : w.running ? `sweep running${w.last?.started ? ` since ${w.last.started.slice(11, 16)} UTC` : ''}`
   : !w.last || w.last.state === 'never' ? 'sweep not run yet' : w.last.state === 'done' ? `last sweep done${w.last.finished ? ` ${w.last.finished.slice(0, 16).replace('T', ' ')} UTC` : ''}`
   : `last sweep ${w.last.state}${w.last.exit != null ? `, exit ${w.last.exit}` : ''}${w.last.reason ? `: ${w.last.reason}` : ''}`;
+// A download's run, in words: while it runs, its phase; after, how it ended. The row reads it as the sweep row reads its run.
+const downloadText = d => !d ? '' : d.running ? (d.phase === 'waiting' ? 'waiting for you to log in' : d.phase === 'downloading' ? 'downloading'
+  : `opening ${d.label} in Chrome`) : d.state === 'done' ? `last download done${d.finished ? ` ${d.finished.slice(0, 16).replace('T', ' ')} UTC` : ''}`
+  : d.state === 'unavailable' ? `last download not possible: ${d.reason}` : d.state === 'failed' ? `last download failed${d.reason ? `: ${d.reason}` : ''}` : '';
 const sweepState = w => !w || w.error || w.last?.state === 'unknown' ? 'unknown' : w.running || !w.last || w.last.state === 'never' ? 'queued' : w.last.state === 'done' ? 'ok' : 'warning';
 // While a refresh job runs, HOA reads again every SRC_POLL ms, so the lamps follow the run to its end.
 const SRC_POLL = 15000;
@@ -64,8 +75,8 @@ let polling = 0;
       : { id: 'alarms', label: 'Alarms today', state: at.count ? 'warning' : 'ok', open: AL[0]?.id, val: html`<b>${at.count}</b> today${at.acked ? ` · ${at.acked} acknowledged` : ''}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` });
     const late = OB.filter(o => o.state === 'warning').length, soon = OB.filter(o => o.state === 'caution').length;
     out.push(f.error ? { id: 'tasks', label: 'Tasks', state: 'unknown', val: html`<b>—</b> not read`, small: f.error }
-      : late ? { id: 'tasks', label: 'Tasks', state: 'warning', open: OB[0].id, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
-      : { id: 'tasks', label: 'Tasks', state: soon ? 'caution' : 'ok', open: OB[0]?.id, val: html`<b>${soon || OB.length}</b> ${soon ? 'due soon' : 'open'}`, small: soon ? `${OB.length} open · none overdue` : 'none overdue or due within a week' });
+      : late ? { id: 'tasks', label: 'Tasks', state: 'warning', open: OB[0].key, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
+      : { id: 'tasks', label: 'Tasks', state: soon ? 'caution' : 'ok', open: OB[0]?.key, val: html`<b>${soon || OB.length}</b> ${soon ? 'due soon' : 'open'}`, small: soon ? `${OB.length} open · none overdue` : 'none overdue or due within a week' });
     out.push(m.latest ? { id: 'mission', label: 'Mission data', state: m.stale ? 'caution' : 'ok', open: 'source:mission', val: html`<b>${m.age_days} d</b> old`, small: `newest row ${m.latest}${m.error ? ' · a file did not read' : ''}` }
       : { id: 'mission', label: 'Mission data', state: 'unknown', open: src, val: html`<b>—</b> not read`, small: why });
     return out;
@@ -106,6 +117,9 @@ let polling = 0;
   const glyph = type => html`<svg viewBox="0 0 24 24" aria-hidden="true">${TYPES[type].svg}</svg>`;
   const stClass = s => s === 'in service' ? 'st-ok' : s === 'unknown' ? 'st-unknown' : 'st-out';
   const W = 1000, ZOOMS = [1, 2, 4, 8, 16, 32], LABEL_ZOOM = 4;
+  // sd:5623: every common tract (the county's land use TRCT) is the HOA's; the road parcel is not. A tract whose longest side
+  // is under TRACT_MIN_PX on screen is too small to see, so a ring marks it until the zoom shows it.
+  const owned = l => l.kind === 'tract' && l.luc === 'TRCT', TRACT_MIN_PX = 12;
 
   function project() {
     const pts = [...LOTS.flatMap(l => l.rings.flat()), ...ASSETS.map(a => [a.lng, a.lat])];
@@ -130,8 +144,11 @@ let polling = 0;
     const mid = r => [r.reduce((a, p) => a + p[0], 0) / r.length, r.reduce((a, p) => a + p[1], 0) / r.length];
     const labels = zoom >= LABEL_ZOOM ? LOTS.filter(l => l.kind === 'lot' && l.address).map(l => { const [x, y] = mid(l.rings[0].slice(0, -1));
       return html`<text class="lot-label" x="${P.x(x).toFixed(1)}" y="${P.y(y).toFixed(1)}" font-size="${(11 * u).toFixed(2)}">${l.address}</text>`; }) : '';
+    const extent = l => { const xs = l.rings[0].map(p => P.x(p[0])), ys = l.rings[0].map(p => P.y(p[1])); return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)); };
+    const marks = LOTS.filter(l => owned(l) && extent(l) / u < TRACT_MIN_PX).map(l => { const [x, y] = mid(l.rings[0].slice(0, -1));
+      return html`<circle class="hoa-mark" data-tract="${l.ain || l.label}" cx="${P.x(x).toFixed(1)}" cy="${P.y(y).toFixed(1)}" r="${(8 * u).toFixed(2)}"><title>HOA-owned tract${l.label ? `, ${l.label}` : ''}</title></circle>`; });
     put(box, html`<svg class="map" viewBox="${vx} ${vy} ${vw} ${vh}" preserveAspectRatio="xMidYMid meet" aria-label="HOA water assets map">
-      ${LOTS.map(l => html`<path class="lot k-${l.kind}"${key(l)}${l.kind === 'lot' && `lot:${l.index}` === selected ? html` aria-current="true"` : ''} d="${l.rings.map(ring).join('')}"><title>${l.address || l.label || l.kind}</title></path>`)}${labels}
+      ${LOTS.map(l => html`<path class="lot k-${l.kind}"${key(l)}${owned(l) ? html` data-owned` : ''}${l.kind === 'lot' && `lot:${l.index}` === selected ? html` aria-current="true"` : ''} d="${l.rings.map(ring).join('')}"><title>${l.address || l.label || (owned(l) ? 'HOA-owned tract' : l.kind)}</title></path>`)}${labels}${marks}
       ${ASSETS.filter(a => !hidden.has(a.type) && TYPES[a.type]).map(a => { const t = TYPES[a.type], g = t.size * u;
         return html`<g class="asset t-${a.type} ${stClass(a.status)}" data-asset="${a.id}" tabindex="0" role="button" aria-label="${a.name}, ${a.type}, ${a.status}"${a.id === selected?.slice(6) ? html` aria-current="true"` : ''} transform="translate(${(P.x(a.lng) - g / 2).toFixed(2)} ${(P.y(a.lat) - g / 2).toFixed(2)}) scale(${(g / 24).toFixed(4)})"><title>${a.name} · ${a.status}</title>${TYPES[a.type].svg}</g>`; })}
     </svg>`);
@@ -139,9 +156,11 @@ let polling = 0;
   function zoomTo(z, at) { zoom = Math.max(ZOOMS[0], Math.min(ZOOMS[ZOOMS.length - 1], z)); if (at) center = at; drawMap(); }
   function legend() {
     const byType = {}, byStatus = {};
+    const tracts = LOTS.filter(owned).length;
     ASSETS.forEach(a => { byType[a.type] = (byType[a.type] || 0) + 1; byStatus[a.status] = (byStatus[a.status] || 0) + 1; });
     put($('legend'), html`${ORDER.filter(t => byType[t]).map(t => html`<li><button type="button" data-type="${t}" aria-pressed="${hidden.has(t) ? 'false' : 'true'}">${glyph(t)}${TYPES[t].label}s <b>${byType[t]}</b></button></li>`)}<li class="sep" aria-hidden="true"></li>${
-      Object.entries(byStatus).map(([s, n]) => html`<li class="status"><i class="${s === 'in service' ? '' : s === 'unknown' ? 'unk' : 'out'}" aria-hidden="true"></i>${s} <b class="data">${n}</b></li>`)}`);
+      Object.entries(byStatus).map(([s, n]) => html`<li class="status"><i class="${s === 'in service' ? '' : s === 'unknown' ? 'unk' : 'out'}" aria-hidden="true"></i>${s} <b class="data">${n}</b></li>`)}${
+      tracts ? html`<li class="status"><i class="own" aria-hidden="true"></i>HOA-owned ${tracts === 1 ? 'tract' : 'tracts'} <b class="data">${tracts}</b><i class="mark" aria-hidden="true"></i>ring: too small to see at this zoom</li>` : ''}`);
   }
 
   // ---------- Details ----------
@@ -190,13 +209,12 @@ let polling = 0;
       ${lots.error ? unknownBlock(lots.error) : dl([['Address', l.address || 'no match in the lot data'], ['Owner of record', l.owner], ['AIN', l.parcel],
         ['Source', `county parcel layer, fetched ${lots.fetched_at.slice(0, 10)}`]])}`, null, open);
   }
-  function selectOb(id, open) {
-    const o = OB.find(x => x.id === id); if (!o) return;
-    selected = id; mark(); drawMap();
-    show(html`<div class="kind"><span class="g-${o.state}" aria-hidden="true">${GLYPH[o.state]}</span><span class="label">${o.kind[0].toUpperCase()}${o.kind.slice(1)} · sd:${o.item}</span></div>
-      <h2>${o.title}</h2>${dl([['Due', o.due ? `${o.due.slice(0, 10)} · ${dueText(o)}` : 'no due date'], ['Priority', o.priority == null ? '' : `P${o.priority}`], ['Status', o.status], ['Item', `sd:${o.item}`], ['Source', `sd item, kind ${o.kind}`]])}
-      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}
-      <p class="why">Drafting asks the HOA chat for an email. Nothing is sent: the HOA rule is no external action without your approval.</p>`, id, open);
+  // sd:5671: a task's Details are the Tasks page's (task-details.js), drawn into this pane; its key is the item number.
+  function selectTask(key, open) {
+    const o = OB.find(x => x.key === key); if (!o || !TD) return;
+    selected = key; mark(); drawMap();
+    window.shell.commands.select(key); TD.readDet(o.id); TD.renderDetails();
+    if (open) window.shell.openPane('tab-details');
   }
   function selectAlarm(id, open) {
     const a = AL.find(x => x.id === id); if (!a) return;
@@ -210,13 +228,20 @@ let polling = 0;
   const ageBlock = r => !r ? '' : html`<h3 class="label">Age · ${DOC.sources.command}</h3>${dl([['State', r.state === 'unknown' ? `not read: ${r.error}` : r.state],
     ['Newest', r.latest ? `${r.latest} · ${r.age_days} d old` : 'no date found'], ['Allowed', `${r.allowed_days} d`], ['Ends', r.ends || ''], ['To do', r.state === 'stale' ? r.todo : ''],
     ['Refresh job', !r.job ? '' : r.job.error || `${r.job.name} · ${refreshText(r.job)}`]])}`;
+  // sd:5680: a source with a Download shows the end of that download's start.log, as Management shows a job's log; a log
+  // that was not read is unknown with its reason, a missing one says so.
+  const logBlock = k => { const d = DL[k], g = d?.tail; if (!d) return '';
+    const head = html`<h3 class="label">Log${g?.cut ? ' · last lines' : ''}</h3><p class="note">${d.log}</p>`;
+    return !g || g.state === 'unread' ? html`${head}${unknownBlock(g ? g.reason : 'this reading carries no log')}`
+      : g.state === 'none' ? html`${head}<p class="why">${g.reason}.</p>`
+      : html`${head}<div class="mailbody">${g.text || html`<span class="note">The log is empty.</span>`}</div>`; };
   function selectSourceRow(id, open) {
     const r = srcOf(id.slice(7)); if (!r) return;
     const st = SRC_STATE[r.state] || 'unknown';
     selected = id; mark();
     show(html`<div class="kind"><span class="g-${st}" aria-hidden="true">${GLYPH[st]}</span><span class="label">Source</span></div>
       <h2>${r.label}</h2>${ageBlock(r)}
-      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}`, id, open);
+      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}${logBlock(r.source)}`, id, open);
   }
   function selectSource(open) {
     const m = DOC.mission;
@@ -226,7 +251,7 @@ let polling = 0;
       ${dl([['Path', m.dir], ['Cadence', 'daily export, one row per day'], ['State', m.latest ? `${m.stale ? 'stale' : 'current'} · newest row ${m.latest} · ${m.age_days} d old` : 'not read']])}
       <h3 class="label">Files in this page</h3>${dl(m.files.map(f => [f.name, f.error ? `not read: ${f.error}` : `${f.rows} rows · latest ${f.latest.slice(0, 10)}`]))}
       <p class="note">Tank level and Aquifer read analog-daily.csv; Pumps reads pump-daily.csv; Alarms reads alarm-events.csv. The pump export lags the analog export by one day.</p>
-      ${ageBlock(srcOf('mission'))}<h3 class="label">Act</h3>${window.shell.commands.bar('source:mission')}`, 'source:mission', open);
+      ${ageBlock(srcOf('mission'))}<h3 class="label">Act</h3>${window.shell.commands.bar('source:mission')}${logBlock('mission')}`, 'source:mission', open);
   }
   function selectDay(d, open, series) {
     const m = DOC.mission, a = m.analog.find(r => r.date === d), p = m.pump.find(r => r.date === d);
@@ -241,7 +266,7 @@ let polling = 0;
   function select(id, open) {
     if (!id) return;
     if (id.startsWith('asset:')) selectAsset(id, open);
-    else if (id.startsWith('item:')) selectOb(id, open);
+    else if (OB.some(o => o.key === id)) selectTask(id, open);
     else if (id.startsWith('lot:')) selectLot(id.slice(4), open);
     else if (id.startsWith('alarm:')) { if (window.shell.view?.current() !== 'alarms') window.shell.view?.show('alarms'); selectAlarm(id, open); }
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
@@ -337,24 +362,31 @@ let polling = 0;
   function drawSources() {
     const C = window.shell.commands, sr = DOC?.sources;
     put($('src-body'), !DOC ? html`` : html`${drawSourceRows(C, sr)}${SWEEP ? sweepRow() : ''}`);
-    // sd:5482: Refresh all, the head's one button. aria-disabled, not disabled, so an off button keeps focus and its reason.
-    const o = C.get('sources'), w = o && REFRESH ? REFRESH.when(o) : '';
-    const icon = html`<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg>${REFRESH?.label}`;
-    put($('src-tools'), !o || !REFRESH ? html`` : w === true
-      ? html`<button class="btn quiet sm" type="button" id="src-refresh" data-tip="${REFRESH.does} Runs ${REFRESH.cli(o)}.">${icon}</button>`
-      : html`<button class="btn quiet sm" type="button" id="src-refresh" aria-disabled="true" aria-describedby="src-refresh-off" data-tip="${w}">${icon}</button><span class="sr" id="src-refresh-off">${w}</span>`);
+    // sd:5626: one Download button per source row with a download, in the rows' order. aria-disabled, not disabled, so an
+    // off button keeps focus and its reason.
+    put($('src-tools'), html`${SRC.map(r => r.source).filter(k => DOWNLOADS[k] && C.get(`download:${k}`)).map(k => {
+      const c = DOWNLOADS[k], o = C.get(`download:${k}`), w = c.when(o);
+      const icon = html`<svg class="i" aria-hidden="true"><use href="#i-download"/></svg>${c.label}`;
+      return w === true ? html`<button class="btn quiet sm" type="button" data-download="${k}" data-tip="${c.does} Runs ${c.cli(o)}.">${icon}</button>`
+        : html`<button class="btn quiet sm" type="button" data-download="${k}" aria-disabled="true" aria-describedby="dl-${k}-off" data-tip="${w}">${icon}</button><span class="sr" id="dl-${k}-off">${w}</span>`; })}`);
   }
-  // The head button and the palette entry: an off Refresh all toasts its reason, as the shell's run does not check it.
-  function refreshAll() {
-    const S = window.shell, o = S.commands.get('sources'), w = o && REFRESH ? REFRESH.when(o) : 'HOA is not read';
-    if (w === true) S.commands.run(REFRESH, o); else S.toast(w);
+  // The head button and the palette entry: an off Download toasts its reason, as the shell's run does not check it.
+  function downloadFrom(k) {
+    const S = window.shell, c = DOWNLOADS[k], o = S.commands.get(`download:${k}`);
+    const w = !c ? 'HOA is not read' : !o ? `${c.label} has no source row on this page` : c.when(o);
+    if (w === true) S.commands.run(c, o); else S.toast(w);
+  }
+  // The toolbar button and the palette entry, the same as Download.
+  function acknowledgeAll() {
+    const S = window.shell, o = S.commands.get('alarms'), w = o && ACK_ALL ? ACK_ALL.when(o) : 'HOA is not read';
+    if (w === true) S.commands.run(ACK_ALL, o); else S.toast(w);
   }
   function drawSourceRows(C, sr) {
     return sr.error ? html`<tr><td colspan="5">${unknownBlock(sr.error)}</td></tr>`
       : SRC.length ? html`${SRC.map(r => { const st = SRC_STATE[r.state] || 'unknown', id = `source:${r.source}`;
         return html`<tr data-id="${id}" aria-selected="${id === selected ? 'true' : 'false'}"><td class="g g-${st}" aria-label="${st}">${GLYPH[st]}</td>
-        <td class="what"><button type="button">${r.label}</button><div class="detail">${r.state === 'unknown' ? r.error : r.latest ? `newest ${r.latest} · ${r.age_days} d old` : 'no date found'}</div></td>
-        <td class="src hide-sm">allowed ${r.allowed_days} d</td><td class="detail hide-sm">${refreshText(r.job)}</td>
+        <td class="what"><button type="button">${r.label}</button><div class="detail">${r.state === 'unknown' ? r.error : r.latest ? `newest ${r.latest} · ${r.age_days} d old` : 'no date found'}${DL[r.source]?.running ? ` · ${downloadText(DL[r.source])}` : ''}</div></td>
+        <td class="src hide-sm">allowed ${r.allowed_days} d</td><td class="detail hide-sm">${downloadText(DL[r.source]) || refreshText(r.job)}</td>
         <td class="act">${C.rowActions(id)}</td></tr>`; })}`
       : html`<tr><td colspan="5" class="why">tools/source-ages.py lists no current source.</td></tr>`;
   }
@@ -366,7 +398,7 @@ let polling = 0;
   let kind = 'all';
   const OB_COLS = [['item', 'ID', 'num'], ['rank', html`<span class="sr">Urgency</span>`], ['title', 'What'], ['kind', 'Kind', 'hide-sm'],
     ['due', 'Due', 'hide-sm'], ['status', 'Status', 'hide-sm'], ['', html`<span class="sr">Actions</span>`]];
-  const OB_BY = { item: o => o.item, rank: o => OB.indexOf(o), title: o => o.title.toLowerCase(), kind: o => o.kind, due: o => o.due_days ?? Infinity, status: o => o.status };
+  const OB_BY = { item: o => o.id, rank: o => OB.indexOf(o), title: o => o.title.toLowerCase(), kind: o => o.kind, due: o => o.due_days ?? Infinity, status: o => o.status };
   function obRows() {
     const rows = OB.filter(o => kind === 'all' || o.kind === kind), by = OB_BY[OB_ST.sort];
     return by ? rows.sort((a, b) => { const x = by(a), y = by(b); return (x < y ? -1 : x > y ? 1 : 0) * OB_ST.dir; }) : rows;
@@ -379,18 +411,26 @@ let polling = 0;
     put($('ob-head'), window.shell.list.sortHead(OB_COLS, OB_ST));
     const rows = obRows();
     put($('ob-body'), !DOC ? html`` : f.error ? html`<tr><td colspan="7">${unknownBlock(f.error)}</td></tr>`
-      : rows.length ? html`${rows.map(o => html`<tr data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}">
-        <td class="id num">sd:${o.item}</td><td class="g g-${o.state}" aria-label="${o.state}">${GLYPH[o.state]}</td>
-        <td class="what"><button type="button">${o.title}</button>${o.priority == null ? '' : html` <span class="tag real">P${o.priority}</span>`}<div class="detail">${dueText(o)}</div></td>
+      : rows.length ? html`${rows.map(o => html`<tr data-id="${o.key}" aria-selected="${o.key === selected ? 'true' : 'false'}">
+        <td class="id num">sd:${o.id}</td><td class="g g-${o.state}" aria-label="${o.state}">${GLYPH[o.state]}</td>
+        <td class="what"><button type="button">${o.title}</button>${o.p == null ? '' : html` <span class="tag real">P${o.p}</span>`}<div class="detail">${dueText(o)}</div></td>
         <td class="hide-sm">${o.kind}</td><td class="detail hide-sm">${dueText(o)}</td><td class="src hide-sm">${o.status}</td>
-        <td class="act">${C.rowActions(o.id)}</td></tr>`)}`
+        <td class="act">${C.rowActions(o.key)}</td></tr>`)}`
       : html`<tr><td colspan="7" class="why">No open item in the checkout.</td></tr>`);
   }
 
   // ---------- Alarm ledger ----------
+  const alarmsErr = () => DOC?.mission?.files.find(x => x.name === 'alarm-events.csv')?.error;
+  const openAlarms = () => AL.filter(a => !a.acked);
   function drawLedgers() {
-    const C = window.shell.commands, m = DOC?.mission, alErr = m?.files.find(x => x.name === 'alarm-events.csv')?.error;
+    const C = window.shell.commands, alErr = alarmsErr();
     const shown = AL.filter(AL_VIEWS.find(v => v[0] === alView)[2]);
+    // sd:5621: Acknowledge all, the toolbar's one button. aria-disabled, not disabled, so an off button keeps focus and its reason.
+    const o = C.get('alarms'), w = o && ACK_ALL ? ACK_ALL.when(o) : '';
+    const label = html`<svg class="i" aria-hidden="true"><use href="#i-check"/></svg>${ACK_ALL?.label} <span class="n">${String(openAlarms().length)}</span>`;
+    put($('al-tools'), !o || !ACK_ALL ? html`` : w === true
+      ? html`<button class="btn quiet sm" type="button" id="al-ack-all" data-tip="${ACK_ALL.does} Asks first.">${label}</button>`
+      : html`<button class="btn quiet sm" type="button" id="al-ack-all" aria-disabled="true" aria-describedby="al-ack-all-off" data-tip="${w}">${label}</button><span class="sr" id="al-ack-all-off">${w}</span>`);
     put($('al-show'), DOC && !alErr ? html`${AL_VIEWS.map(([id, label, test]) => html`<button type="button" data-alview="${id}" aria-pressed="${String(id === alView)}">${label} <span class="n">${String(AL.filter(test).length)}</span></button>`)}` : html``);
     put($('al-body'), !DOC ? html`` : alErr ? html`<tr><td colspan="7">${unknownBlock(alErr)}</td></tr>`
       : shown.length ? html`${shown.map(a => html`<tr data-id="${a.id}" aria-selected="${a.id === selected ? 'true' : 'false'}"${a.acked ? html` data-acked` : ''}><td class="g g-${a.st}" aria-label="${a.st}">${GLYPH[a.st]}</td><td class="what"><button type="button">${a.event}</button>${a.acked ? html` <span class="tag">acknowledged</span>` : ''}</td><td class="src">${a.datetime.slice(5, 16)}</td><td class="detail hide-sm">${a.kind}</td><td class="num hide-sm">${a.minutes}</td><td class="detail hide-sm">${a.notified}</td><td class="act">${C.rowActions(a.id)}</td></tr>`)}`
@@ -400,11 +440,15 @@ let polling = 0;
   }
   const alarmState = a => a.kind === 'generator' ? ['queued', 'weekly generator test'] : /Normal/.test(a.event) ? ['ok', 'return to normal'] : ['warning', 'alarm'];
 
-  function draw() { lamps(); drawSources(); drawMap(); legend(); drawTrends(); drawTasks(); drawLedgers(); }
+  // A read retires the objects it did not put: the open task's notes and assignments are put again (task-details.js).
+  function draw() { TD?.putAll(); lamps(); drawSources(); drawMap(); legend(); drawTrends(); drawTasks(); drawLedgers(); }
 
   // ---------- Reader (read.js) ----------
   let reader = null;
   const load = () => reader.load();
+  // Read again (sd:5638): the shell's head button reads /api/hoa and the shown Briefs or Reports
+  // view again. Download from Vantaca or Mission, on Data sources, starts a download.
+  window.PAGE_AGAIN = { title: 'Read the HOA readings and the shown view again', run: () => Promise.all([load(), window.places.again()]) };
   // One timer at a time; each read that still sees a running job sets the next.
   function poll() { if (!polling) polling = setTimeout(() => { polling = 0; reader.reread(); }, SRC_POLL); }
   const spec = {
@@ -412,43 +456,50 @@ let polling = 0;
     adopt: doc => {
       DOC = doc; M = doc.mission;
       ASSETS = doc.assets.features; LOTS = doc.base.features;
-      OB = doc.items.rows;
+      // sd:5671: each item is an /api/tasks row (hoa_screen._items) in task-details.js's task shape, with HOA's due state.
+      OB = doc.items.rows.map(r => Object.assign(TD.shape(r), { state: r.state, due_days: r.due_days }));
+      TD.adopt(OB);
       // An event's id is its datetime and text, the server's view key (hoa_screen.alarm_key), so it holds across reads.
       AL = M.alarms.slice().reverse().map(a => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime} ${a.event}`, st, why }; });
       ACKS = M.acks && !M.acks.available ? `Acknowledge is off: ${M.acks.reason}` : '';
       // The end date is the site's calendar day, so the read's time is compared in the browser's zone, not UTC.
       const today = new Date(doc.read).toLocaleDateString('en-CA');
       SRC = (doc.sources?.rows || []).filter(r => r.state !== 'retired' && !(r.ends && r.ends < today));
+      DL = doc.downloads || {};
       P = project(); if (!P) { zoom = 1; center = null; }
       CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
       const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, !doc.base.error && doc.lots.error && `Lots: ${doc.lots.error}`, doc.items.error && `Tasks: ${doc.items.error}`].filter(Boolean);
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
-        ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title, kind: o.kind, revision: o.revision })),
+        ...OB.map(TD.objectOf),
+        // sd:5621: the Alarms toolbar, which Acknowledge all acts on; its label is the count the confirm names.
+        ...(M.error ? [] : [{ id: 'alarms', type: 'alarms', label: plural(AL.filter(a => !a.acked).length, 'alarm') }]),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
         ...(M.dir && !srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
         // A source with a refresh job is a job row: Management's shared Retry and Show log act on it.
         ...SRC.map(r => ({ id: `source:${r.source}`, type: r.job ? 'job' : 'source', label: r.label, source: r.source })),
-        // sd:5482: the Data sources head, which Refresh all acts on.
-        ...(doc.sources && !doc.sources.error ? [{ id: 'sources', type: 'sources', label: 'Data sources' }] : [])];
+        // sd:5626: a download for each source row the page shows that has one.
+        ...SRC.filter(r => DL[r.source]).map(r => ({ id: `download:${r.source}`, type: `${r.source} download`, label: DL[r.source].label, source: r.source }))];
       SWEEP = doc.sweep || null;
       if (SWEEP) objects.push({ id: 'sweep', type: 'sweep', label: 'HOA sweep' });
-      if (SRC.some(r => r.job?.state === 'running') || SWEEP?.running) poll();
+      if (SRC.some(r => r.job?.state === 'running') || SWEEP?.running || Object.values(DL).some(d => d.running)) poll();
       const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
         : c.problems.length ? { kind: 'partial', text: `${c.source}: ${c.problems.join(' · ')}.`, source: c.source }
         : failed.length ? { kind: 'partial', text: `${failed.join(' · ')}. The other parts are current.`, source: '/api/hoa' } : null;
       return { objects, state: st };
     },
     clear: () => {
-      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = []; SRC = []; SWEEP = null;
+      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = []; SRC = []; SWEEP = null; DL = {};
       delete document.body.dataset.observed;
       put($('subhead'), html`The HOA readings could not be read.`);
       window.shell.attention({ state: 'unknown', n: 0, what: 'HOA not read' });
     },
     draw,
     current: () => selected,
-    first: () => OB[0]?.id,
+    first: () => OB[0]?.key,
+    // sd:5620: a Briefs row fills Details in its view (places.js); a read selects HOA's own rows only outside Briefs and Reports.
+    active: () => own(),
     select: (id, opened) => select(id, opened),
     unselect: () => { selected = null; mark(); put($('details'), html`<p class="note">${DOC ? 'Select a marker, a task, an alarm or a trend day to see it here.' : 'Nothing is selected: the HOA readings could not be read.'}</p>`); },
   };
@@ -456,27 +507,28 @@ let polling = 0;
   window.PAGE_COMMANDS = [
     { label: 'Read HOA again', icon: 'rotate-ccw', run: () => load() },
     { label: 'Fit the map to the HOA', icon: 'maximize-2', run: () => { center = null; zoomTo(1); } },
-    { label: 'Refresh all sources', icon: 'rotate-ccw', run: () => refreshAll() },
+    { label: 'Download from Vantaca', icon: 'download', run: () => downloadFrom('vantaca') },
+    { label: 'Download from Mission', icon: 'download', run: () => downloadFrom('mission') },
+    { label: 'Acknowledge all alarms', icon: 'check', run: () => acknowledgeAll() },
   ];
   // The shell walks the ledger rows on j / k; a row selects by its own click.
   window.PAGE_LIST = { rows: () => document.querySelectorAll('.ledger tbody tr[data-id]'), current: () => selected, select: id => select(id, false) };
 
   document.addEventListener('DOMContentLoaded', () => {
     const S = window.shell, C = S.commands;
+    // ---------- Tasks' Details (sd:5671) ----------
+    // A task's Details, commands, writes and dialogs are the Tasks page's (task-details.js), as on Home and the realm places.
+    // HOA gives it the rows, the selection and the read; its due line; a link to Tasks; and Draft email (sd:3463, which
+    // HOA's Draft followup posted too) as a followup's first action. Email is never sent from the dashboard.
+    TD = window.taskDetails.attach({ details: $('details'), rows: () => OB, selected: () => own() ? selected : null, read: () => DOC?.read,
+      render: () => { drawTasks(); if (own() && OB.some(o => o.key === selected)) TD.renderDetails(); }, reread: () => reader.reread(), load: () => reader.load(),
+      select: (key, open) => select(key, open), draftFirst: t => t.kind === 'followup',
+      note: t => html`<p class="why"><span class="g-${t.state}" aria-hidden="true">${GLYPH[t.state]}</span> ${t.due ? `${t.due.slice(0, 10)} · ${dueText(t)}` : 'no due date'}</p>`,
+      foot: () => DOC ? html`Rows read <time class="rel" datetime="${DOC.read}"></time> from /api/hoa.` : '',
+      more: t => html`<p class="why"><a href="${S.itemHref(t.id)}">Open on Tasks</a>: the board, the matrix and every task.</p>` });
     reader = S.read(spec);
     // ---------- Commands (products/system/commands.md) ----------
-    // Draft followup is Tasks' Draft email (sd:5483, email_draft): claude writes it and workspace-mcp saves it as a Gmail draft
-    // in the EMAIL_FROM account, with no recipient. Email is never sent from the dashboard.
-    const openItem = o => S.openItem(o.item);
     C.register(
-      // A followup's first action drafts it; any other kind's opens the item (sd:4959).
-      { id: 'item.draft', on: 'item', label: 'Draft followup', key: 'd', risk: 'safe', primary: o => o.kind === 'followup',
-        icon: 'mail', executes: true, sends: o => `POST /api/items/${o.item}/draft-email {revision}`,
-        run: o => S.post(`/api/items/${o.item}/draft-email`, { revision: o.revision }).then(
-          v => reader.reread().then(() => `Draft saved · sd:${o.item} · "${v.draft.subject}" · in Gmail Drafts, not sent`),
-          err => { if (!err.status) throw new Error(`no answer (${err.message}), so whether a draft was saved is not known; look in Gmail Drafts before you draft again`);
-            reader.reread(); throw err; }) },
-      { id: 'item.open', on: 'item', label: 'Open item', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: o => o.kind !== 'followup', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
       { id: 'asset.ask', on: 'asset', label: 'Ask', key: 'a', icon: 'message-square', risk: 'safe', primary: () => true,
         run: o => { S.openChat(); S.send(`What do we know about ${o.asset} (${o.name})?`); return ''; } },
     );
@@ -558,6 +610,26 @@ let polling = 0;
         key: 'a', risk: 'undo', bulk: true, when: o => !o.acked ? 'not acknowledged' : ACKS || true, cli: () => NO_CLI,
         run: o => ack(o, false).then(() => `Unacknowledged: ${o.label}`), undo: o => ack(o, true) },
     );
+    // ---------- Acknowledge all (sd:5621) ----------
+    // One post for every unacknowledged event: POST /api/hoa/alarms writes each key as the single route does, and names the
+    // keys it did not write (an event the export dropped, or a refused write). It asks first and names the count; the toast
+    // says how many landed and which did not, and Undo posts back only the keys that landed.
+    const ackMany = (keys, acked) => S.post('/api/hoa/alarms', { keys, acked }).then(v => reader.reread().then(() => v));
+    ACK_ALL = { id: 'alarms.ack', on: 'alarms', label: 'Acknowledge all', icon: 'check', risk: 'undo', primary: () => true, executes: true,
+      askFirst: true, does: 'Hides every open alarm event here only. Undo shows them.',
+      when: () => alarmsErr() ? `alarm-events.csv did not read: ${alarmsErr()}` : ACKS || (openAlarms().length ? true : 'no alarm event is unacknowledged'),
+      consequence: () => `Hides ${plural(openAlarms().length, 'unacknowledged alarm event')} in this list. The Mission portal is not told; Undo shows them again.`,
+      cli: () => NO_CLI, sends: () => 'POST /api/hoa/alarms {keys, acked: true}',
+      run: () => { const rows = openAlarms(), named = new Map(rows.map(a => [a.key, `${a.datetime.slice(5, 16)} ${a.event}`]));
+        return ackMany(rows.map(a => a.key), true).then(out => {
+          const got = out.acked.map(x => x.key), bad = out.failed.map(x => `${named.get(x.key) || x.key} (${x.error})`);
+          return { keys: got, text: bad.length ? `Acknowledged ${got.length} of ${plural(rows.length, 'alarm')}. ${bad.length} not acknowledged: ${bad.join(', ')}`
+            : `Acknowledged ${plural(got.length, 'alarm')}. The Acknowledged view lists them.` }; }); },
+      undo: (o, v) => !v?.keys?.length ? false : ackMany(v.keys, false).then(out => {
+        if (out.failed.length) throw new Error(`${out.acked.length} of ${v.keys.length} shown again; ${out.failed.length} not: ${out.failed.map(x => x.error).join(', ')}`);
+        return true; }) };
+    C.register(ACK_ALL);
+    $('al-tools').addEventListener('click', e => { if (e.target.closest('#al-ack-all')) acknowledgeAll(); });
     // ---------- Refresh a source (sd:4965) ----------
     // Each refreshable source has a manual cron job, named by its source-ages row (sd:5280). Its row registers Management's shared Retry
     // (commands.js), which posts /api/jobs/<name>/retry with the job's revision; the jobs inventory's answer is the off
@@ -568,37 +640,40 @@ let polling = 0;
     const kick = j => S.post(`/api/jobs/${encodeURIComponent(j.name)}/retry`, { revision: j.revision });
     const refresh = o => { const j = srcOf(o.source).job;
       return kick(j).then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
-    const retry = window.commands.retry({ job: facts, run: refresh });
+    // sd:5678: a source with a Download runs that Download from its row: its job exits 3 on a login page, the Download
+    // waits for the login. Its off reason, line, post and answer are the Download's, so one lock refuses both alike.
+    const via = o => DL[o.source] && DOWNLOADS[o.source];
+    const ran = o => { const d = DL[o.source], w = via(o).when();
+      return { name: via(o).label, failed: ['failed', 'unavailable'].includes(d.state), exit: d.exit, sends: via(o).sends(),
+        capability: { allowed: w === true, reason: w === true ? '' : w } }; };
+    const retry = window.commands.retry({ job: o => via(o) ? ran(o) : facts(o), run: o => via(o) ? via(o).run() : refresh(o) });
+    // sd:5680: so Show log on that row is the download's start.log, in the row's Details; the job's log opens on Management.
+    const shown = window.commands.showLog({ job: facts }), shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
     C.register(
       { ...retry,
-        does: o => o.source === 'mission' ? 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.'
-          : `Pulls ${o.label} once through its refresh job. Nothing to undo.` },
-      window.commands.showLog({ job: facts }),
+        does: o => via(o) ? via(o).does : o.source === 'mission' ? 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.'
+          : `Pulls ${o.label} once through its refresh job. Nothing to undo.`,
+        cli: o => via(o) ? via(o).cli() : retry.cli(o) },
+      { ...shown,
+        does: o => via(o) ? 'Shows the last download\'s log in Details.' : shown.does,
+        cli: o => via(o) ? `cat ${shq(DL[o.source].log)}` : shown.cli(o),
+        run: o => { if (!via(o)) return shown.run(o); select(`source:${o.source}`, true); return `${DL[o.source].label} download log is in Details`; } },
     );
-    // ---------- Refresh all (sd:5482) ----------
-    // The Data sources head's one button: Retry's post for every source row whose Retry is on, then one reread. Each source's
-    // off reason is Retry's own; the toast names what started and what did not.
-    const jobRows = () => SRC.filter(r => r.job).map(r => C.get(`source:${r.source}`)).filter(Boolean);
-    const startable = () => jobRows().filter(o => retry.when(o) === true);
-    REFRESH = { id: 'sources.refresh', on: 'sources', label: 'Refresh all', icon: 'rotate-ccw', risk: 'safe', primary: () => true, executes: true,
-      does: 'Starts every source\'s refresh job that can start, as each row\'s Run now does.',
-      when: () => { const all = jobRows(); return !all.length ? 'no source has a refresh job' : startable().length ? true : all.map(o => `${o.label}: ${retry.when(o)}`).join(' · '); },
-      askFirst: () => startable().some(o => retry.askFirst(o)),
-      consequence: () => startable().map(o => retry.consequence(o)).filter(Boolean).join(' '),
-      cli: () => (startable().length ? startable() : jobRows()).map(o => retry.cli(o)).join(' && '),
-      sends: () => startable().map(o => retry.sends(o)).filter(Boolean).join('; '),
-      run: () => { const go = startable(), rest = jobRows().filter(o => !go.includes(o));
-        // answered() gives true for a sent start, else the sentence that names the job and why.
-        return Promise.all(go.map(o => { const j = srcOf(o.source).job;
-          return kick(j).then(out => window.commands.answered(out, j.name, 'started', true),
-            err => err.status ? `${j.name} not started: ${err.message}` : `Not known whether ${j.name} was started: no answer (${err.message})`); }))
-          .then(said => reader.reread().then(() => {
-            const ok = go.filter((_, i) => said[i] === true), not = [...said.filter(s => s !== true), ...rest.map(o => `${o.label} not started: ${retry.when(o)}`)];
-            if (ok.length) poll();
-            return [ok.length ? `Refresh started · ${ok.map(o => o.label).join(', ')}` : 'Nothing started', ...not, ok.length ? 'HOA reads again until it ends' : ''].filter(Boolean).join(' · ');
-          })); } };
-    C.register(REFRESH);
-    $('src-tools').addEventListener('click', e => { if (e.target.closest('#src-refresh')) refreshAll(); });
+    // ---------- Download (sd:5626) ----------
+    // POST /api/hoa/download {source} starts hoa_download.py detached: a Claude Chrome session opens the portal, waits for
+    // the operator's login, then the checkout's own download runs. A 409 names the run going; a 400 the missing procedure.
+    // HOA reads again until it ends; the source row shows "waiting for you to log in" while the session waits.
+    for (const [k, label] of [['vantaca', 'Vantaca'], ['mission', 'Mission']]) {
+      DOWNLOADS[k] = { id: `download.${k}`, on: `${k} download`, label: `Download from ${label}`, icon: 'download', risk: 'safe', primary: () => true, executes: true,
+        does: `Opens ${label} in Chrome, waits for your login, then downloads.`,
+        when: () => { const d = DL[k]; return !d ? 'HOA is not read' : d.error || (d.running ? `a ${label} download is running now: ${downloadText(d)}` : true); },
+        cli: () => DL[k]?.command || '', sends: () => `POST /api/hoa/download {"source": "${k}"}`,
+        run: () => S.post('/api/hoa/download', { source: k }).then(
+          out => reader.reread().then(() => { poll(); return `${label} download started ${String(out.started).slice(11, 16)} UTC · log in in Chrome if it asks`; }),
+          err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether the ${label} download started is not known`); }) };
+      C.register(DOWNLOADS[k]);
+    }
+    $('src-tools').addEventListener('click', e => { const b = e.target.closest('[data-download]'); if (b) downloadFrom(b.dataset.download); });
     // ---------- Run sweep (sd:5095) ----------
     // POST /api/hoa/sweep starts the checkout's tools/sweep.py in the background (sd_dashboard/sweep.py); a 409 names the run going.
     // HOA reads again until the run ends; the row's lamp and text follow it. It asks first: the run lands a commit.

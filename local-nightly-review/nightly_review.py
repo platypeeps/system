@@ -21,6 +21,8 @@ from pathlib import Path
 
 QUEUE = "nightly"
 OPTIONS = ["Approve", "Reject"]
+#: Every question is the model's own suggestion, so it proposes Approve; the Review page shows that as its recommendation.
+PROPOSED = "Proposed label: Approve"
 #: The nightly batch's ceiling; `sd-db review file` drops the rest and says so.
 LIMIT = 5
 #: How long a rejection keeps a subject out, as `sd-db review file` reads it.
@@ -89,7 +91,8 @@ def _reply(text):
                 or not isinstance(question.get("subject"), str) or not isinstance(question.get("text"), str)):
             raise Refused(f"suggestion {number} must hold subject and text, and evidence at most")
         questions.append({"subject": question["subject"], "text": question["text"],
-                          "evidence": question.get("evidence", []), "options": list(OPTIONS)})
+                          "evidence": [*question.get("evidence", []), PROPOSED],
+                          "options": list(OPTIONS)})
     return questions
 
 

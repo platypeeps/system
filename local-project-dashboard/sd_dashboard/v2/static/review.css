@@ -1,5 +1,5 @@
 /* Hallmark · page: Review · genre: modern-minimal · theme: design.md instrument panel (foundation tokens, unchanged)
- * macrostructure: operations list in two views (sd:5497): Questions, the decision rows decisions.css draws; Bulk scoring, an
+ * macrostructure: operations list in one view (sd:5651): an
  * annunciator of batches over a ledger banded by batch, each row carrying its question; no Details pane
  * states: row default, hover, selected, focus, reviewed; option default, hover, focus, active, disabled; fold closed, open;
  * lamp caution, ok, unknown; Show reviewed pressed, not pressed; checkbox off, on, mixed (band), focus, disabled;
@@ -76,17 +76,6 @@ annunciator-strip:has(> .annunciator[hidden]) { display: none; }
 .review .at { width: 1%; white-space: nowrap; font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-muted); }
 .review .tag { display: inline-block; margin-left: var(--space-2xs); padding: 0 var(--space-2xs); border: var(--rule-hair) solid currentColor; border-radius: var(--radius-sm); font: 500 var(--text-2xs)/1.3 var(--font-label); letter-spacing: 0.06em; text-transform: uppercase; }
 .review tr.empty td { color: var(--color-ink-2); }
-
-/* No Details pane (sd:5123): the row carries the question. Below 1240px the shell's pane is already a sheet that opens for
- * Chat; from 1240px it docks, so here main takes its column and the pane opens over the page only for Chat (c). */
-#tab-details { display: none; }
-@media (min-width: 1240px) {
-  .shell > main { grid-column: 2 / -1; }
-  .pane { position: fixed; inset: 0 0 0 auto; width: var(--drawer); z-index: 10; box-shadow: var(--shadow-sheet); }
-  .pane:not([data-open]) { display: none; }
-  .tabs .close { display: inline-grid; }
-  .tabs .fold { display: none; }
-}
 
 @media (max-width: 899px) {
   .review thead { display: none; }

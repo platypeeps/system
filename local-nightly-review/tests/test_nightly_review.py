@@ -123,6 +123,8 @@ class NightlyReview(unittest.TestCase):
         self.assertEqual((written["queue"], written["batch"], written["mode"], written["limit"]),
                          ("nightly", self.today, "open", 5))
         self.assertEqual([q["options"] for q in written["questions"]], [["Approve", "Reject"]] * 2)
+        # Every question is the model's own suggestion, so the page recommends Approve (sd:5634).
+        self.assertEqual([q["evidence"][-1] for q in written["questions"]], ["Proposed label: Approve"] * 2)
         found = self.batches()
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["ref"], f"review:nightly:{self.today}")

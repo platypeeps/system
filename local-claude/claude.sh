@@ -381,6 +381,8 @@ for name, live_path, common_path, prof_path, expands in targets:
                 print("  WARN    no snapshot yet — run: claude.sh capture --apply")
                 rc = 1
             continue
+        # An empty env or headers says nothing: {} and no field are the same (sd:5593).
+        bare = lambda srv: {k: v for k, v in srv.items() if v != {}}
         for server in sorted(set(merged) | set(clean)):
             layer = "profile" if server in profile_snap else "common"
             if server not in merged:
@@ -390,10 +392,10 @@ for name, live_path, common_path, prof_path, expands in targets:
                 print("  removed %s (in %s, not on this machine — capture, or "
                       "restore it)" % (server, layer))
                 rc = 1
-            elif merged[server] != clean[server]:
+            elif bare(merged[server]) != bare(clean[server]):
                 fields = sorted(
                     k for k in set(merged[server]) | set(clean[server])
-                    if merged[server].get(k) != clean[server].get(k)
+                    if bare(merged[server]).get(k) != bare(clean[server]).get(k)
                 )
                 print("  changed %s (%s) [%s]"
                       % (server, ", ".join(fields), layer))

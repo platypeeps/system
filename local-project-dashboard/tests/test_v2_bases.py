@@ -200,13 +200,13 @@ class TheScriptForBases(Bases, ScreenCase):
 
     def test_the_base_filter_the_stage_column_and_the_score_sort(self):
         out = self.run_page("""R.filters = ELS.filters.html;
-ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'base' }, value: 'blog-idea' } });
+ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'kind' }, value: 'base:blog-idea' } });
 R.board = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
-        self.assertIn('<select id="f-base" class="fsel" data-pick="base"><option value="" selected>All</option>'
-                      '<option value="blog-idea">blog-idea</option></select>', out["R"]["filters"])
+        # One Kind filter holds the plugin kinds (sd:5644).
+        self.assertIn('<option value="base:blog-idea">blog-idea (plugin kind)</option></select>', out["R"]["filters"])
         self.assertIn("An idea", out["R"]["board"])
         self.assertNotIn("Plan the review", out["R"]["board"])
-        self.assertIn("base=blog-idea", out["R"]["url"])
+        self.assertIn("kind=base%3Ablog-idea", out["R"]["url"])
         out = self.run_page("R.list = ELS['view-list'].html;", search="?view=list&sort=score")
         self.assertRegex(out["R"]["list"], r"An idea</button><span class=\"fold mono\">[^<]*</span></td><td class=\"mono rp\"><span[^>]*>[^<]*</span></td>"
                          r"<td class=\"st\">Planning</td><td>inbox<span class=\"fold mono\">score 7</span></td><td class=\"mono sc\">7</td>")

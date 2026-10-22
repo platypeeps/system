@@ -18,8 +18,9 @@ the failed part as unknown with the reason, never as an empty list. The read
 reaches no network: the map draws the vectors in the files, and the page loads
 no tiles. It runs one command, the checkout's bounded `tools/source-ages.py`,
 and reads the refresh jobs' launchd state, and asks the checkout's `tools/sweep.py status --json` for the last sweep
-(`sweep`); it starts nothing. The writes are Acknowledge (`acknowledge`), the jobs route Refresh now posts, and
-Run sweep (`sweep.start`).
+(`sweep`) and each source's last download with the end of its log (`downloads`, sd:5626, sd:5680); it starts nothing. The writes are Acknowledge
+(`acknowledge`) and Acknowledge all (`acknowledge_many`), the jobs route Refresh now posts, Run sweep (`sweep.start`) and
+Download (`hoa_download.start`).
 """
 
 from __future__ import annotations
@@ -34,12 +35,12 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from sd_db import operations, reads, repos, workflow, writes
+from sd_db import SdDbError, operations, reads, repos, workflow, writes
 
-from . import sweep
+from . import hoa_download, sweep
 from .documents import _config_dir, pipe_lines
 
-__all__ = ["ALARM_ROOT", "REFRESH_JOBS", "SOURCE_AGES", "SOURCE_SECONDS", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "alarm_key", "document",
+__all__ = ["ALARM_ROOT", "REFRESH_JOBS", "SOURCE_AGES", "SOURCE_SECONDS", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "acknowledge_many", "alarm_key", "document",
            "thresholds"]
 
 #: The folder name that picks the checkout out of the repo table.
@@ -279,6 +280,24 @@ def _refresh_jobs(connection, rows: list[dict], backend) -> None:
         row["job"] = {key: job.get(key) for key in JOB_KEYS} | {"said": _said(job_log(root, name), name)}
 
 
+
+def _download(source: str, place: Path) -> dict:
+    """The source's last download (`hoa_download.status`) and `tail`, the end of its start.log in Management's log shape
+    (sd:5680): Show log on the row reads it. Only the path the status names is read, never one from a request."""
+    from .management_screen import LOG_BYTES, log_tail, unreadable
+
+    out = hoa_download.status(source, place)
+    tail = {"state": "unread", "text": "", "cut": False, "reason": ""}
+    try:
+        _, raw, start = log_tail(Path(out["log"]), LOG_BYTES)
+    except FileNotFoundError:
+        tail |= {"state": "none", "reason": f"no log: the {out['label']} download has not run on this machine"}
+    except OSError as error:
+        tail |= {"reason": unreadable(error)}
+    else:
+        tail |= {"state": "read", "text": raw.decode("utf-8", "replace"), "cut": bool(start)}
+    return out | {"tail": tail}
+
 # ---------------------------------------------------------------------------
 # Acknowledge (sd:4967): the workflow database's `view` state, the store Designs' Hide and Documents' Pin write
 # (sd:3428, sd:3447). An acknowledged alarm event is a hidden view keyed `hoa-alarm/<datetime> <event>`: the row's own
@@ -315,6 +334,24 @@ def _real(row: dict) -> bool:
     return row["kind"] != "generator" and "Normal" not in row["event"]
 
 
+def _listed(connection) -> set[str]:
+    """The keys of the alarm events the export lists now: a write reads the file again, so a key it no longer holds is stale."""
+    _, place, problems = checkout(connection)
+    if problems or place is None:
+        raise ValueError(f"Nothing was acknowledged: {problems[0] if problems else 'no repo named hoa is registered'}.")
+    name, stamp, columns = FILES["alarms"]
+    try:
+        rows = _csv(_paths(place)["mission"] / name, stamp, columns)
+    except (OSError, UnicodeDecodeError, ValueError, csv.Error) as error:
+        raise ValueError(f"Nothing was acknowledged: {name} did not read: {error}") from None
+    return {alarm_key(row) for row in rows}
+
+
+def _need_views() -> None:
+    if not hasattr(writes, "set_view"):
+        raise ValueError("The command pack has no view store yet (sd:3430): pull it and restart the dashboard.")
+
+
 def acknowledge(payload: dict):
     """`POST /api/hoa/alarm`: `{"key", "acked"}`; the write as `action_route` returns one. The write reads the export
     again, so a key the export no longer holds is refused as stale and nothing is written."""
@@ -322,22 +359,41 @@ def acknowledge(payload: dict):
     if set(payload) != {"key", "acked"} or not isinstance(key, str) or not isinstance(acked, bool) \
             or not key.startswith(f"{ALARM_ROOT}/"):
         raise ValueError("Send the alarm event's key and acked, true or false.")
-    if not hasattr(writes, "set_view"):
-        raise ValueError("The command pack has no view store yet (sd:3430): pull it and restart the dashboard.")
+    _need_views()
 
     def write(connection):
-        _, place, problems = checkout(connection)
-        if problems or place is None:
-            raise ValueError(f"Nothing was acknowledged: {problems[0] if problems else 'no repo named hoa is registered'}.")
-        name, stamp, columns = FILES["alarms"]
-        try:
-            rows = _csv(_paths(place)["mission"] / name, stamp, columns)
-        except (OSError, UnicodeDecodeError, ValueError, csv.Error) as error:
-            raise ValueError(f"Nothing was acknowledged: {name} did not read: {error}") from None
-        if key not in {alarm_key(row) for row in rows}:
-            raise workflow.StaleItem(f"{name} holds no alarm event {key[len(ALARM_ROOT) + 1:]}. Nothing was acknowledged. "
-                                     "Read HOA again.")
+        if key not in _listed(connection):
+            raise workflow.StaleItem(f"{FILES['alarms'][0]} holds no alarm event {key[len(ALARM_ROOT) + 1:]}. "
+                                     "Nothing was acknowledged. Read HOA again.")
         return {"key": key, **writes.set_view(connection, key, hidden=acked)}
+
+    return write
+
+
+def acknowledge_many(payload: dict):
+    """`POST /api/hoa/alarms`: `{"keys", "acked"}`, Acknowledge all and its Undo: the single write for each key, in one
+    transaction, with the export read once. A key the export no longer holds, or the store refuses, is `failed` with its
+    reason and the others still land (`acked`); when none lands the answer is stale and nothing is written."""
+    keys, acked = payload.get("keys"), payload.get("acked")
+    if set(payload) != {"keys", "acked"} or not isinstance(acked, bool) or not isinstance(keys, list) or not keys \
+            or not all(isinstance(key, str) and key.startswith(f"{ALARM_ROOT}/") for key in keys) or len(set(keys)) != len(keys):
+        raise ValueError("Send the alarm events' keys, each once, and acked, true or false.")
+    _need_views()
+
+    def write(connection):
+        listed, landed, failed = _listed(connection), [], []
+        for key in keys:
+            if key not in listed:
+                failed.append({"key": key, "error": f"{FILES['alarms'][0]} holds no alarm event {key[len(ALARM_ROOT) + 1:]}"})
+                continue
+            try:
+                landed.append({"key": key, **writes.set_view(connection, key, hidden=acked)})
+            except SdDbError as error:
+                failed.append({"key": key, "error": str(error)})
+        if not landed:
+            raise workflow.StaleItem(f"{FILES['alarms'][0]} holds none of the {len(keys)} alarm events. "
+                                     "Nothing was acknowledged. Read HOA again.")
+        return {"acked": landed, "failed": failed}
 
     return write
 
@@ -402,30 +458,28 @@ def _lots(path: Path | None, base: Path | None, features: list[dict]) -> dict:
 
 def _items(connection, repo: str | None, now: str, today: date) -> dict:
     """The checkout's open items of every kind, ranked: overdue, then due within a week, then the rest; priority breaks
-    ties. A report is its family's (`places.area_of`), so it is not here (sd:4959)."""
-    from .places import area_of
+    ties. A report is its family's (`places.area_of`), so it is not here (sd:4959). Each is the Tasks page's row
+    (`tasks_screen._rows`, read in one snapshot as `places.tasks` reads it), so its Details on HOA are the Tasks page's
+    (sd:5671), with its revision, moves, edit capability and issue targets; HOA adds `due_days` and `state`."""
+    from .operations_screen import _one_snapshot
+    from .places import area_of, realms
+    from .tasks_screen import _rows, is_scheduled
 
     if repo is None:
         return {"error": "no checkout: no repo named hoa is registered", "rows": []}
-    rows = []
-    for item in reads.backlog_items(connection, repo=repo, now=now):
-        if item["status"] == "done" or area_of(item["repo"], item["kind"], repo) != "hoa":
-            continue
+    with _one_snapshot(connection):
+        found = [item for item in reads.backlog_items(connection, repo=repo, now=now)
+                 if item["status"] != "done" and not is_scheduled(item) and area_of(item["repo"], item["kind"], repo) == "hoa"]
+        rows = _rows(connection, found, realms(connection), now=now)
+    for row in rows:
         try:
-            due = (_day(item["due"]) - today).days if item["due"] else None
+            due = (_day(row["due"]) - today).days if row["due"] else None
         except ValueError:
             due = None
-        state = "queued" if due is None or due > SOON_DAYS else "caution" if due >= 0 else "warning"
-        rows.append({"id": f"item:{item['id']}", "item": item["id"], "title": item["title"], "kind": item["kind"],
-                     "status": item["status"], "priority": item["priority"], "due": item["due"] or "", "due_days": due,
-                     "state": state, "since": item["status_since"] or ""})
-    # sd:5483: Draft followup posts the draft-email route, which checks the revision the page read.
-    revision = reads.revisions(connection, [row["item"] for row in rows])
-    for row in rows:
-        row["revision"] = revision[row["item"]]
+        row["due_days"], row["state"] = due, "queued" if due is None or due > SOON_DAYS else "caution" if due >= 0 else "warning"
     order = {"warning": 0, "caution": 1, "queued": 2}
     rows.sort(key=lambda row: (order[row["state"]], row["priority"] is None, row["priority"] or 0,
-                               row["due_days"] is None, row["due_days"] or 0, row["item"]))
+                               row["due_days"] is None, row["due_days"] or 0, row["id"]))
     return {"error": "", "rows": rows}
 
 
@@ -457,6 +511,7 @@ def document(connection, *, now: str, jobs=None) -> dict:
         "thresholds": thresholds(connection),
         "sources": ages,
         "sweep": sweep.status(place) if not problems else {**sweep.status(None), "error": problems[0]},
+        "downloads": {source: _download(source, place) for source in hoa_download.SOURCES} if place else {},
         "attention": _attention(mission, items),
     }
 

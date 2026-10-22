@@ -26,7 +26,7 @@ from pathlib import Path
 from sd_db import workflow
 from sd_dashboard import decisions, v2
 
-from support import ScreenCase
+from support import NOW, ScreenCase, before_5648
 from test_v2_tasks import MARKUP_JS, SHELL, STAND_IN
 from test_v2_today import OSASCRIPT
 from test_workflow_actions import BrowserSession
@@ -109,6 +109,15 @@ class TheDocument(ScreenCase):
         self.assertEqual(row["options"], ["A pack store kind", "Workflow database rows"])
         self.assertEqual(row["revision"], workflow.item_state(self.connection, ids["item"])["revision"])
         self.assertTrue(row["asked"])
+
+    def test_a_scheduled_occurrence_asks_nothing_until_it_opens(self):
+        """sd:5670: Decisions lists questions on the items Tasks lists, so a scheduled occurrence (pack sd:5648) waits
+        until it opens. A pack before sd:5648 lists its questions as before."""
+        ids = seed(self)
+        self.schedule(ids["item"], "2026-09-09")
+        self.assertEqual(decisions.document(self.connection, now=NOW)["decisions"], [])
+        with before_5648():
+            self.assertEqual(len(decisions.document(self.connection, now=NOW)["decisions"]), 3)
 
     def test_no_decisions_is_an_empty_list(self):
         self.assertEqual(decisions.document(self.connection)["decisions"], [])
@@ -270,16 +279,6 @@ class TheScript(unittest.TestCase):
         self.assertTrue(none["R"]["hidden"])
         failed = self.run_page("R.hidden = ELS['decisions-review'].hidden;", "(path, body) => [500, { error: 'locked' }]")
         self.assertTrue(failed["R"]["hidden"])
-
-    def test_on_review_the_list_reads_with_no_review_line_and_read_again_rereads_it(self):
-        # sd:5497: Review's Questions view runs this script; that page has no line linking to itself and names its button reload.
-        prefix = ("var bare = document.getElementById.bind(document);"
-                  " document.getElementById = id => id === 'decisions-review' || id === 'refresh' ? null : bare(id);\n")
-        doc = json.dumps({"decisions": [decision_row()], "review": 5})
-        out = self.run_page("R.rows = ELS.decisions.html; ELS.reload.listeners.click[0](); await flush();",
-                            f"(path, body) => [200, {doc}]", prefix=prefix)
-        self.assertIn('data-note="7" data-option="0"', out["R"]["rows"])
-        self.assertEqual(out["gets"], ["/api/decisions", "/api/decisions"])
 
     def test_no_decisions_says_so_and_a_failed_read_says_why(self):
         empty = self.run_page("R.rows = ELS.decisions.html;", "(path, body) => [200, { decisions: [] }]")

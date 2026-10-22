@@ -11,6 +11,8 @@
  *   view group · pre-emit critique: P4 H4 E4 S4 R5 V4 · states: default · hover · focus · active · pressed; filter typed · count "N of M"
  * 2026-10-19 component: filter dropdowns (sd:5281) every filter select one pill, accent when narrowed; every select's open
  *   list themed where base-select exists (decision #24588) · pre-emit critique: P4 H4 E4 S4 R5 V4 · states: default · hover · focus · open · picked (accent) · disabled
+ * 2026-10-21 component: toolbar alignment (sd:5619) row 1 view switch and Shapeshift box share --bar-h, one top and bottom edge
+ *   pre-emit critique: P4 H4 E4 S4 R5 V4 · states: unchanged (height and margin only)
  */
 
 html, body { overflow-x: clip; }
@@ -215,6 +217,9 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
 .btn.quiet { background: transparent; color: var(--color-ink); border-color: var(--color-rule); }
 .btn.quiet:hover { border-color: var(--color-ink-2); }
 .btn.sm { min-height: 2rem; padding: 0 var(--space-sm); font-size: var(--text-xs); }
+/* Read again (sd:5638): busy while its read is pending; at the head's end it keeps its height where a page stretches the head. */
+.btn[aria-busy="true"] { cursor: progress; }
+.head > #read-again { align-self: end; }
 .icon-btn {
   display: inline-grid; place-items: center; width: 2rem; height: 2rem; padding: 0;
   border: var(--rule-hair) solid transparent; border-radius: var(--radius-sm);
@@ -307,7 +312,7 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
 .tabs [role="tab"] kbd { font-size: var(--text-2xs); color: var(--color-muted); }
 .tabs .close { margin-left: auto; display: none; }
 .pane [role="tabpanel"] { overflow-y: auto; }
-.pane [role="tabpanel"][hidden] { display: none; }
+.pane [role="tabpanel"][hidden], .pane [role="tab"][hidden] { display: none; }
 
 /* Details */
 .details { padding: var(--space-lg); }
@@ -331,6 +336,12 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
   background: var(--color-well); border-radius: var(--radius-sm); font: 400 var(--text-xs)/1.4 var(--font-data); overflow-wrap: anywhere;
 }
 .cli .icon-btn { flex-shrink: 0; }
+/* One disclosure arrow (sd:5637): every summary but a filter pick's (its own chevron) wears ▸ closed and ▾ open, drawn
+ * here and not by the browser, so a summary a page lays out as flex keeps it. */
+details:not(.fpick) > summary { list-style: none; }
+details:not(.fpick) > summary::-webkit-details-marker { display: none; }
+details:not(.fpick) > summary::before { content: '▸'; display: inline-block; width: 1em; flex: none; font-family: var(--font-data); color: var(--color-muted); }
+details:not(.fpick)[open] > summary::before { content: '▾'; }
 /* The CLI lines fold under one summary, closed by default (sd:3464). */
 .cli-all { margin: var(--space-sm) 0 0; }
 .cli-all > summary { cursor: pointer; font-size: var(--text-xs); color: var(--color-muted); white-space: nowrap; }
@@ -459,6 +470,31 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 .actmenu [role="menuitem"]:hover, .actmenu [role="menuitem"]:focus-visible { background: var(--color-accent-bg); }
 .actmenu [role="menuitem"]:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; } /* the fill alone is 1.3:1 */
 .actmenu [data-menu-open] { border-top: var(--rule-hair) solid var(--color-rule-2); border-radius: 0; }
+/* 2026-10-18 component: view menu (sd:5064; Tasks and Writing share it through shell.viewPick, sd:5641) · one compact button
+ *   with the view's icon and the shared select's chevron; its menu is the shell's .actmenu box, opened under the button. · pre-emit critique: P4 H4 E4 S4 R5 V4
+ *   states: default · hover · focus · active (open) · checked; no disabled, loading, error or success: a view always opens */
+.viewpick { position: relative; }
+.viewpick-btn {
+  display: inline-flex; align-items: center; min-height: 2.25rem; padding: 0 calc(var(--space-xs) + 1rem) 0 var(--space-sm);
+  border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background-color: var(--color-panel); color: var(--color-ink); cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-muted) 50%), linear-gradient(135deg, var(--color-muted) 50%, transparent 50%);
+  background-position: right calc(var(--space-xs) + 5px) center, right var(--space-xs) center; background-size: 5px 5px; background-repeat: no-repeat;
+}
+.viewpick-btn:hover, .viewpick-btn[aria-expanded="true"] { border-color: var(--color-ink-2); }
+.viewpick-btn:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+/* Opens leftward under the button at the column's right edge; on a narrow page the button sits left, so the menu opens right. */
+.viewmenu { position: absolute; top: calc(100% + var(--space-2xs)); right: 0; width: auto; min-width: 11rem; }
+.viewmenu [role="menuitemradio"] {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: var(--space-xs); width: 100%; min-height: 2.25rem;
+  padding: 0 var(--space-sm); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-ink-2); font: 500 var(--text-sm)/1 var(--font-ui); text-align: left; cursor: pointer;
+}
+.viewmenu [role="menuitemradio"]:hover, .viewmenu [role="menuitemradio"]:focus-visible { background: var(--color-accent-bg); color: var(--color-ink); }
+.viewmenu [role="menuitemradio"]:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+.viewmenu [aria-checked="true"] { color: var(--color-ink); box-shadow: inset 2px 0 0 var(--color-accent); }
+.viewmenu kbd { font-size: var(--text-2xs); color: var(--color-muted); }
+@media (forced-colors: active) { .viewpick-btn { background-image: none; } .viewmenu [aria-checked="true"] { outline: 2px solid CanvasText; } }
+@media (pointer: coarse) { .viewpick-btn, .viewmenu [role="menuitemradio"] { min-height: var(--row-touch); } }
+@media (max-width: 899px) { .viewmenu { right: auto; left: 0; } }
 .palette .grp { padding: var(--space-sm) var(--space-sm) var(--space-2xs); font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); cursor: default; }
 .palette .grp.out { display: none; }
 .palette li code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 var(--text-2xs)/1 var(--font-data); color: var(--color-muted); }
@@ -709,7 +745,14 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 .toolbar-2 { margin-top: calc(-1 * var(--space-2xs)); font-size: var(--text-xs); color: var(--color-muted); }
 .toolbar > .tgrid, .filters > .tgrid { display: contents; }
 .toolbar > .tgrid[hidden], .filters > .tgrid[hidden] { display: none; }
-.toolbar .viewswitch, .toolbar .vseg { margin: 0; }
+/* One height for the boxes in row 1 (sd:5619): the view switch (.viewswitch, .vseg) and the Shapeshift box (.shift .field) take
+ * --bar-h, so they share a top and a bottom edge. A tab stretches to fill the switch; on touch the bar grows so the tab keeps
+ * --row-touch. The box around a place switch (.place-switch) has no margin here: its margin-bottom made it taller than the switch. */
+.toolbar { --bar-h: var(--row-touch); }
+@media (pointer: coarse) { .toolbar { --bar-h: calc(var(--row-touch) + 2 * (var(--space-3xs) + var(--rule-hair))); } }
+.toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg, .toolbar > .fgroup { margin: 0; }
+.toolbar .viewswitch, .toolbar .vseg, .toolbar .shift .field { height: var(--bar-h); }
+.toolbar .viewswitch [role="tab"], .toolbar .vseg > button { min-height: 0; }
 .toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
 .toolbar > .count:empty { display: none; }
 /* A table's title line (sd:5463): its heading and help on the left, its tally (the count and the table's facts) on the right. */

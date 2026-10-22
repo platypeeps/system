@@ -1,0 +1,373 @@
+"""Download from Vantaca and Download from Mission on the HOA page (sd:5626).
+
+What this slice promises: `POST /api/hoa/download {"source"}` starts `hoa_download.py` detached and answers 202; a second
+POST for that source while it runs is a 409 and starts nothing. The run opens the portal named in section 2 of the
+checkout's prompt in one `claude -p --chrome` with Chrome tools only and no form tool; while that session prints
+`STATUS: waiting for login`, `/api/hoa`'s `downloads` part says so, and no download runs. Signed in, the checkout's own
+command runs; its exit 0 is done, 3 unavailable, any other failed, each with its last line. A session that does not
+sign in runs no download. A runner stopped between steps reads failed, or running while its session holds the lock.
+
+No test calls claude, Chrome or a portal: `CLAUDE_BIN` is a stub that prints a stream-json reply, the checkout's
+download scripts are stubs, and HOME is a temporary folder, so no token file is sourced.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from datetime import datetime, timedelta
+from io import StringIO
+from pathlib import Path
+from unittest import mock
+from zoneinfo import ZoneInfo
+
+from sd_dashboard import command_journal, hoa_download
+
+from test_workflow_actions import BrowserSession
+
+#: claude: records its argv, prints a stream-json reply by `mode`; `login` waits for `release` after its WAITING line.
+CLAUDE = r'''import json, os, pathlib, sys, time
+here = pathlib.Path(os.environ["STUB_DIR"])
+(here / "claude-argv.json").write_text(json.dumps(sys.argv[1:]))
+mode = (here / "mode").read_text().strip() if (here / "mode").exists() else "signed-in"
+def say(text):
+    print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}), flush=True)
+print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
+if mode == "crash":
+    print("boom: no browser extension", flush=True)
+    sys.exit(2)
+if mode in ("error-result", "no-result"):
+    # A sign-in said along the way is not the session's end: only a successful result event is.
+    say("RESULT: signed in")
+    if mode == "error-result":
+        print(json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True, "result": ""}), flush=True)
+    sys.exit(0)
+if mode in ("login", "login-never"):
+    say("The portal shows a login page.\nSTATUS: waiting for login")
+    while mode == "login-never" or not (here / "release").exists():
+        time.sleep(0.05)
+result = {"signed-in": "RESULT: signed in", "login": "RESULT: signed in",
+          "unavailable": "RESULT: unavailable, no browser is connected"}[mode]
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Done.\n" + result}), flush=True)
+'''
+#: The checkout's downloads: each counts itself in downloads.txt, prints a line, exits `code` (default 0).
+VANTACA = r'''import os, pathlib, sys
+here = pathlib.Path(os.environ["STUB_DIR"])
+with open(here / "downloads.txt", "a") as runs:
+    runs.write("vantaca\n")
+print("vantaca-pull: pulled six exports")
+code = int((here / "code").read_text()) if (here / "code").exists() else 0
+if code:
+    print("vantaca-pull: the portal session is logged out")
+sys.exit(code)
+'''
+MISSION = '''#!/bin/sh
+echo "mission $1" >> "$STUB_DIR/downloads.txt"
+echo "mission export: done"
+exit "$(cat "$STUB_DIR/code" 2>/dev/null || echo 0)"
+'''
+VANTACA_PROMPT = """# Pull
+## Rules
+- Stay on `https://wrong.example.test`.
+## 2. Open the portal in your own tab
+- Navigate to `https://portal.example.test/board/invoices`.
+## 3. Exports
+- `https://later.example.test`
+"""
+MISSION_PROMPT = "## 2. Open the portal in your own tab\n- navigate to `https://scada.example.test`.\n"
+
+
+def wait(test, until, what, tries=400):
+    for _ in range(tries):
+        if until():
+            return
+        time.sleep(0.05)
+    test.fail(f"timed out waiting for {what}")
+
+
+class Stubs:
+    """A checkout with both procedures, a stub claude, and this test's own HOME and state folder."""
+
+    def stubs(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.stub = root / "stub"
+        self.stub.mkdir()
+        claude = root / "claude"
+        claude.write_text(f"#!{sys.executable}\n" + CLAUDE)
+        claude.chmod(0o755)
+        self.hoa = root / "hoa"
+        (self.hoa / "tools" / "mission").mkdir(parents=True)
+        (self.hoa / "tools" / "vantaca-pull.py").write_text(VANTACA)
+        (self.hoa / "tools" / "mission" / "mission.sh").write_text(MISSION)
+        (self.hoa / "tools" / "vantaca-pull-prompt.md").write_text(VANTACA_PROMPT)
+        (self.hoa / "tools" / "mission" / "export-prompt.md").write_text(MISSION_PROMPT)
+        (root / "home").mkdir()
+        patch = mock.patch.dict(os.environ, {"STUB_DIR": str(self.stub), "CLAUDE_BIN": str(claude), "HOME": str(root / "home"),
+                                             "XDG_STATE_HOME": str(root / "state")})
+        patch.start()
+        self.addCleanup(patch.stop)
+        # A session still waiting when a test ends is released, so no stub outlives its folder.
+        self.addCleanup(lambda: (self.stub / "release").touch())
+
+    def downloads(self):
+        try:
+            return (self.stub / "downloads.txt").read_text().splitlines()
+        except FileNotFoundError:
+            return []
+
+    def record(self, source="vantaca"):
+        return json.loads((hoa_download.state_dir(source) / "last.json").read_text())
+
+
+class ThePortal(Stubs, unittest.TestCase):
+    def setUp(self):
+        self.stubs()
+
+    def test_the_page_is_the_first_link_in_section_2_of_the_sources_prompt(self):
+        self.assertEqual(hoa_download.portal_url(self.hoa, "vantaca"), "https://portal.example.test/board/invoices")
+        self.assertEqual(hoa_download.portal_url(self.hoa, "mission"), "https://scada.example.test")
+        (self.hoa / "tools" / "mission" / "export-prompt.md").write_text("## 2. Open\nno address here\n## 3. https://x.example.test\n")
+        with self.assertRaisesRegex(ValueError, "tools/mission/export-prompt.md names no https address in its section 2"):
+            hoa_download.portal_url(self.hoa, "mission")
+
+    def test_a_checkout_without_the_procedure_is_the_downloads_error_by_file(self):
+        (self.hoa / "tools" / "vantaca-pull.py").unlink()
+        self.assertEqual(hoa_download.status("vantaca", self.hoa)["error"],
+                         f"tools/vantaca-pull.py is not in the hoa checkout {self.hoa}, so the Vantaca download has no procedure there")
+        self.assertEqual(hoa_download.status("mission", self.hoa)["error"], "")
+
+    def test_the_day_after_the_scripts_last_day_vantaca_download_is_off_and_mission_is_not(self):
+        # sd:5677: vantaca-pull.py refuses once its SITE_TZ day passes LAST_DAY; the row reads both names from the script.
+        script = self.hoa / "tools" / "vantaca-pull.py"
+        today = datetime.now(ZoneInfo("America/Denver")).date()
+        window = "from datetime import date\nfrom zoneinfo import ZoneInfo\nLAST_DAY = {}\nSITE_TZ = ZoneInfo(\"America/Denver\")\n"
+        script.write_text(window.format(f"date({today.year}, {today.month}, {today.day})") + VANTACA)
+        self.assertEqual(hoa_download.status("vantaca", self.hoa)["error"], "")
+        ended = today - timedelta(days=1)
+        script.write_text(window.format(f"date({ended.year}, {ended.month}, {ended.day})") + VANTACA)
+        self.assertEqual(hoa_download.status("vantaca", self.hoa)["error"],
+                         f"the approved Vantaca pull window ended {ended.isoformat()}")
+        self.assertEqual(hoa_download.status("mission", self.hoa)["error"], "")
+        # A LAST_DAY that does not read as a date is not an open window: the button is off and says why.
+        script.write_text(window.format("date.fromisoformat(DAY)") + VANTACA)
+        self.assertEqual(hoa_download.status("vantaca", self.hoa)["error"],
+                         "LAST_DAY in tools/vantaca-pull.py is not a date(year, month, day), so whether the Vantaca "
+                         "pull window is open is not known")
+
+
+class TheRun(Stubs, unittest.TestCase):
+    """`run` in process: the login session's end decides whether the download runs."""
+
+    def setUp(self):
+        self.stubs()
+
+    def run_now(self, source="vantaca"):
+        return hoa_download.run(source, self.hoa, out=StringIO(), err=StringIO())
+
+    def test_signed_in_runs_the_checkouts_download_and_records_done(self):
+        self.assertEqual(self.run_now(), 0)
+        self.assertEqual(self.downloads(), ["vantaca"])
+        r = self.record()
+        self.assertEqual((r["state"], r["exit"], r["reason"]), ("done", 0, "vantaca-pull: pulled six exports"))
+        self.assertEqual(hoa_download.status("vantaca")["state"], "done")
+
+    def test_the_session_has_chrome_tools_only_and_no_tool_that_types_into_a_form(self):
+        self.run_now("mission")
+        argv = json.loads((self.stub / "claude-argv.json").read_text())
+        allowed = argv[argv.index("--allowedTools") + 1].split(",")
+        self.assertTrue(all(tool.startswith("mcp__claude-in-chrome__") for tool in allowed), allowed)
+        denied = argv[argv.index("--disallowedTools") + 1].split(",")
+        for tool in ("mcp__claude-in-chrome__form_input", "mcp__claude-in-chrome__javascript_tool", "Bash", "Write"):
+            self.assertIn(tool, denied)
+            self.assertNotIn(tool, allowed)
+        self.assertEqual(argv[argv.index("--tools") + 1], "ToolSearch")
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+        self.assertIn("--chrome", argv)
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertIn("navigate your tab to https://scada.example.test", argv[argv.index("-p") + 1])
+        self.assertIn("Never type into the page", argv[argv.index("-p") + 1])
+        self.assertEqual(self.downloads(), ["mission export"])
+
+    def test_a_session_that_does_not_sign_in_runs_no_download(self):
+        (self.stub / "mode").write_text("unavailable")
+        self.assertEqual(self.run_now(), 3)
+        r = self.record()
+        self.assertEqual((r["state"], r["reason"]), ("unavailable", "no browser is connected"))
+        self.assertEqual(self.downloads(), [])
+        (self.stub / "mode").write_text("crash")
+        self.assertEqual(self.run_now(), 1)
+        self.assertEqual((self.record()["state"], self.record()["reason"]), ("failed", "claude exited 2: boom: no browser extension"))
+        self.assertEqual(self.downloads(), [])
+
+    def test_only_a_successful_result_event_signs_in(self):
+        for mode, reason in (("error-result", "claude ended with error_max_turns"),
+                             ("no-result", "claude ended without a result")):
+            (self.stub / "mode").write_text(mode)
+            self.assertEqual(self.run_now(), 1, mode)
+            self.assertEqual((self.record()["state"], self.record()["reason"]), ("failed", reason))
+        self.assertEqual(self.downloads(), [])
+
+    def test_each_child_carries_an_alarm_that_outlives_a_killed_runner(self):
+        started = []
+        real = subprocess.Popen
+
+        def popen(argv, **kwargs):
+            started.append(argv)
+            return real(argv, **kwargs)
+
+        with mock.patch.object(hoa_download.subprocess, "Popen", popen):
+            self.assertEqual(self.run_now(), 0)
+        self.assertEqual([argv[:len(hoa_download.alarmed(0)) - 1] for argv in started],
+                         [hoa_download.alarmed(0)[:-1]] * 2)
+        self.assertEqual([int(argv[len(hoa_download.alarmed(0)) - 1]) for argv in started],
+                         [hoa_download.LOGIN_SECONDS + 60, hoa_download.DOWNLOAD_SECONDS + 60])
+        # The alarm ends the child by itself, with no runner left to stop it, and its lock with it.
+        child = real([*hoa_download.alarmed(1), "sleep", "30"])
+        self.assertEqual(child.wait(timeout=20), -signal.SIGALRM)
+
+    def test_a_login_past_the_sessions_bound_is_stopped_and_downloads_nothing(self):
+        (self.stub / "mode").write_text("login-never")
+        with mock.patch.object(hoa_download, "LOGIN_SECONDS", 1):
+            self.assertEqual(self.run_now(), 3)
+        self.assertRegex(self.record()["reason"], "^no login within")
+        self.assertEqual(self.downloads(), [])
+
+    def test_the_downloads_exit_3_is_unavailable_and_any_other_failed_with_its_last_line(self):
+        (self.stub / "code").write_text("3")
+        self.assertEqual(self.run_now(), 3)
+        self.assertEqual((self.record()["state"], self.record()["reason"]), ("unavailable", "vantaca-pull: the portal session is logged out"))
+        (self.stub / "code").write_text("1")
+        self.assertEqual(self.run_now(), 1)
+        self.assertEqual((self.record()["state"], self.record()["reason"]),
+                         ("failed", "python3 tools/vantaca-pull.py exited 1: vantaca-pull: the portal session is logged out"))
+
+    def test_a_record_left_running_by_a_stopped_runner_reads_failed(self):
+        state = hoa_download.state_dir("vantaca")
+        state.mkdir(parents=True)
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        (state / "lock").write_text("2026-09-06T08:00:00+00:00")
+        (state / "last.json").write_text(json.dumps({"state": "running", "phase": "waiting", "pid": dead.pid,
+                                                     "started": "2026-09-06T08:00:00+00:00"}))
+        out = hoa_download.status("vantaca")
+        self.assertEqual((out["running"], out["state"]), (False, "failed"))
+        self.assertIn("stopped without recording an outcome", out["reason"])
+
+    def test_a_record_left_running_with_the_lock_free_reads_failed_whatever_its_pid(self):
+        # Every live runner holds the lock, so a free lock ends the run even when its pid now names another process.
+        state = hoa_download.state_dir("vantaca")
+        state.mkdir(parents=True)
+        (state / "lock").write_text("2026-09-06T08:00:00+00:00")
+        (state / "last.json").write_text(json.dumps({"state": "running", "phase": "waiting", "pid": os.getpid(),
+                                                     "started": "2026-09-06T08:00:00+00:00"}))
+        out = hoa_download.status("vantaca")
+        self.assertEqual((out["running"], out["state"]), (False, "failed"))
+        self.assertIn("stopped without recording an outcome", out["reason"])
+
+    def test_a_start_newer_than_the_record_with_the_lock_free_reads_failed_naming_the_log(self):
+        self.assertEqual(self.run_now(), 0)
+        (hoa_download.state_dir("vantaca") / "lock").write_text("2099-01-01T00:00:00+00:00")
+        out = hoa_download.status("vantaca")
+        self.assertEqual(out["state"], "failed")
+        self.assertIn("ended without a record of its own; see", out["reason"])
+
+
+class TheRoute(Stubs, BrowserSession):
+    def setUp(self):
+        super().setUp()
+        self.stubs()
+        self.repo(str(self.hoa))
+
+    def read(self):
+        status, _, body = self.request("/api/hoa", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200, body)
+        return json.loads(body)["downloads"]
+
+    def test_the_row_says_waiting_for_login_until_the_operator_logs_in_then_the_download_runs(self):
+        (self.stub / "mode").write_text("login")
+        status, _, body = self.post("/api/hoa/download", {"source": "vantaca"})
+        self.assertEqual(status, 202, body)
+        self.assertEqual((body["repo"], body["command"]), (str(self.hoa), "python3 tools/vantaca-pull.py"))
+        wait(self, lambda: self.read()["vantaca"]["phase"] == "waiting", "the login wait")
+        doc = self.read()
+        self.assertEqual((doc["vantaca"]["running"], doc["vantaca"]["state"]), (True, "running"))
+        self.assertEqual(doc["mission"]["state"], "never")
+        self.assertEqual(self.downloads(), [])
+        # One run per source: a second post is refused and starts nothing.
+        status, _, body = self.post("/api/hoa/download", {"source": "vantaca"})
+        self.assertEqual(status, 409, body)
+        self.assertIn("A Vantaca download is already running", body["error"])
+
+        (self.stub / "release").touch()
+        wait(self, lambda: not self.read()["vantaca"]["running"], "the download to end")
+        self.assertEqual(self.read()["vantaca"]["state"], "done")
+        self.assertEqual(self.downloads(), ["vantaca"])
+
+    def test_a_runner_stopped_while_its_session_waits_holds_the_lock_until_the_session_ends(self):
+        (self.stub / "mode").write_text("login")
+        self.assertEqual(self.post("/api/hoa/download", {"source": "mission"})[0], 202)
+        wait(self, lambda: self.read()["mission"]["phase"] == "waiting", "the login wait")
+        os.kill(self.record("mission")["pid"], signal.SIGKILL)
+        wait(self, lambda: "runner stopped" in self.read()["mission"]["reason"], "the stopped runner")
+        self.assertTrue(self.read()["mission"]["running"])
+        self.assertIn("the session ends by itself within", self.read()["mission"]["reason"])
+        self.assertEqual(self.post("/api/hoa/download", {"source": "mission"})[0], 409)
+        (self.stub / "release").touch()
+        wait(self, lambda: not self.read()["mission"]["running"], "the session to end")
+        doc = self.read()["mission"]
+        self.assertEqual(doc["state"], "failed")
+        self.assertIn("stopped without recording an outcome", doc["reason"])
+        self.assertEqual(self.downloads(), [])
+
+    def test_a_refused_post_starts_nothing(self):
+        for payload in ({"source": "core"}, {}, {"source": "vantaca", "x": 1}):
+            status, _, body = self.post("/api/hoa/download", payload)
+            self.assertEqual(status, 400, body)
+            self.assertIn("Download takes one field, source: vantaca or mission.", body["error"])
+        (self.hoa / "tools" / "vantaca-pull-prompt.md").unlink()
+        status, _, body = self.post("/api/hoa/download", {"source": "vantaca"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("tools/vantaca-pull-prompt.md is not in the hoa checkout", body["error"])
+        self.assertFalse(hoa_download.state_dir("vantaca").exists())
+
+    def test_a_post_after_the_pull_window_ended_starts_nothing(self):
+        script = self.hoa / "tools" / "vantaca-pull.py"
+        script.write_text("from datetime import date\nfrom zoneinfo import ZoneInfo\nLAST_DAY = date(2026, 1, 1)\n"
+                          "SITE_TZ = ZoneInfo(\"America/Denver\")\n" + VANTACA)
+        self.assertEqual(self.read()["vantaca"]["error"], "the approved Vantaca pull window ended 2026-01-01")
+        status, _, body = self.post("/api/hoa/download", {"source": "vantaca"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("the approved Vantaca pull window ended 2026-01-01", body["error"])
+        self.assertFalse(hoa_download.state_dir("vantaca").exists())
+        self.assertEqual(self.downloads(), [])
+
+
+class TheJournal(Stubs, unittest.TestCase):
+    """The execution journal's record of a download ends with that run's own record, never another's."""
+
+    def setUp(self):
+        self.stubs()
+
+    def test_a_download_record_ends_with_its_runs_end(self):
+        settle = command_journal.SETTLE["download"]
+        self.assertEqual(settle.handle({"started": "2026-09-06T08:00:00+00:00"}, {"target": "mission"}),
+                         {"started": "2026-09-06T08:00:00+00:00", "source": "mission"})
+        self.assertEqual(hoa_download.run("mission", self.hoa, out=StringIO(), err=StringIO()), 0)
+        started = self.record("mission")["started"]
+        code, said = settle.look({"started": started, "source": "mission"})
+        self.assertEqual(code, 0)
+        self.assertIn("mission download done", said)
+        code, said = settle.look({"started": "2026-01-01T00:00:00+00:00", "source": "mission"})
+        self.assertEqual(code, command_journal.UNKNOWN)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -20,7 +20,10 @@ It also shows `github_issues` (sd:4840): on or off, written with
 the item's row on Tasks. Land on a checkout's row (sd:5104, `land.py`) reads
 `GET /api/repos/land/preview`, asks with what would land, then posts `/api/repos/land` with that preview's revision:
 one commit per item, a `land/sd-<n>` branch and worktree when the checkout is on its default branch, then
-`sd-ship lane enqueue`. The classic Jobs and Repos areas were retired in
+`sd-ship lane enqueue`. Standard setup (sd:5610, `standard.py`) reads `GET /api/repos/standard/preview`, the plan
+`sd fleet standard --json` gives, and posts `/api/repos/standard` with its digest. Turning `managed` on opens it with
+Manage only or Apply standard; a managed repo's Standard setup row checks it. Alerts the operator turned off stay off.
+The classic Jobs and Repos areas were retired in
 sd:3402; Services, Sessions and Protection stay as palette screens.
 Repos, Services and Schedules filter through Activity's bar (sd:5504): their
 segments, the text as a token, then Clear all; each list's title line counts

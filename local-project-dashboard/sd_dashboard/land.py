@@ -64,9 +64,10 @@ class Unknown(Exception):
     """A step whose result is not known: the write answers 502 with what did land."""
 
 
-def _git(path: Path, *args: str, env: dict | None = None, check: bool = True) -> subprocess.CompletedProcess:
+def _git(path: Path, *args: str, env: dict | None = None, check: bool = True,
+         seconds: int = GIT_SECONDS) -> subprocess.CompletedProcess:
     try:
-        done = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, timeout=GIT_SECONDS,
+        done = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, timeout=seconds,
                               check=False, env=env)
     except (OSError, subprocess.SubprocessError) as error:
         raise Unknown(f"git {args[0]} gave no answer: {error}") from None
@@ -430,16 +431,23 @@ def land(connection, values: dict):
 
 def _enqueue(facts: dict, head: str, claim: str, done: dict):
     """Step 3: the lane's enqueue; a refusal leaves the commits, and a second Land enqueues again."""
+    return enqueue(Path(facts["worktree"]), "sd-land-body.md", _body(facts),
+                   lambda body: _enqueue_argv(facts, head, claim, body), head, done, "Committed")
+
+
+def enqueue(tree: Path, name: str, text: str, argv, head: str, done: dict, made: str):
+    """The lane's enqueue from the worktree `tree`, with `text` as the body file `name` in its git dir; `argv(body)` is
+    the `sd-ship lane enqueue` line. A refusal answers ok with `lane.status` "not queued"; any other failure is a 502
+    that says what was `made` and that whether the lane queued it is not known. Merge (`pr_merge`) runs it too."""
     from .queue_screen import _run, refused
 
-    tree = Path(facts["worktree"])
     gitdir = Path(_out(tree, "rev-parse", "--absolute-git-dir"))
-    body = gitdir / "sd-land-body.md"
+    body = gitdir / name
     try:
-        body.write_text(_body(facts), encoding="utf-8")
+        body.write_text(text, encoding="utf-8")
     except OSError as error:
         raise Unknown(f"the pull-request body {body} was not written: {error}") from None
-    answer = _run(_enqueue_argv(facts, head, claim, str(body)), ENQUEUE_SECONDS)
+    answer = _run(argv(str(body)), ENQUEUE_SECONDS)
     if answer.get("ok") and answer.get("exit") == 0:
         done["lane"] = {"status": answer.get("status") or "pending", "item": answer.get("item"),
                         "expected_head": answer.get("expected_head") or head}
@@ -447,7 +455,7 @@ def _enqueue(facts: dict, head: str, claim: str, done: dict):
     if refused(answer) or answer.get("exit") == 3:
         done["lane"] = {"status": "not queued", "error": answer.get("error") or "sd-ship lane enqueue refused"}
         return {"ok": True, **done}
-    return 502, {"error": f"Committed, but whether the lane queued it is not known: {answer.get('error')}",
+    return 502, {"error": f"{made}, but whether the lane queued it is not known: {answer.get('error')}",
                  "outcome": "unknown", **done}
 
 
