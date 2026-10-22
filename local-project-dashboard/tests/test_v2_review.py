@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sd_db import review, workflow
 from sd_dashboard import decisions, review_screen, v2
@@ -159,6 +161,111 @@ class TheDocument(ScreenCase):
                                                                    "attention": {"state": "ok", "n": 0, "what": "questions open"}})
 
 
+#: What a pack with pack sd:5763 reads from a batch filed with a context block and a recommendation (system sd:5759).
+ADVICE = {"option": "no", "reason": "the diff only renames"}
+CONTEXT = {"purpose": "Calibrate the file check.", "rubric": ["yes: the file reads right", "no: it does not"],
+           "feeds": "the file-check eval"}
+
+
+def advised():
+    """`review.read` as a pack with pack sd:5763 answers it: a context block and one recommendation on every question.
+
+    The gate's pinned pack may predate those fields, so the page's filter is tested on the read it serves; the pack's own
+    suite tests the note format and the agreement."""
+    real = review.read
+
+    def read(connection, item):
+        found = real(connection, item)
+        found["header"]["context"] = CONTEXT
+        for question in found["questions"]:
+            question["recommendation"] = dict(ADVICE)
+            question["agreed"] = None if question["label"] is None else question["label"] == ADVICE["option"]
+        return found
+
+    return mock.patch.object(review, "read", read)
+
+
+def blind_batches(case):
+    """A blind batch and a sealed one, two questions each."""
+    return {"blind": review.file(case.connection, batch("B1", mode="blind", count=2), who="test")["item"],
+            "sealed": review.file(case.connection, batch("S1", mode="sealed", count=2), who="test")["item"]}
+
+
+class TheRecommendation(ScreenCase):
+    """sd:5759: each batch's context block, and each question's recommendation, which a blind batch holds back until it is
+    ruled."""
+
+    def test_every_batch_sends_its_context_whatever_its_mode(self):
+        ids = seed(self)
+        with advised():
+            batches = {b["item"]: b for b in review_screen.document(self.connection)["batches"]}
+        for name in ("open", "blind", "nightly"):
+            self.assertEqual(batches[ids[name]]["context"], CONTEXT, name)
+
+    def test_an_open_batch_sends_each_recommendation_before_the_ruling(self):
+        ids = seed(self)
+        with advised():
+            doc = review_screen.document(self.connection)
+        opened = [q for q in doc["questions"] if q["item"] == ids["open"]]
+        self.assertEqual([q["recommendation"] for q in opened], [ADVICE] * 3)
+        self.assertNotIn("agreed", opened[0])
+
+    def test_a_blind_or_sealed_question_sends_its_recommendation_only_once_ruled(self):
+        ids = blind_batches(self)
+        for mode in ("blind", "sealed"):
+            with self.subTest(mode):
+                item = ids[mode]
+                first, second = questions_of(self.connection, item)
+                with advised():
+                    doc = review_screen.document(self.connection)
+                asked = [q for q in doc["questions"] if q["item"] == item]
+                self.assertEqual([set(q) for q in asked], [{"item", "note", "text", "options", "asked"}] * 2)
+                self.assertNotIn(ADVICE["reason"], json.dumps(doc))
+                revision = workflow.item_state(self.connection, item)["revision"]
+                out = review_screen.rule_request({"item": item, "note": first, "option": "yes", "revision": revision})(self.connection)
+                with advised():
+                    doc = review_screen.document(self.connection)
+                ruled = next(q for q in doc["reviewed"] if q["note"] == first)
+                self.assertEqual((ruled["recommendation"], ruled["agreed"]), (ADVICE, False))
+                self.assertEqual([q["note"] for q in doc["questions"] if q["item"] == item and "recommendation" in q], [])
+                # An undo reopens the question, which holds its recommendation back again.
+                review_screen.withdraw_request({"item": item, "ruling": out["ruling"], "revision": out["revision"]})(self.connection)
+                # An expired question was never ruled, so it shows none either.
+                self.assertTrue(review._expire(self.connection, item, second, "test"))
+                with advised():
+                    doc = review_screen.document(self.connection)
+                self.assertNotIn(ADVICE["reason"], json.dumps(doc))
+
+    def test_the_label_reply_names_the_recommendation_and_whether_it_agreed(self):
+        ids = blind_batches(self)
+        note = questions_of(self.connection, ids["blind"])[0]
+        revision = workflow.item_state(self.connection, ids["blind"])["revision"]
+        with advised():
+            out = review_screen.rule_request({"item": ids["blind"], "note": note, "option": "no", "revision": revision})(self.connection)
+        self.assertEqual((out["recommendation"], out["agreed"]), (ADVICE, True))
+
+    def test_a_read_that_fails_after_the_label_still_answers_the_label(self):
+        # The label committed in `review.rule`; a failed read of its recommendation must not turn it into "not labelled".
+        ids = blind_batches(self)
+        note = questions_of(self.connection, ids["blind"])[0]
+        revision = workflow.item_state(self.connection, ids["blind"])["revision"]
+        with mock.patch.object(review, "read", side_effect=sqlite3.OperationalError("disk I/O error")):
+            out = review_screen.rule_request({"item": ids["blind"], "note": note, "option": "no", "revision": revision})(self.connection)
+        self.assertEqual((out["recommendation"], out["agreed"]), (None, None))
+        self.assertEqual(review.read(self.connection, ids["blind"])["questions"][0]["label"], "no")
+
+    def test_a_question_with_no_recommendation_sends_none(self):
+        # The pack as pinned, or a batch filed with neither field: no key, and the batch's context is None.
+        ids = seed(self)
+        doc = review_screen.document(self.connection)
+        self.assertEqual({b.get("context") for b in doc["batches"] if b["item"] != ids["broken"]}, {None})
+        self.assertFalse(any("recommendation" in q for q in doc["questions"]))
+        note = questions_of(self.connection, ids["open"])[0]
+        revision = workflow.item_state(self.connection, ids["open"])["revision"]
+        out = review_screen.rule_request({"item": ids["open"], "note": note, "option": "no", "revision": revision})(self.connection)
+        self.assertEqual((out["recommendation"], out["agreed"]), (None, None))
+
+
 class TheExport(ScreenCase):
     def test_an_open_batch_exports_the_lines_sd_db_review_export_writes(self):
         ids = seed(self)
@@ -191,7 +298,7 @@ class TheRoutes(BrowserSession):
         payload = {"item": ids["open"], "note": q["note"], "option": "yes", "revision": revision}
         status, _, out = self.post("/api/review/rule", payload)
         self.assertEqual(status, 200, out)
-        self.assertEqual(set(out), {"item", "note", "revision", "ruling"})
+        self.assertEqual(set(out), {"item", "note", "revision", "ruling", "recommendation", "agreed"})
         status, _, refused = self.post("/api/review/rule", payload)
         self.assertEqual((status, refused.get("reload")), (409, True))
         status, _, pulled = self.post("/api/review/withdraw", {"item": ids["open"], "ruling": out["ruling"], "revision": out["revision"]})
@@ -199,6 +306,24 @@ class TheRoutes(BrowserSession):
         self.assertTrue(review.read(self.connection, ids["open"])["questions"][0]["open"])
         status, _, exported = self.request("/api/review/%d/export" % ids["open"], headers={"Cookie": self.cookie})[0], None, None
         self.assertEqual(status, 200)
+
+    def test_a_blind_batch_never_serves_a_recommendation_before_its_ruling(self):
+        # sd:5759: the server's reply, not the page, holds it back: the bytes /api/review sends name no recommendation.
+        ids = blind_batches(self)
+        with advised():
+            status, _, body = self.request("/api/review", headers={"Cookie": self.cookie})
+            self.assertEqual(status, 200)
+            self.assertNotIn(ADVICE["reason"], body)
+            self.assertNotIn("recommendation", body)
+            doc = json.loads(body)
+            q = next(q for q in doc["questions"] if q["item"] == ids["sealed"])
+            revision = next(b["revision"] for b in doc["batches"] if b["item"] == ids["sealed"])
+            status, _, out = self.post("/api/review/rule", {"item": ids["sealed"], "note": q["note"], "option": "no", "revision": revision})
+            self.assertEqual(status, 200, out)
+            self.assertEqual((out["recommendation"], out["agreed"]), (ADVICE, True))
+            body = self.request("/api/review", headers={"Cookie": self.cookie})[2]
+        self.assertEqual(body.count(ADVICE["reason"]), 1)
+        self.assertEqual([r["note"] for r in json.loads(body)["reviewed"]], [q["note"]])
 
     def test_a_closed_batch_refuses_a_label(self):
         ids = seed(self)
@@ -345,6 +470,53 @@ class TheScript(unittest.TestCase):
                 self.assertEqual('<span>Reject</span><span class="tag">recommended</span>' in out["R"]["rows"], marked)
                 self.assertEqual(out["R"]["rows"].count('class="tag">recommended'), int(marked))
                 self.assertEqual('<p class="rec">Recommended: <b>Reject</b></p>' in out["R"]["rows"], marked)
+
+    def test_a_band_carries_its_batch_context_and_values_stay_text(self):
+        # sd:5759: purpose, rubric and what the labels feed, above the batch's questions; a batch with none draws none.
+        doc = doc_with(2, context={"purpose": "Calibrate <b>", "rubric": ["skip: docs only", "deep: touches state"],
+                                   "feeds": "the router"})
+        doc["batches"].append({**doc["batches"][0], "item": 12, "title": "Label: C1", "context": None})
+        doc["questions"].append(question(30, item=12))
+        rows = self.run_page("R.rows = ELS.rows.html;", "(path, body) => [200, DOC]", doc=doc)["R"]["rows"]
+        self.assertIn('<dl class="brief" data-tkeep=""><dt>Purpose</dt><dd>Calibrate &lt;b&gt;</dd><dt>Rubric</dt>'
+                      '<dd><ul><li>skip: docs only</li><li>deep: touches state</li></ul></dd><dt>Feeds</dt><dd>the router</dd></dl>', rows)
+        self.assertEqual(rows.count('class="brief"'), 1)
+        self.assertLess(rows.index('class="brief"'), rows.index('data-id="q10"'))
+
+    def test_an_open_rows_recommendation_shows_its_reason_marks_its_option_and_bulk_accepts_it(self):
+        doc = doc_with(2)
+        doc["questions"][0]["recommendation"] = {"option": "Reject", "reason": "a repeat of an earlier suggestion"}
+        out = self.run_page(TheBulkView.PICK + "R.rows = ELS.rows.html; bar('#select-all'); R.bar = ELS.bulk.html; bar('#accept-rec'); await settle();",
+                            TheBulkView.BULK_RULE.replace("body.note === REFUSE", "false").replace("body.note === STALE", "false")
+                            .replace("body.note === LOST", "false"), doc=doc)
+        rows = out["R"]["rows"]
+        self.assertIn('<p class="rec">Recommended: <b>Reject</b> · a repeat of an earlier suggestion</p>', rows)
+        self.assertIn('<span>Reject</span><span class="tag">recommended</span>', rows)
+        self.assertIn('id="accept-rec">Accept recommendation <span class="n">1</span></button>', out["R"]["bar"])
+        self.assertEqual([(p[1]["note"], p[1]["option"]) for p in out["posts"] if p[0] == "/api/review/rule"], [(10, "Reject")])
+
+    def test_a_ruled_rows_recommendation_says_whether_the_label_matched(self):
+        # A blind batch sends it only once ruled (review_screen); the row then says it and how the label compares.
+        doc = doc_with(3, mode="blind", open=1, labels=2)
+        doc["reviewed"] = [{**doc["questions"].pop(), "open": False, "label": "Reject", "ruling": 90,
+                            "recommendation": {"option": "Approve", "reason": "small change"}, "agreed": False},
+                           {**doc["questions"].pop(), "open": False, "label": "Approve", "ruling": 91,
+                            "recommendation": {"option": "Approve", "reason": "small change"}, "agreed": True}]
+        rows = self.run_page("R.rows = ELS.rows.html;", "(path, body) => [200, DOC]", search="?reviewed=1", doc=doc)["R"]["rows"]
+        self.assertIn('<p class="rec">Recommended: <b>Approve</b> · small change · <span class="agree">differs from your label</span></p>', rows)
+        self.assertIn('<p class="rec">Recommended: <b>Approve</b> · small change · <span class="agree">matches your label</span></p>', rows)
+        # The open blind row says nothing of a recommendation.
+        self.assertEqual(rows.split('data-id="q10"')[1].split("</tr>")[0].count('class="rec'), 0)
+
+    def test_a_blind_label_reply_shows_its_recommendation_in_the_toast_and_the_row(self):
+        out = self.run_page("key('1'); await flush(); R.rows = ELS.rows.html;",
+                            """(path, body) => path === '/api/review' ? [200, DOC]
+                              : [200, { item: 11, note: body.note, revision: 'b'.repeat(64), ruling: 110,
+                                        recommendation: { option: 'Reject', reason: 'seen before' }, agreed: false }]""",
+                            search="?reviewed=1", doc=doc_with(2, mode="blind"))
+        self.assertEqual(out["toasts"][-1], ["Labelled note #10: Approve · recommended Reject", True])
+        self.assertIn('<p class="rec">Recommended: <b>Reject</b> · seen before · <span class="agree">differs from your label</span></p>',
+                      out["R"]["rows"])
 
     def test_a_row_with_no_proposal_says_it_has_no_recommendation(self):
         out = self.run_page("R.rows = ELS.rows.html;", "(path, body) => [200, DOC]", doc=doc_with(1))

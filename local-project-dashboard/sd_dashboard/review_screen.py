@@ -9,7 +9,12 @@ and the CLI verb share one path (operator ruling Q3); the page adds no store and
   question; and in `reviewed` each ruled or expired one, with `label` and `ruling`. A blind or sealed batch sends the
   question text, options and label only: no subject and no evidence.
   A batch whose notes do not read as one is listed with its reason, never dropped.
-- `rule_request` is `/api/review/rule`: `review.rule`, under the batch revision the page read.
+  Each batch sends its `context` (purpose, rubric, feeds; None when filed with none), and a question its `recommendation`
+  (option and reason) when it has one (sd:5759, pack sd:5763). A blind or sealed batch sends a recommendation only on a
+  question its standing label ruled, with `agreed`: an open or expired question never carries it, so its label stays
+  independent. A pack without the fields sends neither.
+- `rule_request` is `/api/review/rule`: `review.rule`, under the batch revision the page read. Its reply names the
+  question's recommendation and whether the label agreed (both None when it has none), now that the label is in.
 - `withdraw_request` is `/api/review/withdraw`: `review.withdraw`, the undo.
 - `recommendations` is `/api/briefs/<item>/recommendations` (sd:5064): the questions of each batch an adversarial review's
   brief names in its frontmatter (`batches: sd:N, ...`), ruled and open, with each batch's revision, so the Briefs page
@@ -23,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 
 from sd_db import reads, workflow
 
@@ -71,12 +77,13 @@ def document(connection) -> dict:
                         "queue": header["queue"], "name": header["batch"], "mode": header["mode"],
                         "source": header["source"], "nightly": header["queue"] == NIGHTLY, "revision": revision,
                         "questions": len(found["questions"]), "open": found["open"], "labels": found["labels"],
-                        "error": None})
+                        "context": header.get("context"), "error": None})
         for question in found["questions"]:
             shown = {"item": item, "note": question["note"], "text": question["text"],
                      "options": question["options"], "asked": question["asked_at"]}
             if not blind:
                 shown.update(subject=question["subject"], evidence=question["evidence"])
+            shown.update(_advice(question, blind))
             if question["open"]:
                 questions.append(shown)
             else:
@@ -95,6 +102,15 @@ def document(connection) -> dict:
 
     found = attention(["caution"] * sum(batch.get("open") or 0 for batch in batches), {"caution": "questions open"})
     return {"batches": batches, "questions": questions, "reviewed": reviewed, "attention": found}
+
+
+def _advice(question: dict, blind: bool) -> dict:
+    """A question's recommendation as the page may see it (sd:5759): in a blind or sealed batch only once a standing label
+    ruled it, with whether that label agreed; in an open batch at once."""
+    advice, label = question.get("recommendation"), question["label"]
+    if advice is None or (blind and label is None):
+        return {}
+    return {"recommendation": advice, **({} if label is None else {"agreed": question.get("agreed")})}
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -153,8 +169,16 @@ def rule_request(payload: dict):
 
         state = review.rule(connection, payload["item"], payload["note"], payload["option"],
                             expected_revision=payload["revision"], who="dashboard")
+        # The label is in, so a blind batch may now show what was recommended (sd:5759). A read that fails here costs only
+        # that line: the label landed, and the page's next read shows the recommendation.
+        try:
+            ruled = [q for q in review.read(connection, payload["item"])["questions"] if q["note"] == payload["note"]]
+        except (review.ReviewError, sqlite3.Error):
+            ruled = []
+        advice = _advice(ruled[0], blind=True) if ruled else {}
         return {"item": payload["item"], "note": payload["note"], "revision": state["revision"],
-                "ruling": state["ruling"]["id"]}
+                "ruling": state["ruling"]["id"], "recommendation": advice.get("recommendation"),
+                "agreed": advice.get("agreed")}
 
     return write
 
