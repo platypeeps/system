@@ -176,7 +176,7 @@ function renderExperiments() {
       <td class="upd" data-l="Updated">${updatedCell(x)}</td>
       <td class="ask" data-l="Asks">${asksCell(x)}</td>
       <td class="lnk" data-l="Links">${linksCell(p)}</td>
-      <td class="acts">${shell.commands.rowActions(xpId(p.key))}</td></tr>`; })}`);
+      <td class="acts">${slidesAct(p)}${shell.commands.rowActions(xpId(p.key))}</td></tr>`; })}`);
   const stale = list.filter(p => p.experiment.stale).length, asks = list.reduce((n, p) => n + (p.experiment.asks_total || 0), 0);
   put(document.getElementById('xp-tally'), list.length ? html`<span>${plural(list.length, 'brief')}</span><span>${stale} stale</span><span>${plural(asks, 'ask')}</span>${BUILD_UNREAD ? html`<span>last deck build not read: ${BUILD_UNREAD}</span>` : ''}` : html``);
   const empty = document.getElementById('xp-empty');
@@ -223,6 +223,13 @@ function slidesCommand() {
         IMPORTING = ''; SLIDES = { ...SLIDES, imports: { ...SLIDES?.imports, [o.key]: d.slides } }; renderExperiments();
         return d.reused ? `Slides unchanged · ${o.label}: this deck is already imported` : `Imported to Slides · ${o.label}${d.replaces ? '; the earlier Slides file stays in Drive' : ''}`;
       }, err => { IMPORTING = ''; renderExperiments(); return refused(err); }); } };
+}
+const SLIDES_CMD = slidesCommand();
+// The row's second icon, beside Build deck: Import to Slides, shown only while it can run; ⋯ and Details say why it is off.
+function slidesAct(p) {
+  const o = shell.commands.get(xpId(p.key));
+  if (!o || SLIDES_CMD.when(o) !== true) return '';
+  return html`<button class="icon-btn" type="button" data-cmd="${SLIDES_CMD.id}" data-obj="${o.id}" aria-label="${SLIDES_CMD.label}" data-tip="${`${SLIDES_CMD.label}: ${SLIDES_CMD.does}`}">${I(SLIDES_CMD.icon)}</button>`;
 }
 xpBody.addEventListener('click', e => { if (e.target.closest('a, .acts')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
@@ -695,7 +702,7 @@ function registerCommands() {
     REFRESH,
     ...experimentCommands(),
     deckCommand(),
-    slidesCommand(),
+    SLIDES_CMD,
     // sd:5101: codex checks the source's grade and the claims citing it against the source as the runner fetches it.
     window.commands.adversarialReview('research source', { id: 'source.adversarial-review',
       does: 'Starts a codex review of this source against the claims citing it; its brief lists fixes to pick.',

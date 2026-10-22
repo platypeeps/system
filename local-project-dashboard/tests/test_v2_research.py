@@ -1385,7 +1385,8 @@ R.when = cmd('research.deck').when(C.get('xp:research/alpha')); R.rows = ELS['xp
 R.when = c.when(o); R.beta = c.when(C.get('xp:research/beta')); R.ask = c.askFirst; R.before = ELS['xp-rows'].html;
 R.said = await c.run(o); R.rows = ELS['xp-rows'].html;
 SLIDES.imports['research/alpha'] = { ...SLIDES.imports['research/alpha'], built: '2026-09-01T00:00:00Z' }; renderExperiments(); R.older = ELS['xp-rows'].html;
-SLIDES = { ready: false, why: 'workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused', imports: {} }; R.down = c.when(o);""", answer=answer)
+SLIDES = { ready: false, why: 'workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused', imports: {} }; R.down = c.when(o);
+renderExperiments(); R.downRows = ELS['xp-rows'].html;""", answer=answer)
         r = out["R"]
         self.assertEqual((r["when"], r["ask"]), (True, True))
         self.assertEqual(r["beta"], "no deck is built: press Build deck first")
@@ -1396,6 +1397,11 @@ SLIDES = { ready: false, why: 'workspace-mcp at http://127.0.0.1:8083/mcp did no
         self.assertIn("current deck", r["rows"])
         self.assertIn("an older deck: import again", r["older"])
         self.assertEqual(r["down"], "workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused")
+        # sd:5747: the row carries an Import to Slides icon while the import can run, and none while it cannot.
+        icon = '<button class="icon-btn" type="button" data-cmd="research.slides" data-obj="xp:research/alpha" aria-label="Import to Slides"'
+        self.assertIn(icon, r["before"])
+        self.assertEqual(r["before"].count('data-cmd="research.slides"'), 1)
+        self.assertNotIn('data-cmd="research.slides"', r["downRows"])
 
     def test_sources_and_claim_map_send_the_viewer_to_projects_when_none_is_selected(self):
         out = self.run_page("""ANSWER = () => [500, { error: 'boom' }]; await load(); await flush();
