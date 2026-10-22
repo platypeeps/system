@@ -521,7 +521,7 @@ class ThePullRequestDetails(unittest.TestCase):
     def test_a_row_a_later_read_drops_is_retired_so_no_command_runs_on_it(self):
         out = self.run_page("show(); await flush(); R.before = C.get('gh:" + PR + "').type;"
                             " ANSWER = (path, body) => [200, " + json.dumps(doc()) + "];"
-                            " ELS.refresh.listeners.click[0](); await flush(); R.after = C.get('gh:" + PR + "');",
+                            " window.githubPulls.again(); await flush(); R.after = C.get('gh:" + PR + "');",
                             f"(path, body) => [200, {json.dumps(doc(pulls=[entry(1)]))}]")
         self.assertEqual(out["R"]["before"], "github pull request")
         self.assertEqual(out["R"]["after"]["type"], "not listed")
