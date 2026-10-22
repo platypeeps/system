@@ -551,12 +551,31 @@ window.shell.view.current = () => 'briefs'; window.markup.put(ELS.details, mk`<h
 late.forEach(f => f()); await flush(); R.det = ELS.details.html;""")
         self.assertEqual(out["R"]["det"], "<h2>A brief</h2>")
 
-    def test_a_followups_first_action_is_draft_email_and_any_other_kinds_its_next_status(self):
+    def test_a_followups_first_action_is_draft_email_and_any_other_kinds_done(self):
         # sd:5671: HOA's Draft followup was a followup's row action; merged into Tasks' Draft email, it stays the first
-        # action of a followup on HOA, and any other kind's is the Tasks list's next status move.
+        # action of a followup on HOA. sd:5752: any other kind's is Done, its acknowledge, whatever its status.
         out = self.run_page(f"""const first = n => {{ const o = OBJ.get(String(n)); return REG.filter(c => c.on === o.type).find(c => c.primary?.(o) && (!c.when || c.when(o) === true))?.id; }};
 R.p = [first({self.late}), first({self.task}), first({self.blocked})];""")
-        self.assertEqual(out["R"]["p"], ["item.email", "item.status.ready", "item.status.ready"])
+        self.assertEqual(out["R"]["p"], ["item.email", "item.status.done", "item.status.done"])
+
+    def test_tasks_show_the_open_items_and_all_adds_the_weeks_done_ones_kept_in_the_url(self):
+        # sd:5752: Open is the default and what the annunciator counts; All adds /api/hoa's items.done, and ?tasks=all keeps it.
+        settled = self.item("Settle the invoice", kind="task", repo=str(self.hoa), status="done")
+        seg = "ELS['ob-show'].listeners.click[0]({ target: { closest: s => s === '[data-f=\"tasks\"]' ? { dataset: { f: 'tasks', v: 'V' } } : null } }); "
+        rows = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"(\\d+)\"/g)].map(m => +m[1]); "
+        out = self.run_page(rows + "R.open = re(); R.seg = ELS['ob-show'].html; R.lamps = ELS.annunciator.html; " + seg.replace("V", "all")
+                            + "R.all = re(); R.det = OBJ.get('%d').type; " % settled + seg.replace("V", "open") + "R.back = re(); R.urls = R0;",
+                            pre="R0 = []; window.shell.url = q => R0.push(String(q)); var R0;")
+        r = out["R"]
+        everything, done = [self.late, self.soon, self.later, self.task, self.blocked], [r["id"] for r in self.doc()["items"]["done"]]
+        self.assertIn(settled, done)
+        self.assertEqual((r["open"], r["all"], r["back"], r["urls"]), (everything, everything + done, everything, ["tasks=all", ""]))
+        self.assertIn('data-f="tasks" data-v="open" aria-pressed="true"', r["seg"])
+        self.assertIn(f'All <span class="n">{len(everything + done)}</span>', r["seg"])
+        self.assertEqual(r["det"], "item", "a done row is a command object, so Undo finds it")
+        self.assertIn("5 open", r["lamps"])
+        out = self.run_page(rows + "R.rows = re();", pre="location.search = '?tasks=all';")
+        self.assertEqual(out["R"]["rows"], everything + done)
 
     def test_draft_email_asks_first_and_saves_a_gmail_draft_through_the_draft_email_route(self):
         # sd:5483, sd:5671: Draft email posts the draft-email route with the row's revision, as on Tasks, and asks first.
