@@ -133,7 +133,7 @@ def document(connection: sqlite3.Connection, *, now: str) -> dict:
         contribution = projected.get(key) or {}
         state = str(row.get("state") or "").lower()
         # Waiting on you is an open row's: the projection can still say it of one GitHub has since closed.
-        if state == "open" and (row.get("needs_you") or contribution.get("needs_you")):
+        if state == "open" and any(part.get("needs_you") for part in (row, contribution)):
             why = "waiting on you"
         elif row.get("reason") == "assigned":
             why = "assigned to you"
