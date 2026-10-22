@@ -1038,6 +1038,56 @@ class TheRailWidth(unittest.TestCase):
 
 
 
+PANE = re.search(r"^  // pane:start\n(.*?)^  // pane:end$", SHELL_JS, re.S | re.M)
+IPAD = {"maxTouchPoints": 5, "platform": "MacIntel"}
+
+
+class ThePaneFold(unittest.TestCase):
+    """sd:5725: each page keeps its own pane fold, and an iPad starts folded whatever is kept."""
+
+    def run_pane(self, body, stored=None, path="/v2/tasks", nav=None):
+        self.assertIsNotNone(PANE, "shell.js has no pane block")
+        script = ("var STORE = " + json.dumps(stored or {}) + ", ATTR = {};\n"
+                  "var location = { pathname: " + json.dumps(path) + " }, navigator = "
+                  + json.dumps(nav or {"maxTouchPoints": 0, "platform": "MacIntel"}) + ";\n"
+                  "const body = { dataset: {} };\n"
+                  "const store = (k, v) => { if (v === undefined) return k in STORE ? STORE[k] : null; STORE[k] = v; return v; };\n"
+                  "const foldPane = { setAttribute: (k, v) => { ATTR[k] = v; }, querySelector: () => ({ setAttribute: () => {} }) };\n"
+                  + PANE.group(1) + "\nvar R = {};\n" + body
+                  + "\nfunction run() { return JSON.stringify({ R, STORE, ATTR, pane: body.dataset.pane || null }); }\n")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        return json.loads(result.stdout)
+
+    def test_a_fold_is_kept_for_its_page_alone(self):
+        out = self.run_pane("setPane(true);")
+        self.assertEqual(out["STORE"], {"sd.pane./v2/tasks": "min"})
+        self.assertEqual(out["ATTR"]["aria-expanded"], False)
+        # Reports kept its pane open; Tasks folding does not fold it.
+        out = self.run_pane("R.kept = paneKept();", stored={"sd.pane./v2/tasks": "min", "sd.pane./v2/reports": ""}, path="/v2/reports")
+        self.assertIs(out["R"]["kept"], False)
+
+    def test_a_page_with_no_fold_yet_takes_the_old_browser_wide_one(self):
+        out = self.run_pane("R.kept = paneKept();", stored={"sd.pane": "min"})
+        self.assertIs(out["R"]["kept"], True)
+        out = self.run_pane("R.kept = paneKept();", stored={"sd.pane": "min", "sd.pane./v2/tasks": ""})
+        self.assertIs(out["R"]["kept"], False)
+
+    def test_an_ipad_starts_folded_whatever_is_kept_and_a_click_still_toggles(self):
+        out = self.run_pane("R.kept = paneKept(); setPane(false);", stored={"sd.pane./v2/tasks": ""}, nav=IPAD)
+        self.assertIs(out["R"]["kept"], True)
+        self.assertIsNone(out["pane"])
+        # An older iPad names itself; a Mac without touch and an iPhone do not count.
+        self.assertIs(self.run_pane("R.kept = paneKept();", nav={"maxTouchPoints": 5, "platform": "iPad"})["R"]["kept"], True)
+        self.assertIs(self.run_pane("R.kept = paneKept();", nav={"maxTouchPoints": 0, "platform": "MacIntel"})["R"]["kept"], False)
+        self.assertIs(self.run_pane("R.kept = paneKept();", nav={"maxTouchPoints": 5, "platform": "iPhone"})["R"]["kept"], False)
+
+    def test_the_shell_applies_the_kept_fold_on_load_and_the_rail_keeps_one_key(self):
+        self.assertIn("if (paneKept()) setPane(true);", SHELL_JS)
+        self.assertIn("if (store('sd.rail') === 'min') setRail(true);", SHELL_JS)
+
+
 WALK = re.search(r"^  // walk:start\n(.*?)^  // walk:end$", SHELL_JS, re.S | re.M)
 
 

@@ -460,7 +460,8 @@
     const i = tabs.indexOf(document.activeElement); if (i < 0) return;
     e.preventDefault(); const n = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length]; showTab(n.id); n.focus();
   });
-  // Collapse: the rail folds to icons (≥900px) and the pane to a strip (≥1240px). [ and ] toggle; each browser remembers.
+  // Collapse: the rail folds to icons (≥900px) and the pane to a strip (≥1240px). [ and ] toggle; the browser remembers the
+  // rail once and the pane per page.
   const store = (k, v) => { try { v === undefined ? v = localStorage.getItem(k) : localStorage.setItem(k, v); } catch { v = null; } return v; };
   const foldRail = rail.querySelector('#fold-rail'), foldPane = pane.querySelector('#fold-pane');
   function setRail(min) {
@@ -471,17 +472,25 @@
     foldRail.querySelector('use').setAttribute('href', `#i-panel-left-${min ? 'open' : 'close'}`);
     rail.querySelectorAll('nav a[data-section]').forEach(a => { a.title = min ? a.querySelector('.nm').textContent : ''; });
   }
+  // pane:start
+  // sd:5725: each page keeps its own pane fold as sd.pane.<path>, as VKEY keys the view; a page with none yet takes the one
+  // browser-wide sd.pane the shell kept before. An iPad starts folded whatever is kept: iPadOS reports a Mac platform, so
+  // touch tells it from a Mac. A click still toggles it for the visit.
+  const PKEY = `sd.pane.${location.pathname}`;
+  const ipad = () => navigator.maxTouchPoints > 1 && /^(Mac|iPad)/.test(navigator.platform || '');
+  const paneKept = () => ipad() || (store(PKEY) ?? store('sd.pane')) === 'min';
   function setPane(min) {
-    min ? body.dataset.pane = 'min' : delete body.dataset.pane; store('sd.pane', min ? 'min' : '');
+    min ? body.dataset.pane = 'min' : delete body.dataset.pane; store(PKEY, min ? 'min' : '');
     foldPane.setAttribute('aria-expanded', !min); foldPane.setAttribute('aria-label', min ? 'Expand panel (])' : 'Collapse panel (])');
     foldPane.querySelector('use').setAttribute('href', `#i-panel-right-${min ? 'open' : 'close'}`);
   }
+  // pane:end
   foldRail.addEventListener('click', () => setRail(!body.dataset.rail));
   foldPane.addEventListener('click', () => setPane(!body.dataset.pane));
   // A tab click in the strip expands the pane on that tab.
   pane.querySelector('.tabs').addEventListener('click', e => { if (body.dataset.pane && e.target.closest('[role="tab"]')) setPane(false); });
   if (store('sd.rail') === 'min') setRail(true);
-  if (store('sd.pane') === 'min') setPane(true);
+  if (paneKept()) setPane(true);
   // Width: the rail's right edge is a separator (WAI-ARIA window splitter). Drag it, or step it with ← → (Home, End) when it
   // has focus; a double-click goes back to the default. Hidden while the rail is folded, below 900px and on touch, where
   // a page sets it through shell.railWidth instead.
