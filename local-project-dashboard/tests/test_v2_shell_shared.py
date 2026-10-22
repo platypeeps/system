@@ -331,6 +331,44 @@ class TheActBar(unittest.TestCase):
         self.assertIn("if (b.dataset.copy) copy(b.dataset.copy);", click.group(0))
 
 
+# How-to and legend words that sd:5733 moved out of view text, captions and table headers into the help line.
+HOWTO = re.compile(r"\b(Drag|[Pp]ress \d|Tap|[Cc]lick|or use Move to)\b|Run now starts|lamps per piece")
+
+
+class TheTableHelp(unittest.TestCase):
+    """sd:5733: how to work a table and what its marks mean sit in one help line under it; its header keeps what it is."""
+
+    def test_the_help_line_draws_the_legend_then_the_how_to(self):
+        R = run_js("""R.both = String(list.help('Tap a job to see its reports.', [[html`<span class="g-ok">●</span>`, 'ran clean']]));
+R.text = String(list.help('Drag a card.')); R.none = String(list.help(''));""")
+        self.assertEqual(R["both"], '<p class="list-help"><span class="key"><span class="g-ok">●</span> ran clean</span>'
+                                    '<span>Tap a job to see its reports.</span></p>')
+        self.assertEqual(R["text"], '<p class="list-help"><span>Drag a card.</span></p>')
+        self.assertEqual(R["none"], "")
+
+    def test_no_view_text_caption_or_table_header_holds_how_to_or_legend_words(self):
+        heads = []
+        for page in V2.glob("*.html"):
+            text = page.read_text(encoding="utf-8")
+            heads += [(page.name, t) for t in re.findall(r"<caption[^>]*>(.*?)</caption>", text, re.S)]
+            heads += [(page.name, t) for t in re.findall(r'<div class="panel-head">\s*<div>(.*?)</div>', text, re.S)]
+        for name, js in PAGE_JS.items():
+            heads += [(name, t) for t in re.findall(r"const SUB = \{(.*?)\};", js, re.S)]
+            heads += [(name, t) for t in re.findall(r"(?:'subhead'|'cad-caption'|sub\.textContent =)[^;]*", js)]
+        self.assertTrue(any(name == "tasks.js" for name, _ in heads), "the walk found no Tasks view text")
+        for name, text in heads:
+            with self.subTest(name, text=text[:60]):
+                self.assertNotRegex(text, HOWTO)
+
+    def test_each_moved_text_is_in_its_tables_help_line(self):
+        for name, text in (("tasks.js", PAGE_JS["tasks.js"]), ("writing.js", PAGE_JS["writing.js"]),
+                           ("reports.html", (V2 / "reports.html").read_text(encoding="utf-8")),
+                           ("hoa.html", (V2 / "hoa.html").read_text(encoding="utf-8"))):
+            with self.subTest(name):
+                self.assertTrue("list.help(" in text or 'class="list-help"' in text)
+        self.assertIn(".list-help {", SHELL_CSS)
+
+
 class TheSharedRules(unittest.TestCase):
     """sd:2588: shell.css holds each shared annunciator and ledger rule once; no page repeats one."""
 

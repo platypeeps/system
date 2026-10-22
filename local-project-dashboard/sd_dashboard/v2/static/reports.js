@@ -96,7 +96,7 @@ function renderCad() {
     return;
   }
   put(byId('cad-head'), html`<tr><th scope="col">Job</th>${DAYS.map(d => html`<th scope="col"><abbr title="${d}">${dayName(d)}</abbr></th>`)}</tr>`);
-  put(byId('cad-caption'), html`${DAYS.length ? `${dayName(DAYS[0])} ${DAYS[0].slice(8)} – ${dayName(DAYS[DAYS.length - 1])} ${DAYS[DAYS.length - 1].slice(8)}` : ''}, local time. Tap a job to see its reports.`);
+  put(byId('cad-caption'), html`${DAYS.length ? `${dayName(DAYS[0])} ${DAYS[0].slice(8)} – ${dayName(DAYS[DAYS.length - 1])} ${DAYS[DAYS.length - 1].slice(8)}` : ''}, local time.`);
   const list = cadAll ? CAD_JOBS : CAD_JOBS.filter(interesting);
   let lastFam = null;
   put(byId('cad-body'), html`${list.map(([f, j]) => {

@@ -834,6 +834,18 @@ R.pick = [menu.hidden, btn.attrs['aria-label'], OUT.focus.at(-1)];""")
         self.assertNotIn('class="seg" role="group" aria-label="View"', page)
         self.assertIn('aria-label="Help: views"', page)
 
+    def test_the_boards_how_to_is_the_help_line_under_it_not_the_view_text(self):
+        """sd:5733: the operator moved "Drag a card, or select it and press 1-5 or use Move to." under the board."""
+        out = self.run_page("R.board = ELS['view-board'].html; R.sub = ELS.subhead.html;\n"
+                            "document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'matrix' })); await flush();\n"
+                            "R.matrix = ELS['view-matrix'].html; R.msub = ELS.subhead.html;")
+        self.assertIn("Board of the framework statuses.", out["R"]["sub"])
+        self.assertIn("urgency is derived from the due date.", out["R"]["msub"])
+        for sub in (out["R"]["sub"], out["R"]["msub"]):
+            self.assertNotRegex(sub, r"Drag|press 1")
+        self.assertRegex(out["R"]["board"], r'</div><p class="list-help"><span>Drag a card, or select it and press 1–5 or use Move to\.</span></p>$')
+        self.assertRegex(out["R"]["matrix"], r'<p class="list-help"><span>Drag a card, or select it and press 1–4\.</span></p>$')
+
     def test_the_page_reads_the_rows_and_draws_the_kind_and_repo_filters(self):
         out = self.run_page("R.filters = ELS.filters.html; R.board = ELS['view-board'].html; R.sub = ELS.subhead.html;")
         self.assertEqual(out["gets"], ["/api/tasks"])

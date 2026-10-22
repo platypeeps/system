@@ -135,7 +135,7 @@ addEventListener('DOMContentLoaded', () => {
         <header><span class="label">${name}</span><span class="n">${rows.length}</span></header>
         <div><p class="refusal" role="note"></p><div class="drop">${rows.length ? rows.map(card) : html`<p class="empty">Nothing ${name.toLowerCase()}.</p>`}</div></div>
       </div>`;
-    })}</div>`);
+    })}</div>${window.shell.list.help('Four lamps per piece: draft, research, fact-check, adversarial.')}`);
   }
 
   // ---------- Details ----------
@@ -348,7 +348,7 @@ addEventListener('DOMContentLoaded', () => {
     if (!D) { sub.textContent = 'The pieces were not read.'; return; }
     // Each realm's tab carries its pieces (sd:5524).
     (window.PAGE_VIEWS || []).forEach(v => window.shell.view?.count(v.id, (D.pieces || []).filter(p => inRealm(p, v.id)).length));
-    sub.textContent = `Read ${String(D.read).slice(11, 16)} UTC · ` + (view === 'board' ? 'Pieces by stage. Four lamps per piece: draft, research, fact-check, adversarial.' : 'Focused editor: the draft on the left, its evidence on the right.');
+    sub.textContent = `Read ${String(D.read).slice(11, 16)} UTC · ` + (view === 'board' ? 'Pieces by stage.' : 'Focused editor: the draft on the left, its evidence on the right.');
   }
   // Board and Editor are the layout menu Tasks uses (shell.viewPick, sd:5641): one icon button; its menu lists the two.
   const pickView = window.shell.viewPick(document.getElementById('view-btn'), document.getElementById('view-menu'),

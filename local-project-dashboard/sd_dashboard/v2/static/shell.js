@@ -1297,7 +1297,14 @@
   function fbar(parts, { clear = false } = {}) {
     return html`<div class="fbar" role="group" aria-label="Filters">${parts}<div class="fsum">${clear ? html`<button class="linkbtn" type="button" data-fclear>Clear all</button>` : ''}</div></div>`;
   }
-  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange, fseg, tok: ftok, fbar, count };
+  // sd:5733: the help line under a table, after its pager: how to work the table (keys, drag, tap) and what its marks mean.
+  // legend is [[mark, meaning]], each mark drawn as the rows draw it, so the two read from one map; text is the how-to.
+  // A table's header, caption or view text keeps what the table is. Static pages write the same <p class="list-help">.
+  function help(text, legend = []) {
+    if (!text && !legend.length) return html``;
+    return html`<p class="list-help">${legend.map(([mark, meaning]) => html`<span class="key">${mark} ${meaning}</span>`)}${text ? html`<span>${text}</span>` : ''}</p>`;
+  }
+  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange, fseg, tok: ftok, fbar, count, help };
   // list:end
 
   // ---------- Layout picker: one icon button and its menu (sd:5064; shared sd:5641) ----------
