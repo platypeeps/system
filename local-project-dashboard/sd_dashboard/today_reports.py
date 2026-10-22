@@ -7,9 +7,10 @@ Two lists, read from the workflow database and from nothing else:
   read, which is for a person to look at as well (`reporting.UNREADABLE_FIELDS`). A quiet run report is left out, as the
   backlog leaves it out. Acknowledge posts the Reports page's route, `/api/reports/<id>/acknowledge`, with the revision.
 - `briefs`: the routine briefs (`briefs_screen`) filed in the last `WINDOW_DAYS` days, newest first, that the operator has
-  not marked seen. Seen is a Today snooze (`snooze`), key `today:brief:<stem>`, held until `SEEN_DAYS` days after the
-  brief's day: by then the brief has aged off Today, and the Briefs page keeps it. A brief whose text grows (an `extend`)
-  reads as new again, since its word count is its problem. No new store: the snooze is the existing one.
+  not marked seen. Seen is a Today snooze (`snooze`), key `today:brief:<stem>`, held until the brief changes
+  (`writes.SNOOZE_FOREVER`, sd:5752): the place pages' Briefs (`places.briefs`) read the same mark (`seen_row`), so a brief
+  seen in either place stays seen in both. A brief whose text grows (an `extend`) reads as new again, since its word
+  count is its problem. No new store: the snooze is the existing one.
 
 A read that fails is its reason (`problems_error`, `briefs_error`), never an empty list. Nothing here writes.
 """
@@ -18,19 +19,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
-from sd_db import reads, reporting
+from sd_db import reads, reporting, writes
 from sd_db.errors import SdDbError
 
 from . import briefs_screen, snooze
 
-__all__ = ["READ", "SEEN_DAYS", "SHOWN", "WINDOW_DAYS", "document"]
+__all__ = ["READ", "SHOWN", "WINDOW_DAYS", "document", "seen_row"]
 
 #: Briefs older than this many days stay on the Briefs page only.
 WINDOW_DAYS = 7
-#: How long Seen holds a brief off Today, counted from its day: past the window, and inside the snooze's 31-day limit.
-SEEN_DAYS = WINDOW_DAYS + 1
 #: Rows shown per list; the rest are counted and stay on Reports or Briefs.
 SHOWN = 50
 #: The last characters of a report's body Details shows.
@@ -84,9 +83,9 @@ def problems(connection: sqlite3.Connection) -> tuple[list[dict], int, bool]:
     return [_problem(connection, row, revisions[row["id"]]) for row in rows], len(found) - len(rows), len(read) >= READ
 
 
-def _seen_until(day: str) -> str:
-    moment = datetime.combine(datetime.fromisoformat(day).date() + timedelta(days=SEEN_DAYS), time(12), timezone.utc)
-    return moment.isoformat(timespec="seconds").replace("+00:00", "Z")
+def seen_row(row: dict) -> dict:
+    """A brief row's Seen mark as `snooze` reads it: its Today row id and its problem, the stem and its word count."""
+    return {"id": f"brief:{row['id']}", "problem": [row["id"], row["words"]]}
 
 
 def briefs(connection: sqlite3.Connection, *, now: str, snoozes: dict) -> tuple[list[dict], int, int]:
@@ -97,8 +96,7 @@ def briefs(connection: sqlite3.Connection, *, now: str, snoozes: dict) -> tuple[
     if not isinstance(got, list):
         raise ValueError("the brief reader returned no list")  # noqa: TRY004 - external document validation
     found, bad = briefs_screen.rows(got, None, briefs_screen.copies(None), None)
-    rows = [{**row, "id": f"brief:{row['id']}", "stem": row["id"], "until": _seen_until(row["day"]),
-             "problem": [row["id"], row["words"]]} for row in found if row["day"] >= since]
+    rows = [{**row, **seen_row(row), "stem": row["id"], "until": writes.SNOOZE_FOREVER} for row in found if row["day"] >= since]
     shown, _seen = snooze.split("today", rows, snoozes)
     return shown[:SHOWN], max(0, len(shown) - SHOWN), bad
 

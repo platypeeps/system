@@ -107,13 +107,14 @@ class TheBriefs(ReportsCase):
                          ["2026-09-05 - Daily Intel Brief", "2026-09-04 - Weekly Intel Synthesis"])
         first = doc["briefs"][0]
         self.assertEqual((first["id"], first["until"], first["lead"]),
-                         ("brief:2026-09-05 - Daily Intel Brief", "2026-09-13T12:00:00Z", "Three things moved overnight."))
+                         ("brief:2026-09-05 - Daily Intel Brief", "forever", "Three things moved overnight."))
         self.assertTrue(first["seen"])
 
     def test_a_brief_marked_seen_leaves_today_until_its_text_grows(self):
         self.brief("2026-09-05 - Daily Intel Brief")
         row = self.read()["briefs"][0]
-        # Seen is the snooze Today already writes (POST /api/snooze), held to the brief's `until`.
+        # Seen is the snooze Today already writes (POST /api/snooze), held until the brief changes (sd:5752): the place
+        # pages read the same mark, and a brief that aged off Today still reads seen there.
         writes.snooze(self.connection, f"today:{row['id']}", row["until"], seen=row["seen"], now=NOW)
         self.assertEqual([r["stem"] for r in self.today()["briefs"]], [])
         routine_briefs.add(self.connection, "2026-09-05 - Daily Intel Brief",

@@ -20,9 +20,9 @@ from unittest import mock
 
 import sqlite3
 
-from sd_db import reporting, routine_briefs, writes
+from sd_db import reporting, routine_briefs, workflow, writes
 
-from sd_dashboard import hoa_screen, places, reports_screen, tasks_screen, v2
+from sd_dashboard import hoa_screen, places, reports_screen, snooze, tasks_screen, today_reports, v2
 
 import test_v2_tasks
 from support import NOW, ScreenCase, before_5648
@@ -135,6 +135,24 @@ class Tasks(Fixture):
             self.assertEqual(self.ids(places.tasks(self.connection, "home", now=NOW)), [self.home_item])
 
 
+    def test_a_places_done_rows_are_the_weeks_done_items_kept_apart_from_its_open_rows(self):
+        """sd:5752: a place's Tasks All view lists the week's done items, as Tasks does (`backlog_items`' bound); `rows`
+        stays the open ones, which every count reads. HOA's are /api/hoa's `items.done`, each `ok`."""
+        swept = self.item("Swept the porch", kind="task", status="done")
+        old = self.item("Painted the fence", kind="task", status="done")
+        self.age(old, 30)
+        home = places.tasks(self.connection, "home", now=NOW)
+        self.assertEqual((self.ids(home), [r["id"] for r in home["done"]]), ([self.home_item], [swept]))
+        hoa = places.tasks(self.connection, "hoa", now=NOW)
+        settled = [r["id"] for r in hoa["done"]]
+        self.assertEqual(len(settled), 1)
+        items = hoa_screen.document(self.connection, now=NOW)["items"]
+        self.assertEqual(([r["id"] for r in items["rows"]], [(r["id"], r["state"]) for r in items["done"]]),
+                         ([self.hoa_item], [(settled[0], "ok")]))
+        listed = {r["id"]: r for r in tasks_screen.document(self.connection, now=NOW)["rows"]}
+        self.assertEqual(home["done"], [listed[swept]], "a done row is the Tasks page's row too")
+
+
 class Realms(Fixture):
     """sd:5064: `places.realm_of` puts a Tasks row in Personal or a realm of the dashboard.realms list."""
 
@@ -220,6 +238,26 @@ class Briefs(Fixture):
         self.assertEqual((doc["state"], doc["rows"]), ("unknown", []))
         self.assertIn("<config>/project-dashboard/report-families.conf", doc["reason"])
         self.assertIn("family|home|", doc["reason"])
+
+
+    def test_a_brief_seen_on_today_reads_seen_here_until_its_text_grows(self):
+        # sd:5752: Seen is Today's snooze, under Today's row id and fingerprint, so a mark made in either place holds in both.
+        stem = "2026-09-05 - Board Notes"
+        mine = lambda: next(r for r in places.briefs(self.connection, "hoa", now=NOW, config=self.config)["rows"] if r["id"] == stem)
+        today = next(r for r in today_reports.document(self.connection, now=NOW, snoozes={})["briefs"] if r["stem"] == stem)
+        row = mine()
+        self.assertEqual((row["mark"], row["seen"], row["marked"]), (today["id"], today["seen"], False))
+        writes.snooze(self.connection, snooze.key("today", today["id"]), today["until"], seen=today["seen"], now=NOW)
+        self.assertTrue(mine()["marked"])
+        routine_briefs.add(self.connection, stem, "---\nseries: x\n---\n\nA lead.\n\nA second.\n", repo=self.hoa,
+                           who="test", mode="extend")
+        self.assertFalse(mine()["marked"])
+
+    def test_a_seen_read_that_fails_marks_nothing_and_says_so(self):
+        with mock.patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("no such table: state")):
+            doc = places.briefs(self.connection, "hoa", now=NOW, config=self.config)
+        self.assertEqual((doc["state"], [r["marked"] for r in doc["rows"]]), ("read", [False, False]))
+        self.assertIn("Seen marks were not read: no such table: state. Every brief shows as open.", doc["reason"])
 
 
 class Reports(Fixture):
@@ -469,7 +507,7 @@ class ThePlaceScript(Fixture):
     VIEWS = {"hoa": [["overview", "Overview", None], ["tasks", "Tasks", None], ["briefs", "Briefs", "/api/hoa/briefs"], ["reports", "Reports", "/api/hoa/reports"]],
              "home": [["overview", "Overview", None], ["tasks", "Tasks", "/api/home/tasks"], ["briefs", "Briefs", "/api/home/briefs"], ["reports", "Reports", "/api/home/reports"]]}
 
-    def run_page(self, body, docs, place="hoa", setup=""):
+    def run_page(self, body, docs, place="hoa", setup="", before=""):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL
                   + f"\nconst DOCS = {json.dumps(docs)}, PLACE = {json.dumps(place)}, VIEWS = {json.dumps(self.VIEWS[place])};\n"
                   + """ANSWER = path => path in DOCS ? DOCS[path] : [404, { error: 'no answer' }];
@@ -483,7 +521,7 @@ const shown = () => SECTIONS.filter(x => !x.hidden).map(x => x.dataset.placeView
 let VIEW = VIEWS[0][0];
 window.shell.view = { current: () => VIEW, show: () => true, count: () => {} };
 const go = async hash => { VIEW = hash.replace('#view=', ''); document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: VIEW } })); await flush(); };
-""" + COMMANDS_JS + BRIEF_DETAILS_JS + REPORT_DETAILS_JS + TASK_DETAILS_JS + PLACES_JS + "\nvar R = {};\n(async () => { try {\n" + setup + "\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
+""" + before + "\n" + COMMANDS_JS + BRIEF_DETAILS_JS + REPORT_DETAILS_JS + TASK_DETAILS_JS + PLACES_JS + "\nvar R = {};\n(async () => { try {\n" + setup + "\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
@@ -642,6 +680,111 @@ shellRun(cmd('item.status.{to}'), C.get('{n}')); await flush(); R.det = ELS.deta
         self.assertEqual([p[:2] for p in out["posts"]], [[f"/api/items/{n}/status", {"status": to, "revision": row["revision"]}]])
         self.assertEqual(out["gets"].count("/api/home/tasks"), 2)
         self.assertIn("<h2>Clean the gutters</h2>", out["R"]["det"])
+
+    #: sd:5752: each row's act cell names its primary command, as shell.js's rowActions picks it (the first live one whose
+    #: primary holds); a click on a filter bar segment; shell.url's writes.
+    ACTS = """C.rowActions = id => { const o = C.get(id), p = o && REG.find(c => c.on === o.type && (!c.when || c.when(o) === true) && c.primary?.(o));
+  return mk`<i data-act="${p ? p.id : ''}"></i>`; };
+const seg = (f, v) => (DOC_LISTENERS['click'] || []).forEach(h => h({ button: 0, target: { closest: sel => sel === '.place-view[data-api] [data-f]' ? { dataset: { f, v } } : null } }));
+R.urls = []; window.shell.url = q => R.urls.push(String(q));
+"""
+
+    def acked_docs(self):
+        """Home's documents with one done task and the fun report acknowledged."""
+        self.swept = self.item("Swept the porch", kind="task", status="done")
+        reporting.acknowledge(self.connection, self.fun, expected_revision=workflow.item_state(self.connection, self.fun)["revision"], who="test")
+        self.open_report = report(self, "fun-events-nightly", "r4")
+        return self.docs("home")
+
+    def test_tasks_and_reports_show_their_open_rows_and_all_shows_every_row_kept_in_the_url(self):
+        # sd:5752: Open is the default; All adds the week's done tasks or the acknowledged reports, and the URL keeps it.
+        docs = self.acked_docs()
+        out = self.run_page(self.ACTS + """await go('#view=tasks'); R.open = ELS['tasks-rows'].html;
+seg('tasks', 'all'); await flush(); R.all = ELS['tasks-rows'].html; R.gets = OUT.gets.slice();
+seg('tasks', 'open'); await flush(); R.back = ELS['tasks-rows'].html;
+await go('#view=reports'); R.reports = ELS['reports-rows'].html; seg('reports', 'all'); await flush(); R.reportsAll = ELS['reports-rows'].html;""",
+                            docs, place="home")
+        r = out["R"]
+        row = lambda n: f'<tr data-id="{n}" '
+        self.assertEqual([row(self.home_item) in r["open"], row(self.swept) in r["open"]], [True, False])
+        self.assertIn('data-f="tasks" data-v="open" aria-pressed="true"', r["open"])
+        self.assertIn('Open <span class="n">1</span>', r["open"])
+        self.assertIn('All <span class="n">2</span>', r["open"])
+        self.assertEqual([row(self.home_item) in r["all"], row(self.swept) in r["all"]], [True, True])
+        self.assertEqual(r["gets"], ["/api/home/tasks"], "a filter draws the read it has; it reads nothing")
+        self.assertNotIn(row(self.swept), r["back"])
+        self.assertEqual([row(f"r{self.open_report}") in r["reports"], row(f"r{self.fun}") in r["reports"]], [True, False])
+        self.assertEqual([row(f"r{self.open_report}") in r["reportsAll"], row(f"r{self.fun}") in r["reportsAll"]], [True, True])
+        self.assertEqual(r["urls"], ["tasks=all", "", "reports=all"])
+        # A page opened with ?tasks=all shows All at once.
+        out = self.run_page("await go('#view=tasks'); R.tasks = ELS['tasks-rows'].html;", docs, place="home",
+                            before="location.search = '?tasks=all';")
+        self.assertIn(row(self.swept), out["R"]["tasks"])
+        self.assertIn('data-f="tasks" data-v="all" aria-pressed="true"', out["R"]["tasks"])
+
+    def test_each_tasks_and_reports_rows_primary_act_is_its_acknowledge(self):
+        # sd:5752: a task's Done (task-details.js' own move), whatever its status, and a report's Acknowledge (report.ack).
+        docs = self.acked_docs()
+        out = self.run_page(self.ACTS + """await go('#view=tasks'); R.tasks = ELS['tasks-rows'].html;
+await go('#view=reports'); R.reports = ELS['reports-rows'].html;""", docs, place="home")
+        r = out["R"]
+        self.assertIn(f'<td class="what"><button type="button">Clean the gutters</button></td>', r["tasks"])
+        self.assertRegex(r["tasks"], rf'(?s)<tr data-id="{self.home_item}" .*?<i data-act="item.status.done"></i></td></tr>')
+        self.assertRegex(r["reports"], rf'(?s)<tr data-id="r{self.open_report}" .*?<i data-act="report.ack"></i></td></tr>')
+        self.assertIn('<th scope="col" class=""><span class="sr">Actions</span></th>', r["tasks"])
+
+    def test_done_moves_a_task_out_of_open_and_undo_brings_it_back(self):
+        # sd:5752: Done is the Tasks page's move, with its Undo; the view reads again after each, and Open follows the read.
+        n, docs = self.home_item, self.docs("home")
+        row = docs["/api/home/tasks"][1]["rows"][0]
+        state = workflow.item_state(self.connection, n)
+        moved = workflow.change_status(self.connection, n, "done", expected_revision=state["revision"], who="test")
+        done_doc = places.tasks(self.connection, "home", now=NOW)
+        docs[f"/api/items/{n}/status"] = [200, {"revision": moved["revision"], "item": {"status": "done", "priority": row["priority"],
+                                                                                         "due": row["due"], "recurrence": row["recurrence"], "title": row["title"]}}]
+        out = self.run_page(self.ACTS + f"""const open = DOCS['/api/home/tasks'];
+await go('#view=tasks'); R.before = ELS['tasks-rows'].html;
+DOCS['/api/home/tasks'] = {json.dumps([200, done_doc])};
+shellRun(cmd('item.status.done'), C.get('{n}')); await flush(); R.after = ELS['tasks-rows'].html;
+DOCS['/api/home/tasks'] = open; lastUndo().undo(); await flush(); R.undone = ELS['tasks-rows'].html;""", docs, place="home")
+        r, mark = out["R"], f'<tr data-id="{n}" '
+        self.assertEqual([mark in r["before"], mark in r["after"], mark in r["undone"]], [True, False, True])
+        self.assertEqual([p[1]["status"] for p in out["posts"]], ["done", row["status"]])
+        self.assertIn('All <span class="n">1</span>', r["after"])
+
+    def seen_docs(self):
+        """HOA's documents with Board Notes marked seen on Today, the way Today's Seen writes it."""
+        row = next(r for r in places.briefs(self.connection, "hoa", now=NOW, config=self.config)["rows"] if r["item"] == self.hoa_brief)
+        writes.snooze(self.connection, snooze.key("today", row["mark"]), writes.SNOOZE_FOREVER, seen=row["seen"], now=NOW)
+        return self.docs("hoa")
+
+    def test_briefs_show_the_unseen_and_all_adds_the_seen_kept_in_the_url(self):
+        # sd:5752: Open is the briefs Today's Seen has not marked; All adds the seen ones, and ?briefs=all keeps it.
+        docs, seen, unseen = self.seen_docs(), "2026-09-05 - Board Notes", "2026-09-05 - HOA Morning Digest"
+        out = self.run_page(self.ACTS + """await go('#view=briefs'); R.open = ELS['briefs-rows'].html;
+seg('briefs', 'all'); await flush(); R.all = ELS['briefs-rows'].html;""", docs)
+        r, row = out["R"], lambda stem: f'<tr data-id="{stem}" '
+        self.assertEqual([row(unseen) in r["open"], row(seen) in r["open"]], [True, False])
+        self.assertIn('data-f="briefs" data-v="open" aria-pressed="true"', r["open"])
+        self.assertEqual([row(unseen) in r["all"], row(seen) in r["all"]], [True, True])
+        self.assertEqual(r["urls"], ["briefs=all"])
+        out = self.run_page("await go('#view=briefs'); R.briefs = ELS['briefs-rows'].html;", docs, before="location.search = '?briefs=all';")
+        self.assertIn(row(seen), out["R"]["briefs"])
+
+    def test_a_briefs_seen_is_its_rows_act_and_posts_todays_mark_until_it_changes_and_undo_clears_it(self):
+        # sd:5752: the Today snooze, under Today's row id and fingerprint, until 'forever'; the view reads again after each.
+        docs, stem = self.docs("hoa"), "2026-09-05 - HOA Morning Digest"
+        row = next(r for r in docs["/api/hoa/briefs"][1]["rows"] if r["id"] == stem)
+        docs["/api/snooze"] = [200, {"key": f"today:{row['mark']}"}]
+        out = self.run_page(self.ACTS + f"""await go('#view=briefs'); R.rows = ELS['briefs-rows'].html; const reads = OUT.gets.length;
+shellRun(cmd('brief.seen'), C.get({json.dumps(stem)})); await flush(); R.reads = OUT.gets.length - reads;
+lastUndo().undo(); await flush(); R.undone = OUT.gets.length - reads;""", docs)
+        r = out["R"]
+        self.assertRegex(r["rows"], rf'(?s)<tr data-id="{stem}" .*?<i data-act="brief.seen"></i></td></tr>')
+        self.assertEqual([p[:2] for p in out["posts"]],
+                         [["/api/snooze", {"page": "today", "row": f"brief:{stem}", "until": "forever", "seen": row["seen"]}],
+                          ["/api/snooze", {"page": "today", "row": f"brief:{stem}", "until": None, "seen": row["seen"]}]])
+        self.assertEqual((r["reads"], r["undone"]), (1, 2))
 
     def test_the_overview_reads_no_view_and_each_view_reads_its_own_document_when_shown(self):
         out = self.run_page("""R.first = shown(); R.gets0 = OUT.gets.slice();
