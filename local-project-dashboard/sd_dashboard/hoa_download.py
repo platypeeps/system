@@ -7,7 +7,9 @@ Claude Chrome session, waits there for the operator to log in, then runs the hoa
 
 The download steps are the checkout's, not this module's (`SOURCES`): `tools/vantaca-pull.py` and
 `tools/mission/mission.sh export`, each one `claude -p --chrome` that stops with exit 3 on a login page. The portal's
-address is the first `https://` link in section 2 of that run's prompt, so no address is kept here.
+address is the first `https://` link in section 2 of that run's prompt, so no address is kept here. A source with
+`window` is off once its script's own last day has passed (sd:5677): the script's `LAST_DAY = date(...)` and
+`SITE_TZ = ZoneInfo(...)`, read with `ast`, never run, so no end date is kept here either.
 
 `start` answers `POST /api/hoa/download {"source"}` through `sweep.spawn`: the source's lock, `<state>/lock`, then this
 module's `run` detached, its output in `<state>/start.log`, and 202. `status` is `/api/hoa`'s `downloads` part.
@@ -30,6 +32,7 @@ Exit codes: 0 done, 3 not possible now (signed out, no browser, another run), 1 
 
 from __future__ import annotations
 
+import ast
 import datetime
 import fcntl
 import json
@@ -40,17 +43,21 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .realm_sweep import WITH_TOKEN, alive, claude_binary, write_record
 from .sweep import DASHBOARD, _held, _since, spawn
 
-__all__ = ["LOGIN_SECONDS", "SOURCES", "allowed_tools", "portal_url", "request", "run", "start", "state_dir", "status"]
+__all__ = ["LOGIN_SECONDS", "SOURCES", "allowed_tools", "closed", "portal_url", "request", "run", "start", "state_dir",
+           "status"]
 
 EXIT_OK, EXIT_NONE, EXIT_ERROR = 0, 3, 1
 
-#: Each source's download: its label, the prompt whose section 2 names the portal, and the checkout's command.
+#: Each source's download: its label, the prompt whose section 2 names the portal, the checkout's command, and the
+#: names in its script of the approved window's last day and that day's zone (`closed`).
 SOURCES = {
-    "vantaca": {"label": "Vantaca", "prompt": "tools/vantaca-pull-prompt.md", "argv": ("python3", "tools/vantaca-pull.py")},
+    "vantaca": {"label": "Vantaca", "prompt": "tools/vantaca-pull-prompt.md", "argv": ("python3", "tools/vantaca-pull.py"),
+                "window": ("LAST_DAY", "SITE_TZ")},
     "mission": {"label": "Mission", "prompt": "tools/mission/export-prompt.md",
                 "argv": ("sh", "tools/mission/mission.sh", "export")},
 }
@@ -118,6 +125,45 @@ def _gap(place: Path, source: str) -> str:
     return ""
 
 
+def _assigned(tree: ast.Module, name: str, call: str) -> tuple | None:
+    """The literal arguments of the module's `name = call(...)`, () for no such name, None for any other value."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            value = node.value
+            if not (isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == call
+                    and not value.keywords and all(isinstance(a, ast.Constant) for a in value.args)):
+                return None
+            return tuple(a.value for a in value.args)
+    return ()
+
+
+def closed(place: Path, source: str) -> str:
+    """Why the source's approved pull window is over, or not known to be open; '' while it is open or has no end."""
+    spec = SOURCES[source]
+    if "window" not in spec:
+        return ""
+    name = next(a for a in spec["argv"] if a.startswith("tools/"))
+    unknown = f"so whether the {spec['label']} pull window is open is not known"
+    try:
+        tree = ast.parse((place / name).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError) as error:
+        return f"{name} did not read ({error}), {unknown}"
+    last_name, zone_name = spec["window"]
+    last, zone = _assigned(tree, last_name, "date"), _assigned(tree, zone_name, "ZoneInfo")
+    if last == ():
+        return ""
+    try:
+        last = datetime.date(*last)
+    except (TypeError, ValueError):
+        return f"{last_name} in {name} is not a date(year, month, day), {unknown}"
+    try:
+        today = datetime.datetime.now(ZoneInfo(*zone)).date()
+    except (TypeError, ValueError, KeyError) as error:
+        return f"{zone_name} in {name} is not a ZoneInfo(name) ({error}), {unknown}"
+    # The script refuses once its own day is past the last one, so the last day itself still pulls.
+    return f"the approved {spec['label']} pull window ended {last.isoformat()}" if today > last else ""
+
+
 def portal_url(place: Path, source: str) -> str:
     """The first https link in section 2 of the source's prompt; a prompt that names none raises ValueError."""
     name = SOURCES[source]["prompt"]
@@ -173,6 +219,9 @@ def start(connection, source: str):
     gap = _gap(place, source)
     if gap:
         raise ValueError(f"{gap}; pull its main first.")
+    ended = closed(place, source)
+    if ended:
+        raise ValueError(f"{ended}; the script refuses a pull after it.")
     portal_url(place, source)
     label = SOURCES[source]["label"]
     argv = [sys.executable, "-m", "sd_dashboard.hoa_download", "run", source, str(place)]
@@ -223,6 +272,8 @@ def status(source: str, place: Path | None = None) -> dict:
     if out["state"] != "running" and ours and (theirs is None or ours > theirs) and not out["error"]:
         out.update(state="failed", phase="", started=began, exit=None,
                    reason=f"the download started at {began} ended without a record of its own; see {out['log']}")
+    # After the run's own reading: a closed window turns Download off, and does not hide how the last run ended.
+    out["error"] = out["error"] or (closed(place, source) if place else "")
     out["running"] = out["state"] == "running"
     return out
 

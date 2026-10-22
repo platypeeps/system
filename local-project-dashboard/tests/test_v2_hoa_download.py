@@ -21,9 +21,11 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from sd_dashboard import command_journal, hoa_download
 
@@ -141,6 +143,24 @@ class ThePortal(Stubs, unittest.TestCase):
         self.assertEqual(hoa_download.status("vantaca", self.hoa)["error"],
                          f"tools/vantaca-pull.py is not in the hoa checkout {self.hoa}, so the Vantaca download has no procedure there")
         self.assertEqual(hoa_download.status("mission", self.hoa)["error"], "")
+
+    def test_the_day_after_the_scripts_last_day_vantaca_download_is_off_and_mission_is_not(self):
+        # sd:5677: vantaca-pull.py refuses once its SITE_TZ day passes LAST_DAY; the row reads both names from the script.
+        script = self.hoa / "tools" / "vantaca-pull.py"
+        today = datetime.now(ZoneInfo("America/Denver")).date()
+        window = "from datetime import date\nfrom zoneinfo import ZoneInfo\nLAST_DAY = {}\nSITE_TZ = ZoneInfo(\"America/Denver\")\n"
+        script.write_text(window.format(f"date({today.year}, {today.month}, {today.day})") + VANTACA)
+        self.assertEqual(hoa_download.status("vantaca", self.hoa)["error"], "")
+        ended = today - timedelta(days=1)
+        script.write_text(window.format(f"date({ended.year}, {ended.month}, {ended.day})") + VANTACA)
+        self.assertEqual(hoa_download.status("vantaca", self.hoa)["error"],
+                         f"the approved Vantaca pull window ended {ended.isoformat()}")
+        self.assertEqual(hoa_download.status("mission", self.hoa)["error"], "")
+        # A LAST_DAY that does not read as a date is not an open window: the button is off and says why.
+        script.write_text(window.format("date.fromisoformat(DAY)") + VANTACA)
+        self.assertEqual(hoa_download.status("vantaca", self.hoa)["error"],
+                         "LAST_DAY in tools/vantaca-pull.py is not a date(year, month, day), so whether the Vantaca "
+                         "pull window is open is not known")
 
 
 class TheRun(Stubs, unittest.TestCase):
@@ -317,6 +337,17 @@ class TheRoute(Stubs, BrowserSession):
         self.assertEqual(status, 400, body)
         self.assertIn("tools/vantaca-pull-prompt.md is not in the hoa checkout", body["error"])
         self.assertFalse(hoa_download.state_dir("vantaca").exists())
+
+    def test_a_post_after_the_pull_window_ended_starts_nothing(self):
+        script = self.hoa / "tools" / "vantaca-pull.py"
+        script.write_text("from datetime import date\nfrom zoneinfo import ZoneInfo\nLAST_DAY = date(2026, 1, 1)\n"
+                          "SITE_TZ = ZoneInfo(\"America/Denver\")\n" + VANTACA)
+        self.assertEqual(self.read()["vantaca"]["error"], "the approved Vantaca pull window ended 2026-01-01")
+        status, _, body = self.post("/api/hoa/download", {"source": "vantaca"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("the approved Vantaca pull window ended 2026-01-01", body["error"])
+        self.assertFalse(hoa_download.state_dir("vantaca").exists())
+        self.assertEqual(self.downloads(), [])
 
 
 class TheJournal(Stubs, unittest.TestCase):
