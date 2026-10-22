@@ -1193,11 +1193,10 @@ cmd_exec() { # invoked by launchd (and by `run`)
   # resolved to empty. The exports now live in their own file that both a login
   # shell and this runner source, so the two cannot drift.
   # Not fatal when absent: a machine that has not split its profile yet still
-  # runs its jobs exactly as before.
-  if [ -f "$HOME/.config/shell/env.sh" ]; then
-    # shellcheck source=/dev/null
-    . "$HOME/.config/shell/env.sh"
-  fi
+  # runs its jobs exactly as before. st_shell_env (lib/config.sh) sources it
+  # and maps its CUSTOM_CLAUDE_CODE_OAUTH_TOKEN to the name claude reads
+  # (sd:5791).
+  st_shell_env
 
   # launchd hands a job 256 open files (`launchctl limit maxfiles`), where a
   # login shell gets 1048576. Claude needs more than 256 and aborts at startup
