@@ -228,13 +228,20 @@ let polling = 0;
   const ageBlock = r => !r ? '' : html`<h3 class="label">Age · ${DOC.sources.command}</h3>${dl([['State', r.state === 'unknown' ? `not read: ${r.error}` : r.state],
     ['Newest', r.latest ? `${r.latest} · ${r.age_days} d old` : 'no date found'], ['Allowed', `${r.allowed_days} d`], ['Ends', r.ends || ''], ['To do', r.state === 'stale' ? r.todo : ''],
     ['Refresh job', !r.job ? '' : r.job.error || `${r.job.name} · ${refreshText(r.job)}`]])}`;
+  // sd:5680: a source with a Download shows the end of that download's start.log, as Management shows a job's log; a log
+  // that was not read is unknown with its reason, a missing one says so.
+  const logBlock = k => { const d = DL[k], g = d?.tail; if (!d) return '';
+    const head = html`<h3 class="label">Log${g?.cut ? ' · last lines' : ''}</h3><p class="note">${d.log}</p>`;
+    return !g || g.state === 'unread' ? html`${head}${unknownBlock(g ? g.reason : 'this reading carries no log')}`
+      : g.state === 'none' ? html`${head}<p class="why">${g.reason}.</p>`
+      : html`${head}<div class="mailbody">${g.text || html`<span class="note">The log is empty.</span>`}</div>`; };
   function selectSourceRow(id, open) {
     const r = srcOf(id.slice(7)); if (!r) return;
     const st = SRC_STATE[r.state] || 'unknown';
     selected = id; mark();
     show(html`<div class="kind"><span class="g-${st}" aria-hidden="true">${GLYPH[st]}</span><span class="label">Source</span></div>
       <h2>${r.label}</h2>${ageBlock(r)}
-      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}`, id, open);
+      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}${logBlock(r.source)}`, id, open);
   }
   function selectSource(open) {
     const m = DOC.mission;
@@ -244,7 +251,7 @@ let polling = 0;
       ${dl([['Path', m.dir], ['Cadence', 'daily export, one row per day'], ['State', m.latest ? `${m.stale ? 'stale' : 'current'} · newest row ${m.latest} · ${m.age_days} d old` : 'not read']])}
       <h3 class="label">Files in this page</h3>${dl(m.files.map(f => [f.name, f.error ? `not read: ${f.error}` : `${f.rows} rows · latest ${f.latest.slice(0, 10)}`]))}
       <p class="note">Tank level and Aquifer read analog-daily.csv; Pumps reads pump-daily.csv; Alarms reads alarm-events.csv. The pump export lags the analog export by one day.</p>
-      ${ageBlock(srcOf('mission'))}<h3 class="label">Act</h3>${window.shell.commands.bar('source:mission')}`, 'source:mission', open);
+      ${ageBlock(srcOf('mission'))}<h3 class="label">Act</h3>${window.shell.commands.bar('source:mission')}${logBlock('mission')}`, 'source:mission', open);
   }
   function selectDay(d, open, series) {
     const m = DOC.mission, a = m.analog.find(r => r.date === d), p = m.pump.find(r => r.date === d);
@@ -640,12 +647,17 @@ let polling = 0;
       return { name: via(o).label, failed: ['failed', 'unavailable'].includes(d.state), exit: d.exit, sends: via(o).sends(),
         capability: { allowed: w === true, reason: w === true ? '' : w } }; };
     const retry = window.commands.retry({ job: o => via(o) ? ran(o) : facts(o), run: o => via(o) ? via(o).run() : refresh(o) });
+    // sd:5680: so Show log on that row is the download's start.log, in the row's Details; the job's log opens on Management.
+    const shown = window.commands.showLog({ job: facts }), shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
     C.register(
       { ...retry,
         does: o => via(o) ? via(o).does : o.source === 'mission' ? 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.'
           : `Pulls ${o.label} once through its refresh job. Nothing to undo.`,
         cli: o => via(o) ? via(o).cli() : retry.cli(o) },
-      window.commands.showLog({ job: facts }),
+      { ...shown,
+        does: o => via(o) ? 'Shows the last download\'s log in Details.' : shown.does,
+        cli: o => via(o) ? `cat ${shq(DL[o.source].log)}` : shown.cli(o),
+        run: o => { if (!via(o)) return shown.run(o); select(`source:${o.source}`, true); return `${DL[o.source].label} download log is in Details`; } },
     );
     // ---------- Download (sd:5626) ----------
     // POST /api/hoa/download {source} starts hoa_download.py detached: a Claude Chrome session opens the portal, waits for

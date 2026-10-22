@@ -76,6 +76,8 @@ never types. Once signed in, it runs the checkout's own download, `tools/vantaca
 part reads each source's `last.json`: running and its phase, or done, unavailable or failed with the reason. A
 checkout without the script or prompt turns that button off, naming the file. A button shows only while its source
 row does, so Vantaca's leaves with its row after its end date.
+On a row with a Download, Run now runs that Download (sd:5678), and Show log puts the end of its `start.log` in
+the row's Details, or why there is none (sd:5680); a row without one keeps its job's Run now and Show log.
 
 The last Data sources row is the HOA sweep (sd:5095). Run sweep asks first,
 then posts `/api/hoa/sweep`, which starts the checkout's `tools/sweep.py run`

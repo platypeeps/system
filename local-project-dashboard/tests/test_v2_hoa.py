@@ -1318,6 +1318,52 @@ C.run(c, v); await flush(); R.timers = TIMERS;"""
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/download", {"source": "vantaca"}]])
         self.assertIn("A Vantaca download is already running.", out["toasts"][-1][0])
 
+    # sd:5680: Show log on a source row with a Download is the download's start.log, in Details, as Run now is the
+    # Download; a row without one keeps its job's log on Management.
+    SHOW_LOG = """const c = cmd('jobs.log'), v = OBJ.get('source:vantaca'), m = OBJ.get('source:mission');
+R.cli = [c.cli(v), c.cli(m)]; R.does = c.does(v);
+C.run(c, v); await flush(); R.vantaca = ELS.details.html;
+C.run(c, m); await flush(); R.mission = ELS.details.html;"""
+
+    def test_show_log_on_a_source_with_a_download_shows_its_start_log(self):
+        tail = {"state": "read", "text": "opening Vantaca\nSTATUS: waiting for login\n", "cut": False, "reason": ""}
+        doc = self.download_doc(log="/state/vantaca/start.log", tail=tail)
+        doc["downloads"]["mission"]["tail"] = {"state": "none", "text": "", "cut": False,
+                                               "reason": "no log: the Mission download has not run on this machine"}
+        out = self.run_page(self.SHOW_LOG, doc)
+        self.assertEqual(out["R"]["cli"], ["cat '/state/vantaca/start.log'", "cat '/state/start.log'"])
+        self.assertIn("download", out["R"]["does"])
+        self.assertIn("STATUS: waiting for login", out["R"]["vantaca"])
+        self.assertIn("/state/vantaca/start.log", out["R"]["vantaca"])
+        self.assertIn("no log: the Mission download has not run on this machine", out["R"]["mission"])
+        self.assertEqual([t[0] for t in out["toasts"]], ["Vantaca download log is in Details", "Mission download log is in Details"])
+        # A log that did not read is unknown with its reason, never an empty log.
+        doc["downloads"]["mission"]["tail"] = {"state": "unread", "text": "", "cut": False, "reason": "the log is not a regular file"}
+        out = self.run_page(self.SHOW_LOG, doc)
+        self.assertIn("<b>▨ Not read.</b> the log is not a regular file", out["R"]["mission"])
+        self.assertNotIn("The log is empty", out["R"]["mission"])
+
+    def test_show_log_on_a_row_without_a_download_opens_its_jobs_log(self):
+        self.script()
+        self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("idle", 0)})
+        out = self.run_page("""const c = cmd('jobs.log'), m = OBJ.get('source:mission');
+window.shell.pages = { Management: '/management' }; R.cli = c.cli(m); C.run(c, m); await flush(); R.to = location.href;""", self.job_doc())
+        self.assertEqual(out["R"]["cli"], "local-cron-jobs/cron-jobs.sh logs hoa-mission-export")
+        self.assertEqual(out["toasts"][-1][0], "hoa-mission-export opens in Management > Schedules")
+        self.assertEqual(out["R"]["to"], "/management?q=hoa-mission-export&row=cron%3Ahoa-mission-export#view=schedules")
+
+    def test_the_document_carries_each_downloads_log_or_why_it_has_none(self):
+        self.script()
+        (self.root / "downloads" / "vantaca").mkdir(parents=True)
+        (self.root / "downloads" / "vantaca" / "start.log").write_text("opening Vantaca\nRESULT: signed in\n", encoding="utf-8")
+        (self.root / "downloads" / "mission" / "start.log").mkdir(parents=True)
+        got = self.doc()["downloads"]
+        self.assertEqual(got["vantaca"]["tail"], {"state": "read", "text": "opening Vantaca\nRESULT: signed in\n", "cut": False, "reason": ""})
+        self.assertEqual(got["mission"]["tail"], {"state": "unread", "text": "", "cut": False, "reason": "the log is not a regular file"})
+        (self.root / "downloads" / "mission" / "start.log").rmdir()
+        self.assertEqual(self.doc()["downloads"]["mission"]["tail"]["state"], "none")
+        self.assertIn("no log", self.doc()["downloads"]["mission"]["tail"]["reason"])
+
     def test_a_finished_download_is_the_rows_refresh_text_and_a_missing_procedure_turns_its_button_off(self):
         doc = self.download_doc(state="failed", reason="python3 tools/vantaca-pull.py exited 1: boom",
                                 error="tools/vantaca-pull.py is not in the hoa checkout /hoa, so the Vantaca download has no procedure there")

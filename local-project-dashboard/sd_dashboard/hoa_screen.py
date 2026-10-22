@@ -18,7 +18,7 @@ the failed part as unknown with the reason, never as an empty list. The read
 reaches no network: the map draws the vectors in the files, and the page loads
 no tiles. It runs one command, the checkout's bounded `tools/source-ages.py`,
 and reads the refresh jobs' launchd state, and asks the checkout's `tools/sweep.py status --json` for the last sweep
-(`sweep`) and each source's last download (`downloads`, sd:5626); it starts nothing. The writes are Acknowledge
+(`sweep`) and each source's last download with the end of its log (`downloads`, sd:5626, sd:5680); it starts nothing. The writes are Acknowledge
 (`acknowledge`) and Acknowledge all (`acknowledge_many`), the jobs route Refresh now posts, Run sweep (`sweep.start`) and
 Download (`hoa_download.start`).
 """
@@ -280,6 +280,24 @@ def _refresh_jobs(connection, rows: list[dict], backend) -> None:
         row["job"] = {key: job.get(key) for key in JOB_KEYS} | {"said": _said(job_log(root, name), name)}
 
 
+
+def _download(source: str, place: Path) -> dict:
+    """The source's last download (`hoa_download.status`) and `tail`, the end of its start.log in Management's log shape
+    (sd:5680): Show log on the row reads it. Only the path the status names is read, never one from a request."""
+    from .management_screen import LOG_BYTES, log_tail, unreadable
+
+    out = hoa_download.status(source, place)
+    tail = {"state": "unread", "text": "", "cut": False, "reason": ""}
+    try:
+        _, raw, start = log_tail(Path(out["log"]), LOG_BYTES)
+    except FileNotFoundError:
+        tail |= {"state": "none", "reason": f"no log: the {out['label']} download has not run on this machine"}
+    except OSError as error:
+        tail |= {"reason": unreadable(error)}
+    else:
+        tail |= {"state": "read", "text": raw.decode("utf-8", "replace"), "cut": bool(start)}
+    return out | {"tail": tail}
+
 # ---------------------------------------------------------------------------
 # Acknowledge (sd:4967): the workflow database's `view` state, the store Designs' Hide and Documents' Pin write
 # (sd:3428, sd:3447). An acknowledged alarm event is a hidden view keyed `hoa-alarm/<datetime> <event>`: the row's own
@@ -493,7 +511,7 @@ def document(connection, *, now: str, jobs=None) -> dict:
         "thresholds": thresholds(connection),
         "sources": ages,
         "sweep": sweep.status(place) if not problems else {**sweep.status(None), "error": problems[0]},
-        "downloads": {source: hoa_download.status(source, place) for source in hoa_download.SOURCES} if place else {},
+        "downloads": {source: _download(source, place) for source in hoa_download.SOURCES} if place else {},
         "attention": _attention(mission, items),
     }
 
