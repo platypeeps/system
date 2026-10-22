@@ -78,6 +78,8 @@ ROUNDS = 5
 
 NOTION = "mcp__notion__notion-{}".format
 DRIVE = "mcp__workspace-mcp__{}".format
+#: Notion's hosted MCP server, as `claude mcp add` records it; the Notion runs load it alone.
+NOTION_MCP = {"type": "http", "url": "https://mcp.notion.com/mcp"}
 #: Each run's MCP tools, by `verb` and `action` (the design's table). Nothing else outward is allowed.
 MCP = {
     ("list", None): (NOTION("search"), NOTION("fetch")),
@@ -476,9 +478,10 @@ def _out(folder: Path) -> dict | None:
 def tools(asked: dict, folder: Path) -> tuple[list[str], list[str]]:
     """`(allowed, denied)` for the run: its MCP row, Read and Write in its folder, Read of the checkout for a draft and
     of the kit's design.md alone for a deck draft. Denied is `realm_sweep.DENIED` less this run's own tools, so no
-    deny shadows an allow, plus Bash, Drive's deletes and the kit's other files."""
+    deny shadows an allow, plus Bash, Drive's deletes and the kit's other files. Write's grant is an `Edit(path)` rule:
+    Claude Code checks every file write against Edit rules and ignores a `Write(path)` one (sd:5751)."""
     key = (asked["verb"], asked.get("action"))
-    allowed = [f"Read(/{folder}/**)", f"Write(/{folder}/**)", *MCP[key]]
+    allowed = [f"Read(/{folder}/**)", f"Edit(/{folder}/**)", *MCP[key]]
     denied = []
     if asked["verb"] == "draft":
         allowed.append(f"Read(/{asked['checkout']}/**)")
@@ -492,12 +495,16 @@ def tools(asked: dict, folder: Path) -> tuple[list[str], list[str]]:
 
 
 def claude_argv(asked: dict, folder: Path, prompt: str) -> list[str]:
-    """The run: exact allowlist, dontAsk, never skipped permissions. The deck apply loads workspace-mcp alone; the
-    Notion runs load the user's servers, which hold notion's credentials, and dontAsk refuses every tool not listed."""
+    """The run: exact allowlist, dontAsk, never skipped permissions. The deck apply loads workspace-mcp alone, every
+    other run notion alone, which finds the credentials its login stored under that name. `--setting-sources project`
+    skips the user's own server list, and without `--strict-mcp-config` the claude.ai connectors load in its place:
+    the first draft called the claude.ai Notion fetch, which dontAsk refused (sd:5751)."""
     allowed, denied = tools(asked, folder)
-    url = os.environ.get("WORKSPACE_MCP_URL", "http://127.0.0.1:8083/mcp")
-    servers = ["--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {"workspace-mcp": {"type": "http", "url": url}}})
-               ] if (asked["verb"], asked.get("action")) == ("apply", "deck") else []
+    if (asked["verb"], asked.get("action")) == ("apply", "deck"):
+        server = {"workspace-mcp": {"type": "http", "url": os.environ.get("WORKSPACE_MCP_URL", "http://127.0.0.1:8083/mcp")}}
+    else:
+        server = {"notion": NOTION_MCP}
+    servers = ["--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": server})]
     return [realm_sweep.claude_binary(), "-p", prompt, "--permission-mode", "dontAsk", "--permission-prompts", "none",
             "--setting-sources", "project", *servers, "--tools", "Read,Write,ToolSearch",
             "--allowedTools", ",".join(allowed), "--disallowedTools", ",".join(denied), "--append-system-prompt", TOLD]
