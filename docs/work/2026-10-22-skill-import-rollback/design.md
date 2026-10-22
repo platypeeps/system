@@ -66,12 +66,12 @@ already records them. Add no table and no verb.
 
 Rejected: an automatic revert of informed skills. Each Lineage mixes the outside idea with the pack's own work,
 so a mechanical revert would remove both; a builder must edit by hand anyway.
-Rejected: a database row per install. The Provenance line and the kept copy carry what rollback needs (Q4).
+Rejected: a database row per install. The Provenance line and the kept copy carry what rollback needs (decision 4).
 
 ## Non-goals
 
 - No rollback for skills that `sd-skill-adopt` or a hand copy installed; only intake installs keep a copy.
-- No history beyond one previous copy (Q1).
+- No history beyond one previous copy (decision 1).
 - No change to how the intake fetches, scores or approves.
 - No new check that Lineage lines follow a format; the listing reads the repository URL they already name.
 
@@ -113,17 +113,14 @@ Rejected: a database row per install. The Provenance line and the kept copy carr
   and the list then says less than the truth.
 - One kept copy means two re-imports in a row lose the oldest copy.
 
-## Open questions
+## Decisions
 
-1. **How many previous copies does an install keep?**
-   - (Recommended) One per skill, replaced at each install; a second rollback is the undo.
-   - Every copy, with a prune; more disk, and a prune to schedule.
-2. **What happens to skills an import informed?**
-   - (Recommended) Rollback lists them with their commits; the operator files a revert item for each one to undo.
-   - Rollback opens a revert branch per informed skill; a builder still has to separate the pack's own work.
-3. **May rollback touch a pack copy that git already holds?**
-   - (Recommended) No: refuse, and point to `git revert` through the lane.
-   - Yes: roll back the working copy, which leaves the pinned checkout dirty.
-4. **Should installs and rollbacks be recorded in the database?**
-   - (Recommended) No new record: the Provenance line and the kept copy carry what rollback needs.
-   - A note per install and rollback on one item per skill, so the Skills page can show a history.
+The operator ruled on 2026-10-22.
+
+1. **An install keeps one previous copy per skill; a second rollback is the undo.** Reason: one copy is all a
+   rollback needs, and it needs no prune job.
+2. **Rollback lists each informed skill with its commit; the operator files revert items.** Reason: each Lineage
+   mixes the outside idea with the pack's own work, so a builder must separate them by hand.
+3. **Rollback refuses a skill git already holds in the pack, and names the `git revert` to run through the
+   lane.** Reason: the lane is the only way the pinned pack checkout moves.
+4. **No new database record.** Reason: the Provenance line and the kept copy carry what rollback needs.
