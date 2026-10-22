@@ -39,7 +39,7 @@ into this machine's `<config>/cron-jobs/jobs/<host>/` on the hub, then run
 3. **File.** `nightly_review.py check` refuses a file that is not an open
    batch of the `nightly` queue for today, with a limit of 5 and the options
    Approve and Reject. The job files no blind or sealed batch: those need the
-   dashboard's Review page (lead ruling on sd:3635). Then `sd-db review file`
+   dashboard's Scoring tab on Decide (lead ruling on sd:3635). Then `sd-db review file`
    files the first five suggestions in the model's order. It drops a subject
    rejected in the last 90 days and prints each drop.
 

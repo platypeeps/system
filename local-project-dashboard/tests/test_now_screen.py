@@ -213,7 +213,7 @@ class Document(ScreenCase):
                 trees=[tree("gone", live=False)]))
         shadow.assert_called_once_with(self.connection, tracker="github")
         self.assertEqual(set(document), {"rows", "sources", "now", "observed", "snoozed", "snooze_error", "work", "work_error", "active",
-                                         "waiting", "attention", "issues", "issues_error", "intake", "intake_error",
+                                         "attention",
                                          "mail", "mail_more", "mail_unread", "mail_error", "problems", "problems_more",
                                          "problems_capped", "problems_error", "briefs", "briefs_more", "briefs_error", "briefs_skipped"})
         self.assertEqual(document["now"], NOW)
@@ -226,23 +226,19 @@ class Document(ScreenCase):
         ])
         self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
         # sd:3446: the rail badge is the read's; every page shows it from Today's last read.
-        self.assertEqual((document["waiting"], document["attention"]), (0, {"state": "caution", "n": 3, "what": "caution rows"}))
+        self.assertEqual(document["attention"], {"state": "caution", "n": 3, "what": "caution rows"})
         for row in document["rows"]:
             # `seen` is the snooze's fingerprint; the `problem` it reads stays on the server (sd:1896).
             self.assertEqual(set(row), {"rank", "band", "kind", "id", "what", "detail", "source", "seen"})
 
-    def test_the_badge_counts_warning_rows_else_caution_rows_and_waiting_decisions(self):
-        from sd_dashboard import decisions
-
+    def test_the_badge_counts_warning_rows_else_caution_rows_and_problem_reports(self):
+        # sd:5781: the decisions that wait count on Decide's badge (pages/decide.py), not here.
         look, broken = {"band": "look"}, {"band": "broken"}
         self.assertEqual(now_screen._attention([look, broken, broken], 2), {"state": "warning", "n": 2, "what": "warning rows"})
-        self.assertEqual(now_screen._attention([look], 2), {"state": "caution", "n": 3, "what": "caution rows and decisions waiting"})
-        self.assertEqual(now_screen._attention([], 1), {"state": "caution", "n": 1, "what": "decisions waiting"})
-        self.assertEqual(now_screen._attention([{"band": "queued"}], 0), {"state": "ok", "n": 0, "what": "rows"})
-        with patch.object(decisions, "document", return_value={"decisions": [{}, {}], "review": 0}):
-            self.assertEqual(now_screen._waiting(self.connection, NOW), 2)
-        with patch.object(decisions, "document", side_effect=sqlite3.OperationalError("locked")):
-            self.assertEqual(now_screen._waiting(self.connection, NOW), 0)
+        self.assertEqual(now_screen._attention([look], 2), {"state": "caution", "n": 3, "what": "caution rows and problem reports"})
+        self.assertEqual(now_screen._attention([], 1), {"state": "caution", "n": 1, "what": "problem reports"})
+        self.assertEqual(now_screen._attention([{"band": "queued"}]), {"state": "ok", "n": 0, "what": "rows"})
+        self.assertFalse(hasattr(now_screen, "_waiting"))
 
     def test_an_empty_fleet_and_no_pulls_is_an_empty_list_with_every_source_read(self):
         document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=self.fixture_fleet())

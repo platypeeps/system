@@ -21,7 +21,7 @@ from pathlib import Path
 
 QUEUE = "nightly"
 OPTIONS = ["Approve", "Reject"]
-#: Every question is the model's own suggestion, so it proposes Approve; the Review page shows that as its recommendation.
+#: Every question is the model's own suggestion, so it proposes Approve; Decide's Scoring tab shows that as its recommendation.
 PROPOSED = "Proposed label: Approve"
 #: The nightly batch's ceiling; `sd-db review file` drops the rest and says so.
 LIMIT = 5

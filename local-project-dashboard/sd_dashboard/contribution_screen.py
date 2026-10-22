@@ -337,7 +337,7 @@ def document(connection, *, now):
 
     rows = contributions.projection(connection)
     remotes, places = _registered(connection)
-    # Hide (sd:5486): an open row the operator hid stays in `rows` with `hidden`, for the Hidden view, and leaves every count.
+    # Hide (sd:5486): an open row the operator hid stays in `rows` with `hidden`, for Show hidden on Open, and leaves every count.
     # A store that does not read hides nothing, and `store.reason` says why Hide is off.
     kept, unread = views(connection)
     lanes = dict.fromkeys(contributions.LANES, 0)

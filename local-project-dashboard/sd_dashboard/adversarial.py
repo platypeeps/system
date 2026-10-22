@@ -47,7 +47,7 @@ database the server reads, in one transaction, as the operator asked in note #22
 - When the target is an item (a task, a brief, or the change's `item`), a `comment` note names the brief and the
   batches, or the failure. A failed run files no brief and no batch.
 
-Nothing here approves, merges, publishes or posts anywhere else; the operator picks recommendations on the Review page.
+Nothing here approves, merges, publishes or posts anywhere else; the operator picks recommendations on Decide's Scoring tab.
 
 `status` answers `GET /api/adversarial/<id>` from the state file. A run whose runner is gone without an outcome reads
 `failed`, with the reason, and a run queued for longer than `STARTUP` that never started reads `failed` too. A run

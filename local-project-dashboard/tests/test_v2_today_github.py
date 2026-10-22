@@ -1,4 +1,5 @@
-"""Today's GitHub view (sd:5608): the operator's open pull requests and issues, and those merged or closed in 7 days.
+"""GitHub's Pull requests view (sd:5608, Today's GitHub view until sd:5781): the operator's open pull requests and
+issues, and those merged or closed in 7 days.
 
 What this slice promises: `/api/today/github` lists only what the dashboard already stores -- `shadow`, the Contributions
 projection, the repositories with GitHub issues on, sd-ship's delivery notes and items filed under a GitHub ref -- and
@@ -49,10 +50,11 @@ V2 = Path(v2.__file__).resolve().parent
 SCRIPT = V2 / "static" / "today-github.js"
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 PAGE_JS = SCRIPT.read_text(encoding="utf-8") if SCRIPT.exists() else ""
-# today.js's one selection (pick, sd:5654), which today.js defines before this script: it names the row in ?row=, puts
-# the Details and makes the row the shell's selection. test_v2_today_reader runs the real one with both scripts.
-PICK = ("window.todayPick = (id, draw, open) => { location.search = '?row=' + encodeURIComponent(id);"
-        " window.markup.put(document.getElementById('details'), draw()); C.select(id); if (open) OUT.panes = (OUT.panes || 0) + 1; };\n")
+# What the script's own selection (pick, sd:5654) needs beyond the stand-in page: URL and history, which name the row in
+# ?row= as a browser does.
+PICK = ("function URL() { this.searchParams = new URLSearchParams(location.search); }\n"
+        "var history = { state: null, replaceState: (s, t, u) => { const q = u.searchParams.toString(); location.search = q ? '?' + q : ''; } };\n"
+        "window.shell.openPane = () => { OUT.panes = (OUT.panes || 0) + 1; };\n")
 HUB = "https://github.com"
 SHA = "a" * 40
 
@@ -136,13 +138,13 @@ class TheDocument(ScreenCase):
         self.assertEqual([row["item"] for row in found["settled"]], [None, None])
         self.assertEqual(len(found["pulls"]), 6)
 
-    def test_the_today_page_serves_the_read_in_its_own_view(self):
-        page = next(page for page in pages.PAGES if page.section == "Today")
+    def test_the_github_page_serves_the_read_in_its_own_view(self):
+        page = next(page for page in pages.PAGES if page.section == "GitHub")
         self.assertIn("/api/today/github", [api.path for api in page.api])
-        html = (V2 / "today.html").read_text(encoding="utf-8")
-        self.assertIn('<div id="view-github" aria-label="GitHub" hidden>', html)
+        html = (V2 / "github.html").read_text(encoding="utf-8")
+        self.assertIn('<div id="view-pulls" aria-label="Pull requests">', html)
         self.assertLess(html.index('src="/ui/today-github.js"'), html.index('src="/ui/shell.js"'))
-        self.assertIn("{ id: 'github', label: 'GitHub' }", (V2 / "static" / "today.js").read_text(encoding="utf-8"))
+        self.assertIn("{ id: 'pulls', label: 'Pull requests' }", (V2 / "static" / "github.js").read_text(encoding="utf-8"))
 
 
 class TheDetails(ScreenCase):
@@ -265,7 +267,7 @@ class TheScript(unittest.TestCase):
     def run_page(self, body, answer):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + COMMANDS_JS
                   + "\nANSWER = " + answer + ";\n" + PICK + PAGE_JS
-                  + "\nvar R = {};\nconst show = () => document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'github', first: true } }));\n"
+                  + "\nvar R = {};\nconst show = () => document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'pulls', first: true } }));\n"
                   + "const press = key => ELS['github-sections'].listeners.click[0]({ target: { closest: s => s === '[data-gh-open]'"
                     " ? { dataset: { ghOpen: key } } : null } });\n"
                   + "const more = key => ELS['github-sections'].listeners.click[0]({ target: { closest: s => s === 'button[data-gh-more]'"
@@ -519,7 +521,7 @@ class ThePullRequestDetails(unittest.TestCase):
     def test_a_row_a_later_read_drops_is_retired_so_no_command_runs_on_it(self):
         out = self.run_page("show(); await flush(); R.before = C.get('gh:" + PR + "').type;"
                             " ANSWER = (path, body) => [200, " + json.dumps(doc()) + "];"
-                            " ELS.refresh.listeners.click[0](); await flush(); R.after = C.get('gh:" + PR + "');",
+                            " window.githubPulls.again(); await flush(); R.after = C.get('gh:" + PR + "');",
                             f"(path, body) => [200, {json.dumps(doc(pulls=[entry(1)]))}]")
         self.assertEqual(out["R"]["before"], "github pull request")
         self.assertEqual(out["R"]["after"]["type"], "not listed")

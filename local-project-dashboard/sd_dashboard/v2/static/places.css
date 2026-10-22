@@ -1,4 +1,4 @@
-/* Places: the HOA and Home pages' views and Tasks' place views (places.js). Tokens only.
+/* Places: the HOA and Home pages' views and a realm place's (places.js). Tokens only.
  * The view switch is the shell's (shell.js view:start); each place view is one section
  * head and one ledger (shell.css .ledger), as Your issues draws its rows (issues.css). A brief, report or task row is
  * selected in place (aria-selected, shell.css) and its Details fill the pane (sd:5620, sd:5636, sd:5635); HOA's Tasks rows
