@@ -162,7 +162,9 @@ function linksCell(p) {
   const x = p.experiment;
   return html`<span class="links">${x.links.map(l => ext(l.url, l.text))}${x.deck_url ? ext(x.deck_url, 'Deck') : ''}${deckLine(p)}${slidesLine(p)}</span>`;
 }
+// The selected experiment's Details carry its deck line and Act bar (sd:5747), so they redraw with the row.
 function renderExperiments() {
+  if (shownProject && shownProject === selected && PROJECTS.find(p => p.key === shownProject)?.experiment) showProject(shownProject, false);
   const list = briefs();
   put(xpBody, html`${list.map(p => { const x = p.experiment;
     if (x.error) return html`<tr data-id="${p.key}" aria-selected="${String(p.key === selected)}"><td class="g g-unknown"><span aria-hidden="true">▨</span><span class="sr">unknown</span></td>
@@ -489,9 +491,10 @@ function showProject(key, read = true) {
     ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until it is read.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
     <h3>Act</h3>${shell.commands.bar(p.key)}
+    ${p.experiment ? html`<h3>Deck</h3><p class="links">${deckLine(p)}${slidesLine(p)}</p>${shell.commands.bar(xpId(p.key))}` : ''}
     ${REVIEWS[p.key] ? html`<h3>Last review</h3><p class="why">${REVIEWS[p.key].state === 'done' ? 'Every check passed' : REVIEWS[p.key].reason || 'failed'} · <time class="rel" datetime="${REVIEWS[p.key].finished || ''}"></time></p>
       <details class="report"><summary>Report</summary><pre>${REVIEWS[p.key].output || 'It printed nothing.'}</pre></details>` : ''}
-    <p class="why">Render and Review run here as dashboard runs, one at a time: the kit refuses a research.conf.py no render by hand has read.</p>
+    <p class="why">Render, Review and Build deck run one at a time. The kit runs research.conf.py only after you run sd-research-kit render once by hand in this checkout.</p>
     <section aria-live="polite">${experimentSection(p)}</section>`);
   shell.commands.select(p.key);
   if (read) loadExperiment(p.key);

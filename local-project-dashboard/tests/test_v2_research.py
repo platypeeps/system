@@ -1334,6 +1334,23 @@ R.rows = ELS['xp-rows'].html; R.after = c.when(C.get('xp:research/alpha'));""", 
         self.assertIn(["Deck built · research/alpha", False], out["toasts"])
         self.assertIs(r["after"], True)
 
+    def test_an_experiments_details_offer_build_deck_and_import_to_slides(self):
+        # sd:5747: the selected experiment's Details carry its deck line and its Build deck and Import to Slides buttons.
+        doc = self.experiment_board()
+        answer = (f"(path, body) => path === '/api/research' ? [200, {doc}] : path === '/api/research/deck/status' ? [200, {{ run: null }}]"
+                  " : [404, { error: 'No research checkout at this address.' }]")
+        out = self.run_page("window.shell.commands.bar = id => mk`<div data-bar=\"${id}\"></div>`;"
+                            " select('research/alpha', false); R.det = ELS.details.html; select('group/gamma', false); R.none = ELS.details.html;",
+                            answer=answer)
+        det = out["R"]["det"]
+        self.assertIn("<h3>Deck</h3>", det)
+        self.assertIn("deck.json ●, no deck built yet", det)
+        self.assertIn('<div data-bar="research/alpha"></div>', det)
+        self.assertIn('<div data-bar="xp:research/alpha"></div>', det)
+        cmds = self.run_page("R.on = C.commands ? 1 : 0; R.deck = cmd('research.deck').on; R.slides = cmd('research.slides').on;", answer=answer)["R"]
+        self.assertEqual((cmds["deck"], cmds["slides"]), ("research experiment", "research experiment"))
+        self.assertNotIn("<h3>Deck</h3>", out["R"]["none"])
+
     def test_build_deck_is_off_without_a_deck_json_and_while_a_run_builds(self):
         # The poll's first read fails, which is not known, not settled; the stand-in's timers fire at once, so the second answers.
         doc = self.experiment_board()
