@@ -920,6 +920,14 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual({entry["error"] for entry in scan["storage"]},
                          {"not measured: mount gave no table, so a network folder cannot be told from a local one"})
 
+    def test_a_missing_folder_on_a_share_is_dfs_refusal_not_a_size(self):
+        # The share path runs no is_dir; df names a missing folder, and that is the row, never a zero.
+        stub = self.stub("df", 'echo "df: $2: No such file or directory" >&2\nexit 1\n')
+        with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
+            entry = health_collectors._share(health_collectors.Walk(8, "the Disk reading"), Path("/Volumes/share/gone"),
+                                             ("/Volumes/share", "smbfs"))
+        self.assertEqual((entry["error"], entry["network"]), ("df: /Volumes/share/gone: No such file or directory", None))
+
     def test_a_network_mount_row_shows_the_shares_use_and_says_its_folders_are_not_measured(self):
         share = {"root": "/Volumes/share/repo-storage", "folders": [], "error": "",
                  "network": {"type": "smbfs", "mount": "/Volumes/share", "size_kb": 4 * 1024 ** 3, "used_kb": 3 * 1024 ** 3,
