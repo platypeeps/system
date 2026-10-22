@@ -50,13 +50,14 @@
 
   <section class="panel" id="sources" aria-labelledby="src-h">
     <div class="panel-head">
-      <div><h2 id="src-h">Data sources</h2><p>How old each HOA source is, from the checkout's <code>tools/source-ages.py</code>. Run now starts the source's manual job, as Management's does; Download from Vantaca or Mission opens the portal in Chrome, waits for your login, then downloads; Run sweep starts the HOA sweep.</p></div>
+      <div><h2 id="src-h">Data sources</h2><p>How old each HOA source is, from the checkout's <code>tools/source-ages.py</code>.</p></div>
       <div class="tools" id="src-tools"></div>
     </div>
     <table class="ledger" id="src-table" aria-labelledby="src-h">
       <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Source</th><th scope="col" class="hide-sm">Allowed</th><th scope="col" class="hide-sm">Refresh</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
       <tbody id="src-body"></tbody>
     </table>
+    <p class="list-help"><span>Run now starts the source's manual job, as Management's does; Download from Vantaca or Mission opens the portal in Chrome, waits for your login, then downloads; Run sweep starts the HOA sweep.</span></p>
   </section>
 
   <section class="panel" id="map-panel" aria-labelledby="map-h">
@@ -75,7 +76,7 @@
 
   <section class="panel" id="trends" aria-labelledby="trends-h">
     <div class="panel-head">
-      <div><h2 id="trends-h">Trends</h2><p>Daily Mission rows. Tap a day for its row.</p></div>
+      <div><h2 id="trends-h">Trends</h2><p>Daily Mission rows.</p></div>
       <div class="range" id="range" role="group" aria-label="Time range">
         <button class="chip" type="button" data-range="1" aria-disabled="true" aria-pressed="false" title="Mission exports daily rows; 24h needs the hourly export">24h</button>
         <button class="chip" type="button" data-range="7" aria-pressed="true">7d</button>
@@ -84,6 +85,7 @@
       </div>
     </div>
     <div class="trends" id="trend-list"></div>
+    <p class="list-help"><span>Tap a day for its row.</span></p>
   </section>
 
   </div>

@@ -707,6 +707,9 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 .list-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin-top: var(--space-sm); font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-muted); }
 .list-pager .pages, .list-pager .sizes { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); }
 .list-pager .chip { min-width: 2rem; justify-content: center; }
+/* sd:5733: the help line under a table (shell.list.help): how to work it and what its marks mean, muted and small, below the pager. */
+.list-help { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2xs) var(--space-md); margin: var(--space-xs) 0 0; font: 400 var(--text-xs)/1.4 var(--font-ui); color: var(--color-muted); }
+.list-help .key { display: inline-flex; align-items: baseline; gap: var(--space-2xs); white-space: nowrap; }
 .list-pager .chip[aria-current="page"] { border-color: var(--color-accent); color: var(--color-ink); background: var(--color-accent-bg); }
 .list-pager .gap { padding: 0 var(--space-3xs); }
 .list-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-xs); margin: 0 0 var(--space-sm); font-size: var(--text-xs); color: var(--color-muted); }

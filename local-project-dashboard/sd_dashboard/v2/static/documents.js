@@ -122,9 +122,15 @@ function activeFilters() {
   if (F.text) act.push({ key: 'q', label: `“${F.text}”` });
   return act;
 }
+// The render state a row's first cell draws: [state class, glyph, words]. The help line under the table lists this map with
+// the pin and the publish fills (sd:5731), so a new state shows its meaning there too.
+const RENDER = { stale: ['caution', '▲', 'render-stale: source newer than page'], ok: ['ok', '●', 'rendered after its source'],
+  unknown: ['unknown', '▨', 'unknown: no source Markdown to compare'] };
+const legend = () => [...Object.values(RENDER).map(([s, g, w]) => [html`<span class="g-${s}" aria-hidden="true">${g}</span>`, w]),
+  [html`<span class="pinmark" aria-hidden="true">${I('pin')}</span>`, 'pinned'], ...window.commands.pubLegend()];
 function row(d) {
   // Every state cell carries its glyph and its words; no source means the render state is unknown, and the cell says why.
-  const st = d.stale ? ['caution', '▲', 'render-stale: source newer than page'] : d.src ? ['ok', '●', 'rendered after its source'] : ['unknown', '▨', 'unknown: no source Markdown to compare'];
+  const st = RENDER[d.stale ? 'stale' : d.src ? 'ok' : 'unknown'];
   const g = html`<td class="g g-${st[0]}" title="${st[2]}"><span aria-hidden="true">${st[1]}</span><span class="sr">${st[2]}</span></td>`;
   const meta = ` · ${d.kind} · ${days(d.mod) <= 0 ? 'today' : days(d.mod) + 'd'} · ${kb(d.bytes)}`;
   return html`<tr data-id="${d.id}"${d.hidden ? html` class="hid"` : ''} aria-selected="${String(d.id === selected)}"${picked.includes(d.id) ? html` data-picked` : ''}>
@@ -152,6 +158,7 @@ function render() {
   put(empty, html`${F.hidden ? html`Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a document from its row or from Details.'}` : html`No document matches these filters. <button class="linkish" type="button" data-clear>Clear filters</button>`}`);
   put(document.getElementById('chips'), L_.chips(activeFilters(), list.length, DOCS.filter(d => d.hidden === F.hidden).length));
   put(document.getElementById('pager'), L_.pager(list.length, L, 'documents'));
+  put(document.getElementById('list-help'), L_.help('', legend()));
   window.shell?.view.count('documents', list.length);
   // A filter that hides the selected row moves the selection to the first shown row, or clears it (design.md, Page contract).
   // No selection counts too: after an empty filter clears it, the next non-empty list selects its first row again.

@@ -17,7 +17,7 @@
 #
 # The page reads each tile's state and its age from Home Assistant, with the
 # URL and token local-ha-mcp uses (<config>/ha-mcp/.env); a tile it cannot read
-# names why. A light, switch, fan or input_boolean turns on and off with Undo; a scene, script or button runs once;
+# names why; a script or automation shows its last run. A light, switch, fan or input_boolean turns on and off with Undo; a scene, script or button runs once;
 # a lock, alarm or cover asks for its entity id typed out first. Any other domain gets Read state, a curl line for
 # Copy only. A line the page cannot read is named on the page and skipped.
 

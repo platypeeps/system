@@ -478,22 +478,6 @@
         consequence: () => 'Closes the work item as cancelled, with your reason. No sd verb takes it back.',
         run: (o, v) => { const t = must(o);
           return landing(write(t.key, x => `/api/items/${x.id}/cancel`, { reason: v.reason }), () => `${label(t)} cancelled · sd work cancel ${t.id} --reason ${window.shell.shq(v.reason)}`); } },
-      // Recurrence: sd task edit --recur needs a due date; --clear-recur stops the series and clears its anchor, which Undo sets again.
-      { id: 'item.recur', on: 'item', label: 'Edit → repeat weekly', risk: 'undo', icon: 'calendar-clock',
-        when: o => { const t = T(o), d = detOf(t); if (!t) return 'the task is no longer listed'; if (!RECURS.includes(t.kind)) return `a ${t.kind} item cannot recur`;
-          if (!EDITABLE(t)) return noEdit(t);
-          if (!d) return 'recurrence was not read for this row';
-          return d.item.recurrence ? `it repeats already: ${d.item.recurrence}` : t.due ? true : '--recur needs a due date'; },
-        cli: o => rowOr(o, t => `sd task edit ${t.id} --recur FREQ=WEEKLY`),
-        run: o => { const t = must(o); return editRun(t, { recurrence: 'FREQ=WEEKLY' }, () => `${label(t)} repeats weekly`,
-          { check: r => !repeats(r) || `it repeats already: ${r.recurrence}` }); }, undo: undoOf },
-      { id: 'item.recur.clear', on: 'item', label: 'Edit → stop repeating', risk: 'undo', icon: 'calendar-clock',
-        when: o => { const t = T(o), d = detOf(t); return !d ? 'recurrence was not read for this row' : !EDITABLE(t) ? noEdit(t) : d.item.recurrence ? true : 'the task does not repeat'; },
-        cli: o => rowOr(o, t => `sd task edit ${t.id} --clear-recur`),
-        // The rule and anchor Undo sets again are the row's as the edit leaves, after any edit queued before it.
-        run: o => { const t = must(o); return editRun(t, { recurrence: null }, () => `${label(t)} no longer repeats`,
-          { check: r => repeats(r) || 'the task does not repeat', keep: ['recurrence', 'anchor'] }); },
-        undo: undoOf },
       // A followup note closes with sd note resolve. sd note has resolve and list only, so nothing reopens it: confirm, no Undo.
       // build: POST /api/notes/<note>/resolve with the item's revision; the readback is the item's state.
       NOTE_RESOLVE(o => { const item = String(o.item);

@@ -42,8 +42,8 @@
 .ledger .repo, .ledger .num, .ledger .kind { font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
 .ledger .num { text-align: right; font-variant-numeric: tabular-nums; }
 .ledger .acts { white-space: nowrap; text-align: right; width: 1%; }
-.ledger .pinmark { display: inline-flex; margin-left: var(--space-2xs); color: var(--color-accent); vertical-align: -2px; }
-.ledger .pinmark .i { width: 0.85rem; height: 0.85rem; }
+.ledger .pinmark, .list-help .pinmark { display: inline-flex; margin-left: var(--space-2xs); color: var(--color-accent); vertical-align: -2px; }
+.ledger .pinmark .i, .list-help .pinmark .i { width: 0.85rem; height: 0.85rem; }
 .ledger tbody tr[data-picked] td { background: var(--color-accent-bg); }
 .ledger tbody tr[data-picked] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-focus); }
 .ledger tr.queued .what button { color: var(--color-ink-2); }
