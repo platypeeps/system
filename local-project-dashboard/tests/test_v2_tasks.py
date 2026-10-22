@@ -785,8 +785,6 @@ class TheScript(ScreenCase):
             ["item.delete", "item", "confirm", None, None, False, False],
             ["work.relink", "item", "safe", "l", True, True, False],
             ["work.cancel", "item", "confirm", "w", True, True, False],
-            ["item.recur", "item", "undo", None, None, True, True],
-            ["item.recur.clear", "item", "undo", None, None, True, True],
             ["note.resolve", "note", "confirm", "v", None, True, False],
             ["asg.cancel", "assignment", "confirm", "x", None, True, False],
             ["asg.get", "assignment", "safe", "o", False, True, False],  # copy only: Details show it (sd:3524)
@@ -1411,19 +1409,6 @@ R.plan = [cmd('work.relink').when(C.get('{plan}')), cmd('work.cancel').when(C.ge
         self.assertEqual(out["R"]["port"], [why, why])
         self.assertEqual(out["R"]["plan"], ["sd work relink acts on a work item; this is a task", "sd work cancel acts on a work item; this is a task"])
 
-    def test_recur_needs_a_due_date_and_undo_clears_it(self):
-        plan, ask = self.ids["plan"], self.ids["ask"]
-        row = next(r for r in self.doc["rows"] if r["id"] == plan)
-        answer = f"(path, body) => [200, {{ item: {{ id: {plan}, status: 'ready', priority: 2, due: '2026-09-09', recurrence: body.recurrence }}, notes: [], revision: 'b'.repeat(64) }}]"
-        out = self.run_page(f"""open({ask}); await flush(); R.noDue = cmd('item.recur').when(C.get('{ask}'));
-open({plan}); await flush(); R.cli = cmd('item.recur').cli(C.get('{plan}'));
-shellRun(cmd('item.recur'), C.get('{plan}')); await flush(); lastToast().undo(); await flush();""", answer)
-        self.assertEqual(out["gets"].count(f"/api/tasks/{plan}"), 3, "the open Details were not read again after each write")
-        self.assertEqual(out["R"]["noDue"], "--recur needs a due date")
-        self.assertEqual(out["R"]["cli"], f"sd task edit {plan} --recur FREQ=WEEKLY")
-        self.assertEqual(out["posts"], [[f"/api/items/{plan}", {"recurrence": "FREQ=WEEKLY", "revision": row["revision"]}, 64],
-                                        [f"/api/items/{plan}", {"recurrence": None, "revision": "b" * 64}, 64]])
-
     def test_a_due_weekday_is_a_calendar_date_across_the_dst_change(self):
         # Friday 2026-10-30 in Denver; the clocks go back on Sunday 2026-11-01, so "due mon" is 2026-11-02.
         prelude = """var RealDate = Date; Date = class extends RealDate { constructor(...a) { if (a.length) super(...a); else super(2026, 9, 30, 9, 0, 0); } };\n"""
@@ -1998,16 +1983,21 @@ shellRun(cmd('issue.check'), d); await flush(); R.after = ELS.details.html;""", 
             self.assertEqual(html.count('class="ext issue-link"'), 1)
             self.assertIn(f'href="https://github.com/example/tool/issues/7" target="_blank" rel="noopener noreferrer" aria-label="Filed issue for #{plan}"', html)
 
+    def test_no_command_sets_or_clears_repeating_the_details_select_does(self):
+        # sd:5737: "Edit → repeat weekly" and "Edit → stop repeating" doubled the Details Repeat select (sd:5649) on every page
+        # that shows tasks (Tasks, HOA, Home and the places pages, RWBP among them, load task-details.js), so no command id starts with item.recur.
+        out = self.run_page("R.ids = REG.map(c => c.id);")
+        self.assertEqual([i for i in out["R"]["ids"] if i.startswith("item.recur")], [])
+        self.assertIn("item.p2", out["R"]["ids"])
+
     def test_commands_are_off_where_the_library_would_refuse_them(self):
         plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]
         (asg,) = self.details[str(port)]["assignments"]
         out = self.run_page(f"""open({ask}); await flush(); open({port}); await flush(); open({plan}); await flush();
 R.p2 = cmd('item.p2').when(C.get('{plan}'));
-R.recur = cmd('item.recur').when(C.get('{port}'));
 R.cancel = cmd('asg.cancel').when(C.get('asg:{asg["id"]}'));""")
         self.assertEqual(out["R"], {
             "p2": True,
-            "recur": "a work item cannot recur",
             "cancel": asg["cancel"]["reason"]})
         self.assertTrue(out["R"]["cancel"])
 
@@ -2025,22 +2015,6 @@ document.dispatchEvent({{ type: 'keydown', key: '1', target: El('card'), prevent
         self.assertEqual((out["R"]["edit"], out["R"]["p2"]), (why, why))
         self.assertEqual(out["posts"], [])
         self.assertIn([f"#{port} not moved: {why}", False], out["toasts"])
-
-    def test_a_second_stop_repeating_queued_behind_the_first_sends_nothing(self):
-        # Two quick Stop repeating: the second waits for the first, and by then the task no longer repeats. It refuses as
-        # it leaves, so no empty write goes out and no Undo sets back the rule the first one cleared (review, PR #46).
-        self.repeat_plan()
-        plan, row = self.ids["plan"], self.row("plan")
-        answer = f"""(path, body) => new Promise(r => HOLD.push(() => r([200, {{ item: {{ id: {plan}, status: 'ready', priority: 2,
-  due: '2026-09-09', recurrence: body.recurrence, recurrence_anchor: body.recurrence_anchor ?? null }}, notes: [], revision: 'b'.repeat(64) }}])))"""
-        out = self.run_page(f"""open({plan}); await flush();
-shellRun(cmd('item.recur.clear'), C.get('{plan}')); shellRun(cmd('item.recur.clear'), C.get('{plan}')); await flush();
-for (let i = 0; i < 3; i++) {{ HOLD.splice(0).forEach(f => f()); await flush(); }}
-OUT.toasts.find(t => t.undo).undo(); await flush(); HOLD.splice(0).forEach(f => f()); await flush();""", answer, prelude="var HOLD = [];\n")
-        self.assertEqual(out["posts"], [
-            [f"/api/items/{plan}", {"recurrence": None, "revision": row["revision"]}, 64],
-            [f"/api/items/{plan}", {"recurrence": "FREQ=WEEKLY", "recurrence_anchor": row["recurrence_anchor"], "revision": "b" * 64}, 64]])
-        self.assertIn([f"#{plan} Plan the review not changed: the task does not repeat", False], out["toasts"])
 
     def test_a_status_with_no_column_gets_the_other_lane(self):
         ask = self.ids["ask"]
@@ -2203,13 +2177,13 @@ shellRun(cmd('item.status.in_progress'), C.get('{plan}')); await flush(); undo()
         self.assertEqual(out["toasts"][-1], [f"Edit → P2 not undone · #{ask} Answer the question: it changed after this write, and Undo would overwrite that change", False])
 
     def test_a_queued_done_asks_again_whether_the_task_repeats(self):
-        # Review round 3: repeat weekly is sent; Done is pressed before it answers, while the task does not repeat yet. As
+        # Review round 3: repeat weekly is sent (the Details Repeat select, sd:5737); Done is pressed before it answers, while the task does not repeat yet. As
         # Done's write leaves, the task repeats, so the plain move would complete a series without its confirm: it refuses.
         plan = self.ids["plan"]
         answer = f"""(path, body) => new Promise(r => HOLD.push(() => r([200, {{ item: {{ id: {plan}, status: 'ready', priority: 2, due: '2026-09-09',
   recurrence: body.recurrence === undefined ? null : body.recurrence }}, notes: [], revision: 'b'.repeat(64) }}])))"""
-        out = self.run_page(f"""open({plan}); await flush();
-shellRun(cmd('item.recur'), C.get('{plan}')); shellRun(cmd('item.status.done'), C.get('{plan}')); await flush();
+        out = self.run_page(self.CHANGE + f"""open({plan}); await flush();
+change('det-recur', 'FREQ=WEEKLY'); shellRun(cmd('item.status.done'), C.get('{plan}')); await flush();
 HOLD.splice(0).forEach(f => f()); await flush(); HOLD.splice(0).forEach(f => f()); await flush();""", answer, prelude="var HOLD = [];\n")
         self.assertEqual([p[0] for p in out["posts"]], [f"/api/items/{plan}"], "Done was sent after the task began to repeat")
         self.assertIn([f"#{plan} Plan the review not changed: it repeats: 5 completes it and opens the next occurrence", False], out["toasts"])
@@ -2262,14 +2236,14 @@ shellRun(cmd('item.complete'), C.get('{plan}')); await flush(); R.listed = !!C.g
         self.assertEqual(out["toasts"], [[f"#{plan} Ready → Done · next occurrence #99 due Sep 16 · sd task status {plan} done", False]])
 
     def test_a_queued_complete_asks_again_whether_the_task_still_repeats(self):
-        # The mirror case: stop repeating is sent, and 5 is confirmed before it answers. As the completion leaves, the task
+        # The mirror case: stop repeating is sent (the Details Repeat select, sd:5737), and 5 is confirmed before it answers. As the completion leaves, the task
         # no longer repeats, so it would end without a next occurrence the confirm promised: it refuses.
         self.repeat_plan()
         plan = self.ids["plan"]
         answer = f"""(path, body) => new Promise(r => HOLD.push(() => r([200, {{ item: {{ id: {plan}, status: 'ready', priority: 2, due: '2026-09-09',
   recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}])))"""
-        out = self.run_page(f"""open({plan}); await flush();
-shellRun(cmd('item.recur.clear'), C.get('{plan}')); shellRun(cmd('item.complete'), C.get('{plan}')); await flush();
+        out = self.run_page(self.CHANGE + f"""open({plan}); await flush();
+change('det-recur', ''); shellRun(cmd('item.complete'), C.get('{plan}')); await flush();
 HOLD.splice(0).forEach(f => f()); await flush(); HOLD.splice(0).forEach(f => f()); await flush();""", answer, prelude="var HOLD = [];\n")
         self.assertEqual([p[0] for p in out["posts"]], [f"/api/items/{plan}"], "the completion was sent after the series stopped")
         self.assertIn([f"#{plan} Plan the review not changed: the task does not repeat; Status → Done completes it", False], out["toasts"])
