@@ -101,7 +101,7 @@ function reconcile() {
 function clearSelection() {
   selected = null; curSource = null; shownProject = null; resetClaims(); shell.commands.select(null);
   ['reader-for', 'reader-tally', 'claims-for'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = ''; });
-  put(reader, PICK()); put(claimsEl, PICK());
+  put(reader, PICK()); put(claimsEl, PICK()); drawPickers();
   shell.view.count('sources', null); shell.view.count('claims', null);
 }
 function writeURL() {
@@ -302,7 +302,7 @@ const reader = document.getElementById('reader');
 let curSource = null;
 async function readerFor(key) {
   const p = PROJECTS.find(x => x.key === key);
-  document.getElementById('reader-for').textContent = p ? `· ${p.label}` : '';
+  document.getElementById('reader-for').textContent = '';
   document.getElementById('reader-tally').textContent = '';
   if (!p) return;
   if (!(SOURCES.has(key) && !SOURCES.get(key).then)) put(reader, html`<p class="why">Reading the ledger in ${p.path}…</p>`);
@@ -386,7 +386,7 @@ let verdict = null, curClaim = null, litKeys = [], litClaims = [];
 function resetClaims() { verdict = null; curClaim = null; litKeys = []; litClaims = []; }
 async function renderClaims(key) {
   const p = PROJECTS.find(x => x.key === key);
-  document.getElementById('claims-for').textContent = p ? `· ${p.label}` : '';
+  document.getElementById('claims-for').textContent = '';
   if (!p) { put(claimsEl, PICK()); return; }
   if (!(SOURCES.has(key) && !SOURCES.get(key).then)) put(claimsEl, html`<p class="why">Reading the claims in ${p.path}…</p>`);
   const s = await loadSources(key);
@@ -420,7 +420,7 @@ function drawClaims(p, s) {
       <button type="button" aria-describedby="claim-type-${x.s}">${x.text}</button>
       <span class="meta"><span>${x.doc}:${x.line}</span>${x.keys.map(k => chip(s, k))}</span></li>`)}</ul>${
     c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown. ${c.moreError ? `The next claims were not read: ${c.moreError}. ` : ''}<button type="button" class="btn" data-more-claims${c.loading ? html` disabled` : ''}>${c.loading ? 'Reading…' : 'Show more'}</button></p>` : ''}${unread}`);
-  document.getElementById('claims-for').textContent = `· ${p.label} · ${plural(c.total, 'claim')}`;
+  document.getElementById('claims-for').textContent = `· ${plural(c.total, 'claim')}`;
 }
 // Show more (past the reader's print bound): the next claims, from the count already held, appended to the cached map.
 function moreClaims() {
@@ -631,9 +631,18 @@ function showClaim(s, x) {
       return html`<li class="claim"><span class="g" aria-hidden="true">${r ? r.id : '?'}</span><span>${r ? r.title : `${k}: past the rows shown`}</span></li>`; })}</ul>`);
   shell.setContext(x.text.slice(0, 40)); swap();
 }
+// Sources and Claim map name their project in a picker in their heads (sd:5747), so either picks another without Projects.
+function drawPickers() {
+  for (const id of ['reader-pick', 'claims-pick']) {
+    const el = document.getElementById(id);
+    put(el, html`${selected ? '' : html`<option value="" selected>Pick a project</option>`}${PROJECTS.map(p => html`<option value="${p.key}"${p.key === selected ? html` selected` : ''}>${p.label}</option>`)}`);
+    el.value = selected || '';
+  }
+}
+['reader-pick', 'claims-pick'].forEach(id => document.getElementById(id).addEventListener('change', e => { if (e.target.value) select(e.target.value, false); }));
 function select(key, open) {
   if (!PROJECTS.some(p => p.key === key)) return;
-  selected = key; curSource = null; resetClaims();
+  selected = key; curSource = null; resetClaims(); drawPickers();
   [tbody, xpBody].forEach(b => b.querySelectorAll('tr').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === key)));
   readerFor(key); renderClaims(key); showProject(key);
   writeURL();

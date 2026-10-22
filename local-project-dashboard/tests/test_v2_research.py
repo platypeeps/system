@@ -1263,7 +1263,7 @@ R.afterSource = OUT.views.slice(); R.litClaims = ELS.claims.html;""")
         self.assertEqual(r["declared"], [["projects", "Projects"], ["sources", "Sources"], ["claims", "Claim map"], ["experiments", "Experiments"]])
         # Selecting a project stays on Projects; the panels name it.
         self.assertEqual((r["start"], r["selecting"]), ([], []))
-        self.assertEqual(r["for"], ["· Beta", "· Beta · 2 claims"])
+        self.assertEqual(r["for"], ["", "· 2 claims"])  # the project is named by each head's picker (sd:5747)
         self.assertEqual(r["counts"], {"experiments": 0, "sources": 3, "claims": 2})
         self.assertEqual(r["afterClaim"], ["sources"])
         self.assertEqual(re.findall(r'<li class="src" data-i="(\d+)"[^>]*data-lit', r["lit"]), ["1"])
@@ -1349,6 +1349,18 @@ R.rows = ELS['xp-rows'].html; R.after = c.when(C.get('research/alpha'));""", ans
         cmds = self.run_page("R.on = C.commands ? 1 : 0; R.deck = cmd('research.deck').on; R.slides = cmd('research.slides').on;", answer=answer)["R"]
         self.assertEqual((cmds["deck"], cmds["slides"]), ("research project", "research project"))
         self.assertNotIn("<h3>Deck</h3>", out["R"]["none"])
+
+    def test_sources_and_claim_map_pick_their_project_in_their_heads(self):
+        # sd:5747: both views name their project in a picker; changing it selects that project without leaving the view.
+        out = self.run_page("""select('research/alpha', false); R.a = ELS['reader-pick'].html; R.c = ELS['claims-pick'].html;
+ELS['reader-pick'].value = 'research/beta'; ELS['reader-pick'].listeners.change[0]({ target: ELS['reader-pick'] });
+R.sel = selected; R.after = ELS['claims-pick'].html;""")
+        r = out["R"]
+        for html in (r["a"], r["c"]):
+            self.assertIn('<option value="research/alpha" selected>Alpha</option>', html)
+            self.assertNotIn("Pick a project", html)
+        self.assertEqual(r["sel"], "research/beta")
+        self.assertIn('<option value="research/beta" selected>Beta</option>', r["after"])
 
     def test_draft_experiment_sits_on_the_experiments_tab_not_the_toolbar(self):
         # sd:5747: the operator moved it; Refresh experiments stays in the toolbar.

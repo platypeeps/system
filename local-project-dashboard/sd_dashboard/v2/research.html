@@ -75,7 +75,7 @@
 
     <section id="view-sources" aria-labelledby="reader-h">
       <div class="sec-head">
-        <h2 id="reader-h">Sources <span class="for" id="reader-for"></span> <button class="help" type="button" aria-label="Help: Sources" data-help="<b>The project's own ledger, as written.</b> Grade or ID comes from the registry: A primary, B secondary, C summary only, U unverified, M measured here. A ◆ count is how many claims cite the source; tap it to light them.">
+        <h2 id="reader-h">Sources <select class="pick" id="reader-pick" aria-label="Project"></select> <span class="for" id="reader-for"></span> <button class="help" type="button" aria-label="Help: Sources" data-help="<b>The project's own ledger, as written.</b> Grade or ID comes from the registry: A primary, B secondary, C summary only, U unverified, M measured here. A ◆ count is how many claims cite the source; tap it to light them.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
         <p class="tally" id="reader-tally"></p>
       </div>
@@ -100,7 +100,7 @@
 
     <section id="view-claims" aria-labelledby="claims-h">
       <div class="sec-head">
-        <h2 id="claims-h">Claim map <span class="for" id="claims-for"></span> <button class="help" type="button" aria-label="Help: Claim map" data-help="<b>Claims against their sources.</b> A claim is a sentence in 20-map, 30-brief or 40-docs that cites a ledger row: it links the row's URL or a deeper path under it, or names the row's ID. Supported ● cites an A, B or M source; unverified ▨ cites only C, U or ungraded ones, so a ledger without grades leaves every claim unverified. Tap a claim to light its sources.">
+        <h2 id="claims-h">Claim map <select class="pick" id="claims-pick" aria-label="Project"></select> <span class="for" id="claims-for"></span> <button class="help" type="button" aria-label="Help: Claim map" data-help="<b>Claims against their sources.</b> A claim is a sentence in 20-map, 30-brief or 40-docs that cites a ledger row: it links the row's URL or a deeper path under it, or names the row's ID. Supported ● cites an A, B or M source; unverified ▨ cites only C, U or ungraded ones, so a ledger without grades leaves every claim unverified. Tap a claim to light its sources.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
       </div>
       <div id="claims"></div>
