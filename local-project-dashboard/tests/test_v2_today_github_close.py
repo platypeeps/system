@@ -120,6 +120,31 @@ class Close(Copy):
         self.assertRegex(found["revision"], r"^[0-9a-f]{64}$")
         self.assertIn(f"gh api repos/{REPO}/pulls/5 --method PATCH -f state=closed", found["cli"])
 
+    def test_the_shown_command_checks_the_head_before_it_comments_or_closes(self):
+        """The confirm's command keeps the server's check: a head the lane's pull request lacks posts and closes nothing."""
+        import os
+        import tempfile
+
+        self.deliver()
+        cli = self.preview()["cli"]
+        for head, writes in (("b" * 40, []), ("a" * 40, ["POST", "PATCH"])):
+            with self.subTest(head=head[:1]), tempfile.TemporaryDirectory() as bin_dir:
+                log = os.path.join(bin_dir, "log")
+                gh = os.path.join(bin_dir, "gh")
+                with open(gh, "w") as script:
+                    script.write(f"""#!/bin/sh
+echo "$*" >> {log}
+case "$*" in
+  *--jq\ .head.sha*) echo {head} ;;
+  */commits*) echo {"a" * 40} ;;
+esac
+""")
+                os.chmod(gh, 0o755)
+                REAL_RUN(["sh", "-c", cli], env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+                         capture_output=True, check=False)
+                calls = open(log).read()
+                self.assertEqual([verb for verb in ("POST", "PATCH") if f"--method {verb}" in calls], writes, calls)
+
     def test_close_reads_github_comments_once_then_closes_and_never_merges(self):
         self.deliver()
         found, github = self.preview(), GitHub()

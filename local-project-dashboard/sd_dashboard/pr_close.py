@@ -106,8 +106,11 @@ def _read(connection, repo: str, number: int) -> dict:
 
 
 def _cli(facts: dict) -> str:
-    target = f"repos/{facts['repo']}"
-    return (f"gh api {target}/issues/{facts['number']}/comments --method POST -f body={shlex.quote(facts['text'])} && "
+    """The write as one shell line, with the write's own head check first (`close`): a push after the copy stops it."""
+    target, lane = f"repos/{facts['repo']}", facts["merged"].rstrip("/").rsplit("/", 1)[-1]
+    return (f"head=$(gh api {target}/pulls/{facts['number']} --jq .head.sha) && "
+            f"gh api --paginate {target}/pulls/{lane}/commits --jq '.[].sha' | grep -qxF \"$head\" && "
+            f"gh api {target}/issues/{facts['number']}/comments --method POST -f body={shlex.quote(facts['text'])} && "
             f"gh api {target}/pulls/{facts['number']} --method PATCH -f state=closed")
 
 
