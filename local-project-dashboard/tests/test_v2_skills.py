@@ -409,6 +409,12 @@ class TheIntakeRoute(StubSd):
         status, body, _ = self.intake(approve, out="sd: [Errno 28] No space left on device", code=1)
         self.assertEqual((status, body["outcome"]), (502, "unknown"))
         self.assertIn("Rollback again", body["error"])
+        # The report runs the verb's recovery first, which may move files: a failure it does not name as a refusal is unknown.
+        status, body, _ = self.intake({"source": "sd-extra", "rollback": True}, out="sd: [Errno 28] No space left on device", code=1)
+        self.assertEqual((status, body.get("outcome")), (502, "unknown"))
+        none = "sd: no kept copy of sd-extra: only an install by `sd skill intake` keeps one; nothing to roll back"
+        status, body, _ = self.intake({"source": "sd-extra", "rollback": True}, out=none, code=1)
+        self.assertEqual((status, body["error"]), (400, "No rollback: " + none.removeprefix("sd: ")))
 
 
 REPO = "https://github.com/example/skills"

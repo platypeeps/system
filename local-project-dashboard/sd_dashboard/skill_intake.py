@@ -135,12 +135,14 @@ def intake(payload: dict):
         said, report = _said(done), _json(done)
         if isinstance(report, dict) and isinstance(report.get("revision"), str):
             return report
-        if approve and done.returncode and said.endswith("nothing written"):
+        refused = done.returncode and said.endswith(("nothing written", "nothing to roll back"))
+        if approve and refused:
             # The verb's refusals of an approve, each before it writes (pack sd_skill_intake.intake and .rollback).
             if said.startswith("approved revision"):
                 raise workflow.StaleItem(f"Not {did}: {said}")
             raise ValueError(f"Not {did}: {said}")
-        if approve:
+        # A rollback's report runs the verb's recovery first, which may move files: only a named refusal moved nothing.
+        if approve or (rollback and not refused):
             return 502, {"error": f"sd skill intake exited {done.returncode} without a report: {said or 'no output'}. {unknown}",
                          "outcome": "unknown"}
         raise ValueError(f"{'No rollback' if rollback else 'Not evaluated'}: {said or f'sd skill intake exited {done.returncode}'}")
