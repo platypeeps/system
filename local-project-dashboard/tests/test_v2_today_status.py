@@ -63,8 +63,8 @@ class TheDocument(ScreenCase):
         html = (V2 / "today.html").read_text(encoding="utf-8")
         self.assertIn('<div id="view-status"', html)
         self.assertLess(html.index('src="/ui/today-status.js"'), html.index('src="/ui/shell.js"'))
-        # Status follows Issues, the tab after Now since sd:5645.
-        self.assertIn("{ id: 'issues', label: 'Issues' }, { id: 'status', label: 'Status' },", (V2 / "static" / "today.js").read_text(encoding="utf-8"))
+        # Status follows Inbox since sd:5781, the views by job: Now, Inbox, Status, Work.
+        self.assertIn("{ id: 'inbox', label: 'Inbox', key: 'm' }, { id: 'status', label: 'Status' },", (V2 / "static" / "today.js").read_text(encoding="utf-8"))
 
 
 class TheRoute(BrowserSession):

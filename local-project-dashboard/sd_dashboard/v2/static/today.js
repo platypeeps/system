@@ -4,18 +4,23 @@
 // The work items `sd today` lists (sd:3271) are the document's `work`: their own table, the same Snooze, keyed today:item:<id>.
 // Ported from ui-design products/system/designs/v2/today.html at a3861c9; the sources the build has no collector for are left out.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
-// sd:5080: Today's areas are the shell's views (shell.js, view:start): Now; Issues (yours, intake: the tab after Now since
-// sd:5645 moved Your issues here from Tasks, so issues assigned to the operator sit near the top); Status (sd:5099,
-// today-status.js); Work (working now, your work); Inbox (problem reports, new briefs, mail); GitHub (sd:5608,
-// today-github.js); Decisions. Each tab counts what waits on you there; a section's script reports its number through
-// window.todayCount(key, n), and n null means not read, which hides the tab's count. Status and GitHub count nothing: what
-// waits in them is counted on the tab that acts on it.
-window.PAGE_VIEWS = [{ id: 'now', label: 'Now' }, { id: 'inbox', label: 'Inbox', key: 'm' },
-  { id: 'issues', label: 'Issues' }, { id: 'status', label: 'Status' }, { id: 'work', label: 'Work' },
-  { id: 'github', label: 'GitHub' }, { id: 'decisions', label: 'Decisions' }];
+// sd:5080: Today's areas are the shell's views (shell.js, view:start), four by job since sd:5781: Now; Inbox (problem
+// reports, new briefs, mail); Status (sd:5099, today-status.js); Work (working now, your work). Decisions moved to Decide,
+// and GitHub with Your issues and Issue intake to GitHub. Each tab counts what waits on you there; a section's script
+// reports its number through window.todayCount(key, n), and n null means not read, which hides the tab's count. Status
+// counts nothing: what waits in it is counted on the tab that acts on it.
+// moved:start
+// sd:5781: an old address of a view that moved opens the view's new page, keeping its query (?row=).
+{
+  const moved = { decisions: '/decide#view=decisions', github: '/github#view=pulls', issues: '/github#view=issues' }[(/^#view=([a-z]+)$/.exec(location.hash) || [])[1]];
+  if (moved) location.replace(moved.replace('#', `${location.search}#`));
+}
+// moved:end
+window.PAGE_VIEWS = [{ id: 'now', label: 'Now' }, { id: 'inbox', label: 'Inbox', key: 'm' }, { id: 'status', label: 'Status' },
+  { id: 'work', label: 'Work' }];
 window.PAGE_FILTER = { now: 'the Now ledger' };
 (() => {
-  const VIEW_OF = { now: 'now', work: 'work', problems: 'inbox', briefs: 'inbox', mail: 'inbox', issues: 'issues', intake: 'issues', decisions: 'decisions' };
+  const VIEW_OF = { now: 'now', work: 'work', problems: 'inbox', briefs: 'inbox', mail: 'inbox' };
   const COUNTS = {};
   window.todayCount = (key, n) => {
     COUNTS[key] = n; const view = VIEW_OF[key];
@@ -62,9 +67,8 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     return f;
   }
 
-  // One selection for Today's tables (sd:5654): a Now, Work or GitHub row is selected through pick(id, draw, open). It names
-  // the row in ?row=, marks it alone aria-selected in every table, puts draw()'s Details and makes it the shell's selection.
-  // today-github.js passes its own draw: its rows are not in this read.
+  // One selection for Today's tables (sd:5654): a Now or Work row is selected through pick(id, draw, open). It names the
+  // row in ?row=, marks it alone aria-selected in every table, puts draw()'s Details and makes it the shell's selection.
   function pick(id, draw, open) {
     mark(id);
     put($('details'), draw());
@@ -73,7 +77,6 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     $('details').setAttribute('data-swap', ''); requestAnimationFrame(() => $('details').removeAttribute('data-swap'));
     if (open) shell.openPane('tab-details');
   }
-  window.todayPick = pick;
   const nowRow = id => ROWS.some(r => r.id === id), workRow = id => WORK.some(r => r.id === id);
 
   function nowDetails(r) {
@@ -134,7 +137,7 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
 
   // The selected row in every table, and the picked ones, marked again on the rows a redraw made.
   function mark(id) {
-    ['work', 'github-sections'].forEach(t => $(t)?.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id)));
+    $('work').querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
     $('rows').querySelectorAll('tr[data-id]').forEach(tr => { tr.setAttribute('aria-selected', tr.dataset.id === id); tr.toggleAttribute('data-picked', picked.includes(tr.dataset.id)); });
   }
   // A band starts only while the list is in rank order.
@@ -207,12 +210,10 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     put($('work-tally'), WORK.length ? html`<span>${WORK.length} listed</span>${n ? html`<span class="g-caution">▲ ${n} overdue</span>` : ''}` : html``);
   }
 
-  // The badge is the read's own (sd:3446, now_screen._attention): warning rows, else caution rows and the decisions that
-  // wait. A ruling here lowers the count decisions.js tells, so Now is read again for a badge that counts it.
+  // The badge is the read's own (sd:3446, now_screen._attention): warning rows, else caution rows and open problem reports.
   function attend() {
     shell.attention(DOC && DOC.attention || { state: 'unknown', n: 0, what: 'rows' });
   }
-  document.addEventListener('today:decisions', e => { if (DOC && reading && e.detail < (DOC.waiting || 0)) reading.reread(); });
 
   // The filter hides rows; it moves no selection. applyFilter() also moves the selection off a row the filter hid.
   function hideRows() {
@@ -231,9 +232,9 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     const u = new URL(location.href); u.searchParams.delete('row'); history.replaceState(null, '', u);
     put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Now could not be read.' : ROWS.length ? 'No row matches the filter, so nothing is selected. Esc clears it.' : 'Nothing is selected: Now has no rows.'}</p>`);
   }
-  // The filter hides Now rows only: a Work or GitHub selection stays.
+  // The filter hides Now rows only: a Work selection stays.
   const reconcile = () => shell.reconcile({ rows: $('rows').querySelectorAll('tr[data-id]'), current: row(),
-    keep: id => workRow(id) || id.startsWith('gh:'), select: id => select(id, false), clear: unselect });
+    keep: id => workRow(id), select: id => select(id, false), clear: unselect });
   function applyFilter() { hideRows(); reconcile(); }
 
   // ---------- Reading (build, sd:2483): shell.read reads /api/now ----------
@@ -248,10 +249,6 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
   }
   function clear(err) { DOC = null; ROWS = []; WORK = []; WORK_ERROR = ''; SNOOZED = []; ACTIVE = null; failed = err.message; delete document.body.dataset.observed; }
   function draw() {
-    // Your issues (sd:4628) are this document's too; issues.js draws them, or the failure that left none.
-    document.dispatchEvent(new CustomEvent('issues:read', { detail: DOC ? { issues: DOC.issues || [], error: DOC.issues_error || '' } : { error: failed } }));
-    // Issue intake (sd:4840) too; issues.js draws it, and a filed row says so until the next read drops it.
-    document.dispatchEvent(new CustomEvent('intake:read', { detail: DOC ? { intake: DOC.intake || [], error: DOC.intake_error || '' } : { error: failed } }));
     // Your mail (sd:4191) too; mail.js draws it from the document's mail keys.
     document.dispatchEvent(new CustomEvent('mail:read', { detail: DOC || { mail_error: failed } }));
     // Problem reports and new briefs too; today-reports.js draws them, or the failure that left none.
@@ -368,8 +365,6 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
     reading = shell.read({
       source: '/api/now', what: 'the Now rows', adopt, clear, draw,
       current: row,
-      // A GitHub row's selection is today-github.js's: this read leaves it, and its Details, alone.
-      active: () => !String(row() || '').startsWith('gh:'),
       first: () => [...$('rows').querySelectorAll('tr[data-id]')].find(tr => !tr.hidden)?.dataset.id,
       // A row the filter hides is not selected: reconcile moves to the first row it shows, or clears.
       select: id => (shown(id) || workRow(id) ? select(id, false) : reconcile()),

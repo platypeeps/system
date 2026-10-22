@@ -4,22 +4,15 @@
   Data: /api/now, the document now_screen.document builds for v1 Today's Now section, read when the page opens and on Refresh.
   Snooze (sd:1896): /ui/snooze.js; a row's Snooze or Unsnooze posts /api/snooze, and Now reads again.
   Your work (sd:3271): the items `sd today` lists, from the same document (work); the Snooze control is Now's, keyed today:item:<id>.
-  A Work row selects into Details as a Now or GitHub row does: one selection, today.js pick (sd:5654).
+  A Work row selects into Details as a Now row does: one selection, today.js pick (sd:5654).
   Working now (sd:3466): each open item's live sessions, from the same document (active, active_sessions.document).
-  Your issues (sd:4628): each repo's issues assigned to or filed by the operator, from the same document (issues); issues.js draws them.
-  The Issues view is the tab after Now (sd:5645): Your issues moved here from Tasks, so issues assigned to the operator sit near the top.
-  Issue intake (sd:4840): each github_issues repo's open third-party issues no item carries (intake); issues.js draws them, File as item posts /api/items with the ref.
   Problem reports and New briefs (operator ruling 2026-10-17): open reports that ask for a person and the last week's unseen
   briefs, from the same document (problems, briefs); today-reports.js draws them, Acknowledge and Seen post the Reports and snooze routes.
   Your mail (sd:4191): the mail threads waiting on the operator under each repo's aliases, from the same document (mail); mail.js draws them.
   Status (sd:5099): /api/today/status, the sections `sd today` prints (sd_db.today.sections), read by today-status.js when the view
   first shows and on Refresh.
-  GitHub (sd:5608): /api/today/github, the operator's open pull requests and issues and those merged or closed in the last
-  7 days, from what sd shadow sync and the Contributions collector stored (today_github.document), read by today-github.js
-  when the view first shows and on Refresh. Your issues and Issue intake stay on Issues, with Jira and File as item.
-  Decisions (sd:3012): /api/decisions, read by decisions.js when the page opens and on Refresh; a choice posts /api/decisions/answer.
-  A review batch's questions (sd:3709) are not rows here: one line under the table counts them and links to Review.
-  The decisions waiting count in Today's rail badge with the caution rows (today.js attend).
+  Four views by job (sd:5781): Now, Inbox, Status, Work. Decisions moved to Decide, and GitHub with Your issues and Issue
+  intake to GitHub; today.js opens an old #view=decisions, #view=github or #view=issues address there.
   Sources: repos and sessions (fleet child), prs (shadow table), jobs (launchd through sd_db.operations.inventory).
   Left out until a collector exists: status mail, backups, HOA water, the Runner lamp and Wants you.
 -->
@@ -36,7 +29,6 @@
 <link rel="stylesheet" href="/ui/shell.css">
 <link rel="stylesheet" href="/ui/annunciator-strip.css">
 <link rel="stylesheet" href="/ui/today.css">
-<link rel="stylesheet" href="/ui/decisions.css">
 <link rel="stylesheet" href="/ui/issues.css">
 </head>
 <body data-page="Today" data-scope="fleet">
@@ -74,30 +66,6 @@
         </table>
         <p class="filtered" id="filtered" hidden></p>
         <div id="snoozed"></div>
-      </section>
-    </div>
-    <div id="view-issues" aria-label="Issues" hidden>
-      <section class="issues-sec" aria-labelledby="issues-h">
-        <div class="sec-head">
-          <h2 id="issues-h">Your issues <button class="help" type="button" aria-label="Help: Your issues" data-help="&lt;b&gt;Issues that are yours.&lt;/b&gt; Open Jira and GitHub issues assigned to you or filed by you, from each repo&#39;s issue sources (&lt;code&gt;jira=KEY&lt;/code&gt;, &lt;code&gt;github=owner/name&lt;/code&gt; on the repo&#39;s channels). Watched issues stay synced and are not listed. &lt;code&gt;sd shadow sync&lt;/code&gt; refreshes them.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="issues-tally"></p>
-        </div>
-        <table class="ledger issues" aria-labelledby="issues-h">
-          <thead><tr><th>Issue</th><th>Title</th><th>Repo</th><th>Why</th></tr></thead>
-          <tbody id="issues"><tr class="empty"><td colspan="4">Reading issues…</td></tr></tbody>
-        </table>
-      </section>
-      <section class="issues-sec" aria-labelledby="intake-h">
-        <div class="sec-head">
-          <h2 id="intake-h">Issue intake <button class="help" type="button" aria-label="Help: Issue intake" data-help="&lt;b&gt;Issues that need an item.&lt;/b&gt; Open GitHub issues someone else opened, in each repo with GitHub issues on (Management), that no item carries yet. File as item adds a task in that repo under &lt;code&gt;--ref github:owner/name#N&lt;/code&gt;, as &lt;code&gt;sd task add --ref&lt;/code&gt; does, and the row leaves. &lt;code&gt;sd shadow sync&lt;/code&gt; refreshes them.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="intake-tally"></p>
-        </div>
-        <table class="ledger issues" aria-labelledby="intake-h">
-          <thead><tr><th>Issue</th><th>Title</th><th>Repo</th><th>Opened by</th><th><span class="sr">File</span></th></tr></thead>
-          <tbody id="intake"><tr class="empty"><td colspan="5">Reading issue intake…</td></tr></tbody>
-        </table>
       </section>
     </div>
     <div id="view-status" aria-label="Status" hidden>
@@ -171,32 +139,6 @@
         </table>
       </section>
     </div>
-    <div id="view-github" aria-label="GitHub" hidden>
-      <section aria-labelledby="github-h">
-        <div class="sec-head">
-          <h2 id="github-h">GitHub <button class="help" type="button" aria-label="Help: GitHub" data-help="&lt;b&gt;Your pull requests and issues.&lt;/b&gt; Open pull requests that are yours, assigned to you or waiting on you; open issues that are yours or opened by someone else in a repo with GitHub issues on; and both merged or closed in the last 7 days. Upstream is yours in a repo sd does not register. Show mine, the default, hides what others opened; Show all adds every open pull request in a registered repo. Newest GitHub activity first; each part shows 5 rows, Show all opens the rest. Read from what &lt;code&gt;sd shadow sync&lt;/code&gt; and the Contributions collector stored: the reading calls no GitHub API. Press a pull request for its details and actions; Copilot review asks GitHub, once per press. Your issues and Issue intake stay on Issues.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="github-tally"></p>
-        </div>
-        <div class="filters toolbar-2" id="github-filters"></div>
-        <div id="github-sections"><p class="st-line">Reading GitHub…</p></div>
-      </section>
-    </div>
-    <div id="view-decisions" aria-label="Decisions" hidden>
-      <section aria-labelledby="decisions-h">
-        <div class="sec-head">
-          <h2 id="decisions-h">Decisions <button class="help" type="button" aria-label="Help: Decisions" data-help="&lt;b&gt;Questions that wait on you.&lt;/b&gt; Each is a &lt;code&gt;question&lt;/code&gt; note with one &lt;code&gt;Option:&lt;/code&gt; line per choice. A button records that choice as a &lt;code&gt;decision&lt;/code&gt; note and resolves the question; &lt;code&gt;sd task show&lt;/code&gt; prints both. Prose &quot;Decision needed&quot; notes stay on their item.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="decisions-tally"></p>
-        </div>
-        <table class="ledger decisions" aria-labelledby="decisions-h">
-          <thead id="decisions-head"></thead>
-          <tbody id="decisions"><tr class="empty"><td colspan="4">Reading decisions…</td></tr></tbody>
-        </table>
-        <p class="filtered" id="decisions-review" hidden></p>
-        <p class="filtered" id="decisions-note" role="status" hidden></p>
-      </section>
-    </div>
   </main>
 
   <div class="details" id="details"><p class="why">Reading the fleet…</p></div>
@@ -205,13 +147,10 @@
 <script src="/ui/read.js"></script>
 <script src="/ui/snooze.js"></script>
 <script src="/ui/commands.js"></script>
-<script src="/ui/issues.js"></script>
 <script src="/ui/mail.js"></script>
 <script src="/ui/today-reports.js"></script>
 <script src="/ui/today.js"></script>
 <script src="/ui/today-status.js"></script>
-<script src="/ui/today-github.js"></script>
-<script src="/ui/decisions.js"></script>
 <script src="/ui/shell.js"></script>
 </body>
 </html>

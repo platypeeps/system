@@ -1,6 +1,6 @@
-/* Your issues (sd:4628), on Today and Tasks: one ledger of each repo's Jira and GitHub issues assigned to or filed by the
+/* Your issues (sd:4628), on GitHub (sd:5781): one ledger of each repo's Jira and GitHub issues assigned to or filed by the
  * operator. Your mail (sd:4191) on Today is the same ledger; its subject is the link and opens the thread in Gmail. The rows are not selectable, so no row hover; the reference is the one link and opens the issue on its tracker.
- * Issue intake (sd:4840) on Today is the same ledger plus one row control, File as item (the shell's btn quiet sm): busy
+ * Issue intake (sd:4840) on GitHub is the same ledger plus one row control, File as item (the shell's btn quiet sm): busy
  * disables it, a refusal is a line under it, and a filed row names its item where the button was.
  * Hallmark · component: issue row · genre: modern-minimal · theme: design.md instrument panel
  * states: default · hover (the reference link) · focus · active · disabled (filing) · error (not filed) · success (filed);

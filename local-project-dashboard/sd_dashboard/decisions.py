@@ -18,8 +18,8 @@ place of buttons. An old prose "Decision needed" comment stays a comment: it lis
   `recommended` is the index of the option the note recommends, or null (sd:5306): one option that ends
   "(Recommended)" or starts "(Recommended)" or "Recommended:", else a line "Recommendation: <text>" that names an
   option. A conditional "(Recommended only if …)" and two marked options recommend nothing.
-  A question on a review batch (sd:3709, a task under a `review:` ref) is Review's: it is counted in `review`, and
-  Today draws one line that links there in place of its rows.
+  A question on a review batch (sd:3709, a task under a `review:` ref) is Scoring's: it is counted in `review`, and
+  Decide's Decisions view draws one line that opens Scoring in place of its rows (sd:5781).
 - `answer` is `/api/decisions/answer`, posted with the item, the note, the option and that revision: the CLI's two
   verbs in one transaction under the revision, as `sd task note N "<ruling>" --kind decision --answers <note>` writes.
   `workflow.add_item_note` writes the ruling, a `decision` note `Ruling on note #<note>: <option>`, and
@@ -43,7 +43,7 @@ __all__ = ["answer", "document", "parse", "recommended", "request"]
 OPTION = re.compile(r"^[ \t]*Option:[ \t]*(.*?)[ \t]*$")
 MARKED = re.compile(r"\(recommended\)$|^(?:\(recommended\)|recommended:)", re.IGNORECASE)
 ADVICE = re.compile(r"^[ \t]*Recommendation:[ \t]*(.*?)[ \t.]*$", re.IGNORECASE)
-#: A review batch's ref, as `sd_db.review` files it (`REF_SOURCE`, `review:<queue>:<batch>`); named here so Today reads
+#: A review batch's ref, as `sd_db.review` files it (`REF_SOURCE`, `review:<queue>:<batch>`); named here so Decisions reads
 #: without that module, and a test holds the two equal.
 BATCH_SOURCE, BATCH_PREFIX = "task-ref", "review:"
 #: The longest free-text answer the page posts: a ruling is a line or a short paragraph, not a document.

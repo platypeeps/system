@@ -54,8 +54,9 @@
   const openItem = n => { location.href = itemHref(n); return `#${n} opens in Tasks`; };
   // item:end
   const GROUPS = [
-    ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i'], ['Review', 'list-checks', 'l'], ['Queue', 'git-merge', 'u']]],
-    ['Work',      [['Tasks', 'list-todo', 'k'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
+    // build (sd:5781): the Now group by job: Today what wants you, Decide what waits on a ruling (Decisions, Scoring), then Briefs and Queue.
+    ['Now',       [['Today', 'sunrise', 't'], ['Decide', 'list-checks', 'l'], ['Briefs', 'inbox', 'i'], ['Queue', 'git-merge', 'u']]],
+    ['Work',      [['Tasks', 'list-todo', 'k'], ['GitHub', 'git-branch', 'b'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
     ['Knowledge', [['Documents', 'file-text', 'd'], ['Notes', 'notebook-pen', 'n']]],
     ['Places',    [['HOA', 'droplets', 'h'], ['Home', 'house', 'o']]],
     ['Fleet',     [['Skills', 'sparkles', 's'], ['Metrics', 'chart-no-axes-column', 'm'], ['Management', 'settings', 'g'], ['Health', 'heart-pulse', 'e'], ['Activity', 'activity', 'a'], ['Reports', 'clipboard-list', 'p'], ['Designs', 'palette', 'x'], ['Settings', 'sun-moon', 'v']]],
@@ -450,7 +451,7 @@
     });
   }
   tabs.forEach(t => t.addEventListener('click', () => showTab(t.id)));
-  // A page with no Details element (Queue, Review, Settings) has nothing to show there: the pane is Chat alone.
+  // A page with no Details element (Queue, Decide, Settings) has nothing to show there: the pane is Chat alone.
   if (!details) { pane.querySelector('#tab-details').hidden = true; showTab('tab-chat'); }
   // Roving focus: ← → move between tabs and select (WAI-ARIA tabs pattern).
   pane.querySelector('.tablist').addEventListener('keydown', e => {
@@ -1464,7 +1465,7 @@
     });
   }
   // A band's words go into its fold button. One span holds them, so their mixed font sizes share a baseline instead of each
-  // centring as a flex item. A [data-tkeep] child (Review's batch checkbox, sd:5497) stays beside the button: a control
+  // centring as a flex item. A [data-tkeep] child (Scoring's batch checkbox, sd:5497) stays beside the button: a control
   // may not sit inside another.
   function tbandFold(td) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'tfold';

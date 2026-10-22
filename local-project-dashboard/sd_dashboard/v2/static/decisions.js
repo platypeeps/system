@@ -1,4 +1,5 @@
-// Today's Decisions (sd:3012): each open question note, one button per option. It loads before shell.js.
+// Decide's Decisions (sd:3012; Today's view until sd:5781): each open question note, one button per option. It loads before
+// shell.js.
 // Rows: /api/decisions (sd_dashboard.decisions.document). A click posts /api/decisions/answer with the item, note, option
 // and the item revision the read gave; the server writes the ruling and resolves the question in one transaction.
 // A question with fewer than two Option: lines (sd:5064) gets a text box: its words post as the option, the same ruling
@@ -10,12 +11,12 @@
   const repoName = path => String(path || '').split('/').filter(Boolean).pop() || '';
 
   // LIST is the last read; null when it failed. RULED and REFUSED hold what a click did to a row until the next read.
-  // REVIEW counts the questions on review batches (sd:3709): Review asks them, so Today draws one line that links there.
+  // REVIEW counts the questions on review batches (sd:3709): Scoring asks them, so Decisions draws one line that opens it.
   let LIST = [], REVIEW = 0, reads = 0, failed = '';
   const RULED = new Map(), REFUSED = new Map(), BUSY = new Set(), DRAFT = new Map();
   // The marker an option carries (sd:5306); the label drops it, the posted text keeps it.
   const REC = /^\s*(?:\(recommended\)|recommended:)\s*|\s*\(recommended\)\s*$/gi, label = o => o.replace(REC, '');
-  // Sort (sd:3455): the shell's sort header, in memory as Today's other tables. The read's order (priority, then the oldest)
+  // Sort (sd:3455): the shell's sort header, in memory as the other tables. The read's order (priority, then the oldest)
   // stands until a header is pressed; a tie keeps it.
   const low = s => String(s || '').toLowerCase();
   const SORT = { sort: '', dir: 1, page: 1 };
@@ -39,20 +40,17 @@
       ${refused(d)}`;
   }
 
-  // today.js counts the waiting decisions in Today's badge; a failed read counts none.
-  const tell = n => document.dispatchEvent(new CustomEvent('today:decisions', { detail: n }));
-
   function draw() {
     const tb = $('decisions'), line = $('decisions-review'), n = LIST ? REVIEW : 0;
     put($('decisions-head'), window.shell.list.sortHead(COLS, SORT));
     if (line) {
-      put(line, n ? html`<span class="g-caution" aria-hidden="true">▲</span> <a href="/review">${n} ${n === 1 ? 'question waits' : 'questions wait'} on Review</a>` : html``);
+      put(line, n ? html`<span class="g-caution" aria-hidden="true">▲</span> <a href="#view=scoring">${n} ${n === 1 ? 'question waits' : 'questions wait'} on Scoring</a>` : html``);
       line.hidden = !n;
     }
     if (!LIST) {
       put(tb, html`<tr class="empty"><td colspan="4">Decisions could not be read: ${failed}. Refresh tries again.</td></tr>`);
-      put($('decisions-tally'), html``); window.todayCount?.('decisions', null);
-      return tell(0);
+      put($('decisions-tally'), html``); window.decideCount?.('decisions', null);
+      return;
     }
     put(tb, LIST.length ? html`${sorted(LIST).map(d => { const ruled = RULED.has(d.note); return html`<tr data-item="${d.item}"${BUSY.has(d.note) ? html` aria-busy="true"` : ''}>
       <td class="g ${ruled ? 'g-ok' : 'g-caution'}" title="${ruled ? 'ruled' : 'waiting'}">${ruled ? '●' : '▲'}</td>
@@ -62,8 +60,7 @@
       : html`<tr class="empty"><td colspan="4">No decision waits on you. An open question note appears here; one with two Option: lines gets a button each.</td></tr>`);
     const waiting = LIST.filter(d => !RULED.has(d.note)).length;
     put($('decisions-tally'), LIST.length ? html`<span class="g-caution">▲ ${waiting} waiting</span>${RULED.size ? html`<span class="g-ok">● ${RULED.size} ruled</span>` : ''}` : html``);
-    window.todayCount?.('decisions', waiting);
-    tell(waiting);
+    window.decideCount?.('decisions', waiting); // the Decisions tab's count, and its part of Decide's badge
   }
 
   // Of overlapping reads only the newest draws.
@@ -102,6 +99,9 @@
     }
   }
 
+  // Read again (decide.js) reads the list again.
+  window.decisions = { load: () => { say(''); return load(); } };
+
   document.addEventListener('DOMContentLoaded', () => {
     $('decisions').addEventListener('click', e => {
       const b = e.target.closest('button[data-option]');
@@ -112,7 +112,6 @@
       e.preventDefault(); choose(+f.dataset.note, null, f.elements.answer.value);
     });
     $('decisions').addEventListener('input', e => { const f = e.target.closest('form.answer'); if (f) DRAFT.set(+f.dataset.note, e.target.value); });
-    $('refresh').addEventListener('click', () => { say(''); load(); });
     $('decisions-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, SORT)) window.shell.list.keepFocus(e, draw); });
     put($('decisions-head'), window.shell.list.sortHead(COLS, SORT)); // drawn before the read, so a failed one keeps the columns
     load();

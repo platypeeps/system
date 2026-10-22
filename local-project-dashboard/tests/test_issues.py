@@ -1,6 +1,7 @@
-"""Your issues on Today (sd:4628): each repo's Jira and GitHub issues assigned to or filed by the operator.
+"""Your issues (sd:4628): each repo's Jira and GitHub issues assigned to or filed by the operator.
 
-sd:5645 moved the section off Tasks: Today shows it in its Issues view, the tab after Now, and Tasks keeps no copy.
+sd:5645 moved the section off Tasks to Today's Issues view, and Tasks keeps no copy. sd:5781 moved it, and Issue intake,
+to the GitHub page's Your issues and Intake tabs, read from `/api/github/issues` instead of Today's `/api/now`.
 
 The rows come from `sd_db.repos.mine_issues` (pack sd:4636), which filters `shadow` on its `reason` column. The pin in
 `.sd-pack-rev` predates both, so these stub the read: what is under test is the page's half, the document, its failure
@@ -18,6 +19,7 @@ from unittest import mock
 from sd_db import repos
 
 from sd_dashboard import issues, now_screen, tasks_screen, v2
+from sd_dashboard.v2.pages import Read
 
 from support import NOW, ScreenCase
 from test_now_screen import JobsBackend, fleet_document
@@ -38,6 +40,12 @@ FOUND = {
          "reason": "assigned", "last_seen": "2026-09-04T08:00:00+00:00"},
     ],
 }
+
+
+def github_issues(connection):
+    """What the GitHub page's Your issues and Intake tabs read: /api/github/issues."""
+    _, route = v2.api("/api/github/issues")
+    return route.read(Read(connection=connection, now=NOW, path="/api/github/issues"))
 
 
 def stub(**kwargs):
@@ -74,31 +82,34 @@ class TheDocument(ScreenCase):
 
 
 class ThePages(ScreenCase):
-    def test_today_carries_the_issues_and_tasks_does_not(self):
+    def test_github_carries_the_issues_and_today_and_tasks_do_not(self):
         with stub(return_value=FOUND) as read:
-            today = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
-                                        fleet=lambda area: fleet_document(area))
+            found = github_issues(self.connection)
             calls = read.call_count
-            tasks = tasks_screen.document(self.connection, now=NOW)
-        self.assertEqual(([row["ref"] for row in today["issues"]], today["issues_error"]), (["EXAMPLE-8", "#12", "#3"], ""))
-        self.assertEqual(read.call_count, calls)  # sd:5645: Tasks no longer reads them
-        self.assertNotIn("issues", tasks)
-        self.assertNotIn("issues_error", tasks)
-
-    def test_a_failed_issue_read_leaves_the_rest_of_today(self):
-        with stub(side_effect=sqlite3.OperationalError("database is locked")):
             today = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
                                         fleet=lambda area: fleet_document(area))
-        self.assertEqual((today["issues_error"], today["work_error"]), ("database is locked", ""))
+            tasks = tasks_screen.document(self.connection, now=NOW)
+        self.assertEqual(([row["ref"] for row in found["issues"]], found["issues_error"]), (["EXAMPLE-8", "#12", "#3"], ""))
+        self.assertEqual(read.call_count, calls)  # sd:5645, sd:5781: neither Tasks nor Today reads them
+        for other in (today, tasks):
+            self.assertNotIn("issues", other)
+            self.assertNotIn("issues_error", other)
 
-    def test_today_draws_the_section_and_loads_its_script_before_the_shell(self):
-        html = (V2 / "today.html").read_text(encoding="utf-8")
+    def test_a_failed_issue_read_leaves_the_intake(self):
+        with stub(side_effect=sqlite3.OperationalError("database is locked")), stub_intake(return_value=INTAKE):
+            found = github_issues(self.connection)
+        self.assertEqual((found["issues_error"], [row["ref"] for row in found["intake"]]), ("database is locked", ["#21", "#22"]))
+
+    def test_github_draws_the_section_and_loads_its_script_before_the_shell(self):
+        html = (V2 / "github.html").read_text(encoding="utf-8")
         self.assertIn('<tbody id="issues">', html)
         self.assertIn('id="issues-tally"', html)
         self.assertIn('<link rel="stylesheet" href="/ui/issues.css">', html)
         scripts = re.findall(r'<script src="/ui/([a-z-]+\.js)"></script>', html)
-        self.assertLess(scripts.index("issues.js"), scripts.index("today.js"))
-        self.assertIn("issues:read", (V2 / "static" / "today.js").read_text(encoding="utf-8"))
+        self.assertLess(scripts.index("github.js"), scripts.index("issues.js"))
+        self.assertLess(scripts.index("issues.js"), scripts.index("shell.js"))
+        self.assertIn("issues:read", (V2 / "static" / "github.js").read_text(encoding="utf-8"))
+        self.assertNotIn("issues:read", (V2 / "static" / "today.js").read_text(encoding="utf-8"))
 
     def test_tasks_keeps_no_copy_of_the_section(self):
         # sd:5645: the section moved to Today; Tasks draws none, loads neither its script nor its sheet, and reads none.
@@ -183,21 +194,19 @@ class TheIntake(ScreenCase):
         with stub_intake(side_effect=sqlite3.OperationalError("database is locked")):
             self.assertEqual(issues.intake(self.connection), {"intake": [], "intake_error": "database is locked"})
 
-    def test_today_carries_the_intake_and_a_failure_leaves_the_rest(self):
-        with stub_intake(return_value=INTAKE):
-            today = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
-                                        fleet=lambda area: fleet_document(area))
-        self.assertEqual([row["ref"] for row in today["intake"]], ["#21", "#22"])
-        with stub_intake(side_effect=sqlite3.OperationalError("database is locked")):
-            today = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
-                                        fleet=lambda area: fleet_document(area))
-        self.assertEqual((today["intake_error"], today["work_error"]), ("database is locked", ""))
+    def test_github_carries_the_intake_and_a_failure_leaves_the_rest(self):
+        with stub_intake(return_value=INTAKE), stub(return_value=FOUND):
+            found = github_issues(self.connection)
+        self.assertEqual([row["ref"] for row in found["intake"]], ["#21", "#22"])
+        with stub_intake(side_effect=sqlite3.OperationalError("database is locked")), stub(return_value=FOUND):
+            found = github_issues(self.connection)
+        self.assertEqual((found["intake_error"], len(found["issues"])), ("database is locked", 3))
 
-    def test_today_draws_the_section_and_hands_the_rows_over(self):
-        html = (V2 / "today.html").read_text(encoding="utf-8")
+    def test_github_draws_the_section_and_hands_the_rows_over(self):
+        html = (V2 / "github.html").read_text(encoding="utf-8")
         self.assertIn('<tbody id="intake">', html)
         self.assertIn('id="intake-tally"', html)
-        self.assertIn("intake:read", (V2 / "static" / "today.js").read_text(encoding="utf-8"))
+        self.assertIn("intake:read", (V2 / "static" / "github.js").read_text(encoding="utf-8"))
 
 
 class TheIntakeTable(ScreenCase):

@@ -178,7 +178,7 @@ def _column(row, name: str):
 def is_scheduled(row) -> bool:
     """Whether a `reads.backlog_items` row is a scheduled occurrence (pack sd:5648), which a list shows only once it opens.
 
-    Home and HOA Tasks, the HOA page, Metrics' age, Start next, Review and Decisions hide it, as Tasks does (sd:5670).
+    Home and HOA Tasks, the HOA page, Metrics' age, Start next, Scoring and Decisions hide it, as Tasks does (sd:5670).
     A pack before sd:5648 gives no `scheduled`: nothing is scheduled, and every row shows as before.
     """
     return bool(_column(row, "scheduled"))
