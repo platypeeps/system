@@ -35,6 +35,8 @@ uses: `HA_MCP_URL` and `HA_TOKEN` from the environment, else from
 `<config>/ha-mcp/.env`, the environment winning as in `ha-mcp.sh`. The REST
 base is that URL's scheme and host. Each tile gets `state` (its value, last
 change, device class and unit) or `error`, a short name for why it has none.
+A script or automation tile also gets `ran`, its last run: Home Assistant's
+`last_triggered`, or None when the answer holds none (sd:5727).
 A failed read leaves `reader.available` false with `reader.reason`, and every
 tile carries the short error; an entity the answer does not list is
 `NOT_LISTED` on its tile alone. The token goes only into the request header:
@@ -111,6 +113,9 @@ JOURNAL_ITEM = 2117
 
 #: The most bytes of a refusal's body read for Home Assistant's reason, and the most characters of it shown.
 REASON_BYTES, REASON_CHARS = 2048, 200
+
+#: The domains whose tile shows its last run, `last_triggered` (sd:5727).
+RUNS = ("script", "automation")
 
 #: A tile whose entity the read answer does not list.
 NOT_LISTED = "not in Home Assistant"
@@ -250,8 +255,12 @@ def _state(row: dict) -> dict:
     """What a tile shows of one state row: no other attribute leaves this module (an `entity_picture` carries a token)."""
     attributes = row.get("attributes") or {}
     device_class, unit = (attributes.get(name) for name in ("device_class", "unit_of_measurement"))
-    return {"value": row["state"], "changed": row["last_changed"],
-            "device_class": device_class if isinstance(device_class, str) else None, "unit": unit if isinstance(unit, str) else None}
+    state = {"value": row["state"], "changed": row["last_changed"],
+             "device_class": device_class if isinstance(device_class, str) else None, "unit": unit if isinstance(unit, str) else None}
+    if row["entity_id"].split(".", 1)[0] in RUNS:
+        ran = attributes.get("last_triggered")
+        state["ran"] = ran if isinstance(ran, str) else None
+    return state
 
 
 class _Unread(Exception):

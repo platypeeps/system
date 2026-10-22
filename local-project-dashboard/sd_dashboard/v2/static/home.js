@@ -59,12 +59,18 @@ addEventListener('DOMContentLoaded', () => {
   // The reference's state grammar per entity kind: [lamp state, words]. A tile claims only a state it was given; one without
   // says why (its error). build: the headline reads on/off (the reference counted a sample attribute), and a binary sensor is
   // lit by its device_class (BINARY), not by an id that holds "wan" or "fault".
+  // sd:5727: a script or automation (Good night) reads as its last run, Home Assistant's last_triggered, in this machine's
+  // local time with its zone; a run the read did not report is unknown, never "off".
+  const RUNS = ['script', 'automation'];
+  const ranAt = id => { const t = Date.parse(E[id]?.state?.ran || '');
+    return isFinite(t) ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' }) : ''; };
   function read(id) {
     const e = E[id];
     if (!e?.state) return ['unknown', e?.error || REASON || 'no reading'];
     const s = e.state.value;
     if (s === 'unavailable' || s === 'unknown') return ['unknown', `${s} · no reading`];
     if (id === HEAD?.id) return s === 'on' ? ['caution', 'active'] : ['ok', 'none'];
+    if (RUNS.includes(domain(id))) return s === 'on' ? ['ok', 'running'] : ranAt(id) ? ['ok', `last run ${ranAt(id)}`] : ['unknown', 'last run not read'];
     if (typeOf(id) === 'alarm') return s === 'triggered' ? ['warning', 'triggered'] : ['ok', s.replace(/_/g, ' ')];
     if (typeOf(id) === 'lock') return s === 'locked' ? ['ok', 'locked'] : s === 'jammed' ? ['warning', 'jammed'] : ['caution', s];
     if (id.startsWith('sensor.backup')) return (Date.now() - new Date(s)) / 3600000 > 36 ? ['warning', 'stale · over 36 h'] : ['ok', 'succeeded'];
@@ -75,7 +81,7 @@ addEventListener('DOMContentLoaded', () => {
   // The age: the shell's relative-time renderer fills each <time class="rel"> from its last change.
   const changedAt = id => E[id]?.state ? html`<time class="rel" datetime="${E[id].state.changed}"></time>` : '';
   // build: one icon per domain; the reference picked one per sample entity.
-  const ICONS = { alarm_control_panel: 'shield-check', lock: 'lock', input_boolean: 'circle-dot', sensor: 'gauge', binary_sensor: 'siren' };
+  const ICONS = { script: 'play', automation: 'play', alarm_control_panel: 'shield-check', lock: 'lock', input_boolean: 'circle-dot', sensor: 'gauge', binary_sensor: 'siren' };
   const iconOf = id => id === HEAD?.id ? 'bell-ring' : id.startsWith('sensor.backup') ? 'hard-drive-download' : ICONS[domain(id)] || 'circle-help';
 
   // ---------- Commands (products/system/commands.md) ----------
@@ -189,7 +195,8 @@ addEventListener('DOMContentLoaded', () => {
         <dt>State</dt><dd class="g-${st}"><span aria-hidden="true">${GLYPH[st]}</span> ${words}${e.state ? html` <span class="g-queued">(${e.state.value})</span>` : ''}</dd>
         <dt>Entity</dt><dd><code>${id}</code></dd>
         <dt>Group</dt><dd>${e.group || 'headline'}</dd>
-        <dt>Last changed</dt><dd>${e.state ? changedAt(id) : 'not read'}</dd>
+        <dt>Last changed</dt><dd>${e.state ? changedAt(id) : 'not read'}</dd>${RUNS.includes(domain(id)) ? html`
+        <dt>Last run</dt><dd>${ranAt(id) || 'not read'}</dd>` : ''}
         <dt>Source</dt><dd>Home Assistant <code>/api/states</code>${e.state?.device_class ? html`, device class <code>${e.state.device_class}</code>` : ''}</dd>
       </dl>
       ${e.state ? '' : html`<p class="why">Not read: ${REASON || e.error || 'no reading'}.</p>`}
