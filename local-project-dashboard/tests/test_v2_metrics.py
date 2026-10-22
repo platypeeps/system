@@ -461,8 +461,8 @@ R.weeks = ELS['su-weeks'].html; R.top = ELS['su-top'].html; R.sc = ELS['sc-body'
         self.assertEqual(re.findall(r'<a class="hbar" href="([^"]+)"', r["top"]), ["/skills?row=sd-ship", "/skills?row=sd-review"])
         self.assertEqual(re.findall(r'data-ev="sc:([^"]+)"', r["sc"]), ["claude", "kimi"])
         self.assertIn('aria-label="3-6d: 1 items, 1 ready to send"', r["hist"])
-        # sd:5474: a bar links to Tasks' list at its bucket, open items only, in the All view: the scope the bar counts.
-        self.assertIn('<a class="hbar" href="/tasks?view=list&age=3&active=1#view=all" aria-label="3-6d', r["hist"])
+        # sd:5474: a bar links to Tasks' list at its bucket, open items only, under Realm All (sd:5753): the scope the bar counts.
+        self.assertIn('<a class="hbar" href="/tasks?view=list&age=3&active=1&realm=all" aria-label="3-6d', r["hist"])
 
     def lane(self):
         c, h = self.connection, "1" * 40

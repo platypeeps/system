@@ -1,4 +1,4 @@
-"""The HOA and Home sub-views (Tasks, Briefs, Reports) and Tasks' HOA and Home views.
+"""The HOA and Home sub-views (Tasks, Briefs, Reports) and Tasks' Realm filter (sd:5753).
 
 What this slice promises: one rule places a row in an area (`places.area_of`): an item of the hoa checkout is HOA, an
 item with no repo is Home, and a report is in neither, since an area's Reports view holds it. The place pages' Tasks
@@ -701,11 +701,15 @@ await window.places.again(); await flush(); R.overview = OUT.gets.slice(before);
         self.assertEqual((out["R"]["briefs"], out["R"]["overview"]), (["/api/hoa/briefs"], []))
 
 
-class TheTasksSwitch(Fixture):
-    """Tasks' Personal | <realms> | HOA | Home | All: tasks.js with places.js, against the rows `tasks_screen` builds."""
+class TheTasksRealm(Fixture):
+    """sd:5753: Tasks' Realm filter (Personal, <realms>, HOA, Home or All, once its views): tasks.js against the rows
+    `tasks_screen` builds."""
 
     #: The realms /ui/sections.js hands the page, and the realms.conf line that puts /repos/system in Work.
     REALMS = "globalThis.SHELL_REALMS = [{ id: 'work', label: 'Work' }];\n"
+    #: A pick of the Realm select, as shell.list.pickChange reads the change: '' is All.
+    PICK = "const realm = async v => { ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'realm' }, value: v } }); await flush(); };\n"
+    TITLES = ("Fix the valve log", "Clean the gutters", "Tune the gate")
 
     def realm_doc(self):
         conf = self.dir / "realms.conf"
@@ -713,42 +717,61 @@ class TheTasksSwitch(Fixture):
         with mock.patch.object(places, "REALMS_CONFIG", conf):
             return tasks_screen.document(self.connection, now=NOW)
 
-    def test_each_view_narrows_the_board_to_its_realm_or_area(self):
+    def run_tasks(self, body, **kw):
+        kw.setdefault("prelude", self.REALMS)
+        return test_v2_tasks.TheScript.run_page(self, self.PICK + body, realm=None, **kw)
+
+    def test_realm_narrows_the_board_to_its_realm_or_area_and_the_address_keeps_it(self):
         self.doc, self.details = self.realm_doc(), {}
-        body = (f"window.shell.view = {{ current: () => 'personal', show: () => true, count: () => {{}} }};\n(0, eval)({json.dumps(PLACES_JS)});\n"
-                + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush();
-R.first = ELS['view-board'].html; R.views = window.PAGE_VIEWS.map(v => v.id);
-for (const v of ['work', 'hoa', 'home', 'all']) { document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: v } })); await flush(); R[v] = ELS['view-board'].html; }""")
-        out = test_v2_tasks.TheScript.run_page(self, body, prelude=self.REALMS)
+        out = self.run_tasks("""R.first = ELS['view-board'].html; R.views = window.PAGE_VIEWS || null; R.urls = [OUT.urls[OUT.urls.length - 1]];
+for (const v of ['work', 'hoa', 'home', '', 'personal']) { await realm(v); R[v || 'all'] = ELS['view-board'].html; R.urls.push(OUT.urls[OUT.urls.length - 1]); }""")
         r = out["R"]
-        self.assertEqual(r["views"], ["personal", "work", "hoa", "home", "all"])
-        titles = ("Fix the valve log", "Clean the gutters", "Tune the gate")
-        # sd:5064: Personal, the first view, is every row no realm claims: the hoa checkout's and the one with no repo.
-        self.assertEqual([t in r["first"] for t in titles], [True, True, False])
-        self.assertEqual([t in r["work"] for t in titles], [False, False, True])
-        self.assertEqual([t in r["hoa"] for t in titles], [True, False, False])
-        self.assertEqual([t in r["home"] for t in titles], [False, True, False])
-        self.assertEqual([t in r["all"] for t in titles], [True, True, True])
+        # Tasks declares no views: the shell draws no switch and the rail lists none under Tasks.
+        self.assertIsNone(r["views"])
+        # sd:5064: Personal, the default, is every row no realm claims: the hoa checkout's and the one with no repo.
+        self.assertEqual([t in r["first"] for t in self.TITLES], [True, True, False])
+        self.assertEqual([t in r["work"] for t in self.TITLES], [False, False, True])
+        self.assertEqual([t in r["hoa"] for t in self.TITLES], [True, False, False])
+        self.assertEqual([t in r["home"] for t in self.TITLES], [False, True, False])
+        self.assertEqual([t in r["all"] for t in self.TITLES], [True, True, True])
+        self.assertEqual([t in r["personal"] for t in self.TITLES], [True, True, False])
+        self.assertEqual(r["urls"], ["view=board", "view=board&realm=work", "view=board&realm=hoa", "view=board&realm=home",
+                                     "view=board&realm=all", "view=board"])
 
-    def test_a_realm_named_after_a_layout_panel_is_kept_out_of_the_views(self):
-        """sd:5114: a realm named list, board or matrix would make the shell hide that layout panel (view-<id>); one named
-        btn or menu, the layout menu's view-btn and view-menu (sd:5641)."""
+    def test_the_realm_is_a_pick_in_the_filter_bar_with_each_choice_counted(self):
         self.doc, self.details = self.realm_doc(), {}
-        prelude = ("globalThis.SHELL_REALMS = [{ id: 'list', label: 'List' }, { id: 'board', label: 'Board' },"
-                   " { id: 'matrix', label: 'Matrix' }, { id: 'btn', label: 'Btn' }, { id: 'menu', label: 'Menu' }, { id: 'work', label: 'Work' }];\n")
-        out = test_v2_tasks.TheScript.run_page(self, "R.views = window.PAGE_VIEWS.map(v => v.id);", prelude=prelude)
-        self.assertEqual(out["R"]["views"], ["personal", "work", "hoa", "home", "all"])
+        f = self.run_tasks("R.filters = ELS.filters.html;")["R"]["filters"]
+        self.assertRegex(f, r'^<div class="fgroup"><label class="label" for="f-realm">Realm</label><select id="f-realm" class="fsel" data-pick="realm">')
+        self.assertEqual(re.findall(r'<option value="(\w*)"( selected)?>([^<]*)</option>', f.split("</select>")[0]),
+                         [("", "", "All · 5"), ("personal", " selected", "Personal · 3"), ("work", "", "Work · 1"),
+                          ("hoa", "", "HOA · 2"), ("home", "", "Home · 1")])
 
-    def test_without_realms_conf_a_realm_view_holds_the_no_repo_rows_and_says_why(self):
+    def test_an_address_or_an_older_view_link_lands_on_its_realm(self):
+        """The Metrics bars linked /tasks?...#view=all, and a bookmark may hold #view=hoa or #view=home."""
+        self.doc, self.details = self.realm_doc(), {}
+        for search, hash_, shown in (("?realm=hoa", "", [True, False, False]), ("", "#view=all", [True, True, True]),
+                                     ("", "#view=hoa", [True, False, False]), ("", "#view=home", [False, True, False]),
+                                     ("", "#view=work", [False, False, True]), ("?realm=home", "#view=all", [False, True, False]),
+                                     ("", "#view=nope", [True, True, False]), ("?realm=nope", "", [True, True, False])):
+            with self.subTest(search=search, hash=hash_):
+                out = self.run_tasks("R.board = ELS['view-board'].html;", search=search, hash=hash_)
+                self.assertEqual([t in out["R"]["board"] for t in self.TITLES], shown)
+
+    def test_a_realm_with_a_taken_id_is_dropped(self):
+        self.doc, self.details = self.realm_doc(), {}
+        prelude = ("globalThis.SHELL_REALMS = [{ id: 'all', label: 'Sneaky' }, { id: 'hoa', label: 'Hoa2' }, { id: 'list', label: 'List' },"
+                   " { id: 'Bad id', label: 'Bad' }, { id: 'work', label: 'Work' }];\n")
+        f = self.run_tasks("R.filters = ELS.filters.html;", prelude=prelude)["R"]["filters"]
+        self.assertEqual(re.findall(r'<option value="(\w*)"', f.split("</select>")[0]), ["", "personal", "list", "work", "hoa", "home"])
+
+    def test_without_realms_conf_a_realm_holds_the_no_repo_rows_and_says_why(self):
         with mock.patch.object(places, "REALMS_CONFIG", self.dir / "realms.conf"):
             self.doc, self.details = tasks_screen.document(self.connection, now=NOW), {}
-        body = (f"window.shell.view = {{ current: () => 'personal', show: () => true, count: () => {{}} }};\n(0, eval)({json.dumps(PLACES_JS)});\n"
-                + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush(); R.board = ELS['view-board'].html; R.sub = ELS.subhead.html;""")
-        r = test_v2_tasks.TheScript.run_page(self, body, prelude=self.REALMS)["R"]
-        self.assertEqual([t in r["board"] for t in ("Fix the valve log", "Clean the gutters", "Tune the gate")], [False, True, False])
+        r = self.run_tasks("R.board = ELS['view-board'].html; R.sub = ELS.subhead.html;")["R"]
+        self.assertEqual([t in r["board"] for t in self.TITLES], [False, True, False])
         self.assertIn("repos in no realm: no realm list; set dashboard.realms on Settings", r["sub"])
 
-    def test_the_personal_and_work_views_carry_their_sweep_and_run_sweep_posts_the_realm(self):
+    def test_personal_and_work_carry_their_sweep_and_run_sweep_posts_the_realm(self):
         """sd:5096, sd:5097: the subhead names the realm's last sweep on Personal and Work only; Run sweep posts the
         realm, and is off while that realm's run goes. A running sweep reads again after SWEEP_POLL, not at once."""
         self.doc, self.details = self.realm_doc(), {}
@@ -759,14 +782,12 @@ for (const v of ['work', 'hoa', 'home', 'all']) { document.dispatchEvent(new Cus
         self.doc["sweeps"] = {"personal": never, "work": going}
         prelude = self.REALMS + "var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };\n"
         answer = "(path, body) => path === '/api/tasks/sweep' ? [202, { started: '2026-09-06T12:01:00+00:00', repo: '/x', command: 'c' }] : null"
-        body = (f"window.shell.view = {{ current: () => 'personal', show: () => true, count: () => {{}} }};\n(0, eval)({json.dumps(PLACES_JS)});\n"
-                + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush(); R.personal = ELS.subhead.html;
-document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'work' } })); await flush(); R.work = ELS.subhead.html;
-document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'all' } })); await flush(); R.all = ELS.subhead.html;
+        out = self.run_tasks("""R.personal = ELS.subhead.html;
+await realm('work'); R.work = ELS.subhead.html;
+await realm(''); R.all = ELS.subhead.html;
 R.objects = [...OBJ.keys()].filter(k => k.startsWith('sweep:')); R.timers = TIMERS.slice();
 C.run(cmd('realm-sweep.run'), C.get('sweep:work')); await flush();
-C.run(cmd('realm-sweep.run'), C.get('sweep:personal')); await flush();""")
-        out = test_v2_tasks.TheScript.run_page(self, body, answer=answer, prelude=prelude)
+C.run(cmd('realm-sweep.run'), C.get('sweep:personal')); await flush();""", answer=answer, prelude=prelude)
         r = out["R"]
         self.assertIn('data-sweep="personal">Personal sweep not run yet', r["personal"])
         self.assertIn('data-sweep="work">Work sweep running since 11:30 UTC', r["work"])
@@ -783,37 +804,10 @@ C.run(cmd('realm-sweep.run'), C.get('sweep:personal')); await flush();""")
         done = {"running": False, "error": "", "command": "c",
                 "last": {"state": "done", "finished": "2026-09-06T11:40:00+00:00", "gaps": ["jira", "github"]}}
         self.doc["sweeps"] = {"personal": done, "work": {**done, "last": {**done["last"], "gaps": []}}}
-        body = (f"window.shell.view = {{ current: () => 'personal', show: () => true, count: () => {{}} }};\n(0, eval)({json.dumps(PLACES_JS)});\n"
-                + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush(); R.personal = ELS.subhead.html;
-document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'work' } })); await flush(); R.work = ELS.subhead.html;""")
-        r = test_v2_tasks.TheScript.run_page(self, body, prelude=self.REALMS)["R"]
+        r = self.run_tasks("R.personal = ELS.subhead.html; await realm('work'); R.work = ELS.subhead.html;")["R"]
         self.assertIn("Personal sweep done 2026-09-06 11:40 UTC · not read: jira, github", r["personal"])
         self.assertIn("Work sweep done 2026-09-06 11:40 UTC ", r["work"])
         self.assertNotIn("not read", r["work"])
-
-    def test_the_view_keys_skip_the_list_board_and_matrix_keys(self):
-        body = "R.views = window.PAGE_VIEWS.map(v => [v.id, v.key]);"
-        prelude = "globalThis.SHELL_REALMS = [{ id: 'work', label: 'Work' }, { id: 'brand', label: 'Brand' }, { id: 'lab', label: 'Lab' }, { id: 'all', label: 'Sneaky' }];\n"
-        self.doc, self.details = tasks_screen.document(self.connection, now=NOW), {}
-        r = test_v2_tasks.TheScript.run_page(self, body, prelude=prelude)["R"]
-        # brand cannot take b (the board), so it takes r; every letter of lab is taken, so lab has no key.
-        # A realm named all, a reserved view, is dropped.
-        self.assertEqual(r["views"], [["personal", "p"], ["work", "w"], ["brand", "r"], ["lab", None],
-                                      ["hoa", "h"], ["home", "o"], ["all", "a"]])
-
-
-    def test_with_the_shells_view_switch_tasks_follows_shell_view(self):
-        self.doc, self.details = tasks_screen.document(self.connection, now=NOW), {}
-        body = (f"window.shell.view = {{ current: () => 'hoa', show: () => true, count: () => {{}} }};\n(0, eval)({json.dumps(PLACES_JS)});\n"
-                + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush();
-R.views = window.PAGE_VIEWS; R.sw = (ELS['viewswitch'] || {}).html || ''; R.hoa = ELS['view-board'].html;
-document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'home', first: true, api: null } })); await flush(); R.home = ELS['view-board'].html;""")
-        r = test_v2_tasks.TheScript.run_page(self, body)["R"]
-        self.assertEqual(r["views"], [{"id": "personal", "label": "Personal", "key": "p"}, {"id": "hoa", "label": "HOA", "key": "h"},
-                                      {"id": "home", "label": "Home", "key": "o"}, {"id": "all", "label": "All", "key": "a"}])
-        self.assertFalse(r["sw"])
-        self.assertEqual([("Fix the valve log" in r["hoa"], "Clean the gutters" in r["hoa"]), ("Fix the valve log" in r["home"], "Clean the gutters" in r["home"])],
-                         [(True, False), (False, True)])
 
 
 PLACE_JS = (STATIC / "place.js").read_text(encoding="utf-8")
@@ -906,11 +900,17 @@ function run() {{ OUT.R = R; return JSON.stringify(OUT); }}
 
 class ThePages(unittest.TestCase):
     def test_page_views_are_declared_before_shell_js_and_each_page_has_the_switch_host(self):
-        for page, script in (("hoa", "places.js"), ("home", "places.js"), ("place", "place.js"), ("place", "places.js"),
-                             ("tasks", "tasks.js")):
+        for page, script in (("hoa", "places.js"), ("home", "places.js"), ("place", "place.js"), ("place", "places.js")):
             text = (STATIC.parent / f"{page}.html").read_text(encoding="utf-8")
             self.assertLess(text.index(f'src="/ui/{script}"'), text.index('src="/ui/shell.js"'), page)
             self.assertEqual(text.count('id="viewswitch"'), 1, page)
+
+    def test_tasks_has_no_view_switch(self):
+        """sd:5753: Tasks' realms are a filter, so the page has no switch host and does not load places.js."""
+        text = (STATIC.parent / "tasks.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="viewswitch"', text)
+        self.assertNotIn('src="/ui/places.js"', text)
+        self.assertNotIn("PAGE_VIEWS", (STATIC / "tasks.js").read_text(encoding="utf-8"))
 
 
     def test_the_overviews_read_state_shows_with_the_overview_only(self):
