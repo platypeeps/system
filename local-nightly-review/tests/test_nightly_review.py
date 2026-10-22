@@ -196,6 +196,20 @@ class NightlyReview(unittest.TestCase):
                 self.assertFalse(self.batch.with_name(self.batch.name + ".part").exists())
                 self.assertEqual(self.batches(), [])
 
+    def test_one_malformed_suggestion_drops_itself_and_the_rest_file(self):
+        # sd:5732: an extra key on suggestion 2 refused the whole night's batch.
+        good = SUGGESTIONS["questions"][0]
+        for bad in ({**good, "rank": 2}, {**good, "evidence": "one string"}, {**good, "evidence": ["e"] * 6}):
+            with self.subTest(bad=bad):
+                for path in (self.batch, self.batch.with_name(self.batch.stem + ".reply")):
+                    path.unlink(missing_ok=True)
+                result = self.run_job(reply={"questions": [good, bad]})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("suggestion 2 dropped", result.stderr)
+                filed = json.loads(self.batch.read_text(encoding="utf-8"))["questions"]
+                self.assertEqual([q["subject"] for q in filed], [good["subject"]])
+                self.assertTrue(self.batch.with_name(self.batch.stem + ".reply").exists())
+
     def test_a_reply_wrapped_in_prose_or_a_fence_still_files(self):
         fenced = "Here are tonight's suggestions:\n```json\n" + json.dumps(SUGGESTIONS) + "\n```\n"
         result = self.run_job(reply=fenced)

@@ -85,14 +85,22 @@ def _reply(text):
         raise Refused(f"the reply is not JSON: {failure}") from None
     if not isinstance(found, dict) or set(found) != REPLY_KEYS or not isinstance(found["questions"], list):
         raise Refused('the reply must be {"questions": [...]} and nothing else')
-    questions = []
+    # One malformed suggestion drops itself, named on stderr, and the rest file (sd:5732: one bad key lost a night).
+    # A reply whose every suggestion is malformed is still refused: that is a broken reply, not "no suggestions".
+    questions, dropped = [], []
     for number, question in enumerate(found["questions"], 1):
+        evidence = question.get("evidence", []) if isinstance(question, dict) else None
         if (not isinstance(question, dict) or set(question) - QUESTION_KEYS
-                or not isinstance(question.get("subject"), str) or not isinstance(question.get("text"), str)):
-            raise Refused(f"suggestion {number} must hold subject and text, and evidence at most")
+                or not isinstance(question.get("subject"), str) or not isinstance(question.get("text"), str)
+                or not isinstance(evidence, list) or len(evidence) > 5 or not all(isinstance(e, str) for e in evidence)):
+            dropped.append(number)
+            print(f"nightly-review: suggestion {number} dropped: it must hold subject and text, "
+                  "and evidence (at most 5 strings) at most", file=sys.stderr)
+            continue
         questions.append({"subject": question["subject"], "text": question["text"],
-                          "evidence": [*question.get("evidence", []), PROPOSED],
-                          "options": list(OPTIONS)})
+                          "evidence": [*evidence, PROPOSED], "options": list(OPTIONS)})
+    if dropped and not questions:
+        raise Refused(f"every suggestion was malformed: {', '.join(map(str, dropped))}")
     return questions
 
 

@@ -16,8 +16,11 @@
 // sd:5669: Close original is off until the lane merged the copy (the row's landed, pr_close.landed). Its run reads the
 // preview, asks with the exact comment, then posts the preview's revision: one comment linking the lane's pull request and
 // its merge commit, then the close. A 502 may follow the comment, so the toast says Close original again resumes.
+// sd:5757: Show mine, the default, keeps the rows that are yours, assigned to you or waiting on you (a review asked of you);
+// Show all adds what others opened in a registered repo. ?gh=all keeps All across a reload.
 (() => {
   const { html, put, plural } = window.markup;
+  const count = (shown, total, noun) => window.shell.list.count(shown, total, noun);
   const $ = id => document.getElementById(id);
   // Status's cap (today-status.js): the rows a part shows before Show all.
   const CAP = 5;
@@ -37,6 +40,9 @@
   const pulls = () => DOC && !DOC.error ? [...DOC.pulls, ...DOC.settled.filter(r => r.kind === 'pull')] : [];
   const pullOf = key => pulls().find(r => r.key === key);
   // The selected pull request's key: Today's one selection (today.js pick, sd:5654) names it in ?row= as its object id.
+  const all = () => new URLSearchParams(location.search).get('gh') === 'all';
+  const mine = r => !String(r.why || '').startsWith('opened by');
+  const rowsOf = key => all() ? DOC[key] : DOC[key].filter(mine);
   const chosen = () => { const id = new URLSearchParams(location.search).get('row') || ''; return id.startsWith('gh:') ? id.slice(3) : null; };
 
   const state = r => r.state !== 'open' ? 'ok' : r.why === 'waiting on you' ? 'caution' : 'queued';
@@ -57,16 +63,16 @@
     if (key !== 'settled') return '';
     return html`<p class="st-line">The last ${DOC.days} days${DOC.undated ? html` · <span class="g-unknown">▨</span> ${plural(DOC.undated, 'merged or closed row')} with no date recorded, not placed` : ''}</p>`;
   }
-  const shows = key => DOC[key].length || (key === 'settled' && DOC.undated);
+  const shows = key => rowsOf(key).length || (key === 'settled' && DOC.undated);
   function section(key) {
-    const all = DOC[key], open = OPEN.has(key), shown = open ? all : all.slice(0, CAP);
+    const rows = rowsOf(key), open = OPEN.has(key), shown = open ? rows : rows.slice(0, CAP);
     return html`<section class="st-sec" id="gh-${key}" aria-labelledby="gh-${key}-h">
-      <div class="sec-head"><h3 id="gh-${key}-h">${HEAD[key]} <span class="n">${all.length}</span></h3></div>
+      <div class="sec-head"><h3 id="gh-${key}-h">${HEAD[key]} <span class="n">${rows.length}</span></h3></div>
       ${note(key)}
-      ${all.length ? html`<table class="ledger st" aria-labelledby="gh-${key}-h">
+      ${rows.length ? html`<table class="ledger st" aria-labelledby="gh-${key}-h">
         <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Pull request or issue</th><th scope="col">Why</th><th scope="col">Activity</th></tr></thead>
         <tbody>${shown.map(row)}</tbody></table>` : ''}
-      ${all.length > CAP ? html`<button type="button" class="linkbtn more" data-gh-more="${key}" aria-expanded="${String(open)}">${open ? `Show the first ${CAP}` : `Show all ${all.length}`}</button>` : ''}
+      ${rows.length > CAP ? html`<button type="button" class="linkbtn more" data-gh-more="${key}" aria-expanded="${String(open)}">${open ? `Show the first ${CAP}` : `Show all ${rows.length}`}</button>` : ''}
     </section>`;
   }
 
@@ -77,18 +83,21 @@
       ? html`<span${fresh ? '' : html` class="g-caution"`}>${fresh ? '' : `▲ sync ${c.state} · `}synced <time class="rel" datetime="${c.last_success_at}"></time></span>`
       : html`<span class="g-unknown">▨ sync ${c.state || 'unknown'}${c.reason ? `: ${c.reason}` : ''}</span>`;
     return html`${waiting ? html`<a class="g-caution" href="#gh-pulls">▲ ${waiting} waiting on you</a>` : ''}
-      <span>${plural(DOC.pulls.length, 'open pull request')}</span><span>${plural(DOC.issues.length, 'open issue')}</span>
-      <span>${DOC.settled.length} settled in ${DOC.days} d</span>${sync}`;
+      <span>${count(rowsOf('pulls').length, DOC.pulls.length, 'open pull request')}</span><span>${count(rowsOf('issues').length, DOC.issues.length, 'open issue')}</span>
+      <span>${count(rowsOf('settled').length, DOC.settled.length, 'settled row')} in ${DOC.days} d</span>${sync}`;
   }
 
   function draw() {
     if (!DOC || DOC.error) {
       const why = DOC ? `GitHub could not be read: ${DOC.error}. Refresh tries again.` : started ? `GitHub could not be read: ${failed}. Refresh tries again.` : 'Reading GitHub…';
-      put($('github-tally'), html``);
+      put($('github-tally'), html``); put($('github-filters'), html``);
       put($('github-sections'), html`<p class="st-line">${why}</p>`);
       return;
     }
     put($('github-tally'), tally());
+    const L = window.shell.list, n = f => ORDER.reduce((c, k) => c + DOC[k].filter(f).length, 0);
+    put($('github-filters'), L.fbar(L.fseg('gh', 'Show', [['mine', mine], ['all', () => true]].map(([v, f]) =>
+      ({ v, pressed: all() === (v === 'all'), label: html`${v} <span class="n">${String(n(f))}</span>` })))));
     const full = ORDER.filter(shows), empty = ORDER.filter(k => !shows(k));
     const unread = Object.entries(DOC.unread || {});
     put($('github-sections'), html`${unread.map(([k, why]) => html`<p class="st-line"><span class="g-unknown">▨</span> ${UNREAD[k] || k} not read: ${why}</p>`)}${full.map(section)}${empty.length ? html`<p class="st-line st-empty">Nothing in ${empty.map(k => HEAD[k]).join(' · ')}.</p>` : ''}`);
@@ -236,6 +245,12 @@
     document.addEventListener('adversarial:run', e => { const key = chosen(), r = key && pullOf(key);
       if (r && r.checkout && e.detail?.key === `change:${r.checkout}`) details(key, false); });
     document.addEventListener('shell:open', e => { const id = String(e.detail || ''); if (id.startsWith('gh:') && pullOf(id.slice(3))) details(id.slice(3)); });
+    $('github-filters').addEventListener('click', e => {
+      const b = e.target.closest('[data-f="gh"]'); if (!b) return;
+      window.shell.url(b.dataset.v === 'all' ? 'gh=all' : '');
+      draw();
+      $('github-filters').querySelector(`[data-v="${b.dataset.v}"]`)?.focus();
+    });
     $('github-sections').addEventListener('click', e => {
       const opened = e.target.closest('[data-gh-open]'); if (opened) return details(opened.dataset.ghOpen);
       const b = e.target.closest('button[data-gh-more]');
