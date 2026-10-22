@@ -290,7 +290,7 @@ addEventListener('DOMContentLoaded', () => {
     readDet(byKey(key)?.id); // build: the Details reading, once per task until a write changes it
     renderDetails();
     writeURL();
-    if (open && innerWidth < 1240) openPane('tab-details');
+    if (open) openPane('tab-details');
   }
   document.getElementById('main').addEventListener('click', e => {
     if (e.target.closest('.rowact, .pick, .tile-f')) return;

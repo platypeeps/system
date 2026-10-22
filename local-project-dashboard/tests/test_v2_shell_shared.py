@@ -1097,6 +1097,23 @@ class ThePaneFold(unittest.TestCase):
         self.assertIs(self.run_pane("R.kept = paneKept();", nav={"maxTouchPoints": 0, "platform": "MacIntel"})["R"]["kept"], False)
         self.assertIs(self.run_pane("R.kept = paneKept();", nav={"maxTouchPoints": 5, "platform": "iPhone"})["R"]["kept"], False)
 
+    def test_a_row_select_opens_the_pane_for_the_visit_and_keeps_the_pages_fold(self):
+        """sd:5730: a select is a one-time open; the fold the operator chose for the page stays kept."""
+        out = self.run_pane("setPane(false, false);", stored={"sd.pane./v2/notes": "min"}, path="/v2/notes")
+        self.assertIsNone(out["pane"])
+        self.assertEqual(out["STORE"], {"sd.pane./v2/notes": "min"})
+        self.assertIn("if (body.dataset.pane) setPane(false, false);", SHELL_JS)
+
+    def test_every_pages_row_click_opens_details_at_every_width(self):
+        """sd:5730: Notes, Tasks and Writing opened Details only below 1240 px, so a folded pane stayed folded; Notes' row
+        click did not open it at all. Each page with Details opens it on a row click, the shell's openPane unfolding it."""
+        pages = {name: js for name, js in PAGE_JS.items() if "openPane('tab-details')" in js}
+        self.assertTrue({"notes.js", "tasks.js", "writing.js", "reports.js"} <= set(pages))
+        for name, js in pages.items():
+            with self.subTest(name):
+                self.assertNotRegex(js, r"innerWidth\s*<\s*1240\)\s*(window\.shell\.)?openPane")
+        self.assertIn("if (r && !e.target.closest('button, a, time')) select(r.dataset.id, true);", PAGE_JS["notes.js"])
+
     def test_the_shell_applies_the_kept_fold_on_load_and_the_rail_keeps_one_key(self):
         self.assertIn("if (paneKept()) setPane(true);", SHELL_JS)
         self.assertIn("if (store('sd.rail') === 'min') setRail(true);", SHELL_JS)

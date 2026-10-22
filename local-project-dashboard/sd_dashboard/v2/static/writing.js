@@ -288,7 +288,7 @@ addEventListener('DOMContentLoaded', () => {
     const scope = document.getElementById('scope-name'); if (scope && byId(selected)) scope.textContent = byId(selected).piece; // chat scope = the selected piece
     C.select(curId()); // the shell writes ?row=
     window.shell.url({ view });
-    if (open && innerWidth < 1240) openPane('tab-details');
+    if (open) openPane('tab-details');
   }
   function unselect() { selected = null; renderDetails(); if (view === 'editor') renderEditor(); }
   document.getElementById('main').addEventListener('click', e => { const c = e.target.closest?.('.card[data-id]'); if (c && !suppress) select(c.dataset.id, true); });

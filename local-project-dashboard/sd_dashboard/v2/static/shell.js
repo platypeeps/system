@@ -479,8 +479,10 @@
   const PKEY = `sd.pane.${location.pathname}`;
   const ipad = () => navigator.maxTouchPoints > 1 && /^(Mac|iPad)/.test(navigator.platform || '');
   const paneKept = () => ipad() || (store(PKEY) ?? store('sd.pane')) === 'min';
-  function setPane(min) {
-    min ? body.dataset.pane = 'min' : delete body.dataset.pane; store(PKEY, min ? 'min' : '');
+  // sd:5730: keep=false unfolds for the visit only: a row select opens the pane once, and the page keeps the fold its fold
+  // button, ] or a tab click in the strip chose.
+  function setPane(min, keep = true) {
+    min ? body.dataset.pane = 'min' : delete body.dataset.pane; if (keep) store(PKEY, min ? 'min' : '');
     foldPane.setAttribute('aria-expanded', !min); foldPane.setAttribute('aria-label', min ? 'Expand panel (])' : 'Collapse panel (])');
     foldPane.querySelector('use').setAttribute('href', `#i-panel-right-${min ? 'open' : 'close'}`);
   }
@@ -532,7 +534,7 @@
   const wide = () => matchMedia('(min-width: 1240px)').matches;
   let paneReturn = null;
   // Below 1240 the pane is a bottom sheet, last in the DOM: focus moves into it, or 89 stops sit between the row and the sheet.
-  const openPane = tab => { if (tab) showTab(tab); if (body.dataset.pane) setPane(false); if (!pane.contains(document.activeElement)) paneReturn = document.activeElement; pane.setAttribute('data-open', '');
+  const openPane = tab => { if (tab) showTab(tab); if (body.dataset.pane) setPane(false, false); if (!pane.contains(document.activeElement)) paneReturn = document.activeElement; pane.setAttribute('data-open', '');
     if (!wide() && !pane.contains(document.activeElement)) pane.querySelector('[role="tab"][aria-selected="true"]')?.focus(); };
   // Close puts focus back on the row (or button) that opened the sheet, so a keyboard user does not restart at the top.
   const closePane = () => { const was = pane.hasAttribute('data-open'); pane.removeAttribute('data-open'); if (was && paneReturn?.isConnected && !wide()) paneReturn.focus?.(); };

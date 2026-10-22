@@ -84,7 +84,7 @@
     selected = id;
     document.querySelectorAll('.row[data-id]').forEach(r => r.setAttribute('aria-selected', r.dataset.id === id ? 'true' : 'false'));
     window.shell.commands.select(id); renderDetails();
-    if (open && innerWidth < 1240) window.shell.openPane('tab-details');
+    if (open) window.shell.openPane('tab-details');
   }
   // build: a day change redraws from the one document; the shared reader keeps the selection only when it is on that day.
   function go(d) {
@@ -143,9 +143,9 @@
     $('daily').addEventListener('click', e => {
       const m = e.target.closest('[data-more]');
       if (m) { const k = m.dataset.more; expanded.has(k) ? expanded.delete(k) : expanded.add(k); document.querySelectorAll('details.repo[open]').forEach(d => openRepos.add(d.dataset.repo)); render(); return; }
-      // Only the ledger's own row buttons open a row; the id is checked against the objects (template.html).
+      // A row's own button or the row itself opens its Details (sd:5730); a button's id is checked against the objects (template.html).
       const b = e.target.closest('.rows [data-open]'); if (b) { if (C.get(b.dataset.open)) select(b.dataset.open, true); return; }
-      const r = e.target.closest('.row[data-id]'); if (r && !e.target.closest('button, a, time')) select(r.dataset.id, false);
+      const r = e.target.closest('.row[data-id]'); if (r && !e.target.closest('button, a, time')) select(r.dataset.id, true);
     });
     document.addEventListener('shell:open', e => { if (OBJS.some(o => o.id === e.detail)) select(e.detail, true); });
     document.addEventListener('keydown', e => {
