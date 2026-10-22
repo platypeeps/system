@@ -79,9 +79,11 @@ makes the view unknown with the reason and the line to add, never an empty list.
 The views are `window.PAGE_VIEWS`, set from the markup before `shell.js`; the shell's view switch draws
 them in `#viewswitch`, and until that shell lands `places.js` draws a segmented control there (`viewSwitch`).
 
-Open | All (sd:5752): Tasks and Reports show their open rows; All adds the
-week's done tasks (`places.task_rows`, the Tasks page's bound) or the
-acknowledged reports, and the address keeps it as `?tasks=all` or
-`?reports=all`. Each row's act is its acknowledge: a task's Done (or Done →
-next occurrence for a repeating one), a report's Acknowledge, each with
-Undo. A brief has none: it is filed done, and the pack refuses to move it.
+Open | All (sd:5752): Tasks, Briefs and Reports show their open rows; All
+adds the week's done tasks (`places.task_rows`, the Tasks page's bound), the
+seen briefs or the acknowledged reports, and the address keeps it as
+`?tasks=all`, `?briefs=all` or `?reports=all`. Each row's act is its
+acknowledge: a task's Done (or Done → next occurrence for a repeating one), a
+brief's Seen, a report's Acknowledge, each with Undo. Seen is Today's mark,
+the snooze `today:brief:<stem>` held until the brief's text changes, so a
+brief seen here or on Today is seen in both; Not seen clears it.

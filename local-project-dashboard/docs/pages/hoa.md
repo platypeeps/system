@@ -103,6 +103,7 @@ sd:5752), which nothing counts, and the address keeps it as `?tasks=all`.
 Any other kind's row act is Done, its acknowledge, with Undo.
 Briefs and Reports each read their own document, `GET /api/hoa/briefs` and
 `/reports`, only when shown, and the address keeps the view as `#view=<id>`.
+Each opens on its open rows, with Open | All and Seen or Acknowledge as on Home.
 A brief is hoa's when its series, lower-cased with spaces as hyphens,
 names a job of the `hoa` family in `dashboard.report_families`, or it is filed under the hoa checkout; a report
 is hoa's when its job is in that family. A missing checkout, family or file

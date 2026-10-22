@@ -7,9 +7,10 @@
 // an empty list. Nothing here writes; a brief's Details (brief-details.js) carry the Briefs page's commands, a report's
 // (report-details.js) the Reports page's, and a task's (task-details.js) the Tasks page's. Markup is html`…` from markup.js:
 // every value is escaped.
-// Open | All (sd:5752): Tasks and Reports show their open rows, and each row's primary act is its acknowledge: a task's
-// Done (task-details.js, view 'place'), a report's Acknowledge (report.ack). All adds the week's done tasks (places.task_rows)
-// or the acknowledged reports. The choice is the URL's ?<view>=all. A brief has no open state: it is filed done for good.
+// Open | All (sd:5752): Tasks, Briefs and Reports show their open rows, and each row's primary act is its acknowledge: a
+// task's Done (task-details.js, view 'place'), a brief's Seen (Today's mark, below), a report's Acknowledge (report.ack).
+// All adds the week's done tasks (places.task_rows), the seen briefs or the acknowledged reports. The choice is the URL's
+// ?<view>=all.
 //
 // Adapter: viewSwitch(show) is the one place a page meets the shell's view switch (shell.js view:start). The page declares
 // window.PAGE_VIEWS = [{ id, label, key?, api? }] before shell.js; show(id) runs for the view shown, at shell:ready and on
@@ -26,7 +27,7 @@
 
   const GLYPH = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknown: '▨' };
   // sd:5752: the views with Open | All, each a row's open test; SHOW the choice per view, from the URL.
-  const OPEN = { tasks: r => r.status !== 'done', reports: r => r.status !== 'done' };
+  const OPEN = { tasks: r => r.status !== 'done', briefs: r => !r.marked, reports: r => r.status !== 'done' };
   const SHOW = Object.fromEntries(Object.keys(OPEN).map(v => [v, new URLSearchParams(location.search).get(v) === 'all' ? 'all' : 'open']));
   const act = id => html`<td class="act">${window.shell.commands.rowActions(id)}</td>`, ACT = [html`<span class="sr">Actions</span>`];
   const unknown = why => html`<p class="state-unknown"><b>▨ Not read.</b> ${why}</p>`;
@@ -44,10 +45,10 @@
       rows.length || !doc.done?.length ? $('view-tasks')?.dataset.empty || 'No open item without a repo.'
         : `No open item. All lists the ${plural(doc.done.length, 'item')} done this week.`), ''],
     // sd:5620: a brief row is selected in place; Details is the Briefs page's (brief-details.js), with a link to Briefs.
-    briefs: (doc, rows) => [table([['Day'], ['Brief'], ['Words', 'num hide-sm'], ['Lead', 'hide-sm']],
+    briefs: (doc, rows) => [table([['Day'], ['Brief'], ['Words', 'num hide-sm'], ['Lead', 'hide-sm'], ACT],
       rows.map(r => html`<tr data-id="${r.id}" aria-selected="${String(r.id === sel.briefs)}"><td class="when">${r.day}</td><td class="what"><button type="button">${r.subj}</button></td>
-        <td class="num hide-sm">${r.words}</td><td class="lead hide-sm">${r.lead}</td></tr>`),
-      'No brief is filed for this place.'), ''],
+        <td class="num hide-sm">${r.words}</td><td class="lead hide-sm">${r.lead}</td>${act(r.id)}</tr>`),
+      rows.length || !doc.rows.length ? 'No brief is filed for this place.' : `No unseen brief. All lists the ${plural(doc.rows.length, 'seen brief')}.`), ''],
     // sd:5636: a report row is selected in place too; Details is the Reports page's (report-details.js), with a link to Reports.
     reports: (doc, rows) => {
       const state = r => r.status === 'done' ? 'ok' : r.attention ? 'warning' : 'queued';
@@ -85,12 +86,22 @@
   const shownView = () => window.shell?.view?.current?.();
   const details = () => $('details');
   // The Briefs page's Details (brief-details.js), with a link that opens the brief on Briefs.
+  // sd:5752: Seen is Today's (today-reports.js): the Today snooze under the brief's Today row id (`mark`) and fingerprint
+  // (`seen`), until it changes (snooze.js FOREVER), so a brief seen here or on Today is seen in both. Not seen clears it;
+  // each is the other's Undo. Registered before the Briefs page's commands, so Seen, not Read, is an open row's act.
   function briefs(view) {
     const B = window.briefDetails; if (!B) return null;
+    const mark = (o, until) => window.shell.post('/api/snooze', { page: 'today', row: o.mark, until, seen: o.seen }).then(() => window.places.reread(view));
+    const cli = () => 'no sd verb: the dashboard writes the Today snooze (POST /api/snooze)';
+    window.shell.commands.register(
+      { id: 'brief.seen', on: 'brief', label: 'Seen', does: 'Marks the brief seen here and on Today until it changes; Undo clears it.', icon: 'check', risk: 'undo', bulk: true,
+        primary: o => !o.marked, when: o => !o.marked || 'already seen', cli, run: o => mark(o, 'forever').then(() => `Seen · ${o.label}`), undo: o => mark(o, null) },
+      { id: 'brief.unseen', on: 'brief', label: 'Not seen', does: 'Clears the Seen mark here and on Today; Undo marks it again.', icon: 'eye', risk: 'undo',
+        when: o => o.marked || 'not marked seen', cli, run: o => mark(o, null).then(() => `Not seen · ${o.label}`), undo: o => mark(o, 'forever') });
     const d = B.attach({ details: details(), reread: () => window.places.reread(view), read: () => RAW[view]?.read || new Date().toISOString(),
       watch: () => RAW[view]?.watchdog?.available ? 'read' : (RAW[view]?.watchdog?.reason || 'no watchdog reader'),
       more: b => html`<p class="why"><a href="/briefs?row=${encodeURIComponent(b.id)}">Open on Briefs</a>: the cadence strip and every source.</p>` });
-    return { rows: doc => doc.rows, objects: rows => rows.map(B.object), show: d.show, forget: d.forget };
+    return { rows: doc => doc.rows, objects: rows => rows.map(b => ({ ...B.object(b), mark: b.mark, seen: b.seen, marked: b.marked })), show: d.show, forget: d.forget };
   }
   // The Reports page's Details (report-details.js), read from the view's `details`: the Reports page's document for the
   // place's jobs. A write posts, then reads the view again; a refused stale one reads it again too, as Reports does.

@@ -22,7 +22,7 @@ import sqlite3
 
 from sd_db import reporting, routine_briefs, workflow, writes
 
-from sd_dashboard import hoa_screen, places, reports_screen, tasks_screen, v2
+from sd_dashboard import hoa_screen, places, reports_screen, snooze, tasks_screen, today_reports, v2
 
 import test_v2_tasks
 from support import NOW, ScreenCase, before_5648
@@ -238,6 +238,26 @@ class Briefs(Fixture):
         self.assertEqual((doc["state"], doc["rows"]), ("unknown", []))
         self.assertIn("<config>/project-dashboard/report-families.conf", doc["reason"])
         self.assertIn("family|home|", doc["reason"])
+
+
+    def test_a_brief_seen_on_today_reads_seen_here_until_its_text_grows(self):
+        # sd:5752: Seen is Today's snooze, under Today's row id and fingerprint, so a mark made in either place holds in both.
+        stem = "2026-09-05 - Board Notes"
+        mine = lambda: next(r for r in places.briefs(self.connection, "hoa", now=NOW, config=self.config)["rows"] if r["id"] == stem)
+        today = next(r for r in today_reports.document(self.connection, now=NOW, snoozes={})["briefs"] if r["stem"] == stem)
+        row = mine()
+        self.assertEqual((row["mark"], row["seen"], row["marked"]), (today["id"], today["seen"], False))
+        writes.snooze(self.connection, snooze.key("today", today["id"]), today["until"], seen=today["seen"], now=NOW)
+        self.assertTrue(mine()["marked"])
+        routine_briefs.add(self.connection, stem, "---\nseries: x\n---\n\nA lead.\n\nA second.\n", repo=self.hoa,
+                           who="test", mode="extend")
+        self.assertFalse(mine()["marked"])
+
+    def test_a_seen_read_that_fails_marks_nothing_and_says_so(self):
+        with mock.patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("no such table: state")):
+            doc = places.briefs(self.connection, "hoa", now=NOW, config=self.config)
+        self.assertEqual((doc["state"], [r["marked"] for r in doc["rows"]]), ("read", [False, False]))
+        self.assertIn("Seen marks were not read: no such table: state. Every brief shows as open.", doc["reason"])
 
 
 class Reports(Fixture):
@@ -731,6 +751,40 @@ DOCS['/api/home/tasks'] = open; lastUndo().undo(); await flush(); R.undone = ELS
         self.assertEqual([mark in r["before"], mark in r["after"], mark in r["undone"]], [True, False, True])
         self.assertEqual([p[1]["status"] for p in out["posts"]], ["done", row["status"]])
         self.assertIn('All <span class="n">1</span>', r["after"])
+
+    def seen_docs(self):
+        """HOA's documents with Board Notes marked seen on Today, the way Today's Seen writes it."""
+        row = next(r for r in places.briefs(self.connection, "hoa", now=NOW, config=self.config)["rows"] if r["item"] == self.hoa_brief)
+        writes.snooze(self.connection, snooze.key("today", row["mark"]), writes.SNOOZE_FOREVER, seen=row["seen"], now=NOW)
+        return self.docs("hoa")
+
+    def test_briefs_show_the_unseen_and_all_adds_the_seen_kept_in_the_url(self):
+        # sd:5752: Open is the briefs Today's Seen has not marked; All adds the seen ones, and ?briefs=all keeps it.
+        docs, seen, unseen = self.seen_docs(), "2026-09-05 - Board Notes", "2026-09-05 - HOA Morning Digest"
+        out = self.run_page(self.ACTS + """await go('#view=briefs'); R.open = ELS['briefs-rows'].html;
+seg('briefs', 'all'); await flush(); R.all = ELS['briefs-rows'].html;""", docs)
+        r, row = out["R"], lambda stem: f'<tr data-id="{stem}" '
+        self.assertEqual([row(unseen) in r["open"], row(seen) in r["open"]], [True, False])
+        self.assertIn('data-f="briefs" data-v="open" aria-pressed="true"', r["open"])
+        self.assertEqual([row(unseen) in r["all"], row(seen) in r["all"]], [True, True])
+        self.assertEqual(r["urls"], ["briefs=all"])
+        out = self.run_page("await go('#view=briefs'); R.briefs = ELS['briefs-rows'].html;", docs, before="location.search = '?briefs=all';")
+        self.assertIn(row(seen), out["R"]["briefs"])
+
+    def test_a_briefs_seen_is_its_rows_act_and_posts_todays_mark_until_it_changes_and_undo_clears_it(self):
+        # sd:5752: the Today snooze, under Today's row id and fingerprint, until 'forever'; the view reads again after each.
+        docs, stem = self.docs("hoa"), "2026-09-05 - HOA Morning Digest"
+        row = next(r for r in docs["/api/hoa/briefs"][1]["rows"] if r["id"] == stem)
+        docs["/api/snooze"] = [200, {"key": f"today:{row['mark']}"}]
+        out = self.run_page(self.ACTS + f"""await go('#view=briefs'); R.rows = ELS['briefs-rows'].html; const reads = OUT.gets.length;
+shellRun(cmd('brief.seen'), C.get({json.dumps(stem)})); await flush(); R.reads = OUT.gets.length - reads;
+lastUndo().undo(); await flush(); R.undone = OUT.gets.length - reads;""", docs)
+        r = out["R"]
+        self.assertRegex(r["rows"], rf'(?s)<tr data-id="{stem}" .*?<i data-act="brief.seen"></i></td></tr>')
+        self.assertEqual([p[:2] for p in out["posts"]],
+                         [["/api/snooze", {"page": "today", "row": f"brief:{stem}", "until": "forever", "seen": row["seen"]}],
+                          ["/api/snooze", {"page": "today", "row": f"brief:{stem}", "until": None, "seen": row["seen"]}]])
+        self.assertEqual((r["reads"], r["undone"]), (1, 2))
 
     def test_the_overview_reads_no_view_and_each_view_reads_its_own_document_when_shown(self):
         out = self.run_page("""R.first = shown(); R.gets0 = OUT.gets.slice();

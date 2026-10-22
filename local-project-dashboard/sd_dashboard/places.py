@@ -222,8 +222,12 @@ BRIEF_SCAN = 100_000
 
 
 def briefs(connection, area: str, *, now: str, config: Path | None = None) -> dict:
-    """The area's briefs, in the Briefs page's row shape (`briefs_screen.document`), with its watchdog for their Details."""
-    from . import briefs_screen
+    """The area's briefs, in the Briefs page's row shape (`briefs_screen.document`), with its watchdog for their Details.
+
+    Each row carries Today's Seen mark (sd:5752): `mark` the Today row id it is snoozed under, `seen` its fingerprint, and
+    `marked` whether that snooze holds. A snooze read that fails marks nothing and says so in `reason`.
+    """
+    from . import briefs_screen, snooze, today_reports
 
     jobs, unconfigured, unread = _family(connection, area, config)
     if unread:
@@ -246,8 +250,14 @@ def briefs(connection, area: str, *, now: str, config: Path | None = None) -> di
 
     doc = briefs_screen.document(connection, now=now, reader=reader)
     state = "error" if doc["reader"]["state"] == "error" else "read"
+    held, unheld = snooze.held(connection, now=now)
+    for row in doc["briefs"]:
+        mark = today_reports.seen_row(row)
+        row["mark"], row["seen"] = mark["id"], snooze.fingerprint(mark)
+        row["marked"] = held.get(snooze.key("today", mark["id"]), {}).get("seen") == row["seen"]
     # A family not configured still leaves the checkout's briefs; the reason says what else would be read.
-    return {"read": now, "area": area, "state": state, "reason": doc["reader"]["reason"] or unconfigured or why,
+    reason = [doc["reader"]["reason"] or unconfigured or why, unheld and f"Seen marks were not read: {unheld}. Every brief shows as open."]
+    return {"read": now, "area": area, "state": state, "reason": " ".join(part for part in reason if part),
             "rows": doc["briefs"], "reader": doc["reader"], "watchdog": doc["watchdog"]}
 
 
