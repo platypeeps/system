@@ -200,7 +200,8 @@ in `BuildMismatch` for 15 to 35 minutes after every hub migration.
 
 The wait is bounded at 45 minutes in total, for the refresh lock, the lane
 locks and the gate together, not 45 minutes each. `REPO_SYNC_DRAIN_WAIT` overrides it in
-seconds (default 2700). It prints what it waits on
+seconds (default 2700); `make post-merge` sets 420, under the lane's 600-second cap on
+the target (sd:5799). It prints what it waits on
 when the wait starts and once a minute after that. Past the bound, refresh
 refuses with nothing moved and names the busy lane or the gate. When `sd`
 itself fails, as a broken pack would make it, the refusal prints the manual
