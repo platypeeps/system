@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import subprocess
 import unittest
 from pathlib import Path
@@ -242,6 +243,16 @@ class TheRecommendation(ScreenCase):
         with advised():
             out = review_screen.rule_request({"item": ids["blind"], "note": note, "option": "no", "revision": revision})(self.connection)
         self.assertEqual((out["recommendation"], out["agreed"]), (ADVICE, True))
+
+    def test_a_read_that_fails_after_the_label_still_answers_the_label(self):
+        # The label committed in `review.rule`; a failed read of its recommendation must not turn it into "not labelled".
+        ids = blind_batches(self)
+        note = questions_of(self.connection, ids["blind"])[0]
+        revision = workflow.item_state(self.connection, ids["blind"])["revision"]
+        with mock.patch.object(review, "read", side_effect=sqlite3.OperationalError("disk I/O error")):
+            out = review_screen.rule_request({"item": ids["blind"], "note": note, "option": "no", "revision": revision})(self.connection)
+        self.assertEqual((out["recommendation"], out["agreed"]), (None, None))
+        self.assertEqual(review.read(self.connection, ids["blind"])["questions"][0]["label"], "no")
 
     def test_a_question_with_no_recommendation_sends_none(self):
         # The pack as pinned, or a batch filed with neither field: no key, and the batch's context is None.

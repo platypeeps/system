@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 
 from sd_db import reads, workflow
 
@@ -172,7 +173,7 @@ def rule_request(payload: dict):
         # that line: the label landed, and the page's next read shows the recommendation.
         try:
             ruled = [q for q in review.read(connection, payload["item"])["questions"] if q["note"] == payload["note"]]
-        except review.ReviewError:
+        except (review.ReviewError, sqlite3.Error):
             ruled = []
         advice = _advice(ruled[0], blind=True) if ruled else {}
         return {"item": payload["item"], "note": payload["note"], "revision": state["revision"],
