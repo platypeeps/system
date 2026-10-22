@@ -814,6 +814,8 @@ class TheDeepReview(AdversarialCase):
     def test_saving_a_bad_setting_or_another_key_is_refused_and_writes_nothing(self):
         for payload, said in (({"adversarial.deep.agents": "40"}, "adversarial.deep.agents wants a number of sub-agents"),
                               ({"adversarial.deep.model": "--dangerously-skip-permissions"}, "wants a claude model id"),
+                              # sd:5614: effort is one of claude --effort's levels, not any lowercase word.
+                              ({"adversarial.deep.effort": "ultra"}, "wants one of low, medium, high, xhigh or max"),
                               ({"adversarial.model": "x"}, "The deep review's settings are")):
             with self.subTest(payload=payload):
                 status, _, answer = self.post("/api/adversarial/settings", payload)

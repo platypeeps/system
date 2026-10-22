@@ -933,6 +933,14 @@ class ThePage(BrowserSession):
             self.assertEqual(status, 400)
             self.assertIn("Name the session's id and the pid the page showed.", got["error"])
 
+    def test_refresh_repos_answers_and_takes_no_values(self):
+        """sd:5614: the post writes nothing; as an answered post it invalidates the fleet snapshot (sd:4955)."""
+        status, _, got = self.post("/api/repos/refresh", {})
+        self.assertEqual((status, got), (200, {"refreshed": True}))
+        status, _, got = self.post("/api/repos/refresh", {"path": "/x"})
+        self.assertEqual(status, 400)
+        self.assertIn("takes no values", got["error"])
+
     def test_refresh_satellites_writes_a_new_request_and_takes_no_values(self):
         """sd:5108: each post is a new request id; a post that carries values is refused and writes nothing."""
         status, _, first = self.post("/api/satellites/refresh", {})
@@ -1168,6 +1176,16 @@ R.got = await cmd('repo.standard').run(C.get('repo:{path}'));""", doc=doc, searc
         self.assertIn("not registered", repos)
         self.assertIn("nightly-sync", out["R"]["sched"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "scheduled jobs failed"})
+
+    def test_the_repos_table_has_a_refresh_button_and_no_hint_line(self):
+        """sd:5614: Refresh posts /api/repos/refresh, which makes the next read wait for a fresh git reading."""
+        answer = """(p, b) => p === '/api/repos/refresh' ? [200, { refreshed: true }] : [404, { error: 'no' }]"""
+        click = "ELS['view-repos'].listeners.click.forEach(f => f({ target: { closest: s => s === '[data-refresh-repos]' ? {} : null } }));"
+        out = self.run_page(f"R.html = ELS['view-repos'].html; {click} await flush(); await flush();", answer=answer)
+        self.assertIn('data-refresh-repos', out["R"]["html"])
+        self.assertNotIn("nothing here fetches", out["R"]["html"])
+        self.assertNotIn("opens a registered repo's settings", out["R"]["html"])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/repos/refresh", {}]])
 
     def test_only_the_sorted_header_carries_aria_sort_and_a_click_moves_it(self):
         """sd:2527: each column with an order sorts through its button; aria-sort is on the sorted th alone."""
@@ -1444,7 +1462,7 @@ selectRow('repo:{path}'); C.run(c, o); await flush(); await flush(); R.end = ELS
         answer = """(p, b) => p === '/api/adversarial/settings' ? [200, { saved: b }] : [404, { error: 'no' }]"""
         # sd:5656: the settings are every repository's, so the command is on the page's own object, run from the Repos heading.
         out = self.run_page(f"""const o = C.get('deep:settings'), c = cmd('repo.deep-settings'); R.button = ELS['view-repos'].html.includes('data-deep-settings');
-selectRow('repo:{path}'); R.det = ELS.details.html; R.fields = c.fields(o).map(f => [f.name, f.value]); R.on = c.when(o);
+selectRow('repo:{path}'); R.det = ELS.details.html; R.fields = c.fields(o).map(f => [f.name, f.value ?? f.options[0].value]); R.on = c.when(o);
 FIELD_VALUES = {{ model: '', effort: 'max', bound_minutes: '120', agents: '8' }}; C.run(c, o); await flush(); await flush();""",
                             answer=answer, doc=doc)
         self.assertIn("Deep review settings: model <b>fable</b> · effort <b>max</b> (default)", out["R"]["det"])
@@ -1454,6 +1472,19 @@ FIELD_VALUES = {{ model: '', effort: 'max', bound_minutes: '120', agents: '8' }}
         self.assertEqual(out["R"]["fields"], [["model", "fable"], ["effort", "max"], ["bound_minutes", "90"], ["agents", "8"]])
         self.assertEqual(out["posts"], [["/api/adversarial/settings", {"adversarial.deep.model": "",
                                                                        "adversarial.deep.bound_minutes": "120"}, 64]])
+
+    def test_deep_review_model_and_effort_are_choices_that_open_on_the_held_value(self):
+        """sd:5614: model offers the claude aliases and effort the --effort levels, the held value first; a held model
+        outside the list stays offered."""
+        path = self.ids["checkout"]
+        doc = json.loads(json.dumps(self.doc))
+        doc["deep"]["adversarial.deep.model"] = {"value": "claude-fixture-1", "from": "database"}
+        doc["deep"]["adversarial.deep.effort"] = {"value": "high", "from": "database"}
+        out = self.run_page(f"""R.fields = cmd('repo.deep-settings').fields(C.get('repo:{path}'))
+  .map(f => [f.name, f.options ? f.options.map(x => x.value) : f.value]);""", doc=doc)
+        self.assertEqual(out["R"]["fields"], [["model", ["claude-fixture-1", "opus", "fable", "sonnet", "haiku"]],
+                                              ["effort", ["high", "low", "medium", "xhigh", "max"]],
+                                              ["bound_minutes", "90"], ["agents", "8"]])
 
     def test_deep_review_settings_are_off_when_the_settings_were_not_read(self):
         path = self.ids["checkout"]

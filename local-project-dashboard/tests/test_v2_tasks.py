@@ -627,6 +627,11 @@ OUT.toasts[0].undo(); await flush();""")
         self.assertTrue("askFirst: objs.length > 25 || objs.some(o => asksFirst(c, o))" in SHELL_JS, "runBulk() skips the test")
         self.assertIsNone(re.search(r"(?<!!)!c\.askFirst\b", SHELL_JS), "a test of the object read as a flag")
 
+    def test_a_command_dialog_says_cancel_unless_its_act_is_a_cancel(self):
+        """sd:5614: "Don't deep review settings" read wrong; the button is Cancel, or Keep it beside "Cancel job"."""
+        self.assertNotIn("keep: `Don't", SHELL_JS)
+        self.assertIn("keep: /^cancel\\b/i.test(act) ? 'Keep it' : 'Cancel'", SHELL_JS)
+
 class TheConfirmFields(unittest.TestCase):
     """shell.js's confirmAction with fields (sd:2200), run against a stand-in dialog: OK is off until a required field is typed."""
 

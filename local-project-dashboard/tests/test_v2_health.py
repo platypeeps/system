@@ -566,17 +566,6 @@ class TheDocument(Collectors, ScreenCase):
         rows = [row["id"] for row in self.area("dep", protection=protection_of([stale, ALERTED[0]]))["rows"]]
         self.assertEqual(rows, ["dep:/checkouts/alpha"])
 
-    def test_dependabot_turned_off_is_a_setting_not_a_failed_read(self):
-        """sd:5611. Alerts disabled on GitHub is the operator's choice: counted on the ok row, never "not read"."""
-        clean = {**ALERTED[0], "alerts": {"dependabot": {"open": 0, "more": False}}}
-        off = {**ALERTED[3], "alerts": {"dependabot": {"setting": "disabled"}}}
-        rows = self.area("dep", protection=protection_of([clean, off]))["rows"]
-        (row,) = [r for r in rows if r["id"] != "dep:stale"]  # the fixtures' read times differ; staleness is not under test
-        self.assertEqual((row["id"], row["state"]), ("dep:ok", "ok"))
-        self.assertEqual(row["facts"]["Alerts off"], "1")
-        (row,) = [r for r in self.area("dep", protection=protection_of([off]))["rows"] if r["id"] != "dep:stale"]
-        self.assertEqual((row["id"], row["state"], row["detail"]), ("dep:ok", "ok", "archived repos left out: 0 · alerts off: 1"))
-
     def test_no_open_alert_is_an_ok_row_and_no_managed_repo_is_unknown(self):
         clean = [{**repo, "alerts": {"dependabot": {"open": 0, "more": False}}} for repo in ALERTED[:2]]
         (row,) = self.area("dep", protection=protection_of(clean))["rows"]
@@ -584,6 +573,29 @@ class TheDocument(Collectors, ScreenCase):
         for key in ("dep", "sec"):
             (row,) = self.area(key)["rows"]
             self.assertEqual((row["id"], row["state"]), (f"{key}:none", "unknown"))
+
+    def test_dependabot_alerts_off_is_an_ok_row_listing_the_repos_never_unread(self):
+        """sd:5595: alerts off may stay off; the area tracks which repos, beside clean, open and unread ones."""
+        off = {**ALERTED[4], "alerts": {"dependabot": {"setting": "disabled"}}}
+        clean = {**ALERTED[0], "alerts": {"dependabot": {"open": 0, "more": False}}}
+        (row,) = self.area("dep", protection=protection_of([off]))["rows"]
+        self.assertEqual((row["id"], row["state"], row["what"], row["list"]),
+                         ("dep:off", "ok", "Dependabot alerts off in 1 managed repo", ["group/delta"]))
+        area = self.area("dep", protection=protection_of([off, clean]))
+        self.assertEqual({row["id"]: row["state"] for row in area["rows"]}, {"dep:ok": "ok", "dep:off": "ok"})
+        self.assertEqual(health_screen._lamp(area)["state"], "ok")
+        mixed = [*ALERTED[:4], off, *ALERTED[5:]]
+        rows = {row["id"]: row for row in self.area("dep", protection=protection_of(mixed))["rows"]}
+        self.assertEqual({key: row["state"] for key, row in rows.items()},
+                         {"dep:/checkouts/alpha": "warning", "dep:unread": "unknown", "dep:off": "ok"})
+        self.assertEqual(rows["dep:unread"]["what"], "2 managed repos: dependencies not read")
+        self.assertEqual(rows["dep:off"]["list"], ["group/delta"])
+
+    def test_an_alerts_off_repo_not_re_read_in_48_hours_is_still_stale(self):
+        old = {**ALERTED[4], "observed_at": "2026-09-04T08:00:00Z", "alerts": {"dependabot": {"setting": "disabled"}}}
+        rows = {row["id"]: row for row in self.area("dep", protection=protection_of([old]))["rows"]}
+        self.assertEqual(rows["dep:stale"]["list"], ["group/delta: observed 2026-09-04T08:00:00Z"])
+        self.assertEqual(rows["dep:off"]["state"], "ok")
 
     def test_an_older_library_without_the_managed_flag_is_the_area_error_not_an_empty_fleet(self):
         older = [{key: value for key, value in repo.items() if key not in ("managed", "alerts")} for repo in PROTECTION]
