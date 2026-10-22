@@ -165,7 +165,7 @@ class TheDocument(ScreenCase):
 
     def test_a_hidden_row_carries_hidden_and_leaves_every_count_and_the_badge(self):
         # sd:5486: Hide is the view store Designs and Documents write, keyed contribution:<key>. A hidden row stays in the
-        # document for the Hidden view, but leaves the lanes, the tallies and the badge; settled rows ignore it.
+        # document for Show hidden, but leaves the lanes, the tallies and the badge; settled rows ignore it.
         writes.set_view(self.connection, "contribution:" + contribution(1)["key"], hidden=True)
         writes.set_view(self.connection, "contribution:" + contribution(5)["key"], hidden=True)
         self.connection.commit()
@@ -609,14 +609,19 @@ shellRun(cmd('contribution.dismiss'), ext); await flush(); R.off = cmd('contribu
     VIEWS = ("(path, body) => { if (path === '/api/contributions/view') { DOC.rows.find(r => r.key === body.key).hidden = body.hidden;"
              " return [200, { key: body.key, hidden: body.hidden }]; } return [200, DOC]; }")
 
-    def test_a_hidden_row_leaves_the_open_rows_and_the_hidden_view_lists_it_with_unhide(self):
-        # sd:5486: Hidden is a page view on the Open table; Open lists the unhidden rows, Hidden the hidden ones alone.
+    #: A click on the Open table's Show hidden toggle (sd:5753).
+    SHOW_HIDDEN = "ELS['open-filters'].listeners.click[0]({ target: { closest: s => s === '[data-f=\"hidden\"]' ? {} : null } });"
+
+    def test_a_hidden_row_leaves_the_open_rows_and_show_hidden_lists_it_with_unhide(self):
+        # sd:5486: Open lists the unhidden rows. sd:5753: Show hidden, a toggle in the Open table's filter bar, lists the
+        # hidden ones alone; the URL keeps it, and a second press turns it off.
         self.hidden()
-        out = self.run_page(f"""R.rows = ELS.rows.html; R.lamps = ELS.annunciator.html; R.tally = ELS.tally.html;
-window.shell.view.show('hidden'); R.hidden = ELS.rows.html; R.title = ELS['open-title'].textContent; R.htally = ELS.tally.html;
+        out = self.run_page(f"""R.rows = ELS.rows.html; R.lamps = ELS.annunciator.html; R.tally = ELS.tally.html; R.bar = ELS['open-filters'].html;
+{self.SHOW_HIDDEN} R.hidden = ELS.rows.html; R.title = ELS['open-title'].textContent; R.htally = ELS.tally.html;
+R.bar2 = ELS['open-filters'].html; R.url = OUT.urls[OUT.urls.length - 1];
 R.off = [cmd('contribution.hide').when(C.get('{ONE}')), cmd('contribution.unhide').when(C.get('{ONE}')),
   cmd('contribution.unhide').when(C.get('github:{EXTERNAL}'))];
-window.shell.view.show('open'); R.back = ELS.rows.html;""")
+{self.SHOW_HIDDEN} R.back = ELS.rows.html; R.url2 = OUT.urls[OUT.urls.length - 1];""")
         ids = r'<tr data-id="([^"]+)"'
         self.assertNotIn(ONE, re.findall(ids, out["R"]["rows"]))
         self.assertEqual(len(re.findall(ids, out["R"]["rows"])), 3)
@@ -625,7 +630,11 @@ window.shell.view.show('open'); R.back = ELS.rows.html;""")
         self.assertEqual(re.findall(ids, out["R"]["hidden"]), [ONE])
         self.assertEqual((out["R"]["title"], out["R"]["htally"]), ("Hidden", "1 hidden"))
         self.assertEqual(out["R"]["off"], ["already hidden", True, "not hidden"])
-        self.assertEqual(out["counts"]["hidden"], 1)
+        toggle = r'data-f="hidden" data-v="1" aria-pressed="(\w+)">.*?Show hidden <span class="n">(\d+)</span>'
+        self.assertEqual(re.findall(toggle, out["R"]["bar"]), [("false", "1")])
+        self.assertEqual(re.findall(toggle, out["R"]["bar2"]), [("true", "1")])
+        self.assertEqual((out["R"]["url"], out["R"]["url2"]), ({"hidden": 1}, {}))
+        self.assertNotIn("hidden", out["counts"], "Hidden is no view, so no tab carries its count")
         self.assertNotIn(ONE, re.findall(ids, out["R"]["back"]))
         self.assertEqual(out["attention"]["n"], 1)
 
@@ -635,33 +644,55 @@ await lastUndo().undo(); await flush(); R.back = ELS.rows.html;""", answer=self.
         self.assertEqual(out["confirms"], [])
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/contributions/view", {"key": ONE, "hidden": True}],
                                                          ["/api/contributions/view", {"key": ONE, "hidden": False}]])
-        self.assertEqual(out["toasts"][0], ["Hidden · Fix it's $HOME. The Hidden view lists it.", True])
+        self.assertEqual(out["toasts"][0], ["Hidden · Fix it's $HOME. Show hidden lists it.", True])
         self.assertNotIn(ONE, re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]))
         self.assertIn(ONE, re.findall(r'<tr data-id="([^"]+)"', out["R"]["back"]), "Undo did not bring the row back")
         self.assertEqual(out["gets"].count("/api/contributions/page"), 3, "Hide or its Undo did not read again")
 
     def test_unhide_posts_the_row_and_undo_hides_it_again(self):
         self.hidden()
-        out = self.run_page(f"""window.shell.view.show('hidden'); shellRun(cmd('contribution.unhide'), C.get('{ONE}')); await flush();
+        out = self.run_page(f"""{self.SHOW_HIDDEN} shellRun(cmd('contribution.unhide'), C.get('{ONE}')); await flush();
 await lastUndo().undo(); await flush();""")
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/contributions/view", {"key": ONE, "hidden": False}],
                                                          ["/api/contributions/view", {"key": ONE, "hidden": True}]])
         self.assertEqual(out["toasts"][0], ["Unhidden · Fix it's $HOME", True])
 
-    def test_an_emptied_hidden_view_says_nothing_is_hidden_while_a_count_lags(self):
+    def test_an_emptied_show_hidden_says_nothing_is_hidden_while_a_count_lags(self):
         # Seen in the browser: after Unhide, a count from the last read still said 1 hidden, and the empty view blamed the
         # limit. Rows are left out only when the document says it cut some.
         self.hidden()
-        out = self.run_page(f"""window.shell.view.show('hidden'); shellRun(cmd('contribution.unhide'), C.get('{ONE}')); await flush();
+        out = self.run_page(f"""{self.SHOW_HIDDEN} shellRun(cmd('contribution.unhide'), C.get('{ONE}')); await flush();
 R.rows = ELS.rows.html;""", answer=self.VIEWS)
         self.assertIn("Nothing hidden in any repositories", out["R"]["rows"])
         self.assertNotIn("left out by the limit", out["R"]["rows"])
 
-    def test_an_unread_view_store_turns_hide_off_with_its_reason_and_the_hidden_view_says_so(self):
+    def test_an_unread_view_store_turns_hide_off_with_its_reason_and_show_hidden_says_so(self):
         self.doc["store"] = {"available": False, "reason": "the view store was not read: locked"}
-        out = self.run_page(f"""R.off = cmd('contribution.hide').when(C.get('{ONE}')); window.shell.view.show('hidden'); R.rows = ELS.rows.html;""")
+        out = self.run_page(f"""R.off = cmd('contribution.hide').when(C.get('{ONE}')); {self.SHOW_HIDDEN} R.rows = ELS.rows.html;""")
         self.assertEqual(out["R"]["off"], "Hide is off: the view store was not read: locked")
         self.assertIn("Hidden not read: the view store was not read: locked", out["R"]["rows"])
+
+    def test_an_address_or_an_older_hidden_view_link_opens_show_hidden_and_a_lamp_turns_it_off(self):
+        # sd:5753: Hidden was a view (sd:5486); its #view=hidden link lands on Open with Show hidden on, as ?hidden=1 does.
+        # A lamp counts the unhidden rows, so a press shows them.
+        self.hidden()
+        moved = ("location.pathname = '/contributions'; location.hash = %s; OUT.moved = null;"
+                 " var history = { state: null, replaceState(s, t, u) { OUT.moved = u; const h = u.indexOf('#');"
+                 " location.search = u.slice(u.indexOf('?'), h); location.hash = u.slice(h); } };")
+        lamp = "ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { dataset: { cell: 'awaiting_you' } } : null } });"
+        ids = r'<tr data-id="([^"]+)"'
+        for search, hash, moved_to in (("", "#view=hidden", "/contributions?hidden=1#view=open"),
+                                       ("?scope=internal", "#view=hidden", "/contributions?scope=internal&hidden=1#view=open"),
+                                       ("?hidden=1", "", None)):
+            out = self.run_page(f"R.rows = ELS.rows.html; R.bar = ELS['open-filters'].html; {lamp} R.lamped = ELS.rows.html;",
+                                search=search, extra=moved % json.dumps(hash))
+            self.assertEqual(out["moved"], moved_to, (search, hash))
+            self.assertEqual(re.findall(ids, out["R"]["rows"]), [ONE], (search, hash))
+            self.assertIn('data-f="hidden" data-v="1" aria-pressed="true"', out["R"]["bar"])
+            self.assertNotIn(ONE, re.findall(ids, out["R"]["lamped"]))
+            self.assertNotIn("hidden", out["urls"][-1])
+        out = self.run_page("", extra=moved % json.dumps("#view=settled"))
+        self.assertIsNone(out["moved"])
 
     def test_a_landed_write_whose_reread_fails_still_says_it_landed_and_turns_its_command_off(self):
         # Review 2 of PR #72 (84cde549031a): the reread sat inside the write's promise, so a failed GET reported a committed
@@ -1010,7 +1041,9 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         self.assertNotIn("innerHTML", PAGE_JS)
         self.assertNotIn("setAttribute('style'", PAGE_JS)
         self.assertNotRegex(PAGE_JS, r"style=\\?\"")
-        self.assertNotIn("history.replaceState", PAGE_JS)
+        # sd:5753: one replaceState, before the shell runs, moves an older #view=hidden link; every other URL write is shell.url.
+        self.assertEqual(PAGE_JS.count("history.replaceState"), 1)
+        self.assertLess(PAGE_JS.index("history.replaceState"), PAGE_JS.index("addEventListener('DOMContentLoaded'"))
         self.assertNotRegex(PAGE_JS, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", PAGE_JS)
         self.assertNotIn("CONTRIBUTIONS_DATA", PAGE_JS)
@@ -1180,10 +1213,9 @@ ELS.annunciator.listeners.click[0]({ target: lamp }); R.on = where(); R.html = E
 
     def test_open_is_the_first_view_and_settled_the_second(self):
         page = (V2 / "contributions.html").read_text(encoding="utf-8")
-        # sd:5486: Hidden shows the Open panel with the hidden rows, and is never the remembered view.
-        # sd:5488: Filed, the tickets and issues the operator filed this year, has its own panel.
-        self.assertIn("window.PAGE_VIEWS = [{ id: 'open', label: 'Open' }, { id: 'settled', label: 'Settled' }, { id: 'filed', label: 'Filed' },"
-                      " { id: 'hidden', label: 'Hidden', panel: 'open', keep: false }];", PAGE_JS)
+        # sd:5488: Filed, the tickets and issues the operator filed this year, has its own panel. sd:5753: the hidden rows
+        # are Open's Show hidden filter, not a view.
+        self.assertIn("window.PAGE_VIEWS = [{ id: 'open', label: 'Open' }, { id: 'settled', label: 'Settled' }, { id: 'filed', label: 'Filed' }];", PAGE_JS)
         self.assertLess(page.index('id="view-settled"'), page.index('<section class="filed" id="view-filed"'))
         self.assertLess(page.index('<section id="view-open"'), page.index('<section class="settled" id="view-settled"'))
 

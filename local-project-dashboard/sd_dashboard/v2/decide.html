@@ -1,0 +1,87 @@
+<!doctype html>
+<!--
+  Decide (sd:5781), at /decide: what waits on a ruling, in two views. /review, the old address, serves this page and
+  decide.js opens it on Scoring with its query.
+  Decisions (sd:3012, Today's view until sd:5781): /api/decisions, read by decisions.js when the page opens and on Read
+  again; a choice posts /api/decisions/answer. A review batch's questions (sd:3709) are not rows here: one line under the
+  table counts them and opens Scoring.
+  Scoring (sd:3709, the Review page until sd:5781): the labelling queue (design docs/work/2026-10-12-review-queue, Queue
+  UX). No design source page: built on the v2 shell from ui-design products/system/design.md (Keys: digits 1-9 on Scoring)
+  and foundation/. Data: /api/review (review_screen.document: each open batch and its questions, open or reviewed; a blind
+  or sealed batch sends text, options and label only), read when the page opens, on Read again and after a failed or stale
+  write. Scoring bands its rows by batch, a fold each, under which the batch's purpose, rubric and feeds show (sd:5759);
+  each row carries its question, context, recommendation, option buttons and a checkbox (sd:5123, sd:5497); a blind or
+  sealed batch's recommendation shows only once its question is ruled. The bar over the table labels every selected row.
+  The page has no Details pane.
+  Writes: /api/review/rule (a label, one per question, from a row or the bar) and /api/review/withdraw (its Undo, or a
+  reviewed row's Withdraw label), each sd_db.review, the code sd-db review runs;
+  a comment (n) posts the shell capture's note route on the batch as "On note #N: ...". Download reads
+  /api/review/<item>/export, the lines sd-db review export writes. Nothing here is sample data.
+  Each tab counts what waits there; the rail badge is their sum (pages/decide.py).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Decide · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<script src="/ui/annunciator-strip.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/annunciator-strip.css">
+<link rel="stylesheet" href="/ui/decisions.css">
+<link rel="stylesheet" href="/ui/review.css">
+</head>
+<body data-page="Decide" data-scope="fleet">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+<main id="main">
+  <header class="head">
+    <h1>Decide</h1>
+  </header>
+  <!-- The toolbar standard (sd:5281): row 1, the views then the shell's Shapeshift bar (sd:5539). -->
+  <div class="toolbar" id="toolbar" data-shift></div>
+  <div id="view-decisions" aria-label="Decisions">
+    <section aria-labelledby="decisions-h">
+      <div class="sec-head">
+        <h2 id="decisions-h">Decisions <button class="help" type="button" aria-label="Help: Decisions" data-help="&lt;b&gt;Questions that wait on you.&lt;/b&gt; Each is a &lt;code&gt;question&lt;/code&gt; note with one &lt;code&gt;Option:&lt;/code&gt; line per choice. A button records that choice as a &lt;code&gt;decision&lt;/code&gt; note and resolves the question; &lt;code&gt;sd task show&lt;/code&gt; prints both. Prose &quot;Decision needed&quot; notes stay on their item. A review batch&#39;s questions are on Scoring.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="decisions-tally"></p>
+      </div>
+      <table class="ledger decisions" aria-labelledby="decisions-h">
+        <thead id="decisions-head"></thead>
+        <tbody id="decisions"><tr class="empty"><td colspan="4">Reading decisions…</td></tr></tbody>
+      </table>
+      <p class="filtered" id="decisions-review" hidden></p>
+      <p class="filtered" id="decisions-note" role="status" hidden></p>
+    </section>
+  </div>
+  <div id="view-scoring" aria-label="Scoring" hidden>
+    <div id="state" hidden></div>
+    <h2 class="sr">Open batches</h2>
+    <annunciator-strip><ul class="annunciator" id="annunciator" hidden></ul></annunciator-strip>
+    <section aria-labelledby="led-h">
+      <div class="sec-head">
+        <h2 id="led-h">Scoring <button class="help" type="button" aria-label="Help: Scoring" data-help="&lt;b&gt;Review batches to label.&lt;/b&gt; A batch is a task filed by &lt;code&gt;sd-db review file&lt;/code&gt;; its questions are question notes, and a label is the ruling. A digit labels the selected question with that option; the bar labels every selected row. Undo withdraws a label while its toast shows.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="tally"></p>
+      </div>
+      <p class="progress" id="sub">Reading the review queue…</p>
+      <div class="bulk" id="bulk" role="group" aria-label="Selected questions"></div>
+      <table class="ledger review" aria-labelledby="led-h">
+        <thead><tr><th scope="col" class="pk"><span class="sr">Select</span></th><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Question</th><th scope="col">Asked</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </section>
+  </div>
+</main>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/decide.js"></script>
+<script src="/ui/review.js"></script>
+<script src="/ui/decisions.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>
