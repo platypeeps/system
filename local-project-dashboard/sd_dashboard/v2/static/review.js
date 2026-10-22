@@ -1,5 +1,5 @@
-// Review (sd:3709): the labelling queue. It loads before shell.js, which reads PAGE_LIST and PAGE_KEYS from it.
-// One view (sd:5651): the review batches. One-off questions are Today's Decisions, which links here.
+// Scoring (sd:3709, the Review page until sd:5781): the labelling queue, Decide's Scoring view. It loads before shell.js,
+// which reads PAGE_LIST and PAGE_KEYS from it. One-off questions are Decide's Decisions view (decide.js, decisions.js).
 // Rows: /api/review (review_screen.document): one lamp per open batch, one ledger row per question, nightly suggestions
 // first. A row carries its question (sd:5123): the first line and its subject and evidence, the options as numbered buttons,
 // and the whole question folded in place. No Details pane: the shell's pane opens only for Chat. One click on an option
@@ -40,6 +40,8 @@
   const find = note => Q.find(q => q.note === note);
   const firstLine = t => String(t || '').split('\n')[0];
   const clock = d => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' });
+  // The digits and j / k act on Scoring alone: on Decisions they would label a question the reader cannot see.
+  const onScoring = () => (window.shell?.view?.current?.() ?? 'scoring') === 'scoring';
 
 
   // ---------- Draw ----------
@@ -65,9 +67,8 @@
     // Show reviewed sits in the tally beside the batch filter: the page's one filter line, kept in the address.
     const toggle = html` · <button class="btn quiet sm" type="button" id="show-reviewed" aria-pressed="${String(REVIEWED)}">Show reviewed <span class="n">${hidden}</span></button>`;
     put($('tally'), html`${batch === null ? html`${plural(list.length, 'question')} open` : header(list.length)}${toggle}`);
-    // The rail's rule is the read's (sd:3446, review_screen.document); this page keeps it current as its labels land.
-    window.PAGE_ATTENTION = { state: open > 0 ? 'caution' : 'ok', n: Math.max(0, open), what: 'questions open' };
-    window.shell?.attention?.();
+    // The Scoring tab's count, and its part of Decide's badge (decide.js), kept current as its labels land.
+    window.decideCount?.('scoring', DOC ? Math.max(0, open) : null);
     bar();
   }
 
@@ -363,13 +364,13 @@
     ['j / k', 'Next / previous question, without a label (a skip)'], ['↵', 'Open or fold the whole question in its row'],
     ['u', 'Undo the last label while its toast shows'], ['n', 'Comment on the selected question'],
     ['Esc', 'Show every batch again and hide reviewed questions']];
-  window.PAGE_LIST = { rows: () => $('rows').querySelectorAll('tr[data-id]'), select: id => select(noteOf(id)),
+  window.PAGE_LIST = { rows: () => $('rows').querySelectorAll('tr[data-id]'), select: id => select(noteOf(id)), when: onScoring,
     current: () => (sel === null ? null : rowId(sel)), clear: () => (batch !== null || REVIEWED) && (filter(null, false), true) };
 
   document.addEventListener('keydown', e => {
     if (!/^[1-9]$/.test(e.key) || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target?.matches?.('input, textarea, select, [contenteditable]') || document.querySelector('dialog[open]')) return;
-    if (window.shell?.chording?.() || sel === null) return;
+    if (window.shell?.chording?.() || sel === null || !onScoring()) return;
     e.preventDefault();
     label(sel, +e.key - 1);
   });

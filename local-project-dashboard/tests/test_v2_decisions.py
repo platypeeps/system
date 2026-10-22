@@ -267,12 +267,12 @@ class TheScript(unittest.TestCase):
         self.assertNotIn("Choose recommended", rows)
         self.assertEqual(rows.count('data-option="'), 2)
 
-    def test_review_batch_questions_are_one_line_that_links_to_review(self):
+    def test_review_batch_questions_are_one_line_that_opens_scoring(self):
         # sd:3709: a review batch's questions are counted, not listed; a failed read draws no count.
         doc = json.dumps({"decisions": [decision_row()], "review": 292})
         out = self.run_page("R.line = ELS['decisions-review'].html; R.hidden = ELS['decisions-review'].hidden; R.rows = ELS.decisions.html;",
                             f"(path, body) => [200, {doc}]")
-        self.assertIn('<a href="/review">292 questions wait on Review</a>', out["R"]["line"])
+        self.assertIn('<a href="#view=scoring">292 questions wait on Scoring</a>', out["R"]["line"])
         self.assertFalse(out["R"]["hidden"])
         self.assertEqual(out["R"]["rows"].count("<tr data-item="), 1)
         none = self.run_page("R.hidden = ELS['decisions-review'].hidden;", "(path, body) => [200, { decisions: [] }]")

@@ -1409,7 +1409,8 @@ class TheShapeshiftBar(unittest.TestCase):
         # Reports, Activity, Briefs and Today drew the bar in their markup and wired it in their script; the shell draws it
         # now on every page that marks row 1 (data-shift). The pages whose own bar has readings of its own keep theirs.
         marked = [p for p in sorted(V2.glob("*.html")) if "data-shift" in p.read_text(encoding="utf-8")]
-        for name in ("reports", "activity", "briefs", "today", "health", "contributions", "designs", "management", "review"):
+        for name in ("reports", "activity", "briefs", "today", "health", "contributions", "designs", "management", "decide",
+                     "github"):
             self.assertIn(V2 / f"{name}.html", marked)
         for page in marked:
             text = page.read_text(encoding="utf-8")
@@ -1652,10 +1653,10 @@ if __name__ == "__main__":
 class ThePaneWithoutDetails(unittest.TestCase):
     """sd:5592. A page whose Details never shows a row has no Details element; the shell hides the tab and opens on Chat."""
 
-    def test_only_queue_review_and_settings_have_no_details_and_the_shell_shows_chat(self):
+    def test_only_queue_decide_and_settings_have_no_details_and_the_shell_shows_chat(self):
         v2 = V2
         bare = sorted(p.stem for p in v2.glob("*.html") if 'id="details"' not in p.read_text(encoding="utf-8"))
-        self.assertEqual(bare, ["queue", "review", "settings"])
+        self.assertEqual(bare, ["decide", "queue", "settings"])
         self.assertIn("if (!details) { pane.querySelector('#tab-details').hidden = true; showTab('tab-chat'); }", SHELL_JS)
         self.assertIn('.pane [role="tab"][hidden] { display: none; }', (v2 / "static" / "shell.css").read_text(encoding="utf-8"))
 

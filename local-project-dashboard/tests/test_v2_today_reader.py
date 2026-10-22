@@ -17,8 +17,8 @@ import json
 import re
 import subprocess
 import tempfile
+import unittest
 from pathlib import Path
-from urllib.parse import quote
 
 from sd_dashboard import now_screen, v2
 
@@ -168,18 +168,17 @@ class TheViews(TheReader):
     """sd:5080: Today's areas are the shell's views; each tab counts what waits there, and an unread section hides it."""
 
     def test_the_areas_are_page_views_and_each_panel_holds_its_sections(self):
+        # sd:5781: Decisions moved to Decide, GitHub and Issues to GitHub; Today keeps four views, by job.
         views = re.search(r"window\.PAGE_VIEWS = (\[.*?\]);", TODAY_JS, re.S).group(1)
-        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["now", "issues", "status", "work", "inbox", "github", "decisions"])
+        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["now", "inbox", "status", "work"])
         self.assertIn("{ id: 'inbox', label: 'Inbox', key: 'm' }", views)
         page = (V2 / "today.html").read_text(encoding="utf-8")
         panels = {m.group(1): re.findall(r'<h2[^>]*id="([a-z]+-h)"', m.group(2))
                   for m in re.finditer(r'<div id="view-([a-z]+)"(.*?)(?=<div id="view-|</main>)', page, re.S)}
-        self.assertEqual(panels, {"now": ["now-h"], "status": ["status-h"], "work": ["active-h", "work-h"], "inbox": ["problems-h", "briefs-h", "mail-h"],
-                                  "issues": ["issues-h", "intake-h"], "github": ["github-h"], "decisions": ["decisions-h"]})
-        scripts = "".join((V2 / "static" / f).read_text(encoding="utf-8")
-                          for f in ("today.js", "today-reports.js", "mail.js", "issues.js", "decisions.js"))
+        self.assertEqual(panels, {"now": ["now-h"], "status": ["status-h"], "work": ["active-h", "work-h"], "inbox": ["problems-h", "briefs-h", "mail-h"]})
+        scripts = "".join((V2 / "static" / f).read_text(encoding="utf-8") for f in ("today.js", "today-reports.js", "mail.js"))
         reported = set(re.findall(r"todayCount(?:\?\.)?\('([a-z]+)'", scripts))
-        self.assertEqual(reported, {"now", "work", "problems", "briefs", "mail", "issues", "intake", "decisions"})
+        self.assertEqual(reported, {"now", "work", "problems", "briefs", "mail"})
 
     def test_a_read_counts_now_and_an_unread_section_hides_its_tabs_count(self):
         out = self.run_page("""R.now = OUT.counts.now;
@@ -318,30 +317,20 @@ refresh(); await flush(); R.work = ELS.work.html; R.again = ELS.details.html; R.
         self.assertIn("#7 Write the brief", out["R"]["again"])
         self.assertEqual((out["R"]["now"], out["R"]["row2"]), ([], "?row=item%3A7"))
 
-    def test_one_selection_spans_now_work_and_github_rows(self):
-        """sd:5654: Now, Work and GitHub rows share today.js pick: selecting one unmarks the others, and Now's read keeps a
-        GitHub selection."""
-        from test_v2_today_github import PAGE_JS as GITHUB_JS, doc as gh_doc, entry
-        pr = entry(1, checkout="~/repos/anvil")
+    def test_one_selection_spans_now_and_work_rows(self):
+        """sd:5654: Now and Work rows share today.js pick: selecting one unmarks the other. GitHub rows select on their own
+        page since sd:5781 (test_v2_today_github)."""
         self.doc["work"], self.doc["work_error"] = [self.ITEM], ""
-        out = self.run_page(self.PRESS + self.SPY + f"""ANSWER = path => path === '/api/today/github' ? [200, {json.dumps(gh_doc(pulls=[pr]))}] : [200, DOC0];
-const gh = () => ELS['github-sections'].listeners.click[0]({{ target: {{ closest: s => s === '[data-gh-open]' ? {{ dataset: {{ ghOpen: {json.dumps(pr["key"])} }} }} : null }} }});
-const more = () => ELS['github-sections'].listeners.click[0]({{ target: {{ closest: s => s === 'button[data-gh-more]' ? {{ dataset: {{ ghMore: 'pulls' }} }} : null }} }});
-document.dispatchEvent(new CustomEvent('shell:view', {{ detail: {{ id: 'github' }} }})); await flush();
-gh(); refresh(); await flush(); R.kept = ELS.details.html; R.row = location.search; R.now = selected();
-press('rows', 'job:nightly-sync:7'); more(); R.gh = ELS['github-sections'].html; R.now2 = selected();
-const sortWork = () => ELS['work-head'].listeners.click[0]({{ target: {{ closest: s => s === 'button[data-sort]' ? {{ dataset: {{ sort: 'what' }} }} : null }} }});
-press('work', 'item:7'); more(); sortWork(); R.gh2 = ELS['github-sections'].html; R.now3 = selected(); R.work = ELS.work.html;
-gh(); sortWork(); R.work2 = ELS.work.html; R.sel = SEL.slice();""", after=GITHUB_JS)
-        self.assertIn("Pull request · open", out["R"]["kept"], "Now's read took the GitHub row's selection")
-        self.assertEqual((out["R"]["now"], out["R"]["row"]), ([], "?row=" + quote("gh:" + pr["key"], safe="")))
-        self.assertEqual(out["R"]["now2"], ["job:nightly-sync:7"])
-        self.assertIn('data-pr aria-selected="false"', out["R"]["gh"])
-        self.assertIn('data-pr aria-selected="false"', out["R"]["gh2"])
-        self.assertEqual(out["R"]["now3"], [])
+        out = self.run_page(self.PRESS + self.SPY + """
+const sortWork = () => ELS['work-head'].listeners.click[0]({ target: { closest: s => s === 'button[data-sort]' ? { dataset: { sort: 'what' } } : null } });
+press('rows', 'job:nightly-sync:7'); R.now = selected();
+press('work', 'item:7'); sortWork(); R.now2 = selected(); R.work = ELS.work.html;
+press('rows', 'job:nightly-sync:7'); sortWork(); R.work2 = ELS.work.html; R.sel = SEL.slice();""")
+        self.assertEqual(out["R"]["now"], ["job:nightly-sync:7"])
+        self.assertEqual(out["R"]["now2"], [])
         self.assertIn('<tr data-id="item:7" aria-selected="true">', out["R"]["work"])
         self.assertIn('<tr data-id="item:7" aria-selected="false">', out["R"]["work2"])
-        self.assertEqual(out["R"]["sel"][-4:], ["gh:" + pr["key"], "job:nightly-sync:7", "item:7", "gh:" + pr["key"]])
+        self.assertEqual(out["R"]["sel"][-3:], ["job:nightly-sync:7", "item:7", "job:nightly-sync:7"])
 
     def test_a_work_read_that_failed_says_so_and_is_not_an_empty_list(self):
         self.doc["work"], self.doc["work_error"] = [], "database is locked"
@@ -411,12 +400,11 @@ DECISIONS_JS = (V2 / "static" / "decisions.js").read_text(encoding="utf-8")
 
 
 class TheBadge(TheReader):
-    """Today's badge (shell.attention) counts the decisions waiting beside the Now rows (sd:3012).
+    """Today's badge (shell.attention) is the Now read's (sd:3446); a decision waiting counts on Decide's since sd:5781.
 
-    today.js and decisions.js run together, as today.html loads them; /api/decisions answers with one decision, and the
-    Now document keeps only its caution row, so the badge is caution and its count is the row plus the decision. The rule
-    is the server's (sd:3446): /api/now answers with the badge `now_screen._attention` gives for the decisions still open,
-    as the server reads them, so a ruling here is counted once Now is read again."""
+    decisions.js runs beside today.js here, as today.html loaded it until sd:5781, so a decision waits while Now reads:
+    Today's badge stays the Now document's, and TheSort sorts the decisions table with the others. Decide's badge is
+    TheDecideBadge."""
 
     DECISION = {"note": 7, "item": 3012, "title": "Dashboard v2", "repo": "/repos/system", "asked": "2026-10-08T21:00:00Z",
                 "question": "Which shape?", "options": ["Option lines", "Free text"], "revision": "a" * 64}
@@ -424,16 +412,14 @@ class TheBadge(TheReader):
     def run_badge(self, body, decisions, keep_job=False):
         self.doc["rows"] = [row for row in self.doc["rows"] if keep_job or row["kind"] != "job"]
         self.assertEqual([row["band"] for row in self.doc["rows"]], ["broken", "look"] if keep_job else ["look"])
-        # What /api/now answers while the decision is open, and once it is ruled or resolved.
-        before, after = (dict(self.doc, waiting=n, attention=now_screen._attention(self.doc["rows"], n)) for n in (len(decisions), 0))
+        now = dict(self.doc, attention=now_screen._attention(self.doc["rows"]))
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + SHELL_MORE + READ_SHELL
                   # As shell.js does: a page passes its badge, or sets window.PAGE_ATTENTION and passes nothing.
                   + "\nwindow.shell.attention = a => { if (a) window.PAGE_ATTENTION = a; OUT.attention.push(window.PAGE_ATTENTION); };"
-                  + f"\nconst DOC0 = {json.dumps(before)}, DOC1 = {json.dumps(after)}, DECISIONS = {json.dumps({'decisions': decisions})};\n"
-                  + "var ruled = false;\n"
-                  + "ANSWER = (path, body) => path === '/api/now' ? [200, ruled || !DECISIONS.decisions.length ? DOC1 : DOC0]"
+                  + f"\nconst DOC0 = {json.dumps(now)}, DECISIONS = {json.dumps({'decisions': decisions})};\n"
+                  + "ANSWER = (path, body) => path === '/api/now' ? [200, DOC0]"
                     " : path === '/api/decisions' ? [200, DECISIONS]"
-                    " : (ruled = true, [200, { revision: 'b'.repeat(64), ruling: { id: 99, kind: 'decision', body: 'x' } }]);\n"
+                    " : [200, { revision: 'b'.repeat(64), ruling: { id: 99, kind: 'decision', body: 'x' } }];\n"
                   + SNOOZE_JS + COMMANDS_JS + TODAY_JS + "\n" + DECISIONS_JS
                   + "\nvar R = {};\nconst click = (note, i) => ELS.decisions.listeners.click[0]({ target: { closest: s => s === 'button[data-option]'"
                     " ? { dataset: { note: String(note), option: String(i) }, closest: () => null } : null } });\n"
@@ -447,20 +433,10 @@ class TheBadge(TheReader):
         self.assertIsNone(out["error"])
         return out
 
-    def test_a_waiting_decision_counts_in_the_badge(self):
-        out = self.run_badge("", [self.DECISION])
-        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 2, "what": "caution rows and decisions waiting"})
-
-    def test_an_answered_decision_stops_counting(self):
-        out = self.run_badge("R.before = OUT.attention[OUT.attention.length - 1]; click(7, 0); await flush();", [self.DECISION])
+    def test_a_waiting_decision_no_longer_counts_on_today(self):
+        out = self.run_badge("click(7, 0); await flush();", [self.DECISION])
         self.assertEqual(out["posts"][0][0], "/api/decisions/answer")
-        self.assertEqual(out["R"]["before"]["n"], 2)
-        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "caution rows"})
-
-    def test_a_resolved_decision_the_read_no_longer_lists_counts_nothing(self):
-        out = self.run_badge("R.before = OUT.attention[OUT.attention.length - 1]; DECISIONS.decisions = [];"
-                             " ELS.refresh.listeners.click[0](); await flush();", [self.DECISION])
-        self.assertEqual(out["R"]["before"]["n"], 2)
+        self.assertEqual({tuple(sorted(a)) for a in out["attention"]}, {("n", "state", "what")})
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "caution rows"})
 
     def test_an_unread_now_is_unknown_while_a_decision_waits(self):
@@ -473,6 +449,48 @@ class TheBadge(TheReader):
         """A guard: the badge counts its loudest state, and a decision is caution, as its ▲ in the section says."""
         out = self.run_badge("", [self.DECISION], keep_job=True)
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "warning rows"})
+
+
+DECIDE_JS = (V2 / "static" / "decide.js").read_text(encoding="utf-8")
+
+
+class TheDecideBadge(unittest.TestCase):
+    """sd:5781: Decide's badge is what waits on its two tabs: the decisions still open and Scoring's open questions.
+
+    decide.js and decisions.js run as decide.html loads them; review.js's part is its window.decideCount('scoring', n)
+    call (test_v2_review runs review.js). An unread tab (n null) hides its count and adds nothing."""
+
+    def run_page(self, body):
+        decision = {**TheBadge.DECISION, "recommended": None}
+        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL
+                  + "\nwindow.shell.attention = a => OUT.attention.push(a);"
+                  + f"\nvar LIST = {json.dumps({'decisions': [decision, {**decision, 'note': 8}]})};\n"
+                  + "ANSWER = (path, body) => path === '/api/decisions' ? [200, LIST]"
+                    " : [200, { revision: 'b'.repeat(64), ruling: { id: 99, kind: 'decision', body: 'x' } }];\n"
+                  + DECIDE_JS + "\n" + DECISIONS_JS
+                  + "\nvar R = {};\nconst click = (note, i) => ELS.decisions.listeners.click[0]({ target: { closest: s => s === 'button[data-option]'"
+                    " ? { dataset: { note: String(note), option: String(i) }, closest: () => null } : null } });\n"
+                  + "(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+                  + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
+                  + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
+                                capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out["error"])
+        return out
+
+    def test_the_badge_adds_the_decisions_waiting_and_the_questions_to_score(self):
+        out = self.run_page("R.read = OUT.attention.slice(-1)[0]; window.decideCount('scoring', 3); R.both = OUT.attention.slice(-1)[0];"
+                            " click(7, 0); await flush(); R.ruled = OUT.attention.slice(-1)[0];"
+                            " window.decideCount('scoring', null); R.unread = OUT.attention.slice(-1)[0];"
+                            " click(8, 1); await flush(); R.none = OUT.attention.slice(-1)[0];")
+        self.assertEqual(out["R"]["read"], {"state": "caution", "n": 2, "what": "decisions waiting"})
+        self.assertEqual(out["R"]["both"], {"state": "caution", "n": 5, "what": "decisions waiting and questions open"})
+        self.assertEqual(out["R"]["ruled"], {"state": "caution", "n": 4, "what": "decisions waiting and questions open"})
+        self.assertEqual(out["R"]["unread"], {"state": "caution", "n": 1, "what": "decisions waiting"})
+        self.assertEqual(out["R"]["none"], {"state": "ok", "n": 0, "what": "decisions or questions"})
+        self.assertEqual((out["counts"]["decisions"], out["counts"]["scoring"]), (0, None))
 
 
 class TheSort(TheReader):
