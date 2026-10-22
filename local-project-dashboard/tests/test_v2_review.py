@@ -316,6 +316,15 @@ class TheScript(unittest.TestCase):
         self.assertNotIn("<b>", out["R"]["rows"])
         self.assertRegex(out["R"]["sub"], r"^0 labelled · 3 open · 0 skipped · read ")
 
+    def test_a_question_is_the_shells_selection_only_while_scoring_shows(self):
+        # sd:5781 review: Scoring reads beside Decisions; a selection it made while hidden took Enter and a note there.
+        out = self.run_page("R.hidden = OUT.selected; VIEW = 'scoring'; view(); R.shown = OUT.selected;"
+                            " VIEW = 'decisions'; view(); R.left = OUT.selected;",
+                            "(path, body) => [200, DOC]", doc=doc_with(),
+                            prefix="var VIEW = 'decisions'; window.shell.view.current = () => VIEW;"
+                                   " const view = () => document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: VIEW } }));\n")
+        self.assertEqual((out["R"].get("hidden"), out["R"].get("shown"), out["R"].get("left")), (None, "q10", None))
+
     def test_a_batch_that_did_not_read_links_its_lamp_to_the_item(self):
         # sd:5298: an unknown lamp links to its evidence; for a batch that is its sd item, where the batch is filed.
         out = self.run_page("R.lamps = ELS.annunciator.html;", "(path, body) => [200, DOC]",

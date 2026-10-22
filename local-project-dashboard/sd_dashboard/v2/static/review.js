@@ -170,7 +170,8 @@
     sel = note;
     const q = note === null ? null : find(note);
     $('rows').querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.id === rowId(note))));
-    if (q) {
+    // The shell's selection only while Scoring shows: a hidden question takes no Enter and no note (sd:5781).
+    if (q && onScoring()) {
       window.shell.commands.put({ id: rowId(note), type: 'question', label: `note #${note}`, item: q.item });
       window.shell.commands.select(rowId(note));
     } else window.shell.commands.select(null);
@@ -366,6 +367,9 @@
     ['Esc', 'Show every batch again and hide reviewed questions']];
   window.PAGE_LIST = { rows: () => $('rows').querySelectorAll('tr[data-id]'), select: id => select(noteOf(id)), when: onScoring,
     current: () => (sel === null ? null : rowId(sel)), clear: () => (batch !== null || REVIEWED) && (filter(null, false), true) };
+
+  // Scoring shown again selects its question again; another view takes the selection off it.
+  document.addEventListener('shell:view', e => { if (e.detail?.id === 'scoring') select(sel); else window.shell.commands.select(null); });
 
   document.addEventListener('keydown', e => {
     if (!/^[1-9]$/.test(e.key) || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
