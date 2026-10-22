@@ -142,5 +142,7 @@ main { container-type: inline-size; }
 @media (pointer: coarse) {
   .range .chip { min-width: var(--row-touch); justify-content: center; }
   .legend button, .legend .status { min-height: var(--row-touch); }
-  .panel-head .help, .panel-head .tools .btn, .toolbar > .tools .btn { display: inline-grid; place-items: center; min-width: var(--row-touch); min-height: var(--row-touch); }
+  .panel-head .help { display: inline-grid; place-items: center; min-width: var(--row-touch); min-height: var(--row-touch); }
+  /* sd:5729: a labelled button stays shell.css's one nowrap flex line (icon, label, count); a grid stacked them. */
+  .panel-head .tools .btn, .toolbar > .tools .btn { min-height: var(--row-touch); }
 }

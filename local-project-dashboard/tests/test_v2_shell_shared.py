@@ -353,6 +353,20 @@ class TheSharedRules(unittest.TestCase):
         self.assertTrue(LAMP_ONLY.search(wide((STATIC / "annunciator-strip.css").read_text(encoding="utf-8"))),
                         "the pattern finds the strip's own lamp rules")
 
+    def test_no_rule_lays_a_buttons_icon_label_and_count_on_lines_of_their_own(self):
+        """sd:5729: shell.css's .btn is one nowrap flex line; HOA's touch rule made its toolbar buttons inline-grid, so on
+        an iPad Acknowledge all stacked its icon, label and count. No rule on a .btn may make it a grid or let it wrap."""
+        self.assertRegex(SHELL_CSS, r"\.btn \{[^}]*display: inline-flex;[^}]*white-space: nowrap;")
+        for name, css in {**PAGE_CSS, "shell.css": SHELL_CSS}.items():
+            found = []
+            for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", re.sub(r"/\*.*?\*/", "", css, flags=re.S)):
+                # Split the selector list at its top-level commas: a :not(.a, .b) holds commas of its own.
+                selectors = [sel.strip() for sel in re.split(r",(?![^(]*\))", m.group(1))]
+                if re.search(r"display:\s*(inline-)?grid|white-space:\s*(normal|pre-wrap)", m.group(2)):
+                    found += [sel for sel in selectors if re.search(r"\.btn(\.[\w-]+|\[[^\]]*\]|:[\w-]+)*$", sel)]
+            with self.subTest(name):
+                self.assertEqual(found, [])
+
     def test_one_ledger_layout_auto_with_no_colgroup(self):
         self.assertNotIn("table-layout", SHELL_CSS)
         for name, text in {**PAGE_CSS, **PAGE_JS, **{p.name: p.read_text(encoding="utf-8") for p in V2.glob("*.html")}}.items():
