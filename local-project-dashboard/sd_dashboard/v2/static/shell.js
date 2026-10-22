@@ -201,7 +201,7 @@
     VIEW_LIST.forEach((v, i) => {
       const on = v.id === id;
       viewTabs[i].setAttribute('aria-selected', on); viewTabs[i].tabIndex = on ? 0 : -1;
-      // A view may show another view's panel (v.panel, Reports' Needs attention): the panel shows while either is on.
+      // A view may show another view's panel (v.panel, Contributions' Hidden): the panel shows while either is on.
       const panel = viewPanel(v); if (panel) panel.hidden = viewPanel(VIEW_LIST.find(w => w.id === id) || {}) !== panel;
       if (viewLinks[i]) on ? viewLinks[i].setAttribute('aria-current', 'true') : viewLinks[i].removeAttribute('aria-current');
     });

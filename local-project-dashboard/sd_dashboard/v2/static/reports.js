@@ -201,7 +201,6 @@ function renderRows(read) {
   const list = window.shell.list;
   shown = ROWS.filter(matches).sort(order);
   window.shell.view.count('reports', DOC.reports ? shown.length : null);
-  window.shell.view.count('attention', DOC.reports ? ROWS.filter(r => r.act).length : null);
   const slice = list.pageOf(shown, L);
   if (started) writeURL();
   put(byId('rows-head'), list.sortHead(COLS, L));
@@ -262,16 +261,11 @@ tbody.addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'
 
 // The shell's Shapeshift bar (sd:5539) gives the list its text, bodies included; the cadence table takes it from the shell.
 document.addEventListener('shell:filter', e => { const q = e.detail.q.toLowerCase(); if (q === F.q) return; F.q = q; L.page = 1; if (DOC) renderRows(); });
-window.PAGE_FILTER = { reports: 'reports, bodies included', attention: 'reports, bodies included' };
+window.PAGE_FILTER = { reports: 'reports, bodies included' };
 // The shell's view switch (shell.js, view block): the list first, the run table second. Both read /api/reports, so neither
 // names an api of its own.
-window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'attention', label: 'Needs attention', panel: 'reports' }, { id: 'cadence', label: 'Cadence' }];
-// Needs attention is the Reports table with Status set to Needs action (sd:5461); Reports clears that value again.
-document.addEventListener('shell:view', e => {
-  const want = e.detail.id === 'attention' ? 'act' : e.detail.id === 'reports' && F.status === 'act' ? '' : F.status;
-  if (want === F.status) return;
-  F.status = want; L.page = 1; if (DOC) renderRows();
-});
+// Status's Needs action replaces the old Needs attention view (sd:5724).
+window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'cadence', label: 'Cadence' }];
 // The shell walks these rows on j / k.
 window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), select: id => select(id, false), clear: () => !!activeFilters().length && (clearAll(), true) };
 
