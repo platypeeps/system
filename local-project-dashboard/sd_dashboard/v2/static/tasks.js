@@ -209,7 +209,7 @@ addEventListener('DOMContentLoaded', () => {
     })}${other.length ? html`<div class="col" role="group" aria-label="Other statuses">
         <header><span class="label">Other</span><span class="n">${other.length}</span></header>
         <div><div class="drop">${other.map(t => card(t, true))}</div></div>
-      </div>` : ''}</div>`);
+      </div>` : ''}</div>${window.shell.list.help(HOW.board)}`);
   }
   function renderMatrix() {
     const v = visible().filter(t => t.status !== 'done');
@@ -229,7 +229,7 @@ addEventListener('DOMContentLoaded', () => {
       <div class="axis y">Important <span class="rule">P1–P2</span></div>${q[0]}${q[1]}
       <div class="axis y">Not important</div>${q[2]}${q[3]}
     </div>
-    <p class="mnote">Done tasks stay off the matrix. A drop edits the task: into Important sets P2, out of it sets P3; crossing into or out of Urgent asks you for the due date, because urgency comes from it. Cancel changes nothing.</p>`);
+    <p class="mnote">Done tasks stay off the matrix. A drop edits the task: into Important sets P2, out of it sets P3; crossing into or out of Urgent asks you for the due date, because urgency comes from it. Cancel changes nothing.</p>${window.shell.list.help(HOW.matrix)}`);
   }
   // The list's sort, page and size (shell.list, sd:2682): priority first, 50 a page. Every column with an order sorts.
   const LIST = { sort: 'p', dir: 1, size: 50 }, L = { ...LIST, page: 1 };
@@ -290,7 +290,7 @@ addEventListener('DOMContentLoaded', () => {
     readDet(byKey(key)?.id); // build: the Details reading, once per task until a write changes it
     renderDetails();
     writeURL();
-    if (open && innerWidth < 1240) openPane('tab-details');
+    if (open) openPane('tab-details');
   }
   document.getElementById('main').addEventListener('click', e => {
     if (e.target.closest('.rowact, .pick, .tile-f')) return;
@@ -453,10 +453,12 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Views ----------
   const SUB = {
-    board: 'Board of the framework statuses. Drag a card, or select it and press 1–5 or use Move to.',
-    matrix: 'Importance is priority 1–2; urgency is derived from the due date. Drag, or press 1–4.',
+    board: 'Board of the framework statuses.',
+    matrix: 'Importance is priority 1–2; urgency is derived from the due date.',
     list: 'Every task, sortable by any column.',
   };
+  // How to move a card, in the help line under the board or the matrix (sd:5733); the view text says what the view is.
+  const HOW = { board: 'Drag a card, or select it and press 1–5 or use Move to.', matrix: 'Drag a card, or select it and press 1–4.' };
   function subhead() {
     const parked = tasks.filter(t => t.parked).length, scheduled = tasks.filter(t => !t.parked && t.scheduled).length;
     // A realm view without a readable realm list (dashboard.realms) holds only the rows with no repo; it says why (sd:5064).

@@ -331,6 +331,44 @@ class TheActBar(unittest.TestCase):
         self.assertIn("if (b.dataset.copy) copy(b.dataset.copy);", click.group(0))
 
 
+# How-to and legend words that sd:5733 moved out of view text, captions and table headers into the help line.
+HOWTO = re.compile(r"\b(Drag|[Pp]ress \d|Tap|[Cc]lick|or use Move to)\b|Run now starts|lamps per piece")
+
+
+class TheTableHelp(unittest.TestCase):
+    """sd:5733: how to work a table and what its marks mean sit in one help line under it; its header keeps what it is."""
+
+    def test_the_help_line_draws_the_legend_then_the_how_to(self):
+        R = run_js("""R.both = String(list.help('Tap a job to see its reports.', [[html`<span class="g-ok">●</span>`, 'ran clean']]));
+R.text = String(list.help('Drag a card.')); R.none = String(list.help(''));""")
+        self.assertEqual(R["both"], '<p class="list-help"><span class="key"><span class="g-ok">●</span> ran clean</span>'
+                                    '<span>Tap a job to see its reports.</span></p>')
+        self.assertEqual(R["text"], '<p class="list-help"><span>Drag a card.</span></p>')
+        self.assertEqual(R["none"], "")
+
+    def test_no_view_text_caption_or_table_header_holds_how_to_or_legend_words(self):
+        heads = []
+        for page in V2.glob("*.html"):
+            text = page.read_text(encoding="utf-8")
+            heads += [(page.name, t) for t in re.findall(r"<caption[^>]*>(.*?)</caption>", text, re.S)]
+            heads += [(page.name, t) for t in re.findall(r'<div class="panel-head">\s*<div>(.*?)</div>', text, re.S)]
+        for name, js in PAGE_JS.items():
+            heads += [(name, t) for t in re.findall(r"const SUB = \{(.*?)\};", js, re.S)]
+            heads += [(name, t) for t in re.findall(r"(?:'subhead'|'cad-caption'|sub\.textContent =)[^;]*", js)]
+        self.assertTrue(any(name == "tasks.js" for name, _ in heads), "the walk found no Tasks view text")
+        for name, text in heads:
+            with self.subTest(name, text=text[:60]):
+                self.assertNotRegex(text, HOWTO)
+
+    def test_each_moved_text_is_in_its_tables_help_line(self):
+        for name, text in (("tasks.js", PAGE_JS["tasks.js"]), ("writing.js", PAGE_JS["writing.js"]),
+                           ("reports.html", (V2 / "reports.html").read_text(encoding="utf-8")),
+                           ("hoa.html", (V2 / "hoa.html").read_text(encoding="utf-8"))):
+            with self.subTest(name):
+                self.assertTrue("list.help(" in text or 'class="list-help"' in text)
+        self.assertIn(".list-help {", SHELL_CSS)
+
+
 class TheSharedRules(unittest.TestCase):
     """sd:2588: shell.css holds each shared annunciator and ledger rule once; no page repeats one."""
 
@@ -352,6 +390,20 @@ class TheSharedRules(unittest.TestCase):
         self.assertEqual([m.group(0).strip() for m in LAMP_ONLY.finditer(wide(SHELL_CSS))], [])
         self.assertTrue(LAMP_ONLY.search(wide((STATIC / "annunciator-strip.css").read_text(encoding="utf-8"))),
                         "the pattern finds the strip's own lamp rules")
+
+    def test_no_rule_lays_a_buttons_icon_label_and_count_on_lines_of_their_own(self):
+        """sd:5729: shell.css's .btn is one nowrap flex line; HOA's touch rule made its toolbar buttons inline-grid, so on
+        an iPad Acknowledge all stacked its icon, label and count. No rule on a .btn may make it a grid or let it wrap."""
+        self.assertRegex(SHELL_CSS, r"\.btn \{[^}]*display: inline-flex;[^}]*white-space: nowrap;")
+        for name, css in {**PAGE_CSS, "shell.css": SHELL_CSS}.items():
+            found = []
+            for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", re.sub(r"/\*.*?\*/", "", css, flags=re.S)):
+                # Split the selector list at its top-level commas: a :not(.a, .b) holds commas of its own.
+                selectors = [sel.strip() for sel in re.split(r",(?![^(]*\))", m.group(1))]
+                if re.search(r"display:\s*(inline-)?grid|white-space:\s*(normal|pre-wrap)", m.group(2)):
+                    found += [sel for sel in selectors if re.search(r"\.btn(\.[\w-]+|\[[^\]]*\]|:[\w-]+)*$", sel)]
+            with self.subTest(name):
+                self.assertEqual(found, [])
 
     def test_one_ledger_layout_auto_with_no_colgroup(self):
         self.assertNotIn("table-layout", SHELL_CSS)
@@ -1036,6 +1088,73 @@ class TheRailWidth(unittest.TestCase):
         self.assertEqual([r for r in rules if re.search(r"\d+px", r)], [])
 
 
+
+
+PANE = re.search(r"^  // pane:start\n(.*?)^  // pane:end$", SHELL_JS, re.S | re.M)
+IPAD = {"maxTouchPoints": 5, "platform": "MacIntel"}
+
+
+class ThePaneFold(unittest.TestCase):
+    """sd:5725: each page keeps its own pane fold, and an iPad starts folded whatever is kept."""
+
+    def run_pane(self, body, stored=None, path="/v2/tasks", nav=None):
+        self.assertIsNotNone(PANE, "shell.js has no pane block")
+        script = ("var STORE = " + json.dumps(stored or {}) + ", ATTR = {};\n"
+                  "var location = { pathname: " + json.dumps(path) + " }, navigator = "
+                  + json.dumps(nav or {"maxTouchPoints": 0, "platform": "MacIntel"}) + ";\n"
+                  "const body = { dataset: {} };\n"
+                  "const store = (k, v) => { if (v === undefined) return k in STORE ? STORE[k] : null; STORE[k] = v; return v; };\n"
+                  "const foldPane = { setAttribute: (k, v) => { ATTR[k] = v; }, querySelector: () => ({ setAttribute: () => {} }) };\n"
+                  + PANE.group(1) + "\nvar R = {};\n" + body
+                  + "\nfunction run() { return JSON.stringify({ R, STORE, ATTR, pane: body.dataset.pane || null }); }\n")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        return json.loads(result.stdout)
+
+    def test_a_fold_is_kept_for_its_page_alone(self):
+        out = self.run_pane("setPane(true);")
+        self.assertEqual(out["STORE"], {"sd.pane./v2/tasks": "min"})
+        self.assertEqual(out["ATTR"]["aria-expanded"], False)
+        # Reports kept its pane open; Tasks folding does not fold it.
+        out = self.run_pane("R.kept = paneKept();", stored={"sd.pane./v2/tasks": "min", "sd.pane./v2/reports": ""}, path="/v2/reports")
+        self.assertIs(out["R"]["kept"], False)
+
+    def test_a_page_with_no_fold_yet_takes_the_old_browser_wide_one(self):
+        out = self.run_pane("R.kept = paneKept();", stored={"sd.pane": "min"})
+        self.assertIs(out["R"]["kept"], True)
+        out = self.run_pane("R.kept = paneKept();", stored={"sd.pane": "min", "sd.pane./v2/tasks": ""})
+        self.assertIs(out["R"]["kept"], False)
+
+    def test_an_ipad_starts_folded_whatever_is_kept_and_a_click_still_toggles(self):
+        out = self.run_pane("R.kept = paneKept(); setPane(false);", stored={"sd.pane./v2/tasks": ""}, nav=IPAD)
+        self.assertIs(out["R"]["kept"], True)
+        self.assertIsNone(out["pane"])
+        # An older iPad names itself; a Mac without touch and an iPhone do not count.
+        self.assertIs(self.run_pane("R.kept = paneKept();", nav={"maxTouchPoints": 5, "platform": "iPad"})["R"]["kept"], True)
+        self.assertIs(self.run_pane("R.kept = paneKept();", nav={"maxTouchPoints": 0, "platform": "MacIntel"})["R"]["kept"], False)
+        self.assertIs(self.run_pane("R.kept = paneKept();", nav={"maxTouchPoints": 5, "platform": "iPhone"})["R"]["kept"], False)
+
+    def test_a_row_select_opens_the_pane_for_the_visit_and_keeps_the_pages_fold(self):
+        """sd:5730: a select is a one-time open; the fold the operator chose for the page stays kept."""
+        out = self.run_pane("setPane(false, false);", stored={"sd.pane./v2/notes": "min"}, path="/v2/notes")
+        self.assertIsNone(out["pane"])
+        self.assertEqual(out["STORE"], {"sd.pane./v2/notes": "min"})
+        self.assertIn("if (body.dataset.pane) setPane(false, false);", SHELL_JS)
+
+    def test_every_pages_row_click_opens_details_at_every_width(self):
+        """sd:5730: Notes, Tasks and Writing opened Details only below 1240 px, so a folded pane stayed folded; Notes' row
+        click did not open it at all. Each page with Details opens it on a row click, the shell's openPane unfolding it."""
+        pages = {name: js for name, js in PAGE_JS.items() if "openPane('tab-details')" in js}
+        self.assertTrue({"notes.js", "tasks.js", "writing.js", "reports.js"} <= set(pages))
+        for name, js in pages.items():
+            with self.subTest(name):
+                self.assertNotRegex(js, r"innerWidth\s*<\s*1240\)\s*(window\.shell\.)?openPane")
+        self.assertIn("if (r && !e.target.closest('button, a, time')) select(r.dataset.id, true);", PAGE_JS["notes.js"])
+
+    def test_the_shell_applies_the_kept_fold_on_load_and_the_rail_keeps_one_key(self):
+        self.assertIn("if (paneKept()) setPane(true);", SHELL_JS)
+        self.assertIn("if (store('sd.rail') === 'min') setRail(true);", SHELL_JS)
 
 
 WALK = re.search(r"^  // walk:start\n(.*?)^  // walk:end$", SHELL_JS, re.S | re.M)

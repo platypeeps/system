@@ -201,7 +201,7 @@
     VIEW_LIST.forEach((v, i) => {
       const on = v.id === id;
       viewTabs[i].setAttribute('aria-selected', on); viewTabs[i].tabIndex = on ? 0 : -1;
-      // A view may show another view's panel (v.panel, Reports' Needs attention): the panel shows while either is on.
+      // A view may show another view's panel (v.panel, Contributions' Hidden): the panel shows while either is on.
       const panel = viewPanel(v); if (panel) panel.hidden = viewPanel(VIEW_LIST.find(w => w.id === id) || {}) !== panel;
       if (viewLinks[i]) on ? viewLinks[i].setAttribute('aria-current', 'true') : viewLinks[i].removeAttribute('aria-current');
     });
@@ -460,7 +460,8 @@
     const i = tabs.indexOf(document.activeElement); if (i < 0) return;
     e.preventDefault(); const n = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length]; showTab(n.id); n.focus();
   });
-  // Collapse: the rail folds to icons (≥900px) and the pane to a strip (≥1240px). [ and ] toggle; each browser remembers.
+  // Collapse: the rail folds to icons (≥900px) and the pane to a strip (≥1240px). [ and ] toggle; the browser remembers the
+  // rail once and the pane per page.
   const store = (k, v) => { try { v === undefined ? v = localStorage.getItem(k) : localStorage.setItem(k, v); } catch { v = null; } return v; };
   const foldRail = rail.querySelector('#fold-rail'), foldPane = pane.querySelector('#fold-pane');
   function setRail(min) {
@@ -471,17 +472,27 @@
     foldRail.querySelector('use').setAttribute('href', `#i-panel-left-${min ? 'open' : 'close'}`);
     rail.querySelectorAll('nav a[data-section]').forEach(a => { a.title = min ? a.querySelector('.nm').textContent : ''; });
   }
-  function setPane(min) {
-    min ? body.dataset.pane = 'min' : delete body.dataset.pane; store('sd.pane', min ? 'min' : '');
+  // pane:start
+  // sd:5725: each page keeps its own pane fold as sd.pane.<path>, as VKEY keys the view; a page with none yet takes the one
+  // browser-wide sd.pane the shell kept before. An iPad starts folded whatever is kept: iPadOS reports a Mac platform, so
+  // touch tells it from a Mac. A click still toggles it for the visit.
+  const PKEY = `sd.pane.${location.pathname}`;
+  const ipad = () => navigator.maxTouchPoints > 1 && /^(Mac|iPad)/.test(navigator.platform || '');
+  const paneKept = () => ipad() || (store(PKEY) ?? store('sd.pane')) === 'min';
+  // sd:5730: keep=false unfolds for the visit only: a row select opens the pane once, and the page keeps the fold its fold
+  // button, ] or a tab click in the strip chose.
+  function setPane(min, keep = true) {
+    min ? body.dataset.pane = 'min' : delete body.dataset.pane; if (keep) store(PKEY, min ? 'min' : '');
     foldPane.setAttribute('aria-expanded', !min); foldPane.setAttribute('aria-label', min ? 'Expand panel (])' : 'Collapse panel (])');
     foldPane.querySelector('use').setAttribute('href', `#i-panel-right-${min ? 'open' : 'close'}`);
   }
+  // pane:end
   foldRail.addEventListener('click', () => setRail(!body.dataset.rail));
   foldPane.addEventListener('click', () => setPane(!body.dataset.pane));
   // A tab click in the strip expands the pane on that tab.
   pane.querySelector('.tabs').addEventListener('click', e => { if (body.dataset.pane && e.target.closest('[role="tab"]')) setPane(false); });
   if (store('sd.rail') === 'min') setRail(true);
-  if (store('sd.pane') === 'min') setPane(true);
+  if (paneKept()) setPane(true);
   // Width: the rail's right edge is a separator (WAI-ARIA window splitter). Drag it, or step it with ← → (Home, End) when it
   // has focus; a double-click goes back to the default. Hidden while the rail is folded, below 900px and on touch, where
   // a page sets it through shell.railWidth instead.
@@ -523,7 +534,7 @@
   const wide = () => matchMedia('(min-width: 1240px)').matches;
   let paneReturn = null;
   // Below 1240 the pane is a bottom sheet, last in the DOM: focus moves into it, or 89 stops sit between the row and the sheet.
-  const openPane = tab => { if (tab) showTab(tab); if (body.dataset.pane) setPane(false); if (!pane.contains(document.activeElement)) paneReturn = document.activeElement; pane.setAttribute('data-open', '');
+  const openPane = tab => { if (tab) showTab(tab); if (body.dataset.pane) setPane(false, false); if (!pane.contains(document.activeElement)) paneReturn = document.activeElement; pane.setAttribute('data-open', '');
     if (!wide() && !pane.contains(document.activeElement)) pane.querySelector('[role="tab"][aria-selected="true"]')?.focus(); };
   // Close puts focus back on the row (or button) that opened the sheet, so a keyboard user does not restart at the top.
   const closePane = () => { const was = pane.hasAttribute('data-open'); pane.removeAttribute('data-open'); if (was && paneReturn?.isConnected && !wide()) paneReturn.focus?.(); };
@@ -1289,7 +1300,14 @@
   function fbar(parts, { clear = false } = {}) {
     return html`<div class="fbar" role="group" aria-label="Filters">${parts}<div class="fsum">${clear ? html`<button class="linkbtn" type="button" data-fclear>Clear all</button>` : ''}</div></div>`;
   }
-  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange, fseg, tok: ftok, fbar, count };
+  // sd:5733: the help line under a table, after its pager: how to work the table (keys, drag, tap) and what its marks mean.
+  // legend is [[mark, meaning]], each mark drawn as the rows draw it, so the two read from one map; text is the how-to.
+  // A table's header, caption or view text keeps what the table is. Static pages write the same <p class="list-help">.
+  function help(text, legend = []) {
+    if (!text && !legend.length) return html``;
+    return html`<p class="list-help">${legend.map(([mark, meaning]) => html`<span class="key">${mark} ${meaning}</span>`)}${text ? html`<span>${text}</span>` : ''}</p>`;
+  }
+  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange, fseg, tok: ftok, fbar, count, help };
   // list:end
 
   // ---------- Layout picker: one icon button and its menu (sd:5064; shared sd:5641) ----------

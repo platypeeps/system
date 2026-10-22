@@ -65,6 +65,10 @@ line on what the state means, from the same device class and domain tables, and
 names the entity, its last change and its source. The repo holds no text per
 entity.
 
+A script or automation tile reads as its last run (sd:5727): Home Assistant's
+`last_triggered`, in local time with its zone, or "last run not read" when the
+answer holds none. Good night is such a tile; its entity id is in the tile list.
+
 Views (`places.js`, `places.py`): Overview is the page above; Tasks, Briefs and
 Reports each read their own document, `GET /api/home/tasks`, `/briefs` and
 `/reports`, only when shown, and the address keeps the view as `#view=<id>`.

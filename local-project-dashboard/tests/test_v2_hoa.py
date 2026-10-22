@@ -1226,7 +1226,8 @@ C.run(c, m); await flush(); R.timers = TIMERS;""", doc,
         self.assertEqual(out["R"]["types"], ["job", "source", "job", "source"])
         self.assertEqual(out["R"]["cli"], ["sd jobs retry hoa-mission-export", "sd jobs retry hoa-vantaca-pull"])
         self.assertEqual(out["R"]["sends"], "launchctl kickstart fixture/hoa-mission-export")
-        self.assertEqual(out["R"]["primary"], [True, False])
+        # sd:5728: Run now is each row's act, the idle Vantaca's too.
+        self.assertEqual(out["R"]["primary"], [True, True])
         self.assertIn("Vantaca", out["R"]["does"])
         self.assertIs(out["R"]["when"], True)
         self.assertEqual(out["R"]["log"], "local-cron-jobs/cron-jobs.sh logs hoa-mission-export")
@@ -1236,6 +1237,22 @@ C.run(c, m); await flush(); R.timers = TIMERS;""", doc,
         self.assertEqual(hoa_reads(out), ["/api/hoa", "/api/hoa"])
         # and once more after SRC_POLL, in case launchd had not marked the job running yet.
         self.assertEqual(out["R"]["timers"], [15000])
+
+    # The row's act as shell.rowActions picks it: the first live command of the row's type that calls itself primary.
+    ACT = """const act = k => { const o = OBJ.get(`source:${k}`); const c = REG.filter(c => c.on === o.type).find(c => c.primary?.(o) && (!c.when || c.when(o) === true)); return c && [c.id, c.icon]; };
+R.acts = [act('mission'), act('vantaca')];"""
+
+    def test_run_now_is_the_mission_and_vantaca_rows_act_whatever_their_last_run(self):
+        """sd:5728: the operator wants Run on the Overview's Mission and Vantaca rows, not only after a failed run."""
+        self.script()
+        self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("idle", 0)})
+        download = self.download_doc()
+        download["sources"] = self.doc()["sources"]
+        for doc in (self.job_doc(), download):
+            self.assertEqual(self.run_page(self.ACT, doc)["R"]["acts"], [["jobs.retry", "play"]] * 2)
+        # A job whose last run did not find its command is not run from the row (sd:3392).
+        self.jobs.jobs.update({"hoa-mission-export": ("failed", 127)})
+        self.assertEqual(self.run_page(self.ACT, self.job_doc())["R"]["acts"], [None, ["jobs.retry", "play"]])
 
     # sd:5626: Refresh all is gone; the head holds Download from Vantaca and Download from Mission, each one start of
     # hoa_download through POST /api/hoa/download, and the source row follows that run.
