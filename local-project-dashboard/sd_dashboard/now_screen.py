@@ -87,7 +87,7 @@ from pathlib import Path
 from sd_db import operations, progress, reads
 from sd_db.errors import SdDbError
 
-from . import active_sessions, issues, job_failures, snooze, today_mail, today_reports
+from . import active_sessions, job_failures, snooze, today_mail, today_reports
 from . import fleet as fleet_module
 from .operations_screen import _signal_name
 
@@ -418,10 +418,6 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     with its `until` and not in `work`; `work_error` says why the items could not be read, and is never an empty list.
     `active` is Working now (sd:3466), `active_sessions.document` over the sessions document this read already holds;
     `herdr` is its seam for the live agents.
-    `issues` is Your issues (sd:4628), `issues.document`: each repo's open issues assigned to or filed by the operator, with
-    `issues_error` saying why none could be read.
-    `intake` is Issue intake (sd:4840), `issues.intake`: each `github_issues` repo's open third-party issues no item
-    carries, with `intake_error` saying why none could be read.
     `observed` holds, for each fleet area the read came from the server's snapshot, when that area was read (`at`)
     and why its newest read failed (`stale`, else None); the page says both (sd:TBD).
     `mail` is Your mail (sd:4191), `today_mail.document`: the mail threads waiting on the operator under each repo's aliases,
@@ -460,38 +456,26 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     work, work_snoozed = snooze.split("today", items, snoozes)
     active = active_sessions.document(connection, now=now, sessions=kept.get("sessions") or {},
                                       sessions_error=sources["sessions"], herdr=herdr)
-    waiting = _waiting(connection, now)
     # When each fleet area was read, and why its newest read failed, from the server's snapshot (sd:TBD).
     observed = {area: {"at": found.get("observed"), "stale": found.get("stale")} for area, found in kept.items()
                 if isinstance(found, dict) and found.get("observed")}
     reported = today_reports.document(connection, now=now, snoozes=snoozes)
     return {"now": now, "sources": sources, "observed": observed, "rows": shown, "active": active, "snoozed": snoozed + work_snoozed, "snooze_error": snooze_error,
-            "work": work, "work_error": work_error, "waiting": waiting,
-            "attention": _attention(shown, waiting, len(reported["problems"]) + reported["problems_more"]),
-            **issues.document(connection), **issues.intake(connection), **today_mail.document(connection, now=now), **reported}
+            "work": work, "work_error": work_error,
+            "attention": _attention(shown, len(reported["problems"]) + reported["problems_more"]),
+            **today_mail.document(connection, now=now), **reported}
 
 
-def _waiting(connection: sqlite3.Connection, now: str) -> int:
-    """The decisions Today lists (sd:3012), which its badge counts; a failed read counts none, as the page's own list did."""
-    from . import decisions
-
-    try:
-        return len(decisions.document(connection, now=now)["decisions"])
-    except (SdDbError, sqlite3.Error):
-        return 0
-
-
-def _attention(rows: list[dict], waiting: int, reports: int = 0) -> dict:
-    """The rail badge (sd:3446): warning rows, else caution rows, the decisions that wait and the open problem reports
-    (`today_reports`), which are caution there too."""
+def _attention(rows: list[dict], reports: int = 0) -> dict:
+    """The rail badge (sd:3446): warning rows, else caution rows and the open problem reports (`today_reports`), which are
+    caution there too. The decisions that wait count on Decide's badge since they moved there (sd:5781)."""
     warning = sum(row["band"] == "broken" for row in rows)
     caution = sum(row["band"] == "look" for row in rows)
     if warning:
         return {"state": "warning", "n": warning, "what": "warning rows"}
-    if caution + waiting + reports:
-        what = " and ".join(word for count, word in ((caution, "caution rows"), (waiting, "decisions waiting"),
-                                                     (reports, "problem reports")) if count)
-        return {"state": "caution", "n": caution + waiting + reports, "what": what}
+    if caution + reports:
+        what = " and ".join(word for count, word in ((caution, "caution rows"), (reports, "problem reports")) if count)
+        return {"state": "caution", "n": caution + reports, "what": what}
     return {"state": "ok", "n": 0, "what": "rows"}
 
 

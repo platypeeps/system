@@ -158,9 +158,9 @@ def _rows(connection, rows, found, *, now: str) -> list[dict]:
             "allowed": workflow.allowed_statuses(connection, row["id"], state=state),
             "edit": _edit_capability(row),
             "parked": row["parked_at"],
-            # The place Tasks' HOA and Home views filter on: the HOA and Home pages' Tasks rule (`places.area_of`).
+            # The place Tasks' Realm HOA and Home filter on: the HOA and Home pages' Tasks rule (`places.area_of`).
             "area": area_of(row["repo"], row["kind"], hoa),
-            # The realm Tasks' Personal, Work and other realm views filter on (sd:5064, `places.realm_of`).
+            # The realm Tasks' Realm filter narrows to: Personal, Work and the others (sd:5064, `places.realm_of`).
             "realm": realm_of(row["repo"], row["kind"], rules),
             # File GitHub issue and File Jira issue (sd:5103): where each would file, or why it is off; and the
             # issue the item's ref names, for the row's link icon.
@@ -178,7 +178,7 @@ def _column(row, name: str):
 def is_scheduled(row) -> bool:
     """Whether a `reads.backlog_items` row is a scheduled occurrence (pack sd:5648), which a list shows only once it opens.
 
-    Home and HOA Tasks, the HOA page, Metrics' age, Start next, Review and Decisions hide it, as Tasks does (sd:5670).
+    Home and HOA Tasks, the HOA page, Metrics' age, Start next, Scoring and Decisions hide it, as Tasks does (sd:5670).
     A pack before sd:5648 gives no `scheduled`: nothing is scheduled, and every row shows as before.
     """
     return bool(_column(row, "scheduled"))

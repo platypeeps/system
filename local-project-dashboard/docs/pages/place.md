@@ -14,7 +14,7 @@ points each view at `GET /api/place/<id>/tasks`, `/briefs` or `/reports`,
 read only when shown:
 
 - Tasks: the open items `places.realm_of` puts in the realm, the rows of
-  Tasks' realm view.
+  Tasks under that Realm.
 - Briefs: briefs whose repo a glob of the realm matches, and briefs whose
   series, lower-cased with spaces as hyphens, names a job of the family.
 - Reports: reports of the family's jobs, from the newest 200.

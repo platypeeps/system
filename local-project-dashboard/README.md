@@ -53,19 +53,22 @@ non-zero, a shadow read or a launchd read that fails — is a rank-0 row naming 
 and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
-**Issues**, the tab after Now, lists Your issues, the open Jira and GitHub issues assigned to you or filed by you, and
-Issue intake (sd:4628, sd:4840). Your issues moved here from Tasks (sd:5645), which keeps no copy.
+Today has four tabs by job (sd:5781): Now, Inbox, Status and Work. Decisions moved to **Decide**, and the GitHub tab
+with Your issues and Issue intake to **GitHub**; an old `/today#view=decisions`, `#view=github` or `#view=issues`
+address opens there, with its query.
 
-**Status**, the tab after Issues, shows the sections `sd today` and `sd-status` print (sd:5099).
+**Status**, the tab after Inbox, shows the sections `sd today` and `sd-status` print (sd:5099).
 `/api/today/status` is the pack's `sd_db.today.sections` unchanged, so the tab and the command cannot drift.
 A bar shows where the work is: delivered in 24 h, landing, planned, unscheduled and blocked. Its key links each count
 to its section. Each section shows its first 5 rows, as the command does, and Show all opens the rest.
 The gate slots come from `sd gate status --json`; a failed read shows as unknown with its reason.
 
-**GitHub**, the tab after Inbox, lists your open pull requests and issues, and those merged or closed in 7 days (sd:5608).
+**GitHub**, at `/github` in the rail's Work group (sd:5781), has three tabs. **Pull requests** lists your open pull requests and issues, and those merged or closed in 7 days (sd:5608).
 `/api/today/github` (`today_github.py`) reads only what is stored: `shadow`, the Contributions projection, the
 repos with GitHub issues on, sd-ship's delivery notes and items filed under a `github:` ref; it calls no collector.
-Rows sort newest GitHub activity first; a row with no stamp says not recorded. Your issues and Issue intake stay on Issues.
+Rows sort newest GitHub activity first; a row with no stamp says not recorded. **Your issues** lists the open Jira and
+GitHub issues assigned to you or filed by you, and **Intake** each third-party issue no item carries (sd:4628, sd:4840),
+both read from `/api/github/issues`.
 A pull request row opens its details in the right pane (sd:5633), with Open on GitHub, Open item, Adversarial review
 (a codex review of the pull request at its head, in its registered checkout) and Copilot review. Copilot review asks
 GitHub once per press through `POST /api/today/github/copilot-review`, which runs `gh api` for one open pull request.
@@ -76,10 +79,11 @@ its confirm previews the head, author, worktree and item; then it fetches `pull/
 Close original (sd:5669, `pr_close.py`) opens once the lane merged the copy, as its item's delivery note records it:
 its confirm shows the exact comment, which links the lane's pull request and merge commit; then it posts that comment
 once and closes the original, never merges it. A second press finds an earlier comment by its marker and only closes.
-Now, Work and GitHub rows share one selection (sd:5654): pressing a row in any of them marks it alone, names it in
+Now and Work rows share one selection (sd:5654): pressing a row in either marks it alone, names it in
 `?row=` and shows its details; a Work row's title there opens the item on Tasks.
 
-**Decisions**, below Now, list the questions that wait on the operator, one button per option (sd:3012).
+**Decide**, at `/decide` in the rail's Now group (sd:5781), has two tabs: **Decisions** and **Scoring**, the review
+queue that was the Review page (`/review` opens Scoring). Its rail badge counts both. **Decisions** list the questions that wait on the operator, one button per option (sd:3012).
 Ask one with a `question` note that carries one `Option: <text>` line per choice, at least two:
 `sd task note N $'Which store?\nOption: Pack store kind\nOption: Database rows' --kind question`.
 Keep each option short; the rest of the body is the question. A button writes the ruling as a `decision` note,

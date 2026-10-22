@@ -593,6 +593,18 @@ class ThePostMergeTarget(unittest.TestCase):
             with self.subTest(tool=tool):
                 self.assertIn(tool, line)
 
+    def test_the_refresh_gives_up_on_the_gates_while_the_lane_cap_leaves_time_for_the_rest(self):
+        # The lane ends `make post-merge` at the pack's POST_MERGE_SECONDS (600). The refresh's drain waited up to 45
+        # minutes for gates run by hand, so the target timed out, and could be killed mid-move (sd:5799). Its bound
+        # must leave the moves, the prompt refresh and the health check two minutes at least.
+        run = subprocess.run(["make", "-n", "post-merge"], cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        refresh = run.stdout.splitlines()[0]
+        wait = re.search(r"\bREPO_SYNC_DRAIN_WAIT=(\d+) ", refresh)
+        self.assertIsNotNone(wait, refresh)
+        self.assertLessEqual(int(wait.group(1)), 600 - 120, refresh)
+        self.assertGreater(int(wait.group(1)), 0, refresh)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)
