@@ -11,6 +11,7 @@
 //     reread    reads the rows again after a landed write; load reads them after a refused one and answers whether it read
 //     select    selects a task (File issue)  view      'list', 'board' or 'matrix', which a row's primary move follows
 //     got       a Details reading answered (Tasks' linked item, sd:5462): true selects it
+//     draftFirst  a task whose first action is Draft email, not its next status (HOA's followups, sd:5671)
 //     empty, note, foot, more   the page's lines: nothing selected, under the title, the footer, a link to Tasks
 //     landed    marks a landed write's card
 //     lead      whether the store takes a lead (tasks_screen._has_lead, pack sd:5648): the Lead field shows and writes
@@ -46,6 +47,7 @@
   function attach(host) {
     const { ICON, toast } = window.shell;
     const byKey = host.byKey || (k => host.rows().find(t => t.key === k)), selected = host.selected, view = host.view || (() => 'list');
+    const draftFirst = t => !!t && !!host.draftFirst?.(t);
     // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
     function absorb(key, state) {
       const t = byKey(key); if (!t || !state?.item) return;
@@ -291,7 +293,7 @@
     const STATUS_ICON = { planning: 'notebook-pen', ready: 'flag-triangle-right', in_progress: 'play', blocked: 'ban', done: 'check' };
     const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
       id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: STATUS_ICON[s], bar: false,
-      primary: o => view() === 'list' && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
+      primary: o => view() === 'list' && !draftFirst(T(o)) && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
       when: o => { const t = T(o); return t ? moveOn(s, t) : 'the task is no longer listed'; },
       cli: o => rowOr(o, t => cliMove(t, s)),
       run: o => { const t = must(o); let from = t.status;
@@ -306,7 +308,7 @@
     // row is skipped with its reason (keys below).
     const completeOn = t => { if (!repeats(t)) return 'the task does not repeat; Status → Done completes it'; const L = legal(t, 'done'); return L.ok || L.reason; };
     const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-clock', bar: false,
-      primary: o => view() === 'list' && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
+      primary: o => view() === 'list' && !draftFirst(T(o)) && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
       when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
       cli: o => rowOr(o, t => cliMove(t, 'done')),
       // build: next_due is workflow.next_occurrence_due, the date the completion computes. null is its "none": the
@@ -395,7 +397,10 @@
       // as a Gmail draft with no recipient. Nothing sends it. It asks first, since it runs a model and writes to Gmail. An
       // answered refusal reads the rows again: a failure writes a note, so the row's revision moved. A post with no answer
       // may have saved a draft, so it says that. No Undo: the draft stays in Gmail for the operator to send or delete.
-      { id: 'item.email', on: 'item', label: 'Draft email', risk: 'safe', askFirst: true, executes: true, icon: 'mail',
+      // sd:5671: HOA's Draft followup posted this route too; merged here, it keeps its key d, and a host's draftFirst rows
+      // (HOA's followups) take it as their first action.
+      { id: 'item.email', on: 'item', label: 'Draft email', key: 'd', risk: 'safe', askFirst: true, executes: true, icon: 'mail',
+        primary: o => draftFirst(T(o)),
         when: o => { const t = T(o); return !t ? 'the task is no longer listed' : CLOSES.includes(t.kind) || `Draft email writes about a task or followup; this is a ${t.kind} item`; },
         cli: () => 'no sd verb: the dashboard runs claude -p and saves the draft through workspace-mcp',
         sends: o => `POST /api/items/${T(o).id}/draft-email {revision}`,

@@ -54,11 +54,11 @@ class OneDeclaration(unittest.TestCase):
         users = sorted(name for name, body in SCRIPTS.items() if re.search(r"window\.commands\b", body) and name != SHARED)
         self.assertEqual(users, ["activity.js", "brief-details.js", "briefs.js", "contributions.js", "documents.js", "health.js", "hoa.js", "management.js", "queue.js", "report-details.js", "research.js",
                                  "task-details.js", "today-github.js", "today.js"])
-        # brief-details.js (sd:5620), report-details.js (sd:5636) and task-details.js (sd:5635) are modules, not pages: every
+        # brief-details.js (sd:5620), report-details.js (sd:5636) and task-details.js (sd:5635, on HOA sd:5671) are modules, not pages: every
         # page that loads one loads the shared module first. today-github.js is Today's GitHub view (sd:5633), loaded by
         # today.html.
         modules = {"brief-details.js": ["briefs.html", "hoa.html", "home.html", "place.html"], "report-details.js": ["hoa.html", "home.html", "reports.html"],
-                   "task-details.js": ["home.html", "place.html", "tasks.html"],
+                   "task-details.js": ["hoa.html", "home.html", "place.html", "tasks.html"],
                    "today-github.js": ["today.html"]}
         scripts = lambda page: re.findall(r'<script src="/ui/([^"]+)"', page.read_text(encoding="utf-8"))
         for name in users:

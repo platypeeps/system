@@ -3,7 +3,8 @@ views share.
 
 Each view reads its own document: `/api/<area>/tasks`, `/api/<area>/briefs` and `/api/<area>/reports`, built here
 from readers that already exist, with no store of its own. HOA's Tasks is the exception: its rows are
-`/api/hoa`'s items (`hoa_screen`, ranked by urgency), which the page reads anyway for its annunciator and badge.
+`/api/hoa`'s items (`hoa_screen`, ranked by urgency), which the page reads anyway for its annunciator and badge; they
+are the same `tasks_screen._rows` (sd:5671).
 
 **Which rows are an area's.**
 

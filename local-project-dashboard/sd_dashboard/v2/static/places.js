@@ -2,7 +2,7 @@
 // place.js: Tasks | Briefs | Reports) and Tasks' place views.
 // Data: a place view with data-api reads its own document when it is shown, /api/<place>/<view> (sd_dashboard/places.py).
 // Overview is the page's own read, and so is HOA's Tasks: hoa.js draws it from /api/hoa, which the annunciator and the badge
-// read anyway. Which rows are a place's is decided once (places.area_of): Tasks' HOA and Home views filter on the `area` each
+// read anyway, with the Tasks page's Details (task-details.js, sd:5671). Which rows are a place's is decided once (places.area_of): Tasks' HOA and Home views filter on the `area` each
 // /api/tasks row carries, so they hold the place pages' Tasks rows. A view that did not read is unknown with its reason, never
 // an empty list. Nothing here writes; a brief's Details (brief-details.js) carry the Briefs page's commands, a report's
 // (report-details.js) the Reports page's, and a task's (task-details.js) the Tasks page's. Markup is html`…` from markup.js:
@@ -176,7 +176,7 @@
   function place() {
     if (blocks.some(b => b.dataset.placeView === 'briefs')) DETAILS.briefs = briefs('briefs');
     if (blocks.some(b => b.dataset.placeView === 'reports')) DETAILS.reports = reports('reports');
-    // HOA's Tasks is hoa.js's table from /api/hoa, with HOA's own item commands: only a Tasks view that reads its rows.
+    // HOA's Tasks is hoa.js's table from /api/hoa, which attaches task-details.js itself (sd:5671): only a Tasks view that reads its rows.
     if (blocks.some(b => b.dataset.placeView === 'tasks' && b.dataset.api)) DETAILS.tasks = tasks('tasks');
     Object.keys(DETAILS).forEach(v => { if (!DETAILS[v]) delete DETAILS[v]; });
     list();

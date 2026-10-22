@@ -90,11 +90,12 @@ its own reads failed, naming `start.log`.
 
 Gaps from the design: the map is one SVG of the files' vectors with Fit, zoom
 and drag, not Leaflet, so there are no asset clusters and no aerial button.
-Draft followup asks the chat, which has no backend yet; nothing is sent.
 
 Views (`places.js`, `places.py`): Overview is the page above. Tasks is one
 table of `/api/hoa`'s items, ranked by urgency: the id is its own first column,
 every column sorts (a third click returns to the rank), and Kind narrows the rows.
+A row is the Tasks page's row, and its Details and commands are Tasks' (`task-details.js`, sd:5671);
+a followup's first action is Draft email, which saves a Gmail draft and never sends.
 Briefs and Reports each read their own document, `GET /api/hoa/briefs` and
 `/reports`, only when shown, and the address keeps the view as `#view=<id>`.
 A brief is hoa's when its series, lower-cased with spaces as hyphens,

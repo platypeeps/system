@@ -7,7 +7,7 @@
   (sd:4967, POST /api/hoa/alarm, the workflow database's view state), Acknowledge all on the Alarms toolbar (sd:5621, POST /api/hoa/alarms) and Run sweep on the HOA sweep row (sd:5095, POST /api/hoa/sweep,
   the checkout's tools/sweep.py in the background: Gmail drafts only); email is never sent; the Mission portal is never touched.
   Nothing here is sample data.
-  Views (places.js, left to right as below): Overview is the above; Tasks is hoa.js's table of /api/hoa's items; Briefs and Reports each read /api/hoa/<view> (places.py) when shown; Alarms, right of Reports (sd:5622), is hoa.js's alarm ledger (sd:5286). A Briefs row shows its Details in the pane, the Briefs page's own (brief-details.js, sd:5620); a Reports row the Reports page's (report-details.js, sd:5636).
+  Views (places.js, left to right as below): Overview is the above; Tasks is hoa.js's table of /api/hoa's items, whose rows show the Tasks page's Details (task-details.js, sd:5671); Briefs and Reports each read /api/hoa/<view> (places.py) when shown; Alarms, right of Reports (sd:5622), is hoa.js's alarm ledger (sd:5286). A Briefs row shows its Details in the pane, the Briefs page's own (brief-details.js, sd:5620); a Reports row the Reports page's (report-details.js, sd:5636).
 -->
 <html lang="en">
 <head>
@@ -25,6 +25,7 @@
 <link rel="stylesheet" href="/ui/places.css">
 <link rel="stylesheet" href="/ui/brief-details.css">
 <link rel="stylesheet" href="/ui/report-details.css">
+<link rel="stylesheet" href="/ui/task-details.css">
 </head>
 <body data-page="HOA" data-scope="hoa" data-scope-note="HOA water system" data-place="hoa">
 <script src="/ui/icons.js"></script>
@@ -88,7 +89,7 @@
   </div>
 
   <section class="place-view" id="view-tasks" data-place-view="tasks" data-label="Tasks" aria-labelledby="tasks-h" hidden>
-    <div class="sec-head"><div><h2 id="tasks-h">Tasks</h2><p>Every open item of the hoa checkout, ranked by urgency: overdue, due within a week, the rest. Drafts go to chat; you send.</p></div></div>
+    <div class="sec-head"><div><h2 id="tasks-h">Tasks</h2><p>Every open item of the hoa checkout, ranked by urgency: overdue, due within a week, the rest. Draft email saves a Gmail draft; you send it.</p></div></div>
     <div class="toolbar" id="ob-toolbar"><div class="range" id="ob-kinds" role="group" aria-label="Kind"></div></div>
     <table class="ledger" id="ob-table" aria-labelledby="tasks-h" data-toolbar="ob-toolbar">
       <thead id="ob-head"></thead>
@@ -121,6 +122,7 @@
 <script src="/ui/commands.js"></script>
 <script src="/ui/brief-details.js"></script>
 <script src="/ui/report-details.js"></script>
+<script src="/ui/task-details.js"></script>
 <script src="/ui/hoa.js"></script>
 <script src="/ui/places.js"></script>
 <script src="/ui/shell.js"></script>

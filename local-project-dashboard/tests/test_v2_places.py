@@ -109,7 +109,7 @@ class Tasks(Fixture):
             tasks = sorted(r["id"] for r in rows if r["area"] == area and r["status"] != "done" and not r["parked"])
             self.assertEqual(tasks, self.ids(places.tasks(self.connection, area, now=NOW)), area)
         # The HOA page draws its Tasks view from /api/hoa's items: the same rows, in urgency order.
-        hoa = sorted(r["item"] for r in hoa_screen.document(self.connection, now=NOW)["items"]["rows"])
+        hoa = sorted(r["id"] for r in hoa_screen.document(self.connection, now=NOW)["items"]["rows"])
         self.assertEqual(hoa, self.ids(places.tasks(self.connection, "hoa", now=NOW)))
         self.assertEqual({r["id"]: r["area"] for r in rows if r["id"] == self.other_item}, {self.other_item: None})
 
@@ -612,7 +612,7 @@ shellRun(cmd('report.ack'), C.get('r{self.fun}')); await flush(); R.det = ELS.de
 
     def test_a_tasks_row_shows_the_tasks_pages_details_in_the_pane_and_the_page_stays(self):
         # sd:5635: a Tasks row on Home fills Details with the Tasks page's own Details and commands, rather than opening
-        # Tasks; a link in Details still opens it there. HOA's Tasks rows are hoa.js's, with HOA's own item commands.
+        # Tasks; a link in Details still opens it there. HOA's Tasks rows are hoa.js's, which attaches it itself (sd:5671).
         n = self.home_item
         out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=tasks'); R.rows = ELS['tasks-rows'].html;
 clickRow('{n}'); await flush();

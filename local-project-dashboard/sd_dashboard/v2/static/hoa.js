@@ -27,6 +27,10 @@
   const DOWNLOADS = {};
   // sd:5621: the Alarms toolbar's Acknowledge all command, registered on DOMContentLoaded.
   let ACK_ALL = null;
+  // sd:5671: a Tasks row's Details and commands, the Tasks page's (task-details.js), attached on DOMContentLoaded.
+  let TD = null;
+  // Whether the pane is HOA's: Briefs and Reports draw their own Details there (places.js).
+  const own = () => !['briefs', 'reports'].includes(window.shell.view?.current?.());
 // A source's refresh job (its source-ages row's `job`) as the jobs inventory reads it: its last run, in words.
 const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
   : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
@@ -71,8 +75,8 @@ let polling = 0;
       : { id: 'alarms', label: 'Alarms today', state: at.count ? 'warning' : 'ok', open: AL[0]?.id, val: html`<b>${at.count}</b> today${at.acked ? ` · ${at.acked} acknowledged` : ''}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` });
     const late = OB.filter(o => o.state === 'warning').length, soon = OB.filter(o => o.state === 'caution').length;
     out.push(f.error ? { id: 'tasks', label: 'Tasks', state: 'unknown', val: html`<b>—</b> not read`, small: f.error }
-      : late ? { id: 'tasks', label: 'Tasks', state: 'warning', open: OB[0].id, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
-      : { id: 'tasks', label: 'Tasks', state: soon ? 'caution' : 'ok', open: OB[0]?.id, val: html`<b>${soon || OB.length}</b> ${soon ? 'due soon' : 'open'}`, small: soon ? `${OB.length} open · none overdue` : 'none overdue or due within a week' });
+      : late ? { id: 'tasks', label: 'Tasks', state: 'warning', open: OB[0].key, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
+      : { id: 'tasks', label: 'Tasks', state: soon ? 'caution' : 'ok', open: OB[0]?.key, val: html`<b>${soon || OB.length}</b> ${soon ? 'due soon' : 'open'}`, small: soon ? `${OB.length} open · none overdue` : 'none overdue or due within a week' });
     out.push(m.latest ? { id: 'mission', label: 'Mission data', state: m.stale ? 'caution' : 'ok', open: 'source:mission', val: html`<b>${m.age_days} d</b> old`, small: `newest row ${m.latest}${m.error ? ' · a file did not read' : ''}` }
       : { id: 'mission', label: 'Mission data', state: 'unknown', open: src, val: html`<b>—</b> not read`, small: why });
     return out;
@@ -205,13 +209,12 @@ let polling = 0;
       ${lots.error ? unknownBlock(lots.error) : dl([['Address', l.address || 'no match in the lot data'], ['Owner of record', l.owner], ['AIN', l.parcel],
         ['Source', `county parcel layer, fetched ${lots.fetched_at.slice(0, 10)}`]])}`, null, open);
   }
-  function selectOb(id, open) {
-    const o = OB.find(x => x.id === id); if (!o) return;
-    selected = id; mark(); drawMap();
-    show(html`<div class="kind"><span class="g-${o.state}" aria-hidden="true">${GLYPH[o.state]}</span><span class="label">${o.kind[0].toUpperCase()}${o.kind.slice(1)} · sd:${o.item}</span></div>
-      <h2>${o.title}</h2>${dl([['Due', o.due ? `${o.due.slice(0, 10)} · ${dueText(o)}` : 'no due date'], ['Priority', o.priority == null ? '' : `P${o.priority}`], ['Status', o.status], ['Item', `sd:${o.item}`], ['Source', `sd item, kind ${o.kind}`]])}
-      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}
-      <p class="why">Drafting asks the HOA chat for an email. Nothing is sent: the HOA rule is no external action without your approval.</p>`, id, open);
+  // sd:5671: a task's Details are the Tasks page's (task-details.js), drawn into this pane; its key is the item number.
+  function selectTask(key, open) {
+    const o = OB.find(x => x.key === key); if (!o || !TD) return;
+    selected = key; mark(); drawMap();
+    window.shell.commands.select(key); TD.readDet(o.id); TD.renderDetails();
+    if (open) window.shell.openPane('tab-details');
   }
   function selectAlarm(id, open) {
     const a = AL.find(x => x.id === id); if (!a) return;
@@ -256,7 +259,7 @@ let polling = 0;
   function select(id, open) {
     if (!id) return;
     if (id.startsWith('asset:')) selectAsset(id, open);
-    else if (id.startsWith('item:')) selectOb(id, open);
+    else if (OB.some(o => o.key === id)) selectTask(id, open);
     else if (id.startsWith('lot:')) selectLot(id.slice(4), open);
     else if (id.startsWith('alarm:')) { if (window.shell.view?.current() !== 'alarms') window.shell.view?.show('alarms'); selectAlarm(id, open); }
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
@@ -388,7 +391,7 @@ let polling = 0;
   let kind = 'all';
   const OB_COLS = [['item', 'ID', 'num'], ['rank', html`<span class="sr">Urgency</span>`], ['title', 'What'], ['kind', 'Kind', 'hide-sm'],
     ['due', 'Due', 'hide-sm'], ['status', 'Status', 'hide-sm'], ['', html`<span class="sr">Actions</span>`]];
-  const OB_BY = { item: o => o.item, rank: o => OB.indexOf(o), title: o => o.title.toLowerCase(), kind: o => o.kind, due: o => o.due_days ?? Infinity, status: o => o.status };
+  const OB_BY = { item: o => o.id, rank: o => OB.indexOf(o), title: o => o.title.toLowerCase(), kind: o => o.kind, due: o => o.due_days ?? Infinity, status: o => o.status };
   function obRows() {
     const rows = OB.filter(o => kind === 'all' || o.kind === kind), by = OB_BY[OB_ST.sort];
     return by ? rows.sort((a, b) => { const x = by(a), y = by(b); return (x < y ? -1 : x > y ? 1 : 0) * OB_ST.dir; }) : rows;
@@ -401,11 +404,11 @@ let polling = 0;
     put($('ob-head'), window.shell.list.sortHead(OB_COLS, OB_ST));
     const rows = obRows();
     put($('ob-body'), !DOC ? html`` : f.error ? html`<tr><td colspan="7">${unknownBlock(f.error)}</td></tr>`
-      : rows.length ? html`${rows.map(o => html`<tr data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}">
-        <td class="id num">sd:${o.item}</td><td class="g g-${o.state}" aria-label="${o.state}">${GLYPH[o.state]}</td>
-        <td class="what"><button type="button">${o.title}</button>${o.priority == null ? '' : html` <span class="tag real">P${o.priority}</span>`}<div class="detail">${dueText(o)}</div></td>
+      : rows.length ? html`${rows.map(o => html`<tr data-id="${o.key}" aria-selected="${o.key === selected ? 'true' : 'false'}">
+        <td class="id num">sd:${o.id}</td><td class="g g-${o.state}" aria-label="${o.state}">${GLYPH[o.state]}</td>
+        <td class="what"><button type="button">${o.title}</button>${o.p == null ? '' : html` <span class="tag real">P${o.p}</span>`}<div class="detail">${dueText(o)}</div></td>
         <td class="hide-sm">${o.kind}</td><td class="detail hide-sm">${dueText(o)}</td><td class="src hide-sm">${o.status}</td>
-        <td class="act">${C.rowActions(o.id)}</td></tr>`)}`
+        <td class="act">${C.rowActions(o.key)}</td></tr>`)}`
       : html`<tr><td colspan="7" class="why">No open item in the checkout.</td></tr>`);
   }
 
@@ -430,7 +433,8 @@ let polling = 0;
   }
   const alarmState = a => a.kind === 'generator' ? ['queued', 'weekly generator test'] : /Normal/.test(a.event) ? ['ok', 'return to normal'] : ['warning', 'alarm'];
 
-  function draw() { lamps(); drawSources(); drawMap(); legend(); drawTrends(); drawTasks(); drawLedgers(); }
+  // A read retires the objects it did not put: the open task's notes and assignments are put again (task-details.js).
+  function draw() { TD?.putAll(); lamps(); drawSources(); drawMap(); legend(); drawTrends(); drawTasks(); drawLedgers(); }
 
   // ---------- Reader (read.js) ----------
   let reader = null;
@@ -445,7 +449,9 @@ let polling = 0;
     adopt: doc => {
       DOC = doc; M = doc.mission;
       ASSETS = doc.assets.features; LOTS = doc.base.features;
-      OB = doc.items.rows;
+      // sd:5671: each item is an /api/tasks row (hoa_screen._items) in task-details.js's task shape, with HOA's due state.
+      OB = doc.items.rows.map(r => Object.assign(TD.shape(r), { state: r.state, due_days: r.due_days }));
+      TD.adopt(OB);
       // An event's id is its datetime and text, the server's view key (hoa_screen.alarm_key), so it holds across reads.
       AL = M.alarms.slice().reverse().map(a => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime} ${a.event}`, st, why }; });
       ACKS = M.acks && !M.acks.available ? `Acknowledge is off: ${M.acks.reason}` : '';
@@ -459,7 +465,7 @@ let polling = 0;
       const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, !doc.base.error && doc.lots.error && `Lots: ${doc.lots.error}`, doc.items.error && `Tasks: ${doc.items.error}`].filter(Boolean);
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
-        ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title, kind: o.kind, revision: o.revision })),
+        ...OB.map(TD.objectOf),
         // sd:5621: the Alarms toolbar, which Acknowledge all acts on; its label is the count the confirm names.
         ...(M.error ? [] : [{ id: 'alarms', type: 'alarms', label: plural(AL.filter(a => !a.acked).length, 'alarm') }]),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
@@ -484,9 +490,9 @@ let polling = 0;
     },
     draw,
     current: () => selected,
-    first: () => OB[0]?.id,
+    first: () => OB[0]?.key,
     // sd:5620: a Briefs row fills Details in its view (places.js); a read selects HOA's own rows only outside Briefs and Reports.
-    active: () => !['briefs', 'reports'].includes(window.shell.view?.current?.()),
+    active: () => own(),
     select: (id, opened) => select(id, opened),
     unselect: () => { selected = null; mark(); put($('details'), html`<p class="note">${DOC ? 'Select a marker, a task, an alarm or a trend day to see it here.' : 'Nothing is selected: the HOA readings could not be read.'}</p>`); },
   };
@@ -503,20 +509,19 @@ let polling = 0;
 
   document.addEventListener('DOMContentLoaded', () => {
     const S = window.shell, C = S.commands;
+    // ---------- Tasks' Details (sd:5671) ----------
+    // A task's Details, commands, writes and dialogs are the Tasks page's (task-details.js), as on Home and the realm places.
+    // HOA gives it the rows, the selection and the read; its due line; a link to Tasks; and Draft email (sd:3463, which
+    // HOA's Draft followup posted too) as a followup's first action. Email is never sent from the dashboard.
+    TD = window.taskDetails.attach({ details: $('details'), rows: () => OB, selected: () => own() ? selected : null, read: () => DOC?.read,
+      render: () => { drawTasks(); if (own() && OB.some(o => o.key === selected)) TD.renderDetails(); }, reread: () => reader.reread(), load: () => reader.load(),
+      select: (key, open) => select(key, open), draftFirst: t => t.kind === 'followup',
+      note: t => html`<p class="why"><span class="g-${t.state}" aria-hidden="true">${GLYPH[t.state]}</span> ${t.due ? `${t.due.slice(0, 10)} · ${dueText(t)}` : 'no due date'}</p>`,
+      foot: () => DOC ? html`Rows read <time class="rel" datetime="${DOC.read}"></time> from /api/hoa.` : '',
+      more: t => html`<p class="why"><a href="${S.itemHref(t.id)}">Open on Tasks</a>: the board, the matrix and every task.</p>` });
     reader = S.read(spec);
     // ---------- Commands (products/system/commands.md) ----------
-    // Draft followup is Tasks' Draft email (sd:5483, email_draft): claude writes it and workspace-mcp saves it as a Gmail draft
-    // in the EMAIL_FROM account, with no recipient. Email is never sent from the dashboard.
-    const openItem = o => S.openItem(o.item);
     C.register(
-      // A followup's first action drafts it; any other kind's opens the item (sd:4959).
-      { id: 'item.draft', on: 'item', label: 'Draft followup', key: 'd', risk: 'safe', primary: o => o.kind === 'followup',
-        icon: 'mail', executes: true, sends: o => `POST /api/items/${o.item}/draft-email {revision}`,
-        run: o => S.post(`/api/items/${o.item}/draft-email`, { revision: o.revision }).then(
-          v => reader.reread().then(() => `Draft saved · sd:${o.item} · "${v.draft.subject}" · in Gmail Drafts, not sent`),
-          err => { if (!err.status) throw new Error(`no answer (${err.message}), so whether a draft was saved is not known; look in Gmail Drafts before you draft again`);
-            reader.reread(); throw err; }) },
-      { id: 'item.open', on: 'item', label: 'Open item', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: o => o.kind !== 'followup', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
       { id: 'asset.ask', on: 'asset', label: 'Ask', key: 'a', icon: 'message-square', risk: 'safe', primary: () => true,
         run: o => { S.openChat(); S.send(`What do we know about ${o.asset} (${o.name})?`); return ''; } },
     );

@@ -771,7 +771,7 @@ class TheScript(ScreenCase):
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.fix", "item", "safe", "f", True, True, False],
             ["item.adversarial-review", "item", "safe", None, True, True, False],
-            ["item.email", "item", "safe", None, True, True, False],
+            ["item.email", "item", "safe", "d", True, True, False],
             ["item.file-github-issue", "item", "safe", None, True, True, False],
             ["item.file-jira-issue", "item", "safe", None, True, True, False],
             ["issue.file", "issue draft", "confirm", None, True, True, False],

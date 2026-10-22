@@ -28,7 +28,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_dashboard import hoa_download, hoa_screen, server, v2
+from sd_dashboard import hoa_download, hoa_screen, places, server, v2
 
 from sd_db import SdDbError, connect, upsert_repo, workflow, writes
 from sd_db.migrate import initialise
@@ -44,6 +44,7 @@ from test_v2_shell_shared import cell_grammar
 V2 = Path(v2.__file__).resolve().parent
 HOA_JS = (V2 / "static" / "hoa.js").read_text(encoding="utf-8")
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
+TASK_DETAILS_JS = (V2 / "static" / "task-details.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
 #: NOW is 2026-09-06; the export below ends the day before, so it is current and has no row for today.
@@ -97,6 +98,12 @@ def checkout(root: Path, *, analog=ANALOG, pump=PUMP, alarms=ALARMS, base=BASE, 
     for name, data in (("base.geojson", base), ("assets.geojson", assets)):
         (maps / name).write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
     return root
+
+
+def hoa_reads(out) -> list[str]:
+    """The page's reads less a task's Details reading, /api/tasks/<id> (task-details.js, sd:5671): the first read selects
+    the first task, and its Details read it."""
+    return [path for path in out["gets"] if not path.startswith("/api/tasks/")]
 
 
 class HoaJobs:
@@ -221,19 +228,29 @@ class TheDocument(Fixture):
     def test_items_are_the_checkouts_open_items_of_every_kind_ranked_by_urgency(self):
         # sd:4959: one table of every open hoa item; a report is its family's, so it is not here.
         rows = self.doc()["items"]["rows"]
-        self.assertEqual([(r["item"], r["kind"], r["state"], r["due_days"]) for r in rows],
+        self.assertEqual([(r["id"], r["kind"], r["state"], r["due_days"]) for r in rows],
                          [(self.late, "followup", "warning", -5), (self.soon, "followup", "caution", 4),
                           (self.later, "followup", "queued", 54), (self.task, "task", "queued", 14),
                           (self.blocked, "task", "queued", None)])
-        self.assertEqual(rows[0]["id"], f"item:{self.late}")
         self.assertEqual((rows[0]["priority"], rows[-1]["status"]), (1, "blocked"))
 
     def test_a_scheduled_occurrence_is_no_item_until_it_opens(self):
         """sd:5670: as Tasks does, the table hides a scheduled occurrence (pack sd:5648); a pack before it shows the row."""
         flush = self.schedule(self.item("Flush the hydrants", kind="task", repo=str(self.hoa)), "2026-09-09")
-        self.assertNotIn(flush, [r["item"] for r in self.doc()["items"]["rows"]])
+        self.assertNotIn(flush, [r["id"] for r in self.doc()["items"]["rows"]])
         with before_5648():
-            self.assertIn(flush, [r["item"] for r in self.doc()["items"]["rows"]])
+            self.assertIn(flush, [r["id"] for r in self.doc()["items"]["rows"]])
+
+    def test_each_item_is_the_tasks_pages_row_with_its_due_state(self):
+        # sd:5671: an item's Details on HOA are the Tasks page's (task-details.js), so each item is the /api/tasks row
+        # (tasks_screen._rows, as places.tasks reads it), with its revision, moves, edit capability and issue targets.
+        listed = {r["id"]: r for r in places.tasks(self.connection, "hoa", now=NOW)["rows"]}
+        rows = self.doc()["items"]["rows"]
+        self.assertEqual(sorted(r["id"] for r in rows), sorted(listed))
+        for row in rows:
+            self.assertEqual({key: row[key] for key in listed[row["id"]]}, listed[row["id"]])
+            self.assertEqual(set(row) - set(listed[row["id"]]), {"state", "due_days"})
+        self.assertEqual(rows[0]["allowed"], listed[self.late]["allowed"])
 
     # sd:4964: each lot carries its address and owner of record from the checkout's downloads/parcels/lots.json, joined by
     # the lot's index among base.geojson's lots, and only against the base file the lot data was made from.
@@ -305,7 +322,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>HOA · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "brief-details.js", "report-details.js", "hoa.js", "places.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "brief-details.js", "report-details.js", "task-details.js", "hoa.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -338,7 +355,7 @@ class TheScript(Fixture):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + HOA_SHELL + READ_SHELL
                   + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status};\n"
                   + "ANSWER = (path, body) => path === '/api/hoa' ? [STATUS, DOC] : [404, { error: 'no answer' }];\n"
-                  + pre + "\n" + COMMANDS_JS + HOA_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
+                  + pre + "\n" + COMMANDS_JS + TASK_DETAILS_JS + HOA_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
                   + "(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
@@ -353,17 +370,24 @@ class TheScript(Fixture):
         # Retry and Show log are spread from commands.js, which test_v2_commands' scan cannot read, so HOA checks its
         # registered commands here, a per-row text once for each source.
         from test_v2_commands import WORDS
-        out = self.run_page("""R.d = REG.filter(c => c.does).flatMap(c => typeof c.does === 'function'
+        # A task's commands are task-details.js's, which test_v2_tasks runs against task rows.
+        out = self.run_page("""R.d = REG.filter(c => c.does && !['item', 'note', 'assignment', 'issue draft'].includes(c.on)).flatMap(c => typeof c.does === 'function'
   ? [['vantaca', 'Vantaca invoices'], ['mission', 'Mission export']].map(([source, label]) => [c.id, c.does({ source, label })])
   : [[c.id, c.does]]);""")
         long = [f"{command}: {does}" for command, does in out["R"]["d"] if len(does.split()) > WORDS]
         self.assertEqual(long, [], f"a does line over {WORDS} words")
 
     def test_every_command_is_registered_with_the_design_id_risk_and_key(self):
+        # sd:5671: an item's commands are the Tasks page's (task-details.js), registered once, first; HOA adds no item
+        # command of its own, and its Draft followup is Tasks' Draft email, with HOA's key d.
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.risk, c.key || null]);")
-        self.assertEqual(out["R"]["reg"], [
-            ["item.draft", "item", "safe", "d"],
-            ["item.open", "item", "safe", "o"],
+        reg = out["R"]["reg"]
+        tasks = [c for c in reg if c[1] in ("item", "note", "assignment", "issue draft")]
+        self.assertEqual(reg[:len(tasks)], tasks)
+        self.assertEqual(len({c[0] for c in reg}), len(reg))
+        self.assertIn(["item.email", "item", "safe", "d"], tasks)
+        self.assertEqual([c[0] for c in tasks if c[0] in ("item.draft", "item.open")], [])
+        self.assertEqual(reg[len(tasks):], [
             ["asset.ask", "asset", "safe", "a"],
             ["alarm.ack", "alarm", "undo", "a"],
             ["alarm.unack", "alarm", "undo", "a"],
@@ -381,7 +405,7 @@ class TheScript(Fixture):
         out = self.run_page("""const read = () => window.PAGE_COMMANDS.find(p => p.label === 'Read HOA again').run();
 for (const v of ['briefs', 'reports']) { window.shell.view.current = () => v; window.markup.put(ELS.details, mk`<h2>A brief</h2>`); read(); await flush(); R[v] = ELS.details.html; }
 window.shell.view.current = () => 'tasks'; read(); await flush(); R.tasks = ELS.details.html;""")
-        self.assertEqual(out["gets"], ["/api/hoa"] * 4)
+        self.assertEqual(hoa_reads(out), ["/api/hoa"] * 4)
         self.assertEqual((out["R"]["briefs"], out["R"]["reports"]), ("<h2>A brief</h2>", "<h2>A brief</h2>"))
         self.assertNotEqual(out["R"]["tasks"], "<h2>A brief</h2>")
 
@@ -396,13 +420,13 @@ window.shell.view.current = () => 'tasks'; read(); await flush(); R.tasks = ELS.
 
     def test_each_cell_is_a_reading_or_unknown_with_its_reason(self):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.sub = ELS.subhead.html;")
-        self.assertEqual(out["gets"], ["/api/hoa"])
+        self.assertEqual(hoa_reads(out), ["/api/hoa"])
         lamps = out["R"]["lamps"]
         self.assertRegex(lamps, r'data-cell="water" data-state="unknown".*?no live reader')
         self.assertRegex(lamps, r'data-cell="tank" data-open="day:2026-09-05" data-state="ok".*?<b>16.1</b> ft mean')
         self.assertRegex(lamps, r'data-cell="pumps" data-open="day:2026-09-04" data-state="ok".*?<b>16.9</b> h A2.*?0 starts · 91,119 gal · 09-04')
         self.assertRegex(lamps, r'data-cell="alarms"[^>]*data-state="unknown".*?the export ends 2026-09-05.*?2 alarms in 30 d · 1 generator test')
-        self.assertRegex(lamps, rf'data-cell="tasks" data-open="item:{self.late}" data-state="warning".*?Tasks.*?<b>1</b> overdue.*?5 open · 1 due within a week')
+        self.assertRegex(lamps, rf'data-cell="tasks" data-open="{self.late}" data-state="warning".*?Tasks.*?<b>1</b> overdue.*?5 open · 1 due within a week')
         self.assertRegex(lamps, r'data-cell="mission" data-open="source:mission" data-state="ok".*?<b>1 d</b> old')
         self.assertEqual(cell_grammar(self, lamps)[-1], ("button", None))
         self.assertIn("3 mapped assets, 4 lot and tract outlines; Mission export through 2026-09-05", out["R"]["sub"])
@@ -483,7 +507,7 @@ R.near = ELS.map.html;""", self.tract_doc())
     def test_the_tasks_are_ranked_rows_with_their_due_state(self):
         out = self.run_page("R.ob = ELS['ob-body'].html; R.al = ELS['al-body'].html; R.det = ELS.details.html;")
         ob = out["R"]["ob"]
-        self.assertEqual(re.findall(r'<tr data-id="item:(\d+)"', ob), [str(i) for i in (self.late, self.soon, self.later, self.task, self.blocked)])
+        self.assertEqual(re.findall(r'<tr data-id="(\d+)"', ob), [str(i) for i in (self.late, self.soon, self.later, self.task, self.blocked)])
         self.assertIn("overdue 5 days", ob)
         self.assertIn("in 4 days", ob)
         self.assertRegex(ob, r'g g-warning" aria-label="warning">■')
@@ -509,33 +533,60 @@ R.near = ELS.map.html;""", self.tract_doc())
 
     def test_the_id_sorts_by_number_and_a_third_click_returns_to_the_rank(self):
         doc = self.doc()
-        nine, ten = (dict(doc["items"]["rows"][0], id=f"item:{n}", item=n) for n in (9, 10))
+        nine, ten = (dict(doc["items"]["rows"][0], id=n) for n in (9, 10))
         doc["items"]["rows"] = [ten, nine]
-        ids = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"item:(\\d+)\"/g)].map(m => +m[1]); "
+        ids = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"(\\d+)\"/g)].map(m => +m[1]); "
         out = self.run_page(ids + "R.rank = re(); " + self.sort("item") + "R.up = re(); R.cell = ELS['ob-body'].html; "
                             + self.sort("item") + "R.down = re(); " + self.sort("item") + "R.back = re(); R.head = ELS['ob-head'].html;", doc)
         self.assertEqual((out["R"]["rank"], out["R"]["up"], out["R"]["down"], out["R"]["back"]), ([10, 9], [9, 10], [10, 9], [10, 9]))
         self.assertIn('<td class="id num">sd:9</td>', out["R"]["cell"])
         self.assertNotIn("aria-sort", out["R"]["head"])
 
-    def test_a_followups_row_action_drafts_and_any_other_kinds_opens_the_item(self):
-        out = self.run_page(f"""const p = (id, o) => !!REG.find(c => c.id === id).primary(OBJ.get('item:' + o));
-R.p = [p('item.draft', {self.late}), p('item.open', {self.late}), p('item.draft', {self.task}), p('item.open', {self.task})];""")
-        self.assertEqual(out["R"]["p"], [True, False, False, True])
+    def test_a_tasks_details_read_that_answers_in_briefs_leaves_their_details_alone(self):
+        # sd:5671: a task's Details reading answers late; once Briefs fills the pane (places.js), it draws nothing there.
+        out = self.run_page(f"""const late = []; const answer = ANSWER;
+ANSWER = (path, body) => path.startsWith('/api/tasks/') ? new Promise(done => late.push(() => done(answer(path, body)))) : answer(path, body);
+ELS['ob-body'].listeners.click[0]({{ target: {{ closest: s => s === 'tr[data-id]' ? {{ dataset: {{ id: '{self.task}' }} }} : null }} }}); await flush();
+window.shell.view.current = () => 'briefs'; window.markup.put(ELS.details, mk`<h2>A brief</h2>`);
+late.forEach(f => f()); await flush(); R.det = ELS.details.html;""")
+        self.assertEqual(out["R"]["det"], "<h2>A brief</h2>")
 
-    def test_draft_followup_saves_a_gmail_draft_through_the_draft_email_route(self):
-        # sd:5483: the chat is read-only and saved no draft; Draft followup posts Tasks' Draft email with the row's revision.
+    def test_a_followups_first_action_is_draft_email_and_any_other_kinds_its_next_status(self):
+        # sd:5671: HOA's Draft followup was a followup's row action; merged into Tasks' Draft email, it stays the first
+        # action of a followup on HOA, and any other kind's is the Tasks list's next status move.
+        out = self.run_page(f"""const first = n => {{ const o = OBJ.get(String(n)); return REG.filter(c => c.on === o.type).find(c => c.primary?.(o) && (!c.when || c.when(o) === true))?.id; }};
+R.p = [first({self.late}), first({self.task}), first({self.blocked})];""")
+        self.assertEqual(out["R"]["p"], ["item.email", "item.status.ready", "item.status.ready"])
+
+    def test_draft_email_asks_first_and_saves_a_gmail_draft_through_the_draft_email_route(self):
+        # sd:5483, sd:5671: Draft email posts the draft-email route with the row's revision, as on Tasks, and asks first.
         doc = self.doc()
-        row = next(r for r in doc["items"]["rows"] if r["item"] == self.late)
+        row = next(r for r in doc["items"]["rows"] if r["id"] == self.late)
         self.assertTrue(row["revision"])
-        out = self.run_page(f"""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [200, {{ draft: {{ subject: 'Gate quote', id: 'd1' }} }}];
-C.run(cmd('item.draft'), OBJ.get('item:{self.late}')); await flush();""", doc)
+        out = self.run_page(f"""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : path.endsWith('/draft-email')
+  ? [200, {{ item: {{ id: {self.late}, status: 'planning', priority: 1, due: '2026-09-01', recurrence: null }}, notes: [], revision: 'e'.repeat(64),
+      draft: {{ subject: 'Gate quote', id: 'd1' }} }}] : [404, {{ error: 'no answer' }}];
+shellRun(cmd('item.email'), OBJ.get('{self.late}')); await flush();""", doc)
+        self.assertEqual(out["confirms"], ["item.email"])
         self.assertEqual([p[:2] for p in out["posts"]], [[f"/api/items/{self.late}/draft-email", {"revision": row["revision"]}]])
-        self.assertIn('Draft saved · sd:%d · "Gate quote" · in Gmail Drafts, not sent' % self.late, out["toasts"][-1][0])
+        self.assertIn('Draft saved · #%d · "Gate quote" · in Gmail Drafts, not sent' % self.late, out["toasts"][-1][0])
+        self.assertEqual(out["gets"].count("/api/hoa"), 2)
+
+    def test_a_tasks_row_shows_the_tasks_pages_details_in_the_pane(self):
+        # sd:5671: a row is selected in place; Details are the Tasks page's (task-details.js), with HOA's due line and a
+        # link that opens the task on Tasks.
+        click = f"ELS['ob-body'].listeners.click[0]({{ target: {{ closest: s => s === 'tr[data-id]' ? {{ dataset: {{ id: '{self.task}' }} }} : null }} }}); "
+        out = self.run_page(click + "await flush(); R.det = ELS.details.html; R.cur = window.PAGE_LIST.current();")
+        r = out["R"]
+        self.assertEqual(r["cur"], str(self.task))
+        self.assertIn(f"/api/tasks/{self.task}", out["gets"])
+        for part in ("<h2>Paint the pump house</h2>", '<dl class="fields">', f"<dd>#{self.task}</dd>", '<select id="det-status" class="fld">',
+                     "2026-09-20 · in 14 days", f'href="/tasks?row={self.task}">Open on Tasks</a>', "from /api/hoa."):
+            self.assertIn(part, r["det"])
 
     def test_one_followup_one_task_and_one_blocked_task_show_and_kind_narrows(self):
         kind = "ELS['ob-kinds'].listeners.click[0]({ target: { closest: s => s === 'button[data-kind]' ? { dataset: { kind: 'K' } } : null } }); "
-        rows = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"item:(\\d+)\"/g)].map(m => +m[1]); "
+        rows = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"(\\d+)\"/g)].map(m => +m[1]); "
         out = self.run_page(rows + "R.all = re(); R.chips = ELS['ob-kinds'].html; " + kind.replace("K", "task") + "R.task = re(); "
                             + kind.replace("K", "followup") + "R.followup = re(); " + kind.replace("K", "all") + "R.again = re(); R.tally = ELS['tasks-tally'];")
         everything = [self.late, self.soon, self.later, self.task, self.blocked]
@@ -593,18 +644,12 @@ C.run(cmd('item.draft'), OBJ.get('item:{self.late}')); await flush();""", doc)
 DOC = { error: 'Open a dashboard page before reading HOA.' }; STATUS = 403;
 ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: 'refresh', dataset: {} } : null } }); await flush();
 R.ob = ELS['ob-body'].html; R.lamps = ELS.annunciator.html;""")
-        self.assertEqual(out["gets"], ["/api/hoa", "/api/hoa"])
+        self.assertEqual(hoa_reads(out), ["/api/hoa", "/api/hoa"])
         self.assertIn("data-id=", out["R"]["before"])
         self.assertEqual(out["states"][-1]["kind"], "error")
         self.assertNotIn("data-id=", out["R"]["ob"])
         self.assertNotIn("data-cell=", out["R"]["lamps"])
         self.assertEqual(out["attention"][-1], {"state": "unknown", "n": 0, "what": "HOA not read"})
-
-    def test_the_open_command_names_the_item_and_opens_it_in_tasks(self):
-        out = self.run_page(f"""var o = OBJ.get('item:{self.late}'); var c = REG.find(x => x.id === 'item.open');
-R.cli = c.cli(o); R.run = c.run(o); R.href = location.href;""")
-        self.assertEqual(out["R"]["cli"], f"sd task show {self.late}")
-        self.assertEqual(out["R"]["href"], f"/tasks?row={self.late}")
 
     def test_the_page_keeps_the_shells_keys_and_reads_through_the_shared_reader(self):
         self.assertIn("S.read(spec)", HOA_JS)
@@ -896,7 +941,7 @@ OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
         self.assertIn("Acknowledged: 09-05 06:00 Tank Low Alarm. The Acknowledged view lists it.", out["toasts"][0][0])
         self.assertTrue(out["toasts"][0][1])
         # Each landed write reads HOA again.
-        self.assertEqual(out["gets"], ["/api/hoa"] * 3)
+        self.assertEqual(hoa_reads(out), ["/api/hoa"] * 3)
 
     def test_a_refused_event_is_named_in_the_toast(self):
         out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
@@ -947,7 +992,7 @@ C.run(cmd('alarms.ack'), OBJ.get('alarms')); await flush();""", self.acked_doc()
             "hoa-alarm/2026-08-20 09:00:00 Generator Running", "hoa-alarm/2026-09-01 10:00:00 A2 VSD Alarm",
             "hoa-alarm/2026-09-01 10:30:00 A2 VSD Normal")), True))
         self.assertNotIn(TANK_LOW, body["keys"])
-        self.assertEqual(out["gets"], ["/api/hoa"] * 2)
+        self.assertEqual(hoa_reads(out), ["/api/hoa"] * 2)
         self.assertEqual(out["toasts"][-1], ["Acknowledged 3 alarms. The Acknowledged view lists them.", True])
 
     def test_acknowledge_all_names_the_events_that_did_not_land(self):
@@ -1181,7 +1226,7 @@ C.run(c, m); await flush(); R.timers = TIMERS;""", doc,
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/jobs/hoa-mission-export/retry", {"revision": revision}]])
         self.assertIn("Mission export refresh started · hoa-mission-export", out["toasts"][0][0])
         # The landed start reads HOA again, and the lamps with it,
-        self.assertEqual(out["gets"], ["/api/hoa", "/api/hoa"])
+        self.assertEqual(hoa_reads(out), ["/api/hoa", "/api/hoa"])
         # and once more after SRC_POLL, in case launchd had not marked the job running yet.
         self.assertEqual(out["R"]["timers"], [15000])
 
@@ -1218,7 +1263,7 @@ await flush(); R.timers = TIMERS;"""
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/download", {"source": "vantaca"}]])
         self.assertIn("Vantaca download started 08:00 UTC", out["toasts"][-1][0])
         # The start reads HOA again, then again every SRC_POLL until the run ends.
-        self.assertEqual(out["gets"], ["/api/hoa", "/api/hoa"])
+        self.assertEqual(hoa_reads(out), ["/api/hoa", "/api/hoa"])
         self.assertEqual(out["R"]["timers"], [15000])
 
     def test_the_row_says_waiting_for_you_to_log_in_and_the_button_is_off_while_it_waits(self):
