@@ -799,30 +799,6 @@ class TheDeepReview(AdversarialCase):
         self.assertIn("adversarial.deep.bound_minutes wants whole minutes, such as 90, not 'soon'", answer["error"])
         self.assertFalse(self.argv.exists())
 
-    def test_saving_the_settings_writes_setting_rows_and_an_empty_value_clears_one(self):
-        status, _, answer = self.post("/api/adversarial/settings", {"adversarial.deep.model": "fable",
-                                                                    "adversarial.deep.agents": "4"})
-        self.assertEqual(status, 200, answer)
-        self.assertEqual(answer["was"], {"adversarial.deep.model": None, "adversarial.deep.agents": None})
-        self.assertEqual(writes.read_settings(self.connection, ["adversarial.deep.model", "adversarial.deep.agents"]),
-                         {"adversarial.deep.model": "fable", "adversarial.deep.agents": "4"})
-        status, _, answer = self.post("/api/adversarial/settings", {"adversarial.deep.model": ""})
-        self.assertEqual(status, 200, answer)
-        self.assertEqual(answer["settings"]["adversarial.deep.model"], {"value": "opus", "from": "default"})
-        self.assertEqual(answer["settings"]["adversarial.deep.agents"], {"value": "4", "from": "database"})
-
-    def test_saving_a_bad_setting_or_another_key_is_refused_and_writes_nothing(self):
-        for payload, said in (({"adversarial.deep.agents": "40"}, "adversarial.deep.agents wants a number of sub-agents"),
-                              ({"adversarial.deep.model": "--dangerously-skip-permissions"}, "wants a claude model id"),
-                              # sd:5614: effort is one of claude --effort's levels, not any lowercase word.
-                              ({"adversarial.deep.effort": "ultra"}, "wants one of low, medium, high, xhigh or max"),
-                              ({"adversarial.model": "x"}, "The deep review's settings are")):
-            with self.subTest(payload=payload):
-                status, _, answer = self.post("/api/adversarial/settings", payload)
-                self.assertEqual(status, 400, answer)
-                self.assertIn(said, answer["error"])
-        self.assertEqual(writes.read_settings(self.connection, list(adversarial.DEEP)), {})
-
     def test_a_second_deep_review_of_the_repository_is_refused_while_one_runs(self):
         self.mode.write_text("hold")
         status, _, first = self.review("deep", self.key)

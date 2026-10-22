@@ -11,7 +11,8 @@ the value again. There is no stale-write check: two concurrent manual writes are
 answer carries the value the set replaced, so the page can say when it differs from the one it showed.
 
 The Sweeps section (sd:5109) holds the Work and Personal sweeps' settings, `realm_sweep.SETTINGS`, and the Dashboard
-section the adversarial review's model and effort (`adversarial.SETTINGS`) and the dashboard lists (`setting_rows.LISTS`):
+section the adversarial review's model and effort (`adversarial.SETTINGS`), the Deep review's model, effort, bound and
+sub-agent cap (`adversarial.DEEP`, sd:5784) and the dashboard lists (`setting_rows.LISTS`):
 setting rows read and written on the page's own connection (`sd_db.writes`), as no `sd config` prefix declares them.
 
 - A single value posts `/api/settings/row {key, value, before}`: `before` is the row value the page showed, a row that
@@ -119,10 +120,12 @@ def _set(key: str, value: str):
 
 def _scalars() -> dict:
     """Every single-value row the page edits, by key: `(description, pattern or None)`."""
-    from .adversarial import PATTERNS, SETTINGS as REVIEW
+    from .adversarial import DEEP, PATTERNS, SETTINGS as REVIEW
     from .realm_sweep import SETTINGS as SWEEP
 
-    return {**{key: (text, None) for key, text in SWEEP.items()}, **{key: (text, PATTERNS[key]) for key, text in REVIEW.items()}}
+    return {**{key: (text, None) for key, text in SWEEP.items()}, **{key: (text, PATTERNS[key]) for key, text in REVIEW.items()},
+            **{key: (f"The Deep review's {key.rsplit('.', 1)[1].replace('_', ' ')}: {wants}. Unset is {default}.", pattern)
+               for key, (default, pattern, wants) in DEEP.items()}}
 
 
 def _list(key: str):
@@ -141,13 +144,13 @@ def rows(connection) -> dict:
     from sd_db.errors import SdDbError
 
     from . import setting_rows
-    from .adversarial import SETTINGS as REVIEW
+    from .adversarial import DEEP, SETTINGS as REVIEW
     from .realm_sweep import SETTINGS as SWEEP
 
-    def scalar(key, text, held):
+    def scalar(key, text, held, pattern=None):
         value = held.get(key)
         return {"key": key, "value": value, "row": value, "source": "database" if value else "unset", "description": text,
-                "choices": None}
+                "choices": pattern.split("|") if pattern and CHOICES.fullmatch(pattern) else None}
 
     out = {}
     try:
@@ -157,7 +160,7 @@ def rows(connection) -> dict:
     else:
         out.update(sweeps=[scalar(key, text, held) for key, text in SWEEP.items()], sweeps_reason="")
     try:
-        held = writes.read_settings(connection, list(REVIEW))
+        held = writes.read_settings(connection, [*REVIEW, *DEEP])
         lists = []
         for key, (_, text) in setting_rows.LISTS.items():
             try:
@@ -171,7 +174,9 @@ def rows(connection) -> dict:
     except (SdDbError, sqlite3.Error, LookupError) as failed:
         out.update(dashboard=None, dashboard_reason=f"the workflow database did not answer: {failed}")
     else:
-        out.update(dashboard=lists + [scalar(key, text, held) for key, text in REVIEW.items()], dashboard_reason="")
+        known = _scalars()
+        out.update(dashboard=lists + [scalar(key, text, held) for key, text in REVIEW.items()]
+                   + [scalar(key, known[key][0], held, known[key][1]) for key in DEEP], dashboard_reason="")
     return out
 
 
