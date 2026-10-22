@@ -123,8 +123,10 @@
     unselect: () => { selected = null; renderDetails(); },
   };
 
+  // Quick notes (sd:5750) open in a dialog over the day, so the day keeps the page's width; / and the palette open it too.
+  const quick = () => { const d = $('qn-dlg'); if (!d.open) d.showModal(); $('qn-in').focus(); };
   window.PAGE_COMMANDS = [
-    { label: 'Write a quick note', icon: 'notebook-pen', key: '/', run: () => $('qn-in').focus() },
+    { label: 'Write a quick note', icon: 'notebook-pen', key: '/', run: quick },
     { label: 'Previous day', icon: 'chevron-left', key: '←', run: () => window.notesDay(-1) },
     { label: 'Next day', icon: 'chevron-right', key: '→', run: () => window.notesDay(1) },
   ];
@@ -150,7 +152,7 @@
     document.addEventListener('shell:open', e => { if (OBJS.some(o => o.id === e.detail)) select(e.detail, true); });
     document.addEventListener('keydown', e => {
       if (e.target.matches?.('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-      if (e.key === '/') { e.preventDefault(); $('qn-in').focus(); return; }
+      if (e.key === '/') { e.preventDefault(); quick(); return; }
       if (e.key === 'ArrowLeft') { e.preventDefault(); window.notesDay(-1); return; }
       if (e.key === 'ArrowRight') { e.preventDefault(); window.notesDay(1); }
     });
@@ -175,11 +177,12 @@
       qKeep.disabled = true;
       try {
         const out = await S.post('/api/notes/quick/add', { text: qIn.value });
-        qIn.value = '';
+        qIn.value = ''; $('qn-dlg').close(); // a kept note closes the dialog, so its toast is not under the scrim
         S.toast(`Kept in sdw.quick-note as ${out.title}.`);
       } catch (e) { S.toast(`Not kept: ${e.message}`); }
       await readQ();
     }
+    $('qn-open').addEventListener('click', quick);
     qKeep.addEventListener('click', keep);
     qIn.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); keep(); } });
     paintQ(); readQ();
