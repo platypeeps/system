@@ -37,12 +37,12 @@ from pathlib import Path
 from . import notes_screen, realm_sweep, research_deck
 from .publish_drain import _iso, _write
 
-__all__ = ["GONE", "PROBE_TIMEOUT", "SLIDES_TIMEOUT", "TOOL", "UPDATE", "attachments", "request", "start", "status"]
+__all__ = ["GONE", "PROBE_TIMEOUT", "SLIDES_TIMEOUT", "TOOL", "REPLACE", "attachments", "request", "start", "status"]
 
 #: The tool that makes a Slides file, for an experiment that has none: an import, never a share or a delete.
 TOOL = "import_to_google_slides"
 #: The tool that replaces a file's content in place, for an experiment that has one: the only other call this makes.
-UPDATE = "update_drive_file"
+REPLACE = "update_drive_file"
 #: What Drive answers, through workspace-mcp, for a file id it no longer has.
 GONE = "File not found"
 SLIDES_TIMEOUT = 120
@@ -145,7 +145,7 @@ def _update(url: str, account: str, file_id: str, data: bytes, digest: str) -> N
     staged = folder / f"sd-research-deck-{digest[:16]}.pptx"
     try:
         staged.write_bytes(data)
-        said = _call(url, UPDATE, {"user_google_email": account, "file_id": file_id, "file_path": str(staged),
+        said = _call(url, REPLACE, {"user_google_email": account, "file_id": file_id, "file_path": str(staged),
                                    "source_format": "pptx"}, "the update")
     finally:
         staged.unlink(missing_ok=True)
