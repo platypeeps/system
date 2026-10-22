@@ -1669,6 +1669,7 @@ class ThePaneWithoutDetails(unittest.TestCase):
 
 
 AGAIN = re.search(r"^  // again:start\n(.*?)^  // again:end$", SHELL_JS, re.S | re.M)
+STALENESS = re.search(r"^  function staleness\(\) \{\n.*?^  \}$", SHELL_JS, re.S | re.M)
 
 
 class TheReadAgainButton(unittest.TestCase):
@@ -1721,6 +1722,17 @@ done(); await flush(); R.after = BTN.attrs['aria-busy'] || null;""")
         self.assertIn('id="read-again" title="Read this page again"', placed["R"]["slot"])
         bare = self.run_again("SHELL_AGAIN\nloaded(); R.head = HEAD.html;")
         self.assertEqual(bare["R"]["head"], "")
+
+    def test_a_page_with_no_observed_cell_gets_the_staleness_mark_on_read_again(self):
+        """sd:5750: Home's Read again is the shell's button now, so the band marks #read-again when no #refresh is drawn."""
+        out = self.run_again("""window.PAGE_AGAIN = { run() {} };
+SHELL_AGAIN
+loaded(); const b = document.getElementById('read-again'); b.dataset = {}; b.querySelector = () => null;
+var body = { dataset: { observed: new Date(Date.now() - 3 * 60000).toISOString(), interval: '1' } };
+""" + STALENESS.group(0) + """
+staleness(); R.state = b.dataset.state || null; R.html = b.html;""")
+        self.assertEqual(out["R"]["state"], "caution")
+        self.assertIn('<small class="stale">stale since ', out["R"]["html"])
 
     def test_a_run_that_fails_says_so_and_ends_busy(self):
         out = self.run_again("""window.PAGE_AGAIN = { run: () => Promise.reject(new Error('no answer')) };
