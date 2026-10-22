@@ -55,6 +55,9 @@ COMMANDS = [
     ["skill.demote", "skill", "Demote", "d", "safe"],
     ["skill.reimport", "skill", "Re-import", "i", "safe"],
     ["skill.reimport.user", "user skill", "Re-import", "i", "safe"],
+    # system sd:5779: Rollback shows the swap back to the kept copy; its approve asks first, as the intake's does.
+    ["skill.rollback", "skill", "Rollback", "b", "safe"],
+    ["skill.rollback.user", "user skill", "Rollback", "b", "safe"],
     ["skill.schedule", "skill", "Schedule", "s", "safe"],
     ["skill.apply", "skill", "Apply", "a", "confirm"],
     ["skill.scan", "use surfaces", "Scan", "s", "safe"],
@@ -224,6 +227,16 @@ REPORT = {"url": URL, "commit": "a" * 40, "scope": "pack", "skill": "sd-example"
           "verdict": {"action": "install", "reason": "no refusal, enough instructions, no close match"},
           "diff": ["--- installed/SKILL.md", "+++ upstream/SKILL.md", "@@ -1 +1 @@", "-old line", "+new line"],
           "revision": REVISION, "recovered": [], "installed": False}
+#: What `sd skill intake <name> --rollback --json` prints (pack bin/sd_skill_intake.py `rollback`, system sd:5779):
+#: a swap back to the kept copy, and the pack skills the import informed, one of them unread.
+ROLLBACK = {"skill": "sd-example", "scope": "pack", "destination": "/pack/contrib/sd-example",
+            "kept": "/pack/.sd-skill-intake/kept/contrib/sd-example", "mode": "rollback", "installed_commit": "a" * 40,
+            "kept_commit": "b" * 40, "diff": ["--- installed/SKILL.md", "+++ kept/SKILL.md", "@@ -1 +1 @@", "-new line", "+old line"],
+            "informed": [{"skill": "sd-adapted", "path": "skills/sd-adapted/SKILL.md", "names": "github.com/example/skills",
+                          "commits": ["abc1234"], "unknown": None},
+                         {"skill": "sd-other", "path": "contrib/sd-other/SKILL.md", "names": "github.com/example/skills",
+                          "commits": None, "unknown": "git log failed: not a git repository"}],
+            "revision": REVISION, "recovered": [], "rolled_back": False}
 #: A stand-in `sd`: it records its arguments, one per line, then prints INTAKE_OUT on stdout or stderr and exits INTAKE_EXIT.
 STUB_SD = """#!/bin/sh
 for arg in "$@"; do printf '%s\\n' "$arg"; done > "$INTAKE_ARGS"
@@ -367,6 +380,35 @@ class TheIntakeRoute(StubSd):
         with mock.patch.object(skill_intake, "INTAKE_SECONDS", 0.5), mock.patch.dict(os.environ, {"INTAKE_SLEEP": "5"}):
             status, body, _ = self.intake({"source": URL, "scope": "pack", "approve": REVISION})
         self.assertEqual((status, body["outcome"]), (502, "unknown"))
+
+    def test_rollback_runs_intake_with_rollback_and_approves_only_the_printed_revision(self):
+        """system sd:5779: Rollback reports first; its approve names the skill, the scope and the revision."""
+        status, body, argv = self.intake({"source": "sd-extra", "rollback": True}, out=json.dumps(ROLLBACK))
+        self.assertEqual((status, body["mode"]), (200, "rollback"))
+        self.assertEqual(argv, ["skill", "intake", "--json", "--rollback", "--", "sd-extra"])
+        status, body, argv = self.intake({"source": "sd-extra", "scope": "pack", "rollback": True, "approve": REVISION},
+                                         out=json.dumps(dict(ROLLBACK, rolled_back=True)))
+        self.assertEqual((status, body["rolled_back"]), (200, True))
+        self.assertEqual(argv, ["skill", "intake", "--json", "--rollback", "--scope", "pack", "--approve", REVISION, "--", "sd-extra"])
+
+    def test_a_rollback_of_a_url_or_without_a_scope_to_approve_is_refused_and_runs_nothing(self):
+        for payload in ({"source": URL, "rollback": True}, {"source": "sd-extra", "rollback": "yes"},
+                        {"source": "sd-extra", "rollback": True, "approve": REVISION}):
+            with self.subTest(payload=payload):
+                status, _, argv = self.intake(payload)
+                self.assertEqual((status, argv), (400, None))
+
+    def test_a_refused_or_failed_rollback_says_what_is_known(self):
+        held = "sd: /pack/contrib/sd-extra is committed in the pack at abc1234; revert it through the lane: git revert abc1234; nothing written"
+        status, body, _ = self.intake({"source": "sd-extra", "rollback": True}, out=held, code=1)
+        self.assertEqual((status, body["error"]), (400, "No rollback: " + held.removeprefix("sd: ")))
+        approve = {"source": "sd-extra", "scope": "pack", "rollback": True, "approve": REVISION}
+        stale = f"sd: approved revision {REVISION} is not this report's fedcba9876543210: the installed or the kept copy changed; nothing written"
+        status, body, _ = self.intake(approve, out=stale, code=1)
+        self.assertEqual((status, body.get("reload")), (409, True))
+        status, body, _ = self.intake(approve, out="sd: [Errno 28] No space left on device", code=1)
+        self.assertEqual((status, body["outcome"]), (502, "unknown"))
+        self.assertIn("Rollback again", body["error"])
 
 
 REPO = "https://github.com/example/skills"
@@ -694,6 +736,41 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
         out = self.run_page("shellRun(cmd('skill.reimport'), C.get('sd-extra')); await flush(); R.slot = ELS['intake-slot'].html;", answer=answer)
         self.assertIn("Not evaluated: git fetch failed", out["R"]["slot"])
         self.assertNotIn("data-approve", out["R"]["slot"])
+
+    # system sd:5779: Rollback shows its report first; Approve rollback asks, then posts the revision that report printed.
+    ROLLBACK_ANSWER = ("(path, body) => path === '/api/skills' ? [200, DOC] : path === '/api/skills/intake' ? [200, Object.assign({},"
+                       " body.rollback ? %s : %s, body.rollback ? { rolled_back: !!body.approve } : {})] : [200, {}]")
+    CLICK_ROLLBACK = "ELS.details.listeners.click.forEach(f => f({ target: { closest: s => s === '[data-rollback]' ? { dataset: {} } : null } }));"
+
+    def test_rollback_shows_its_report_then_asks_and_posts_the_exact_revision(self):
+        self.imported()
+        answer = self.ROLLBACK_ANSWER % (json.dumps(ROLLBACK), json.dumps(REPORT))
+        out = self.run_page("open('sd-extra'); R.before = ELS.details.html; shellRun(cmd('skill.rollback'), C.get('sd-extra')); await flush();"
+                            " R.slot = ELS['intake-slot'].html; R.posts = OUT.posts.length; " + self.CLICK_ROLLBACK + " await flush();"
+                            " R.after = ELS['intake-slot'].html;", answer=answer)
+        self.assertNotIn("data-rollback", out["R"]["before"], "Approve rollback showed before any report")
+        self.assertEqual(out["posts"][0], ["/api/skills/intake", {"source": "sd-extra", "rollback": True}, 64])
+        slot = out["R"]["slot"]
+        for shown in ("Rollback report", "-new line", "+old line", "sd-adapted (skills/sd-adapted/SKILL.md) names github.com/example/skills: abc1234",
+                      "unknown: git log failed: not a git repository"):
+            self.assertIn(shown, slot)
+        self.assertEqual(re.findall(r"<button[^>]*data-rollback[^>]*>([^<]*)", slot), [f"Approve rollback {REVISION}"])
+        self.assertEqual(out["R"]["posts"], 1, "the report posted an approve on its own")
+        self.assertEqual(out["confirms"], ["skill.intake.rollback"])
+        self.assertEqual(out["posts"][1], ["/api/skills/intake", {"source": "sd-example", "scope": "pack", "rollback": True,
+                                                                  "approve": REVISION}, 64])
+        self.assertNotIn("data-rollback", out["R"]["after"], "Approve rollback stayed after the rollback")
+        self.assertIn("a second Rollback undoes it", out["R"]["after"])
+        self.assertEqual(out["toasts"][-1], ["Rolled back sd-example", False])
+
+    def test_rollback_is_on_only_for_a_skill_intake_installed_and_the_evaluate_report_lists_informed_skills(self):
+        answer = self.imported(dict(REPORT, informed=ROLLBACK["informed"]))
+        out = self.run_page("R.off = [cmd('skill.rollback').when(C.get('sd-extra')), cmd('skill.rollback').when(C.get('sd-used'))];"
+                            " R.cli = cmd('skill.rollback').cli(C.get('sd-extra'));"
+                            " shellRun(cmd('skill.reimport'), C.get('sd-extra')); await flush(); R.slot = ELS['intake-slot'].html;", answer=answer)
+        self.assertEqual(out["R"]["off"], [True, "not installed by sd skill intake"])
+        self.assertEqual(out["R"]["cli"], "sd skill intake 'sd-extra' --rollback")
+        self.assertIn("sd-adapted (skills/sd-adapted/SKILL.md) names github.com/example/skills: abc1234", out["R"]["slot"])
 
     # The lines the operator copies quote every value (sd:3992 review): pasted into sh, each runs sd with the URL as one argument.
     OPEN_ADOPT = ("ELS.details.querySelector = s => s[0] === '#' ? document.getElementById(s.slice(1)) : El('x');"

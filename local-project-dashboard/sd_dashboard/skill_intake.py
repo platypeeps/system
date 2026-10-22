@@ -9,6 +9,9 @@ temporary directory; nothing here calls git or gh, and `skills_screen` stays fre
 The Intake view's tracked repositories (system sd:5478) are the pack's too: `repos` reads `sd skill intake --tracked --json`
 and `tracking` runs `--track`, `--untrack` or `--refresh` with one https://github.com/<owner>/<repo> URL. The list is one
 workflow database setting row the verb writes; a refresh fetches and judges, and installs nothing.
+
+Rollback (system sd:5779) is the same run with `--rollback` and an installed skill's name: its report swaps the installed
+copy with the one its last install replaced, and `--approve` makes the swap, again only for the revision a report printed.
 """
 
 import json
@@ -26,6 +29,7 @@ SOURCE = re.compile(r"https://github\.com/[\x21-\x7e]{1,1000}|[A-Za-z0-9][A-Za-z
 APPROVE = re.compile(r"[0-9a-f]{16}")
 REFUSAL = "Give a https://github.com/ skill URL or the name of a skill sd skill intake installed."
 UNKNOWN = "Evaluate again: its next run finishes or undoes a stopped install, and its report says what is installed."
+ROLLBACK_UNKNOWN = "Rollback again: its report first finishes or undoes a stopped rollback, then shows both copies."
 #: A tracked repository: the pack's `repo_url` shape, owner then repository, nothing after.
 REPO = re.compile(r"https://github\.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
 #: Reading the list or writing it is local: the verb reads installed skills and one setting row.
@@ -105,34 +109,39 @@ def intake(payload: dict):
     the revision a report printed, and then only for the URL and scope that report named."""
     values = dict(payload)
     source, scope, approve = values.get("source"), values.get("scope"), values.get("approve")
-    if (set(values) - {"source", "scope", "approve"} or not isinstance(source, str) or not SOURCE.fullmatch(source)
-            or "`" in source or source.rstrip("/") == "https://github.com"):
+    rollback = values.get("rollback", False)
+    if (set(values) - {"source", "scope", "approve", "rollback"} or not isinstance(source, str) or not SOURCE.fullmatch(source)
+            or "`" in source or source.rstrip("/") == "https://github.com" or rollback not in (True, False)):
         raise ValueError(REFUSAL)
+    if rollback and source.startswith("https://"):
+        raise ValueError("Rollback takes the name of an installed skill, not a URL.")
     if scope is not None and scope not in ("pack", "user"):
         raise ValueError("Choose the pack or user scope.")
+    # An install's approve names the URL its report printed; a rollback's, the skill's name. Both name the scope.
     if "approve" in values and not (isinstance(approve, str) and APPROVE.fullmatch(approve)
-                                    and source.startswith("https://") and scope is not None):
+                                    and (rollback or source.startswith("https://")) and scope is not None):
         raise ValueError("Approve the revision a report printed, with the URL and scope that report named.")
-    argv = [command("sd"), "skill", "intake", "--json", *(["--scope", scope] if scope else []),
+    argv = [command("sd"), "skill", "intake", "--json", *(["--rollback"] if rollback else []), *(["--scope", scope] if scope else []),
             *(["--approve", approve] if approve else []), "--", source]
+    did, unknown = ("rolled back", ROLLBACK_UNKNOWN) if rollback else ("installed", UNKNOWN)
 
     def run(_connection):
         try:
             done = _run(argv, INTAKE_SECONDS)
         except (OSError, subprocess.SubprocessError) as error:
             if approve:
-                return 502, {"error": f"sd skill intake gave no answer ({error}). {UNKNOWN}", "outcome": "unknown"}
-            return 502, {"error": f"Not evaluated: sd skill intake gave no answer ({error})."}
+                return 502, {"error": f"sd skill intake gave no answer ({error}). {unknown}", "outcome": "unknown"}
+            return 502, {"error": f"{'No rollback' if rollback else 'Not evaluated'}: sd skill intake gave no answer ({error})."}
         said, report = _said(done), _json(done)
         if isinstance(report, dict) and isinstance(report.get("revision"), str):
             return report
         if approve and done.returncode and said.endswith("nothing written"):
-            # The verb's two refusals of an approve, both before it writes (pack sd_skill_intake.intake).
+            # The verb's refusals of an approve, each before it writes (pack sd_skill_intake.intake and .rollback).
             if said.startswith("approved revision"):
-                raise workflow.StaleItem(f"Not installed: {said}")
-            raise ValueError(f"Not installed: {said}")
+                raise workflow.StaleItem(f"Not {did}: {said}")
+            raise ValueError(f"Not {did}: {said}")
         if approve:
-            return 502, {"error": f"sd skill intake exited {done.returncode} without a report: {said or 'no output'}. {UNKNOWN}",
+            return 502, {"error": f"sd skill intake exited {done.returncode} without a report: {said or 'no output'}. {unknown}",
                          "outcome": "unknown"}
-        raise ValueError(f"Not evaluated: {said or f'sd skill intake exited {done.returncode}'}")
+        raise ValueError(f"{'No rollback' if rollback else 'Not evaluated'}: {said or f'sd skill intake exited {done.returncode}'}")
     return run
