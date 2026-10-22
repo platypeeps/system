@@ -1616,14 +1616,14 @@ class TheWholeShell(unittest.TestCase):
 class TheRowActions(unittest.TestCase):
     """sd:5457: a row's act is its icon when the command declares one, a text button when it does not, then ⋯."""
 
-    ROW_ACTIONS = re.search(r"  function rowActions\(id\) \{.*?\n  \}\n", SHELL_JS, re.S).group(0)
+    ROW_ACTIONS = re.search(r"  function rowActions\(id, \{ icons = false \} = \{\}\) \{.*?\n  \}\n", SHELL_JS, re.S).group(0)
 
-    def row(self, command):
+    def row(self, command, call="rowActions('r1')", extra=""):
         script = (STAND_IN + MARKUP_JS + "\nconst { html, plural } = window.markup;\n"
                   + "const ICON = n => html`<svg class=\"i\" aria-hidden=\"true\"><use href=\"#i-${n}\"/></svg>`;\n"
                   + SETTLE_JS + "\nconst OBJ = new Map([['r1', { id: 'r1', type: 'row', label: 'notes.html' }]]);\n"
-                  + f"const CMD = {command};\nconst live = () => [CMD];\n" + self.ROW_ACTIONS
-                  + "\nvar R = {};\n(async () => { try {\nR.html = String(rowActions('r1'));\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
+                  + f"const CMD = {command};\nconst live = () => [CMD{extra}];\n" + self.ROW_ACTIONS
+                  + f"\nvar R = {{}};\n(async () => {{ try {{\nR.html = String({call});\n}} catch (e) {{ OUT.error = String(e) + ' ' + e.stack; }} }})();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1643,6 +1643,15 @@ class TheRowActions(unittest.TestCase):
     def test_a_command_without_an_icon_stays_a_text_button(self):
         html = self.row("{ id: 'x.run', label: 'Run', does: 'Runs it.', risk: 'safe', primary: () => true, cli: () => 'sd run' }")
         self.assertIn('<button class="btn quiet sm" type="button" data-cmd="x.run" data-obj="r1" data-tip="Runs it. Runs sd run.">Run</button>', html)
+
+    def test_icons_shows_every_live_command_with_an_icon_and_keeps_text_ones_in_the_menu(self):
+        # sd:5747: a row that offers what its Details offer; a text-only command stays in the ⋯ menu.
+        html = self.row("{ id: 'x.deck', label: 'Build deck', does: 'Builds it.', icon: 'file-text', risk: 'safe', cli: () => 'sd deck' }",
+                        call="rowActions('r1', { icons: true })",
+                        extra=", { id: 'x.slides', label: 'Import', does: 'Imports it.', icon: 'send', risk: 'safe', cli: () => 'no CLI: here' },"
+                              " { id: 'x.apply', label: 'Apply', does: 'Applies it.', risk: 'safe', cli: () => 'sd apply' }")
+        self.assertEqual(re.findall(r'data-cmd="([^"]+)"', html), ["x.deck", "x.slides"])
+        self.assertIn('data-menu-for="r1"', html)
 
 
 if __name__ == "__main__":

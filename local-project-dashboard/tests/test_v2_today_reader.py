@@ -169,7 +169,7 @@ class TheViews(TheReader):
 
     def test_the_areas_are_page_views_and_each_panel_holds_its_sections(self):
         views = re.search(r"window\.PAGE_VIEWS = (\[.*?\]);", TODAY_JS, re.S).group(1)
-        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["now", "issues", "status", "work", "inbox", "github", "decisions"])
+        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["now", "inbox", "issues", "status", "work", "github", "decisions"])
         self.assertIn("{ id: 'inbox', label: 'Inbox', key: 'm' }", views)
         page = (V2 / "today.html").read_text(encoding="utf-8")
         panels = {m.group(1): re.findall(r'<h2[^>]*id="([a-z]+-h)"', m.group(2))

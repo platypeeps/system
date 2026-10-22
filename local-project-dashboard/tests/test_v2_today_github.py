@@ -306,6 +306,26 @@ class TheScript(unittest.TestCase):
         self.assertIn("Issue · example/anvil#20", first)
         self.assertIn("Nothing in Merged or closed.", first)
 
+    def test_mine_is_the_default_and_all_adds_what_others_opened(self):
+        # sd:5757: a pull request someone else opened in a registered repo shows under All only.
+        found = doc(pulls=[entry(1), entry(2, why="opened by bo"), entry(3, why="waiting on you"), entry(4, why="assigned to you")],
+                    issues=[entry(20, kind="issue", why="opened by alice")])
+        out = self.run_page(
+            "window.shell.url = q => { location.search = q ? '?' + q : ''; };"
+            " show(); await flush(); R.mine = ELS['github-sections'].html; R.bar = ELS['github-filters'].html; R.tally = ELS['github-tally'].html;"
+            " ELS['github-filters'].listeners.click[0]({ target: { closest: s => s === '[data-f=\"gh\"]' ? { dataset: { v: 'all' } } : null } });"
+            " R.all = ELS['github-sections'].html; R.search = location.search;",
+            f"(path, body) => [200, {json.dumps(found)}]")
+        mine, every = out["R"]["mine"], out["R"]["all"]
+        self.assertEqual([n for n in (1, 2, 3, 4) if f"pull/{n}\"" in mine], [1, 3, 4])
+        self.assertNotIn("example/anvil#20", mine)
+        self.assertIn('data-f="gh" data-v="mine" aria-pressed="true">mine <span class="n">3</span>', out["R"]["bar"])
+        self.assertIn('data-v="all" aria-pressed="false">all <span class="n">5</span>', out["R"]["bar"])
+        self.assertIn("3 of 4 open pull requests", out["R"]["tally"])
+        self.assertEqual([n for n in (1, 2, 3, 4) if f"pull/{n}\"" in every], [1, 2, 3, 4])
+        self.assertIn("example/anvil#20", every)
+        self.assertEqual(out["R"]["search"], "?gh=all")
+
     def test_waiting_rows_are_caution_settled_rows_say_how_and_a_missing_stamp_is_not_recorded(self):
         found = doc(pulls=[entry(1, why="waiting on you"), entry(2, at=None, at_what=None)],
                     settled=[entry(3, state="merged", at_what="merged")], undated=2)
