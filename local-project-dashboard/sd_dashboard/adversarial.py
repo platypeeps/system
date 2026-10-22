@@ -16,7 +16,8 @@ wrote the work: codex, at the model and effort the `adversarial.model` and `adve
   deep    a registered repository, reviewed by headless claude rather than codex (sd:5100): `lenses/deep.md` has the
           lead fan out read-only sub-agents, one per area, then verify and rank what they find. Its model, effort,
           bound and sub-agent cap are the `DEEP` setting rows in the workflow database (sd:5109), else their defaults;
-          `save_settings` writes them. Its lock is the repository's own, so one deep review runs per repository.
+          the Settings page writes them (sd:5784). Its lock is the repository's own, so one deep review runs per
+          repository.
   source  a research checkout's key, as the Research page lists it, with `source`, one ledger row's key: its URL or
           `id:<ID>` (sd:5101). The checkout must be registered. The input holds the row and the claims citing it, as
           the page's own reader finds them; the runner appends the row's link as it fetched it, one bounded GET
@@ -78,7 +79,7 @@ import time
 from pathlib import Path
 
 __all__ = ["DEEP", "EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "QUEUE", "SETTINGS", "TIMEOUT", "deep_settings",
-           "recommendations", "request", "run", "run_settings", "save_settings", "settings", "start", "status"]
+           "recommendations", "request", "run", "run_settings", "settings", "start", "status"]
 
 #: This repository's checkout: a brief that names no repository is reviewed here.
 CHECKOUT = Path(__file__).resolve().parents[2]
@@ -213,25 +214,6 @@ def deep_settings(connection) -> dict:
         except ValueError as problem:
             raise ValueError(f"the setting {problem}; set it again in the repo's Deep review settings") from None
     return out
-
-
-def save_settings(values: dict):
-    """`POST /api/adversarial/settings {key: value, ...}` (sd:5109): each `DEEP` key given, checked, then written with
-    `set_setting`; an empty value clears the row, so the default applies. Answers what each key held before."""
-    from sd_db import writes
-
-    if not values or set(values) - set(DEEP) or not all(isinstance(value, str) for value in values.values()):
-        raise ValueError(f"The deep review's settings are {', '.join(DEEP)}, each as text.")
-    checked = {key: _deep_value(key, value.strip()) if value.strip() else None for key, value in values.items()}
-
-    def write(connection):
-        from sd_db.database import transaction
-
-        with transaction(connection):
-            was = {key: writes.set_setting(connection, key, value) for key, value in checked.items()}
-        return {"saved": checked, "was": was, "settings": deep_settings(connection)}
-
-    return write
 
 
 def _stamp(now: datetime.datetime) -> str:
