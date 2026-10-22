@@ -17,6 +17,9 @@ from support import ScreenCase
 
 
 class BrowserSession(ScreenCase):
+    #: Seconds one request waits for the in-process server; a class whose server runs real subprocesses sets more.
+    http_timeout = 5
+
     def setUp(self):
         super().setUp()
         self.listening = server.build(self.path, port=0, operations_backend=getattr(self, "backend", None),
@@ -39,7 +42,7 @@ class BrowserSession(ScreenCase):
             data=json.dumps(payload).encode() if payload is not None else None,
             headers=headers or {}, method=method)
         try:
-            answer = urllib.request.urlopen(request, timeout=5)
+            answer = urllib.request.urlopen(request, timeout=self.http_timeout)
         except urllib.error.HTTPError as error:
             answer = error
         with answer:
