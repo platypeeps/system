@@ -1417,6 +1417,19 @@ SLIDES = { ready: false, why: 'workspace-mcp at http://127.0.0.1:8083/mcp did no
         self.assertIn("an older deck: import again", r["older"])
         self.assertEqual(r["down"], "workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused")
 
+    def test_import_to_slides_says_a_changed_deck_updated_the_same_file(self):
+        """sd:5761: a changed deck replaces its Slides file's content in place; the confirm and the answer say so."""
+        board = json.loads(self.experiment_board())
+        board["projects"][0]["experiment"]["built"] = NOW
+        ready = {"ready": True, "why": "", "imports": {}}
+        slides = {"id": "p-1", "link": "https://docs.google.com/presentation/d/p-1/edit", "built": NOW, "imported": NOW}
+        answer = (f"(path, body) => path === '/api/research' ? [200, {json.dumps(board)}] : path === '/api/research/slides/status' ? [200, {json.dumps(ready)}]"
+                  f" : path === '/api/research/slides' ? [200, {json.dumps({'slides': slides, 'reused': False, 'updated': True, 'replaces': None})}] : [200, {{ run: null }}]")
+        out = self.run_page("""const c = cmd('research.slides'), o = C.get('xp:research/alpha');
+R.consequence = c.consequence(o); R.said = await c.run(o);""", answer=answer)
+        self.assertEqual(out["R"]["said"], "Updated in Slides · Alpha: same file and link")
+        self.assertIn("a changed one replaces that file's content, keeping its link and sharing", out["R"]["consequence"])
+
     def test_sources_and_claim_map_send_the_viewer_to_projects_when_none_is_selected(self):
         out = self.run_page("""ANSWER = () => [500, { error: 'boom' }]; await load(); await flush();
 R.reader = ELS.reader.html; R.claims = ELS.claims.html; R.counts = Object.assign({}, OUT.counts);
