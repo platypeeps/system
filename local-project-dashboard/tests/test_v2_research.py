@@ -63,8 +63,8 @@ COMMANDS = [
     ["experiment.make", "research project", "Make experiment", None, "safe"],
     ["experiment.deck", "research project", "Draft deck", None, "safe"],
     ["experiment.apply", "research project", "Apply draft", None, "safe"],
-    ["research.deck", "research experiment", "Build deck", None, "safe"],
-    ["research.slides", "research experiment", "Import to Slides", None, "safe"],
+    ["research.deck", "research project", "Build deck", None, "safe"],
+    ["research.slides", "research project", "Import to Slides", None, "safe"],
     ["source.adversarial-review", "research source", "Adversarial review", None, "safe"],
 ]
 
@@ -1286,7 +1286,7 @@ R.afterSource = OUT.views.slice(); R.litClaims = ELS.claims.html;""")
         doc = self.experiment_board()
         answer = (f"(path, body) => path === '/api/research' ? [200, {doc}] : path === '/api/research/deck/status' ? [200, {{ run: null }}]"
                   " : [404, { error: 'No research checkout at this address.' }]")
-        out = self.run_page("""window.shell.commands.rowActions = id => mk`<span data-for="${id}"></span>`; renderExperiments();
+        out = self.run_page("""window.shell.commands.rowActions = (id, o) => mk`<span data-for="${id}" data-icons="${String(!!o?.icons)}"></span>`; renderExperiments();
 R.rows = ELS['xp-rows'].html; R.tally = ELS['xp-tally'].html;""", answer=answer)
         rows, r = re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), out["R"]
         self.assertEqual(rows, ["research/alpha", "research/beta"])
@@ -1300,7 +1300,7 @@ R.rows = ELS['xp-rows'].html; R.tally = ELS['xp-tally'].html;""", answer=answer)
         self.assertIn('href="https://example.test/deck"', r["rows"])
         self.assertIn("deck.json ●, no deck built yet", r["rows"])
         self.assertIn("The status brief was not read: 30-brief/BRIEF-status.md exceeds the bounded read size.</span>", r["rows"])
-        self.assertEqual(re.findall(r'<td class="acts"><span data-for="([^"]+)">', r["rows"]), ["xp:research/alpha", "xp:research/beta"])
+        self.assertEqual(re.findall(r'<td class="acts"><span data-for="([^"]+)" data-icons="true">', r["rows"]), ["research/alpha", "research/beta"])
         # The tally counts briefs, stale ones and asks; there is no deck count and no run line above the ledger.
         self.assertEqual(re.findall(r"<span>([^<]+)</span>", r["tally"]), ["2 briefs", "1 stale", "3 asks"])
         self.assertNotIn("xp-run", (V2 / "research.html").read_text(encoding="utf-8"))
@@ -1321,11 +1321,11 @@ R.rows = ELS['xp-rows'].html; R.tally = ELS['xp-tally'].html;""", answer=answer)
         answer = (f"(path, body) => path === '/api/research' ? [200, (BOARDS = (typeof BOARDS === 'number' ? BOARDS : 0) + 1) > 1 ? {json.dumps(built)} : {doc}]"
                   f" : path === '/api/research/deck' ? [202, {json.dumps(run)}] : path === '/api/research/deck/status' ? [200, {{ run: null }}]"
                   f" : path === '/api/research/deck/{run['id']}' ? [200, {json.dumps(done)}] : [404, {{ error: 'No research checkout at this address.' }}]")
-        out = self.run_page("""const o = C.get('xp:research/alpha'), c = cmd('research.deck');
-R.when = c.when(o); R.primary = c.primary(o); R.cli = c.cli(o); R.icon = c.icon; shellRun(c, o); await flush(); await flush(); await flush();
-R.rows = ELS['xp-rows'].html; R.after = c.when(C.get('xp:research/alpha'));""", answer=answer)
+        out = self.run_page("""const o = C.get('research/alpha'), c = cmd('research.deck');
+R.when = c.when(o); R.primary = !!c.primary; R.cli = c.cli(o); R.icon = c.icon; shellRun(c, o); await flush(); await flush(); await flush();
+R.rows = ELS['xp-rows'].html; R.after = c.when(C.get('research/alpha'));""", answer=answer)
         r = out["R"]
-        self.assertEqual((r["when"], r["primary"], r["icon"]), (True, True, "file-text"))
+        self.assertEqual((r["when"], r["primary"], r["icon"]), (True, False, "file-text"))
         self.assertEqual(r["cli"], "cd ~/'repos/research/alpha' && sd-research-kit deck")
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/deck", {"repo": "research/alpha"}]], out["toasts"])
         self.assertIn(f"/api/research/deck/{run['id']}", out["gets"])
@@ -1335,7 +1335,7 @@ R.rows = ELS['xp-rows'].html; R.after = c.when(C.get('xp:research/alpha'));""", 
         self.assertIs(r["after"], True)
 
     def test_an_experiments_details_offer_build_deck_and_import_to_slides(self):
-        # sd:5747: the selected experiment's Details carry its deck line and its Build deck and Import to Slides buttons.
+        # sd:5747: the selected experiment's Details carry its deck line, and its one Act bar holds Build deck and Import to Slides.
         doc = self.experiment_board()
         answer = (f"(path, body) => path === '/api/research' ? [200, {doc}] : path === '/api/research/deck/status' ? [200, {{ run: null }}]"
                   " : [404, { error: 'No research checkout at this address.' }]")
@@ -1345,11 +1345,19 @@ R.rows = ELS['xp-rows'].html; R.after = c.when(C.get('xp:research/alpha'));""", 
         det = out["R"]["det"]
         self.assertIn("<h3>Deck</h3>", det)
         self.assertIn("deck.json ●, no deck built yet", det)
-        self.assertIn('<div data-bar="research/alpha"></div>', det)
-        self.assertIn('<div data-bar="xp:research/alpha"></div>', det)
+        self.assertEqual(det.count('<div data-bar="research/alpha"></div>'), 1)
         cmds = self.run_page("R.on = C.commands ? 1 : 0; R.deck = cmd('research.deck').on; R.slides = cmd('research.slides').on;", answer=answer)["R"]
-        self.assertEqual((cmds["deck"], cmds["slides"]), ("research experiment", "research experiment"))
+        self.assertEqual((cmds["deck"], cmds["slides"]), ("research project", "research project"))
         self.assertNotIn("<h3>Deck</h3>", out["R"]["none"])
+
+    def test_draft_experiment_sits_on_the_experiments_tab_not_the_toolbar(self):
+        # sd:5747: the operator moved it; Refresh experiments stays in the toolbar.
+        page = (V2 / "research.html").read_text(encoding="utf-8")
+        xp = page[page.index('<section id="view-experiments"'):]
+        toolbar = page[:page.index('<section id="view-projects"')]
+        self.assertIn('id="draft-exp"', xp[:xp.index("</section>")])
+        self.assertNotIn('id="draft-exp"', toolbar)
+        self.assertIn('id="refresh-exp"', toolbar)
 
     def test_build_deck_is_off_without_a_deck_json_and_while_a_run_builds(self):
         # The poll's first read fails, which is not known, not settled; the stand-in's timers fire at once, so the second answers.
@@ -1358,8 +1366,8 @@ R.rows = ELS['xp-rows'].html; R.after = c.when(C.get('xp:research/alpha'));""", 
         answer = (f"(path, body) => path === '/api/research' ? [200, {doc}] : path === '/api/research/deck/status' ? [200, {{ run: {json.dumps(running)} }}]"
                   f" : path !== '/api/research/deck/{running['id']}' ? [404, {{ error: 'none' }}]"
                   f" : (POLLS = (typeof POLLS === 'number' ? POLLS : 0) + 1) < 2 ? [503, {{ error: 'unread' }}] : [200, {json.dumps({**running, 'state': 'failed', 'reason': 'the kit exited 1'})}]")
-        out = self.run_page("""R.rows = ELS['xp-rows'].html; R.beta = cmd('research.deck').when(C.get('xp:research/beta'));
-R.alpha = cmd('research.deck').when(C.get('xp:research/alpha'));""", answer=answer)
+        out = self.run_page("""R.rows = ELS['xp-rows'].html; R.beta = cmd('research.deck').when(C.get('research/beta'));
+R.alpha = cmd('research.deck').when(C.get('research/alpha'));""", answer=answer)
         self.assertIn("Last build failed: the kit exited 1", out["R"]["rows"])
         self.assertIn("no deck.json: Build deck is off", out["R"]["rows"])
         self.assertEqual(out["gets"].count("/api/research/deck/deck-20260906T120000Z"), 2)
@@ -1368,7 +1376,7 @@ R.alpha = cmd('research.deck').when(C.get('xp:research/alpha'));""", answer=answ
         # While a run builds, every row's action is off and names it.
         answer = f"(path, body) => path === '/api/research' ? [200, {doc}] : [200, {{ run: null }}]"
         out = self.run_page(f"""setTimeout = () => 0; followBuild({{ ...{json.dumps(running)}, unread: 'unread' }}, false);
-R.when = cmd('research.deck').when(C.get('xp:research/alpha')); R.rows = ELS['xp-rows'].html;""", answer=answer)
+R.when = cmd('research.deck').when(C.get('research/alpha')); R.rows = ELS['xp-rows'].html;""", answer=answer)
         self.assertEqual(out["R"]["when"], "run deck-20260906T120000Z is building research/alpha's deck")
         self.assertIn("Building: run deck-20260906T120000Z is running; its state was not read: unread", out["R"]["rows"])
 
@@ -1381,12 +1389,11 @@ R.when = cmd('research.deck').when(C.get('xp:research/alpha')); R.rows = ELS['xp
         slides = {"id": "p-1", "link": "https://docs.google.com/presentation/d/p-1/edit", "built": NOW, "imported": NOW}
         answer = (f"(path, body) => path === '/api/research' ? [200, {json.dumps(board)}] : path === '/api/research/slides/status' ? [200, {json.dumps(ready)}]"
                   f" : path === '/api/research/slides' ? [200, {json.dumps({'slides': slides, 'reused': False, 'replaces': None})}] : [200, {{ run: null }}]")
-        out = self.run_page("""const c = cmd('research.slides'), o = C.get('xp:research/alpha');
-R.when = c.when(o); R.beta = c.when(C.get('xp:research/beta')); R.ask = c.askFirst; R.before = ELS['xp-rows'].html;
+        out = self.run_page("""const c = cmd('research.slides'), o = C.get('research/alpha');
+R.when = c.when(o); R.beta = c.when(C.get('research/beta')); R.ask = c.askFirst; R.before = ELS['xp-rows'].html;
 R.said = await c.run(o); R.rows = ELS['xp-rows'].html;
 SLIDES.imports['research/alpha'] = { ...SLIDES.imports['research/alpha'], built: '2026-09-01T00:00:00Z' }; renderExperiments(); R.older = ELS['xp-rows'].html;
-SLIDES = { ready: false, why: 'workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused', imports: {} }; R.down = c.when(o);
-renderExperiments(); R.downRows = ELS['xp-rows'].html;""", answer=answer)
+SLIDES = { ready: false, why: 'workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused', imports: {} }; R.down = c.when(o);""", answer=answer)
         r = out["R"]
         self.assertEqual((r["when"], r["ask"]), (True, True))
         self.assertEqual(r["beta"], "no deck is built: press Build deck first")
@@ -1397,11 +1404,6 @@ renderExperiments(); R.downRows = ELS['xp-rows'].html;""", answer=answer)
         self.assertIn("current deck", r["rows"])
         self.assertIn("an older deck: import again", r["older"])
         self.assertEqual(r["down"], "workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused")
-        # sd:5747: the row carries an Import to Slides icon while the import can run, and none while it cannot.
-        icon = '<button class="icon-btn" type="button" data-cmd="research.slides" data-obj="xp:research/alpha" aria-label="Import to Slides"'
-        self.assertIn(icon, r["before"])
-        self.assertEqual(r["before"].count('data-cmd="research.slides"'), 1)
-        self.assertNotIn('data-cmd="research.slides"', r["downRows"])
 
     def test_sources_and_claim_map_send_the_viewer_to_projects_when_none_is_selected(self):
         out = self.run_page("""ANSWER = () => [500, { error: 'boom' }]; await load(); await flush();
@@ -1490,7 +1492,7 @@ R.refreshOff = cmd('experiment.refresh').when(C.get('research:page')); ELS['refr
 FIELD_VALUES = { page: '2'.repeat(32), project: 'research/beta', description: 'Tail sampling keeps the slow spans' };
 shellRun(cmd('experiment.attach'), o); await flush(); ELS['draft-exp'].listeners.click[0]({}); await flush();
 R.projects = cmd('experiment.create').fields(C.get('research:page'))[0].options.map(x => x.value);""", answer=answer)
-        self.assertIn("Not linked. Attach one, or use Draft experiment in the toolbar.", out["R"]["section"])
+        self.assertIn("Not linked. Attach one, or use Draft experiment on the Experiments tab.", out["R"]["section"])
         # Draft experiment and Refresh experiments are page actions (toolbar), not project commands (sd:5631, sd:5656).
         self.assertTrue(out["R"]["refreshOff"])
         self.assertIn("Refresh experiments, in the toolbar, reads it", self.run_page("PAGE_LIST.select('research/beta'); await flush(); R.s = ELS.details.html;",

@@ -57,8 +57,6 @@
           <p class="hint" id="shift-hint">→ switches reading · Enter keeps the filter · Esc clears · Tab moves on</p>
         </div>
       </div>
-      <button class="btn quiet sm" type="button" id="draft-exp" title="Draft a new experiment for a research project; Apply writes it after you read it">
-        <svg class="i" aria-hidden="true"><use href="#i-flask-conical"/></svg><span>Draft experiment</span></button>
       <button class="btn quiet sm" type="button" id="refresh-exp" title="Read the team's experiments list from Notion; writes nothing there">
         <svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg><span>Refresh experiments</span></button>
     </div>
@@ -113,6 +111,8 @@
         <h2 id="xp-h">Experiments <button class="help" type="button" aria-label="Help: Experiments" data-help="<b>Each checkout's status brief, 30-brief/BRIEF-status.md.</b> State, Updated, the line and Asks are its Status at a glance and Asks sections. The State cell's first word sets the mark: Running, Decided or Done ●, Waiting ▲, Blocked ■, any other word ▨. A brief not updated for over 7 days is stale. A row's Build deck lays its 30-brief/deck.json out as docs/dashboard/deck.pptx in the checkout, and the row links it. Import to Slides then sends that deck to Google Slides on the work account, and the row links the Slides file.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
         <p class="tally" id="xp-tally"></p>
+        <button class="btn quiet sm" type="button" id="draft-exp" title="Draft a new experiment for a research project; Apply writes it after you read it">
+          <svg class="i" aria-hidden="true"><use href="#i-flask-conical"/></svg><span>Draft experiment</span></button>
       </div>
       <table class="ledger xp" aria-labelledby="xp-h" data-tfilter="page" data-toolbar="toolbar">
         <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Experiment</th><th scope="col">Updated</th><th scope="col">Asks</th><th scope="col">Links</th><th scope="col" class="acts"><span class="sr">Actions</span></th></tr></thead>
