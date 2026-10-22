@@ -704,7 +704,7 @@ class TheTableGrammar(unittest.TestCase):
         # A page's own count wins: shell.view.count marks the view owned.
         self.assertIn("function viewCount(id, n) { viewOwned.add(id);", js)
         # The pages that printed a separate count put it on a tab, and the two pages without views have one now.
-        for page, call in [("designs.js", "shell.view.count(F.hidden ? 'hidden' : 'pages', rows.length);"),
+        for page, call in [("designs.js", "shell.view.count('pages', rows.length);"),
                            ("activity.js", "window.shell.view.count('timeline', shown);"),
                            ("briefs.js", "shell.view.count('list', all.length);"),
                            ("skills.js", "window.shell.view?.count('catalog', DOC ? v.length : null);"),
