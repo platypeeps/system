@@ -613,9 +613,8 @@ OUT.toasts[0].undo(); await flush();""")
             "Hides 7 here only. Dashboard only, no CLI line.",
         ])
         # The foundation's help popover shows it after --delay-help, in the theme's tokens; a native title would not.
-        for where in ("data-cmd=\"${c.id}\" data-obj=\"${id}\" data-tip=\"${tipOf(c, o)}\"",
-                      "data-cmd=\"${p.id}\" data-obj=\"${id}\" data-tip=\"${tipOf(p, o)}\""):
-            self.assertIn(where, SHELL_JS)
+        # The Details bar and a row's text button share one form (sd:5747: rowActions names its command c too).
+        self.assertGreaterEqual(SHELL_JS.count("data-cmd=\"${c.id}\" data-obj=\"${id}\" data-tip=\"${tipOf(c, o)}\""), 2)
         self.assertNotIn("title=\"${tipOf(", SHELL_JS)
         self.assertIn("const b = e.target.closest?.('.help, [data-tip]');", SHELL_JS, "the hover delay skips the command buttons")
         self.assertIn("btn.dataset.help != null ? helpText(btn.dataset.help) : html`${btn.dataset.tip}`", SHELL_JS,
