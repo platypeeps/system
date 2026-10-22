@@ -29,7 +29,11 @@ no answer is a reason to stay, never a pass.
   `dashboard.disk_storage` setting row (sd:5109; `disk.conf` answers only
   while the database has never held the row), one `du -k -d 1` per folder
   with what is left of the budget; a folder `du` could not finish is a row
-  that says so, not a refusal of the area;
+  that says so, not a refusal of the area. A folder on a network mount
+  (sd:5726: smbfs, nfs, afp, webdav, by one `mount`) gets no `du`, which
+  ran past 120 s on an SMB share: one `df -kP <folder>` gives the share's
+  use instead. A mount table that did not answer leaves each folder to its
+  bounded `du`, as before;
 - registered worktrees whose `HEAD` is in `origin/HEAD` and that still hold
   `target/`, `node_modules/` or `.venv/` (the 2026-09-25 rule: delete build
   output once the PR merges). Presence only: sizing build output needs a
@@ -385,12 +389,62 @@ def build_output(walk: Walk, keys: list[str]) -> dict:
     return {"checked": checked, "merged": merged, "unread": unread, "revision": build_revision(merged)}
 
 
+#: The file system types `mount` names for a network share (sd:5726): macOS's, then Linux's.
+NETWORK_TYPES = frozenset({"smbfs", "nfs", "afpfs", "webdav", "cifs", "nfs4"})
+#: One `mount` line: macOS's "<device> on <point> (<type>, ...)" or Linux's "<device> on <point> type <type> (...)".
+MOUNT_LINE = re.compile(r"^.+? on (.+?) (?:type (\S+) \(|\((\w+)[,)])")
+
+
+def _mounts(walk: Walk) -> dict[str, str] | None:
+    """Each mount point's file system type, or None when `mount` gave no table: then no type is known."""
+    done = walk.run(["mount"], spare=True)
+    if done is None or done.returncode != 0:
+        return None
+    found = {}
+    for line in done.stdout.splitlines():
+        m = MOUNT_LINE.match(line)
+        if m:
+            found[m.group(1)] = m.group(2) or m.group(3)
+    return found or None
+
+
+def _network(mounts: dict[str, str] | None, root: Path) -> tuple[str, str] | None:
+    """(mount point, type) of the network mount that holds `root`, by its innermost mount point; None for a local one."""
+    path = str(root)
+    held = [point for point in (mounts or {}) if path == point or path.startswith(point.rstrip("/") + "/")]
+    point = max(held, key=len, default=None)
+    return (point, mounts[point]) if point and mounts[point] in NETWORK_TYPES else None
+
+
+def _share(walk: Walk, root: Path, mount: tuple[str, str]) -> dict:
+    """A network folder's entry: the share's use from one `df -kP`, and no folders."""
+    entry = {"root": str(root), "folders": [], "error": "", "network": None}
+    done = walk.run(["df", "-kP", str(root)], spare=True)
+    if done is None:
+        entry["error"] = f"df did not finish inside the Disk budget on the {mount[1]} share"
+        return entry
+    fields = (done.stdout.strip().splitlines() or [""])[-1].split()
+    if done.returncode != 0 or len(fields) < 6 or not all(field.isdigit() for field in fields[1:4]):
+        entry["error"] = (done.stderr.strip().splitlines() or [f"df exited {done.returncode} on the {mount[1]} share"])[-1]
+        return entry
+    entry["network"] = {"type": mount[1], "mount": " ".join(fields[5:]), "size_kb": int(fields[1]),
+                        "used_kb": int(fields[2]), "avail_kb": int(fields[3])}
+    return entry
+
+
 def _storage(walk: Walk, roots: list[Path]) -> list[dict]:
-    """One entry per configured folder: its subfolders by size, or the reason they were not measured."""
+    """One entry per configured folder: its subfolders by size, its share's use, or the reason they were not measured."""
     out = []
+    mounts = _mounts(walk) if roots and walk.left() > 0 else None
     for root in roots:
         entry = {"root": str(root), "folders": [], "error": ""}
-        if not root.is_dir():
+        mount = _network(mounts, root)
+        if walk.left() <= 0 and mount:
+            entry["error"] = "not measured: the Disk budget was spent before this folder"
+        elif mount:
+            # No is_dir either: a stat on a share that does not answer is not bounded; df is, and names a missing folder.
+            entry = _share(walk, root, mount)
+        elif not root.is_dir():
             entry["error"] = "the folder does not exist or is not mounted"
         elif walk.left() <= 0:
             entry["error"] = "not measured: the Disk budget was spent before this folder"
