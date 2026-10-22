@@ -3,7 +3,7 @@
 // today-reports:read event after each read, `error` set when the whole read failed. A list that could not be read is a row
 // naming why, never an empty list. A row's title opens it in Details.
 // Acknowledge posts /api/reports/<id>/acknowledge with the revision the read gave, the Reports page's route; Seen posts the
-// Today snooze /api/snooze for the brief until its `until`, after it ages off Today. A refusal stays on the row; a landed
+// Today snooze /api/snooze for the brief until its `until`, forever: until it changes, the mark the place pages read too (sd:5752). A refusal stays on the row; a landed
 // write says so until Refresh, pressed for it, drops the row. Markup is html`…` from markup.js: every value is escaped.
 (() => {
   const { html, put } = window.markup;

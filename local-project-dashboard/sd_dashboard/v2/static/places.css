@@ -5,7 +5,7 @@
  * are hoa.js's.
  * Hallmark · component: place view · genre: modern-minimal · theme: design.md instrument panel
  * states: default · hover (the row link or button) · focus (link, button and switch) · active (pressed view) · selected (a brief, report or task row) · loading (Reading…) ·
- * error (▨ Not read, with the reason) · empty (a row naming what was looked for) */
+ * error (▨ Not read, with the reason) · empty (a row naming what was looked for) · filtered (Open | All, shell.css .filters, sd:5752) */
 .place-switch { margin: 0 0 var(--space-md); }
 .place-switch:empty, html[data-kiosk] .place-switch { display: none; }
 
@@ -21,6 +21,8 @@
 .place-rows td { vertical-align: top; height: auto; padding-block: var(--space-xs); }
 .place-rows .ref, .place-rows .when, .place-rows .job, .place-rows .num { white-space: nowrap; font: 400 var(--text-xs)/1.35 var(--font-data); color: var(--color-ink-2); }
 .place-rows .num { text-align: right; }
+/* sd:5752: the row's act (shell.commands.rowActions), its acknowledge first, as hoa.css sets HOA's own ledgers. */
+.place-rows .act { width: 1%; white-space: nowrap; text-align: right; }
 .place-rows .what { min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
 .place-rows .lead { min-width: 0; overflow-wrap: anywhere; color: var(--color-ink-2); }
 .place-rows a { color: var(--color-ink); text-decoration: none; }

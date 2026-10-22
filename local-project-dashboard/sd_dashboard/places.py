@@ -43,7 +43,7 @@ from sd_db import reads
 from .documents import _config_dir, pipe_lines
 
 __all__ = ["AREAS", "area_of", "briefs", "parse_realms", "realm_of", "realm_places", "realms", "reports", "series_job",
-           "tasks"]
+           "task_rows", "tasks"]
 
 #: The places, by family key, and their labels.
 AREAS = {"hoa": "HOA", "home": "Home"}
@@ -182,25 +182,39 @@ def _unknown(now: str, area: str, reason: str, **more) -> dict:
     return {"read": now, "area": area, "state": "unknown", "reason": reason, "rows": [], **more}
 
 
+def task_rows(connection, owns, *, now: str, repo: str | None = None) -> tuple[list[dict], list[dict]]:
+    """The open rows and the week's done rows `owns(repo, kind)` places, as the Tasks page's rows (`tasks_screen._rows`).
+
+    Both are `reads.backlog_items`' unparked rows (`repo` narrows the read), so done is bounded as on Tasks: done within
+    the week. A scheduled occurrence waits until it opens (sd:5670). The caller holds the snapshot. sd:5752: the done
+    rows are a place's All view, and a row Done moved there stays a command object, so its Undo finds it.
+    """
+    from .tasks_screen import _rows, is_scheduled
+
+    found = [row for row in reads.backlog_items(connection, now=now, **({"repo": repo} if repo is not None else {}))
+             if not is_scheduled(row) and owns(row["repo"], row["kind"])]
+    rows = _rows(connection, found, realms(connection), now=now)
+    return [row for row in rows if row["status"] != "done"], [row for row in rows if row["status"] == "done"]
+
+
 def tasks(connection, area: str, *, now: str) -> dict:
-    """The area's open items: `reads.backlog_items`' unparked open rows `area_of` (or a realm's `realm_of`) places in it.
+    """The area's open items in `rows`, and the week's done ones in `done` (`task_rows`): `area_of` (or a realm's
+    `realm_of`) places each in it.
 
     Each is the Tasks page's row (`tasks_screen._rows`), read in one snapshot as `/api/tasks` is: a row's Details on the
     place page are the Tasks page's own (sd:5635), with its revision, moves, edit capability and issue targets, and `lead`
-    says whether the store takes a lead, as `/api/tasks` does. A scheduled occurrence waits until it opens (sd:5670).
+    says whether the store takes a lead, as `/api/tasks` does.
     """
     owns, why, unread = _place(connection, area)
     if owns is None:
-        return {**_unknown(now, area, why), **({"state": "error"} if unread else {})}
+        return {**_unknown(now, area, why, done=[]), **({"state": "error"} if unread else {})}
     from .operations_screen import _one_snapshot
-    from .tasks_screen import _has_lead, _rows, is_scheduled
+    from .tasks_screen import _has_lead
 
     with _one_snapshot(connection):
-        found = [row for row in reads.backlog_items(connection, now=now)
-                 if row["status"] != "done" and not is_scheduled(row) and owns(row["repo"], row["kind"])]
-        rows = _rows(connection, found, realms(connection), now=now)
+        rows, done = task_rows(connection, owns, now=now)
         lead = _has_lead(connection)
-    return {"read": now, "area": area, "state": "read", "reason": "", "rows": rows, "lead": lead}
+    return {"read": now, "area": area, "state": "read", "reason": "", "rows": rows, "done": done, "lead": lead}
 
 
 #: How many briefs are read before the area filter: every one the store holds, in practice; a page shows `ROWS`.
@@ -208,8 +222,12 @@ BRIEF_SCAN = 100_000
 
 
 def briefs(connection, area: str, *, now: str, config: Path | None = None) -> dict:
-    """The area's briefs, in the Briefs page's row shape (`briefs_screen.document`), with its watchdog for their Details."""
-    from . import briefs_screen
+    """The area's briefs, in the Briefs page's row shape (`briefs_screen.document`), with its watchdog for their Details.
+
+    Each row carries Today's Seen mark (sd:5752): `mark` the Today row id it is snoozed under, `seen` its fingerprint, and
+    `marked` whether that snooze holds. A snooze read that fails marks nothing and says so in `reason`.
+    """
+    from . import briefs_screen, snooze, today_reports
 
     jobs, unconfigured, unread = _family(connection, area, config)
     if unread:
@@ -232,8 +250,14 @@ def briefs(connection, area: str, *, now: str, config: Path | None = None) -> di
 
     doc = briefs_screen.document(connection, now=now, reader=reader)
     state = "error" if doc["reader"]["state"] == "error" else "read"
+    held, unheld = snooze.held(connection, now=now)
+    for row in doc["briefs"]:
+        mark = today_reports.seen_row(row)
+        row["mark"], row["seen"] = mark["id"], snooze.fingerprint(mark)
+        row["marked"] = held.get(snooze.key("today", mark["id"]), {}).get("seen") == row["seen"]
     # A family not configured still leaves the checkout's briefs; the reason says what else would be read.
-    return {"read": now, "area": area, "state": state, "reason": doc["reader"]["reason"] or unconfigured or why,
+    reason = [doc["reader"]["reason"] or unconfigured or why, unheld and f"Seen marks were not read: {unheld}. Every brief shows as open."]
+    return {"read": now, "area": area, "state": state, "reason": " ".join(part for part in reason if part),
             "rows": doc["briefs"], "reader": doc["reader"], "watchdog": doc["watchdog"]}
 
 
