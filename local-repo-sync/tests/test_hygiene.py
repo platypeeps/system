@@ -1480,5 +1480,190 @@ class NightlyJevShadowTest(unittest.TestCase):
         self.assertEqual(self.calls(), [])
 
 
+SD_SHIP_STUB = """#!/bin/sh
+# Test stub for the pack's sd-ship: records its arguments, prints
+# $SD_SHIP_DIR/<checkout name>.out when there is one, and exits with the
+# number in <checkout name>.rc, else 0.
+printf '%s\\n' "$*" >> "$SD_SHIP_DIR/calls"
+name=$(basename "$2")
+[ ! -e "$SD_SHIP_DIR/$name.out" ] || cat "$SD_SHIP_DIR/$name.out"
+[ ! -e "$SD_SHIP_DIR/$name.rc" ] || exit "$(cat "$SD_SHIP_DIR/$name.rc")"
+exit 0
+"""
+
+
+class LaneProofTest(unittest.TestCase):
+    """NEW (sd:5701). A builder branch merged into a lane bundle that landed
+    by squash is on the default branch by none of hygiene's three ways. The
+    pack's `sd-ship lane prune --dry-run --json` proves it landed (pack
+    sd:5700); hygiene takes that proof for a branch at exactly the tip
+    listed, and the rest of its delete path stays."""
+
+    def fixture(self):
+        f = HygieneFixture()
+        self.addCleanup(f.destroy)
+        self.ship = f.tmp / "sd-ship-stub"
+        self.ship.mkdir()
+        (f.sd_pack / "bin" / "sd-ship").write_text(SD_SHIP_STUB)
+        (f.sd_pack / "bin" / "sd-ship").chmod(0o755)
+        self.env = {"SD_SHIP_DIR": str(self.ship)}
+        return f
+
+    def bundled(self, f, repo, name="builder-a"):
+        """A pushed builder branch whose commit landed only inside a bundle
+        squash with another change, so no rule of hygiene's own proves it."""
+        f.git(repo, "switch", "-q", "-c", name)
+        tip = f.commit(repo, f"{name}.txt", "builder\n", "builder work")
+        f.git(repo, "push", "-q", "-u", "origin", name)
+        f.git(repo, "switch", "-q", "main")
+        (repo / f"{name}.txt").write_text("builder\n")
+        (repo / "bundle.txt").write_text("bundle\n")
+        f.git(repo, "add", f"{name}.txt", "bundle.txt")
+        f.git(repo, "commit", "-q", "-m", "bundle squash")
+        f.git(repo, "push", "-q", "origin", "main")
+        return tip
+
+    def answer(self, repo, rows=None, raw=None, rc=None):
+        """What the stub prints for `repo`: a dry run listing `rows`
+        (branch, tip), or the text `raw`; and its exit code."""
+        if raw is None:
+            raw = json.dumps({"ok": True, "dry_run": True, "deleted": [], "kept": [],
+                              "landed": [{"branch": b, "tip": t} for b, t in rows or []]})
+        name = pathlib.Path(repo).name
+        (self.ship / f"{name}.out").write_text(raw)
+        if rc is not None:
+            (self.ship / f"{name}.rc").write_text(str(rc))
+
+    def asked(self):
+        """Each stub call as (checkout name, the arguments after -C <dir>)."""
+        path = self.ship / "calls"
+        lines = path.read_text().splitlines() if path.exists() else []
+        return [(pathlib.Path(l.split()[1]).name, " ".join(l.split()[2:])) for l in lines]
+
+    def test_a_branch_the_lane_lists_at_its_tip_is_deleted(self):
+        f = self.fixture()
+        repo = f.repo()
+        tip = self.bundled(f, repo)
+        self.answer(repo, [("builder-a", tip)])
+
+        result = f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertEqual("", f.branch_sha(repo, "builder-a"))
+        self.assertIn(f"deleted branch builder-a {tip} (landed by a merged lane head;",
+                      result.stdout)
+        self.assertEqual([("proj", "lane prune --dry-run --json")], self.asked())
+
+    def test_a_branch_the_lane_lists_at_another_tip_is_kept(self):
+        f = self.fixture()
+        repo = f.repo()
+        tip = self.bundled(f, repo)
+        self.answer(repo, [("builder-a", f.git(repo, "rev-parse", "main"))])
+
+        f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertEqual(tip, f.branch_sha(repo, "builder-a"))
+
+    def test_an_answer_that_proves_nothing_deletes_only_by_todays_rule(self):
+        """A failed, garbled or older-pack answer adds a note, proves no
+        branch, and fails no run; a branch landed by hygiene's own rule
+        still goes."""
+        cases = {
+            "older pack": ("usage: sd-ship lane: invalid choice: 'prune'\n", 2),
+            "refused": (json.dumps({"ok": False, "error": "hub down"}), 3),
+            "garbage": ("not json at all\n", 0),
+            "ok false": (json.dumps({"ok": False, "dry_run": True, "landed": []}), 0),
+            "not a dry run": None,
+            "short tip": None,
+        }
+        for case, answer in cases.items():
+            with self.subTest(case=case):
+                f = self.fixture()
+                repo = f.repo()
+                tip = self.bundled(f, repo)
+                f.git(repo, "branch", "ff-landed")
+                if answer:
+                    self.answer(repo, raw=answer[0], rc=answer[1])
+                else:
+                    row = {"branch": "builder-a",
+                           "tip": tip if case == "not a dry run" else tip[:12]}
+                    self.answer(repo, raw=json.dumps({
+                        "ok": True, "dry_run": case != "not a dry run", "landed": [row]}))
+
+                result = f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+                self.assertEqual(tip, f.branch_sha(repo, "builder-a"))
+                self.assertEqual("", f.branch_sha(repo, "ff-landed"))
+                self.assertIn("note: no lane proof", result.stdout)
+
+    def test_a_missing_sd_ship_is_silent(self):
+        f = self.fixture()
+        repo = f.repo()
+        tip = self.bundled(f, repo)
+        (f.sd_pack / "bin" / "sd-ship").unlink()
+
+        result = f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertEqual(tip, f.branch_sha(repo, "builder-a"))
+        self.assertNotIn("lane proof", result.stdout)
+
+    def test_report_mode_lists_it_and_deletes_nothing(self):
+        f = self.fixture()
+        repo = f.repo()
+        tip = self.bundled(f, repo)
+        self.answer(repo, [("builder-a", tip)])
+
+        result = f.run("hygiene", expect=1, extra_env=self.env)
+
+        self.assertEqual(tip, f.branch_sha(repo, "builder-a"))
+        self.assertIn(f"would delete branch builder-a {tip} (landed by a merged lane head)",
+                      result.stdout)
+
+    def test_a_listed_branch_in_a_dirty_worktree_is_kept(self):
+        f = self.fixture()
+        repo = f.repo()
+        tip = self.bundled(f, repo)
+        wt = f.tmp / "wt" / "builder-a"
+        wt.parent.mkdir(parents=True)
+        f.git(repo, "worktree", "add", "-q", str(wt), "builder-a")
+        (wt / "scratch.txt").write_text("unsaved\n")
+        self.answer(repo, [("builder-a", tip)])
+
+        result = f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertEqual(tip, f.branch_sha(repo, "builder-a"))
+        self.assertTrue((wt / "scratch.txt").exists())
+        self.assertIn("KEEP     branch builder-a", result.stdout)
+
+    def test_a_stale_default_ref_deletes_no_listed_branch_and_asks_nothing(self):
+        f = self.fixture()
+        repo = f.repo()
+        tip = self.bundled(f, repo)
+        self.answer(repo, [("builder-a", tip)])
+        bare = f.git(repo, "remote", "get-url", "origin")
+        f.git(bare, "update-ref", "refs/heads/main", f.git(repo, "rev-parse", "main~1"))
+
+        f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertEqual(tip, f.branch_sha(repo, "builder-a"))
+        self.assertEqual([], self.asked())
+
+    def test_each_repo_is_asked_once_and_reads_only_its_own_answer(self):
+        f = self.fixture()
+        first = f.repo("a/proj")
+        second = f.repo("b/other")
+        tips = {first: self.bundled(f, first), second: self.bundled(f, second)}
+        f.git(first, "branch", "builder-b", "builder-a")
+        self.answer(first, [])
+        self.answer(second, [("builder-a", tips[second])])
+
+        f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertEqual(tips[first], f.branch_sha(first, "builder-a"))
+        self.assertEqual(tips[first], f.branch_sha(first, "builder-b"))
+        self.assertEqual("", f.branch_sha(second, "builder-a"))
+        self.assertEqual([("proj", "lane prune --dry-run --json"),
+                          ("other", "lane prune --dry-run --json")], self.asked())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -340,6 +340,12 @@ safe classes:
   the branch must also sit unmoved for `REPO_SYNC_HYGIENE_MIN_AGE` seconds
   (default 86400, at most 12 digits, read from its reflog), so a fresh
   branch survives;
+- delete, on the same terms, a local branch the pack's
+  `sd-ship lane prune --dry-run --json` lists as landed by a merged lane
+  head at exactly its tip: a builder branch whose bundle landed by squash
+  (pack sd:5700, sd:5701); it is asked once per checkout, only when a
+  branch is left unproven, and an older pack or a failed answer proves
+  nothing and adds a note;
 - remove a worktree that holds such a branch, wherever it sits, when it has
   no uncommitted or untracked files, no ignored files but build output
   directories (`target/`, `node_modules/`, `dist/`, Python caches; a regular
@@ -359,7 +365,8 @@ on no remote, one named for a done sd item
 still behind its upstream. It never touches a stash, a remote branch, the
 default branch, or a dirty or in-use worktree. All checks are local git
 plumbing, except two calls to `origin`: the remote prune, and
-`git ls-remote` for the default branch. When `origin` cannot be read, the
+`git ls-remote` for the default branch; and the one `sd-ship lane prune`
+call, which asks the hub and `origin` itself. When `origin` cannot be read, the
 local `origin/<default>` is missing, or it differs from `origin`'s, no landed
 branch is deleted that run.
 
