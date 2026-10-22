@@ -182,13 +182,15 @@ def rows(got: list, found, state: dict, vault: str | None) -> tuple[list[dict], 
 
 
 def _section(body: str, name: str) -> list[str] | None:
-    """The non-blank lines under `## <name>`, list marks dropped, up to the next `## `; None when there is no such heading."""
+    """The non-blank lines under `## <name>`, list marks dropped, up to the next `# ` or `## ` heading; None when there is
+    no such heading. A closing run of `#` is part of the heading, as Markdown reads it."""
     lines, found = None, False
     for line in body.split("\n"):
-        if line.startswith("## "):
+        heading = re.match(r"(#{1,2})\s+(.*?)(?:\s+#+)?\s*$", line)
+        if heading:
             if found:
                 break
-            found = line[3:].strip() == name
+            found = heading[1] == "##" and heading[2] == name
             lines = [] if found else lines
         elif found and line.strip():
             lines.append(re.sub(r"^\s*[-*]\s+", "", line).strip())

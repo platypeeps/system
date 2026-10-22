@@ -130,18 +130,24 @@ addEventListener('DOMContentLoaded', () => {
   // A brief names its signal topics only once pack sd:5798 copies them into its record (`topics`, else null). A brief with
   // null is not recorded, never quiet: with none recorded, every topic's signal says so instead of a count.
   function renderTopics() {
+    // A failed brief read says nothing about the briefs' records: signal is not read. A range whose briefs record no topics
+    // is not recorded, though an older brief does; a count of none needs every brief in the range to record its topics.
     const rows = TOPICS?.state === 'read' ? TOPICS.rows : [], recorded = BRIEFS.filter(b => Array.isArray(b.topics));
+    const unread = !READER || READER.state === 'error';
     const unrecorded = ranged().filter(b => !Array.isArray(b.topics)).length;
     const lines = (n, none, one, many) => n === null || n === undefined ? html`<span class="u">no ${none} section</span>` : n ? plural(n, one) : many;
     put(document.getElementById('topic-rows'), html`${rows.map(t => {
       const mine = recorded.filter(b => t.slug && b.topics.includes(t.slug));
       const last = mine.reduce((m, b) => b.day > m ? b.day : m, ''), on = new Set(mine.filter(inRange).map(b => b.day)).size;
-      const signal = recorded.length ? html`<td>${last ? html`<time datetime="${last}">${last.slice(5)}</time>` : 'none read'}</td><td>${on ? plural(on, 'day') : `none in ${range === '24h' ? '24 hours' : `${RANGES[range]} days`}`}</td>`
+      const days = on ? plural(on, 'day') : unrecorded ? html`<span class="u">not recorded</span>` : `none in ${range === '24h' ? '24 hours' : `${RANGES[range]} days`}`;
+      const signal = unread ? html`<td class="u">not read</td><td class="u">not read</td>`
+        : recorded.length ? html`<td>${last ? html`<time datetime="${last}">${last.slice(5)}</time>` : 'none read'}</td><td>${days}</td>`
         : html`<td class="u">not recorded</td><td class="u">not recorded</td>`;
       return html`<tr data-topic="${t.title}"><td class="what"><a href="${shell.itemHref(t.item)}">${t.title}</a></td><td>${t.slug || '–'}</td><td>${t.stage || '–'}</td>${signal}<td>${t.memory || (t.memory_lines === 0 ? 'empty' : lines(t.memory_lines, 'Memory'))}${t.memory_lines > 1 ? html`<small>${plural(t.memory_lines, 'line')}</small>` : ''}</td><td class="r">${lines(t.sources, 'Sources', 'source', 'empty')}</td></tr>`;
     })}`);
     const note = TOPICS?.state === 'error' ? `The topics were not read: ${TOPICS.reason}. Reload retries it.`
       : !TOPICS ? '' : !rows.length ? 'The workflow database holds no topic row.'
+      : unread ? 'Signal was not read: the briefs were not read. Reload retries it.'
       : !recorded.length ? 'No brief records its signal topics yet (pack sd:5798), so signal is not recorded, never quiet.'
       : unrecorded ? `${plural(unrecorded, 'brief')} in range ${unrecorded === 1 ? 'records' : 'record'} no signal topics; ${unrecorded === 1 ? 'it counts' : 'they count'} as not recorded, never as quiet.` : '';
     put(document.getElementById('topic-note'), html`${note}`);

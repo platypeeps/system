@@ -274,6 +274,14 @@ class TheTopics(BriefCase):
             {"item": self.topics["Climate"], "title": "Climate", "slug": "climate", "stage": "parked",
              "memory": None, "memory_lines": None, "sources": None}]})
 
+    def test_a_section_ends_at_any_heading_and_a_closing_hash_run_still_names_it(self):
+        """Review: `## Memory ##` is the Memory heading, and a later `# ` heading is not Memory's content."""
+        create_item(self.connection, kind="idea", title="Edges", status="ready", source="vault", stage="active",
+                    fields={"kind": "topic", "slug": "edges"},
+                    body={"markdown": "## Memory ##\n\n- kept\n\n# Appendix\n\n- not memory\n"})
+        row = next(r for r in self.doc()["topics"]["rows"] if r["title"] == "Edges")
+        self.assertEqual((row["memory"], row["memory_lines"], row["sources"]), ("kept", 1, None))
+
     def test_a_topic_read_that_fails_is_an_error_with_its_cause_and_the_briefs_stay(self):
         def refuse(_):
             raise sqlite3.OperationalError("database is locked")
@@ -850,11 +858,18 @@ await flush(); R.lane = OUT.shown.slice(); R.rows = ELS.rows.html;""")
         self.assertIn(">09-04</", agents)
         self.assertIn("1 day", agents)
         self.assertIn("empty", agents)
-        self.assertIn("none in 7 days", climate)
         self.assertIn("no Memory section", climate)
         self.assertIn("no Sources section", climate)
-        # One brief in range records no signal topics: it is not recorded, never quiet.
+        # One brief in range records no signal topics: a topic none of the others names is not recorded, never quiet.
+        self.assertIn("not recorded", climate)
+        self.assertNotIn("none in", climate)
         self.assertIn("1 brief in range records no signal topics", out["R"]["note"])
+        # Once every brief in range records its topics, a topic none names is none in the range.
+        record_topics(self.connection, {"2026-09-03 - Weekly Digest": []})
+        out = self.run_page("R.rows = ELS['topic-rows'].html; R.note = ELS['topic-note'].html;",
+                            answer=f"() => [200, {json.dumps(self.doc())}]")
+        self.assertIn("none in 7 days", re.split(r'(?=<tr data-topic=)', out["R"]["rows"])[3])
+        self.assertEqual(out["R"]["note"], "")
 
     def test_with_no_brief_recording_its_topics_signal_is_not_recorded_never_quiet(self):
         _seeded, doc = self.topics_page()
@@ -864,6 +879,27 @@ await flush(); R.lane = OUT.shown.slice(); R.rows = ELS.rows.html;""")
         self.assertNotRegex(out["R"]["rows"], r"none in|\d day")
         self.assertEqual(out["R"]["rows"].count("not recorded"), 6)
         self.assertIn("No brief records its signal topics yet", out["R"]["note"])
+
+    def test_a_range_whose_briefs_record_no_topics_says_not_recorded_though_an_older_brief_does(self):
+        """Review: one recorded brief outside the range is no evidence that the range was quiet."""
+        _seeded, doc = self.topics_page({"2026-08-20 - Intel Brief": ["agents"]})
+        out = self.run_page("R.rows = ELS['topic-rows'].html;", answer=f"() => [200, {json.dumps(doc)}]")
+        self.assertNotIn("none in", out["R"]["rows"])
+        agents = re.split(r'(?=<tr data-topic=)', out["R"]["rows"])[2]
+        self.assertIn(">08-20</", agents)
+        self.assertIn("not recorded", agents)
+
+    def test_a_failed_brief_read_says_signal_was_not_read_not_that_no_brief_records_it(self):
+        """Review: a failed brief read is no evidence about the briefs' records."""
+        def refuse(_):
+            raise sqlite3.OperationalError("database is locked")
+        _seeded, doc = self.topics_page(reader=refuse)
+        out = self.run_page("R.rows = ELS['topic-rows'].html; R.note = ELS['topic-note'].html;",
+                            answer=f"() => [200, {json.dumps(doc)}]")
+        self.assertNotIn("records its signal topics", out["R"]["note"])
+        self.assertIn("Signal was not read: the briefs were not read", out["R"]["note"])
+        self.assertEqual(out["R"]["rows"].count("not read"), 6)
+        self.assertNotIn("not recorded", out["R"]["rows"])
 
     def test_a_topic_read_that_failed_says_so_and_names_no_topic(self):
         def refuse(_):

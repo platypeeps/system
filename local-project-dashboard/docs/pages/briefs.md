@@ -33,5 +33,6 @@ same document's `topics` (`briefs_screen.topics`, through `records.list_rows`). 
 the newest line of its `## Memory` section with the line count, and how many lines its `## Sources` section holds;
 the hub's brief routines rewrite both, and a topic without one says so. A topic opens on Tasks, where it is edited.
 Last signal and the days in range come from each brief's `signal_topics`, which pack sd:5798 copies into its
-record. Until then no brief records them, and the view says signal is not recorded, never quiet. A failed topic
+record. Until then no brief records them, and the view says signal is not recorded, never quiet; a range with any
+brief that records none counts no topic as quiet. A failed brief read shows signal as not read, and a failed topic
 read says so with its cause and leaves the briefs.
