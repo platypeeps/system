@@ -78,6 +78,8 @@ run() {
     (cd "$ROOT" && st_step 1200 "${CLAUDE_BIN:-claude}" -p "$(cat "$tmp/prompt")" --model sonnet \
       --restricted --strict-mcp-config --tools 'Read,Grep,Glob,Bash' --add-dir "$bulk" "$HOME/.claude/projects" \
       --allowedTools "$TOOLS" --disallowedTools 'Write Edit NotebookEdit' < /dev/null > "$tmp/reply")
+    # The raw reply stays beside the batch, so a refused one can be read the next morning (sd:5732).
+    cp "$tmp/reply" "${batch%.json}.reply"
     source="system@$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
     st_step 60 python3 "$DIR/nightly_review.py" batch "$tmp/reply" "$batch" "$today" "$source"
   fi

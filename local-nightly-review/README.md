@@ -33,6 +33,9 @@ into this machine's `<config>/cron-jobs/jobs/<host>/` on the hub, then run
    `<bulk root>/system/nightly-review/<date>.json`, through a `.part` file and a
    rename. The job sets every field but the questions: queue `nightly`, mode
    `open`, limit 5, and the options Approve and Reject.
+   A malformed suggestion is dropped and named on stderr; the rest file. A reply
+   whose every suggestion is malformed is refused. The raw reply stays as
+   `<date>.reply` beside the batch file.
 3. **File.** `nightly_review.py check` refuses a file that is not an open
    batch of the `nightly` queue for today, with a limit of 5 and the options
    Approve and Reject. The job files no blind or sealed batch: those need the
@@ -55,6 +58,7 @@ suggestions writes the file, files nothing and exits 0.
 | Apply | Tasks and closes, in the pack | A pack without `sd-db review` | Exit non-zero before the model; nothing filed | `test_a_pack_without_review_fails_before_the_model` |
 | Rejections | Nothing | `sd store items` or an export fails | Exit non-zero before the model | `test_a_failed_read_of_earlier_rejections_fails_before_the_model` |
 | Review | `<date>.json` through `.part` and a rename | `claude -p` fails, times out, or replies with no batch | No file; exit non-zero; the rerun asks again | `test_a_failed_model_run_writes_no_file_files_nothing_and_fails`, `test_a_reply_that_is_not_a_batch_writes_no_file_and_fails` |
+| Review | `<date>.reply` | One suggestion breaks the schema | That suggestion is dropped with a stderr line; the rest file | `test_one_malformed_suggestion_drops_itself_and_the_rest_file` |
 | Review | `.part` only | The run stops before the rename | The rerun asks again and files once | `test_a_stop_after_the_reply_before_the_rename_runs_the_model_again` |
 | File | The batch, in the pack | The run stops after the rename, before filing | The rerun files the file without the model | `test_a_stop_after_the_rename_before_filing_files_without_the_model` |
 | File | Nothing | The job reruns the same day | No model run; filing the same file is a no-op | `test_a_second_run_the_same_day_runs_no_model_and_files_nothing_new` |
