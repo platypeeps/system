@@ -400,8 +400,10 @@ await flush();""")
 
     def test_a_refused_note_stays_in_the_field_and_the_toast_says_why(self):
         out = self.run_page("""ELS['qn-dlg'].showModal(); ELS['qn-in'].value = 'Say "hi"'; ELS['qn-keep'].listeners.click[0](); await flush();
-R.value = ELS['qn-in'].value; R.open = ELS['qn-dlg'].open;""", kept=(400, {"error": 'A quick note holds no double quote (").'}))
+R.value = ELS['qn-in'].value; R.open = ELS['qn-dlg'].open; const why = document.getElementById('qn-why'); R.why = [why.hidden, why.textContent ?? null];""", kept=(400, {"error": 'A quick note holds no double quote (").'}))
         self.assertTrue(out["R"]["open"], "a refused note closed the dialog")
+        # Review of sd:5750: the toast sits under the modal's scrim, so the dialog says why too.
+        self.assertEqual(out["R"]["why"], [False, 'Not kept: A quick note holds no double quote (").'])
         self.assertEqual(out["toasts"][-1], ['Not kept: A quick note holds no double quote (").', False])
         self.assertEqual(out["R"]["value"], 'Say "hi"')
 

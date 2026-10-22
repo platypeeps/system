@@ -171,15 +171,17 @@
         : html`<li><p class="empty">No quick notes yet.</p></li>`);
     }
     const readQ = () => S.getJSON('/api/notes/quick').then(doc => { qn = doc; }, e => { qn = { error: e.message }; }).then(paintQ);
+    // A refusal is said in the dialog: the toast sits under the modal's scrim (review of sd:5750).
+    const qWhy = $('qn-why'), say = text => { qWhy.textContent = text; qWhy.hidden = !text; };
     async function keep() {
       if (qKeep.disabled) return; // a keep in flight, or no kind to keep into: ⌘↵ must not post a second note
       if (!qIn.value.trim()) { qIn.focus(); return; }
-      qKeep.disabled = true;
+      qKeep.disabled = true; say('');
       try {
         const out = await S.post('/api/notes/quick/add', { text: qIn.value });
         qIn.value = ''; $('qn-dlg').close(); // a kept note closes the dialog, so its toast is not under the scrim
         S.toast(`Kept in sdw.quick-note as ${out.title}.`);
-      } catch (e) { S.toast(`Not kept: ${e.message}`); }
+      } catch (e) { say(`Not kept: ${e.message}`); S.toast(`Not kept: ${e.message}`); }
       await readQ();
     }
     $('qn-open').addEventListener('click', quick);
