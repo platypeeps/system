@@ -1793,6 +1793,55 @@ hyg_merged() {
   return 1
 }
 
+# Returns 0 when the pack's lane proves branch $2 of repo $1 landed at tip
+# $3: a builder branch merged into a lane bundle that landed by squash is
+# on the default branch by none of the three ways above (sd:5701). The
+# proof is `sd-ship lane prune --dry-run --json` (pack sd:5700), asked once
+# per repo, on the first branch the three ways leave; its `landed` rows go
+# to $HYG_TMP/lane.landed as `<branch><US><tip>`. Only a row at exactly the
+# tip hygiene classified counts, so a branch moved since stays. A missing
+# sd-ship proves nothing and says nothing; a failed, older-pack or garbled
+# answer proves nothing and leaves a note. The caller resets
+# HYG_LANE_ASKED for each repo.
+hyg_lane_landed() {
+  if [ "$HYG_LANE_ASKED" != 1 ]; then
+    HYG_LANE_ASKED=1
+    : > "$HYG_TMP/lane.landed"
+    h_ship="$SD_PACK_ROOT/bin/sd-ship"
+    [ -x "$h_ship" ] || return 1
+    h_rc=0
+    bound_step 300 "$h_ship" -C "$1" lane prune --dry-run --json \
+      < /dev/null > "$HYG_TMP/lane.prune" 2>/dev/null || h_rc=$?
+    if [ "$h_rc" != 0 ]; then
+      hyg_note "no lane proof: sd-ship lane prune exited $h_rc (an older pack, or no answer)"
+      return 1
+    fi
+    # All rows or none: one malformed row makes the whole answer suspect.
+    if ! python3 -I -c '
+import json, re, sys
+answer = json.load(sys.stdin)
+if not isinstance(answer, dict) or answer.get("ok") is not True or answer.get("dry_run") is not True:
+    sys.exit(1)
+rows = answer.get("landed")
+if not isinstance(rows, list):
+    sys.exit(1)
+lines = []
+for row in rows:
+    branch, tip = (row.get("branch"), row.get("tip")) if isinstance(row, dict) else (None, None)
+    if not isinstance(branch, str) or not re.fullmatch(r"[^\x00-\x20\x7f]+", branch) \
+            or not isinstance(tip, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", tip):
+        sys.exit(1)
+    lines.append(branch + sys.argv[1] + tip + "\n")
+sys.stdout.write("".join(lines))
+' "$US" < "$HYG_TMP/lane.prune" > "$HYG_TMP/lane.parsed" 2>/dev/null; then
+      hyg_note "no lane proof: sd-ship lane prune printed no dry-run answer hygiene can read"
+      return 1
+    fi
+    mv "$HYG_TMP/lane.parsed" "$HYG_TMP/lane.landed"
+  fi
+  grep -qxF "$2$US$3" "$HYG_TMP/lane.landed"
+}
+
 # One record per worktree registration, fields split by $US:
 # path, branch (empty when detached), locked (0|1), lock reason.
 # The first record is the main checkout. Fails when git cannot list them:
@@ -2127,9 +2176,17 @@ hyg_repo() {
   else
     hyg_note "no default branch found; branches not classified"
   fi
+  HYG_LANE_ASKED=0
   while IFS=$US read -r b_name b_sha b_track b_up; do
     [ "$b_name" = "$def_name" ] && continue
-    if h_how=$(hyg_merged "$d" "refs/heads/$b_name" "$def_ref"); then
+    # The lane's proof is asked only while a delete could follow from it.
+    if ! h_how=$(hyg_merged "$d" "refs/heads/$b_name" "$def_ref"); then
+      h_how=""
+      if [ "$h_fresh" = 1 ] && hyg_lane_landed "$d" "$b_name" "$b_sha"; then
+        h_how="a merged lane head"
+      fi
+    fi
+    if [ -n "$h_how" ]; then
       [ "$h_fresh" = 1 ] || continue
       # A branch made or moved within HYG_MIN_AGE seconds is kept: a fresh
       # agent branch sits at the default tip and counts as landed. The age
@@ -2668,7 +2725,9 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              remote-tracking refs for deleted remote branches, and deletes
              local branches whose content is on the default branch
              (ancestor, tree equal to the merge base, or a patch-equivalent
-             squash), removing a clean, unused worktree that holds one
+             squash, or listed at its tip by the pack's sd-ship lane
+             prune --dry-run as landed by a merged lane head), removing a
+             clean, unused worktree that holds one
              (build output does not count against clean; it goes with the
              worktree). It deletes lane files under the bulk storage root
              (sd.bulk_storage_root, <root>/<repo>/lane/, queue/ aside)
