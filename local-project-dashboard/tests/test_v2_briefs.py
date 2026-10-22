@@ -28,7 +28,7 @@ import urllib.parse
 from pathlib import Path
 from unittest import mock
 
-from sd_db import review, routine_briefs, workflow
+from sd_db import create_item, review, routine_briefs, workflow
 from sd_dashboard import briefs_screen, review_screen, server, v2
 
 from support import NOW, ScreenCase
@@ -229,6 +229,72 @@ class TheDocument(BriefCase):
             self.assertEqual(row["open"], link(row["id"]))
         self.assertNotIn(self.tmp.name, json.dumps(doc))
         self.assertNotIn(str(Path(self.tmp.name).resolve()), json.dumps(doc))
+
+
+#: Topic rows (system sd:5778): title, stage, slug, body. Memory is newest first; a topic may lack either section.
+TOPICS = [
+    ("Graphs", "active", "graphs", "## Covers\n\nGraphs.\n\n## Memory\n\n- 2026-09-06 a running story · 2026-09-06 - Intel Brief\n"
+     "- 2026-09-04 an older fact · 2026-09-04 - Intel Brief\n\n## Sources\n\n- arxiv · last signal 2026-09-06\n- a blog · dead since 2026-08-01\n"),
+    ("Climate", "parked", "climate", "## Covers\n\nClimate.\n"),
+    ("Agents", "candidate", "agents", "## Memory\n\n## Sources\n\n- a feed · last signal 2026-09-01\n"),
+]
+
+
+def seed_topics(connection):
+    """The `TOPICS` rows as `sdw.topic` base rows, by title."""
+    return {title: create_item(connection, kind="idea", title=title, status="ready", source="vault",
+                               external_id=f"topic:Topics/{title}.md", path=f"Topics/{title}.md", stage=stage,
+                               fields={"kind": "topic", "slug": slug}, body={"markdown": body})
+            for title, stage, slug, body in TOPICS}
+
+
+def record_topics(connection, found):
+    """Each named brief's `fields.brief.signal_topics`, as pack sd:5798 will copy them."""
+    for stem, value in found.items():
+        connection.execute("UPDATE item SET fields = json_set(fields, '$.brief.signal_topics', json(?)) WHERE title = ?",
+                           (json.dumps(value), stem))
+    connection.commit()
+
+
+class TheTopics(BriefCase):
+    """system sd:5778: the Topics view's rows, read from the `sdw.topic` rows, and each brief's signal topics."""
+
+    def setUp(self):
+        super().setUp()
+        self.topics = seed_topics(self.connection)
+
+    def test_topics_come_from_the_topic_rows_active_first_with_their_newest_memory_and_source_count(self):
+        create_item(self.connection, kind="idea", title="Not a topic", status="planning", source="vault",
+                    fields={"kind": "blog-idea"}, body={"markdown": "## Memory\n\n- x\n"})
+        self.assertEqual(self.doc()["topics"], {"state": "read", "reason": "", "rows": [
+            {"item": self.topics["Graphs"], "title": "Graphs", "slug": "graphs", "stage": "active",
+             "memory": "2026-09-06 a running story · 2026-09-06 - Intel Brief", "memory_lines": 2, "sources": 2},
+            {"item": self.topics["Agents"], "title": "Agents", "slug": "agents", "stage": "candidate",
+             "memory": None, "memory_lines": 0, "sources": 1},
+            {"item": self.topics["Climate"], "title": "Climate", "slug": "climate", "stage": "parked",
+             "memory": None, "memory_lines": None, "sources": None}]})
+
+    def test_a_topic_read_that_fails_is_an_error_with_its_cause_and_the_briefs_stay(self):
+        def refuse(_):
+            raise sqlite3.OperationalError("database is locked")
+        doc = self.doc(topic_reader=refuse)
+        self.assertEqual((doc["topics"]["state"], doc["topics"]["rows"]), ("error", []))
+        self.assertIn("database is locked", doc["topics"]["reason"])
+        self.assertEqual(len(doc["briefs"]), 5)
+
+        def broken(_):
+            raise sqlite3.OperationalError("disk I/O error")
+        self.assertEqual(self.doc(reader=broken)["topics"]["state"], "read")
+
+    def test_a_brief_carries_its_signal_topics_only_when_its_record_holds_a_list_of_slugs(self):
+        """Pack sd:5798 copies `signal-topics` into `fields.brief.signal_topics`; until then no brief records them."""
+        self.assertEqual({b["topics"] for b in self.doc()["briefs"]}, {None})
+        record_topics(self.connection, {"2026-09-06 - Intel Brief": ["graphs", "agents"], "2026-09-04 - Intel Brief": "graphs",
+                                        "2026-09-06 - Fun Events": [], "2026-09-03 - Weekly Digest": ["graphs", 7]})
+        got = {b["id"]: b["topics"] for b in self.doc()["briefs"]}
+        self.assertEqual([got[stem] for stem in ("2026-09-06 - Intel Brief", "2026-09-04 - Intel Brief",
+                                                 "2026-09-06 - Fun Events", "2026-09-03 - Weekly Digest")],
+                         [["graphs", "agents"], None, [], None])
 
 
 class TheItemPage(BriefCase):
@@ -738,11 +804,12 @@ R.det = ELS.details.html;""", answer=f"() => [200, {json.dumps(cut)}]")
         """sd:5080: Briefs and Cadence are PAGE_VIEWS; the Range chips sit in each view's head and set one range."""
         page = (V2 / "briefs.html").read_text(encoding="utf-8")
         self.assertLess(page.index('id="view-list"'), page.index('id="view-cadence"'))
+        self.assertLess(page.index('id="view-cadence"'), page.index('id="view-topics"'))
         out = self.run_page("""R.views = window.PAGE_VIEWS.map(v => [v.id, v.label, v.key || null]);
 R.list = ELS.range.html; R.cad = ELS['range-cad'].html;
 ELS['range-cad'].listeners.click[0]({ target: { closest: () => ({ dataset: { r: '30d' } }) } }); await flush();
 R.after = [ELS.range.html, ELS['range-cad'].html]; R.urls = OUT.urls.slice(-1);""")
-        self.assertEqual(out["R"]["views"], [["list", "Briefs", "b"], ["cadence", "Cadence", None]])
+        self.assertEqual(out["R"]["views"], [["list", "Briefs", "b"], ["cadence", "Cadence", None], ["topics", "Topics", None]])
         self.assertIn('data-r="7d" aria-pressed="true"', out["R"]["list"])
         self.assertEqual(out["R"]["list"], out["R"]["cad"])
         self.assertTrue(all('data-r="30d" aria-pressed="true"' in h for h in out["R"]["after"]), out["R"]["after"])
@@ -755,6 +822,57 @@ await flush(); R.lane = OUT.shown.slice(); R.rows = ELS.rows.html;""")
         self.assertEqual(out["R"]["tick"], ["list"])
         self.assertEqual(out["R"]["lane"], ["list", "list"])
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["2026-09-06 - Fun Events"])
+
+    def topics_page(self, found=None, **more):
+        """The page's document with `TOPICS` seeded and `found` recorded as signal topics (pack sd:5798)."""
+        seeded = seed_topics(self.connection)
+        if found:
+            record_topics(self.connection, found)
+        return seeded, self.doc(**more)
+
+    def test_the_topics_view_shows_each_topic_its_last_signal_newest_memory_and_sources(self):
+        """system sd:5778: one row per topic row; a topic opens its Details on Tasks, where it is edited."""
+        seeded, doc = self.topics_page({"2026-09-06 - Intel Brief": ["graphs"], "2026-09-04 - Intel Brief": ["graphs", "agents"],
+                                        "2026-08-20 - Intel Brief": ["agents"], "2026-09-06 - Fun Events": []})
+        out = self.run_page("R.rows = ELS['topic-rows'].html; R.note = ELS['topic-note'].html; R.counts = OUT.counts || {};",
+                            answer=f"() => [200, {json.dumps(doc)}]")
+        rows = out["R"]["rows"]
+        self.assertEqual(re.findall(r'<tr data-topic="([^"]+)"', rows), ["Graphs", "Agents", "Climate"])
+        graphs, agents, climate = re.split(r'(?=<tr data-topic=)', rows)[1:]
+        self.assertIn(f'href="/tasks?row={seeded["Graphs"]}"', graphs)
+        self.assertIn("<td>graphs</td><td>active</td>", graphs)
+        self.assertIn(">09-06</", graphs)
+        self.assertIn("2 days", graphs)
+        self.assertIn("2026-09-06 a running story · 2026-09-06 - Intel Brief", graphs)
+        self.assertIn("2 lines", graphs)
+        self.assertIn("2 sources", graphs)
+        # 08-20 is outside 7 days: the last signal stands, the days in range count one.
+        self.assertIn(">09-04</", agents)
+        self.assertIn("1 day", agents)
+        self.assertIn("empty", agents)
+        self.assertIn("none in 7 days", climate)
+        self.assertIn("no Memory section", climate)
+        self.assertIn("no Sources section", climate)
+        # One brief in range records no signal topics: it is not recorded, never quiet.
+        self.assertIn("1 brief in range records no signal topics", out["R"]["note"])
+
+    def test_with_no_brief_recording_its_topics_signal_is_not_recorded_never_quiet(self):
+        _seeded, doc = self.topics_page()
+        out = self.run_page("R.rows = ELS['topic-rows'].html; R.note = ELS['topic-note'].html;",
+                            answer=f"() => [200, {json.dumps(doc)}]")
+        self.assertEqual(len(re.findall(r'<tr data-topic=', out["R"]["rows"])), 3)
+        self.assertNotRegex(out["R"]["rows"], r"none in|\d day")
+        self.assertEqual(out["R"]["rows"].count("not recorded"), 6)
+        self.assertIn("No brief records its signal topics yet", out["R"]["note"])
+
+    def test_a_topic_read_that_failed_says_so_and_names_no_topic(self):
+        def refuse(_):
+            raise sqlite3.OperationalError("database is locked")
+        _seeded, doc = self.topics_page(topic_reader=refuse)
+        out = self.run_page("R.rows = ELS['topic-rows'].html; R.note = ELS['topic-note'].html;",
+                            answer=f"() => [200, {json.dumps(doc)}]")
+        self.assertEqual(out["R"]["rows"], "")
+        self.assertIn("The topics were not read: database is locked", out["R"]["note"])
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         for text in (BRIEFS_JS, BRIEF_DETAILS_JS):

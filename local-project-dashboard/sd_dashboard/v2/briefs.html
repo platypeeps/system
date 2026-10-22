@@ -3,7 +3,7 @@
   Briefs (sd:2112), at /briefs. Built from the design source's products/system/designs/v2/briefs.html, briefs.js and briefs.css at
   b2b8c2b, with design.md and commands.md.
   Data: /api/briefs (briefs_screen.document: the routine briefs the workflow database holds, sd:3459, and the state of their vault
-  copies), read when the page opens. Read opens a brief's item page, which renders its Markdown. The design's rows are brief mail;
+  copies, and the research topics with their Memory and Sources sections, system sd:5778), read when the page opens. Read opens a brief's item page, which renders its Markdown. The design's rows are brief mail;
   the dashboard has no mail reader, so unread state, follow-up flags and the watchdog's failures are left out or shown unknown with
   the reason. Nothing here is sample data. The one write is Make task, through the shell's capture form and POST /api/items.
 -->
@@ -63,6 +63,17 @@
       <div class="lanes" id="lanes"></div>
       <p class="legend"><span><span class="sw t"></span>brief written</span><span><span class="sw h"></span>watchdog not read (unknown)</span><span>times UTC</span></p>
       <details class="fallback"><summary>Cadence as a table</summary><div class="tbl-wrap" id="cad-table"></div></details>
+    </section>
+    <section id="view-topics" aria-labelledby="top-h" hidden>
+      <div class="sec-head">
+        <h2 id="top-h">Topics <button class="help" type="button" aria-label="Help: Topics" data-help="<b>One row per research topic,</b> active first. Last signal is the newest brief in the read that names the topic among its signal topics; days counts those briefs' days in the range. Memory is the newest line of the topic's Memory section, and Sources counts its Sources lines; the hub's brief routines rewrite both. A topic opens on Tasks, where it is edited.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+      </div>
+      <table class="ledger" aria-labelledby="top-h">
+        <thead><tr><th scope="col">Topic</th><th scope="col">Slug</th><th scope="col">Stage</th><th scope="col">Last signal</th><th scope="col">In range</th><th scope="col">Memory</th><th scope="col" class="r">Sources</th></tr></thead>
+        <tbody id="topic-rows"></tbody>
+      </table>
+      <p class="note" id="topic-note"></p>
     </section>
 
   </main>

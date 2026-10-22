@@ -9,7 +9,8 @@ window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'watchdog not read' };
 window.PAGE_COMMANDS = [];
 // sd:5080: the list and the cadence strip are the shell's views (shell.js, view:start). The Range chips sit in each view's
 // head and set one range for both; a tick or a lane shows the list with that brief or that source.
-window.PAGE_VIEWS = [{ id: 'list', label: 'Briefs', key: 'b' }, { id: 'cadence', label: 'Cadence' }];
+// system sd:5778: Topics is the third view, one row per research topic (briefs_screen.topics).
+window.PAGE_VIEWS = [{ id: 'list', label: 'Briefs', key: 'b' }, { id: 'cadence', label: 'Cadence' }, { id: 'topics', label: 'Topics' }];
 // The shell's Shapeshift bar (sd:5539) filters the list through shell:filter, and the cadence fallback table itself.
 window.PAGE_FILTER = { list: 'subject, source and first lines' };
 addEventListener('DOMContentLoaded', () => {
@@ -20,7 +21,8 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Data (build) ----------
   // BRIEFS: { id (the stem), item, subj, src, day, at (null when not known), words, lead, rel, open, copy }. rel and open are
   // null unless the last render vouches for the vault copy, and copy says why. READ: when the server read them.
-  let BRIEFS = [], SOURCES = [], READ = null, READER = null, WATCH = '', COPIES = null, LOADED = false;
+  // TOPICS: briefs_screen.topics, { state, reason, rows: [{ item, title, slug, stage, memory, memory_lines, sources }] }.
+  let BRIEFS = [], SOURCES = [], READ = null, READER = null, WATCH = '', COPIES = null, LOADED = false, TOPICS = null;
   const DAY_MS = 864e5;
   const RANGES = { '24h': 1, '7d': 7, '30d': 30 };
   // build: the reference had one fixed week of sample mail; the range here is the last 1, 7 or 30 days before the read.
@@ -124,6 +126,28 @@ addEventListener('DOMContentLoaded', () => {
     if (F.src.has(s)) showSource(s);
   });
 
+  // ---------- Topics (system sd:5778) ----------
+  // A brief names its signal topics only once pack sd:5798 copies them into its record (`topics`, else null). A brief with
+  // null is not recorded, never quiet: with none recorded, every topic's signal says so instead of a count.
+  function renderTopics() {
+    const rows = TOPICS?.state === 'read' ? TOPICS.rows : [], recorded = BRIEFS.filter(b => Array.isArray(b.topics));
+    const unrecorded = ranged().filter(b => !Array.isArray(b.topics)).length;
+    const lines = (n, none, one, many) => n === null || n === undefined ? html`<span class="u">no ${none} section</span>` : n ? plural(n, one) : many;
+    put(document.getElementById('topic-rows'), html`${rows.map(t => {
+      const mine = recorded.filter(b => t.slug && b.topics.includes(t.slug));
+      const last = mine.reduce((m, b) => b.day > m ? b.day : m, ''), on = new Set(mine.filter(inRange).map(b => b.day)).size;
+      const signal = recorded.length ? html`<td>${last ? html`<time datetime="${last}">${last.slice(5)}</time>` : 'none read'}</td><td>${on ? plural(on, 'day') : `none in ${range === '24h' ? '24 hours' : `${RANGES[range]} days`}`}</td>`
+        : html`<td class="u">not recorded</td><td class="u">not recorded</td>`;
+      return html`<tr data-topic="${t.title}"><td class="what"><a href="${shell.itemHref(t.item)}">${t.title}</a></td><td>${t.slug || '–'}</td><td>${t.stage || '–'}</td>${signal}<td>${t.memory || (t.memory_lines === 0 ? 'empty' : lines(t.memory_lines, 'Memory'))}${t.memory_lines > 1 ? html`<small>${plural(t.memory_lines, 'line')}</small>` : ''}</td><td class="r">${lines(t.sources, 'Sources', 'source', 'empty')}</td></tr>`;
+    })}`);
+    const note = TOPICS?.state === 'error' ? `The topics were not read: ${TOPICS.reason}. Reload retries it.`
+      : !TOPICS ? '' : !rows.length ? 'The workflow database holds no topic row.'
+      : !recorded.length ? 'No brief records its signal topics yet (pack sd:5798), so signal is not recorded, never quiet.'
+      : unrecorded ? `${plural(unrecorded, 'brief')} in range ${unrecorded === 1 ? 'records' : 'record'} no signal topics; ${unrecorded === 1 ? 'it counts' : 'they count'} as not recorded, never as quiet.` : '';
+    put(document.getElementById('topic-note'), html`${note}`);
+    shell.view.count('topics', rows.length);
+  }
+
   // ---------- Filters ----------
   // build (sd:5158): Source is a dropdown of checkboxes, so any sources at once, and Day a select of the days with a brief;
   // both are shell.list.pick. sd:5463: Activity's bar (shell.list.fbar): the picked sources and the query as removable
@@ -185,7 +209,7 @@ addEventListener('DOMContentLoaded', () => {
   });
   tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
-  function update() { renderAnnunciator(); renderLanes(); renderFilters(); renderRows(); writeURL(); }
+  function update() { renderAnnunciator(); renderLanes(); renderTopics(); renderFilters(); renderRows(); writeURL(); }
 
   // ---------- Details ----------
   const details = document.getElementById('details');
@@ -233,6 +257,7 @@ addEventListener('DOMContentLoaded', () => {
       READ = doc.read; READER = doc.reader || { state: 'error', reason: 'no reader in the answer', total: 0, shown: 0 };
       WATCH = doc.watchdog?.available ? 'read' : (doc.watchdog?.reason || 'no watchdog reader');
       COPIES = READER.copies || null;
+      TOPICS = doc.topics || { state: 'error', reason: 'no topics in the answer', rows: [] };
       BRIEFS = READER.state === 'error' ? [] : (doc.briefs || []);
       const by = new Map();
       BRIEFS.forEach(b => { const s = by.get(b.src) || { id: b.src, n: 0, newest: b.day }; s.n++; if (b.day > s.newest) s.newest = b.day; by.set(b.src, s); });
@@ -248,7 +273,8 @@ addEventListener('DOMContentLoaded', () => {
       return { objects: BRIEFS.map(window.briefDetails.object), state };
     },
     // Nothing from the last read stays on screen: rows, lanes and the observed time.
-    clear: err => { READ = null; READER = { state: 'error', reason: err.message, total: 0, shown: 0 }; COPIES = null; BRIEFS = []; SOURCES = []; F.src.clear(); LOADED = true; },
+    clear: err => { READ = null; READER = { state: 'error', reason: err.message, total: 0, shown: 0 }; COPIES = null; BRIEFS = [];
+      TOPICS = { state: 'error', reason: err.message, rows: [] }; SOURCES = []; F.src.clear(); LOADED = true; },
     draw: () => { renderRange(); update(); },
     current: () => selected,
     first: () => (BRIEFS.filter(match)[0] || BRIEFS[0])?.id,

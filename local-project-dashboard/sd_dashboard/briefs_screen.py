@@ -23,6 +23,12 @@ its reason, `off`, or `unknown` when none was recorded or it was not read.
 **Where it was published** (sd:5102). Each row's `pub.copies` names the destinations holding a copy, from the item's
 `fields.published` and the vault copy above (`publishing.brief_copies`); `pub.unread` says when the fields were not read.
 
+**Topics** (system sd:5778). `topics` lists the writing plugin's `sdw.topic` rows (`records.list_rows`), active
+first: each one's slug, stage, the newest line of its `## Memory` section and how many lines it and `## Sources`
+hold, None for a section the body lacks. The hub's brief routines rewrite both sections; nothing here writes them.
+A row's `topics` is the brief's `signal_topics`, which pack sd:5798 copies into its record; None until it does, so the
+page counts such a brief as not recorded, never as quiet. A failed read is `state: error` with its cause.
+
 **What is not read.** Unread state, follow-up flags, the watchdog's failures
 and each job's cadence come from mail and the weekly digest in the design. No
 reader supplies them: `watchdog.available` is false and `watchdog.reason`
@@ -40,7 +46,7 @@ from pathlib import Path
 
 from . import publishing
 
-__all__ = ["ROWS", "SOURCE", "WATCHDOG_REASON", "document", "rows"]
+__all__ = ["ROWS", "SOURCE", "WATCHDOG_REASON", "document", "rows", "topics"]
 
 #: The most rows the page takes; one more is read to know whether the list was cut.
 ROWS = 200
@@ -51,6 +57,8 @@ WATCHDOG_REASON = "no watchdog reader: the dashboard does not read the failures 
 SOURCE = "workflow database"
 
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+#: The topic stages, in the order the Topics view lists them.
+STAGES = ("active", "candidate", "parked", "retired")
 
 
 def _library():
@@ -67,6 +75,12 @@ def read_rows(connection) -> list[dict]:
 
 def read_copies(connection) -> tuple[str, dict] | None:
     return _library().copies_state(connection)
+
+
+def read_topics(connection) -> list[dict]:
+    from sd_db import records
+
+    return records.list_rows(connection, "topic")
 
 
 def _vault_name() -> str | None:
@@ -146,9 +160,11 @@ def _row(raw, found, state: dict, vault: str | None) -> dict | None:
     except ValueError:
         return None
     stamp = at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    signal = brief.get("signal_topics")
+    signal = signal if isinstance(signal, list) and all(isinstance(t, str) and t for t in signal) else None
     rel, link, why = _copy(stem, raw.get("repo"), raw.get("updated_at"), found, state, vault)
     return {"id": stem, "item": item, "subj": stem, "src": series.split(" · ", 1)[0], "day": day, "at": stamp if stamp[:10] == day else None,
-            "words": words, "lead": lead[:LEAD], "rel": rel, "open": link, "copy": why}
+            "words": words, "lead": lead[:LEAD], "rel": rel, "open": link, "copy": why, "topics": signal}
 
 
 def rows(got: list, found, state: dict, vault: str | None) -> tuple[list[dict], int]:
@@ -163,6 +179,42 @@ def rows(got: list, found, state: dict, vault: str | None) -> tuple[list[dict], 
         out.append(row)
     out.sort(key=lambda r: (r["day"], r["at"] or "", r["item"]), reverse=True)
     return out, bad
+
+
+def _section(body: str, name: str) -> list[str] | None:
+    """The non-blank lines under `## <name>`, list marks dropped, up to the next `## `; None when there is no such heading."""
+    lines, found = None, False
+    for line in body.split("\n"):
+        if line.startswith("## "):
+            if found:
+                break
+            found = line[3:].strip() == name
+            lines = [] if found else lines
+        elif found and line.strip():
+            lines.append(re.sub(r"^\s*[-*]\s+", "", line).strip())
+    return lines
+
+
+def topics(connection, reader=read_topics) -> dict:
+    """The Topics view's rows: each `sdw.topic` row's slug, stage, newest `Memory` line and section sizes."""
+    try:
+        got = reader(connection)
+        if not isinstance(got, list):
+            raise ValueError("the topic reader returned no list")  # noqa: TRY004 - external document validation
+    except Exception as error:  # noqa: BLE001 - a failed read says its cause, never no topics
+        return {"state": "error", "reason": str(error) or type(error).__name__, "rows": []}
+    out = []
+    for raw in got:
+        fields, body = raw.get("fields") or {}, raw.get("body") or ""
+        memory, sources = _section(body, "Memory"), _section(body, "Sources")
+        slug = fields.get("slug") if isinstance(fields, dict) else None
+        out.append({"item": raw["id"], "title": raw["title"], "slug": slug if isinstance(slug, str) and slug else None,
+                    "stage": raw.get("stage"), "memory": memory[0][:LEAD] if memory else None,
+                    "memory_lines": None if memory is None else len(memory),
+                    "sources": None if sources is None else len(sources)})
+    rank = {stage: i for i, stage in enumerate(STAGES)}
+    out.sort(key=lambda row: (rank.get(row["stage"], len(STAGES)), row["title"].casefold()))
+    return {"state": "read", "reason": "", "rows": out}
 
 
 def _publishing(connection, briefs: list[dict], repos: dict) -> None:
@@ -195,9 +247,11 @@ def _publishing(connection, briefs: list[dict], repos: dict) -> None:
             brief["pub"]["choice"]["why"] = why
 
 
-def document(connection, *, now: str, reader=read_rows, copies_reader=read_copies, vault=_vault_name) -> dict:
-    """The Briefs page's document: the database's brief rows, the vault copy's state, and what is not read."""
+def document(connection, *, now: str, reader=read_rows, copies_reader=read_copies, vault=_vault_name,
+             topic_reader=read_topics) -> dict:
+    """The Briefs page's document: the database's brief rows, the vault copy's state, the topics, and what is not read."""
     watchdog = {"available": False, "reason": WATCHDOG_REASON}
+    found_topics = topics(connection, topic_reader)
     try:
         found = copies_reader(connection)
     except Exception as error:  # noqa: BLE001 - an unread heartbeat is unknown, never ok
@@ -210,7 +264,7 @@ def document(connection, *, now: str, reader=read_rows, copies_reader=read_copie
     except Exception as error:  # noqa: BLE001 - a failed read says its cause, never an empty page
         return {"read": now, "reader": {"state": "error", "reason": str(error) or type(error).__name__, "source": SOURCE,
                                         "total": 0, "shown": 0, "skipped": 0, "capped": False, "copies": state},
-                "briefs": [], "watchdog": watchdog}
+                "briefs": [], "watchdog": watchdog, "topics": found_topics}
     try:
         name = vault() if state["state"] == "ok" else None
     except Exception:  # noqa: BLE001 - no vault name is no link; Read still opens the brief
@@ -224,4 +278,4 @@ def document(connection, *, now: str, reader=read_rows, copies_reader=read_copie
             "reader": {"state": "partial" if bad else "read", "reason": f"{bad} rows were not briefs" if bad else "",
                        "source": SOURCE, "total": None if capped else len(briefs), "shown": len(briefs), "skipped": bad,
                        "capped": capped, "copies": state},
-            "briefs": briefs, "watchdog": watchdog}
+            "briefs": briefs, "watchdog": watchdog, "topics": found_topics}
