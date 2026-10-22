@@ -71,7 +71,7 @@ restart: `agent-install` again.
 
 ## Label review
 
-Label a Kev label file on the dashboard's Review page, not in the review app under `kev/tools/review`.
+Label a Kev label file on the dashboard's Decide page, Scoring tab, not in the review app under `kev/tools/review`.
 File it as a batch, label it with the digits, then export Kev's `reviews.jsonl` shape:
 
 ```sh

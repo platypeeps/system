@@ -1,4 +1,4 @@
-// Today's GitHub view (sd:5608): the operator's open pull requests and issues, and those merged or closed in the last 7
+// GitHub's Pull requests view (sd:5608; Today's GitHub view until sd:5781): the operator's open pull requests and issues, and those merged or closed in the last 7
 // days, from /api/today/github (today_github.document). The reading calls no GitHub API: the rows are what sd shadow sync
 // and the Contributions collector stored; only Copilot review, pressed, asks GitHub. It loads before shell.js, and reads
 // when the view first shows and on Refresh. Each part shows its first CAP rows, newest activity first, and Show all opens
@@ -9,7 +9,7 @@
 // sd:5633: a pull request row's title, or a press on its row, opens its Details in the right pane: what the read carries,
 // a link to GitHub in a new tab, and its commands (Open on GitHub, Open item, Adversarial review, Copilot review, Merge,
 // Close original), each a command object of TYPE the shell runs. An issue row keeps its title's link to GitHub. The
-// selection is Today's one (today.js pick, sd:5654), so a Now or Work row selected after it unmarks it.
+// selection is the page's one, pick below, named in ?row= as on Today (sd:5654).
 // sd:5668: Merge copies an open pull request into a worktree and enqueues it in the lane (pr_merge.py). Its run reads the
 // preview, asks with it (the pull request, its head, its author, the worktree and the item), then posts the preview's
 // revision; a 4xx moved nothing, and a 502 may follow a step that moved, so the toast says Merge again resumes.
@@ -39,7 +39,7 @@
   const oid = key => `gh:${key}`;
   const pulls = () => DOC && !DOC.error ? [...DOC.pulls, ...DOC.settled.filter(r => r.kind === 'pull')] : [];
   const pullOf = key => pulls().find(r => r.key === key);
-  // The selected pull request's key: Today's one selection (today.js pick, sd:5654) names it in ?row= as its object id.
+  // The selected pull request's key: the page's one selection (pick) names it in ?row= as its object id.
   const all = () => new URLSearchParams(location.search).get('gh') === 'all';
   const mine = r => !String(r.why || '').startsWith('opened by');
   const rowsOf = key => all() ? DOC[key] : DOC[key].filter(mine);
@@ -104,12 +104,22 @@
   }
 
   // ---------- Details (sd:5633) ----------
+  // One selection (today.js pick, sd:5654, until this view left Today): the row is named in ?row=, marked alone
+  // aria-selected, its Details drawn, and it is the shell's selection.
+  function pick(id, draw, open) {
+    $('github-sections').querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
+    put($('details'), draw());
+    window.shell.commands.select(id);
+    const u = new URL(location.href); u.searchParams.set('row', id); history.replaceState(null, '', u);
+    $('details').setAttribute('data-swap', ''); requestAnimationFrame(() => $('details').removeAttribute('data-swap'));
+    if (open) window.shell.openPane('tab-details');
+  }
   // A time the read carries, or not recorded: a missing stamp is never a time.
   const stamp = v => v ? html`<time class="rel" data-long datetime="${v}"></time>` : html`<span class="ph">not recorded</span>`;
   function details(key, open = true) {
     const r = pullOf(key); if (!r) return;
     const s = state(r), settled = r.merged_at ? ['Merged', r.merged_at] : r.closed_at ? ['Closed', r.closed_at] : null;
-    window.todayPick(oid(key), () => html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> Pull request · ${r.state}</p>
+    pick(oid(key), () => html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> Pull request · ${r.state}</p>
       <h2>${r.title || r.ref}</h2>
       <dl><dt>Repo</dt><dd>${r.repo}</dd><dt>Number</dt><dd>#${r.number}</dd><dt>State</dt><dd>${r.state} · ${r.why}</dd>
         <dt>Author</dt><dd>${r.author || html`<span class="ph">not recorded</span>`}</dd>
@@ -237,9 +247,10 @@
     if (chosen() && pullOf(chosen())) details(chosen(), false);
   }
 
-  document.addEventListener('shell:view', e => { if (e.detail && e.detail.id === 'github' && !started) load(); });
+  document.addEventListener('shell:view', e => { if (e.detail && e.detail.id === 'pulls' && !started) load(); });
+  // Read again (github.js) reads this view again once it has been read.
+  window.githubPulls = { again: () => started ? load() : undefined };
   document.addEventListener('DOMContentLoaded', () => {
-    $('refresh').addEventListener('click', () => { if (started) load(); });
     register();
     // A run of this view's Adversarial review draws the selected row's Details again (commands.js follows the run).
     document.addEventListener('adversarial:run', e => { const key = chosen(), r = key && pullOf(key);

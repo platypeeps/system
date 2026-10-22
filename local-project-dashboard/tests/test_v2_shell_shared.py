@@ -704,7 +704,7 @@ class TheTableGrammar(unittest.TestCase):
         # A page's own count wins: shell.view.count marks the view owned.
         self.assertIn("function viewCount(id, n) { viewOwned.add(id);", js)
         # The pages that printed a separate count put it on a tab, and the two pages without views have one now.
-        for page, call in [("designs.js", "shell.view.count(F.hidden ? 'hidden' : 'pages', rows.length);"),
+        for page, call in [("designs.js", "shell.view.count('pages', rows.length);"),
                            ("activity.js", "window.shell.view.count('timeline', shown);"),
                            ("briefs.js", "shell.view.count('list', all.length);"),
                            ("skills.js", "window.shell.view?.count('catalog', DOC ? v.length : null);"),
@@ -1223,18 +1223,17 @@ var rail = { querySelector: sel => sel === '[data-section="Reports"]' ? LINK : n
 var page = 'Reports', hrefOf = name => name === 'Reports' ? '/reports' : undefined;
 window.PAGE_KEYS = [['/', 'Filter reports']];
 window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'cadence', label: 'Cadence', api: '/api/reports/cadence' }, { id: 'gone', label: 'No panel' }];
-if (KEEP_FALSE) window.PAGE_VIEWS[1].keep = false;
 """
 
 
 class TheViewSwitch(unittest.TestCase):
     """The view switch, cut out of shell.js: one declaration, window.PAGE_VIEWS, draws the tablist and the rail's sub-entries."""
 
-    def run_view(self, body, hash="", host=False, store=None, keep=True):
+    def run_view(self, body, hash="", host=False, store=None):
         block = re.search(r"^  // view:start\n(.*?)^  // view:end$", SHELL_JS, re.S | re.M)
         self.assertIsNotNone(block, "shell.js has no view:start block")
         stand_in = (VIEW_STAND_IN.replace("HASH", json.dumps(hash)).replace("WITH_HOST", json.dumps(host))
-                    .replace("KEPT_STORE", json.dumps({} if store is None else store or None)).replace("KEEP_FALSE", json.dumps(not keep)))
+                    .replace("KEPT_STORE", json.dumps({} if store is None else store or None)))
         script = (stand_in + block.group(1) + r"""
 var R = {};
 const shown = () => Object.values(PANELS).filter(p => !p.hidden).map(p => p.id);
@@ -1274,10 +1273,9 @@ function run() { OUT.R = R; OUT.STORE = STORE; return JSON.stringify(OUT); }
         # The tab's display: inline-flex would beat the hidden attribute without its own rule.
         self.assertRegex(SHELL_CSS, r'\.viewswitch \[role="tab"\]\[hidden\][^{]*\{ display: none; \}')
 
-    def test_a_keep_false_view_is_never_restored_and_storage_that_throws_is_no_view(self):
-        out = self.run_view("R.cur = view.current();", store={"sd.view./reports": "cadence"}, keep=False)
-        self.assertEqual(out["R"]["cur"], "reports")
-        self.assertEqual(self.run_view("R.cur = view.current();", hash="#view=cadence", keep=False)["R"]["cur"], "cadence")
+    def test_storage_that_throws_is_no_view(self):
+        # sd:5753: keep: false went with the last views that set it (Designs' and Contributions' Hidden); a stored id no page
+        # declares any more is not restored (test_the_last_chosen_view_is_kept_per_page_and_the_address_wins covers it).
         # Storage off (a private window): no localStorage at all, and a show still works.
         out = self.run_view("view.show('cadence'); R.cur = view.current();", store=False)
         self.assertEqual(out["R"]["cur"], "cadence")
@@ -1409,7 +1407,8 @@ class TheShapeshiftBar(unittest.TestCase):
         # Reports, Activity, Briefs and Today drew the bar in their markup and wired it in their script; the shell draws it
         # now on every page that marks row 1 (data-shift). The pages whose own bar has readings of its own keep theirs.
         marked = [p for p in sorted(V2.glob("*.html")) if "data-shift" in p.read_text(encoding="utf-8")]
-        for name in ("reports", "activity", "briefs", "today", "health", "contributions", "designs", "management", "review"):
+        for name in ("reports", "activity", "briefs", "today", "health", "contributions", "designs", "management", "decide",
+                     "github"):
             self.assertIn(V2 / f"{name}.html", marked)
         for page in marked:
             text = page.read_text(encoding="utf-8")
@@ -1661,10 +1660,10 @@ if __name__ == "__main__":
 class ThePaneWithoutDetails(unittest.TestCase):
     """sd:5592. A page whose Details never shows a row has no Details element; the shell hides the tab and opens on Chat."""
 
-    def test_only_queue_review_and_settings_have_no_details_and_the_shell_shows_chat(self):
+    def test_only_queue_decide_and_settings_have_no_details_and_the_shell_shows_chat(self):
         v2 = V2
         bare = sorted(p.stem for p in v2.glob("*.html") if 'id="details"' not in p.read_text(encoding="utf-8"))
-        self.assertEqual(bare, ["queue", "review", "settings"])
+        self.assertEqual(bare, ["decide", "queue", "settings"])
         self.assertIn("if (!details) { pane.querySelector('#tab-details').hidden = true; showTab('tab-chat'); }", SHELL_JS)
         self.assertIn('.pane [role="tab"][hidden] { display: none; }', (v2 / "static" / "shell.css").read_text(encoding="utf-8"))
 

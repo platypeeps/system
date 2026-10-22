@@ -79,7 +79,7 @@
   function note(key) {
     const sum = DOC.summary;
     if (key === 'delivered' && sum.closed_by_hand) return html`<p class="st-line">+${sum.closed_by_hand} closed by hand</p>`;
-    if (key === 'decisions') return html`<p class="st-line"><a href="#view=decisions">Answer on Decisions</a>${sum.review_questions ? html` · <a href="/review">${plural(sum.review_questions, 'review question')} on Review</a>` : ''}</p>`;
+    if (key === 'decisions') return html`<p class="st-line"><a href="/decide#view=decisions">Answer on Decide</a>${sum.review_questions ? html` · <a href="/decide#view=scoring">${plural(sum.review_questions, 'review question')} on Scoring</a>` : ''}</p>`;
     if (key === 'attention') return html`<p class="st-line"><a href="#view=inbox">Acknowledge in Inbox</a></p>`;
     if (key === 'planned') return html`<p class="st-line">${sum.planned_this_week} due in the next 7 days</p>`;
     if (key === 'unscheduled') {

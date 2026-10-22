@@ -1,10 +1,11 @@
-"""The v2 Review page (sd:3709): the labelling queue on its own rail page.
+"""Scoring (sd:3709): the labelling queue, the Review page until sd:5781 and now Decide's Scoring tab.
 
-What this slice promises: `/review` is a registered page in the rail's Now group (`g l`); `/api/review` lists each open
+What this slice promises: Decide (`/decide`, and `/review`, its old address) is a registered page in the rail's Now group
+(`g l`); `/api/review` lists each open
 batch, nightly suggestions first, and its open questions, and a blind or sealed batch sends no subject or evidence; a
 batch whose notes do not read is listed with its reason. A label and its undo go through `sd_db.review.rule` and
 `withdraw`, the code `sd-db review` runs, under the batch revision the page read (409 when stale). Today's Decisions panel
-lists no batch question and counts them for one line that links to Review. `review.js` runs under JavaScriptCore
+lists no batch question and counts them for one line that opens Scoring. `review.js` runs under JavaScriptCore
 (osascript) against the stand-in page `test_v2_tasks` uses: the digits label and advance, u undoes, a failed read is
 unknown and never an empty queue. The browser half (the widths, the themes) is recorded on the pull request.
 """
@@ -70,12 +71,13 @@ def questions_of(connection, item):
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route = "review", "Review", "/review"
-    api = ("/api/review", "/api/review/7/export", "/api/review/rule", "/api/review/withdraw")
+    page, section, route = "decide", "Decide", "/decide"
+    api = ("/api/decisions", "/api/decisions/answer", "/api/review", "/api/review/7/export", "/api/review/rule",
+           "/api/review/withdraw")
 
-    def test_review_follows_briefs_in_now_with_its_chord_and_icon(self):
+    def test_decide_follows_today_in_now_with_reviews_chord_and_icon(self):
         now = re.search(r"\['Now',\s*\[(.*?)\]\],", GROUP_BLOCK).group(1)
-        self.assertIn("['Briefs', 'inbox', 'i'], ['Review', 'list-checks', 'l']", now)
+        self.assertIn("['Today', 'sunrise', 't'], ['Decide', 'list-checks', 'l']", now)
         self.assertIn('<symbol id="i-list-checks"', (STATIC / "icons.js").read_text(encoding="utf-8"))
 
 
@@ -362,23 +364,23 @@ class TodaysDecisions(ScreenCase):
 
 
 class ThePage(unittest.TestCase):
-    def test_the_page_is_bulk_scoring_alone_and_today_owns_the_decisions(self):
-        # sd:5651: Review's Questions view drew Today's Decisions rows again; Review keeps the labelling queue alone.
-        page = (V2 / "review.html").read_text(encoding="utf-8")
+    def test_scoring_is_its_own_view_and_decide_owns_the_decisions(self):
+        # sd:5651: Review's Questions view drew Today's Decisions rows again. sd:5781: Decisions and Scoring are Decide's
+        # two views; review.js draws Scoring alone and declares no views of its own.
+        page = (V2 / "decide.html").read_text(encoding="utf-8")
         self.assertNotIn("PAGE_VIEWS", PAGE_JS)
         self.assertNotIn('id="view-questions"', page)
-        self.assertNotIn("decisions.js", page)
-        self.assertNotIn("decisions.css", page)
-        self.assertLess(page.index('id="annunciator"'), page.index('<tbody id="rows">'))
-        today = (V2 / "today.html").read_text(encoding="utf-8")
-        self.assertIn('<link rel="stylesheet" href="/ui/decisions.css">', today)
+        scoring = page[page.index('<div id="view-scoring"'):]
+        self.assertLess(scoring.index('id="annunciator"'), scoring.index('<tbody id="rows">'))
+        self.assertIn('<link rel="stylesheet" href="/ui/decisions.css">', page)
+        self.assertNotIn("decisions.css", (V2 / "today.html").read_text(encoding="utf-8"))
         # One home for the decision rows' look: Today's sheet no longer carries them.
         self.assertNotIn(".decisions .choices", (STATIC / "today.css").read_text(encoding="utf-8"))
         self.assertIn(".decisions .choices", (STATIC / "decisions.css").read_text(encoding="utf-8"))
 
     def test_the_page_has_no_details_pane_and_the_shell_pane_is_chat(self):
         # sd:5123: the row carries the question. sd:5592: with no Details element the shell docks Chat alone.
-        page = (V2 / "review.html").read_text(encoding="utf-8")
+        page = (V2 / "decide.html").read_text(encoding="utf-8")
         self.assertNotIn('id="details"', page)
         self.assertNotIn("#tab-details", PAGE_CSS)
         self.assertNotIn(".pane", PAGE_CSS)
@@ -438,6 +440,15 @@ class TheScript(unittest.TestCase):
         self.assertEqual(out["R"]["rows"].count('<tr data-id="q'), 3)
         self.assertNotIn("<b>", out["R"]["rows"])
         self.assertRegex(out["R"]["sub"], r"^0 labelled · 3 open · 0 skipped · read ")
+
+    def test_a_question_is_the_shells_selection_only_while_scoring_shows(self):
+        # sd:5781 review: Scoring reads beside Decisions; a selection it made while hidden took Enter and a note there.
+        out = self.run_page("R.hidden = OUT.selected; VIEW = 'scoring'; view(); R.shown = OUT.selected;"
+                            " VIEW = 'decisions'; view(); R.left = OUT.selected;",
+                            "(path, body) => [200, DOC]", doc=doc_with(),
+                            prefix="var VIEW = 'decisions'; window.shell.view.current = () => VIEW;"
+                                   " const view = () => document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: VIEW } }));\n")
+        self.assertEqual((out["R"].get("hidden"), out["R"].get("shown"), out["R"].get("left")), (None, "q10", None))
 
     def test_a_batch_that_did_not_read_links_its_lamp_to_the_item(self):
         # sd:5298: an unknown lamp links to its evidence; for a batch that is its sd item, where the batch is filed.
