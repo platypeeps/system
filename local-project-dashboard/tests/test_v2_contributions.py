@@ -773,13 +773,14 @@ shellRun(cmd('collector.sync'), C.get('collector')); await flush();""", answer=s
         self.assertEqual(out["gets"], ["/api/contributions/page", "/api/shadow/state", "/api/shadow/state", "/api/contributions/page"])
         self.assertEqual([t[0] for t in out["toasts"]], ["Shadow sync started · Contributions reads again when it ends"])
 
-    def test_the_toolbar_refresh_button_reruns_the_collector_and_reads_again(self):
-        """sd:5630. Refresh in the toolbar runs Re-run collector: one sync, then the table reads again."""
-        done = {"running": False, "error": None, "trackers": [
-            {"tracker": "github", "ok": True, "configured": True, "reason": "", "lines": []}]}
-        out = self.run_page("""ELS['contrib-refresh'].listeners.click[0]({ target: {} }); await flush();""", answer=self.sync_answer(done))
-        self.assertEqual(out["posts"], [["/api/shadow/sync", {}, 64]])
-        self.assertEqual(out["gets"][-1], "/api/contributions/page")
+    def test_the_toolbar_has_no_refresh_and_re_run_collector_still_syncs(self):
+        """sd:5750: the operator ruled out the toolbar's Refresh (sd:5630). Read again reads; Re-run collector syncs."""
+        page = (V2 / "contributions.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="contrib-refresh"', page)
+        self.assertNotIn("contrib-refresh", PAGE_JS)
+        out = self.run_page("R.title = window.PAGE_AGAIN.title; R.sync = cmd('collector.sync').label;")
+        self.assertEqual(out["R"]["title"], "Read the contributions again; Re-run collector runs the sync")
+        self.assertEqual(out["R"]["sync"], "Re-run collector")
 
     def test_a_sync_that_ends_with_a_failed_tracker_or_a_broken_run_says_why(self):
         failed = {"running": False, "error": None, "trackers": [
