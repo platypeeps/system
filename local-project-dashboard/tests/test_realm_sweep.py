@@ -105,12 +105,14 @@ class Allowlist(unittest.TestCase):
             self.assertFalse(set(allowed) & set(realm_sweep.DENIED), realm)
             self.assertIn("mcp__workspace-mcp__send_gmail_message", realm_sweep.DENIED)
             self.assertFalse([t for t in allowed if re.search(r"send|forward", t)], realm)
-            # Bash runs sd's item verbs only; Read and Write reach the run folder alone.
+            # Bash runs sd's item verbs only; Read and Write reach the run folder alone. Claude Code checks Write
+            # against Edit(path) rules and ignores a Write(path) one, so Write's grant is the Edit rule (sd:5751).
+            self.assertIn("Edit(//runs/x/**)", allowed)
             for tool in allowed:
                 if tool.startswith("Bash("):
                     self.assertRegex(tool, r"^Bash\(sd (store items|task (show|note|add --kind followup --no-repo|add --belongs-to /repos/example-work/a)):\*\)$")
                 elif not tool.startswith("mcp__"):
-                    self.assertIn(tool, ("Read(//runs/x/**)", "Write(//runs/x/**)"))
+                    self.assertIn(tool, ("Read(//runs/x/**)", "Edit(//runs/x/**)"))
 
     def test_the_work_run_reads_notion_jira_and_github_and_the_personal_run_does_not(self):
         work = realm_sweep.allowed_tools("work", Path("/runs/x"), "/r")
