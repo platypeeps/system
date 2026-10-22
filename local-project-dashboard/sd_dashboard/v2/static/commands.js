@@ -154,10 +154,15 @@
   const PUB_ICON = { drive: 'triangle', notion: 'box', obsidian: 'gem' };
   // What each fill says (sd:5731): published() draws its tips from it and the Documents legend lists it, so the two agree.
   const PUB_STATE = { has: 'published', queued: 'copy queued', missing: 'designated, no copy yet', unread: 'not read', off: 'not a destination' };
-  const pubGlyph = ch => window.markup.html`<svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg>`;
+  function pubGlyph(ch) {
+    const { html } = window.markup;
+    return html`<svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg>`;
+  }
   // One sample mark per fill, as a table's help line takes it (shell.list.help): [[mark, meaning]].
-  const pubLegend = () => Object.entries(PUB_STATE).map(([k, w]) =>
-    [window.markup.html`<span class="pub"><span class="pub-notion ${k}" aria-hidden="true">${pubGlyph('notion')}</span></span>`, w]);
+  function pubLegend() {
+    const { html } = window.markup;
+    return Object.entries(PUB_STATE).map(([k, w]) => [html`<span class="pub"><span class="pub-notion ${k}" aria-hidden="true">${pubGlyph('notion')}</span></span>`, w]);
+  }
   const PUB_WHERE = (ch, url) => { const f = ch === 'obsidian' && /[?&]file=([^&]*)/.exec(url); return f ? decodeURIComponent(f[1]) : url; };
   function published(pub) {
     const { html } = window.markup;
