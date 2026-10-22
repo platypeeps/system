@@ -650,7 +650,10 @@ let polling = 0;
     // sd:5680: so Show log on that row is the download's start.log, in the row's Details; the job's log opens on Management.
     const shown = window.commands.showLog({ job: facts }), shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
     C.register(
+      // sd:5728: Run now is the source row's act (its play icon) whatever the last run did, not only after a failure;
+      // a job whose last run did not find its command (exit 127) keeps it in the menu (sd:3392).
       { ...retry,
+        primary: o => !!via(o) || facts(o).exit !== 127,
         does: o => via(o) ? via(o).does : o.source === 'mission' ? 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.'
           : `Pulls ${o.label} once through its refresh job. Nothing to undo.`,
         cli: o => via(o) ? via(o).cli() : retry.cli(o) },
