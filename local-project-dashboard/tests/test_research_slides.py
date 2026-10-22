@@ -183,19 +183,20 @@ class TheRefusals(SlidesCase):
         self.assertIn("Look in Drive before you press Import to Slides again", body["error"])
         self.assertFalse(research_slides.store().exists())
 
-    def test_a_refused_update_changes_nothing_and_an_unclear_one_is_safe_to_press_again(self):
+    def test_a_refused_or_unclear_update_is_safe_to_press_again(self):
         self.press()
         self.deck.write_bytes(b"pptx two")
         self.workspace.tools[UPDATE] = ("API error in update_drive_file: <HttpError 403 returned \"forbidden\">", True)
         status, body = self.press()
         self.assertEqual(status, 503)
         self.assertIn("workspace-mcp refused the update", body["error"])
-        self.assertIn("still holds the earlier deck", body["error"])
+        self.assertIn("Press Import to Slides again to send this deck to the same file", body["error"])
+        self.assertNotIn("still holds", body["error"], "a tool error may come after Drive took the upload")
         self.workspace.tools[UPDATE] = ("Done.", False)
         status, body = self.press()
         self.assertEqual(status, 504)
         self.assertIn("Press Import to Slides again: it updates the same file", body["error"])
-        self.assertEqual(research_slides.records()["research/alpha"]["sha256"], hashlib.sha256(b"pptx one").hexdigest())
+        self.assertEqual(research_slides.records()["research/alpha"]["sha256"], "", "Drive may hold either deck now")
         self.workspace.tools[UPDATE] = (UPDATED, False)
         status, body = self.press()
         self.assertEqual((status, body["slides"]["id"], body["updated"]), (200, "p-1", True))
@@ -208,10 +209,20 @@ class TheRefusals(SlidesCase):
         self.assertEqual(status, 503)
         self.assertIn("imported as https://docs.google.com/presentation/d/p-1/edit, but its record was not written: disk full", body["error"])
 
+    def failing(self, data: bytes):
+        """`_write` that fails only the record naming `data`'s digest: the write after a call, not the one before it."""
+        real, digest = research_slides._write, hashlib.sha256(data).hexdigest()
+
+        def write(path, value):
+            if value["research/alpha"].get("sha256") == digest:
+                raise OSError("disk full")
+            return real(path, value)
+        return mock.patch.object(research_slides, "_write", side_effect=write)
+
     def test_an_update_whose_record_is_not_written_updates_the_same_file_at_the_next_press(self):
         self.press()
         self.deck.write_bytes(b"pptx two")
-        with mock.patch.object(research_slides, "_write", side_effect=OSError("disk full")):
+        with self.failing(b"pptx two"):
             status, body = self.press()
         self.assertEqual(status, 503)
         self.assertIn("record was not written: disk full. A second press updates the same file again.", body["error"])
@@ -219,6 +230,30 @@ class TheRefusals(SlidesCase):
         self.assertEqual((status, body["slides"]["id"], body["updated"]), (200, "p-1", True))
         self.assertEqual([(n, a.get("file_id")) for n, a in self.tools()],
                          [("import_to_google_slides", None), ("update_drive_file", "p-1"), ("update_drive_file", "p-1")])
+
+    def test_a_deck_restored_after_an_update_the_record_missed_is_sent_again(self):
+        """Review of sd:5761: Drive took deck two, the record kept deck one's digest, and deck one rebuilt read as unchanged."""
+        self.press()
+        for name, unrecorded in (("record not written", lambda: self.failing(b"pptx two")),
+                                 ("no clear answer", lambda: mock.patch.dict(self.workspace.tools, {UPDATE: ("Done.", False)}))):
+            with self.subTest(name):
+                self.deck.write_bytes(b"pptx two")
+                with unrecorded():
+                    status, _ = self.press()
+                self.assertIn(status, (503, 504))
+                self.deck.write_bytes(b"pptx one")
+                calls = len(self.tools())
+                status, body = self.press()
+                self.assertEqual((status, body["reused"], [n for n, _ in self.tools()[calls:]]), (200, False, ["update_drive_file"]), body)
+
+    def test_a_record_that_cannot_be_marked_before_an_update_sends_nothing(self):
+        self.press()
+        self.deck.write_bytes(b"pptx two")
+        with mock.patch.object(research_slides, "_write", side_effect=OSError("disk full")):
+            status, body = self.press()
+        self.assertEqual(status, 503)
+        self.assertIn("Nothing was sent", body["error"])
+        self.assertEqual([n for n, _ in self.tools()], ["import_to_google_slides"])
 
     def test_a_deck_that_cannot_be_staged_sends_nothing(self):
         self.press()

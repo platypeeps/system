@@ -9,10 +9,12 @@ time (`IMPORTING`):
    deck's sha256 and the account. An unchanged deck on the same account reuses that file and calls nothing.
 4. A changed deck on the same account replaces that file's content in place (sd:5761): workspace-mcp's
    `update_drive_file`, Drive's files.update, keeps the file's id, name, folder, link and sharing, so the brief's Deck
-   row and every link to it stay current. The tool takes no bytes, only a path the server may read: the deck is copied
-   into the server's attachment folder (`attachments`) for the call and removed after it. A refused update changed
-   nothing; one with no answer may have, and a second press sends the same update to the same file. A file Drive no
-   longer has (`GONE`) is made again, as in step 5.
+   row and every link to it stay current. First the record loses its digest, so a deck Drive may now hold is never
+   taken for the recorded one; a record that cannot be written sends nothing. The tool takes no bytes, only a path the
+   server may read: the deck is copied into the server's attachment folder (`attachments`) for the call and removed
+   after it. A tool error may come after Drive took the upload, so a refused or unanswered update leaves the file's
+   content unknown, and a second press sends the deck to the same file. A file Drive no longer has (`GONE`) is made
+   again, as in step 5.
 5. No record, or one for another account: workspace-mcp's `import_to_google_slides` makes the file, through
    `local-mail-intake`'s client, with the deck as base64 and its sha256. A refused call made nothing; a call with no
    answer may have made a file.
@@ -176,11 +178,16 @@ def start(key: str, root=None):
         updated = False
         if mine:
             try:
+                known = {**known, key: {**mine, "sha256": ""}}
+                _write(store(), known)
+            except OSError as problem:
+                return 503, {"error": f"Nothing was sent: the Slides record could not be written before the update: {problem}"}
+            try:
                 _update(url, account, mine["id"], data, digest)
                 file_id, link, updated = mine["id"], mine["link"], True
             except ConnectionError as error:  # before OSError, its base: the update was refused, or never sent
                 if GONE not in str(error):
-                    return 503, {"error": f"{error}. {mine['link']} still holds the earlier deck."}
+                    return 503, {"error": f"{error}. Press Import to Slides again to send this deck to the same file, {mine['link']}."}
             except LookupError as error:
                 return 504, {"error": f"workspace-mcp gave no clear answer ({error}), so whether {mine['link']} holds this "
                                       "deck is not known. Press Import to Slides again: it updates the same file."}
