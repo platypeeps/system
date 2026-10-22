@@ -10,9 +10,9 @@
 // today-github.js); Decisions. Each tab counts what waits on you there; a section's script reports its number through
 // window.todayCount(key, n), and n null means not read, which hides the tab's count. Status and GitHub count nothing: what
 // waits in them is counted on the tab that acts on it.
-window.PAGE_VIEWS = [{ id: 'now', label: 'Now' }, { id: 'inbox', label: 'Inbox', key: 'm' }, { id: 'issues', label: 'Issues' },
-  { id: 'status', label: 'Status' }, { id: 'work', label: 'Work' }, { id: 'github', label: 'GitHub' },
-  { id: 'decisions', label: 'Decisions' }];
+window.PAGE_VIEWS = [{ id: 'now', label: 'Now' }, { id: 'inbox', label: 'Inbox', key: 'm' },
+  { id: 'issues', label: 'Issues' }, { id: 'status', label: 'Status' }, { id: 'work', label: 'Work' },
+  { id: 'github', label: 'GitHub' }, { id: 'decisions', label: 'Decisions' }];
 window.PAGE_FILTER = { now: 'the Now ledger' };
 (() => {
   const VIEW_OF = { now: 'now', work: 'work', problems: 'inbox', briefs: 'inbox', mail: 'inbox', issues: 'issues', intake: 'issues', decisions: 'decisions' };
