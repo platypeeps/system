@@ -44,6 +44,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 - One hub holds the workflow database; a satellite reaches it over the tailnet; setup and refusals: `local-machine-setup/README.md`.
   - A satellite runs no hub-only agent: `SD_HUB_ONLY_AGENTS` in `local-machine-setup/machine-setup.sh` is the one list.
   - A verb that needs a lock or a directory beside the database refuses with `HubOnly` off the hub; do not add a remote path for it.
+  - The hub's system and pack checkouts sit on a detached HEAD on purpose: pinned, moved only by the lane or `repo-sync.sh refresh` (sd:3097); never switch them to a branch or report it as a fault.
 - `local-project-dashboard` runs the workflow dashboard; `dashboard.sh test` runs its suite, and `preflight`, `install`, `health` manage the server.
 - Read `local-project-dashboard/RUNTIME.md` before changing the service.
 - `local-*` folders run local services or tools; `network-testing` is iperf3/ping tooling.
