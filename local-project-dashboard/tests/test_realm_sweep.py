@@ -1,10 +1,10 @@
 """The Work and Personal sweeps' runner (sd:5096, sd:5097): `python3 -m sd_dashboard.realm_sweep`.
 
 What this slice promises: the run's allowlist reads and saves Gmail drafts, and names no tool that sends, forwards or
-writes; the Personal run loads workspace-mcp alone; a run reads its filters from the workflow database's setting rows
-(sd:5109) and its account from that database or the pack's config.json, files the brief its model wrote as
-`<day> - <Realm> sweep`, and records done; the next run reads since the last done one; one run per realm at a time; a
-missing account, filter or brief, or a database that does not answer, fails, naming it.
+writes; each run loads only the servers its allowlist names, and no credential reaches argv; a run reads its filters
+from the workflow database's setting rows (sd:5109) and its account from that database or the pack's config.json, files
+the brief its model wrote as `<day> - <Realm> sweep`, and records done; the next run reads since the last done one; one
+run per realm at a time; a missing account, filter or brief, or a database that does not answer, fails, naming it.
 
 `claude` and `sd` are stubs: the claude stub writes the brief the prompt names and prints `RESULT: ok`; the sd stub
 records its calls. The workflow database is a temporary one under the run's HOME. No test calls claude, Gmail or Drive.
@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 DASHBOARD = Path(__file__).resolve().parents[1]
@@ -121,17 +122,33 @@ class Allowlist(unittest.TestCase):
             self.assertTrue([t for t in work if t.startswith(f"mcp__{server}__")], server)
             self.assertFalse([t for t in personal if t.startswith(f"mcp__{server}__")], server)
 
-    def test_the_run_never_skips_permissions_and_the_personal_run_loads_workspace_mcp_alone(self):
+    def test_the_run_never_skips_permissions_and_loads_the_servers_its_allowlist_names_alone(self):
+        # `--setting-sources project` skips the user's server list, so the Work run loaded no notion, jira or github
+        # (sd:5764); each run names its servers itself, strict, so no claude.ai connector stands in for one.
         for realm in realm_sweep.REALMS:
             argv = realm_sweep.claude_argv("claude", realm, "go", "http://127.0.0.1:1/mcp", ["Read"])
             self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
             self.assertFalse([a for a in argv if "skip-permissions" in a or a == "bypassPermissions"])
             self.assertEqual(argv[argv.index("--setting-sources") + 1], "project")
-            if realm == "personal":
-                self.assertIn("--strict-mcp-config", argv)
-                self.assertEqual(list(json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]), ["workspace-mcp"])
-            else:
-                self.assertNotIn("--strict-mcp-config", argv)
+            self.assertIn("--strict-mcp-config", argv, realm)
+            servers = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
+            named = {tool.split("__")[1] for tool in realm_sweep.allowed_tools(realm, Path("/runs/x"), "/r")
+                     if tool.startswith("mcp__")}
+            self.assertEqual(set(servers), named, realm)
+            self.assertEqual(servers["workspace-mcp"], {"type": "http", "url": "http://127.0.0.1:1/mcp"})
+
+    def test_no_credential_reaches_argv_only_the_name_of_its_variable(self):
+        # The run's shell sources env.sh, and claude expands `${NAME}` when it starts the server (sd:5764).
+        secrets = {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_example0secret", "JIRA_API_TOKEN": "jira-example-secret",
+                   "CLAUDE_CODE_OAUTH_TOKEN": "oauth-example-secret"}
+        with unittest.mock.patch.dict(os.environ, secrets):
+            argv = realm_sweep.claude_argv("claude", "work", "go", "http://127.0.0.1:1/mcp", ["Read"])
+        for value in secrets.values():
+            self.assertFalse([a for a in argv if value in a], value)
+        servers = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
+        self.assertEqual(servers["github"]["headers"], {"Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"})
+        # jira's process inherits JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN from env.sh: no value is written here.
+        self.assertNotIn("env", servers["jira"])
 
 
 class Run(unittest.TestCase):
