@@ -28,6 +28,9 @@ const rootOf = d => ROOTS.find(x => x.key === d.key);
 const shownRoots = () => ROOTS.filter(r => !r.hidden);
 // build: a root is a checkout's docs/dashboard; the checkout is where its render runs.
 const checkoutOf = d => rootOf(d).path.replace(/\/docs\/dashboard$/, '');
+// sd:5666: a computed research.conf.py is read from its render's research.json, as on Research; the root says what was not.
+const confNote = r => r.conf ? `research.conf.py was not read: ${r.conf}`
+  : r.manifest === 'older' ? `docs/dashboard/research.json is from an older research.conf.py: run sd-research-kit render in ${checkoutOf(r)} to refresh it` : '';
 
 // ---------- State ----------
 const F = { repo: new Set(), kind: new Set(), fresh: new Set(), dest: new Set(), text: '', pinned: false, hidden: false };
@@ -291,6 +294,7 @@ function show(id) {
       <dt>Modified</dt><dd><time class="rel" datetime="${d.mod}"></time></dd><dt>Source</dt><dd>${d.src ? d.src : '— none matched'}</dd>
       <dt>Render</dt><dd>${d.stale ? html`<span class="g-caution">▲</span> source newer than page` : d.src ? html`<span class="g-ok">●</span> rendered after source` : html`<span class="g-unknown">▨</span> unknown: no source Markdown to compare`}</dd>
       <dt>Label</dt><dd>${LABEL[d.key] || d.key}${root.research ? ' · research repo' : ''}</dd></dl>
+    ${confNote(root) ? html`<p class="why">${confNote(root)}.</p>` : ''}
     ${window.commands.publishPane('document', d)}
     <h3>Root</h3><div>${shell.commands.bar(`root:${d.key}`)}</div>
     ${root.file_label ? html`<p class="why">documents.conf still holds <code>label|${d.key}|${root.file_label}</code>, which is not read (sd:3986): Rename root sets the name here.</p>` : ''}
@@ -484,12 +488,13 @@ function adopt(doc) {
     const at = ordered().findIndex(d => d.id === q);
     if (at >= 0) { L.page = Math.floor(at / L.size) + 1; selected = q; }
   }
-  const contested = DOC.contested || [];
+  const contested = DOC.contested || [], unread = shownRoots().filter(confNote);
   // build: a key two checkouts claim is served by neither (documents.py, contested); the state slot names each one.
   const state = !ROOTS.length && !contested.length ? { kind: 'empty', title: 'No document roots', text: `Publish into ${DOC.published} in a checkout under ${DOC.base}, or add a root| line to ${DOC.config}.`, source: DOC.config }
     : contested.length ? { kind: 'partial', text: `${contested.map(c => `${plural(c.paths.length, 'checkout')} claim the key ${c.key} (${c.paths.join(', ')}), so none is served`).join('; ')}. Name the one you mean with a root| line in ${DOC.config}.`, source: DOC.config }
     // build: an unread view store pins and hides nothing, so every document shows; the slot says so (sd:3428).
     : STORE ? { kind: 'partial', text: `Pins, hidden documents and tags were not read: ${STORE}. Every document shows.`, source: '/api/documents' }
+    : unread.length ? { kind: 'partial', text: `${unread.map(r => `${r.label}: ${confNote(r)}`).join('; ')}.`, source: '/api/documents' }
     : null;
   const roots = ROOTS.map(r => ({ id: `root:${r.key}`, type: 'document root', label: r.label, key: r.key, hidden: !!r.hidden,
     derived: r.derived || r.label, set: r.set || null }));

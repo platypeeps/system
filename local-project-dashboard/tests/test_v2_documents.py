@@ -21,6 +21,7 @@ and 320 px, both schemes, a coarse pointer, focus visibility).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -195,6 +196,33 @@ class TheDocument(ScreenCase):
         rows = {r["file"]: r for r in documents_screen.document(now=NOW, config_path=self.conf, repo_root=self.base)["documents"]}
         self.assertEqual((rows["overview.html"]["src"], rows["overview.html"]["stale"]), ("00-overview/Overview.md", False))
         self.assertEqual((rows["plan.html"]["src"], rows["plan.html"]["stale"]), ("", False))
+
+    def test_a_computed_config_is_read_through_its_render_manifest(self):
+        """sd:5666: a config the safe reader refuses was read as no entries; Research reads its render's manifest (sd:5659)."""
+        lab = self.base / "lab"
+        conf = write(lab / "research.conf.py", 'DOCS = [{"src": s, "out": "plan"} for s in ["notes/DRAFT.md"]]\n', T0)
+        write(lab / "notes" / "DRAFT.md", "# draft\n", T0 + 3 * DAY)
+        manifest = {"version": 1, "project": "Lab", "conf_sha256": hashlib.sha256(conf.read_bytes()).hexdigest(),
+                    "docs": [{"src": "notes/DRAFT.md", "out": "plan", "links": []}]}
+        write(lab / "docs" / "dashboard" / "research.json", json.dumps(manifest), T0)
+
+        def read():
+            doc = documents_screen.document(now=NOW, config_path=self.conf, repo_root=self.base)
+            root = next(r for r in doc["roots"] if r["key"] == "lab")
+            plan = next(r for r in doc["documents"] if r["file"] == "plan.html")
+            return root.get("conf"), root.get("manifest"), plan["src"], plan["stale"]
+
+        self.assertEqual(read(), ("", "current", "notes/DRAFT.md", True))
+        # A config changed since the render still reads the manifest, and the root says it is from an older render.
+        write(lab / "research.conf.py", conf.read_text(encoding="utf-8") + "# edited\n", T0)
+        self.assertEqual(read(), ("", "older", "notes/DRAFT.md", True))
+        # With no manifest the root says to render once; the name match still answers.
+        (lab / "docs" / "dashboard" / "research.json").unlink()
+        refused, state, src, stale = read()
+        self.assertIn("run sd-research-kit render", refused)
+        self.assertEqual((state, src, stale), ("", "notes/PLAN.md", True))
+        # A literal config reads as before: no refusal and no manifest.
+        self.assertEqual([(r["conf"], r["manifest"]) for r in self.doc["roots"] if r["key"] == "lab"], [("", "")])
 
     def test_each_row_says_its_title_h1_and_stand_line(self):
         rows = self.rows()
@@ -722,6 +750,25 @@ R.cli = cmd('document.request').cli(C.get('draft:request'));""")
         failed = self.run_page("", answer="() => [500, { error: 'boom' }]")["states"][-1]
         self.assertEqual(failed["kind"], "error")
         self.assertIn("boom", failed["text"])
+
+    def test_a_root_read_without_its_config_says_so_with_the_render_fix(self):
+        """sd:5666: a computed config with no manifest, or a manifest of an older config, is said in Details and the slot."""
+        self.doc["contested"] = []
+        lab = next(r for r in self.doc["roots"] if r["key"] == "lab")
+        lab["conf"] = "research.conf.py computes its data; run sd-research-kit render once to write docs/dashboard/research.json"
+        out = self.run_page("R.det = ELS.details.html;", row="'lab/plan.html'")
+        self.assertIn("research.conf.py was not read: research.conf.py computes its data; run sd-research-kit render once", out["R"]["det"])
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn("Lab: research.conf.py was not read", out["states"][-1]["text"])
+        lab.update(conf="", manifest="older")
+        out = self.run_page("R.det = ELS.details.html;", row="'lab/plan.html'")
+        self.assertIn("run sd-research-kit render in ~/repos/lab to refresh it", out["R"]["det"])
+        self.assertIn("Lab: docs/dashboard/research.json is from an older research.conf.py", out["states"][-1]["text"])
+        # A current manifest, like a literal config, says nothing.
+        lab["manifest"] = "current"
+        out = self.run_page("R.det = ELS.details.html;", row="'lab/plan.html'")
+        self.assertNotIn("research.json", out["R"]["det"])
+        self.assertIsNone(out["states"][-1])
 
     def test_repo_is_a_multiselect_dropdown_and_two_repos_show_their_union(self):
         """sd:5158: Repo is a menu of checkboxes; two picks list the documents of both."""
