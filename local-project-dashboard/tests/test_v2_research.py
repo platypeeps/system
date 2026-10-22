@@ -1425,7 +1425,7 @@ SLIDES = { ready: false, why: 'workspace-mcp at http://127.0.0.1:8083/mcp did no
         slides = {"id": "p-1", "link": "https://docs.google.com/presentation/d/p-1/edit", "built": NOW, "imported": NOW}
         answer = (f"(path, body) => path === '/api/research' ? [200, {json.dumps(board)}] : path === '/api/research/slides/status' ? [200, {json.dumps(ready)}]"
                   f" : path === '/api/research/slides' ? [200, {json.dumps({'slides': slides, 'reused': False, 'updated': True, 'replaces': None})}] : [200, {{ run: null }}]")
-        out = self.run_page("""const c = cmd('research.slides'), o = C.get('xp:research/alpha');
+        out = self.run_page("""const c = cmd('research.slides'), o = C.get('research/alpha');
 R.consequence = c.consequence(o); R.said = await c.run(o);""", answer=answer)
         self.assertEqual(out["R"]["said"], "Updated in Slides · Alpha: same file and link")
         self.assertIn("a changed one replaces that file's content, keeping its link and sharing", out["R"]["consequence"])
