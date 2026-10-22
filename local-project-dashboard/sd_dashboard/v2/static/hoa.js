@@ -633,11 +633,18 @@ let polling = 0;
     const kick = j => S.post(`/api/jobs/${encodeURIComponent(j.name)}/retry`, { revision: j.revision });
     const refresh = o => { const j = srcOf(o.source).job;
       return kick(j).then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
-    const retry = window.commands.retry({ job: facts, run: refresh });
+    // sd:5678: a source with a Download runs that Download from its row: its job exits 3 on a login page, the Download
+    // waits for the login. Its off reason, line, post and answer are the Download's, so one lock refuses both alike.
+    const via = o => DL[o.source] && DOWNLOADS[o.source];
+    const ran = o => { const d = DL[o.source], w = via(o).when();
+      return { name: via(o).label, failed: ['failed', 'unavailable'].includes(d.state), exit: d.exit, sends: via(o).sends(),
+        capability: { allowed: w === true, reason: w === true ? '' : w } }; };
+    const retry = window.commands.retry({ job: o => via(o) ? ran(o) : facts(o), run: o => via(o) ? via(o).run() : refresh(o) });
     C.register(
       { ...retry,
-        does: o => o.source === 'mission' ? 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.'
-          : `Pulls ${o.label} once through its refresh job. Nothing to undo.` },
+        does: o => via(o) ? via(o).does : o.source === 'mission' ? 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.'
+          : `Pulls ${o.label} once through its refresh job. Nothing to undo.`,
+        cli: o => via(o) ? via(o).cli() : retry.cli(o) },
       window.commands.showLog({ job: facts }),
     );
     // ---------- Download (sd:5626) ----------

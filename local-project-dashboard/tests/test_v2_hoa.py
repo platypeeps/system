@@ -1124,6 +1124,13 @@ class TheSourceAges(Fixture):
                         f"sys.stderr.write({stderr!r})\nsys.exit({code})\n")
         (tools / "source-ages.py").write_text(text, encoding="utf-8")
 
+    def job_doc(self):
+        """The document with no Download entry, as a source outside `hoa_download.SOURCES` has: its row's Run now is the
+        job's own (sd:5678)."""
+        doc = self.doc()
+        doc["downloads"] = {}
+        return doc
+
     def test_the_lamps_are_every_row_of_the_script_in_its_order(self):
         self.script()
         got = self.doc()["sources"]
@@ -1205,7 +1212,7 @@ R.type = a.type; R.cli = c.cli(a); R.does = c.does(a); R.vantaca = OBJ.get('sour
     def test_retry_starts_the_sources_manual_job_through_the_jobs_route(self):
         self.script()
         self.jobs.jobs.update({"hoa-mission-export": ("failed", 3), "hoa-vantaca-pull": ("idle", 0)})
-        doc = self.doc()
+        doc = self.job_doc()
         revision = doc["sources"]["rows"][0]["job"]["revision"]
         out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
   : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' }, job: {} }];
@@ -1278,6 +1285,39 @@ await flush(); R.timers = TIMERS;"""
         # A running download reads HOA again, so the row follows the session to the download and its end.
         self.assertEqual(out["R"]["timers"], [15000])
 
+    # sd:5678: Run now on a source row with a Download is that Download: its job exits 3 on a login page, the Download
+    # waits for the login. The same off reason, CLI line and post, so the download's lock refuses both alike.
+    RUN_NOW = """const c = cmd('jobs.retry'), d = cmd('download.vantaca'), v = OBJ.get('source:vantaca'), o = OBJ.get('download:vantaca');
+R.when = [c.when(v), d.when(o)]; R.cli = [c.cli(v), d.cli(o)]; R.sends = c.sends(v); R.does = c.does(v);
+C.run(c, v); await flush(); R.timers = TIMERS;"""
+
+    def test_run_now_on_a_source_with_a_download_signs_in_through_the_download(self):
+        self.script()
+        self.jobs.jobs.update({"hoa-mission-export": ("failed", 3), "hoa-vantaca-pull": ("failed", 3)})
+        doc = self.download_doc()
+        doc["sources"] = self.doc()["sources"]
+        out = self.run_page("ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [202, { started: '2026-09-06T08:00:00+00:00', repo: '/hoa', command: 'x' }];\n"
+                            + self.RUN_NOW, doc, pre=TIMERS)
+        self.assertEqual(out["R"]["when"], [True, True])
+        self.assertEqual(out["R"]["cli"], ["python3 tools/vantaca-pull.py"] * 2)
+        self.assertEqual(out["R"]["sends"], 'POST /api/hoa/download {"source": "vantaca"}')
+        self.assertIn("waits for your login", out["R"]["does"])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/download", {"source": "vantaca"}]])
+        self.assertIn("Vantaca download started 08:00 UTC", out["toasts"][-1][0])
+        self.assertEqual(out["R"]["timers"], [15000])
+
+    def test_run_now_while_a_download_runs_is_refused_with_the_downloads_reason(self):
+        doc = self.download_doc(running=True, state="running", phase="waiting", started="2026-09-06T08:00:00+00:00")
+        out = self.run_page(self.RUN_NOW, doc, pre=TIMERS)
+        self.assertEqual(out["R"]["when"], ["a Vantaca download is running now: waiting for you to log in"] * 2)
+        self.assertEqual(out["posts"], [])
+        # The server's lock is the same route's: its 409 is the Run now's toast as it is the Download's.
+        doc = self.download_doc()
+        out = self.run_page("ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [409, { error: 'A Vantaca download is already running.' }];\n"
+                            + self.RUN_NOW, doc, pre=TIMERS)
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/download", {"source": "vantaca"}]])
+        self.assertIn("A Vantaca download is already running.", out["toasts"][-1][0])
+
     def test_a_finished_download_is_the_rows_refresh_text_and_a_missing_procedure_turns_its_button_off(self):
         doc = self.download_doc(state="failed", reason="python3 tools/vantaca-pull.py exited 1: boom",
                                 error="tools/vantaca-pull.py is not in the hoa checkout /hoa, so the Vantaca download has no procedure there")
@@ -1307,7 +1347,7 @@ await flush(); R.timers = TIMERS;"""
         self.jobs.jobs["hoa-mission-export"] = ("failed", 3)
         out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
   : [200, { request: { status: 'failed', message: 'job changed before dispatch; no action was sent' }, job: {} }];
-C.run(cmd('jobs.retry'), OBJ.get('source:mission')); await flush();""",
+C.run(cmd('jobs.retry'), OBJ.get('source:mission')); await flush();""", self.job_doc(),
                             pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
         self.assertIn("hoa-mission-export not started: job changed before dispatch; no action was sent", out["toasts"][0][0])
 
@@ -1316,13 +1356,13 @@ C.run(cmd('jobs.retry'), OBJ.get('source:mission')); await flush();""",
         self.script()
         self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("running", None)})
         out = self.run_page("""const c = cmd('jobs.retry');
-R.when = ['mission', 'vantaca'].map(k => c.when(OBJ.get(`source:${k}`)));""",
+R.when = ['mission', 'vantaca'].map(k => c.when(OBJ.get(`source:${k}`)));""", self.job_doc(),
                             pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
         self.assertEqual(out["R"]["when"], [True, "hoa-vantaca-pull is running now"])
 
     def test_a_job_that_is_not_installed_turns_retry_off_and_says_how_to_install_it(self):
         self.script()
-        doc = self.doc()
+        doc = self.job_doc()
         self.assertEqual(doc["sources"]["rows"][0]["job"], {
             "name": "hoa-mission-export",
             "error": "hoa-mission-export is not an installed job (job is not supported: installed configuration is "
