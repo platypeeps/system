@@ -60,7 +60,8 @@ Reuse the topic rows as the per-topic store and Seen as the review. Add no table
    each topic's `Memory` and folds those in too, so a stopped run is caught up by the next. `intel-weekly` prunes
    and settles `Memory` once a week. The work satellite's run reads the sections and writes none.
    The routines live in the vault; the sitting edits them and records each edit with `sd task note 5778`.
-4. **Signal topics on each brief row.** Pack sd:5798 copies each brief's `signal-topics` into `fields.brief`.
+4. **Signal topics on each brief row.** Pack sd:5798 copies each brief's `signal-topics` into
+   `fields.brief.signal_topics`, a list of slugs.
 5. **A Topics view on the Briefs page.** It lists each topic row, active first: title, slug, stage, the last day
    it gave signal and its signal days in the page's window, read from `fields.brief`, then the newest `Memory` line
    and the number of `Sources` lines. A row opens `/tasks?row=<id>`, where editing already works.
@@ -94,7 +95,8 @@ Rejected: a topic table or a memory store in the pack. The topic rows already ar
 2. Vault routines: the hub's `intel-brief` and `intel-weekly` read and write the sections; the satellite's run only
    reads them. Outside every repository; recorded by note on sd:5778.
 3. Pack sd:5798: `signal-topics` in `fields.brief`.
-4. This repository: the Topics view on the Briefs page, after slices 1 and 3.
+4. This repository: the Topics view on the Briefs page. It lands first: until slice 1 a topic shows no `Memory` or
+   `Sources` section, and until slice 3 signal shows not recorded.
 
 ## Acceptance criteria
 
