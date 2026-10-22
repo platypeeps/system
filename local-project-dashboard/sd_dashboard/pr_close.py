@@ -16,7 +16,8 @@ its merge commit and the exact comment, from the database; nothing calls GitHub 
 `/api/today/github/close` `{repo, number, revision}` (`request`); the write reads the merge again, and a revision that
 differs moves nothing. Then GitHub, through gh as Copilot review calls it (`issue_filing.GH`):
 
-1. Read. `gh api repos/<repo>/pulls/<n>`: the answer must name this pull request, open and not merged.
+1. Read. `gh api repos/<repo>/pulls/<n>`: the answer must name this pull request, open and not merged; then
+   `gh api --paginate repos/<repo>/pulls/<lane>/commits` must hold its head, or the author pushed after the copy.
 2. Find. `gh api --paginate repos/<repo>/issues/<n>/comments`, for a comment carrying `MARKER` with this merge's link
    and commit: the one an earlier run posted.
 3. Comment, unless step 2 found one: `POST repos/<repo>/issues/<n>/comments` with the text the preview showed.
@@ -30,6 +31,7 @@ Failure table (step, state moved, failure, recovery, test in `test_v2_today_gith
 - Revision: nothing. Another merge recorded since the preview: `StaleItem`
   (`test_a_revision_that_differs_moves_nothing`).
 - 1 Read: nothing. Closed or merged on GitHub: 409 (`test_a_pull_request_github_shows_closed_or_merged_is_refused`);
+  a head the lane's pull request does not hold: 409 (`test_a_head_pushed_after_the_copy_is_refused_and_posts_nothing`);
   gh failed, or answered about another pull request: 502, not read
   (`test_a_read_that_fails_is_not_known_and_posts_nothing`).
 - 2 Find: nothing. gh failed: 502, not read (`test_a_read_that_fails_is_not_known_and_posts_nothing`).
@@ -176,6 +178,13 @@ def close(connection, repo: str, number: int, expected: str, *, run=None):
         if pull.get("merged") or pull.get("state") != "open":
             return 409, {"error": f"GitHub shows {ref} {'merged' if pull.get('merged') else pull.get('state')}; "
                                   "nothing to close. Nothing moved."}
+        # The lane's pull request was built from the head Merge copied, so the original's head now must be one of its
+        # commits: a push after the copy landed nowhere, and closing would drop it.
+        head, lane = str((pull.get("head") or {}).get("sha") or ""), facts["merged"].rstrip("/").rsplit("/", 1)[-1]
+        copied = _api(run, f"repos/{repo}/pulls/{lane}/commits", "--paginate", "--jq", ".[].sha").split()
+        if not head or head not in copied:
+            return 409, {"error": f"{ref}'s head {head[:12] or '(none)'} is not in {facts['merged']}: its author pushed "
+                                  "after the copy. Merge it again, or close it by hand. Nothing moved."}
         # jq's string is the marker as JSON writes it, so a quote or a backslash in it stays a literal.
         posted = _api(run, f"repos/{repo}/issues/{number}/comments", "--paginate", "--jq",
                       f".[] | select((.body // \"\") | contains({json.dumps(marker)})) | .html_url").split()

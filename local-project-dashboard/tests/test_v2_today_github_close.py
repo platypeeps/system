@@ -38,6 +38,9 @@ class GitHub:
     def __init__(self, state: str = "open", merged: bool = False, number: int = 5, full_name: str = REPO):
         self.state, self.merged, self.number, self.full_name = state, merged, number, full_name
         self.comments: list[dict] = []
+        # The original's head, and the commits of the lane's pull request: the copy was made at that head.
+        self.head = "a" * 40
+        self.copied = [self.head]
         self.calls: list[tuple[str, list, dict]] = []
         self.fail: dict = {}
         self.lost: set = set()
@@ -46,7 +49,8 @@ class GitHub:
         if argv[:3] != ["sh", "-c", GH]:
             return REAL_RUN(argv, **kwargs)
         args = argv[4:]
-        step = ("close" if "PATCH" in args else "comment" if "POST" in args else "find" if "--jq" in args else "read")
+        step = ("close" if "PATCH" in args else "comment" if "POST" in args else "commits" if args[1].endswith("/commits")
+                else "find" if "--jq" in args else "read")
         self.calls.append((step, args, kwargs))
         sent = json.loads(kwargs["input"]) if kwargs.get("input") else None
         if step in self.fail:
@@ -61,12 +65,14 @@ class GitHub:
         elif step == "close":
             self.state = sent["state"]
             out = json.dumps({"number": self.number, "state": self.state})
+        elif step == "commits":
+            out = "".join(sha + "\n" for sha in self.copied)
         elif step == "find":
             marker = json.loads(re.search(r"contains\((\".*\")\)", args[-1])[1])
             out = "".join(c["html_url"] + "\n" for c in self.comments if marker in c["body"])
         else:
             out = json.dumps({"number": self.number, "state": self.state, "merged": self.merged,
-                              "base": {"repo": {"full_name": self.full_name}}})
+                              "head": {"sha": self.head}, "base": {"repo": {"full_name": self.full_name}}})
         if step in self.lost:
             raise subprocess.TimeoutExpired("gh", pr_close.GH_SECONDS)
         return subprocess.CompletedProcess(argv, 0, out, "")
@@ -118,12 +124,13 @@ class Close(Copy):
         self.deliver()
         found, github = self.preview(), GitHub()
         answer = self.close(found["revision"], github)
-        self.assertEqual(github.steps(), ["read", "find", "comment", "close"])
+        self.assertEqual(github.steps(), ["read", "commits", "find", "comment", "close"])
         self.assertEqual(github.calls[0][1], ["api", f"repos/{REPO}/pulls/5"])
-        self.assertEqual(github.calls[2][1][:4], ["api", f"repos/{REPO}/issues/5/comments", "--method", "POST"])
-        self.assertEqual(json.loads(github.calls[2][2]["input"]), {"body": found["text"]})
-        self.assertEqual(github.calls[3][1][:4], ["api", f"repos/{REPO}/pulls/5", "--method", "PATCH"])
-        self.assertEqual(json.loads(github.calls[3][2]["input"]), {"state": "closed"})
+        self.assertEqual(github.calls[1][1][:2], ["api", f"repos/{REPO}/pulls/12/commits"])
+        self.assertEqual(github.calls[3][1][:4], ["api", f"repos/{REPO}/issues/5/comments", "--method", "POST"])
+        self.assertEqual(json.loads(github.calls[3][2]["input"]), {"body": found["text"]})
+        self.assertEqual(github.calls[4][1][:4], ["api", f"repos/{REPO}/pulls/5", "--method", "PATCH"])
+        self.assertEqual(json.loads(github.calls[4][2]["input"]), {"state": "closed"})
         self.assertEqual((answer["closed"], answer["commented"], answer["merged"]), (True, True, LANE))
         self.assertEqual(answer["comment"], f"https://github.com/{REPO}/pull/5#issuecomment-1")
         self.assertEqual((github.state, github.merged, len(github.comments)), ("closed", False, 1))
@@ -174,6 +181,19 @@ class Refusals(Copy):
                 self.assertIn(f"GitHub shows {REPO}#5 {says}; nothing to close", body["error"])
                 self.assertEqual(github.steps(), ["read"])
 
+    def test_a_head_pushed_after_the_copy_is_refused_and_posts_nothing(self):
+        """The author pushed after Merge copied: the lane's pull request does not hold the original's head."""
+        self.deliver()
+        github = GitHub()
+        github.head = "b" * 40
+        out = self.close(self.preview()["revision"], github)
+        self.assertIsInstance(out, tuple, f"closed without the check: {out}")
+        status, body = out
+        self.assertEqual(status, 409)
+        self.assertIn("is not in", body["error"])
+        self.assertEqual(github.steps(), ["read", "commits"])
+        self.assertEqual((github.comments, github.state), ([], "open"))
+
     def test_a_read_that_fails_is_not_known_and_posts_nothing(self):
         self.deliver()
         revision = self.preview()["revision"]
@@ -197,7 +217,7 @@ class Refusals(Copy):
         status, body = self.close(self.preview()["revision"], github)
         self.assertEqual(status, 409, body)
         self.assertIn("the comment was not posted", body["error"])
-        self.assertEqual((github.steps(), github.state), (["read", "find", "comment"], "open"))
+        self.assertEqual((github.steps(), github.state), (["read", "commits", "find", "comment"], "open"))
 
     def test_the_request_takes_a_repo_a_number_and_a_revision_and_nothing_else(self):
         good = {"repo": REPO, "number": 5, "revision": "a" * 64}
@@ -220,7 +240,7 @@ class Steps(Copy):
         answer = self.close(revision, github)
         self.assertEqual((answer["closed"], answer["commented"]), (True, False))
         self.assertEqual(answer["comment"], f"https://github.com/{REPO}/pull/5#issuecomment-1")
-        self.assertEqual(github.steps(), ["read", "find", "comment", "read", "find", "close"])
+        self.assertEqual(github.steps(), ["read", "commits", "find", "comment", "read", "commits", "find", "close"])
         self.assertEqual(len(github.comments), 1)
 
     def test_a_close_that_failed_after_the_comment_closes_on_the_next_press_with_one_comment(self):
@@ -261,6 +281,6 @@ class Route(Copy, BrowserSession):
             status, _, body = self.post("/api/today/github/close", {"repo": REPO, "number": 5,
                                                                      "revision": found["revision"]})
         self.assertEqual(status, 200, body)
-        self.assertEqual((body["closed"], github.steps()), (True, ["read", "find", "comment", "close"]))
+        self.assertEqual((body["closed"], github.steps()), (True, ["read", "commits", "find", "comment", "close"]))
         self.assertEqual(command_journal.command("/api/today/github/close", {"repo": REPO, "number": 5})[0].label,
                          "Close original")
