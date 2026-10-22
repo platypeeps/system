@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -25,16 +26,36 @@ from test_workflow_actions import BrowserSession
 IMPORTED = ("✅ Successfully imported 'alpha: status deck' as Google Slides presentation\n   Presentation ID: p-1\n"
             "   Source format: application/vnd.openxmlformats-officedocument.presentationml.presentation\n   Folder: root\n"
             "   Link: https://docs.google.com/presentation/d/p-1/edit")
+UPDATED = ("✅ Successfully updated file: alpha: status deck\n   File ID: p-1\n\n   (No changes were made)\n\n"
+           "View file: https://docs.google.com/presentation/d/p-1/edit?usp=drivesdk")
+#: The tool a changed deck goes through: it replaces a file's content in place, keeping its id, folder and sharing.
+UPDATE = "update_drive_file"
 WORK = {"google.accounts.work.email": "work@example.test"}
+
+
+class StagingWorkspace(FakeWorkspace):
+    """FakeWorkspace that also keeps the bytes at an update's `file_path` when the call arrives: the server reads them then."""
+
+    def do_POST(self):  # noqa: N802
+        size = int(self.headers["Content-Length"])
+        raw = self.rfile.read(size)
+        body = json.loads(raw)
+        if body.get("method") == "tools/call" and body["params"]["name"] == UPDATE:
+            path = Path(body["params"]["arguments"].get("file_path", ""))
+            self.server.staged.append(path.read_bytes() if path.is_file() else None)
+        self.rfile = io.BytesIO(raw)
+        return super().do_POST()
 
 
 class SlidesCase(BrowserSession):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
-        self.workspace = ThreadingHTTPServer(("127.0.0.1", 0), FakeWorkspace)
+        self.workspace = ThreadingHTTPServer(("127.0.0.1", 0), StagingWorkspace)
         self.workspace.daemon_threads = True
-        self.workspace.calls, self.workspace.closed, self.workspace.delay = [], [], 0
-        self.workspace.tools = {research_slides.TOOL: (IMPORTED, False)}
+        self.workspace.calls, self.workspace.closed, self.workspace.delay, self.workspace.staged = [], [], 0, []
+        self.workspace.tools = {research_slides.TOOL: (IMPORTED, False), UPDATE: (UPDATED, False)}
+        self.attachments = self.root / "attachments"
+        self.enterContext(mock.patch.object(research_slides, "attachments", return_value=self.attachments))
         threading.Thread(target=self.workspace.serve_forever, daemon=True).start()
         self.addCleanup(self.workspace.server_close)
         self.addCleanup(self.workspace.shutdown)
@@ -81,16 +102,45 @@ class TheImport(SlidesCase):
         self.assertEqual((status, body["reused"], body["slides"]["id"]), (200, True, "p-1"))
         self.assertEqual(len(self.tools()), 1)
 
-    def test_a_changed_deck_or_another_account_imports_again_and_names_the_file_it_replaces(self):
+    def test_a_changed_deck_replaces_its_slides_file_in_place_so_its_link_and_sharing_stay(self):
+        """sd:5761: each changed deck made a new owner-only file, so the brief's Deck row and Notion links went stale."""
         self.press()
         self.deck.write_bytes(b"pptx two")
+        status, body = self.press()
+        self.assertEqual(status, 200, body)
+        [_, (name, arguments)] = self.tools()
+        self.assertEqual(name, "update_drive_file")
+        self.assertEqual((body["slides"]["id"], body["slides"]["link"], body["reused"], body["updated"], body.get("replaces")),
+                         ("p-1", "https://docs.google.com/presentation/d/p-1/edit", False, True, None))
+        self.assertEqual(set(arguments), {"user_google_email", "file_id", "file_path", "source_format"})
+        self.assertEqual((arguments["user_google_email"], arguments["file_id"], arguments["source_format"]), ("work@example.test", "p-1", "pptx"))
+        self.assertEqual(Path(arguments["file_path"]).parent, self.attachments)
+        self.assertEqual(self.workspace.staged, [b"pptx two"])
+        self.assertEqual(list(self.attachments.iterdir()), [], "the staged copy is removed after the call")
+        self.assertEqual(research_slides.records()["research/alpha"]["sha256"], hashlib.sha256(b"pptx two").hexdigest())
+        status, body = self.press()
+        self.assertEqual((status, body["reused"]), (200, True))
+        self.assertEqual(len(self.tools()), 2)
+
+    def test_another_account_makes_its_own_file_and_names_the_one_it_replaces(self):
+        self.press()
+        self.held.return_value = ({"google.accounts.work.email": "other@example.test"}, "")
         self.workspace.tools[research_slides.TOOL] = (IMPORTED.replace("p-1", "p-2"), False)
         status, body = self.press()
-        self.assertEqual((status, body["slides"]["id"], body["replaces"]["id"]), (200, "p-2", "p-1"))
-        self.held.return_value = ({"google.accounts.work.email": "other@example.test"}, "")
+        self.assertEqual((status, body["slides"]["id"], body["replaces"]["id"], body["updated"]), (200, "p-2", "p-1", False))
+        self.assertEqual([(n, a["user_google_email"]) for n, a in self.tools()],
+                         [("import_to_google_slides", "work@example.test"), ("import_to_google_slides", "other@example.test")])
+
+    def test_a_slides_file_gone_from_drive_is_made_again(self):
+        self.press()
+        self.deck.write_bytes(b"pptx two")
+        self.workspace.tools[UPDATE] = (
+            'API error in update_drive_file: <HttpError 404 when requesting https://example.test/files/p-1 returned "File not found: p-1.">', True)
+        self.workspace.tools[research_slides.TOOL] = (IMPORTED.replace("p-1", "p-2"), False)
         status, body = self.press()
-        self.assertEqual((status, body["reused"]), (200, False))
-        self.assertEqual([a["user_google_email"] for _, a in self.tools()], ["work@example.test", "work@example.test", "other@example.test"])
+        self.assertEqual((status, body["slides"]["id"], body["replaces"]["id"]), (200, "p-2", "p-1"), body)
+        self.assertEqual([n for n, _ in self.tools()], ["import_to_google_slides", "update_drive_file", "import_to_google_slides"])
+        self.assertEqual(research_slides.records()["research/alpha"]["id"], "p-2")
 
 
 class TheRefusals(SlidesCase):
@@ -133,11 +183,51 @@ class TheRefusals(SlidesCase):
         self.assertIn("Look in Drive before you press Import to Slides again", body["error"])
         self.assertFalse(research_slides.store().exists())
 
+    def test_a_refused_update_changes_nothing_and_an_unclear_one_is_safe_to_press_again(self):
+        self.press()
+        self.deck.write_bytes(b"pptx two")
+        self.workspace.tools[UPDATE] = ("API error in update_drive_file: <HttpError 403 returned \"forbidden\">", True)
+        status, body = self.press()
+        self.assertEqual(status, 503)
+        self.assertIn("workspace-mcp refused the update", body["error"])
+        self.assertIn("still holds the earlier deck", body["error"])
+        self.workspace.tools[UPDATE] = ("Done.", False)
+        status, body = self.press()
+        self.assertEqual(status, 504)
+        self.assertIn("Press Import to Slides again: it updates the same file", body["error"])
+        self.assertEqual(research_slides.records()["research/alpha"]["sha256"], hashlib.sha256(b"pptx one").hexdigest())
+        self.workspace.tools[UPDATE] = (UPDATED, False)
+        status, body = self.press()
+        self.assertEqual((status, body["slides"]["id"], body["updated"]), (200, "p-1", True))
+        self.assertEqual([n for n, _ in self.tools()], ["import_to_google_slides"] + ["update_drive_file"] * 3)
+        self.assertEqual(list(self.attachments.iterdir()), [])
+
     def test_an_import_whose_record_is_not_written_names_its_link(self):
         with mock.patch.object(research_slides, "_write", side_effect=OSError("disk full")):
             status, body = self.press()
         self.assertEqual(status, 503)
         self.assertIn("imported as https://docs.google.com/presentation/d/p-1/edit, but its record was not written: disk full", body["error"])
+
+    def test_an_update_whose_record_is_not_written_updates_the_same_file_at_the_next_press(self):
+        self.press()
+        self.deck.write_bytes(b"pptx two")
+        with mock.patch.object(research_slides, "_write", side_effect=OSError("disk full")):
+            status, body = self.press()
+        self.assertEqual(status, 503)
+        self.assertIn("record was not written: disk full. A second press updates the same file again.", body["error"])
+        status, body = self.press()
+        self.assertEqual((status, body["slides"]["id"], body["updated"]), (200, "p-1", True))
+        self.assertEqual([(n, a.get("file_id")) for n, a in self.tools()],
+                         [("import_to_google_slides", None), ("update_drive_file", "p-1"), ("update_drive_file", "p-1")])
+
+    def test_a_deck_that_cannot_be_staged_sends_nothing(self):
+        self.press()
+        self.deck.write_bytes(b"pptx two")
+        self.attachments.write_text("a file where the folder goes", encoding="utf-8")
+        status, body = self.press()
+        self.assertEqual(status, 503)
+        self.assertIn("Nothing was imported: the deck was not staged for workspace-mcp", body["error"])
+        self.assertEqual([n for n, _ in self.tools()], ["import_to_google_slides"])
 
     def test_an_unreadable_record_is_unknown_not_empty(self):
         research_slides.store().parent.mkdir(parents=True, exist_ok=True)

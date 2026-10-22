@@ -215,11 +215,11 @@ function slidesCommand() {
       : !SLIDES ? 'whether workspace-mcp answers is not read yet' : SLIDES.why || true),
     cli: () => 'no sd verb: the dashboard imports the deck through workspace-mcp',
     sends: o => `POST /api/research/slides {"repo": "${o.key}"}`,
-    consequence: o => `${o.label}'s deck.pptx goes to Google Slides on the work account. An unchanged deck reuses its Slides file; a changed one makes a new file. Nothing is shared.`,
+    consequence: o => `${o.label}'s deck.pptx goes to Google Slides on the work account. An unchanged deck reuses its Slides file; a changed one replaces that file's content, keeping its link and sharing. Nothing new is shared.`,
     run: o => { IMPORTING = o.key; renderExperiments();
       return window.shell.post('/api/research/slides', { repo: o.key }).then(d => {
         IMPORTING = ''; SLIDES = { ...SLIDES, imports: { ...SLIDES?.imports, [o.key]: d.slides } }; renderExperiments();
-        return d.reused ? `Slides unchanged · ${o.label}: this deck is already imported` : `Imported to Slides · ${o.label}${d.replaces ? '; the earlier Slides file stays in Drive' : ''}`;
+        return d.reused ? `Slides unchanged · ${o.label}: this deck is already imported` : d.updated ? `Updated in Slides · ${o.label}: same file and link` : `Imported to Slides · ${o.label}${d.replaces ? '; the earlier Slides file stays in Drive' : ''}`;
       }, err => { IMPORTING = ''; renderExperiments(); return refused(err); }); } };
 }
 xpBody.addEventListener('click', e => { if (e.target.closest('a, .acts')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
