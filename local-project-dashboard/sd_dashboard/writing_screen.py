@@ -2,8 +2,8 @@
 
 `document` is each piece's stage, gates and next moves as `writing.piece_state` gives them, its files' sizes, and the
 opening of its draft. The repository goes out by its folder name only, so no local path leaves. Its `attention` is the
-page's rail badge (sd:3446, `_attention`). Each piece's `realm` is `places.realm_of` of its repo, the rule Tasks' realm
-views use (sd:5064).
+page's rail badge (sd:3446, `_attention`). Each piece's `realm` is `places.realm_of` of its repo, the rule Tasks' Realm
+filter uses (sd:5064).
 """
 
 from pathlib import Path

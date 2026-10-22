@@ -1,4 +1,4 @@
-"""Run sweep on the Tasks page's Personal and Work views (sd:5096, sd:5097).
+"""Run sweep on the Tasks page under Realm Personal or Work (sd:5096, sd:5097).
 
 What this slice promises: `POST /api/tasks/sweep {"realm"}` starts that realm's sweep in the background and answers 202
 at once; a second POST for the same realm while its run holds the lock is a 409 and starts nothing, while the other

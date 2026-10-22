@@ -26,7 +26,9 @@ GitHub opens the row on GitHub in a new tab (sd:5628). Hide and Unhide (sd:5486)
 Designs' Hide writes, keyed `contribution:<key>`; each offers Undo. A key the
 projection no longer lists is refused with 409. A hidden open row stays in the
 document with `hidden`, after every shown row, and leaves the lanes, tallies
-and badge; the Hidden view lists it on the Open table with Unhide. Unlike
+and badge; Show hidden, a toggle in the Open table's filter bar, lists it
+with Unhide (sd:5753; it was the Hidden view, and a `#view=hidden` link lands
+on it as `?hidden=1`). Unlike
 Dismiss, new activity does not unhide it, and settled rows keep their counts.
 A view store that does not read hides nothing: `store.reason` says why, and
 Hide is off. The Filed view (sd:5488) lists the Jira tickets and GitHub issues

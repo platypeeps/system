@@ -1,5 +1,5 @@
-"""Places: the HOA, Home and realm place pages' Tasks, Briefs and Reports views, and the area rule Tasks' HOA and Home
-views share.
+"""Places: the HOA, Home and realm place pages' Tasks, Briefs and Reports views, and the area rule Tasks' Realm
+filter uses for HOA and Home.
 
 Each view reads its own document: `/api/<area>/tasks`, `/api/<area>/briefs` and `/api/<area>/reports`, built here
 from readers that already exist, with no store of its own. HOA's Tasks is the exception: its rows are
@@ -10,7 +10,7 @@ are the same `tasks_screen._rows` (sd:5671).
 
 - An item is HOA when its repo is the hoa checkout (`hoa_screen.checkout`), and Home when it has no repo: the
   operator files personal and home items without one. A report is in neither: its family's Reports view holds it.
-  `area_of` is that rule, and Tasks' rows carry its answer as `area`, so Tasks' HOA and Home views hold the place
+  `area_of` is that rule, and Tasks' rows carry its answer as `area`, so Tasks' HOA and Home realms hold the place
   pages' Tasks rows.
 - A brief is the area's when its repo is the area's checkout, or its series, lower-cased with spaces as hyphens, is a
   job of the area's report family (`series_job`): briefs always name a registered repo, so Home has only the second.
@@ -19,10 +19,10 @@ are the same `tasks_screen._rows` (sd:5671).
 
 **A realm's place page (sd:5663).** A realm whose id is also a `dashboard.report_families` key is a place, at
 `/places?realm=<id>`, its views at `/api/place/<id>/<view>`. Its Tasks are the open items `realm_of` puts in it, as
-Tasks' realm view; its Briefs are those whose repo is in it or whose series is a job of its family; its Reports are its
+Tasks' Realm filter; its Briefs are those whose repo is in it or whose series is a job of its family; its Reports are its
 family's. `realm_places` says which realms are places, for the rail: a realm or family line that did not read makes none.
 
-**Which realm a row is in (sd:5064).** Tasks' Personal, Work and other realm views: the `dashboard.realms` setting row
+**Which realm a row is in (sd:5064).** Tasks' Realm filter, Personal, Work and the others: the `dashboard.realms` setting row
 (sd:5109; Settings edits it) names each realm and the checkout path globs that are its (`realms`); `realm_of` gives a row the first realm whose glob matches its repo path. A
 row with no repo, or a repo no line claims, is Personal; a report is in no realm. Without a readable row a repo row's
 realm is unknown (None), so Personal holds only the rows with no repo and the page says why.
@@ -48,7 +48,7 @@ __all__ = ["AREAS", "area_of", "briefs", "parse_realms", "realm_of", "realm_plac
 #: The places, by family key, and their labels.
 AREAS = {"hoa": "HOA", "home": "Home"}
 
-#: The ids a realm line may not take: Personal is every row no line claims, and the others are Tasks' place views.
+#: The ids a realm line may not take: Personal is every row no line claims, and the others are Tasks' other Realm choices.
 RESERVED = ("personal", "hoa", "home", "all")
 REALM_ID = re.compile(r"[a-z0-9][a-z0-9-]*")
 

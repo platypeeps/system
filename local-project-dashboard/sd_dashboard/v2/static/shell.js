@@ -166,13 +166,12 @@
   //   Each view's panel is the page's element id="view-<id>"; a view with no panel is not drawn. The shell makes the panels
   //   tabpanels, hides all but the shown one, and puts the switch (WAI-ARIA tabs: ← → Home End) before the first panel, under
   //   the lamps. The rail lists the views under the current page, each linking <page>#view=<id>.
-  //   A page whose views filter one surface instead (Tasks: All, HOA, Home) puts an empty <div id="viewswitch"> where the
+  //   A page whose views filter one surface instead (Writing's realms) puts an empty <div id="viewswitch"> where the
   //   switch goes: the shell draws it there and keeps every declared view; a view-<id> panel is still hidden where one exists.
   //   With no #viewswitch, a page's row-1 toolbar (id="toolbar", sd:5281) takes the switch at its start, else the first panel.
   //   key: the letter after v that shows the view (default the id's first letter).
   //   The address keeps the view as #view=<id>; another hash (#main, #chat) leaves the view as it is.
-  //   The last view the reader chose is kept per page in localStorage (sd:5064) and shown when the address names none; a
-  //   view with keep: false (Designs' Hidden) is never restored, so the page opens on its default.
+  //   The last view the reader chose is kept per page in localStorage (sd:5064) and shown when the address names none.
   //   shell.view.current() is the shown id; shell.view.show(id) shows a view and writes the hash (a lamp that filters a view
   //   calls it); shell.view.count(id, n) puts n on the view's segment, and null hides it. The tab is where a list's row count
   //   shows (sd:5524): a view the page never counts takes the shown rows of the one table in its panel, and none for two or more
@@ -183,13 +182,13 @@
   //   'shell:view' fires on document with detail { id, first, api }: once at DOMContentLoaded, after the page's own listener,
   //   then on every change (a segment, a key, a rail sub-entry, back and forward). first is true the first time a view shows,
   //   so a page starts that view's reader (shell.read with source: api) then; the shell fetches nothing itself.
-  const viewHost = document.getElementById('viewswitch'), viewPanel = v => document.getElementById(`view-${v.panel || v.id}`);
+  const viewHost = document.getElementById('viewswitch'), viewPanel = v => document.getElementById(`view-${v.id}`);
   const VIEW_LIST = (window.PAGE_VIEWS || []).filter(v => /^[a-z0-9-]+$/.test(v.id) && (viewHost || viewPanel(v)));
   const viewKey = v => v.key || v.id[0];
   let viewNow = null, viewStarted = false, viewChord = 0;
   const viewSeen = new Set(), viewTabs = [], viewLinks = [], viewItems = [];
   const VKEY = `sd.view.${location.pathname}`;
-  const viewKept = () => { try { const id = localStorage.getItem(VKEY); return VIEW_LIST.some(v => v.id === id && v.keep !== false) ? id : null; } catch (_) { return null; } };
+  const viewKept = () => { try { const id = localStorage.getItem(VKEY); return VIEW_LIST.some(v => v.id === id) ? id : null; } catch (_) { return null; } };
   const viewOf = h => { const m = /^#view=([a-z0-9-]+)$/.exec(h || ''); return m && VIEW_LIST.some(v => v.id === m[1]) ? m[1] : null; };
   function viewFire(id) {
     const first = !viewSeen.has(id); viewSeen.add(id);
@@ -201,8 +200,7 @@
     VIEW_LIST.forEach((v, i) => {
       const on = v.id === id;
       viewTabs[i].setAttribute('aria-selected', on); viewTabs[i].tabIndex = on ? 0 : -1;
-      // A view may show another view's panel (v.panel, Contributions' Hidden): the panel shows while either is on.
-      const panel = viewPanel(v); if (panel) panel.hidden = viewPanel(VIEW_LIST.find(w => w.id === id) || {}) !== panel;
+      const panel = viewPanel(v); if (panel) panel.hidden = !on;
       if (viewLinks[i]) on ? viewLinks[i].setAttribute('aria-current', 'true') : viewLinks[i].removeAttribute('aria-current');
     });
     if (viewStarted) viewFire(id);
@@ -248,7 +246,7 @@
       t.append(nm, n); t.addEventListener('click', () => viewShow(v.id));
       bar.append(t); viewTabs.push(t);
       const panel = viewPanel(v);
-      if (panel) { t.setAttribute('aria-controls', panel.id); if (!v.panel) { panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `vt-${v.id}`); } }
+      if (panel) { t.setAttribute('aria-controls', panel.id); panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `vt-${v.id}`); }
       const li = document.createElement('li'), a = document.createElement('a');
       a.setAttribute('href', `${hrefOf(page) || ''}#view=${v.id}`); a.textContent = v.label;
       // On the page a sub-entry switches in place, so the page keeps its query (?job=); the href opens a new tab there.
