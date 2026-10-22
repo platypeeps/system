@@ -35,7 +35,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from sd_db import SdDbError, operations, reads, repos, workflow, writes
+from sd_db import SdDbError, operations, repos, workflow, writes
 
 from . import hoa_download, sweep
 from .documents import _config_dir, pipe_lines
@@ -460,27 +460,25 @@ def _items(connection, repo: str | None, now: str, today: date) -> dict:
     """The checkout's open items of every kind, ranked: overdue, then due within a week, then the rest; priority breaks
     ties. A report is its family's (`places.area_of`), so it is not here (sd:4959). Each is the Tasks page's row
     (`tasks_screen._rows`, read in one snapshot as `places.tasks` reads it), so its Details on HOA are the Tasks page's
-    (sd:5671), with its revision, moves, edit capability and issue targets; HOA adds `due_days` and `state`."""
+    (sd:5671), with its revision, moves, edit capability and issue targets; HOA adds `due_days` and `state`. `done` holds
+    the week's done ones (`places.task_rows`), for the Tasks view's All (sd:5752); each is `ok`, and none is counted."""
     from .operations_screen import _one_snapshot
-    from .places import area_of, realms
-    from .tasks_screen import _rows, is_scheduled
+    from .places import area_of, task_rows
 
     if repo is None:
-        return {"error": "no checkout: no repo named hoa is registered", "rows": []}
+        return {"error": "no checkout: no repo named hoa is registered", "rows": [], "done": []}
     with _one_snapshot(connection):
-        found = [item for item in reads.backlog_items(connection, repo=repo, now=now)
-                 if item["status"] != "done" and not is_scheduled(item) and area_of(item["repo"], item["kind"], repo) == "hoa"]
-        rows = _rows(connection, found, realms(connection), now=now)
-    for row in rows:
+        rows, done = task_rows(connection, lambda path, kind: area_of(path, kind, repo) == "hoa", now=now, repo=repo)
+    for row in rows + done:
         try:
             due = (_day(row["due"]) - today).days if row["due"] else None
         except ValueError:
             due = None
-        row["due_days"], row["state"] = due, "queued" if due is None or due > SOON_DAYS else "caution" if due >= 0 else "warning"
+        row["due_days"], row["state"] = due, "ok" if row["status"] == "done" else "queued" if due is None or due > SOON_DAYS else "caution" if due >= 0 else "warning"
     order = {"warning": 0, "caution": 1, "queued": 2}
     rows.sort(key=lambda row: (order[row["state"]], row["priority"] is None, row["priority"] or 0,
                                row["due_days"] is None, row["due_days"] or 0, row["id"]))
-    return {"error": "", "rows": rows}
+    return {"error": "", "rows": rows, "done": done}
 
 
 def document(connection, *, now: str, jobs=None) -> dict:

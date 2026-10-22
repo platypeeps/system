@@ -98,8 +98,12 @@ table of `/api/hoa`'s items, ranked by urgency: the id is its own first column,
 every column sorts (a third click returns to the rank), and Kind narrows the rows.
 A row is the Tasks page's row, and its Details and commands are Tasks' (`task-details.js`, sd:5671);
 a followup's first action is Draft email, which saves a Gmail draft and never sends.
+Tasks shows the open items; All adds the week's done ones (`items.done`,
+sd:5752), which nothing counts, and the address keeps it as `?tasks=all`.
+Any other kind's row act is Done, its acknowledge, with Undo.
 Briefs and Reports each read their own document, `GET /api/hoa/briefs` and
 `/reports`, only when shown, and the address keeps the view as `#view=<id>`.
+Each opens on its open rows, with Open | All and Seen or Acknowledge as on Home.
 A brief is hoa's when its series, lower-cased with spaces as hyphens,
 names a job of the `hoa` family in `dashboard.report_families`, or it is filed under the hoa checkout; a report
 is hoa's when its job is in that family. A missing checkout, family or file
