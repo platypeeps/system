@@ -257,6 +257,21 @@ class TheLiveRead(ScreenCase):
         for secret in (HA_TOKEN, "pic-secret", "127.0.0.1", "sensor.unlisted"):
             self.assertNotIn(secret, text)
 
+    def test_a_script_or_automation_tile_carries_its_last_run(self):
+        """sd:5727: a script's or automation's last run is Home Assistant's last_triggered; a tile of another domain has none."""
+        config = self.config / "home-tiles.conf"
+        config.write_text("headline|binary_sensor.problems_active|Problems\ntile|Routines|script.good_night|Good night\ntile|Routines|automation.good_night|Good night rule\n"
+                          "tile|Routines|script.never_ran|Never ran\ntile|Security|lock.front_door|Front door\n", encoding="utf-8")
+        states = STATES + [entity("script.good_night", "off", "2026-10-22T04:39:30+00:00", last_triggered="2026-10-22T04:39:00+00:00"),
+                           entity("automation.good_night", "on", last_triggered="2026-09-19T04:35:00+00:00"),
+                           entity("script.never_ran", "off", last_triggered=None)]
+        stub = self.stub(lambda path: (200, states, {}))
+        doc = home_screen.document(self.connection, now=NOW, config=config, environ=self.env(stub.url))
+        self.assertEqual(self.tile(doc, "script.good_night")["state"]["ran"], "2026-10-22T04:39:00+00:00")
+        self.assertEqual(self.tile(doc, "automation.good_night")["state"]["ran"], "2026-09-19T04:35:00+00:00")
+        self.assertIsNone(self.tile(doc, "script.never_ran")["state"]["ran"])
+        self.assertNotIn("ran", self.tile(doc, "lock.front_door")["state"])
+
     def test_the_settings_are_local_ha_mcps_and_the_environment_wins(self):
         stub = self.stub()
         (self.config / "ha-mcp").mkdir()
@@ -946,6 +961,30 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
             "binary_sensor.grid_off": ("neutral", "disconnected"),
             "binary_sensor.pump_fault_clear": ("ok", "clear"),
         })
+
+    def test_a_script_tile_reads_as_its_last_run_in_local_time_with_its_zone(self):
+        """sd:5727: Good night is a script tile; it shows when it last ran, as this machine's local time and zone, and a run
+        Home Assistant did not report is unknown, never "off" or "never"."""
+        doc = self.live()
+        base = doc["groups"][0]["tiles"][0]
+        ran = "2026-10-22T04:39:00+00:00"
+        tile = lambda entity_id, value, last: dict(base, id=entity_id, name=entity_id.split(".")[1], type=None, error="", state={
+            "value": value, "changed": "2026-10-22T04:39:30+00:00", "device_class": None, "unit": None, "ran": last})
+        doc["groups"].append({"name": "Routines", "tiles": [tile("script.good_night", "off", ran), tile("automation.good_night", "on", ran),
+                                                             tile("script.never_ran", "off", None)]})
+        out = self.run_page("R.groups = ELS.groups.html; open('script.good_night'); R.det = ELS.details.html;",
+                            answer=f"() => [200, {json.dumps(doc)}]")
+        tiles = dict(re.findall(r'<div class="tile" data-id="([^"]+)"(.*?)</div></li>', out["R"]["groups"], re.S))
+        got = {i: (re.search(r'data-state="(\w+)"', t).group(1), re.search(r'</span>([^<]*)</span>\s*<time', t).group(1))
+               for i, t in tiles.items() if i.split(".")[0] in ("script", "automation")}
+        # The engine words the date ("Oct 21, 22:39" or "Oct 21 at 22:39"); the day, the 24-hour time and the zone are fixed.
+        local = datetime.fromisoformat(ran).astimezone()
+        when = rf"{local:%b} {local.day}(,| at) {local:%H:%M} {local:%Z}"
+        state, words = got.pop("script.good_night")
+        self.assertEqual(state, "ok")
+        self.assertRegex(words, rf"^last run {when}$")
+        self.assertEqual(got, {"automation.good_night": ("ok", "running"), "script.never_ran": ("unknown", "last run not read")})
+        self.assertRegex(out["R"]["det"], rf"<dt>Last run</dt><dd>{when}</dd>")
 
     def test_details_explain_the_state_in_one_line_and_name_its_source(self):
         out = self.run_page("open('binary_sensor.house_powerwall_grid_status'); R.grid = ELS.details.html; open('binary_sensor.bare_switch'); R.bare = ELS.details.html;"

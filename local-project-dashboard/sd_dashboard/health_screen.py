@@ -406,6 +406,23 @@ def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
             })
     for entry in scan["storage"]:
         root = entry["root"]
+        share = entry.get("network")
+        if share:
+            # sd:5726: a folder on a network mount is not walked; its share's use stands in, at the volume thresholds.
+            used, size, free = share["used_kb"], share["size_kb"], share["avail_kb"]
+            capacity = round(100 * used / (used + free)) if used + free else 0
+            rows.append({
+                "id": f"rs:{root}", "state": "warning" if capacity >= VOLUME_WARNING else "caution" if capacity >= VOLUME_CAUTION else "queued",
+                "type": "volume", "what": f"{Path(root).name} on a network mount: {_size(used)} used of {_size(size)}, {_size(free)} free",
+                "detail": f"{root} · {share['type']} share at {share['mount']} · folders not measured",
+                "kind": "Disk · storage folder",
+                "facts": {"Path": root, "Mount": share["mount"], "File system": share["type"], "Used": f"{capacity}%",
+                          "Free": _size(free), "Size": _size(size)},
+                "cli": f"df -h {shlex.quote(root)}",
+                "note": "Health runs no du on a network mount: over the SMB share it ran past 120 s against the 8 s Disk budget.",
+                "problem": [root],
+            })
+            continue
         if entry["error"]:
             rows.append({"id": f"rs:{root}", "state": "unknown", "type": "check", "what": f"{root}: sizes not read",
                          "detail": entry["error"], "kind": "Disk · storage folder", "facts": {"Path": root},
