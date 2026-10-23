@@ -186,7 +186,8 @@ def branch_scan(connection: sqlite3.Connection, *, within: float = BRANCH_SECOND
     worktrees the lane merged when `heads`, `merged_heads`' answer, is given: Health reads it on its own thread, since
     this walk runs on another and a sqlite connection belongs to the thread that opened it."""
     walk = Walk(within, "the merged-branch walk")
-    keys = _registered(connection, repo_paths)
+    # A repository registered for another machine has no folder here: nothing to read, not a git error.
+    keys = [key for key in _registered(connection, repo_paths) if paths.disk(key).is_dir()]
     scan: dict = {"repos": 0, "merged": [], "no_default": [], "unread": [],
                   "worktrees": None if heads is None else merged_worktrees(walk, keys, heads)}
     for key in keys:
