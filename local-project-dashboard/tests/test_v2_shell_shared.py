@@ -412,6 +412,30 @@ class TheSharedRules(unittest.TestCase):
                 self.assertFalse("table-layout" in text or "<colgroup" in text)
 
 
+class EveryFoldControlIsALink(unittest.TestCase):
+    """sd:5878: every expand, collapse, Show all and Show more control has the table bar's link look (shell.js tfolds), the
+    one shared class `linkbtn`; Reports' Show all jobs and Notes' Show all were buttons (btn quiet sm)."""
+
+    maxDiff = None
+    FOLD = re.compile(r"\b(Show (all|fewer|more|the first|only)|Expand all|Collapse all)\b|data-[\w-]*more|id=\"[\w-]*more\"|data-tfold")
+
+    def test_no_fold_or_show_all_control_carries_btn(self):
+        sources = {**PAGE_JS, "shell.js": SHELL_JS, **{p.name: p.read_text(encoding="utf-8") for p in V2.glob("*.html")}}
+        found, wrong = [], []
+        for name, text in sources.items():
+            for m in re.finditer(r"<button\b([^>]*)>(.*?)</button>", text, re.S):
+                # A help icon's text names these controls; it is not one.
+                if not self.FOLD.search(re.sub(r'data-help="[^"]*"', "", m.group(1)) + m.group(2)[:200]):
+                    continue
+                classes = (re.search(r'class="([^"]*)"', m.group(1)) or [None, ""])[1].split()
+                found.append(name)
+                if "btn" in classes or "linkbtn" not in classes:
+                    wrong.append(f"{name}: {m.group(0)[:120]}")
+        self.assertEqual(wrong, [])
+        # The sweep reaches each page that draws one, so a renamed control cannot leave it empty.
+        self.assertLessEqual({"shell.js", "notes.js", "reports.html", "research.js", "today-github.js", "today-status.js"}, set(found))
+
+
 class TheViewPicker(unittest.TestCase):
     """sd:5641: a page's layout menu (Tasks' List, Board, Matrix; Writing's Board, Editor) is the shell's one viewPick."""
 

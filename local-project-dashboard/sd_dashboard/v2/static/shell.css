@@ -655,6 +655,9 @@ body[data-rail="min"] .rail nav .subnav { display: none; }
 .since b { color: var(--color-ink); font-weight: 600; }
 .linkbtn { all: unset; cursor: pointer; color: var(--color-ink); text-decoration: underline; text-underline-offset: 2px; }
 .linkbtn:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: var(--radius-sm); }
+.linkbtn:disabled { cursor: default; color: var(--color-muted); text-decoration: none; }
+/* A fold or Show all control under a list (sd:5878): the link look, on a line of its own so its margin holds. */
+.linkbtn.more { display: inline-block; }
 [data-new] { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
 tr[data-new] > td:first-child { position: relative; }
 body[data-only-new] [data-changed]:not([data-new]) { display: none; }

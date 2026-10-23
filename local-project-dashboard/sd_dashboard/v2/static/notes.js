@@ -32,7 +32,7 @@
   const LIMIT = 12;
   function list(objs, key) {
     const open = expanded.has(key), shown = open ? objs : objs.slice(0, LIMIT);
-    return html`<ul class="rows" aria-label="${key}">${shown.map(rowHtml)}</ul>${objs.length > LIMIT ? html`<button class="btn quiet sm more" type="button" data-more="${key}">${open ? 'Show fewer' : `Show all ${objs.length}`}</button>` : ''}`;
+    return html`<ul class="rows" aria-label="${key}">${shown.map(rowHtml)}</ul>${objs.length > LIMIT ? html`<button class="linkbtn more" type="button" data-more="${key}" aria-expanded="${String(open)}">${open ? 'Show fewer' : `Show all ${objs.length}`}</button>` : ''}`;
   }
   const sect = (id, title, n, src, body) => html`<section class="act" id="${id}" aria-labelledby="${id}-h"><header><h2 id="${id}-h">${title}</h2><span class="n">${n}</span><span class="src">${src}</span></header>${body}</section>`;
   const failed = name => DOC?.sources?.[name];
