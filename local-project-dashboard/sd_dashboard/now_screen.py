@@ -81,7 +81,7 @@ question in shadow and its answer is recorded, never shown (`job_failures`).
 from __future__ import annotations
 
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from sd_db import operations, progress, reads
@@ -277,6 +277,24 @@ def _log_time(log: Path | None) -> str:
         return "log unreadable"
 
 
+def _log_at(log: Path | None) -> str | None:
+    """The log's last write as UTC ISO, the time the day track marks a failed run at; None when it cannot be read."""
+    try:
+        return _utc(log.stat().st_mtime) if log is not None else None
+    except OSError:
+        return None
+
+
+def _utc(when) -> str | None:
+    """A time as `YYYY-MM-DDTHH:MM:SSZ`: an epoch, or ISO text, a naive one read as UTC. None when it is not a time."""
+    try:
+        at = (datetime.fromtimestamp(when, timezone.utc) if isinstance(when, (int, float))
+              else datetime.fromisoformat(str(when).replace(" ", "T").replace("Z", "+00:00")))
+    except (TypeError, ValueError, OSError):
+        return None
+    return (at if at.tzinfo else at.replace(tzinfo=timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
     """One row for each job `operations.inventory` reads as needing attention.
 
@@ -310,7 +328,7 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
         if state in ("failed", "interrupted"):
             logged = _log_time(log)
             retry = f"launchctl kickstart {service}" if service else "retry from Operations Jobs"
-            row.update(detail=f"{logged} · retry: {retry}", retry=retry, job=name, exit=code,
+            row.update(detail=f"{logged} · retry: {retry}", retry=retry, job=name, exit=code, at=_log_at(log),
                        revision=job.get("revision"), capability=(job.get("capabilities") or {}).get("retry"))
         if state == "failed":
             # launchd can report `last exit code = 0` beside a terminating signal;
@@ -566,6 +584,48 @@ def lane_summary(queue: dict) -> dict:
             "unread_why": "; ".join(f"{Path(p['repo']).name}: {p['error']}" for p in (queue.get("problems") or [])[:3])}
 
 
+TRACK_HOURS = 24
+
+
+def track(connection: sqlite3.Connection, now: str, *, rows: list[dict], briefs: list[dict], active: dict,
+          lane: dict) -> dict:
+    """The day track (sd:5921): the last 24 hours, rolling, as marks in four lanes, and its key's four counts.
+
+    Landed is each item a merge delivered (`sd_db.today.delivered`); Jobs each failed run at its log time; Briefs each new
+    brief at its filing; Live each session's start. Every mark names its row. A read that failed is `error`, so the page
+    says the track was not read, never an empty day.
+    """
+    from sd_db import today
+
+    end = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    since, until = _utc((end - timedelta(hours=TRACK_HOURS)).timestamp()), _utc(end.timestamp())
+    week = (end + timedelta(days=7)).strftime("%Y-%m-%d")
+
+    def within(marks):
+        return sorted((mark for mark in marks if mark["at"] and since <= mark["at"] <= until), key=lambda mark: mark["at"])
+
+    try:
+        delivered = today.delivered(connection, now=now, hours=TRACK_HOURS)
+        due = sum(1 for row in today.planned(connection, now=now) if row["due"] <= week)
+        blocked = len(today.blocked(connection))
+    except (SdDbError, sqlite3.Error, KeyError, TypeError) as failure:
+        return {"error": str(failure) or "the delivered, planned and blocked items could not be read"}
+    marks = {
+        "landed": within({"at": _utc(row["at"]), "id": f"item:{row['id']}", "item": row["id"],
+                          "what": f"sd:{row['id']} {row.get('title') or ''}".strip()} for row in delivered),
+        "jobs": within({"at": row.get("at"), "id": row["id"], "what": row["what"]}
+                       for row in rows if row["kind"] == "job" and row.get("state") == "failed"),
+        "briefs": within({"at": _utc(row["at"]) if row.get("at") else None, "id": row["id"], "what": row["subj"]}
+                         for row in briefs),
+        "live": within({"at": _utc(row["started"]) if row.get("started") else None, "id": f"session:{row['item']}:{n}",
+                        "item": row["item"], "what": f"sd:{row['item']} {row['session']}"}
+                       for n, row in enumerate(active.get("rows") or [])),
+    }
+    return {"since": since, "until": until, **marks,
+            "key": {"landed": len(marks["landed"]), "landing": lane["merging"] + lane["next"], "due_week": due,
+                    "blocked": blocked}}
+
+
 def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, jev=None, herdr=None,
              lanes=None) -> dict:
     """The merged, ranked, banded rows, and what each source said if it said nothing.
@@ -642,9 +702,11 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     dark = [dark_row("lane", sources["lane"])] if sources["lane"] else []
     listed = needs([*shown, *dark, *reports, *threads], work=work, live=live, today=now[:10],
                    lanes=queue.get("lanes") or [], briefs=reported["briefs"])
+    summary = lane_summary(queue)
     return {"now": now, "sources": sources, "observed": observed, "rows": shown, "active": active,
             "snoozed": snoozed + work_snoozed + reports_snoozed + mail_snoozed, "snooze_error": snooze_error,
-            "work": work, "work_error": work_error, "needs": listed, "lane": lane_summary(queue),
+            "work": work, "work_error": work_error, "needs": listed, "lane": summary,
+            "track": track(connection, now, rows=rows, briefs=reported["briefs"], active=active, lane=summary),
             "attention": _attention(listed), **mail, **reported}
 
 

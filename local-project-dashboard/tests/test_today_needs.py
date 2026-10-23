@@ -146,3 +146,44 @@ class TheGroups(ReportsCase):
         moving = {row["item"] for row in doc["active"]["rows"]}
         listed = {member.get("item") for row in doc["needs"] for member in row.get("members", [row])}
         self.assertFalse(moving & listed)
+
+
+class TheTrack(ReportsCase):
+    """The day track (sd:5921): the last 24 hours as marks, one per landed item, failed run, new brief and session, and the
+    key's four counts. A mark outside the 24 hours is left out; a read that failed is its reason, never an empty day."""
+
+    DELIVERED = [{"id": 7, "title": "Seven", "at": "2026-09-06 10:00:00"}, {"id": 8, "title": "Eight", "at": "2026-09-05T11:00:00Z"}]
+    PLANNED = [{"due": "2026-09-08"}, {"due": "2026-09-20"}]
+
+    def track(self, jobs, **seams):
+        from sd_db import today
+
+        with mock.patch.object(today, "delivered", return_value=seams.get("delivered", self.DELIVERED)), \
+                mock.patch.object(today, "planned", return_value=self.PLANNED), \
+                mock.patch.object(today, "blocked", side_effect=seams.get("blocked", lambda connection: [{}, {}, {}])):
+            return now_screen.document(self.connection, now=NOW, jobs=jobs, fleet=fleet_document,
+                                       lanes=queue(lane(rows=[{**blocked(1), "state": "merging"}])))["track"]
+
+    def test_each_lane_marks_its_source_in_the_last_24_hours_and_the_key_counts(self):
+        from datetime import datetime, timezone
+
+        jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("old-one", "failed", 1, None)])
+        jobs.log("nightly-sync", datetime(2026, 9, 6, 9, 0, tzinfo=timezone.utc).timestamp())
+        jobs.log("old-one", datetime(2026, 9, 4, 9, 0, tzinfo=timezone.utc).timestamp())
+        self.brief("2026-09-06 - Daily Intel Brief", at="2026-09-06T06:00:00Z")
+        found = self.track(jobs)
+        self.assertEqual((found["since"], found["until"]), ("2026-09-05T12:00:00Z", NOW))
+        self.assertEqual([(m["at"], m["item"]) for m in found["landed"]], [("2026-09-06T10:00:00Z", 7)])
+        self.assertEqual([(m["at"], m["id"]) for m in found["jobs"]], [("2026-09-06T09:00:00Z", "job:nightly-sync:7")])
+        self.assertEqual([m["at"] for m in found["briefs"]], ["2026-09-06T06:00:00Z"])
+        self.assertEqual(found["live"], [])
+        self.assertEqual(found["key"], {"landed": 1, "landing": 1, "due_week": 1, "blocked": 3})
+
+    def test_a_read_that_failed_is_its_reason(self):
+        import sqlite3
+
+        def locked(connection):
+            raise sqlite3.OperationalError("database is locked")
+
+        found = self.track(JobsBackend(self.tmp.name), blocked=locked)
+        self.assertEqual(found, {"error": "database is locked"})

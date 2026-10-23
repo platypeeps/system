@@ -212,6 +212,44 @@ window.PAGE_LIST.clear(); click('intents', 'intent', 'fix'); R.fix = ids(); R.ch
         self.assertEqual(out["R"]["sel"], ["item:7"])
 
 
+class TheTrack(ReaderCase):
+    """sd:5921: the day track draws one mark per entry of the document's `track`, the same marks as a table, and the key;
+    a day with no mark is one line, never an empty axis; a track that was not read says so."""
+
+    TRACK = {"since": "2026-09-05T12:00:00Z", "until": NOW, "key": {"landed": 2, "landing": 1, "due_week": 17, "blocked": 27},
+             "landed": [{"at": "2026-09-06T10:00:00Z", "id": "item:7", "item": 7, "what": "sd:7 Seven"},
+                        {"at": "2026-09-06T11:00:00Z", "id": "item:8", "item": 8, "what": "sd:8 <b>Eight</b>"}],
+             "jobs": [{"at": "2026-09-06T09:00:00Z", "id": "job:nightly-sync:7", "what": "nightly-sync failed with exit 7"}],
+             "briefs": [], "live": [{"at": "2026-09-06T11:30:00Z", "id": "session:9:0", "item": 9, "what": "sd:9 worktree"}]}
+    DRAWN = "R.plot = ELS['track-plot'].html; R.rows = ELS['track-rows'].html; R.key = ELS.flowkey.html; R.table = ELS['track-table'].hidden;"
+
+    def test_each_entry_is_one_mark_and_one_table_row(self):
+        self.doc["track"] = self.TRACK
+        out = self.run_page(self.DRAWN)
+        plot = out["R"]["plot"]
+        self.assertEqual((plot.count('<line class="land"'), plot.count('<rect class="fail"'), plot.count('<circle class="brief"'),
+                          plot.count('<rect class="sess"')), (2, 1, 0, 1))
+        self.assertIn('aria-label="Last 24 hours: 2 landed, 1 job failed, 0 briefs filed, 1 session started"', plot)
+        self.assertIn('<a href="?row=job%3Anightly-sync%3A7">', plot)
+        self.assertIn("sd:8 &lt;b&gt;Eight&lt;/b&gt;", out["R"]["rows"])
+        self.assertEqual(out["R"]["rows"].count("<tr>"), 4)
+        self.assertIn('status=blocked&amp;realm=all">Blocked</a></li><li><b>27</b>', out["R"]["key"])
+        self.assertFalse(out["R"]["table"])
+
+    def test_a_day_with_no_mark_is_one_line_not_an_empty_axis(self):
+        self.doc["track"] = {**self.TRACK, "landed": [], "jobs": [], "live": [], "key": {**self.TRACK["key"], "landed": 0}}
+        out = self.run_page(self.DRAWN)
+        self.assertIn("Nothing landed, failed, was filed or started in the last 24 hours.", out["R"]["plot"])
+        self.assertNotIn("<svg", out["R"]["plot"])
+        self.assertTrue(out["R"]["table"])
+
+    def test_a_track_that_was_not_read_says_so(self):
+        self.doc["track"] = {"error": "database is locked"}
+        out = self.run_page(self.DRAWN)
+        self.assertIn("The day track was not read: database is locked.", out["R"]["plot"])
+        self.assertEqual((out["R"]["key"], out["R"]["table"]), ("", True))
+
+
 class TheLamps(ReaderCase):
     """sd:TBD: a fleet area the server's snapshot kept says when it was read; a stale one is unknown, never green."""
 

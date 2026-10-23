@@ -3,6 +3,7 @@
   Today, v2 (sd:2110), the default page at / and /today since sd:2163. Built from ui-design products/system/designs/v2/today.html at a3861c9 and design.md.
   One page, no tabs (sd:5921, docs/work/2026-10-23-today-queue/design.md): what is going on, then what needs you.
   Data: /api/now, the document now_screen.document builds, read when the page opens and on Refresh.
+  The day track: the last 24 hours as marks (landed, failed jobs, briefs, sessions), a table of them and a key to Tasks.
   The annunciator: Jobs, Lane, Reports, Pulls, Mail and Repos filter Needs you to their rows; Sessions opens In motion and
   Gate opens Queue. Each number counts the rows its filter shows.
   Needs you: the document's `needs`, every fact that asks for an act, ranked in the bands, with group rows for the work items
@@ -49,6 +50,15 @@
       <li><a class="cell" href="/queue" id="lamp-gate" data-state="unknown"><span class="lbl">Gate<svg class="i" aria-hidden="true"><use href="#i-gauge"/></svg></span><span class="val">reading…</span></a></li>
       <li><button class="cell clock" type="button" id="refresh"><span class="lbl">Observed<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg></span><span class="val"><span class="ph" id="observed">not yet</span> · <span class="ph">refresh</span></span></button></li>
     </ul></annunciator-strip>
+
+    <section class="daytrack" id="track" aria-labelledby="track-h">
+      <h2 class="sr" id="track-h">The last 24 hours</h2>
+      <div class="track-plot" id="track-plot"><p class="why">Reading the day…</p></div>
+      <ul class="flowkey" id="flowkey" aria-label="Where the work is"></ul>
+      <details class="track-table" id="track-table" hidden><summary>The marks as a table</summary>
+        <table class="ledger"><thead><tr><th>When</th><th>Lane</th><th>What</th></tr></thead><tbody id="track-rows"></tbody></table>
+      </details>
+    </section>
 
     <section aria-labelledby="needs-h">
       <div class="sec-head">

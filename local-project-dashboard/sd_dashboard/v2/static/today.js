@@ -214,6 +214,7 @@ window.PAGE_FILTER = { '': 'Needs you' };
     $('unread').hidden = !unread.length;
     $('unread').textContent = unread.map(([k, why]) => `${k} could not be read: ${why}. Refresh tries again.`).join(' ');
     motion();
+    dayTrack();
     window.snooze.draw($('snoozed'), SNOOZED);
   }
 
@@ -240,6 +241,41 @@ window.PAGE_FILTER = { '': 'Needs you' };
     const note = $('active-note');
     note.hidden = !dark.length;
     note.textContent = dark.map(([k, why]) => `${SOURCE[k] || k} not read: ${why}`).join(' · ');
+  }
+
+  // The day track (sd:5921): the document's `track`, the last 24 hours as marks in four lanes, each linked to its row, with
+  // the same marks as a table in a details and a key of four counts linked to Tasks. A track that was not read says so;
+  // a day with no mark says that in one line, never an empty axis.
+  const LANES = [['landed', 'Landed', 18], ['jobs', 'Jobs', 40], ['briefs', 'Briefs', 58], ['live', 'Live', 74]];
+  const markHref = (lane, m) => lane === 'landed' || lane === 'live' ? shell.itemHref(m.item) : `?row=${encodeURIComponent(m.id)}`;
+  function dayTrack() {
+    const T = DOC.track || { error: 'the document carried no track' };
+    if (T.error) {
+      put($('track-plot'), html`<p class="why">The day track was not read: ${T.error}. Refresh tries again.</p>`);
+      put($('flowkey'), html``); put($('track-rows'), html``); $('track-table').hidden = true; return;
+    }
+    const t0 = Date.parse(T.since), t1 = Date.parse(T.until), X0 = 64, W = 900, x = at => (X0 + (W - X0 - 8) * (Date.parse(at) - t0) / (t1 - t0)).toFixed(1);
+    const marks = LANES.flatMap(([k, label]) => T[k].map(m => ({ ...m, lane: k, label })));
+    const said = `Last 24 hours: ${T.landed.length} landed, ${plural(T.jobs.length, 'job')} failed, ${plural(T.briefs.length, 'brief')} filed, ${plural(T.live.length, 'session')} started`;
+    const ticks = [];
+    for (let t = Math.ceil(t0 / 36e5) * 36e5; t <= t1; t += 36e5) if (new Date(t).getHours() % 3 === 0) ticks.push(t);
+    const mark = m => { const at = x(m.at), tip = html`<title>${hm(m.at)} UTC · ${m.what}</title>`;
+      return html`<a href="${markHref(m.lane, m)}">${m.lane === 'landed' ? html`<line class="land" x1="${at}" y1="10" x2="${at}" y2="26">${tip}</line>`
+        : m.lane === 'jobs' ? html`<rect class="fail" x="${(at - 4).toFixed(1)}" y="36" width="8" height="8">${tip}</rect>`
+        : m.lane === 'briefs' ? html`<circle class="brief" cx="${at}" cy="58" r="3.5">${tip}</circle>`
+        : html`<rect class="sess" x="${at}" y="72" width="${Math.max(2, W - 8 - at).toFixed(1)}" height="3">${tip}</rect>`}</a>`; };
+    put($('track-plot'), marks.length ? html`<svg viewBox="0 0 ${W} 100" role="img" aria-label="${said}">
+      ${ticks.map(t => html`<line class="grid" x1="${x(new Date(t).toISOString())}" y1="6" x2="${x(new Date(t).toISOString())}" y2="80"/><text class="axis" x="${x(new Date(t).toISOString())}" y="94" text-anchor="middle">${String(new Date(t).getHours()).padStart(2, '0')}:00</text>`)}
+      ${LANES.map(([, label, y]) => html`<text class="lane-l" x="0" y="${y + 4}">${label}</text>`)}
+      ${marks.map(mark)}<line class="now" x1="${x(T.until)}" y1="4" x2="${x(T.until)}" y2="82"/></svg>`
+      : html`<p class="why">Nothing landed, failed, was filed or started in the last 24 hours.</p>`);
+    const K2 = T.key;
+    put($('flowkey'), html`<li><a href="/tasks?view=list&amp;status=merged,delivered&amp;realm=all">Landed 24h</a></li><li><b>${K2.landed}</b></li>
+      <li><a href="/queue">Landing</a></li><li><b>${K2.landing}</b></li>
+      <li><a href="/tasks?view=list&amp;due=week&amp;realm=all">Due this week</a></li><li><b>${K2.due_week}</b></li>
+      <li><a href="/tasks?view=list&amp;status=blocked&amp;realm=all">Blocked</a></li><li><b>${K2.blocked}</b></li>`);
+    $('track-table').hidden = !marks.length;
+    put($('track-rows'), html`${[...marks].sort((a, b) => a.at < b.at ? 1 : -1).map(m => html`<tr><td class="when"><time datetime="${m.at}">${clock(m.at)}</time></td><td>${m.label}</td><td class="what"><a href="${markHref(m.lane, m)}">${m.what}</a></td></tr>`)}`);
   }
 
   // The badge is the read's own (sd:3446, now_screen._attention): Needs you's broken rows, else its look rows.
@@ -277,6 +313,7 @@ window.PAGE_FILTER = { '': 'Needs you' };
     put($('active'), html`<tr class="empty"><td colspan="5">Sessions could not be read: ${failed}. Refresh tries again.</td></tr>`);
     put($('active-tally'), html``);
     $('active-note').hidden = true; $('unread').hidden = true;
+    put($('track-plot'), html`<p class="why">The day track was not read: ${failed}.</p>`); put($('flowkey'), html``); $('track-table').hidden = true;
     window.snooze.draw($('snoozed'), []);
     attend();
   }
