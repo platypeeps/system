@@ -811,7 +811,7 @@
     }
     document.addEventListener('adversarial:run', e => { if (e.detail.key === `task:${byKey(selected())?.id}`) renderDetails(); });
     return { shape, label, opens, STATUSES, SLABEL, slabel, QUADS, TODAY, plus, fmt, days, withinWeek, quadOf, dueText, legal, quadChange,
-      EDITABLE, repeats, DET, live, objectOf, putAll, readDet, redrawDet, adopt, write, renderDetails, fieldChange, move, toQuad, askEdit, STATUS_CMD };
+      EDITABLE, repeats, DET, live, objectOf, putAll, readDet, redrawDet, adopt, write, renderDetails, fieldChange, move, toQuad, askEdit, STATUS_CMD, COMPLETE };
   }
 
   window.taskDetails = { shape, attach };

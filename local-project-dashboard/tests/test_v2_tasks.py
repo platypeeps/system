@@ -447,7 +447,8 @@ function fetch(path, o) {
 SHELL = SETTLE_JS + FETCH_JS + ITEM_JS + r"""
 var REG = [], OBJ = new Map();
 var C = { register: (...cs) => { REG.push(...cs); }, put: o => { OBJ.set(o.id, o); }, get: id => OBJ.get(id), select() {}, pick() {},
-  rowActions: () => mk``, bar: () => mk`<div class="bar"></div>` };
+  rowActions: () => mk``, bar: () => mk`<div class="bar"></div>`,
+  offWhy: (c, o) => { const w = c.when ? c.when(o) : true; return w === true ? '' : (w || 'not available'); } };
 // A command with fields asks for them (shell.js's confirm): FIELD_VALUES is what the operator typed, and a required field left
 // empty keeps OK off, so nothing runs; a field's value is typed in already. One that asks first (shell.js's asksFirst) records its confirm and runs.
 var FIELD_VALUES = {};
@@ -1628,6 +1629,27 @@ C.runBulk(cmd('item.unpark'), [C.get('{parked}'), C.get('{other}')]); await flus
                                         [f"/api/items/{other}", {"parked_at": None, "revision": revisions[other]}, 64]])
         self.assertEqual(out["bulkCli"], f"sd task edit {parked} --unpark && sd task edit {other} --unpark")
         self.assertEqual(out["toasts"], [["Unpark · 2 items", False]])
+
+    def test_a_card_marks_its_task_done_from_its_done_icon(self):
+        # sd:5917: a card's done icon is the Done command, Done -> next occurrence on a repeating task; the shell runs a
+        # data-cmd click, and the card's own click handler leaves it alone, so it opens no Details. Off, it is disabled.
+        plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]
+        out = self.run_page(f"""R.board = ELS['view-board'].html;
+ELS.main.listeners.click.forEach(f => f({{ target: {{ closest: s => s.includes('.tile-done') ? {{}} : s === '.card' ? {{ dataset: {{ key: '{ask}' }} }} : null }} }}));
+await flush(); R.gets = OUT.gets.slice();
+shellRun(cmd('item.status.done'), C.get('{ask}')); await flush();""", self.ECHO)
+        buttons = {key: b for b, key in re.findall(r'(<button class="icon-btn tile-done"[^>]*data-obj="(\d+)"[^>]*>)', out["R"]["board"])}
+        self.assertEqual(buttons[str(ask)], f'<button class="icon-btn tile-done" type="button" data-cmd="item.status.done" data-obj="{ask}" '
+                                            'aria-label="Mark Answer the question done">')
+        self.assertIn('data-cmd="item.status.done"', buttons[str(plan)])
+        self.assertRegex(buttons[str(port)], r' disabled title="A runner assignment is running\. Status is locked until it ends\.">$')
+        self.assertNotIn(f"/api/tasks/{ask}", out["R"]["gets"], "a click on the done icon opened the Details")
+        self.assertEqual([(p[0], p[1]["status"]) for p in out["posts"]], [(f"/api/items/{ask}/status", "done")])
+        self.assertTrue(out["toasts"][-1][1], "Done keeps its Undo")
+        self.schedule_plan(2)
+        board = self.run_page("R.board = ELS['view-board'].html;", search="?active=scheduled")["R"]["board"]
+        self.assertIn(f'data-cmd="item.complete" data-obj="{plan}" aria-label="Mark Plan the review done">', board,
+                      "a repeating task's Done opens its next occurrence")
 
     def test_park_parks_a_listed_task_with_undo_and_is_off_for_a_parked_or_done_one(self):
         # sd:5906: Park beside Unpark, by hand. It posts parked_at as now through the edit route, and Undo posts it back null.

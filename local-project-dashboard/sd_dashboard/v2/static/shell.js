@@ -1016,7 +1016,7 @@
     get: id => OBJ.get(id),
     select: id => { const changed = id !== selId; selId = id; const o = OBJ.get(id); setContext(o?.label); writeRow(id); if (changed) { details?.querySelector('.asked')?.remove(); renderAsked(); } },
     selected: () => OBJ.get(selId),
-    rowActions, bar, openMenu, run, runBulk,
+    rowActions, bar, openMenu, run, runBulk, offWhy,
     pick: id => { const o = OBJ.get(id); if (!o) return; if (!REG.some(c => c.on === o.type && c.bulk)) { toast(`No bulk command for a ${o.type}.`); return; } picked.has(id) ? picked.delete(id) : picked.add(id); renderBulk(); },
   };
 

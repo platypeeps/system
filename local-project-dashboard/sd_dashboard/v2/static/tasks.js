@@ -21,7 +21,7 @@ addEventListener('DOMContentLoaded', () => {
     select: (key, open) => select(key, open), landed: key => landed(key), lead: () => LEAD, got: (id, got) => pin(id, got), empty: () => empty(), note: t => note(t),
     foot: () => READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : '' });
   const { label, opens, STATUSES, SLABEL, slabel, QUADS, TODAY, plus, fmt, days, withinWeek, quadOf, dueText, legal, quadChange, EDITABLE, repeats, live,
-    objectOf, putAll, readDet, redrawDet, write, renderDetails, fieldChange, move, toQuad, askEdit, STATUS_CMD } = TD;
+    objectOf, putAll, readDet, redrawDet, write, renderDetails, fieldChange, move, toQuad, askEdit, STATUS_CMD, COMPLETE } = TD;
   const WD = ['sun','mon','tue','wed','thu','fri','sat'];
 
   // ---------- Data (build) ----------
@@ -171,6 +171,12 @@ addEventListener('DOMContentLoaded', () => {
   }
   // sd:5103: the issue File issue filed and linked, from the item's ref (tasks_screen's issue_link), on its card and row.
   const issueLink = t => t.issueLink ? html`<a class="ext issue-link" href="${t.issueLink}" target="_blank" rel="noopener noreferrer" aria-label="Filed issue for ${label(t)}" title="${t.issueLink}">${ICON('link-2')}</a>` : '';
+  // sd:5917: a card's Done as an icon: the Done command, or Done → next occurrence on a repeating task, with its toast and
+  // Undo. The shell runs a data-cmd click before the card's own click; a button starts no drag. Off, it says why.
+  function doneBtn(t) {
+    const c = repeats(t) ? COMPLETE : STATUS_CMD.done, o = C.get(t.key), off = o ? C.offWhy(c, o) : 'the task is no longer listed';
+    return html`<button class="icon-btn tile-done" type="button" data-cmd="${c.id}" data-obj="${t.key}" aria-label="Mark ${t.title} done"${off ? html` disabled title="${off}"` : ''}>${ICON('check')}</button>`;
+  }
   function card(t, compact) {
     const st = state(t), [dt, dc] = dueText(t);
     return html`<article class="card" tabindex="0" data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}${st ? html` data-state="${st}"` : ''} aria-label="${label(t) + ' ' + t.title}">
@@ -181,7 +187,7 @@ addEventListener('DOMContentLoaded', () => {
         ${tileF(t) ? html`<select class="tile-f pri" data-edit="p" data-key="${t.key}" data-p="${String(t.p || '')}" aria-label="Priority of ${label(t)}">${t.p ? '' : html`<option value="" selected>P–</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select>`
           : html`<span class="pri" data-p="${String(t.p || '')}" title="Priority">${t.p ? 'P' + t.p : 'P–'}</span>`}
         ${t.assignment === 'running' ? html`<span class="lock" title="Runner assignment running">${ICON('lock')}</span>` : ''}
-        ${C.rowActions(t.key)}
+        ${doneBtn(t)}${C.rowActions(t.key)}
       </div>
       <div class="t">${t.title}</div>
       <div class="meta"><span class="repo">${t.repo}</span>${tileF(t) ? dueSelect(t, dt, dc) : html`<span class="due ${dc}">${dt}</span>`}${opens(t) ? html`<span class="opens">${opens(t)}</span>` : ''}${compact ? html`<span>${slabel(t.status).toLowerCase()}</span>` : ''}</div>
@@ -289,7 +295,7 @@ addEventListener('DOMContentLoaded', () => {
     if (open) openPane('tab-details');
   }
   document.getElementById('main').addEventListener('click', e => {
-    if (e.target.closest('.rowact, .pick, .tile-f')) return;
+    if (e.target.closest('.rowact, .pick, .tile-f, .tile-done')) return;
     const c = e.target.closest('.card'); if (c && !suppressClick) select(c.dataset.key, true);
   });
   // Selection follows focus on a card, so Enter, which the shell sends as shell:open, opens the focused one.
