@@ -8,7 +8,7 @@
 .area { margin: 0 0 var(--space-2xl); scroll-margin-top: var(--space-3xl); }
 .sec-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); display: flex; align-items: center; gap: var(--space-xs); }
 .sec-head h2 > .i { color: var(--color-muted); }
-.tally { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 0; font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); }
+.tally { gap: var(--space-md); line-height: 1.3; }
 p.quiet { margin: var(--space-xs) 0 0; font: 400 var(--text-xs)/1.4 var(--font-data); color: var(--color-muted); }
 
 /* Ledger with a fix column */
