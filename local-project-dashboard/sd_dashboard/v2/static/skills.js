@@ -634,7 +634,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   // workspace with the text typed in, as Fix does; the session is the operator's. The repo list is read once, at start.
   let CHECKOUTS = [];
   window.shell.repos?.().then(list => { CHECKOUTS = list; }, () => {});
-  const RUN = { id: 'skill.run', on: 'skill', label: 'Run', does: 'Starts claude with this skill in a new herdr workspace in the repo you pick.', key: 'r', icon: 'play', risk: 'confirm', executes: true,
+  const RUN = { id: 'skill.run', on: 'skill', label: 'Run', does: 'Starts claude with this skill in herdr, in the repo you pick.', key: 'r', icon: 'play', risk: 'confirm', executes: true,
     when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
     fields: () => [{ name: 'repo', label: 'Repo', required: true, options: CHECKOUTS.map(r => ({ value: r.path, label: r.name })), help: CHECKOUTS.length ? '' : 'The repo list was not read; Reload retries it.' }],
     consequence: o => `This opens herdr workspace skill-${o.id} and starts claude in the repo's checkout with /${o.id} typed in. The session is yours to steer or close.`,

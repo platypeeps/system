@@ -402,7 +402,7 @@
         cli: o => `sd services start ${o.facts.Label}`,
         consequence: o => `Loads ${o.facts.Label} if it is unloaded and kickstarts it through launchctl.`,
         run: service('start') },
-      { id: 'dashboard service.kickstart', on: 'dashboard service', label: 'Kickstart', does: 'Gives the line that restarts the dashboard service; copy only, since the restart would end its own request.', key: 'l', icon: 'rocket', risk: 'safe', executes: false,
+      { id: 'dashboard service.kickstart', on: 'dashboard service', label: 'Kickstart', does: 'Gives the restart line; copy only, since a restart ends its own request.', key: 'l', icon: 'rocket', risk: 'safe', executes: false,
         primary: () => true, cli: o => o.kickstart, run: copyOnly },
     );
     // Ports and Protection are read-only: each line is copy only.
