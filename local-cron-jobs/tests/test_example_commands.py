@@ -323,5 +323,35 @@ class MailIntakeDailyTest(unittest.TestCase):
                 self.assertEqual(result.returncode, job_rc, result.stdout + result.stderr)
 
 
+class GenaiTracesArchiveTest(unittest.TestCase):
+    """The hourly archive (sd:5775) passes `archive`'s exit 3, nothing to do,
+    as 0: an unmounted share must not page every hour. A failed write, exit
+    1, still fails the run."""
+
+    def test_the_job_runs_every_hour_so_rotation_cannot_outrun_it(self):
+        # 30 backups of 100 MB: a daily run lost files to a 3 GB burst.
+        text = (EXAMPLES / "genai-traces-archive.job").read_text()
+        schedule = re.search(r'^JOB_SCHEDULE="([^"]+)"', text, re.M).group(1).split()
+        self.assertTrue(schedule[0].isdigit(), schedule)
+        self.assertEqual(schedule[1:], ["*", "*", "*", "*"])
+
+    def test_the_job_runs_archive_and_passes_only_exit_3(self):
+        for archive_rc, job_rc in ((0, 0), (3, 0), (1, 1)):
+            with self.subTest(archive=archive_rc):
+                fx = Fixture()
+                self.addCleanup(fx.destroy)
+                script = fx.tmp / "local-genai-traces" / "genai-traces.sh"
+                script.parent.mkdir()
+                script.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$ARCHIVE_MARKER"\n'
+                                  'exit "$ARCHIVE_RC"\n')
+                marker = fx.tmp / "archive-calls"
+                job = EXAMPLES / "genai-traces-archive.job"
+                fx.write_job(job.stem, job.read_text())
+                result = fx.exec_job(job.stem, extra_env={
+                    "ARCHIVE_MARKER": str(marker), "ARCHIVE_RC": str(archive_rc)})
+                self.assertEqual(result.returncode, job_rc, result.stdout + result.stderr)
+                self.assertEqual(marker.read_text().splitlines(), ["archive"])
+
+
 if __name__ == "__main__":
     unittest.main()
