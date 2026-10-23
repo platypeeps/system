@@ -3,7 +3,7 @@
   Notes (sd:2120), at /notes. Built from the design source's products/system/designs/pages/notes.{html,css,js}.
   Data: /api/notes (notes_screen.document: the last seven days in this machine's zone, each with its sd-ship merges, items
   done and opened, and the daily note's text from the Obsidian vault, sd:3426), read when the page opens. No mail and no
-  runner runs (sd:5289). Quick notes: /api/notes/quick lists the sdw.quick-note items (sd store list), and Keep note posts
+  runner runs (sd:5289). Quick notes, a dialog the date bar opens (sd:5750): /api/notes/quick lists the sdw.quick-note items (sd store list), and Keep note posts
   /api/notes/quick/add (sd store add, sd:2549). That is the page's one write.
   Nothing here is sample data.
 -->
@@ -33,22 +33,27 @@
       <h2 class="day" id="day-name" aria-live="polite"></h2>
       <button class="btn quiet sm" type="button" id="next" aria-label="Next day" aria-keyshortcuts="ArrowRight"><svg class="i" aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
       <button class="btn quiet sm" type="button" id="today">Today</button>
+      <button class="btn quiet sm" type="button" id="qn-open" aria-haspopup="dialog" aria-controls="qn-dlg" aria-keyshortcuts="/"><svg class="i" aria-hidden="true"><use href="#i-notebook-pen"/></svg><span>Quick notes</span></button>
     </div>
   </div>
   <div id="state" hidden></div>
-  <div class="layout">
-    <div id="daily"></div>
-    <aside class="quick" aria-labelledby="qn-h">
+  <div id="daily"></div>
+  <!-- Quick notes (sd:5750): a dialog over the day, so the day keeps the page's width. The help is a line, not a popover:
+       the shell's popover sits under a modal dialog. -->
+  <dialog class="palette" id="qn-dlg" aria-labelledby="qn-h">
+    <form method="dialog" class="confirm-body quick">
       <h2 id="qn-h">Quick notes</h2>
       <label class="sr" for="qn-in">Quick note</label>
-      <textarea id="qn-in" placeholder="A thought, a link, a name. ⌘↵ keeps it."></textarea>
-      <div class="row-btns">
-        <button class="btn sm" type="button" id="qn-keep">Keep note</button>
-        <button class="help" type="button" aria-label="Help: quick notes" data-help="<b>Kept in the vault.</b> Keep note writes an sdw.quick-note item with sd store add, titled with the time. One line, at most 1000 characters, no double quote; newlines become spaces. sd task note attaches a note to an item instead."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+      <textarea id="qn-in" aria-describedby="qn-help" placeholder="A thought, a link, a name. ⌘↵ keeps it."></textarea>
+      <p id="qn-help">Kept in the vault: Keep note writes an sdw.quick-note item with sd store add, titled with the time. One line, at most 1000 characters, no double quote; newlines become spaces. sd task note attaches a note to an item instead.</p>
+      <div class="actions">
+        <button class="btn quiet" value="close" formnovalidate>Close</button>
+        <button class="btn" type="button" id="qn-keep">Keep note</button>
       </div>
+      <p class="why" id="qn-why" role="status" hidden></p>
       <ul id="qn-list" aria-live="polite"></ul>
-    </aside>
-  </div>
+    </form>
+  </dialog>
 </main>
 
 <div class="details" id="details"><p class="note">Reading the last week…</p></div>

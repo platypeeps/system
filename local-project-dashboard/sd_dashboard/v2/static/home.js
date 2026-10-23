@@ -245,7 +245,7 @@ addEventListener('DOMContentLoaded', () => {
   // The reader (read.js, sd:2418) holds the guards: only the newest read draws, a tile the read no longer lists runs no
   // command, a failed read clears the grid and Details, and the first read selects the ?row= tile.
   function adopt(doc) {
-    // body[data-observed] and data-interval (minutes) give the shell's staleness band on #refresh its reading time and cadence.
+    // body[data-observed] and data-interval (minutes) give the shell's staleness band on Read again its reading time and cadence.
     READ = doc.read; document.body.dataset.observed = doc.read; document.body.dataset.interval = String(EVERY / 60000); CONFIG = doc.config; REASON = doc.reader?.available ? '' : (doc.reader?.reason || 'Home Assistant not read');
     WRITES = doc.writes?.available ? '' : (doc.writes?.reason || 'no Home Assistant writes'); SERVICES = doc.writes?.services || {};
     HEAD = doc.headline; GROUPS = doc.groups || []; E = {};
@@ -320,8 +320,8 @@ addEventListener('DOMContentLoaded', () => {
   load();
   // Live state (sd:3522): Read again reads /api/home now, and a visible page reads it each minute, so the wall display follows
   // Home Assistant without a reload. The minute read is quiet: a loading state above the tiles would move them each minute.
-  // sd:5638: it reads the shown Tasks, Briefs or Reports view again too.
-  document.getElementById('refresh').addEventListener('click', () => { load(); window.places.again(); });
+  // sd:5638: it reads the shown Tasks, Briefs or Reports view again too. sd:5750: it is the shell's button, in the head's tools.
+  window.PAGE_AGAIN = { title: 'Read the tiles and the shown view again', run: () => Promise.all([load(), window.places.again()]) };
   setInterval(() => { if (!document.hidden) reading.load(true); }, EVERY);
   suggest([
     'Why is binary_sensor.problems_active on?',

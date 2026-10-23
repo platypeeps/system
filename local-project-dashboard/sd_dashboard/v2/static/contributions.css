@@ -5,7 +5,10 @@
  * route: custom (locked by foundation/ + v2 shell.css) · structure: repository scope + lane lamps + collector source line + open ledger
  * build (sd:1333): the design source's stamp, which the port had dropped. */
 
-.repo-scope { margin: 0; min-width: 0; }
+/* The scope group stays one row: the toolbar wraps the whole group, never a button inside it. Each button's count sits
+ * beside its name: .seg span is a grid, which stacks the name and the <b> count as two rows (sd:5750). */
+.repo-scope { margin: 0; flex: none; flex-wrap: nowrap; }
+.repo-scope span { grid-auto-flow: column; column-gap: var(--space-3xs); }
 .source { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-3xs) var(--space-sm); margin: calc(-1 * var(--space-sm)) 0 var(--space-xl); font: 400 var(--text-xs)/1.5 var(--font-data); color: var(--color-muted); }
 .source b { color: var(--color-ink-2); font-weight: 500; }
 .source .linkish { padding: 0; border: 0; background: none; color: var(--color-ink-2); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }

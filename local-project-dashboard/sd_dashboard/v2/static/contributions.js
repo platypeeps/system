@@ -54,7 +54,6 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Data (build: /api/contributions/page) ----------
   let DOC = null, ROWS = [], BY = new Map(), selected = null, FAILED = '', STORE = '';
-  let SYNC = null;
   // The Filed view (sd:5488): its rows, by key, and whether it is the shown view.
   let FILED = [], FBY = new Map(), FILEDVIEW = false;
   const u0 = new URLSearchParams(location.search);
@@ -167,7 +166,7 @@ addEventListener('DOMContentLoaded', () => {
         cli: o => `open ${shq(o.url)}`,
         run: o => { window.open(o.url, '_blank', 'noopener'); return `Opened in ${TRACKER[o.tracker]} · ${o.ref}`; } },
       // Re-run collector (commands.js); Contributions reads again once the run ends.
-      (SYNC = window.commands.syncCollector({ reread: () => reread(), page: 'Contributions' })),
+      window.commands.syncCollector({ reread: () => reread(), page: 'Contributions' }),
     );
   }
 
@@ -479,8 +478,6 @@ addEventListener('DOMContentLoaded', () => {
   document.addEventListener('shell:view', e => onView(e.detail.id));
   onView(window.shell.view?.current?.());
   document.getElementById('source').addEventListener('click', e => { if (e.target.closest('[data-collector]')) select('collector', true); });
-  // Refresh (sd:5630): the toolbar's way to Re-run collector; the table reads again once the sync ends.
-  document.getElementById('contrib-refresh').addEventListener('click', () => { if (SYNC) window.shell.commands.run(SYNC, window.shell.commands.get('collector')); });
   [tbody, ftbody].forEach(b => b.addEventListener('click', e => { if (e.target.closest('.rowact') || e.target.closest('a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); }));
   document.addEventListener('shell:open', e => select(e.detail, true));
   document.addEventListener('shell:filter', e => { if (e.detail.q === q.value) return; q.value = e.detail.q; if (DOC) applyFilter(); });
@@ -528,8 +525,9 @@ addEventListener('DOMContentLoaded', () => {
     unselect: nothing,
   });
   const load = () => reading.load(), reread = () => reading.reread();
-  // Read again (sd:5638): the shell's head button reads the table again; Refresh runs the sync first.
-  window.PAGE_AGAIN = { title: 'Read the contributions again; Refresh runs the sync first', run: load };
+  // Read again (sd:5638): the shell's head button reads the table again. The sync is the collector's Re-run collector
+  // (sd:5750 took out the toolbar's Refresh, a second way to it).
+  window.PAGE_AGAIN = { title: 'Read the contributions again; Re-run collector runs the sync', run: load };
   registerCommands();
   load();
 });

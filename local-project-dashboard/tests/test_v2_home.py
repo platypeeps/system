@@ -1052,7 +1052,7 @@ class TheReader(TheScript):
         # sd:5638: Read again also reads the shown Tasks, Briefs or Reports view again (places.js, stood in here).
         out = self.run_page("""R.observed = [document.body.dataset.observed, document.body.dataset.interval];
 R.again = 0; window.places = { again: () => { R.again++; } };
-(document.getElementById('refresh').listeners.click || []).forEach(f => f()); await flush();
+await window.PAGE_AGAIN.run(); await flush();
 const every = INTERVALS.filter(i => i[1] === 60 * 1000).map(i => i[0]);
 every.forEach(f => f()); await flush();
 document.hidden = true; every.forEach(f => f()); await flush();""")
