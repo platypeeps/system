@@ -53,15 +53,16 @@ non-zero, a shadow read or a launchd read that fails — is a rank-0 row naming 
 and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
-Today has four tabs by job (sd:5781): Now, Inbox, Status and Work. Decisions moved to **Decide**, and the GitHub tab
-with Your issues and Issue intake to **GitHub**; an old `/today#view=decisions`, `#view=github` or `#view=issues`
-address opens there, with its query.
+Today is one page with no tabs (sd:5921, `docs/work/2026-10-23-today-queue/design.md`):
+- The annunciator: Jobs, Lane, Reports, Pulls, Mail and Repos filter Needs you; Sessions opens In motion; Gate opens Queue.
+- The day track: the last 24 hours as marks (landed, failed jobs, new briefs, sessions), with a key linked to Tasks.
+- **Needs you**: every row that asks for an act, ranked broken, look, queued. The work items and briefs fold into group
+  rows ("114 items past due" with Triage and Snooze all 1w; "4 new briefs" with Mark all seen). The rail badge counts
+  this list's broken rows, else its look rows.
+- **In motion**: the open items with a live session, and the lane's merging and landed counts.
 
-**Status**, the tab after Inbox, shows the sections `sd today` and `sd-status` print (sd:5099).
-`/api/today/status` is the pack's `sd_db.today.sections` unchanged, so the tab and the command cannot drift.
-A bar shows where the work is: delivered in 24 h, landing, planned, unscheduled and blocked. Its key links each count
-to its section. Each section shows its first 5 rows, as the command does, and Show all opens the rest.
-The gate slots come from `sd gate status --json`; a failed read shows as unknown with its reason.
+Decisions are on **Decide** and GitHub on **GitHub**; an old `#view=` address opens its new home with its query.
+`sd today` prints the sections the Status tab showed.
 
 **GitHub**, at `/github` in the rail's Work group (sd:5781), has three tabs. **Pull requests** lists your open pull requests and issues, and those merged or closed in 7 days (sd:5608).
 `/api/today/github` (`today_github.py`) reads only what is stored: `shadow`, the Contributions projection, the

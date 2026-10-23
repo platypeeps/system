@@ -338,4 +338,3 @@ JSON.stringify({
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route = "today", "Today", "/today"
-    api = ("/api/today/status",)
