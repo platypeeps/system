@@ -1,0 +1,58 @@
+#!/bin/sh
+# sdm-login: sign StrongDM's sdm in when it is signed out, then print
+# `sdm status`.
+#
+# `sdm status` exits 9 when signed out; only then does this run `sdm login`,
+# whose SSO finishes in the browser. Any other failure of `sdm status` is not
+# a signed-out answer, so it is printed and nothing signs in.
+#
+# The email is SDM_EMAIL: an exported value wins, an empty one too; else the
+# one in machine-setup.env in the config folder. machine-setup's dotfiles
+# stage copies this file into ~/.local/bin, away from the checkout, so it
+# cannot source lib/config.sh and names the config root itself.
+#
+# No argument runs it, like a login command; `help` prints usage.
+set -e
+
+case "${1:-}" in
+  '') ;;
+  -h|--help|help)
+    echo "usage: sdm-login    sign sdm in when \`sdm status\` exits 9, then print \`sdm status\`"
+    echo "  SDM_EMAIL  the sign-in email; else SDM_EMAIL in <config>/machine-setup/machine-setup.env"
+    exit 0 ;;
+  *) echo "sdm-login: takes no argument (see: sdm-login help)" >&2; exit 1 ;;
+esac
+
+command -v sdm >/dev/null 2>&1 || { echo "sdm-login: sdm is not on PATH" >&2; exit 1; }
+
+rc=0
+out=$(sdm status 2>&1) || rc=$?
+if [ "$rc" -eq 0 ]; then
+  printf '%s\n' "$out"
+  exit 0
+fi
+if [ "$rc" -ne 9 ]; then
+  printf '%s\n' "$out" >&2
+  echo "sdm-login: sdm status exited $rc, not 9 (signed out); nothing signed in" >&2
+  exit "$rc"
+fi
+
+conf="${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}/machine-setup/machine-setup.env"
+if [ -z "${SDM_EMAIL+x}" ] && [ -f "$conf" ]; then
+  # Read in a subshell, so none of the file's other names reach this one.
+  # shellcheck source=/dev/null
+  SDM_EMAIL=$(. "$conf" >/dev/null 2>&1 </dev/null && printf '%s' "${SDM_EMAIL-}") || {
+    echo "sdm-login: $conf does not source; its values are ignored" >&2
+    SDM_EMAIL=
+  }
+fi
+case "${SDM_EMAIL:-}" in
+  ''|change-me*)
+    echo "sdm-login: sdm is signed out and SDM_EMAIL is empty or unset." >&2
+    echo "  export SDM_EMAIL=<your sign-in email>, or copy" >&2
+    echo "  local-machine-setup/machine-setup.env.example to $conf and set SDM_EMAIL there" >&2
+    exit 1 ;;
+esac
+
+sdm login --email "$SDM_EMAIL"
+exec sdm status
