@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from sd_db import repos, writes
+from sd_db import progress, repos, writes
 from sd_db.errors import SdDbError
 
 TRACKER = {"github": "GitHub", "jira": "Jira"}
@@ -40,11 +40,13 @@ def fallback(entry: dict, row: dict) -> str:
 
 def _details(connection: sqlite3.Connection, pairs: list[tuple[dict, dict]]) -> None:
     """Add to each listed entry its stored facts and the item filed under its ref, read by its pack row's tracker and
-    url; a read that fails leaves every fact None and `unread` naming why."""
+    url through `progress.tracker_items`, as both lists hold open rows only; a read that fails leaves every fact None
+    and `unread` naming why."""
     try:
+        stored_rows = {(tracker, found["url"]): found for tracker in {row["tracker"] for _, row in pairs}
+                       for found in progress.tracker_items(connection, tracker=tracker)}
         for entry, row in pairs:
-            found = connection.execute("SELECT * FROM shadow WHERE tracker = ? AND url = ?", (row["tracker"], row["url"])).fetchone()
-            stored = dict(found) if found is not None else {}
+            stored = stored_rows.get((row["tracker"], row["url"]), {})
             entry.update({name: stored.get(column) for name, column in FACTS.items()}, unread="")
             slug = entry["slug"] or row.get("repo")
             ref = (f"jira:{entry['ref']}" if row["tracker"] == "jira" else
