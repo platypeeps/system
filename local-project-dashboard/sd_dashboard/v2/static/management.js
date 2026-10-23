@@ -490,7 +490,7 @@ function propose(key, value) {
     if (!reviewDiff(rv.declaration || '', edit)) { shell.toast('Not proposed: the review declaration is not a JSON object'); return; }
     // The diff and the line are set by restateDeclaration, with every other pending edit for this repo.
     p = { key, value, route: 'declare', icon: 'terminal', title: `review declaration · ${key} → ${value || 'unset'}`, edit,
-      note: 'Replaces the review declaration on the row with every pending review edit; the next review reads it. Nothing changes until the line runs.' };
+      note: 'Replaces the review declaration on the row with every pending review edit; the next review reads it. Nothing changes until Write runs.' };
   }
   if (p) addProposal(p);
 }
@@ -519,13 +519,13 @@ function lineDiff(a, b) {
   while (j < m) out.push(['add', b[j++]]);
   return out;
 }
-const ROUTE = { 'sd-db': ['sd-db change', 'sd-db · local'], declare: ['declaration change', 'sd-db declare · copy'] };
+const ROUTE = { 'sd-db': ['sd-db change', 'sd-db · local'], declare: ['declaration change', 'sd-db declare · local'] };
 // sd:5159 review: the row holds one review declaration, so each pending line for a repo carries every pending edit for it,
 // made on the reading in the order they were proposed. Running any one line, or all of them, leaves the same row.
 function restateDeclaration(path) {
   const r = REPOS.find(x => x.path === path), edits = pending.filter(x => x.edit && x.repo?.path === path).reverse();
   const change = r && edits.length ? reviewDiff(r.review?.declaration || '', body => edits.forEach(x => x.edit(body))) : null;
-  if (change) edits.forEach(x => { x.diff = change.diff; x.cmd = `${SDDB} repo declare ${shq(path)} review ${shq(change.after)}`; });
+  if (change) edits.forEach(x => { x.diff = change.diff; x.after = change.after; x.cmd = `${SDDB} repo declare ${shq(path)} review ${shq(change.after)}`; });
 }
 function addProposal(p) {
   const r = REPOS.find(x => x.path === repoParam);
@@ -568,7 +568,7 @@ document.getElementById('view-repos').addEventListener('click', e => {
     addProposal({ key: 'review-declaration', route: 'declare', icon: 'terminal', title: 'review declaration · new', edit: body => { body.severity_floor = 'high'; },
       cmd: `${SDDB} repo declare ${shq(r.path)} review ${shq('{"severity_floor":"high"}')}`,
       diff: [['hd', '@@ new review declaration @@'], ['add', '{'], ['add', '  "severity_floor": "high"'], ['add', '}']],
-      note: 'A starting declaration with the floor the managed repos use. Nothing changes until the line runs.' });
+      note: 'A starting declaration with the floor the managed repos use. Nothing changes until Write runs.' });
   }
 });
 
@@ -589,6 +589,11 @@ function landing(promise, msg, inverse) {
 const undoOf = (o, r) => r && r.undo ? r.undo() : false;
 async function setRepo(field, r, value, before) {
   const got = await window.shell.post(`/api/repos/${field}`, { path: r.path, value, before });
+  await reread();
+  return got;
+}
+async function declare(r, value, before) {
+  const got = await window.shell.post('/api/run', { action: 'declaration.write', path: r.path, kind: 'review', value, before });
   await reread();
   return got;
 }
@@ -686,9 +691,14 @@ function registerCommands() {
         const undo = o.verb !== 'channels' ? () => setRepo(o.verb, o.repo, o.before, o.value) : o.back !== undefined ? v => setRepo(o.verb, o.repo, o.back, v?.value) : null;
         return landing(setRepo(o.verb, o.repo, o.value, o.before), v => `Ran locally · ${o.title}${v?.remedy ? ` · ${v.remedy}` : ''}`, undo); },
       undo: undoOf },
-    // sd:5159: copy only. `sd-db repo declare` checks the value with sd-review's own validator before it writes the row.
-    { id: 'declaration.copy', on: 'declaration change', label: 'Copy', does: 'Gives the sd-db repo declare line that writes this change to the repo row.', key: 'p', icon: 'copy', risk: 'safe', primary: () => true, executes: false,
-      cli: o => o.cmd, run: () => 'Copy it into a terminal: the dashboard does not write declarations' },
+    // sd:5887: Write does what the sd-db repo declare line does, through /api/run (run_actions.declaration_write): the
+    // server refuses a row that changed since this reading, checks the value with the pack's own validator, and writes the
+    // row. Undo writes the reading back, or removes a declaration the row did not have.
+    { id: 'declaration.write', on: 'declaration change', label: 'Write', does: 'Writes this change to the repo row; Undo writes the old declaration back.', key: 'p', icon: 'play', risk: 'undo', primary: () => true, executes: true,
+      cli: o => o.cmd, sends: o => `POST /api/run {action: declaration.write, path: ${o.repo.path}, kind: review}`,
+      run: o => { dropProposal(o); const before = o.repo.review?.declaration || '';
+        return landing(declare(o.repo, JSON.parse(o.after), before), () => `Written · ${o.title}`, () => declare(o.repo, before.trim() ? JSON.parse(before) : null, o.after)); },
+      undo: undoOf },
     ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', does: 'Drops this proposal from the list; nothing was run.', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
     window.commands.showAssignment({ run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } }),

@@ -158,7 +158,7 @@ addEventListener('DOMContentLoaded', () => {
       <ul class="gates">${L.map(([, n, s, w]) => html`<li><span class="g g-${s}" aria-hidden="true">${GLYPH[s]}</span><span>${n}</span><span class="what">${w}</span></li>`)}</ul>
       <div class="publish">
         <span class="label">Publish gate</span>
-        ${P.ok ? html`<p class="why">Open: stage Ready, gates pass, readiness recorded for this draft. Publish is copy only: <code>sd writing publication-claim</code>, then <code>publication-dispatch</code> on the recorded claim.</p>` : html`<p class="why">Closed. Publish stays off until each of these clears:</p><ul>${P.why.map(w => html`<li>${w}</li>`)}</ul>`}
+        ${P.ok ? html`<p class="why">Open: stage Ready, gates pass, readiness recorded for this draft. Publish is copy only, since it posts outside: <code>sd writing publication-claim</code>, then <code>publication-dispatch</code> on the recorded claim.</p>` : html`<p class="why">Closed. Publish stays off until each of these clears:</p><ul>${P.why.map(w => html`<li>${w}</li>`)}</ul>`}
       </div>
       <h3>Act</h3>${C.bar(String(p.id))}
       <div class="actions"><button class="btn quiet sm" type="button" id="open-ed">${ICON('pen-line')}Open in editor</button></div>
@@ -240,15 +240,15 @@ addEventListener('DOMContentLoaded', () => {
     { id: 'piece.readiness', on: 'piece', label: 'Readiness', does: 'Checks the piece\'s review gates and names the first problem.', key: 'r', icon: 'shield-check', risk: 'safe',
       cli: o => `sd writing readiness --piece ${P_(o).piece}`,
       run: o => { const p = P_(o); return p.gates_ok ? `#${p.id}: review checks pass` : `#${p.id}: ${markup.plural(p.problems.length, 'gate problem')}; first: ${p.problems[0]}`; } },
-    { id: 'piece.publish', on: 'piece', label: 'Publish', does: 'Gives the two lines that publish the piece; the dashboard sends nothing.', key: 'u', icon: 'send', risk: 'confirm',
+    { id: 'piece.publish', on: 'piece', label: 'Publish', does: 'Gives the two lines that publish the piece; copy only, since it posts outside.', key: 'u', icon: 'send', risk: 'confirm',
       // sd writing publication-claim writes the claim (--piece, --context-file, --payload-file); dispatch then publishes it.
-      // build: copy only, with the reference's own executes: false; the dashboard sends nothing.
+      // build: copy only, with the reference's own executes: false: publishing posts outside, so it stays the operator's (sd:5887).
       executes: false,
       cli: o => `sd writing publication-claim --piece ${P_(o).piece} --context-file context.json --payload-file payload.json\nsd writing publication-dispatch --piece ${P_(o).piece} --claim <claim> --context-file context.json --confirmed`,
       primary: o => !!P_(o) && publishState(P_(o)).ok,
       when: o => { const P = publishState(P_(o)); return P.ok || P.why.join(' '); },
-      consequence: () => 'Publishes to the destinations in sd-plugin.json; the canonical destination comes first. The publication claim records the URL. The dashboard sends nothing: copy the two lines.',
-      run: o => `Copy the two lines to publish #${P_(o).id}; the dashboard does not run them` },
+      consequence: () => 'Publishes to the destinations in sd-plugin.json; the canonical destination comes first. The publication claim records the URL. It posts outside, so the dashboard sends nothing: copy the two lines.',
+      run: o => `Copy the two lines to publish #${P_(o).id}; publishing posts outside, so the dashboard does not run them` },
   ];
   C.register(...CMDS);
   const cmd = id => CMDS.find(c => c.id === id);
@@ -374,7 +374,8 @@ addEventListener('DOMContentLoaded', () => {
     select: (id, n) => { select(id); n.focus(); }, clear: () => !!drag && (endDrag(false), true) };
 
   // ---------- Shapeshift: capture an idea, or find a piece ----------
-  // build: capture is copy only. It writes a vault note, and no dashboard route writes to the vault.
+  // Capture (sd:5887): Enter posts /api/run, and the server runs `sd store add` with the idea as one argument, never a shell.
+  // A refused or failed capture puts the idea back in the box, so nothing typed is lost.
   const inp = document.getElementById('shift-in'), prev = document.getElementById('shift-preview'), ghost = document.getElementById('shift-ghost');
   const captureCli = t => `sd store add sdw.blog-idea ${shq(t)} --field status=inbox`;
   function parse(t) {
@@ -388,9 +389,9 @@ addEventListener('DOMContentLoaded', () => {
     const t = inp.value; ghost.hidden = !!t;
     if (!t.trim()) { prev.hidden = true; inp.setAttribute('aria-expanded', 'false'); return; }
     const P = parse(t);
-    put(prev, html`${(P.idea ? html`<div class="as"><span class="label">Enter copies</span>${ICON('lightbulb')}<span>${P.idea}</span></div><div class="cli"><code>${captureCli(P.idea)}</code><button class="icon-btn" type="button" aria-label="Copy: ${captureCli(P.idea)}" data-copy="${captureCli(P.idea)}">${ICON('copy')}</button></div>` : '') }${
+    put(prev, html`${(P.idea ? html`<div class="as"><span class="label">Enter captures</span>${ICON('lightbulb')}<span>${P.idea}</span></div><div class="cli"><code>${captureCli(P.idea)}</code><button class="icon-btn" type="button" aria-label="Copy: ${captureCli(P.idea)}" data-copy="${captureCli(P.idea)}">${ICON('copy')}</button></div>` : '') }${
       (P.find.length ? html`<p class="hint">${P.idea ? 'Or open' : 'Enter opens'}</p><div class="suggest">${P.find.map(p => html`<button type="button" data-open-find="${p.id}">${ICON('search')}<span>#${p.id} · ${p.title}</span></button>`)}</div>` : P.id ? html`<p class="hint">No piece #${P.id}.</p>` : '') }${
-      html`<p class="hint">Capture writes to the vault, which the dashboard does not write · Esc clears</p>`}`);
+      html`<p class="hint">Capture adds a blog idea to the vault's inbox · Esc clears</p>`}`);
     prev.hidden = false; inp.setAttribute('aria-expanded', 'true');
   }
   inp.addEventListener('input', showPrev); inp.addEventListener('focus', showPrev);
@@ -400,9 +401,12 @@ addEventListener('DOMContentLoaded', () => {
     const P = parse(inp.value);
     if (!P.idea && P.find[0]) { inp.value = ''; showPrev(); select(P.find[0].id, true); return; }
     if (!P.idea) return;
-    const line = captureCli(P.idea); inp.value = ''; showPrev();
-    navigator.clipboard?.writeText(line).catch(() => {});
-    toast(`Copy the line to capture the idea; the dashboard does not write to the vault: ${line}`);
+    const idea = P.idea, back = () => { if (!inp.value) { inp.value = idea; showPrev(); } };
+    inp.value = ''; showPrev();
+    window.shell.post('/api/run', { action: 'idea.capture', text: idea }).then(r => {
+      if (r.exit === 0) return toast(`Idea captured in the vault inbox: ${idea}`);
+      back(); toast(`Idea not captured: ${captureCli(idea)} exited ${r.exit}: ${r.output}`);
+    }, e => { back(); toast(`Idea not captured: ${e.message}`); });
   });
   prev.addEventListener('click', e => { const b = e.target.closest?.('[data-open-find]'); if (b) { inp.value = ''; showPrev(); select(b.dataset.openFind, true); } });
   document.addEventListener('click', e => { if (!e.target.closest?.('#shift')) { prev.hidden = true; inp.setAttribute('aria-expanded', 'false'); } });

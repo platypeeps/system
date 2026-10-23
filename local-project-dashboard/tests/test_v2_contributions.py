@@ -5,7 +5,8 @@ old screen moves to `/classic/contributions`, which the palette lists. `/api/con
 renders: open rows in lane order with only the fields the page shows, settled rows counted per repository, open rows
 capped at `OPEN_LIMIT` with the cut said, each row's scope from sd's repo table, and the GitHub tracker's freshness. The
 page registers the design's Contributions commands; Acknowledge and Make task ask first and post, Make task a linked task, and
-Draft nudge, Open on GitHub and Re-run collector are copy only and post nothing. Nothing claims a GitHub reading.
+Open on GitHub and Re-run collector post nothing; Draft nudge drafts into Details, and Post nudge asks first, then posts
+the draft through /api/run (sd:5887). Nothing claims a GitHub reading.
 
 `contributions.js` runs under JavaScriptCore (osascript) against the stand-in page and shell `test_v2_tasks` uses, with the
 real reader (`read.js`, sd:2488). Focus after a redraw (sd:2426) runs against a small box stand-in that parses the drawn
@@ -46,6 +47,8 @@ COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 COMMANDS = [
     ["contribution.ack", "contribution", "Acknowledge", "a", "confirm"],
     ["contribution.nudge", "contribution", "Draft nudge", "d", "safe"],
+    # sd:5887: Post nudge posts the draft as the operator's comment, after a confirm that names the pull request or issue.
+    ["contribution.post", "contribution", "Post nudge", "n", "confirm"],
     ["contribution.task", "contribution", "Make task", "k", "confirm"],
     ["contribution.open", "contribution", "Open on GitHub", "o", "safe"],
     ["contribution.dismiss", "contribution", "Dismiss", "x", "confirm"],
@@ -742,16 +745,34 @@ const gone = C.get('github:""" + EXTERNAL + """'); R.gone = [gone.type, gone.lab
         self.assertEqual(out["R"]["gone"], ["not listed", "Contribution 3 (no longer listed)", 0])
         self.assertEqual(out["picks"], ["github:" + EXTERNAL])
 
-    def test_the_copy_only_commands_post_nothing(self):
+    def test_draft_nudge_posts_nothing_and_open_opens_the_page(self):
         out = self.run_page("""const ext = C.get('github:""" + EXTERNAL + """');
 R.exec = ['contribution.nudge', 'contribution.open'].map(id => cmd(id).executes);
 R.cli = [cmd('contribution.nudge').cli(ext), cmd('contribution.open').cli(ext)];
-shellRun(cmd('contribution.nudge'), ext); shellRun(cmd('contribution.open'), ext); await flush();""")
+shellRun(cmd('contribution.nudge'), ext); shellRun(cmd('contribution.open'), ext); await flush(); R.det = ELS.details.html;""")
         self.assertEqual(out["R"]["exec"], [False, False])
         self.assertEqual(out["R"]["cli"], [f"gh pr comment {EXTERNAL} --body-file nudge.md", f"gh pr view --web {EXTERNAL}"])
         self.assertEqual((out["posts"], out["confirms"]), ([], []))
         # sd:5628 reverses the copy-only ruling of PR #72's review 2: Open on GitHub opens the pull request, nudge still opens nothing.
         self.assertEqual(out["opened"], [EXTERNAL])
+        # sd:5887: the draft is in Details, editable, and names where Post nudge would post it.
+        self.assertIn('<textarea class="cap-in" id="nudge-text"', out["R"]["det"])
+        self.assertIn(f"Nothing is posted until Post nudge, which asks first and names {EXTERNAL}.", out["R"]["det"])
+
+    def test_post_nudge_asks_naming_the_pull_request_and_posts_the_edited_draft(self):
+        out = self.run_page("""const ext = C.get('github:""" + EXTERNAL + """'), post = cmd('contribution.post');
+const was = ANSWER; ANSWER = (p, b) => p === '/api/run' ? [200, { action: b.action, label: 'Post nudge', line: 'l', exit: R.code || 0, output: 'HTTP 403', cut: false }] : was(p, b);
+R.before = post.when(ext); shellRun(cmd('contribution.nudge'), ext); await flush(); R.after = post.when(ext); R.says = post.consequence(ext);
+ELS.details.listeners.input.forEach(f => f({ target: { id: 'nudge-text', value: 'Any news on this?' } }));
+R.code = 1; shellRun(post, ext); await flush(); R.code = 0; shellRun(post, ext); await flush(); R.gone = post.when(ext);""")
+        self.assertEqual((out["R"]["before"], out["R"]["after"], out["R"]["gone"]), ("draft a nudge first", True, "draft a nudge first"))
+        self.assertIn(f"as your comment on {EXTERNAL}", out["R"]["says"])
+        nudge = {"action": "contribution.nudge", "key": "github:" + EXTERNAL, "body": "Any news on this?"}
+        self.assertEqual([{k: v for k, v in b.items() if k != "revision"} for p, b, _ in out["posts"]], [nudge, nudge])
+        self.assertEqual(out["confirms"], ["contribution.post", "contribution.post"])
+        toasts = [t[0] for t in out["toasts"]]
+        self.assertTrue(any("gh exited 1: HTTP 403" in t for t in toasts), toasts)
+        self.assertEqual(toasts[-1], f"Nudge posted on {EXTERNAL}")
 
     def sync_answer(self, finished):
         """The page's document, a started sync, and its state: running on the first read, then `finished`."""
@@ -1028,7 +1049,7 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         # Review 4 of PR #72 (0435ca1e4fbb): the help and the page note still said a followup through /api/items.
         page = (V2 / "contributions.html").read_text(encoding="utf-8")
         routes = re.findall(r"post\('(/api/[^']+)'", PAGE_JS)
-        self.assertEqual(routes, ["/api/contributions/view", "/api/contributions/acknowledge", "/api/contributions/task",
+        self.assertEqual(routes, ["/api/contributions/view", "/api/contributions/acknowledge", "/api/run", "/api/contributions/task",
                                   "/api/contributions/dismiss"])
         # Re-run collector is the shared declaration (commands.js, sd:3524); the page help still names its route.
         self.assertIn("window.commands.syncCollector(", PAGE_JS)

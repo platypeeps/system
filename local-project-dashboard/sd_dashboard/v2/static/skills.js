@@ -2,9 +2,9 @@
 // reference is marked "build:". The rows are /api/skills (skills_screen.document): the catalog the old screen renders, each
 // skill's use in the last three Monday-start weeks, and the use records no catalog skill explains; never sample data.
 // Try, Review, Promote and Demote ask first and post the routes the old screen posts: no verb ends a trial early, and a
-// request files an sd item that closes in Tasks (system sd:5477), so none carries the reference's Undo. Run, Schedule and Adopt are copy only: the dashboard has no route that
-// creates the item a run needs, adds a launchd job or adopts a skill, and the reference's chat proposals are not ported.
-// Scan runs `sd skill scan` through /api/run (sd:5886). Re-import and Evaluate (sd:3992) post /api/skills/intake, which runs `sd skill intake` and answers its report;
+// request files an sd item that closes in Tasks (system sd:5477), so none carries the reference's Undo. Schedule is copy only: a
+// job is a launchd agent and sd adds none. Scan runs `sd skill scan` through /api/run (sd:5886); Run and Adopt ask first and
+// start claude in a new herdr workspace through /api/run (sd:5887), and Details shows which. Re-import and Evaluate (sd:3992) post /api/skills/intake, which runs `sd skill intake` and answers its report;
 // Approve shows only under a report that can install, asks first, and posts the URL, scope and revision that report printed.
 // A skill the intake installed in ~/.claude/skills (sd:3997) is a "user skill": the Adopt panel lists it with Re-import, which
 // runs the intake with the user scope. It is no catalog row, so Try, Review, Promote and Demote are not on it.
@@ -245,8 +245,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
       : 'The skills were not read, so nothing is selected. Reload retries it.'}</p>`);
   }
 
-  // ---------- Forms: promote (posts); adopt (copy only) ----------
-  // build: the reference's run and schedule forms built proposals; with no route behind either, Run and Schedule are copy only.
+  // ---------- Forms: promote (posts); adopt (runs, sd:5887) ----------
   function openPromote(s) {
     const slot = document.getElementById('form-slot'); if (!slot) return;
     put(slot, html`<form class="form" id="pro-form"><div class="parsed" role="group" aria-label="Path">${Object.entries(DOC.paths).map(([k, v], i) => html`<button class="chip" type="button" data-path="${k}" aria-pressed="${String(!i)}">${k} · ${v}</button>`)}</div>
@@ -271,7 +270,8 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
       ${U.length ? html`<h3>Imported to ~/.claude/skills</h3><ul class="imported">${U.map(u => html`<li><span><b>${u.name}</b><span class="src">${u.url} at ${u.commit.slice(0, 12)}</span></span>${C.rowActions(u.id)}</li>`)}</ul>` : ''}
       <div id="intake-slot"></div>
       <h3>Same thing from the CLI</h3><div class="cli"><code id="ad-intake"></code><button class="icon-btn" type="button" id="ad-intake-copy" aria-label="Copy the intake line">${I('copy')}</button></div>
-      <h3>Or adopt by hand</h3><p class="why"><code>sd-skill-adopt</code> also takes owner/repo shorthand; the dashboard does not run it.</p>
+      <h3>Or adopt with claude</h3><p class="why"><code>sd-skill-adopt</code> also takes owner/repo shorthand. Adopt asks first, then starts it in a new herdr workspace in the pack.</p>
+      <div class="row"><button class="btn quiet" type="button" id="ad-run">${I('play')} Adopt</button></div>
       <div class="cli"><code id="ad-cli"></code><button class="icon-btn" type="button" id="ad-copy" aria-label="Copy the adopt line">${I('copy')}</button></div>`);
     const src = details.querySelector('#ad-src'), out = details.querySelector('#ad-parsed'), cli = details.querySelector('#ad-cli'), copy = details.querySelector('#ad-copy');
     const scope = details.querySelector('#ad-scope'), err = details.querySelector('#ad-err'), line2 = details.querySelector('#ad-intake'), copy2 = details.querySelector('#ad-intake-copy');
@@ -281,6 +281,9 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
       const intakeLine = `sd skill intake ${GITHUB.test(src.value.trim()) ? shq(src.value.trim()) : 'URL'} --scope ${shq(scope.value)}`;
       line2.textContent = intakeLine; copy2.dataset.copy = intakeLine; };
     src.addEventListener('input', upd); scope.addEventListener('change', upd); upd();
+    details.querySelector('#ad-run').addEventListener('click', () => { const p = parseSource(src.value);
+      err.hidden = !!p; err.textContent = p ? '' : 'Adopt takes owner/repo, owner/repo/path or its https://github.com/ URL.';
+      if (p) C.run(ADOPT, { ...C.get('adopt'), source: `${p.owner}/${p.repo}${p.path ? '/' + p.path : ''}` }); });
     // Evaluate takes a GitHub URL only: the route refuses anything else, and runs sd with it as one argument, never a shell.
     details.querySelector('#adopt-form').addEventListener('submit', e => {
       e.preventDefault(); const v = src.value.trim();
@@ -599,8 +602,8 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
     if (e.key === 'ArrowRight' && input.selectionStart === input.value.length && input.value) { e.preventDefault(); const o = ['filter', 'run', 'adopt']; setMode(o[(o.indexOf(mode) + 1) % 3]); }
     if (e.key === 'Enter' && input.value.trim()) {
       e.preventDefault(); const v = input.value.trim();
-      // build: run selects the skill; its Details hold Run's line to copy.
-      if (mode === 'run') { const name = (v.match(/^run\s+([\w-]+)/i) || [])[1]; if (!byName[name]) return window.shell.toast(`No skill named “${name || ''}” in the catalog.`); select(name, true); input.value = ''; render(); }
+      // build: run selects the skill and opens Run's dialog, where the repo is picked (sd:5887).
+      if (mode === 'run') { const name = (v.match(/^run\s+([\w-]+)/i) || [])[1]; if (!byName[name]) return window.shell.toast(`No skill named “${name || ''}” in the catalog.`); select(name, true); input.value = ''; render(); C.run(RUN, byName[name]); }
       if (mode === 'adopt') { showAdopt(v); input.value = ''; render(); }
     }
     if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; render(); }
@@ -627,6 +630,20 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
     consequence: o => `This files a task in Tasks to move ${o.id} into skills/ on the ${o.path} path, in an isolated checkout, with one pull request. Close the task there to drop it.`,
     cli: o => `sd skill promote ${shq(o.id)} --path ${shq(o.path)}`,
     run: o => write(o, 'promote', `promotion to ${o.path} filed`, out => `Promotion of ${o.id} to ${o.path} filed${itemOf(out)}`, { path_name: o.path }) };
+  // Run and Adopt (sd:5887): the server checks the skill or source and the registered repo, then starts claude in a new herdr
+  // workspace with the text typed in, as Fix does; the session is the operator's. The repo list is read once, at start.
+  let CHECKOUTS = [];
+  window.shell.repos?.().then(list => { CHECKOUTS = list; }, () => {});
+  const RUN = { id: 'skill.run', on: 'skill', label: 'Run', does: 'Starts claude with this skill in a new herdr workspace in the repo you pick.', key: 'r', icon: 'play', risk: 'confirm', executes: true,
+    when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
+    fields: () => [{ name: 'repo', label: 'Repo', required: true, options: CHECKOUTS.map(r => ({ value: r.path, label: r.name })), help: CHECKOUTS.length ? '' : 'The repo list was not read; Reload retries it.' }],
+    consequence: o => `This opens herdr workspace skill-${o.id} and starts claude in the repo's checkout with /${o.id} typed in. The session is yours to steer or close.`,
+    cli: (o, v) => `cd ${shq(v.repo || 'REPO')} && claude ${shq('/' + o.id)}`, sends: o => `POST /api/run {action: skill.run, skill: ${o.id}, repo}`,
+    run: (o, v) => window.commands.runAction(o, 'skill.run', { skill: o.id, repo: v?.repo || '' }) };
+  const ADOPT = { id: 'skill.adopt', on: 'adopt form', label: 'Adopt', does: 'Starts claude with sd-skill-adopt in a new herdr workspace in the pack.', risk: 'confirm', executes: true,
+    consequence: o => `This opens herdr workspace skill-adopt and starts claude in the pack checkout with /sd-skill-adopt ${o.source} typed in. It lands as a pull request you review.`,
+    cli: o => `claude ${shq(`/sd-skill-adopt ${o.source}`)}`, sends: o => `POST /api/run {action: skill.adopt, source: ${o.source}}`,
+    run: o => window.commands.runAction({ ...o, id: 'adopt' }, 'skill.adopt', { source: o.source }) };
   function registerCommands() {
     C.register(
       { id: 'skill.try', on: 'skill', label: 'Try', does: 'Starts a 30-day trial at the next install; it cannot end early.', key: 't', icon: 'flask-conical', risk: 'confirm', bulk: true, primary: o => sk(o).status === 'contrib',
@@ -650,6 +667,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         cli: o => `sd skill intake ${shq(o.id)} --rollback`, run: o => { select(o.id, true); return evaluate(o.id, { source: o.id, rollback: true }); } },
       { id: 'skill.rollback.user', on: 'user skill', label: 'Rollback', does: 'Shows the swap back to the copy this user skill\'s last install replaced.', key: 'b', risk: 'safe',
         cli: o => `sd skill intake ${shq(o.name)} --rollback --scope user`, run: o => { showAdopt(); return evaluate('adopt', { source: o.name, scope: 'user', rollback: true }); } },
+      RUN,
       { id: 'skill.schedule', on: 'skill', label: 'Schedule', does: 'Says why not: a scheduled job is a launchd agent, and sd adds none.', key: 's', risk: 'safe', executes: false, when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
         cli: () => 'no sd verb: a job is a launchd agent', run: () => 'No sd verb adds a job: a job is a launchd agent' },
       // build: applying review notes lives on the review item's page, where the notes are.

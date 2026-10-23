@@ -1,22 +1,25 @@
-"""Run (sd:5886): a button that gave a line to copy posts /api/run, and the server runs a fixed command from its registry.
+"""Run (sd:5886, sd:5887): a button that gave a line to copy posts /api/run, and the server runs a fixed command from its
+registry.
 
 What this slice promises: the page names an action and ids, never a command. Each id is read against what the server
 holds -- an installed job, a configured storage folder, a mount, a port number, a tile -- and a refusal runs nothing.
 A step that ran answers 200 with its exit and its output's tail, whatever the exit; the journal keeps that exit. A step
-past its bound is 504 with `outcome: unknown`. Stubs on PATH stand in for launchctl, lsof, df, du and sd: no test
-reaches launchd, the network or the live database.
+past its bound is 504 with `outcome: unknown`. Stubs on PATH stand in for launchctl, lsof, df, du, sd and gh, and a
+patched `fix_session._launch` for herdr: no test reaches launchd, herdr, GitHub or the live database.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
 from unittest.mock import patch
 
+from sd_db import contributions, repos, upsert_repo
 from sd_db.workflow import WorkflowError
 
-from sd_dashboard import health_collectors, home_screen, run_actions
+from sd_dashboard import fix_session, health_collectors, home_screen, run_actions
 from test_workflow_actions import BrowserSession
 
 STUB = """#!/bin/sh
@@ -182,3 +185,123 @@ class TheBounds(Run):
         status, body = run_actions.run("job.log", run_actions.Step(line="gone", argv=(str(self.bin / "gone"),)))
         self.assertEqual(status, 503)
         self.assertIn("did not start", body["error"])
+
+
+class TheWrites(Run):
+    def setUp(self):
+        super().setUp()
+        root = Path(self.tmp.name).resolve()
+        self.home = root / "home"
+        (self.home / ".claude" / "skills" / "demo").mkdir(parents=True)
+        (self.home / ".claude" / "skills" / "demo" / "SKILL.md").write_text("---\nname: demo\n---\n")
+        self.repo_dir = root / "widget"
+        self.repo_dir.mkdir()
+        upsert_repo(self.connection, str(self.repo_dir), remote="git@example.invalid:example/widget.git")
+        self.connection.commit()
+        self.stub("gh", f'cat > "{root}/posted"')
+        env = patch.dict(os.environ, {"HOME": str(self.home), "GH_BIN": str(self.bin / "gh")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.launched = []
+        launch = patch.object(fix_session, "_launch", lambda *a: self.launched.append(a) or "w1:p1")
+        launch.start()
+        self.addCleanup(launch.stop)
+
+    def refused(self, cases):
+        before = self.snapshot()
+        for ids, code, said in cases:
+            with self.subTest(ids=ids):
+                status, _, body = self.post("/api/run", ids)
+                self.assertEqual(status, code)
+                self.assertIn(said, body["error"])
+        self.assertEqual((self.ran(), self.launched), ([], []))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_capture_idea_runs_sd_store_add_with_the_idea_as_one_argument(self):
+        status, body = self.run_("idea.capture", text="Gates; and $(why) they wait\n")
+        self.assertEqual((status, body["exit"]), (200, 0))
+        self.assertEqual(self.ran(), ["sd store add sdw.blog-idea Gates; and $(why) they wait --field status=inbox"])
+        self.assertEqual(self.journalled()[-1], ("Run · idea.capture", 0))
+
+    def test_capture_idea_refuses_what_sd_store_would_misread(self):
+        self.refused([({"action": "idea.capture", "text": "--force"}, 400, "not a dash"),
+                      ({"action": "idea.capture", "text": 'say "hi"'}, 400, "double quote"),
+                      ({"action": "idea.capture", "text": "  "}, 400, "empty"),
+                      ({"action": "idea.capture", "text": ["a"]}, 400, "text")])
+
+    def declared(self):
+        return repos.declarations(self.connection, str(self.repo_dir)).get("review")
+
+    def test_write_declaration_writes_at_the_shown_reading_and_undo_removes_it(self):
+        status, body = self.run_("declaration.write", path=str(self.repo_dir), kind="review",
+                                 value={"severity_floor": "high"}, before="")
+        self.assertEqual((status, body["exit"]), (200, 0), body)
+        self.assertEqual(self.declared(), {"severity_floor": "high"})
+        self.assertIn("sd-db repo declare", body["line"])
+        status, body = self.run_("declaration.write", path=str(self.repo_dir), kind="review", value=None,
+                                 before=json.dumps({"severity_floor": "high"}))
+        self.assertEqual((status, body["exit"]), (200, 0), body)
+        self.assertIsNone(self.declared())
+
+    def test_write_declaration_refuses_a_stale_reading_a_bad_value_and_an_unknown_repo(self):
+        repos.set_declaration(self.connection, str(self.repo_dir), "review", {"severity_floor": "low"})
+        self.connection.commit()
+        shown = json.dumps({"severity_floor": "low"})
+        write = {"action": "declaration.write", "path": str(self.repo_dir), "kind": "review"}
+        self.refused([({**write, "value": {"severity_floor": "high"}, "before": ""}, 409, "changed since the page read it"),
+                      ({**write, "value": {"severity_floor": "extreme"}, "before": shown}, 400, "severity_floor must be one of"),
+                      ({**write, "value": "high", "before": shown}, 400, "JSON object"),
+                      ({**write, "kind": "lane", "value": {}, "before": shown}, 400, "review declaration only"),
+                      ({**write, "path": "/repos/elsewhere", "value": {}, "before": ""}, 400, "not a registered repository")])
+        self.assertEqual(self.declared(), {"severity_floor": "low"})
+
+    def test_run_starts_the_skill_in_herdr_in_a_registered_checkout(self):
+        status, body = self.run_("skill.run", skill="demo", repo=str(self.repo_dir))
+        self.assertEqual((status, body["exit"]), (200, 0))
+        self.assertEqual(self.launched, [(self.repo_dir, "skill-demo", "/demo")])
+        self.assertIn("w1:p1", body["output"])
+
+    def test_run_and_adopt_refuse_an_unknown_skill_repo_or_source(self):
+        self.refused([({"action": "skill.run", "skill": "nope", "repo": str(self.repo_dir)}, 400, "not an installed skill"),
+                      ({"action": "skill.run", "skill": "../demo", "repo": str(self.repo_dir)}, 400, "not an installed skill"),
+                      ({"action": "skill.run", "skill": "demo", "repo": str(self.home)}, 400, "not a registered repository"),
+                      ({"action": "skill.adopt", "source": "o/r; rm -rf ~"}, 400, "Adopt takes owner/repo"),
+                      ({"action": "skill.adopt", "source": "https://example.test/o/r"}, 400, "Adopt takes owner/repo")])
+
+    def test_adopt_starts_sd_skill_adopt_in_the_pack_and_a_herdr_refusal_is_its_exit(self):
+        from sd_dashboard import pack_library
+
+        status, body = self.run_("skill.adopt", source="https://github.com/o/r/tree/main/skills/x")
+        self.assertEqual((status, body["exit"]), (200, 0))
+        self.assertEqual(self.launched, [(pack_library().parent, "skill-adopt", "/sd-skill-adopt o/r/skills/x")])
+        with patch.object(fix_session, "_launch", lambda *a: (503, {"error": "Fix failed: herdr is not running"})):
+            status, body = self.run_("skill.adopt", source="o/r")
+        self.assertEqual((status, body["exit"], body["output"]), (200, 1, "herdr is not running"))
+
+    def observed(self, url):
+        contributions.observe_pull(self.connection, url, {"complete": True, "observed_at": "2026-09-09T12:00:00Z",
+            "operator": {"id": "1", "login": "author"}, "author": {"id": "1", "login": "author"}, "repo": "example/project",
+            "title": "Upstream patch", "state": "open", "head": "a" * 40, "base": "b" * 40, "draft": False,
+            "mergeable": "mergeable", "ci": "success", "ci_head": "a" * 40, "ci_ids": ["check:1"], "why": ["author"],
+            "blocking_labels": [], "labels": [], "reviews": [], "events": []},
+            expected_revision=contributions.snapshot(self.connection, "github:" + url)["revision"])
+        self.connection.commit()
+        return contributions.snapshot(self.connection, "github:" + url)["revision"]
+
+    def test_post_nudge_posts_the_draft_on_stdin_to_the_rows_own_url(self):
+        url = "https://github.com/example/project/pull/21"
+        revision = self.observed(url)
+        status, body = self.run_("contribution.nudge", key="github:" + url, revision=revision, body="Any news? $(id)\n")
+        self.assertEqual((status, body["exit"]), (200, 0), body)
+        self.assertEqual(self.ran(), [f"gh pr comment {url} --body-file -"])
+        self.assertEqual((Path(self.tmp.name).resolve() / "posted").read_text(), "Any news? $(id)\n")
+
+    def test_post_nudge_refuses_a_stale_row_an_empty_draft_and_a_key_off_github(self):
+        url = "https://github.com/example/project/pull/21"
+        revision = self.observed(url)
+        nudge = {"action": "contribution.nudge", "key": "github:" + url, "revision": revision}
+        self.refused([({**nudge, "revision": "0" * 64, "body": "hi"}, 409, "contribution changed"),
+                      ({**nudge, "body": "   "}, 400, "empty"),
+                      ({**nudge, "body": "x" * (run_actions.NUDGE_MAX + 1)}, 400, "at most"),
+                      ({**nudge, "key": "sd:5", "body": "hi"}, 400, "filed on GitHub")])
+

@@ -215,6 +215,10 @@ Run (sd:5886, `run_actions.py`): a button that once gave a line to copy posts `/
 Show log and Print need an installed job; Show biggest and Show use a configured storage folder or a mount; Inspect listener a port number; Read state a tile in the tile list.
 Each run waits in the POST, bounded (30 s unless the action sets more), and answers 200 with its exit and the last 64 KiB of output, which Details shows.
 A refusal is a 4xx and ran nothing; a run past its bound is a 504 whose outcome is not known. The command journal keeps each run's own exit.
+Local writes (sd:5887) use the same route: Capture idea runs `sd store add`, Write runs `repos.set_declaration` at the reading the page showed (409 when the row changed), and Post nudge runs `gh ... comment --body-file -` with the URL from the contribution row and the draft on stdin.
+Run and Adopt on Skills start claude in a new herdr workspace through `fix_session._launch`; the session is the operator's.
+Document Request and Research Run file through `/api/items`, as Capture does, and their Undo is `cancel-task`.
+Three stay copy only, each with its reason in the UI: Publish posts outside, Kickstart would end its own request, and Schedule needs a launchd agent sd does not add.
 
 Draft email on Tasks (sd:3463, `email_draft.py`) runs `claude -p` on Sonnet with no tools and no MCP servers.
 The item's title, description and notes go on stdin.
