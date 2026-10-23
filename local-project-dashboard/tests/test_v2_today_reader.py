@@ -24,7 +24,7 @@ from sd_dashboard import now_screen, v2
 
 from support import NOW, ScreenCase
 from test_now_screen import JobsBackend, fleet_document, repo
-from test_today_needs import work
+from test_today_needs import blocked, lane, work
 from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT
@@ -210,6 +210,51 @@ window.PAGE_LIST.clear(); click('intents', 'intent', 'fix'); R.fix = ids(); R.ch
         out = self.run_page(self.IDS + "R.ids = ids(); R.sel = selected();", search="?row=item%3A7")
         self.assertIn("item:7", out["R"]["ids"])
         self.assertEqual(out["R"]["sel"], ["item:7"])
+
+
+class TheConfirms(ReaderCase):
+    """sd:5921 review: a Today act that moves state asks first where its home page does. Approve grants a manual repo's
+    merge, so it asks as Queue's does; a group act on more members than the shell's bulk limit asks as a bulk act does.
+    Retry runs at once, as on Queue. `decline` is the shell's run with the confirm answered Cancel."""
+
+    ENTRY = "lane:system:5780:" + "a" * 12
+
+    def setUp(self):
+        super().setUp()
+        late = [work(n, due="2026-08-01", recurring=True) for n in range(1, 32)]
+        briefs = [{"id": f"b{n}", "subj": f"Brief {n}", "src": "hoa", "words": 90, "day": NOW[:10], "seen": "x"} for n in (1, 2)]
+        self.doc["needs"] = now_screen.needs(self.doc["needs"], work=late, live=set(), today=NOW[:10], briefs=briefs,
+                                             lanes=[{**lane(rows=[blocked(5780)]), "runner_merge": "manual"}])
+
+    DECLINE = """const cmd = id => REG.find(c => c.id === id);
+function decline(c, o) {
+  const off = c.when ? c.when(o) : true; if (off !== true) { OUT.toasts.push({ msg: 'off: ' + off }); return; }
+  if (c.risk === 'confirm' || c.fields || asksFirst(c, o)) { OUT.confirms.push(c.id); return; }
+  c.run(o);
+}
+"""
+
+    def test_approve_asks_first_and_posts_nothing_until_it_is_confirmed(self):
+        out = self.run_page(self.DECLINE + f"""const o = C.get('{self.ENTRY}');
+decline(cmd('today.lane.approve'), o); await flush(); R.said = (cmd('today.lane.approve').consequence || (() => null))(o);""")
+        self.assertEqual([(path, body["action"]) for path, body, _ in out["posts"]], [])
+        self.assertEqual(out["confirms"], ["today.lane.approve"])
+        self.assertEqual(out["R"]["said"], "The entry is queued again at head aaaaaaaaaaaa, and the runner may merge it to"
+                                           " the default branch. A merge is not taken back.")
+
+    def test_retry_runs_at_once_as_on_queue(self):
+        out = self.run_page(self.DECLINE + f"decline(cmd('today.lane.retry'), C.get('{self.ENTRY}')); await flush();")
+        self.assertEqual(out["confirms"], [])
+        self.assertEqual([(path, body["action"]) for path, body, _ in out["posts"]], [("/api/queue/move", "retry")])
+
+    def test_a_group_act_past_the_bulk_limit_asks_first_and_a_small_one_runs(self):
+        out = self.run_page(self.DECLINE + """decline(cmd('today.group.snooze'), C.get('group:late'));
+decline(cmd('today.group.seen'), C.get('group:briefs')); await flush();
+R.said = (cmd('today.group.snooze').consequence || (() => null))(C.get('group:late'));""")
+        self.assertEqual(out["confirms"], ["today.group.snooze"])
+        self.assertEqual([body["row"] for _, body, _ in out["posts"]], ["b1", "b2"])
+        self.assertEqual(out["R"]["said"], "Writes 31 snoozes, one per member; each member comes back on its own after a week"
+                                           " or by Unsnooze.")
 
 
 class TheTrack(ReaderCase):

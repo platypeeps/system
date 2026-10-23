@@ -370,6 +370,7 @@ window.PAGE_FILTER = { '': 'Needs you' };
     const each = (o, body) => Promise.all(o.members.map(m => window.shell.post('/api/snooze', body(m))))
       .then(() => reading.reread(), err => { load(); throw err; });
     const week = () => new Date(Date.now() + 7 * 864e5).toISOString();
+    const BULK = 25; // shell.js asks first for a bulk act on more rows than this; a group act on more members asks too
     const lane = action => o => post('/api/queue/move', { repo: o.repoPath, item: o.item, action, revision: o.laneRevision, head: o.head });
     const go = (href, said) => () => { location.href = href; return said; };
     C.register(
@@ -400,7 +401,9 @@ window.PAGE_FILTER = { '': 'Needs you' };
       { id: 'today.lane.retry', on: 'lane entry', label: 'Retry', does: 'Queues the entry again at the head it ended at.', key: 'r', icon: 'rotate-ccw', risk: 'safe', primary: () => true,
         cli: o => `sd-ship -C ${o.repoPath} lane retry ${o.item} --expected-head ${o.head}`, sends: () => 'POST /api/queue/move {action: retry}',
         when: o => !!o.head || 'the entry recorded no head; retry it from Queue', run: o => lane('retry')(o).then(() => `Queued again · sd:${o.item}`) },
-      { id: 'today.lane.approve', on: 'lane entry', label: 'Approve', does: 'Queues the entry again with the merge grant.', key: 'p', risk: 'safe',
+      // Approve grants the merge, which nothing takes back, so it asks first as Queue's does; Retry runs at once there too.
+      { id: 'today.lane.approve', on: 'lane entry', label: 'Approve', does: 'Asks first, then queues the entry again with the merge grant.', key: 'p', risk: 'safe', askFirst: true,
+        consequence: o => `The entry is queued again at head ${String(o.head).slice(0, 12)}, and the runner may merge it to the default branch. A merge is not taken back.`,
         cli: o => `sd-ship -C ${o.repoPath} lane retry ${o.item} --expected-head ${o.head} --manual`, sends: () => 'POST /api/queue/move {action: approve}',
         when: o => o.runnerMerge === 'manual' || 'this repo merges without a grant (runner_merge auto)', run: o => lane('approve')(o).then(() => `Approved · sd:${o.item}`) },
       { id: 'today.lane.queue', on: 'lane entry', label: 'Open in Queue', does: 'Opens the lane on Queue, where Cancel is.', key: 'q', risk: 'safe', executes: false,
@@ -419,11 +422,13 @@ window.PAGE_FILTER = { '': 'Needs you' };
         primary: o => o.group !== 'group:late', cli: () => 'sd today',
         run: o => { location.href = o.group === 'group:ready' ? '/writing' : '/tasks?view=list&realm=all'; return 'Opens'; } },
       { id: 'today.group.snooze', on: 'item group', label: 'Snooze all 1w', does: 'Hides every member for a week, one snooze each.', key: 'z', risk: 'safe',
+        askFirst: o => o.members.length > BULK, consequence: o => `Writes ${o.members.length} snoozes, one per member; each member comes back on its own after a week or by Unsnooze.`,
         cli: () => 'no sd verb: the dashboard writes one snooze per member (POST /api/snooze)',
         run: o => each(o, m => ({ page: 'today', row: m.id, until: week(), seen: m.seen })).then(() => `Snoozed ${o.members.length} for a week · ${o.label}`) },
       { id: 'today.group.read', on: 'brief group', label: 'Read', does: 'Opens Briefs.', key: 'o', icon: 'book-open', risk: 'safe', executes: false, primary: () => true,
         cli: () => 'sd reports brief list', run: go('/briefs', 'Briefs opens') },
       { id: 'today.group.seen', on: 'brief group', label: 'Mark all seen', does: 'Marks every new brief seen, one mark each, until its text grows.', key: 's', risk: 'safe',
+        askFirst: o => o.members.length > BULK, consequence: o => `Marks ${o.members.length} briefs seen; each comes back when its text grows.`,
         cli: () => 'no sd verb: the dashboard writes one snooze per brief (POST /api/snooze)',
         run: o => each(o, m => ({ page: 'today', row: m.id, until: m.until, seen: m.seen })).then(() => `Seen · ${o.members.length} briefs`) },
     );
