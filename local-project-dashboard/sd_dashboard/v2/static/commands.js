@@ -163,6 +163,9 @@
     const { html } = window.markup;
     return Object.entries(PUB_STATE).map(([k, w]) => [html`<span class="pub"><span class="pub-notion ${k}" aria-hidden="true">${pubGlyph('notion')}</span></span>`, w]);
   }
+  // The Drive and Notion destinations published() draws as `missing`: designated, every read answered, and no copy.
+  const missingCopies = pub => !pub || !pub.choice || pub.unread ? []
+    : ['drive', 'notion'].filter(ch => pub.choice[ch] === true && !(pub.copies || []).some(c => c.channel === ch));
   const PUB_WHERE = (ch, url) => { const f = ch === 'obsidian' && /[?&]file=([^&]*)/.exec(url); return f ? decodeURIComponent(f[1]) : url; };
   function published(pub) {
     const { html } = window.markup;
@@ -243,6 +246,19 @@
             : r.trash === 'queued' ? `${o.name} removed · its copy is queued for the trash; Publish now drains it` : `${o.name} removed · no copy was queued or delivered`),
           err => refusal(err, 'the trash was queued')),
         undo: o => window.shell.post(`${base}/publish`, { ...payload(o.row), channel: o.channel }).then(() => reread()) },
+      // A row whose icon reads "designated, no copy yet": POST <base>/publish again keeps the designation and queues the copy.
+      { id: `${on}.queue-copy`, on, label: 'Queue copy', does: 'Queues the missing copy of each designated destination; Publish now drains it.', icon: 'send', risk: 'safe', askFirst: true, executes: true,
+        when: o => !o.pub ? `not a ${on} the dashboard publishes` : missingCopies(o.pub).length > 0 || 'every designated destination has its copy or is queued',
+        cli: o => missingCopies(o.pub).map(ch => cli(o, ch)).join('\n'),
+        sends: o => missingCopies(o.pub).map(ch => `POST ${base}/publish ${JSON.stringify({ ...payload(o), channel: ch })}`).join('\n'),
+        consequence: o => `Queues ${o.label} for ${missingCopies(o.pub).map(ch => PUB_NAME[ch]).join(' and ')}. Nothing leaves the machine until Publish now or a drain by hand.`,
+        run: o => {
+          const want = missingCopies(o.pub);
+          return want.reduce((done, ch) => done.then(n => window.shell.post(`${base}/publish`, { ...payload(o), channel: ch }).then(r => n + (r.queued ? 1 : 0))), Promise.resolve(0))
+            .then(n => reread().then(() => n === want.length ? `Queued ${n === 1 ? 'one copy' : `${n} copies`} · ${o.label}; Publish now drains ${n === 1 ? 'it' : 'them'}`
+              : `${n} of ${want.length} copies queued · ${o.label}; the publish said nothing for the rest`),
+            err => refusal(err, 'the copy was queued'));
+        } },
       { id: `${on}.publish-now`, on, label: 'Publish now', does: 'Starts a drain that mirrors the queued copies to Notion or Drive.', icon: 'send', risk: 'safe', askFirst: true, executes: true,
         when: o => !o.pub ? `not a ${on} the dashboard publishes` : (o.pub.copies || []).some(c => c.state === 'queued') || 'nothing is queued: tick Drive or Notion under Publish to first',
         cli: () => 'no sd verb: drain the queue in a Claude session by the publication contract',

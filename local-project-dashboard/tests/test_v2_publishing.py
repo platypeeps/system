@@ -605,6 +605,39 @@ class BriefRows(brief_tests.BriefCase):
         self.assertIn('<span class="pub-obsidian off" role="img" aria-label="Obsidian: not a destination" '
                       'title="Obsidian: not a destination"><svg class="i" aria-hidden="true"><use href="#i-gem"/></svg></span>', rows)
 
+    def test_the_legend_under_the_list_names_every_icon_fill(self):
+        """The Briefs list carries the destination legend Documents draws (sd:5731): one key per fill, from PUB_STATE."""
+        self.page_doc = self.doc()
+        out = self.run_page("R.help = String(ELS['list-help'].html); R.pub = Object.values(window.commands.PUB_STATE);")
+        keys = re.findall(r'<span class="key"><span class="pub">.*?</svg></span></span> ([^<]+)</span>', out["R"]["help"])
+        self.assertEqual(keys, out["R"]["pub"])
+
+    def test_queue_copy_queues_each_designated_destination_that_has_no_copy(self):
+        """A row drawn "designated, no copy yet" offers Queue copy, which posts Publish to again for each such destination."""
+        self.page_doc = self.doc()
+        stem, item = self.page_doc["briefs"][0]["id"], self.page_doc["briefs"][0]["item"]
+        self.page_doc["briefs"][0]["pub"] = {"unread": "", "choice": {"notion": True, "drive": True, "obsidian": False, "why": ""},
+                                             "copies": [{"channel": "notion", "url": NOTION_URL, "state": "published", "title": "Notion"}]}
+        answer = f"""(path, body) => path === '/api/briefs/publish' ? [200, {{ designated: body.channel, already: true, queued: true, exit: 0, lines: [] }}]
+  : [200, {json.dumps(self.page_doc)}]"""
+        out = self.run_page(f"""R.when = cmd('brief.queue-copy').when(C.get({json.dumps(stem)}));
+shellRun(cmd('brief.queue-copy'), C.get({json.dumps(stem)})); await flush();""", answer)
+        self.assertIs(out["R"]["when"], True)
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/briefs/publish", {"item": item, "channel": "drive"}]])
+        self.assertIn(f"Queued one copy · {stem}; Publish now drains it", [t[0] for t in out["toasts"]])
+
+    def test_queue_copy_is_off_when_nothing_designated_lacks_a_copy_or_a_read_failed(self):
+        self.page_doc = self.doc()
+        stem = self.page_doc["briefs"][0]["id"]
+        whens = []
+        for pub in ({"unread": "", "choice": {"notion": True, "drive": False, "obsidian": False, "why": ""},
+                     "copies": [{"channel": "notion", "url": None, "state": "queued", "title": "Notion: queued"}]},
+                    {"unread": "the pack's mirror queue was not read: x", "copies": [],
+                     "choice": {"notion": True, "drive": False, "obsidian": False, "why": ""}}):
+            self.page_doc["briefs"][0]["pub"] = pub
+            whens.append(self.run_page(f"R.when = cmd('brief.queue-copy').when(C.get({json.dumps(stem)}));")["R"]["when"])
+        self.assertEqual(whens, ["every designated destination has its copy or is queued"] * 2)
+
 
 class BriefDesignation(brief_tests.BriefCase):
     """Publish to on a brief: `fields.publish.<channel>` on its item, then the pack's `enqueue_briefs` (ruling note #23223)."""

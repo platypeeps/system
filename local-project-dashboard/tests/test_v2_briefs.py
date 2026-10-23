@@ -57,6 +57,8 @@ COMMANDS = [
     ["brief.publish", "brief destination", "Publish to", None, "safe"],
     # sd:5489: a ticked destination unticks: ask first, and Undo ticks it again.
     ["brief.unpublish", "brief destination", "Remove copy", None, "undo"],
+    # A designated destination with no copy: queue it again.
+    ["brief.queue-copy", "brief", "Queue copy", None, "safe"],
     ["brief.publish-now", "brief", "Publish now", None, "safe"],
 ]
 
@@ -436,7 +438,7 @@ R.primary = REG.filter(c => c.primary && c.primary({})).map(c => c.id); R.gated 
         self.assertEqual(out["R"]["reg"], COMMANDS)
         # Read is every row's primary action and is never off, so a row without a vault copy offers it too (the shell draws
         # the primary in each row: the browser check on the pull request).
-        self.assertEqual((out["R"]["primary"], out["R"]["gated"]), (["brief.read"], ["brief.open", "brief.adversarial-review", "brief.publish", "brief.unpublish", "brief.publish-now"]))
+        self.assertEqual((out["R"]["primary"], out["R"]["gated"]), (["brief.read"], ["brief.open", "brief.adversarial-review", "brief.publish", "brief.unpublish", "brief.queue-copy", "brief.publish-now"]))
 
     def test_adversarial_review_on_a_brief_posts_its_item(self):
         """sd:5064: a brief row asks for {kind: brief, target: <its item>}; the run starts in the background."""
@@ -809,15 +811,15 @@ R.det = ELS.details.html;""", answer=f"() => [200, {json.dumps(cut)}]")
         self.assertNotIn("at least", full)
 
     def test_the_list_and_the_cadence_are_the_shells_views_with_the_range_in_each(self):
-        """sd:5080: Briefs and Cadence are PAGE_VIEWS; the Range chips sit in each view's head and set one range."""
+        """sd:5080: Briefs, Topics and Cadence are PAGE_VIEWS, in that order; the Range chips sit in each view's head."""
         page = (V2 / "briefs.html").read_text(encoding="utf-8")
-        self.assertLess(page.index('id="view-list"'), page.index('id="view-cadence"'))
-        self.assertLess(page.index('id="view-cadence"'), page.index('id="view-topics"'))
+        self.assertLess(page.index('id="view-list"'), page.index('id="view-topics"'))
+        self.assertLess(page.index('id="view-topics"'), page.index('id="view-cadence"'))
         out = self.run_page("""R.views = window.PAGE_VIEWS.map(v => [v.id, v.label, v.key || null]);
 R.list = ELS.range.html; R.cad = ELS['range-cad'].html;
 ELS['range-cad'].listeners.click[0]({ target: { closest: () => ({ dataset: { r: '30d' } }) } }); await flush();
 R.after = [ELS.range.html, ELS['range-cad'].html]; R.urls = OUT.urls.slice(-1);""")
-        self.assertEqual(out["R"]["views"], [["list", "Briefs", "b"], ["cadence", "Cadence", None], ["topics", "Topics", None]])
+        self.assertEqual(out["R"]["views"], [["list", "Briefs", "b"], ["topics", "Topics", None], ["cadence", "Cadence", None]])
         self.assertIn('data-r="7d" aria-pressed="true"', out["R"]["list"])
         self.assertEqual(out["R"]["list"], out["R"]["cad"])
         self.assertTrue(all('data-r="30d" aria-pressed="true"' in h for h in out["R"]["after"]), out["R"]["after"])
