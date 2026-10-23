@@ -7,6 +7,9 @@
 // sd:5877: a row of either list, its title or a press on the row, opens its Details in the right pane, as a pull request
 // row does (sd:5633): what sd shadow sync stored, said not stored where it keeps nothing, and Open in Jira or Open on
 // GitHub and Open item, commands of the row's type the shell runs. The selection is named in ?row= as iss:<key>.
+// sd:5899: one Jira and GitHub list: the operator's GitHub issues the Pull requests view listed are here too
+// (issues.with_github), and `github` names that read when it failed. State open, the default, hides a closed row; with
+// closed (?iss=closed) shows it, as the Pull requests view's State does.
 (() => {
   const { html, put } = window.markup;
   const $ = id => document.getElementById(id);
@@ -14,20 +17,35 @@
   const oid = r => `iss:${r.key}`;
   const title = r => html`<button type="button" data-iss-open="${oid(r)}">${r.title || r.ref}</button>`;
   const selected = r => html` data-id="${oid(r)}" aria-selected="${String(window.shell?.row?.() === oid(r))}"`;
-  function draw({ issues = [], error = '' } = {}) {
+  let READ = {};
+  const isOpen = r => (r.state || 'open') === 'open';
+  const closedToo = () => new URLSearchParams(location.search).get('iss') === 'closed';
+  function draw({ issues = [], error = '', github = '' } = READ) {
+    READ = { issues, error, github };
     ISSUES = error ? [] : issues;
+    const open = ISSUES.filter(isOpen), rows = closedToo() ? ISSUES : open, L = window.shell?.list;
     put($('issues'), error ? html`<tr class="empty"><td colspan="4">Issues could not be read: ${error}. Refresh tries again.</td></tr>`
-      : issues.length ? html`${issues.map(r => html`<tr${selected(r)}>
+      : html`${rows.length ? rows.map(r => html`<tr${selected(r)}>
         <td class="ref">${r.url ? html`<a href="${r.url}">${r.tracker} ${r.ref}</a>` : html`${r.tracker} ${r.ref}`}</td>
         <td class="what">${title(r)}</td>
         <td class="repo">${r.repo}</td>
-        <td class="why">${r.reason}</td></tr>`)}`
-      : html`<tr class="empty"><td colspan="4">No open issue is assigned to you or filed by you in a repo with issue sources.</td></tr>`);
-    put($('issues-tally'), issues.length && !error ? html`<span>${issues.length} open</span>` : html``);
-    window.shell?.view?.count('issues', error ? null : issues.length); // the Your issues tab (sd:5080)
+        <td class="why">${isOpen(r) ? r.reason : `${r.state} · ${r.reason}`}</td></tr>`)
+      : html`<tr class="empty"><td colspan="4">No ${closedToo() ? '' : 'open '}issue is assigned to you or filed by you.</td></tr>`}${
+        github ? html`<tr class="empty"><td colspan="4">Your GitHub issues outside the repos' issue sources were not read: ${github}. Refresh tries again.</td></tr>` : ''}`);
+    put($('issues-tally'), ISSUES.length && !error ? html`<span>${open.length} open</span>${closedToo() ? html`<span>${ISSUES.length - open.length} closed in 7 d</span>` : ''}` : html``);
+    if (L) put($('issues-filters'), error ? html`` : L.fbar(L.fseg('iss', 'State', [['open', open.length], ['closed', ISSUES.length]].map(([v, n]) =>
+      ({ v, pressed: closedToo() === (v === 'closed'), label: html`${v === 'open' ? 'open' : 'with closed'} <span class="n">${String(n)}</span>` })))));
+    window.shell?.view?.count('issues', error ? null : open.length); // the Your issues tab (sd:5080)
     objects();
   }
   document.addEventListener('issues:read', e => draw(e.detail));
+  // State: open, or with closed; the param is written around the page's others (shell.url keeps ?row=).
+  function pickState(v) {
+    const p = new URLSearchParams(location.search);
+    if (v === 'closed') p.set('iss', 'closed'); else p.delete('iss');
+    window.shell.url(p.toString()); draw();
+    $('issues-filters').querySelector?.(`[data-v="${v}"]`)?.focus();
+  }
 
   // Issue intake (sd:4840), on GitHub: each github_issues repo's open third-party issues no item carries (issues.intake over
   // sd_db.repos.intake_issues). File as item posts /api/items with the issue's title, repo and ref, the item `sd task add
@@ -67,6 +85,8 @@
     INTAKE = intake; FAILED = error; FILED.clear(); REFUSED.clear(); BUSY.clear(); drawIntake();
   });
   document.addEventListener('click', e => {
+    const s = e.target?.closest?.('#issues-filters [data-f="iss"]');
+    if (s) return pickState(s.dataset.v);
     const b = e.target && e.target.closest && e.target.closest('#intake button[data-key]');
     if (b) return file(b.dataset.key);
     const opened = e.target?.closest?.('[data-iss-open]');

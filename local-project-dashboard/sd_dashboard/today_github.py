@@ -24,6 +24,9 @@ for one Copilot review of an open pull request, once per press, through the revi
 recorded here, and the lane's own request count is sd-ship's. An answer that proves GitHub or gh refused is a 409; any
 other failure is a 502 that says whether Copilot was asked is not known.
 
+Each row carries `mine` (sd:5899): assigned to the operator or theirs (the `filed` flag, else a `reason` of filed, or a
+contribution), what the view's Show mine keeps. A review asked of them is not, on its own, theirs.
+
 An open pull request carries `landed`, the lane's merge of its Merge copy (`pr_close.landed`), or None: Close original
 (sd:5669) opens only on it.
 """
@@ -150,6 +153,7 @@ def document(connection: sqlite3.Connection, *, now: str) -> dict:
                  "ref": f"{row['repo']}#{row['number']}", "title": row.get("title") or "",
                  "url": url if url.startswith("https://github.com/") else None, "why": why, "state": state,
                  "at": at, "at_what": what, "item": contribution.get("item_id") or delivered.get(key),
+                 "mine": row.get("reason") == "assigned" or _mine(row) or bool(contribution),
                  # sd:5633: what a row's Details show, each None when the store did not record it.
                  **{name: row.get(name) for name in FACTS}, "attention": list(contribution.get("reasons") or []),
                  "checkout": checkouts.get(f"github.com/{str(row['repo']).lower()}")}

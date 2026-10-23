@@ -12,7 +12,7 @@ window.PAGE_VIEWS = [{ id: 'pulls', label: 'Pull requests' }, { id: 'issues', la
     let detail;
     try { detail = await window.shell.getJSON('/api/github/issues'); } catch (e) { detail = { issues_error: e.message, intake_error: e.message }; }
     if (n !== reads) return; // of overlapping reads only the newest draws
-    document.dispatchEvent(new CustomEvent('issues:read', { detail: { issues: detail.issues || [], error: detail.issues_error || '' } }));
+    document.dispatchEvent(new CustomEvent('issues:read', { detail: { issues: detail.issues || [], error: detail.issues_error || '', github: detail.github_error || '' } }));
     document.dispatchEvent(new CustomEvent('intake:read', { detail: { intake: detail.intake || [], error: detail.intake_error || '' } }));
   }
   document.addEventListener('shell:view', e => { if (['issues', 'intake'].includes(e.detail && e.detail.id) && !started) load(); });

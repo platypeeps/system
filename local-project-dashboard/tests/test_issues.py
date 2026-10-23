@@ -16,7 +16,7 @@ import sqlite3
 from pathlib import Path
 from unittest import mock
 
-from sd_db import repos, writes
+from sd_db import progress, repos, upsert_shadow, writes
 
 from sd_dashboard import issues, now_screen, tasks_screen, v2
 from sd_dashboard.v2.pages import Read
@@ -138,6 +138,28 @@ class ThePages(ScreenCase):
             self.assertNotIn("issues", other)
             self.assertNotIn("issues_error", other)
 
+    def test_your_issues_add_the_operators_other_github_issues_once_and_their_closed_ones(self):
+        # sd:5899: the GitHub issues the Pull requests view listed join Your issues; one an issue source lists is not repeated.
+        def issue(repo, number, **columns):
+            upsert_shadow(self.connection, tracker="github", url=f"https://github.com/{repo}/issues/{number}", repo=repo,
+                          number=number, kind="issue", title=f"{repo} {number}", **columns)
+        issue("example/project", 12, state="open", reason="assigned")
+        issue("upstream/tool", 5, state="open", reason="filed", filed=True, author="me")
+        issue("upstream/tool", 6, state="closed", reason="filed", filed=True, author="me", closed_at="2026-09-05T10:00:00Z")
+        issue("upstream/tool", 7, state="open", reason="watched", author="carol")
+        self.connection.commit()
+        with stub(return_value=FOUND):
+            found = github_issues(self.connection)
+        self.assertEqual(found["github_error"], "")
+        self.assertEqual([(row["tracker"], row["ref"], row["repo"], row["state"], row["reason"]) for row in found["issues"]], [
+            ("Jira", "EXAMPLE-8", "anvil", None, "filed"), ("GitHub", "#12", "anvil", "open", "assigned"),
+            ("GitHub", "#3", "kiln", None, "assigned"), ("GitHub", "#5", "upstream/tool", "open", "upstream"),
+            ("GitHub", "#6", "upstream/tool", "closed", "upstream")])
+        self.assertEqual(found["issues"][3]["key"], "github:upstream/tool#5")
+        with stub(return_value=FOUND), mock.patch.object(progress, "tracker_items", side_effect=sqlite3.OperationalError("database is locked")):
+            failed = github_issues(self.connection)
+        self.assertEqual((failed["github_error"], len(failed["issues"])), ("database is locked", 3))
+
     def test_a_failed_issue_read_leaves_the_intake(self):
         with stub(side_effect=sqlite3.OperationalError("database is locked")), stub_intake(return_value=INTAKE):
             found = github_issues(self.connection)
@@ -168,13 +190,17 @@ class TheTable(ScreenCase):
     """issues.js under JavaScriptCore: it draws what the page's read hands it, escaped, and says a failure."""
 
     PAGE = """
+var location = { search: '' };
+function URLSearchParams(q) { var m = new Map(String(q || '').replace(/^[?]/, '').split('&').filter(Boolean).map(p => p.split('=')));
+  this.get = k => m.has(k) ? m.get(k) : null; this.set = (k, v) => m.set(k, v); this.delete = k => m.delete(k); }
 var els = {}, listeners = {};
 document.getElementById = id => (els[id] = els[id] || { id, replaceChildren(f) { sunk.push([id, f.parsed]); } });
 document.addEventListener = (t, f) => { listeners[t] = f; };
 """
 
-    def drawn(self, detail):
-        script = self.PAGE + ISSUES_JS + f"listeners['issues:read']({{ detail: {json.dumps(detail)} }}); JSON.stringify(sunk)"
+    def drawn(self, detail, search=""):
+        script = (self.PAGE + f"location.search = '{search}';" + ISSUES_JS
+                  + f"listeners['issues:read']({{ detail: {json.dumps(detail)} }}); JSON.stringify(sunk)")
         return dict(run_js(self, script))
 
     def test_rows_link_the_reference_escape_the_title_and_name_the_reason(self):
@@ -188,6 +214,22 @@ document.addEventListener = (t, f) => { listeners[t] = f; };
         self.assertIn("GitHub #3", drawn["issues"])
         self.assertIn("3 open", drawn["issues-tally"])
 
+    def test_a_closed_row_shows_with_closed_only_and_a_failed_github_read_is_said(self):
+        # sd:5899: Your issues holds the operator's closed GitHub issues of the window; State open hides them.
+        rows = [{"repo": "anvil", "tracker": "Jira", "ref": "EXAMPLE-8", "key": "jira:EXAMPLE-8", "title": "Fix", "reason": "filed",
+                 "url": None, "state": None},
+                {"repo": "upstream/tool", "tracker": "GitHub", "ref": "#6", "key": "github:upstream/tool#6", "title": "Old crash",
+                 "reason": "upstream", "url": None, "state": "closed"}]
+        hidden = self.drawn({"issues": rows, "error": ""})
+        shown = self.drawn({"issues": rows, "error": ""}, search="?iss=closed")
+        self.assertNotIn("Old crash", hidden["issues"])
+        self.assertIn("<span>1 open</span>", hidden["issues-tally"])
+        self.assertIn("closed · upstream", shown["issues"])
+        self.assertIn("1 closed in 7 d", shown["issues-tally"])
+        failed = self.drawn({"issues": rows, "error": "", "github": "database is locked"})
+        self.assertIn("Your GitHub issues outside the repos' issue sources were not read: database is locked", failed["issues"])
+        self.assertIn("Jira EXAMPLE-8", failed["issues"])
+
     def test_a_failure_is_a_row_naming_it_and_none_is_said(self):
         failed = self.drawn({"issues": [], "error": "database is locked"})
         self.assertIn("Issues could not be read: database is locked. Refresh tries again.", failed["issues"])
@@ -200,6 +242,9 @@ class TheDetailsPane(ScreenCase):
     """sd:5877 under JavaScriptCore: a row of Your issues or Intake opens its Details, as a pull request row does."""
 
     PAGE = """
+var location = { search: '' };
+function URLSearchParams(q) { var m = new Map(String(q || '').replace(/^[?]/, '').split('&').filter(Boolean).map(p => p.split('=')));
+  this.get = k => m.has(k) ? m.get(k) : null; this.set = (k, v) => m.set(k, v); this.delete = k => m.delete(k); }
 var els = {}, listeners = {}, opened = [], selected = [], panes = [], registered = [], objects = {};
 document.getElementById = id => (els[id] = els[id] || { id, replaceChildren(f) { sunk.push([id, f.parsed]); } });
 document.addEventListener = (t, f) => { (listeners[t] = listeners[t] || []).push(f); };

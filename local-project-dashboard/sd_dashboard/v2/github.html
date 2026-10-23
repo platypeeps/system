@@ -1,10 +1,11 @@
 <!doctype html>
 <!--
   GitHub (sd:5781), at /github: Today's GitHub and Issues views until sd:5781, in three views.
-  Pull requests (sd:5608): /api/today/github, the operator's open pull requests and issues and those merged or closed in
-  the last 7 days, from what sd shadow sync and the Contributions collector stored (today_github.document), read by
-  today-github.js when the page opens on it and on Read again. A pull request row selects into Details (sd:5633).
-  Your issues (sd:4628): each repo's issues assigned to or filed by the operator; Intake (sd:4840): each github_issues
+  Pull requests (sd:5608): /api/today/github, the operator's open pull requests and those merged or closed in the last
+  7 days, from what sd shadow sync and the Contributions collector stored (today_github.document), read by
+  today-github.js when the page opens on it and on Read again, one paged table (sd:5899). A row selects into Details (sd:5633).
+  Your issues (sd:4628): each repo's issues assigned to or filed by the operator, and their other GitHub issues the
+  Pull requests view listed until sd:5899; Intake (sd:4840): each github_issues
   repo's open third-party issues no item carries, File as item posts /api/items with the ref. Both are /api/github/issues
   (issues.document, issues.intake), read by github.js when either view first shows and on Read again; issues.js draws them.
   An issue row of either selects into Details too (sd:5877), from what the same read carries.
@@ -38,7 +39,7 @@
     <div id="view-pulls" aria-label="Pull requests">
       <section aria-labelledby="github-h">
         <div class="sec-head">
-          <h2 id="github-h">Pull requests <button class="help" type="button" aria-label="Help: Pull requests" data-help="&lt;b&gt;Your pull requests and issues.&lt;/b&gt; Open pull requests that are yours, assigned to you or waiting on you; open issues that are yours or opened by someone else in a repo with GitHub issues on; and both merged or closed in the last 7 days. Upstream is yours in a repo sd does not register. Show mine, the default, hides what others opened; Show all adds every open pull request in a registered repo. Newest GitHub activity first; each part shows 5 rows, Show all opens the rest. Read from what &lt;code&gt;sd shadow sync&lt;/code&gt; and the Contributions collector stored: the reading calls no GitHub API. Press a pull request for its details and actions; Copilot review asks GitHub, once per press. Your issues and Intake are their own tabs, with Jira and File as item.">
+          <h2 id="github-h">Pull requests <button class="help" type="button" aria-label="Help: Pull requests" data-help="&lt;b&gt;Your pull requests.&lt;/b&gt; Open pull requests that are yours, assigned to you or waiting on you, and every open one in a registered repo. Upstream is yours in a repo sd does not register. Show mine, the default, keeps those assigned to you or opened by you; Show all adds the rest, a review asked of you among them. State open, the default, lists open ones; with closed adds those merged or closed in the last 7 days. Newest GitHub activity first, 25 rows a page. Read from what &lt;code&gt;sd shadow sync&lt;/code&gt; and the Contributions collector stored: the reading calls no GitHub API. Press a pull request for its details and actions; Copilot review asks GitHub, once per press. Your issues lists your GitHub issues with Jira&#39;s; Intake has File as item.">
             <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
           <p class="tally" id="github-tally"></p>
         </div>
@@ -49,10 +50,11 @@
     <div id="view-issues" aria-label="Your issues" hidden>
       <section class="issues-sec" aria-labelledby="issues-h">
         <div class="sec-head">
-          <h2 id="issues-h">Your issues <button class="help" type="button" aria-label="Help: Your issues" data-help="&lt;b&gt;Issues that are yours.&lt;/b&gt; Open Jira and GitHub issues assigned to you or filed by you, from each repo&#39;s issue sources (&lt;code&gt;jira=KEY&lt;/code&gt;, &lt;code&gt;github=owner/name&lt;/code&gt; on the repo&#39;s channels). Watched issues stay synced and are not listed. Press an issue for its details: what &lt;code&gt;sd shadow sync&lt;/code&gt; stored, Open in Jira or Open on GitHub, and Open item. &lt;code&gt;sd shadow sync&lt;/code&gt; refreshes them; the reading calls no tracker.">
+          <h2 id="issues-h">Your issues <button class="help" type="button" aria-label="Help: Your issues" data-help="&lt;b&gt;Issues that are yours.&lt;/b&gt; Open Jira and GitHub issues assigned to you or filed by you, from each repo&#39;s issue sources (&lt;code&gt;jira=KEY&lt;/code&gt;, &lt;code&gt;github=owner/name&lt;/code&gt; on the repo&#39;s channels), and your GitHub issues in any other repo. Watched issues stay synced and are not listed. State with closed adds your GitHub issues closed in the last 7 days; closed Jira issues are not read. Press an issue for its details: what &lt;code&gt;sd shadow sync&lt;/code&gt; stored, Open in Jira or Open on GitHub, and Open item. &lt;code&gt;sd shadow sync&lt;/code&gt; refreshes them; the reading calls no tracker.">
             <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
           <p class="tally" id="issues-tally"></p>
         </div>
+        <div class="filters toolbar-2" id="issues-filters"></div>
         <table class="ledger issues" aria-labelledby="issues-h">
           <thead><tr><th>Issue</th><th>Title</th><th>Repo</th><th>Why</th></tr></thead>
           <tbody id="issues"><tr class="empty"><td colspan="4">Reading issues…</td></tr></tbody>

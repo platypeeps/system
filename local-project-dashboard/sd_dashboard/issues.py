@@ -12,6 +12,10 @@ no sd item carries yet, from `sd_db.repos.intake_issues` (pack sd:4880). Each ro
 Details (sd:5877): each row of both lists also carries the `shadow` columns its Details show (`FACTS`, each None when
 the sync did not store it) and the item filed under its ref, read from what `sd shadow sync` stored; no tracker is called.
 A read of them that fails is the row's `unread`, so the page says the facts are unknown, never empty.
+
+sd:5899: Your issues is one Jira and GitHub list. `with_github` adds the GitHub issues the Pull requests view used to
+list: each issue `today_github.document` holds open, or closed in its window, that is the operator's (`mine`) and no
+issue source already lists. A closed row carries its `state`; the page shows it under its closed filter only.
 """
 
 from __future__ import annotations
@@ -87,6 +91,26 @@ def document(connection: sqlite3.Connection) -> dict:
             pairs.append((issues[-1], row))
     _details(connection, pairs)
     return {"issues": issues, "issues_error": ""}
+
+
+def with_github(document: dict, github: dict) -> dict:
+    """`document` with the operator's GitHub issues from `github` (`today_github.document`) that it does not list, by
+    ref; `github_error` names a GitHub read that failed, so the list never looks complete when it is not."""
+    if github.get("error"):
+        return {**document, "github_error": github["error"]}
+    listed = {str(row.get("key", "")).lower() for row in document["issues"]}
+    extra = []
+    for entry in (*github["issues"], *(row for row in github["settled"] if row["kind"] == "issue")):
+        key = f"github:{entry['ref']}"
+        if not entry.get("mine") or key.lower() in listed:
+            continue
+        listed.add(key.lower())
+        extra.append({"repo": entry["repo"], "repo_path": None, "tracker": "GitHub", "ref": f"#{entry['number']}", "key": key,
+                      "title": entry["title"], "reason": entry["why"], "last_seen": None, "url": entry["url"],
+                      "slug": entry["repo"], "state": entry["state"], "status": None, "assignee": entry.get("assignee"),
+                      "reporter": entry.get("author"), "created_at": entry.get("created_at"),
+                      "updated_at": entry.get("updated_at"), "item": entry["item"], "unread": ""})
+    return {**document, "issues": [*document["issues"], *extra], "github_error": ""}
 
 
 def intake(connection: sqlite3.Connection) -> dict:
