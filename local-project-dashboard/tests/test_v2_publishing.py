@@ -1032,6 +1032,34 @@ esac
         self.assertIn("publication-contract.md", prompt)
         self.assertIn(str(self.queue / "lab.plan.notion.json"), prompt)
 
+    def test_claude_loads_a_server_for_every_mcp_tool_it_may_call(self):
+        """sd:5942: `--restricted` drops the user's settings and their servers, so the drain had no Notion tool."""
+        self.request()
+        with mock.patch.dict(os.environ, {"WORKSPACE_MCP_URL": "http://192.0.2.7:8083/mcp"}):
+            record = self.started()
+        publish_drain.run(record)
+        said = (self.base / "argv").read_text(encoding="utf-8").split("\n")
+        self.assertIn("--strict-mcp-config", said)
+        servers = json.loads(said[said.index("--mcp-config") + 1])["mcpServers"]
+        allowed = said[said.index("--allowedTools") + 1].split(",")
+        self.assertEqual(set(servers), {tool.split("__")[1] for tool in allowed if tool.startswith("mcp__")})
+        self.assertEqual(servers["notion"], {"type": "http", "url": "https://mcp.notion.com/mcp"})
+        self.assertEqual(servers["workspace-mcp"], {"type": "http", "url": "http://192.0.2.7:8083/mcp"})
+        self.assertNotIn("servers", publish_drain.public(json.loads(record.read_text(encoding="utf-8"))))
+
+    def test_a_run_queued_before_the_servers_loads_none_and_leaves_its_request(self):
+        self.request()
+        record = self.started()
+        document = json.loads(record.read_text(encoding="utf-8"))
+        del document["servers"]
+        record.write_text(json.dumps(document), encoding="utf-8")
+        with mock.patch.dict(os.environ, {"FAKE_MODE": "leave"}):
+            code = publish_drain.run(record)
+        said = (self.base / "argv").read_text(encoding="utf-8").split("\n")
+        self.assertEqual(said[said.index("--mcp-config") + 1], '{"mcpServers": {}}')
+        self.assertEqual(code, 1)
+        self.assertTrue((self.queue / "lab.plan.notion.json").is_file())
+
     def test_a_brief_drain_skips_step_5_and_may_edit_no_conf(self):
         self.request()
         status, run = publish_drain.start(None, self.checkout, "plan", brief=True, spawn=self.spawn)
