@@ -61,7 +61,6 @@ COMMANDS = [
     ["experiment.attach", "research project", "Attach experiment", None, "safe"],
     ["experiment.status", "research project", "Draft status update", None, "safe"],
     ["experiment.make", "research project", "Make experiment", None, "safe"],
-    ["experiment.deck", "research project", "Draft deck", None, "safe"],
     ["experiment.apply", "research project", "Apply draft", None, "safe"],
     ["research.deck", "research project", "Build deck", None, "safe"],
     ["research.slides", "research project", "Import to Slides", None, "safe"],
@@ -1454,8 +1453,8 @@ R.views = OUT.views.slice();""")
 
     def experiments(self, doc):
         """The answer with `/api/research/experiments` for beta as `doc` (research_experiments.document's shape)."""
-        base = {"read": NOW, "running": "", "source": "u", "account": "operator@example.test", "kit": "/kit/design.md",
-                "problems": {"source": "", "account": "", "kit": ""}, "cache": None, "cache_error": "", "runs": [],
+        base = {"read": NOW, "running": "", "source": "u",
+                "problems": {"source": ""}, "cache": None, "cache_error": "", "runs": [],
                 "runs_error": "", "project": "research/beta", "link": None, "link_error": ""}
         return (f"(path, body) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
                 f" : path === '/api/research/research/beta' ? [200, {json.dumps(self.ledger)}]"
@@ -1487,25 +1486,27 @@ shellRun(cmd('experiment.apply'), o); await flush();""", answer=answer)
 
     def test_the_apply_confirm_shows_the_whole_draft_and_apply_posts_only_the_draft_it_showed(self):
         # sd:5296: the confirm shows every field Apply writes, and Apply posts the draft that confirm showed, never a newer one.
-        deck = {"title": "Span sampling", "slides": [{"id": f"sdexp_{n}", "message": f"m{n}", "elements": [
-            {"shape": "RECTANGLE", "x": 0, "y": 300, "w": 720, "h": 40, "fill": "#000000"},
-            {"shape": "TEXT_BOX", "x": 40, "y": 40, "w": 640, "h": 60, "text": f"say {n}", "color": "#FFFFFF", "size": 28,
-             "font": "Inter", "bold": True}]} for n in range(1, 7)]}
         create = {"title": "Trace budgets", "problem": "Budgets drift.", "body": "## Hypothesis\nTail."}
         done = {"verb": "draft", "project": "research/beta", "state": "done", "reason": "RESULT: ok", "log": "/s/run.log"}
         linked = {"page": "1" * 32, "data_source": "u", "title": "Span sampling"}
         out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
-R.deck = cmd('experiment.apply').consequence(o); shellRun(cmd('experiment.apply'), o); await flush();
+R.create = cmd('experiment.apply').consequence(o); shellRun(cmd('experiment.apply'), o); await flush();
 R.again = cmd('experiment.apply').run(o);""", answer=self.experiments({"link": linked, "runs": [
-            {**done, "run": "20261019-160000-000002", "action": "deck", "fingerprint": "d" * 64, "draft": deck}]}))
-        self.assertIn("6. m6 Shapes: RECTANGLE at 0,300 720x40 fill #000000; TEXT_BOX at 40,40 640x60 “say 6” text #FFFFFF 28pt Inter bold.",
-                      out["R"]["deck"])
-        self.assertEqual([p[1]["fingerprint"] for p in out["posts"]], ["d" * 64])
-        self.assertEqual(out["R"]["again"], "Apply writes only a draft its confirm showed: choose Apply draft again")
-        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
-R.create = cmd('experiment.apply').consequence(o);""", answer=self.experiments({"runs": [
             {**done, "run": "20261019-160000-000003", "action": "create", "fingerprint": "c" * 64, "draft": create}]}))
         self.assertIn("its body “## Hypothesis\nTail.”", out["R"]["create"])
+        self.assertEqual([p[1]["fingerprint"] for p in out["posts"]], ["c" * 64])
+        self.assertEqual(out["R"]["again"], "Apply writes only a draft its confirm showed: choose Apply draft again")
+
+    def test_a_deck_draft_an_earlier_version_left_offers_no_apply(self):
+        # sd:5536: Draft deck is gone; its finished drafts stay in the run list but nothing applies them.
+        deck = {"title": "Span sampling", "slides": []}
+        old = {"verb": "draft", "project": "research/beta", "state": "done", "reason": "RESULT: ok", "log": "/s/run.log",
+               "run": "20261019-160000-000002", "action": "deck", "fingerprint": "d" * 64, "draft": deck}
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
+R.on = cmd('experiment.apply').when(o); R.section = ELS.details.html;""",
+                            answer=self.experiments({"link": {"page": "1" * 32, "data_source": "u", "title": "Span sampling"}, "runs": [old]}))
+        self.assertEqual(out["R"]["on"], "no finished draft waits for Apply")
+        self.assertNotIn("Waiting for Apply", out["R"]["section"])
 
     def test_refresh_and_drafts_post_without_asking_and_attach_asks_naming_what_it_writes(self):
         answer = self.experiments({"cache": {"read": NOW, "source": "u", "current": True,
@@ -1532,14 +1533,6 @@ R.projects = cmd('experiment.create').fields(C.get('research:page'))[0].options.
         self.assertEqual([p[1] for p in out["posts"]], [
             {"verb": "list"}, {"verb": "attach", "page": "2" * 32, "replaces": None, "project": "research/beta"},
             {"verb": "draft", "action": "create", "description": "Tail sampling keeps the slow spans", "project": "research/beta"}])
-
-    def test_the_deck_is_off_while_the_brand_kit_is_unset_and_the_section_says_why(self):
-        answer = self.experiments({"link": {"page": "1" * 32, "data_source": "u", "title": "Span sampling"},
-                                   "problems": {"source": "", "account": "", "kit": "RESEARCH_BRAND_KIT is not set. Export it, or copy x to y."}})
-        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
-R.deck = cmd('experiment.deck').when(o); R.section = ELS.details.html;""", answer=answer)
-        self.assertEqual(out["R"]["deck"], "RESEARCH_BRAND_KIT is not set. Export it, or copy x to y.")
-        self.assertIn("RESEARCH_BRAND_KIT is not set. Export it, or copy x to y. The deck is off until then.", out["R"]["section"])
 
     def test_each_claim_type_and_claim_carries_hover_text_from_the_document_and_the_ledgers_grades(self):
         # sd:5297: the legend and the claims named a type with no hover text saying what it means or how it is graded.

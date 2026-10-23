@@ -32,11 +32,11 @@ map and Experiments. The selected project carries across them; with none selecte
 Sources with its sources lit, and a source's ◆ count opens Claim map with its claims lit.
 A project's Details hold its Experiment (sd:5296, `research_experiments.py`): the row of the team's experiments database
 in the work Notion that the checkout's repo declaration of kind `experiment` names. `GET /api/research/experiments?project=<key>`
-reads the link, the cached list, the runs and any setting that blocks one. Refresh experiments, the three drafts and
+reads the link, the cached list, the runs and any setting that blocks one. Refresh experiments, the two drafts (a new experiment, a status update) and
 Apply draft post to `/api/research/experiments/act`; each outward read or write is a headless `claude -p` run with an exact allowlist, one at a time.
 The drafts write nothing outward. Apply asks first, shows the draft it writes, and posts the draft's SHA-256; the server
-refuses it when the draft, the link, the data source or the deck's account changed since. Attach writes the workflow
-database only. Draft deck needs `RESEARCH_BRAND_KIT`. The shape and the failure table are in
+refuses it when the draft, the link, the data source changed since. Attach writes the workflow
+database only. A deck draft an earlier version left stays in the run list; Apply refuses it (sd:5536). The shape and the failure table are in
 `docs/work/2026-10-19-research-notion-experiments/design.md`.
 Experiments (pack sd:5525) is each checkout's status brief, `30-brief/BRIEF-status.md`, read with the board
 (`research_screen.experiment`): the State word (Running, Decided or Done ●, Waiting ▲, Blocked ■, any other ▨), the

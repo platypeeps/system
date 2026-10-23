@@ -20,6 +20,9 @@ R1 `DENIED` denied the Notion writers the apply runs need; R2 a deck stopped bef
 not resume; R3 create recovery took a search miss as "never created"; R4 a status apply could overwrite a teammate's
 edit made after the draft; R5 a deck apply re-read the brand kit, outside the confirmed draft.
 
+The Draft deck action was retired in system sd:5536: Build deck and Import to Slides cover decks. The deck rows,
+sections and failure-table rows below describe what was removed.
+
 ## Terms
 
 - **Experiment**: one row of the team's experiments database in the work Notion workspace.

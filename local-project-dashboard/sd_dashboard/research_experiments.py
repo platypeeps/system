@@ -2,10 +2,9 @@
 
     python3 -m sd_dashboard.research_experiments run <run folder>    one run the dashboard started; it holds the lock
 
-The design is `docs/work/2026-10-19-research-notion-experiments/design.md`. The Research page's Details hold four
-actions: attach an experiment from the cached list, create one from a description, build a Slides deck, and write a
-dated status entry. The dashboard cannot call MCP tools, so each outward read or write is a headless `claude -p` run
-with an exact allowlist, started through `sweep.spawn` under one lock, `<state>/lock`: one Notion or Drive writer at
+The design is `docs/work/2026-10-19-research-notion-experiments/design.md`. The Research page's Details hold three
+actions: attach an experiment from the cached list, create one from a description, and write a dated status entry. The dashboard cannot call MCP tools, so each outward read or write is a headless `claude -p` run
+with an exact allowlist, started through `sweep.spawn` under one lock, `<state>/lock`: one Notion writer at
 a time. Every outward write is two runs: a draft that reads only and leaves `draft.json`, then an apply the operator
 confirms after the page showed that draft, bound to it by its SHA-256 (`fingerprint`).
 
@@ -13,17 +12,13 @@ Storage:
 
 - the link: the checkout's repo declaration of kind `experiment` (`KIND`), `{"page", "data_source", "url", "title"}`.
   A pack that does not know the kind holds none, so every checkout reads "not linked"; attach then says so.
-- the experiments database: the `sd.notion_experiments` setting (`SOURCE_KEY`), read only; the account is the
-  `google.accounts.work.email` setting (`realm_sweep.account`).
-- the brand kit: `RESEARCH_BRAND_KIT` (`KIT`), the path of the kit's `design.md`, from the environment or
-  `<config>/project-dashboard/.env`. Unset, the deck is off and says how to set it.
+- the experiments database: the `sd.notion_experiments` setting (`SOURCE_KEY`), read only.
 - the state folder: `experiments.json`, the list cache, replaced whole; `runs/<stamp>/` per run, with `request.json`,
   `record.json`, the model's `rows.json`, `draft.json` or `out.json`, and `run.log`.
 
 A run that dies leaves its record `running` with a dead pid, read as failed. An apply writes `out.json` right after
-its outward create, so the next apply of the same draft starts from it: create links from it without a run, deck
-resumes that presentation. Without one, the next apply searches first, and a miss is `unknown`, never "not created":
-only `recreate`, confirmed, creates again. A status apply compares the page with the draft's `before` and `after`
+its outward create, so the next apply of the same draft starts from it and links without a run. Without one, the next
+apply searches first, and a miss is `unknown`, never "not created": only `recreate`, confirmed, creates again. A status apply compares the page with the draft's `before` and `after`
 and writes nothing when either moved since the draft.
 """
 
@@ -33,7 +28,6 @@ import contextlib
 import datetime
 import hashlib
 import json
-import math
 import os
 import re
 import sqlite3
@@ -47,9 +41,7 @@ __all__ = ["KIND", "document", "request", "run", "state_dir", "tools"]
 
 KIND = "experiment"
 SOURCE_KEY = "sd.notion_experiments"
-ACCOUNT_KEY = "google.accounts.work.email"
-KIT = "RESEARCH_BRAND_KIT"
-ACTIONS = ("create", "status", "deck")
+ACTIONS = ("create", "status")
 STATUSES = ("Todo", "In Progress", "Blocked", "Done")
 #: The runs the page lists, newest first; the rows a list run may cache; the bytes a draft or a model file may hold.
 RUNS_SHOWN = 30
@@ -62,22 +54,7 @@ STAMP = re.compile(r"\d{8}-\d{6}-\d{6}")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 PAGE = re.compile(r"[0-9a-f]{32}")
 SHA = re.compile(r"[0-9a-f]{64}")
-#: A deck slide's objectId, `sdexp_<n>`: Slides takes 5 to 50 characters of this alphabet (`OBJECT_ID`), and the prefix
-#: tells the deck's own slides from the blank one `create_presentation` adds.
-SLIDE_PREFIX = "sdexp_"
-OBJECT_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_:-]{4,49}")
-#: An id as Slides reports it: its own ids may be shorter than 5 (a new deck's blank slide is often `p`).
-SEEN_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_:-]{0,49}")
-#: A deck element: the shapes the runner builds, the page it fits (a new deck's 16:9 page, in points), at most this many
-#: on a slide, and the rounds of send-then-read an apply takes before it gives up.
-SHAPES = ("TEXT_BOX", "RECTANGLE", "ROUND_RECTANGLE", "ELLIPSE")
-PAGE_PT = (720, 405)
-ELEMENTS = 12
-COLOUR = re.compile(r"#[0-9A-Fa-f]{6}")
-ROUNDS = 5
-
 NOTION = "mcp__notion__notion-{}".format
-DRIVE = "mcp__workspace-mcp__{}".format
 #: Notion's hosted MCP server, as `claude mcp add` records it; the Notion runs load it alone.
 NOTION_MCP = {"type": "http", "url": "https://mcp.notion.com/mcp"}
 #: Each run's MCP tools, by `verb` and `action` (the design's table). Nothing else outward is allowed.
@@ -85,16 +62,13 @@ MCP = {
     ("list", None): (NOTION("search"), NOTION("fetch")),
     ("draft", "create"): (NOTION("fetch"),),
     ("draft", "status"): (NOTION("fetch"),),
-    ("draft", "deck"): (NOTION("fetch"),),
     ("apply", "create"): (NOTION("search"), NOTION("fetch"), NOTION("create-pages")),
     ("apply", "status"): (NOTION("fetch"), NOTION("update-page")),
-    ("apply", "deck"): tuple(DRIVE(n) for n in ("search_drive_files", "create_presentation", "batch_update_presentation",
-                                                 "get_presentation", "get_page")),
 }
-#: Denied beside `realm_sweep.DENIED`: Bash, and Drive's delete and trash.
-DENIED_TOO = ("Bash", DRIVE("delete_drive_file"), DRIVE("trash_drive_file"))
+#: Denied beside `realm_sweep.DENIED`: Bash.
+DENIED_TOO = ("Bash",)
 TOLD = ("This unattended run has no person to answer. Write reaches only the run folder. Use only the MCP tools the "
-        "prompt names; never delete or move a page, block, slide, shape or file, except the one deletion a step names. "
+        "prompt names; never delete or move a page or block. "
         "An MCP server may still be connecting "
         "when the run starts: if ToolSearch reports it still connecting, wait and search again, up to five times.")
 REPLY = ("Reply with a short report. Its last line is `RESULT: ok`, or `RESULT: failed, <step>: <reason>` when a step "
@@ -149,40 +123,22 @@ def checkout(key: str) -> Path | None:
 
 
 def settings(connection) -> dict:
-    """`{"source", "account", "problems": {"source", "account"}}`. A failed read is unknown, never unset."""
-    out = {"source": "", "account": "", "problems": {"source": "", "account": ""}}
+    """`{"source", "problems": {"source"}}`. A failed read is unknown, never unset."""
+    out = {"source": "", "problems": {"source": ""}}
     try:
         from sd_db import writes
 
-        rows = writes.read_settings(connection, [SOURCE_KEY, ACCOUNT_KEY])
+        rows = writes.read_settings(connection, [SOURCE_KEY])
     except Exception as error:  # noqa: BLE001 - any read failure is named, as realm_sweep.held does
         why = f"the settings did not read from the workflow database: {type(error).__name__}: {error}"
-        out["problems"] = {"source": why, "account": why}
+        out["problems"] = {"source": why}
         return out
     raw = rows.get(SOURCE_KEY)
     out["source"] = source_id(raw)
     if not out["source"]:
         out["problems"]["source"] = (f"{SOURCE_KEY} is not set; set it on Settings to the experiments data source"
                                      if not raw else f"{SOURCE_KEY} is not a data source id (collection://<uuid>)")
-    out["account"], why = realm_sweep.account("work", rows)
-    out["problems"]["account"] = f"no work Google account: {why}" if why else ""
     return out
-
-
-def brand_kit(environ=None) -> tuple[str, str]:
-    """`(path of the kit's design.md, "")`, or `("", why not)`: `KIT` exported, else in the dashboard's `.env`."""
-    lib = str(Path(__file__).resolve().parents[2] / "lib")
-    if lib not in sys.path:
-        sys.path.insert(0, lib)
-    import system_tools_config as config
-
-    value = config.setting(KIT, config.read_env("project-dashboard", environ), environ)
-    if not value or value == "change-me":
-        return "", config.missing(KIT, "project-dashboard", ".env", environ=environ)
-    path = Path(value).expanduser()
-    if not path.is_absolute() or path.name != "design.md" or not path.is_file():
-        return "", f"{KIT} names {value}, which is not a design.md file; set it to the brand kit's design.md"
-    return str(path.resolve()), ""
 
 
 def linked(connection, place: Path) -> tuple[dict | None, str]:
@@ -233,7 +189,7 @@ def _run(folder: Path, running: str) -> dict:
         else:
             out["reason"] = f"the run ended without a record of its own; see {folder.parent.parent / 'start.log'}"
         return out
-    out.update({k: record.get(k) for k in ("state", "reason", "started", "finished", "fingerprint", "deck", "linked")})
+    out.update({k: record.get(k) for k in ("state", "reason", "started", "finished", "fingerprint", "linked")})
     if out["state"] == "running" and not realm_sweep.alive(record.get("pid")):
         if running:
             out["reason"] = "its runner stopped, and its model run still holds the lock; nothing starts until that ends"
@@ -264,9 +220,8 @@ def document(connection, project: str = "") -> dict:
     """`GET /api/research/experiments[?project=<key>]`: the settings, the cache, the runs, and the project's link."""
     state = state_dir()
     found = settings(connection)
-    kit, kit_problem = brand_kit()
-    out = {"read": _now(), "running": _held(state), "source": found["source"], "account": found["account"],
-           "problems": {**found["problems"], "kit": kit_problem}, "kit": kit, "cache": None, "cache_error": "",
+    out = {"read": _now(), "running": _held(state), "source": found["source"],
+           "problems": found["problems"], "cache": None, "cache_error": "",
            "runs": [], "runs_error": "", "project": project, "link": None, "link_error": ""}
     try:
         cache = _read_json(state / "experiments.json")
@@ -310,7 +265,7 @@ def request(values: dict):
         if action not in ACTIONS:
             raise ValueError(f"action is one of {', '.join(ACTIONS)}.")
         if (action == "create") != isinstance(text, str) or (action == "create" and not text.strip()):
-            raise ValueError("A create draft takes a description; status and deck take none.")
+            raise ValueError("A create draft takes a description; status takes none.")
         if action == "create" and len(text) > DESCRIPTION:
             raise ValueError(f"The description is over {DESCRIPTION} characters.")
         asked = {"verb": "draft", "action": action, "project": str(values.get("project") or ""),
@@ -373,7 +328,7 @@ def _start(connection, asked: dict, draft: bytes | None = None):
     found = settings(connection)
     if found["problems"]["source"]:
         return 409, {"error": found["problems"]["source"]}
-    asked = {**asked, "source": found["source"], "account": found["account"]}
+    asked = {**asked, "source": found["source"]}
     if asked["verb"] != "list":
         place = checkout(asked["project"])
         if place is None:
@@ -390,12 +345,6 @@ def _start(connection, asked: dict, draft: bytes | None = None):
             return 409, {"error": f"{asked['project']} is linked already; attach replaces the link"}
         if asked["action"] != "create" and not asked["page"]:
             return 409, {"error": f"{asked['project']} is not linked to an experiment; attach or create one first"}
-        if asked["action"] == "deck" and found["problems"]["account"]:
-            return 409, {"error": found["problems"]["account"]}
-        if asked["action"] == "deck" and asked["verb"] == "draft":
-            asked["kit"], why = brand_kit()
-            if why:
-                return 409, {"error": why}
     state = state_dir()
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     folder = state / "runs" / stamp
@@ -424,6 +373,8 @@ def apply(connection, stamp: str, fingerprint: str, recreate: bool):
         return 409, {"error": f"the draft {stamp} did not read: {error}"}
     if not drafted or drafted.get("verb") != "draft" or record.get("state") != "done":
         return 409, {"error": f"{stamp} is not a finished draft"}
+    if drafted.get("action") not in ACTIONS:
+        return 409, {"error": f"{stamp} drafts a {drafted.get('action')}, which this dashboard no longer applies; draft again"}
     if hashlib.sha256(body).hexdigest() != fingerprint:
         return 409, {"error": "fingerprint: the draft changed since the page showed it; read it again", "stale": True}
     found = settings(connection)
@@ -431,11 +382,11 @@ def apply(connection, stamp: str, fingerprint: str, recreate: bool):
     held, why = linked(connection, place) if place else (None, "has no checkout")
     if why:
         return 409, {"error": f"the link {why}"}
-    now = {"source": found["source"], "page": page_id((held or {}).get("page")), "account": found["account"]}
+    now = {"source": found["source"], "page": page_id((held or {}).get("page"))}
     if held and source_id(held.get("data_source")) != found["source"]:
         now["source"] = f"{found['source']} (the link names {held.get('data_source')})"
     for field, value in now.items():
-        if (field != "account" or drafted["action"] == "deck") and value != drafted.get(field):
+        if value != drafted.get(field):
             return 409, {"error": f"{field}: it changed since the draft ({drafted.get(field) or 'none'} then, "
                                   f"{value or 'none'} now); draft again", "stale": True}
     earlier = _applies(state, stamp)
@@ -451,9 +402,7 @@ def apply(connection, stamp: str, fingerprint: str, recreate: bool):
             {"url": outs[0].get("url"), "title": json.loads(body).get("title")})}
         return _link(connection, place, value)
     asked = {"verb": "apply", "action": drafted["action"], "project": drafted["project"], "draft": stamp,
-             "fingerprint": fingerprint, "recreate": recreate, "earlier": bool(earlier),
-             "resume": next(({k: o.get(k) for k in ("presentation", "url", "blank") if k in o}
-                             for o in outs if o.get("presentation")), "")}
+             "fingerprint": fingerprint, "recreate": recreate, "earlier": bool(earlier)}
     return _start(connection, asked, draft=body)
 
 
@@ -476,35 +425,24 @@ def _out(folder: Path) -> dict | None:
 
 
 def tools(asked: dict, folder: Path) -> tuple[list[str], list[str]]:
-    """`(allowed, denied)` for the run: its MCP row, Read and Write in its folder, Read of the checkout for a draft and
-    of the kit's design.md alone for a deck draft. Denied is `realm_sweep.DENIED` less this run's own tools, so no
-    deny shadows an allow, plus Bash, Drive's deletes and the kit's other files. Write's grant is an `Edit(path)` rule:
+    """`(allowed, denied)` for the run: its MCP row, Read and Write in its folder, Read of the checkout for a draft.
+    Denied is `realm_sweep.DENIED` less this run's own tools, so no deny shadows an allow, plus Bash. Write's grant is an `Edit(path)` rule:
     Claude Code checks every file write against Edit rules and ignores a `Write(path)` one (sd:5751)."""
     key = (asked["verb"], asked.get("action"))
     allowed = [f"Read(/{folder}/**)", f"Edit(/{folder}/**)", *MCP[key]]
-    denied = []
     if asked["verb"] == "draft":
         allowed.append(f"Read(/{asked['checkout']}/**)")
-    if key == ("draft", "deck"):
-        kit = Path(asked["kit"])
-        allowed.append(f"Read(/{kit})")
-        denied += [f"Read(/{kit.parent}/known-issues.md)", f"Read(/{kit.parent}/internal/**)",
-                   f"Read(/{kit.parent}/tests/**)"]
-    denied = [n for n in (*realm_sweep.DENIED, *DENIED_TOO) if n not in allowed] + denied
+    denied = [n for n in (*realm_sweep.DENIED, *DENIED_TOO) if n not in allowed]
     return allowed, denied
 
 
 def claude_argv(asked: dict, folder: Path, prompt: str) -> list[str]:
-    """The run: exact allowlist, dontAsk, never skipped permissions. The deck apply loads workspace-mcp alone, every
-    other run notion alone, which finds the credentials its login stored under that name. `--setting-sources project`
+    """The run: exact allowlist, dontAsk, never skipped permissions. Every run loads notion alone, which finds the
+    credentials its login stored under that name. `--setting-sources project`
     skips the user's own server list, and without `--strict-mcp-config` the claude.ai connectors load in its place:
     the first draft called the claude.ai Notion fetch, which dontAsk refused (sd:5751)."""
     allowed, denied = tools(asked, folder)
-    if (asked["verb"], asked.get("action")) == ("apply", "deck"):
-        server = {"workspace-mcp": {"type": "http", "url": os.environ.get("WORKSPACE_MCP_URL", "http://127.0.0.1:8083/mcp")}}
-    else:
-        server = {"notion": NOTION_MCP}
-    servers = ["--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": server})]
+    servers = ["--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {"notion": NOTION_MCP}})]
     return [realm_sweep.claude_binary(), "-p", prompt, "--permission-mode", "dontAsk", "--permission-prompts", "none",
             "--setting-sources", "project", *servers, "--tools", "Read,Write,ToolSearch",
             "--allowedTools", ",".join(allowed), "--disallowedTools", ",".join(denied), "--append-system-prompt", TOLD]
@@ -513,67 +451,6 @@ def claude_argv(asked: dict, folder: Path, prompt: str) -> list[str]:
 def pointer(asked: dict) -> str:
     """The line a created row's body opens with, which a later apply searches for (the design's look before write)."""
     return f"Linked from research project {asked['project']}, draft {asked['draft']}."
-
-
-def deck_title(asked: dict, spec: dict) -> str:
-    """The deck's exact title; it carries the draft's stamp, so a later apply can find it by name. Quotes and
-    backslashes are dropped: the Drive search for it is a quoted `name = '...'` query."""
-    title = re.sub(r"['\"\\]", "", str(spec.get("title") or "")).strip()[:100] or "Experiment"
-    return f"{title} - draft {asked['draft']}"
-
-
-def _rgb(colour: str) -> dict:
-    return {"rgbColor": {name: int(colour[i:i + 2], 16) / 255 for name, i in (("red", 1), ("green", 3), ("blue", 5))}}
-
-
-def element_requests(slide: str, k: int, element: dict) -> list[dict]:
-    """One element's requests, every field built here: the shape with its own id (`<slide>_<k>`), then its fill, text
-    and text style, each naming that id. The model sends them as written; it writes no request field."""
-    shape = f"{slide}_{k}"
-    def point(value):
-        return {"magnitude": value, "unit": "PT"}
-
-    out = [{"createShape": {"objectId": shape, "shapeType": element["shape"], "elementProperties": {
-        "pageObjectId": slide, "size": {"width": point(element["w"]), "height": point(element["h"])},
-        "transform": {"scaleX": 1, "scaleY": 1, "translateX": element["x"], "translateY": element["y"], "unit": "PT"}}}}]
-    if element.get("fill"):
-        out.append({"updateShapeProperties": {"objectId": shape, "fields": "shapeBackgroundFill.solidFill.color",
-                                              "shapeProperties": {"shapeBackgroundFill": {"solidFill": {
-                                                  "color": _rgb(element["fill"])}}}}})
-    if element.get("text"):
-        out.append({"insertText": {"objectId": shape, "insertionIndex": 0, "text": element["text"]}})
-        style = {**({"foregroundColor": {"opaqueColor": _rgb(element["color"])}} if element.get("color") else {}),
-                 **({"fontSize": point(element["size"])} if element.get("size") else {}),
-                 **({"fontFamily": element["font"]} if element.get("font") else {}),
-                 **({"bold": element["bold"]} if "bold" in element else {})}
-        if style:
-            out.append({"updateTextStyle": {"objectId": shape, "textRange": {"type": "ALL"}, "style": style,
-                                            "fields": ",".join(style)}})
-    return out
-
-
-def plan(spec: dict, deck: list[dict], blank) -> list[list[dict]]:
-    """The batches the next round sends, from the deck as last read (`[{"id", "elements"}]` in deck order); [] when
-    the deck is complete. A missing slide is one batch: its `createSlide`, after the spec slide before it, and all its
-    elements. A slide whose elements are not all there gets the missing ones only, by id. Once every slide is whole,
-    the blank slide recorded at creation goes, if it is still there; no other slide is ever deleted."""
-    order = [slide["id"] for slide in deck]
-    held = {slide["id"]: set(slide["elements"]) for slide in deck}
-    batches, before = [], None
-    for slide in spec["slides"]:
-        sid, wanted = slide["id"], list(enumerate(slide["elements"], 1))
-        if sid not in held:
-            at = order.index(before) + 1 if before in order else 0
-            order.insert(at, sid)
-            batches.append([{"createSlide": {"objectId": sid, "insertionIndex": at,
-                                             "slideLayoutReference": {"predefinedLayout": "BLANK"}}},
-                            *(r for k, element in wanted for r in element_requests(sid, k, element))])
-        elif missing := [(k, element) for k, element in wanted if f"{sid}_{k}" not in held[sid]]:
-            batches.append([r for k, element in missing for r in element_requests(sid, k, element)])
-        before = sid
-    if not batches and blank and blank in held:
-        batches.append([{"deleteObject": {"objectId": blank}}])
-    return batches
 
 
 def prompt(asked: dict, folder: Path) -> str:
@@ -598,9 +475,8 @@ def prompt(asked: dict, folder: Path) -> str:
 {REPLY}
 """
     if verb == "draft":
-        read = (f"Read the checkout's overview, brief and status documents for context. Read nothing else on disk"
-                f"{', except the brand kit below' if action == 'deck' else ''}. You write nothing to Notion or Drive: "
-                "the operator confirms this draft, and another run writes it.")
+        read = ("Read the checkout's overview, brief and status documents for context. Read nothing else on disk. "
+                "You write nothing to Notion: the operator confirms this draft, and another run writes it.")
         if action == "create":
             return f"""You draft a new row for the team's experiments database, unattended. Nobody answers questions.
 
@@ -617,9 +493,8 @@ def prompt(asked: dict, folder: Path) -> str:
 
 {REPLY}
 """
-        if action == "status":
-            today = datetime.datetime.now().astimezone().date().isoformat()
-            return f"""You draft a dated status update for one experiment, unattended. Nobody answers questions.
+        today = datetime.datetime.now().astimezone().date().isoformat()
+        return f"""You draft a dated status update for one experiment, unattended. Nobody answers questions.
 
 {head}
 
@@ -633,29 +508,6 @@ def prompt(asked: dict, folder: Path) -> str:
     "entry": "<the new entry alone>"}}
    The new section keeps the heading. The new entry is first, headed {today}: what changed, where it stands, next
    steps. Each earlier entry follows, condensed to one line that starts with its date, newest first; drop none.
-
-{REPLY}
-"""
-        return f"""You draft a slide deck spec for one experiment, unattended. Nobody answers questions.
-
-{head}
-- Brand kit: {asked['kit']}. Read it in full first. Read no other file of the kit: not known-issues.md, internal/
-  or tests/.
-
-{read}
-
-1. Fetch the experiment page for its fields and status.
-2. Write {folder}/draft.json:
-   {{"title": "<the deck title>", "slides": [{{"id": "{SLIDE_PREFIX}1", "message": "<the slide's one line>",
-     "elements": [{{"shape": "<{' | '.join(SHAPES)}>", "x": <points>, "y": <points>, "w": <points>, "h": <points>,
-                   "text": "<optional>", "fill": "<optional #RRGGBB>", "color": "<optional #RRGGBB text colour>",
-                   "size": <optional font points>, "font": "<optional font family>", "bold": <optional true|false>}}]}},
-     ...]}}
-   Six to eight slides, ids {SLIDE_PREFIX}1 to {SLIDE_PREFIX}8 in order: overview, approach, current status and next
-   steps among them. The page is {PAGE_PT[0]} by {PAGE_PT[1]} points; each element fits on it, at most {ELEMENTS} a
-   slide. Draw each visual (a timeline, a status band, a stat tile) from these shapes. Every colour, font and size
-   comes from the kit. Visuals over bullets; one call to action, on the last slide. Use the project's own figures
-   only; invent none. These fields are all a slide holds: the runner builds every Slides request from them.
 
 {REPLY}
 """
@@ -688,8 +540,7 @@ Never update, move or delete any page.
 
 {REPLY}
 """
-    if action == "status":
-        return f"""You write one approved status update to one experiment page, unattended. Nobody answers questions.
+    return f"""You write one approved status update to one experiment page, unattended. Nobody answers questions.
 
 {head}
 {draft}
@@ -701,44 +552,6 @@ Never update, move or delete any page.
 3. If either part is stale, write nothing to the page. Otherwise, with notion-update-page, replace only the status
    section's content with after.section, and set Status to after.status; touch nothing else on the page.
 4. Write {out} as {{"page": "<the page id>", "section": "written|skipped|stale", "status": "written|skipped|stale"}}.
-
-{REPLY}
-"""
-    return deck_prompt(asked, folder, True)
-
-
-def deck_prompt(asked: dict, folder: Path, first: bool) -> str:
-    """One round of the deck apply: on the first, find or make the deck; on each, send `batches.json` as written,
-    then read the deck back into `deck.json`. The runner builds every request; the model copies and reports."""
-    spec = json.loads((folder / "draft.json").read_text(encoding="utf-8"))
-    title, out = deck_title(asked, spec), f"{folder}/out.json"
-    if not first:
-        find = "Go to step 2; out.json names the deck."
-    elif asked["resume"]:
-        find = f"An earlier apply made the deck {asked['resume']['presentation']}; out.json names it. Go to step 2."
-    elif asked["earlier"] and not asked["recreate"]:
-        find = (f"An earlier apply may have made the deck before it recorded it. Search My Drive with "
-                f"search_drive_files for a file named exactly \"{title}\". One match: write {out} as "
-                f"{{\"outcome\": \"found\", \"presentation\": \"<its id>\", \"url\": \"<its url>\"}} and go to step 2. "
-                f"No match: write {out} as {{\"outcome\": \"unknown\"}} and stop: create nothing.")
-    else:
-        find = (f"Create the presentation with create_presentation, titled exactly \"{title}\". Right after, before "
-                f"any other call, write {out} as {{\"outcome\": \"created\", \"presentation\": \"<its id>\", "
-                f"\"url\": \"<its url>\"}}.")
-    return f"""You send one approved slide deck's requests to Google Slides, unattended. Nobody answers questions.
-
-- Run folder: {folder}. Write files only there.
-- Google account: {asked['account']}. Every call names it as user_google_email.
-
-1. {find}
-2. Read {folder}/batches.json, a JSON array of batches. For each batch in order, call batch_update_presentation with
-   the deck's presentation_id and requests set to that batch, exactly as written: copy the JSON; change, add and drop
-   nothing. After each call, append to {folder}/sent.json (a JSON array) {{"batch": <its index>, "ok": true}}, or
-   {{"batch": <its index>, "ok": false, "error": "<the API's message>"}} and send no further batch.
-3. Read the deck back: get_presentation, then get_page for each slide it lists. Write {folder}/deck.json as
-   {{"slides": [{{"id": "<slide id>", "elements": ["<each element id get_page lists>"]}}, ...]}}, slides in deck order,
-   every id copied exactly.
-Call batch_update_presentation only with a batch from batches.json. Never share, move or delete the deck.
 
 {REPLY}
 """
@@ -783,16 +596,16 @@ def _checked(asked: dict, folder: Path) -> tuple[str, dict]:
         if status != 200:
             raise ValueError(f"created {page}, but the link was not written: {body['error']}; apply again to link it")
         return "done", {"linked": value}
-    if action == "status":
-        if page_id(out.get("page")) != asked["page"]:
-            raise ValueError(f"out.json names page {out.get('page')}, not the linked {asked['page']}")
-        parts = {part: out.get(part) for part in ("section", "status")}
-        if "stale" in parts.values():
-            raise ValueError("stale: the page changed after the draft, so nothing was written; draft again")
-        if not set(parts.values()) <= {"written", "skipped"}:
-            raise ValueError(f"out.json says {parts}, not written or skipped")
-        return "done", {"reason": f"section {parts['section']}, Status {parts['status']}"}
-    raise ValueError(f"{verb} {action} is judged round by round (_deck), not here")
+    if action != "status":
+        raise ValueError(f"{verb} {action} is not an action this dashboard applies")
+    if page_id(out.get("page")) != asked["page"]:
+        raise ValueError(f"out.json names page {out.get('page')}, not the linked {asked['page']}")
+    parts = {part: out.get(part) for part in ("section", "status")}
+    if "stale" in parts.values():
+        raise ValueError("stale: the page changed after the draft, so nothing was written; draft again")
+    if not set(parts.values()) <= {"written", "skipped"}:
+        raise ValueError(f"out.json says {parts}, not written or skipped")
+    return "done", {"reason": f"section {parts['section']}, Status {parts['status']}"}
 
 
 def _shape(action: str, draft) -> None:
@@ -818,108 +631,7 @@ def _shape(action: str, draft) -> None:
         if draft["after"]["status"] not in STATUSES:
             raise ValueError(f"draft.json: after.status is not one of {', '.join(STATUSES)}")
     else:
-        slides = draft.get("slides")
-        text(draft.get("title"), "title")
-        if not isinstance(slides, list) or not 6 <= len(slides) <= 8:
-            raise ValueError("draft.json: a deck has 6 to 8 slides")
-        for n, slide in enumerate(slides, 1):
-            sid = f"{SLIDE_PREFIX}{n}"
-            if not isinstance(slide, dict) or slide.get("id") != sid:
-                raise ValueError(f"draft.json: slide {n} is not an object with id {sid}")
-            text(slide.get("message"), f"{sid}.message")
-            elements = slide.get("elements")
-            if not isinstance(elements, list) or not 1 <= len(elements) <= ELEMENTS:
-                raise ValueError(f"draft.json: {sid} has 1 to {ELEMENTS} elements")
-            for k, element in enumerate(elements, 1):
-                _element(element, f"{sid}_{k}")
-
-
-def _element(element, name: str) -> None:
-    """One drawn element the runner can build requests from; anything else raises ValueError naming it."""
-    if not isinstance(element, dict) or element.get("shape") not in SHAPES:
-        raise ValueError(f"draft.json: {name} is not an element with a shape of {', '.join(SHAPES)}")
-    known = {"shape", "x", "y", "w", "h", "text", "fill", "color", "size", "font", "bold"}
-    if set(element) - known:
-        raise ValueError(f"draft.json: {name} has fields the runner does not build: {sorted(set(element) - known)}")
-    def number(v):
-        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-
-    x, y, w, h = (element.get(k) for k in ("x", "y", "w", "h"))
-    if not all(map(number, (x, y, w, h))) or x < 0 or y < 0 or w < 1 or h < 1 or x + w > PAGE_PT[0] or \
-            y + h > PAGE_PT[1]:
-        raise ValueError(f"draft.json: {name} does not fit the {PAGE_PT[0]} by {PAGE_PT[1]} point page")
-    for key in ("fill", "color"):
-        if key in element and not (isinstance(element[key], str) and COLOUR.fullmatch(element[key])):
-            raise ValueError(f"draft.json: {name}.{key} is not #RRGGBB")
-    if "text" in element and not (isinstance(element["text"], str) and 0 < len(element["text"]) <= 1000):
-        raise ValueError(f"draft.json: {name}.text is not 1 to 1000 characters")
-    if "size" in element and not (number(element["size"]) and 6 <= element["size"] <= 96):
-        raise ValueError(f"draft.json: {name}.size is not 6 to 96 points")
-    if "font" in element and not (isinstance(element["font"], str) and 0 < len(element["font"]) <= 50):
-        raise ValueError(f"draft.json: {name}.font is not a font name")
-    if "bold" in element and not isinstance(element["bold"], bool):
-        raise ValueError(f"draft.json: {name}.bold is not true or false")
-
-
-def _read_deck(folder: Path) -> list[dict]:
-    """`deck.json`, as the model copied it from get_presentation and get_page; ValueError when it does not read."""
-    found = _read_json(folder / "deck.json")
-    slides = found.get("slides") if isinstance(found, dict) else None
-    if not isinstance(slides, list) or not all(
-            isinstance(slide, dict) and isinstance(slide.get("id"), str) and SEEN_ID.fullmatch(slide["id"])
-            and isinstance(slide.get("elements"), list)
-            and all(isinstance(e, str) and SEEN_ID.fullmatch(e) for e in slide["elements"]) for slide in slides):
-        raise ValueError("deck.json is not the deck's slides with their element ids")
-    return slides
-
-
-def _deck(asked: dict, folder: Path, ask) -> tuple[str, dict]:
-    """The deck apply, in rounds: each one sends the batches `plan` built from the last read, and reads the deck back.
-    The first round finds or makes the deck; when it made it, the slides it holds then are recorded as `blank` (one id,
-    or none), the only slide a later round may delete. `(state, record fields)`, a reason on failure."""
-    spec = json.loads((folder / "draft.json").read_text(encoding="utf-8"))
-    _shape("deck", spec)  # a draft from before the runner built the requests holds no elements: refuse it, named
-    out_path = folder / "out.json"
-    if asked["resume"]:
-        realm_sweep.write_record(out_path, {"outcome": "resumed", **asked["resume"]})
-    batches: list[list[dict]] = []
-    for n in range(ROUNDS):
-        (folder / "batches.json").write_text(json.dumps(batches, indent=1) + "\n", encoding="utf-8")
-        (folder / "sent.json").unlink(missing_ok=True)
-        (folder / "deck.json").unlink(missing_ok=True)
-        code, reason = ask(deck_prompt(asked, folder, n == 0))
-        out = _out(folder) or {}
-        if out.get("outcome") == "unknown":
-            return "unknown", {"reason": "the earlier deck was not found; nothing was made. Apply again with recreate"}
-        if n == 0 and out.get("outcome") == "created":
-            # Read right after the create, before any batch: the one slide a new deck holds is its blank slide,
-            # recorded by the runner (whatever out.json said) so it alone may go. Anything else, or no read, records
-            # none, and nothing is deleted.
-            try:
-                first = [slide["id"] for slide in _read_deck(folder)] if (folder / "deck.json").exists() else []
-            except ValueError:
-                first = []
-            out["blank"] = first[0] if len(first) == 1 and not first[0].startswith(SLIDE_PREFIX) else None
-            realm_sweep.write_record(out_path, out)
-        if code != realm_sweep.EXIT_OK:
-            raise ValueError(f"{reason}; apply again to resume it" if out.get("presentation") else reason)
-        if not out.get("presentation") or not str(out.get("url", "")).startswith("https://"):
-            raise ValueError("out.json names no presentation and URL")
-        deck = _read_deck(folder)
-        sent = _read_json(folder / "sent.json") or []
-        if not isinstance(sent, list):
-            raise ValueError("sent.json is not a list of batch results")
-        refused = [s for s in sent if not isinstance(s, dict) or s.get("ok") is not True]
-        if len(sent) != len(batches) or refused:
-            error = str(refused[0].get("error") if isinstance(refused[0], dict) else refused[0])[:300] if refused else ""
-            raise ValueError(f"Slides took {len(sent) - len(refused)} of {len(batches)} batches"
-                             f"{': ' + error if error else ''}; apply again to resume it")
-        batches = plan(spec, deck, out.get("blank"))
-        if not batches:
-            return "done", {"reason": f"{len(spec['slides'])} slides built",
-                            "deck": {"presentation": out["presentation"], "url": out["url"],
-                                     "slides": len(spec["slides"])}}
-    raise ValueError(f"the deck was not whole after {ROUNDS} rounds; apply again to resume it")
+        raise ValueError(f"draft.json: {action} is not a draft this dashboard shows")
 
 
 def _lock(state: Path) -> int | None:
@@ -962,16 +674,6 @@ def run(folder: Path, out, err) -> int:
     if lock is None:
         return end("failed", "this runner holds no experiments lock; start it from the dashboard")
     timeout = int(os.environ.get("RESEARCH_EXPERIMENTS_TIMEOUT", TIMEOUT))
-    if (asked["verb"], asked.get("action")) == ("apply", "deck"):
-        def ask(text):
-            with (folder / "run.log").open("a", encoding="utf-8") as logged:
-                return realm_sweep.ask(claude_argv(asked, folder, text), folder, timeout, logged, keep=(lock,))[:2]
-
-        try:
-            state, more = _deck(asked, folder, ask)
-        except (KeyError, OSError, ValueError) as error:
-            return end("failed", str(error))
-        return end(state, more.pop("reason"), **more)
     try:
         argv = claude_argv(asked, folder, prompt(asked, folder))
     except (KeyError, OSError, ValueError) as error:
