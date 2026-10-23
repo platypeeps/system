@@ -14,8 +14,10 @@
 // Rollback (system sd:5779) posts the same route with rollback: true and shows the swap back to the copy the last install
 // replaced, with the pack skills the import informed; Approve rollback asks first and posts the revision that report printed.
 const { html, put, plural, cells } = window.markup;
-// The views, for the shell's view switch: the catalog, and the tracked repositories, read the first time the view opens.
-window.PAGE_VIEWS = [{ id: 'catalog', label: 'Catalog' }, { id: 'intake', label: 'Intake', api: '/api/skills/intake/repos' }];
+// The views, for the shell's view switch: the catalog, then the tracked repositories and skill use (sd:5881,
+// skills-usage.js), each read the first time its view opens.
+window.PAGE_VIEWS = [{ id: 'catalog', label: 'Catalog' }, { id: 'intake', label: 'Intake', api: '/api/skills/intake/repos' },
+  { id: 'usage', label: 'Usage', api: '/api/skills/usage' }];
 // Palette "This page" group and the key sheet. shell.js reads both at start, so they are set before the shell runs.
 window.PAGE_KEYS = [['/', 'Filter, run or adopt a skill'], ['→', 'In the field: the next reading (filter, run, adopt)']];
 window.PAGE_COMMANDS = [

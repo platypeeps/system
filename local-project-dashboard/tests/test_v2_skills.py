@@ -27,13 +27,16 @@ from unittest import mock
 from sd_db import skills_catalog
 from sd_db.writes import record_skill_use
 
-from sd_dashboard import server, skill_intake, skills_screen, v2
+from sd_dashboard import metrics_screen, server, skill_intake, skills_screen, v2
+from sd_dashboard.v2.pages import Read
 
 from support import ScreenCase
 from test_v2_read import READ_SHELL
 from test_v2_registry import Registers
 from test_v2_tasks import SHELL, STAND_IN
-from test_v2_today import OSASCRIPT, Refused
+from test_v2_metrics import METRICS_JS
+from test_v2_nav_split import moved
+from test_v2_today import OSASCRIPT, Refused, run_js
 from test_v2_shell_shared import cell_grammar
 from test_v2_shell_shared import cell_grammar
 from test_workflow_actions import BrowserSession
@@ -186,7 +189,7 @@ class ThePage(Pack, BrowserSession):
         self.assertIn("<title>Skills · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "skills.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "skills.js", "skills-usage.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -1017,9 +1020,55 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
         self.assertIn("window.PAGE_LIST", PAGE_JS)
 
 
+class TheUsage(Pack, ScreenCase):
+    """sd:5881: Metrics' Skills view is Skills' third view, Usage, after Catalog and Intake; its read moved with it."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed_use()
+
+    def test_usage_is_four_monday_weeks_and_this_weeks_top_skills(self):
+        usage = skills_screen.usage(self.connection, now=NOW)
+        self.assertEqual([(w["start"], w["uses"]) for w in usage["weeks"]],
+                         [("2026-09-21", 3), ("2026-09-14", 3), ("2026-09-07", 1), ("2026-08-31", 0)])
+        self.assertEqual(usage["top"][0], ["sd-used", 2])
+        self.assertEqual((usage["since"], usage["first"], usage["error"]), ("2026-08-31", "2026-09-11", ""))
+        _, route = v2.api("/api/skills/usage")
+        self.assertEqual(route.read(Read(connection=self.connection, now=NOW, path="/api/skills/usage")), usage)
+
+    def test_the_views_are_catalog_intake_and_usage_and_metrics_has_no_skills_view(self):
+        views = lambda js: re.findall(r"id: '([a-z]+)'", re.search(r"window\.PAGE_VIEWS = (\[.*?\]);", js, re.S).group(1))  # noqa: E731
+        self.assertEqual(views(PAGE_JS), ["catalog", "intake", "usage"])
+        self.assertIn('<section id="view-usage"', (V2 / "skills.html").read_text(encoding="utf-8"))
+        self.assertEqual(views(METRICS_JS), ["spend", "providers", "ci", "age"])
+        self.assertNotIn("view-skills", (V2 / "metrics.html").read_text(encoding="utf-8"))
+        self.assertNotIn("skills", metrics_screen.document(self.connection, now=NOW))
+
+    def test_an_old_metrics_skills_address_opens_usage_with_its_query(self):
+        self.assertEqual(moved(METRICS_JS, path="/metrics", search="?row=sd-used", hash="#view=skills"),
+                         [["replace", "/skills?row=sd-used#view=usage"]])
+        self.assertEqual(moved(METRICS_JS, path="/metrics", hash="#view=ci"), [])
+
+    def test_the_view_draws_the_weeks_and_links_each_top_skill_to_its_catalog_row(self):
+        usage = skills_screen.usage(self.connection, now=NOW)
+        script = ("""
+var els = {}, listeners = {};
+document.getElementById = id => (els[id] = els[id] || { id, textContent: '', replaceChildren(f) { sunk.push([id, f.parsed]); } });
+document.addEventListener = (t, f) => { listeners[t] = f; };
+""" + (V2 / "static" / "skills-usage.js").read_text(encoding="utf-8")
+                  + f"window.skillsUsage.draw({json.dumps(usage)}, ''); window.skillsUsage.draw(null, 'database is locked');"
+                  + "JSON.stringify(sunk)")
+        drawn = run_js(self, script)
+        out = dict(drawn[:2])
+        self.assertIn("2026-09-21", out["su-weeks"])
+        self.assertIn('<a href="/skills?row=sd-used#view=catalog">sd-used</a>', out["su-top"])
+        # A read that failed is a row naming it, never an empty list.
+        self.assertIn("Skill use could not be read: database is locked.", dict(drawn[2:])["su-weeks"])
+
+
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "skills", "Skills", "/skills", ("/api/skills", "/api/skills/intake", "/api/skills/intake/repos",
-                                                               "/api/skills/intake/tracking")
+                                                               "/api/skills/intake/tracking", "/api/skills/usage")
 
 
 if __name__ == "__main__":

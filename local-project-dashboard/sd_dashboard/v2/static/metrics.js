@@ -5,10 +5,17 @@
 // Writes (sd:3387): Cap and Configure post /api/bills/<bill>/cap and /api/providers/configure with the revision the page
 // read (controls.revision). A 400 or 409 wrote nothing; any other failure, or no answer, leaves the outcome unknown.
 // build: bars are SVG rects sized by attribute, not CSSOM widths, and the age chart is the design's bar list only.
-// sd:5080: the panels are the shell's views (shell.js, view:start): Spend (spend, the week, usage), Providers, CI, Skills
-// and Age. A lamp shows the view that holds its reading.
+// sd:5080: the panels are the shell's views (shell.js, view:start): Spend (spend, the week, usage), Providers, CI and
+// Age. A lamp shows the view that holds its reading. Skill use moved to Skills' Usage view (sd:5881).
+// moved:start
+// sd:5881: an old address of the Skills view opens Skills' Usage view, keeping its query (?row=).
+{
+  const moved = { skills: '/skills#view=usage' }[(/^#view=([a-z]+)$/.exec(location.hash) || [])[1]];
+  if (moved) location.replace(moved.replace('#', `${location.search}#`));
+}
+// moved:end
 window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 'Providers' }, { id: 'ci', label: 'CI' },
-  { id: 'skills', label: 'Skills', key: 'k' }, { id: 'age', label: 'Age' }];
+  { id: 'age', label: 'Age' }];
 (() => {
   const { html, put, plural, cells } = window.markup;
   const $ = id => document.getElementById(id);
@@ -50,9 +57,6 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
       revision: d.controls.revision, control: ctlProvider(r.provider),
       facts: [['Author order', order('author', r.provider)], ['Reviewer order', order('reviewer', r.provider)], ['Author rank', r.author_rank ?? '—'], ['Reviewer rank', r.reviewer_rank ?? '—'], ['Passes', r.passes], ['Blocking', r.blocking], ['$/pass', money(r.usd_per_pass)], ['Skipped', r.fallthrough], ['State', r.enabled ? 'enabled' : `disabled: ${r.reason || '—'}`]],
       note: scState(r) === 'caution' ? `Asked ${r.fallthrough} times and fell through every time this month.` : '', cli: 'sd providers configure --file CONFIG.json' }));
-    if (!d.skills.error) {
-      d.skills.weeks.forEach(w => put1(`week:${w.start}`, { kind: 'Skill use · week', title: `week of ${w.start}`, facts: [['Uses', w.uses], ['Source', 'reads.skill_use_days (Monday-start weeks)']], cli: 'sd skill list' }));
-    }
     if (!d.observed.error) put1('observed', { kind: 'Observed activity', title: `${d.observed.since} → ${d.observed.until}`, facts: [['Requests recorded', d.observed.recorded_requests], ['Finished review attempts', d.observed.finished_review_attempts], ['Recorded deliveries', d.observed.recorded_deliveries], ['Source', 'reporting.metrics']], note: d.observed.interpretation, cli: '—' });
     if (!d.ci.error) {
       const lane = 'sd-ship -C CHECKOUT lane list', src = ['Source', 'reads.lane_entries: each lane entry\'s last checkpoint'];
@@ -155,14 +159,6 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
     $('usage-note').textContent = u && !u.error ? `${u.month}: ${money(u.spent)} spent, ${money(u.held)} held. ${u.bills.filter(b => b.cap != null).map(b => `${b.name} ${money(b.spent)} of its ${money(b.cap)} cap (room ${money(b.room)})`).join('; ')}`.trim() : '';
     $('us-h').textContent = u && !u.error ? `Usage · ${u.month}` : 'Usage';
   }
-  function skills() {
-    const s = DOC?.skills;
-    if (!s || s.error) { put($('su-weeks'), html`<li>${unknownBlock(s ? s.error : 'the Metrics document did not arrive')}</li>`); put($('su-top'), html``); $('su-sub').textContent = ''; return; }
-    $('su-sub').textContent = `From skill_use, Monday-start weeks since ${s.since}${s.first ? `; the first row is ${s.first}` : '; no row yet'}.`;
-    const maxW = Math.max(1, ...s.weeks.map(w => w.uses)), maxT = Math.max(1, ...s.top.map(t => t[1]));
-    put($('su-weeks'), html`${s.weeks.map((w, i) => bar(`week:${w.start}`, `wk ${w.start.slice(5)}`, i ? '' : 'this week', w.uses / maxW * 100, w.uses, i ? '' : 's1'))}`);
-    put($('su-top'), s.top.length ? html`${s.top.map(([n, v]) => bar(`skill:${n}`, n, '', v / maxT * 100, v, '', '', `/skills?row=${encodeURIComponent(n)}`))}` : html`<li class="why">No skill use this week.</li>`);
-  }
   function age() {
     const a = DOC?.age;
     if (!a || a.error) { put($('hist'), unknownBlock(a ? a.error : 'the Metrics document did not arrive')); return; }
@@ -183,7 +179,7 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
       : html`<tr><td colspan="4" class="why">No head failed its gate and then passed at that head in the last ${c.days} days.</td></tr>`);
   }
   function draw() {
-    lamps(); spend(); trends(); tables(); skills(); age();
+    lamps(); spend(); trends(); tables(); age();
     put($('model'), unreadBlock('model'));
     ci();
     const o = DOC?.observed;
@@ -266,9 +262,9 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
     adopt: doc => {
       DOC = doc; evidence(); CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
-      const failed = ['usage', 'trend', 'numbers', 'scorecard', 'skills', 'age', 'observed', 'controls', 'ci'].filter(k => doc[k].error || doc[k].stale);
+      const failed = ['usage', 'trend', 'numbers', 'scorecard', 'age', 'observed', 'controls', 'ci'].filter(k => doc[k].error || doc[k].stale);
       FIRST = CELLS.find(c => c.state === 'warning' || c.state === 'caution')?.ev || Object.keys(EV).find(k => k.startsWith('win:')) || null;
-      put($('subhead'), html`Spend against budget, the week, providers, CI, skill use and the month's usage · read <time class="rel" datetime="${doc.read}"></time>`);
+      put($('subhead'), html`Spend against budget, the week, providers, CI and the month's usage · read <time class="rel" datetime="${doc.read}"></time>`);
       return { objects: Object.entries(EV).map(([id, e]) => ({ ...e, id, type: e.type || 'reading', label: e.label || e.title })),
         state: failed.length ? { kind: 'partial', text: `${failed.map(k => `${k}: ${doc[k].error || `stale since ${hhmm(doc[k].observed)}: ${doc[k].stale}`}`).join(' · ')}. The other readings are current.`, source: '/api/metrics' } : null };
     },

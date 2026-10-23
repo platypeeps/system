@@ -8,7 +8,8 @@
   POST /api/skills/<name>/try, /review, /promote and /demote. Re-import and Evaluate post /api/skills/intake (sd:3992),
   which runs sd skill intake; Approve asks first. The Intake view (system sd:5478) reads /api/skills/intake/repos, the
   repositories sd skill intake --tracked lists, and posts /api/skills/intake/tracking for Track, Refresh and Remove; a
-  refresh lists each skill's intake report and installs nothing. Run, Schedule, Adopt and Scan are copy only. Nothing here
+  refresh lists each skill's intake report and installs nothing. The Usage view (sd:5881, Metrics' Skills view until
+  then) reads /api/skills/usage the first time it shows (skills-usage.js). Run, Schedule, Adopt and Scan are copy only. Nothing here
   is sample data. The old screen was retired in sd:3402.
 -->
 <html lang="en">
@@ -96,6 +97,24 @@
       <div class="untracked" id="intake-untracked"></div>
       <p class="foot-note" id="intake-foot"></p>
     </section>
+
+    <section id="view-usage" class="usage" aria-labelledby="usage-h">
+      <div class="sec-head">
+        <h2 id="usage-h">Skill use <button class="help" type="button" aria-label="Help: Skill use" data-help="<b>Every skill use <code>skill_use</code> records, over four Monday-start weeks.</b> All skills per week, this week first, and this week's ten most used; a skill opens its catalog row. Metrics' Skills view until sd:5881.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="usage-tally"></p>
+      </div>
+      <h3 id="su-weeks-h">All skills, per week</h3>
+      <table class="ledger" aria-labelledby="su-weeks-h">
+        <thead><tr><th scope="col">Week of</th><th scope="col">Uses</th></tr></thead>
+        <tbody id="su-weeks"><tr class="empty"><td colspan="2">Reading skill use…</td></tr></tbody>
+      </table>
+      <h3 id="su-top-h">Most used this week</h3>
+      <table class="ledger" aria-labelledby="su-top-h">
+        <thead><tr><th scope="col">Skill</th><th scope="col">Uses</th></tr></thead>
+        <tbody id="su-top"></tbody>
+      </table>
+    </section>
   </main>
 
   <div class="details" id="details"><p class="why">Select a skill to see its use, its paths and what you can do with it.</p></div>
@@ -103,6 +122,7 @@
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
 <script src="/ui/skills.js"></script>
+<script src="/ui/skills-usage.js"></script>
 <script src="/ui/shell.js"></script>
 </body>
 </html>
