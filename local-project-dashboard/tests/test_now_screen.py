@@ -215,7 +215,8 @@ class Document(ScreenCase):
         self.assertEqual(set(document), {"rows", "sources", "now", "observed", "snoozed", "snooze_error", "work", "work_error", "active",
                                          "attention",
                                          "mail", "mail_more", "mail_unread", "mail_error", "problems", "problems_more",
-                                         "problems_capped", "problems_error", "briefs", "briefs_more", "briefs_error", "briefs_skipped"})
+                                         "problems_capped", "problems_error", "briefs", "briefs_more", "briefs_error", "briefs_skipped",
+                                         "needs", "lane"})
         self.assertEqual(document["now"], NOW)
         self.assertEqual([(row["rank"], row["id"], row["band"]) for row in document["rows"]], [
             (2, "pr:example/project#14:2", "look"),
@@ -224,26 +225,26 @@ class Document(ScreenCase):
             (4, "dirty:messy:2", "queued"),
             (4, "pr:example/project#15:4", "queued"),
         ])
-        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
+        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": "", "lane": ""})
         # sd:3446: the rail badge is the read's; every page shows it from Today's last read.
-        self.assertEqual(document["attention"], {"state": "caution", "n": 3, "what": "caution rows"})
+        self.assertEqual(document["attention"], {"state": "caution", "n": 3, "what": "rows to look at"})
         for row in document["rows"]:
             # `seen` is the snooze's fingerprint; the `problem` it reads stays on the server (sd:1896).
             self.assertEqual(set(row), {"rank", "band", "kind", "id", "what", "detail", "source", "seen"})
 
-    def test_the_badge_counts_warning_rows_else_caution_rows_and_problem_reports(self):
-        # sd:5781: the decisions that wait count on Decide's badge (pages/decide.py), not here.
+    def test_the_badge_counts_broken_rows_else_look_rows(self):
+        # sd:5781: the decisions that wait count on Decide's badge (pages/decide.py), not here. sd:5921: a report is a look
+        # row of Needs you, so the badge counts it as one (test_today_needs).
         look, broken = {"band": "look"}, {"band": "broken"}
-        self.assertEqual(now_screen._attention([look, broken, broken], 2), {"state": "warning", "n": 2, "what": "warning rows"})
-        self.assertEqual(now_screen._attention([look], 2), {"state": "caution", "n": 3, "what": "caution rows and problem reports"})
-        self.assertEqual(now_screen._attention([], 1), {"state": "caution", "n": 1, "what": "problem reports"})
+        self.assertEqual(now_screen._attention([look, broken, broken]), {"state": "warning", "n": 2, "what": "broken rows"})
+        self.assertEqual(now_screen._attention([look, look]), {"state": "caution", "n": 2, "what": "rows to look at"})
         self.assertEqual(now_screen._attention([{"band": "queued"}]), {"state": "ok", "n": 0, "what": "rows"})
         self.assertFalse(hasattr(now_screen, "_waiting"))
 
     def test_an_empty_fleet_and_no_pulls_is_an_empty_list_with_every_source_read(self):
         document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=self.fixture_fleet())
         self.assertEqual(document["rows"], [])
-        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
+        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": "", "lane": ""})
 
     def test_a_collector_that_refuses_is_a_rank_zero_row_and_the_others_still_render(self):
         def fleet_backend(area):
@@ -392,7 +393,7 @@ class DarkCollector(FleetCase):
         self.assertEqual([(row["rank"], row["id"]) for row in document["rows"]], [
             (3, "ahead:clone:1"), (3, "worktrees:1"), (4, "dirty:messy:1"),
         ])
-        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
+        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": "", "lane": ""})
 
     def test_a_fixture_commit_leaves_the_abandoned_registration_in_place(self):
         """sd:1272: git 2.54's auto maintenance prunes a registration with no
@@ -442,7 +443,7 @@ class NowApi(BrowserSession):
         self.assertNotIn("Today", badges(), "a refused request is no read")
         self.request("/api/now", headers={"Cookie": self.cookie})
         self.assertEqual({key: value for key, value in badges()["Today"].items() if key != "at"},
-                         {"state": "warning", "n": 1, "what": "warning rows"})
+                         {"state": "warning", "n": 1, "what": "broken rows"})
         with patch.object(now_screen, "document", side_effect=RuntimeError("the fleet child hung")), patch("sys.stderr"):
             try:
                 self.request("/api/now", headers={"Cookie": self.cookie})
@@ -511,7 +512,7 @@ class FailedJobs(ScreenCase):
         self.assertEqual(row["retry"], "launchctl kickstart fixture/nightly-sync")
         self.assertEqual(row["detail"], f"log 2026-09-27 02:15 · retry: {row['retry']} · triage: unclear, no rule matched exit 7")
         self.assertEqual(now_screen.FAILED, 1)
-        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
+        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": "", "lane": ""})
 
     def test_interrupted_unloaded_and_unknown_jobs_are_look_rows_below_a_failed_one(self):
         # sd:2014. Operations lists these three under attention beside failed;

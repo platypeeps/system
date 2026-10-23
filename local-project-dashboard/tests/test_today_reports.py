@@ -92,8 +92,7 @@ class TheProblems(ReportsCase):
         self.report("nas-full-copy", "r1")
         today = self.today()
         self.assertEqual(len(today["problems"]), 1)
-        self.assertIn("problem reports", today["attention"]["what"])
-        self.assertGreaterEqual(today["attention"]["n"], 1)
+        self.assertEqual(today["attention"], {"state": "caution", "n": 1, "what": "rows to look at"})
 
 
 class TheBriefs(ReportsCase):
