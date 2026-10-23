@@ -13,7 +13,10 @@ held runner lock. Waiting for an idle gate starved a busy machine for hours,
 since new gates kept arriving (sd:3265). Follow does not wait on the gate
 (sd:4046): a lane's gate runs under its runner lock, which follow holds, and
 waiting out gates started by hand left each satellite in BuildMismatch for
-15 to 35 minutes after every hub migration. `machine-setup.sh promote` (sd:4012)
+15 to 35 minutes after every hub migration. A refresh with
+REPO_SYNC_LANES_ONLY=1, as `make post-merge` runs it, skips that wait too:
+a gate run by hand outlasted the lane's 600-second cap on the target, and
+the hub kept the old commit (sd:5799). `machine-setup.sh promote` (sd:4012)
 does wait on them, and also holds every ship lock in this satellite's ship-lock
 folder: a ship or gate run by hand holds no lane lock, and the role moves under
 it. It reads the lane root from this machine's pack config, never through
@@ -343,8 +346,14 @@ def main(argv):
         if verb == "refresh":
             names += registry_names(script, env)
         # Promote waits for the gates from before, as refresh does: a gate or
-        # ship run by hand holds no lane lock (sd:4012).
-        held = drain(env, names, gate=verb in ("refresh", "promote"), promote=verb == "promote")
+        # ship run by hand holds no lane lock (sd:4012). REPO_SYNC_LANES_ONLY=1,
+        # which `make post-merge` sets, waits on the lanes alone, as follow
+        # does: a hand-run gate outlasted the lane's cap on the target (sd:5799).
+        lanes_only = env.get("REPO_SYNC_LANES_ONLY", "") if verb == "refresh" else ""
+        if lanes_only not in ("", "1"):
+            raise Refused(f"REPO_SYNC_LANES_ONLY must be 1 or unset, got {lanes_only!r}")
+        gate = verb == "promote" or (verb == "refresh" and lanes_only != "1")
+        held = drain(env, names, gate=gate, promote=verb == "promote")
     except Refused as refusal:
         if verb == "follow" and refusal.busy:
             print(f"repo-sync.sh follow: skipped, nothing moved: {refusal}; the next run tries again")

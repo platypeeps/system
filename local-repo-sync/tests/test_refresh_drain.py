@@ -239,6 +239,50 @@ class DrainTest(unittest.TestCase):
         self.assertIn("nothing moved", result.stdout + result.stderr)
         self.assertEqual(before, f.head(repo))
 
+    def test_lanes_only_moves_past_a_gate_run_by_hand(self):
+        """NEW, sd:5799. With REPO_SYNC_LANES_ONLY=1, as `make post-merge`
+        sets it, refresh waits on the lanes alone, as follow does (sd:4046):
+        a gate left once every lane lock is held was run by hand."""
+        f = self.fixture()
+        repo, _, new = f.pinned_behind()
+        script = f.tmp / "gate.sh"
+        script.write_text("echo '{\"holders\": [{\"slot\": 1, \"pid\": 7, \"since\": \"t0\"}], "
+                          "\"waiters\": []}'\n")
+
+        result = f.run("refresh", expect=0, extra_env={
+            "SD_GATE_SCRIPT": str(script), "REPO_SYNC_DRAIN_WAIT": "2", "REPO_SYNC_LANES_ONLY": "1"})
+
+        self.assertIn("gates not waited on", result.stdout)
+        self.assertNotIn("waiting for the gate", result.stdout)
+        self.assertEqual(new, f.head(repo))
+
+    def test_lanes_only_still_waits_on_a_busy_lane_within_the_bound(self):
+        """NEW, sd:5799. The switch skips the gate wait only: a lane's runner
+        lock still holds refresh, bounded by REPO_SYNC_DRAIN_WAIT."""
+        f = self.fixture()
+        repo, before, _ = f.pinned_behind()
+        proc = self.holder(f, f.lane("busy-repo"), 30)
+
+        result = f.run("refresh", expect=1, extra_env={"REPO_SYNC_DRAIN_WAIT": "2", "REPO_SYNC_LANES_ONLY": "1"})
+
+        self.assertIn("busy-repo", result.stdout + result.stderr)
+        self.assertIn("nothing moved", result.stdout + result.stderr)
+        self.assertEqual(before, f.head(repo))
+        proc.kill()
+        proc.wait()
+
+    def test_a_lanes_only_value_other_than_1_refuses(self):
+        """NEW, sd:5799. A value the switch does not know is no answer: it
+        refuses with nothing moved rather than guess."""
+        f = self.fixture()
+        repo, before, _ = f.pinned_behind()
+
+        result = f.run("refresh", expect=1, extra_env={"REPO_SYNC_LANES_ONLY": "yes"})
+
+        self.assertIn("REPO_SYNC_LANES_ONLY", result.stderr)
+        self.assertIn("nothing moved", result.stderr)
+        self.assertEqual(before, f.head(repo))
+
     def test_a_failing_gate_status_refuses(self):
         """NEW. An unreadable gate is not an idle one. The refusal names the
         manual move, for when a broken pack is what breaks `sd`."""

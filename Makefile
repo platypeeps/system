@@ -15,11 +15,11 @@ test:
 # here (pack sd:3566): move the checkout to the merge, rewrite stale agent
 # prompt targets (it writes nothing current and refuses hand edits), then
 # report service health so a stale build shows (sd:3568). The lane ends
-# the target at 600 s, so the refresh waits at most 420 s for the lanes and
-# for gates run by hand, then refuses with nothing moved, naming them; the
-# next refresh moves the checkout (sd:5799).
+# the target at 600 s, so the refresh waits on the lanes alone, not on
+# gates run by hand, and at most 420 s; then it refuses with nothing moved,
+# naming the busy lane, and the next refresh moves the checkout (sd:5799).
 .PHONY: post-merge
 post-merge:
-	REPO_SYNC_DRAIN_WAIT=420 sh local-repo-sync/repo-sync.sh refresh "$(CURDIR)"
+	REPO_SYNC_LANES_ONLY=1 REPO_SYNC_DRAIN_WAIT=420 sh local-repo-sync/repo-sync.sh refresh "$(CURDIR)"
 	sh local-agent-prompt/agent-prompt.sh refresh --apply
 	sh local-project-dashboard/dashboard.sh health
