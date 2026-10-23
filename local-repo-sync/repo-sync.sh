@@ -2757,7 +2757,9 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              whose runner never ran, so `lane run` exits at once,
              and wait until each gate holder `sd gate status` listed once
              every lock was held has ended; a waiter or a later gate is no
-             lane's and does not count. TERM, INT, HUP or kill -9
+             lane's and does not count; with REPO_SYNC_LANES_ONLY=1,
+             as `make post-merge` sets it, it skips that gate wait, as
+             follow does. TERM, INT, HUP or kill -9
              of the helper leaves the locks held until the refresh steps
              end. The wait is
              bounded: 45 minutes in total for the lane locks and the gate
@@ -2890,6 +2892,11 @@ environment:
                       seconds refresh waits for the lane locks and an idle
                       gate together before it refuses (default 2700,
                       45 minutes)
+  REPO_SYNC_LANES_ONLY
+                      1 makes refresh wait on the lane locks alone, not on
+                      gates run by hand, as follow does; unset waits on
+                      both; any other value refuses. `make post-merge`
+                      sets it: the lane ends that target at 600 s
   REPO_SYNC_LANES_HELD
                       set to 1 only by refresh_drain.py for its child: the
                       lanes are already held, so refresh or follow moves

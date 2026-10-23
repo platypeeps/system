@@ -19,6 +19,7 @@ for is the order `lane list` then reports. `queue.js` runs under JavaScriptCore 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -694,6 +695,10 @@ class RealLane(BrowserSession):
     pending head to `origin`. The checkout's origin names a GitHub repository, as every lane's must.
     """
 
+    #: A move runs `lane list` and then the verb, each in a real `sd-ship` under the server's own bound; past both, the
+    #: server itself hangs. Under load the 5 s default erred 8 tests whose server was still in bound (sd:5780).
+    http_timeout = queue_screen.LIST_SECONDS + queue_screen.WRITE_SECONDS + 10
+
     def setUp(self):
         super().setUp()
         self.checkout = Path(self.tmp.name) / "system"
@@ -755,6 +760,44 @@ class ThePinnedPack(unittest.TestCase):
             ship.chmod(0o755)
             with mock.patch.dict(os.environ, {"PATH": f"{ship.parent}:{os.environ['PATH']}"}):
                 self.assertEqual(pinned_pack(), pack_bin().parent)
+
+
+class TheRealLaneBound(unittest.TestCase):
+    """A real-lane request waits out the server's own `sd-ship` bounds, so load fails no test (sd:5780)."""
+
+    def waited(self, case):
+        seen = []
+
+        class Answer:
+            status, headers = 200, {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b""
+
+        def urlopen(request, timeout):
+            seen.append(timeout)
+            return Answer()
+        session = case("run")
+        session.base = "http://192.0.2.1"
+        with mock.patch("urllib.request.urlopen", urlopen):
+            session.request("/api/queue")
+        return seen[0]
+
+    def test_a_real_lane_request_outwaits_the_list_and_the_verb(self):
+        # At load 41-54 the 5 s bound erred 8 tests, though the server's list and verb were within their own bounds.
+        waited = self.waited(TheRealLane)
+        self.assertGreater(waited, queue_screen.LIST_SECONDS + queue_screen.WRITE_SECONDS)
+        self.assertTrue(math.isfinite(waited))
+        self.assertEqual(self.waited(TheRealRelease), waited)
+
+    def test_a_stand_in_lane_keeps_the_short_bound(self):
+        self.assertEqual(self.waited(TheMove), 5)
 
 
 class TheRealLane(RealLane):

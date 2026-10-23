@@ -34,12 +34,11 @@
       <h1>Home</h1>
       <p id="subhead">Reading the tiles…</p>
     </div>
-    <div class="tools">
+    <div class="tools" data-again>
       <time class="clock" id="clock" aria-live="off"></time>
-      <button class="btn quiet" type="button" id="refresh"><svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg>Read again</button>
-      <button class="btn quiet enter" type="button" id="edit-tiles" aria-controls="editor" disabled><svg class="i" aria-hidden="true"><use href="#i-pen-line"/></svg>Edit tiles</button>
-      <button class="btn quiet enter" type="button" id="kiosk-on"><svg class="i" aria-hidden="true"><use href="#i-maximize-2"/></svg>Wall display</button>
-      <button class="btn quiet exit" type="button" id="kiosk-off"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg>Exit wall display</button>
+      <button class="btn quiet sm enter" type="button" id="edit-tiles" aria-controls="editor" disabled><svg class="i" aria-hidden="true"><use href="#i-pen-line"/></svg><span>Edit tiles</span></button>
+      <button class="btn quiet sm enter" type="button" id="kiosk-on"><svg class="i" aria-hidden="true"><use href="#i-maximize-2"/></svg><span>Wall display</span></button>
+      <button class="btn quiet sm exit" type="button" id="kiosk-off"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg><span>Exit wall display</span></button>
     </div>
   </header>
   <!-- The toolbar standard (sd:5281): row 1, the views; the count sits on each table's title line. -->

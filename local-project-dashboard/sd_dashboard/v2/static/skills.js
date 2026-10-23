@@ -11,6 +11,8 @@
 // The Intake view (system sd:5478) lists the repositories `sd skill intake --tracked` names, from /api/skills/intake/repos.
 // Track, Refresh and Remove post /api/skills/intake/tracking; Remove keeps the installed skills and its Undo tracks the
 // repository again. A refresh lists each skill's intake report and installs nothing: Approve under a report is the intake's.
+// Rollback (system sd:5779) posts the same route with rollback: true and shows the swap back to the copy the last install
+// replaced, with the pack skills the import informed; Approve rollback asks first and posts the revision that report printed.
 const { html, put, plural, cells } = window.markup;
 // The views, for the shell's view switch: the catalog, and the tracked repositories, read the first time the view opens.
 window.PAGE_VIEWS = [{ id: 'catalog', label: 'Catalog' }, { id: 'intake', label: 'Intake', api: '/api/skills/intake/repos' }];
@@ -303,6 +305,30 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   const approvable = r => !r.installed && (r.mode === 'new' || r.mode === 're-import') && !refused(r);
   const verdictMark = r => r.installed ? ['●', 'ok'] : refused(r) ? ['■', 'warning'] : r.verdict.action === 'install' ? ['●', 'ok'] : ['▲', 'caution'];
   const diffLine = l => html`<span class="${/^(\+\+\+|---|@@)/.test(l) ? 'hd' : l[0] === '+' ? 'add' : l[0] === '-' ? 'del' : ''}">${l}</span>`;
+  // The pack skills whose Lineage or Provenance names the import's repository; a failed git log is unknown, never none.
+  const informedOf = rows => rows.length ? html`<ul class="risk">${rows.map(x => html`<li>${x.commits === null
+    ? html`<span class="g-unknown" aria-hidden="true">▨</span> ${x.skill} (${x.path}) names ${x.names}: unknown: ${x.unknown}`
+    : `${x.skill} (${x.path}) names ${x.names}: ${x.commits.join(', ') || 'no commit adds it'}`}</li>`)}</ul>` : 'none';
+  const rollbackLine = r => `sd skill intake ${shq(r.skill)} --rollback --scope ${shq(r.scope)} --approve ${shq(r.revision)}`;
+  function rollbackOf(r) {
+    const shown = r.diff.slice(0, DIFF_LINES), more = r.diff.length - shown.length, gone = r.mode === 'remove';
+    const after = r.rolled_back ? html`<p class="why"><span class="g-ok" aria-hidden="true">●</span> Rolled back at revision <code>${r.revision}</code>. The replaced copy is kept: a second Rollback undoes it.</p>`
+      : html`<div class="row"><button class="btn" type="button" data-rollback>Approve rollback ${r.revision}</button></div>
+        <p class="why">Swaps the installed copy with the kept one. If either changed since this report, the rollback is refused.</p>`;
+    const line = r.rolled_back ? `sd skill intake ${shq(r.skill)} --rollback --scope ${shq(r.scope)}` : rollbackLine(r);
+    return html`<section class="intake" aria-labelledby="intake-h"><h3 id="intake-h">Rollback report</h3>
+      <p class="verdict"><span class="g-${gone ? 'caution' : 'ok'}" aria-hidden="true">${gone ? '▲' : '●'}</span> <b>${gone ? 'removes the skill' : 'restores the kept copy'}</b> · ${gone ? 'the last install put it there new' : 'the copy the last install replaced'}</p>
+      <dl><dt>Skill</dt><dd>${r.skill} · ${r.scope}</dd>
+        <dt>Installed from</dt><dd>${r.installed_commit ? r.installed_commit.slice(0, 12) : 'not recorded'}</dd>
+        <dt>Kept copy</dt><dd>${gone ? 'none: the skill was new' : r.kept_commit ? `from ${r.kept_commit.slice(0, 12)}` : 'records no source'}</dd>
+        <dt>Informed</dt><dd>${informedOf(r.informed)}</dd>
+        <dt>Revision</dt><dd>${r.revision}</dd></dl>
+      ${r.informed.length ? html`<p class="note">Rollback changes none of these skills. File a revert item for each one to undo; it lands through the lane.</p>` : ''}
+      ${r.recovered.length ? html`<p class="note">${r.recovered.join(' · ')}</p>` : ''}
+      <h3>Diff from the installed copy to the kept one</h3>${shown.length ? html`<pre class="diff">${shown.map(diffLine)}</pre>` : html`<p class="why">No diff.</p>`}
+      ${more > 0 ? html`<p class="why">${more} more lines; <code>sd skill intake --rollback --json</code> holds them all.</p>` : ''}
+      ${after}<div class="cli"><code>${line}</code><button class="icon-btn" type="button" aria-label="Copy: ${line}" data-copy="${line}">${I('copy')}</button></div></section>`;
+  }
   function reportOf(r) {
     // A refresh's report carries its first diff lines and diff_lines, their count (system sd:5478); an evaluation, all of them.
     const [g, st] = verdictMark(r), shown = r.diff.slice(0, DIFF_LINES), more = (r.diff_lines ?? r.diff.length) - shown.length;
@@ -318,6 +344,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         <dt>Risk</dt><dd>${r.risk.length ? html`<ul class="risk">${r.risk.map(f => html`<li><span class="g-${f.severity === 'refuse' ? 'warning' : 'caution'}" aria-hidden="true">${f.severity === 'refuse' ? '■' : '▲'}</span> ${f.severity}: ${f.rule} in ${f.file}${f.line ? ` line ${f.line}` : ''}</li>`)}</ul>` : 'no finding'}</dd>
         <dt>Match</dt><dd>${r.match.map(m => `${m.skill} ${m.overlap}`).join(' · ') || 'none'}</dd>
         <dt>Value</dt><dd>${plural(r.value.instruction_lines, 'instruction line')} · novelty ${r.value.novelty}</dd>
+        ${r.informed ? html`<dt>Informed</dt><dd>${informedOf(r.informed)}</dd>` : ''}
         <dt>Revision</dt><dd>${r.revision}</dd></dl>
       ${r.recovered.length ? html`<p class="note">${r.recovered.join(' · ')}</p>` : ''}
       <h3>Diff against the installed copy</h3>${shown.length ? html`<pre class="diff">${shown.map(diffLine)}</pre>` : html`<p class="why">No diff${r.mode === 'blocked' ? ': the name belongs to another skill' : ''}.</p>`}
@@ -327,14 +354,14 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   function drawIntake() {
     if (!intake || intake.for !== selected) return;
     const slot = document.getElementById('intake-slot'); if (!slot) return;
-    put(slot, intake.wait ? html`<p class="why" role="status"><span class="g-queued" aria-hidden="true">◌</span> Evaluating ${intake.body.source}: fetching it from GitHub and scoring it.</p>`
+    put(slot, intake.wait ? html`<p class="why" role="status"><span class="g-queued" aria-hidden="true">◌</span> ${intake.body.rollback ? `Reading the kept copy of ${intake.body.source}.` : `Evaluating ${intake.body.source}: fetching it from GitHub and scoring it.`}</p>`
       : intake.error ? html`<p class="err" role="alert"><span class="g-unknown" aria-hidden="true">▨</span> ${intake.error}</p>`
-      : reportOf(intake.report));
+      : intake.body.rollback ? rollbackOf(intake.report) : reportOf(intake.report));
   }
   // The answer is the toast text: an evaluation that failed wrote nothing, so its reason is the result, not a refused write.
   function evaluate(key, body) {
     intake = { for: key, body, wait: true }; drawIntake();
-    return window.shell.post('/api/skills/intake', body).then(r => { intake = { for: key, body, report: r }; drawIntake(); return `Report for ${r.skill}: ${r.verdict.action}`; },
+    return window.shell.post('/api/skills/intake', body).then(r => { intake = { for: key, body, report: r }; drawIntake(); return body.rollback ? `Rollback report for ${r.skill}: ${r.mode}` : `Report for ${r.skill}: ${r.verdict.action}`; },
       e => { intake = { for: key, body, error: e.message }; drawIntake(); return e.message; });
   }
   const APPROVE = { id: 'skill.intake.approve', on: 'intake report', label: 'Approve revision', does: 'Installs this revision over the current copy; this cannot be undone.', risk: 'confirm',
@@ -350,6 +377,24 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         if (e.status === 502) return `Install of ${o.label} not known: ${e.message}`;
         throw e;
       }); } };
+  const ROLLBACK = { id: 'skill.intake.rollback', on: 'rollback report', label: 'Approve rollback', does: 'Swaps the installed copy with the kept one; a second rollback undoes it.', risk: 'confirm',
+    consequence: o => `This swaps ${o.label} in ${o.destination} with the copy its last install replaced${o.mode === 'remove' ? ', which removes it' : ''}. The replaced copy is kept, so a second rollback undoes it.`,
+    cli: o => rollbackLine(o),
+    run: o => { const at = intake;
+      return window.shell.post('/api/skills/intake', { source: o.skill, scope: o.scope, rollback: true, approve: o.revision }).then(r => {
+        intake = { ...at, report: r }; drawIntake(); reread(); repoReader?.reread();
+        return `Rolled back ${r.skill}`;
+      }, e => {
+        // A 502 is a rollback whose outcome is not known; a refusal (400, or 409 for a changed copy) wrote nothing.
+        intake = { ...at, report: null, error: e.message }; drawIntake();
+        if (e.status === 502) return `Rollback of ${o.label} not known: ${e.message}`;
+        throw e;
+      }); } };
+  details.addEventListener('click', e => {
+    if (!e.target.closest('[data-rollback]') || !intake?.body?.rollback || !intake.report || intake.report.rolled_back) return;
+    const r = intake.report;
+    C.run(ROLLBACK, { id: 'rollback', type: 'rollback report', label: r.skill, skill: r.skill, scope: r.scope, revision: r.revision, destination: r.destination, mode: r.mode });
+  });
   details.addEventListener('click', e => {
     if (!e.target.closest('[data-approve]') || !intake?.report || !approvable(intake.report)) return;
     const r = intake.report;
@@ -601,6 +646,10 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         cli: o => `sd skill intake ${shq(o.id)}`, run: o => { select(o.id, true); return evaluate(o.id, { source: o.id }); } },
       { id: 'skill.reimport.user', on: 'user skill', label: 'Re-import', does: 'Reads this user skill\'s source and shows the intake report.', key: 'i', icon: 'download', risk: 'safe', primary: () => true,
         cli: o => `sd skill intake ${shq(o.name)} --scope user`, run: o => { showAdopt(); return evaluate('adopt', { source: o.name, scope: 'user' }); } },
+      { id: 'skill.rollback', on: 'skill', label: 'Rollback', does: 'Shows the swap back to the copy the last install replaced.', key: 'b', risk: 'safe', when: o => !!sk(o).imported || 'not installed by sd skill intake',
+        cli: o => `sd skill intake ${shq(o.id)} --rollback`, run: o => { select(o.id, true); return evaluate(o.id, { source: o.id, rollback: true }); } },
+      { id: 'skill.rollback.user', on: 'user skill', label: 'Rollback', does: 'Shows the swap back to the copy this user skill\'s last install replaced.', key: 'b', risk: 'safe',
+        cli: o => `sd skill intake ${shq(o.name)} --rollback --scope user`, run: o => { showAdopt(); return evaluate('adopt', { source: o.name, scope: 'user', rollback: true }); } },
       { id: 'skill.schedule', on: 'skill', label: 'Schedule', does: 'Says why not: a scheduled job is a launchd agent, and sd adds none.', key: 's', risk: 'safe', executes: false, when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
         cli: () => 'no sd verb: a job is a launchd agent', run: () => 'No sd verb adds a job: a job is a launchd agent' },
       // build: applying review notes lives on the review item's page, where the notes are.

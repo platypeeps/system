@@ -147,7 +147,7 @@ Split the PR if the table shows it does too much; a deferred advisory filed as i
 
 Run `codex exec` as `timeout N codex exec -s read-only -o <out> "<prompt>" < /dev/null > <log> 2>&1`: without `< /dev/null` it waits on stdin forever.
 No new `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` within a minute means it hung: stop it and fix stdin.
-Claude Code strips `CLAUDE_CODE_OAUTH_TOKEN` from Bash: source it on the line that starts `claude`: `. "$HOME/.config/shell/env.sh" >/dev/null 2>&1; <cmd>`.
+Claude Code strips `CLAUDE_CODE_OAUTH_TOKEN` from Bash, and env.sh exports it as `CUSTOM_CLAUDE_CODE_OAUTH_TOKEN` so day-to-day claude keeps its own login: set it on the line that starts `claude`: `. "$HOME/.config/shell/env.sh" >/dev/null 2>&1; CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN" <cmd>`.
 Never copy that token into `settings.json`, a script or a log.
 
 # Gen-AI experiments

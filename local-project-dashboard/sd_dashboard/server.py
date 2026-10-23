@@ -355,11 +355,6 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
 
         # sd:5112: pasted URLs and staged files become ledger rows on a fresh branch, landed through the lane.
         return source_intake.request(values, principal)
-    if path == "/api/adversarial/settings":
-        from . import adversarial
-
-        # sd:5109: the deep review's model, effort, bound and sub-agent cap, as setting rows.
-        return adversarial.save_settings(values)
     issue_run = re.fullmatch(r"/api/issue-runs/([A-Za-z0-9-]{1,80})/(confirm|check|discard)", path)
     if issue_run:
         from . import issue_filing

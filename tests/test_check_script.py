@@ -605,6 +605,12 @@ class ThePostMergeTarget(unittest.TestCase):
         self.assertLessEqual(int(wait.group(1)), 600 - 120, refresh)
         self.assertGreater(int(wait.group(1)), 0, refresh)
 
+    def test_the_refresh_waits_on_the_lanes_not_on_gates_run_by_hand(self):
+        # A gate run by hand outlasted the bound, so the hub kept the old commit (sd:5799 note #27210).
+        run = subprocess.run(["make", "-n", "post-merge"], cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertRegex(run.stdout.splitlines()[0], r"\bREPO_SYNC_LANES_ONLY=1 ")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

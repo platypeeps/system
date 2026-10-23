@@ -27,7 +27,9 @@ list`, and `POST /api/notes/quick/add` keeps one through `sd store add`, each
 the `sd` on the dashboard's PATH. The server checks the kind's rules: one line,
 no control character, no double quote, at most `QUICK_MAX` characters. The
 title is the local time; a taken title gets ` 2`, ` 3` and so on. A machine
-without the kind says so, and Keep is off.
+without the kind says so, and Keep is off. Quick notes open in a dialog over
+the day, from the date bar's Quick notes button or `/` (sd:5750); a kept note
+closes it, and a refused one stays in it with its text.
 
 Gap from the design: the read covers seven days; an older day says it was not
 read.

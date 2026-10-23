@@ -1,11 +1,10 @@
 /* Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4
  * Notes v2: a day is the unit. Date bar, then the daily note: its text, or why there is none, above the day's own
- * activity ledger (merges by repo, tasks done; sd:5289 dropped runs and mail). Quick notes sit beside it as a capture box and an honest empty list.
+ * activity ledger (merges by repo, tasks done; sd:5289 dropped runs and mail). Quick notes open in a dialog over it (sd:5750).
  * build (sd:2120): the design's CSS as drawn; days are this machine's, from /api/notes. */
 .datebar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); }
 .datebar .day { font: 600 var(--text-lg)/1.2 var(--font-ui); min-width: 0; margin: 0 var(--space-xs); }
 .datebar .rel { font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); }
-.layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem); gap: var(--space-xl); align-items: start; }
 .tally { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-lg); background: var(--color-rule-2); border: var(--rule-hair) solid var(--color-rule-2); border-radius: var(--radius-md); overflow: hidden; }
 .tally a { display: grid; gap: var(--space-2xs); padding: var(--space-sm) var(--space-md); background: var(--color-panel); color: inherit; text-decoration: none; min-height: var(--row-touch); }
 .tally a:hover { background: var(--color-well); }
@@ -48,13 +47,13 @@ details.repo > summary .n { margin-left: auto; font: 500 var(--text-xs)/1 var(--
 .unknown b { color: var(--color-ink); }
 .more { margin-top: var(--space-xs); }
 
-/* Quick notes */
-.quick { position: sticky; top: var(--space-md); display: grid; gap: var(--space-sm); padding: var(--space-md); border: var(--rule-hair) solid var(--color-rule-2); border-radius: var(--radius-md); background: var(--color-panel); }
-.quick h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); }
+/* Quick notes (sd:5750): the confirm dialog's form, in the shell's palette dialog; its list rows are notes, not palette options. */
 .quick textarea { width: 100%; min-height: 6rem; resize: vertical; padding: var(--space-xs) var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-paper); color: var(--color-ink); font: 400 var(--text-sm)/1.5 var(--font-ui); }
 .quick textarea:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
-.quick .row-btns { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); }
-.quick ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-xs); }
+.quick ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-xs); max-height: 40vh; overflow-y: auto; }
+.quick li { display: block; min-height: 0; padding: 0; cursor: auto; }
+.quick li:hover { background: none; }
+.quick li.unknown { padding: var(--space-sm) var(--space-md); }
 .quick li.qn { padding: var(--space-xs) var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .quick li.qn small { display: block; font: 400 var(--text-2xs)/1.4 var(--font-data); color: var(--color-muted); }
 .quick .empty { margin: 0; font-size: var(--text-sm); color: var(--color-ink-2); }
@@ -64,7 +63,6 @@ details.repo > summary .n { margin-left: auto; font: 500 var(--text-xs)/1 var(--
   #main .help { min-width: var(--row-touch); min-height: var(--row-touch); }
   .datebar .btn { min-height: var(--row-touch); min-width: var(--row-touch); }
 }
-@media (max-width: 1599px) { .layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-lg); } .quick { position: static; order: -1; } }
 @media (max-width: 599px) {
   .tally { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .datebar .day { order: -1; flex-basis: 100%; margin: 0; }
