@@ -9,8 +9,8 @@ window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'watchdog not read' };
 window.PAGE_COMMANDS = [];
 // sd:5080: the list and the cadence strip are the shell's views (shell.js, view:start). The Range chips sit in each view's
 // head and set one range for both; a tick or a lane shows the list with that brief or that source.
-// system sd:5778: Topics is the third view, one row per research topic (briefs_screen.topics).
-window.PAGE_VIEWS = [{ id: 'list', label: 'Briefs', key: 'b' }, { id: 'cadence', label: 'Cadence' }, { id: 'topics', label: 'Topics' }];
+// system sd:5778: Topics is the second view, one row per research topic (briefs_screen.topics).
+window.PAGE_VIEWS = [{ id: 'list', label: 'Briefs', key: 'b' }, { id: 'topics', label: 'Topics' }, { id: 'cadence', label: 'Cadence' }];
 // The shell's Shapeshift bar (sd:5539) filters the list through shell:filter, and the cadence fallback table itself.
 window.PAGE_FILTER = { list: 'subject, source and first lines' };
 addEventListener('DOMContentLoaded', () => {
@@ -204,6 +204,8 @@ addEventListener('DOMContentLoaded', () => {
       <div class="chips" role="group" aria-label="Page">${page > 1 ? html`<button class="chip" type="button" data-p="${page - 1}">${I('chevron-left')}Previous</button>` : ''}${page < pages ? html`<button class="chip" type="button" data-p="${page + 1}">Next${I('chevron-right')}</button>` : ''}</div>
       <div class="chips" role="group" aria-label="Rows per page">${[25, 50, 100, 200].map(n => html`<button class="chip" type="button" data-size="${n}" aria-pressed="${String(n === size)}">${n}</button>`)}</div>`);
     put(document.getElementById('tally'), html`<span>${plural(new Set(ranged().map(b => b.src)).size, 'source')}</span>`);
+    // What each destination icon's fill says, the legend Documents draws too (sd:5731).
+    put(document.getElementById('list-help'), shell.list.help('', window.commands.pubLegend()));
     shell.view.count('list', all.length);
     document.getElementById('sub').textContent = READER ? (capped() ? `newest ${plural(READER.shown, 'brief')} read` : `All read${READER.skipped ? `, ${READER.skipped} skipped` : ''}`) : 'Reading the briefs…';
   }
