@@ -305,3 +305,88 @@ class TheWrites(Run):
                       ({**nudge, "body": "x" * (run_actions.NUDGE_MAX + 1)}, 400, "at most"),
                       ({**nudge, "key": "sd:5", "body": "hi"}, 400, "filed on GitHub")])
 
+
+class ThePull(Run):
+    """sd:5888: real repositories in a temporary folder; the clone is one commit behind origin."""
+
+    def git(self, where, *args):
+        import subprocess
+
+        return subprocess.run(["git", "-C", str(where), *args], capture_output=True, text=True, check=True,
+                              env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.test",
+                                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.test"}).stdout.strip()
+
+    def setUp(self):
+        super().setUp()
+        root = Path(self.tmp.name).resolve()
+        self.origin, self.clone, other = root / "origin.git", root / "clone", root / "other"
+        self.git(root, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        self.git(root, "clone", "-q", str(self.origin), str(other))
+        (other / "a").write_text("one\n")
+        self.git(other, "add", "a")
+        self.git(other, "commit", "-q", "-m", "one")
+        self.git(other, "push", "-q", "origin", "main")
+        self.git(root, "clone", "-q", str(self.origin), str(self.clone))
+        (other / "a").write_text("two\n")
+        self.git(other, "commit", "-q", "-am", "two")
+        self.git(other, "push", "-q", "origin", "main")
+        self.tip = self.git(other, "rev-parse", "HEAD")
+        upsert_repo(self.connection, str(self.clone), remote="git@example.invalid:example/clone.git")
+        self.connection.commit()
+        self.lanes = root / "lanes"
+        lanes = patch.dict(os.environ, {"SD_LANE_ROOT": str(self.lanes), "GIT_CONFIG_GLOBAL": os.devnull})
+        lanes.start()
+        self.addCleanup(lanes.stop)
+
+    def pull(self, path=None):
+        return self.run_("repo.pull", path=str(path or self.clone))
+
+    def head(self):
+        return self.git(self.clone, "rev-parse", "HEAD")
+
+    def test_a_clean_checkout_on_its_default_branch_fast_forwards(self):
+        status, body = self.pull()
+        self.assertEqual((status, body["exit"], body["line"]), (200, 0, f"git -C {self.clone} pull --ff-only"), body)
+        self.assertEqual(self.head(), self.tip)
+        self.assertEqual(self.journalled()[-1][1], 0)
+
+    def refuses(self, said, path=None):
+        before = self.head()
+        status, body = self.pull(path)
+        self.assertEqual(status, 400, body)
+        self.assertIn(said, body["error"])
+        self.assertEqual(self.head(), before)
+
+    def test_a_dirty_tree_another_branch_or_a_detached_head_refuses(self):
+        (self.clone / "new").write_text("x")
+        self.refuses("1 uncommitted or untracked file")
+        (self.clone / "new").unlink()
+        self.git(self.clone, "switch", "-q", "-c", "topic")
+        self.refuses("it is on topic, not the default branch main")
+        self.git(self.clone, "switch", "-q", "--detach", "main")
+        self.refuses("HEAD is detached")
+
+    def test_a_linked_worktree_and_a_pinned_checkout_refuse(self):
+        linked = Path(self.tmp.name).resolve() / "linked"
+        self.git(self.clone, "worktree", "add", "-q", "-b", "main-copy", str(linked), "main")
+        upsert_repo(self.connection, str(linked), remote="git@example.invalid:example/linked.git")
+        self.connection.commit()
+        status, body = self.pull(linked)
+        self.assertEqual((status, "is a linked worktree" in body["error"]), (400, True), body)
+        with patch.object(run_actions, "CHECKOUT", self.clone):
+            self.refuses("is a pinned checkout")
+
+    def test_a_lane_that_holds_the_runner_lock_refuses_and_a_free_lock_is_released_after(self):
+        import fcntl
+
+        lock = self.lanes / "clone" / "lane" / "queue" / "runner.lock"
+        lock.parent.mkdir(parents=True)
+        with open(lock, "a", encoding="utf-8") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.refuses("the lane runs in")
+        self.assertEqual(self.pull()[0], 200)
+        with open(lock, "a", encoding="utf-8") as after:
+            fcntl.flock(after, fcntl.LOCK_EX | fcntl.LOCK_NB)  # raises BlockingIOError if Pull kept it
+
+    def test_an_unregistered_path_runs_nothing(self):
+        self.refuses("not a registered repository", self.origin)

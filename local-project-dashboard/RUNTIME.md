@@ -216,6 +216,7 @@ Show log and Print need an installed job; Show biggest and Show use a configured
 Each run waits in the POST, bounded (30 s unless the action sets more), and answers 200 with its exit and the last 64 KiB of output, which Details shows.
 A refusal is a 4xx and ran nothing; a run past its bound is a 504 whose outcome is not known. The command journal keeps each run's own exit.
 Local writes (sd:5887) use the same route: Capture idea runs `sd store add`, Write runs `repos.set_declaration` at the reading the page showed (409 when the row changed), and Post nudge runs `gh ... comment --body-file -` with the URL from the contribution row and the draft on stdin.
+Pull on Management (sd:5888) runs `git pull --ff-only` in a registered checkout under the lane's runner lock; it checks again there that the checkout is not pinned or a linked worktree, is on its default branch and is clean.
 Run and Adopt on Skills start claude in a new herdr workspace through `fix_session._launch`; the session is the operator's.
 Document Request and Research Run file through `/api/items`, as Capture does, and their Undo is `cancel-task`.
 Three stay copy only, each with its reason in the UI: Publish posts outside, Kickstart would end its own request, and Schedule needs a launchd agent sd does not add.

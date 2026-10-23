@@ -21,6 +21,7 @@ mounted volume, a port number, a Home Assistant tile, a registered repo row, a c
 | skill.run          | a skill on disk, a registered repo row       | claude `/<skill>` in herdr (`fix_session`)    |
 | skill.adopt        | an owner/repo[/path] source                  | claude `/sd-skill-adopt <source>` in herdr    |
 | contribution.nudge | a contribution row and its revision          | `gh pr|issue comment <url> --body-file -`     |
+| repo.pull          | `pull_refusal`, read again under the lock    | `git pull --ff-only`, under the lane's lock   |
 
 A step is bounded (`Step.seconds`), and its output is kept to its last `OUTPUT_CHARS` characters. The answer is
 `{action, line, exit, output, cut}` for a step that ran, whatever its exit. A refusal before the step ran is a
@@ -384,6 +385,111 @@ def contribution_nudge(connection, values, jobs=None) -> Step:
                 stdin=body.strip() + "\n", seconds=60)
 
 
+# ---------- Pull (sd:5888) ----------
+
+def _git(path: Path, *args: str) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(["git", "-C", str(path), *args], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _pinned() -> list[Path]:
+    """The hub's pinned checkouts: this repository's and the pack's, which only the lane or repo-sync move (sd:3097)."""
+    from . import pack_library
+
+    found = [CHECKOUT, pack_library().parent]
+    for checkout in list(found):
+        common = _git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if common is not None and common.returncode == 0:
+            found.append(Path(common.stdout.strip()).parent)
+    return [Path(os.path.realpath(path)) for path in found]
+
+
+def pull_refusal(path: Path) -> str:
+    """Why Pull does not run in `path`, or "": a check that gave no answer refuses, since its answer is not known."""
+    if Path(os.path.realpath(path)) in _pinned():
+        return f"{path} is a pinned checkout: only the lane or local-repo-sync/repo-sync.sh refresh moves it"
+    common = _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    own = _git(path, "rev-parse", "--path-format=absolute", "--git-dir")
+    if common is None or own is None or common.returncode or own.returncode:
+        return "git did not say whether this is the main checkout, so it is not known"
+    if common.stdout.strip() != own.stdout.strip():
+        return f"{path} is a linked worktree: a builder or a session holds it"
+    branch = _git(path, "symbolic-ref", "-q", "--short", "HEAD")
+    if branch is None:
+        return "git did not say which branch is checked out"
+    if branch.returncode:
+        return "HEAD is detached: Pull moves only the default branch"
+    default = _git(path, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if default is None or default.returncode or not default.stdout.strip().startswith("origin/"):
+        return "origin/HEAD is not set, so the default branch is not known"
+    name = default.stdout.strip().removeprefix("origin/")
+    if branch.stdout.strip() != name:
+        return f"it is on {branch.stdout.strip()}, not the default branch {name}"
+    status = _git(path, "status", "--porcelain")
+    if status is None or status.returncode:
+        return "git status gave no answer, so whether the tree is clean is not known"
+    if status.stdout.strip():
+        count = len(status.stdout.splitlines())
+        return f"{count} uncommitted or untracked {'file' if count == 1 else 'files'}"
+    return ""
+
+
+def _lane_lock(path: Path):
+    """The lane's runner lock for this checkout, held now; None when this machine has no lane folder for it.
+
+    `BlockingIOError` when a lane holds it. The lock is the one `sd_lane.runner_lock` takes, never waited for."""
+    import fcntl
+
+    from . import pack_module
+
+    lane = pack_module("sd_lane")
+    lock = lane.lane_dir(path, dict(os.environ)) / "queue" / "runner.lock"
+    if not lock.exists():
+        return None
+    handle = open(lock, "a", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException:
+        handle.close()
+        raise
+    return handle
+
+
+def repo_pull(connection, values, jobs=None) -> Step:
+    """`git pull --ff-only` in a registered checkout on its default branch, clean, and held by no lane or worktree.
+
+    Every check runs here, just before the pull, whatever the page read; a refusal is a ValueError (400), and nothing
+    ran. The lane's runner lock is held across the checks and the pull, so a lane that starts meanwhile finds it held
+    and tries again at its next tick."""
+    path = _repo(connection, _fields(values, {"path"})["path"])
+
+    def call():
+        try:
+            held = _lane_lock(path)
+        except BlockingIOError:
+            raise ValueError(f"No pull: the lane runs in {path} now, and it fast-forwards the checkout after it lands.") from None
+        except (ImportError, OSError) as error:
+            raise ValueError(f"No pull: whether a lane holds {path} is not known ({error}).") from None
+        try:
+            why = pull_refusal(path)
+            if why:
+                raise ValueError(f"No pull: {why}.")
+            done = subprocess.run(["git", "-C", str(path), "pull", "--ff-only"], stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=110, check=False,
+                                  env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+            return done.returncode, (done.stdout + done.stderr).strip()
+        except subprocess.TimeoutExpired:
+            return None, f"git pull gave no answer in 110 s, so whether {path} moved is not known. Read Repos again."
+        finally:
+            if held is not None:
+                held.close()
+
+    return Step(line=f"git -C {path} pull --ff-only", call=call, seconds=120)
+
+
 #: Every action a page may post, by name: its label for the journal and Details, and its check.
 ACTIONS = {
     "job.log": ("Show log", job_log),
@@ -400,6 +506,7 @@ ACTIONS = {
     "skill.run": ("Run skill", skill_run),
     "skill.adopt": ("Adopt skill", skill_adopt),
     "contribution.nudge": ("Post nudge", contribution_nudge),
+    "repo.pull": ("Pull", repo_pull),
 }
 
 

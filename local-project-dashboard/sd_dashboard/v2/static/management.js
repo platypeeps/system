@@ -657,9 +657,14 @@ function registerCommands() {
     { id: 'repo.lane-host', on: 'repo', label: 'Move lane', does: 'Opens the repo\'s settings page, where you move its lane.', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo lane-host ${shq(o.path)} hub`,
       run: o => { location.href = `?repo=${encodeURIComponent(o.path)}#view=repos`; return `Move lane: ${o.label}'s settings page opens`; } },
-    // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
-    { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', icon: 'download', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
-      when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
+    // sd:5888: Pull runs `git pull --ff-only` through /api/run (run_actions.repo_pull). when() carries v1's refusals; the
+    // server checks again under the lane's runner lock, just before the pull, and refuses a pinned checkout, a linked
+    // worktree, another branch, a dirty tree or a lane that runs. Details shows git's output; no verb undoes a pull.
+    { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Fast-forwards the default branch from origin; the server checks it is clean and free first.', key: 'l', icon: 'download', risk: 'confirm', executes: true, primary: o => o.row.git?.state === 'behind',
+      when: o => o.row.registered ? pullWhy(o) : 'not registered in sd-db: Pull runs only in a registered checkout',
+      consequence: o => `This runs git pull --ff-only in ${o.path}. It moves the default branch only, and refuses a dirty tree, another branch or a lane that runs there.`,
+      cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, sends: o => `POST /api/run {action: repo.pull, path: ${o.path}}`,
+      run: o => window.commands.runAction(o, 'repo.pull', { path: o.path }).then(t => { reread(); return t; }) },
     // sd:5064: a codex review of the repository, in the background; the backend reviews only a registered checkout.
     window.commands.adversarialReview('repo', { payload: o => ({ kind: 'repo', target: o.path }), when: registeredWhy }),
     // sd:5100: one open pull request, picked from the shadow rows the document carries (`pulls`), reviewed by codex
