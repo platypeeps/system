@@ -62,7 +62,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import sqlite3
 import subprocess
 import time
@@ -373,8 +372,6 @@ def document(connection, *, now: str = "") -> dict:
     return {"read": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock)), "load": _load(), "gates": gates,
             "lanes": lanes, "problems": problems, "root": str(root) if root else None, "edits": EDITS,
             "managed": len(managed),
-            # The dashboard runs on the hub: the Idle table names it beside each hub lane (sd:5650).
-            "hub": socket.gethostname().split(".")[0].lower(),
             **(probe if lanes else {"retry": False, "requeue": False, "requeue_off": None})}
 
 

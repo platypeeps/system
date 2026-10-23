@@ -451,7 +451,7 @@
     });
   }
   tabs.forEach(t => t.addEventListener('click', () => showTab(t.id)));
-  // A page with no Details element (Queue, Decide, Settings) has nothing to show there: the pane is Chat alone.
+  // A page with no Details element (Decide, Settings) has nothing to show there: the pane is Chat alone.
   if (!details) { pane.querySelector('#tab-details').hidden = true; showTab('tab-chat'); }
   // Roving focus: ← → move between tabs and select (WAI-ARIA tabs pattern).
   pane.querySelector('.tablist').addEventListener('keydown', e => {

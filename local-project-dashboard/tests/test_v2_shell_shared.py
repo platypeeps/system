@@ -709,8 +709,7 @@ class TheTableGrammar(unittest.TestCase):
                            ("briefs.js", "shell.view.count('list', all.length);"),
                            ("skills.js", "window.shell.view?.count('catalog', DOC ? v.length : null);"),
                            ("management.js", "shell.view.count('repos', rows.length);"),
-                           ("documents.js", "window.PAGE_VIEWS = [{ id: 'documents', label: 'Documents' }];"),
-                           ("queue.js", "window.shell?.view.count('lanes', busyLanes.length); window.shell?.view.count('idle', idle.length);")]:
+                           ("documents.js", "window.PAGE_VIEWS = [{ id: 'documents', label: 'Documents' }];")]:
             self.assertIn(call, (STATIC / page).read_text(encoding="utf-8"), page)
 
     def test_a_kept_state_that_is_malformed_falls_back_field_by_field(self):
@@ -1660,10 +1659,11 @@ if __name__ == "__main__":
 class ThePaneWithoutDetails(unittest.TestCase):
     """sd:5592. A page whose Details never shows a row has no Details element; the shell hides the tab and opens on Chat."""
 
-    def test_only_queue_decide_and_settings_have_no_details_and_the_shell_shows_chat(self):
+    def test_only_decide_and_settings_have_no_details_and_the_shell_shows_chat(self):
         v2 = V2
         bare = sorted(p.stem for p in v2.glob("*.html") if 'id="details"' not in p.read_text(encoding="utf-8"))
-        self.assertEqual(bare, ["decide", "queue", "settings"])
+        # Queue's open lane shows in Details since sd:5921.
+        self.assertEqual(bare, ["decide", "settings"])
         self.assertIn("if (!details) { pane.querySelector('#tab-details').hidden = true; showTab('tab-chat'); }", SHELL_JS)
         self.assertIn('.pane [role="tab"][hidden] { display: none; }', (v2 / "static" / "shell.css").read_text(encoding="utf-8"))
 
