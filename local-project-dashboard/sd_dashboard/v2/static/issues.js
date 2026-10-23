@@ -1,7 +1,7 @@
-// Your issues (sd:4628), on Today (Tasks drew them until sd:5645): each repo's Jira and GitHub issues assigned to or
-// filed by the operator.
-// Issue intake (sd:4840), on Today only, is at the end.
-// The rows are the page document's `issues` (issues.document over sd_db.repos.mine_issues); the page script hands them over
+// Your issues (sd:4628), on GitHub (sd:5781; Today drew them from sd:5645, Tasks before): each repo's Jira and GitHub
+// issues assigned to or filed by the operator.
+// Issue intake (sd:4840), GitHub's Intake view, is at the end.
+// The rows are /api/github/issues' `issues` (issues.document over sd_db.repos.mine_issues); github.js hands them over
 // with an issues:read event after each read, `error` set when the read failed. A failure is a row naming it, never an empty list.
 // Markup is html`…` from markup.js: every value is escaped, and only an https address the server kept becomes a link.
 (() => {
@@ -16,11 +16,11 @@
         <td class="why">${r.reason}</td></tr>`)}`
       : html`<tr class="empty"><td colspan="4">No open issue is assigned to you or filed by you in a repo with issue sources.</td></tr>`);
     put($('issues-tally'), issues.length && !error ? html`<span>${issues.length} open</span>` : html``);
-    window.todayCount?.('issues', error ? null : issues.length); // Today's Issues tab (sd:5080)
+    window.shell?.view?.count('issues', error ? null : issues.length); // the Your issues tab (sd:5080)
   }
   document.addEventListener('issues:read', e => draw(e.detail));
 
-  // Issue intake (sd:4840), on Today: each github_issues repo's open third-party issues no item carries (issues.intake over
+  // Issue intake (sd:4840), on GitHub: each github_issues repo's open third-party issues no item carries (issues.intake over
   // sd_db.repos.intake_issues). File as item posts /api/items with the issue's title, repo and ref, the item `sd task add
   // --ref github:<owner>/<repo>#N` files; the row then names the item until the next read leaves it out. A refusal, such as
   // a ref another item already carries, stays on the row. Rows are keyed by that ref.
@@ -42,7 +42,7 @@
       : html`<tr class="empty"><td colspan="5">No third-party issue waits for an item in a repo with GitHub issues on.</td></tr>`);
     const waiting = INTAKE.filter(r => !FILED.has(r.key)).length;
     put($('intake-tally'), INTAKE.length && !FAILED ? html`<span>${waiting} waiting</span>` : html``);
-    window.todayCount?.('intake', FAILED ? null : waiting);
+    window.shell?.view?.count('intake', FAILED ? null : waiting); // the Intake tab
   }
   function file(key) {
     const r = INTAKE.find(x => x.key === key);

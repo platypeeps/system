@@ -42,13 +42,14 @@ A v1 `/backlog` address answers 301 to `/tasks` with the query v1 read
 Tasks filters on. v1's screen and its run selection were deleted in sd:2622;
 `/classic/backlog` is a 404.
 
-All | HOA | Home (`places.js`) narrows every view to the rows of one place. Each
-row carries `area` from `places.area_of`, the rule the HOA and Home pages'
-Tasks views use: the hoa checkout's items, or items with no repo. A report is
-in neither. The address keeps the choice as `#view=<id>`. The views are `window.PAGE_VIEWS` in `tasks.js`;
-they have no panels, so the switch goes in `#viewswitch`. Home's key is `v o`, since `v h` is HOA's.
+Realm, the first pick in the filter bar (sd:5753), narrows every layout to the rows of one realm or place:
+Personal (the default), each realm `dashboard.realms` names, HOA or Home; All shows every row, and each choice
+carries its count. Each row carries `realm` from `places.realm_of` and `area` from `places.area_of`, the rule the
+HOA and Home pages' Tasks views use: the hoa checkout's items, or items with no repo. A report is in neither.
+The address keeps a choice other than Personal as `?realm=<id>`; an older `#view=<id>` link lands on that choice.
+Clear all keeps the Realm. Tasks declares no `PAGE_VIEWS`, so the rail lists no views under it.
 
-The Personal and Work views carry Run sweep (sd:5096, sd:5097) in their subhead, with the realm's last run.
+Personal and Work carry Run sweep (sd:5096, sd:5097) in their subhead, with the realm's last run.
 It posts `/api/tasks/sweep {"realm"}`, which starts `realm_sweep run <realm>` in the background, one run per realm
 (`sd_dashboard/sweep.py`); a second start of a running realm is a 409. The run reads that realm's Google account, mail and Drive,
 and for Work also Notion, Jira and GitHub; it files a `<day> - Work sweep` or `<day> - Personal sweep` brief and sd

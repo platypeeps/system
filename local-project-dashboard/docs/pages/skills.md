@@ -27,6 +27,20 @@ first, and posts the URL, scope and revision that report printed; nothing
 installs without it. A refused approve wrote nothing; one that failed any
 other way is reported as unknown, and the next Evaluate finishes or undoes it.
 
+Rollback (system sd:5779) sits beside Re-import, for a catalog skill and a
+user skill alike. It posts the same route with `rollback: true`, which runs
+`sd skill intake <name> --rollback --json`. Details shows the swap back to
+the copy the last install replaced: the diff, both commits and the
+revision. A skill the last install put there new is removed. Approve
+rollback asks first and posts the name, scope and revision that report
+printed. The replaced copy is kept, so a second Rollback undoes the first.
+The verb refuses a locally edited copy and a pack skill git holds clean,
+and names the `git revert` to run through the lane. The Rollback and
+Evaluate reports list the pack skills whose Lineage or Provenance names the
+same repository, with their commits; a `git log` that failed shows unknown.
+A skill installed before the pack kept copies has none, and its Rollback
+says so.
+
 The Intake view (system sd:5478) lists the repositories skills are adopted
 from. `GET /api/skills/intake/repos` (`skill_intake.repos`) runs
 `sd skill intake --tracked --json`: the `skills.intake_repos` setting row,

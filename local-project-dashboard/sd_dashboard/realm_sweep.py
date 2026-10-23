@@ -26,9 +26,9 @@ fleet key. A failed database read fails the run: it is unknown, not unset.
 The run has an exact allowlist, `--permission-mode dontAsk`, and never skips permission checks. Its MCP tools read
 (`MCP_READS`); its one write is `draft_gmail_message`. No tool that sends, forwards or labels mail, writes Drive, Notion
 or Jira, or comments on GitHub is allowed, and `DENIED` names them as well. Bash runs only `sd store items`,
-`sd task show|note` and the realm's `sd task add`; Write reaches only the run folder. The Personal run loads
-workspace-mcp alone (`--strict-mcp-config`). The Work run also needs notion, jira and github, which the user's Claude
-config holds with their credentials, so it loads that config's servers, and dontAsk refuses every tool not listed.
+`sd task show|note` and the realm's `sd task add`; Write reaches only the run folder. Each run loads its servers alone
+(`--strict-mcp-config`): the Personal run workspace-mcp, the Work run also notion, jira and github (`WORK_MCP`), whose
+credentials come from env.sh by name, never in argv or a file.
 
 Steps, and what a stop between them leaves:
 
@@ -125,6 +125,16 @@ DENIED = (
         "update_pull_request", "merge_pull_request", "issue_write", "request_copilot_review", "create_or_update_file",
         "push_files")),
 )
+#: The Work run's other servers, as the user's Claude config defines them: `--setting-sources project` skips that
+#: config (sd:5764). No credential is written here or reaches argv. notion finds the login it stored under its name;
+#: claude expands github's `${NAME}` when it starts the server, and jira's process inherits its JIRA_* variables, both
+#: from env.sh, which the run's shell sources (`WITH_TOKEN`).
+WORK_MCP = {
+    "notion": {"type": "http", "url": "https://mcp.notion.com/mcp"},
+    "jira": {"type": "stdio", "command": "npx", "args": ["-y", "mcp-jira-stdio@latest"]},
+    "github": {"type": "http", "url": "https://api.githubcopilot.com/mcp",
+               "headers": {"Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"}},
+}
 TOLD = (
     "This unattended run has no person to answer. Bash runs only the sd commands the prompt names, each on its own: "
     "no cd, no pipes, no $(...). Write reaches only the run folder. Gmail allows reading and draft_gmail_message, "
@@ -290,9 +300,11 @@ def allowed_tools(realm: str, folder: Path, followups: str = "") -> list[str]:
 
 
 def claude_argv(claude: str, realm: str, prompt: str, mcp_url: str, allowed: list[str]) -> list[str]:
-    """The run: an exact allowlist, never skipped permissions; the Personal run has workspace-mcp alone."""
-    servers = ["--strict-mcp-config", "--mcp-config",
-               json.dumps({"mcpServers": {"workspace-mcp": {"type": "http", "url": mcp_url}}})] if realm == "personal" else []
+    """The run: an exact allowlist, never skipped permissions, and the realm's servers alone (`MCP_READS`)."""
+    loaded = {"workspace-mcp": {"type": "http", "url": mcp_url}}
+    if realm == "work":
+        loaded.update(WORK_MCP)
+    servers = ["--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": loaded})]
     return [
         claude, "-p", prompt,
         "--permission-mode", "dontAsk",

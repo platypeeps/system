@@ -50,7 +50,9 @@
 .linkbtn:hover { color: var(--color-ink); }
 
 /* Ledger (Today grammar) */
-.ledger th.r { text-align: right; }
+.ledger th.r, .ledger td.r { text-align: right; }
+/* system sd:5778: Topics: a cell nothing records yet reads muted, as the cadence table's unknown does. */
+.ledger td.u, .ledger td .u { color: var(--color-muted); }
 .ledger .act { text-align: right; white-space: nowrap; padding-right: 0; overflow: visible; }
 .ledger tbody tr[data-picked] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
 .ledger tbody tr[data-picked] .g::after { content: " ✓"; color: var(--color-accent); }

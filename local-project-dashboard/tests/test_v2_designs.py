@@ -151,21 +151,21 @@ SHELL_MORE = r"""
 window.shell.row = () => null; window.shell.closePane = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
 OUT.selected = []; C.select = id => OUT.selected.push(id);
 const click = sel => DOC_LISTENERS.click.forEach(f => f({ target: { closest: s => s === sel.s ? { id: sel.id, dataset: sel.dataset || {} } : null } }));
-// The shell's view switch: the hash names the view, Pages by default; count() records each tab's count.
-location.pathname = '/designs'; location.hash = ''; OUT.counts = {}; OUT.replacedState = null;
-var history = { state: null, replaceState(s, t, u) { OUT.replacedState = u; location.hash = u.slice(u.indexOf('#')); } };
-window.shell.view = { current: () => location.hash === '#view=hidden' ? 'hidden' : 'pages', count: (id, n) => { OUT.counts[id] = n; },
-  show(id) { location.hash = '#view=' + id; document.dispatchEvent(new CustomEvent('shell:view', { detail: { id } })); } };
+// The shell's view switch, Pages alone; count() records each tab's count. replaceState moves the query and the hash.
+location.pathname = '/designs'; OUT.counts = {}; OUT.replacedState = null;
+var history = { state: null, replaceState(s, t, u) { OUT.replacedState = u; const h = u.indexOf('#'), q = u.indexOf('?');
+  location.hash = h < 0 ? '' : u.slice(h); location.search = q < 0 ? '' : u.slice(q, h < 0 ? undefined : h); } };
+window.shell.view = { current: () => 'pages', count: (id, n) => { OUT.counts[id] = n; } };
 """
 
 
 class TheScript(unittest.TestCase):
     """designs.js against a ledger with a page in each state."""
 
-    def run_page(self, body, answer=None, search=""):
+    def run_page(self, body, answer=None, search="", hash=""):
         answer = answer or "(path) => [200, DOC]"
         script = (STAND_IN + f"location.search = {json.dumps(search)};\nvar DOC = {json.dumps(DOC)};\n" + MARKUP_JS
-                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + PAGE_JS
+                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + f"location.hash = {json.dumps(hash)};\n" + READ_SHELL + f"\nANSWER = {answer};\n" + PAGE_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.page_attention = window.PAGE_ATTENTION; OUT.html = Object.fromEntries(Object.entries(ELS).map(([k, e]) => [k, e.html]));"
@@ -183,7 +183,7 @@ class TheScript(unittest.TestCase):
         self.assertEqual(out["R"]["exec"], [False, None, None, None, None])
 
     def test_hide_and_unhide_are_the_rows_act(self):
-        # sd:5457: the row shows Hide (or Unhide, on the Hidden view) on every page and brief row.
+        # sd:5457: the row shows Hide (or Unhide, under Show hidden) on every page and brief row.
         rows = {"page": f"{PAGES}/tasks.html", "brief": "product:brand"}
         out = self.run_page(f"const ROWS_ = {json.dumps(rows)};"
                             " R.primary = Object.fromEntries(Object.entries(ROWS_).map(([t, id]) => [t, REG.filter(c => c.on === t && c.primary?.(C.get(id))).map(c => c.id)]));")
@@ -224,7 +224,7 @@ class TheScript(unittest.TestCase):
         self.assertEqual(out["text"]["src"], "~/repos/example/ui-design at abc1234")
         self.assertEqual(out["page_attention"], {"state": "caution", "n": 3, "what": "pages uncommitted or without a current screenshot"})
 
-    SHOW_HIDDEN = "shell.view.show('hidden');"
+    SHOW_HIDDEN = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-fclear], [data-f]' ? { dataset: { f: 'hidden', v: '1' } } : null } });"
 
     def hidden_doc(self):
         """The ledger with the stale page hidden."""
@@ -234,31 +234,36 @@ class TheScript(unittest.TestCase):
         doc["attention"] = designs._attention(doc)
         return doc
 
-    def test_a_hidden_row_leaves_the_ledger_the_lamps_and_the_badge_and_the_hidden_view_lists_it(self):
-        # sd:3447: the stale page is hidden, so the Shot stale lamp and the badge drop it. sd:5064: Hidden is a page view;
-        # Pages, the default, lists the unhidden rows, Hidden the hidden ones alone, and the lamps count the rows the view draws.
-        out = self.run_page(f"R.lamps = ELS.annunciator.html; R.rows = ELS.rows.html; {self.SHOW_HIDDEN}"
-                            " R.hidden = ELS.rows.html; R.lamps2 = ELS.annunciator.html;"
+    def test_a_hidden_row_leaves_the_ledger_the_lamps_and_the_badge_and_show_hidden_lists_it(self):
+        # sd:3447: the stale page is hidden, so the Shot stale lamp and the badge drop it. sd:5753: Show hidden, a toggle in
+        # the filter bar, lists the hidden rows alone; the lamps and the Pages tab count the rows the ledger draws.
+        out = self.run_page(f"R.lamps = ELS.annunciator.html; R.rows = ELS.rows.html; R.counts = {{ ...OUT.counts }}; R.bar = ELS.filters.html; {self.SHOW_HIDDEN}"
+                            " R.hidden = ELS.rows.html; R.lamps2 = ELS.annunciator.html; R.bar2 = ELS.filters.html;"
                             " R.unhide = cmd('design.unhide').when(C.get('" + PAGES + "/tasks.html'));"
                             " R.hide = cmd('design.hide').when(C.get('" + PAGES + "/tasks.html'));", answer=f"(path) => [200, {json.dumps(self.hidden_doc())}]")
         self.assertEqual(re.findall(r'data-filter="(\w+)"[^>]*>.*?<b>(\d+)</b>', out["R"]["lamps"], re.S),
                          [("recent", "2"), ("stale", "0"), ("noshot", "1"), ("dirty", "1"), ("brief", "1")])
         self.assertNotIn(f"{PAGES}/tasks.html", out["R"]["rows"])
-        self.assertEqual(out["counts"], {"pages": 4, "hidden": 1})
+        self.assertEqual((out["R"]["counts"], out["counts"]), ({"pages": 4}, {"pages": 1}))
+        toggle = r'data-f="hidden" data-v="1" aria-pressed="(\w+)">.*?Show hidden <span class="n">(\d+)</span>'
+        self.assertEqual(re.findall(toggle, out["R"]["bar"]), [("false", "1")])
+        self.assertEqual(re.findall(toggle, out["R"]["bar2"]), [("true", "1")])
+        self.assertEqual(out["urls"][-1], {"hidden": 1})
+        self.assertIn("Clear all", out["R"]["bar2"])
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["hidden"]), [f"{PAGES}/tasks.html"])
         self.assertEqual(re.findall(r'data-filter="(\w+)"[^>]*>.*?<b>(\d+)</b>', out["R"]["lamps2"], re.S),
                          [("recent", "0"), ("stale", "1"), ("noshot", "0"), ("dirty", "0"), ("brief", "0")])
-        # The view is the hash the shell writes, so the query carries no show key and the Show chips are gone.
-        self.assertNotIn("show", out["urls"][-1] if out["urls"] else {})
         self.assertNotIn("data-show", json.dumps(out["html"]))
         self.assertEqual((out["R"]["unhide"], out["R"]["hide"]), (True, "already hidden"))
         self.assertEqual(out["page_attention"]["n"], 2)
 
-    def test_an_older_show_hidden_or_hidden_lamp_link_lands_on_the_hidden_view(self):
-        for search, query in (("?show=hidden", ""), ("?f=hidden", ""), ("?show=hidden&q=tasks", "?q=tasks")):
-            out = self.run_page("R.rows = ELS.rows.html;", answer=f"(path) => [200, {json.dumps(self.hidden_doc())}]", search=search)
-            self.assertEqual(out["replacedState"], f"/designs{query}#view=hidden", search)
-            self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), [f"{PAGES}/tasks.html"], search)
+    def test_an_older_show_hidden_hidden_lamp_or_hidden_view_link_lands_on_show_hidden(self):
+        # sd:5753: Hidden was a view (sd:5064); its #view=hidden link, and the older query links, land on the toggle.
+        for search, hash, query in (("?show=hidden", "", "?hidden=1"), ("?f=hidden", "", "?hidden=1"), ("?show=hidden&q=tasks", "", "?q=tasks&hidden=1"),
+                                    ("", "#view=hidden", "?hidden=1"), ("?q=tasks", "#view=hidden", "?q=tasks&hidden=1"), ("?hidden=1", "", None)):
+            out = self.run_page("R.rows = ELS.rows.html;", answer=f"(path) => [200, {json.dumps(self.hidden_doc())}]", search=search, hash=hash)
+            self.assertEqual(out["replacedState"], query and f"/designs{query}", (search, hash))
+            self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), [f"{PAGES}/tasks.html"], (search, hash))
         out = self.run_page("", search="?f=stale")
         self.assertIsNone(out["replacedState"])
 
@@ -266,14 +271,14 @@ class TheScript(unittest.TestCase):
         out = self.run_page(f"{self.SHOW_HIDDEN} click({{ s: '.annunciator .cell', dataset: {{ filter: 'noshot' }} }}); R.rows = ELS.rows.html; R.empty = ELS.empty.textContent;",
                             answer=f"(path) => [200, {json.dumps(self.hidden_doc())}]")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), [])
-        self.assertEqual(out["urls"][-1], {"f": "noshot"})
+        self.assertEqual(out["urls"][-1], {"f": "noshot", "hidden": 1})
 
     def test_hide_posts_the_row_and_undo_posts_it_back(self):
         out = self.run_page(f"shellRun(cmd('design.hide'), C.get('{PAGES}/notes.html')); await flush();"
                             " cmd('design.hide').undo(C.get('" + PAGES + "/notes.html')); await flush();")
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/designs/view", {"id": f"{PAGES}/notes.html", "hidden": True}],
                                                          ["/api/designs/view", {"id": f"{PAGES}/notes.html", "hidden": False}]])
-        self.assertEqual(out["toasts"][0], "Hidden: designs/pages/notes.html. The Hidden view lists it.")
+        self.assertEqual(out["toasts"][0], "Hidden: designs/pages/notes.html. Show hidden lists it.")
 
     def test_an_unread_store_hides_nothing_and_turns_hide_off_with_its_reason(self):
         doc = json.loads(json.dumps(DOC))

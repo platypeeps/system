@@ -79,9 +79,6 @@ section[aria-labelledby="active-h"] { margin-top: var(--space-xl); }
   .active .what { grid-area: what; width: auto; } .active .detail { grid-area: detail; } .active .when { grid-area: when; } .active .num { grid-area: num; }
 }
 
-/* Decisions (sd:3012): the rows are decisions.css, shared with Review's Questions view (sd:5497). */
-section[aria-labelledby="decisions-h"] { margin-top: var(--space-xl); }
-
 /* Status (sd:5099): the sections `sd today` prints, under one flow strip (design.md § Per-page allowances: one evidence strip).
  * Hallmark · component: status view · genre: modern-minimal · theme: design.md instrument panel
  * Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4
@@ -131,7 +128,7 @@ section[aria-labelledby="decisions-h"] { margin-top: var(--space-xl); }
   .st .what { grid-area: what; width: auto; } .st .detail { grid-area: detail; } .st .when { grid-area: when; }
 }
 
-/* GitHub (sd:5608): Status's parts and rows (.st-sec, .st) for pull requests and issues. The title links to GitHub, the
+/* GitHub (sd:5608; the GitHub page's Pull requests since sd:5781, which links this sheet): Status's parts and rows (.st-sec, .st) for pull requests and issues. The title links to GitHub, the
  * item under Why to Tasks; the tally's waiting count links to its part. No new tokens.
  * Hallmark · component: github view · genre: modern-minimal · theme: design.md instrument panel
  * states: default · hover (links) · focus · active · empty (one shared line) · error (could not be read) · not read (▨ line) */
