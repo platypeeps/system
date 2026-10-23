@@ -312,6 +312,29 @@ R.cells = CELLS.map(c => [c.dataset.src, c.dataset.state, c.title || null]); R.o
         self.assertIn("<b>11:31</b> UTC", out["R"]["observed"])
 
 
+class TheUnreadLamps(ReaderCase):
+    """sd:5939: a source read only in part keeps its counts on its lamp but reads unknown, never ok; the Sessions lamp
+    reads unknown when a live-session source was not read."""
+
+    def setUp(self):
+        super().setUp()
+        self.doc["needs"] = now_screen.needs(
+            [*self.doc["needs"], {**now_screen.unread_row("lane", {"pack": "sd-ship gave no answer"}), "band": "broken"},
+             {**now_screen.unread_row("live", {"herdr": "herdr did not answer"}), "band": "broken"}],
+            work=[], live=set(), today=NOW[:10], lanes=[lane(rows=[blocked(5780)])], briefs=[])
+        self.doc["lane"] = {**self.doc["lane"], "blocked": 1, "unread": 1, "unread_why": "pack: sd-ship gave no answer"}
+
+    def test_a_lane_read_in_part_and_an_unread_live_source_read_unknown(self):
+        out = self.run_page("""const lane = El('div'), val = El('span'); lane.dataset = { src: 'lane' }; lane.querySelector = () => val;
+document.querySelectorAll = sel => sel === '.cell[data-src]' ? [lane] : [];
+refresh(); await flush();
+R.lane = [lane.dataset.state, lane.title, val.html]; const ses = ELS['lamp-sessions']; R.ses = [ses.dataset.state, ses.title];""")
+        state, title, text = out["R"]["lane"]
+        self.assertEqual((state, title), ("unknown", "pack: sd-ship gave no answer"))
+        self.assertIn("<b>1</b> blocked", text)
+        self.assertEqual(out["R"]["ses"], ["unknown", "herdr: herdr did not answer"])
+
+
 class TheFix(ReaderCase):
     """sd:3456: Fix on a work row Today lists posts /api/items/<id>/fix with the revision the Now read gave."""
 

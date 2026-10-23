@@ -187,3 +187,57 @@ class TheTrack(ReportsCase):
 
         found = self.track(JobsBackend(self.tmp.name), blocked=locked)
         self.assertEqual(found, {"error": "database is locked"})
+
+
+class TheUnread(ReportsCase):
+    """sd:5939: a source read only in part is a dark Needs you row, never a quiet 0. Queue's document names an unread
+    lane in `problems` and does not raise; the reports, the mail, a checkout, the gate and a live-session source each
+    say an unread part the same way. Each such part is one broken row under its lamp, so the lamp reads unknown and the
+    badge counts it."""
+
+    def today(self, *, lanes=None, fleet=fleet_document):
+        return now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name), fleet=fleet,
+                                   lanes=lanes or queue())
+
+    def dark(self, doc):
+        return {row["id"]: (row["band"], row["lamp"], row["what"], row["detail"]) for row in doc["needs"] if row["kind"] == "dark"}
+
+    def test_an_unread_lane_is_a_broken_row_and_the_badge_counts_it(self):
+        def partial(connection, now):
+            return {**queue(lane(rows=[]))(connection, now), "problems": [{"repo": "/repos/pack", "error": "sd-ship gave no answer"}]}
+
+        doc = self.today(lanes=partial)
+        self.assertEqual(self.dark(doc), {"dark:lane": ("broken", "lane", "lane not read for pack", "pack: sd-ship gave no answer")})
+        self.assertEqual(doc["attention"], {"state": "warning", "n": 1, "what": "broken rows"})
+
+    def test_a_gate_read_that_failed_is_a_broken_row(self):
+        doc = self.today(lanes=queue(gates={"error": "sd gate status gave no answer"}))
+        self.assertEqual(self.dark(doc), {"dark:gate": ("broken", "gate", "gate could not be read", "sd gate status gave no answer")})
+
+    def test_reports_or_mail_that_could_not_be_read_are_broken_rows(self):
+        from sd_dashboard import today_mail, today_reports
+
+        reports = {"problems": [], "problems_more": 0, "problems_capped": False, "problems_error": "database is locked",
+                   "briefs": [], "briefs_more": 0, "briefs_error": "", "briefs_skipped": 0}
+        mail = {"mail": [], "mail_more": 0, "mail_unread": [{"repo": "hoa", "reason": "alias board is not in aliases.conf"}],
+                "mail_error": ""}
+        with mock.patch.object(today_reports, "document", return_value=reports), \
+                mock.patch.object(today_mail, "document", return_value=mail):
+            doc = self.today()
+        self.assertEqual(self.dark(doc), {
+            "dark:reports": ("broken", "reports", "reports could not be read", "database is locked"),
+            "dark:mail": ("broken", "mail", "mail not read for hoa", "hoa: alias board is not in aliases.conf")})
+
+    def test_a_checkout_the_fleet_could_not_read_is_a_broken_repos_row(self):
+        from test_now_screen import repo
+
+        doc = self.today(fleet=lambda area: fleet_document(area, repos=[repo("fine"), repo("gone", error="git did not answer")]))
+        self.assertEqual(self.dark(doc), {"dark:repos": ("broken", "repos", "repos not read for gone", "gone: git did not answer")})
+
+    def test_a_live_session_source_that_failed_is_a_broken_sessions_row(self):
+        from sd_dashboard import active_sessions
+
+        found = {"rows": [], "sources": {"fleet": "", "lane": "", "launch": "", "herdr": "herdr did not answer"}, "error": ""}
+        with mock.patch.object(active_sessions, "document", return_value=found):
+            doc = self.today()
+        self.assertEqual(self.dark(doc), {"dark:live": ("broken", "sessions", "live not read for herdr", "herdr: herdr did not answer")})

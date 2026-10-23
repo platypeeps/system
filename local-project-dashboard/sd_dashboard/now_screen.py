@@ -129,7 +129,7 @@ LATE_DAYS = 30
 GROUP_SHOWN = 5
 #: Each source's lamp on Today (sd:5921): the abandoned worktrees are checkouts, so they light Repos.
 LAMP = {"repos": "repos", "sessions": "repos", "prs": "pulls", "jobs": "jobs", "lane": "lane",
-        "reports": "reports", "mail": "mail"}
+        "reports": "reports", "mail": "mail", "gate": "gate", "live": "sessions"}
 
 #: The three bands, loudest first; the script paints each as a class name.
 BANDS = ("broken", "look", "queued")
@@ -366,6 +366,42 @@ def dark_row(source: str, reason: str) -> dict:
         "detail": reason,
         "source": source,
     }
+
+
+def unread_row(source: str, unread: dict[str, str]) -> dict:
+    """A source read only in part (sd:5939): one dark row naming the parts not read, so its lamp reads unknown and the
+    badge counts it, never a quiet 0."""
+    names = sorted(unread)
+    more = f" and {len(names) - 3} more" if len(names) > 3 else ""
+    return {**dark_row(source, "; ".join(f"{name}: {unread[name]}" for name in names[:3]) + more),
+            "what": f"{source} not read for {', '.join(names[:3])}{more}", "partial": True}
+
+
+def unread_rows(sources: dict, kept: dict, queue: dict, active: dict, reported: dict, mail: dict) -> list[dict]:
+    """The dark rows for every read that failed in part or that a document reports instead of raising (sd:5939): a lane
+    Queue could not list, the gate, the reports, the mail, a checkout the fleet could not read and a live-session source.
+    A collector that failed whole is already its own dark row and adds none here."""
+    rows = []
+    if not sources["lane"] and queue.get("problems"):
+        rows.append(unread_row("lane", {Path(p["repo"]).name: p["error"] for p in queue["problems"]}))
+    if not sources["lane"] and (queue.get("gates") or {}).get("error"):
+        rows.append(dark_row("gate", queue["gates"]["error"]))
+    if reported.get("problems_error"):
+        rows.append(dark_row("reports", reported["problems_error"]))
+    if mail.get("mail_error"):
+        rows.append(dark_row("mail", mail["mail_error"]))
+    elif mail.get("mail_unread"):
+        rows.append(unread_row("mail", {u["repo"]: u["reason"] for u in mail["mail_unread"]}))
+    checkouts = {repo["name"]: repo["error"] for repo in (kept.get("repos") or {}).get("repos") or [] if repo.get("error")}
+    if not sources["repos"] and checkouts:
+        rows.append(unread_row("repos", checkouts))
+    # The fleet's sessions document failing whole is already the dark sessions row.
+    live = {name: why for name, why in (active.get("sources") or {}).items() if why and not (name == "fleet" and sources["sessions"])}
+    if active.get("error"):
+        live["sessions"] = active["error"]
+    if live:
+        rows.append(unread_row("live", live))
+    return rows
 
 
 def merge(rows: list[dict]) -> list[dict]:
@@ -700,6 +736,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     threads, mail_snoozed = snooze.split("today", mail_rows(mail["mail"]), snoozes)
     live = {row["item"] for row in active.get("rows") or []}
     dark = [dark_row("lane", sources["lane"])] if sources["lane"] else []
+    dark += unread_rows(sources, kept, queue, active, reported, mail)
     listed = needs([*shown, *dark, *reports, *threads], work=work, live=live, today=now[:10],
                    lanes=queue.get("lanes") or [], briefs=reported["briefs"])
     summary = lane_summary(queue)

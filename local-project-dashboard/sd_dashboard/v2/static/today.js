@@ -121,7 +121,7 @@ window.PAGE_FILTER = { '': 'Needs you' };
     document.querySelectorAll('.cell[data-src]').forEach(cell => {
       const s = cell.dataset.src, rows = NEEDS.filter(r => r.lamp === s && r.kind !== 'dark'), val = cell.querySelector('.val');
       const dark = NEEDS.find(r => r.lamp === s && r.kind === 'dark'), seen = (DOC.observed || {})[s];
-      if (dark || why[s]) { cell.dataset.state = 'unknown'; cell.title = dark?.detail || why[s]; put(val, html`<span class="ph">not read</span>`); return; }
+      if ((dark && !dark.partial) || why[s]) { cell.dataset.state = 'unknown'; cell.title = dark?.detail || why[s]; put(val, html`<span class="ph">not read</span>`); return; }
       if (seen) cell.title = `observed ${seen.at.slice(11, 16)} UTC${seen.stale ? ` · stale: ${seen.stale}` : ''}`; else cell.removeAttribute('title');
       const st = rows.map(r => STATE[r.band]);
       cell.dataset.state = seen?.stale ? 'unknown' : st.includes('warning') ? 'warning' : st.includes('caution') ? 'caution' : st.length ? 'queued' : 'ok';
@@ -136,10 +136,13 @@ window.PAGE_FILTER = { '': 'Needs you' };
         : html`<b>${rows.length}</b> to tidy<small>${n('ahead')} ahead · ${n('dirty')} dirty${n('pinned') ? ` · ${n('pinned')} pinned` : ''}</small>`);
       if (s === 'lane' && L.unread) cell.title = L.unread_why;
       // A repo whose mail could not be read is unknown, never none: the lamp names each reason (sd:4191).
-      if (s === 'mail' && unread.length) { cell.title = unread.map(u => `${u.repo}: mail not read: ${u.reason}`).join('\n'); if (!rows.length) cell.dataset.state = 'unknown'; }
+      if (s === 'mail' && unread.length) cell.title = unread.map(u => `${u.repo}: mail not read: ${u.reason}`).join('\n');
+      // A source read only in part (sd:5939) keeps its counts but reads unknown, never ok: its dark row says what is missing.
+      if (dark) { cell.dataset.state = 'unknown'; cell.title = cell.title || dark.detail; }
     });
     const a = ACTIVE || {}, items = new Set((a.rows || []).map(r => r.item)), ses = $('lamp-sessions');
-    ses.dataset.state = a.error ? 'unknown' : 'ok'; ses.title = a.error || '';
+    const liveDark = NEEDS.find(r => r.lamp === 'sessions' && r.kind === 'dark');
+    ses.dataset.state = a.error || liveDark ? 'unknown' : 'ok'; ses.title = a.error || liveDark?.detail || '';
     put(ses.querySelector('.val'), a.error ? html`<span class="ph">not read</span>` : html`<b>${items.size}</b> live<small>${plural((a.rows || []).length, 'session')}</small>`);
     const gate = $('lamp-gate'), load = (L.load || {}).load5, off = DOC.sources.lane || gates.error;
     gate.dataset.state = off ? 'unknown' : gates.waiting ? 'caution' : 'ok';
