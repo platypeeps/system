@@ -241,3 +241,18 @@ class TheUnread(ReportsCase):
         with mock.patch.object(active_sessions, "document", return_value=found):
             doc = self.today()
         self.assertEqual(self.dark(doc), {"dark:live": ("broken", "sessions", "live not read for herdr", "herdr: herdr did not answer")})
+
+    def test_a_malformed_fleet_document_is_the_whole_repos_row_never_a_crash(self):
+        # Review of sd:5939: unread_rows read the kept fleet rows before it checked that _repos accepted them.
+        for repos in ("not a list", [{"error": "git did not answer"}], [{"name": "x", "error": {"not": "text"}}]):
+            with self.subTest(repos=repos):
+                doc = self.today(fleet=lambda area: {"repos": repos} if area == "repos" else fleet_document(area))
+                self.assertEqual(self.dark(doc), {"dark:repos": ("broken", "repos", "repos could not be read",
+                                                                 "fleet collector returned an incomplete repos document")})
+
+    def test_a_malformed_queue_document_reads_only_what_it_can(self):
+        def odd(connection, now):
+            return {**queue()(connection, now), "gates": "no gates", "problems": [{"repo": "/repos/pack"}, "junk"]}
+
+        doc = self.today(lanes=odd)
+        self.assertEqual(self.dark(doc), {"dark:lane": ("broken", "lane", "lane not read for pack", "pack: no reason given")})

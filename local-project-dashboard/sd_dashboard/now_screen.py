@@ -380,24 +380,40 @@ def unread_row(source: str, unread: dict[str, str]) -> dict:
 def unread_rows(sources: dict, kept: dict, queue: dict, active: dict, reported: dict, mail: dict) -> list[dict]:
     """The dark rows for every read that failed in part or that a document reports instead of raising (sd:5939): a lane
     Queue could not list, the gate, the reports, the mail, a checkout the fleet could not read and a live-session source.
-    A collector that failed whole is already its own dark row and adds none here."""
+    A collector that failed whole is already its own dark row and adds none here. Each branch first checks that its
+    source was accepted, then reads only values of the shape it needs: a malformed part is skipped, never a raise."""
+    def text(value, default=""):
+        return value if isinstance(value, str) and value else default
+
+    def listed(value):
+        return [entry for entry in value if isinstance(entry, dict)] if isinstance(value, list) else []
+
     rows = []
-    if not sources["lane"] and queue.get("problems"):
-        rows.append(unread_row("lane", {Path(p["repo"]).name: p["error"] for p in queue["problems"]}))
-    if not sources["lane"] and (queue.get("gates") or {}).get("error"):
-        rows.append(dark_row("gate", queue["gates"]["error"]))
-    if reported.get("problems_error"):
+    if not sources["lane"] and isinstance(queue, dict):
+        unread = {Path(p["repo"]).name: text(p.get("error"), "no reason given")
+                  for p in listed(queue.get("problems")) if text(p.get("repo"))}
+        if unread:
+            rows.append(unread_row("lane", unread))
+        gates = queue.get("gates")
+        if isinstance(gates, dict) and text(gates.get("error")):
+            rows.append(dark_row("gate", gates["error"]))
+    if text(reported.get("problems_error")):
         rows.append(dark_row("reports", reported["problems_error"]))
-    if mail.get("mail_error"):
+    if text(mail.get("mail_error")):
         rows.append(dark_row("mail", mail["mail_error"]))
-    elif mail.get("mail_unread"):
-        rows.append(unread_row("mail", {u["repo"]: u["reason"] for u in mail["mail_unread"]}))
-    checkouts = {repo["name"]: repo["error"] for repo in (kept.get("repos") or {}).get("repos") or [] if repo.get("error")}
-    if not sources["repos"] and checkouts:
-        rows.append(unread_row("repos", checkouts))
+    else:
+        unread = {u["repo"]: text(u.get("reason"), "no reason given") for u in listed(mail.get("mail_unread")) if text(u.get("repo"))}
+        if unread:
+            rows.append(unread_row("mail", unread))
+    # Only a fleet document `_repos` accepted: its rows are dicts with a text name and a text or empty error.
+    if not sources["repos"]:
+        checkouts = {repo["name"]: repo["error"] for repo in kept["repos"]["repos"] if repo.get("error")}
+        if checkouts:
+            rows.append(unread_row("repos", checkouts))
     # The fleet's sessions document failing whole is already the dark sessions row.
-    live = {name: why for name, why in (active.get("sources") or {}).items() if why and not (name == "fleet" and sources["sessions"])}
-    if active.get("error"):
+    live = {name: why for name, why in (active.get("sources") or {}).items()
+            if text(why) and not (name == "fleet" and sources["sessions"])} if isinstance(active.get("sources"), dict) else {}
+    if text(active.get("error")):
         live["sessions"] = active["error"]
     if live:
         rows.append(unread_row("live", live))
@@ -422,6 +438,7 @@ def _repos(fleet_read) -> list[dict]:
                                          or (row.get("dirty") is not None and type(row.get("dirty")) is not int)
                                          or (row.get("pinned_behind") is not None
                                              and type(row.get("pinned_behind")) is not int)
+                                         or not isinstance(row.get("error") or "", str)
                                          for row in rows):
         raise ValueError("fleet collector returned an incomplete repos document")
     return backbone_rows(rows)
@@ -609,6 +626,7 @@ def lane_summary(queue: dict) -> dict:
     """What Today's Lane and Gate lamps and In motion's tally read from Queue's document (sd:5921)."""
     states: dict[str, int] = {}
     landed_in = set()
+    problems = [p for p in queue.get("problems") or [] if isinstance(p, dict)] if isinstance(queue.get("problems"), list) else []
     for lane in queue.get("lanes") or []:
         for row in lane.get("rows") or []:
             states[row["state"]] = states.get(row["state"], 0) + 1
@@ -616,8 +634,8 @@ def lane_summary(queue: dict) -> dict:
                 landed_in.add(lane["repo"])
     return {"merging": states.get("merging", 0), "next": states.get("next", 0), "blocked": states.get("blocked", 0),
             "landed": states.get("landed", 0), "landed_lanes": len(landed_in), "gates": queue.get("gates") or {},
-            "load": queue.get("load") or {}, "unread": len(queue.get("problems") or []),
-            "unread_why": "; ".join(f"{Path(p['repo']).name}: {p['error']}" for p in (queue.get("problems") or [])[:3])}
+            "load": queue.get("load") or {}, "unread": len(problems),
+            "unread_why": "; ".join(f"{Path(str(p.get('repo') or '?')).name}: {p.get('error') or 'no reason given'}" for p in problems[:3])}
 
 
 TRACK_HOURS = 24
