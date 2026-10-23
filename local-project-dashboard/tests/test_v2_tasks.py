@@ -637,7 +637,7 @@ class TheConfirmFields(unittest.TestCase):
     def confirm(self, body):
         self.assertIsNotNone(CONFIRM, "shell.js has no confirm:start block")
         script = "var window = globalThis;\n" + MARKUP_JS + r"""
-const { html } = window.markup, put = (el, m) => { el.html = String(m); };
+const { html } = window.markup, put = (el, m) => { el.html = String(m); }, CLOSE_X = '';
 var OUT = { focused: null, result: null, error: null };
 const yes = { disabled: false }, no = {}, line = { textContent: '' }, inputs = { reason: { value: '', tagName: 'INPUT' } }, L = {};
 const form = { elements: inputs, addEventListener: (t, f) => { (L[t] = L[t] || []).push(f); },

@@ -723,7 +723,7 @@
     // Edit: priority and due date. Save applies both with Undo; Cancel changes nothing.
     function askEdit(t) {
       put(dateDlg, html`<form method="dialog" class="date-form">
-        <h2 id="date-h">Edit ${label(t)}</h2>
+        <h2 id="date-h">Edit ${label(t)}</h2>${window.shell.closeX}
         <label class="label" for="pri-in">Priority</label>
         <select id="pri-in">${t.p ? '' : html`<option value="" selected>not recorded</option>`}${[1, 2, 3, 4].map(v => html`<option value="${v}"${t.p === v ? html` selected` : ''}>P${v}</option>`)}</select>
         <label class="label" for="due-in">Due date</label>
@@ -733,7 +733,7 @@
         <div class="actions">
           <button class="btn" value="set" type="submit">Save</button>
           ${t.due && !repeats(t) ? html`<button class="btn quiet" value="clear" type="submit" formnovalidate>Remove due date</button>` : ''}
-          <button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button>
+          <button class="btn quiet" value="cancel" type="submit" formnovalidate data-cancel>Cancel</button>
         </div></form>`);
       const f = dateDlg.querySelector('form');
       const change = clear => { const ch = {}, p = f.querySelector('#pri-in').value, d = f.querySelector('#due-in').value; if (p && +p !== t.p) ch.p = +p; if (clear) ch.due = null; else if (d && d !== t.due) ch.due = d; return ch; };
@@ -758,7 +758,7 @@
       let n = 0; while (withinWeek({ due: plus(n + 1) }) && n < 400) n++;
       const last = plus(n), min = into ? plus(0) : plus(n + 1), max = into ? last : '';
       put(dateDlg, html`<form method="dialog" class="date-form">
-        <h2 id="date-h">${label(t)} → ${name}</h2>
+        <h2 id="date-h">${label(t)} → ${name}</h2>${window.shell.closeX}
         <p class="why">${into ? 'Urgent means due within 7 days. Pick the real deadline.' : `Not urgent means due after ${fmt(last)}. ${t.due ? `The current deadline is ${fmt(t.due)}; moving it changes the obligation.` : ''}`}</p>
         ${!into && repeats(t) ? html`<p class="why">${NO_CLEAR}</p>` : ''}
         <label class="label" for="due-in">Due date</label>
@@ -766,7 +766,7 @@
         <div class="actions">
           <button class="btn" value="set" type="submit">Set date and move</button>
           ${!into && !repeats(t) ? html`<button class="btn quiet" value="none" type="submit" formnovalidate>Remove due date</button>` : ''}
-          <button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button>
+          <button class="btn quiet" value="cancel" type="submit" formnovalidate data-cancel>Cancel</button>
         </div></form>`);
       dateDlg.onclose = () => {
         const v = dateDlg.returnValue, d = dateDlg.querySelector('#due-in').value;
@@ -780,12 +780,12 @@
     // Move to: one button per status in board order, keys 1–5 as on the board. The move runs the status command, so it keeps Undo.
     function askMove(t) {
       put(dateDlg, html`<form method="dialog" class="date-form">
-        <h2 id="date-h">Move ${label(t)} to</h2>
+        <h2 id="date-h">Move ${label(t)} to</h2>${window.shell.closeX}
         <p class="why">Now in ${slabel(t.status)}. A column this task cannot take is off and says why.</p>
         <div class="moves">${STATUSES.map(([s, name], i) => { const L = legal(t, s); return html`<div class="mv">
           <button class="btn${L.ok ? '' : ' quiet'}" type="submit" value="${s}" data-move="${s}"${L.ok ? '' : html` disabled aria-describedby="mv-${s}"`}><span>${name}</span><kbd>${i + 1}</kbd></button>
           ${L.ok ? html`<code>${cliMove(t, s)}</code>` : html`<p class="why" id="mv-${s}">${L.reason}</p>`}</div>`; })}</div>
-        <div class="actions"><button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button></div></form>`);
+        <div class="actions"><button class="btn quiet" value="cancel" type="submit" formnovalidate data-cancel>Cancel</button></div></form>`);
       const f = dateDlg.querySelector('form');
       f.addEventListener('keydown', e => { const S = STATUSES[parseInt(e.key, 10) - 1], b = S && f.querySelector(`[data-move="${S[0]}"]`); if (b && !b.disabled) { e.preventDefault(); b.click(); } });
       dateDlg.onclose = () => {

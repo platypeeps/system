@@ -809,6 +809,13 @@
     d.showModal(); first?.focus();
     return from;
   }
+  // Close (sd:5883): every dialog's header carries this X. It presses the dialog's own Cancel ([data-cancel]), so it runs
+  // the Cancel path, never a copy; Esc stays the browser's. Pages draw it as window.shell.closeX.
+  const CLOSE_X = html`<button class="icon-btn dlg-x" type="button" data-dlg-x aria-label="Close">${ICON('x')}</button>`;
+  // dlgx:start
+  const pressCancel = x => x.closest('dialog')?.querySelector('[data-cancel]')?.click();
+  // dlgx:end
+  document.addEventListener('click', e => { const x = e.target.closest?.('[data-dlg-x]'); if (x) pressCancel(x); });
   const confirmDlg = document.createElement('dialog');
   confirmDlg.className = 'palette confirm'; confirmDlg.setAttribute('aria-labelledby', 'confirm-h');
   put(confirmDlg, html`<h2 id="confirm-h"></h2>`); // the label target exists while the dialog is closed
@@ -829,10 +836,10 @@
     const line = v => typeof cli === 'function' ? cli(v) : cli;
     return new Promise(done => {
       put(confirmDlg, html`<form method="dialog" class="confirm-body">
-        <h2 id="confirm-h">${title}</h2>${text ? html`<p>${text}</p>` : ''}
+        <h2 id="confirm-h">${title}</h2>${CLOSE_X}${text ? html`<p>${text}</p>` : ''}
         ${fields.map(fieldOf)}
         ${line({}) ? html`<div class="cli"><code id="confirm-cli">${line({})}</code></div>` : ''}
-        <div class="actions"><button class="btn quiet" value="no" formnovalidate>${keep}</button><button class="btn${danger ? ' danger' : ''}" value="yes">${ok}</button></div></form>`);
+        <div class="actions"><button class="btn quiet" value="no" formnovalidate data-cancel>${keep}</button><button class="btn${danger ? ' danger' : ''}" value="yes">${ok}</button></div></form>`);
       const f = confirmDlg.querySelector('form'), yes = f.querySelector('[value="yes"]');
       const values = () => Object.fromEntries(fields.map(x => [x.name, f.elements[x.name].value.trim()]));
       const filled = () => fields.every(x => !x.required || values()[x.name]);
@@ -1063,7 +1070,7 @@
     const o = (typeof target === 'string' ? OBJ.get(target) : target && target.id && OBJ.get(target.id)) || (target && target.type ? target : null) || OBJ.get(selId);
     const about = o && o.item ? o : null;
     put(cap, html`<form method="dialog" class="confirm-body" id="cap-form">
-      <h2 id="cap-h">Capture</h2>
+      <h2 id="cap-h">Capture</h2>${CLOSE_X}
       <div class="seg" role="radiogroup" aria-label="Kind">
         <label><input type="radio" name="kind" value="task" checked><span>Task</span></label>
         <label><input type="radio" name="kind" value="followup"><span>Followup</span></label>
@@ -1078,7 +1085,7 @@
       </fieldset>
       <p class="why" id="cap-why"></p>
       <div class="cli"><code id="cap-cli">sd task add ''</code></div>
-      <div class="actions"><button class="btn quiet" value="no" formnovalidate>Cancel</button><button class="btn" value="yes">Capture</button></div></form>`);
+      <div class="actions"><button class="btn quiet" value="no" formnovalidate data-cancel>Cancel</button><button class="btn" value="yes">Capture</button></div></form>`);
     const f = cap.querySelector('form'), inp = f.querySelector('#cap-in'), cli = f.querySelector('#cap-cli'), why = f.querySelector('#cap-why');
     const sel = f.querySelector('#cap-repo'), pick = f.querySelector('.cap-pick');
     const fields = () => ({ kind: f.kind.value, title: inp.value.trim(), item: about ? about.item : null, priority: +f.priority.value, repo: sel.value });
@@ -1636,7 +1643,7 @@
   keys.className = 'palette keys'; keys.setAttribute('aria-labelledby', 'keys-h');
   const KEYS = [['j / k', 'Next / previous row'], ['↵', 'Open Details for the selected row'], ['.', 'Actions for the selected row'], ['x', 'Select the row for a bulk command'], ['n', 'Capture a task, followup or note'],
     ['u', 'Undo the last undoable action while its toast shows'], ['⌘K', 'Commands'], ['c', 'Chat'], ['[ ]', 'Fold the sections rail / the panel'], ['g then a letter', 'Go to a section'], ['r', 'Reload'], ['?', 'This sheet'], ['Esc', 'Close the top panel, else clear the filter']];
-  put(keys, html`<div class="confirm-body"><h2 id="keys-h">Keys</h2><table class="keys-table"><tbody>${KEYS.concat(window.PAGE_KEYS || []).map(([k, w]) => html`<tr><th scope="row"><kbd>${k}</kbd></th><td>${w}</td></tr>`)}</tbody></table><div class="actions"><button class="btn quiet" type="button" id="keys-close">Close</button></div></div>`);
+  put(keys, html`<div class="confirm-body"><h2 id="keys-h">Keys</h2>${CLOSE_X}<table class="keys-table"><tbody>${KEYS.concat(window.PAGE_KEYS || []).map(([k, w]) => html`<tr><th scope="row"><kbd>${k}</kbd></th><td>${w}</td></tr>`)}</tbody></table><div class="actions"><button class="btn quiet" type="button" id="keys-close" data-cancel>Close</button></div></div>`);
   body.append(keys); trap(keys);
   keys.querySelector('#keys-close').addEventListener('click', () => keys.close());
   keys.addEventListener('click', e => { if (e.target === keys) keys.close(); });
@@ -1863,7 +1870,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API; (view switch) so does `view`.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, shown: stillShown, list, viewPick, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), ask: a => confirmAction(a).then(({ yes, values }) => ({ yes, values })), commands, capture: openCapture, fileCapture, filter, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+  window.shell = { ready, ICON, closeX: CLOSE_X, plural, state, read, post, getJSON, shown: stillShown, list, viewPick, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), ask: a => confirmAction(a).then(({ yes, values }) => ({ yes, values })), commands, capture: openCapture, fileCapture, filter, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
     // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
     railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook

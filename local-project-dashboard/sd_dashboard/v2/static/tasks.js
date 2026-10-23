@@ -335,7 +335,7 @@ addEventListener('DOMContentLoaded', () => {
     let P;
     try { P = await window.shell.getJSON('/api/tasks/start-next'); } catch (err) { toast(`Start next not read: ${err.message}`); return; }
     put(startDlg, html`<form method="dialog" class="date-form">
-      <h2 id="start-h">Start next ready tasks</h2>
+      <h2 id="start-h">Start next ready tasks</h2>${window.shell.closeX}
       <p class="why">${unread(P.running)} of ${P.cap} builders run · five-minute load ${unread(P.load)} of ${unread(P.load_max)}</p>
       ${P.refusal ? html`<p class="why">▲ Nothing can start: ${P.refusal}.</p>
         ${P.holders?.length ? html`<p><a class="btn quiet" href="/management?view=sessions">Open Management › Sessions</a></p>` : ''}` : html`
@@ -346,7 +346,7 @@ addEventListener('DOMContentLoaded', () => {
         <ul class="start-list">${P.skipped.map(r => html`<li><code>#${r.id}</code> ${r.title}: ${r.why}</li>`)}</ul></details>` : ''}
       <div class="actions">
         ${P.refusal ? '' : html`<button class="btn" value="start" type="submit">Start</button>`}
-        <button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button>
+        <button class="btn quiet" value="cancel" type="submit" formnovalidate data-cancel>Cancel</button>
       </div></form>`);
     const n = () => Math.max(1, Math.min(P.room, parseInt(startDlg.querySelector('#start-n')?.value, 10) || 0));
     // The list marks what Start would start now, so the count and the items never disagree.
