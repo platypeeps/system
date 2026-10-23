@@ -215,6 +215,14 @@ keep_sessions_cp() { # dotfile, src, dst
   mv "$3.merge.$$" "$3"
 }
 
+# The mode copy_dotfile sets, or nothing when the file keeps cp's.
+dotfile_mode() { # dotfile
+  case " $DOTFILES_PRIVATE " in *" $1 "*) echo 600; return ;; esac
+  # A command runs whatever mode its copy in the config folder kept: a copy
+  # moved through a share mounted noowners loses the bit.
+  case "$1" in .local/bin/*) echo 755 ;; esac
+}
+
 # Returns the first failed step, so the caller records nothing after it.
 copy_dotfile() { # dotfile, src, dst
   if [ -n "$(dotfile_session_re "$1")" ] && [ -f "$3" ]; then
@@ -222,10 +230,8 @@ copy_dotfile() { # dotfile, src, dst
   else
     run_ok cp "$2" "$3" || return
   fi
-  case " $DOTFILES_PRIVATE " in *" $1 "*) run_ok chmod 600 "$3" || return ;; esac
-  # A command runs whatever mode its copy in the config folder kept: a copy
-  # moved through a share mounted noowners loses the bit.
-  case "$1" in .local/bin/*) run_ok chmod 755 "$3" ;; esac
+  cd_mode=$(dotfile_mode "$1")
+  [ -z "$cd_mode" ] || run_ok chmod "$cd_mode" "$3"
 }
 
 env_src() {
@@ -1151,8 +1157,16 @@ stage_dotfiles() {
         record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
       fi
     elif cmp -s "$src" "$(dotfile_view "$f" "$dst" "$view")"; then
-      echo "  ok      $f"
       record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+      # The content alone read ok after a chmod that failed past its copy
+      # (sd:5940). find -perm is POSIX; a failed probe reads as wrong.
+      mode=$(dotfile_mode "$f")
+      if [ -n "$mode" ] && [ -z "$(find "$dst" -prune -perm "$mode" 2>/dev/null)" ]; then
+        echo "  DIFFERS $f — mode is not $mode"
+        run chmod "$mode" "$dst"
+      else
+        echo "  ok      $f"
+      fi
     else
       # The machine file still being what we installed means nobody here
       # touched it, so the repo is what moved.

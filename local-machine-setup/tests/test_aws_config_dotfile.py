@@ -97,6 +97,16 @@ class AwsConfigDotfileTest(unittest.TestCase):
         # No record yet, and the only difference is the sessions.
         self.config.parent.mkdir(parents=True)
         self.config.write_text(signed_in(tracked()))
+        self.config.chmod(0o600)
+        self.assertEqual(self.run_stage(), ["  ok      .aws/config"])
+
+    def test_a_private_file_left_readable_is_not_ok_and_is_made_private(self):
+        # sd:5940: a chmod 600 that failed after its copy left the content right.
+        self.run_stage("--apply")
+        self.config.chmod(0o644)
+        self.assertEqual(self.run_stage(), ["  DIFFERS .aws/config — mode is not 600"])
+        self.run_stage("--apply")
+        self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o600)
         self.assertEqual(self.run_stage(), ["  ok      .aws/config"])
 
     def test_force_keeps_each_session_under_its_own_profile(self):
