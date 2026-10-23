@@ -133,7 +133,9 @@ FORCE=0
 
 # Dotfiles safe to copy into the repo. ~/.bash_profile is deliberately absent:
 # it holds ~40 live API keys, and capturing it would commit them.
-DOTFILES=".zshrc .zshenv .zprofile .bash_aliases .gitconfig .gitignore_global .ssh/config .config/gh/config.yml .prism/.env .gito/.env .aws/config .vale.ini"
+# .local/bin/sdm-login signs StrongDM's sdm back in (sd:5919); only a profile
+# with a copy gets it, and examples/dotfiles/work/ holds one.
+DOTFILES=".zshrc .zshenv .zprofile .bash_aliases .gitconfig .gitignore_global .ssh/config .config/gh/config.yml .prism/.env .gito/.env .aws/config .vale.ini .local/bin/sdm-login"
 # Dotfiles installed 0600 rather than with cp's default mode. Not because
 # they hold secrets — capture refuses those — but because they sit where a
 # secret would go, and a world-readable ~/.gito/.env is how the last one
@@ -220,7 +222,10 @@ copy_dotfile() { # dotfile, src, dst
   else
     run_ok cp "$2" "$3" || return
   fi
-  case " $DOTFILES_PRIVATE " in *" $1 "*) run_ok chmod 600 "$3" ;; esac
+  case " $DOTFILES_PRIVATE " in *" $1 "*) run_ok chmod 600 "$3" || return ;; esac
+  # A command runs whatever mode its copy in the config folder kept: a copy
+  # moved through a share mounted noowners loses the bit.
+  case "$1" in .local/bin/*) run_ok chmod 755 "$3" ;; esac
 }
 
 env_src() {

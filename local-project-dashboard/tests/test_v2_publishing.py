@@ -626,6 +626,29 @@ shellRun(cmd('brief.queue-copy'), C.get({json.dumps(stem)})); await flush();""",
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/briefs/publish", {"item": item, "channel": "drive"}]])
         self.assertIn(f"Queued one copy · {stem}; Publish now drains it", [t[0] for t in out["toasts"]])
 
+    def test_queue_copy_rereads_and_names_what_queued_when_a_later_destination_fails(self):
+        """sd:5924: Drive queues, then Notion fails; the page reads again, so Publish now is on, and the toast names Drive."""
+        self.page_doc = self.doc()
+        stem = self.page_doc["briefs"][0]["id"]
+        self.page_doc["briefs"][0]["pub"] = {"unread": "", "copies": [],
+                                             "choice": {"notion": True, "drive": True, "obsidian": False, "why": ""}}
+        after = json.loads(json.dumps(self.page_doc))
+        after["briefs"][0]["pub"]["copies"] = [{"channel": "drive", "url": None, "state": "queued", "title": "Google Drive: queued"}]
+        toasts = []
+        for status, error in ((409, "the brief changed"), (500, "pack crashed")):
+            answer = f"""(path, body) => path === '/api/briefs/publish' ? (body.channel === 'drive'
+    ? (window.QUEUED = true, [200, {{ designated: 'drive', already: true, queued: true, exit: 0, lines: [] }}])
+    : [{status}, {{ error: {json.dumps(error)} }}])
+  : [200, window.QUEUED ? {json.dumps(after)} : {json.dumps(self.page_doc)}]"""
+            out = self.run_page(f"""const reads = OUT.gets.length;
+shellRun(cmd('brief.queue-copy'), C.get({json.dumps(stem)})); await flush();
+R.reread = OUT.gets.length > reads; R.now = cmd('brief.publish-now').when(C.get({json.dumps(stem)}));""", answer)
+            self.assertEqual([p[1]["channel"] for p in out["posts"]], ["drive", "notion"])
+            self.assertEqual((out["R"]["reread"], out["R"]["now"]), (True, True), "no reread, so Publish now stays off")
+            toasts += [t[0] for t in out["toasts"]]
+        self.assertEqual(toasts, [f"Queued for Google Drive · {stem}; Notion refused: the brief changed",
+                                  f"Queued for Google Drive · {stem}; whether Notion queued is not known: pack crashed"])
+
     def test_queue_copy_is_off_when_nothing_designated_lacks_a_copy_or_a_read_failed(self):
         self.page_doc = self.doc()
         stem = self.page_doc["briefs"][0]["id"]
