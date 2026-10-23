@@ -71,6 +71,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sd_db import reads
 from sd_db.errors import SdDbError
 
 from . import pack_module
@@ -285,10 +286,8 @@ def _building(lane: Path, now: float) -> list[dict]:
 def closed(connection, entries: list[dict]) -> set:
     """The items whose newest entry is blocked and that are `done` in the database; a cancel closes as `done` too."""
     items = sorted(item for item, row in newest(entries).items() if type(item) is int and row.get("status") in BLOCKED)
-    if not items:
-        return set()
-    marks = ",".join("?" * len(items))
-    return {row[0] for row in connection.execute(f"SELECT id FROM item WHERE status = 'done' AND id IN ({marks})", items)}
+    found = {item: reads.item_by_id(connection, item) for item in items}
+    return {item for item, row in found.items() if row is not None and row["status"] == "done"}
 
 
 def rows(entries: list[dict], *, path: str, lane: Path, now: float, done: frozenset | set = frozenset()) -> list[dict]:
