@@ -971,6 +971,7 @@
     if (!menuEl.hidden && !menuEl.contains(e.target)) closeMenu();
   }, true);
   // Bulk: x adds the selected row; the bar offers commands that every picked object shares.
+  // A button reads its command's label alone (sd:5904): the bar's "<b>N</b> selected" already counts the rows.
   const bulk = document.createElement('div');
   bulk.className = 'bulkbar'; bulk.hidden = true; bulk.setAttribute('role', 'region'); bulk.setAttribute('aria-label', 'Selected rows');
   body.append(bulk);
@@ -979,7 +980,7 @@
     if (!picked.size) { bulk.hidden = true; return; }
     const objs = [...picked].map(i => OBJ.get(i)), type = objs[0].type;
     const shared = objs.every(o => o.type === type) ? REG.filter(c => c.on === type && c.bulk && objs.every(o => !offWhy(c, o))) : [];
-    put(bulk, html`<span><b>${picked.size}</b> selected</span>${shared.length ? shared.map(c => html`<button class="btn quiet sm" type="button" data-bulk="${c.id}">${c.label} ${picked.size}</button>`) : html`<span class="why">No shared command</span>`}<button class="btn quiet sm" type="button" data-bulk-clear>Clear</button>`);
+    put(bulk, html`<span><b>${picked.size}</b> selected</span>${shared.length ? shared.map(c => html`<button class="btn quiet sm" type="button" data-bulk="${c.id}">${c.label}</button>`) : html`<span class="why">No shared command</span>`}<button class="btn quiet sm" type="button" data-bulk-clear>Clear</button>`);
     bulk.hidden = false;
   }
   bulk.addEventListener('click', e => {

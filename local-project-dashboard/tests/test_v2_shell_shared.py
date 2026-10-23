@@ -485,6 +485,20 @@ function run() { return JSON.stringify(OUT); }
                       (V2 / "notes.html").read_text(encoding="utf-8"))
 
 
+class TheBulkBar(unittest.TestCase):
+    """sd:5904: a bulk button reads its command's label alone; the bar's "<b>N</b> selected" already counts the rows."""
+
+    def test_each_bulk_button_reads_its_command_label_alone(self):
+        found = re.search(r"  function renderBulk\(\) \{\n.*?\n  \}\n", SHELL_JS, re.S)
+        self.assertIsNotNone(found, "shell.js has no renderBulk")
+        out = run_js("""const picked = new Set(['a', 'b']), OBJ = new Map([['a', { type: 't' }], ['b', { type: 't' }]]);
+  const REG = [{ id: 't.hide', on: 't', label: 'Hide', bulk: true }], offWhy = () => '';
+  const bulk = { hidden: true }, put = (el, m) => { el.html = String(m); };
+""" + found.group(0) + "  renderBulk(); R.html = bulk.html;")
+        self.assertIn("<b>2</b> selected", out["html"])
+        self.assertIn('data-bulk="t.hide">Hide</button>', out["html"])
+
+
 class TheViewPicker(unittest.TestCase):
     """sd:5641: a page's layout menu (Tasks' List, Board, Matrix; Writing's Board, Editor) is the shell's one viewPick."""
 
