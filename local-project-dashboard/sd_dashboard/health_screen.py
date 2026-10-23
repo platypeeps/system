@@ -446,20 +446,26 @@ def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
             })
     for entry in scan["storage"]:
         root = entry["root"]
-        share = entry.get("network")
+        share = entry.get("network") or entry.get("drive")
         if share:
             # sd:5726: a folder on a network mount is not walked; its share's use stands in, at the volume thresholds.
+            # sd:5879: so does a local drive's when du did not finish on its folder.
             used, size, free = share["used_kb"], share["size_kb"], share["avail_kb"]
             capacity = round(100 * used / (used + free)) if used + free else 0
+            use = f"{_size(used)} used of {_size(size)}, {_size(free)} free"
             rows.append({
                 "id": f"rs:{root}", "state": "warning" if capacity >= VOLUME_WARNING else "caution" if capacity >= VOLUME_CAUTION else "queued",
-                "type": "volume", "what": f"{Path(root).name} on a network mount: {_size(used)} used of {_size(size)}, {_size(free)} free",
-                "detail": f"{root} · {share['type']} share at {share['mount']} · folders not measured",
+                "type": "volume",
+                "what": f"{Path(root).name} on a network mount: {use}" if "type" in share else f"{Path(root).name}: drive {use}",
+                "detail": f"{root} · {share['type']} share at {share['mount']} · folders not measured" if "type" in share else
+                          f"{root} · local drive at {share['mount']} · du did not finish inside the Disk budget; folders not measured",
                 "kind": "Disk · storage folder",
-                "facts": {"Path": root, "Mount": share["mount"], "File system": share["type"], "Used": f"{capacity}%",
+                "facts": {"Path": root, "Mount": share["mount"], "File system": share.get("type", "local"), "Used": f"{capacity}%",
                           "Free": _size(free), "Size": _size(size)},
                 "cli": f"df -h {shlex.quote(root)}",
-                "note": "Health runs no du on a network mount: over the SMB share it ran past 120 s against the 8 s Disk budget.",
+                "note": "Health runs no du on a network mount: over the SMB share it ran past 120 s against the 8 s Disk budget."
+                        if "type" in share else
+                        "du did not finish inside the 8 s Disk budget on this drive, so Health shows the drive's total, not its folders.",
                 "problem": [root],
             })
             continue

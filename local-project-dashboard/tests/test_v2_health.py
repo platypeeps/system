@@ -930,11 +930,16 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual((text, source), (None, "<config>/project-dashboard/disk.conf"))
         self.assertEqual(problem, "not read: IsADirectoryError")
 
-    def test_a_du_that_does_not_finish_is_a_row_not_a_refusal_of_the_area(self):
+    #: `df -kP <folder>` on a local drive that holds 1.5 TiB, the size du cannot walk inside the budget (sd:5879);
+    #: printf format, so the percent sign is doubled.
+    DRIVE = "/dev/disk6s1 2147483648 1610612736 536870912 75%% /Volumes/store"
+
+    def stalled_du(self, drive):
+        """The real reader on a local folder whose du does not finish; `drive` is what `df -kP <folder>` prints."""
         store = Path(self.tmp.name) / "store"
         store.mkdir()
         listed = (f"storage|{store}\n", "<config>/project-dashboard/disk.conf", "")
-        stub = self.stub("df", f"cat <<'EOF'\n{self.DF}EOF\n")
+        stub = self.stub("df", f'if [ "$1" = -kP ]; then {drive}; else cat <<\'EOF\'\n{self.DF}EOF\nfi\n')
         self.stub("du", self.stalled())
         # The walk's clock holds still, so df spends none of the 1 s however
         # long it takes to start, and du alone meets its timeout (sd:2667).
@@ -944,7 +949,21 @@ class TheDocument(Collectors, ScreenCase):
         disk = doc["areas"][0]
         self.assertFalse(self.finished.exists(), "the page waited on du instead of stopping it")
         self.assertEqual(disk["error"], "")
-        rows = {row["id"]: row for row in disk["rows"]}
+        return store, {row["id"]: row for row in disk["rows"]}
+
+    def test_a_du_that_does_not_finish_on_a_local_folder_shows_the_drives_use(self):
+        """sd:5879: du on a 2.1 TB local SSD cannot finish in the 8 s budget; the operator ruled for the drive total."""
+        store, rows = self.stalled_du(f'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n{self.DRIVE}\\n"')
+        row = rows[f"rs:{store}"]
+        self.assertEqual((row["state"], row["type"]), ("queued", "volume"))
+        self.assertEqual(row["what"], "store: drive 1.50 TiB used of 2.00 TiB, 512.0 GiB free")
+        self.assertEqual(row["detail"], f"{store} · local drive at /Volumes/store · du did not finish inside the Disk budget; "
+                                        "folders not measured")
+        self.assertIn("du did not finish", row["note"])
+        self.assertEqual(row["cli"], f"df -h {store}")
+
+    def test_a_du_that_does_not_finish_and_no_df_is_a_row_not_a_refusal_of_the_area(self):
+        store, rows = self.stalled_du("exit 1")
         self.assertEqual(rows[f"rs:{store}"]["detail"], "du did not finish inside the Disk budget")
 
     MOUNT = ("/dev/disk3s5 on / (apfs, local, journaled)\n"

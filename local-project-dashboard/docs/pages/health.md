@@ -92,8 +92,11 @@ thread, not one per refresh. Meanwhile the area shows its last answer under
   80% (caution) or 90% (warning). It lists the three biggest subfolders of
   each folder a `storage|<path>` line of the `dashboard.disk_storage` row
   names (Settings, Dashboard), one `du -k -d 1` per folder in what is left of
-  the budget; a folder `du` cannot finish, or that is not mounted, is an
-  unknown row, and so are no folder and a row that was not read. It finds registered worktrees
+  the budget. A local folder `du` cannot finish shows its drive's used and
+  free from one `df -kP`, read before the `du`, at the volume thresholds
+  (sd:5879): `du` on a 2.1 TB drive does not finish in the 8 s budget. A
+  folder `du` cannot finish with no `df` answer, or that is not mounted, is
+  an unknown row, and so are no folder and a row that was not read. It finds registered worktrees
   whose `HEAD` is in `origin/HEAD` and that still hold `target/`,
   `node_modules/` or `.venv/`, the rule of 2026-09-25; it reads their
   presence, not their size, and `git status --porcelain` in each: a worktree
