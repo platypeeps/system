@@ -98,6 +98,11 @@ thread, not one per refresh. Meanwhile the area shows its last answer under
   `node_modules/` or `.venv/`, the rule of 2026-09-25; it reads their
   presence, not their size, and `git status --porcelain` in each: a worktree
   with uncommitted changes keeps its folders.
+- Services lists each long-running user LaunchAgent from `sd services
+  list`, with Restart and Start. A run-once or scheduled user agent shows
+  only when its last run failed (a non-zero exit or a failure signal), as a
+  warning with its last exit and no controls (sd:5882); a healthy one stays
+  off the page.
 - Containers (sd:5840) lists each running container: its name, image,
   status and uptime, compose project and working directory, and its bind
   mounts under the checkout root (`REPO_ROOT`, default `~/repos`), so a

@@ -888,18 +888,37 @@ def read_services(connection: sqlite3.Connection, backend=None) -> dict:
         raise RuntimeError(f"launchctl gave no answer: {failure}") from failure
 
 
+#: The user LaunchAgents Services lists only when their last run failed, by `sd_db.services` category.
+RUN_ONCE = {"startup": "Run-once", "scheduled": "Scheduled"}
+
+
 def _service_rows(inventory, *, served_commit=None) -> list[dict]:
-    """One row per long-running user LaunchAgent; the dashboard's row also says whether it serves the checkout."""
+    """One row per long-running user LaunchAgent, and per run-once or scheduled one whose last run failed.
+
+    The dashboard's row also says whether it serves the checkout.
+    """
     if not isinstance(inventory, dict) or not isinstance(inventory.get("services"), list):
         raise ValueError("the service inventory is incomplete")
     rows = []
     for entry in inventory["services"]:
-        if entry.get("scope") != "user" or entry.get("category") != "service":
+        if entry.get("scope") != "user":
             continue
         label, state = entry["label"], entry["state"]
         facts = {"Label": label, "Domain": entry["domain"], "State": state,
                  "PID": "—" if entry["pid"] is None else str(entry["pid"]),
                  "Last exit": "—" if entry["last_exit"] is None else str(entry["last_exit"])}
+        if entry.get("category") in RUN_ONCE and state == "failed":
+            # sd:5882: a run-once or scheduled agent shows only when its last run failed, and has no
+            # controls: `sd services` starts and restarts long-running services only.
+            rows.append({"id": f"svc:{label}", "state": "warning", "type": "launch agent",
+                         "revision": entry["revision"], "what": f"{entry['name']} · failed",
+                         "detail": " · ".join(part for part in (
+                             f"last exit {entry['last_exit']}" if entry["last_exit"] is not None else "",
+                             entry.get("reason") or "") if part) or "last run failed",
+                         "kind": f"{RUN_ONCE[entry['category']]} user LaunchAgent", "facts": facts})
+            continue
+        if entry.get("category") != "service":
+            continue
         row = {"id": f"svc:{label}", "state": SERVICE_STATE.get(state, "unknown"), "type": "service",
                "revision": entry["revision"], "what": f"{entry['name']} · {state}",
                "detail": " · ".join(part for part in (

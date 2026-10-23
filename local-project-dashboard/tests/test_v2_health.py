@@ -339,6 +339,26 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual(rows["svc:com.example.gamma"]["detail"], "last exit 78")
         self.assertEqual(rows["svc:com.example.alpha"]["facts"]["PID"], "101")
 
+    def test_a_failed_run_once_or_scheduled_agent_is_a_warning_row_with_no_controls(self):
+        """sd:5882: pack sd:5880 makes a run-once agent `startup`; a failed run must not vanish, a healthy one stays off."""
+        killed = dict(service_of("com.example.sweep", "failed", category="scheduled", rev="6"),
+                      last_signal=9, reason="last run ended in SIGKILL")
+        _, rows = self.services(inventory={"services": [
+            service_of("com.example.alpha", "running", pid=101, start="service is already running"),
+            service_of("com.example.prune", "failed", last_exit=1, category="startup", rev="5"),
+            service_of("com.example.boot", "idle", category="startup"), killed,
+            service_of("com.example.daily", "idle", category="scheduled"),
+            service_of("com.example.sysfail", "failed", last_exit=2, scope="system", category="startup")],
+            "revision": "0" * 64})
+        self.assertEqual(list(rows), ["svc:com.example.alpha", "svc:com.example.prune", "svc:com.example.sweep"])
+        prune, sweep = rows["svc:com.example.prune"], rows["svc:com.example.sweep"]
+        self.assertEqual((prune["state"], prune["type"], prune["what"], prune["detail"]),
+                         ("warning", "launch agent", "prune · failed", "last exit 1"))
+        self.assertEqual((prune["kind"], prune["facts"]["Last exit"]), ("Run-once user LaunchAgent", "1"))
+        self.assertNotIn("can", prune)
+        self.assertEqual((sweep["state"], sweep["kind"], sweep["detail"]),
+                         ("warning", "Scheduled user LaunchAgent", "last run ended in SIGKILL"))
+
     def test_the_dashboard_row_is_stale_when_it_serves_another_commit_and_gives_the_kickstart_line(self):
         """sd:3707 with sd:3528: the row asks what `dashboard.sh health` asks, and its own service is copy only."""
         _, rows = self.services(served_commit="a" * 40)
@@ -1535,7 +1555,7 @@ window.shell.state = (s, at) => { OUT.states.push(s); (OUT.slots = OUT.slots || 
 
 SNOOZED_TYPES = ("check", "storage folder", "build output", "volume", "worktree registrations", "unread registrations",
                  "merged branches", "merged worktrees", "port", "branch protection", "dependabot alerts", "secret scanning", "credential", "service",
-                 "dashboard service", "vault mirror")
+                 "dashboard service", "launch agent", "vault mirror")
 
 
 def summary_of(doc):
