@@ -32,8 +32,6 @@ GROUP_BLOCK = re.search(r"^  const GROUPS = \[\n(.*?)^  \];$", SHELL_JS, re.S | 
 GROUPS = re.findall(r"\['([A-Za-z ]+)', '[a-z0-9-]+', '[a-z]'\]", GROUP_BLOCK)
 #: The pages without the shell's Read again (sd:5638), each with its reason.
 AGAIN_ALLOWED = {
-    "home": "its own Read again (#refresh, the same label and icon) sits with the wall display's tools, and the shell's"
-            " staleness band marks that button by its id",
     "settings": "forms, not tables: a read again would drop a list typed and not saved",
 }
 
@@ -160,6 +158,18 @@ class TheRegistry(unittest.TestCase):
         self.assertEqual(twice, [], "the rail's whole-page reload is #reload: a page button with that id is a second one")
         self.assertEqual(declared & set(AGAIN_ALLOWED), set(), "a page in AGAIN_ALLOWED declares PAGE_AGAIN: drop its entry")
         self.assertLessEqual(set(AGAIN_ALLOWED), {page.name for page in registry().PAGES}, "an AGAIN_ALLOWED entry names no page")
+
+    def test_no_page_draws_its_own_read_again(self):
+        """sd:5750: every Read again is the shell's (again:start), one label and icon; Home drew its own (#refresh)."""
+        drawn = []
+        for page in registry().PAGES:
+            html = (V2 / page.html).read_text(encoding="utf-8")
+            scripts = [s for s in re.findall(r'<script src="/ui/([\w-]+\.js)"></script>', html)
+                       if s != "shell.js" and (V2 / "static" / s).is_file()]
+            for name, text in [(page.html, html)] + [(s, (V2 / "static" / s).read_text(encoding="utf-8")) for s in scripts]:
+                if re.search(r"<button\b(?:(?!</button>).)*Read again", text, re.S):
+                    drawn.append(f"{page.name}: {name}")
+        self.assertEqual(drawn, [], "set window.PAGE_AGAIN and let the shell draw the button")
 
     def test_each_page_names_its_item(self):
         for page in registry().PAGES:

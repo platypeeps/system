@@ -282,6 +282,7 @@ UNKNOWN_KIND = "sd: plugin 'sdw' declares no kind 'quick-note' (it declares blog
 NOTES_SHELL = r"""
 window.shell.row = () => null;
 window.shell.pages = { Tasks: '/tasks' };
+ELS['qn-dlg'] = Object.assign(El('qn-dlg'), { open: false, showModal() { this.open = true; }, close() { this.open = false; } });
 """
 
 
@@ -339,11 +340,12 @@ class TheScript(Fixture):
         self.assertEqual(out["gets"], ["/api/notes/quick", "/api/notes", "/api/notes", "/api/notes/quick"])
 
     def test_slash_writes_a_quick_note_as_the_palette_and_keys_sheet_say(self):
-        """sd:3525 (review 2026-10-12, A2 F9): the palette offers / for the quick note, so the page binds it and the ? sheet lists it."""
-        out = self.run_page("""ELS['qn-in'].focus = () => { R.focused = true; };
+        """sd:3525 (review 2026-10-12, A2 F9): the palette offers / for the quick note, so the page binds it and the ? sheet lists it.
+        sd:5750: the note field is in a dialog, so / opens it first."""
+        out = self.run_page("""ELS['qn-in'].focus = () => { R.focused = ELS['qn-dlg'].open; };
 document.dispatchEvent({ type: 'keydown', key: '/', target: El('main'), preventDefault() { R.prevented = true; } });
 R.keys = window.PAGE_KEYS; R.palette = window.PAGE_COMMANDS.filter(c => c.key === '/').map(c => c.label);""")
-        self.assertEqual((out["R"].get("focused"), out["R"].get("prevented")), (True, True), "/ did not reach the quick note field")
+        self.assertEqual((out["R"].get("focused"), out["R"].get("prevented")), (True, True), "/ did not open the quick note dialog")
         self.assertEqual(out["R"]["palette"], ["Write a quick note"])
         self.assertIn(["/", "Write a quick note"], out["R"]["keys"])
 
@@ -366,9 +368,22 @@ open('merge:{self.merges[1]}'); R.det = ELS.details.html;""")
         self.assertIn('Buy stamps<small>2026-09-06 050000</small>', r["list"])
         self.assertFalse(r["keep"])
 
+    def test_quick_notes_open_in_a_dialog_not_beside_the_day(self):
+        """sd:5750: Quick notes took a column, or the whole width above the day; the date bar's button opens them as a dialog."""
+        page = (V2 / "notes.html").read_text(encoding="utf-8")
+        self.assertNotIn('<aside class="quick"', page)
+        self.assertIn('<dialog class="palette" id="qn-dlg" aria-labelledby="qn-h">', page)
+        self.assertLess(page.index('<dialog class="palette" id="qn-dlg"'), page.index('id="qn-in"'))
+        self.assertLess(page.index('id="qn-open"'), page.index('<div id="state" hidden>'), "the opener is not in the date bar")
+        self.assertNotIn(".layout", (V2 / "static" / "notes.css").read_text(encoding="utf-8"))
+        out = self.run_page("""ELS['qn-in'].focus = () => { R.focused = ELS['qn-dlg'].open; };
+ELS['qn-open'].listeners.click[0](); R.open = ELS['qn-dlg'].open;""")
+        self.assertEqual((out["R"]["open"], out["R"].get("focused")), (True, True))
+
     def test_keep_posts_the_text_then_reads_the_list_again(self):
-        out = self.run_page("""ELS['qn-in'].value = 'Call the plumber'; ELS['qn-keep'].listeners.click[0](); await flush();
-R.value = ELS['qn-in'].value;""")
+        out = self.run_page("""ELS['qn-dlg'].showModal(); ELS['qn-in'].value = 'Call the plumber'; ELS['qn-keep'].listeners.click[0](); await flush();
+R.value = ELS['qn-in'].value; R.open = ELS['qn-dlg'].open;""")
+        self.assertFalse(out["R"]["open"], "sd:5750: a kept note leaves the dialog open, its toast under the scrim")
         self.assertEqual(out["posts"], [["/api/notes/quick/add", {"text": "Call the plumber"}, 64]])
         self.assertEqual(out["gets"].count("/api/notes/quick"), 2)
         self.assertEqual(out["toasts"][-1], ["Kept in sdw.quick-note as 2026-09-06 060000.", False])
@@ -384,8 +399,11 @@ await flush();""")
         self.assertEqual(out["posts"], [])
 
     def test_a_refused_note_stays_in_the_field_and_the_toast_says_why(self):
-        out = self.run_page("""ELS['qn-in'].value = 'Say "hi"'; ELS['qn-keep'].listeners.click[0](); await flush();
-R.value = ELS['qn-in'].value;""", kept=(400, {"error": 'A quick note holds no double quote (").'}))
+        out = self.run_page("""ELS['qn-dlg'].showModal(); ELS['qn-in'].value = 'Say "hi"'; ELS['qn-keep'].listeners.click[0](); await flush();
+R.value = ELS['qn-in'].value; R.open = ELS['qn-dlg'].open; const why = document.getElementById('qn-why'); R.why = [why.hidden, why.textContent ?? null];""", kept=(400, {"error": 'A quick note holds no double quote (").'}))
+        self.assertTrue(out["R"]["open"], "a refused note closed the dialog")
+        # Review of sd:5750: the toast sits under the modal's scrim, so the dialog says why too.
+        self.assertEqual(out["R"]["why"], [False, 'Not kept: A quick note holds no double quote (").'])
         self.assertEqual(out["toasts"][-1], ['Not kept: A quick note holds no double quote (").', False])
         self.assertEqual(out["R"]["value"], 'Say "hi"')
 

@@ -1720,10 +1720,11 @@
 
   // ---------- Staleness (design.md, Microinteractions) ----------
   // body[data-observed] is the reading time and body[data-interval] the collector's interval in minutes. Past twice the interval
-  // the Observed cell (#refresh) turns caution and says "stale since …"; past five times it is unknown. It is checked against
-  // real now each minute and after a re-render. A page without data-interval gets no state: the shell does not guess a cadence.
+  // the Observed cell (#refresh) turns caution and says "stale since …"; past five times it is unknown. A page with no Observed
+  // cell marks its Read again button (Home, sd:5750). It is checked against real now each minute and after a re-render. A page
+  // without data-interval gets no state: the shell does not guess a cadence.
   function staleness() {
-    const cell = document.getElementById('refresh'), obs = Date.parse(body.dataset.observed || ''), iv = +body.dataset.interval * 60000;
+    const cell = document.getElementById('refresh') || document.getElementById('read-again'), obs = Date.parse(body.dataset.observed || ''), iv = +body.dataset.interval * 60000;
     if (!cell || !isFinite(obs) || !(iv > 0)) return;
     const age = Date.now() - obs, state = age > 5 * iv ? 'unknown' : age > 2 * iv ? 'caution' : '';
     const d = new Date(obs + 2 * iv).toISOString(), text = state ? `${state === 'unknown' ? 'unknown · ' : ''}stale since ${d.slice(5, 10)} ${d.slice(11, 16)} UTC` : '';
