@@ -16,7 +16,7 @@ import sqlite3
 from pathlib import Path
 from unittest import mock
 
-from sd_db import repos
+from sd_db import repos, writes
 
 from sd_dashboard import issues, now_screen, tasks_screen, v2
 from sd_dashboard.v2.pages import Read
@@ -79,6 +79,49 @@ class TheDocument(ScreenCase):
         with stub(side_effect=sqlite3.OperationalError("database is locked")):
             document = issues.document(self.connection)
         self.assertEqual(document, {"issues": [], "issues_error": "database is locked"})
+
+
+class TheDetails(ScreenCase):
+    """sd:5877: each row carries what its Details show, from the `shadow` row sd shadow sync stored; no tracker is called."""
+
+    def shadow(self, **row):
+        row = {"kind": "issue", "state": "open", "first_seen": "2026-09-01T08:00:00+00:00",
+               "last_seen": "2026-09-06T08:00:00+00:00", **row}
+        self.connection.execute(f"INSERT INTO shadow ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", list(row.values()))
+
+    def test_each_row_carries_the_stored_facts_and_the_item_filed_under_its_ref(self):
+        self.shadow(tracker="github", repo="example/project", url="https://github.com/example/project/issues/12", number=12,
+                    title="Crash on start", author="octocat", assignee="example-user", updated_at="2026-09-05T09:00:00Z",
+                    created_at="2026-09-01T09:00:00Z")
+        self.shadow(tracker="jira", repo="EXAMPLE", url="https://example.test/browse/EXAMPLE-8", title="Fix",
+                    author="Reporter Example", status="In Progress")
+        filed, jira = self.item("the crash"), self.item("the widget")
+        writes.set_item_fields(self.connection, filed, source="task-ref", external_id="github:example/project#12")
+        writes.set_item_fields(self.connection, jira, source="task-ref", external_id="jira:EXAMPLE-8")
+        with stub(return_value=FOUND):
+            rows = {row["ref"]: row for row in issues.document(self.connection)["issues"]}
+        crash = rows["#12"]
+        self.assertEqual({name: crash[name] for name in ("key", "slug", "state", "assignee", "reporter", "updated_at", "item", "unread")},
+                         {"key": "github:example/project#12", "slug": "example/project", "state": "open", "assignee": "example-user",
+                          "reporter": "octocat", "updated_at": "2026-09-05T09:00:00Z", "item": filed, "unread": ""})
+        self.assertEqual((rows["EXAMPLE-8"]["key"], rows["EXAMPLE-8"]["status"], rows["EXAMPLE-8"]["item"]),
+                         ("jira:EXAMPLE-8", "In Progress", jira))
+        # A row the store does not hold says nothing it did not record: every fact None, no item; never its url as key.
+        self.assertEqual((rows["#3"]["key"], rows["#3"]["assignee"], rows["#3"]["item"]),
+                         ("github:/home/example/repos/other/kiln#3", None, None))
+
+    def test_intake_rows_carry_their_facts_and_a_failed_read_is_unread_not_empty(self):
+        self.shadow(tracker="github", repo="example/project", url="https://github.com/example/project/issues/21", number=21,
+                    title="Docs", author="octocat", updated_at="2026-09-06T07:00:00Z")
+        with stub_intake(return_value=INTAKE):
+            row = issues.intake(self.connection)["intake"][0]
+        self.assertEqual((row["key"], row["reporter"], row["updated_at"], row["item"]),
+                         ("github:example/project#21", "octocat", "2026-09-06T07:00:00Z", None))
+        self.connection.execute("DROP TABLE shadow")
+        with stub(return_value=FOUND):
+            rows = issues.document(self.connection)["issues"]
+        self.assertEqual({row["unread"] for row in rows}, {"no such table: shadow"})
+        self.assertEqual({row["assignee"] for row in rows}, {None})
 
 
 class ThePages(ScreenCase):
@@ -151,6 +194,67 @@ document.addEventListener = (t, f) => { listeners[t] = f; };
         self.assertNotIn("open", failed["issues-tally"])
         empty = self.drawn({"issues": [], "error": ""})
         self.assertIn("No open issue is assigned to you or filed by you", empty["issues"])
+
+
+class TheDetailsPane(ScreenCase):
+    """sd:5877 under JavaScriptCore: a row of Your issues or Intake opens its Details, as a pull request row does."""
+
+    PAGE = """
+var els = {}, listeners = {}, opened = [], selected = [], panes = [], registered = [], objects = {};
+document.getElementById = id => (els[id] = els[id] || { id, replaceChildren(f) { sunk.push([id, f.parsed]); } });
+document.addEventListener = (t, f) => { (listeners[t] = listeners[t] || []).push(f); };
+document.querySelectorAll = () => [];
+const fire = (t, detail) => (listeners[t] || []).forEach(f => f({ detail }));
+window.open = (u, t) => opened.push([u, t]);
+window.shell = { itemHref: n => `/tasks?item=${n}`, openItem: n => `#${n} opens in Tasks`, shq: v => `'${v}'`, row: () => null,
+  openPane: tab => panes.push(tab), post: () => new Promise(() => {}),
+  commands: { put: o => { objects[o.id] = o; }, get: id => objects[id], register: (...c) => registered.push(...c),
+    select: id => selected.push(id), bar: id => window.markup.html`<div class="bar">${id}</div>` } };
+"""
+
+    shadow = TheDetails.shadow
+
+    def run_page(self, then):
+        self.shadow(tracker="github", repo="example/project", url="https://github.com/example/project/issues/12", number=12,
+                    title="Crash on start", author="octocat", assignee="example-user", updated_at="2026-09-05T09:00:00Z")
+        filed = self.item("the crash")
+        writes.set_item_fields(self.connection, filed, source="task-ref", external_id="github:example/project#12")
+        with stub(return_value=FOUND), stub_intake(return_value=INTAKE):
+            found = github_issues(self.connection)
+        script = (self.PAGE + ISSUES_JS + "fire('DOMContentLoaded');"
+                  + f"fire('issues:read', {{ issues: {json.dumps(found['issues'])}, error: '' }});"
+                  + f"fire('intake:read', {{ intake: {json.dumps(found['intake'])}, error: '' }});" + then
+                  + "JSON.stringify({ sunk, opened, selected, panes, ids: registered.map(c => c.id), types: Object.values(objects).map(o => o.type) })")
+        return filed, run_js(self, script)
+
+    def test_a_row_opens_its_details_with_the_stored_facts_and_its_actions(self):
+        filed, out = self.run_page("window.issues.details('iss:github:example/project#12');")
+        drawn = dict(out["sunk"])
+        self.assertIn('data-id="iss:github:example/project#12"', drawn["issues"])
+        self.assertIn('data-iss-open="iss:jira:EXAMPLE-8"', drawn["issues"])
+        self.assertIn('data-iss-open="iss:github:example/project#21"', drawn["intake"])
+        self.assertIn(">File as item<", drawn["intake"])
+        details = drawn["details"]
+        for shown in ("GitHub issue · open", "<h2>Crash on start</h2>", "example/project", "example-user", "octocat",
+                      'datetime="2026-09-05T09:00:00Z"', f'<a href="/tasks?item={filed}">sd:{filed}</a>',
+                      '<a href="https://github.com/example/project/issues/12" target="_blank" rel="noopener noreferrer">Open #12 on GitHub</a>',
+                      '<div class="bar">iss:github:example/project#12</div>'):
+            self.assertIn(shown, details)
+        self.assertIn("<dt>Labels</dt><dd><span class=\"ph\">not stored</span>", details)
+        self.assertIn("<dt>Priority</dt>", details)
+        self.assertIn("sd shadow sync keeps no labels, priority or description", details)
+        self.assertEqual((out["selected"], out["panes"]), (["iss:github:example/project#12"], ["tab-details"]))
+        self.assertEqual(out["ids"], ["jira issue.open", "jira issue.item", "github issue.open", "github issue.item"])
+        self.assertEqual(sorted(set(out["types"])), ["github issue", "jira issue"])
+
+    def test_a_jira_row_says_open_in_jira_and_a_fact_not_stored_says_so(self):
+        _, out = self.run_page("window.issues.details('iss:jira:EXAMPLE-8');"
+                               "const o = objects['iss:jira:EXAMPLE-8']; R = registered.find(c => c.id === 'jira issue.open').run(o);")
+        details = dict(out["sunk"])["details"]
+        self.assertIn("Open EXAMPLE-8 in Jira", details)
+        self.assertIn("<dt>Assignee</dt><dd><span class=\"ph\">not stored</span>", details)
+        self.assertIn("none filed under this issue", details)
+        self.assertEqual(out["opened"], [["https://example.test/browse/EXAMPLE-8", "_blank"]])
 
 
 INTAKE = {

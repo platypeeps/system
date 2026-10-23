@@ -17,4 +17,9 @@ repo's open third-party issues no item carries; File as item posts
 `/api/items` with the issue's `github:<owner>/<repo>#N` ref. Both are one read,
 `GET /api/github/issues` (`issues.document`, `issues.intake`), made when either
 view first shows and on Read again. A failed read is a row naming it, never an
-empty list.
+empty list. An issue row of either view opens its Details (sd:5877): key,
+title, state, tracker, assignee, reporter, opened and updated, and the item
+filed under its ref, from the `shadow` row `sd shadow sync` stored; no tracker
+is called. The sync stores no labels, priority or description, and Details
+say so. Its actions are Open in Jira or Open on GitHub, and Open item; an
+Intake row keeps File as item.
