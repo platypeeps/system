@@ -242,13 +242,24 @@ const ROOT_CMDS = [
 // Publish to and Publish now (sd:5102): commands.js declares both, for a research-kit document here and a brief on Briefs.
 const PUBLISH_CMDS = window.commands.publishCommands('document', { base: '/api/documents', payload: o => ({ root: o.key, file: o.file }), reread: () => reading.reread(),
   cli: (o, channel) => `add ${channel}=dict() to the ${o.file.replace(/\.html$/, '')} entry in research.conf.py, then: cd ${shq(checkoutOf(o))} && sd-research-kit publish` });
+// Render (sd:5884) runs as Research's does: POST /api/research/render with the root's checkout key (`render`), then one
+// poll per run until it settles. One render at a time: Render is off while a run goes. When it ends, the rows are read again.
+const RENDER_POLL = 5000;
+let RENDERING = null;
+const refused = err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether it started is not known`); };
+const followRender = (run, o) => (['done', 'failed'].includes(run.state)
+  ? (RENDERING = null, shell.toast(run.state === 'done' ? `Rendered · ${o.title}` : `Render failed · ${o.title}: ${run.reason || 'no reason recorded'}`), reading.reread())
+  : setTimeout(() => window.shell.getJSON(`/api/research/deck/${encodeURIComponent(run.id)}`).then(next => followRender(next, o),
+    e => { RENDERING = null; shell.toast(`Render ${run.id}: not read (${e.message}); whether it ended is not known`); }), RENDER_POLL));
 function registerCommands() {
   const C = shell.commands;
   C.register(
-    // build: copy only; the dashboard does not run a render. The reference's run said "Mockup: nothing ran."
-    { id: 'document.render', on: 'document', label: 'Render', does: 'Gives the line that renders this research page again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', executes: false, primary: o => o.stale && rootOf(o).research,
-      when: o => rootOf(o).research || 'not a research repo: no source renders this page',
-      cli: o => `cd ${shq(checkoutOf(o))} && sd-research-kit render`, run: o => `Copy the line to render ${o.title}; the dashboard does not run it` },
+    { id: 'document.render', on: 'document', label: 'Render', does: 'Renders this research page again in its checkout.', key: 'r', icon: 'rotate-ccw', risk: 'safe', executes: true, primary: o => o.stale && rootOf(o).research,
+      when: o => !rootOf(o).research ? 'not a research repo: no source renders this page'
+        : !rootOf(o).render ? `${checkoutOf(o)} is not a research checkout under the repo root, so the dashboard cannot run its render`
+        : RENDERING ? `a render is running now (run ${RENDERING})` : true,
+      cli: o => `cd ${shq(checkoutOf(o))} && sd-research-kit render`, sends: o => `POST /api/research/render {"repo": "${rootOf(o).render}"}`,
+      run: o => window.shell.post('/api/research/render', { repo: rootOf(o).render }).then(run => { RENDERING = run.id; followRender(run, o); return `Rendering ${o.title} · run ${run.id}`; }, refused) },
     // build: the document's own address on this dashboard, not a fixed host.
     { id: 'document.open', on: 'document', label: 'Open document', does: 'Opens the rendered document in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: o => !(o.stale && rootOf(o).research),
       cli: o => `open ${location.origin}${o.href}`, run: o => { window.open(o.href, '_blank', 'noopener'); return `Opened in a new tab · ${o.title}`; } },
