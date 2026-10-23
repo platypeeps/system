@@ -16,7 +16,7 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle
 // the new entry back. Approve asks first: it grants the runner the merge to the default branch, which nothing takes back.
 // Show draws the active rows by default: merging, next (a held one keeps its place), building and blocked, each still
 // waiting on the runner, a builder or the operator. All adds the ended ones, cancelled and landed; ?show=all keeps it.
-// The badge and each lane's counts read every row, whatever Show draws; a lane with no row to draw goes to the Idle view.
+// Each lane's counts read every row, whatever Show draws (Queue has no rail badge since sd:5921); a lane with no row to draw goes to the Idle view.
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
@@ -112,8 +112,6 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle
       DOC = await S.getJSON('/api/queue');
       S.state(DOC.problems.length ? { kind: 'partial', text: `${plural(DOC.problems.length, 'lane')} not read; the others are current.`, source: '/api/queue' } : null);
       put($('subhead'), html`${plural(DOC.managed, 'managed repository', 'managed repositories')} · read ${at(DOC.read)}`);
-      // The badge is the read's own (sd:3446, queue_screen._attention): blocked rows in every lane.
-      S.attention(DOC.attention || { state: 'unknown', n: 0, what: 'lanes not read' });
     } catch (err) {
       DOC = null;
       S.state({ kind: 'error', text: `The lanes were not read: ${err.message}. Read again retries it.`, source: '/api/queue' });

@@ -166,9 +166,13 @@ class TheRows(Lane, ScreenCase):
             ("merging", None), ("next", "/work/sd-9"), ("next", "/work/sd-12"), ("building", None), ("building", None),
             ("blocked", "/work/sd-5"), ("blocked", None), ("cancelled", None), ("landed", None)])
 
-    def test_the_badge_counts_the_blocked_rows(self):
-        # sd:3446: the read's rule, which every page's rail shows from the page's last read.
-        self.assertEqual(self.doc()["attention"], {"state": "caution", "n": 2, "what": "blocked"})
+    def test_queue_has_no_rail_badge_its_blocked_rows_count_on_today(self):
+        # sd:5921, operator answer 2: a blocked entry is a broken row of Today's Needs you, so Queue's rail shows no count.
+        from test_v2_registry import registry
+
+        self.assertEqual({page.name: page for page in registry().PAGES}["queue"].count, "")
+        self.assertNotIn("attention", self.doc())
+        self.assertNotIn(".attention(", QUEUE_JS)
 
     def test_merging_names_its_step_host_claim_age_and_lease(self):
         merging = self.doc()["lanes"][0]["rows"][0]
@@ -1039,7 +1043,7 @@ R.det = ELS.adv.html;""")
         self.assertIn('<a href="/item/77">brief sd:77</a>', out["R"]["det"])
 
     # Tuning: Show draws the active rows by default: merging, next (held too), building and blocked; All adds the ended
-    # ones, cancelled and landed. The badge and each lane's counts read every row, whatever Show draws.
+    # ones, cancelled and landed. Each lane's counts read every row, whatever Show draws.
     SHOW_ALL = "ELS.show.listeners.click[0]({ target: { closest: s => s === 'button[data-show]' ? { dataset: { show: 'all' } } : null } });"
 
     def test_show_defaults_to_the_active_rows_and_all_adds_the_ended_ones(self):
@@ -1057,10 +1061,9 @@ R.det = ELS.adv.html;""")
         lanes = self.run_page("R.lanes = ELS.lanes.html;", search="?show=all")["R"]["lanes"]
         self.assertEqual(len(re.findall(r'<li class="qrow"', lanes)), 9)
 
-    def test_the_badge_and_the_lane_counts_read_every_row_whatever_show_draws(self):
+    def test_the_lane_counts_read_every_row_whatever_show_draws(self):
         out = self.run_page("R.lanes = ELS.lanes.html;", search="")
         self.assertIn("1 merging · 2 next · 2 blocked · 1 landed today", out["R"]["lanes"])
-        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 2, "what": "blocked"})
 
     def test_a_lane_with_only_ended_rows_joins_the_idle_line_under_active(self):
         self.list([entry for entry in self.entries() if entry["status"] in ("merged", "cancelled")])
