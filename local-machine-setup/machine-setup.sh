@@ -4233,12 +4233,21 @@ service_clash_with_manifest() { # service -> "port:other" lines
 
 candidates_service() {
   cand_listed=$(manifest service)
-  if cand_running=$(docker ps --format '{{.Names}}' 2>/dev/null); then
+  # One docker ps answers both the service states and the CONTAINER lines the
+  # dashboard's Health > Containers reads (sd:5840). Its stderr is dropped: the
+  # reason printed is a fixed sentence, so nothing docker says reaches a page.
+  cand_ps=""
+  if ! command -v docker >/dev/null 2>&1; then
+    cand_docker_observed=0
+    cand_docker_why="docker is not installed"
+  elif cand_ps=$(docker ps --no-trunc --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.project.working_dir"}}\t{{.Mounts}}' 2>/dev/null); then
     cand_docker_observed=1
   else
-    cand_running=""
+    cand_ps=""
     cand_docker_observed=0
+    cand_docker_why="docker ps failed; the daemon is not running or not reachable"
   fi
+  cand_running=$(printf '%s\n' "$cand_ps" | cut -f1)
   cand_pairs=""
   cand_have=0
   cand_in=0
@@ -4300,6 +4309,12 @@ candidates_service() {
     cand_wants=$(printf '%s' "$cand_pairs" | awk -v p="$cand_port" '$1==p {print substr($2,7)}' | sort -u | tr '\n' ' ')
     echo "  BUSY    port $cand_port held by $cand_who — ${cand_wants% } cannot bind it"
   done
+  if [ "$cand_docker_observed" -eq 1 ]; then
+    echo "  DOCKER  read: $(printf '%s' "$cand_ps" | grep -c .) running"
+    printf '%s\n' "$cand_ps" | grep . | sed 's/^/  CONTAINER	/' || :
+  else
+    echo "  DOCKER  unknown: $cand_docker_why"
+  fi
   echo "  add by hand: $PROFILE_DIR/${PROFILE:-<profile>}.service  (.service is never auto-captured)"
   echo
 }

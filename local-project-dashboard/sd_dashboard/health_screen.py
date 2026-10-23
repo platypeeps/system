@@ -13,6 +13,10 @@ adds no collector:
   be read is a row of its own, in the unknown state.
 - Ports: `ports_screen.port_rows` over `collect_ports`, Operations > Ports'
   reader, with its counts and warnings; collected for the request.
+- Containers (sd:5840): the running containers in that same collection,
+  from the one `docker ps` `machine-setup.sh candidates service` runs; Ports
+  and Containers share one `collect_ports` call (`_Once`). A Docker that
+  was not read is the area's error. No control: the rows only show.
 - Protection: `protection.rows`, what the nightly `sd shadow sync` left in
   `repo_protection`, with `protection_screen`'s rule: a repository whose
   protection was not read is unknown and shows no cell.
@@ -91,6 +95,7 @@ AREAS = (
     ("ports", "Ports", "collect_ports · lsof -nP -iTCP -sTCP:LISTEN · docker ps", ()),
     ("prot", "Protection", "sd shadow sync → repo_protection", ()),
     ("svc", "Services", "sd services list · launchctl print per user LaunchAgent · the dashboard's /health commit", ()),
+    ("ctr", "Containers", "collect_ports · machine-setup.sh candidates service · docker ps", ()),
     ("mir", "Vault mirror", "sd-db records render → state heartbeat records-mirror · "
      "sd reports brief render → state heartbeat brief-copies", ()),
     ("doc", "Doctor", "machine-setup.sh doctor · its ok, WARN and FAIL lines", ()),
@@ -100,7 +105,7 @@ AREAS = (
 #: sync stored; Jobs the heartbeats unattended jobs leave. Each is one request, `/api/health/<view>`.
 VIEWS = (
     ("checkouts", "Checkouts", ("wt", "br")),
-    ("machine", "Machine", ("disk", "svc", "ports", "doc")),
+    ("machine", "Machine", ("disk", "svc", "ports", "ctr", "doc")),
     ("github", "GitHub", ("prot", "dep", "sec")),
     ("jobs", "Jobs", ("cred", "mir")),
 )
@@ -218,6 +223,41 @@ def _port_rows(snapshot) -> tuple[list[dict], dict]:
                     if not configured else "",
         })
     return rows, {"counts": counts, "warnings": warnings}
+
+
+def _container_rows(snapshot) -> tuple[list[dict], dict]:
+    """One row per running container, with the bind mounts it holds under the checkout root (sd:5840)."""
+    found = snapshot.get("containers") if isinstance(snapshot, dict) else None
+    if not isinstance(found, dict) or not isinstance(found.get("rows"), list):
+        raise ValueError("the port collection carried no container read")
+    if not found.get("read"):
+        raise ValueError(found.get("reason") or "docker ps was not read")
+    # The checkout root the collectors read (`collectors.REPO_ROOT`).
+    root = os.environ.get("REPO_ROOT", os.path.expanduser("~/repos")).rstrip("/") or "/"
+    rows, holding = [], 0
+    for one in found["rows"]:
+        # Docker Desktop names a bind mount's source by its path in its VM, under /host_mnt.
+        sources = [mount.removeprefix("/host_mnt") for mount in one["mounts"] if mount.startswith("/")]
+        held = [source for source in sources if source == root or source.startswith(root + "/")]
+        holding += bool(held)
+        project = one["project"]
+        rows.append({
+            "id": f"ctr:{one['name']}", "state": "ok", "type": "container", "what": one["name"],
+            "detail": " · ".join(part for part in (
+                one["image"], one["status"],
+                f"compose {project} in {one['workdir'] or 'no working dir'}" if project else "no compose project",
+                f"mounts {', '.join(held)}" if held else "") if part),
+            "kind": "Container · running",
+            "facts": {"Image": one["image"], "Status": one["status"], "Compose project": project or "none",
+                      "Working dir": one["workdir"] or "none", "Checkouts mounted": str(len(held))},
+            "list": held, "list_head": f"Bind mounts under {root}",
+            "cli": f"docker inspect {shlex.quote(one['name'])}",
+        })
+    if not rows:
+        rows.append({"id": "ctr:none", "state": "ok", "type": "check", "what": "No container running",
+                     "detail": "docker ps listed no running container", "kind": "Containers", "facts": {},
+                     "cli": "docker ps"})
+    return rows, {"running": len(found["rows"]), "holding": holding, "root": root}
 
 
 def _cell(row: dict, check: str) -> list[str]:
@@ -895,7 +935,7 @@ def _service_rows(inventory, *, served_commit=None) -> list[dict]:
 PAGE_SECONDS = 13.0
 #: The areas whose reader walks subprocesses, each on its own scan thread; Protection, Dependencies, Security and
 #: Credentials read only the database, on this thread.
-POOLED = ("disk", "wt", "br", "ports", "doc")
+POOLED = ("disk", "wt", "br", "ports", "ctr", "doc")
 #: How long a doctor answer stands before a page read starts another run, and how long a page waits on a run in flight
 #: when no answer is kept.
 DOCTOR_FRESH_SECONDS = 600
@@ -994,6 +1034,31 @@ class _Scans:
 _SCANS = _Scans()
 
 
+class _Once:
+    """`read` run once for one request's readers: every later call shares its answer or its failure.
+
+    Ports and Containers read one `collect_ports` (sd:5840), so one `docker ps` answers both areas whichever scan
+    calls first. A scan a later request starts gets that request's own read.
+    """
+
+    def __init__(self, read):
+        self.read, self.lock, self.answer = read, threading.Lock(), None
+
+    def __call__(self):
+        with self.lock:
+            if self.answer is None:
+                self.answer = Future()
+                mine = True
+            else:
+                mine = False
+        if mine:
+            try:
+                self.answer.set_result(self.read())
+            except BaseException as failure:  # noqa: BLE001 - each caller gets the failure from the future
+                self.answer.set_exception(failure)
+        return self.answer.result()
+
+
 def _settle(area: dict, name: str, read) -> None:
     """One reader's answer into its area: rows and extra, or the reason it has none."""
     try:
@@ -1038,7 +1103,7 @@ def _readers(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         return heads
 
     read_fleet = fleet or fleet_module.collect
-    collect_ports = ports or ports_screen._collect
+    collect_ports = _Once(ports or ports_screen._collect)
     read_protection = protection or protection_module.rows
     read_creds = credentials or read_credentials
     scan_disk = disk or (lambda connection: health_collectors.disk_scan(connection, listed=storage, repo_paths=registered()))
@@ -1050,6 +1115,7 @@ def _readers(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         "wt": lambda: _fleet_rows(read_fleet("sessions")),
         "br": lambda: _branch_rows(scan_branches(connection)),
         "ports": lambda: _port_rows(collect_ports()),
+        "ctr": lambda: _container_rows(collect_ports()),
         "prot": lambda: _protection_rows(read_protection(connection)),
         "dep": lambda: _dependency_rows(read_protection(connection), now=now),
         "sec": lambda: _security_rows(read_protection(connection), now=now),
@@ -1214,6 +1280,8 @@ def _lamp(area: dict) -> dict:
     elif key == "ports":
         counts = extra.get("counts") or {}
         value = [{"b": str(counts.get("unknown", 0)), "t": "unknown"}, {"b": "", "t": f"{counts.get('listening', 0)} listening"}]
+    elif key == "ctr":
+        value = [{"b": str(extra.get("running", 0)), "t": "running"}, {"b": "", "t": f"{extra.get('holding', 0)} mount a checkout"}]
     elif key == "prot":
         counts = extra.get("counts") or {}
         value = [{"b": str(counts.get("unprotected", 0)), "t": "unprotected"}, {"b": "", "t": f"{counts.get('unknown', 0)} unknown"}]
