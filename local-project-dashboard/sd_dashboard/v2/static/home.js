@@ -138,7 +138,8 @@ addEventListener('DOMContentLoaded', () => {
       safe('cover', 'open_cover', 'Open', 'o', 'Opens the cover or garage door. No Undo.', ['closed']),
       safe('cover', 'close_cover', 'Close', 'x', 'Closes the cover or garage door. No Undo.', ['open']),
       // Read-only sensors: the one command is the state read a reader makes.
-      { id: 'sensor.read', on: 'sensor', label: 'Read state', key: 's', risk: 'safe', executes: false, does: 'Shows the curl line that reads this state; the dashboard does not run it.', cli: o => `curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states/${o.id}"`, run: () => 'Copy the line; it reads HA_TOKEN and HA_URL from your shell' },
+      { id: 'sensor.read', on: 'sensor', label: 'Read state', key: 's', risk: 'safe', executes: true, does: 'Reads this state from Home Assistant now and shows it in Details.', cli: o => `curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states/${o.id}"`,
+        sends: o => `POST /api/run {action: sensor.read, entity_id: ${o.id}}`, run: o => window.commands.runAction(o, 'sensor.read', { entity_id: o.id }) },
     );
   }
   // build: a tile shows its commands only once one of them can run.

@@ -108,8 +108,9 @@
       .then(() => `Followup resolved · note ${o.source.followups[0]}`);
     const reopen = (o, acked) => write(`/api/reports/${o.n}/reopen`, { revision: acked.revision }).then(() => true);
     const task = on => ({ id: `${on}.task`, on, label: 'Make task', does: 'Opens Capture to file a task about this report.', key: 'k', risk: 'safe', journal: () => 'new', cli: o => `sd task add ${shq(o.label)}`, run: o => { shell.capture(o, '', `${on}.task`); return null; } }); // the filed task is the write
-    // build: copy only here. Management shows the job's log in its Details, and its Show log command (key o) opens it (sd:3388).
-    const log = on => ({ id: `${on}.log`, on, label: 'Show log', does: 'Gives the line that prints the job\'s log.', key: 'l', risk: 'safe', executes: false, when: o => logOf(o) || 'this report came from sd-db, not a job log', cli: o => window.commands.logLine(o.job), run: () => 'Copy it into a terminal, or open the job in Management: its Details show the log' });
+    // sd:5886: the server prints the job's log, as commands.js's Show log does, and Details shows it under the report.
+    const log = on => ({ id: `${on}.log`, on, label: 'Show log', does: 'Prints the job\'s last 200 log lines in Details.', key: 'l', risk: 'safe', executes: true, when: o => logOf(o) || 'this report came from sd-db, not a job log', cli: o => window.commands.logLine(o.job),
+      sends: o => `POST /api/run {action: job.log, job: ${o.job}}`, run: o => window.commands.runAction(o, 'job.log', { job: o.job }) });
     C.register(
       // build: Acknowledge posts /api/reports/<n>/acknowledge with the report's revision, the route v1's form posts. It is off,
       // with the library's reason, for a report an open followup holds or whose fields cannot be read.

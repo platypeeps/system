@@ -328,7 +328,7 @@ class TheScript(ScreenCase):
             ["asg.get", "assignment", "safe", "o", False, True, False, False],  # copy only: Details show it (sd:3524)
             ["asg.item", "assignment", "safe", "i", None, True, False, False],
             ["jobs.retry", "job", "safe", "t", None, True, False, True],
-            ["jobs.log", "job", "safe", "l", False, True, False, False],
+            ["jobs.log", "job", "safe", "l", True, True, False, False],
             ["command.reconcile", "command", "safe", "r", None, True, False, False],
             ["command.output", "command", "safe", "o", None, True, False, False],
             ["command.item", "command", "safe", "i", None, True, False, False],
@@ -403,15 +403,17 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", ACCEP
         self.assertEqual(out["posts"], [["/api/jobs/nightly-sync/retry", {"revision": failed["revision"]}, 64]])
         self.assertEqual(out["toasts"], [["Run started · nightly-sync", False]])
 
-    def test_show_log_opens_the_jobs_row_on_management_schedules_and_keeps_the_line_to_copy(self):
-        # sd:2392, ruling #8769: the row on Schedules, filtered to the job so a fleet of more than 25 jobs still shows it.
-        out = self.run_page("""window.shell.pages.Management = '/management';
+    def test_show_log_runs_the_log_and_shows_it_in_details_and_keeps_the_line_to_copy(self):
+        """sd:5886: Show log posts the job's name to /api/run; Details shows the line, the exit and the output, escaped."""
+        out = self.run_page("""const was = ANSWER; ANSWER = (p, b) => p === '/api/run' ? [200, { action: b.action, label: 'Show log', line: `local-cron-jobs/cron-jobs.sh logs ${b.job}`, exit: 0, output: 'the log <tail>', cut: false }] : was(p, b);
 R.cli = cmd('jobs.log').cli(C.get('job:nightly-sync'));
-shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = location.href;""")
-        self.assertEqual(out["R"].get("href"), "/management?q=nightly-sync&row=cron%3Anightly-sync#view=schedules")
+shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.details = ELS.details.html;""")
+        self.assertEqual(out["posts"], [["/api/run", {"action": "job.log", "job": "nightly-sync"}, 64]])
         self.assertEqual(out["R"]["cli"], "local-cron-jobs/cron-jobs.sh logs nightly-sync")
-        self.assertEqual(out["toasts"], [["nightly-sync opens in Management > Schedules", False]])
-        self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"], [["Show log · exit 0 · the output is in Details", False]])
+        self.assertIn('<section class="ran" data-obj="job:nightly-sync"', out["R"]["details"])
+        self.assertIn("Exit 0 · <code>local-cron-jobs/cron-jobs.sh logs nightly-sync</code>", out["R"]["details"])
+        self.assertIn("<pre class=\"code\">the log &lt;tail&gt;</pre>", out["R"]["details"])
 
     def test_show_output_reads_the_execution_record_into_details(self):
         note = self.ids["bad_run"]

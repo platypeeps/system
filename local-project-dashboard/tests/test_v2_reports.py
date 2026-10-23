@@ -508,6 +508,14 @@ class TheScript(ScreenCase):
                 self.assertEqual(line, out["R"]["shared"])
         self.assertEqual(out["R"]["shared"], "local-cron-jobs/cron-jobs.sh logs nightly-sync")
 
+    def test_show_log_runs_the_jobs_log_on_the_server(self):
+        """sd:5886: Show log on a report posts the job's name to /api/run, as every page's Show log does."""
+        out = self.run_page("""const was = ANSWER; ANSWER = (p, b) => p === '/api/run' ? [200, { action: b.action, label: 'Show log', line: 'l', exit: 0, output: 'o', cut: false }] : was(p, b);
+const c = cmd('report.log'), o = { id: 'report:7', job: 'nightly-sync', source: { src: '/x/nightly-sync.log' } };
+R.exec = c.executes; shellRun(c, o); await flush();""")
+        self.assertTrue(out["R"]["exec"])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/run", {"action": "job.log", "job": "nightly-sync"}]])
+
     ANSWERED = "(path, body) => path.endsWith('/acknowledge') ? [200, { revision: 'after-ack' }] : path.endsWith('/reopen') ? [200, { revision: 'after-reopen' }] : path === '/api/reports' ? [200, DOC_JSON] : [200, {}]"
 
     def test_acknowledge_posts_the_route_with_the_revision_offers_undo_and_reads_again(self):

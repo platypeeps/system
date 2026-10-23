@@ -726,7 +726,7 @@ function registerCommands() {
       consequence: o => `Sends SIGTERM to ${o.job}${o.pid ? ` (PID ${o.pid})` : ''} through launchd. The run stops part way through; its next scheduled run still starts.`,
       run: cancelJob },
     window.commands.showLog({ job: o => ({ name: o.job }), run: o => { selectRow(o.id, true); return `${o.job}'s log is in Details`; } }),
-    window.commands.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
+    window.commands.printJob({ job: o => ({ name: o.job, service: o.service, exit: o.exit }) }),
     // sd:5126: End session sends SIGTERM to a Claude session on this Mac, so a full builder cap can be cleared. A subagent
     // runs inside its session's process, so a stalled agent ends with its session; the confirm names each agent that does.
     { id: 'cs.end', on: 'claude session', label: 'End session', does: 'Sends SIGTERM to the Claude session; its turn and every agent under it stop.', key: 'e', icon: 'square', risk: 'confirm',

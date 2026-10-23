@@ -124,6 +124,7 @@ COMMANDS = (
     Command(r"/api/shared-upload/regenerate", "Regenerate upload link"),
     Command(r"/api/items/([1-9][0-9]*)/fix", "Fix session", _item),
     Command(r"/api/now/fix", "Fix session", _key("row")),
+    Command(r"/api/run", "Run", _key("action", "job", "path", "port", "row", "entity_id")),
     Command(r"/api/items/([1-9][0-9]*)/draft-email", "Draft email", _item),
     Command(r"/api/items/([1-9][0-9]*)/file-issue", "Draft issue", _item, run="issue"),
     Command(r"/api/issue-runs/([A-Za-z0-9-]{1,80})/confirm", "File issue", _group),
@@ -193,7 +194,9 @@ def record(database, connection, path: str, payload: dict, principal: str, start
                  "output_path": str(database_path.parent / "executions" / (uuid.uuid4().hex + ".log")), "run": None}
         # An answer says its outcome is not known with a 504 (no answer in time) or `outcome` (land, skill intake).
         unknown = status == 504 or isinstance(body, dict) and body.get("outcome") == "unknown"
-        ended, code = writes.now(), UNKNOWN if unknown else 0 if status < 400 else 1
+        # Run (sd:5886) answers 200 with its step's own exit: a step that ran and failed is no success.
+        ran = body.get("exit") if path == "/api/run" and isinstance(body, dict) and type(body.get("exit")) is int and status < 400 else None
+        ended, code = writes.now(), UNKNOWN if unknown else ran if ran is not None else 0 if status < 400 else 1
         if failure is None and status == 202 and entry.run is not None:
             value["run"] = SETTLE[entry.run].handle(body if isinstance(body, dict) else {}, value)
             if value["run"] is None:

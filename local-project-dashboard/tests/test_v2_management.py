@@ -1070,7 +1070,7 @@ class TheScript(PageScript):
             ["jobs.retry", "job", "safe", "t", None, False],
             ["jobs.cancel", "job", "confirm", "x", None, False],
             ["jobs.log", "job", "safe", "l", False, False],
-            ["jobs.print", "job", "safe", "p", False, False],
+            ["jobs.print", "job", "safe", "p", True, False],
             ["cs.end", "claude session", "confirm", "e", True, False],
         ])
 

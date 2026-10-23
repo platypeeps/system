@@ -291,6 +291,10 @@
   // None runs in the shell's bulk: its confirm names four rows at most, and its tally counts an unknown outcome as landed.
   // Clean all safe (sd:5105) is its own command instead: its confirm names every row, and an unknown outcome stops it.
   const copyOnly = o => `Not run here: copy the line from Details and run it in a terminal · ${o.label}`;
+  // sd:5886: the read actions run on the server (run_actions.py) from the row's own id: `rs:<path>` or `vol:<mount>`.
+  // None reads Health again after it: a reread draws Details anew, and Read again shows what a run changed.
+  const run = (o, action, ids) => window.commands.runAction(o, action, ids);
+  const pathOf = o => o.id.slice(o.id.indexOf(':') + 1), RECHECK = /^(doc|cred):/;
   const openAlerts = (o, page) => { window.open(`https://github.com/${o.slug}/security/${page}`, '_blank', 'noopener'); return 'Opened on GitHub in a new tab'; };
   const names = xs => xs.length > 6 ? `${xs.slice(0, 6).join(', ')} and ${xs.length - 6} more` : xs.join(', ');
   // A 4xx wrote nothing (health_cleanup); a 502 or no answer may follow a step that landed, so the page reads again either way.
@@ -356,17 +360,19 @@
     C.put({ id: 'collector:protection', type: 'collector', label: 'protection collector' });
     C.put({ id: 'cleanup:safe', type: 'safe cleanups', label: 'Clean all safe' });
     C.register(
-      { id: 'check.recheck', on: 'check', label: 'Re-check', does: 'Reads Health again; the line reruns this check.', key: 'e', icon: 'rotate-ccw', risk: 'safe', executes: false, primary: () => true,
-        cli: o => o.cli, run: () => { load(); return 'Reading Health again'; } },
-      { id: 'storage folder.du', on: 'storage folder', label: 'Show biggest', does: 'Gives the line that lists this folder\'s biggest entries.', key: 'b', icon: 'chart-no-axes-column', risk: 'safe', executes: false, primary: () => true,
-        cli: o => o.cli, run: copyOnly },
+      // sd:5886: a doctor or credentials row runs its read and shows it in Details; every other check reads Health again.
+      { id: 'check.recheck', on: 'check', label: 'Re-check', does: o => RECHECK.test(o.id) ? 'Runs this check again and shows its output in Details.' : 'Reads Health again.', key: 'e', icon: 'rotate-ccw', risk: 'safe', executes: true, primary: () => true,
+        cli: o => o.cli, sends: o => RECHECK.test(o.id) ? `POST /api/run {action: check.run, row: ${o.id}}` : 'GET /api/health/summary',
+        run: o => RECHECK.test(o.id) ? run(o, 'check.run', { row: o.id }) : (load(), 'Reading Health again') },
+      { id: 'storage folder.du', on: 'storage folder', label: 'Show biggest', does: 'Lists this folder\'s biggest entries in Details.', key: 'b', icon: 'chart-no-axes-column', risk: 'safe', executes: true, primary: () => true,
+        cli: o => o.cli, sends: o => `POST /api/run {action: storage.du, path: ${pathOf(o)}}`, run: o => run(o, 'storage.du', { path: pathOf(o) }) },
       { id: 'build output.rm', on: 'build output', label: 'Remove build output', does: 'Deletes build output in merged, clean worktrees; this cannot be undone.', key: 'r', icon: 'folder-x', risk: 'confirm', executes: true, primary: () => true,
         when: o => revised(o) === true ? (o.remove.length ? true : 'every merged worktree has uncommitted changes: nothing is removed') : revised(o),
         cli: o => o.cli, consequence: o => `Deletes ${o.remove.length} build output folders in merged, clean worktrees: ${names(o.remove)}.`
           + (o.kept.length ? ` Keeps ${o.kept.length} with uncommitted changes: ${names(o.kept)}.` : '') + ' Each worktree is checked again first. This cannot be undone.', run: cleanup },
       // Volume rows are the build's: the design draws volumes as bars only. Its line shows the volume's use in a terminal.
-      { id: 'volume.df', on: 'volume', label: 'Show use', does: 'Gives the line that shows this volume\'s use.', key: 'b', icon: 'gauge', risk: 'safe', executes: false, primary: () => true,
-        cli: o => o.cli, run: copyOnly },
+      { id: 'volume.df', on: 'volume', label: 'Show use', does: 'Shows this volume\'s use in Details.', key: 'b', icon: 'gauge', risk: 'safe', executes: true, primary: () => true,
+        cli: o => o.cli, sends: o => `POST /api/run {action: volume.df, path: ${pathOf(o)}}`, run: o => run(o, 'volume.df', { path: pathOf(o) }) },
       { id: 'worktree registrations.prune', on: 'worktree registrations', label: 'Prune registrations', does: 'Removes registrations of worktrees whose folders are gone; cannot be undone.', key: 'p', risk: 'confirm',
         executes: true, primary: () => true, cli: CLEAN['worktree registrations'].cli, when: CLEAN['worktree registrations'].ready,
         consequence: o => `Removes ${o.facts.Registered} worktree registrations whose directories are gone: ${names(o.list)}. No directory is touched.`, run: cleanup },
@@ -401,8 +407,9 @@
     );
     // Ports and Protection are read-only: each line is copy only.
     C.register(
-      { id: 'port.inspect', on: 'port', label: 'Inspect listener', does: 'Gives the lsof line that shows what listens on this port.', key: 'i', icon: 'search', risk: 'safe', primary: () => true, executes: false,
-        when: o => !!o.port || 'no port configured: there is nothing to inspect', cli: o => `lsof -nP -iTCP:${o.port || '<port>'} -sTCP:LISTEN`, run: copyOnly },
+      { id: 'port.inspect', on: 'port', label: 'Inspect listener', does: 'Shows what listens on this port in Details, from lsof.', key: 'i', icon: 'search', risk: 'safe', primary: () => true, executes: true,
+        when: o => !!o.port || 'no port configured: there is nothing to inspect', cli: o => `lsof -nP -iTCP:${o.port || '<port>'} -sTCP:LISTEN`,
+        sends: o => `POST /api/run {action: port.lsof, port: ${o.port}}`, run: o => run(o, 'port.lsof', { port: Number(o.port) }) },
       { id: 'protection.settings', on: 'branch protection', label: 'Open branch settings', does: 'Opens the repo\'s branch protection settings on GitHub.', key: 'o', icon: 'settings', risk: 'safe', primary: () => true, executes: false,
         when: o => !!o.slug || 'no github.com remote: there is no settings page', cli: o => `open https://github.com/${o.slug || '<owner>/<repo>'}/settings/branches`,
         run: o => { window.open(`https://github.com/${o.slug}/settings/branches`, '_blank', 'noopener'); return 'Opens in a new tab'; } },
@@ -414,8 +421,8 @@
         executes: false, when: o => !!o.slug || 'no github.com remote: there is no alerts page', cli: o => o.cli, run: o => openAlerts(o, 'dependabot') },
       { id: 'secret scanning.review', on: 'secret scanning', label: 'Review on GitHub', does: 'Opens the secret scanning alerts on GitHub in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: () => true,
         executes: false, when: o => !!o.slug || 'no github.com remote: there is no alerts page', cli: o => o.cli, run: o => openAlerts(o, 'secret-scanning') },
-      { id: 'credential.probe', on: 'credential', label: 'Probe again', does: 'Gives the line that probes this credential again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', primary: () => true, executes: false,
-        cli: o => o.cli, run: copyOnly },
+      { id: 'credential.probe', on: 'credential', label: 'Probe again', does: 'Probes the credentials again and shows the result in Details.', key: 'r', icon: 'rotate-ccw', risk: 'safe', primary: () => true, executes: true,
+        cli: o => o.cli, sends: () => 'POST /api/run {action: credentials.probe}', run: o => run(o, 'credentials.probe') },
     );
     // Snooze (sd:1896) and Ignore (sd:5470) on every row type; an ok row wants nothing, so it has nothing to snooze.
     window.snooze.register(C, { page: 'health', ignore: true, reread: () => load(), off: o => o.state === 'ok' && 'an ok row has nothing to snooze',

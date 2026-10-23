@@ -40,6 +40,7 @@ from test_workflow_actions import BrowserSession
 
 V2 = Path(v2.__file__).resolve().parent
 PAGE_JS = (V2 / "static" / "skills.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
 #: Wednesday; its week starts Monday 2026-09-21, so the three weeks start 09-07, 09-14 and 09-21.
@@ -186,7 +187,7 @@ class ThePage(Pack, BrowserSession):
         self.assertIn("<title>Skills · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "skills.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "skills.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -537,7 +538,7 @@ class TheScript(Pack, ScreenCase):
     def run_page(self, body, answer=None, search="", before=""):
         answer = answer or "(path, body) => path === '/api/skills' ? [200, DOC] : [200, { item: { id: 42 } }]"
         script = (STAND_IN + f"location.search = {json.dumps(search)};\nvar DOC = {json.dumps(self.doc)};\n" + MARKUP_JS
-                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + PAGE_JS
+                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + COMMANDS_JS + PAGE_JS
                   + "\nvar R = {};\n(async () => { try {\n" + before + "\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION; OUT.html = Object.fromEntries(Object.entries(ELS).map(([k, e]) => [k, e.html]));"
@@ -647,11 +648,14 @@ R.off = [w('skill.try', 'sd-used'), w('skill.promote', 'sd-used'), w('skill.demo
         self.assertEqual(out["R"]["off"], ["already installed · path", "on build already", "not on a path",
                                            "apply review notes from the review item", True])
 
-    def test_the_copy_only_commands_post_nothing(self):
-        out = self.run_page("""R.exec = ['skill.schedule', 'skill.scan'].map(id => cmd(id).executes);
-shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C.get('surfaces')); await flush();""")
-        self.assertEqual(out["R"]["exec"], [False, False])
-        self.assertEqual((out["posts"], out["confirms"]), ([], []))
+    def test_schedule_stays_copy_only_and_scan_runs_on_the_server(self):
+        """sd:5886: Scan posts /api/run and shows its report in Details; Schedule posts nothing: sd adds no launchd job."""
+        out = self.run_page("""const LABEL = 'Scan'; const was = ANSWER; ANSWER = (p, b) => p === '/api/run' ? [200, { action: b.action, label: LABEL, line: 'the line', exit: 0, output: 'out', cut: false }] : was(p, b);
+R.exec = ['skill.schedule', 'skill.scan'].map(id => cmd(id).executes);
+shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C.get('surfaces')); await flush(); R.details = ELS.details.html;""")
+        self.assertEqual(out["R"]["exec"], [False, True])
+        self.assertEqual(([p[:2] for p in out["posts"]], out["confirms"]), ([["/api/run", {"action": "skill.scan"}]], []))
+        self.assertIn('<section class="ran" data-obj="surfaces"', out["R"]["details"])
 
     def test_the_page_draws_lamps_rows_and_the_rail_badge_from_the_document(self):
         out = self.run_page("R.sub = ELS.sub.textContent; R.tally = ELS.tally.textContent;")

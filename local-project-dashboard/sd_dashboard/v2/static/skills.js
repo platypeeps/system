@@ -2,9 +2,9 @@
 // reference is marked "build:". The rows are /api/skills (skills_screen.document): the catalog the old screen renders, each
 // skill's use in the last three Monday-start weeks, and the use records no catalog skill explains; never sample data.
 // Try, Review, Promote and Demote ask first and post the routes the old screen posts: no verb ends a trial early, and a
-// request files an sd item that closes in Tasks (system sd:5477), so none carries the reference's Undo. Run, Schedule, Adopt and Scan are copy only: the dashboard has no route that
-// creates the item a run needs, adds a launchd job, adopts a skill or scans sessions, and the reference's chat proposals are
-// not ported. Re-import and Evaluate (sd:3992) post /api/skills/intake, which runs `sd skill intake` and answers its report;
+// request files an sd item that closes in Tasks (system sd:5477), so none carries the reference's Undo. Run, Schedule and Adopt are copy only: the dashboard has no route that
+// creates the item a run needs, adds a launchd job or adopts a skill, and the reference's chat proposals are not ported.
+// Scan runs `sd skill scan` through /api/run (sd:5886). Re-import and Evaluate (sd:3992) post /api/skills/intake, which runs `sd skill intake` and answers its report;
 // Approve shows only under a report that can install, asks first, and posts the URL, scope and revision that report printed.
 // A skill the intake installed in ~/.claude/skills (sd:3997) is a "user skill": the Adopt panel lists it with Re-import, which
 // runs the intake with the user scope. It is no catalog row, so Try, Review, Promote and Demote are not on it.
@@ -655,8 +655,9 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
       // build: applying review notes lives on the review item's page, where the notes are.
       { id: 'skill.apply', on: 'skill', label: 'Apply', does: 'Applies review notes to the skill; run it from the review item.', key: 'a', risk: 'confirm', when: () => 'apply review notes from the review item',
         cli: () => 'sd skill apply ITEM NOTE…' },
-      { id: 'skill.scan', on: 'use surfaces', label: 'Scan', does: 'Gives the line that reads codex sessions into skill use records.', key: 's', icon: 'search', risk: 'safe', executes: false, primary: () => true,
-        cli: () => 'sd skill scan', run: () => 'Copy it into a terminal: the dashboard has no route that runs sd skill scan' },
+      // sd:5886: Scan runs `sd skill scan` on the server and shows its report in Details; Read again shows the new counts.
+      { id: 'skill.scan', on: 'use surfaces', label: 'Scan', does: 'Reads codex sessions into skill use records, then shows the report in Details.', key: 's', icon: 'search', risk: 'safe', executes: true, primary: () => true,
+        cli: () => 'sd skill scan', sends: () => 'POST /api/run {action: skill.scan}', run: o => window.commands.runAction(o, 'skill.scan') },
       ...REPO_COMMANDS,
     );
   }
