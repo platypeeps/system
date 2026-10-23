@@ -51,7 +51,9 @@ page reads `/api/research/deck/<id>` until the run settles, then reads the board
 Import to Slides (#25693, option A) posts `/api/research/slides` with the row's checkout (`research_slides.py`). It sends
 the built deck as base64, with its sha256, to workspace-mcp's `import_to_google_slides` on the work Google account,
 `google.accounts.work.email`. `<state>/research-deck/slides.json` records each checkout's Slides file id, link and deck
-sha256. An unchanged deck reuses its file and calls nothing; a changed one makes a new file, because the tool cannot
-replace a Slides file's content from bytes, and the earlier file stays in Drive. `/api/research/slides/status` probes
+sha256. An unchanged deck reuses its file and calls nothing. A changed one replaces that file's content in place
+(sd:5761) through `update_drive_file`, so its id, link, folder and sharing stay: the tool reads a path, not bytes, so
+the deck is copied into workspace-mcp's attachment folder, `~/.workspace-mcp/attachments`, for the call and removed
+after. A file Drive no longer has, or a record for another account, gets a new file. `/api/research/slides/status` probes
 workspace-mcp, so the action is off with its reason when it does not answer, when no account is set, or when no deck is
 built. The row then links the Slides file and says whether it holds the current deck or an older one.

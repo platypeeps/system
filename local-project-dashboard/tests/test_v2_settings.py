@@ -258,7 +258,7 @@ class TheDashboardSettings(BrowserSession):
         writes.set_setting(self.connection, "dashboard.hoa_thresholds", "tank|below|12")
         writes.set_setting(self.connection, "adversarial.model", "gpt-fixture")
         held = self.read()
-        self.assertEqual(list(held), list(setting_rows.LISTS) + list(adversarial.SETTINGS))
+        self.assertEqual(list(held), list(setting_rows.LISTS) + list(adversarial.SETTINGS) + list(adversarial.DEEP))
         self.assertEqual((held["dashboard.realms"]["value"], held["dashboard.realms"]["source"]),
                          ("realm|work|Work|/repos/example-work/*\n", "file"))
         self.assertEqual((held["dashboard.hoa_thresholds"]["source"], held["dashboard.report_families"]["source"]), ("database", "unset"))
@@ -340,6 +340,20 @@ class TheDashboardSettings(BrowserSession):
         status, _, answer = self.post("/api/settings/row", {"key": "adversarial.effort", "value": "very high", "before": None})
         self.assertEqual(status, 400, answer)
         self.assertEqual(writes.read_settings(self.connection, ["adversarial.effort"]), {})
+
+    def test_the_deep_review_keys_are_global_rows_that_check_their_pattern(self):
+        """sd:5784: the Deep review's settings moved from a Management dialog to this section; effort is a select."""
+        writes.set_setting(self.connection, "adversarial.deep.agents", "4")
+        held = self.read()
+        self.assertEqual((held["adversarial.deep.agents"]["value"], held["adversarial.deep.agents"]["source"]), ("4", "database"))
+        self.assertEqual(held["adversarial.deep.effort"]["choices"], ["low", "medium", "high", "xhigh", "max"])
+        self.assertIn("Unset is opus.", held["adversarial.deep.model"]["description"])
+        status, _, answer = self.post("/api/settings/row", {"key": "adversarial.deep.bound_minutes", "value": "120", "before": None})
+        self.assertEqual((status, answer["was"]), (200, None))
+        self.assertEqual(adversarial.deep_settings(self.connection)["adversarial.deep.bound_minutes"], {"value": "120", "from": "database"})
+        status, _, answer = self.post("/api/settings/row", {"key": "adversarial.deep.agents", "value": "40", "before": "4"})
+        self.assertEqual(status, 400, answer)
+        self.assertIn("from 1 to 16", answer["error"])
 
 
 class TheThemeMoved(unittest.TestCase):

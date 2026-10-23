@@ -34,6 +34,9 @@
 GITHUB_PERSONAL_ACCESS_TOKEN=change-me
 HF_TOKEN=change-me
 ANTHROPIC_API_KEY=change-me
+# From `claude setup-token`. Not CLAUDE_CODE_OAUTH_TOKEN, which would replace
+# every claude's own login: a headless run sets that name from this one.
+CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=change-me
 OPENAI_API_KEY=change-me
 GEMINI_API_KEY=change-me
 OPENROUTER_API_KEY=change-me
