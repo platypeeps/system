@@ -40,6 +40,7 @@ from sd_db.errors import SdDbError
 from sd_db.progress import CANCELLABLE_TASK_KINDS
 
 from . import notes_screen
+from .claude_env import SHELL_ENV
 
 __all__ = ["KINDS", "MODEL_TIMEOUT", "GMAIL_TIMEOUT", "TOOL", "command", "prompt", "reply", "request", "start"]
 
@@ -66,10 +67,10 @@ def command(tools: str, *, bound: int | None = None) -> str:
     launchd gives the dashboard 256 open files, and claude aborts below that need (local-cron-jobs raises it too);
     the LaunchAgent's PATH lacks ~/.local/bin, where the native installer puts claude. With `bound`, the run carries
     its own alarm, which survives the exec: it ends after `bound` seconds even when no dashboard is waiting for it.
+    `SHELL_ENV` (claude_env) sources ~/.config/shell/env.sh and maps its CUSTOM_ token (sd:5791).
     """
     alarm = f"perl -e 'alarm shift; exec @ARGV' {int(bound)} " if bound else ""
-    return ('f="$HOME/.config/shell/env.sh"; [ ! -f "$f" ] || . "$f" >/dev/null 2>&1; '
-            'ulimit -S -n 65536 2>/dev/null; '
+    return (SHELL_ENV + 'ulimit -S -n 65536 2>/dev/null; '
             f'exec {alarm}"${{CLAUDE_BIN:-$(command -v claude || echo "$HOME/.local/bin/claude")}}" -p --model sonnet '
             f'--restricted --strict-mcp-config --tools {tools} --no-session-persistence')
 

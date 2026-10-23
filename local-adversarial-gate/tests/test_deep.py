@@ -28,6 +28,7 @@ WRITERS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Bash", "PowerShell", "
 FAKE = """#!/bin/sh
 printf '%s\\n' "$@" > "$CLAUDE_ARGV"
 pwd > "$CLAUDE_CWD"
+case "${CLAUDE_CODE_OAUTH_TOKEN-unset}" in unset) echo unset ;; tok-custom) echo same ;; *) echo other ;; esac > "$CLAUDE_TOKEN"
 cat > "$CLAUDE_STDIN"
 case "$CLAUDE_MODE" in
   hang) sleep 60 & echo $! > "$CLAUDE_GRANDCHILD"; sleep 60 ;;
@@ -49,7 +50,7 @@ class Deep(unittest.TestCase):
         self.fake.chmod(0o755)
         self.out = self.tmp / "out" / "deep.md"
         self.out.parent.mkdir()
-        self.log = {name: self.tmp / f"claude.{name}" for name in ("argv", "cwd", "stdin", "grandchild")}
+        self.log = {name: self.tmp / f"claude.{name}" for name in ("argv", "cwd", "stdin", "grandchild", "token")}
 
     def gate(self, *args, mode="ok", claude=None):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(self.tmp / "home"), "CLAUDE_BIN": str(claude or self.fake),
@@ -100,6 +101,16 @@ class Deep(unittest.TestCase):
         self.assertEqual((self.value("--model"), self.value("--effort")), ("opus", "max"))
         self.assertEqual(self.out.read_text(), "### 1. A finding\nConfidence: LIKELY\n")
         self.assertEqual(list(self.repo.iterdir()), [], "the run wrote into the checkout")
+
+    def test_env_sh_custom_token_reaches_claude_as_claude_code_oauth_token(self):
+        # sd:5791: env.sh exports the setup token as CUSTOM_CLAUDE_CODE_OAUTH_TOKEN, so lib/config.sh's st_shell_env
+        # maps it in claude's own shell. The fake writes only same, other or unset.
+        (self.tmp / "home" / ".config" / "shell").mkdir(parents=True)
+        (self.tmp / "home" / ".config" / "shell" / "env.sh").write_text("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        result = self.gate("--repo", str(self.repo), "--out", str(self.out))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.log["token"].read_text(), "same\n")
+        self.assertNotIn("tok-custom", self.log["argv"].read_text())
 
     def test_a_claude_failure_is_its_exit_code(self):
         result = self.gate("--repo", str(self.repo), "--out", str(self.out), mode="fail")

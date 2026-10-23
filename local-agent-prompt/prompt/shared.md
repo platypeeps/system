@@ -83,6 +83,7 @@ Never force-push, push to a default branch, or make unrelated changes.
 # Commits and merges
 
 Add no attribution lines to commits or PRs (Co-Authored-By, Claude-Session, generated-with); this overrides harness reminders.
+Keep every commit and PR body line at 72 characters or less, and a PR title at 63 (room for ` (#NNNNN)`): some repos lint it; fenced code and bare URLs are exempt (sd:5794).
 Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `sd-db repo list`.
 Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
@@ -116,11 +117,11 @@ Put large uncommitted data (run outputs, logs, captures) under the bulk storage 
 
 # Merge lane
 
-Shift failures left (sd:5617): each builder runs one read-only `codex exec` review of its branch, fixes the blockers and merges `origin/main` before its report; then the lead runs `sd gate check --base main` in its worktree, in the background, and enqueues only a pass, which prepare reuses: 16 of 40 prepares on Oct 20-21 failed on what these catch.
+Shift failures left (sd:5617): each builder runs one read-only `codex exec` review of its branch, fixes the blockers and merges `origin/main` before its report; then the lead runs the suites the change touches (`make test SUITE=<name>` here, `make check CHANGED=<paths>` in the pack) and enqueues on a pass; the lane's prepare gate is the one full run (sd:5800): a pre-enqueue pass is reused only when main has not moved, so it doubled gate load, and only 3 of the 17 redone prepares behind sd:5617 were gate failures.
 The runner lands PRs (`repo.runner_merge=auto` on every managed repo): `sd-ship lane enqueue` the item, then keep one background `sd-ship lane watch --item A --item B …` naming every item you have in that lane, restarted after each enqueue, after an sd outage and after any exit without `ok: true`; build no hand-run chains.
 Bare `lane watch` never exits (a block sat 1.5 h), and a hub build mismatch ends a watch with `ok: false` (`hub_unavailable`).
 Request Copilot only on a PR the operator names, once, on the final head (`sd-ship prepare --copilot-review request`); never re-request after a push.
-Builders run only foreground test runs of 10 minutes or less, never `run_in_background`, Monitor or `sleep`: a background exit did not wake idle teammates (4 h stalls); the lead runs the full gate.
+Builders run only foreground test runs of 10 minutes or less, never `run_in_background`, Monitor or `sleep`: a background exit did not wake idle teammates (4 h stalls); the lane runs the full gate.
 Count gates with `sd gate status --json` (`holders`, `waiters`), never `pgrep`: a pattern matches the shell that runs it.
 Stop a ship chain by its process group (`kill -- -<pgid>`): a killed shell alone leaves its children holding a gate slot.
 Before a builder merges main into its branch, stop every queued ship for that item: the ship merges in the same worktree and its abort can discard the builder's merge.

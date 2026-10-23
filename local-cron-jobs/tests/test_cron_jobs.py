@@ -263,6 +263,19 @@ class PromptJobEnvironmentTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.fx.claude_env().get("SD_HANDOFF_RESTORE"), "0")
 
+    def test_env_sh_custom_token_reaches_claude_as_claude_code_oauth_token(self):
+        # sd:5791. env.sh exports the setup token as
+        # CUSTOM_CLAUDE_CODE_OAUTH_TOKEN, so a day-to-day claude keeps its
+        # own login; lib/config.sh's st_shell_env maps it for the job.
+        env_sh = self.fx.home / ".config" / "shell" / "env.sh"
+        env_sh.parent.mkdir(parents=True)
+        env_sh.write_text("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        self.fx.write_job("nightly", PROMPT_JOB)
+        result = self.fx.exec_job("nightly")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.fx.claude_env().get("CLAUDE_CODE_OAUTH_TOKEN"), "tok-custom")
+        self.assertNotIn("tok-custom", result.stdout + result.stderr)
+
     def test_command_job_is_not_touched(self):
         # PIN. The variable is set on the agent call, not exported for the
         # run: a JOB_COMMAND job never starts claude here and inherits

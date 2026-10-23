@@ -247,9 +247,11 @@ cmd_run() {
     # The token for a headless run lives in the shell's env file, which a
     # launchd job never reads, and launchd's 256 open files are too few:
     # both are set in a shell of claude's own, so neither reaches this one.
-    set -- sh -c 'f="$HOME/.config/shell/env.sh"; [ ! -f "$f" ] || . "$f" >/dev/null 2>&1
+    # lib/config.sh's st_shell_env sources that file and maps its
+    # CUSTOM_CLAUDE_CODE_OAUTH_TOKEN to the name claude reads (sd:5791).
+    set -- sh -c '. "$0"; st_shell_env
 ulimit -S -n 65536 2>/dev/null
-exec "$0" "$@"' "$claude" "$@"
+exec "$@"' "$ROOT/../lib/config.sh" "$claude" "$@"
     echo "# adversarial gate: claude -p with $DEEP_TOOLS only, $repo -> $outfile" >&2
     # claude prints its answer on stdout and reads the files under its cwd.
     exec 3>&1 >"$outfile"
