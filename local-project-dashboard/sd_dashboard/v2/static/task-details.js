@@ -374,8 +374,18 @@
         consequence: () => 'Each task closes as done, with a cancelled receipt and your reason. No sd verb takes it back.',
         run: (o, v) => { const t = must(o);
           return landing(write(t.key, x => `/api/items/${x.id}/cancel-task`, { reason: v.reason }), () => `${label(t)} closed · sd task cancel ${t.id} --reason ${window.shell.shq(v.reason)}`); } },
+      // Park (sd:5906) sets parked_at to now through the item edit route, by hand, as the nightly prune does; its Undo
+      // unparks. The route takes a parked_at only from a pack with sd task edit --park (pack sd:5905).
+      { id: 'item.park', on: 'item', label: 'Park', risk: 'undo', executes: true, bulk: true, icon: 'archive',
+        when: o => { const t = T(o); return !t ? 'the task is no longer listed' : t.parked ? 'it is already parked' : t.status === 'done' ? 'it is done' : EDITABLE(t) || noEdit(t); },
+        cli: o => rowOr(o, t => `sd task edit ${t.id} --park`),
+        sends: o => `POST /api/items/${T(o).id} {parked_at: <now>}`,
+        run: o => { const t = must(o);
+          return landing(write(t.key, x => `/api/items/${x.id}`, { parked_at: new Date().toISOString() }), () => `${label(t)} parked · sd task edit ${t.id} --park`,
+            v => write(t.key, x => `/api/items/${x.id}`, { parked_at: null }, { rev: v.revision })); },
+        undo: undoOf },
       // Unpark (sd:3012) clears parked_at through the item edit route, as the item page's Unpark does (sd:3007). No Undo:
-      // only the nightly prune parks, so no write takes it back.
+      // Park is a separate command, so an unpark is taken back by Park.
       { id: 'item.unpark', on: 'item', label: 'Unpark', risk: 'safe', executes: true, bulk: true, icon: 'archive-restore',
         when: o => { const t = T(o); return !t ? 'the task is no longer listed' : !t.parked ? 'it is not parked' : true; },
         cli: o => rowOr(o, t => `sd task edit ${t.id} --unpark`),

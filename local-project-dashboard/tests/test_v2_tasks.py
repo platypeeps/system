@@ -775,6 +775,7 @@ class TheScript(ScreenCase):
             ["item.p3", "item", "undo", None, None, True, True],
             ["item.p4", "item", "undo", None, None, True, True],
             ["item.close", "item", "confirm", None, True, True, False],
+            ["item.park", "item", "undo", None, True, True, True],
             ["item.unpark", "item", "safe", None, True, True, False],
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.fix", "item", "safe", "f", True, True, False],
@@ -1610,6 +1611,31 @@ C.runBulk(cmd('item.unpark'), [C.get('{parked}'), C.get('{other}')]); await flus
                                         [f"/api/items/{other}", {"parked_at": None, "revision": revisions[other]}, 64]])
         self.assertEqual(out["bulkCli"], f"sd task edit {parked} --unpark && sd task edit {other} --unpark")
         self.assertEqual(out["toasts"], [["Unpark · 2 items", False]])
+
+    def test_park_parks_a_listed_task_with_undo_and_is_off_for_a_parked_or_done_one(self):
+        # sd:5906: Park beside Unpark, by hand. It posts parked_at as now through the edit route, and Undo posts it back null.
+        parked = self.park()
+        done = self.item("Finished already", kind="task", priority=3)
+        workflow.change_status(self.connection, done, "done", who="test")
+        self.connection.commit()
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        plan = self.ids["plan"]
+        revision = {row["id"]: row["revision"] for row in self.doc["rows"]}[plan]
+        answer = """(path, body) => { const id = +path.split('/').pop(); return [200, { item: { id, status: 'planning', priority: 2, due: null, recurrence: null, parked_at: body.parked_at }, notes: [], revision: String(id % 10).repeat(64) }]; }"""
+        out = self.run_page(f"""const park = cmd('item.park');
+R.off = [park.when(C.get('{parked}')), C.get('{done}') ? park.when(C.get('{done}')) : 'not listed'];
+R.cli = park.cli(C.get('{plan}')); R.sends = park.sends(C.get('{plan}'));
+shellRun(park, C.get('{plan}')); await flush(); OUT.toasts[0].undo(); await flush();""", answer)
+        self.assertEqual(out["R"]["off"][0], "it is already parked")
+        self.assertIn(out["R"]["off"][1], ("it is done", "not listed"))
+        self.assertEqual(out["R"]["cli"], f"sd task edit {plan} --park")
+        self.assertEqual(out["R"]["sends"], f"POST /api/items/{plan} {{parked_at: <now>}}")
+        (first, body, _), (second, back, _) = out["posts"]
+        self.assertEqual((first, second), (f"/api/items/{plan}", f"/api/items/{plan}"))
+        self.assertRegex(body["parked_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$")
+        self.assertEqual(body["revision"], revision)
+        self.assertEqual(back["parked_at"], None)
+        self.assertTrue(out["toasts"][0][1], "Park offers no Undo")
 
     # sd:5649: Repeat and Lead in Details, Scope's Scheduled only, and the Lead (days) column the Columns menu shows.
     def schedule_plan(self, lead):
