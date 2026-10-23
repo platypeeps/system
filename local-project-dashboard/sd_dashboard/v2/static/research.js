@@ -503,7 +503,7 @@ function showProject(key, read = true) {
 }
 // ---------- Experiment (sd:5296) ----------
 // The project's row in the team's experiments database (research_experiments.py), read for the selected project. Every Notion
-// or Drive write is two runs: a draft that reads only, then Apply, which asks first and shows that draft; the POST carries the
+// write is two runs: a draft that reads only, then Apply, which asks first and shows that draft; the POST carries the
 // draft's SHA-256, so the server refuses an apply of anything but what was shown. Refresh and the drafts write nothing outward.
 let EXP = null, expPolling = 0, shownProject = null;
 const EXP_POLL = 5000;
@@ -521,14 +521,14 @@ const mine = key => (EXP?.runs || []).filter(r => r.project === key);
 function pending(key) {
   const runs = EXP?.runs || [];
   for (const r of mine(key)) {
-    if (r.verb !== 'draft' || r.state !== 'done' || !r.draft) continue;
+    if (r.verb !== 'draft' || r.state !== 'done' || !r.draft || !ACTION_WORD[r.action]) continue; // an older deck draft has no Apply
     const applies = runs.filter(a => a.verb === 'apply' && a.draft === r.run);
     if (applies.some(a => a.state === 'running' || a.state === 'done')) continue;
     return { ...r, unknown: applies[0]?.state === 'unknown' };
   }
   return null;
 }
-const ACTION_WORD = { create: 'new experiment', status: 'status update', deck: 'deck' };
+const ACTION_WORD = { create: 'new experiment', status: 'status update' };
 const stampTime = s => `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(9, 11)}:${s.slice(11, 13)} UTC`;
 const listed = page => (EXP?.cache?.rows || []).find(r => r.page === page);
 function experimentSection(p) {
@@ -542,7 +542,7 @@ function experimentSection(p) {
       row ? html`<dt>Stage</dt><dd>${row.stage || 'none'} · Status ${row.status || 'none'}</dd>` : ''}</dl>`
     : html`<p class="why">Not linked. Attach one, or use Draft experiment on the Experiments tab.</p>`}
     <p class="why">${c ? html`List: ${plural(c.rows.length, 'experiment')}, read <time class="rel" datetime="${c.read}"></time>${c.current ? '' : ' from another data source: refresh it before you attach'}.` : 'List: never read. Refresh experiments, in the toolbar, reads it.'}${EXP.cache_error ? ` The list did not read: ${EXP.cache_error}.` : ''}</p>
-    ${problems.map(([k, why]) => html`<p class="unknown"><span class="g-unknown">▨</span>${why.replace(/\.$/, '')}.${k === 'kit' ? ' The deck is off until then.' : ''}</p>`)}
+    ${problems.map(([, why]) => html`<p class="unknown"><span class="g-unknown">▨</span>${why.replace(/\.$/, '')}.</p>`)}
     ${draft ? html`<p class="why">Waiting for Apply: the ${ACTION_WORD[draft.action]} drafted ${stampTime(draft.run)}${draft.unknown ? ', whose last apply found no trace of its write' : ''}. Apply shows it first.</p>` : ''}
     ${EXP.running ? html`<p class="why">A run is going, started ${EXP.running}. This reads again until it ends.</p>`
       : last ? html`<p class="why">Last run: ${last.verb} ${last.action || 'experiments'} · ${last.state}${last.reason ? ` · ${last.reason}` : ''} · log ${last.log}</p>` : ''}`;
@@ -556,12 +556,8 @@ function applyText(o) {
   const dup = d.unknown ? 'An earlier apply found no trace of its write, so this one may make a duplicate. ' : '';
   const x = d.draft, title = EXP.link?.title || 'the linked experiment';
   if (d.action === 'create') return `${dup}Creates one row in the experiments database, “${x.title}”, Stage Idea, Problem “${x.problem}”, its body “${x.body}”, and links ${o.label} to it. Nothing else is written.`;
-  if (d.action === 'status') return `Writes the status section of ${title}. Now: “${x.before.section}”. After: “${x.after.section}”. Status ${x.before.status || 'none'} becomes ${x.after.status}. If either changed since the draft, nothing is written.`;
-  return `${dup}Creates the Google Slides deck “${x.title} - draft ${d.run}” in My Drive's root, in the work account: ${x.slides.map((sl, i) => `${i + 1}. ${sl.message} Shapes: ${sl.elements.map(shapeText).join('; ')}.`).join(' ')} Removes only the blank slide a new deck starts with; deletes nothing else.`;
+  return `${dup}Writes the status section of ${title}. Now: “${x.before.section}”. After: “${x.after.section}”. Status ${x.before.status || 'none'} becomes ${x.after.status}. If either changed since the draft, nothing is written.`;
 }
-// One drawn element as the runner builds it, in points: the shape, its box, then each optional field it sets.
-const shapeText = e => [`${e.shape} at ${e.x},${e.y} ${e.w}x${e.h}`, e.text && `“${e.text}”`, e.fill && `fill ${e.fill}`,
-  e.color && `text ${e.color}`, e.size && `${e.size}pt`, e.font, e.bold && 'bold'].filter(Boolean).join(' ');
 // The answer to a start, as a toast: a refusal names its reason; no answer means the outcome is not known.
 const started = (what, key) => out => (key ? loadExperiment(key) : Promise.resolve()).then(() => (out.linked ? `Linked to ${out.linked.title || out.linked.page}` : `${what} started · this reads again until it ends`));
 const refused = err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether it started is not known`); };
@@ -589,10 +585,6 @@ function experimentCommands() {
       fields: () => [{ name: 'description', label: 'What the experiment tests', required: true, placeholder: 'One or two sentences' }],
       sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
       run: (o, v) => post(o, { verb: 'draft', action: 'create', description: v.description }, 'Draft') },
-    { id: 'experiment.deck', on, label: 'Draft deck', does: 'Drafts a branded 6-8 slide deck; Apply builds it after you read it.', risk: 'safe', executes: true,
-      when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.link ? 'not linked: attach or create an experiment first' : EXP.problems?.kit || EXP.problems?.account || true; },
-      sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"deck"}',
-      run: o => post(o, { verb: 'draft', action: 'deck' }, 'Draft') },
     { id: 'experiment.apply', on, label: 'Apply draft', does: o => { const d = EXP?.key === o.key && pending(o.key); return d ? `Writes the ${ACTION_WORD[d.action]} drafted ${stampTime(d.run)}, after you read it.` : 'Writes a finished draft, after you read it.'; },
       risk: 'safe', askFirst: true, executes: true,
       when: o => { const w = expOff(o); return w !== true ? w : pending(o.key) ? true : 'no finished draft waits for Apply'; },
