@@ -212,7 +212,7 @@ A herdr that does not answer leaves Fix launches shown as not confirmed, never a
 
 Draft email on Tasks (sd:3463, `email_draft.py`) runs `claude -p` on Sonnet with no tools and no MCP servers.
 The item's title, description and notes go on stdin.
-It loads the token on the same line with `st_shell_env` (`lib/config.sh`), which sources `~/.config/shell/env.sh` and maps `CUSTOM_CLAUDE_CODE_OAUTH_TOKEN` to `CLAUDE_CODE_OAUTH_TOKEN`.
+It loads the token on the same line with `claude_env.SHELL_ENV`, which sources `~/.config/shell/env.sh` and maps `CUSTOM_CLAUDE_CODE_OAUTH_TOKEN` to `CLAUDE_CODE_OAUTH_TOKEN`.
 It finds claude on PATH, else at `~/.local/bin/claude`.
 It saves the reply through workspace-mcp's `draft_gmail_message`, as `EMAIL_FROM` (`notes_screen.workspace`), with no recipient; no send tool is called.
 The model has 120 seconds and the draft call 30. Every run that reaches the model adds a note to the item: the subject, draft id and Drafts link, or the failure.
