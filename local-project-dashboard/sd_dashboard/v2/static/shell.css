@@ -13,6 +13,7 @@
  *   list themed where base-select exists (decision #24588) · pre-emit critique: P4 H4 E4 S4 R5 V4 · states: default · hover · focus · open · picked (accent) · disabled
  * 2026-10-21 component: toolbar alignment (sd:5619) row 1 view switch and Shapeshift box share --bar-h, one top and bottom edge
  *   pre-emit critique: P4 H4 E4 S4 R5 V4 · states: unchanged (height and margin only)
+ * 2026-10-23 (sd:5902): row 1's selects and buttons take --bar-h too · states: unchanged (height only)
  */
 
 html, body { overflow-x: clip; }
@@ -761,6 +762,9 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 @media (pointer: coarse) { .toolbar { --bar-h: calc(var(--row-touch) + 2 * (var(--space-3xs) + var(--rule-hair))); } }
 .toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg, .toolbar > .fgroup { margin: 0; }
 .toolbar .viewswitch, .toolbar .vseg, .toolbar .shift .field { height: var(--bar-h); }
+/* sd:5902: a select in row 1 (the column filter, the layout picker) and a button there take the row's height as well, so no
+ * box sits short beside the Shapeshift box; :is() keeps this above the touch rules for .tgrid select and .viewpick-btn. */
+.toolbar :is(select, .viewpick-btn, .btn) { min-height: var(--bar-h); }
 .toolbar .viewswitch [role="tab"], .toolbar .vseg > button { min-height: 0; }
 .toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
 .toolbar > .count:empty { display: none; }
