@@ -252,12 +252,17 @@
         cli: o => missingCopies(o.pub).map(ch => cli(o, ch)).join('\n'),
         sends: o => missingCopies(o.pub).map(ch => `POST ${base}/publish ${JSON.stringify({ ...payload(o), channel: ch })}`).join('\n'),
         consequence: o => `Queues ${o.label} for ${missingCopies(o.pub).map(ch => PUB_NAME[ch]).join(' and ')}. Nothing leaves the machine until Publish now or a drain by hand.`,
+        // A failure after an earlier destination queued leaves that copy queued (sd:5924): the page reads again, so the row and
+        // Publish now show it, and the toast names what queued and what failed. A failed reread shows on the page itself.
         run: o => {
-          const want = missingCopies(o.pub);
-          return want.reduce((done, ch) => done.then(n => window.shell.post(`${base}/publish`, { ...payload(o), channel: ch }).then(r => n + (r.queued ? 1 : 0))), Promise.resolve(0))
-            .then(n => reread().then(() => n === want.length ? `Queued ${n === 1 ? 'one copy' : `${n} copies`} · ${o.label}; Publish now drains ${n === 1 ? 'it' : 'them'}`
-              : `${n} of ${want.length} copies queued · ${o.label}; the publish said nothing for the rest`),
-            err => refusal(err, 'the copy was queued'));
+          const want = missingCopies(o.pub), queued = [];
+          let at = null;
+          return want.reduce((done, ch) => done.then(() => { at = ch; return window.shell.post(`${base}/publish`, { ...payload(o), channel: ch }).then(r => { if (r.queued) queued.push(ch); }); }), Promise.resolve())
+            .then(() => reread().then(() => { const n = queued.length; return n === want.length ? `Queued ${n === 1 ? 'one copy' : `${n} copies`} · ${o.label}; Publish now drains ${n === 1 ? 'it' : 'them'}`
+              : `${n} of ${want.length} copies queued · ${o.label}; the publish said nothing for the rest`; }),
+            err => !queued.length ? refusal(err, 'the copy was queued')
+              : reread().catch(() => {}).then(() => `Queued for ${queued.map(ch => PUB_NAME[ch]).join(' and ')} · ${o.label}; `
+                + ([400, 404, 409].includes(err.status) ? `${PUB_NAME[at]} refused: ${err.message}` : `whether ${PUB_NAME[at]} queued is not known: ${err.message}`)));
         } },
       { id: `${on}.publish-now`, on, label: 'Publish now', does: 'Starts a drain that mirrors the queued copies to Notion or Drive.', icon: 'send', risk: 'safe', askFirst: true, executes: true,
         when: o => !o.pub ? `not a ${on} the dashboard publishes` : (o.pub.copies || []).some(c => c.state === 'queued') || 'nothing is queued: tick Drive or Notion under Publish to first',
