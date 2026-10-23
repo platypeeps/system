@@ -840,7 +840,9 @@ class TheDocument(Collectors, ScreenCase):
         beta = root / "beta"
         git("init", "-q", "-b", "main", str(beta))
         git("-C", str(beta), "commit", "-q", "--allow-empty", "-m", "first")
-        for path in (alpha, beta, root / "gone"):
+        # A folder that is no repository is unread; a registered path with no folder is skipped.
+        (root / "gone").mkdir()
+        for path in (alpha, beta, root / "gone", root / "elsewhere"):
             self.repo(str(path))
         scan = REAL_BRANCH_SCAN(self.connection)
         self.assertEqual(scan["repos"], 1)
@@ -853,11 +855,13 @@ class TheDocument(Collectors, ScreenCase):
 
     def test_a_slow_branch_walk_is_stopped_at_its_budget_and_is_the_branches_error(self):
         stub = self.stub("git", self.stalled())
-        for name in ("one", "two"):
-            self.repo(f"/checkouts/{name}")
+        checkouts = [str(Path(self.tmp.name) / name) for name in ("one", "two")]
+        for path in checkouts:
+            Path(path).mkdir()
+            self.repo(path)
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
             doc = self.doc(branches=lambda connection: REAL_BRANCH_SCAN(
-                connection, within=0.5, repo_paths=["/checkouts/one", "/checkouts/two"]))
+                connection, within=0.5, repo_paths=checkouts))
         br = doc["areas"][3]
         self.assertFalse(self.finished.exists(), "the page waited on the branch walk instead of stopping it")
         self.assertEqual((br["rows"], br["error"]), ([], "the merged-branch walk ran past its budget of 0.5 seconds "

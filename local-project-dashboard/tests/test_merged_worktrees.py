@@ -133,6 +133,14 @@ class TheReading(Merged):
         self.assertIn("merged worktrees were not listed", rows["wt:unread"]["detail"])
         self.assertEqual(scan["worktrees"]["revision"], health_collectors.worktrees_revision(scan["worktrees"]["trees"]))
 
+    def test_a_registered_repository_not_cloned_on_this_machine_is_not_a_git_error(self):
+        """A repository registered for another machine has no folder here: nothing to read, nothing failed."""
+        absent = str(self.root / "repos" / "elsewhere")
+        self.repo(absent)
+        scan = health_collectors.branch_scan(
+            self.connection, repo_paths=[str(self.alpha), absent], heads=health_collectors.merged_heads(self.connection))
+        self.assertEqual((scan["unread"], scan["worktrees"]["unread"], scan["repos"]), ([], [], 1))
+
 
 class TheWrite(Merged):
     def test_remove_takes_the_tree_its_branch_origins_branch_and_its_build_output(self):
