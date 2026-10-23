@@ -71,6 +71,7 @@ COMMANDS = [
     ["document.publish", "document destination", "Publish to", None, "safe"],
     # sd:5489: a ticked destination unticks: ask first, and Undo ticks it again.
     ["document.unpublish", "document destination", "Remove copy", None, "undo"],
+    ["document.queue-copy", "document", "Queue copy", None, "safe"],
     ["document.publish-now", "document", "Publish now", None, "safe"],
 ]
 
