@@ -79,7 +79,8 @@
 .intents .chip:disabled { opacity: 0.5; cursor: default; }
 .needs tr.band th { padding: var(--space-sm) var(--space-xs) var(--space-2xs); text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); border-bottom: var(--rule-hair) solid var(--color-rule); }
 .needs .what { min-width: 0; overflow-wrap: anywhere; }
-.needs .what .disc { all: unset; display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; margin-right: var(--space-3xs); cursor: pointer; color: var(--color-muted); vertical-align: -0.2em; }
+.needs .what .disc { all: unset; float: left; display: grid; place-items: center; width: 1.25rem; height: 1.25rem; margin-right: var(--space-3xs); cursor: pointer; color: var(--color-muted); vertical-align: -0.2em; }
+.needs .what .disc + .pick { display: flow-root; } /* beside the floated chevron, wrapping in its own box */
 .needs .what .disc .i { transition: transform var(--dur-fast) var(--ease-out); }
 .needs .what .disc[aria-expanded="true"] .i { transform: rotate(90deg); }
 .needs .what .disc:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: var(--radius-sm); }
