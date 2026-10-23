@@ -348,16 +348,16 @@ R.icon = btn.html;""")
         self.assertEqual(out["states"][-2]["kind"], "loading", "a refused write reads again with load()")
 
     def test_publish_stays_copy_only_and_capture_posts_the_idea(self):
-        """sd:5887: Enter captures through /api/run; Publish posts outside, so it stays copy only and posts nothing."""
+        """sd:5887: Enter captures through /api/actions/run; Publish posts outside, so it stays copy only and posts nothing."""
         out = self.run_page("""const was = ANSWER;
-ANSWER = (p, b) => p === '/api/run' ? [200, { action: b.action, label: 'Capture idea', line: 'l', exit: R.code || 0, output: 'kind not installed', cut: false }] : was(p, b);
+ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Capture idea', line: 'l', exit: R.code || 0, output: 'kind not installed', cut: false }] : was(p, b);
 shellRun(cmd('piece.publish'), Object.assign({}, C.get('12'))); await flush(); R.posted = OUT.posts.length;
 const enter = () => ELS['shift-in'].listeners.keydown[0]({ key: 'Enter', preventDefault() {} });
 ELS['shift-in'].value = 'A new idea'; enter(); await flush(); R.cleared = ELS['shift-in'].value;
 R.code = 1; ELS['shift-in'].value = 'Another idea'; enter(); await flush(); R.kept = ELS['shift-in'].value;""")
         self.assertEqual(out["R"]["posted"], 0)
-        self.assertEqual([p[:2] for p in out["posts"]], [["/api/run", {"action": "idea.capture", "text": "A new idea"}],
-                                                         ["/api/run", {"action": "idea.capture", "text": "Another idea"}]])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/actions/run", {"action": "idea.capture", "text": "A new idea"}],
+                                                         ["/api/actions/run", {"action": "idea.capture", "text": "Another idea"}]])
         toasts = [t[0] for t in out["toasts"]]
         self.assertIn("Idea captured in the vault inbox: A new idea", toasts)
         self.assertEqual(toasts[-1], "Idea not captured: sd store add sdw.blog-idea 'Another idea' --field status=inbox exited 1: kind not installed")

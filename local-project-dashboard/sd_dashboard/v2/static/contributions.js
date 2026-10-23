@@ -107,7 +107,7 @@ addEventListener('DOMContentLoaded', () => {
   // build: Acknowledge and Make task ask first, since no verb un-acknowledges or deletes a task; the reference gave both Undo.
   // Draft nudge (sd:5887) puts an editable draft in Details and posts nothing; the draft is kept per row until it posts or the
   // page reloads. Post nudge asks first, naming the pull request or issue, then the server posts the draft as the operator's
-  // comment through gh, with the URL from the row's key and the text on stdin (/api/run contribution.nudge).
+  // comment through gh, with the URL from the row's key and the text on stdin (/api/actions/run contribution.nudge).
   // A write's answer is its own: the reread after it is started, not awaited, so a failed reread never reports a landed write
   // as "not changed". Until the reread lands, the row itself records the write, so the command that made it goes off.
   // A refused write reads again with load(): only reread() says a change landed.
@@ -144,8 +144,8 @@ addEventListener('DOMContentLoaded', () => {
       { id: 'contribution.post', on: 'contribution', label: 'Post nudge', does: 'Posts the draft in Details as your comment on GitHub.', key: 'n', icon: 'send', risk: 'confirm', executes: true, primary: o => DRAFTS.has(o.key),
         when: o => { const w = nudgeable(o); return w !== true ? w : DRAFTS.has(o.key) || 'draft a nudge first'; },
         consequence: o => `This posts the draft in Details as your comment on ${o.url}. Anyone who follows that ${isIssue(o) ? 'issue' : 'pull request'} sees it; no verb takes it back.`,
-        cli: o => `gh ${kindOf(o)} comment ${o.url} --body-file nudge.md`, sends: o => `POST /api/run {action: contribution.nudge, key: ${o.key}, revision, body}`,
-        run: o => window.shell.post('/api/run', { action: 'contribution.nudge', key: o.key, revision: o.revision, body: DRAFTS.get(o.key) || '' })
+        cli: o => `gh ${kindOf(o)} comment ${o.url} --body-file nudge.md`, sends: o => `POST /api/actions/run {action: contribution.nudge, key: ${o.key}, revision, body}`,
+        run: o => window.shell.post('/api/actions/run', { action: 'contribution.nudge', key: o.key, revision: o.revision, body: DRAFTS.get(o.key) || '' })
           .then(r => { if (r.exit !== 0) throw new Error(`gh exited ${r.exit}: ${r.output}`); DRAFTS.delete(o.key); landed(o, {}); return `Nudge posted on ${o.url}`; },
             e => { if (e.status === 409) load(); throw e.status === 504 ? new Error(`${e.message} Whether it posted is not known: look on GitHub before you post again.`) : e; }) },
       { id: 'contribution.task', on: 'contribution', label: 'Make task', does: 'Files a task that tracks this contribution; no Undo, cancel it in Tasks.', key: 'k', risk: 'confirm', executes: true,

@@ -537,13 +537,13 @@ class TheJobRow(TheReader):
     def test_a_job_row_runs_its_log_and_its_launchd_record(self):
         out = self.run_page("""const o = C.get('job:nightly-sync:7'), log = cmd('jobs.log'), print = cmd('jobs.print');
 R.got = [log.on, log.executes, log.cli(o), print.on, print.executes, print.when(o), print.cli(o), !!print.primary(o)];
-const was = ANSWER; ANSWER = (p, b) => p === '/api/run' ? [200, { action: b.action, label: 'Show log', line: `local-cron-jobs/cron-jobs.sh logs ${b.job}`, exit: 0, output: 'the log <tail>', cut: false }] : was(p, b);
+const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Show log', line: `local-cron-jobs/cron-jobs.sh logs ${b.job}`, exit: 0, output: 'the log <tail>', cut: false }] : was(p, b);
 shellRun(log, o); shellRun(print, o); await flush();""")
         self.assertEqual(out["R"]["got"], ["job", True, "local-cron-jobs/cron-jobs.sh logs nightly-sync",
                                            "job", True, True, "launchctl print fixture/nightly-sync", False])
         # sd:5886: both run on the server from the job's name; the row's service is shown, never sent.
-        self.assertEqual([post[:2] for post in out["posts"]], [["/api/run", {"action": "job.log", "job": "nightly-sync"}],
-                                                               ["/api/run", {"action": "job.print", "job": "nightly-sync"}]])
+        self.assertEqual([post[:2] for post in out["posts"]], [["/api/actions/run", {"action": "job.log", "job": "nightly-sync"}],
+                                                               ["/api/actions/run", {"action": "job.print", "job": "nightly-sync"}]])
 
     def test_after_exit_127_print_is_the_rows_act(self):
         self.doc["rows"][0]["exit"] = 127

@@ -1,6 +1,6 @@
 """Run (sd:5886, sd:5887): a button that gave a line to copy runs that line here, and Details shows the output.
 
-Every page posts `/api/run` with `{"action": <name>, ...fields}`. `ACTIONS` is the one registry: each name maps to a
+Every page posts `/api/actions/run` with `{"action": <name>, ...fields}`. `ACTIONS` is the one registry: each name maps to a
 check that reads its fields against what the server holds now and answers one `Step`. The page never sends a
 command: a step's argv is fixed text and values the check found -- an installed job, a configured storage folder, a
 mounted volume, a port number, a Home Assistant tile, a registered repo row, a contribution row. No step runs a shell.
@@ -535,7 +535,7 @@ def run(name: str, step: Step) -> tuple[int, dict]:
 
 
 def request(values: dict, *, jobs=None):
-    """`POST /api/run`'s checks before the server opens a writer; the write, as `action_route` takes it."""
+    """`POST /api/actions/run`'s checks before the server opens a writer; the write, as `action_route` takes it."""
     values = dict(values)
     name = values.get("action")
     if not isinstance(name, str) or name not in ACTIONS:

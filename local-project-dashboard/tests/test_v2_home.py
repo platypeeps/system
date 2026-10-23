@@ -845,9 +845,9 @@ await lastUndo().undo(); await flush();""", answer=self.answer_service(f"[200, {
 
     def test_read_state_posts_the_tile_and_shows_its_state_in_details(self):
         """sd:5886: the server reads the tile it finds in the tile list; the page sends the entity id, never a URL or a token."""
-        out = self.run_page("""const was = ANSWER; ANSWER = (p, b) => p === '/api/run' ? [200, { action: b.action, label: 'Read state', line: 'curl', exit: 0, output: '{"value": "off"}', cut: false }] : was(p, b);
+        out = self.run_page("""const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Read state', line: 'curl', exit: 0, output: '{"value": "off"}', cut: false }] : was(p, b);
 shellRun(cmd('sensor.read'), C.get('binary_sensor.water_leak')); await flush(); R.details = ELS.details.html;""")
-        self.assertEqual([p[:2] for p in out["posts"]], [["/api/run", {"action": "sensor.read", "entity_id": "binary_sensor.water_leak"}]])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/actions/run", {"action": "sensor.read", "entity_id": "binary_sensor.water_leak"}]])
         self.assertIn("Read state", out["R"]["details"])
 
     def test_read_state_runs_on_the_server_and_its_line_names_the_token_and_never_holds_one(self):

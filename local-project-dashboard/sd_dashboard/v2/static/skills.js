@@ -3,8 +3,8 @@
 // skill's use in the last three Monday-start weeks, and the use records no catalog skill explains; never sample data.
 // Try, Review, Promote and Demote ask first and post the routes the old screen posts: no verb ends a trial early, and a
 // request files an sd item that closes in Tasks (system sd:5477), so none carries the reference's Undo. Schedule is copy only: a
-// job is a launchd agent and sd adds none. Scan runs `sd skill scan` through /api/run (sd:5886); Run and Adopt ask first and
-// start claude in a new herdr workspace through /api/run (sd:5887), and Details shows which. Re-import and Evaluate (sd:3992) post /api/skills/intake, which runs `sd skill intake` and answers its report;
+// job is a launchd agent and sd adds none. Scan runs `sd skill scan` through /api/actions/run (sd:5886); Run and Adopt ask first and
+// start claude in a new herdr workspace through /api/actions/run (sd:5887), and Details shows which. Re-import and Evaluate (sd:3992) post /api/skills/intake, which runs `sd skill intake` and answers its report;
 // Approve shows only under a report that can install, asks first, and posts the URL, scope and revision that report printed.
 // A skill the intake installed in ~/.claude/skills (sd:3997) is a "user skill": the Adopt panel lists it with Re-import, which
 // runs the intake with the user scope. It is no catalog row, so Try, Review, Promote and Demote are not on it.
@@ -638,11 +638,11 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
     when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
     fields: () => [{ name: 'repo', label: 'Repo', required: true, options: CHECKOUTS.map(r => ({ value: r.path, label: r.name })), help: CHECKOUTS.length ? '' : 'The repo list was not read; Reload retries it.' }],
     consequence: o => `This opens herdr workspace skill-${o.id} and starts claude in the repo's checkout with /${o.id} typed in. The session is yours to steer or close.`,
-    cli: (o, v) => `cd ${shq(v.repo || 'REPO')} && claude ${shq('/' + o.id)}`, sends: o => `POST /api/run {action: skill.run, skill: ${o.id}, repo}`,
+    cli: (o, v) => `cd ${shq(v.repo || 'REPO')} && claude ${shq('/' + o.id)}`, sends: o => `POST /api/actions/run {action: skill.run, skill: ${o.id}, repo}`,
     run: (o, v) => window.commands.runAction(o, 'skill.run', { skill: o.id, repo: v?.repo || '' }) };
   const ADOPT = { id: 'skill.adopt', on: 'adopt form', label: 'Adopt', does: 'Starts claude with sd-skill-adopt in a new herdr workspace in the pack.', risk: 'confirm', executes: true,
     consequence: o => `This opens herdr workspace skill-adopt and starts claude in the pack checkout with /sd-skill-adopt ${o.source} typed in. It lands as a pull request you review.`,
-    cli: o => `claude ${shq(`/sd-skill-adopt ${o.source}`)}`, sends: o => `POST /api/run {action: skill.adopt, source: ${o.source}}`,
+    cli: o => `claude ${shq(`/sd-skill-adopt ${o.source}`)}`, sends: o => `POST /api/actions/run {action: skill.adopt, source: ${o.source}}`,
     run: o => window.commands.runAction({ ...o, id: 'adopt' }, 'skill.adopt', { source: o.source }) };
   function registerCommands() {
     C.register(
@@ -675,7 +675,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         cli: () => 'sd skill apply ITEM NOTE…' },
       // sd:5886: Scan runs `sd skill scan` on the server and shows its report in Details; Read again shows the new counts.
       { id: 'skill.scan', on: 'use surfaces', label: 'Scan', does: 'Reads codex sessions into skill use records, then shows the report in Details.', key: 's', icon: 'search', risk: 'safe', executes: true, primary: () => true,
-        cli: () => 'sd skill scan', sends: () => 'POST /api/run {action: skill.scan}', run: o => window.commands.runAction(o, 'skill.scan') },
+        cli: () => 'sd skill scan', sends: () => 'POST /api/actions/run {action: skill.scan}', run: o => window.commands.runAction(o, 'skill.scan') },
       ...REPO_COMMANDS,
     );
   }

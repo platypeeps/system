@@ -210,7 +210,7 @@ Today's Working now (sd:3466, `active_sessions.py`) reads `herdr session list --
 session, 5 seconds each, only when a Fix note or a worktree could tie an agent to an open item.
 A herdr that does not answer leaves Fix launches shown as not confirmed, never as ended.
 
-Run (sd:5886, `run_actions.py`): a button that once gave a line to copy posts `/api/run` with an action name and ids.
+Run (sd:5886, `run_actions.py`): a button that once gave a line to copy posts `/api/actions/run` with an action name and ids.
 `run_actions.ACTIONS` is the one registry: it checks each id against the server's own rows and runs a fixed argv, never a line from the page.
 Show log and Print need an installed job; Show biggest and Show use a configured storage folder or a mount; Inspect listener a port number; Read state a tile in the tile list.
 Each run waits in the POST, bounded (30 s unless the action sets more), and answers 200 with its exit and the last 64 KiB of output, which Details shows.

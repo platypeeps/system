@@ -45,7 +45,7 @@
       run };
   }
 
-  // Run (sd:5886): a button that gave a line to copy posts /api/run {action, ...ids}; the server checks the ids against
+  // Run (sd:5886): a button that gave a line to copy posts /api/actions/run {action, ...ids}; the server checks the ids against
   // its own rows and runs a fixed command from its registry (run_actions.py), never a line from the page. The answer
   // stays with the row while the page is open, and Details shows it after the row's facts: the label, the line, the exit
   // and the output's tail. A 4xx ran nothing; a 504 ran past its bound, so whether a write landed is not known. `o` is
@@ -68,7 +68,7 @@
     // The page draws Details again on a select or a reread; the observer adds the row's output back, and skips its own.
     const own = recs => recs.every(x => [...x.addedNodes, ...x.removedNodes].every(n => n.classList?.contains('ran')));
     if (details && watched !== details && typeof MutationObserver === 'function') { watched = details; new MutationObserver(recs => own(recs) || drawRan()).observe(details, { childList: true }); }
-    return window.shell.post('/api/run', { action, ...ids }).then(r => {
+    return window.shell.post('/api/actions/run', { action, ...ids }).then(r => {
       RAN.set(o.id, r); details?.querySelector('.ran')?.remove(); drawRan(o.id); window.shell.openPane('tab-details');
       return `${r.label} · exit ${r.exit} · the output is in Details`;
     }, err => { throw err.status === 504 ? new Error(`${err.message} Whether it finished is not known.`) : err; });
@@ -79,7 +79,7 @@
   const logLine = name => `local-cron-jobs/cron-jobs.sh logs ${name}`;
   function showLog({ job, run }) {
     return { id: 'jobs.log', on: 'job', label: 'Show log', does: run ? 'Shows the job\'s log in Details.' : 'Prints the job\'s last 200 log lines in Details.', key: 'l', risk: 'safe', executes: !run,
-      cli: o => logLine(job(o).name), sends: o => `POST /api/run {action: job.log, job: ${job(o).name}}`,
+      cli: o => logLine(job(o).name), sends: o => `POST /api/actions/run {action: job.log, job: ${job(o).name}}`,
       run: run || (o => runAction(o, 'job.log', { job: job(o).name })) };
   }
 
@@ -88,7 +88,7 @@
   function printJob({ job }) {
     return { id: 'jobs.print', on: 'job', label: 'Print', does: 'Prints launchd\'s full record of the job in Details.', key: 'p', icon: 'terminal', risk: 'safe', executes: true, primary: o => job(o).exit === 127,
       when: o => !!job(o).service || 'the row names no launchd service', cli: o => `launchctl print ${job(o).service}`,
-      sends: o => `POST /api/run {action: job.print, job: ${job(o).name}}`,
+      sends: o => `POST /api/actions/run {action: job.print, job: ${job(o).name}}`,
       run: o => runAction(o, 'job.print', { job: job(o).name }) };
   }
 

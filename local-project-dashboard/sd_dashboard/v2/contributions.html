@@ -8,7 +8,7 @@
   Details shows each row's dependencies, test evidence and notification delivery (sd:3394), every local path cut to its last part.
   Writes: Acknowledge (POST /api/contributions/acknowledge), Make task (POST /api/contributions/task, a task linked to the
   contribution by its GitHub URL) and Dismiss (POST /api/contributions/dismiss, sd:3432: closes a row with no item), each asked first.
-  Draft nudge puts an editable draft in Details; Post nudge (POST /api/run, sd:5887) asks first, then posts it through gh.
+  Draft nudge puts an editable draft in Details; Post nudge (POST /api/actions/run, sd:5887) asks first, then posts it through gh.
   Hide and Unhide (POST /api/contributions/view, sd:5486) write the view state Designs' Hide writes, each with Undo; the
   Open table's Show hidden filter (sd:5753) shows the hidden rows. The Filed view (sd:5488) lists the Jira tickets and GitHub issues you
   filed this year from the same read, as sd shadow sync stored them (pack sd:5496); its Edit opens one in a new tab and posts nothing. Re-run collector (POST /api/shadow/sync, sd:2207) asks the server to run

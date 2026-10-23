@@ -404,11 +404,11 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", ACCEP
         self.assertEqual(out["toasts"], [["Run started · nightly-sync", False]])
 
     def test_show_log_runs_the_log_and_shows_it_in_details_and_keeps_the_line_to_copy(self):
-        """sd:5886: Show log posts the job's name to /api/run; Details shows the line, the exit and the output, escaped."""
-        out = self.run_page("""const was = ANSWER; ANSWER = (p, b) => p === '/api/run' ? [200, { action: b.action, label: 'Show log', line: `local-cron-jobs/cron-jobs.sh logs ${b.job}`, exit: 0, output: 'the log <tail>', cut: false }] : was(p, b);
+        """sd:5886: Show log posts the job's name to /api/actions/run; Details shows the line, the exit and the output, escaped."""
+        out = self.run_page("""const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Show log', line: `local-cron-jobs/cron-jobs.sh logs ${b.job}`, exit: 0, output: 'the log <tail>', cut: false }] : was(p, b);
 R.cli = cmd('jobs.log').cli(C.get('job:nightly-sync'));
 shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.details = ELS.details.html;""")
-        self.assertEqual(out["posts"], [["/api/run", {"action": "job.log", "job": "nightly-sync"}, 64]])
+        self.assertEqual(out["posts"], [["/api/actions/run", {"action": "job.log", "job": "nightly-sync"}, 64]])
         self.assertEqual(out["R"]["cli"], "local-cron-jobs/cron-jobs.sh logs nightly-sync")
         self.assertEqual(out["toasts"], [["Show log · exit 0 · the output is in Details", False]])
         self.assertIn('<section class="ran" data-obj="job:nightly-sync"', out["R"]["details"])

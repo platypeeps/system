@@ -374,7 +374,7 @@ addEventListener('DOMContentLoaded', () => {
     select: (id, n) => { select(id); n.focus(); }, clear: () => !!drag && (endDrag(false), true) };
 
   // ---------- Shapeshift: capture an idea, or find a piece ----------
-  // Capture (sd:5887): Enter posts /api/run, and the server runs `sd store add` with the idea as one argument, never a shell.
+  // Capture (sd:5887): Enter posts /api/actions/run, and the server runs `sd store add` with the idea as one argument, never a shell.
   // A refused or failed capture puts the idea back in the box, so nothing typed is lost.
   const inp = document.getElementById('shift-in'), prev = document.getElementById('shift-preview'), ghost = document.getElementById('shift-ghost');
   const captureCli = t => `sd store add sdw.blog-idea ${shq(t)} --field status=inbox`;
@@ -403,7 +403,7 @@ addEventListener('DOMContentLoaded', () => {
     if (!P.idea) return;
     const idea = P.idea, back = () => { if (!inp.value) { inp.value = idea; showPrev(); } };
     inp.value = ''; showPrev();
-    window.shell.post('/api/run', { action: 'idea.capture', text: idea }).then(r => {
+    window.shell.post('/api/actions/run', { action: 'idea.capture', text: idea }).then(r => {
       if (r.exit === 0) return toast(`Idea captured in the vault inbox: ${idea}`);
       back(); toast(`Idea not captured: ${captureCli(idea)} exited ${r.exit}: ${r.output}`);
     }, e => { back(); toast(`Idea not captured: ${e.message}`); });

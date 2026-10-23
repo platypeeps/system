@@ -1383,10 +1383,10 @@ C.run(c, m); await flush(); R.mission = ELS.details.html;"""
         self.script()
         self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("idle", 0)})
         out = self.run_page("""const c = cmd('jobs.log'), m = OBJ.get('source:mission');
-const was = ANSWER; ANSWER = (p, b) => p === '/api/run' ? [200, { action: b.action, label: 'Show log', line: `local-cron-jobs/cron-jobs.sh logs ${b.job}`, exit: 0, output: 'the log <tail>', cut: false }] : was(p, b);
+const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Show log', line: `local-cron-jobs/cron-jobs.sh logs ${b.job}`, exit: 0, output: 'the log <tail>', cut: false }] : was(p, b);
 R.cli = c.cli(m); C.run(c, m); await flush();""", self.job_doc())
         self.assertEqual(out["R"]["cli"], "local-cron-jobs/cron-jobs.sh logs hoa-mission-export")
-        self.assertEqual(out["posts"][-1][:2], ["/api/run", {"action": "job.log", "job": "hoa-mission-export"}])
+        self.assertEqual(out["posts"][-1][:2], ["/api/actions/run", {"action": "job.log", "job": "hoa-mission-export"}])
         self.assertEqual(out["toasts"][-1][0], "Show log · exit 0 · the output is in Details")
 
     def test_the_document_carries_each_downloads_log_or_why_it_has_none(self):

@@ -6,7 +6,7 @@ renders: open rows in lane order with only the fields the page shows, settled ro
 capped at `OPEN_LIMIT` with the cut said, each row's scope from sd's repo table, and the GitHub tracker's freshness. The
 page registers the design's Contributions commands; Acknowledge and Make task ask first and post, Make task a linked task, and
 Open on GitHub and Re-run collector post nothing; Draft nudge drafts into Details, and Post nudge asks first, then posts
-the draft through /api/run (sd:5887). Nothing claims a GitHub reading.
+the draft through /api/actions/run (sd:5887). Nothing claims a GitHub reading.
 
 `contributions.js` runs under JavaScriptCore (osascript) against the stand-in page and shell `test_v2_tasks` uses, with the
 real reader (`read.js`, sd:2488). Focus after a redraw (sd:2426) runs against a small box stand-in that parses the drawn
@@ -761,7 +761,7 @@ shellRun(cmd('contribution.nudge'), ext); shellRun(cmd('contribution.open'), ext
 
     def test_post_nudge_asks_naming_the_pull_request_and_posts_the_edited_draft(self):
         out = self.run_page("""const ext = C.get('github:""" + EXTERNAL + """'), post = cmd('contribution.post');
-const was = ANSWER; ANSWER = (p, b) => p === '/api/run' ? [200, { action: b.action, label: 'Post nudge', line: 'l', exit: R.code || 0, output: 'HTTP 403', cut: false }] : was(p, b);
+const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Post nudge', line: 'l', exit: R.code || 0, output: 'HTTP 403', cut: false }] : was(p, b);
 R.before = post.when(ext); shellRun(cmd('contribution.nudge'), ext); await flush(); R.after = post.when(ext); R.says = post.consequence(ext);
 ELS.details.listeners.input.forEach(f => f({ target: { id: 'nudge-text', value: 'Any news on this?' } }));
 R.code = 1; shellRun(post, ext); await flush(); R.code = 0; shellRun(post, ext); await flush(); R.gone = post.when(ext);""")
@@ -1049,7 +1049,7 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         # Review 4 of PR #72 (0435ca1e4fbb): the help and the page note still said a followup through /api/items.
         page = (V2 / "contributions.html").read_text(encoding="utf-8")
         routes = re.findall(r"post\('(/api/[^']+)'", PAGE_JS)
-        self.assertEqual(routes, ["/api/contributions/view", "/api/contributions/acknowledge", "/api/run", "/api/contributions/task",
+        self.assertEqual(routes, ["/api/contributions/view", "/api/contributions/acknowledge", "/api/actions/run", "/api/contributions/task",
                                   "/api/contributions/dismiss"])
         # Re-run collector is the shared declaration (commands.js, sd:3524); the page help still names its route.
         self.assertIn("window.commands.syncCollector(", PAGE_JS)

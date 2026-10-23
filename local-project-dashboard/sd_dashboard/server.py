@@ -371,7 +371,7 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
 
         # sd:5652: Fix on a Today Now row no other command addresses, read again through the server's fleet seam.
         return fix_session.row_request(values, fleet=fleet_backend, jobs=operations_backend)
-    if path == "/api/run":
+    if path == "/api/actions/run":
         from . import run_actions
 
         # sd:5886: a button that gave a line to copy runs it: the page names an action and ids, the registry the argv.

@@ -1374,18 +1374,18 @@ R.lamp = /data-view="sessions" data-state="(\w+)"/.exec(ELS.annunciator.html)[1]
         self.assertEqual(out["R"]["lamp"], "unknown")
 
     def test_pull_asks_then_posts_the_registered_path_and_is_off_for_an_unregistered_checkout(self):
-        """sd:5888: Pull runs through /api/run; the server checks the checkout again, so the page sends only its key."""
+        """sd:5888: Pull runs through /api/actions/run; the server checks the checkout again, so the page sends only its key."""
         path = self.ids["checkout"]
         behind = {"path": path, "state": "behind", "remedy": f"git -C {path} pull --ff-only", "branch": "main", "default": "main",
                   "dirty": 0, "ahead": 0, "behind": 2, "headline": "2 behind", "detail": "", "error": None}
         loose = dict(behind, path="/elsewhere/loose")
         doc = dict(self.doc, git=dict(self.doc["git"] or {}, repos=[behind, loose]))
-        out = self.run_page(f"""const was = ANSWER; ANSWER = (p, b) => p === '/api/run' ? [200, {{ action: b.action, label: 'Pull', line: 'l', exit: 0, output: 'Fast-forward', cut: false }}] : was(p, b);
+        out = self.run_page(f"""const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, {{ action: b.action, label: 'Pull', line: 'l', exit: 0, output: 'Fast-forward', cut: false }}] : was(p, b);
 R.off = cmd('repo.pull').when(C.get('repo:/elsewhere/loose')); R.on = cmd('repo.pull').when(C.get('repo:{path}'));
 shellRun(cmd('repo.pull'), C.get('repo:{path}')); await flush(); R.toast = lastToast().msg;""", doc=doc)
         self.assertEqual(out["R"]["off"], "not registered in sd-db: Pull runs only in a registered checkout")
         self.assertIs(out["R"]["on"], True)
-        self.assertEqual(([b for p, b, _ in out["posts"] if p == "/api/run"], out["confirms"]), ([{"action": "repo.pull", "path": path}], ["repo.pull"]))
+        self.assertEqual(([b for p, b, _ in out["posts"] if p == "/api/actions/run"], out["confirms"]), ([{"action": "repo.pull", "path": path}], ["repo.pull"]))
         self.assertEqual(out["R"]["toast"], "Pull · exit 0 · the output is in Details")
 
     def test_a_repo_flip_posts_the_verb_with_before_toasts_after_the_write_and_undoes(self):
@@ -1895,7 +1895,7 @@ R.parsed = R.texts.map(t => { try { return JSON.parse(t); } catch (e) { return '
         out = self.proposal(self.LAST, """propose('severity_floor', 'low'); C.run(cmd('declaration.write'), pending[0]); await flush();
 R.toast = lastToast().msg; R.left = pending.length; await lastToast().undo(); await flush();""".replace("C.run", "OUT.posts.length = 0; C.run"))
         path, after = self.ids["checkout"], {"copilot_review": {"automatic_deep": False}, "severity_floor": "low"}
-        self.assertEqual([b for p, b, _ in out["posts"] if p == "/api/run"],
+        self.assertEqual([b for p, b, _ in out["posts"] if p == "/api/actions/run"],
                          [{"action": "declaration.write", "path": path, "kind": "review", "value": after, "before": self.LAST},
                           {"action": "declaration.write", "path": path, "kind": "review", "value": json.loads(self.LAST),
                            "before": json.dumps(after, separators=(",", ":"))}])

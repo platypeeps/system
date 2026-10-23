@@ -1,4 +1,4 @@
-"""Run (sd:5886, sd:5887): a button that gave a line to copy posts /api/run, and the server runs a fixed command from its
+"""Run (sd:5886, sd:5887): a button that gave a line to copy posts /api/actions/run, and the server runs a fixed command from its
 registry.
 
 What this slice promises: the page names an action and ids, never a command. Each id is read against what the server
@@ -80,7 +80,7 @@ class Run(BrowserSession):
         return self.log.read_text().splitlines() if self.log.exists() else []
 
     def run_(self, action, **ids):
-        status, _, body = self.post("/api/run", {"action": action, **ids})
+        status, _, body = self.post("/api/actions/run", {"action": action, **ids})
         return status, body
 
 
@@ -128,7 +128,7 @@ class TheReads(Run):
                           ({"action": "volume.df", "path": f"{self.store}/captures"}, "is not a mounted volume"),
                           ({"action": "check.run", "row": "wt:ok"}, "Re-check reads Health again")):
             with self.subTest(ids=ids):
-                status, _, body = self.post("/api/run", ids)
+                status, _, body = self.post("/api/actions/run", ids)
                 self.assertEqual(status, 400)
                 self.assertIn(said, body["error"])
         self.assertEqual(self.ran(), [])
@@ -152,7 +152,7 @@ class TheReads(Run):
         with patch("sd_db.credentials.check", lambda connection, env: probes), \
              patch("sd_db.credentials.describe", lambda probe: f"{probe['name']}: {'ok' if probe['ok'] else 'failed'}"):
             for ids in ({"action": "credentials.probe"}, {"action": "check.run", "row": "cred:stale"}):
-                status, _, body = self.post("/api/run", ids)
+                status, _, body = self.post("/api/actions/run", ids)
                 self.assertEqual((status, body["output"], body["line"]), (200, "GitHub PAT: ok\ngh CLI: failed", "sd-db credentials"))
 
     def test_read_state_reads_only_a_tile_in_the_tile_list(self):
@@ -211,7 +211,7 @@ class TheWrites(Run):
         before = self.snapshot()
         for ids, code, said in cases:
             with self.subTest(ids=ids):
-                status, _, body = self.post("/api/run", ids)
+                status, _, body = self.post("/api/actions/run", ids)
                 self.assertEqual(status, code)
                 self.assertIn(said, body["error"])
         self.assertEqual((self.ran(), self.launched), ([], []))
