@@ -1,5 +1,5 @@
 /* Hallmark · genre: modern-minimal · macrostructure: rail + annunciator + ledger + pane · design-system: design.md · designed-as-app
- * Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4 · Today v2, built: annunciator → Now ledger, from /api/now (now_screen.document).
+ * Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4 · Today v2 (sd:5921): annunciator → Needs you → In motion, one page, from /api/now.
  * Page CSS from ui-design products/system/designs/v2/today.html at a3861c9 (a file, since the dashboard CSP refuses inline style).
  * Left out with the sections they styled: Wants you, Briefs and the chat proposal card have no collector in the build yet. */
 
@@ -28,9 +28,9 @@
 .rel { border-bottom: 1px dotted var(--color-rule); cursor: pointer; }
 .details .kind { font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); }
 .details h3 { font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); }
-/* build: five cells, not nine (four sources and the clock). The strip draws them in two or three columns, so the clock
- * spans two and closes the last row in both. */
-#refresh { grid-column: span 2; }
+/* sd:5921: nine cells, eight lamps and the clock: three rows of three from 40rem; in the two-column strip the clock spans
+ * both and closes the last row. */
+@container (max-width: 39.99rem) { #refresh { grid-column: span 2; } }
 @media (max-width: 899px) {
   .ledger thead { display: none; }
   .ledger tbody tr { display: grid; grid-template-columns: 2rem minmax(0, 1fr) auto; grid-template-areas: "g what src" ". detail act"; align-items: start; border-bottom: var(--rule-hair) solid var(--color-rule-2); padding: var(--space-xs) 0; }
@@ -44,24 +44,40 @@
 
 .ledger tr.empty td { color: var(--color-muted); padding-block: var(--space-sm); cursor: default; }
 
-/* Your work (sd:3271): the items `sd today` lists. A row selects as a Now row does (sd:5654): the ledger's hover, selection
- * and title button; the snooze control is the shell's.
- * Hallmark · component: work row · genre: modern-minimal · theme: design.md instrument panel
- * states: default · hover · focus (the title button) · active · selected · disabled -- the row actions are shell.css's; overdue is ▲, not colour alone. */
-section[aria-labelledby="work-h"] { margin-top: var(--space-xl); }
-.work .what { min-width: 0; overflow-wrap: anywhere; }
-.work .detail { white-space: nowrap; }
+/* Needs you (sd:5921): one ranked ledger, a band head where the band changes, and group rows that open in place.
+ * Hallmark · component: needs ledger · genre: modern-minimal · theme: design.md instrument panel
+ * states: default · hover · focus (the title and disclosure buttons) · active · selected · picked · disabled (an intent with
+ * no rows) -- a group's state is its glyph and its chevron's turn, never colour alone; the row actions are shell.css's. */
+.intents { display: flex; flex-wrap: wrap; gap: var(--space-2xs); margin: var(--space-xs) 0 var(--space-sm); }
+.intents .chip b { font: 600 var(--text-2xs)/1 var(--font-data); font-variant-numeric: tabular-nums; margin-left: var(--space-3xs); }
+.intents .chip:disabled { opacity: 0.5; cursor: default; }
+.needs tr.band th { padding: var(--space-sm) var(--space-xs) var(--space-2xs); text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); border-bottom: var(--rule-hair) solid var(--color-rule); }
+.needs .what { min-width: 0; overflow-wrap: anywhere; }
+.needs .what .disc { all: unset; display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; margin-right: var(--space-3xs); cursor: pointer; color: var(--color-muted); vertical-align: -0.2em; }
+.needs .what .disc .i { transition: transform var(--dur-fast) var(--ease-out); }
+.needs .what .disc[aria-expanded="true"] .i { transform: rotate(90deg); }
+.needs .what .disc:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: var(--radius-sm); }
+.needs tr.member .what { padding-left: var(--space-lg); font-weight: 400; }
+.needs tr.more td { padding-block: var(--space-2xs); font-size: var(--text-xs); color: var(--color-muted); }
+.needs .age, .ledger.active .num { white-space: nowrap; font: 400 var(--text-xs)/1 var(--font-data); font-variant-numeric: tabular-nums; color: var(--color-ink-2); }
+.needs .detail { min-width: 0; overflow-wrap: anywhere; }
+.foot { margin: var(--space-sm) 0 0; font-size: var(--text-xs); color: var(--color-muted); }
+.foot a { color: var(--color-ink-2); }
+.foot a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+#active-tally a { color: var(--color-ink-2); }
+@media (pointer: coarse) { .needs .what .disc { width: var(--row-touch); height: var(--row-touch); } .needs tr.more .linkbtn, .foot a { display: inline-flex; align-items: center; min-height: var(--row-touch); } }
+@media (prefers-reduced-motion: reduce) { .needs .what .disc .i { transition: none; } }
 @media (max-width: 899px) {
-  .work tbody tr { grid-template-areas: "g what act" ". detail detail"; }
-  .work .act { align-self: start; }
-  .work .detail { white-space: normal; }
+  .needs tbody tr { grid-template-columns: 2rem minmax(0, 1fr) auto; grid-template-areas: "g what age" ". detail detail" ". src act"; }
+  .needs tbody tr.band, .needs tbody tr.more { display: block; }
+  .needs .age { grid-area: age; } .needs .src { align-self: center; }
 }
 
 /* Working now (sd:3466): one row per open item, its live sessions listed in the Session cell. Rows are not selectable,
  * so no row hover.
  * Hallmark · component: session row · genre: modern-minimal · theme: design.md instrument panel
  * states: default · hover (the title link) · focus · active -- no row control; unconfirmed is ▨ with a title, not colour alone. */
-section[aria-labelledby="active-h"] { margin-top: var(--space-xl); }
+section[aria-labelledby="motion-h"] { margin-top: var(--space-xl); }
 .active tbody tr { cursor: default; }
 .active tbody tr:hover td { background: transparent; }
 .active td { vertical-align: top; height: auto; padding-block: var(--space-xs); }

@@ -454,7 +454,7 @@ class TheCells(unittest.TestCase):
     def test_todays_server_drawn_lamps_follow_the_same_grammar(self):
         today = (V2 / "today.html").read_text(encoding="utf-8")
         lamps = re.search(r'<ul class="annunciator" id="annunciator">(.*?)</ul>', today, re.S).group(1)
-        self.assertEqual(cell_grammar(self, re.sub(r">\s+<li>", "><li>", lamps)), [("button", "unknown")] * 4 + [("button", None)])
+        self.assertEqual(cell_grammar(self, re.sub(r">\s+<li>", "><li>", lamps)), [("button", "unknown")] * 6 + [("a", "unknown")] * 2 + [("button", None)])
         self.assertNotIn('class="cell', PAGE_JS["today.js"])
 
     def test_a_spec_becomes_a_button_a_link_or_a_div(self):

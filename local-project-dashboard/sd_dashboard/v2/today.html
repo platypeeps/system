@@ -1,20 +1,15 @@
 <!doctype html>
 <!--
   Today, v2 (sd:2110), the default page at / and /today since sd:2163. Built from ui-design products/system/designs/v2/today.html at a3861c9 and design.md.
-  Data: /api/now, the document now_screen.document builds for v1 Today's Now section, read when the page opens and on Refresh.
-  Snooze (sd:1896): /ui/snooze.js; a row's Snooze or Unsnooze posts /api/snooze, and Now reads again.
-  Your work (sd:3271): the items `sd today` lists, from the same document (work); the Snooze control is Now's, keyed today:item:<id>.
-  A Work row selects into Details as a Now row does: one selection, today.js pick (sd:5654).
-  Working now (sd:3466): each open item's live sessions, from the same document (active, active_sessions.document).
-  Problem reports and New briefs (operator ruling 2026-10-17): open reports that ask for a person and the last week's unseen
-  briefs, from the same document (problems, briefs); today-reports.js draws them, Acknowledge and Seen post the Reports and snooze routes.
-  Your mail (sd:4191): the mail threads waiting on the operator under each repo's aliases, from the same document (mail); mail.js draws them.
-  Status (sd:5099): /api/today/status, the sections `sd today` prints (sd_db.today.sections), read by today-status.js when the view
-  first shows and on Refresh.
-  Four views by job (sd:5781): Now, Inbox, Status, Work. Decisions moved to Decide, and GitHub with Your issues and Issue
-  intake to GitHub; today.js opens an old #view=decisions, #view=github or #view=issues address there.
-  Sources: repos and sessions (fleet child), prs (shadow table), jobs (launchd through sd_db.operations.inventory).
-  Left out until a collector exists: status mail, backups, HOA water, the Runner lamp and Wants you.
+  One page, no tabs (sd:5921, docs/work/2026-10-23-today-queue/design.md): what is going on, then what needs you.
+  Data: /api/now, the document now_screen.document builds, read when the page opens and on Refresh.
+  The annunciator: Jobs, Lane, Reports, Pulls, Mail and Repos filter Needs you to their rows; Sessions opens In motion and
+  Gate opens Queue. Each number counts the rows its filter shows.
+  Needs you: the document's `needs`, every fact that asks for an act, ranked in the bands, with group rows for the work items
+  and briefs. The rail badge counts its rows (now_screen._attention). One selection: ?row=, a group row too.
+  In motion: each open item's live sessions (active_sessions.document), longest-running first; the tally counts the lanes.
+  Snooze (sd:1896): /ui/snooze.js; a row's Snooze or Unsnooze posts /api/snooze, and Today reads again.
+  The old views' addresses (#view=now|work|inbox|status) land here; Decisions moved to Decide and GitHub to GitHub (sd:5781).
 -->
 <html lang="en">
 <head>
@@ -45,100 +40,47 @@
     <h2 class="sr">Subsystems</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator">
       <li><button class="cell" type="button" data-src="jobs" data-state="unknown" aria-pressed="false"><span class="lbl">Jobs<svg class="i" aria-hidden="true"><use href="#i-siren"/></svg></span><span class="val">reading…</span></button></li>
-      <li><button class="cell" type="button" data-src="prs" data-state="unknown" aria-pressed="false"><span class="lbl">Pull requests<svg class="i" aria-hidden="true"><use href="#i-git-pull-request"/></svg></span><span class="val">reading…</span></button></li>
-      <li><button class="cell" type="button" data-src="sessions" data-state="unknown" aria-pressed="false"><span class="lbl">Sessions<svg class="i" aria-hidden="true"><use href="#i-bot"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" data-src="lane" data-state="unknown" aria-pressed="false"><span class="lbl">Lane<svg class="i" aria-hidden="true"><use href="#i-git-merge"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" data-src="reports" data-state="unknown" aria-pressed="false"><span class="lbl">Reports<svg class="i" aria-hidden="true"><use href="#i-file-text"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" data-src="pulls" data-state="unknown" aria-pressed="false"><span class="lbl">Pulls<svg class="i" aria-hidden="true"><use href="#i-git-pull-request"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" data-src="mail" data-state="unknown" aria-pressed="false"><span class="lbl">Mail<svg class="i" aria-hidden="true"><use href="#i-mail"/></svg></span><span class="val">reading…</span></button></li>
       <li><button class="cell" type="button" data-src="repos" data-state="unknown" aria-pressed="false"><span class="lbl">Repos<svg class="i" aria-hidden="true"><use href="#i-hard-drive-download"/></svg></span><span class="val">reading…</span></button></li>
-      <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg></span><span class="val"><span class="ph" id="observed">not yet</span> · <span class="ph">refresh</span></span></button></li>
+      <li><a class="cell" href="#motion-h" id="lamp-sessions" data-state="unknown"><span class="lbl">Sessions<svg class="i" aria-hidden="true"><use href="#i-bot"/></svg></span><span class="val">reading…</span></a></li>
+      <li><a class="cell" href="/queue" id="lamp-gate" data-state="unknown"><span class="lbl">Gate<svg class="i" aria-hidden="true"><use href="#i-gauge"/></svg></span><span class="val">reading…</span></a></li>
+      <li><button class="cell clock" type="button" id="refresh"><span class="lbl">Observed<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg></span><span class="val"><span class="ph" id="observed">not yet</span> · <span class="ph">refresh</span></span></button></li>
     </ul></annunciator-strip>
-    <!-- The toolbar standard (sd:5281): row 1, the views then the shell's Shapeshift bar (sd:5539); the count sits on the view's tab. -->
-    <div class="toolbar" id="toolbar" data-shift></div>
 
-    <div id="view-now" aria-label="Now">
-      <section aria-labelledby="now-h">
-        <div class="sec-head">
-          <h2 id="now-h">Now <button class="help" type="button" aria-label="Help: Now" data-help="&lt;b&gt;One ranked list.&lt;/b&gt; Failed jobs, pull requests waiting on you, abandoned worktrees and unpushed or uncommitted checkouts, loudest first. A source that could not be read is a row, never an empty list. Tap a lamp above to filter by source.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="tally"></p>
-        </div>
-        <table class="ledger" aria-labelledby="now-h" data-tfilter="page" data-toolbar="toolbar">
-          <thead id="rows-head"></thead>
-          <tbody id="rows"><tr class="empty"><td colspan="5">Reading the fleet…</td></tr></tbody>
-        </table>
-        <p class="filtered" id="filtered" hidden></p>
-        <div id="snoozed"></div>
-      </section>
-    </div>
-    <div id="view-status" aria-label="Status" hidden>
-      <section aria-labelledby="status-h">
-        <div class="sec-head">
-          <h2 id="status-h">Status <button class="help" type="button" aria-label="Help: Status" data-help="&lt;b&gt;What &lt;code&gt;sd today&lt;/code&gt; and &lt;code&gt;sd-status&lt;/code&gt; print.&lt;/b&gt; The bar shows where the work is: delivered in the last 24 hours, landing now, planned, unscheduled and blocked; each key opens its section. A section shows its first 5 rows, as the command does; Show all opens the rest. Sections with nothing in them share the last line.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="status-tally"></p>
-        </div>
-        <div class="flow" id="status-flow"></div>
-        <div id="status-sections"><p class="st-line">Reading status…</p></div>
-      </section>
-    </div>
-    <div id="view-work" aria-label="Work" hidden>
-      <section aria-labelledby="active-h">
-        <div class="sec-head">
-          <h2 id="active-h">Working now <button class="help" type="button" aria-label="Help: Working now" data-help="&lt;b&gt;Open items with a live session.&lt;/b&gt; A worktree, a lane entry, a running &lt;code&gt;sd-*&lt;/code&gt; command or a herdr agent, each tied to its item by a lane entry, a branch name, &lt;code&gt;--item&lt;/code&gt;, &lt;code&gt;-C&lt;/code&gt; or a Fix note; the row says which. Longest-running item first.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="active-tally"></p>
-        </div>
-        <table class="ledger active" aria-labelledby="active-h">
-          <thead id="active-head"></thead>
-          <tbody id="active"><tr class="empty"><td colspan="5">Reading sessions…</td></tr></tbody>
-        </table>
-        <p class="filtered" id="active-note" hidden></p>
-      </section>
-      <section aria-labelledby="work-h">
-        <div class="sec-head">
-          <h2 id="work-h">Your work <button class="help" type="button" aria-label="Help: Your work" data-help="&lt;b&gt;Items due or in progress.&lt;/b&gt; The same list as &lt;code&gt;sd today&lt;/code&gt;, finished-unsent items first. Snooze hides an item until a time; it shows again early if its status or due date changes. &lt;code&gt;sd today&lt;/code&gt; still lists a snoozed item. Press a row for its details and actions; its title there opens it on Tasks.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="work-tally"></p>
-        </div>
-        <table class="ledger work" aria-labelledby="work-h">
-          <thead id="work-head"></thead>
-          <tbody id="work"><tr class="empty"><td colspan="4">Reading work…</td></tr></tbody>
-        </table>
-      </section>
-    </div>
-    <div id="view-inbox" aria-label="Inbox" hidden>
-      <section class="issues-sec" aria-labelledby="problems-h">
-        <div class="sec-head">
-          <h2 id="problems-h">Problem reports <button class="help" type="button" aria-label="Help: Problem reports" data-help="&lt;b&gt;Open reports that ask for you.&lt;/b&gt; A scheduled job that exited non-zero or printed an &lt;code&gt;SD_REPORT_ATTENTION:&lt;/code&gt; line files one; these replace the ntfy and mail alerts. Acknowledge closes the report, as on Reports; &lt;code&gt;sd reports acknowledge&lt;/code&gt; does the same.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="problems-tally"></p>
-        </div>
-        <table class="ledger issues" aria-labelledby="problems-h">
-          <thead><tr><th>Filed</th><th>Report</th><th>Host</th><th>Why</th><th><span class="sr">Acknowledge</span></th></tr></thead>
-          <tbody id="problems"><tr class="empty"><td colspan="5">Reading reports…</td></tr></tbody>
-        </table>
-      </section>
-      <section class="issues-sec" aria-labelledby="briefs-h">
-        <div class="sec-head">
-          <h2 id="briefs-h">New briefs <button class="help" type="button" aria-label="Help: New briefs" data-help="&lt;b&gt;Briefs from the last 7 days you have not marked seen.&lt;/b&gt; Routine briefs and digests file here instead of mail (&lt;code&gt;sd reports brief add&lt;/code&gt;). Seen hides a brief from Today; it shows again if its text grows. Every brief stays on Briefs.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="briefs-tally"></p>
-        </div>
-        <table class="ledger issues" aria-labelledby="briefs-h">
-          <thead><tr><th>Day</th><th>Brief</th><th>Series</th><th>Size</th><th><span class="sr">Seen</span></th></tr></thead>
-          <tbody id="briefs"><tr class="empty"><td colspan="5">Reading briefs…</td></tr></tbody>
-        </table>
-      </section>
-      <section class="issues-sec" aria-labelledby="mail-h">
-        <div class="sec-head">
-          <h2 id="mail-h">Your mail <button class="help" type="button" aria-label="Help: Your mail" data-help="&lt;b&gt;Mail threads waiting on you.&lt;/b&gt; A thread shows when its newest message, in the last 48 hours, came to an alias a repo names (&lt;code&gt;email=LABEL&lt;/code&gt; on the repo&#39;s channels) and someone else wrote last. Read from mail-intake&#39;s state on this machine; &lt;code&gt;mail-intake.sh fetch&lt;/code&gt; refreshes it.">
-            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-          <p class="tally" id="mail-tally"></p>
-        </div>
-        <table class="ledger issues" aria-labelledby="mail-h">
-          <thead><tr><th>Sent</th><th>Subject</th><th>Repo</th><th>From</th></tr></thead>
-          <tbody id="mail"><tr class="empty"><td colspan="4">Reading mail…</td></tr></tbody>
-        </table>
-      </section>
-    </div>
+    <section aria-labelledby="needs-h">
+      <div class="sec-head">
+        <h2 id="needs-h">Needs you <button class="help" type="button" aria-label="Help: Needs you" data-help="&lt;b&gt;Everything that asks you to act, in one list.&lt;/b&gt; Broken first, then what to look at, then what is queued. Rows of one kind fold into one group row: open it for its first rows. A lamp above, or an intent, shows only its rows. Each row has one main action and the rest under ⋯. &lt;code&gt;sd today&lt;/code&gt; prints the full status.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="tally"></p>
+      </div>
+      <!-- The toolbar standard (sd:5281): the shell's Shapeshift bar (sd:5539), then the intents, views over the one list. -->
+      <div class="toolbar" id="toolbar" data-shift></div>
+      <div class="intents" id="intents" role="group" aria-label="Show only"></div>
+      <table class="ledger needs" aria-labelledby="needs-h" data-tfilter="page" data-toolbar="toolbar">
+        <thead id="rows-head"></thead>
+        <tbody id="rows"><tr class="empty"><td colspan="6">Reading the fleet…</td></tr></tbody>
+      </table>
+      <p class="filtered" id="filtered" hidden></p>
+      <p class="filtered" id="unread" role="status" hidden></p>
+      <div id="snoozed"></div>
+      <p class="foot" id="foot">Waiting elsewhere: <a href="/decide">Decide</a> holds the decisions and review questions, <a href="/health">Health</a> the findings. <code>sd today</code> prints the full status.</p>
+    </section>
+
+    <section aria-labelledby="motion-h">
+      <div class="sec-head">
+        <h2 id="motion-h">In motion <button class="help" type="button" aria-label="Help: In motion" data-help="&lt;b&gt;Open items with a live session.&lt;/b&gt; A worktree, a lane entry, a running &lt;code&gt;sd-*&lt;/code&gt; command or a herdr agent, each tied to its item by a lane entry, a branch name, &lt;code&gt;--item&lt;/code&gt;, &lt;code&gt;-C&lt;/code&gt; or a Fix note. Longest-running first. What landed today is on Queue.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="active-tally"></p>
+      </div>
+      <table class="ledger active" aria-labelledby="motion-h">
+        <thead id="active-head"></thead>
+        <tbody id="active"><tr class="empty"><td colspan="5">Reading sessions…</td></tr></tbody>
+      </table>
+      <p class="filtered" id="active-note" hidden></p>
+    </section>
   </main>
 
   <div class="details" id="details"><p class="why">Reading the fleet…</p></div>
@@ -147,10 +89,7 @@
 <script src="/ui/read.js"></script>
 <script src="/ui/snooze.js"></script>
 <script src="/ui/commands.js"></script>
-<script src="/ui/mail.js"></script>
-<script src="/ui/today-reports.js"></script>
 <script src="/ui/today.js"></script>
-<script src="/ui/today-status.js"></script>
 <script src="/ui/shell.js"></script>
 </body>
 </html>

@@ -117,7 +117,7 @@ class ThePage(BrowserSession):
     def test_every_file_the_page_names_is_served(self):
         _, _, body = self.request("/today")
         named = re.findall(r'(?:src|href)="(/ui/[^"]+)"', body)
-        self.assertEqual(len(named), 19)  # six stylesheets, thirteen scripts
+        self.assertEqual(len(named), 16)  # six stylesheets, ten scripts
         for path in named:
             status, headers, _ = self.request(path)
             self.assertEqual(status, 200, path)
@@ -126,7 +126,7 @@ class ThePage(BrowserSession):
     def test_data_and_page_script_load_before_the_shell_and_the_shell_loads_last(self):
         _, _, body = self.request("/today")
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "snooze.js", "commands.js", "mail.js", "today-reports.js", "today.js", "today-status.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "snooze.js", "commands.js", "today.js", "shell.js"])
         self.assertLess(body.index('src="/ui/markup.js?v='), body.index("</head>"))
         self.assertGreater(body.index('src="/ui/icons.js?v='), body.index("<body"))
 
@@ -196,11 +196,15 @@ class TheShellPort(BrowserSession):
     def test_today_maps_every_band_source_and_kind_now_can_send(self):
         state = re.search(r"const STATE = \{([^}]*)\}", TODAY_JS).group(1)
         self.assertEqual(set(re.findall(r"(\w+):", state)), set(now_screen.BANDS))
-        sources = re.search(r"const SRC = \{(.*?)\};", TODAY_JS).group(1)
-        self.assertEqual(set(re.findall(r"(\w+): \[", sources)), set(now_screen.SOURCES))
-        kinds = set(re.findall(r'"kind": "(\w+)"', Path(now_screen.__file__).read_text(encoding="utf-8")))
+        code = Path(now_screen.__file__).read_text(encoding="utf-8")
+        sources = re.search(r"const SRC = \{(.*?)\};", TODAY_JS, re.S).group(1)
+        sent = set(re.findall(r'"source": "(\w+)"|source="(\w+)"', code))
+        self.assertEqual(set(re.findall(r"(\w+): \[", sources)), {a or b for a, b in sent})
+        self.assertLessEqual(set(now_screen.SOURCES), {a or b for a, b in sent})
+        # A group row's kind is _group's default argument.
+        kinds = set(re.findall(r'"kind": "(\w+)"|kind: str = "(\w+)"', code))
         types = re.search(r"const TYPE = \{([^}]*)\}", TODAY_JS).group(1)
-        self.assertEqual(set(re.findall(r"(\w+):", types)), kinds)
+        self.assertEqual(set(re.findall(r"(\w+):", types)), {a or b for a, b in kinds})
 
     def test_the_v1_files_are_unchanged_and_no_page_names_a_v2_address(self):
         self.assertEqual(server.STATIC_FILES, ("dashboard.js",))

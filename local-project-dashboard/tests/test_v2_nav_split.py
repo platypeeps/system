@@ -1,7 +1,7 @@
 """The rail split by job (sd:5781).
 
 What this slice promises: the rail's Now group is Today, Decide, Briefs and Queue, and its Work group gains GitHub after
-Tasks. Today keeps four tabs (Now, Inbox, Status, Work). Decide holds Decisions and Scoring, the Review page renamed; its
+Tasks. Today has no tabs since sd:5921. Decide holds Decisions and Scoring, the Review page renamed; its
 rail badge counts both. GitHub holds Pull requests, Your issues and Intake. Each old address reaches its new home with its
 query: `/review` serves Decide and opens Scoring, and Today's `#view=decisions`, `#view=github` and `#view=issues` open the
 view on its new page. The `moved:start` blocks run under JavaScriptCore (osascript) with a stand-in location and history.
@@ -92,9 +92,9 @@ class TheGitHubRegistration(Registers, unittest.TestCase):
 
 
 class TheTabs(unittest.TestCase):
-    def test_today_has_exactly_four_tabs(self):
-        self.assertEqual(views(js("today.js")), [("now", "Now"), ("inbox", "Inbox"), ("status", "Status"), ("work", "Work")])
-        self.assertEqual(sorted(panels("today.html")), ["inbox", "now", "status", "work"])
+    def test_today_has_no_tabs(self):
+        # sd:5921 folded Now, Inbox, Status and Work into one page.
+        self.assertEqual((views(js("today.js")), panels("today.html")), ([], []))
         page = (V2 / "today.html").read_text(encoding="utf-8")
         for gone in ("/ui/decisions.js", "/ui/today-github.js", "/ui/issues.js", "/ui/decisions.css"):
             with self.subTest(gone=gone):
@@ -142,7 +142,11 @@ class TheOldAddresses(unittest.TestCase):
         self.assertEqual(moved(today, search="?row=gh%3Aexample%2Frepo%2312&gh=all", hash="#view=github"),
                          [["replace", "/github?row=gh%3Aexample%2Frepo%2312&gh=all#view=pulls"]])
         self.assertEqual(moved(today, hash="#view=issues"), [["replace", "/github#view=issues"]])
-        for stays in ("#view=now", "#view=inbox", "#view=status", "#view=work", "#main", ""):
+        for old in ("now", "inbox", "status", "work"):
+            with self.subTest(view=old):
+                self.assertEqual(moved(today, search="?row=item%3A7", hash=f"#view={old}"),
+                                 [["replaceState", "/today?row=item%3A7"]])
+        for stays in ("#main", ""):
             with self.subTest(hash=stays):
                 self.assertEqual(moved(today, hash=stays), [])
 

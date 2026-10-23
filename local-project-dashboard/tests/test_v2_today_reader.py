@@ -1,7 +1,7 @@
 """Today reads /api/now through the shared reader (sd:2483).
 
 What this slice promises: `today.js` reads its document through `shell.read`
-(`read.js`, sd:2418). Of two overlapping reads only the newest draws; a row a
+(`read.js`, sd:2418) and draws its `needs` (sd:5921). Of two overlapping reads only the newest draws; a row a
 read no longer lists runs no command; a failed read clears the rows and
 retires their objects; a selection whose row is gone moves to the first row
 the filter shows.
@@ -24,6 +24,7 @@ from sd_dashboard import now_screen, v2
 
 from support import NOW, ScreenCase
 from test_now_screen import JobsBackend, fleet_document, repo
+from test_today_needs import work
 from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT
@@ -54,6 +55,9 @@ ROWS_EL.querySelectorAll = () => {
       e.dataset = { id: m[1], src: m[2] }; e.textContent = m[1]; e.getClientRects = () => e.hidden ? [] : [1]; e.closest = sel => sel === '[hidden]' && e.hidden ? e : null;
       e.setAttribute = (k, v) => { attrs[k] = String(v); }; e.getAttribute = k => k in attrs ? attrs[k] : null; return e; }); }
   return ROW_CACHE.els; };
+ROWS_EL.querySelector = () => ROWS_EL.querySelectorAll()[0] || null;
+// The Sessions and Gate lamps are links today.js fills in place: each holds a value.
+['lamp-sessions', 'lamp-gate'].forEach(id => { const c = document.getElementById(id), v = El(id + '-val'); c.querySelector = () => v; c.val = v; });
 """
 SHELL_MORE = r"""
 window.shell.row = () => new URLSearchParams(location.search).get('row');
@@ -61,7 +65,7 @@ OUT.shown = []; OUT.counts = {}; window.shell.view = { show: id => { OUT.shown.p
 { const commands = C;
 """ + RECONCILE + """
   window.shell.reconcile = reconcile; }
-const refresh = () => window.PAGE_COMMANDS.find(c => c.label === 'Read Now again').run();
+const refresh = () => window.PAGE_COMMANDS.find(c => c.label === 'Read Today again').run();
 const selected = () => ROWS_EL.querySelectorAll().filter(tr => tr.getAttribute('aria-selected') === 'true').map(tr => tr.dataset.id);
 """
 # Every read waits until the test answers it: held[i](doc) answers the i-th read since the page started.
@@ -71,7 +75,7 @@ ANSWER = () => new Promise(ok => held.push(doc => ok(doc && doc.error ? [500, do
 """
 
 
-class TheReader(ScreenCase):
+class ReaderCase(ScreenCase):
     def setUp(self):
         super().setUp()
         root = tempfile.TemporaryDirectory()
@@ -79,7 +83,7 @@ class TheReader(ScreenCase):
         jobs = JobsBackend(root.name, jobs=[("nightly-sync", "failed", 7, None)])
         self.doc = now_screen.document(self.connection, now=NOW, jobs=jobs,
                                        fleet=lambda area: fleet_document(area, repos=[repo("pushy", ahead=1)]))
-        self.assertEqual([row["id"] for row in self.doc["rows"]], ["job:nightly-sync:7", "ahead:pushy:1"])
+        self.assertEqual([row["id"] for row in self.doc["needs"]], ["job:nightly-sync:7", "ahead:pushy:1"])
 
     def run_page(self, body, search="", after=""):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + SHELL_MORE + READ_SHELL
@@ -95,6 +99,8 @@ class TheReader(ScreenCase):
         self.assertIsNone(out["error"])
         return out
 
+
+class TheReader(ReaderCase):
     def test_the_first_read_draws_the_rows_and_selects_the_first(self):
         """A guard: the page as it was, through the reader."""
         out = self.run_page("R.rows = ELS.rows.html; R.sel = selected(); R.row = location.search;")
@@ -104,7 +110,7 @@ class TheReader(ScreenCase):
         self.assertEqual(out["R"]["row"], "?row=job%3Anightly-sync%3A7")
 
     def test_only_the_newest_read_draws(self):
-        out = self.run_page(HELD + """const gone = copy(DOC0); gone.rows = gone.rows.filter(r => r.kind !== 'job');
+        out = self.run_page(HELD + """const gone = copy(DOC0); gone.needs = gone.needs.filter(r => r.kind !== 'job');
 refresh(); await flush(); refresh(); await flush();
 held[1](gone); await flush(); held[0](copy(DOC0)); await flush();
 R.rows = ELS.rows.html; R.type = C.get('job:nightly-sync:7').type;""")
@@ -112,7 +118,7 @@ R.rows = ELS.rows.html; R.type = C.get('job:nightly-sync:7').type;""")
         self.assertEqual(out["R"]["type"], "not listed")
 
     def test_a_row_the_read_no_longer_lists_runs_no_command(self):
-        out = self.run_page("""DOC0.rows = DOC0.rows.filter(r => r.kind !== 'job'); refresh(); await flush();
+        out = self.run_page("""DOC0.needs = DOC0.needs.filter(r => r.kind !== 'job'); refresh(); await flush();
 R.obj = [C.get('job:nightly-sync:7').type, C.get('job:nightly-sync:7').label]; R.kept = C.get('ahead:pushy:1').type;""")
         self.assertEqual(out["R"]["obj"], ["not listed", "nightly-sync failed with exit 7 (no longer listed)"])
         self.assertEqual(out["R"]["kept"], "repo")
@@ -121,16 +127,16 @@ R.obj = [C.get('job:nightly-sync:7').type, C.get('job:nightly-sync:7').label]; R
         out = self.run_page("""ANSWER = () => [500, { error: 'fleet collection was stopped at its budget' }]; refresh(); await flush();
 R.rows = ELS.rows.html; R.sub = ELS.subhead.textContent; R.type = C.get('job:nightly-sync:7').type; R.row = location.search;""")
         self.assertEqual(out["states"][-1:], [{"kind": "error", "source": "/api/now",
-                                               "text": "The Now rows were not read: fleet collection was stopped at its budget. Reload retries it."}])
+                                               "text": "The Today rows were not read: fleet collection was stopped at its budget. Reload retries it."}])
         self.assertNotIn("nightly-sync", out["R"]["rows"])
-        self.assertIn("Now could not be read: fleet collection was stopped at its budget", out["R"]["rows"])
+        self.assertIn("Needs you could not be read: fleet collection was stopped at its budget", out["R"]["rows"])
         self.assertEqual(out["R"]["type"], "not listed")
         self.assertEqual(out["R"]["row"], "")
         self.assertEqual(out["attention"][-1], {"state": "unknown", "n": 0, "what": "rows"})
 
     def test_a_selection_whose_row_is_gone_moves_to_the_first_row(self):
         """A guard: shell.reconcile did this before the reader; the reader keeps it."""
-        out = self.run_page("""DOC0.rows = DOC0.rows.filter(r => r.kind !== 'job'); refresh(); await flush();
+        out = self.run_page("""DOC0.needs = DOC0.needs.filter(r => r.kind !== 'job'); refresh(); await flush();
 R.sel = selected(); R.details = ELS.details.html;""", search="?row=job%3Anightly-sync%3A7")
         self.assertEqual(out["R"]["sel"], ["ahead:pushy:1"])
         self.assertIn("pushy", out["R"]["details"])
@@ -155,47 +161,58 @@ const L = window.PAGE_LIST, rows = [...L.rows()]; L.select(rows[1].dataset.id, r
     def test_esc_through_page_list_clears_the_source_filter_once(self):
         out = self.run_page(self.KEY + """const cell = { id: 'jobs-cell', dataset: { src: 'jobs' } };
 ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? cell : null } });
-R.hidden = ROWS_EL.querySelectorAll().filter(tr => tr.hidden).map(tr => tr.dataset.id);
-key('Escape'); R.afterEsc = ROWS_EL.querySelectorAll().filter(tr => tr.hidden).length;
-R.cleared = window.PAGE_LIST.clear(); R.shown = ROWS_EL.querySelectorAll().filter(tr => tr.hidden).length; R.again = window.PAGE_LIST.clear();""")
-        self.assertEqual(out["R"]["hidden"], ["ahead:pushy:1"])
-        self.assertEqual(out["R"]["afterEsc"], 1, "today.js cleared the filter on Esc itself; the shell sends Esc to PAGE_LIST.clear")
-        self.assertEqual((out["R"]["cleared"], out["R"]["shown"], out["R"]["again"]), (True, 0, False))
+const ids = () => ROWS_EL.querySelectorAll().map(tr => tr.dataset.id);
+R.shown = ids(); key('Escape'); R.afterEsc = ids();
+R.cleared = window.PAGE_LIST.clear(); R.all = ids(); R.again = window.PAGE_LIST.clear();""")
+        self.assertEqual(out["R"]["shown"], ["job:nightly-sync:7"])
+        self.assertEqual(out["R"]["afterEsc"], ["job:nightly-sync:7"], "today.js cleared the filter on Esc itself; the shell sends Esc to PAGE_LIST.clear")
+        self.assertEqual((out["R"]["cleared"], out["R"]["all"], out["R"]["again"]),
+                         (True, ["job:nightly-sync:7", "ahead:pushy:1"], False))
 
 
+class TheList(ReaderCase):
+    """sd:5921: one ranked list and no tabs; a group row opens to its first five members, then the rest; a lamp or an
+    intent keeps only its rows; ?row= on a member opens its group."""
 
-class TheViews(TheReader):
-    """sd:5080: Today's areas are the shell's views; each tab counts what waits there, and an unread section hides it."""
+    def setUp(self):
+        super().setUp()
+        late = [work(n, due="2026-08-01", recurring=True) for n in range(1, 8)]
+        self.doc["needs"] = now_screen.needs(self.doc["needs"], work=late, live=set(), today=NOW[:10], lanes=[], briefs=[])
 
-    def test_the_areas_are_page_views_and_each_panel_holds_its_sections(self):
-        # sd:5781: Decisions moved to Decide, GitHub and Issues to GitHub; Today keeps four views, by job.
-        views = re.search(r"window\.PAGE_VIEWS = (\[.*?\]);", TODAY_JS, re.S).group(1)
-        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["now", "inbox", "status", "work"])
-        self.assertIn("{ id: 'inbox', label: 'Inbox', key: 'm' }", views)
-        page = (V2 / "today.html").read_text(encoding="utf-8")
-        panels = {m.group(1): re.findall(r'<h2[^>]*id="([a-z]+-h)"', m.group(2))
-                  for m in re.finditer(r'<div id="view-([a-z]+)"(.*?)(?=<div id="view-|</main>)', page, re.S)}
-        self.assertEqual(panels, {"now": ["now-h"], "status": ["status-h"], "work": ["active-h", "work-h"], "inbox": ["problems-h", "briefs-h", "mail-h"]})
-        scripts = "".join((V2 / "static" / f).read_text(encoding="utf-8") for f in ("today.js", "today-reports.js", "mail.js"))
-        reported = set(re.findall(r"todayCount(?:\?\.)?\('([a-z]+)'", scripts))
-        self.assertEqual(reported, {"now", "work", "problems", "briefs", "mail"})
+    IDS = "const ids = () => ROWS_EL.querySelectorAll().map(tr => tr.dataset.id);\n"
+    CLICK = ("const click = (el, attr, v) => ELS[el].listeners.click[0]({ target: { closest: s => s === `[data-${attr}]`"
+             " ? { dataset: { [attr]: v } } : null } });\n")
 
-    def test_a_read_counts_now_and_an_unread_section_hides_its_tabs_count(self):
-        out = self.run_page("""R.now = OUT.counts.now;
-window.todayCount('problems', 2); window.todayCount('briefs', 3); window.todayCount('mail', null); R.unread = OUT.counts.inbox;
-window.todayCount('mail', 1); R.read = OUT.counts.inbox;
-ANSWER = () => [500, { error: 'stopped' }]; refresh(); await flush(); R.failed = [OUT.counts.now, OUT.counts.work];""")
-        self.assertEqual(out["R"]["now"], 2, "the failed job and the unpushed repo both want you")
-        self.assertEqual((out["R"]["unread"], out["R"]["read"]), (None, 6))
-        self.assertEqual(out["R"]["failed"], [None, None])
+    def test_today_has_no_views(self):
+        self.assertNotIn("PAGE_VIEWS", TODAY_JS)
+        self.assertNotIn("todayCount", TODAY_JS)
 
-    def test_a_lamp_shows_now_which_it_filters(self):
-        out = self.run_page("""const cell = { id: 'jobs-cell', dataset: { src: 'jobs' } };
-ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? cell : null } });""")
-        self.assertEqual(out["shown"], ["now"])
+    def test_a_group_row_opens_to_its_first_five_members_then_the_rest(self):
+        out = self.run_page(self.IDS + self.CLICK + """R.closed = ids();
+click('rows', 'toggle', 'group:late'); R.open = ids(); R.html = ELS.rows.html;
+click('rows', 'more', 'group:late'); R.full = ids();""")
+        self.assertEqual(out["R"]["closed"], ["job:nightly-sync:7", "group:late", "ahead:pushy:1"])
+        self.assertEqual(len(out["R"]["open"]), 3 + now_screen.GROUP_SHOWN)
+        self.assertIn(">2 more</button>", out["R"]["html"])
+        self.assertIn('class="member" data-in="group:late"', out["R"]["html"])
+        self.assertEqual(sorted(i for i in out["R"]["full"] if i.startswith("item:")), [f"item:{n}" for n in range(1, 8)])
+
+    def test_a_lamp_and_an_intent_keep_only_their_rows(self):
+        out = self.run_page(self.IDS + self.CLICK + """const cell = { id: 'repos-cell', dataset: { src: 'repos' } };
+ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? cell : null } }); R.lamp = ids();
+window.PAGE_LIST.clear(); click('intents', 'intent', 'fix'); R.fix = ids(); R.chips = ELS.intents.html; R.said = ELS.filtered.textContent;""")
+        self.assertEqual(out["R"]["lamp"], ["ahead:pushy:1"])
+        self.assertEqual(out["R"]["fix"], ["job:nightly-sync:7"])
+        self.assertIn('data-intent="fix" aria-pressed="true">Fix <b>1</b>', out["R"]["chips"])
+        self.assertEqual(out["R"]["said"], "1 of 3 shown · fix. Esc clears.")
+
+    def test_a_member_in_the_address_opens_its_group_and_is_selected(self):
+        out = self.run_page(self.IDS + "R.ids = ids(); R.sel = selected();", search="?row=item%3A7")
+        self.assertIn("item:7", out["R"]["ids"])
+        self.assertEqual(out["R"]["sel"], ["item:7"])
 
 
-class TheLamps(TheReader):
+class TheLamps(ReaderCase):
     """sd:TBD: a fleet area the server's snapshot kept says when it was read; a stale one is unknown, never green."""
 
     CELLS = """const CELLS = ['repos', 'sessions'].map(src => { const c = El('div'), val = El('span');
@@ -212,7 +229,7 @@ R.cells = CELLS.map(c => [c.dataset.src, c.dataset.state, c.title || null]); R.o
         self.assertIn("<b>11:31</b> UTC", out["R"]["observed"])
 
 
-class TheFix(TheReader):
+class TheFix(ReaderCase):
     """sd:3456: Fix on a work row Today lists posts /api/items/<id>/fix with the revision the Now read gave."""
 
     def setUp(self):
@@ -249,7 +266,7 @@ shellRun(cmd('work item.fix'), C.get('item:""" + str(self.task) + """')); await 
         self.assertIn("reload it", out["toasts"][-1]["msg"])
 
 
-class TheSnooze(TheReader):
+class TheSnooze(ReaderCase):
     """sd:1896: Snooze on every Today row, the snoozed rows apart with Unsnooze, and the fixed times."""
 
     def test_snooze_posts_the_row_and_reads_now_again(self):
@@ -257,7 +274,8 @@ class TheSnooze(TheReader):
 R.types = REG.filter(c => c.id.endsWith('.snooze')).map(c => c.on);
 FIELD_VALUES.until = 'snooze-week'; shellRun(cmd('repo.snooze'), C.get('ahead:pushy:1')); await flush();
 R.ahead = Date.parse(OUT.posts[0][1].until) - Date.now();""")
-        self.assertEqual(out["R"]["types"], ["job", "pull request", "repo", "sessions", "collector", "work item"])
+        self.assertEqual(out["R"]["types"], ["item group", "job", "pull request", "repo", "sessions", "collector", "work item", "report",
+                                            "mail thread"])
         # The row's own fingerprint goes with it, so the snooze holds only while the row reads the same.
         seen = next(row["seen"] for row in self.doc["rows"] if row["id"] == "ahead:pushy:1")
         self.assertEqual([(path, body["page"], body["row"], body["seen"]) for path, body, _ in out["posts"]],
@@ -266,7 +284,7 @@ R.ahead = Date.parse(OUT.posts[0][1].until) - Date.now();""")
         self.assertEqual(out["gets"], ["/api/now", "/api/now"])
 
     def test_a_snoozed_row_is_drawn_apart_with_unsnooze(self):
-        row = self.doc["rows"].pop()
+        row = self.doc["needs"].pop()
         self.doc["snoozed"] = [{**row, "until": "2026-09-07T08:00:00+00:00"}]
         out = self.run_page("""R.rows = ELS.rows.html; R.snoozed = ELS.snoozed.html; R.obj = C.get('snoozed:ahead:pushy:1');
 R.primary = REG.filter(c => c.on === 'snoozed row').map(c => c.id);""")
@@ -278,19 +296,17 @@ R.primary = REG.filter(c => c.on === 'snoozed row').map(c => c.id);""")
         self.assertEqual(out["R"]["primary"], ["snoozed row.unsnooze"])
 
     ITEM = {"id": "item:7", "kind": "item", "item": 7, "what": "#7 Write the brief", "detail": "in_progress · due 2026-09-05",
-            "state": "in_progress", "due": "2026-09-05", "seen": "0123456789abcdef"}
+            "state": "in_progress", "due": "2026-09-05", "seen": "0123456789abcdef", "rank": 5, "band": "queued", "lamp": "",
+            "source": "tasks"}
 
     def test_a_work_item_is_a_row_that_snoozes_under_its_own_key(self):
         """sd:3271: the items `sd today` lists get the same control as a Now row, keyed today:item:<id>."""
-        self.doc["work"], self.doc["work_error"] = [self.ITEM, {**self.ITEM, "id": "item:9", "item": 9, "what": "#9 Later", "due": None,
-                                                                 "detail": "in_progress"}], ""
+        self.doc["needs"].append(self.ITEM)
         out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { key: 'k', until: body.until }];
-R.work = ELS.work.html; R.tally = ELS['work-tally'].html; R.obj = C.get('item:7');
+R.rows = ELS.rows.html; R.obj = C.get('item:7');
 FIELD_VALUES.until = 'snooze-hour'; shellRun(cmd('work item.snooze'), C.get('item:7')); await flush();""")
-        self.assertIn("Write the brief", out["R"]["work"])
-        self.assertIn('<tr data-id="item:7" aria-selected="false">', out["R"]["work"])
-        self.assertIn("in_progress · due 2026-09-05", out["R"]["work"])
-        self.assertIn("1 overdue", out["R"]["tally"])
+        self.assertIn('<tr data-id="item:7" data-src="">', out["R"]["rows"])
+        self.assertIn("in_progress · due 2026-09-05", out["R"]["rows"])
         self.assertEqual((out["R"]["obj"]["type"], out["R"]["obj"]["seen"]), ("work item", "0123456789abcdef"))
         self.assertEqual([(path, body["page"], body["row"], body["seen"]) for path, body, _ in out["posts"]],
                          [("/api/snooze", "today", "item:7", "0123456789abcdef")])
@@ -300,61 +316,44 @@ FIELD_VALUES.until = 'snooze-hour'; shellRun(cmd('work item.snooze'), C.get('ite
     PRESS = "const press = (t, id) => ELS[t].listeners.click[0]({ target: { closest: s => s === 'tr[data-id]' ? { dataset: { id } } : null } });\n"
     SPY = "const SEL = []; C.select = id => SEL.push(id); R.panes = []; window.shell.openPane = p => R.panes.push(p);\n"
 
-    def test_a_work_row_selects_into_the_details_as_a_now_row_does(self):
-        """sd:5654: a press on a Work row selects it: ?row=, the shell's selection, its Details and the pane; a read keeps it."""
-        self.doc["work"], self.doc["work_error"] = [{**self.ITEM, "item_kind": "task"}], ""
-        out = self.run_page(self.PRESS + self.SPY + """press('work', 'item:7'); await flush();
+    def test_a_work_row_selects_into_the_details_and_a_read_keeps_it(self):
+        """sd:5654: a press on a work row selects it: ?row=, the shell's selection, its Details and the pane."""
+        self.doc["needs"].append({**self.ITEM, "item_kind": "task"})
+        out = self.run_page(self.PRESS + self.SPY + """press('rows', 'item:7'); await flush();
 R.details = ELS.details.html; R.row = location.search; R.sel = SEL.slice();
-refresh(); await flush(); R.work = ELS.work.html; R.again = ELS.details.html; R.now = selected(); R.row2 = location.search;""")
+refresh(); await flush(); R.again = ELS.details.html; R.now = selected(); R.row2 = location.search;""")
         details = out["R"]["details"]
         self.assertIn('<h2><a href="/tasks?row=7">#7 Write the brief</a></h2>', details)
-        for fact in ("Work item · overdue", "<dt>Status</dt><dd>in_progress</dd>", "<dt>Due</dt><dd>2026-09-05</dd>",
+        for fact in ("Work item · queued", "<dt>Status</dt><dd>in_progress</dd>", "<dt>Due</dt><dd>2026-09-05</dd>",
                      "<dt>Kind</dt><dd>task</dd>", "<dt>Id</dt><dd>sd:7</dd>", '<h3>Act</h3><div class="bar"></div>'):
             self.assertIn(fact, details)
         self.assertEqual((out["R"]["row"], out["R"]["sel"], out["R"]["panes"]), ("?row=item%3A7", ["item:7"], ["tab-details"]))
-        # The read again keeps the Work row: no Now row takes the selection, and the redraw marks the row.
-        self.assertIn('<tr data-id="item:7" aria-selected="true">', out["R"]["work"])
         self.assertIn("#7 Write the brief", out["R"]["again"])
-        self.assertEqual((out["R"]["now"], out["R"]["row2"]), ([], "?row=item%3A7"))
+        self.assertEqual((out["R"]["now"], out["R"]["row2"]), (["item:7"], "?row=item%3A7"))
 
-    def test_one_selection_spans_now_and_work_rows(self):
-        """sd:5654: Now and Work rows share today.js pick: selecting one unmarks the other. GitHub rows select on their own
-        page since sd:5781 (test_v2_today_github)."""
-        self.doc["work"], self.doc["work_error"] = [self.ITEM], ""
-        out = self.run_page(self.PRESS + self.SPY + """
-const sortWork = () => ELS['work-head'].listeners.click[0]({ target: { closest: s => s === 'button[data-sort]' ? { dataset: { sort: 'what' } } : null } });
-press('rows', 'job:nightly-sync:7'); R.now = selected();
-press('work', 'item:7'); sortWork(); R.now2 = selected(); R.work = ELS.work.html;
-press('rows', 'job:nightly-sync:7'); sortWork(); R.work2 = ELS.work.html; R.sel = SEL.slice();""")
-        self.assertEqual(out["R"]["now"], ["job:nightly-sync:7"])
-        self.assertEqual(out["R"]["now2"], [])
-        self.assertIn('<tr data-id="item:7" aria-selected="true">', out["R"]["work"])
-        self.assertIn('<tr data-id="item:7" aria-selected="false">', out["R"]["work2"])
-        self.assertEqual(out["R"]["sel"][-3:], ["job:nightly-sync:7", "item:7", "job:nightly-sync:7"])
+    def test_a_part_that_failed_is_said_under_the_list_never_an_empty_one(self):
+        self.doc["work_error"], self.doc["briefs_error"] = "database is locked", "no routine_briefs"
+        out = self.run_page("R.unread = [ELS.unread.hidden, ELS.unread.textContent];")
+        self.assertEqual(out["R"]["unread"], [False, "Work could not be read: database is locked. Refresh tries again."
+                                                     " Briefs could not be read: no routine_briefs. Refresh tries again."])
 
-    def test_a_work_read_that_failed_says_so_and_is_not_an_empty_list(self):
-        self.doc["work"], self.doc["work_error"] = [], "database is locked"
-        out = self.run_page("R.work = ELS.work.html;")
-        self.assertIn("Work could not be read: database is locked", out["R"]["work"])
-        self.assertNotIn("Nothing", out["R"]["work"])
-
-    def test_no_work_item_says_so(self):
-        self.doc["work"], self.doc["work_error"] = [], ""
-        out = self.run_page("R.work = ELS.work.html;")
-        self.assertIn("Nothing is due and nothing is in progress", out["R"]["work"])
+    def test_nothing_to_do_says_so(self):
+        self.doc["needs"] = []
+        out = self.run_page("R.rows = ELS.rows.html; R.unread = ELS.unread.hidden;")
+        self.assertIn("Nothing needs you: every source was read and raised no row.", out["R"]["rows"])
+        self.assertTrue(out["R"]["unread"])
 
     def test_a_snoozed_work_item_waits_under_snoozed_and_a_failed_read_retires_the_rows(self):
-        self.doc["work"], self.doc["work_error"] = [], ""
         self.doc["snoozed"] = [{**self.ITEM, "until": "2026-09-07T08:00:00+00:00"}]
         out = self.run_page("""R.snoozed = ELS.snoozed.html; R.obj = C.get('snoozed:item:7');""")
         self.assertIn("#7 Write the brief", out["R"]["snoozed"])
         self.assertEqual((out["R"]["obj"]["type"], out["R"]["obj"]["row"], out["R"]["obj"]["seen"]),
                          ("snoozed row", "item:7", "0123456789abcdef"))
-        self.doc["work"] = [self.ITEM]
+        self.doc["needs"].append(self.ITEM)
         out = self.run_page("""ANSWER = () => [500, { error: 'fleet collection was stopped at its budget' }]; refresh(); await flush();
-R.work = ELS.work.html; R.type = C.get('item:7').type;""")
-        self.assertIn("Work could not be read", out["R"]["work"])
-        self.assertEqual(out["R"]["type"], "not listed")
+R.rows = ELS.rows.html; R.type = C.get('item:7').type; R.unread = ELS.unread.hidden;""")
+        self.assertIn("Needs you could not be read: fleet collection was stopped at its budget", out["R"]["rows"])
+        self.assertEqual((out["R"]["type"], out["R"]["unread"]), ("not listed", True))
 
     def test_a_snooze_read_that_failed_is_a_partial_read(self):
         self.doc["snooze_error"] = "database is locked"
@@ -399,20 +398,19 @@ R.hour = Date.parse(OUT.posts[0][1].until) - t0;""")
 DECISIONS_JS = (V2 / "static" / "decisions.js").read_text(encoding="utf-8")
 
 
-class TheBadge(TheReader):
+class TheBadge(ReaderCase):
     """Today's badge (shell.attention) is the Now read's (sd:3446); a decision waiting counts on Decide's since sd:5781.
 
     decisions.js runs beside today.js here, as today.html loaded it until sd:5781, so a decision waits while Now reads:
-    Today's badge stays the Now document's, and TheSort sorts the decisions table with the others. Decide's badge is
-    TheDecideBadge."""
+    Today's badge stays the Now document's. Decide's badge is TheDecideBadge."""
 
     DECISION = {"note": 7, "item": 3012, "title": "Dashboard v2", "repo": "/repos/system", "asked": "2026-10-08T21:00:00Z",
                 "question": "Which shape?", "options": ["Option lines", "Free text"], "revision": "a" * 64}
 
     def run_badge(self, body, decisions, keep_job=False):
-        self.doc["rows"] = [row for row in self.doc["rows"] if keep_job or row["kind"] != "job"]
-        self.assertEqual([row["band"] for row in self.doc["rows"]], ["broken", "look"] if keep_job else ["look"])
-        now = dict(self.doc, attention=now_screen._attention(self.doc["rows"]))
+        self.doc["needs"] = [row for row in self.doc["needs"] if keep_job or row["kind"] != "job"]
+        self.assertEqual([row["band"] for row in self.doc["needs"]], ["broken", "look"] if keep_job else ["look"])
+        now = dict(self.doc, attention=now_screen._attention(self.doc["needs"]))
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + SHELL_MORE + READ_SHELL
                   # As shell.js does: a page passes its badge, or sets window.PAGE_ATTENTION and passes nothing.
                   + "\nwindow.shell.attention = a => { if (a) window.PAGE_ATTENTION = a; OUT.attention.push(window.PAGE_ATTENTION); };"
@@ -437,7 +435,7 @@ class TheBadge(TheReader):
         out = self.run_badge("click(7, 0); await flush();", [self.DECISION])
         self.assertEqual(out["posts"][0][0], "/api/decisions/answer")
         self.assertEqual({tuple(sorted(a)) for a in out["attention"]}, {("n", "state", "what")})
-        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "caution rows"})
+        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "rows to look at"})
 
     def test_an_unread_now_is_unknown_while_a_decision_waits(self):
         # sd:3446: the badge is the Now read's, so a failed read is unknown here as on every other page's rail.
@@ -448,7 +446,7 @@ class TheBadge(TheReader):
     def test_a_warning_row_outranks_a_waiting_decision(self):
         """A guard: the badge counts its loudest state, and a decision is caution, as its ▲ in the section says."""
         out = self.run_badge("", [self.DECISION], keep_job=True)
-        self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "warning rows"})
+        self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "broken rows"})
 
 
 DECIDE_JS = (V2 / "static" / "decide.js").read_text(encoding="utf-8")
@@ -493,45 +491,7 @@ class TheDecideBadge(unittest.TestCase):
         self.assertEqual((out["counts"]["decisions"], out["counts"]["scoring"]), (0, None))
 
 
-class TheSort(TheReader):
-    """sd:3455: each of Today's four tables has the shell's sort header; its order is kept in memory, not the address."""
-
-    DECISION, ITEM, run_badge = TheBadge.DECISION, TheSnooze.ITEM, TheBadge.run_badge
-
-    SORTED = r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"'
-
-    def session(self, item, title, started, seconds):
-        return {"item": item, "title": title, "kind": "worktree", "session": f"worktree sd{item}", "started": started,
-                "elapsed": f"{seconds // 3600}h", "seconds": seconds, "via": "branch name", "verified": True}
-
-    def test_each_table_sorts_by_its_header_and_the_selection_stays(self):
-        self.doc["work"], self.doc["work_error"] = [self.ITEM,
-                                                    {**self.ITEM, "id": "item:9", "item": 9, "what": "#9 Another", "due": None, "detail": "in_progress"}], ""
-        self.doc["active"] = {"rows": [self.session(5, "Long", "2026-09-06T08:00:00Z", 7200), self.session(6, "Short", "2026-09-06T09:00:00Z", 3600)],
-                              "sources": {}}
-        other = {**self.DECISION, "note": 8, "item": 12, "title": "Another", "question": "All of it?"}
-        click = "ELS['{h}'].listeners.click[0]({{ target: {{ closest: s => s === 'button[data-sort]' ? {{ dataset: {{ sort: '{k}' }} }} : null }} }});"
-        body = ("R.heads = ['rows-head', 'active-head', 'work-head', 'decisions-head'].map(h => ELS[h].html); R.sel = selected();"
-                + click.format(h="rows-head", k="what") + click.format(h="rows-head", k="what") + "R.now = ELS.rows.html; R.sel2 = selected();"
-                + click.format(h="active-head", k="elapsed") + "R.active = ELS.active.html;"
-                + click.format(h="work-head", k="what") + click.format(h="work-head", k="what") + "R.work = ELS.work.html;"
-                + click.format(h="decisions-head", k="what") + "R.decisions = ELS.decisions.html; R.url = location.search;")
-        out = self.run_badge(body, [self.DECISION, other], keep_job=True)
-        heads = out["R"]["heads"]
-        self.assertEqual([re.findall(r'data-sort="(\w+)"', h) for h in heads],
-                         [["s", "what", "detail", "src"], ["s", "what", "started", "elapsed"], ["s", "what", "detail"], ["s", "what", "question"]])
-        # Now and Working now start in the server's order and say so; Your work and Decisions keep theirs unmarked.
-        self.assertEqual([re.findall(self.SORTED, h) for h in heads], [[("ascending", "s")], [("descending", "elapsed")], [], []])
-        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["now"]), ["ahead:pushy:1", "job:nightly-sync:7"])
-        self.assertNotIn("band-start", out["R"]["now"])
-        self.assertEqual((out["R"]["sel"], out["R"]["sel2"]), (["job:nightly-sync:7"], ["job:nightly-sync:7"]))
-        self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["active"]), ["6", "5"])
-        self.assertEqual(re.findall(r'<tr data-id="item:(\d+)"', out["R"]["work"]), ["9", "7"])
-        self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["decisions"]), ["12", "3012"])
-        self.assertNotIn("sort=", out["R"]["url"])
-
-
-class TheJobRow(TheReader):
+class TheJobRow(ReaderCase):
     """sd:3449: a job row carries the commands Management and Activity give a job, from the one declaration in commands.js."""
 
     def test_a_job_row_shows_its_log_on_schedules_and_prints_its_launchd_record(self):
@@ -545,16 +505,16 @@ window.shell.pages = { Management: '/management' }; R.said = log.run(o);""")
         self.assertEqual(out["posts"], [])
 
     def test_after_exit_127_print_is_the_rows_act(self):
-        self.doc["rows"][0]["exit"] = 127
+        self.doc["needs"][0]["exit"] = 127
         out = self.run_page("R.print = !!cmd('jobs.print').primary(C.get('job:nightly-sync:7'));")
         self.assertTrue(out["R"]["print"])
 
 
-class TheRetry(TheReader):
+class TheRetry(ReaderCase):
     """sd:3386: a failed job's Retry posts /api/jobs/<job>/retry with the row's revision, as Management and Activity do."""
 
     def test_retry_posts_the_job_route_with_the_rows_revision_and_reads_now_again(self):
-        row = self.doc["rows"][0]
+        row = self.doc["needs"][0]
         out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' } }];
 R.primary = cmd('jobs.retry').primary(C.get('job:nightly-sync:7'));
 shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();
@@ -567,7 +527,7 @@ R.cli = cmd('jobs.retry').cli(C.get('job:nightly-sync:7')); R.sends = cmd('jobs.
 
     def test_exit_127_keeps_retry_on_and_asks_first_naming_the_exit(self):
         """sd:3392, ruled 2026-09-30: the exit is the last run's, and a path fixed outside the dashboard needs Retry to test it."""
-        self.doc["rows"][0]["exit"] = 127
+        self.doc["needs"][0]["exit"] = 127
         out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' } }];
 const c = cmd('jobs.retry'), o = C.get('job:nightly-sync:7');
 R.on = c.when(o); R.primary = !!c.primary(o); R.ask = !!c.askFirst(o); R.says = c.consequence(o);
@@ -584,7 +544,7 @@ R.ask = !!cmd('jobs.retry').askFirst(C.get('job:nightly-sync:7')); shellRun(cmd(
         self.assertEqual((out["R"]["ask"], out["confirms"]), (False, []))
 
     def test_a_retry_the_read_refuses_is_off_with_the_reason(self):
-        self.doc["rows"][0]["capability"] = {"allowed": False, "reason": "an unresolved restore prevents starting jobs"}
+        self.doc["needs"][0]["capability"] = {"allowed": False, "reason": "an unresolved restore prevents starting jobs"}
         out = self.run_page("shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();")
         self.assertEqual(out["posts"], [])
         self.assertEqual(out["toasts"][-1]["msg"], "off: an unresolved restore prevents starting jobs")
@@ -600,7 +560,7 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
         out = self.run_page("""ANSWER = path => path === '/api/now' ? [200, DOC0] : Promise.reject(new TypeError('Load failed'));
 shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
         self.assertEqual(out["toasts"][-1]["msg"], "nightly-sync failed with exit 7 not changed: no answer (Load failed), so whether"
-                         " launchd started it is not known; Now is read again")
+                         " launchd started it is not known; Today is read again")
         self.assertEqual(out["gets"], ["/api/now", "/api/now"])
 
     def test_a_retry_shows_launchctls_answer_when_it_did_not_accept(self):
@@ -624,24 +584,24 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
 ACT = """const act = id => { const o = C.get(id), on = REG.filter(c => c.on === o.type && (!c.when || c.when(o) === true));
   const p = on.find(c => c.primary && c.primary(o)); return p ? [p.id, p.label, p.icon] : null; };
 window.open = u => { OUT.opened = u; };
-const PR = { rank: 4, kind: 'pr', id: 'pr:example/project#4:4', what: 'example/project#4 open', detail: 'Pull 4', source: 'prs', band: 'queued' };
-const DARK = s => ({ rank: 0, kind: 'dark', id: `dark:${s}`, what: `${s} could not be read`, detail: 'no reason', source: s, band: 'broken' });
+const PR = { rank: 4, kind: 'pr', id: 'pr:example/project#4:4', what: 'example/project#4 open', detail: 'Pull 4', source: 'prs', band: 'queued', lamp: 'pulls' };
+const DARK = s => ({ rank: 0, kind: 'dark', id: `dark:${s}`, what: `${s} could not be read`, detail: 'no reason', source: s, band: 'broken', lamp: s === 'prs' ? 'pulls' : s });
 """
 
 
-class TheNowFix(TheReader):
+class TheNowFix(ReaderCase):
     """sd:5652: every Now row has a Fix, its act where the kind has a route, routed to what already addresses the kind;
     a row with no route has Fix off with the reason."""
 
     def test_fix_is_each_routed_rows_act(self):
-        out = self.run_page(ACT + """DOC0.rows.push(PR, DARK('prs'), DARK('jobs')); refresh(); await flush();
+        out = self.run_page(ACT + """DOC0.needs.push(PR, DARK('prs'), DARK('jobs')); refresh(); await flush();
 R.acts = ['job:nightly-sync:7', 'ahead:pushy:1', 'pr:example/project#4:4', 'dark:prs', 'dark:jobs'].map(act);""")
         self.assertEqual(out["R"]["acts"], [["job.fix", "Fix", "play"], ["repo.fix", "Fix", "bot"],
                                             ["pull request.fix", "Fix", "arrow-up-right"], ["collector.fix", "Fix", "bot"],
                                             ["collector.fix", "Fix", "bot"]])
 
     def test_fix_on_a_failed_job_is_its_run_now(self):
-        row = self.doc["rows"][0]
+        row = self.doc["needs"][0]
         out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' } }];
 const c = cmd('job.fix'), o = C.get('job:nightly-sync:7'); R.line = [c.cli(o), c.sends(o), c.key];
 shellRun(c, o); await flush();""")
@@ -650,7 +610,7 @@ shellRun(c, o); await flush();""")
         self.assertEqual(out["R"]["line"], ["sd jobs retry nightly-sync", "launchctl kickstart fixture/nightly-sync", "f"])
 
     def test_after_exit_127_fix_asks_first_and_print_stays_the_act(self):
-        self.doc["rows"][0]["exit"] = 127
+        self.doc["needs"][0]["exit"] = 127
         out = self.run_page(ACT + """ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { request: { status: 'accepted', message: 'ok' } }];
 R.act = act('job:nightly-sync:7'); R.says = cmd('job.fix').consequence(C.get('job:nightly-sync:7'));
 shellRun(cmd('job.fix'), C.get('job:nightly-sync:7')); await flush();""")
@@ -659,21 +619,21 @@ shellRun(cmd('job.fix'), C.get('job:nightly-sync:7')); await flush();""")
         self.assertEqual(out["confirms"], ["job.fix"])
 
     def test_a_job_with_no_route_has_fix_off_with_the_reason(self):
-        self.doc["rows"][0].update(state="unloaded", retry=None, capability=None)
+        self.doc["needs"][0].update(state="unloaded", retry=None, capability=None)
         out = self.run_page(ACT + "R.act = act('job:nightly-sync:7'); shellRun(cmd('job.fix'), C.get('job:nightly-sync:7')); await flush();")
         self.assertNotEqual((out["R"]["act"] or [None])[0], "job.fix")
         self.assertEqual(out["toasts"][-1]["msg"], "off: no failed run to retry")
         self.assertEqual(out["posts"], [])
 
     def test_fix_on_a_pull_request_opens_it_on_github(self):
-        out = self.run_page(ACT + """DOC0.rows.push(PR); refresh(); await flush();
+        out = self.run_page(ACT + """DOC0.needs.push(PR); refresh(); await flush();
 shellRun(cmd('pull request.fix'), C.get('pr:example/project#4:4')); await flush();""")
         self.assertEqual(out["opened"], "https://github.com/example/project/pull/4")
         self.assertEqual(out["toasts"][-1]["msg"], "Opened on GitHub in a new tab")
 
     def test_fix_on_the_dark_pull_request_collector_runs_its_sync(self):
         out = self.run_page(ACT + """ANSWER = (path, body) => path === '/api/shadow/state' ? [200, { running: false, trackers: [] }] : path === '/api/now' ? [200, DOC0] : [202, { started: true }];
-DOC0.rows.push(DARK('prs')); refresh(); await flush();
+DOC0.needs.push(DARK('prs')); refresh(); await flush();
 shellRun(cmd('collector.fix'), C.get('dark:prs')); await flush();""")
         self.assertEqual([p for p, _, _ in out["posts"]], ["/api/shadow/sync"])
         self.assertIn("/api/shadow/state", out["gets"])
@@ -691,7 +651,7 @@ shellRun(c, o); await flush();""")
 
     def test_fix_on_another_dark_collector_posts_the_row_and_a_stale_one_reads_now_again(self):
         out = self.run_page("""ANSWER = (path, body) => path === '/api/now/fix' ? [409, { error: 'the jobs collector reads now; read Now again', reload: true }] : [200, DOC0];
-DOC0.rows.push({ rank: 0, kind: 'dark', id: 'dark:jobs', what: 'jobs could not be read', detail: 'no reason', source: 'jobs', band: 'broken' });
+DOC0.needs.push({ rank: 0, kind: 'dark', id: 'dark:jobs', what: 'jobs could not be read', detail: 'no reason', source: 'jobs', band: 'broken', lamp: 'jobs' });
 refresh(); await flush(); shellRun(cmd('collector.fix'), C.get('dark:jobs')); await flush();""")
         self.assertEqual(out["posts"], [["/api/now/fix", {"row": "dark:jobs"}, 64]])
         self.assertEqual(out["toasts"][-1]["msg"], "jobs could not be read not changed: the jobs collector reads now; read Now again")

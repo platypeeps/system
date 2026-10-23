@@ -6,8 +6,6 @@ person. Seen is a Today snooze; Acknowledge is the Reports page's route. A read 
 
 from __future__ import annotations
 
-import json
-import re
 import sqlite3
 from pathlib import Path
 from unittest import mock
@@ -18,7 +16,6 @@ from sd_dashboard import now_screen, server, today_reports, v2
 
 from support import NOW, ScreenCase
 from test_now_screen import JobsBackend, fleet_document
-from test_v2_today import run_js
 
 V2 = Path(v2.__file__).resolve().parent
 JS = V2 / "static" / "today-reports.js"
@@ -129,55 +126,14 @@ class TheBriefs(ReportsCase):
 
 
 class ThePage(ReportsCase):
-    def test_today_carries_both_lists_and_draws_them_from_its_read(self):
+    def test_today_draws_reports_and_briefs_as_needs_rows_not_their_own_tables(self):
+        # sd:5921: one list; today-reports.js and its two tables are gone.
         html = (V2 / "today.html").read_text(encoding="utf-8")
-        for needle in ('<tbody id="problems">', '<tbody id="briefs">', 'id="problems-tally"', 'id="briefs-tally"'):
-            self.assertIn(needle, html)
-        scripts = re.findall(r'<script src="/ui/([a-z-]+\.js)"></script>', html)
-        self.assertLess(scripts.index("today-reports.js"), scripts.index("today.js"))
-        self.assertIn("today-reports:read", (V2 / "static" / "today.js").read_text(encoding="utf-8"))
-
-
-class TheTables(ReportsCase):
-    """today-reports.js under JavaScriptCore: it draws what Today's read hands it, escaped, and says each reason."""
-
-    PAGE = """
-var els = {}, listeners = {};
-document.getElementById = id => (els[id] = els[id] || { id, replaceChildren(f) { sunk.push([id, f.parsed]); } });
-document.addEventListener = (t, f) => { listeners[t] = f; };
-"""
-
-    def drawn(self, detail):
-        script = (self.PAGE + JS.read_text(encoding="utf-8")
-                  + f"listeners['today-reports:read']({{ detail: {json.dumps(detail)} }}); JSON.stringify(sunk)")
-        return dict(run_js(self, script))
-
-    def test_rows_escape_their_text_and_carry_their_controls(self):
-        self.report("nas-full-copy", "r1", basis="copy <b>failed</b>")
+        for gone in ('<tbody id="problems">', '<tbody id="briefs">', "today-reports.js"):
+            self.assertNotIn(gone, html)
+        self.assertFalse(JS.exists())
+        self.report("nas-full-copy", "r1")
         self.brief("2026-09-05 - Daily Intel Brief")
-        drawn = self.drawn(self.read())
-        self.assertIn("copy &lt;b&gt;failed&lt;/b&gt;", drawn["problems"])
-        self.assertIn("Acknowledge", drawn["problems"])
-        self.assertIn("1 open", drawn["problems-tally"])
-        self.assertIn("2026-09-05 - Daily Intel Brief", drawn["briefs"])
-        self.assertIn("Seen", drawn["briefs"])
-        self.assertIn("1 new", drawn["briefs-tally"])
-
-    def test_a_full_read_draws_its_counts_with_a_plus(self):
-        for run in ("r1", "r2"):
-            self.report(f"job-{run}", run)
-        with mock.patch.object(today_reports, "SHOWN", 1), mock.patch.object(today_reports, "READ", 2):
-            drawn = self.drawn(self.read())
-        self.assertIn("2+ open", drawn["problems-tally"])
-        self.assertIn("1+ more open on Reports.", drawn["problems"])
-
-    def test_an_unknown_read_says_unknown_and_none_is_said(self):
-        failed = self.drawn({"problems_error": "database is locked", "briefs_error": "no routine_briefs"})
-        self.assertIn("Reports could not be read: database is locked", failed["problems"])
-        self.assertIn("Briefs could not be read: no routine_briefs", failed["briefs"])
-        whole = self.drawn({"error": "HTTP 500"})
-        self.assertIn("Reports could not be read: HTTP 500", whole["problems"])
-        self.assertIn("Briefs could not be read: HTTP 500", whole["briefs"])
-        empty = self.drawn(self.read())
-        self.assertIn("No open report asks for you.", empty["problems"])
-        self.assertIn("No new brief this week.", empty["briefs"])
+        needs = {row["kind"]: row for row in self.today()["needs"]}
+        self.assertEqual((needs["report"]["band"], needs["report"]["lamp"]), ("look", "reports"))
+        self.assertEqual((needs["brief"]["band"], needs["brief"]["source"]), ("queued", "briefs"))
