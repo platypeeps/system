@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -276,6 +277,16 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("Archify", source)
         self.assertNotIn("output-styles/", source)
         self.assertNotIn("**any private repo**", source)
+
+    def test_the_token_rule_reads_the_name_env_sh_exports(self):
+        # sd:5786: env.sh exports the token under another name, so a rule that only sourced it left
+        # CLAUDE_CODE_OAUTH_TOKEN unset, and a headless judge run failed 'not logged in'.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        example = (FOLDER.parent / "local-machine-setup/shell-env.example").read_text()
+        rule = next(line for line in source.splitlines() if "CLAUDE_CODE_OAUTH_TOKEN" in line and "env.sh" in line)
+        mapped = re.search(r'CLAUDE_CODE_OAUTH_TOKEN="\$\{?([A-Z_]+)\}?" <cmd>', rule)
+        self.assertIsNotNone(mapped, rule)
+        self.assertIn(mapped.group(1), re.findall(r"^([A-Z_]+)=", example, re.M))
 
 
 if __name__ == "__main__":
