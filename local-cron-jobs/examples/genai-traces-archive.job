@@ -1,0 +1,11 @@
+# Hourly move of the rotated raw Gen-AI traces to their permanent archive
+# (local-genai-traces `archive`, sd:5775): gzipped, checked, never deleted.
+# archive is the only deleter of rotated files (the collector keeps them
+# all), so a late run loses nothing; hourly keeps the system disk small.
+# Exit 3, nothing to do (GENAI_TRACES_ARCHIVE_DIR unset or the share not
+# mounted), passes as 0 so an unmounted share does not page every hour; the
+# log keeps its SKIP line. A write that fails on a mounted share exits 1,
+# and so does a missing or unset archive once 20 rotated files (2 GB) wait.
+JOB_SCHEDULE="15 * * * *"
+JOB_TIMEOUT="50m"
+JOB_COMMAND="sh \"$ROOT/../local-genai-traces/genai-traces.sh\" archive || { rc=\$?; [ \"\$rc\" -eq 3 ] || exit \"\$rc\"; }"

@@ -19,13 +19,16 @@ exporters:
     tls:
       insecure: true
   # The untouched OTLP JSON, one batch per line, for analysis outside Phoenix.
-  # Rotation bounds the disk: 8 files of 100 MB at most.
+  # Rotated at 100 MB into traces-<UTC time>-<reason>.jsonl. max_backups 0
+  # (and no max_days) keeps every rotated file: `genai-traces.sh archive` is
+  # the only deleter, after it has a checked copy. The exporter's default is
+  # 100, so 0 must stay explicit; status fails once 20 files wait on disk.
   file/raw:
     path: /out/traces.jsonl
     format: json
     rotation:
       max_megabytes: 100
-      max_backups: 7
+      max_backups: 0
 
 extensions:
   health_check:

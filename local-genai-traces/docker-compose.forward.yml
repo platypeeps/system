@@ -1,0 +1,11 @@
+# Adds the second OTLP destination: genai-traces.sh start uses this file
+# with docker-compose.yml when TRACES_FORWARD_OTLP_ENDPOINT is set. The
+# collector merges the overlay that start writes over its base config. The
+# header values stay in that file, out of the environment and the command.
+services:
+  collector:
+    command:
+      - "--config=/etc/otelcol-contrib/config.yaml"
+      - "--config=/etc/otelcol-contrib/forward.yaml"
+    volumes:
+      - ./state/forward.yaml:/etc/otelcol-contrib/forward.yaml:ro

@@ -1,7 +1,8 @@
 """`status` answers convention 6: 0 healthy, 3 nothing to check, 1 up and broken.
 
 The script runs from a copy in a temporary folder, so `state/started` and
-`storage/` land there and never in this checkout. `docker` is a stub: one
+`storage/` land there and never in this checkout. The config folder is an
+empty temporary one, so the operator's own values never reach a test. `docker` is a stub: one
 file per running container, which `compose up` creates and `compose down`
 removes. Deleting one file is that container crashing. `curl` is the real
 one, pointed at local HTTP servers that answer with the code a test asks for.
@@ -18,6 +19,7 @@ from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parent.parent
 ENTRYPOINT = FOLDER / "genai-traces.sh"
+LIBS = [FOLDER.parent / "lib" / name for name in ("config.sh", "bounded.sh")]
 COLLECTOR = "local-genai-collector"
 PHOENIX = "local-genai-phoenix"
 
@@ -59,6 +61,12 @@ class StatusCase(unittest.TestCase):
         self.folder = self.root / "local-genai-traces"
         self.folder.mkdir()
         shutil.copy(ENTRYPOINT, self.folder / ENTRYPOINT.name)
+        shutil.copy(FOLDER / "collector.yaml", self.folder / "collector.yaml")
+        (self.root / "lib").mkdir()
+        for lib in LIBS:
+            shutil.copy(lib, self.root / "lib" / lib.name)
+        self.config = self.root / "config"
+        self.config.mkdir()
         stubs = self.root / "bin"
         stubs.mkdir()
         (stubs / "docker").write_text(DOCKER, encoding="utf-8")
@@ -67,9 +75,10 @@ class StatusCase(unittest.TestCase):
         self.containers.mkdir()
         self.env = {
             key: value for key, value in os.environ.items()
-            if not key.startswith("GENAI_TRACES_")
+            if not key.startswith(("GENAI_TRACES_", "TRACES_FORWARD_"))
         }
         self.env.update(
+            SYSTEM_TOOLS_CONFIG=str(self.config),
             PATH=f"{stubs}:{os.environ['PATH']}",
             STUB_LOG=str(self.root / "docker.log"),
             STUB_DIR=str(self.containers),
@@ -229,6 +238,17 @@ class AContainerThatIsGone(StatusCase):
                              for c in calls), calls)
         self.assertTrue(self.marker().is_file())
         self.assertTrue((self.containers / COLLECTOR).exists())
+
+    def test_start_and_update_recreate_the_collector(self):
+        # Lane round 3: compose does not see a change inside the bind-mounted
+        # collector.yaml, so plain `up -d` kept the old config running.
+        for verb in ("start", "update"):
+            with self.subTest(verb=verb):
+                before = len(self.docker_calls())
+                self.run_verb(verb, expect=0)
+                calls = self.docker_calls()[before:]
+                self.assertTrue(any("up -d --force-recreate --no-deps collector" in c
+                                    for c in calls), calls)
 
     def test_update_of_a_service_never_started_only_pulls(self):
         self.run_verb("update", expect=0)
