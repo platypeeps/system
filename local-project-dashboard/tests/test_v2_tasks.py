@@ -721,6 +721,12 @@ def state_answer(row, **changes):
     return {"item": item, "notes": [], "revision": "b" * 64}
 
 
+def field_help(html):
+    """Each Details field label (a `dt` of a `dl.fields`) as its text and whether it carries a help icon (sd:5903)."""
+    return [(re.sub(r"<[^>]+>", "", dt).strip(), 'class="help"' in dt)
+            for dl in re.findall(r'<dl class="fields">(.*?)</dl>', html, re.S) for dt in re.findall(r"<dt>(.*?)</dt>", dl, re.S)]
+
+
 class TheScript(ScreenCase):
     """tasks.js against the documents `tasks_screen` builds for the seeded database."""
 
@@ -968,6 +974,17 @@ open({port}); await flush(); R.port = ELS.details.html;""")
         self.assertIn('<p class="why" id="det-off">The fields are off: message items use their own editing workflow.</p>', out["R"]["port"])
         self.assertRegex(out["R"]["port"], r'<select id="det-repo" class="fld" disabled')
         self.assertNotRegex(html, r'<select id="det-[a-z]+" class="fld" disabled')
+
+    def test_every_details_field_label_carries_help(self):
+        # sd:5903: each field in the Details lists carries the shared help icon, as each section heading does.
+        plan, port = self.ids["plan"], self.ids["port"]
+        self.schedule_plan(2)
+        self.details[str(plan)]["experiment"] = {"value": "yes", "row": None, "choices": [], "reason": None}
+        out = self.run_page(f"open({plan}); await flush(); R.plan = ELS.details.html; open({port}); await flush(); R.port = ELS.details.html;")
+        fields = field_help(out["R"]["plan"]) + field_help(out["R"]["port"])
+        self.assertEqual({name for name, _ in fields}, {"Id", "Title", "Status", "Priority", "Due", "Repeat", "Lead", "Repo",
+                                                        "Urgent", "Quadrant", "Row", "Assignment"})
+        self.assertEqual([name for name, helped in fields if not helped], [])
 
     def test_status_priority_and_edit_leave_the_act_bar_to_the_details_fields(self):
         """sd:5295: Status, Priority and Due are Details fields, so their commands are `bar: false`: off the Act bar, while
