@@ -110,6 +110,20 @@ class SdmLoginTest(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.installed.stat().st_mode), 0o755)
         self.assertIn(f"ok      {NAME}", self.run_stage("work"))
 
+    def test_a_symlinked_helper_is_judged_by_its_target(self):
+        # sd:5960: the probe read the link's own mode (0755 on macOS) while cmp and chmod follow it.
+        target = pathlib.Path(self.tmp.name) / "elsewhere" / "sdm-login"
+        target.parent.mkdir()
+        shutil.copyfile(HELPER, target)
+        target.chmod(0o644)
+        self.installed.parent.mkdir(parents=True)
+        self.installed.symlink_to(target)
+        self.assertIn(f"DIFFERS {NAME} — mode is not 755", self.run_stage("work"))
+        self.run_stage("work", "--apply")
+        self.assertTrue(self.installed.is_symlink())
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o755)
+        self.assertIn(f"ok      {NAME}", self.run_stage("work"))
+
     def test_a_hand_written_helper_is_kept_until_force(self):
         # A machine that wrote its own helper before this one: nothing recorded says which moved.
         self.installed.parent.mkdir(parents=True)
