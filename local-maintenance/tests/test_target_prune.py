@@ -225,6 +225,16 @@ exec /bin/rm "$@"
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {self.trash}/\S+ \(bound \d+s\)")
         self.assertNotIn("[step ", run.stdout)
 
+    def test_a_trash_that_cannot_be_made_keeps_the_target_and_says_so(self):
+        _checkout, target = self.cargo_target("example-no-trash")
+        self.trash.parent.parent.mkdir(parents=True)
+        self.trash.parent.write_text("a file where a folder goes\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file())
+        self.assertIn(f"- build output prune: could not make a folder in {self.trash}; kept {target}",
+                      run.stdout)
+
     def stub_move(self, body):
         """Replace the copied prune_move.py; one argument is the sweep's check."""
         (self.tmp / "local-maintenance" / "prune_move.py").write_text(
