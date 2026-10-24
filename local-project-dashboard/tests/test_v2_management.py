@@ -1915,8 +1915,59 @@ OUT.posts.length = 0; C.run(cmd('declaration.write'), pending[0]); await flush()
 R.left = pending.map(p => p.key);""" % json.dumps({"declaration": newer, "severity_floor": "high"}),
                             doc=doc, search=f"?repo={path}",
                             answer="(p, b) => p === '/api/actions/run' ? [409, {error: 'the declaration changed since this reading'}] : [200, {}]")
-        self.assertEqual([b["before"] for p, b, _ in out["posts"] if p == "/api/actions/run"], [newer])
+        self.assertEqual([(b["before"], b["value"]) for p, b, _ in out["posts"] if p == "/api/actions/run"],
+                         [(newer, {"categories": ["x"], "severity_floor": "low"})])
         self.assertEqual(out["R"]["left"], ["severity_floor"])
+
+    # sd:5958 review, class pass: every way Write's `before` and `after` could come from two readings. Each case reads the
+    # page's posts: the pair sent is always the declaration a line was drafted on and that line's result.
+    def write_after(self, calls, review=None, answer="(p, b) => [200, {}]"):
+        path = self.ids["checkout"]
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["repos"] if r["path"] == path)["review"] = review or {"declaration": self.LAST, "severity_floor": "high",
+                                                                                   "automatic_deep": False}
+        out = self.run_page(calls + "\nR.left = pending.map(p => p.key);", doc=doc, search=f"?repo={path}", hash="#view=repos",
+                            answer=answer)
+        return [(b["before"], b["value"]) for p, b, _ in out["posts"] if p == "/api/actions/run"], out
+
+    def test_a_declaration_cleared_since_the_proposal_is_not_written_back(self):
+        # The blocker: the cleared declaration did not parse, so the line kept its old `after`, and Write sent it with
+        # before '' -- the server took it and brought back the removed categories.
+        sent, out = self.write_after("""DOC0.repos.find(r => r.path === repoParam).review = { declaration: '{"categories": ["x"], "severity_floor": "high"}', severity_floor: 'high' };
+await reread(); propose('severity_floor', 'low');
+DOC0.repos.find(r => r.path === repoParam).review = { declaration: null }; await reread();
+R.cli = cmd('declaration.write').cli(pending[0]); C.run(cmd('declaration.write'), pending[0]); await flush();""")
+        self.assertEqual(sent, [("", {"severity_floor": "low"})])
+        self.assertNotIn("categories", out["R"]["cli"])
+
+    def test_a_declaration_that_stops_parsing_turns_write_off_and_keeps_the_proposal(self):
+        sent, out = self.write_after("""propose('severity_floor', 'low');
+DOC0.repos.find(r => r.path === repoParam).review = { declaration: '{"severity_floor": "high",}' }; await reread();
+R.when = cmd('declaration.write').when(pending[0]); R.cli = cmd('declaration.write').cli(pending[0]);
+C.run(cmd('declaration.write'), pending[0]); await flush();""")
+        self.assertEqual(sent, [])
+        self.assertIn("not a JSON object now", out["R"]["when"])
+        self.assertNotIn("automatic_deep", out["R"]["cli"])
+        self.assertEqual(out["R"]["left"], ["severity_floor"])
+
+    def test_the_starter_writes_onto_no_declaration(self):
+        # The starter had no `after` at all: reviewDiff refused the empty declaration, and Write threw.
+        click = "ELS['view-repos'].listeners.click.forEach(f => f({ target: { closest: s => s === '[data-create-review]' ? {} : null } }));"
+        sent, out = self.write_after(click + "\nC.run(cmd('declaration.write'), pending[0]); await flush();", review={"declaration": None})
+        self.assertEqual(sent, [("", {"severity_floor": "high"})])
+        self.assertEqual(out["R"]["left"], [])
+
+    def test_the_second_of_two_lines_writes_on_the_reading_the_first_left(self):
+        # The first Write lands and the page reads again; the second line is drafted on that reading and sends it.
+        answer = """(p, b) => { if (p === '/api/actions/run') DOC0.repos.find(r => r.path === repoParam).review =
+  { declaration: JSON.stringify(b.value, null, 2), severity_floor: b.value.severity_floor, automatic_deep: b.value.copilot_review?.automatic_deep };
+  return [200, {}]; }"""
+        sent, out = self.write_after("""propose('severity_floor', 'low'); propose('automatic_deep', 'true');
+C.run(cmd('declaration.write'), pending.find(p => p.key === 'severity_floor')); await flush();
+C.run(cmd('declaration.write'), pending[0]); await flush();""", answer=answer)
+        both = {"copilot_review": {"automatic_deep": True}, "severity_floor": "low"}
+        self.assertEqual(sent, [(self.LAST, both), (json.dumps(both, indent=2), both)])
+        self.assertEqual(out["R"]["left"], [])
 
     def test_two_pending_edits_draft_lines_that_each_carry_both(self):
         """sd:5159 review: each line replaced the whole declaration from the first reading, so running the second dropped

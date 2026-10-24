@@ -497,14 +497,15 @@ function propose(key, value) {
 // build (review, PR #50): a declaration change is made on the parsed object, checked to parse again, and shown as a line
 // diff of the two texts, so a proposal is always valid JSON. The shown text is JSON.stringify's two-space layout, the
 // layout the server sends; `after` is the compact text the sd-db line writes (sd:5159). null when it is not a JSON object.
+// No declaration is the empty object, so the starter and a declaration cleared since the proposal draft on it (sd:5958).
 function reviewDiff(text, change) {
   let body;
-  try { body = JSON.parse(text); } catch { return null; }
+  try { body = text.trim() ? JSON.parse(text) : {}; } catch { return null; }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
   change(body);
   const after = JSON.stringify(body, null, 2);
   JSON.parse(after);
-  return { diff: lineDiff(text.replace(/\n$/, '').split('\n'), after.split('\n')), after: JSON.stringify(body) };
+  return { diff: lineDiff(text.trim() ? text.replace(/\n$/, '').split('\n') : [], after.split('\n')), after: JSON.stringify(body) };
 }
 // The longest common run of lines is kept; the rest is a del or an add (the declarations are at most 16 KiB, DECLARATION_BYTES).
 function lineDiff(a, b) {
@@ -522,10 +523,15 @@ function lineDiff(a, b) {
 const ROUTE = { 'sd-db': ['sd-db change', 'sd-db · local'], declare: ['declaration change', 'sd-db declare · local'] };
 // sd:5159 review: the row holds one review declaration, so each pending line for a repo carries every pending edit for it,
 // made on the reading in the order they were proposed. Running any one line, or all of them, leaves the same row.
+// sd:5958: `base` is the declaration `after` was drafted on, the `before` Write sends, so the two always come from one
+// reading. A reading that cannot be drafted on leaves no `after` and says why: Write is off until a reading can be.
 function restateDeclaration(path) {
   const r = REPOS.find(x => x.path === path), edits = pending.filter(x => x.edit && x.repo?.path === path).reverse();
-  const change = r && edits.length ? reviewDiff(r.review?.declaration || '', body => edits.forEach(x => x.edit(body))) : null;
-  if (change) edits.forEach(x => { x.diff = change.diff; x.after = change.after; x.cmd = `${SDDB} repo declare ${shq(path)} review ${shq(change.after)}`; });
+  if (!r || !edits.length) return;
+  const base = r.review?.declaration || '', change = reviewDiff(base, body => edits.forEach(x => x.edit(body)));
+  edits.forEach(x => Object.assign(x, change
+    ? { diff: change.diff, after: change.after, base, why: '', cmd: `${SDDB} repo declare ${shq(path)} review ${shq(change.after)}` }
+    : { after: null, base: null, cmd: '', why: 'the review declaration on the row is not a JSON object now; fix it there, or withdraw this proposal' }));
 }
 function addProposal(p) {
   const r = REPOS.find(x => x.path === repoParam);
@@ -699,13 +705,14 @@ function registerCommands() {
     // sd:5887: Write does what the sd-db repo declare line does, through /api/actions/run (run_actions.declaration_write): the
     // server refuses a row that changed since this reading, checks the value with the pack's own validator, and writes the
     // row. Undo writes the reading back, or removes a declaration the row did not have.
-    // sd:5958: `before` is the latest reading's declaration, the one restateDeclaration drafted `after` on, not the row the
-    // proposal was made on; a refused write keeps its proposal, and only a landed one leaves the list.
+    // sd:5958: `before` is `base`, the declaration restateDeclaration drafted `after` on, never another reading; a refused
+    // write keeps its proposal, and only a landed one leaves the list.
     { id: 'declaration.write', on: 'declaration change', label: 'Write', does: 'Writes this change to the repo row; Undo writes the old declaration back.', key: 'p', icon: 'play', risk: 'undo', primary: () => true, executes: true,
-      cli: o => o.cmd, sends: o => `POST /api/actions/run {action: declaration.write, path: ${o.repo.path}, kind: review}`,
-      run: o => { const r = REPOS.find(x => x.path === o.repo.path) || o.repo, before = r.review?.declaration || '';
-        return landing(declare(r, JSON.parse(o.after), before).then(v => { dropProposal(o); return v; }), () => `Written · ${o.title}`,
-          () => declare(r, before.trim() ? JSON.parse(before) : null, o.after)); },
+      when: o => o.why || true, cli: o => o.cmd, sends: o => `POST /api/actions/run {action: declaration.write, path: ${o.repo.path}, kind: review}`,
+      run: o => { const { after, base: before } = o;
+        if (!after) return Promise.reject(new Error(o.why || 'no declaration is drafted for this proposal'));
+        return landing(declare(o.repo, JSON.parse(after), before).then(v => { dropProposal(o); return v; }), () => `Written · ${o.title}`,
+          () => declare(o.repo, before.trim() ? JSON.parse(before) : null, after)); },
       undo: undoOf },
     ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', does: 'Drops this proposal from the list; nothing was run.', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
