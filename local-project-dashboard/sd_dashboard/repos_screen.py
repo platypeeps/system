@@ -31,7 +31,7 @@ def _fetch(row, now):
 
 
 def _pull(row, target):
-    """The remedy, or why none is offered: the dashboard never pulls a checkout it did not open."""
+    """The remedy, or why none is offered; Management's Pull runs the remedy after its own checks (sd:5888)."""
     if row["dirty"] is None or "status" in row["truncated"]:
         return "No pull offered: the tree's state was not fully read."
     if row["dirty"]:

@@ -329,7 +329,7 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
       // Each row kind's commands from the page that shows it in full (sd:3449): a job's log and launchd record, as Management
       // and Activity declare them; Show log opens the job on Management > Schedules.
       K.showLog({ job: o => ({ name: o.job }) }),
-      K.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
+      K.printJob({ job: o => ({ name: o.job, service: o.service, exit: o.exit }) }),
       open,
       // Fix (sd:3456, commands.js) on a work row, with the revision the Now read gave; a refused one reads Now again.
       K.fix('work item', { item: o => o.item, report: o => o.itemKind === 'report',

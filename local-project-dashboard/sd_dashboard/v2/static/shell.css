@@ -666,6 +666,12 @@ body[data-only-new] [data-changed]:not([data-new]) { display: none; }
 .asked .q { display: flex; gap: var(--space-2xs); margin: 0 0 2px; font-size: var(--text-sm); color: var(--color-ink); }
 .asked .q .i { color: var(--color-muted); margin-top: 0.2em; }
 .asked .a { margin: 0 0 0 calc(var(--icon-sm) + var(--space-2xs)); }
+/* Run output (sd:5886): what a run button printed, under the row's facts, as Asked here sits; the tail scrolls inside. */
+.ran { margin-top: var(--space-lg); padding-top: var(--space-sm); border-top: var(--rule-hair) solid var(--color-rule); }
+.ran h3 { margin: 0 0 var(--space-xs); }
+.ran pre { margin: var(--space-xs) 0 0; padding: var(--space-sm); max-height: 24rem; overflow: auto; background: var(--color-well); border-radius: var(--radius-sm);
+  font: 400 var(--text-xs)/1.5 var(--font-data); color: var(--color-ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.nudge textarea { display: block; width: 100%; padding: var(--space-xs) var(--space-sm); resize: vertical; font: 400 var(--text-base)/1.45 var(--font-ui); }
 
 
 /* ---------- Annunciator and ledger: one of each on every page that draws one (sd:2588, sd:2680) ---------- */

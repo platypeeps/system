@@ -55,7 +55,7 @@ COLLECTORS = Path(research_screen.__file__).resolve().parents[1] / "collectors.p
 COMMANDS = [
     ["research.render", "research project", "Render", "r", "safe"],
     ["research.review", "research project", "Review", "v", "safe"],
-    ["research.start", "research request", "Run", "r", "confirm"],
+    ["research.start", "research request", "Run", "r", "undo"],
     ["experiment.create", "research page", "Draft experiment", None, "safe"],
     ["experiment.refresh", "research page", "Refresh experiments", None, "safe"],
     ["experiment.attach", "research project", "Attach experiment", None, "safe"],
@@ -953,25 +953,29 @@ FIELD_VALUES = { description: 'Tail sampling keeps the slow spans' }; shellRun(c
         self.assertTrue(any(g.startswith("/api/research/experiments?project=research%2Fbeta") for g in out["R"]["after"]))
         self.assertTrue(any(g.startswith("/api/research/research/beta") for g in out["R"]["after"]))
 
-    def test_start_research_is_off_with_its_reason_shows_the_line_and_sends_nothing(self):
-        out = self.run_page("""const input = ELS.shift;
+    def test_run_files_the_research_request_and_undo_cancels_it(self):
+        """sd:5887: Run files the task the line names through /api/items, as Capture does; Undo cancels it."""
+        out = self.run_page("""const was = ANSWER;
+ANSWER = (p, b) => p === '/api/items' ? [201, { item: { id: 71 }, revision: 'r71' }] : /cancel-task$/.test(p) ? [200, {}] : was(p, b);
+const input = ELS.shift;
 input.value = 'how do vendors detect spans? repo:beta deep'; (input.listeners.input || []).forEach(f => f());
 (input.listeners.input || []).forEach(f => f());
 R.draft = Object.assign({}, C.get('draft:research')); R.when = cmd('research.start').when(C.get('draft:research'));
 R.executes = cmd('research.start').executes; R.req = ELS.req.html;
-(input.listeners.keydown || []).forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""")
+(input.listeners.keydown || []).forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();
+await lastToast().undo(); await flush();""")
         draft = out["R"]["draft"]
         self.assertEqual((draft["q"], draft["repo"], draft["depth"]), ("how do vendors detect spans?", "research/beta", "deep"))
         self.assertEqual(draft["cmd"], "sd task add 'Research: how do vendors detect spans?' --body 'repo=beta depth=deep skill=sd-research-repo stage=draft'")
         # The copied line runs as it is: no bare <item>, which the shell reads as a redirect from a file named item.
         self.assertNotRegex(draft["cmd"], r"(?<![\"'])<\w")
-        self.assertIn("does not create items", out["R"]["when"])
-        self.assertFalse(out["R"]["executes"])
+        self.assertEqual((out["R"]["when"], out["R"]["executes"]), (True, True))
         self.assertIn('data-copy="sd task add', out["R"]["req"])
-        self.assertIn("Not started here:", out["R"]["req"])
-        self.assertEqual(out["posts"], [])
-        self.assertEqual(out["confirms"], [])
-        self.assertEqual([t[0] for t in out["toasts"]], [f"Not started: {out['R']['when']}"])
+        self.assertEqual([p[:2] for p in out["posts"]],
+                         [["/api/items", {"title": "Research: how do vendors detect spans?",
+                                          "body": "repo=beta depth=deep skill=sd-research-repo stage=draft"}],
+                          ["/api/items/71/cancel-task", {"reason": "withdrawn on Research right after filing", "revision": "r71"}]])
+        self.assertEqual(out["toasts"][0][0], "Research filed · #71 · how do vendors detect spans?")
 
     def test_start_mode_after_an_empty_filter_selects_a_shown_row_again(self):
         # Start mode cleared the filter and redrew the board but kept the selection the empty filter had cleared.

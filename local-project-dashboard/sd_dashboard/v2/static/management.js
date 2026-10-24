@@ -490,7 +490,7 @@ function propose(key, value) {
     if (!reviewDiff(rv.declaration || '', edit)) { shell.toast('Not proposed: the review declaration is not a JSON object'); return; }
     // The diff and the line are set by restateDeclaration, with every other pending edit for this repo.
     p = { key, value, route: 'declare', icon: 'terminal', title: `review declaration · ${key} → ${value || 'unset'}`, edit,
-      note: 'Replaces the review declaration on the row with every pending review edit; the next review reads it. Nothing changes until the line runs.' };
+      note: 'Replaces the review declaration on the row with every pending review edit; the next review reads it. Nothing changes until Write runs.' };
   }
   if (p) addProposal(p);
 }
@@ -519,13 +519,13 @@ function lineDiff(a, b) {
   while (j < m) out.push(['add', b[j++]]);
   return out;
 }
-const ROUTE = { 'sd-db': ['sd-db change', 'sd-db · local'], declare: ['declaration change', 'sd-db declare · copy'] };
+const ROUTE = { 'sd-db': ['sd-db change', 'sd-db · local'], declare: ['declaration change', 'sd-db declare · local'] };
 // sd:5159 review: the row holds one review declaration, so each pending line for a repo carries every pending edit for it,
 // made on the reading in the order they were proposed. Running any one line, or all of them, leaves the same row.
 function restateDeclaration(path) {
   const r = REPOS.find(x => x.path === path), edits = pending.filter(x => x.edit && x.repo?.path === path).reverse();
   const change = r && edits.length ? reviewDiff(r.review?.declaration || '', body => edits.forEach(x => x.edit(body))) : null;
-  if (change) edits.forEach(x => { x.diff = change.diff; x.cmd = `${SDDB} repo declare ${shq(path)} review ${shq(change.after)}`; });
+  if (change) edits.forEach(x => { x.diff = change.diff; x.after = change.after; x.cmd = `${SDDB} repo declare ${shq(path)} review ${shq(change.after)}`; });
 }
 function addProposal(p) {
   const r = REPOS.find(x => x.path === repoParam);
@@ -568,7 +568,7 @@ document.getElementById('view-repos').addEventListener('click', e => {
     addProposal({ key: 'review-declaration', route: 'declare', icon: 'terminal', title: 'review declaration · new', edit: body => { body.severity_floor = 'high'; },
       cmd: `${SDDB} repo declare ${shq(r.path)} review ${shq('{"severity_floor":"high"}')}`,
       diff: [['hd', '@@ new review declaration @@'], ['add', '{'], ['add', '  "severity_floor": "high"'], ['add', '}']],
-      note: 'A starting declaration with the floor the managed repos use. Nothing changes until the line runs.' });
+      note: 'A starting declaration with the floor the managed repos use. Nothing changes until Write runs.' });
   }
 });
 
@@ -589,6 +589,11 @@ function landing(promise, msg, inverse) {
 const undoOf = (o, r) => r && r.undo ? r.undo() : false;
 async function setRepo(field, r, value, before) {
   const got = await window.shell.post(`/api/repos/${field}`, { path: r.path, value, before });
+  await reread();
+  return got;
+}
+async function declare(r, value, before) {
+  const got = await window.shell.post('/api/actions/run', { action: 'declaration.write', path: r.path, kind: 'review', value, before });
   await reread();
   return got;
 }
@@ -652,9 +657,14 @@ function registerCommands() {
     { id: 'repo.lane-host', on: 'repo', label: 'Move lane', does: 'Opens the repo\'s settings page, where you move its lane.', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo lane-host ${shq(o.path)} hub`,
       run: o => { location.href = `?repo=${encodeURIComponent(o.path)}#view=repos`; return `Move lane: ${o.label}'s settings page opens`; } },
-    // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
-    { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', icon: 'download', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
-      when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
+    // sd:5888: Pull runs `git pull --ff-only` through /api/actions/run (run_actions.repo_pull). when() carries v1's refusals; the
+    // server checks again under the lane's runner lock, just before the pull, and refuses a pinned checkout, a linked
+    // worktree, another branch, a dirty tree or a lane that runs. Details shows git's output; no verb undoes a pull.
+    { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Fast-forwards the default branch from origin, after the server\'s checks.', key: 'l', icon: 'download', risk: 'confirm', executes: true, primary: o => o.row.git?.state === 'behind',
+      when: o => o.row.registered ? pullWhy(o) : 'not registered in sd-db: Pull runs only in a registered checkout',
+      consequence: o => `This runs git pull --ff-only in ${o.path}. It moves the default branch only, and refuses a dirty tree, another branch or a lane that runs there.`,
+      cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, sends: o => `POST /api/actions/run {action: repo.pull, path: ${o.path}}`,
+      run: o => window.commands.runAction(o, 'repo.pull', { path: o.path }).then(t => { reread(); return t; }) },
     // sd:5064: a codex review of the repository, in the background; the backend reviews only a registered checkout.
     window.commands.adversarialReview('repo', { payload: o => ({ kind: 'repo', target: o.path }), when: registeredWhy }),
     // sd:5100: one open pull request, picked from the shadow rows the document carries (`pulls`), reviewed by codex
@@ -686,9 +696,14 @@ function registerCommands() {
         const undo = o.verb !== 'channels' ? () => setRepo(o.verb, o.repo, o.before, o.value) : o.back !== undefined ? v => setRepo(o.verb, o.repo, o.back, v?.value) : null;
         return landing(setRepo(o.verb, o.repo, o.value, o.before), v => `Ran locally · ${o.title}${v?.remedy ? ` · ${v.remedy}` : ''}`, undo); },
       undo: undoOf },
-    // sd:5159: copy only. `sd-db repo declare` checks the value with sd-review's own validator before it writes the row.
-    { id: 'declaration.copy', on: 'declaration change', label: 'Copy', does: 'Gives the sd-db repo declare line that writes this change to the repo row.', key: 'p', icon: 'copy', risk: 'safe', primary: () => true, executes: false,
-      cli: o => o.cmd, run: () => 'Copy it into a terminal: the dashboard does not write declarations' },
+    // sd:5887: Write does what the sd-db repo declare line does, through /api/actions/run (run_actions.declaration_write): the
+    // server refuses a row that changed since this reading, checks the value with the pack's own validator, and writes the
+    // row. Undo writes the reading back, or removes a declaration the row did not have.
+    { id: 'declaration.write', on: 'declaration change', label: 'Write', does: 'Writes this change to the repo row; Undo writes the old declaration back.', key: 'p', icon: 'play', risk: 'undo', primary: () => true, executes: true,
+      cli: o => o.cmd, sends: o => `POST /api/actions/run {action: declaration.write, path: ${o.repo.path}, kind: review}`,
+      run: o => { dropProposal(o); const before = o.repo.review?.declaration || '';
+        return landing(declare(o.repo, JSON.parse(o.after), before), () => `Written · ${o.title}`, () => declare(o.repo, before.trim() ? JSON.parse(before) : null, o.after)); },
+      undo: undoOf },
     ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', does: 'Drops this proposal from the list; nothing was run.', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
     window.commands.showAssignment({ run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } }),
@@ -726,7 +741,7 @@ function registerCommands() {
       consequence: o => `Sends SIGTERM to ${o.job}${o.pid ? ` (PID ${o.pid})` : ''} through launchd. The run stops part way through; its next scheduled run still starts.`,
       run: cancelJob },
     window.commands.showLog({ job: o => ({ name: o.job }), run: o => { selectRow(o.id, true); return `${o.job}'s log is in Details`; } }),
-    window.commands.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
+    window.commands.printJob({ job: o => ({ name: o.job, service: o.service, exit: o.exit }) }),
     // sd:5126: End session sends SIGTERM to a Claude session on this Mac, so a full builder cap can be cleared. A subagent
     // runs inside its session's process, so a stalled agent ends with its session; the confirm names each agent that does.
     { id: 'cs.end', on: 'claude session', label: 'End session', does: 'Sends SIGTERM to the Claude session; its turn and every agent under it stop.', key: 'e', icon: 'square', risk: 'confirm',
