@@ -1973,6 +1973,69 @@ class OffsiteVerify(Fixture):
         self.assertEqual(result.returncode, 1)
         self.assertIn("commands.yaml is in the manifest but missing", result.stderr)
 
+    #: A runner journal lock as the snapshot writer copies it: an empty file.
+    RUNNER_LOCK = "runner-journal/0123456789abcdef0123456789abcdef.lock"
+
+    def lock_snapshot(self, root: Path) -> Path:
+        """Add a runner journal lock to the nightly snapshot and its manifest."""
+        snapshot = root / "sd-backups" / "2026-09-21"
+        (snapshot / self.RUNNER_LOCK).parent.mkdir()
+        (snapshot / self.RUNNER_LOCK).write_bytes(b"")
+        self.rewrite_manifest(snapshot, entries=self._entries(snapshot))
+        return snapshot / self.RUNNER_LOCK
+
+    def test_a_listed_lock_that_vanished_passes(self) -> None:
+        # sd:6048: the 2026-10-24 06:00 MDT run failed on a lock the manifest
+        # named and the NAS copy lacked. A lock is not state restore reads.
+        root = self.build_share()
+        self.lock_snapshot(root).unlink()
+
+        result = self.run_verify(root)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(".lock", result.stderr)
+
+    def test_an_unlisted_lock_passes(self) -> None:
+        root = self.build_share()
+        lock = self.lock_snapshot(root)
+        snapshot = root / "sd-backups" / "2026-09-21"
+        entries = self._entries(snapshot)
+        del entries[self.RUNNER_LOCK]
+        self.rewrite_manifest(snapshot, entries=entries)
+
+        result = self.run_verify(root)
+
+        self.assertTrue(lock.is_file())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_lock_that_cannot_be_opened_passes(self) -> None:
+        # rsync's open of a lock failed on 2026-10-24 02:47 MDT; the copy off
+        # the share and the hash pass must not open one either.
+        root = self.build_share()
+        self.lock_snapshot(root).chmod(0)
+
+        result = self.run_verify(root)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("a full restore of 2026-09-21 into a throwaway home succeeded",
+                      result.stdout)
+
+    def test_a_listed_journal_record_that_vanished_still_fails(self) -> None:
+        # Only the lock is exempt; a run record is state restore reads.
+        root = self.build_share()
+        snapshot = root / "sd-backups" / "2026-09-21"
+        self.lock_snapshot(root)
+        record = snapshot / "runner-journal" / "0123456789abcdef0123456789abcdef.json"
+        record.write_text("{}\n")
+        self.rewrite_manifest(snapshot, entries=self._entries(snapshot))
+        record.unlink()
+
+        result = self.run_verify(root)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("runner-journal/0123456789abcdef0123456789abcdef.json is in the manifest"
+                      " but missing", result.stderr)
+
     def test_a_snapshot_that_will_not_open_fails(self) -> None:
         root = self.build_share()
         (root / "sd-backups" / "2026-09-21" / "sd.db").write_bytes(b"not a database at all")
@@ -2381,6 +2444,38 @@ class NasCopy(unittest.TestCase):
         self.assertEqual((nas / "Backup/sd-backups/2026-09-20/sd.db").read_text(), "last week\n")
         self.assertTrue((nas / "Backup" / "only-on-nas").is_dir())
 
+    def test_a_lock_rsync_cannot_open_does_not_fail_the_copy(self) -> None:
+        # sd:6048: on 2026-10-24 02:47 MDT rsync's open of a runner journal
+        # lock in the new snapshot failed, and the night's copy failed with
+        # it. The pair's excludes keep locks out; the run records stay.
+        for conf in self.CONFS:
+            with self.subTest(conf=conf.name):
+                work = Path(tempfile.mkdtemp(prefix="nas-copy-test-"))
+                self.addCleanup(shutil.rmtree, work, True)
+                source = work / "local" / "Backup"
+                journal = source / "sd-backups" / "2026-10-24" / "runner-journal"
+                journal.mkdir(parents=True)
+                (journal.parent / "sd.db").write_text("tonight\n")
+                (journal / "0123456789abcdef0123456789abcdef.json").write_text("{}\n")
+                lock = journal / "0123456789abcdef0123456789abcdef.lock"
+                lock.write_bytes(b"")
+                lock.chmod(0)
+                nas = work / "nas" / "Backup"
+                nas.mkdir(parents=True)
+                excludes = _pairs(conf)[0][2:]
+                pairs = work / "pairs.conf"
+                pairs.write_text("|".join([str(source), str(nas), *excludes]) + "\n")
+
+                run = subprocess.run(
+                    ["/bin/sh", str(MIRROR_SYNC), "sync"], capture_output=True, text=True,
+                    env={**{k: v for k, v in os.environ.items() if k != "MIRROR_SYNC_BACKUP_ROOT"},
+                         "MIRROR_SYNC_CONF": str(pairs), "MIRROR_SYNC_ADDITIVE": "1"})
+
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                copied = nas / "sd-backups" / "2026-10-24" / "runner-journal"
+                self.assertTrue((copied / "0123456789abcdef0123456789abcdef.json").is_file())
+                self.assertEqual(sorted(copied.glob("*.lock")), [])
+
 
 class NasHourlyCopy(unittest.TestCase):
     """The hourly snapshots to the NAS, after each hourly run (sd:4009).
@@ -2401,6 +2496,13 @@ class NasHourlyCopy(unittest.TestCase):
                 self.assertTrue(source.rstrip("/").endswith("/Backup Local/sd-backups"), source)
                 self.assertTrue(destination.rstrip("/").endswith("/Backup/sd-backups-hourly"),
                                 destination)
+
+    def test_the_hourly_pair_copies_every_entry_the_prune_lists(self) -> None:
+        # The NAS prune deletes a copy only when its names match its
+        # manifest's, locks included; a copy without them would never go.
+        for conf in self.CONFS:
+            with self.subTest(conf=conf.name):
+                self.assertEqual([pair[2:] for pair in _pairs(conf)], [[]])
 
     def test_a_short_local_root_leaves_the_nas_history(self) -> None:
         # A promoted hub starts with one local snapshot; the NAS holds a
