@@ -248,7 +248,8 @@ window.PAGE_FILTER = { '': 'Needs you' };
 
   // The day track (sd:5921): the document's `track`, the last 24 hours as marks in four lanes, each linked to its row, with
   // the same marks as a table in a details and a key of four counts linked to Tasks. A track that was not read says so;
-  // a day with no mark says that in one line, never an empty axis.
+  // a day with no mark says that in one line, never an empty axis. Landed links the items done less than a day ago
+  // (sd:5934): Tasks' In status bucket 0, as a task has no merged or delivered status.
   const LANES = [['landed', 'Landed', 18], ['jobs', 'Jobs', 40], ['briefs', 'Briefs', 58], ['live', 'Live', 74]];
   const markHref = (lane, m) => lane === 'landed' || lane === 'live' ? shell.itemHref(m.item) : `?row=${encodeURIComponent(m.id)}`;
   function dayTrack() {
@@ -273,7 +274,7 @@ window.PAGE_FILTER = { '': 'Needs you' };
       ${marks.map(mark)}<line class="now" x1="${x(T.until)}" y1="4" x2="${x(T.until)}" y2="82"/></svg>`
       : html`<p class="why">Nothing landed, failed, was filed or started in the last 24 hours.</p>`);
     const K2 = T.key;
-    put($('flowkey'), html`<li><a href="/tasks?view=list&amp;status=merged,delivered&amp;realm=all">Landed 24h</a></li><li><b>${K2.landed}</b></li>
+    put($('flowkey'), html`<li><a href="/tasks?view=list&amp;status=done&amp;age=0&amp;realm=all">Landed 24h</a></li><li><b>${K2.landed}</b></li>
       <li><a href="/queue">Landing</a></li><li><b>${K2.landing}</b></li>
       <li><a href="/tasks?view=list&amp;due=week&amp;realm=all">Due this week</a></li><li><b>${K2.due_week}</b></li>
       <li><a href="/tasks?view=list&amp;status=blocked&amp;realm=all">Blocked</a></li><li><b>${K2.blocked}</b></li>`);

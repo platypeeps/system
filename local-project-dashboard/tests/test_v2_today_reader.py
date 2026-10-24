@@ -281,6 +281,27 @@ class TheTrack(ReaderCase):
         self.assertIn('status=blocked&amp;realm=all">Blocked</a></li><li><b>27</b>', out["R"]["key"])
         self.assertFalse(out["R"]["table"])
 
+    def test_each_key_link_filters_tasks_on_values_tasks_accepts(self):
+        """sd:5934: Landed 24h linked status=merged,delivered, which no task has, so Tasks listed none. Each key link names
+        only statuses `workflow.TASK_STATUSES` holds and age buckets `reads.age_histogram` keys, and Landed keeps 24 h."""
+        from urllib.parse import parse_qs, urlsplit
+
+        from sd_db import reads, workflow
+
+        self.doc["track"] = self.TRACK
+        key = self.run_page(self.DRAWN)["R"]["key"].replace("&amp;", "&")
+        links = dict((label, href) for href, label in re.findall(r'<a href="([^"]+)">([^<]+)</a>', key))
+        ages = {bucket.key for bucket in reads.age_histogram([], now=NOW)}
+        for label, href in links.items():
+            if not href.startswith("/tasks"):
+                continue
+            query = parse_qs(urlsplit(href).query)
+            with self.subTest(label=label):
+                self.assertLessEqual(set(",".join(query.get("status", [])).split(",")) - {""}, set(workflow.TASK_STATUSES))
+                self.assertLessEqual(set(",".join(query.get("age", [])).split(",")) - {""}, ages)
+        landed = parse_qs(urlsplit(links["Landed 24h"]).query)
+        self.assertEqual((landed["status"], landed["age"], landed["realm"]), (["done"], ["0"], ["all"]))
+
     def test_a_day_with_no_mark_is_one_line_not_an_empty_axis(self):
         self.doc["track"] = {**self.TRACK, "landed": [], "jobs": [], "live": [], "key": {**self.TRACK["key"], "landed": 0}}
         out = self.run_page(self.DRAWN)
