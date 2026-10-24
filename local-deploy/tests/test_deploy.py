@@ -75,8 +75,6 @@ class DeployTest(unittest.TestCase):
         self.repo = self.tmp / "repo"
         self.write("local-deploy/deploy.sh", (FOLDER / "deploy.sh").read_text())
         self.write("lib/config.sh", (FOLDER.parent / "lib" / "config.sh").read_text())
-        self.write("local-project-dashboard/dashboard.sh",
-                   ENTRYPOINT.format(name="dashboard.sh", status="DEPLOY_TEST_HEALTH"))
         self.git("init", "-q")
         self.commit()
         self.base = self.head()
@@ -88,6 +86,10 @@ class DeployTest(unittest.TestCase):
                            (self.python, PYTHON)):
             path.write_text(body)
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        # The dashboard is the command pack's since pack sd:5987.
+        dashboard = self.tmp / "pack" / "dashboard" / "dashboard.sh"
+        dashboard.parent.mkdir(parents=True)
+        dashboard.write_text(ENTRYPOINT.format(name="dashboard.sh", status="DEPLOY_TEST_HEALTH"))
         self.calls = self.tmp / "calls.txt"
         self.calls.touch()
         self.env = {"PATH": f"{stubs}:/usr/bin:/bin", "HOME": str(self.tmp),
@@ -96,7 +98,7 @@ class DeployTest(unittest.TestCase):
                     "DEPLOY_TEST_KICKED": str(self.tmp / "kicked"),
                     "DEPLOY_TEST_OUT": str(self.tmp / "out"),
                     "DEPLOY_TEST_PYTHON": str(self.python),
-                    "DEPLOY_WAIT": "1", "PYTHON": sys.executable, "XDG_STATE_HOME": str(self.tmp / "state")}
+                    "DEPLOY_WAIT": "1", "PYTHON": sys.executable, "SD_PACK_ROOT": str(self.tmp / "pack"), "XDG_STATE_HOME": str(self.tmp / "state")}
         self.state = self.tmp / "state" / "system" / "deploy" / "deployed"
         self.stopped = self.state.with_name("stopped")
         (self.tmp / "out").mkdir()

@@ -267,9 +267,9 @@ exec "$@"' "$ROOT/../lib/config.sh" "$claude" "$@"
   # because codex is a launcher that spawns its sandbox and the reviewer
   # under it (review of #396): a signal to codex alone returns to the
   # caller while the reviewer keeps running and keeps the pipe open. The
-  # same shape as the two timeout paths this repository already has,
-  # local-project-dashboard/collectors.py (start_new_session + killpg) and
-  # the pack's lib/sd_db/runner_exec.py. A run cut off at the bound exits 124,
+  # same shape as two timeout paths in the command pack,
+  # dashboard/collectors.py (start_new_session + killpg) and
+  # lib/sd_db/runner_exec.py. A run cut off at the bound exits 124,
   # timeout(1)'s own status, so a caller can tell it from the reviewer's
   # own failure; a child that dies of a signal otherwise exits 128+signal.
   status=0

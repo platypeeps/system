@@ -7,6 +7,8 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
+# The command pack holds the dashboard since pack sd:5987.
+SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 # shellcheck source=../lib/config.sh
 . "$ROOT/lib/config.sh"
 PREFIX="$(st_label_prefix)"
@@ -169,7 +171,7 @@ apply() {
     case "$service" in
       dashboard) held sd-dashboard || { skip dashboard sd-dashboard; continue; }
         launchctl kickstart -k "gui/$(id -u)/$PREFIX.sd-dashboard" || fail "dashboard kickstart"
-        sh "$ROOT/local-project-dashboard/dashboard.sh" health --wait "${DEPLOY_WAIT:-30}" || fail "dashboard health"
+        sh "$SD_PACK_ROOT/dashboard/dashboard.sh" health --wait "${DEPLOY_WAIT:-30}" || fail "dashboard health"
         echo "restarted dashboard" ;;
     esac
   done
@@ -190,7 +192,7 @@ start_agent() {
   starting="$1"
   case "$1" in
     *.sd-serve) await_listener ;;
-    *.sd-dashboard) sh "$ROOT/local-project-dashboard/dashboard.sh" health --wait "${DEPLOY_WAIT:-30}" ||
+    *.sd-dashboard) sh "$SD_PACK_ROOT/dashboard/dashboard.sh" health --wait "${DEPLOY_WAIT:-30}" ||
       fail "dashboard health" ;;
   esac
   starting=""

@@ -1,6 +1,5 @@
 ---
 paths:
-  - "local-project-dashboard/**"
   - "local-cron-jobs/**"
   - "local-msgsnap/**"
   - "local-mirror-sync/**"
@@ -26,6 +25,6 @@ Nothing under launchd can click a prompt, so an ungranted read waits instead of 
 - Keep every vault reader on the one pinned Homebrew Python: each `Python.app` has bundle id `org.python.python`, and TCC keeps one Full Disk Access row for it, so granting one version revokes the other (sd:5047).
 - A `brew upgrade python` moves the Cellar path and silently drops that path's grant.
   - `collectors.vault_blocked()` reports it on the first vault-reading tile asked, naming the interpreter to re-grant.
-  - `local-project-dashboard/dashboard.sh grants` probes both paths in one run and names each result.
+  - The pack's `dashboard/dashboard.sh grants` probes both paths in one run and names each result.
 - **Test a grant under launchd, never from a terminal**: Terminal's own FDA leaks in.
   Bootstrap `dashboard.sh grants` as a one-shot plist under `gui/$(id -u)` and read its output file; `dashboard.sh help` gives its exit codes.

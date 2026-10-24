@@ -14,9 +14,9 @@ own README. There is no repository-wide build.
 | `lib` | The shared config resolver the tools source |
 | `docs` | Design documents and planned work (`docs/work/`) |
 
-The larger pieces are `local-project-dashboard` (the dashboard over the
-workflow database) and `local-cron-jobs` (launchd-scheduled jobs). They pair
-with the public command pack
+The larger piece is `local-cron-jobs` (launchd-scheduled jobs). It pairs
+with the public command pack, which also holds the dashboard over the
+workflow database:
 [`platypeeps/sd-ai-command-pack`](https://github.com/platypeeps/sd-ai-command-pack).
 
 ## Conventions
@@ -100,7 +100,6 @@ the second column; the third column is free text.
 | local-opentelemetry-collector | `4317`, `4318`, `55679` | OTLP gRPC, OTLP HTTP, zPages |
 | local-opentelemetry-demo | `8080`, `18080`, `18081` | demo frontend, Kubernetes and Prometheus MCP forwards |
 | local-postgres | `5434` | PostgreSQL (`POSTGRES_HOST_PORT`) |
-| local-project-dashboard | `8767` | the workflow dashboard (`dashboard.sh serve --port`) |
 | local-redis | `6379`, `8001` | Redis Stack, RedisInsight |
 | mezmo-aura | `3033`, `3101`, `3102` | Aura, experiment orchestrator, single-agent |
 

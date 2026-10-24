@@ -7,7 +7,6 @@ paths:
   - "local-mail-intake/**"
   - "local-notify/**"
   - "local-obsidian-review/**"
-  - "local-project-dashboard/**"
   - "local-repo-sync/**"
   - "local-scan-for-secrets/**"
 ---

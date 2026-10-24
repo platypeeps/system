@@ -87,9 +87,10 @@ def seal(case, stubs):
     case.addCleanup(check)
 
 
-def render(template, label, home, root):
-    """A LaunchAgent template as the agents stage installs it."""
+def render(template, label, home, root, pack=None):
+    """A LaunchAgent template as the agents stage installs it; `pack` defaults as `SD_PACK_ROOT` does."""
     text = pathlib.Path(template).read_text()
     return (text.replace("@HOME@", str(home))
                 .replace("@LABEL@", label)
-                .replace("@ROOT@", str(root)))
+                .replace("@ROOT@", str(root))
+                .replace("@PACK@", str(pack or f"{home}/repos/platypeeps/sd-ai-command-pack")))

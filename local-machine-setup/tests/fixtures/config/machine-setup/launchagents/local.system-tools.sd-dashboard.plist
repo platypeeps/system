@@ -6,7 +6,7 @@
 	<string>@LABEL@</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>@ROOT@/local-project-dashboard/dashboard.sh</string>
+		<string>@PACK@/dashboard/dashboard.sh</string>
 		<string>serve</string>
 		<string>--port</string>
 		<string>8767</string>

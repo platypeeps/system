@@ -22,4 +22,4 @@ test:
 post-merge:
 	REPO_SYNC_LANES_ONLY=1 REPO_SYNC_DRAIN_WAIT=420 sh local-repo-sync/repo-sync.sh refresh "$(CURDIR)"
 	sh local-agent-prompt/agent-prompt.sh refresh --apply
-	sh local-project-dashboard/dashboard.sh health
+	sh "$${SD_PACK_ROOT:-$$HOME/repos/platypeeps/sd-ai-command-pack}/dashboard/dashboard.sh" health
