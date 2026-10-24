@@ -3,8 +3,10 @@
 The Claude Code statusline. Runs the [claude-hud] plugin, then adds what the
 plugin cannot render on its own:
 
-- the **full login email** on line 1 — claude-hud's `auth.ts` strips the domain
-  and only ever prints the local part;
+- the **login** at the end of the Tokens line (line 1 until a session has
+  tokens) — claude-hud's `auth.ts` strips the domain and only ever prints the
+  local part. A login named in `STATUSLINE_ACCOUNT_LABELS` shows as its short
+  label instead of the email;
 - the **system load** on line 1 — the 1, 5 and 15 minute averages; the 1 minute
   value is yellow at or above the logical CPU count and red at twice that;
 - an **allowance warning** on line 2 — red, once a plan or model-scoped window
@@ -44,6 +46,11 @@ and sets:
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude config dir — plugin cache, settings |
 | `BUN_BIN` | `~/.bun/bin/bun`, then `$PATH` | bun binary used to run claude-hud's TypeScript entrypoint |
 | `FABLE_WARN_PCT` | `35` | remaining percent below which the allowance warning shows |
+| `STATUSLINE_ACCOUNT_LABELS` | unset | space-separated `email=label` pairs; read from `<config>/statusline/.env` (copy `.env.example`) |
+
+machine-setup's `envs` stage installs `<config>/statusline/.env` from the
+config folder's `envs/<profile>/local-statusline.env`, else `envs/common/`, so
+each machine gets the same labels.
 
 ## Gotchas
 

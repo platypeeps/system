@@ -29,6 +29,7 @@ BUN_STUB = """#!/bin/sh
 cat > /dev/null
 printf '%%s\\n' '%s'
 printf '%%s\\n' '%s'
+[ -z "${FAKE_HUD_LINE3:-}" ] || printf '%%s\\n' "$FAKE_HUD_LINE3"
 """ % (HUD_LINE_1, HUD_LINE_2)
 
 # vm.loadavg prints "{ A B C }" and hw.logicalcpu a count, one per line.
@@ -129,6 +130,36 @@ class StatuslineTest(unittest.TestCase):
             HUD_LINE_1 + SEP + "someone@example.test" + SEP + "load 5.0 4.0 3.0",
         )
         self.assertEqual(line2, HUD_LINE_2)
+
+    def test_mapped_email_shows_its_label(self):
+        (self.root / "claude.json").write_text(
+            json.dumps({"oauthAccount": {"emailAddress": "b@example.test"}})
+        )
+        conf = self.home / ".config/system/statusline"
+        conf.mkdir(parents=True)
+        (conf / ".env").write_text(
+            'STATUSLINE_ACCOUNT_LABELS="a@example.test=one b@example.test=two"\n'
+        )
+        line1, _ = self.render()
+        self.assertEqual(line1, HUD_LINE_1 + SEP + "two" + SEP + "load 5.0 4.0 3.0")
+        # An unmapped login keeps its full email.
+        line1, _ = self.render(STATUSLINE_ACCOUNT_LABELS="a@example.test=one")
+        self.assertIn(SEP + "b@example.test" + SEP, line1)
+
+    def test_login_ends_the_tokens_line(self):
+        (self.root / "claude.json").write_text(
+            json.dumps({"oauthAccount": {"emailAddress": "b@example.test"}})
+        )
+        tokens = "\033[2mTokens 1.2M (in: 1k, out: 2k)\033[0m"
+        proc = self.run_script(
+            "render",
+            FAKE_HUD_LINE3=tokens,
+            STATUSLINE_ACCOUNT_LABELS="b@example.test=two",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        lines = proc.stdout.splitlines()
+        self.assertEqual(lines[0], HUD_LINE_1 + SEP + "load 5.0 4.0 3.0")
+        self.assertEqual(lines[2], tokens + SEP + "two")
 
     def test_missing_claude_hud_exits_1(self):
         proc = self.run_script(
