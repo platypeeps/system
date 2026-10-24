@@ -4,7 +4,8 @@ The HUD is three pieces: the claude-hud plugin, a statusLine in
 ~/.claude/settings.json that runs local-statusline, and the plugin's display
 config. A machine missing any is drift, and `update tooling --apply` installs
 what is missing. The config is seeded from the committed example only when
-absent, and an existing one is never touched (sd:2929).
+absent, and an existing one is never touched (sd:2929), except that a speed
+readout switched on is switched off (sd:6069).
 
 The script runs from a copy of this folder under a temporary root. `claude`
 is a stub on PATH that logs its arguments, and local-statusline/statusline.sh
@@ -134,6 +135,19 @@ class ToolingClaudeHudTest(unittest.TestCase):
 
         self.assertIn("ok      claude-hud config", out)
         self.assertEqual(self.hud_config.read_bytes(), mine)
+
+    def test_the_speed_readout_is_switched_off_and_nothing_else_moves(self):
+        self.hud_config.parent.mkdir(parents=True)
+        self.hud_config.write_text('{"language": "en", "display": {"showSpeed": true, "showDuration": false}}\n')
+
+        dry = self.run_tooling()
+        self.assertIn("DIFFERS claude-hud showSpeed on", dry)
+        self.assertTrue(json.loads(self.hud_config.read_text())["display"]["showSpeed"])
+
+        self.run_tooling("--apply")
+        config = json.loads(self.hud_config.read_text())
+        self.assertEqual(config, {"language": "en", "display": {"showSpeed": False, "showDuration": False}})
+        self.assertNotIn("showSpeed", self.run_tooling())
 
     def test_a_machine_with_every_piece_reports_ok_and_runs_nothing(self):
         self.install_plugin()

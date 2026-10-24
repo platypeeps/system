@@ -2061,7 +2061,8 @@ stage_tooling() {
   # plugin's display options in ~/.claude/plugins/claude-hud/config.json.
   # Each gap prints MISSING so --fail-on-drift sees it. The config is seeded
   # from local-statusline's example only when nothing is at that path, so an
-  # operator's own config is never overwritten (sd:2929).
+  # operator's own config is never overwritten (sd:2929), except that the
+  # speed readout is switched off (sd:6069).
   if command -v claude >/dev/null 2>&1; then
     if ls -d "$HOME"/.claude/plugins/cache/*/claude-hud/*/ >/dev/null 2>&1; then
       echo "  ok      claude-hud plugin"
@@ -2080,6 +2081,16 @@ stage_tooling() {
       if run_ok mkdir -p "${hud_config%/*}"; then
         run cp -n "$ROOT/local-statusline/claude-hud.config.example.json" "$hud_config"
       fi
+    fi
+    # One option is kept in an existing config too: the speed readout
+    # (`out: N tok/s`) stays off on every profile (sd:6069); every other
+    # option stays as the operator set it.
+    if [ -f "$hud_config" ] && python3 -c 'import json, sys
+sys.exit(0 if json.load(open(sys.argv[1])).get("display", {}).get("showSpeed") is True else 1)' "$hud_config" 2>/dev/null; then
+      echo "  DIFFERS claude-hud showSpeed on"
+      run python3 -c 'import json, sys
+d = json.load(open(sys.argv[1])); d["display"]["showSpeed"] = False
+open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$hud_config"
     fi
     if [ ! -f "$HOME/.claude/settings.json" ]; then
       echo "  SKIP    statusLine not set (no ~/.claude/settings.json; start claude once)"
