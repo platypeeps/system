@@ -62,7 +62,7 @@ COMMANDS = [
     ["document.skip-repo", "document", "Disable render for repo", "e", "safe"],
     # build (sd:3525, review 2026-10-12 A2 F5): the design's "Run", r, undo read as a run with an Undo, and r is Render on a
     # document. It only copies the line, so it is Request, safe, and has no key until it files the request.
-    ["document.request", "document request draft", "Request", None, "safe"],
+    ["document.request", "document request draft", "Request", None, "undo"],
     # sd:3986: a root's name and Hide are its own view row.
     ["root.rename", "document root", "Rename root", None, "undo"],
     ["root.hide", "document root", "Hide root", None, "undo"],
@@ -722,16 +722,21 @@ shellRun(r, plan); R.toast = lastToast().msg;""")
         self.assertEqual(out["counts"], {"documents": 4})
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "render-stale documents"})
 
-    def test_a_request_is_a_copy_only_line_and_files_nothing(self):
-        out = self.run_page("""const input = ELS.shift; input.value = 'request water summary repo:lab';
+    def test_a_request_files_the_task_its_line_names_and_undo_cancels_it(self):
+        """sd:5887: Request files through /api/items, as Capture does, and keeps the sd task add line."""
+        out = self.run_page("""const was = ANSWER;
+ANSWER = (p, b) => p === '/api/items' ? [201, { item: { id: 72 }, revision: 'r72' }] : /cancel-task$/.test(p) ? [200, {}] : was(p, b);
+const input = ELS.shift; input.value = 'request water summary repo:lab';
 input.listeners.input.forEach(f => f()); input.listeners.input.forEach(f => f());
 const r = cmd('document.request'), d = C.get('draft:request');
-R.r = [r.executes, r.when(d), r.cli(d)]; shellRun(r, d); await flush();""")
+R.r = [r.executes, r.when(d), r.cli(d)]; shellRun(r, d); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();""")
         executes, when, cli = out["R"]["r"]
-        self.assertEqual((executes, when), (False, True))
+        self.assertEqual((executes, when), (True, True))
         self.assertEqual(cli, "sd task add 'Document request: water summary' --body 'repo=lab kind=research skill=sd-research-repo'")
-        self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"][-1], ["Copy the line: the dashboard does not file document requests yet", False])
+        self.assertEqual([p[:2] for p in out["posts"]],
+                         [["/api/items", {"title": "Document request: water summary", "body": "repo=lab kind=research skill=sd-research-repo"}],
+                          ["/api/items/72/cancel-task", {"reason": "withdrawn on Documents right after filing", "revision": "r72"}]])
+        self.assertEqual(out["R"]["toast"], "Request filed · #72 · water summary")
 
     def test_a_request_names_only_a_repository_it_can_resolve(self):
         # An unknown or ambiguous repo: never falls back to the selected row's repository; an exact key or a unique prefix wins.

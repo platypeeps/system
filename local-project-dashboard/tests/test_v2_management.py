@@ -1050,13 +1050,13 @@ class TheScript(PageScript):
             ["repo.managed", "repo", "undo", "g", True, True],
             ["repo.standard", "repo", "confirm", None, True, False],
             ["repo.lane-host", "repo", "safe", "h", False, False],
-            ["repo.pull", "repo", "safe", "l", False, False],
+            ["repo.pull", "repo", "confirm", "l", True, False],
             ["repo.adversarial-review", "repo", "safe", None, True, False],
             ["repo.adversarial-pr", "repo", "safe", None, True, False],
             ["repo.deep-review", "repo", "safe", None, True, False],
             ["repo.land", "repo", "confirm", "n", True, False],
             ["sddb.run", "sd-db change", "undo", "u", True, True],
-            ["declaration.copy", "declaration change", "safe", "p", False, False],
+            ["declaration.write", "declaration change", "undo", "p", True, True],
             ["sddb.withdraw", "sd-db change", "safe", None, False, False],
             ["declaration.withdraw", "declaration change", "safe", None, False, False],
             ["asg.get", "assignment", "safe", "o", False, False],
@@ -1070,7 +1070,7 @@ class TheScript(PageScript):
             ["jobs.retry", "job", "safe", "t", None, False],
             ["jobs.cancel", "job", "confirm", "x", None, False],
             ["jobs.log", "job", "safe", "l", False, False],
-            ["jobs.print", "job", "safe", "p", False, False],
+            ["jobs.print", "job", "safe", "p", True, False],
             ["cs.end", "claude session", "confirm", "e", True, False],
         ])
 
@@ -1372,6 +1372,21 @@ R.lamp = /data-view="sessions" data-state="(\w+)"/.exec(ELS.annunciator.html)[1]
         self.assertNotIn("stale", out["R"]["repos"])
         self.assertIn("fleet · 11:31 UTC · <span class=\"g-unknown\">▨</span> stale: git did not answer", out["R"]["sess"])
         self.assertEqual(out["R"]["lamp"], "unknown")
+
+    def test_pull_asks_then_posts_the_registered_path_and_is_off_for_an_unregistered_checkout(self):
+        """sd:5888: Pull runs through /api/actions/run; the server checks the checkout again, so the page sends only its key."""
+        path = self.ids["checkout"]
+        behind = {"path": path, "state": "behind", "remedy": f"git -C {path} pull --ff-only", "branch": "main", "default": "main",
+                  "dirty": 0, "ahead": 0, "behind": 2, "headline": "2 behind", "detail": "", "error": None}
+        loose = dict(behind, path="/elsewhere/loose")
+        doc = dict(self.doc, git=dict(self.doc["git"] or {}, repos=[behind, loose]))
+        out = self.run_page(f"""const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, {{ action: b.action, label: 'Pull', line: 'l', exit: 0, output: 'Fast-forward', cut: false }}] : was(p, b);
+R.off = cmd('repo.pull').when(C.get('repo:/elsewhere/loose')); R.on = cmd('repo.pull').when(C.get('repo:{path}'));
+shellRun(cmd('repo.pull'), C.get('repo:{path}')); await flush(); R.toast = lastToast().msg;""", doc=doc)
+        self.assertEqual(out["R"]["off"], "not registered in sd-db: Pull runs only in a registered checkout")
+        self.assertIs(out["R"]["on"], True)
+        self.assertEqual(([b for p, b, _ in out["posts"] if p == "/api/actions/run"], out["confirms"]), ([{"action": "repo.pull", "path": path}], ["repo.pull"]))
+        self.assertEqual(out["R"]["toast"], "Pull · exit 0 · the output is in Details")
 
     def test_a_repo_flip_posts_the_verb_with_before_toasts_after_the_write_and_undoes(self):
         path = self.ids["checkout"]
@@ -1870,17 +1885,28 @@ R.parsed = R.texts.map(t => { try { return JSON.parse(t); } catch (e) { return '
 
     def test_a_floor_change_gives_the_sd_db_declare_line_not_a_pull_request(self):
         """sd:5159: the policy lives on the repo row; the page drafts `sd-db repo declare`, the pack's one writer."""
-        out = self.proposal(self.LAST, "propose('severity_floor', 'low'); R.p = [pending[0].type, cmd('declaration.copy').cli(pending[0])];")
+        out = self.proposal(self.LAST, "propose('severity_floor', 'low'); R.p = [pending[0].type, cmd('declaration.write').cli(pending[0])];")
         path = self.ids["checkout"]
         self.assertEqual(out["R"]["p"], ["declaration change", "~/repos/platypeeps/sd-ai-command-pack/bin/sd-db repo declare "
                                          f"'{path}' review '{{\"copilot_review\":{{\"automatic_deep\":false}},\"severity_floor\":\"low\"}}'"])
+
+    def test_write_posts_the_declaration_with_the_reading_it_changes_and_undo_writes_the_reading_back(self):
+        """sd:5887: Write runs what the sd-db repo declare line does; the server refuses a row that changed since `before`."""
+        out = self.proposal(self.LAST, """propose('severity_floor', 'low'); C.run(cmd('declaration.write'), pending[0]); await flush();
+R.toast = lastToast().msg; R.left = pending.length; await lastToast().undo(); await flush();""".replace("C.run", "OUT.posts.length = 0; C.run"))
+        path, after = self.ids["checkout"], {"copilot_review": {"automatic_deep": False}, "severity_floor": "low"}
+        self.assertEqual([b for p, b, _ in out["posts"] if p == "/api/actions/run"],
+                         [{"action": "declaration.write", "path": path, "kind": "review", "value": after, "before": self.LAST},
+                          {"action": "declaration.write", "path": path, "kind": "review", "value": json.loads(self.LAST),
+                           "before": json.dumps(after, separators=(",", ":"))}])
+        self.assertEqual((out["R"]["toast"], out["R"]["left"]), ("Written · review declaration · severity_floor → low", 0))
 
     def test_two_pending_edits_draft_lines_that_each_carry_both(self):
         """sd:5159 review: each line replaced the whole declaration from the first reading, so running the second dropped
         the first edit. Every pending line now carries every pending edit; withdrawing one drops it from the rest."""
         out = self.proposal(self.LAST, """propose('severity_floor', 'low'); propose('automatic_deep', 'true');
-R.both = pending.map(p => JSON.parse(cmd('declaration.copy').cli(p).split(' review ')[1].slice(1, -1)));
-withdraw('severity_floor', true); R.left = pending.map(p => JSON.parse(cmd('declaration.copy').cli(p).split(' review ')[1].slice(1, -1)));""")
+R.both = pending.map(p => JSON.parse(cmd('declaration.write').cli(p).split(' review ')[1].slice(1, -1)));
+withdraw('severity_floor', true); R.left = pending.map(p => JSON.parse(cmd('declaration.write').cli(p).split(' review ')[1].slice(1, -1)));""")
         both = {"copilot_review": {"automatic_deep": True}, "severity_floor": "low"}
         self.assertEqual(out["R"]["both"], [both, both])
         self.assertEqual(out["R"]["left"], [{"copilot_review": {"automatic_deep": True}, "severity_floor": "high"}])
@@ -1892,7 +1918,7 @@ withdraw('severity_floor', true); R.left = pending.map(p => JSON.parse(cmd('decl
         row["review"] = {"declaration": '{\n  "categories": ["x"],\n  "severity_floor": "high"\n}', "severity_floor": "high"}
         out = self.proposal(self.LAST, """propose('severity_floor', 'low');
 DOC0.repos.find(r => r.path === repoParam).review = %s; await reread();
-R.line = JSON.parse(cmd('declaration.copy').cli(pending[0]).split(' review ')[1].slice(1, -1));""" % json.dumps(row["review"]))
+R.line = JSON.parse(cmd('declaration.write').cli(pending[0]).split(' review ')[1].slice(1, -1));""" % json.dumps(row["review"]))
         self.assertEqual(out["R"]["line"], {"categories": ["x"], "severity_floor": "low"})
 
     def settings_page(self, review, body):
@@ -1902,7 +1928,7 @@ R.line = JSON.parse(cmd('declaration.copy').cli(pending[0]).split(' review ')[1]
 
     def test_a_row_without_a_declaration_offers_the_starter_line(self):
         click = "ELS['view-repos'].listeners.click.forEach(f => f({ target: { closest: s => s === '[data-create-review]' ? {} : null } }));"
-        out = self.settings_page({"declaration": None}, f"R.html = ELS['view-repos'].html; {click} R.cli = cmd('declaration.copy').cli(pending[0]);")
+        out = self.settings_page({"declaration": None}, f"R.html = ELS['view-repos'].html; {click} R.cli = cmd('declaration.write').cli(pending[0]);")
         self.assertIn("Add declaration", out["R"]["html"])
         self.assertNotIn("sd-review.json", out["R"]["html"])
         self.assertTrue(out["R"]["cli"].endswith(f"repo declare '{self.ids['checkout']}' review '{{\"severity_floor\":\"high\"}}'"),
@@ -1913,7 +1939,7 @@ R.line = JSON.parse(cmd('declaration.copy').cli(pending[0]).split(' review ')[1]
         found = {"declaration": '{\n  "categories": ["x"]\n}', "severity_floor": None, "automatic_deep": None}
         out = self.settings_page({"declaration": None}, f"""{click}
 DOC0.repos.find(r => r.path === repoParam).review = {json.dumps(found)}; await reread();
-R.line = JSON.parse(cmd('declaration.copy').cli(pending[0]).split(' review ')[1].slice(1, -1));""")
+R.line = JSON.parse(cmd('declaration.write').cli(pending[0]).split(' review ')[1].slice(1, -1));""")
         self.assertEqual(out["R"]["line"], {"categories": ["x"], "severity_floor": "high"})
 
     def test_an_unread_declaration_offers_no_add(self):

@@ -600,15 +600,16 @@ class TheDecideBadge(unittest.TestCase):
 class TheJobRow(ReaderCase):
     """sd:3449: a job row carries the commands Management and Activity give a job, from the one declaration in commands.js."""
 
-    def test_a_job_row_shows_its_log_on_schedules_and_prints_its_launchd_record(self):
+    def test_a_job_row_runs_its_log_and_its_launchd_record(self):
         out = self.run_page("""const o = C.get('job:nightly-sync:7'), log = cmd('jobs.log'), print = cmd('jobs.print');
 R.got = [log.on, log.executes, log.cli(o), print.on, print.executes, print.when(o), print.cli(o), !!print.primary(o)];
-window.shell.pages = { Management: '/management' }; R.said = log.run(o);""")
-        self.assertEqual(out["R"]["got"], ["job", False, "local-cron-jobs/cron-jobs.sh logs nightly-sync",
-                                           "job", False, True, "launchctl print fixture/nightly-sync", False])
-        self.assertEqual(out["R"]["said"], "nightly-sync opens in Management > Schedules")
-        # The address it opens is the one Activity's test reads (test_v2_activity): the same declaration builds it.
-        self.assertEqual(out["posts"], [])
+const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Show log', line: `local-cron-jobs/cron-jobs.sh logs ${b.job}`, exit: 0, output: 'the log <tail>', cut: false }] : was(p, b);
+shellRun(log, o); shellRun(print, o); await flush();""")
+        self.assertEqual(out["R"]["got"], ["job", True, "local-cron-jobs/cron-jobs.sh logs nightly-sync",
+                                           "job", True, True, "launchctl print fixture/nightly-sync", False])
+        # sd:5886: both run on the server from the job's name; the row's service is shown, never sent.
+        self.assertEqual([post[:2] for post in out["posts"]], [["/api/actions/run", {"action": "job.log", "job": "nightly-sync"}],
+                                                               ["/api/actions/run", {"action": "job.print", "job": "nightly-sync"}]])
 
     def test_after_exit_127_print_is_the_rows_act(self):
         self.doc["needs"][0]["exit"] = 127

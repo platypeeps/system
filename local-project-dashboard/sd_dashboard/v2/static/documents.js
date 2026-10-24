@@ -205,11 +205,14 @@ const tagDraft = () => tagOf(document.getElementById('tag-in')?.value) || lastTa
 // documents.conf hides a document or a root from this list without stopping its render (sd:1904). Both are off with that reason.
 const NO_SWITCH = 'no render switch: SD_SKIP_RENDER skips every render';
 const DRAFT = { id: 'draft:request', type: 'document request draft', label: 'new document request', title: '', cmd: '' };
-// build: copy only. Filing the item and queueing the runner are two writes, and no verb deletes an item, so no Undo is declared.
-// The design's Run, r and undo read as a run with an Undo, and r is Render on a document (sd:3525): Request, safe, no key.
-const REQUEST = { id: 'document.request', on: 'document request draft', label: 'Request', does: 'Gives the line that files this request; the dashboard files nothing.', icon: 'plus', risk: 'safe', primary: () => true, executes: false,
+// sd:5887: Request files the task the line names through /api/items, as Capture does; Undo closes it, as sd task cancel
+// does. r is Render on a document (sd:3525), so Request has no key.
+const REQUEST = { id: 'document.request', on: 'document request draft', label: 'Request', does: 'Files this request as a task; Undo closes it.', icon: 'plus', risk: 'undo', primary: () => true, executes: true,
   when: o => (o.repoError || (!o.title ? 'type what you need first' : !o.repo ? 'name the repository: add repo:<name>' : true)), cli: o => o.cmd,
-  run: () => 'Copy the line: the dashboard does not file document requests yet' };
+  sends: o => `POST /api/items {title, body${o.due ? ', due' : ''}}`,
+  run: o => window.shell.post('/api/items', { title: `Document request: ${o.title}`, body: `repo=${o.repo} kind=${o.kind} skill=${o.skill}`, ...(o.due ? { due: o.due } : {}) })
+    .then(out => ({ text: `Request filed · #${out.item.id} · ${o.title}`, item: out.item.id, revision: out.revision })),
+  undo: (o, v) => window.shell.post(`/api/items/${v.item}/cancel-task`, { reason: 'withdrawn on Documents right after filing', revision: v.revision }) };
 // Tag asks for the tag in a field filled with the one typed under Tags, else the last one applied, so no tag lands unseen
 // (sd:3523); Enter in the Tags field runs it without asking, since that field shows the tag. The toast names the tag.
 const TAG = { id: 'document.tag', on: 'document', label: 'Tag', does: 'Adds a tag to the document; Undo removes it.', key: 't', icon: 'tag', risk: 'undo', bulk: true, when: storeOff,
@@ -430,8 +433,7 @@ function renderShift() {
     reqEl.hidden = false;
     Object.assign(DRAFT, { title, repo, kind, skill, due: p.due,
       cmd: `sd task add ${shq('Document request: ' + title)} --body ${shq(`repo=${repo} kind=${kind} skill=${skill}`)}${p.due ? ` --due ${shq(p.due)}` : ''}` });
-    // build: the line is to copy; nothing is filed or queued from here.
-    put(reqEl, html`<p class="why">Copy the line: it creates an item for ${repo}. ${skill === 'choose' ? 'No skill matches this kind yet; name one with skill:.' : `The item names ${skill}.`} The dashboard does not file it.</p>
+    put(reqEl, html`<p class="why">Request creates an item for ${repo}; Undo closes it. ${skill === 'choose' ? 'No skill matches this kind yet; name one with skill:.' : `The item names ${skill}.`}</p>
       <div class="actions">${shell.commands.rowActions(DRAFT.id)}</div>`);
     F.text = ''; render();
   }

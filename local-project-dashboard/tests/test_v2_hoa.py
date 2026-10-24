@@ -1379,14 +1379,15 @@ C.run(c, m); await flush(); R.mission = ELS.details.html;"""
         self.assertIn("<b>▨ Not read.</b> the log is not a regular file", out["R"]["mission"])
         self.assertNotIn("The log is empty", out["R"]["mission"])
 
-    def test_show_log_on_a_row_without_a_download_opens_its_jobs_log(self):
+    def test_show_log_on_a_row_without_a_download_runs_its_jobs_log(self):
         self.script()
         self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("idle", 0)})
         out = self.run_page("""const c = cmd('jobs.log'), m = OBJ.get('source:mission');
-window.shell.pages = { Management: '/management' }; R.cli = c.cli(m); C.run(c, m); await flush(); R.to = location.href;""", self.job_doc())
+const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Show log', line: `local-cron-jobs/cron-jobs.sh logs ${b.job}`, exit: 0, output: 'the log <tail>', cut: false }] : was(p, b);
+R.cli = c.cli(m); C.run(c, m); await flush();""", self.job_doc())
         self.assertEqual(out["R"]["cli"], "local-cron-jobs/cron-jobs.sh logs hoa-mission-export")
-        self.assertEqual(out["toasts"][-1][0], "hoa-mission-export opens in Management > Schedules")
-        self.assertEqual(out["R"]["to"], "/management?q=hoa-mission-export&row=cron%3Ahoa-mission-export#view=schedules")
+        self.assertEqual(out["posts"][-1][:2], ["/api/actions/run", {"action": "job.log", "job": "hoa-mission-export"}])
+        self.assertEqual(out["toasts"][-1][0], "Show log · exit 0 · the output is in Details")
 
     def test_the_document_carries_each_downloads_log_or_why_it_has_none(self):
         self.script()

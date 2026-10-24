@@ -100,6 +100,16 @@ class SdmLoginTest(unittest.TestCase):
         self.run_stage("work", "--apply")
         self.assertTrue(os.access(self.installed, os.X_OK))
 
+    def test_a_copy_whose_chmod_failed_is_not_ok_and_is_made_executable(self):
+        # sd:5940: the content matches, so a compare of content alone read ok.
+        self.run_stage("work", "--apply")
+        self.installed.chmod(0o644)
+        self.assertIn(f"DIFFERS {NAME} — mode is not 755", self.run_stage("work"))
+        self.assertFalse(os.access(self.installed, os.X_OK))
+        self.run_stage("work", "--apply")
+        self.assertEqual(stat.S_IMODE(self.installed.stat().st_mode), 0o755)
+        self.assertIn(f"ok      {NAME}", self.run_stage("work"))
+
     def test_a_hand_written_helper_is_kept_until_force(self):
         # A machine that wrote its own helper before this one: nothing recorded says which moved.
         self.installed.parent.mkdir(parents=True)

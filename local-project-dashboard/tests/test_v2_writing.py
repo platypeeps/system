@@ -347,12 +347,22 @@ R.icon = btn.html;""")
         self.assertEqual(out["gets"], ["/api/writing", "/api/writing"])
         self.assertEqual(out["states"][-2]["kind"], "loading", "a refused write reads again with load()")
 
-    def test_publish_and_capture_are_copy_only(self):
-        out = self.run_page("shellRun(cmd('piece.publish'), Object.assign({}, C.get('12'))); await flush();"
-                            " ELS['shift-in'].value = 'A new idea'; ELS['shift-in'].listeners.keydown[0]({ key: 'Enter', preventDefault() {} }); await flush();")
-        self.assertEqual(out["posts"], [])
-        self.assertIn("Copy the line to capture the idea; the dashboard does not write to the vault: sd store add sdw.blog-idea 'A new idea' --field status=inbox",
-                      [t[0] for t in out["toasts"]])
+    def test_publish_stays_copy_only_and_capture_posts_the_idea(self):
+        """sd:5887: Enter captures through /api/actions/run; Publish posts outside, so it stays copy only and posts nothing."""
+        out = self.run_page("""const was = ANSWER;
+ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Capture idea', line: 'l', exit: R.code || 0, output: 'kind not installed', cut: false }] : was(p, b);
+shellRun(cmd('piece.publish'), Object.assign({}, C.get('12'))); await flush(); R.posted = OUT.posts.length;
+const enter = () => ELS['shift-in'].listeners.keydown[0]({ key: 'Enter', preventDefault() {} });
+ELS['shift-in'].value = 'A new idea'; enter(); await flush(); R.cleared = ELS['shift-in'].value;
+R.code = 1; ELS['shift-in'].value = 'Another idea'; enter(); await flush(); R.kept = ELS['shift-in'].value;""")
+        self.assertEqual(out["R"]["posted"], 0)
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/actions/run", {"action": "idea.capture", "text": "A new idea"}],
+                                                         ["/api/actions/run", {"action": "idea.capture", "text": "Another idea"}]])
+        toasts = [t[0] for t in out["toasts"]]
+        self.assertIn("Idea captured in the vault inbox: A new idea", toasts)
+        self.assertEqual(toasts[-1], "Idea not captured: sd store add sdw.blog-idea 'Another idea' --field status=inbox exited 1: kind not installed")
+        # A failed capture puts the idea back, so nothing typed is lost.
+        self.assertEqual((out["R"]["cleared"], out["R"]["kept"]), ("", "Another idea"))
 
     def test_the_board_lamps_strip_and_badge_come_from_the_document(self):
         out = self.run_page("")

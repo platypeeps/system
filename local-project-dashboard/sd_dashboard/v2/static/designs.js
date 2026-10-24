@@ -169,9 +169,8 @@ function update() {
 }
 
 // Commands (commands.md). Opening a page is a link, not a command: the tab serves it, nothing runs.
-// build: History and Retake are copy only; the dashboard runs no git, no shots.mjs and no pager. Read brief shows the brief.
-// sd:5457: Hide or Unhide is every row's act; History and Retake stay off Details' bar (bar: false), not off the ⋯ menu,
-// their keys or the palette. Read brief is not the row's act: the row's name opens the same Details.
+// History and Retake left the row menu with sd:5530; Read brief shows the brief.
+// sd:5457: Hide or Unhide is every row's act. Read brief is not the row's act: the row's name opens the same Details.
 const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/designs/view)';
 const view = (o, hidden) => shell.post('/api/designs/view', { id: o.id, hidden }).then(v => reading.reread().then(() => v));
 // One Hide and one Unhide for each row type, a page and a brief-only product; the row shows the one that is on.
