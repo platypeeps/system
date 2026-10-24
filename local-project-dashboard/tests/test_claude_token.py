@@ -41,7 +41,7 @@ class TheToken(unittest.TestCase):
     def lines(self):
         """Each caller's `sh -c` argv, after the line itself."""
         return {"email_draft": (email_draft.CLAUDE, []), "chat": (chat.line(), []),
-                "publish_drain": (publish_drain.CLAUDE, ["sh", "q", "c", "r", "a"]),
+                "publish_drain": (publish_drain.CLAUDE, ["sh", "q", "c", "r", "a", "m"]),
                 "realm_sweep": (realm_sweep.WITH_TOKEN, ["claude-run", str(self.claude)])}
 
     def seen(self, **extra):

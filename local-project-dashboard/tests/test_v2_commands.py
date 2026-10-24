@@ -52,7 +52,7 @@ class OneDeclaration(unittest.TestCase):
 
     def test_a_page_that_registers_a_shared_command_loads_the_module_before_its_script(self):
         users = sorted(name for name, body in SCRIPTS.items() if re.search(r"window\.commands\b", body) and name != SHARED)
-        self.assertEqual(users, ["activity.js", "brief-details.js", "briefs.js", "contributions.js", "documents.js", "health.js", "hoa.js", "management.js", "queue.js", "report-details.js", "research.js",
+        self.assertEqual(users, ["activity.js", "brief-details.js", "briefs.js", "contributions.js", "documents.js", "health.js", "hoa.js", "home.js", "management.js", "queue.js", "report-details.js", "research.js", "skills.js",
                                  "task-details.js", "today-github.js", "today.js"])
         # brief-details.js (sd:5620), report-details.js (sd:5636) and task-details.js (sd:5635, on HOA sd:5671) are modules, not pages: every
         # page that loads one loads the shared module first. today-github.js is GitHub's Pull requests view (sd:5633,

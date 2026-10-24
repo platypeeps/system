@@ -1,7 +1,7 @@
 """Each checkout against its origin's default branch (sd:1676): `repos_screen.primary` over the fleet's repos read.
 
 Primary checkouts lagged `origin/main` after merges, and three sessions share
-them, so the dashboard flags the lag and never pulls; Management shows it. The
+them, so the dashboard flags the lag; Management shows it, and its Pull checks again (sd:5888). The
 classic Operations > Repos area that drew it first was retired in sd:3402. The fixture is a real
 origin and clones of it under a temp root: behind, dirty, detached, on another
 branch, without `origin/HEAD`, and with a stale or missing fetch.

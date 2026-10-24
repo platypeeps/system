@@ -330,6 +330,10 @@ Only a profile with a copy gets it: start one from
 `SDM_EMAIL`, exported or in `machine-setup.env` (`change-me` in the
 example). A file under `.local/bin/` installs 0755 whatever mode its copy kept.
 
+A file whose content matches but whose mode is not the one it installs
+with (0600 or 0755) reads `DIFFERS … mode is not <mode>`, and `--apply`
+sets the mode.
+
 ### Launch agents
 
 `capture` copies this machine's own LaunchAgent plists (`<prefix>.*`, plus any

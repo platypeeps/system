@@ -50,6 +50,7 @@ from test_v2_read import READ_SHELL
 
 V2 = Path(v2.__file__).resolve().parent
 HOME_JS = (V2 / "static" / "home.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 KIOSK_JS = (V2 / "static" / "home-kiosk.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 EXAMPLE = Path(home_screen.__file__).resolve().parents[1] / "home-tiles.conf.example"
@@ -738,7 +739,7 @@ class TheScript(ScreenCase):
     def run_page(self, body, answer=None, search=""):
         answer = answer or f"() => [200, {json.dumps(self.doc)}]"
         script = (STAND_IN + ROOT + f"location.search = {json.dumps(search)};\n" + KIOSK_JS + "\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n"
-                  + SHELL + SHELL_MORE + READ_SHELL + READ_SPY + f"\nANSWER = {answer};\n" + HOME_JS
+                  + SHELL + SHELL_MORE + READ_SHELL + READ_SPY + f"\nANSWER = {answer};\n" + COMMANDS_JS + HOME_JS
                   + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.root = ROOT_ATTRS; OUT.attention = window.PAGE_ATTENTION;"
@@ -842,7 +843,14 @@ await lastUndo().undo(); await flush();""", answer=self.answer_service(f"[200, {
                             answer=self.answer_service("[504, { error: 'no answer; input_boolean.turn_on may have run.', unknown: true }]"))
         self.assertEqual(out["gets"], ["/api/home", "/api/home"], "an unknown outcome reads the tiles again")
 
-    def test_read_state_is_a_copy_only_line_that_names_the_token_and_never_holds_one(self):
+    def test_read_state_posts_the_tile_and_shows_its_state_in_details(self):
+        """sd:5886: the server reads the tile it finds in the tile list; the page sends the entity id, never a URL or a token."""
+        out = self.run_page("""const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Read state', line: 'curl', exit: 0, output: '{"value": "off"}', cut: false }] : was(p, b);
+shellRun(cmd('sensor.read'), C.get('binary_sensor.water_leak')); await flush(); R.details = ELS.details.html;""")
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/actions/run", {"action": "sensor.read", "entity_id": "binary_sensor.water_leak"}]])
+        self.assertIn("Read state", out["R"]["details"])
+
+    def test_read_state_runs_on_the_server_and_its_line_names_the_token_and_never_holds_one(self):
         # A document that carries a token by mistake: nothing the page shows or copies may hold its value.
         doc = json.loads(json.dumps(self.doc))
         doc["reader"]["token"] = TOKEN
@@ -851,7 +859,7 @@ await lastUndo().undo(); await flush();""", answer=self.answer_service(f"[200, {
 R.read = [read.executes, read.cli(C.get('binary_sensor.water_leak'))];
 R.lines = []; OBJ.forEach(o => REG.filter(c => c.on === o.type).forEach(c => R.lines.push(c.cli(o))));
 open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.groups.html;""", answer=f"() => [200, {json.dumps(doc)}]")
-        self.assertEqual(out["R"]["read"], [False, 'curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states/binary_sensor.water_leak"'])
+        self.assertEqual(out["R"]["read"], [True, 'curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states/binary_sensor.water_leak"'])
         self.assertTrue(out["R"]["lines"])
         for line in out["R"]["lines"]:
             self.assertIn("$HA_TOKEN", line)

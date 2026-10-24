@@ -2,7 +2,7 @@
 // reference is marked "build:". The rows are /api/contributions/page (contribution_screen.document): the projection v1
 // /classic/contributions renders, never sample data. The dashboard makes no GitHub call: the "Settled on GitHub" lamp, each
 // row's settle date and the settled-per-day chart read the dates the shadow collector records (sd:5301). Acknowledge, Make task and
-// Dismiss run through dashboard routes and ask first: none has a verb that reverses it. Draft nudge is copy only; Open on GitHub opens a tab (sd:5628);
+// Dismiss run through dashboard routes and ask first: none has a verb that reverses it. Open on GitHub opens a tab (sd:5628);
 // Re-run collector asks the server to run sd shadow sync (sd:2207). The reference's Trackers view is not ported: its switch opens the classic Operations > Trackers.
 // build (sd:5486): Hide and Unhide post /api/contributions/view, the view state Designs' Hide writes, each with Undo. A hidden
 // row leaves the Open rows, the lamps, the tallies and the badge; Show hidden, in the Open table's filter bar, lists it with Unhide.
@@ -105,7 +105,9 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Commands (products/system/commands.md) ----------
   // build: Acknowledge and Make task ask first, since no verb un-acknowledges or deletes a task; the reference gave both Undo.
-  // Draft nudge is the gh line to copy: the reference's chat proposal posted on Approve, and the dashboard posts nothing.
+  // Draft nudge (sd:5887) puts an editable draft in Details and posts nothing; the draft is kept per row until it posts or the
+  // page reloads. Post nudge asks first, naming the pull request or issue, then the server posts the draft as the operator's
+  // comment through gh, with the URL from the row's key and the text on stdin (/api/actions/run contribution.nudge).
   // A write's answer is its own: the reread after it is started, not awaited, so a failed reread never reports a landed write
   // as "not changed". Until the reread lands, the row itself records the write, so the command that made it goes off.
   // A refused write reads again with load(): only reread() says a change landed.
@@ -121,6 +123,12 @@ addEventListener('DOMContentLoaded', () => {
   // The row moves at once, then the page reads again; a refused write reads again with load(), as the other writes do.
   const view = (o, hidden) => window.shell.post('/api/contributions/view', { key: o.key, hidden })
     .then(v => { landed(o, { hidden }); reread(); return v; }, e => { load(); throw e; });
+  const DRAFTS = new Map();
+  const nudgeable = o => !o.url ? 'not filed on GitHub' : o.lane !== 'awaiting_them' ? 'the next step is yours, not theirs' : true;
+  const nudgeText = o => `Hi, a friendly nudge on this ${isIssue(o) ? 'issue' : 'pull request'}. Is there anything I can change or add to help it along?`;
+  const nudgeDraft = r => DRAFTS.has(r.key) ? html`<section class="nudge" aria-labelledby="nudge-h"><h3 id="nudge-h">Nudge draft</h3>
+      <textarea class="cap-in" id="nudge-text" rows="5" maxlength="4000" aria-describedby="nudge-why">${DRAFTS.get(r.key)}</textarea>
+      <p class="why" id="nudge-why">Nothing is posted until Post nudge, which asks first and names ${r.url}.</p></section>` : '';
   function registerCommands() {
     C.register(
       { id: 'contribution.ack', on: 'contribution', label: 'Acknowledge', does: 'Clears this row\'s attention events; this cannot be undone.', key: 'a', icon: 'check', risk: 'confirm', bulk: true, primary: () => true,
@@ -129,10 +137,17 @@ addEventListener('DOMContentLoaded', () => {
         cli: ackCli,
         run: o => window.shell.post('/api/contributions/acknowledge', { key: o.key, revision: o.revision, event_ids: o.event_ids })
           .then(() => { landed(o, { event_ids: [] }); reread(); return `Acknowledged · ${o.label}`; }, e => { load(); throw e; }) },
-      { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', does: 'Gives a gh line to post a nudge; the dashboard posts nothing.', key: 'd', icon: 'message-square', risk: 'safe', executes: false, primary: () => true,
-        when: o => !o.url ? 'not filed on GitHub' : o.lane !== 'awaiting_them' ? 'the next step is yours, not theirs' : true,
-        cli: o => `gh ${isIssue(o) ? 'issue' : 'pr'} comment ${o.url} --body-file nudge.md`,
-        run: () => 'Copy the line and write nudge.md: the dashboard posts nothing' },
+      { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', does: 'Puts a nudge draft in Details to edit; it posts nothing.', key: 'd', icon: 'message-square', risk: 'safe', executes: false, primary: o => !DRAFTS.has(o.key),
+        when: nudgeable,
+        cli: o => `gh ${kindOf(o)} comment ${o.url} --body-file nudge.md`,
+        run: o => { if (!DRAFTS.has(o.key)) DRAFTS.set(o.key, nudgeText(o)); select(o.key, true); document.getElementById('nudge-text')?.focus(); return 'Nudge drafted in Details: edit it, then Post nudge'; } },
+      { id: 'contribution.post', on: 'contribution', label: 'Post nudge', does: 'Posts the draft in Details as your comment on GitHub.', key: 'n', icon: 'send', risk: 'confirm', executes: true, primary: o => DRAFTS.has(o.key),
+        when: o => { const w = nudgeable(o); return w !== true ? w : DRAFTS.has(o.key) || 'draft a nudge first'; },
+        consequence: o => `This posts the draft in Details as your comment on ${o.url}. Anyone who follows that ${isIssue(o) ? 'issue' : 'pull request'} sees it; no verb takes it back.`,
+        cli: o => `gh ${kindOf(o)} comment ${o.url} --body-file nudge.md`, sends: o => `POST /api/actions/run {action: contribution.nudge, key: ${o.key}, revision, body}`,
+        run: o => window.shell.post('/api/actions/run', { action: 'contribution.nudge', key: o.key, revision: o.revision, body: DRAFTS.get(o.key) || '' })
+          .then(r => { if (r.exit !== 0) throw new Error(`gh exited ${r.exit}: ${r.output}`); DRAFTS.delete(o.key); landed(o, {}); return `Nudge posted on ${o.url}`; },
+            e => { if (e.status === 409) load(); throw e.status === 504 ? new Error(`${e.message} Whether it posted is not known: look on GitHub before you post again.`) : e; }) },
       { id: 'contribution.task', on: 'contribution', label: 'Make task', does: 'Files a task that tracks this contribution; no Undo, cancel it in Tasks.', key: 'k', risk: 'confirm', executes: true,
         when: o => o.item_id ? `already tracked as item #${o.item_id}` : linkOf(o) ? true : 'not filed on GitHub',
         consequence: o => `This files a task, "${o.title}", that tracks ${o.url || o.key} as this contribution. No verb deletes it; cancel it from Tasks.`,
@@ -384,6 +399,8 @@ addEventListener('DOMContentLoaded', () => {
   const onGitHub = r => { const s = settle(r); return s ? html`${s[0]} <time class="rel" datetime="${s[1]}" data-long=""></time>`
     : DOC.github_dates ? 'no merge or close date recorded' : 'not recorded: this sd records no merge or close dates'; };
   const details = document.getElementById('details');
+  // The draft follows what is typed, so a redraw of Details or Post nudge reads the edited text.
+  details.addEventListener('input', e => { if (e.target.id === 'nudge-text' && DRAFTS.has(selected)) DRAFTS.set(selected, e.target.value); });
   const swap = () => { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); };
   function showCollector() {
     selected = 'collector'; mark();
@@ -431,7 +448,7 @@ addEventListener('DOMContentLoaded', () => {
       ${github(r.url) ? html`<p><a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">${String(r.url).replace('https://github.com/', '')}${I('arrow-up-right')}</a></p>` : ''}
       <dl>${facts.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>On GitHub</dt><dd>${onGitHub(r)}</dd>${links(r).length ? html`<dt>Linked</dt><dd>${links(r)}</dd>` : ''}<dt>Observed</dt><dd><time class="rel" datetime="${r.observed_at || ''}" data-empty="never"></time></dd></dl>
       ${r.reasons.length ? html`<h3>Why it is here</h3><ul class="reasons">${r.reasons.map(x => html`<li>${x}</li>`)}</ul>` : ''}
-      <h3>Act</h3>${C.bar(r.key)}
+      <h3>Act</h3>${C.bar(r.key)}${nudgeDraft(r)}
       <p class="why">Acknowledge clears attention only. It does not complete a task or send a notification.</p>
       <h3>Dependencies</h3>${dependencies(r.dependencies)}
       <h3>Evidence</h3>${evidence(r.evidence)}

@@ -5,7 +5,7 @@ and the old screen is retired (sd:3402). `/api/skills` is the catalog the old sc
 each skill's use in the last three Monday-start weeks from `skill_use`, the rows that name a path instead of a skill, the
 rows by surface and the skills outside the pack that recorded use; it sends no local path and writes nothing. The page
 registers the design's Skills commands: Try, Review, Promote and Demote ask first and post the old screen's routes with the
-skill's revision; Run, Schedule and Scan are copy only and post nothing.
+skill's revision. Scan, Run and Adopt post /api/actions/run (sd:5886, sd:5887); Schedule is copy only and posts nothing.
 
 `skills.js` runs under JavaScriptCore (osascript) against the stand-in page and shell `test_v2_tasks` uses, with the real
 reader (`read.js`). The browser half -- the look at 1440 and 375 px, the confirm dialog -- is a manual check.
@@ -43,6 +43,7 @@ from test_workflow_actions import BrowserSession
 
 V2 = Path(v2.__file__).resolve().parent
 PAGE_JS = (V2 / "static" / "skills.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
 #: Wednesday; its week starts Monday 2026-09-21, so the three weeks start 09-07, 09-14 and 09-21.
@@ -61,6 +62,8 @@ COMMANDS = [
     # system sd:5779: Rollback shows the swap back to the kept copy; its approve asks first, as the intake's does.
     ["skill.rollback", "skill", "Rollback", "b", "safe"],
     ["skill.rollback.user", "user skill", "Rollback", "b", "safe"],
+    # system sd:5887: Run asks for the repo, then starts claude in herdr through /api/actions/run.
+    ["skill.run", "skill", "Run", "r", "confirm"],
     ["skill.schedule", "skill", "Schedule", "s", "safe"],
     ["skill.apply", "skill", "Apply", "a", "confirm"],
     ["skill.scan", "use surfaces", "Scan", "s", "safe"],
@@ -189,7 +192,7 @@ class ThePage(Pack, BrowserSession):
         self.assertIn("<title>Skills · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "skills.js", "skills-usage.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "skills.js", "skills-usage.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -540,7 +543,7 @@ class TheScript(Pack, ScreenCase):
     def run_page(self, body, answer=None, search="", before=""):
         answer = answer or "(path, body) => path === '/api/skills' ? [200, DOC] : [200, { item: { id: 42 } }]"
         script = (STAND_IN + f"location.search = {json.dumps(search)};\nvar DOC = {json.dumps(self.doc)};\n" + MARKUP_JS
-                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + PAGE_JS
+                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + COMMANDS_JS + PAGE_JS
                   + "\nvar R = {};\n(async () => { try {\n" + before + "\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION; OUT.html = Object.fromEntries(Object.entries(ELS).map(([k, e]) => [k, e.html]));"
@@ -650,11 +653,36 @@ R.off = [w('skill.try', 'sd-used'), w('skill.promote', 'sd-used'), w('skill.demo
         self.assertEqual(out["R"]["off"], ["already installed · path", "on build already", "not on a path",
                                            "apply review notes from the review item", True])
 
-    def test_the_copy_only_commands_post_nothing(self):
-        out = self.run_page("""R.exec = ['skill.schedule', 'skill.scan'].map(id => cmd(id).executes);
-shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C.get('surfaces')); await flush();""")
-        self.assertEqual(out["R"]["exec"], [False, False])
-        self.assertEqual((out["posts"], out["confirms"]), ([], []))
+    def test_schedule_stays_copy_only_and_scan_runs_on_the_server(self):
+        """sd:5886: Scan posts /api/actions/run and shows its report in Details; Schedule posts nothing: sd adds no launchd job."""
+        out = self.run_page("""const LABEL = 'Scan'; const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: LABEL, line: 'the line', exit: 0, output: 'out', cut: false }] : was(p, b);
+R.exec = ['skill.schedule', 'skill.scan'].map(id => cmd(id).executes);
+shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C.get('surfaces')); await flush(); R.details = ELS.details.html;""")
+        self.assertEqual(out["R"]["exec"], [False, True])
+        self.assertEqual(([p[:2] for p in out["posts"]], out["confirms"]), ([["/api/actions/run", {"action": "skill.scan"}]], []))
+        self.assertIn('<section class="ran" data-obj="surfaces"', out["R"]["details"])
+
+    def test_run_asks_for_a_repo_and_posts_the_skill_and_the_repo(self):
+        """sd:5887: Run is off for a skill not installed; on a confirm it posts the skill and the picked repo's key."""
+        out = self.run_page("""const was = ANSWER; ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Run skill', line: 'the line', exit: 0, output: 'Started claude', cut: false }] : was(p, b);
+R.off = cmd('skill.run').when(C.get('sd-extra')); R.cli = cmd('skill.run').cli(C.get('sd-used'), { repo: '/repos/widget' });
+shellRun(cmd('skill.run'), C.get('sd-used')); FIELD_VALUES.repo = '/repos/widget'; shellRun(cmd('skill.run'), C.get('sd-used')); await flush();""")
+        self.assertEqual((out["R"]["off"], out["R"]["cli"]), ("not installed · try it first", "cd '/repos/widget' && claude '/sd-used'"))
+        self.assertEqual(out["toasts"][0][0], "not run: OK is off until Repo is typed")
+        self.assertEqual(([p[:2] for p in out["posts"]], out["confirms"]),
+                         ([["/api/actions/run", {"action": "skill.run", "skill": "sd-used", "repo": "/repos/widget"}]], ["skill.run", "skill.run"]))
+        self.assertEqual(out["toasts"][-1][0], "Run skill · exit 0 · the output is in Details")
+
+    def test_adopt_asks_first_and_posts_the_parsed_source(self):
+        """sd:5887: the panel's Adopt runs sd-skill-adopt through /api/actions/run with owner/repo/path; a bad source posts nothing."""
+        url = "https://github.com/o/r/tree/main/skills/x"
+        out = self.run_page(self.OPEN_ADOPT % json.dumps(url) + """ const was = ANSWER;
+ANSWER = (p, b) => p === '/api/actions/run' ? [200, { action: b.action, label: 'Adopt skill', line: 'l', exit: 0, output: 'o', cut: false }] : was(p, b);
+ELS['ad-run'].listeners.click[0](); await flush(); ELS['ad-src'].value = 'not a source'; ELS['ad-run'].listeners.click[0](); await flush();
+R.err = ELS['ad-err'].textContent;""")
+        self.assertEqual(([p[:2] for p in out["posts"] if p[0] == "/api/actions/run"], out["confirms"]),
+                         ([["/api/actions/run", {"action": "skill.adopt", "source": "o/r/skills/x"}]], ["skill.adopt"]))
+        self.assertIn("Adopt takes owner/repo", out["R"]["err"])
 
     def test_the_page_draws_lamps_rows_and_the_rail_badge_from_the_document(self):
         out = self.run_page("R.sub = ELS.sub.textContent; R.tally = ELS.tally.textContent;")
