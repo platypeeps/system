@@ -15,7 +15,7 @@ config, Details and the state slot say so and name `sd-research-kit render`.
 Open document opens the served page. Render (sd:5884) runs
 the render as Research's does: it posts `/api/research/render` with the
 root's checkout key, one run at a time, and reads the list again when the run
-ends. Request a document is copy only: the page files no item. Pin, hide
+ends. Request (sd:5887) files the task the line names, `Document request: <title>`, through `POST /api/items` as Capture does, under the repository the line names (`repo:`); Undo closes it with `cancel-task`. The field also shows the `sd task add` line for Copy. Pin, hide
 and tag (sd:3428) are the workflow database's `view` state, keyed
 `<root key>/<file>`: each row carries `pinned`, `hidden` and `tags`, and each
 command posts `/api/documents/view` with the fields it changes, offers Undo

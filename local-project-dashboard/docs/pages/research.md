@@ -19,10 +19,11 @@ same host, where the longest row URL wins, or by naming the row's ID: a first-co
 `LOG-21201`, matched whole. A claim is supported when it cites an A, B or M row, and unverified when it cites only C, U
 or ungraded rows; a ledger without grades leaves every claim unverified, and the page says so with the count. A document the reader skips (a link, over 2 MB, past the
 200-document bound or the deadline) is named with its reason. Nothing reads review rounds yet, so they show as unknown
-with that reason. Render and Review are
-copy only: the dashboard does not run `sd-research-kit`. Start research is
-off with its reason; the field shows the `sd task add` line for
-Copy. The old view stays in the palette as Resources (classic), with Toolbox,
+with that reason. Render (sd:5632) and Review
+(sd:5655) run `sd-research-kit` in the checkout through `POST /api/research/render` and `/api/research/review`, and Details show
+the report. Start research's Run (sd:5887) files the task the line names, `Research: <question>`, through
+`POST /api/items` as Capture does, under the project the line names (`repo:`); Undo closes it with `cancel-task`. The field also
+shows the `sd task add` line for Copy. The old view stays in the palette as Resources (classic), with Toolbox,
 Vault and Queues. The board reads through the
 shell's reader, `read.js` (sd:2491): only the newest read draws, a project
 the read no longer lists runs no command, and a failed read clears the board
