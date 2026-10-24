@@ -288,6 +288,17 @@ class SharedPolicy(unittest.TestCase):
         self.assertIsNotNone(mapped, rule)
         self.assertIn(mapped.group(1), re.findall(r"^([A-Z_]+)=", example, re.M))
 
+    def test_hub_sessions_triage_job_alerts_at_start(self):
+        # sd:5993: a session on the hub reads the open job alerts at start and fixes or files
+        # each; a lane failure the work satellite owns goes to that satellite's session once.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        rules = [line for line in source.splitlines() if "sd reports" in line or "work-<repo>" in line]
+        start = next((line for line in rules if "sd reports list" in line), "")
+        self.assertIn("On the hub", start)
+        self.assertIn("builders", start)
+        self.assertTrue(any("sd reports acknowledge" in line and "in_progress" in line for line in rules), rules)
+        self.assertTrue(any("work-<repo>" in line and "SendMessage" in line for line in rules), rules)
+
 
 if __name__ == "__main__":
     unittest.main()
