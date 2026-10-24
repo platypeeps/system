@@ -1160,8 +1160,9 @@ stage_dotfiles() {
       record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
       # The content alone read ok after a chmod that failed past its copy
       # (sd:5940). find -perm is POSIX; a failed probe reads as wrong.
+      # -H reads a symlink's target, the file cmp and chmod act on (sd:5960).
       mode=$(dotfile_mode "$f")
-      if [ -n "$mode" ] && [ -z "$(find "$dst" -prune -perm "$mode" 2>/dev/null)" ]; then
+      if [ -n "$mode" ] && [ -z "$(find -H "$dst" -prune -perm "$mode" 2>/dev/null)" ]; then
         echo "  DIFFERS $f — mode is not $mode"
         run chmod "$mode" "$dst"
       else

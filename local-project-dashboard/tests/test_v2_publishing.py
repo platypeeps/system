@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -567,6 +568,40 @@ class Copies(ScreenCase):
         self.assertIs(pub["choice"]["obsidian"], False)
         self.assertIn("no database connection", pub["unread"])
 
+    def choice_of(self, conf, flags=None):
+        """lab/plan.html's choice for `conf`; with `flags`, beside the research.json a render of it wrote."""
+        if not (self.base / "lab").exists():
+            document_tests.fixture(self.base)
+        lab = self.base / "lab"
+        (lab / "research.conf.py").write_text(conf, encoding="utf-8")
+        if flags is not None:
+            digest = hashlib.sha256((lab / "research.conf.py").read_bytes()).hexdigest()
+            (lab / "docs" / "dashboard" / "research.json").write_text(json.dumps(
+                {"version": 1, "project": "Lab", "conf_sha256": digest,
+                 "docs": [{"src": "notes/PLAN.md", "out": "plan", "links": [], **flags}]}), encoding="utf-8")
+        doc = documents_screen.document(now=NOW, config_path=self.base / "none.conf", repo_root=self.base)
+        return {f"{r['key']}/{r['file']}": r for r in doc["documents"]}["lab/plan.html"]["pub"]["choice"]
+
+    def test_a_config_that_builds_docs_in_code_shows_the_renders_flags(self):
+        """sd:5898: a DOCS built in code showed no designation, so a Notion copy matched no choice and a missing one was no
+        gap. The render's research.json flags each destination (pack sd:5936); ticking stays refused with the reason."""
+        conf = ('DOCS = [{"src": s, "out": "plan"} for s in ["notes/PLAN.md"]]\n'
+                'for _doc in DOCS:\n    _doc["notion"] = {}\n')
+        choice = self.choice_of(conf, {"notion": True, "drive": False})
+        self.assertEqual((choice["notion"], choice["drive"], choice["obsidian"]), (True, False, None))
+        self.assertEqual(choice["why"], "research.conf.py builds DOCS in code; add the key to the entry by hand")
+        # A manifest from before the flags says neither yes nor no, and names the render that writes them.
+        choice = self.choice_of(conf, {})
+        self.assertEqual((choice["notion"], choice["drive"]), (None, None))
+        self.assertIn("builds DOCS in code", choice["why"])
+        self.assertIn("sd-research-kit render writes its designations", choice["why"])
+
+    def test_a_named_entry_shows_its_declared_designations(self):
+        # The safe reader reads a named entry; the literal reader finds no entry to tick.
+        choice = self.choice_of('_PLAN = {"src": "notes/PLAN.md", "out": "plan", "drive": {}, "notion": None}\nDOCS = [_PLAN]\n')
+        self.assertEqual((choice["notion"], choice["drive"], choice["obsidian"]), (False, True, False))
+        self.assertEqual(choice["why"], "research.conf.py has no literal entry for plan; add the key by hand")
+
 
 class BriefRows(brief_tests.BriefCase):
     """Briefs: each row's `pub` from its item's `fields.published`, and the icons the row draws."""
@@ -905,6 +940,19 @@ R.kind = [un.risk, un.askFirst];""", row="'lab/plan.html'")
         self.assertEqual(out["R"]["kind"], ["undo", True])
         self.assertIn("nothing is queued", out["R"]["now"])
 
+    def test_a_render_flag_shows_and_ticking_says_why(self):
+        """sd:5898: a config that builds DOCS in code shows the render's flags; a designated destination with no copy is a
+        gap, every box refuses with the reason, and Obsidian, which the render does not flag, is not known for it."""
+        why = "research.conf.py builds DOCS in code; add the key to the entry by hand"
+        self.plan({"unread": "", "copies": [], "choice": {"notion": True, "drive": False, "obsidian": None, "repo_wide": "", "why": why}})
+        out = self.run_page("""R.det = ELS.details.html; R.rows = ELS.rows.html;
+const pub = REG.find(c => c.id === 'document.publish'), un = REG.find(c => c.id === 'document.unpublish');
+R.when = ['drive', 'notion', 'obsidian'].map(ch => { const o = OBJ.get(`pub:lab/plan.html:${ch}`); return (o.set ? un : pub).when(o); });""",
+                            row="'lab/plan.html'")
+        self.assertEqual(out["R"]["when"], [why, why, why])
+        self.assertIn('aria-checked="mixed" data-cmd="document.publish" data-obj="pub:lab/plan.html:obsidian"', out["R"]["det"])
+        self.assertIn(f'<p class="why">Obsidian not known: {why}.</p>', out["R"]["det"])
+        self.assertIn('class="pub-notion missing"', re.search(r'<tr data-id="lab/plan.html".*?</tr>', out["R"]["rows"], re.S).group(0))
 
     def test_details_in_the_vaults_own_repository_says_obsidian_is_repo_wide(self):
         self.plan({"unread": "", "copies": [], "choice": {"notion": False, "drive": False, "obsidian": True,

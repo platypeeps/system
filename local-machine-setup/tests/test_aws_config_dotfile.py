@@ -109,6 +109,19 @@ class AwsConfigDotfileTest(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o600)
         self.assertEqual(self.run_stage(), ["  ok      .aws/config"])
 
+    def test_a_symlinked_file_is_judged_by_its_target(self):
+        # sd:5960: a link reads 0755 whatever its target holds, so a good chmod 600 read as drift forever.
+        target = pathlib.Path(self.tmp.name) / "elsewhere" / "config"
+        target.parent.mkdir()
+        target.write_text(tracked())
+        target.chmod(0o644)
+        self.config.parent.mkdir(parents=True)
+        self.config.symlink_to(target)
+        self.assertEqual(self.run_stage(), ["  DIFFERS .aws/config — mode is not 600"])
+        self.run_stage("--apply")
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        self.assertEqual(self.run_stage(), ["  ok      .aws/config"])
+
     def test_force_keeps_each_session_under_its_own_profile(self):
         self.run_stage("--apply")
         edited = signed_in(tracked()).replace("[profile agent-sandbox]", "[profile agent-sandbox]\noutput = json")

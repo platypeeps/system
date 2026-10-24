@@ -846,6 +846,8 @@ def research_inventory(result):
 # the research.conf.py bytes it ran. A config this reader refuses is read from here; nothing here runs repository code.
 RESEARCH_MANIFEST = "docs/dashboard/research.json"
 RESEARCH_MANIFEST_BYTES = 2 * 1024 * 1024
+# The destinations each manifest document flags (pack sd:5936), so a designation a config sets in code still shows (sd:5898).
+RESEARCH_MANIFEST_FLAGS = ("notion", "drive")
 COMPUTED_FIX = "research.conf.py computes its data; run sd-research-kit render once to write docs/dashboard/research.json"
 
 
@@ -872,9 +874,11 @@ def read_research_manifest(repo):
     research_inventory(result)
 
     def text(document):
-        # The render writes strings only; anything else is dropped, so the board's cells and links stay text.
+        # The render writes strings, and one true or false per destination it designates (pack sd:5936); anything else is
+        # dropped, so the board's cells and links stay text.
         links = document.get("links") if isinstance(document.get("links"), list) else []
         return {key: value for key, value in document.items() if isinstance(value, str)} | {
+            key: document[key] for key in RESEARCH_MANIFEST_FLAGS if type(document.get(key)) is bool} | {
             "links": [link for link in links if isinstance(link, list) and len(link) == 2 and all(isinstance(part, str) for part in link)]}
 
     result["DOCS"] = [text(document) for document in result["DOCS"]]
