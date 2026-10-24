@@ -1427,9 +1427,11 @@ def parse_ports(txt):
         if line.startswith("  CONTAINER\t"):
             fields = line.split("\t")[1:]
             if len(fields) == 6:
-                name, image, status, project, workdir, mounts = (field[:240] for field in fields)
+                name, image, status, project, workdir = (field[:240] for field in fields[:5])
+                # sd:5964: split the mounts before the cap, so a mount past char 240 is still read.
+                mounts = [mount[:240] for mount in fields[5].split(",") if mount][:40]
                 containers.append({"name": name, "image": image, "status": status, "project": project,
-                                   "workdir": workdir, "mounts": [mount for mount in mounts.split(",") if mount][:40]})
+                                   "workdir": workdir, "mounts": mounts})
             continue
         said = re.fullmatch(r"  DOCKER  (read: (\d+) running|unknown: (.{1,200}))", line)
         if said:
