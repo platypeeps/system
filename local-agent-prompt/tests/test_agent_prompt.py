@@ -288,6 +288,30 @@ class SharedPolicy(unittest.TestCase):
         self.assertIsNotNone(mapped, rule)
         self.assertIn(mapped.group(1), re.findall(r"^([A-Z_]+)=", example, re.M))
 
+    def test_hub_sessions_triage_job_alerts_at_start(self):
+        # sd:5993: a session on the hub reads the open job alerts at start and fixes or files
+        # each; a lane failure the work satellite owns goes to that satellite's session once.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        rules = [line for line in source.splitlines() if "sd reports" in line or "work-<repo>" in line]
+        start = next((line for line in rules if "sd reports list" in line), "")
+        self.assertIn("On the hub", start)
+        self.assertIn("builders", start)
+        self.assertTrue(any("sd reports acknowledge" in line and "in_progress" in line for line in rules), rules)
+        # Lane review: --resolve-followups closes every open followup, so it means the fix is done.
+        # An alert with only an item filed stays open, citing the item: plain `acknowledge`
+        # refuses while the ingest's followup is open.
+        fixed = next((line for line in rules if "--resolve-followups" in line), "")
+        self.assertIn("fixed", fixed)
+        self.assertIn("only filed", fixed)
+        self.assertIn("leave the alert open", fixed)
+        self.assertNotIn("then run `sd reports acknowledge N --resolve-followups`", source)
+        # Second lane review: it also closes followups the operator wrote, so the session lists
+        # them first and resolves only when every open one is its own fix.
+        self.assertIn("`sd note list N`", fixed)
+        self.assertIn("only when every open followup is one this session fixed", fixed)
+        self.assertNotIn("Once fixed, run `sd reports acknowledge N --resolve-followups`", source)
+        self.assertTrue(any("work-<repo>" in line and "SendMessage" in line for line in rules), rules)
+
 
 if __name__ == "__main__":
     unittest.main()

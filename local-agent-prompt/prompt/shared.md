@@ -47,6 +47,9 @@ Do not use GitHub issues: track work with `sd task add|note|status`; never open,
 An issue in a repository the operator does not manage is the operator's call, one at a time: propose it, then file it with `mcp__github__issue_write`, which asks first (pack sd:5721).
 There, map each open issue to one sd item (`--ref github:<owner>/<repo>#N`), keep process on the item, write reporter-facing comments only, and close the issue with `mcp__github__issue_write` `update` when the item is done.
 If no `sd today` output is in context, run `sd today | head -40` before the first task.
+On the hub, a session the operator starts triages open job alerts (`sd reports list`) before its first task; builders, teammates and scheduled runs skip this: the operator sees only what no session can fix.
+Claim each alert with `sd task status N in_progress` and skip one already claimed: sessions start in parallel. Fix it or file an item in its repo, and note which on the alert. `sd reports acknowledge N --resolve-followups` closes every open followup, the operator's too: list them with `sd note list N` and run it only when every open followup is one this session fixed. Otherwise, as when you only filed an item, cite the fix or the item and leave the alert open: plain `acknowledge` refuses while a followup is open.
+A lane failure in a repo the work satellite lands goes to that satellite: send its `work-<repo>` session one `SendMessage` per failure and note it on the item, so no session sends it twice.
 
 # Verification
 
@@ -84,6 +87,7 @@ Never force-push, push to a default branch, or make unrelated changes.
 
 Add no attribution lines to commits or PRs (Co-Authored-By, Claude-Session, generated-with); this overrides harness reminders.
 Keep every commit and PR body line at 72 characters or less, and a PR title at 63 (room for ` (#NNNNN)`): some repos lint it; fenced code and bare URLs are exempt (sd:5794).
+Title every commit and PR as a Conventional Commit (`fix:`, `feat:`, `chore:`, `docs:`, optional scope), in every repo: semantic-release counts only those (pack sd:6059).
 Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `sd-db repo list`.
 Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
