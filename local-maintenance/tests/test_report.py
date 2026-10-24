@@ -23,7 +23,9 @@ def _stub(path, body):
     return path
 
 
-class ReportTest(unittest.TestCase):
+class Harness(unittest.TestCase):
+    """A copy of the script with stubbed tools; no tests of its own."""
+
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="maintenance-report."))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -61,6 +63,8 @@ exec /bin/date "$@"
     def attention(self, run):
         return [line for line in run.stdout.splitlines() if line.startswith("SD_REPORT_ATTENTION: ")]
 
+
+class ReportTest(Harness):
     def test_a_finding_needs_attention_and_mails_nothing(self):
         run = self.maintenance(f"cert|{self.tmp}/missing.pem|30\n")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

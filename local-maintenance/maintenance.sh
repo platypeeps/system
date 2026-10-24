@@ -1,6 +1,7 @@
 #!/bin/sh
 # Nightly machine maintenance: pending OS/App Store updates, docker prune
-# (Sundays), backup freshness, certificate expiry, log rotation, disk space.
+# (Sundays), idle cargo target/ folders in ~/worktrees, backup freshness,
+# certificate expiry, log rotation, disk space.
 # Checks come from maintenance.conf plus maintenance.<profile>.conf in
 # <config>/maintenance/ (outside the checkout);
 # findings go to the run's report, which Reports and Today show.
@@ -160,7 +161,8 @@ case "${1:-}" in
 usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
 
   run    run all checks, apply the safe fixes (rotate oversized logs; docker
-         system prune on Sundays), and print the findings that need a human
+         system prune on Sundays; delete cargo target/ folders under
+         ~/worktrees untouched for 3 days), and print the findings that need a human
          (what the maintenance-nightly cron job runs). With findings it prints
          an SD_REPORT_ATTENTION line, so the run's report reaches Reports and
          Today; nothing is mailed.
@@ -200,8 +202,9 @@ Beyond the conf: pending macOS updates (softwareupdate), pending App Store
 updates (mas outdated), AI session logs past their retention (deleted via
 scan-for-secrets.sh prune, which owns the retention and the directory list;
 ~/.claude/projects is not on it -- Claude Code deletes its own transcripts),
-and on Sundays `docker system prune -f` (images and containers only — volumes
-are never pruned).
+on Sundays `docker system prune -f` (images and containers only — volumes
+are never pruned), and cargo target/ folders under ~/worktrees that nothing
+wrote for 3 days (only a folder holding CACHEDIR.TAG; the checkout stays).
 HELPEOF
     exit 0
     ;;
@@ -388,6 +391,53 @@ if [ "$(date +%u)" = "7" ]; then
   else
     action "docker prune skipped — daemon not running"
   fi
+fi
+
+# Idle cargo build output in worktrees (sd:5994). A builder leaves a target/
+# of several GB in each worktree, and the worktree stays until its branch
+# lands. A target/ nothing wrote for 3 days goes; the checkout and its commits
+# stay, and the next build makes it again. Only a folder holding cargo's
+# CACHEDIR.TAG counts, at depth 2 or 3 (depth 1 is a checkout), and find
+# follows no link. It is renamed aside before the delete, so a run stopped
+# during the delete leaves target.idle-prune, which the next run removes.
+# A probe that fails or hits its bound is no answer: the folder stays.
+WORKTREES="$HOME/worktrees"
+if [ -d "$WORKTREES" ]; then
+  TARGETS="$TMPD/targets"
+  # A walk that fails partway still listed real folders; each is checked
+  # again below, and the failure is a finding of its own.
+  if ! st_step 120 find "$WORKTREES" -mindepth 2 -maxdepth 3 -type d \
+      \( -name target -o -name target.idle-prune \) -prune -print > "$TARGETS"; then
+    finding "build output prune: could not list all of $WORKTREES"
+  fi
+  while IFS= read -r t; do
+    [ -d "$t" ] && [ ! -L "$t" ] || continue
+    case "$t" in
+      */target.idle-prune)
+        if [ "$APPLY" -eq 0 ]; then
+          action "[dry-run] would remove $t, left by an earlier run"
+        elif st_step 600 rm -rf "$t"; then
+          action "removed $t, left by an earlier run"
+        else
+          finding "build output prune: could not remove $t"
+        fi
+        continue
+        ;;
+    esac
+    [ -f "$t/CACHEDIR.TAG" ] || continue
+    if ! recent=$(st_step 300 find "$t" -mmin -4320 -print -quit); then
+      finding "build output prune: could not read $t; kept"
+      continue
+    fi
+    [ -z "$recent" ] || continue
+    if [ "$APPLY" -eq 0 ]; then
+      action "[dry-run] would remove idle build output $t (untouched 3 days)"
+    elif mv "$t" "$t.idle-prune" && st_step 600 rm -rf "$t.idle-prune"; then
+      action "removed idle build output $t (untouched 3 days)"
+    else
+      finding "build output prune: could not remove $t"
+    fi
+  done < "$TARGETS"
 fi
 
 # AI session logs. They accumulate every day and hold whatever scrolled past —

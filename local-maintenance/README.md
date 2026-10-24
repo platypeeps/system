@@ -1,9 +1,10 @@
 # local-maintenance
 
 Nightly machine upkeep in one sweep: pending macOS / App Store updates,
-docker prune (Sundays), backup freshness, certificate expiry, log rotation,
-disk space. Findings that need a human go to the run's report, which Reports
-and Today show; safe fixes (log rotation, docker prune) happen automatically.
+docker prune (Sundays), idle cargo build output in worktrees, backup
+freshness, certificate expiry, log rotation, disk space. Findings that need
+a human go to the run's report, which Reports and Today show; safe fixes
+(log rotation, docker prune, the build output) happen automatically.
 
 ## Usage
 
@@ -51,9 +52,17 @@ Built in, no conf needed: `softwareupdate -l`, `mas outdated`, AI session
 logs past their retention (`scan-for-secrets.sh prune`, which owns the
 retention and the directory list — 30 days for the transcripts, 7 for the
 codex shell-snapshot cache, and `~/.claude/projects` deliberately not in the
-list because Claude Code deletes its own), and on Sundays `docker system prune -f` (containers
+list because Claude Code deletes its own), on Sundays `docker system prune -f` (containers
 and dangling images only — volumes are never pruned, several local services
-keep state in them).
+keep state in them), and idle build output in worktrees (sd:5994).
+
+`run` deletes each cargo `target/` folder under `~/worktrees`, at depth 2
+or 3, that nothing wrote for 3 days; `check` names them. Only a folder
+holding cargo's `CACHEDIR.TAG` counts, and no link is followed; the
+checkout and its commits stay. The folder is renamed to
+`target.idle-prune` before the delete, so the next run finishes a delete
+that was stopped. A probe that fails is a finding, and the folder stays.
+The walks and the delete run under `lib/bounded.sh`'s `st_step`.
 
 ## uv cache prune at login
 
