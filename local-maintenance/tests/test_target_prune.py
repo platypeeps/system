@@ -8,6 +8,8 @@ cargo's when it holds CACHEDIR.TAG, which cargo writes and git never tracks.
 
 import os
 import pathlib
+import subprocess
+import sys
 import time
 
 from tests.test_report import Harness, _stub
@@ -28,12 +30,6 @@ class TargetPruneTest(Harness):
         super().setUp()
         self.worktrees = self.tmp / "home" / "worktrees"
         self.trash = self.tmp / "home" / ".local" / "state" / "maintenance" / "prune-trash"
-        # lsof's answer for "nobody holds these": exit 1, nothing printed.
-        self.lsof_calls = self.tmp / "lsof-calls"
-        self.lsof("exit 1\n")
-
-    def lsof(self, body):
-        _stub(self.bin / "lsof", f'printf "%s\\n" "$*" >> "{self.lsof_calls}"\n' + body)
 
     def cargo_target(self, worktree, *, idle=FOUR_DAYS, tag=True, under="target"):
         """A worktree with tracked files and a build tree last written `idle` ago."""
@@ -96,28 +92,38 @@ class TargetPruneTest(Harness):
         self.maintenance("# nothing to check\n")
         self.assertTrue((checkout / "CACHEDIR.TAG").is_file())
 
-    def test_a_target_a_process_holds_stays(self):
-        # sd:5994 review: an old mtime is no proof cargo is not using the
-        # folder; a build can take its lock after the idle probe. Just
-        # before the rename, a holder of the folder or a .cargo-lock keeps it.
-        self.lsof('echo 4242\nexit 0\n')
-        _checkout, target = self.cargo_target("example-held")
+    def test_a_target_whose_cargo_lock_is_held_stays(self):
+        # sd:5994 review round 5: cargo locks a build with flock(2) on
+        # target/<profile>/.cargo-lock. A child holds a real flock there,
+        # as a running build does; the target stays, with no finding.
+        _checkout, target = self.cargo_target("example-building")
+        lock = target / "debug" / ".cargo-lock"
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import fcntl, sys\n"
+             "f = open(sys.argv[1], 'r+')\n"
+             "fcntl.flock(f, fcntl.LOCK_EX)\n"
+             "print('locked', flush=True)\n"
+             "sys.stdin.read()\n", str(lock)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.stdin.close)
+        self.assertEqual(holder.stdout.readline(), "locked\n")
         run = self.maintenance("# nothing to check\n")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertTrue((target / "CACHEDIR.TAG").is_file(), run.stdout + run.stderr)
-        self.assertIn(f"- kept idle build output {target}: a process holds it", run.stdout)
-        [call] = self.lsof_calls.read_text().splitlines()
-        self.assertIn(f"{target}/debug/.cargo-lock", call.split())
-        self.assertIn(str(target), call.split())
+        self.assertTrue(lock.is_file())
+        self.assertNotIn("build output", run.stdout)
+        self.assertFalse(self.trash.exists() and any(self.trash.iterdir()))
 
-    def test_a_holder_probe_that_fails_keeps_the_target_and_says_so(self):
-        self.lsof('echo "lsof: WARNING: cannot stat" >&2\nexit 1\n')
+    def test_a_lock_that_cannot_be_opened_keeps_the_target_and_says_so(self):
+        # A lock the move cannot open is no answer: the folder stays.
         _checkout, target = self.cargo_target("example-unsure")
+        (target / "debug" / ".cargo-lock").chmod(0)
         run = self.maintenance("# nothing to check\n")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertTrue((target / "CACHEDIR.TAG").is_file())
-        self.assertIn(f"- build output prune: could not tell whether a process holds {target}; kept",
-                      run.stdout)
+        self.assertIn(f"- build output prune: could not move {target} into {self.trash}", run.stdout)
+        self.assertIn("Permission denied", run.stdout)
 
     def test_check_names_the_target_and_removes_nothing(self):
         _checkout, target = self.cargo_target("example-dry")
@@ -202,7 +208,6 @@ exec /bin/rm "$@"
         run = self.maintenance("# nothing to check\n")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {self.worktrees} .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {target} -mmin -4320 .* \(bound \d+s\)")
-        self.assertRegex(run.stderr, rf"\[step [\d:]+\] lsof -t -- {target} .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {self.trash}/\S+ \(bound \d+s\)")
         self.assertNotIn("[step ", run.stdout)
 

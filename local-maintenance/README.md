@@ -60,11 +60,12 @@ keep state in them), and idle build output in worktrees (sd:5994).
 or 3, that nothing wrote for 3 days; `check` names them. Only a folder
 holding cargo's `CACHEDIR.TAG` counts, and no link is followed; the
 checkout and its commits stay. An old time is no proof cargo is idle,
-so just before the rename `lsof` asks whether a process holds the
-folder or a `.cargo-lock` in it; a holder, or an answer that is not a
-clean no, keeps the folder. One rename(2) then moves `target/` into
-`~/.local/state/maintenance/prune-trash/`, and the delete runs there: a
-cargo that starts during it makes a fresh `target/`. A rename that
+so the move uses cargo's own lock: it takes `flock(2)` on every
+`.cargo-lock` in the folder without waiting, and while it holds them,
+one rename(2) moves `target/` into
+`~/.local/state/maintenance/prune-trash/`. A busy lock is a running
+build, and the folder stays. The delete runs in the trash: a cargo that
+starts during the hold or the delete makes a fresh `target/`. A rename that
 fails (another volume) keeps the folder; nothing is copied. A run
 stopped during a delete leaves its entry in the trash, and the next run
 deletes entries there, never a path under `~/worktrees`. A probe that

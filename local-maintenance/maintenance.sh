@@ -402,6 +402,25 @@ fi
 # folder stays. The delete runs only inside PRUNE_TRASH, which this step owns.
 WORKTREES="$HOME/worktrees"
 PRUNE_TRASH="$HOME/.local/state/maintenance/prune-trash"
+# PRUNE_MOVE SRC DST: flock every .cargo-lock under SRC, at depth 1 to 3, then
+# rename SRC to DST and release. Exit 75 when a lock is busy, 1 on any error.
+# shellcheck disable=SC2016 # python source
+PRUNE_MOVE='import fcntl, glob, os, sys
+src, dst = sys.argv[1:3]
+held = []
+try:
+    for pattern in (".cargo-lock", "*/.cargo-lock", "*/*/.cargo-lock"):
+        for path in glob.glob(os.path.join(glob.escape(src), pattern)):
+            held.append(os.open(path, os.O_RDONLY | os.O_NOFOLLOW))
+            fcntl.flock(held[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
+    os.rename(src, dst)
+except BlockingIOError:
+    sys.exit(75)
+except OSError as error:
+    sys.exit(str(error))
+finally:
+    for fd in held:
+        os.close(fd)'
 # A run stopped during a delete leaves its entry in the trash; the next run
 # deletes it. Only entries in the trash go, never a path under ~/worktrees.
 if [ -d "$PRUNE_TRASH" ]; then
@@ -434,48 +453,27 @@ if [ -d "$WORKTREES" ]; then
       continue
     fi
     [ -z "$recent" ] || continue
-    # An old mtime is no proof cargo is idle: a build can take its lock after
-    # the probe above. So, just before the rename, a process that holds the
-    # folder or a .cargo-lock in it keeps it. lsof exits 1 and prints nothing
-    # when no process holds them; any other answer is unknown, and keeps it.
-    if ! locks=$(st_step 60 find "$t" -maxdepth 3 -name .cargo-lock -type f); then
-      finding "build output prune: could not tell whether a process holds $t; kept"
-      continue
-    fi
-    set -- "$t"
-    while IFS= read -r lock; do
-      [ -z "$lock" ] || set -- "$@" "$lock"
-    done <<LOCKS
-$locks
-LOCKS
-    lsof_rc=0
-    holders=$(st_step 60 lsof -t -- "$@" 2> "$TMPD/lsof.err") || lsof_rc=$?
-    if [ "$lsof_rc" -eq 0 ] && [ -n "$holders" ]; then
-      action "kept idle build output $t: a process holds it"
-      continue
-    fi
-    # st_step's own "exited 1" line is not lsof's: it is filtered out.
-    if [ "$lsof_rc" -ne 1 ] || [ -n "$holders" ] || grep -qv '^\[step ' "$TMPD/lsof.err"; then
-      finding "build output prune: could not tell whether a process holds $t; kept"
-      continue
-    fi
     if [ "$APPLY" -eq 0 ]; then
       action "[dry-run] would remove idle build output $t (untouched 3 days)"
       continue
     fi
-    # One rename takes target/ out of cargo's path: a cargo that starts after
-    # it makes a fresh target/ and never sees the files being deleted.
-    # rename(2), not mv: mv copies across volumes, and a copy is the long
-    # window the rename closes. A rename that fails keeps the folder.
-    # ponytail: a cargo that takes its lock between lsof and the rename, one
-    # syscall, fails that build once; the next build makes target/ again.
-    if ! { mkdir -p "$PRUNE_TRASH" && bin=$(mktemp -d "$PRUNE_TRASH/XXXXXXXX"); } 2> "$TMPD/rename.err"; then
+    # An old mtime is no proof cargo is idle, so the move uses cargo's own
+    # lock: flock(2) on each target/<profile>/.cargo-lock. PRUNE_MOVE takes
+    # them all without waiting and, while it holds them, renames target/ into
+    # the trash. A busy lock is a running build: skip it, no finding. A cargo
+    # that starts during the hold waits on the lock, then builds a fresh
+    # target/, and never sees the files being deleted. rename(2), not mv: mv
+    # copies across volumes. A rename that fails keeps the folder.
+    if ! { mkdir -p "$PRUNE_TRASH" && bin=$(mktemp -d "$PRUNE_TRASH/XXXXXXXX"); } 2> "$TMPD/move.err"; then
       finding "build output prune: could not make a folder in $PRUNE_TRASH; kept $t"
       continue
     fi
-    if ! perl -e 'rename($ARGV[0], $ARGV[1]) or die "$!\n"' "$t" "$bin/target" 2> "$TMPD/rename.err"; then
-      finding "build output prune: could not move $t into $PRUNE_TRASH ($(cat "$TMPD/rename.err")); kept"
+    move_rc=0
+    python3 -c "$PRUNE_MOVE" "$t" "$bin/target" 2> "$TMPD/move.err" || move_rc=$?
+    if [ "$move_rc" -ne 0 ]; then
       rmdir "$bin" 2>/dev/null || true
+      [ "$move_rc" -eq 75 ] ||
+        finding "build output prune: could not move $t into $PRUNE_TRASH ($(tail -1 "$TMPD/move.err")); kept"
       continue
     fi
     if st_step 600 rm -rf "$bin"; then
