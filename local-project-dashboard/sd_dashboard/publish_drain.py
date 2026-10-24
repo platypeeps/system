@@ -14,7 +14,9 @@ The runner (`run`) marks the run `running` and pipes the prompt to `claude -p`, 
 group killed past it). The prompt names the contract's six drain steps and nothing else to do. The tools are the
 allowlist below: Notion and Drive may search, read, create in a container and update; nothing deletes, moves, shares or
 changes a permission. Edit covers the queue and, for a document, its checkout's research.conf.py; Bash covers the two
-commands the steps name. The allowlist cannot pin a container: the prompt and the contract do.
+commands the steps name. The allowlist cannot pin a container: the prompt and the contract do. `--restricted` drops the
+user's settings and the servers defined there, so the run loads its two servers alone (`servers`); without them it had
+no Notion tool and left every request (sd:5942).
 
 A trash request (an untick, sd:5489) adds two tools for that run only: Notion's `notion-delete-pages` and Drive's
 `update_drive_file`, both of which move one copy to the trash, recoverably. The prompt then names the contract's trash
@@ -61,7 +63,8 @@ TRASH_TOOLS = ("mcp__notion__notion-delete-pages", "mcp__workspace-mcp__update_d
 #: `SHELL_ENV` (claude_env) sources ~/.config/shell/env.sh and maps its CUSTOM_ token (sd:5791).
 CLAUDE = (SHELL_ENV + 'ulimit -S -n 65536 2>/dev/null; '
           'exec "${CLAUDE_BIN:-$(command -v claude || echo "$HOME/.local/bin/claude")}" -p --model sonnet '
-          '--restricted --no-session-persistence --tools "Read,Edit,Bash" --add-dir "$1" "$2" "$3" --allowedTools "$4"')
+          '--restricted --no-session-persistence --tools "Read,Edit,Bash" --add-dir "$1" "$2" "$3" --allowedTools "$4" '
+          '--strict-mcp-config --mcp-config "$5"')
 STEP5_DOC = "write `page=` or `file=` into {conf}, on the entry the request names; change nothing else in it."
 #: A brief's designation is its item's `fields.publish`; step 6 records the URL on that item (`fields.published`), and the
 #: delivered URL carries into the same container on the next publish; it no longer pins the copy, so the drain writes no file.
@@ -113,6 +116,15 @@ def allowed(queue: Path, checkout: Path | None, sd_db: str, kit: str, trash: boo
               f"Bash({sd_db} repo channels *)", f"Bash({kit} delivered *)"]
     # Comma-separated: a Bash rule holds spaces, and claude reads the list by commas as well as spaces.
     return ",".join(tools)
+
+
+def servers() -> str:
+    """The `--mcp-config` value: notion and workspace-mcp, the servers `allowed` names, as realm_sweep loads them."""
+    from . import realm_sweep
+
+    return json.dumps({"mcpServers": {
+        "notion": realm_sweep.WORK_MCP["notion"],
+        "workspace-mcp": {"type": "http", "url": os.environ.get("WORKSPACE_MCP_URL", "http://127.0.0.1:8083/mcp")}}})
 
 
 def _requests(queue: Path, checkout: Path, out: str) -> list[dict]:
@@ -170,7 +182,8 @@ def start(connection, checkout: Path, out: str, *, brief: bool = False, now: dat
         document = {"id": run_id, "state": "queued", "reason": None, "checkout": str(checkout), "out": out,
                     "queue": str(queue), "receipts": str(kit.receipts()), "references": str(contract.parent),
                     "requests": requests, "results": None, "prompt": str(prompt),
-                    "allowed": allowed(queue, None if brief else checkout, sd_db, script, trash), "timeout": DRAIN_SECONDS,
+                    "allowed": allowed(queue, None if brief else checkout, sd_db, script, trash), "servers": servers(),
+                    "timeout": DRAIN_SECONDS,
                     "started": _iso(now), "finished": None, "pid": None}
         _write(record, document)
         handle.seek(0)
@@ -230,7 +243,7 @@ def brief_request(values: dict):
 def public(document: dict) -> dict:
     """What a page reads: the state file less the runner's own fields."""
     return {key: value for key, value in document.items()
-            if key not in ("pid", "allowed", "timeout", "prompt", "receipts", "references")}
+            if key not in ("pid", "allowed", "servers", "timeout", "prompt", "receipts", "references")}
 
 
 def _alive(pid) -> bool:
@@ -301,7 +314,9 @@ def run(record: Path, lock: int | None = None) -> int:
     document.update(state="running", pid=os.getpid())
     _write(record, document)
     log = record.with_suffix(".log")
-    argv = ["sh", "-c", CLAUDE, "sh", document["queue"], document["checkout"], document["references"], document["allowed"]]
+    argv = ["sh", "-c", CLAUDE, "sh", document["queue"], document["checkout"], document["references"], document["allowed"],
+            # A run queued before sd:5942 names no servers: it loads none and leaves its requests, as it did then.
+            document.get("servers", '{"mcpServers": {}}')]
     with open(log, "w", encoding="utf-8") as sink, open(document["prompt"], encoding="utf-8") as prompt:
         child = subprocess.Popen(argv, stdin=prompt, stdout=sink, stderr=subprocess.STDOUT, cwd=document["checkout"],
                                  start_new_session=True, pass_fds=(lock,) if lock is not None else ())
