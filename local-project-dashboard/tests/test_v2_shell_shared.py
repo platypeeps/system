@@ -433,8 +433,9 @@ class EveryFoldControlIsALink(unittest.TestCase):
                     wrong.append(f"{name}: {m.group(0)[:120]}")
         self.assertEqual(wrong, [])
         # The sweep reaches each page that draws one, so a renamed control cannot leave it empty. today-github.js pages its
-        # table with the shell's pager since sd:5899, so it draws none.
-        self.assertLessEqual({"shell.js", "notes.js", "reports.html", "research.js", "today-status.js"}, set(found))
+        # table with the shell's pager since sd:5899, so it draws none. Today's group and In motion folds are today.js's
+        # since sd:5921 deleted today-status.js.
+        self.assertLessEqual({"shell.js", "notes.js", "reports.html", "research.js", "today.js"}, set(found))
 
 
 class EveryDialogHasAClose(unittest.TestCase):
@@ -542,7 +543,7 @@ class TheCells(unittest.TestCase):
     def test_todays_server_drawn_lamps_follow_the_same_grammar(self):
         today = (V2 / "today.html").read_text(encoding="utf-8")
         lamps = re.search(r'<ul class="annunciator" id="annunciator">(.*?)</ul>', today, re.S).group(1)
-        self.assertEqual(cell_grammar(self, re.sub(r">\s+<li>", "><li>", lamps)), [("button", "unknown")] * 4 + [("button", None)])
+        self.assertEqual(cell_grammar(self, re.sub(r">\s+<li>", "><li>", lamps)), [("button", "unknown")] * 6 + [("a", "unknown")] * 2 + [("button", None)])
         self.assertNotIn('class="cell', PAGE_JS["today.js"])
 
     def test_a_spec_becomes_a_button_a_link_or_a_div(self):
@@ -797,8 +798,7 @@ class TheTableGrammar(unittest.TestCase):
                            ("briefs.js", "shell.view.count('list', all.length);"),
                            ("skills.js", "window.shell.view?.count('catalog', DOC ? v.length : null);"),
                            ("management.js", "shell.view.count('repos', rows.length);"),
-                           ("documents.js", "window.PAGE_VIEWS = [{ id: 'documents', label: 'Documents' }];"),
-                           ("queue.js", "window.shell?.view.count('lanes', busyLanes.length); window.shell?.view.count('idle', idle.length);")]:
+                           ("documents.js", "window.PAGE_VIEWS = [{ id: 'documents', label: 'Documents' }];")]:
             self.assertIn(call, (STATIC / page).read_text(encoding="utf-8"), page)
 
     def test_a_kept_state_that_is_malformed_falls_back_field_by_field(self):
@@ -1748,10 +1748,11 @@ if __name__ == "__main__":
 class ThePaneWithoutDetails(unittest.TestCase):
     """sd:5592. A page whose Details never shows a row has no Details element; the shell hides the tab and opens on Chat."""
 
-    def test_only_queue_decide_and_settings_have_no_details_and_the_shell_shows_chat(self):
+    def test_only_decide_and_settings_have_no_details_and_the_shell_shows_chat(self):
         v2 = V2
         bare = sorted(p.stem for p in v2.glob("*.html") if 'id="details"' not in p.read_text(encoding="utf-8"))
-        self.assertEqual(bare, ["decide", "queue", "settings"])
+        # Queue's open lane shows in Details since sd:5921.
+        self.assertEqual(bare, ["decide", "settings"])
         self.assertIn("if (!details) { pane.querySelector('#tab-details').hidden = true; showTab('tab-chat'); }", SHELL_JS)
         self.assertIn('.pane [role="tab"][hidden] { display: none; }', (v2 / "static" / "shell.css").read_text(encoding="utf-8"))
 

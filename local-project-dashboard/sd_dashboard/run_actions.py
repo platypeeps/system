@@ -150,19 +150,26 @@ def _storage_roots(connection) -> list[Path]:
 
 
 def _sizes(code: int, out: str) -> str:
-    """`du -k -d 1`'s lines, largest first, in human sizes; the folder's own total line leads."""
-    rows = []
+    """`du -k -d 1`'s lines, largest first, in human sizes; the folder's own total line leads.
+
+    Any other line is du's own diagnostic, such as a folder it could not read; it follows the rows unchanged (sd:5958),
+    since a total that skipped a folder is not the folder's size.
+    """
+    rows, said = [], []
     for line in out.splitlines():
         size, _, path = line.partition("\t")
         if size.strip().isdigit() and path:
             rows.append((int(size), path))
+        elif line.strip():
+            said.append(line)
     if not rows:
         return out
     rows.sort(key=lambda row: -row[0])
     human = lambda kb: next(f"{kb / 1024 ** n:.1f} {unit}" for n, unit in ((3, "TiB"), (2, "GiB"), (1, "MiB"), (0, "KiB"))
                             if kb >= 1024 ** n or n == 0)
     shown = "\n".join(f"{human(kb):>10}  {path}" for kb, path in rows[:BIGGEST + 1])
-    return shown + (f"\n... {len(rows) - BIGGEST - 1} more" if len(rows) > BIGGEST + 1 else "")
+    shown += f"\n... {len(rows) - BIGGEST - 1} more" if len(rows) > BIGGEST + 1 else ""
+    return "\n".join([shown, *said])
 
 
 def storage_du(connection, values, jobs=None) -> Step:

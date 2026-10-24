@@ -81,7 +81,7 @@ question in shadow and its answer is recorded, never shown (`job_failures`).
 from __future__ import annotations
 
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from sd_db import operations, progress, reads
@@ -121,6 +121,15 @@ ABANDONED = 3
 PINNED = 3
 #: What moves a pinned checkout, named in its row.
 REFRESH = "local-repo-sync/repo-sync.sh refresh"
+#: Needs you's quiet rows (sd:5921): new briefs and items in progress with no session, the queued band.
+QUIET = 5
+#: A past-due member this many days late, and not recurring, breaks out of its group as its own row (sd:5921).
+LATE_DAYS = 30
+#: Members a group row shows when opened; the rest are "N more" (sd:5921).
+GROUP_SHOWN = 5
+#: Each source's lamp on Today (sd:5921): the abandoned worktrees are checkouts, so they light Repos.
+LAMP = {"repos": "repos", "sessions": "repos", "prs": "pulls", "jobs": "jobs", "lane": "lane",
+        "reports": "reports", "mail": "mail", "gate": "gate", "live": "sessions"}
 
 #: The three bands, loudest first; the script paints each as a class name.
 BANDS = ("broken", "look", "queued")
@@ -268,6 +277,24 @@ def _log_time(log: Path | None) -> str:
         return "log unreadable"
 
 
+def _log_at(log: Path | None) -> str | None:
+    """The log's last write as UTC ISO, the time the day track marks a failed run at; None when it cannot be read."""
+    try:
+        return _utc(log.stat().st_mtime) if log is not None else None
+    except OSError:
+        return None
+
+
+def _utc(when) -> str | None:
+    """A time as `YYYY-MM-DDTHH:MM:SSZ`: an epoch, or ISO text, a naive one read as UTC. None when it is not a time."""
+    try:
+        at = (datetime.fromtimestamp(when, timezone.utc) if isinstance(when, (int, float))
+              else datetime.fromisoformat(str(when).replace(" ", "T").replace("Z", "+00:00")))
+    except (TypeError, ValueError, OSError):
+        return None
+    return (at if at.tzinfo else at.replace(tzinfo=timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
     """One row for each job `operations.inventory` reads as needing attention.
 
@@ -301,7 +328,7 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
         if state in ("failed", "interrupted"):
             logged = _log_time(log)
             retry = f"launchctl kickstart {service}" if service else "retry from Operations Jobs"
-            row.update(detail=f"{logged} · retry: {retry}", retry=retry, job=name, exit=code,
+            row.update(detail=f"{logged} · retry: {retry}", retry=retry, job=name, exit=code, at=_log_at(log),
                        revision=job.get("revision"), capability=(job.get("capabilities") or {}).get("retry"))
         if state == "failed":
             # launchd can report `last exit code = 0` beside a terminating signal;
@@ -341,6 +368,58 @@ def dark_row(source: str, reason: str) -> dict:
     }
 
 
+def unread_row(source: str, unread: dict[str, str]) -> dict:
+    """A source read only in part (sd:5939): one dark row naming the parts not read, so its lamp reads unknown and the
+    badge counts it, never a quiet 0."""
+    names = sorted(unread)
+    more = f" and {len(names) - 3} more" if len(names) > 3 else ""
+    return {**dark_row(source, "; ".join(f"{name}: {unread[name]}" for name in names[:3]) + more),
+            "what": f"{source} not read for {', '.join(names[:3])}{more}", "partial": True}
+
+
+def unread_rows(sources: dict, kept: dict, queue: dict, active: dict, reported: dict, mail: dict) -> list[dict]:
+    """The dark rows for every read that failed in part or that a document reports instead of raising (sd:5939): a lane
+    Queue could not list, the gate, the reports, the mail, a checkout the fleet could not read and a live-session source.
+    A collector that failed whole is already its own dark row and adds none here. Each branch first checks that its
+    source was accepted, then reads only values of the shape it needs: a malformed part is skipped, never a raise."""
+    def text(value, default=""):
+        return value if isinstance(value, str) and value else default
+
+    def listed(value):
+        return [entry for entry in value if isinstance(entry, dict)] if isinstance(value, list) else []
+
+    rows = []
+    if not sources["lane"] and isinstance(queue, dict):
+        unread = {Path(p["repo"]).name: text(p.get("error"), "no reason given")
+                  for p in listed(queue.get("problems")) if text(p.get("repo"))}
+        if unread:
+            rows.append(unread_row("lane", unread))
+        gates = queue.get("gates")
+        if isinstance(gates, dict) and text(gates.get("error")):
+            rows.append(dark_row("gate", gates["error"]))
+    if text(reported.get("problems_error")):
+        rows.append(dark_row("reports", reported["problems_error"]))
+    if text(mail.get("mail_error")):
+        rows.append(dark_row("mail", mail["mail_error"]))
+    else:
+        unread = {u["repo"]: text(u.get("reason"), "no reason given") for u in listed(mail.get("mail_unread")) if text(u.get("repo"))}
+        if unread:
+            rows.append(unread_row("mail", unread))
+    # Only a fleet document `_repos` accepted: its rows are dicts with a text name and a text or empty error.
+    if not sources["repos"]:
+        checkouts = {repo["name"]: repo["error"] for repo in kept["repos"]["repos"] if repo.get("error")}
+        if checkouts:
+            rows.append(unread_row("repos", checkouts))
+    # The fleet's sessions document failing whole is already the dark sessions row.
+    live = {name: why for name, why in (active.get("sources") or {}).items()
+            if text(why) and not (name == "fleet" and sources["sessions"])} if isinstance(active.get("sources"), dict) else {}
+    if text(active.get("error")):
+        live["sessions"] = active["error"]
+    if live:
+        rows.append(unread_row("live", live))
+    return rows
+
+
 def merge(rows: list[dict]) -> list[dict]:
     """Every row there is, loudest first.
 
@@ -359,6 +438,7 @@ def _repos(fleet_read) -> list[dict]:
                                          or (row.get("dirty") is not None and type(row.get("dirty")) is not int)
                                          or (row.get("pinned_behind") is not None
                                              and type(row.get("pinned_behind")) is not int)
+                                         or not isinstance(row.get("error") or "", str)
                                          for row in rows):
         raise ValueError("fleet collector returned an incomplete repos document")
     return backbone_rows(rows)
@@ -394,14 +474,214 @@ def work_rows(connection: sqlite3.Connection, now: str) -> list[dict]:
     rows = reads.today_items(connection, now=now)
     # One batched revision read for the list, not an `item_state` per row (sd:3531).
     revisions = reads.revisions(connection, [row["id"] for row in rows])
+    def column(row, name):
+        return row[name] if name in row.keys() else None
+
+    # `repo`, `priority` and `recurring` place the row in Needs you's groups (sd:5921); an older schema reads none.
     return [{"id": f"item:{row['id']}", "kind": "item", "item": row["id"], "what": f"#{row['id']} {row['title']}",
              "detail": f"{row['status']} · due {row['due']}" if row["due"] else row["status"],
              "state": row["status"], "due": row["due"], "problem": [row["status"], row["due"]],
-             "item_kind": row["kind"], "revision": revisions[row["id"]]}
+             "item_kind": row["kind"], "revision": revisions[row["id"]],
+             "repo": Path(column(row, "repo")).name if column(row, "repo") else "", "priority": column(row, "priority"),
+             "recurring": bool(column(row, "recurrence")), "since": column(row, "status_since")}
             for row in rows]
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, jev=None, herdr=None) -> dict:
+def lane_rows(lanes: list[dict]) -> list[dict]:
+    """Each lane's blocked entries as Needs you rows (sd:5921): broken, and keyed on the head the entry ended at.
+
+    The row carries what Queue's Retry and Approve post (`/api/queue/move`): the repo path, the item, the lane's
+    revision and the full head, so Today's Retry acts on the entry the read showed and nothing newer.
+    """
+    out = []
+    for lane in lanes:
+        for row in lane.get("rows") or []:
+            if row.get("state") != "blocked":
+                continue
+            where = row.get("step") or row.get("status") or "the lane"
+            out.append({"rank": FAILED, "kind": "lane", "id": f"lane:{lane['repo']}:{row['item']}:{row.get('head') or ''}",
+                        "what": f"{lane['repo']} sd:{row['item']} blocked at {where}",
+                        "detail": f"{row.get('who') or 'lane'}: {row.get('reason') or row.get('status')}",
+                        "source": "lane", "at": row.get("finished"), "item": row["item"], "title": row.get("title") or "",
+                        "repo": lane["repo"], "repo_path": lane["path"], "lane_revision": lane["revision"],
+                        "expected_head": row.get("expected_head") or "", "runner_merge": lane.get("runner_merge")})
+    return out
+
+
+def report_rows(problems: list[dict]) -> list[dict]:
+    """The open problem reports as Needs you rows (sd:5921), in the look band; Acknowledge is each one's act."""
+    return [{**problem, "rank": ATTENTION, "kind": "report", "what": f"Report: {problem['title']}",
+             "detail": " · ".join(part for part in (problem.get("why"), f"on {problem['host']}" if problem.get("host") else "",
+                                                     f"repeats {problem['repeats']}×" if problem.get("repeats") else "") if part)
+                       or "asks for a person",
+             "source": "reports", "problem": [problem["title"], problem.get("why")]}
+            for problem in problems]
+
+
+def mail_rows(mail: list[dict]) -> list[dict]:
+    """The mail threads waiting on the operator as Needs you rows (sd:5921), in the look band."""
+    return [{**thread, "rank": ATTENTION, "kind": "mail", "id": f"mail:{thread['thread']}",
+             "what": f"Mail: {thread['subject'] or '(no subject)'}",
+             "detail": f"from {thread['who'] or 'someone'} to the {thread['repo']} alias", "source": "mail",
+             "problem": [thread["thread"], thread["at"]]}
+            for thread in mail]
+
+
+def _group(group_id: str, what: str, detail: str, rank: int, members: list[dict], *, source: str = "",
+           kind: str = "group") -> dict:
+    return {"rank": rank, "kind": kind, "id": group_id, "what": what, "detail": detail, "source": source,
+            "group": True, "members": members, "more": max(0, len(members) - GROUP_SHOWN),
+            "at": min((member.get("at") or "" for member in members), default="") or None}
+
+
+def _late_days(row: dict, today: str) -> int | None:
+    days = stale_days(row.get("due") or "", today)
+    return days if days is not None and days > 0 else None
+
+
+def work_needs(work: list[dict], live: set[int], today: str) -> list[dict]:
+    """The work items as Needs you rows (sd:5921): one group row per kind, so a list of 142 reads as a few.
+
+    Ready to send, past due, and in progress with no live session each collapse into one group row once there are two;
+    an item in progress with a session is In motion only. A past-due member with priority 1, or one more than
+    `LATE_DAYS` late that does not recur, breaks out as its own row, so a group never hides it. What is left, due
+    today and not started, is one queued group.
+    """
+    ready, late, idle, due, alone = [], [], [], [], []
+    for row in work:
+        row = {**row, "source": "tasks", "at": row.get("since")}
+        days = _late_days(row, today)
+        if row["state"] == "ready_to_send":
+            ready.append({**row, "rank": ATTENTION})
+        elif days is not None:
+            row = {**row, "rank": ATTENTION}
+            (alone if row.get("priority") == 1 or (days > LATE_DAYS and not row.get("recurring")) else late).append(row)
+        elif row["state"] == "in_progress":
+            if row["item"] not in live:
+                idle.append({**row, "rank": QUIET})
+        else:
+            due.append({**row, "rank": QUIET})
+
+    def by_repo(rows):
+        counts: dict[str, int] = {}
+        for row in rows:
+            counts[row.get("repo") or "no repo"] = counts.get(row.get("repo") or "no repo", 0) + 1
+        return " · ".join(f"{repo} {count}" for repo, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+    def oldest(rows):
+        return min((row["due"] for row in rows if row.get("due")), default="")
+
+    out = list(alone)
+    for group_id, rows, what, detail, rank in (
+            ("group:ready", ready, f"{len(ready)} ready to send", f"finished, not sent · oldest #{ready[0]['item']}"
+             if ready else "", ATTENTION),
+            ("group:late", late, f"{len(late)} items past due", f"{by_repo(late)} · oldest due {oldest(late)}", ATTENTION),
+            ("group:idle", idle, f"{len(idle)} in progress, no session", ", ".join(f"#{row['item']}" for row in idle[:4]),
+             QUIET),
+            ("group:due", due, f"{len(due)} due today", by_repo(due), QUIET)):
+        if len(rows) == 1:
+            out.append(rows[0])
+        elif rows:
+            out.append(_group(group_id, what, detail, rank, rows, source="tasks"))
+    return out
+
+
+def brief_needs(briefs: list[dict]) -> list[dict]:
+    """The unseen briefs as one queued group row (sd:5921); Mark all seen posts each member's Seen."""
+    rows = [{**brief, "rank": QUIET, "kind": "brief", "what": brief.get("subj") or brief["id"],
+             "detail": f"{brief.get('src') or 'brief'} · {brief.get('words')} words", "source": "briefs",
+             "at": brief.get("at") or brief.get("day")} for brief in briefs]
+    if len(rows) < 2:
+        return rows
+    series = sorted({row.get("src") or "brief" for row in rows})
+    return [_group("group:briefs", f"{len(rows)} new briefs", ", ".join(series[:4]) + (" …" if len(series) > 4 else ""),
+                   QUIET, rows, source="briefs")]
+
+
+def needs(rows: list[dict], *, work: list[dict], live: set[int], today: str, lanes: list[dict],
+          briefs: list[dict]) -> list[dict]:
+    """Needs you (sd:5921): every fact that asks the operator to act, ranked in the bands, as one list.
+
+    `rows` are the rows each source already raised and the snooze left: Now's, the reports' and the mail's. The work
+    items, the briefs and the lanes' blocked entries are made rows here. Each row names its `lamp`, the Today lamp
+    whose filter shows it. Ordered on band, then rank, then id, so the list does not reshuffle between reads.
+    """
+    found = [*rows, *work_needs(work, live, today), *brief_needs(briefs), *lane_rows(lanes)]
+    out = []
+    for row in found:
+        row = {**row, "band": row.get("band") or band(row["rank"]), "lamp": LAMP.get(row.get("source"), "")}
+        if row.get("group"):
+            row["members"] = [{**member, "band": band(member["rank"]), "lamp": row["lamp"]} for member in row["members"]]
+        out.append(row)
+    return sorted(out, key=lambda row: (BANDS.index(row["band"]), row["rank"], row["id"]))
+
+
+def _lanes(connection, now: str) -> dict:
+    from . import queue_screen
+
+    return queue_screen.document(connection, now=now)
+
+
+def lane_summary(queue: dict) -> dict:
+    """What Today's Lane and Gate lamps and In motion's tally read from Queue's document (sd:5921)."""
+    states: dict[str, int] = {}
+    landed_in = set()
+    problems = [p for p in queue.get("problems") or [] if isinstance(p, dict)] if isinstance(queue.get("problems"), list) else []
+    for lane in queue.get("lanes") or []:
+        for row in lane.get("rows") or []:
+            states[row["state"]] = states.get(row["state"], 0) + 1
+            if row["state"] == "landed":
+                landed_in.add(lane["repo"])
+    return {"merging": states.get("merging", 0), "next": states.get("next", 0), "blocked": states.get("blocked", 0),
+            "landed": states.get("landed", 0), "landed_lanes": len(landed_in), "gates": queue.get("gates") or {},
+            "load": queue.get("load") or {}, "unread": len(problems),
+            "unread_why": "; ".join(f"{Path(str(p.get('repo') or '?')).name}: {p.get('error') or 'no reason given'}" for p in problems[:3])}
+
+
+TRACK_HOURS = 24
+
+
+def track(connection: sqlite3.Connection, now: str, *, rows: list[dict], briefs: list[dict], active: dict,
+          lane: dict) -> dict:
+    """The day track (sd:5921): the last 24 hours, rolling, as marks in four lanes, and its key's four counts.
+
+    Landed is each item a merge delivered (`sd_db.today.delivered`); Jobs each failed run at its log time; Briefs each new
+    brief at its filing; Live each session's start. Every mark names its row. A read that failed is `error`, so the page
+    says the track was not read, never an empty day.
+    """
+    from sd_db import today
+
+    end = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    since, until = _utc((end - timedelta(hours=TRACK_HOURS)).timestamp()), _utc(end.timestamp())
+    week = (end + timedelta(days=7)).strftime("%Y-%m-%d")
+
+    def within(marks):
+        return sorted((mark for mark in marks if mark["at"] and since <= mark["at"] <= until), key=lambda mark: mark["at"])
+
+    try:
+        delivered = today.delivered(connection, now=now, hours=TRACK_HOURS)
+        due = sum(1 for row in today.planned(connection, now=now) if row["due"] <= week)
+        blocked = len(today.blocked(connection))
+    except (SdDbError, sqlite3.Error, KeyError, TypeError) as failure:
+        return {"error": str(failure) or "the delivered, planned and blocked items could not be read"}
+    marks = {
+        "landed": within({"at": _utc(row["at"]), "id": f"item:{row['id']}", "item": row["id"],
+                          "what": f"sd:{row['id']} {row.get('title') or ''}".strip()} for row in delivered),
+        "jobs": within({"at": row.get("at"), "id": row["id"], "what": row["what"]}
+                       for row in rows if row["kind"] == "job" and row.get("state") == "failed"),
+        "briefs": within({"at": _utc(row["at"]) if row.get("at") else None, "id": row["id"], "what": row["subj"]}
+                         for row in briefs),
+        "live": within({"at": _utc(row["started"]) if row.get("started") else None, "id": f"session:{row['item']}:{n}",
+                        "item": row["item"], "what": f"sd:{row['item']} {row['session']}"}
+                       for n, row in enumerate(active.get("rows") or [])),
+    }
+    return {"since": since, "until": until, **marks,
+            "key": {"landed": len(marks["landed"]), "landing": lane["merging"] + lane["next"], "due_week": due,
+                    "blocked": blocked}}
+
+
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, jev=None, herdr=None,
+             lanes=None) -> dict:
     """The merged, ranked, banded rows, and what each source said if it said nothing.
 
     `fleet` is `fleet.collect`'s shape, `area -> document`, and the seam
@@ -423,7 +703,11 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     `mail` is Your mail (sd:4191), `today_mail.document`: the mail threads waiting on the operator under each repo's aliases,
     with `mail_more`, `mail_unread` and `mail_error` saying what is left out and why.
     `problems` and `briefs` are `today_reports.document`: the open reports that ask for a person, and the briefs of the
-    last week not marked seen (a Today snooze), each with its `_more` and `_error`; open problem reports count in the badge.
+    last week not marked seen (a Today snooze), each with its `_more` and `_error`.
+    `needs` is Needs you (sd:5921, `needs`): Now's rows, the reports, the mail, each lane's blocked entries and the
+    work and briefs as group rows, ranked in one list; the badge counts its rows and nothing else. `lane` is what the
+    Lane and Gate lamps read (`lane_summary`); `lanes` is the seam for Queue's document, `queue_screen.document` by
+    default, and a lane read that failed is a dark `lane` row, as a dark collector is.
     """
     collect_area, kept = fleet or fleet_module.collect, {}
 
@@ -460,22 +744,36 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     observed = {area: {"at": found.get("observed"), "stale": found.get("stale")} for area, found in kept.items()
                 if isinstance(found, dict) and found.get("observed")}
     reported = today_reports.document(connection, now=now, snoozes=snoozes)
-    return {"now": now, "sources": sources, "observed": observed, "rows": shown, "active": active, "snoozed": snoozed + work_snoozed, "snooze_error": snooze_error,
-            "work": work, "work_error": work_error,
-            "attention": _attention(shown, len(reported["problems"]) + reported["problems_more"]),
-            **today_mail.document(connection, now=now), **reported}
+    mail = today_mail.document(connection, now=now)
+    try:
+        queue, sources["lane"] = (lanes or _lanes)(connection, now), ""
+    except (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error) as failure:
+        queue, sources["lane"] = {}, str(failure) or "lane collector failed without a reason"
+    # Reports and mail snooze as Now's rows do; a lane entry does not: Retry or Cancel ends it, on Today or on Queue.
+    reports, reports_snoozed = snooze.split("today", report_rows(reported["problems"]), snoozes)
+    threads, mail_snoozed = snooze.split("today", mail_rows(mail["mail"]), snoozes)
+    live = {row["item"] for row in active.get("rows") or []}
+    dark = [dark_row("lane", sources["lane"])] if sources["lane"] else []
+    dark += unread_rows(sources, kept, queue, active, reported, mail)
+    listed = needs([*shown, *dark, *reports, *threads], work=work, live=live, today=now[:10],
+                   lanes=queue.get("lanes") or [], briefs=reported["briefs"])
+    summary = lane_summary(queue)
+    return {"now": now, "sources": sources, "observed": observed, "rows": shown, "active": active,
+            "snoozed": snoozed + work_snoozed + reports_snoozed + mail_snoozed, "snooze_error": snooze_error,
+            "work": work, "work_error": work_error, "needs": listed, "lane": summary,
+            "track": track(connection, now, rows=rows, briefs=reported["briefs"], active=active, lane=summary),
+            "attention": _attention(listed), **mail, **reported}
 
 
-def _attention(rows: list[dict], reports: int = 0) -> dict:
-    """The rail badge (sd:3446): warning rows, else caution rows and the open problem reports (`today_reports`), which are
-    caution there too. The decisions that wait count on Decide's badge since they moved there (sd:5781)."""
+def _attention(rows: list[dict]) -> dict:
+    """The rail badge (sd:3446): Needs you's broken rows, else its look rows (sd:5921). A group is one row, and the badge
+    counts nothing the list does not show. The decisions that wait count on Decide's badge (sd:5781)."""
     warning = sum(row["band"] == "broken" for row in rows)
     caution = sum(row["band"] == "look" for row in rows)
     if warning:
-        return {"state": "warning", "n": warning, "what": "warning rows"}
-    if caution + reports:
-        what = " and ".join(word for count, word in ((caution, "caution rows"), (reports, "problem reports")) if count)
-        return {"state": "caution", "n": caution + reports, "what": what}
+        return {"state": "warning", "n": warning, "what": "broken rows"}
+    if caution:
+        return {"state": "caution", "n": caution, "what": "rows to look at"}
     return {"state": "ok", "n": 0, "what": "rows"}
 
 

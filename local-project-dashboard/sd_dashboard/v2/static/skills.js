@@ -703,8 +703,8 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
     unselect: nothing,
   });
   const load = () => reading.load(), reread = () => reading.reread();
-  // Read again (sd:5638): the shell's head button reads the skills again, as the Observed lamp does.
-  window.PAGE_AGAIN = { title: 'Read the skills and the tracked repositories again', run: load };
+  // Read again (sd:5638): the shell's head button reads the skills again, as the Observed lamp does, and Usage once shown (sd:5964).
+  window.PAGE_AGAIN = { title: 'Read the skills and the tracked repositories again', run: () => Promise.all([load(), window.skillsUsage?.again()]) };
   registerCommands();
   if (window.shell.view?.current()) onView(window.shell.view.current());
   load();

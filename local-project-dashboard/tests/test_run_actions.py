@@ -141,6 +141,14 @@ class TheReads(Run):
         status, body = self.run_("storage.du", path=str(self.store / "out"))
         self.assertEqual((status, "is not a storage folder" in body["error"]), (400, True))
 
+    def test_dus_diagnostics_stay_beside_its_sizes(self):
+        # sd:5958: a folder du could not read was dropped from the answer once any size row came back.
+        self.stub("du", 'printf "10\\t$4/small\\n12\\t$4\\n"; echo "du: $4/locked: Permission denied" >&2; exit 1')
+        status, body = self.run_("storage.du", path=str(self.store))
+        self.assertEqual((status, body["exit"]), (200, 1))
+        self.assertEqual(body["output"].splitlines()[-1], f"du: {self.store}/locked: Permission denied")
+        self.assertIn(f"{self.store}/small", body["output"])
+
     def test_an_unread_storage_list_refuses_rather_than_guessing(self):
         with patch.object(health_collectors, "storage_list", lambda connection: (None, "missing", "the row was not read")):
             status, body = self.run_("storage.du", path=str(self.store))

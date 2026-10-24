@@ -331,6 +331,20 @@ def choices(checkout: Path) -> dict:
         return {"docs": {}, "why": str(refused)}
 
 
+def evaluated_choice(entry: dict | None, manifest: str) -> dict | None:
+    """The designations of a DOCS entry as `read_research_inventory` read it, for display only (sd:5898); None for no entry.
+
+    A declared entry designates a destination its value is True or a dict for, as `publish` reads it. A manifest entry
+    carries the render's flag per destination (pack sd:5936); a destination it does not flag, Obsidian among them, is None:
+    not known, never "not designated". Ticking still edits only a literal entry (`add_key`).
+    """
+    if entry is None:
+        return None
+    if manifest:
+        return {channel: entry[channel] if type(entry.get(channel)) is bool else None for channel in DESIGNATED}
+    return {channel: entry.get(channel) is True or isinstance(entry.get(channel), dict) for channel in DESIGNATED}
+
+
 def _offset(source: str, line: int, column: int) -> int:
     """The character offset of an AST position (1-based line, 0-based UTF-8 byte column)."""
     lines = source.splitlines(keepends=True)

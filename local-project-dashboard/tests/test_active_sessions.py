@@ -392,7 +392,7 @@ class TodayDraws(ScreenCase):
         self.assertIn('href="/tasks?row=7"', out["R"]["active"])
         self.assertIn("Worktree wt-7 · 3h 0m", out["R"]["active"])
         self.assertIn("▨", out["R"]["active"])
-        self.assertIn("2 items · 3 sessions", out["R"]["tally"])
+        self.assertIn("2 items live", out["R"]["tally"])
         self.assertEqual("herdr agents not read: herdr agent list gave no answer in 5 s", out["R"]["note"])
         self.assertFalse(out["R"]["hidden"])
 

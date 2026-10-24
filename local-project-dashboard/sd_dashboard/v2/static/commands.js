@@ -314,7 +314,7 @@
     const state = !run ? '' : run.state === 'done' || run.state === 'failed' ? `Last drain ${run.state}${run.reason ? `: ${run.reason}` : ''}.`
       : `Drain ${run.id} is ${run.state}${run.unread ? `; its state was not read: ${run.unread}` : ''}. This page reads it every 10 s.`;
     return html`<section class="pubpane" aria-live="polite"><h3>Publish to</h3><div class="pubboxes">${['drive', 'notion', 'obsidian'].map(box)}</div>
-      ${c.why ? html`<p class="why">${c.why}</p>` : ''}${c.repo_wide ? html`<p class="why">Obsidian: ${c.repo_wide}.</p>` : ''}${c.obsidian == null ? html`<p class="why">Obsidian not known: ${p.unread || 'the channels setting was not read'}.</p>` : ''}
+      ${c.why ? html`<p class="why">${c.why}</p>` : ''}${c.repo_wide ? html`<p class="why">Obsidian: ${c.repo_wide}.</p>` : ''}${c.obsidian == null ? html`<p class="why">Obsidian not known: ${p.unread || c.why || 'the channels setting was not read'}.</p>` : ''}
       ${state ? html`<p class="why">${state}</p>` : ''}</section>`;
   }
 

@@ -86,7 +86,7 @@
   const shownView = () => window.shell?.view?.current?.();
   const details = () => $('details');
   // The Briefs page's Details (brief-details.js), with a link that opens the brief on Briefs.
-  // sd:5752: Seen is Today's (today-reports.js): the Today snooze under the brief's Today row id (`mark`) and fingerprint
+  // sd:5752: Seen is Today's (today.js): the Today snooze under the brief's Today row id (`mark`) and fingerprint
   // (`seen`), until it changes (snooze.js FOREVER), so a brief seen here or on Today is seen in both. Not seen clears it;
   // each is the other's Undo. Registered before the Briefs page's commands, so Seen, not Read, is an open row's act.
   function briefs(view) {
