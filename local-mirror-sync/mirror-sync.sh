@@ -88,7 +88,8 @@ MIRROR_SYNC_MATERIALIZE_WAIT (seconds, default 300) bounds the wait for
 evicted iCloud destination files: on "Resource deadlock avoided" sync asks
 brctl to download the ones the pair is about to update, then retries the
 pair once. A pair whose only errors are source files that vanished mid-pass
-counts as mirrored.
+counts as mirrored. A pair whose only errors are opens that failed with
+"Interrupted system call" is tried once more.
 
 Safety rails before each pair runs:
   - source must exist and be non-empty (an empty directory would wipe the
@@ -602,6 +603,16 @@ only_vanished() {
   ! grep 'error:' "$ERRS" | grep -v -q ': open (2) in .*: No such file or directory$'
 }
 
+# An open that fails with EINTR is a stalled permission check under launchd
+# (pack sd:2660), not a bad file: a NAS pass lost one runner-journal lock
+# that way while every other file arrived, and its job read as a failed
+# backup (sd:6030). Such a pair is tried once more. Any other error line
+# keeps it a failure.
+only_interrupted() {
+  grep -q 'error:' "$ERRS" || return 1
+  ! grep 'error:' "$ERRS" | grep -v -q ': open (2) in .*: Interrupted system call$'
+}
+
 probe_flavours
 check_backup_root
 check_keep_days
@@ -715,6 +726,13 @@ pairs | while IFS='|' read -r src dst excl; do
       rc=0
       pair_rsync "$@" || rc=$?
     fi
+  fi
+  if [ "$rc" -ne 0 ] && [ "$MODE" = sync ] && only_interrupted; then
+    # Its own backup directory, as above: openrsync refuses one that exists.
+    [ -z "$KEEP" ] || set -- --backup --backup-dir "$KEEP.interrupted"
+    echo "--- retrying after an interrupted open: $src"
+    rc=0
+    pair_rsync "$@" || rc=$?
   fi
   if [ "$rc" -ne 0 ] && only_vanished "$rc"; then
     echo "--- source files vanished during the pass; not a failure: $src" >&2
