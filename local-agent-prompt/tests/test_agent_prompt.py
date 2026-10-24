@@ -297,6 +297,14 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("On the hub", start)
         self.assertIn("builders", start)
         self.assertTrue(any("sd reports acknowledge" in line and "in_progress" in line for line in rules), rules)
+        # Lane review: --resolve-followups closes every open followup, so it means the fix is done.
+        # An alert with only an item filed stays open, citing the item: plain `acknowledge`
+        # refuses while the ingest's followup is open.
+        fixed = next((line for line in rules if "--resolve-followups" in line), "")
+        self.assertIn("fixed", fixed)
+        self.assertIn("only filed", fixed)
+        self.assertIn("leave the alert open", fixed)
+        self.assertNotIn("then run `sd reports acknowledge N --resolve-followups`", source)
         self.assertTrue(any("work-<repo>" in line and "SendMessage" in line for line in rules), rules)
 
 
