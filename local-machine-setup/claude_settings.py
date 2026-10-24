@@ -22,6 +22,7 @@ as text after the opening brace, and one already there is left for a hand.
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 
@@ -62,6 +63,12 @@ TOOL_DENY = [
 #: Rules an older baseline added and this one takes back out.
 RETIRED_DENY = ["mcp__github__issue_write"]
 SESSION_START = "sd today 2>/dev/null | head -40"
+#: Agents do not write in the system and pack checkouts (sd:6001). The test keeps a
+#: moved or deleted checkout from blocking every call: python3 on a missing file exits 2,
+#: which Claude Code reads as a deny.
+GUARD_PATH = shlex.quote(os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkout_guard.py"))
+GUARD = f"test ! -f {GUARD_PATH} || python3 {GUARD_PATH}"
+GUARD_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit"
 #: Claude Code updates in the weekly upgrade only (sd:3033); this stops its background updater.
 ENV = {"DISABLE_AUTOUPDATER": "1"}
 #: The same paths for opencode's read permission, whose `*` also matches `/`.
@@ -86,8 +93,8 @@ TRAILING_COMMA = re.compile(STRING + r"|,(\s*[}\]])")
 OPENING_BRACE = re.compile(r"\A((?:\s|//[^\n]*(?=\n|\Z)|/\*(?:[^*]|\*(?!/))*\*/)*)\{", re.S)
 
 
-def session_start_commands(settings):
-    groups = settings.get("hooks", {}).get("SessionStart", [])
+def hook_commands(settings, event):
+    groups = settings.get("hooks", {}).get(event, [])
     return [hook.get("command") for group in groups for hook in group.get("hooks", [])]
 
 
@@ -99,8 +106,10 @@ def missing(settings):
     if "includeCoAuthoredBy" not in settings:
         gaps.append("includeCoAuthoredBy")
     gaps += [f"env.{key}" for key in ENV if key not in settings.get("env", {})]
-    if SESSION_START not in session_start_commands(settings):
+    if SESSION_START not in hook_commands(settings, "SessionStart"):
         gaps.append(f"hooks.SessionStart {SESSION_START}")
+    if GUARD not in hook_commands(settings, "PreToolUse"):
+        gaps.append(f"hooks.PreToolUse {GUARD}")
     return gaps
 
 
@@ -115,9 +124,12 @@ def merge(settings):
     env = settings.setdefault("env", {})
     for key, value in ENV.items():
         env.setdefault(key, value)
-    if SESSION_START not in session_start_commands(settings):
+    if SESSION_START not in hook_commands(settings, "SessionStart"):
         hook = {"hooks": [{"type": "command", "command": SESSION_START}]}
         settings.setdefault("hooks", {}).setdefault("SessionStart", []).append(hook)
+    if GUARD not in hook_commands(settings, "PreToolUse"):
+        hook = {"matcher": GUARD_MATCHER, "hooks": [{"type": "command", "command": GUARD}]}
+        settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(hook)
     return settings
 
 
