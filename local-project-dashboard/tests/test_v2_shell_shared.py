@@ -433,8 +433,9 @@ class EveryFoldControlIsALink(unittest.TestCase):
                     wrong.append(f"{name}: {m.group(0)[:120]}")
         self.assertEqual(wrong, [])
         # The sweep reaches each page that draws one, so a renamed control cannot leave it empty. today-github.js pages its
-        # table with the shell's pager since sd:5899, so it draws none.
-        self.assertLessEqual({"shell.js", "notes.js", "reports.html", "research.js", "today-status.js"}, set(found))
+        # table with the shell's pager since sd:5899, so it draws none. Today's group and In motion folds are today.js's
+        # since sd:5921 deleted today-status.js.
+        self.assertLessEqual({"shell.js", "notes.js", "reports.html", "research.js", "today.js"}, set(found))
 
 
 class EveryDialogHasAClose(unittest.TestCase):
