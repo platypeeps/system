@@ -212,6 +212,13 @@ R.board = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
                          r"<td class=\"st\">Planning</td><td>inbox<span class=\"fold mono\">score 7</span></td><td class=\"mono sc\">7</td>")
         self.assertLess(out["R"]["list"].index("An idea"), out["R"]["list"].index("Plan the review"))
 
+    def test_every_base_field_label_carries_help(self):
+        # sd:5903: the Base section's stage, declared fields and mirror carry the shared help icon, as Tasks' fields do.
+        out = self.run_page(f"open({self.idea}); await flush(); R.det = ELS.details.html;")
+        fields = test_v2_tasks.field_help(out["R"]["det"])
+        self.assertTrue({"Stage", "Mirror"} <= {name for name, _ in fields}, fields)
+        self.assertEqual([name for name, helped in fields if not helped], [])
+
     def test_the_stage_select_posts_the_move_and_names_a_render_that_failed(self):
         echo = """(path, body) => { const row = DOC.rows.find(r => path.startsWith('/api/items/' + r.id));
   return [200, { item: { id: row.id, status: 'ready', stage: body.stage, priority: null, due: null, recurrence: null, title: row.title, repo: null },

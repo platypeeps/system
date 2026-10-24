@@ -4,6 +4,8 @@
 skill's use in the last three Monday-start weeks from `skill_use`, and the use records no catalog skill explains. It
 sends no local path: the pack root and the per-file digests stay here, and a skill's source is its path inside the
 pack. `review_controls` is what the item page renders; the old screen was retired in sd:3402.
+`usage` is the Usage view's read, `/api/skills/usage` (sd:5881; Metrics' Skills view until then): skill use per
+Monday-start week for four weeks and this week's most used skills, from `reads.skill_use_days`.
 `imported` names the GitHub source of a skill `sd skill intake` installed, which turns on the page's Re-import; the run
 itself is `skill_intake`'s, so this module still calls no git (sd:3992). `user` lists the skills in ~/.claude/skills the
 intake installed, by name, URL and commit, for Re-import with the user scope (sd:3997).
@@ -13,7 +15,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sd_db import skills_catalog, workflow
+from sd_db import reads, skills_catalog, workflow
 
 from .controls import form
 from .markup import join, tag
@@ -63,6 +65,30 @@ def _modes(uses) -> dict:
     for entry in uses:
         out[entry["mode"]] = out.get(entry["mode"], 0) + entry["count"]
     return out
+
+
+#: Monday-start weeks of skill use the Usage view counts, this week included.
+USAGE_WEEKS = 4
+
+
+def usage(connection, *, now: str) -> dict:
+    """The Usage view's document: uses per Monday-start week, newest first, and this week's ten most used skills."""
+    today = _stamp(now).astimezone(timezone.utc).date()
+    monday = today - timedelta(days=today.weekday())
+    starts = [monday - timedelta(weeks=n) for n in range(USAGE_WEEKS)]
+    weeks = {start.isoformat(): 0 for start in starts}
+    top: dict[str, int] = {}
+    rows = reads.skill_use_days(connection, since=starts[-1].isoformat())
+    for row in rows:
+        day = datetime.strptime(row["day"], "%Y-%m-%d").date()
+        start = (day - timedelta(days=day.weekday())).isoformat()
+        if start in weeks:
+            weeks[start] += row["uses"]
+        if start == monday.isoformat():
+            top[row["skill"]] = top.get(row["skill"], 0) + row["uses"]
+    return {"error": "", "since": starts[-1].isoformat(), "first": rows[0]["day"] if rows else "",
+            "weeks": [{"start": start, "uses": uses} for start, uses in weeks.items()],
+            "top": sorted(([skill, uses] for skill, uses in top.items()), key=lambda pair: (-pair[1], pair[0]))[:10]}
 
 
 def document(connection, *, now: str) -> dict:

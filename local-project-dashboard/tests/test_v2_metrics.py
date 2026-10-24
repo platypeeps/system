@@ -3,8 +3,8 @@
 What this slice promises: `/metrics` answers under the shared policy and loads
 its script before `shell.js`; `/api/metrics` carries the month exactly as
 `sd usage` reads it, the 7-day window's last meter reading of each day for a
-week, the week's numbers, the provider scorecard, four
-weeks of skill use, age in status and observed activity. Each part is guarded
+week, the week's numbers, the provider scorecard, age in
+status and observed activity. Each part is guarded
 on its own, so one that fails is that part's error and the page shows it as
 unknown with the reason. By model has no reader: the document names it with
 its reason, and the page never draws it empty. CI health and Flaky tests read
@@ -31,7 +31,6 @@ from pathlib import Path
 from unittest import mock
 
 from sd_db import provider_controls, reads, transition, usage, workflow
-from sd_db.writes import record_skill_use
 
 from sd_dashboard import metrics_screen, server, v2
 
@@ -49,7 +48,7 @@ MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
 
 class Fixture(ScreenCase):
-    """A month on a capped company bill and a plan bill, a week of window readings, skill use and three open items.
+    """A month on a capped company bill and a plan bill, a week of window readings and three open items.
 
     NOW is Sunday 2026-09-06; its week starts Monday 08-31.
     """
@@ -68,12 +67,6 @@ class Fixture(ScreenCase):
                                 ("2026-09-05T20:00:00Z", 300, 99),     # another window: not on the 7-day trend
                                 ("2026-09-06T09:00:00Z", 10080, 80)):
             self.cost("meter", at, provider="claude", bill="plan", window_minutes=window, used_percent=pct)
-        for at, skill in (("2026-08-09T09:00:00Z", "sd-ship"),         # the Sunday before the fourth week: not carried
-                          ("2026-08-25T09:00:00Z", "sd-ship"),
-                          ("2026-09-01T09:00:00Z", "sd-review"),
-                          ("2026-09-02T09:00:00Z", "sd-ship"),
-                          ("2026-09-03T09:00:00Z", "sd-ship")):
-            record_skill_use(self.connection, skill, surface="claude", timestamp=at)
         repo = self.repo()
         self.ready = self.item("Ready to send", status="planning", repo=repo)
         transition(self.connection, self.ready, "ready_to_send", who="sd-ship")
@@ -129,13 +122,6 @@ class TheDocument(Fixture):
         self.assertEqual((trend["days"][0], trend["days"][-1], len(trend["days"])), ("2026-08-31", "2026-09-06", 7))
         self.assertEqual([(s["provider"], [p[:2] for p in s["points"]]) for s in trend["series"]],
                          [("claude", [["2026-09-01", 30.0], ["2026-09-06", 80.0]])])
-
-    def test_skill_use_is_four_monday_weeks_and_this_week_s_top_skills(self):
-        skills = self.doc()["skills"]
-        self.assertEqual([(w["start"], w["uses"]) for w in skills["weeks"]],
-                         [("2026-08-31", 3), ("2026-08-24", 1), ("2026-08-17", 0), ("2026-08-10", 0)])
-        self.assertEqual(skills["top"], [["sd-ship", 2], ["sd-review", 1]])
-        self.assertEqual((skills["since"], skills["first"]), ("2026-08-10", "2026-08-25"))
 
     def test_age_counts_open_items_and_splits_out_ready_to_send(self):
         buckets = self.doc()["age"]["buckets"]
@@ -433,15 +419,13 @@ class TheScript(Controlled):
         self.assertIsNone(out["states"][-1])
 
     def test_the_panels_are_the_shells_views(self):
-        """sd:5080: Spend (spend, the week, usage), Providers, CI, Skills and Age are PAGE_VIEWS panels."""
+        """sd:5080: Spend (spend, the week, usage), Providers, CI and Age are PAGE_VIEWS panels; Skills moved (sd:5881)."""
         views = re.search(r"window\.PAGE_VIEWS = (\[.*?\]);", METRICS_JS, re.S).group(1)
-        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["spend", "providers", "ci", "skills", "age"])
-        self.assertIn("{ id: 'skills', label: 'Skills', key: 'k' }", views)
+        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["spend", "providers", "ci", "age"])
         page = (V2 / "metrics.html").read_text(encoding="utf-8")
         panels = {m.group(1): re.findall(r'<section class="panel" id="([a-z-]+)"', m.group(2))
                   for m in re.finditer(r'<div id="view-([a-z]+)"(.*?)(?=<div id="view-|</main>)', page, re.S)}
-        self.assertEqual(panels, {"spend": ["spend", "week", "usage"], "providers": ["scorecard"], "ci": ["ci"],
-                                  "skills": ["skill-use"], "age": ["age"]})
+        self.assertEqual(panels, {"spend": ["spend", "week", "usage"], "providers": ["scorecard"], "ci": ["ci"], "age": ["age"]})
 
     def test_a_lamp_shows_the_view_that_holds_its_reading(self):
         out = self.run_page("""const lamp = (cell, ev, view) => ({ dataset: { cell, ev, view } });
@@ -451,14 +435,12 @@ for (const el of [lamp('ci', 'ci', 'ci'), lamp('spend', '', 'spend')])
 
     def test_the_panels_draw_the_readings_and_name_what_is_not_read(self):
         out = self.run_page("""R.bills = ELS.bills.html; R.trends = ELS.trends.html; R.model = ELS.model.html;
-R.weeks = ELS['su-weeks'].html; R.top = ELS['su-top'].html; R.sc = ELS['sc-body'].html; R.hist = ELS.hist.html;""")
+R.sc = ELS['sc-body'].html; R.hist = ELS.hist.html;""")
         r = out["R"]
         self.assertRegex(r["bills"], r'data-ev="bill:capped".*?<rect class="fill caution" width="80.0".*?<span class="g-caution" aria-hidden="true">▲</span>\$80.00')
         self.assertRegex(r["bills"], r'data-ev="bill:plan".*?class="track hatch".*?▨ window')
         self.assertEqual(re.findall(r'data-ev="(t:[^"]+)"', r["trends"]), ["t:claude:2026-09-01", "t:claude:2026-09-06"])
         self.assertIn("<b>▨ Not read.</b> the cost ledger records bill and provider, not model", r["model"])
-        # sd:5476: a skill is a link to Skills with that skill's Details loaded (?row=, which Skills selects).
-        self.assertEqual(re.findall(r'<a class="hbar" href="([^"]+)"', r["top"]), ["/skills?row=sd-ship", "/skills?row=sd-review"])
         self.assertEqual(re.findall(r'data-ev="sc:([^"]+)"', r["sc"]), ["claude", "kimi"])
         self.assertIn('aria-label="3-6d: 1 items, 1 ready to send"', r["hist"])
         # sd:5474: a bar links to Tasks' list at its bucket, open items only, under Realm All (sd:5753): the scope the bar counts.

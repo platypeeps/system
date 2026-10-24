@@ -34,7 +34,7 @@ from unittest import mock
 
 from sd_db import connect, writes
 
-from sd_dashboard import documents, documents_screen, server, v2
+from sd_dashboard import documents, documents_screen, research_screen, server, v2
 
 from support import NOW, ScreenCase
 from test_v2_read import READ_SHELL
@@ -138,6 +138,18 @@ class TheDocument(ScreenCase):
                          [("civic", "Civic", 1, False), ("lab", "Lab", 3, True), ("quiet", "Quiet", 0, False)])
         self.assertEqual(self.doc["contested"][0]["key"], "twin")
         self.assertEqual(len(self.doc["contested"][0]["paths"]), 2)
+
+    def test_a_research_root_names_the_checkout_key_researchs_render_takes(self):
+        # sd:5884: Render posts /api/research/render {"repo": <key>}, which research_screen.checkout resolves under the
+        # repo root; a root that is no research checkout under it names none, so the page says why Render is off.
+        self.assertEqual([(r["key"], r["render"]) for r in self.doc["roots"]], [("civic", ""), ("lab", "lab"), ("quiet", "")])
+        self.assertEqual(research_screen.checkout(self.base, "lab"), self.base / "lab")
+        elsewhere = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        write(elsewhere / "far" / "research.conf.py", "DOCS = []\n", T0)
+        write(elsewhere / "far" / "docs" / "dashboard" / "x.html", page(title="Far"), T0)
+        conf = write(self.base / "far.conf", f"root|far|Far|{elsewhere / 'far' / 'docs' / 'dashboard'}\n", T0)
+        far = {r["key"]: r for r in documents_screen.document(now=NOW, config_path=conf, repo_root=self.base)["roots"]}["far"]
+        self.assertEqual((far["research"], far["render"]), (True, ""))
 
     def test_kind_and_render_state_come_from_the_checkout(self):
         rows = self.rows()
@@ -685,19 +697,42 @@ R.hidden = ELS.rows.html; R.url = {self.URL}; {click} R.back = ELS.rows.html;"""
         out = self.run_page("R.rows = ELS.rows.html;", search="?hidden=1")
         self.assertEqual(ids(out["R"]["rows"]), ["civic/brief.html"])
 
-    def test_disable_render_is_off_and_render_is_a_copy_only_line_for_a_research_root(self):
-        out = self.run_page("""const plan = C.get('lab/plan.html'), brief = C.get('civic/brief.html');
-R.skip = [cmd('document.skip').when(plan), cmd('document.skip-repo').when(plan)];
-const r = cmd('document.render');
-R.render = [r.executes, r.cli(plan), r.when(plan), r.when(brief), r.primary(plan), r.primary(C.get('lab/overview.html'))];
-shellRun(r, plan); R.toast = lastToast().msg;""")
+    def test_disable_render_is_off_with_its_reason(self):
+        out = self.run_page("""const plan = C.get('lab/plan.html');
+R.skip = [cmd('document.skip').when(plan), cmd('document.skip-repo').when(plan)];""")
         self.assertIn("SD_SKIP_RENDER skips every render", out["R"]["skip"][0])
         self.assertIn("skip|<key>|<file>", out["R"]["skip"][0])
         for reason in out["R"]["skip"]:
             self.assertIn("without stopping its render", reason)
-        self.assertEqual(out["R"]["render"], [False, "cd '~/repos/lab' && sd-research-kit render", True,
-                                              "not a research repo: no source renders this page", True, False])
-        self.assertIn("does not run it", out["R"]["toast"])
+
+    def test_render_runs_the_render_one_at_a_time_and_reads_the_rows_when_it_ends(self):
+        # sd:5884: Render was a copy-only line; it runs as Research's does, through POST /api/research/render and the run
+        # it follows, keyed by the root's checkout. While the run goes, Render is off; when it ends, the rows are read again.
+        run = "render-20261023T190000Z"
+        answer = f"""(path, body) => {{
+  if (path === '/api/research/render') return [202, {{ id: '{run}', verb: 'render', state: 'queued', repo: body.repo }}];
+  if (path === '/api/research/deck/{run}') {{ R.during = cmd('document.render').when(C.get('lab/plan.html')); return [200, {{ id: '{run}', state: 'done' }}]; }}
+  return [200, {json.dumps(self.doc)}];
+}}"""
+        out = self.run_page("""const plan = C.get('lab/plan.html'), brief = C.get('civic/brief.html'), r = cmd('document.render');
+R.render = [r.executes, r.cli(plan), r.when(plan), r.when(brief), r.primary(plan), r.primary(C.get('lab/overview.html')), r.sends(plan)];
+R.reads = OUT.gets.filter(g => g === '/api/documents').length;
+shellRun(r, plan); await flush();
+R.after = r.when(plan); R.rereads = OUT.gets.filter(g => g === '/api/documents').length - R.reads;""", answer=answer)
+        self.assertEqual(out["R"]["render"], [True, "cd '~/repos/lab' && sd-research-kit render", True,
+                                              "not a research repo: no source renders this page", True, False,
+                                              'POST /api/research/render {"repo": "lab"}'])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/render", {"repo": "lab"}]])
+        self.assertEqual(out["R"]["during"], f"a render is running now (run {run})")
+        self.assertEqual((out["R"]["after"], out["R"]["rereads"]), (True, 1))
+        self.assertEqual([t[0] for t in out["toasts"]], [f"Rendering The plan · run {run}", "Rendered · The plan"])
+
+    def test_render_is_off_for_a_research_root_the_server_cannot_run(self):
+        for root in self.doc["roots"]:
+            root["render"] = ""
+        out = self.run_page("R.when = cmd('document.render').when(C.get('lab/plan.html'));")
+        self.assertEqual(out["R"]["when"], "~/repos/lab is not a research checkout under the repo root, so the dashboard cannot run its render")
+        self.assertEqual(out["posts"], [])
 
     def test_the_badge_rule_drops_a_hidden_stale_document(self):
         # sd:3446: the rail's rule is the read's; a stale row the operator hid no longer lights it.

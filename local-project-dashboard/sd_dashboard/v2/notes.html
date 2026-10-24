@@ -42,12 +42,12 @@
        the shell's popover sits under a modal dialog. -->
   <dialog class="palette" id="qn-dlg" aria-labelledby="qn-h">
     <form method="dialog" class="confirm-body quick">
-      <h2 id="qn-h">Quick notes</h2>
+      <h2 id="qn-h">Quick notes</h2><button class="icon-btn dlg-x" type="button" data-dlg-x aria-label="Close"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></button>
       <label class="sr" for="qn-in">Quick note</label>
       <textarea id="qn-in" aria-describedby="qn-help" placeholder="A thought, a link, a name. ⌘↵ keeps it."></textarea>
       <p id="qn-help">Kept in the vault: Keep note writes an sdw.quick-note item with sd store add, titled with the time. One line, at most 1000 characters, no double quote; newlines become spaces. sd task note attaches a note to an item instead.</p>
       <div class="actions">
-        <button class="btn quiet" value="close" formnovalidate>Close</button>
+        <button class="btn quiet" value="close" formnovalidate data-cancel>Close</button>
         <button class="btn" type="button" id="qn-keep">Keep note</button>
       </div>
       <p class="why" id="qn-why" role="status" hidden></p>

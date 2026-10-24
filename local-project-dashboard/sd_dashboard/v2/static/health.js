@@ -32,13 +32,15 @@
     sec: ['shield-alert', '<b>Secret scanning, public repos only.</b> Private repos are not scanned, by policy. A public repo with scanning off is a finding.'],
     ports: ['link-2', '<b>Who holds which port.</b> Configured service ports, then every other TCP listener the Mac shows. <b>Unknown is not free</b>: an uninspected listener says nothing about the port.'],
     doc: ['shield-check', '<b>What machine-setup doctor says.</b> Its WARN and FAIL lines, one row each, and the lines that pass. The doctor runs <code>brew doctor</code>, so an answer stands for ten minutes; a run still going, stopped at its deadline or failed is unknown, never clean.'],
-    svc: ['activity', '<b>Long-running user services.</b> Each LaunchAgent that keeps a process alive, as <code>sd services list</code> reads it. Restart and Start run <code>sd services restart</code> and <code>start</code> here, against the row as shown. The dashboard compares the commit it serves with the checkout; its own service is protected, so a stale one gives the kickstart line to copy.'],
+    ctr: ['box', '<b>Running containers.</b> Each container <code>docker ps</code> lists, read once with Ports: its image, status, compose project and working directory, and the bind mounts it holds under the checkout root. A Docker that was not read is unknown, never empty. Start and stop stay in the CLI.'],
+    svc: ['activity', '<b>Long-running user services.</b> Each LaunchAgent that keeps a process alive, as <code>sd services list</code> reads it. Restart and Start run <code>sd services restart</code> and <code>start</code> here, against the row as shown. The dashboard compares the commit it serves with the checkout; its own service is protected, so a stale one gives the kickstart line to copy. A run-once or scheduled agent shows only when its last run failed, as a warning with no controls.'],
     mir: ['book-open', '<b>The vault mirror of base rows.</b> The <code>records-mirror</code> heartbeat a base row write leaves, read-only: this page writes no vault note.'],
     prot: ['lock', '<b>What each default branch enforces.</b> One column per registered repo, one line per check: a filled cell is a gap, a short mark passes, an empty cell does not apply. <b>Unknown is not protected</b>: a hatched column was not read and shows no cells. Every column opens its repo; the table below carries the same cells.'],
   };
   // Protection has no lamp: the annunciator holds 2 to 8 (the design's rule), and its matrix is Health's evidence strip.
-  // Services (sd:3707) is a further area past a full strip: no lamp, its chip and section only (design.md, lamp: false).
-  const NO_LAMP = new Set(['prot', 'svc']);
+  // Services (sd:3707) and Containers (sd:5840) are further areas past a full strip: no lamp, their chip and section only
+  // (design.md, lamp: false).
+  const NO_LAMP = new Set(['prot', 'svc', 'ctr']);
   const PH = 10; // one matrix line in the SVG's own units
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const $ = id => document.getElementById(id);
@@ -46,7 +48,7 @@
   // an area's lamp or an ?area= value opens. health_screen.VIEWS is the same list.
   window.PAGE_VIEWS = [
     { id: 'checkouts', label: 'Checkouts', api: '/api/health/checkouts', areas: ['wt', 'br'] },
-    { id: 'machine', label: 'Machine', api: '/api/health/machine', areas: ['disk', 'svc', 'ports', 'doc'] },
+    { id: 'machine', label: 'Machine', api: '/api/health/machine', areas: ['disk', 'svc', 'ports', 'ctr', 'doc'] },
     { id: 'github', label: 'GitHub', api: '/api/health/github', areas: ['prot', 'dep', 'sec'] },
     { id: 'jobs', label: 'Jobs', api: '/api/health/jobs', areas: ['cred', 'mir'] },
   ];
@@ -164,6 +166,7 @@
     if (a.id === 'disk') return x.volumes?.length ? html`<div class="bars" role="group" aria-label="Volume use: ${x.volumes.map(v => `${v.name} ${v.capacity}%`).join(', ')}">${x.volumes.map(v => html`<span class="name" title="${v.mount}">${v.name}</span><svg aria-hidden="true"><rect class="track" x="0.5" y="0.5" width="99%" height="11" rx="2"/><rect class="fill" x="0.5" y="0.5" width="${(v.used_kb / v.size_kb * 100 || 0).toFixed(1)}%" height="11" rx="2"/></svg><span class="v">${v.capacity}% · ${size(v.avail_kb)} free</span>`)}</div>` : '';
     // Clean all safe (sd:5105) heads Checkouts: one button for every cleanup row there whose own command would run.
     if (a.id === 'wt') return html`<p class="counts">${plural(safe().length, 'cleanup')} ready in Checkouts · ${shell.commands.rowActions('cleanup:safe')}</p>`;
+    if (a.id === 'ctr') return html`<p class="counts">${plural(x.running, 'container')} running · ${x.holding} mount a checkout under ${x.root}</p>`;
     if (a.id === 'ports') return html`<p class="counts">${x.counts.configured} configured ports · ${x.counts.listening} listening · ${x.counts.unknown} unknown</p>${x.warnings.map(warn)}`;
     if (a.id !== 'prot' || !x.columns) return '';
     const cols = x.columns.map(byId).filter(r => r && scoped(r));
@@ -200,7 +203,7 @@
       ${r.type === 'branch protection' ? (r.status === 'unknown' ? html`<h3>Checks</h3><p class="why">No cell is shown: ${r.reason}.</p>`
         : html`<h3>Checks</h3>${r.sentence ? html`<p class="why">${r.sentence}</p>` : ''}<dl class="checks">${r.cells.map(c => html`<dt>${c[0]}</dt><dd class="c-${c[1]}">${cellText(c)}</dd>`)}</dl>`) : ''}
       ${r.slug ? html`<p><a class="ext" href="https://github.com/${r.slug}/settings/branches" target="_blank" rel="noopener noreferrer">${r.slug} · settings/branches${I('arrow-up-right')}</a></p>` : ''}
-      ${r.list?.length ? html`<h3>Rows behind it</h3><ul class="list">${r.list.map(x => html`<li>${x}</li>`)}</ul>` : ''}
+      ${r.list?.length ? html`<h3>${r.list_head || 'Rows behind it'}</h3><ul class="list">${r.list.map(x => html`<li>${x}</li>`)}</ul>` : ''}
       <h3>Fix</h3>${shell.commands.bar(r.id)}
       ${r.note ? html`<p class="why">${r.note}</p>` : ''}`);
     shell.commands.select(r.id);
@@ -427,7 +430,7 @@
     // Snooze (sd:1896) and Ignore (sd:5470) on every row type; an ok row wants nothing, so it has nothing to snooze.
     window.snooze.register(C, { page: 'health', ignore: true, reread: () => load(), off: o => o.state === 'ok' && 'an ok row has nothing to snooze',
       types: ['check', 'storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'merged branches', 'merged worktrees', 'port',
-        'branch protection', 'dependabot alerts', 'secret scanning', 'credential', 'service', 'dashboard service', 'vault mirror'] });
+        'branch protection', 'dependabot alerts', 'secret scanning', 'credential', 'service', 'dashboard service', 'launch agent', 'vault mirror'] });
 
     const u = new URLSearchParams(location.search);
     (u.get('state') || '').split(',').filter(s => STATES.includes(s)).forEach(s => F.state.add(s));

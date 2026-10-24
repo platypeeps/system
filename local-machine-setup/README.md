@@ -580,6 +580,11 @@ machine that has broken in a way worth knowing about tonight.
   (`local-milvus` → `zilliz`) come from `container_for()`, the same mapping the
   `services` stage uses. A service with several containers
   (`local-genai-traces`) counts as running only while all of them are up.
+  The same `docker ps` also prints a `DOCKER` line (`read: N running`, or
+  `unknown:` with a fixed reason) and one tab-separated `CONTAINER` line per
+  running container: name, image, status, compose project, working
+  directory and mounts. The dashboard's Health > Containers reads them
+  (sd:5840).
 
 ## macOS settings
 

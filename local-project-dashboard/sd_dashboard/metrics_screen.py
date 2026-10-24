@@ -12,7 +12,6 @@ Progress areas already make:
   (`reads.meter_days`).
 - `numbers`: the week's four numbers (`reads.weekly_numbers`).
 - `scorecard`: the providers this month (`reads.scorecard`).
-- `skills`: skill uses per day and skill for four weeks (`reads.skill_use_days`).
 - `age`: open items by days in their current status (`reads.age_histogram`).
 - `observed`: observed workflow activity (`reporting.metrics`).
 - `ci`: the lane's gate runs over the page's range (`CI_DAYS`), per repository, and the flaky heads (`_ci`, sd:5473).
@@ -43,16 +42,13 @@ from sd_db.errors import SdDbError
 from .operations_screen import BILL_NAME
 from .tasks_screen import is_scheduled
 
-__all__ = ["CI_DAYS", "GATE_CODES", "GATE_FAILED", "SKILL_WEEKS", "SLOW", "TREND_DAYS", "UNREAD", "WINDOW", "document", "slow"]
+__all__ = ["CI_DAYS", "GATE_CODES", "GATE_FAILED", "SLOW", "TREND_DAYS", "UNREAD", "WINDOW", "document", "slow"]
 
 #: The vendor window the trend draws: seven days, in minutes.
 WINDOW = 10080
 
 #: Days of window readings the trend carries, ending today.
 TREND_DAYS = 7
-
-#: Monday-start weeks of skill use, this week included.
-SKILL_WEEKS = 4
 
 #: The design's panels no reader covers, and why; the page draws each as unknown with its reason.
 UNREAD = (
@@ -125,24 +121,6 @@ def _scorecard(connection, now):
     return {"error": "", "rows": [{"provider": r.provider, "enabled": r.enabled, "reason": r.reason or "", "author_rank": r.author_rank,
                                    "reviewer_rank": r.reviewer_rank, "passes": r.passes, "blocking": r.blocking, "usd": r.usd,
                                    "usd_per_pass": r.usd_per_pass, "fallthrough": r.fallthrough} for r in reads.scorecard(connection, now=now)]}
-
-
-def _skills(connection, today):
-    monday = today - timedelta(days=today.weekday())
-    starts = [monday - timedelta(weeks=n) for n in range(SKILL_WEEKS)]
-    weeks = {start.isoformat(): 0 for start in starts}
-    top: dict[str, int] = {}
-    rows = reads.skill_use_days(connection, since=starts[-1].isoformat())
-    for row in rows:
-        day = datetime.strptime(row["day"], "%Y-%m-%d").date()
-        start = (day - timedelta(days=day.weekday())).isoformat()
-        if start in weeks:
-            weeks[start] += row["uses"]
-        if start == monday.isoformat():
-            top[row["skill"]] = top.get(row["skill"], 0) + row["uses"]
-    return {"error": "", "since": starts[-1].isoformat(), "first": rows[0]["day"] if rows else "",
-            "weeks": [{"start": start, "uses": uses} for start, uses in weeks.items()],
-            "top": sorted(([skill, uses] for skill, uses in top.items()), key=lambda pair: (-pair[1], pair[0]))[:10]}
 
 
 def _age(connection, now):
@@ -285,7 +263,6 @@ def document(connection, *, now: str, kept=None) -> dict:
         "trend": trend,
         "numbers": _guard(lambda: read_slow("numbers")),
         "scorecard": _guard(lambda: _scorecard(connection, now)),
-        "skills": _guard(lambda: _skills(connection, today)),
         "age": _guard(lambda: _age(connection, now)),
         "observed": _guard(lambda: {"error": "", **reporting.metrics(connection, now=now)}),
         "controls": _guard(lambda: _controls(connection)),

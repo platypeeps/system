@@ -209,7 +209,7 @@ class TheDefaultCapture(unittest.TestCase):
         # Enter closed the box with "no" and dropped the typed text. Enter in a field submits with the Capture button, as the
         # confirm dialog does; the required text still blocks an empty capture.
         box = SHELL_JS[SHELL_JS.index("function openCapture("):SHELL_JS.index("modal(cap, inp);")]
-        self.assertLess(box.index('value="no" formnovalidate>Cancel'), box.index('value="yes">Capture'))
+        self.assertLess(box.index('value="no" formnovalidate data-cancel>Cancel'), box.index('value="yes">Capture'))
         enter = ("if (e.key === 'Enter' && !e.isComposing && e.target.tagName === 'INPUT') { e.preventDefault(); "
                  "f.requestSubmit(f.querySelector('[value=\"yes\"]')); }")
         self.assertTrue(enter in box, "Enter in the capture box cancels it and drops the text")
@@ -410,6 +410,94 @@ class TheSharedRules(unittest.TestCase):
         for name, text in {**PAGE_CSS, **PAGE_JS, **{p.name: p.read_text(encoding="utf-8") for p in V2.glob("*.html")}}.items():
             with self.subTest(name):
                 self.assertFalse("table-layout" in text or "<colgroup" in text)
+
+
+class EveryFoldControlIsALink(unittest.TestCase):
+    """sd:5878: every expand, collapse, Show all and Show more control has the table bar's link look (shell.js tfolds), the
+    one shared class `linkbtn`; Reports' Show all jobs and Notes' Show all were buttons (btn quiet sm)."""
+
+    maxDiff = None
+    FOLD = re.compile(r"\b(Show (all|fewer|more|the first|only)|Expand all|Collapse all)\b|data-[\w-]*more|id=\"[\w-]*more\"|data-tfold")
+
+    def test_no_fold_or_show_all_control_carries_btn(self):
+        sources = {**PAGE_JS, "shell.js": SHELL_JS, **{p.name: p.read_text(encoding="utf-8") for p in V2.glob("*.html")}}
+        found, wrong = [], []
+        for name, text in sources.items():
+            for m in re.finditer(r"<button\b([^>]*)>(.*?)</button>", text, re.S):
+                # A help icon's text names these controls; it is not one.
+                if not self.FOLD.search(re.sub(r'data-help="[^"]*"', "", m.group(1)) + m.group(2)[:200]):
+                    continue
+                classes = (re.search(r'class="([^"]*)"', m.group(1)) or [None, ""])[1].split()
+                found.append(name)
+                if "btn" in classes or "linkbtn" not in classes:
+                    wrong.append(f"{name}: {m.group(0)[:120]}")
+        self.assertEqual(wrong, [])
+        # The sweep reaches each page that draws one, so a renamed control cannot leave it empty. today-github.js pages its
+        # table with the shell's pager since sd:5899, so it draws none.
+        self.assertLessEqual({"shell.js", "notes.js", "reports.html", "research.js", "today-status.js"}, set(found))
+
+
+class EveryDialogHasAClose(unittest.TestCase):
+    """sd:5883: every dialog a page draws carries an X (aria-label Close) in its header, and the X presses the dialog's own
+    Cancel ([data-cancel]), so it runs the Cancel path, never a copy of it. Esc stays the browser's."""
+
+    maxDiff = None
+    X = re.compile(r'data-dlg-x|\$\{(CLOSE_X|window\.shell\.closeX)\}')
+    SOURCES = {**PAGE_JS, "shell.js": SHELL_JS, **{p.name: p.read_text(encoding="utf-8") for p in V2.glob("*.html")}}
+
+    def test_each_dialog_form_carries_the_x_and_one_cancel(self):
+        forms, wrong = [], []
+        for name, text in self.SOURCES.items():
+            for m in re.finditer(r'<form method="dialog".*?</form>', text, re.S):
+                forms.append(name)
+                cancels = re.findall(r"<button\b[^>]*\bdata-cancel\b[^>]*>", m.group(0))
+                if not self.X.search(m.group(0)) or len(cancels) != 1:
+                    wrong.append(f"{name}: {m.group(0)[:100]}")
+        self.assertEqual(wrong, [])
+        # Confirm and capture, Start next, Writing's correction, the three Tasks prompts and Quick notes.
+        self.assertEqual(sorted(forms), sorted(["shell.js"] * 2 + ["tasks.js", "writing.js", "notes.html"] + ["task-details.js"] * 3))
+        # The key sheet is the shell's one dialog without a form; its Close is the Cancel the X presses.
+        keys = re.search(r"put\(keys, html`(.*?)`\);", SHELL_JS, re.S).group(1)
+        self.assertRegex(keys, self.X)
+        self.assertRegex(keys, r'<button[^>]*id="keys-close"[^>]*data-cancel|<button[^>]*data-cancel[^>]*id="keys-close"')
+
+    def test_every_file_that_opens_a_dialog_is_swept(self):
+        opens = {name for name, text in self.SOURCES.items() if re.search(r"showModal\(|createElement\('dialog'\)|<dialog\b", text)}
+        self.assertEqual(opens, {"shell.js", "tasks.js", "writing.js", "notes.html", "notes.js", "task-details.js"})
+
+    def test_the_x_presses_the_dialogs_cancel_and_closes_nothing_itself(self):
+        block = re.search(r"// dlgx:start\n(.*?)// dlgx:end", SHELL_JS, re.S)
+        self.assertIsNotNone(block, "shell.js has no dlgx block")
+        script = (block.group(1) + """
+const OUT = [];
+const cancel = { click: () => OUT.push('cancel') };
+const dlg = { close: () => OUT.push('close'), querySelector: s => s === '[data-cancel]' ? cancel : null };
+const x = { closest: s => s === 'dialog' ? dlg : null };
+pressCancel(x); pressCancel({ closest: () => null });
+function run() { return JSON.stringify(OUT); }
+""")
+        out = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout), ["cancel"])
+
+    def test_the_x_is_an_icon_button_named_close(self):
+        self.assertIn("const CLOSE_X = html`<button class=\"icon-btn dlg-x\" type=\"button\" data-dlg-x aria-label=\"Close\">${ICON('x')}</button>`;", SHELL_JS)
+        self.assertIn('<button class="icon-btn dlg-x" type="button" data-dlg-x aria-label="Close"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></button>',
+                      (V2 / "notes.html").read_text(encoding="utf-8"))
+
+
+class TheBulkBar(unittest.TestCase):
+    """sd:5904: a bulk button reads its command's label alone; the bar's "<b>N</b> selected" already counts the rows."""
+
+    def test_each_bulk_button_reads_its_command_label_alone(self):
+        found = re.search(r"  function renderBulk\(\) \{\n.*?\n  \}\n", SHELL_JS, re.S)
+        self.assertIsNotNone(found, "shell.js has no renderBulk")
+        out = run_js("""const picked = new Set(['a', 'b']), OBJ = new Map([['a', { type: 't' }], ['b', { type: 't' }]]);
+  const REG = [{ id: 't.hide', on: 't', label: 'Hide', bulk: true }], offWhy = () => '';
+  const bulk = { hidden: true }, put = (el, m) => { el.html = String(m); };
+""" + found.group(0) + "  renderBulk(); R.html = bulk.html;")
+        self.assertIn("<b>2</b> selected", out["html"])
+        self.assertIn('data-bulk="t.hide">Hide</button>', out["html"])
 
 
 class TheViewPicker(unittest.TestCase):

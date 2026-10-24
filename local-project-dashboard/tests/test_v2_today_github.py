@@ -123,6 +123,17 @@ class TheDocument(ScreenCase):
         self.assertEqual(found["pulls"][2]["url"], f"{HUB}/upstream/tool/pull/2")
         json.dumps(found)  # the page reads it as JSON
 
+    def test_each_row_says_whether_it_is_assigned_to_or_opened_by_the_operator(self):
+        # sd:5899: Show mine keeps what is assigned to the operator or theirs; a review asked of them is not, on its own.
+        seed(self)
+        with waiting(f"{HUB}/example/anvil/pull/6"):
+            found = today_github.document(self.connection, now=NOW)
+        mine = {row["ref"]: row["mine"] for key in ("pulls", "issues", "settled") for row in found[key]}
+        self.assertEqual(mine, {"example/anvil#1": True, "upstream/tool#2": True, "example/anvil#3": True,
+                                "example/anvil#4": False, "example/anvil#5": False, "example/anvil#6": False,
+                                "example/anvil#7": False, "example/anvil#8": True, "example/anvil#10": True,
+                                "example/anvil#13": True})
+
     def test_a_read_that_failed_is_its_reason_never_an_empty_list(self):
         seed(self)
         with mock.patch.object(progress, "tracker_items", side_effect=sqlite3.OperationalError("database is locked")):
@@ -252,7 +263,7 @@ class TheRoute(BrowserSession):
 def entry(n, **changes):
     return {"key": f"{HUB}/example/anvil/pull/{n}", "kind": "pull", "repo": "example/anvil", "number": n,
             "ref": f"example/anvil#{n}", "title": f"Pull {n}", "url": f"{HUB}/example/anvil/pull/{n}", "why": "yours",
-            "state": "open", "at": "2026-10-19T15:00:00Z", "at_what": "updated", "item": None, **changes}
+            "state": "open", "at": "2026-10-19T15:00:00Z", "at_what": "updated", "item": None, "mine": True, **changes}
 
 
 def doc(**changes):
@@ -270,8 +281,11 @@ class TheScript(unittest.TestCase):
                   + "\nvar R = {};\nconst show = () => document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'pulls', first: true } }));\n"
                   + "const press = key => ELS['github-sections'].listeners.click[0]({ target: { closest: s => s === '[data-gh-open]'"
                     " ? { dataset: { ghOpen: key } } : null } });\n"
-                  + "const more = key => ELS['github-sections'].listeners.click[0]({ target: { closest: s => s === 'button[data-gh-more]'"
-                    " ? { dataset: { ghMore: key } } : null } });\n"
+                  + "const page = n => ELS['github-sections'].listeners.click[0]({ target: { closest: s => s === '.list-pager [data-page]'"
+                    " ? { dataset: { page: String(n) } } : null } });\n"
+                  + "const filter = (f, v) => ELS['github-filters'].listeners.click[0]({ target: { closest: s => s.includes(`[data-f=\"${f}\"]`)"
+                    " ? { dataset: { f, v } } : null } });\n"
+                  + "window.shell.url = q => { location.search = q ? '?' + q : ''; };\n"
                   + "(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
@@ -282,56 +296,70 @@ class TheScript(unittest.TestCase):
         self.assertIsNone(out["error"])
         return out
 
-    def draw(self, found):
-        return self.run_page("show(); await flush(); R.sections = ELS['github-sections'].html; R.tally = ELS['github-tally'].html;"
-                             " more('pulls'); R.all = ELS['github-sections'].html;",
-                             f"(path, body) => [200, {json.dumps(found)}]")
+    def draw(self, found, search=""):
+        return self.run_page(f"location.search = '{search}'; show(); await flush(); R.sections = ELS['github-sections'].html;"
+                             " R.tally = ELS['github-tally'].html;", f"(path, body) => [200, {json.dumps(found)}]")
 
     def test_nothing_is_read_until_the_view_shows(self):
         out = self.run_page("R.sections = ELS['github-sections'].html;", f"(path, body) => [200, {json.dumps(doc())}]")
         self.assertEqual(out["gets"], [])
         self.assertIn("Reading GitHub", out["R"]["sections"])
 
-    def test_a_part_shows_five_rows_and_show_all_opens_the_rest_in_place(self):
-        found = doc(pulls=[entry(n) for n in range(1, 8)], issues=[entry(20, kind="issue", title="<b>odd</b>", item=42)])
-        out = self.draw(found)
+    def test_the_pull_requests_are_one_table_of_25_rows_a_page_and_list_no_issue(self):
+        # sd:5899: one table paged by the shell's pager; the issues list on Your issues (issues.with_github).
+        found = doc(pulls=[entry(n, title="<b>odd</b>" if n == 2 else f"Pull {n}", item=42 if n == 3 else None) for n in range(1, 31)],
+                    issues=[entry(40, kind="issue", key=f"{HUB}/example/anvil/issues/40", ref="example/anvil#40")])
+        out = self.run_page("show(); await flush(); R.first = ELS['github-sections'].html; page(2); R.second = ELS['github-sections'].html;"
+                            " R.search = location.search;", f"(path, body) => [200, {json.dumps(found)}]")
         self.assertEqual(out["gets"], ["/api/today/github"])
-        first, every = out["R"]["sections"], out["R"]["all"]
-        pulls = first[first.index('id="gh-pulls"'):first.index('id="gh-issues"')]
-        self.assertEqual(pulls.count("<tr data-key="), 5)
-        self.assertIn('data-gh-more="pulls" aria-expanded="false">Show all 7</button>', first)
-        self.assertEqual(every[every.index('id="gh-pulls"'):every.index('id="gh-issues"')].count("<tr data-key="), 7)
-        self.assertIn("Show the first 5", every)
+        first, second = out["R"]["first"], out["R"]["second"]
+        self.assertEqual((first.count("<table"), first.count("<tr data-key="), second.count("<tr data-key=")), (1, 25, 5))
+        self.assertIn('<span class="range">1–25 of 30</span>', first)
+        self.assertIn('<span class="range">26–30 of 30</span>', second)
+        self.assertEqual(out["R"]["search"], "?page=2")
         self.assertIn(f'<button type="button" data-gh-open="{HUB}/example/anvil/pull/1">Pull 1</button>', first)
         self.assertIn("&lt;b&gt;odd&lt;/b&gt;", first)
         self.assertIn('<a href="/tasks?row=42">sd:42</a>', first)
-        self.assertIn("Issue · example/anvil#20", first)
-        self.assertIn("Nothing in Merged or closed.", first)
+        self.assertNotIn("example/anvil#40", first + second)
+
+    def test_with_closed_adds_the_merged_and_closed_pull_requests_of_the_window(self):
+        # sd:5899: State open is the default; with closed adds the settled pull requests and says the window.
+        found = doc(pulls=[entry(1)], settled=[entry(2, state="merged", at_what="merged"),
+                                               entry(3, kind="issue", state="closed", ref="example/anvil#3")], undated=1)
+        out = self.run_page("show(); await flush(); R.open = ELS['github-sections'].html; R.bar = ELS['github-filters'].html;"
+                            " filter('prs', 'closed'); R.closed = ELS['github-sections'].html; R.tally = ELS['github-tally'].html;"
+                            " R.search = location.search;", f"(path, body) => [200, {json.dumps(found)}]")
+        self.assertNotIn("pull/2", out["R"]["open"])
+        self.assertIn('data-f="prs" data-v="open" aria-pressed="true">open <span class="n">1</span>', out["R"]["bar"])
+        self.assertIn('data-v="closed" aria-pressed="false">with closed <span class="n">2</span>', out["R"]["bar"])
+        self.assertIn("pull/2", out["R"]["closed"])
+        self.assertNotIn("example/anvil#3", out["R"]["closed"])
+        self.assertIn("Merged or closed: the last 7 days", out["R"]["closed"])
+        self.assertIn("1 merged or closed row with no date recorded", out["R"]["closed"])
+        self.assertIn("2 pull requests", out["R"]["tally"])
+        self.assertEqual(out["R"]["search"], "?prs=closed")
 
     def test_mine_is_the_default_and_all_adds_what_others_opened(self):
-        # sd:5757: a pull request someone else opened in a registered repo shows under All only.
-        found = doc(pulls=[entry(1), entry(2, why="opened by bo"), entry(3, why="waiting on you"), entry(4, why="assigned to you")],
-                    issues=[entry(20, kind="issue", why="opened by alice")])
+        # sd:5757, sd:5899: mine keeps what is assigned to you or opened by you (the read's `mine`); a pull request
+        # someone else opened, a review asked of you among them, shows under All only.
+        found = doc(pulls=[entry(1), entry(2, why="opened by bo", mine=False), entry(3, why="waiting on you", mine=False),
+                           entry(4, why="assigned to you")])
         out = self.run_page(
-            "window.shell.url = q => { location.search = q ? '?' + q : ''; };"
-            " show(); await flush(); R.mine = ELS['github-sections'].html; R.bar = ELS['github-filters'].html; R.tally = ELS['github-tally'].html;"
-            " ELS['github-filters'].listeners.click[0]({ target: { closest: s => s === '[data-f=\"gh\"]' ? { dataset: { v: 'all' } } : null } });"
-            " R.all = ELS['github-sections'].html; R.search = location.search;",
+            "show(); await flush(); R.mine = ELS['github-sections'].html; R.bar = ELS['github-filters'].html; R.tally = ELS['github-tally'].html;"
+            " filter('gh', 'all'); R.all = ELS['github-sections'].html; R.search = location.search;",
             f"(path, body) => [200, {json.dumps(found)}]")
         mine, every = out["R"]["mine"], out["R"]["all"]
-        self.assertEqual([n for n in (1, 2, 3, 4) if f"pull/{n}\"" in mine], [1, 3, 4])
-        self.assertNotIn("example/anvil#20", mine)
-        self.assertIn('data-f="gh" data-v="mine" aria-pressed="true">mine <span class="n">3</span>', out["R"]["bar"])
-        self.assertIn('data-v="all" aria-pressed="false">all <span class="n">5</span>', out["R"]["bar"])
-        self.assertIn("3 of 4 open pull requests", out["R"]["tally"])
+        self.assertEqual([n for n in (1, 2, 3, 4) if f"pull/{n}\"" in mine], [1, 4])
+        self.assertIn('data-f="gh" data-v="mine" aria-pressed="true">mine <span class="n">2</span>', out["R"]["bar"])
+        self.assertIn('data-v="all" aria-pressed="false">all <span class="n">4</span>', out["R"]["bar"])
+        self.assertIn("2 of 4 open pull requests", out["R"]["tally"])
         self.assertEqual([n for n in (1, 2, 3, 4) if f"pull/{n}\"" in every], [1, 2, 3, 4])
-        self.assertIn("example/anvil#20", every)
         self.assertEqual(out["R"]["search"], "?gh=all")
 
     def test_waiting_rows_are_caution_settled_rows_say_how_and_a_missing_stamp_is_not_recorded(self):
         found = doc(pulls=[entry(1, why="waiting on you"), entry(2, at=None, at_what=None)],
                     settled=[entry(3, state="merged", at_what="merged")], undated=2)
-        out = self.draw(found)
+        out = self.draw(found, "?prs=closed")
         sections, tally = out["R"]["sections"], out["R"]["tally"]
         self.assertIn('class="g g-caution" title="open">▲', sections)
         self.assertIn('class="g g-queued" title="open">◌', sections)
@@ -339,9 +367,8 @@ class TheScript(unittest.TestCase):
         self.assertIn("merged · yours", sections)
         self.assertIn('activity not recorded', sections)
         self.assertIn("2 merged or closed rows with no date recorded, not placed", sections)
-        self.assertIn('<a class="g-caution" href="#gh-pulls">▲ 1 waiting on you</a>', tally)
-        self.assertIn("2 open pull requests", tally)
-        self.assertIn("Nothing in Open issues.", sections)
+        self.assertIn('<span class="g-caution">▲ 1 waiting on you</span>', tally)
+        self.assertIn("3 pull requests", tally)
 
     def test_a_stale_sync_and_an_unread_source_are_said(self):
         found = doc(pulls=[entry(1)], unread={"delivery": "disk I/O error"},
@@ -383,8 +410,8 @@ class ThePullRequestDetails(unittest.TestCase):
                              f"(path, body) => path === '/api/today/github' ? [200, {json.dumps(found)}] : ({posts})(path, body)")
 
     def test_a_press_shows_the_pull_requests_facts_a_new_tab_link_and_its_commands(self):
-        # The stand-in has no rows to mark in place, so a redraw (Show all) shows the selection the next draw keeps.
-        out = self.page(f"press({json.dumps(PR)}); R.details = ELS.details.html; more('pulls'); R.sections = ELS['github-sections'].html;"
+        # The stand-in has no rows to mark in place, so a redraw (the pager) shows the selection the next draw keeps.
+        out = self.page(f"press({json.dumps(PR)}); R.details = ELS.details.html; page(1); R.sections = ELS['github-sections'].html;"
                         f" R.obj = C.get('gh:{PR}'); R.ids = REG.map(c => c.id);"
                         f" R.issue = C.get('gh:{HUB}/example/anvil/issues/20') || null;")
         details = out["R"]["details"]

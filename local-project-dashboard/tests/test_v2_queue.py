@@ -270,6 +270,18 @@ class TheRows(Lane, ScreenCase):
         self.assertEqual(queue_screen.lane_revision(self.entries()),
                          queue_screen.lane_revision(json.loads(self.fixture.read_text())["entries"]))
 
+    def test_a_done_or_cancelled_items_failed_newest_entry_is_not_blocked(self):
+        # sd:5847: the item closed after its newest entry failed; the lane still lists that failure.
+        done = self.item("Closed", kind="task", status="done")
+        cancelled = self.item("Cancelled", status="done", fields={"completion": {"outcome": "cancelled"}})
+        still = self.item("Still open", kind="task")
+        failed = {"title": "t", "status": "failed", "step": "merge", "reason": "gate failed",
+                  "expected_head": "e" * 40, "finished_at": "2026-09-06T11:00:00Z"}
+        self.list([{**failed, "item": item} for item in (done, cancelled, still)])
+        doc = self.doc()
+        self.assertEqual([row["item"] for row in doc["lanes"][0]["rows"] if row["state"] == "blocked"], [still])
+        self.assertEqual(doc["attention"], {"state": "caution", "n": 1, "what": "blocked"})
+
     # sd:3398: a cancelled entry is a row, so Re-queue can name the head the operator cancelled.
     def test_a_cancelled_entry_carries_its_head_and_when_it_was_cancelled(self):
         cancelled = next(row for row in self.doc()["lanes"][0]["rows"] if row["state"] == "cancelled")

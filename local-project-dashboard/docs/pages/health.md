@@ -11,7 +11,7 @@ repository shows no cell).
 
 The page shows one view at a time, each its own read, `GET /api/health/<view>`
 (`health_screen.part`): Checkouts (Worktrees, Branches), Machine (Disk,
-Services, Ports, Doctor), GitHub (Dependencies, Security, Protection) and Jobs
+Services, Ports, Containers, Doctor), GitHub (Dependencies, Security, Protection) and Jobs
 (Credentials, Vault mirror). A view whose read fails marks its own areas unknown
 with the reason; no other view is touched. The lamps on top come from
 `GET /api/health/summary` (`health_screen.summary`), which is also the rail
@@ -64,7 +64,7 @@ inside an 8-second budget; past it the area says it stopped rather than
 waited on.
 
 The readers that wait on subprocesses (Disk, Worktrees, Branches,
-Ports, Doctor) run at once, so the slowest decides how long the page
+Ports, Containers, Doctor) run at once, so the slowest decides how long the page
 waits, not the sum of their budgets. The registry they walk is read first,
 on the request's thread, and handed to them as paths. `PAGE_SECONDS` (13)
 bounds the whole document, and the page does not wait for a reader still
@@ -92,12 +92,29 @@ thread, not one per refresh. Meanwhile the area shows its last answer under
   80% (caution) or 90% (warning). It lists the three biggest subfolders of
   each folder a `storage|<path>` line of the `dashboard.disk_storage` row
   names (Settings, Dashboard), one `du -k -d 1` per folder in what is left of
-  the budget; a folder `du` cannot finish, or that is not mounted, is an
-  unknown row, and so are no folder and a row that was not read. It finds registered worktrees
+  the budget. A local folder `du` cannot finish shows its drive's used and
+  free from one `df -kP`, read before the `du`, at the volume thresholds
+  (sd:5879): `du` on a 2.1 TB drive does not finish in the 8 s budget. A
+  folder `du` cannot finish with no `df` answer, or that is not mounted, is
+  an unknown row, and so are no folder and a row that was not read. It finds registered worktrees
   whose `HEAD` is in `origin/HEAD` and that still hold `target/`,
   `node_modules/` or `.venv/`, the rule of 2026-09-25; it reads their
   presence, not their size, and `git status --porcelain` in each: a worktree
   with uncommitted changes keeps its folders.
+- Services lists each long-running user LaunchAgent from `sd services
+  list`, with Restart and Start. A run-once or scheduled user agent shows
+  only when its last run failed (a non-zero exit or a failure signal), as a
+  warning with its last exit and no controls (sd:5882); a healthy one stays
+  off the page.
+- Containers (sd:5840) lists each running container: its name, image,
+  status and uptime, compose project and working directory, and its bind
+  mounts under the checkout root (`REPO_ROOT`, default `~/repos`), so a
+  container that holds a checkout shows. It reads the `CONTAINER` lines of
+  the one `docker ps` that `machine-setup.sh candidates service` runs for
+  Ports; Ports and Containers share that one collection per request. A
+  Docker that is not installed, not running or not fully read makes the
+  area unknown with the reason, never empty. Like Services it has no lamp,
+  only its chip and section. It has no start or stop control.
 - Doctor runs `local-machine-setup/machine-setup.sh doctor` in a child process
   with a 180-second deadline and reads its `ok`, `WARN` and `FAIL` lines: a row
   per WARN (caution) and FAIL (warning), then one row with the rest. A run

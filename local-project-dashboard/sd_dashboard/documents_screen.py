@@ -159,6 +159,18 @@ def _checkout(root: documents.Root) -> Path | None:
     return path.parents[len(parts) - 1] if path.parts[-len(parts):] == parts else None
 
 
+def _render_key(base: Path, checkout: Path) -> str:
+    """The checkout key Research's render takes (sd:5884): the checkout's path under the repo root, when
+    `research_screen.checkout` resolves it back; "" otherwise, so the page says why Render is off."""
+    from . import research_screen
+
+    try:
+        key = checkout.resolve().relative_to(base.resolve()).as_posix()
+        return key if research_screen.checkout(base, key) is not None else ""
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+
 def _inventory(checkout: Path) -> tuple[dict, str, str]:
     """research.conf.py's PROJECT and DOCS as Research reads them (sd:5666), the refusal, and "", "current" or "older"."""
     try:
@@ -303,6 +315,7 @@ def document(connection=None, *, now: str, config_path: Path | None = None, repo
         listed.append({"key": root.key, "label": own.get("label") or root.label, "derived": root.label,
                        "set": own.get("label"), "hidden": bool(own.get("hidden")), "file_label": file_labels.get(root.key),
                        "path": _tilde(root.path.expanduser()), "n": len(found), "research": research,
+                       "render": _render_key(documents._base(repo_root), checkout) if research else "",
                        "conf": conf, "manifest": manifest})
         if own.get("hidden"):
             continue

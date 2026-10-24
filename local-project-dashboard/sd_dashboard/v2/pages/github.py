@@ -2,7 +2,8 @@
 and issues: `/api/today/github` (`today_github`); a pull request's Copilot review (sd:5633) writes through
 `/api/today/github/copilot-review`, and its Merge (sd:5668) previews with a GET and copies into the lane with a POST
 (`pr_merge`); Close original (sd:5669) previews its comment with a GET and closes with a POST (`pr_close`). Your issues
-(sd:4628) and Intake (sd:4840) are `/api/github/issues` (`issues`); File as item posts `/api/items` with the ref."""
+(sd:4628) and Intake (sd:4840) are `/api/github/issues` (`issues`); File as item posts `/api/items` with the ref.
+Your issues holds the operator's GitHub issues `today_github` reads too (sd:5899), so the Pull requests view lists none."""
 
 from __future__ import annotations
 
@@ -16,9 +17,10 @@ def _github(read):
 
 
 def _issues(read):
-    from ... import issues
+    from ... import issues, today_github
 
-    return {**issues.document(read.connection), **issues.intake(read.connection)}
+    found = issues.with_github(issues.document(read.connection), today_github.document(read.connection, now=read.now))
+    return {**found, **issues.intake(read.connection)}
 
 
 def _copilot(payload, principal):
