@@ -84,6 +84,10 @@ pair list names that root and the NAS's `sd-backups` folder, one folder to
 one folder: its parent can hold folders the NAS share lacks, and the share
 folders it lacks, which a pass with `--delete` would delete (sd:4683). An empty
 `SD_DB_BACKUP_NAS_FOLDER` takes the snapshot only, for a one-off.
+The pair's third field, `runner-journal/*.lock`, keeps the snapshot's
+runner journal locks off the NAS: rsync's open of one failed the copy on
+2026-10-24 (sd:6048). The hourly pair copies them, because the NAS prune
+deletes an hourly copy only when its file names match its manifest.
 
 **A detached drive fails loudly.** It looks like a missing destination
 parent, which the safety rails already refuse, so the pass exits 1 and raises
@@ -206,6 +210,9 @@ manifest does not name fails, and so does a manifest that does not hash
 not a nonnegative integer, and an entry that is neither a SHA256 nor `null`
 are each a named failure, not a traceback. Finder's `.DS_Store` and `._*`
 files are ignored: the writer never records them and restore never reads them.
+So are the runner journal's locks, `runner-journal/*.lock`, listed or not
+and readable or not (sd:6048): they are empty files restore makes again, and
+the nightly pair keeps them off the NAS.
 
 Containment says the backups are under the root; it cannot say the root left
 the machine. A `Backup` linked at local storage resolves to a real directory

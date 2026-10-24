@@ -371,7 +371,7 @@ def _prove_restore(snapshot: Path, report: Report) -> None:
             # file and pass a restore that refuses the original -- the same
             # false pass, one layer further in. sd_db's own snapshot code
             # copies with symlinks=True for this reason.
-            shutil.copytree(snapshot, local, symlinks=True)
+            shutil.copytree(snapshot, local, symlinks=True, ignore=_ignore_runner_locks)
         except OSError as error:
             report.fail(f"snapshot directory could not be copied off the share: {error}")
             return
@@ -399,6 +399,20 @@ SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 #: a snapshot that differs from its manifest.
 FINDER_METADATA = re.compile(r"^(?:\.DS_Store|\._.*)$")
 
+#: The runner journal's locks (sd:6048). The writer copies and lists them,
+#: but they are empty files restore makes again, and the nightly NAS pair
+#: leaves them out: rsync's open of one failed the copy on 2026-10-24. So a
+#: lock is neither held to the manifest nor copied off the share; a run
+#: record beside it still is.
+RUNNER_LOCK = re.compile(r"^runner-journal/[^/]+\.lock$")
+
+
+def _ignore_runner_locks(directory: str, names: list[str]) -> set[str]:
+    """`shutil.copytree`'s filter: the locks in the snapshot's runner journal."""
+    if Path(directory).name != "runner-journal":
+        return set()
+    return {name for name in names if RUNNER_LOCK.match(f"runner-journal/{name}")}
+
 
 def _snapshot_inventory(snapshot: Path) -> tuple[dict[str, bool], list[str]]:
     """What the snapshot directory holds, the way the writer inventories it.
@@ -417,6 +431,8 @@ def _snapshot_inventory(snapshot: Path) -> tuple[dict[str, bool], list[str]]:
         if path == manifest or FINDER_METADATA.match(path.name):
             continue
         name = path.relative_to(snapshot).as_posix()
+        if RUNNER_LOCK.match(name):
+            continue
         try:
             details = path.lstat()
         except OSError:
@@ -474,7 +490,7 @@ def _verify_companions(snapshot: Path, manifest: dict, report: Report) -> None:
         kind = "directory" if on_disk[name] else "file"
         report.fail(f"{name} is a {kind} in the snapshot the manifest does not name")
     for name, expected in sorted(entries.items()):
-        if name in malformed:
+        if name in malformed or RUNNER_LOCK.match(name):
             continue
         path = snapshot / name
         if expected is None:
