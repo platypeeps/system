@@ -98,7 +98,7 @@ class TheHub(Case):
         for label in manifest("personal.agent"):
             template = self.config / f"machine-setup/launchagents/{label}.plist"
             (self.agents / f"{label}.plist").write_text(
-                fixture_config.render(template, label, self.fixture.home, ROOT))
+                fixture_config.render(template, label, self.fixture.home, ROOT, self.fixture.pack))
 
     def hub_drift(self):
         return markers(self.run_stage("sd") + self.run_stage("agents"))
