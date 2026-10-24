@@ -309,7 +309,7 @@ def document(connection=None, *, now: str, config_path: Path | None = None, repo
         if own.get("hidden"):
             continue
         sources = _sources(checkout, config, [entry["name"] for entry in found]) if research else {}
-        publish = _publishing(connection, checkout, config) if research else None
+        publish = _publishing(connection, checkout, config, manifest) if research else None
         for entry in found:
             source = sources.get(entry["name"])
             try:
@@ -341,11 +341,12 @@ def document(connection=None, *, now: str, config_path: Path | None = None, repo
     }
 
 
-def _publishing(connection, checkout: Path, config: dict):
+def _publishing(connection, checkout: Path, config: dict, manifest: str = ""):
     """One research root's `pub` reader (sd:5102): each page's published copies and its Publish to choice.
 
     The channels setting, the designations, the queue and the vault are read once per root. A read that fails is named
-    in `unread` or `choice.why`, never shown as no copy or no designation.
+    in `unread` or `choice.why`, never shown as no copy or no designation. A page with no literal entry shows the
+    designations of `config`, the evaluated config, and its `why` still refuses ticking (sd:5898).
     """
     setting, unread = publishing.read_channels(connection, checkout)
     # sd:5500: the vault's own repository keeps Obsidian repo-wide; every other one designates it per document.
@@ -368,6 +369,7 @@ def _publishing(connection, checkout: Path, config: dict):
     outs = {f"{Path(e['out']).name}.html": e["out"] for e in config.get("DOCS", [])}
     outs.update({f"{Path(out).name}.html": out for out in picked["docs"]})
     items = {e["out"]: e.get("item") for e in config.get("DOCS", []) if type(e.get("item")) is int}
+    evaluated = {e["out"]: e for e in config.get("DOCS", [])}
     fields = publishing.published_fields(connection, items.values())
 
     def pub(name: str) -> dict:
@@ -376,9 +378,13 @@ def _publishing(connection, checkout: Path, config: dict):
                                            fields=fields.get(items.get(out)), vault=vault, queue=queue, receipts=receipts)
         chosen = picked["docs"].get(out)
         why = picked["why"] or ("" if chosen else f"research.conf.py has no literal entry for {out}; add the key by hand")
+        if chosen is None:
+            chosen = publishing.evaluated_choice(evaluated.get(out), manifest)
+            if chosen and None in (chosen["notion"], chosen["drive"]):
+                why += "; sd-research-kit render writes its designations into docs/dashboard/research.json"
         found["unread"] = "; ".join(cause for cause in (found["unread"], unqueued) if cause)
-        return {**found, "choice": {"notion": bool(chosen and chosen["notion"]), "drive": bool(chosen and chosen["drive"]),
-                                    "obsidian": repo_wide if whole else bool(chosen and chosen["obsidian"]),
+        return {**found, "choice": {"notion": chosen["notion"] if chosen else False, "drive": chosen["drive"] if chosen else False,
+                                    "obsidian": repo_wide if whole else chosen["obsidian"] if chosen else False,
                                     "repo_wide": publishing.VAULT_REPO if whole else "", "why": why}}
 
     return pub
