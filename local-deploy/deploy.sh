@@ -33,8 +33,10 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
           them (sd:3281).
   apply   print the reports, then restart. dashboard: `launchctl kickstart
           -k`, then `dashboard.sh health --wait DEPLOY_WAIT`. A service whose
-          agent is not loaded is skipped. Stops at the first failed check and
-          exits 1 naming it.
+          agent is not loaded is skipped. A dashboard agent that still runs
+          the deleted local-project-dashboard is not restarted or started:
+          the run exits 1 naming the pack's install. Stops at the first
+          failed check and exits 1 naming it.
   upgrade [--from SHA]
           refuse unless this checkout is on main and clean; `git fetch
           origin`, then fast-forward to origin/main (refuse on divergence).
@@ -170,6 +172,7 @@ apply() {
   for service in $services; do
     case "$service" in
       dashboard) held sd-dashboard || { skip dashboard sd-dashboard; continue; }
+        old_dashboard "$PREFIX.sd-dashboard"
         launchctl kickstart -k "gui/$(id -u)/$PREFIX.sd-dashboard" || fail "dashboard kickstart"
         sh "$SD_PACK_ROOT/dashboard/dashboard.sh" health --wait "${DEPLOY_WAIT:-30}" || fail "dashboard health"
         echo "restarted dashboard" ;;
@@ -181,6 +184,17 @@ loaded() {
   launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1
 }
 
+# The dashboard left this repo for the pack (pack sd:5987). An agent whose
+# loaded job or installed plist still runs the deleted folder cannot start
+# again, so refuse before a restart stops the running one.
+old_dashboard() { # label
+  { launchctl print "gui/$(id -u)/$1" 2>/dev/null
+    cat "$HOME/Library/LaunchAgents/$1.plist" 2>/dev/null; } | grep -qF local-project-dashboard || return 0
+  echo "deploy: not restarting $1: it still runs local-project-dashboard, which is gone; install the pack's: sh $SD_PACK_ROOT/dashboard/dashboard.sh preflight, then install --apply --expected-fingerprint <sha>, then rerun this deploy" >&2
+  stopped_hint
+  exit 1
+}
+
 stopped() {
   [ -s "$STOPPED" ] && grep -qxF "$1" "$STOPPED"
 }
@@ -188,6 +202,7 @@ stopped() {
 # A marked agent that launchd holds already is not bootstrapped again; it
 # still passes its check.
 start_agent() {
+  case "$1" in *.sd-dashboard) old_dashboard "$1" ;; esac
   loaded "$1" || launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$1.plist" || fail "$1 bootstrap"
   starting="$1"
   case "$1" in
