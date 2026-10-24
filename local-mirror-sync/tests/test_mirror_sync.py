@@ -448,7 +448,13 @@ for name in changed:
         sys.exit(11)
 for line in lines("stderr"):
     print(line, file=sys.stderr)
-sys.exit(int((lines("rc") or ["0"])[0]))
+rc = int((lines("rc") or ["0"])[0])
+if lines("once"):
+    # The fault was this run's alone: the next run is clean.
+    for name in ("stderr", "rc"):
+        if os.path.exists(os.path.join(state, name)):
+            os.remove(os.path.join(state, name))
+sys.exit(rc)
 """
 
 # A BSD stat that reports SF_DATALESS (0x40000000) for the listed paths.
@@ -678,6 +684,49 @@ class VanishedSource(FakeTools):
         result = self.sync()
 
         self.assertEqual(result.returncode, 1, result.stdout)
+
+
+class InterruptedOpen(FakeTools):
+    """An open that fails with EINTR is a stalled permission check, not a bad
+    file: the 2026-10-24 NAS pass lost one runner-journal lock that way while
+    every other file arrived, and the job's alert read as a failed backup
+    (sd:6030). The pair is tried once more; any other error keeps it failed."""
+
+    INTERRUPTED = ("rsync(83005): error: {src}/sd-backups/2026-10-24/runner-journal/a.lock:"
+                   " open (2) in /home/example: Interrupted system call")
+
+    def test_an_interrupted_open_is_retried_once(self) -> None:
+        self.state_file("stderr", [self.INTERRUPTED.format(src=self.source)])
+        self.state_file("rc", ["23"])
+        self.state_file("once", ["yes"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.rsync_runs()), 2)
+        self.assertIn(f"--- retrying after an interrupted open: {self.source}", result.stdout)
+        self.assertIn("all 1 pair(s) mirrored", result.stdout)
+
+    def test_an_open_interrupted_again_fails_the_pair(self) -> None:
+        self.state_file("stderr", [self.INTERRUPTED.format(src=self.source)])
+        self.state_file("rc", ["23"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(len(self.rsync_runs()), 2)
+        self.assertIn(f"{self.source} (rsync error)", result.stdout)
+
+    def test_an_interrupted_open_beside_another_error_is_not_retried(self) -> None:
+        self.state_file("stderr", ["rsync(9): error: hoa/downloads: unlinkat: Directory not empty",
+                                   self.INTERRUPTED.format(src=self.source)])
+        self.state_file("rc", ["23"])
+        self.state_file("once", ["yes"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(len(self.rsync_runs()), 1)
 
 
 class NestedByIdentity(Fixture):

@@ -283,6 +283,12 @@ prints `<path>: open (2) in <cwd>: No such file or directory`. A pair whose
 only errors are those lines counts as mirrored, with a note on stderr. Any
 other error line still fails it.
 
+Under launchd an open can fail with `open (2) in <cwd>: Interrupted system
+call` on a file that is there: a stalled permission check (pack sd:2660). A
+NAS pass lost one runner-journal lock that way, and its backup job read as
+failed (sd:6030). A pair whose only errors are those lines runs once more and
+logs `--- retrying after an interrupted open`; a second failure fails it.
+
 ## Known limits
 
 These overlap and prune checks do not cover the cases below. Each line names
