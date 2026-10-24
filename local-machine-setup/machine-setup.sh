@@ -149,7 +149,7 @@ DOTFILES_DENY=".bash_profile"
 # installs it. Only non-secret defaults go in — a template holding a
 # credential would be committed, which is the leak the .env rule exists to
 # stop. Secrets stay in ~/.config/shell/env.sh or a gitignored conf.
-ENVS="local-notify"
+ENVS="local-notify local-statusline"
 
 # Folders whose .env is expected to hold placeholder values — see the
 # placeholder check in doctor for the rule about what belongs here. Set in

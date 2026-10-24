@@ -33,7 +33,7 @@ render() {
   fi
 
   # claude-hud only ever renders the email local part (auth.ts strips the
-  # domain), so the full address is appended here instead of forking the plugin.
+  # domain), so the login is appended here instead of forking the plugin.
   email=$(CLAUDE_CONFIG_DIR="$CONFIG_DIR" python3 -c 'import json,os,sys
 try:
     p=os.environ["CLAUDE_CONFIG_DIR"].rstrip("/")+".json"
@@ -41,6 +41,13 @@ try:
     sys.stdout.write(json.load(open(p))["oauthAccount"]["emailAddress"])
 except Exception:
     pass' 2>/dev/null)
+  # A login named in STATUSLINE_ACCOUNT_LABELS (space-separated email=label
+  # pairs, from the config folder's statusline/.env) shows as its label.
+  . "$DIR/../lib/config.sh"
+  st_source_env statusline
+  for pair in ${STATUSLINE_ACCOUNT_LABELS:-}; do
+    case "$pair" in "$email="*) email=${pair#*=}; break ;; esac
+  done
 
   # System load: the 1, 5 and 15 minute averages. The 1 minute value is
   # yellow at or above the logical CPU count and red at twice that. Empty
@@ -98,11 +105,12 @@ except Exception: pass' "$stdin_file" 2>/dev/null || true)
   # Label that identifies the compactions line, matched against claude-hud's
   # configured language so the fold still works if that changes.
   case "$(hud_language)" in
-    zh-Hans) COMPACTIONS_LABEL='\u538b\u7f29\u6b21\u6570' ;;
-    zh-Hant) COMPACTIONS_LABEL='\u58d3\u7e2e\u6b21\u6578' ;;
-    *)       COMPACTIONS_LABEL='Compactions' ;;
+    zh-Hans) COMPACTIONS_LABEL='\u538b\u7f29\u6b21\u6570'; TOKENS_LABEL='\u8bcd\u5143' ;;
+    zh-Hant) COMPACTIONS_LABEL='\u58d3\u7e2e\u6b21\u6578'; TOKENS_LABEL='Token' ;;
+    *)       COMPACTIONS_LABEL='Compactions'; TOKENS_LABEL='Tokens' ;;
   esac
   COMPACTIONS_LABEL=$(printf '%b' "$COMPACTIONS_LABEL")
+  TOKENS_LABEL=$(printf '%b' "$TOKENS_LABEL")
 
   bun_bin="${BUN_BIN:-$HOME/.bun/bin/bun}"
   if [ ! -x "$bun_bin" ]; then
@@ -119,7 +127,8 @@ except Exception: pass' "$stdin_file" 2>/dev/null || true)
   #      its element/mergeGroups system, so it cannot be merged from config the
   #      way the Cache line can. It is folded onto the preceding line here.
   #      It only exists once a session has compacted at least once.
-  #   2. The full login email, then the system load, join line 1.
+  #   2. The login (label or email) joins the end of the Tokens line, or
+  #      line 1 when the HUD shows no Tokens line yet; the load joins line 1.
   #   3. The allowance warning joins line 2 (the context bar), just left of
   #      the Cache segment that mergeGroups moved onto that line. Line 1 is
   #      already the widest line in the HUD, hence not there.
@@ -128,7 +137,7 @@ except Exception: pass' "$stdin_file" 2>/dev/null || true)
   # Falling back to line 1 keeps the warning visible if the HUD renders a
   # single line.
   "$bun_bin" --env-file /dev/null "${plugin_dir}src/index.ts" < "$stdin_file" \
-    | awk -v e="$email" -v l="$load" -v w="$warn" -v sep="$SEP" -v clabel="$COMPACTIONS_LABEL" '
+    | awk -v e="$email" -v l="$load" -v w="$warn" -v sep="$SEP" -v clabel="$COMPACTIONS_LABEL" -v tlabel="$TOKENS_LABEL" '
         # claude-hud hardcodes the "Weekly" usage label (i18n has no user
         # override); shorten it, and the "Fable weekly" window name, to W.
         { gsub(/[Ww]eekly/, "W"); line[NR] = $0 }
@@ -145,7 +154,15 @@ except Exception: pass' "$stdin_file" 2>/dev/null || true)
             }
           }
 
-          if (e != "") line[1] = line[1] sep e
+          if (e != "") {
+            t = 1
+            for (i = 1; i <= n; i++) {
+              bare = line[i]
+              gsub(/\033\[[0-9;]*m/, "", bare)
+              if (index(bare, tlabel " ") == 1) { t = i; break }
+            }
+            line[t] = line[t] sep e
+          }
           if (l != "") line[1] = line[1] sep l
           # The allowance warning goes just left of the Cache segment so it
           # sits with the other budget numbers; if that label is absent
@@ -209,8 +226,9 @@ case "$1" in
     cat <<'HELPEOF'
 usage: statusline.sh render|install
 
-  render     print the status line: claude-hud output, with the full login
-             email and the system load appended to line 1, the allowance
+  render     print the status line: claude-hud output, with the login
+             (its STATUSLINE_ACCOUNT_LABELS label, else the email) at the
+             end of the Tokens line, the system load on line 1, the allowance
              warning to line 2, and the compactions line folded onto the
              line above it
   install    point statusLine in ~/.claude/settings.json at this script
@@ -219,6 +237,8 @@ usage: statusline.sh render|install
 environment:
   CLAUDE_CONFIG_DIR            Claude config dir (default ~/.claude)
   BUN_BIN                      bun binary (default ~/.bun/bin/bun, then PATH)
+  STATUSLINE_ACCOUNT_LABELS    "email=label ..." pairs; also read from
+                               <config>/statusline/.env
 HELPEOF
     exit 0
     ;;
