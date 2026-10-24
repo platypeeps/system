@@ -303,6 +303,8 @@ def document(connection=None, *, now: str, config_path: Path | None = None, repo
         listed.append({"key": root.key, "label": own.get("label") or root.label, "derived": root.label,
                        "set": own.get("label"), "hidden": bool(own.get("hidden")), "file_label": file_labels.get(root.key),
                        "path": _tilde(root.path.expanduser()), "n": len(found), "research": research,
+                       # sd:5958: the checkout a Request files its task under; "" for a root that is no checkout's.
+                       "checkout": _tilde(checkout) if checkout else "",
                        "conf": conf, "manifest": manifest})
         if own.get("hidden"):
             continue

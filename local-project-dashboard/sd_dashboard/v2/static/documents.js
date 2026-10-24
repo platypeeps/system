@@ -6,6 +6,7 @@
 const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
+const shPath = p => (p.startsWith('~/') ? `~/${shq(p.slice(2))}` : shq(p)); // ~ stays outside the quotes, so the shell expands it
 // One view, so the tab carries the list's count (sd:5524); the panel is the list's section, view-documents.
 window.PAGE_VIEWS = [{ id: 'documents', label: 'Documents' }];
 // build: the page claims nothing for the rail until /api/documents answers; load() sets it from the rows.
@@ -206,11 +207,13 @@ const tagDraft = () => tagOf(document.getElementById('tag-in')?.value) || lastTa
 const NO_SWITCH = 'no render switch: SD_SKIP_RENDER skips every render';
 const DRAFT = { id: 'draft:request', type: 'document request draft', label: 'new document request', title: '', cmd: '' };
 // sd:5887: Request files the task the line names through /api/items, as Capture does; Undo closes it, as sd task cancel
-// does. r is Render on a document (sd:3525), so Request has no key.
+// does. r is Render on a document (sd:3525), so Request has no key. sd:5958: the item belongs to the root's checkout, as the
+// line's --belongs-to says; a root that is no checkout's docs/dashboard names none.
 const REQUEST = { id: 'document.request', on: 'document request draft', label: 'Request', does: 'Files this request as a task; Undo closes it.', icon: 'plus', risk: 'undo', primary: () => true, executes: true,
   when: o => (o.repoError || (!o.title ? 'type what you need first' : !o.repo ? 'name the repository: add repo:<name>' : true)), cli: o => o.cmd,
-  sends: o => `POST /api/items {title, body${o.due ? ', due' : ''}}`,
-  run: o => window.shell.post('/api/items', { title: `Document request: ${o.title}`, body: `repo=${o.repo} kind=${o.kind} skill=${o.skill}`, ...(o.due ? { due: o.due } : {}) })
+  sends: o => `POST /api/items {title, body${o.checkout ? ', repo' : ''}${o.due ? ', due' : ''}}`,
+  run: o => window.shell.post('/api/items', { title: `Document request: ${o.title}`, body: `repo=${o.repo} kind=${o.kind} skill=${o.skill}`,
+    ...(o.checkout ? { repo: o.checkout } : {}), ...(o.due ? { due: o.due } : {}) })
     .then(out => ({ text: `Request filed · #${out.item.id} · ${o.title}`, item: out.item.id, revision: out.revision })),
   undo: (o, v) => window.shell.post(`/api/items/${v.item}/cancel-task`, { reason: 'withdrawn on Documents right after filing', revision: v.revision }) };
 // Tag asks for the tag in a field filled with the one typed under Tags, else the last one applied, so no tag lands unseen
@@ -413,7 +416,7 @@ function renderShift() {
     if (p.repoError) {
       put(as, html`${I('plus')} request “${title || '…'}”`);
       put(chipsEl, html`<span class="chip" aria-pressed="false">repo: none</span>`); reqEl.hidden = false;
-      Object.assign(DRAFT, { title, repo: null, cmd: '', repoError: p.repoError });
+      Object.assign(DRAFT, { title, repo: null, checkout: '', cmd: '', repoError: p.repoError });
       put(reqEl, html`<p class="why">${p.repoError}. The request goes nowhere until <code>repo:</code> names one root.</p>`);
       F.text = ''; render(); return;
     }
@@ -422,7 +425,7 @@ function renderShift() {
     if (!repo) {
       put(as, html`${I('plus')} request “${title || '…'}”`);
       put(chipsEl, html`<span class="chip" aria-pressed="false">repo: none</span>`); reqEl.hidden = false;
-      Object.assign(DRAFT, { title, repo: null, cmd: '' });
+      Object.assign(DRAFT, { title, repo: null, checkout: '', cmd: '' });
       put(reqEl, html`<p class="why">No document was selected when you started typing. Add <code>repo:&lt;name&gt;</code> to say which repository gets the request.</p>`);
       F.text = ''; render(); return;
     }
@@ -431,8 +434,9 @@ function renderShift() {
     put(as, html`${I('plus')} request “${title || '…'}”`);
     put(chipsEl, html`${[`repo:${repo}`, `kind:${kind}`, `skill:${skill}`, 'budget:30m', p.due ? `due:${p.due}` : ''].filter(Boolean).map(c => html`<span class="chip" aria-pressed="true">${c}</span>`)}`);
     reqEl.hidden = false;
-    Object.assign(DRAFT, { title, repo, kind, skill, due: p.due,
-      cmd: `sd task add ${shq('Document request: ' + title)} --body ${shq(`repo=${repo} kind=${kind} skill=${skill}`)}${p.due ? ` --due ${shq(p.due)}` : ''}` });
+    const checkout = ROOTS.find(r => r.key === repo)?.checkout || '';
+    Object.assign(DRAFT, { title, repo, checkout, kind, skill, due: p.due,
+      cmd: `sd task add ${shq('Document request: ' + title)}${checkout ? ` --belongs-to ${shPath(checkout)}` : ''} --body ${shq(`repo=${repo} kind=${kind} skill=${skill}`)}${p.due ? ` --due ${shq(p.due)}` : ''}` });
     put(reqEl, html`<p class="why">Request creates an item for ${repo}; Undo closes it. ${skill === 'choose' ? 'No skill matches this kind yet; name one with skill:.' : `The item names ${skill}.`}</p>
       <div class="actions">${shell.commands.rowActions(DRAFT.id)}</div>`);
     F.text = ''; render();

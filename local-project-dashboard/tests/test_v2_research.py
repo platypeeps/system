@@ -954,7 +954,8 @@ FIELD_VALUES = { description: 'Tail sampling keeps the slow spans' }; shellRun(c
         self.assertTrue(any(g.startswith("/api/research/research/beta") for g in out["R"]["after"]))
 
     def test_run_files_the_research_request_and_undo_cancels_it(self):
-        """sd:5887: Run files the task the line names through /api/items, as Capture does; Undo cancels it."""
+        """sd:5887: Run files the task the line names through /api/items, as Capture does; Undo cancels it.
+        sd:5958: the POST and the line name the project's checkout, so the task belongs to it, not to no repo."""
         out = self.run_page("""const was = ANSWER;
 ANSWER = (p, b) => p === '/api/items' ? [201, { item: { id: 71 }, revision: 'r71' }] : /cancel-task$/.test(p) ? [200, {}] : was(p, b);
 const input = ELS.shift;
@@ -966,16 +967,33 @@ R.executes = cmd('research.start').executes; R.req = ELS.req.html;
 await lastToast().undo(); await flush();""")
         draft = out["R"]["draft"]
         self.assertEqual((draft["q"], draft["repo"], draft["depth"]), ("how do vendors detect spans?", "research/beta", "deep"))
-        self.assertEqual(draft["cmd"], "sd task add 'Research: how do vendors detect spans?' --body 'repo=beta depth=deep skill=sd-research-repo stage=draft'")
+        self.assertEqual(draft["cmd"], "sd task add 'Research: how do vendors detect spans?' --belongs-to ~/'repos/research/beta'"
+                                       " --body 'repo=beta depth=deep skill=sd-research-repo stage=draft'")
         # The copied line runs as it is: no bare <item>, which the shell reads as a redirect from a file named item.
         self.assertNotRegex(draft["cmd"], r"(?<![\"'])<\w")
         self.assertEqual((out["R"]["when"], out["R"]["executes"]), (True, True))
         self.assertIn('data-copy="sd task add', out["R"]["req"])
         self.assertEqual([p[:2] for p in out["posts"]],
                          [["/api/items", {"title": "Research: how do vendors detect spans?",
-                                          "body": "repo=beta depth=deep skill=sd-research-repo stage=draft"}],
+                                          "body": "repo=beta depth=deep skill=sd-research-repo stage=draft",
+                                          "repo": "~/repos/research/beta"}],
                           ["/api/items/71/cancel-task", {"reason": "withdrawn on Research right after filing", "revision": "r71"}]])
         self.assertEqual(out["toasts"][0][0], "Research filed · #71 · how do vendors detect spans?")
+
+    def test_run_for_a_new_project_names_no_checkout(self):
+        # sd:5958: a repo: that names no project has no checkout to file under, so neither the POST nor the line names one.
+        out = self.run_page("""const was = ANSWER;
+ANSWER = (p, b) => p === '/api/items' ? [201, { item: { id: 72 }, revision: 'r72' }] : was(p, b);
+const input = ELS.shift;
+input.value = 'how do vendors detect spans? repo:fresh'; (input.listeners.input || []).forEach(f => f());
+(input.listeners.input || []).forEach(f => f());
+R.draft = Object.assign({}, C.get('draft:research'));
+(input.listeners.keydown || []).forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""")
+        self.assertEqual((out["R"]["draft"]["repo"], out["R"]["draft"]["path"]), ("new:fresh", ""))
+        self.assertNotIn("--belongs-to", out["R"]["draft"]["cmd"])
+        self.assertEqual([p[:2] for p in out["posts"]],
+                         [["/api/items", {"title": "Research: how do vendors detect spans?",
+                                          "body": "repo=fresh depth=standard skill=sd-research-repo stage=draft"}]])
 
     def test_start_mode_after_an_empty_filter_selects_a_shown_row_again(self):
         # Start mode cleared the filter and redrew the board but kept the selection the empty filter had cleared.

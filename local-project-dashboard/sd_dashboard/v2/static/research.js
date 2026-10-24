@@ -677,10 +677,12 @@ const REFRESH = { id: 'experiment.refresh', on: 'research page', label: 'Refresh
 document.getElementById('refresh-exp').addEventListener('click', () => shell.commands.run(REFRESH, PAGE));
 const DRAFT = { id: 'draft:research', type: 'research request', label: 'new research', q: '', cmd: '' };
 // sd:5887: Run files the task the line names through /api/items, as Capture does; Undo closes it, as sd task cancel does.
+// sd:5958: the item belongs to the project's checkout (`path`), as the line's --belongs-to says; a new: project has none.
 const START = { id: 'research.start', on: 'research request', label: 'Run', does: 'Files this research request as a task; Undo closes it.', key: 'r', icon: 'flask-conical', risk: 'undo', executes: true, primary: () => true,
   when: o => (!o.q ? 'type the question first' : !o.repo ? 'name the project: add repo:<name>' : true), cli: o => o.cmd,
-  sends: o => `POST /api/items {title, body${o.due ? ', due' : ''}}`,
-  run: o => window.shell.post('/api/items', { title: `Research: ${o.q}`, body: `repo=${scopeOf(o.repo)} depth=${o.depth} skill=sd-research-repo stage=draft`, ...(o.due ? { due: o.due } : {}) })
+  sends: o => `POST /api/items {title, body${o.path ? ', repo' : ''}${o.due ? ', due' : ''}}`,
+  run: o => window.shell.post('/api/items', { title: `Research: ${o.q}`, body: `repo=${scopeOf(o.repo)} depth=${o.depth} skill=sd-research-repo stage=draft`,
+    ...(o.path ? { repo: o.path } : {}), ...(o.due ? { due: o.due } : {}) })
     .then(out => ({ text: `Research filed · #${out.item.id} · ${o.q}`, item: out.item.id, revision: out.revision })),
   undo: (o, v) => window.shell.post(`/api/items/${v.item}/cancel-task`, { reason: 'withdrawn on Research right after filing', revision: v.revision }) };
 function registerCommands() {
@@ -765,15 +767,16 @@ function renderShift() {
   // With no row selected and no repo: token there is no project to research; say so instead of building a command.
   if (!repo) {
     put(chipsEl, html`<span class="chip" aria-pressed="false">repo: none</span>`); reqEl.hidden = false;
-    Object.assign(DRAFT, { q: o.q, repo: null, cmd: '' });
+    Object.assign(DRAFT, { q: o.q, repo: null, path: '', cmd: '' });
     put(reqEl, html`<p class="why">No project is selected. Add <code>repo:&lt;name&gt;</code> to say where the research runs.</p>`);
     return;
   }
   const scope = scopeOf(repo);
   put(chipsEl, html`${[`repo:${scope}`, `depth:${o.depth}`, 'stage:draft', 'skill:sd-research-repo', `budget:${o.budget}m`, o.due ? `due:${o.due}` : ''].filter(Boolean).map(c => html`<span class="chip" aria-pressed="true">${c}</span>`)}`);
   reqEl.hidden = false;
-  Object.assign(DRAFT, { q: o.q, repo, depth: o.depth, budget: o.budget, due: o.due,
-    cmd: `sd task add ${shq('Research: ' + o.q)} --body ${shq(`repo=${scope} depth=${o.depth} skill=sd-research-repo stage=draft`)}${o.due ? ` --due ${shq(o.due)}` : ''}` });
+  const path = PROJECTS.find(p => p.key === repo)?.path || '';
+  Object.assign(DRAFT, { q: o.q, repo, path, depth: o.depth, budget: o.budget, due: o.due,
+    cmd: `sd task add ${shq('Research: ' + o.q)}${path ? ` --belongs-to ${shPath(path)}` : ''} --body ${shq(`repo=${scope} depth=${o.depth} skill=sd-research-repo stage=draft`)}${o.due ? ` --due ${shq(o.due)}` : ''}` });
   put(reqEl, html`<p class="why">Creates an item in ${scope}: Run files it, and Undo closes it. Review rounds start at 0 of ${CAP}.</p>
     ${o.q ? html`<div class="cli"><code>${DRAFT.cmd}</code><button class="icon-btn" type="button" data-copy="${DRAFT.cmd}" aria-label="Copy command">${I('copy')}</button></div>
     <div class="actions">${shell.commands.rowActions(DRAFT.id)}</div>` : ''}`);

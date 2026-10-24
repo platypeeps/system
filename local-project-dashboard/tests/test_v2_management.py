@@ -1901,6 +1901,23 @@ R.toast = lastToast().msg; R.left = pending.length; await lastToast().undo(); aw
                            "before": json.dumps(after, separators=(",", ":"))}])
         self.assertEqual((out["R"]["toast"], out["R"]["left"]), ("Written · review declaration · severity_floor → low", 0))
 
+    def test_write_after_a_new_reading_sends_that_reading_and_a_refusal_keeps_the_proposal(self):
+        """sd:5958: Write sent the declaration the proposal was made on as `before`, so after a reread the server refused it
+        (409), and the proposal was already gone from the list."""
+        newer = '{\n  "categories": ["x"],\n  "severity_floor": "high"\n}\n'
+        path = self.ids["checkout"]
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["repos"] if r["path"] == path)["review"] = {"declaration": self.LAST, "severity_floor": "high",
+                                                                         "automatic_deep": False}
+        out = self.run_page("""propose('severity_floor', 'low');
+DOC0.repos.find(r => r.path === repoParam).review = %s; await reread();
+OUT.posts.length = 0; C.run(cmd('declaration.write'), pending[0]); await flush();
+R.left = pending.map(p => p.key);""" % json.dumps({"declaration": newer, "severity_floor": "high"}),
+                            doc=doc, search=f"?repo={path}",
+                            answer="(p, b) => p === '/api/actions/run' ? [409, {error: 'the declaration changed since this reading'}] : [200, {}]")
+        self.assertEqual([b["before"] for p, b, _ in out["posts"] if p == "/api/actions/run"], [newer])
+        self.assertEqual(out["R"]["left"], ["severity_floor"])
+
     def test_two_pending_edits_draft_lines_that_each_carry_both(self):
         """sd:5159 review: each line replaced the whole declaration from the first reading, so running the second dropped
         the first edit. Every pending line now carries every pending edit; withdrawing one drops it from the rest."""

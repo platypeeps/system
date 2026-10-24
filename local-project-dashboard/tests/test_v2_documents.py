@@ -139,6 +139,12 @@ class TheDocument(ScreenCase):
         self.assertEqual(self.doc["contested"][0]["key"], "twin")
         self.assertEqual(len(self.doc["contested"][0]["paths"]), 2)
 
+    def test_each_root_names_the_checkout_a_request_files_under(self):
+        # sd:5958: Request sent no repo, so its task belonged to no repository; the root names its checkout.
+        self.assertEqual({r["key"]: r["checkout"] for r in self.doc["roots"]},
+                         {"civic": documents_screen._tilde(self.base / "group" / "civic"),
+                          "lab": documents_screen._tilde(self.base / "lab"), "quiet": documents_screen._tilde(self.base / "quiet")})
+
     def test_kind_and_render_state_come_from_the_checkout(self):
         rows = self.rows()
         self.assertEqual({k: r["kind"] for k, r in rows.items()},
@@ -441,6 +447,7 @@ class TheScript(ScreenCase):
         # The page shows the paths the document gives; a fixed one keeps the expected lines readable.
         for root in self.doc["roots"]:
             root["path"] = f"~/repos/{root['key']}/docs/dashboard"
+            root["checkout"] = f"~/repos/{root['key']}"
         # The view store answered (sd:3428); the case that it did not sets its own.
         self.doc["store"] = {"available": True, "reason": ""}
 
@@ -723,7 +730,8 @@ shellRun(r, plan); R.toast = lastToast().msg;""")
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "render-stale documents"})
 
     def test_a_request_files_the_task_its_line_names_and_undo_cancels_it(self):
-        """sd:5887: Request files through /api/items, as Capture does, and keeps the sd task add line."""
+        """sd:5887: Request files through /api/items, as Capture does, and keeps the sd task add line.
+        sd:5958: both name the root's checkout, so the task belongs to that repository."""
         out = self.run_page("""const was = ANSWER;
 ANSWER = (p, b) => p === '/api/items' ? [201, { item: { id: 72 }, revision: 'r72' }] : /cancel-task$/.test(p) ? [200, {}] : was(p, b);
 const input = ELS.shift; input.value = 'request water summary repo:lab';
@@ -732,9 +740,11 @@ const r = cmd('document.request'), d = C.get('draft:request');
 R.r = [r.executes, r.when(d), r.cli(d)]; shellRun(r, d); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();""")
         executes, when, cli = out["R"]["r"]
         self.assertEqual((executes, when), (True, True))
-        self.assertEqual(cli, "sd task add 'Document request: water summary' --body 'repo=lab kind=research skill=sd-research-repo'")
+        self.assertEqual(cli, "sd task add 'Document request: water summary' --belongs-to ~/'repos/lab'"
+                              " --body 'repo=lab kind=research skill=sd-research-repo'")
         self.assertEqual([p[:2] for p in out["posts"]],
-                         [["/api/items", {"title": "Document request: water summary", "body": "repo=lab kind=research skill=sd-research-repo"}],
+                         [["/api/items", {"title": "Document request: water summary", "body": "repo=lab kind=research skill=sd-research-repo",
+                                          "repo": "~/repos/lab"}],
                           ["/api/items/72/cancel-task", {"reason": "withdrawn on Documents right after filing", "revision": "r72"}]])
         self.assertEqual(out["R"]["toast"], "Request filed · #72 · water summary")
 
@@ -745,7 +755,7 @@ R.r = [r.executes, r.when(d), r.cli(d)]; shellRun(r, d); await flush(); R.toast 
 const ask = v => { input.value = ''; input.listeners.beforeinput.forEach(f => f()); input.value = v;
   input.listeners.input.forEach(f => f()); input.listeners.input.forEach(f => f()); return [r.when(d), d.repo, r.cli(d)]; };
 R.unknown = ask('request memo repo:nowhere'); R.ambiguous = ask('request memo repo:la');
-R.exact = ask('request memo repo:lab'); R.unique = ask('request memo repo:ci');""")
+R.exact = ask('request memo repo:lab'); R.unique = ask('request memo repo:ci'); R.bare = ask('request memo repo:lab-two');""")
         R = out["R"]
         for got, word in ((R["unknown"], "nowhere"), (R["ambiguous"], "lab, lab-two")):
             self.assertIsInstance(got[0], str)
@@ -754,13 +764,17 @@ R.exact = ask('request memo repo:lab'); R.unique = ask('request memo repo:ci');"
         self.assertEqual(R["exact"][:2], [True, "lab"])
         self.assertEqual(R["unique"][:2], [True, "civic"])
         self.assertNotIn("repo:", R["exact"][2])
+        # sd:5958: a root that names no checkout files its request under none.
+        self.assertEqual(R["bare"][:2], [True, "lab-two"])
+        self.assertNotIn("--belongs-to", R["bare"][2])
 
     def test_a_request_takes_the_skill_its_hint_asks_for(self):
         # A report has no skill; the hint says to name one with skill:, so that token names it and leaves the title.
         out = self.run_page("""const input = ELS.shift; input.value = 'request budget memo repo:civic skill:sd-writer';
 input.listeners.input.forEach(f => f()); input.listeners.input.forEach(f => f());
 R.cli = cmd('document.request').cli(C.get('draft:request'));""")
-        self.assertEqual(out["R"]["cli"], "sd task add 'Document request: budget memo' --body 'repo=civic kind=report skill=sd-writer'")
+        self.assertEqual(out["R"]["cli"], "sd task add 'Document request: budget memo' --belongs-to ~/'repos/civic'"
+                                          " --body 'repo=civic kind=report skill=sd-writer'")
 
     def test_each_read_state_is_said_in_the_slot(self):
         out = self.run_page("")

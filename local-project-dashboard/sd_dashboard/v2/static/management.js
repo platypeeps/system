@@ -699,10 +699,13 @@ function registerCommands() {
     // sd:5887: Write does what the sd-db repo declare line does, through /api/actions/run (run_actions.declaration_write): the
     // server refuses a row that changed since this reading, checks the value with the pack's own validator, and writes the
     // row. Undo writes the reading back, or removes a declaration the row did not have.
+    // sd:5958: `before` is the latest reading's declaration, the one restateDeclaration drafted `after` on, not the row the
+    // proposal was made on; a refused write keeps its proposal, and only a landed one leaves the list.
     { id: 'declaration.write', on: 'declaration change', label: 'Write', does: 'Writes this change to the repo row; Undo writes the old declaration back.', key: 'p', icon: 'play', risk: 'undo', primary: () => true, executes: true,
       cli: o => o.cmd, sends: o => `POST /api/actions/run {action: declaration.write, path: ${o.repo.path}, kind: review}`,
-      run: o => { dropProposal(o); const before = o.repo.review?.declaration || '';
-        return landing(declare(o.repo, JSON.parse(o.after), before), () => `Written · ${o.title}`, () => declare(o.repo, before.trim() ? JSON.parse(before) : null, o.after)); },
+      run: o => { const r = REPOS.find(x => x.path === o.repo.path) || o.repo, before = r.review?.declaration || '';
+        return landing(declare(r, JSON.parse(o.after), before).then(v => { dropProposal(o); return v; }), () => `Written · ${o.title}`,
+          () => declare(r, before.trim() ? JSON.parse(before) : null, o.after)); },
       undo: undoOf },
     ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', does: 'Drops this proposal from the list; nothing was run.', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
