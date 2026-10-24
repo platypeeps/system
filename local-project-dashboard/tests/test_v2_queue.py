@@ -31,7 +31,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_dashboard import pack_bin, queue_screen, v2
+from sd_dashboard import now_screen, pack_bin, queue_screen, v2
 from sd_db import upsert_repo
 
 from support import NOW, ScreenCase
@@ -166,9 +166,13 @@ class TheRows(Lane, ScreenCase):
             ("merging", None), ("next", "/work/sd-9"), ("next", "/work/sd-12"), ("building", None), ("building", None),
             ("blocked", "/work/sd-5"), ("blocked", None), ("cancelled", None), ("landed", None)])
 
-    def test_the_badge_counts_the_blocked_rows(self):
-        # sd:3446: the read's rule, which every page's rail shows from the page's last read.
-        self.assertEqual(self.doc()["attention"], {"state": "caution", "n": 2, "what": "blocked"})
+    def test_queue_has_no_rail_badge_its_blocked_rows_count_on_today(self):
+        # sd:5921, operator answer 2: a blocked entry is a broken row of Today's Needs you, so Queue's rail shows no count.
+        from test_v2_registry import registry
+
+        self.assertEqual({page.name: page for page in registry().PAGES}["queue"].count, "")
+        self.assertNotIn("attention", self.doc())
+        self.assertNotIn(".attention(", QUEUE_JS)
 
     def test_merging_names_its_step_host_claim_age_and_lease(self):
         merging = self.doc()["lanes"][0]["rows"][0]
@@ -280,7 +284,9 @@ class TheRows(Lane, ScreenCase):
         self.list([{**failed, "item": item} for item in (done, cancelled, still)])
         doc = self.doc()
         self.assertEqual([row["item"] for row in doc["lanes"][0]["rows"] if row["state"] == "blocked"], [still])
-        self.assertEqual(doc["attention"], {"state": "caution", "n": 1, "what": "blocked"})
+        # Queue has no badge since sd:5921; Today's Lane lamp and Needs you count the blocked entries.
+        self.assertEqual(now_screen.lane_summary(doc)["blocked"], 1)
+        self.assertEqual([row["item"] for row in now_screen.lane_rows(doc["lanes"])], [still])
 
     # sd:3398: a cancelled entry is a row, so Re-queue can name the head the operator cancelled.
     def test_a_cancelled_entry_carries_its_head_and_when_it_was_cancelled(self):
@@ -1025,7 +1031,7 @@ class TheScript(Lane, ScreenCase):
         return out
 
     def test_each_state_renders_its_glyph_and_label(self):
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         found = re.findall(r'data-state="(\w+)".*?<span class="g g-(\w+)" aria-hidden="true">(.)</span><span class="st">([A-Z]+)', lanes)
         self.assertEqual([tuple(f) for f in found], [
             ("merging", "live", "●", "MERGING"), ("next", "queued", "◌", "NEXT"), ("next", "caution", "▲", "HELD"),
@@ -1051,12 +1057,12 @@ R.det = ELS.adv.html;""")
         self.assertIn('<a href="/item/77">brief sd:77</a>', out["R"]["det"])
 
     # Tuning: Show draws the active rows by default: merging, next (held too), building and blocked; All adds the ended
-    # ones, cancelled and landed. The badge and each lane's counts read every row, whatever Show draws.
+    # ones, cancelled and landed. Each lane's counts read every row, whatever Show draws.
     SHOW_ALL = "ELS.show.listeners.click[0]({ target: { closest: s => s === 'button[data-show]' ? { dataset: { show: 'all' } } : null } });"
 
     def test_show_defaults_to_the_active_rows_and_all_adds_the_ended_ones(self):
-        out = self.run_page("window.shell.url = q => OUT.urls.push(q); OUT.urls = []; R.lanes = ELS.lanes.html; R.show = ELS.show.html;"
-                            f" {self.SHOW_ALL} R.all = ELS.lanes.html; R.show2 = ELS.show.html;", search="")
+        out = self.run_page("window.shell.url = q => OUT.urls.push(q); OUT.urls = []; R.lanes = ELS.details.html; R.show = ELS.show.html;"
+                            f" {self.SHOW_ALL} R.all = ELS.details.html; R.show2 = ELS.show.html;", search="")
         states = lambda lanes: re.findall(r'<li class="qrow" data-state="(\w+)"', lanes)
         self.assertEqual(states(out["R"]["lanes"]), ["merging", "next", "next", "building", "building", "blocked", "blocked"])
         self.assertEqual(states(out["R"]["all"]), ["merging", "next", "next", "building", "building", "blocked", "blocked", "cancelled", "landed"])
@@ -1066,34 +1072,30 @@ R.det = ELS.adv.html;""")
         self.assertEqual(out["urls"], [{"show": "all"}])
 
     def test_show_all_comes_from_the_address(self):
-        lanes = self.run_page("R.lanes = ELS.lanes.html;", search="?show=all")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;", search="?show=all")["R"]["lanes"]
         self.assertEqual(len(re.findall(r'<li class="qrow"', lanes)), 9)
 
-    def test_the_badge_and_the_lane_counts_read_every_row_whatever_show_draws(self):
-        out = self.run_page("R.lanes = ELS.lanes.html;", search="")
+    def test_the_lane_counts_read_every_row_whatever_show_draws(self):
+        out = self.run_page("R.lanes = ELS.details.html;", search="")
         self.assertIn("1 merging · 2 next · 2 blocked · 1 landed today", out["R"]["lanes"])
-        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 2, "what": "blocked"})
 
     def test_a_lane_with_only_ended_rows_joins_the_idle_line_under_active(self):
         self.list([entry for entry in self.entries() if entry["status"] in ("merged", "cancelled")])
         for log in self.lane.glob("gate-*.log"):
             log.unlink()
-        out = self.run_page("R.lanes = ELS.lanes.html; R.idle = ELS.idle.html;", search="")
-        self.assertNotIn('<li class="qrow"', out["R"]["lanes"])
-        # sd:5640: idle lanes have their own view; Lanes says where they went.
-        self.assertIn("No lane has a row to show. 1 idle lane is under Idle.", out["R"]["lanes"])
-        # sd:5650: the Idle table says why each lane is idle: here only ended rows.
-        self.assertIn('<td><code>system</code></td><td>', out["R"]["idle"])
-        self.assertIn(' (hub)</td>', out["R"]["idle"])
-        self.assertRegex(out["R"]["idle"], r"No active entry · \d+ landed, \d+ cancelled today")
+        out = self.run_page("R.ledger = ELS.lanes.html; R.lanes = ELS.details.html; R.idle = ELS.idle.html;", search="")
+        self.assertEqual(out["R"]["ledger"], '<p class="done">No lane has a row to show.</p>')
+        self.assertEqual(out["R"]["lanes"], '<p class="why">No lane is open: no lane has a row to show.</p>')
+        # sd:5921: an idle lane folds into one line under the ledger, named with what it landed today.
+        self.assertEqual(out["R"]["idle"], "Idle, landed today: system 1.")
 
     def test_the_merging_row_names_step_host_claim_age_and_lease(self):
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         merging = next(row for row in lanes.split("<li ")[1:] if 'data-state="merging"' in row)
         self.assertIn("<b>merge</b> on <b>hub-1</b> · claimed 10m 0s ago · lease to 13:20 · head " + "a" * 12, merging)
 
     def test_a_running_row_with_a_claim_offers_release(self):
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         self.assertEqual(re.findall(r'data-act="reclaim" data-item="(\d+)" data-claim="([\w:-]+)"', lanes),
                          [("3", "claim-token-3:merge")])
         offered = [row for row in lanes.split("<li ")[1:] if 'data-act="reclaim"' in row]
@@ -1103,14 +1105,14 @@ R.det = ELS.adv.html;""")
         entries = self.entries()
         entries[5] = {key: value for key, value in entries[5].items() if key != "holder"}
         self.list(entries)
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         self.assertNotIn('data-act="reclaim"', lanes)
 
     def release(self, answer, move=(200, {"ok": True, "action": "reclaim", "item": 3, "edits": "Edits take effect at the next item boundary."})):
         """Click Release on sd:3; the confirm answers `answer` and records what it asked."""
         claim = queue_screen.document(self.connection, now=NOW)["lanes"][0]["rows"][0]["claim"]
         return self.run_page(f"window.shell.confirm = a => {{ OUT.asked = a; return Promise.resolve({json.dumps(answer)}); }};\n"
-                             f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '3', act: 'reclaim', claim: {json.dumps(claim)} }} }}); R.lanes = ELS.lanes.html;", move)
+                             f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '3', act: 'reclaim', claim: {json.dumps(claim)} }} }}); R.lanes = ELS.details.html;", move)
 
     def test_release_asks_first_naming_the_holder_step_outcome_and_command(self):
         out = self.release(True)
@@ -1149,11 +1151,49 @@ R.det = ELS.adv.html;""")
                       'not answer. The lane below was read again; check sd:3 there before you act again.</p>', out["R"]["lanes"])
         self.assertEqual(out["gets"], ["/api/queue", "/api/queue"])
 
+    # sd:5921: one ledger row per active lane with a merging · next · blocked pip strip, its head-of-lane line and one
+    # primary action; the lane's entries open in Details; idle lanes fold into one line; no Lanes or Idle tab.
+    OPEN = "ELS.lanes.listeners.click[0]({ target: { closest: s => s === 'button[data-open]' ? { dataset: { open: %s } } : null } });"
+
+    def test_each_active_lane_is_one_ledger_row_with_its_pips_head_of_lane_and_primary_action(self):
+        lanes = self.run_page("R.ledger = ELS.lanes.html;", search="")["R"]["ledger"]
+        self.assertNotIn('<li class="qrow"', lanes)
+        self.assertEqual(re.findall(r'<tr data-lane="([^"]+)"', lanes), [str(self.checkout)])
+        self.assertEqual(re.findall(r'<span class="pip( on| warn)?">(\d+)</span>', lanes), [(" on", "1"), (" on", "2"), (" warn", "2")])
+        self.assertIn('<td class="why">sd:5 blocked: queued without --manual; merge by hand</td>', lanes)
+        # The primary action is the head of lane's: Retry on a blocked entry, with the head the row showed.
+        self.assertEqual(len(re.findall(r'data-act="(\w+)"', lanes)), 1)
+        self.assertRegex(lanes, r'data-act="retry" data-item="\d+" data-head="[0-9a-f]{40}"')
+
+    def test_a_lane_opens_its_entries_in_details(self):
+        out = self.run_page("window.shell.openPane = t => { OUT.pane = t; }; R.before = ELS.details.html;"
+                            f" {self.OPEN % json.dumps(str(self.checkout))} R.details = ELS.details.html;", search="")
+        # The first active lane is open from the start; a pick opens the pane on Details.
+        for html in (out["R"]["before"], out["R"]["details"]):
+            self.assertEqual(re.findall(r'<li class="qrow" data-state="(\w+)"', html),
+                             ["merging", "next", "next", "building", "building", "blocked", "blocked"])
+        self.assertEqual(re.findall(r'data-act="cancel" data-item="(\d+)"', out["R"]["details"]), ["9", "12"])
+        self.assertEqual(out["pane"], "tab-details")
+
+    def test_a_write_from_details_posts_and_says_so_in_details(self):
+        out = self.run_page("ELS.details.listeners.click[0]({ target: { closest: s => s === 'button[data-act]' ? { disabled: false, dataset:"
+                            f" {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'down' }} }} : null }} }}); await flush(); await flush();"
+                            " R.details = ELS.details.html;", search="")
+        self.assertEqual([post[1]["action"] for post in out["posts"]], ["down"])
+        self.assertIn("sd:9 moved down.", out["R"]["details"])
+
+    def test_queue_has_no_lanes_or_idle_tab(self):
+        page = (V2 / "queue.html").read_text(encoding="utf-8")
+        self.assertNotIn("PAGE_VIEWS", QUEUE_JS)
+        self.assertNotIn("view.count", QUEUE_JS)
+        self.assertNotIn('id="view-', page)
+        self.assertIn('id="details"', page)
+
     def test_a_running_entry_past_its_lease_lights_caution(self):
         entries = self.entries()
         entries[5] = {**entries[5], "lease_until": "2026-09-06T11:55:00Z", "step": None, "holder": None}
         self.list(entries)
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         merging = next(row for row in lanes.split("<li ")[1:] if 'data-state="merging"' in row)
         self.assertIn('<span class="g g-caution" aria-hidden="true">▲</span>', merging)
         self.assertIn("<b>step not recorded</b> on <b>host not recorded</b> · claimed 10m 0s ago · lease passed 11:55", merging)
@@ -1166,21 +1206,19 @@ R.det = ELS.adv.html;""")
         self.connection.commit()
         Path(f"{self.fixture}.quiet").write_text(json.dumps({"ok": True, "queue": str(
             Path(self.tmp.name) / "lanes" / "quiet" / "lane" / "queue" / "queue.json"), "entries": []}))
-        out = self.run_page("R.lanes = ELS.lanes.html; R.subhead = ELS.subhead.html; R.idle = ELS.idle.html;")
+        out = self.run_page("R.ledger = ELS.lanes.html; R.lanes = ELS.details.html; R.subhead = ELS.subhead.html; R.idle = ELS.idle.html;")
         lanes = out["R"]["lanes"]
         self.assertIn('<span class="host">lane on hub</span>', lanes)
-        self.assertNotIn('aria-labelledby="lane-quiet"', lanes)
-        # sd:5650: idle lanes sit in the Idle table, one row each: repository, machine, state and merge.
-        self.assertNotIn("<code>quiet</code>", lanes)
-        self.assertIn('<tr><td><code>quiet</code></td><td>build-2</td><td>Empty: nothing queued, gating or landed today</td>'
-                      '<td>Approve to merge</td></tr>', out["R"]["idle"])
-        # sd:5524: the Lanes tab carries the busy lane count, Idle the rest; the line under the title counts the managed repositories.
+        self.assertIn('<small>hub</small>', out["R"]["ledger"])
+        # sd:5921: a quiet lane has no ledger row and no Details; it is one count on the Idle line.
+        self.assertNotIn(str(other), out["R"]["ledger"])
+        self.assertEqual(out["R"]["idle"], "Idle, quiet: 1 lane.")
+        # The line under the title counts the managed repositories; no tab carries a count.
         self.assertIn("2 managed repositories · read", out["R"]["subhead"])
-        self.assertNotIn("lanes of", out["R"]["subhead"])
-        self.assertEqual(out["counts"], {"lanes": 1, "idle": 1})
+        self.assertNotIn("counts", out)
 
     def test_only_next_rows_carry_controls_and_the_ends_are_off(self):
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         self.assertEqual(lanes.count('data-act="up"'), 2)
         self.assertRegex(lanes, r'data-act="up" data-item="9"[^>]*disabled')
         self.assertRegex(lanes, r'data-act="down" data-item="12"[^>]*disabled')
@@ -1188,23 +1226,23 @@ R.det = ELS.adv.html;""")
 
     def test_a_click_posts_the_lane_revision_and_reads_again(self):
         revision = queue_screen.document(self.connection, now=NOW)["lanes"][0]["revision"]
-        out = self.run_page(f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'down' }} }}); R.lanes = ELS.lanes.html;")
+        out = self.run_page(f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'down' }} }}); R.lanes = ELS.details.html;")
         self.assertEqual(out["posts"], [["/api/queue/move", {"repo": str(self.checkout), "item": 9, "action": "down", "revision": revision}, 64]])
         self.assertEqual(out["gets"], ["/api/queue", "/api/queue"])
         self.assertIn("sd:9 moved down. Edits take effect", out["R"]["lanes"])
 
     def test_a_refused_move_says_why_in_its_lane(self):
-        out = self.run_page(f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'up' }} }}); R.lanes = ELS.lanes.html;",
+        out = self.run_page(f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'up' }} }}); R.lanes = ELS.details.html;",
                             move=(409, {"error": "The queue changed since the page read it.", "reload": True}))
         self.assertIn('<p class="fail" role="alert">sd:9 not moved up: The queue changed since the page read it.</p>', out["R"]["lanes"])
 
     def cancel(self, answer, move=(200, {"ok": True, "action": "cancel", "item": 9, "edits": "Edits take effect at the next item boundary."})):
         """Click Cancel on sd:9; the confirm answers `answer` and records what it asked."""
         return self.run_page(f"window.shell.confirm = a => {{ OUT.asked = a; return Promise.resolve({json.dumps(answer)}); }};\n"
-                             f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'cancel' }} }}); R.lanes = ELS.lanes.html;", move)
+                             f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'cancel' }} }}); R.lanes = ELS.details.html;", move)
 
     def test_each_next_row_offers_cancel(self):
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         self.assertEqual(re.findall(r'data-act="cancel" data-item="(\d+)"', lanes), ["9", "12"])
 
     def test_cancel_asks_first_and_names_the_entry_and_command(self):
@@ -1242,14 +1280,14 @@ R.det = ELS.adv.html;""")
 
     def test_a_post_that_got_no_answer_is_an_unknown_outcome(self):
         out = self.run_page("var answered = fetch; fetch = (p, o) => o && o.method === 'POST' ? Promise.reject(new TypeError('Load failed')) : answered(p, o);\n"
-                            f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '12', act: 'hold' }} }}); R.lanes = ELS.lanes.html;")
+                            f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '12', act: 'hold' }} }}); R.lanes = ELS.details.html;")
         self.assertNotIn("unchanged", out["R"]["lanes"])
         self.assertIn("Not known whether sd:12 was held: Load failed", out["R"]["lanes"])
         self.assertEqual(out["gets"], ["/api/queue", "/api/queue"])
 
 
     def test_blocked_rows_offer_retry_and_approve_on_a_manual_repo(self):
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         self.assertEqual(re.findall(r'data-act="retry" data-item="(\d+)"', lanes), ["5", "4"])
         self.assertEqual(re.findall(r'data-act="approve" data-item="(\d+)" data-head="(\w+)"', lanes),
                          [("5", "5" * 40), ("4", "4" * 40)])
@@ -1260,17 +1298,17 @@ R.det = ELS.adv.html;""")
     def test_an_auto_repo_gets_retry_without_approve(self):
         upsert_repo(self.connection, str(self.checkout), runner_merge="auto")
         self.connection.commit()
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         self.assertEqual((lanes.count('data-act="retry"'), lanes.count('data-act="approve"')), (2, 0))
 
     def test_a_pack_without_lane_retry_shows_neither_button(self):
         with mock.patch.dict(os.environ, {"QUEUE_NO_RETRY": "1"}):
-            lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+            lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         self.assertEqual((lanes.count('data-act="retry"'), lanes.count('data-act="approve"')), (0, 0))
 
     # sd:3398: a cancelled row offers Re-queue when the pack's retry takes a cancelled entry.
     def test_a_cancelled_row_offers_requeue_with_its_head(self):
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         self.assertEqual(re.findall(r'data-act="requeue" data-item="(\d+)" data-head="(\w+)"', lanes), [("1", "1" * 40)])
         row = next(row for row in lanes.split("<li ")[1:] if 'data-state="cancelled"' in row)
         self.assertIn('data-act="requeue"', row)
@@ -1278,7 +1316,7 @@ R.det = ELS.adv.html;""")
 
     def test_a_pack_without_requeue_shows_the_row_and_says_why_requeue_is_off(self):
         with mock.patch.dict(os.environ, {"QUEUE_OLD_REQUEUE": "1"}):
-            lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+            lanes = self.run_page("R.lanes = ELS.details.html;")["R"]["lanes"]
         self.assertNotIn('data-act="requeue"', lanes)
         row = next(row for row in lanes.split("<li ")[1:] if 'data-state="cancelled"' in row)
         self.assertIn("Re-queue off:", row)
@@ -1308,7 +1346,7 @@ R.det = ELS.adv.html;""")
     def click(self, act, item, answer=True, move=(200, {"ok": True, "edits": "Edits take effect at the next item boundary."})):
         """Click a blocked row's button, which carries its entry's head; a confirm answers `answer` and records what it asked."""
         return self.run_page(f"window.shell.confirm = a => {{ OUT.asked = a; return Promise.resolve({json.dumps(answer)}); }};\n"
-                             f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '{item}', act: '{act}', head: '{str(item) * 40}' }} }}); R.lanes = ELS.lanes.html;", move)
+                             f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '{item}', act: '{act}', head: '{str(item) * 40}' }} }}); R.lanes = ELS.details.html;", move)
 
     def test_retry_posts_at_once_with_its_head_and_says_the_entry_is_queued_again(self):
         out = self.click("retry", 4)

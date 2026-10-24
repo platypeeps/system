@@ -247,6 +247,16 @@ class PortParser(unittest.TestCase):
              "workdir": "/work/alpha", "mounts": ["/host_mnt/r/a/data", "alpha_vol"]},
             {"name": "loose", "image": "ex/loose", "status": "Up 5 minutes", "project": "", "workdir": "", "mounts": []}]})
 
+    # sd:5964: the 240-char cap cut the whole mounts field, so a checkout mount past char 240 vanished from Health.
+    def test_a_mount_past_char_240_is_still_read_and_each_mount_is_cut_alone(self):
+        volumes = [f"vol{i}_" + "x" * 50 for i in range(5)]
+        long = "/host_mnt/r/" + "y" * 300
+        output = self.legacy("a b").replace("  add by hand", "  DOCKER  read: 1 running\n  CONTAINER\tone\tex/one\tUp\t\t\t"
+                                            + ",".join([*volumes, "/host_mnt/r/a/data", long]) + "\n  add by hand")
+        self.assertGreater(len(",".join(volumes)), 240)
+        mounts = collectors.parse_ports(output)["containers"]["rows"][0]["mounts"]
+        self.assertEqual(mounts, [*volumes, "/host_mnt/r/a/data", long[:240]])
+
     def test_an_unread_or_short_container_list_is_not_read_with_its_reason(self):
         unread = collectors.parse_ports(self.legacy("a b").replace(
             "  add by hand", "  DOCKER  unknown: docker ps failed; the daemon is not running or not reachable\n  add by hand"))

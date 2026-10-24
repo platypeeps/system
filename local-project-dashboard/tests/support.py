@@ -49,6 +49,13 @@ class ScreenCase(unittest.TestCase):
                                              "SYSTEM_TOOLS_CONFIG": str(Path(self.tmp.name) / "config")})
         state.start()
         self.addCleanup(state.stop)
+        # Today reads Queue's document (sd:5921), which asks this machine's gate and pack: a fixture's Today reads no lane
+        # unless its test passes one (now_screen.document's `lanes`). test_today_needs reads the real path.
+        from sd_dashboard import now_screen
+
+        lanes = mock.patch.object(now_screen, "_lanes", lambda connection, now: {"lanes": [], "gates": {}, "problems": []})
+        lanes.start()
+        self.addCleanup(lanes.stop)
 
     # -- seeds -------------------------------------------------------------
 
