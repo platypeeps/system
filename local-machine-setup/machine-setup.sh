@@ -2127,6 +2127,15 @@ open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$hud_config"
     # installs what the profile lists; this names the gap for status.
     echo "  MISSING claude (brew install --cask claude-code@latest)"
   fi
+  # sd is the one work-state store, so claude-mem's own stays off
+  # (sd:5995); its default is on. The plugin writes this file on its first
+  # run, and a machine without it has no claude-mem to switch off.
+  claude_mem="$HOME/.claude-mem/settings.json"
+  if [ -f "$claude_mem" ]; then
+    self_update_json "$claude_mem" CLAUDE_MEM_WORK_STATE_ENABLED '"false"'
+  else
+    echo "  SKIP    no $claude_mem (claude-mem not set up)"
+  fi
   # opencode gets the same secret-read denies as a top-level permission.read
   # block, inserted as text so the operator's comments stay. A file with its
   # own top-level permission block is reported, not edited. Codex has no user
