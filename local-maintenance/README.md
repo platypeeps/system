@@ -59,7 +59,10 @@ keep state in them), and idle build output in worktrees (sd:5994).
 `run` deletes each cargo `target/` folder under `~/worktrees`, at depth 2
 or 3, that nothing wrote for 3 days; `check` names them. Only a folder
 holding cargo's `CACHEDIR.TAG` counts, and no link is followed; the
-checkout and its commits stay. The folder is renamed to
+checkout and its commits stay. An old time is no proof cargo is idle,
+so just before the delete `lsof` asks whether a process holds the
+folder or a `.cargo-lock` in it; a holder, or an answer that is not a
+clean no, keeps the folder. The folder is renamed to
 `target.idle-prune` before the delete, so the next run finishes a delete
 that was stopped. A probe that fails is a finding, and the folder stays.
 The walks and the delete run under `lib/bounded.sh`'s `st_step`.

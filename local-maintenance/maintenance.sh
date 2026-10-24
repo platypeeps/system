@@ -430,6 +430,31 @@ if [ -d "$WORKTREES" ]; then
       continue
     fi
     [ -z "$recent" ] || continue
+    # An old mtime is no proof cargo is idle: a build can take its lock after
+    # the probe above. So, just before the rename, a process that holds the
+    # folder or a .cargo-lock in it keeps it. lsof exits 1 and prints nothing
+    # when no process holds them; any other answer is unknown, and keeps it.
+    if ! locks=$(st_step 60 find "$t" -maxdepth 3 -name .cargo-lock -type f); then
+      finding "build output prune: could not tell whether a process holds $t; kept"
+      continue
+    fi
+    set -- "$t"
+    while IFS= read -r lock; do
+      [ -z "$lock" ] || set -- "$@" "$lock"
+    done <<LOCKS
+$locks
+LOCKS
+    lsof_rc=0
+    holders=$(st_step 60 lsof -t -- "$@" 2> "$TMPD/lsof.err") || lsof_rc=$?
+    if [ "$lsof_rc" -eq 0 ] && [ -n "$holders" ]; then
+      action "kept idle build output $t: a process holds it"
+      continue
+    fi
+    # st_step's own "exited 1" line is not lsof's: it is filtered out.
+    if [ "$lsof_rc" -ne 1 ] || [ -n "$holders" ] || grep -qv '^\[step ' "$TMPD/lsof.err"; then
+      finding "build output prune: could not tell whether a process holds $t; kept"
+      continue
+    fi
     if [ "$APPLY" -eq 0 ]; then
       action "[dry-run] would remove idle build output $t (untouched 3 days)"
     elif mv "$t" "$t.idle-prune" && st_step 600 rm -rf "$t.idle-prune"; then

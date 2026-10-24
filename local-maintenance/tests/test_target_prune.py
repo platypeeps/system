@@ -27,6 +27,12 @@ class TargetPruneTest(Harness):
     def setUp(self):
         super().setUp()
         self.worktrees = self.tmp / "home" / "worktrees"
+        # lsof's answer for "nobody holds these": exit 1, nothing printed.
+        self.lsof_calls = self.tmp / "lsof-calls"
+        self.lsof("exit 1\n")
+
+    def lsof(self, body):
+        _stub(self.bin / "lsof", f'printf "%s\\n" "$*" >> "{self.lsof_calls}"\n' + body)
 
     def cargo_target(self, worktree, *, idle=FOUR_DAYS, tag=True, under="target"):
         """A worktree with tracked files and a build tree last written `idle` ago."""
@@ -37,6 +43,7 @@ class TargetPruneTest(Harness):
         target = checkout / under
         (target / "debug" / "deps").mkdir(parents=True)
         (target / "debug" / "deps" / "example-0123").write_bytes(b"\0" * 64)
+        (target / "debug" / ".cargo-lock").write_bytes(b"")
         if tag:
             (target / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
         _age(target, idle)
@@ -88,6 +95,30 @@ class TargetPruneTest(Harness):
         self.maintenance("# nothing to check\n")
         self.assertTrue((checkout / "CACHEDIR.TAG").is_file())
 
+    def test_a_target_a_process_holds_stays(self):
+        # sd:5994 review: an old mtime is no proof cargo is not using the
+        # folder; a build can take its lock after the idle probe. Just
+        # before the rename, a holder of the folder or a .cargo-lock keeps it.
+        self.lsof('echo 4242\nexit 0\n')
+        _checkout, target = self.cargo_target("example-held")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file(), run.stdout + run.stderr)
+        self.assertFalse((target.parent / "target.idle-prune").exists())
+        self.assertIn(f"- kept idle build output {target}: a process holds it", run.stdout)
+        [call] = self.lsof_calls.read_text().splitlines()
+        self.assertIn(f"{target}/debug/.cargo-lock", call.split())
+        self.assertIn(str(target), call.split())
+
+    def test_a_holder_probe_that_fails_keeps_the_target_and_says_so(self):
+        self.lsof('echo "lsof: WARNING: cannot stat" >&2\nexit 1\n')
+        _checkout, target = self.cargo_target("example-unsure")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file())
+        self.assertIn(f"- build output prune: could not tell whether a process holds {target}; kept",
+                      run.stdout)
+
     def test_check_names_the_target_and_removes_nothing(self):
         _checkout, target = self.cargo_target("example-dry")
         run = self.maintenance("# nothing to check\n", "check")
@@ -108,6 +139,18 @@ class TargetPruneTest(Harness):
         self.assertFalse(aside.exists(), run.stdout + run.stderr)
         self.assertIn(f"- removed {aside}, left by an earlier run", run.stdout)
 
+    def test_an_idle_target_beside_a_leftover_aside_goes_with_it(self):
+        # The rename lands inside a leftover target.idle-prune; the one
+        # delete then takes both, and the leftover's turn finds nothing.
+        checkout, target = self.cargo_target("example-both")
+        aside = checkout / "target.idle-prune"
+        (aside / "debug").mkdir(parents=True)
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertFalse(target.exists())
+        self.assertFalse(aside.exists(), run.stdout + run.stderr)
+        self.assertNotIn("could not remove", run.stdout)
+
     def test_an_idle_probe_that_fails_keeps_the_target_and_says_so(self):
         # A failed probe is no answer: it is not proof the folder is idle.
         _stub(self.bin / "find", 'case " $* " in *" -mmin "*) echo "find: probe failed" >&2; exit 1 ;; esac\n'
@@ -124,6 +167,7 @@ class TargetPruneTest(Harness):
         run = self.maintenance("# nothing to check\n")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {self.worktrees} .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {target} -mmin -4320 .* \(bound \d+s\)")
+        self.assertRegex(run.stderr, rf"\[step [\d:]+\] lsof -t -- {target} .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {target}.idle-prune \(bound \d+s\)")
         self.assertNotIn("[step ", run.stdout)
 
