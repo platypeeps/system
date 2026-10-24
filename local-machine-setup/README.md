@@ -177,7 +177,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `release` | the `.release` tools: an entry is `ok` when each bin is in `~/.local/bin` (`MACHINE_SETUP_RELEASE_BIN`) and its tag, owner/repo and asset are recorded under the state folder's `release/`, `MISSING` when not, `DIFFERS` when the recorded tag is not the pinned one or the line names another owner/repo or asset; a record that holds the tag alone reinstalls once. `--apply` downloads the archive, checks its `.sha256` when the release publishes one, takes exactly one executable file per bin, moves every bin into place, then writes the record; a failed step installs nothing new and records nothing. Runs right after `brew`, so later stages find what it installs | `curl`, `tar`, `unzip` |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
-| `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config`, `.vale.ini` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |
+| `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config`, `.vale.ini`, `.local/bin/sdm-login` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |
 | `envs` | install the `.env` of each folder listed in `ENVS` into `$SYSTEM_TOOLS_CONFIG/<tool>/.env` from `envs/<profile>/<folder>.env`, falling back to `envs/common/`, always 0600. Templates hold non-secret defaults only | — |
 | `prompts` | shared agent system prompt into each tool's global instructions | `local-agent-prompt` |
 | `repos` | clone/pull the repo fleet; write the shared `CLAUDE.local.md` keys (`SHARED_LOCAL_KEYS` in `claude_settings.py`) into each auto repo's `SD-AI-COMMAND-PACK:LOCAL` block, keeping the repo's own keys (a file git does not ignore is reported, not written); install `local-leak-guard`'s pre-push hook in each public managed repo checked out here (a hook another tool wrote is reported, not replaced) | `local-repo-sync`, the pack's `bin/sd-db`, `local-leak-guard` |
@@ -322,6 +322,13 @@ their own sections when it overwrites. Without that, every login read as
 DIFFERS and `--force` signed the machine out of every profile.
 `~/.aws/credentials` is never tracked; a new machine signs in with
 `aws login` and gets agent-profile keys by hand.
+
+`~/.local/bin/sdm-login` signs StrongDM's `sdm` in when `sdm status` exits 9
+(signed out), then prints `sdm status`; any other failure signs nothing in.
+Only a profile with a copy gets it: start one from
+`examples/dotfiles/work/.local/bin/sdm-login`. It reads the email from
+`SDM_EMAIL`, exported or in `machine-setup.env` (`change-me` in the
+example). A file under `.local/bin/` installs 0755 whatever mode its copy kept.
 
 ### Launch agents
 
