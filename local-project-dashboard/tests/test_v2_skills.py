@@ -939,6 +939,21 @@ R.err = ELS['ad-err'].textContent;""")
         self.assertIn(REPO, out["R"]["rows"])
         self.assertEqual(out["R"]["count"], ["intake", 1])
 
+    # sd:5964: a failed Usage read left it started, so neither the view nor Read again read it again.
+    def test_a_failed_usage_read_is_read_again_by_the_view_and_by_read_again(self):
+        usage = skills_screen.usage(self.connection, now=NOW)
+        answer = ("(() => { let n = 0; return path => path === '/api/skills' ? [200, DOC] : path === '/api/skills/usage'"
+                  f" ? (n++ < 2 ? [500, {{ error: 'database is locked' }}] : [200, {json.dumps(usage)}]) : [200, {{}}]; }})()")
+        show = "document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'usage', first: %s, api: '/api/skills/usage' } })); await flush();"
+        again, reads = "await window.PAGE_AGAIN.run(); await flush();", "R.reads.push(OUT.gets.filter(p => p === '/api/skills/usage').length);"
+        out = self.run_page(f"R.reads = []; {again} {reads} {show % 'true'} {reads} R.failed = ELS['su-weeks'].html; {show % 'false'} {reads}"
+                            f" window.shell.view.current = () => 'usage'; {again} {reads} R.weeks = ELS['su-weeks'].html; {again} {reads}",
+                            answer=answer, before=(V2 / "static" / "skills-usage.js").read_text(encoding="utf-8"))
+        # Read again leaves a Usage never shown alone; a failed read is read again on the next showing and on Read again.
+        self.assertEqual(out["R"]["reads"], [0, 1, 2, 3, 4])
+        self.assertIn("Skill use could not be read: database is locked.", out["R"]["failed"])
+        self.assertIn("2026-09-21", out["R"]["weeks"])
+
     def test_a_repository_row_is_unknown_when_its_refresh_did_not_read_every_skill(self):
         cases = (("1 unchanged, 1 failed", "▨", "could not read every skill"), ("failed: git ls-remote exited 128", "▨", "The last refresh failed"),
                  ("1 new, 1 failed", "▲", "skills to review and could not read every skill"), ("1 new", "▲", "skills to review"), ("2 unchanged", "●", "nothing new"))
