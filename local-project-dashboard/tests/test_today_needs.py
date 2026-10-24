@@ -139,6 +139,15 @@ class TheGroups(ReportsCase):
                          [("dark:jobs", "broken", "jobs"), ("lane:system:9:aaaaaaaaaaaa", "broken", "lane"),
                           ("item:1", "look", ""), ("group:briefs", "queued", ""), ("item:2", "queued", "")])
 
+    def test_a_late_item_with_a_live_session_is_in_motion_only(self):
+        """sd:5954: a past-due item in progress with a live session was in Needs you, in the past-due group's bulk
+        snooze, and in In motion. A live session puts it in In motion only, late or not, urgent or not."""
+        rows = now_screen.work_needs([work(1, state="in_progress", due="2026-08-01", recurring=True),
+                                      work(2, state="in_progress", due="2026-08-01", recurring=True),
+                                      work(3, state="in_progress", due="2026-07-01", priority=1),
+                                      work(4, state="in_progress", due="2026-08-01", recurring=True)], {1, 2, 3}, NOW[:10])
+        self.assertEqual([(row["id"], row.get("group")) for row in rows], [("item:4", None)])
+
     def test_needs_and_in_motion_share_no_item(self):
         self.item("live one", status="in_progress")
         doc = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name), fleet=fleet_document,
@@ -241,6 +250,38 @@ class TheUnread(ReportsCase):
         with mock.patch.object(active_sessions, "document", return_value=found):
             doc = self.today()
         self.assertEqual(self.dark(doc), {"dark:live": ("broken", "sessions", "live not read for herdr", "herdr: herdr did not answer")})
+
+    def test_every_dark_row_carries_a_seen_and_a_snooze_holds_it(self):
+        """sd:5954: the dark rows a part read raised skipped the snooze, so they carried no `seen` and /api/snooze refused
+        their Snooze. Each is split as Now's rows are: it carries a `seen`, a snooze holds it, and a snoozed one still
+        names its lamp, so the lamp reads unknown (sd:5939)."""
+        from sd_db import writes
+        from sd_dashboard import active_sessions, today_mail, today_reports
+
+        from test_now_screen import repo
+
+        def lane_down(connection, now):
+            raise OSError("sd-ship gave no answer")
+
+        reports = {"problems": [], "problems_more": 0, "problems_capped": False, "problems_error": "database is locked",
+                   "briefs": [], "briefs_more": 0, "briefs_error": "", "briefs_skipped": 0}
+        mail = {"mail": [], "mail_more": 0, "mail_unread": [{"repo": "hoa", "reason": "no alias"}], "mail_error": ""}
+        live = {"rows": [], "sources": {"herdr": "herdr did not answer"}, "error": ""}
+        fleet = lambda area: fleet_document(area, repos=[repo("gone", error="git did not answer")])
+        cases = (("dark:lane", {"lanes": lane_down}), ("dark:gate", {"lanes": queue(gates={"error": "no answer"})}),
+                 ("dark:repos", {"fleet": fleet}))
+        with mock.patch.object(today_reports, "document", return_value=reports), \
+                mock.patch.object(today_mail, "document", return_value=mail), \
+                mock.patch.object(active_sessions, "document", return_value=live):
+            for row_id, seams in (*cases, ("dark:reports", {}), ("dark:mail", {}), ("dark:live", {})):
+                with self.subTest(row=row_id):
+                    [row] = [row for row in self.today(**seams)["needs"] if row["id"] == row_id]
+                    self.assertTrue(row.get("seen"), row)
+                    writes.snooze(self.connection, f"today:{row_id}", "2026-09-07T08:00:00Z", seen=row["seen"], now=NOW)
+                    doc = self.today(**seams)
+                    self.assertNotIn(row_id, [row["id"] for row in doc["needs"]])
+                    [held] = [held for held in doc["snoozed"] if held["id"] == row_id]
+                    self.assertEqual((held["lamp"], held["until"]), (row["lamp"], "2026-09-07T08:00:00+00:00"))
 
     def test_a_malformed_fleet_document_is_the_whole_repos_row_never_a_crash(self):
         # Review of sd:5939: unread_rows read the kept fleet rows before it checked that _repos accepted them.

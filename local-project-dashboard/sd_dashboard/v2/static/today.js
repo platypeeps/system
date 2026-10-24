@@ -116,11 +116,13 @@ window.PAGE_FILTER = { '': 'Needs you' };
   }
 
   // The lamps (sd:5921): each number counts the rows its filter shows; a source that was not read is unknown, never ok.
+  // A snoozed dark row still names its lamp (sd:5954): the snooze hides the row, not the unread source.
+  const darkOn = lamp => NEEDS.find(r => r.lamp === lamp && r.kind === 'dark') || SNOOZED.find(r => r.lamp === lamp && r.kind === 'dark');
   function lamps() {
     const L = DOC.lane || {}, gates = L.gates || {}, why = { ...DOC.sources, reports: DOC.problems_error, mail: DOC.mail_error }, unread = DOC.mail_unread || [];
     document.querySelectorAll('.cell[data-src]').forEach(cell => {
       const s = cell.dataset.src, rows = NEEDS.filter(r => r.lamp === s && r.kind !== 'dark'), val = cell.querySelector('.val');
-      const dark = NEEDS.find(r => r.lamp === s && r.kind === 'dark'), seen = (DOC.observed || {})[s];
+      const dark = darkOn(s), seen = (DOC.observed || {})[s];
       if ((dark && !dark.partial) || why[s]) { cell.dataset.state = 'unknown'; cell.title = dark?.detail || why[s]; put(val, html`<span class="ph">not read</span>`); return; }
       if (seen) cell.title = `observed ${seen.at.slice(11, 16)} UTC${seen.stale ? ` · stale: ${seen.stale}` : ''}`; else cell.removeAttribute('title');
       const st = rows.map(r => STATE[r.band]);
@@ -141,7 +143,7 @@ window.PAGE_FILTER = { '': 'Needs you' };
       if (dark) { cell.dataset.state = 'unknown'; cell.title = cell.title || dark.detail; }
     });
     const a = ACTIVE || {}, items = new Set((a.rows || []).map(r => r.item)), ses = $('lamp-sessions');
-    const liveDark = NEEDS.find(r => r.lamp === 'sessions' && r.kind === 'dark');
+    const liveDark = darkOn('sessions');
     ses.dataset.state = a.error || liveDark ? 'unknown' : 'ok'; ses.title = a.error || liveDark?.detail || '';
     put(ses.querySelector('.val'), a.error ? html`<span class="ph">not read</span>` : html`<b>${items.size}</b> live<small>${plural((a.rows || []).length, 'session')}</small>`);
     const gate = $('lamp-gate'), load = (L.load || {}).load5, off = DOC.sources.lane || gates.error;
@@ -248,7 +250,8 @@ window.PAGE_FILTER = { '': 'Needs you' };
 
   // The day track (sd:5921): the document's `track`, the last 24 hours as marks in four lanes, each linked to its row, with
   // the same marks as a table in a details and a key of four counts linked to Tasks. A track that was not read says so;
-  // a day with no mark says that in one line, never an empty axis.
+  // a day with no mark says that in one line, never an empty axis. Landed links the items done less than a day ago
+  // (sd:5934): Tasks' In status bucket 0, as a task has no merged or delivered status.
   const LANES = [['landed', 'Landed', 18], ['jobs', 'Jobs', 40], ['briefs', 'Briefs', 58], ['live', 'Live', 74]];
   const markHref = (lane, m) => lane === 'landed' || lane === 'live' ? shell.itemHref(m.item) : `?row=${encodeURIComponent(m.id)}`;
   function dayTrack() {
@@ -273,7 +276,7 @@ window.PAGE_FILTER = { '': 'Needs you' };
       ${marks.map(mark)}<line class="now" x1="${x(T.until)}" y1="4" x2="${x(T.until)}" y2="82"/></svg>`
       : html`<p class="why">Nothing landed, failed, was filed or started in the last 24 hours.</p>`);
     const K2 = T.key;
-    put($('flowkey'), html`<li><a href="/tasks?view=list&amp;status=merged,delivered&amp;realm=all">Landed 24h</a></li><li><b>${K2.landed}</b></li>
+    put($('flowkey'), html`<li><a href="/tasks?view=list&amp;status=done&amp;age=0&amp;realm=all">Landed 24h</a></li><li><b>${K2.landed}</b></li>
       <li><a href="/queue">Landing</a></li><li><b>${K2.landing}</b></li>
       <li><a href="/tasks?view=list&amp;due=week&amp;realm=all">Due this week</a></li><li><b>${K2.due_week}</b></li>
       <li><a href="/tasks?view=list&amp;status=blocked&amp;realm=all">Blocked</a></li><li><b>${K2.blocked}</b></li>`);

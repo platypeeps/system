@@ -281,6 +281,27 @@ class TheTrack(ReaderCase):
         self.assertIn('status=blocked&amp;realm=all">Blocked</a></li><li><b>27</b>', out["R"]["key"])
         self.assertFalse(out["R"]["table"])
 
+    def test_each_key_link_filters_tasks_on_values_tasks_accepts(self):
+        """sd:5934: Landed 24h linked status=merged,delivered, which no task has, so Tasks listed none. Each key link names
+        only statuses `workflow.TASK_STATUSES` holds and age buckets `reads.age_histogram` keys, and Landed keeps 24 h."""
+        from urllib.parse import parse_qs, urlsplit
+
+        from sd_db import reads, workflow
+
+        self.doc["track"] = self.TRACK
+        key = self.run_page(self.DRAWN)["R"]["key"].replace("&amp;", "&")
+        links = dict((label, href) for href, label in re.findall(r'<a href="([^"]+)">([^<]+)</a>', key))
+        ages = {bucket.key for bucket in reads.age_histogram([], now=NOW)}
+        for label, href in links.items():
+            if not href.startswith("/tasks"):
+                continue
+            query = parse_qs(urlsplit(href).query)
+            with self.subTest(label=label):
+                self.assertLessEqual(set(",".join(query.get("status", [])).split(",")) - {""}, set(workflow.TASK_STATUSES))
+                self.assertLessEqual(set(",".join(query.get("age", [])).split(",")) - {""}, ages)
+        landed = parse_qs(urlsplit(links["Landed 24h"]).query)
+        self.assertEqual((landed["status"], landed["age"], landed["realm"]), (["done"], ["0"], ["all"]))
+
     def test_a_day_with_no_mark_is_one_line_not_an_empty_axis(self):
         self.doc["track"] = {**self.TRACK, "landed": [], "jobs": [], "live": [], "key": {**self.TRACK["key"], "landed": 0}}
         out = self.run_page(self.DRAWN)
@@ -333,6 +354,22 @@ R.lane = [lane.dataset.state, lane.title, val.html]; const ses = ELS['lamp-sessi
         self.assertEqual((state, title), ("unknown", "pack: sd-ship gave no answer"))
         self.assertIn("<b>1</b> blocked", text)
         self.assertEqual(out["R"]["ses"], ["unknown", "herdr: herdr did not answer"])
+
+
+class TheSnoozedDarkLamps(ReaderCase):
+    """sd:5954: a dark row snoozes now; a snoozed one still makes its lamp read unknown, never ok (sd:5939)."""
+
+    def test_a_snoozed_dark_row_keeps_its_lamp_unknown(self):
+        for source, lamp in (("lane", "lane"), ("live", "sessions")):
+            held = {**now_screen.unread_row(source, {"pack": "no answer"}), "band": "broken", "lamp": lamp,
+                    "seen": "0" * 16, "until": "2026-09-07T08:00:00Z"}
+            self.doc["snoozed"] = [held]
+            out = self.run_page("""const lane = El('div'), val = El('span'); lane.dataset = { src: 'lane' }; lane.querySelector = () => val;
+document.querySelectorAll = sel => sel === '.cell[data-src]' ? [lane] : [];
+refresh(); await flush();
+R.lane = lane.dataset.state; R.ses = ELS['lamp-sessions'].dataset.state;""")
+            with self.subTest(source=source):
+                self.assertEqual(out["R"]["lane" if lamp == "lane" else "ses"], "unknown")
 
 
 class TheFix(ReaderCase):

@@ -22,11 +22,12 @@ a report (kind `report`) starts a debug and fix session for that report. Tasks, 
 the first one's note in the revision and is refused.
 
 **Fix on a Today Now row** (sd:5652). Today posts `/api/now/fix` with a Now row's id for the rows no other command
-addresses: a repo ahead, dirty or pinned, the abandoned worktrees, and a dark repos, sessions or jobs collector (a
-failed job's Fix is its Run now, a pull request's its Open on GitHub, the pull request collector's its sync, all in the
-page). `start_row` reads that source again and launches only while the read still raises the row: a row it no longer
-raises is `StaleItem` (409), and a read that failed says whether the row stands is not known (503); a dark collector is
-the one row a failed read confirms. A repo row starts in the checkout that read names; the rest start in this checkout.
+addresses: a repo ahead, dirty or pinned, the abandoned worktrees, and every dark row but the pull request collector's
+(a failed job's Fix is its Run now, a pull request's its Open on GitHub, the pull request collector's its sync, all in
+the page). `start_row` reads that source again and launches only while the read still raises the row: a row it no longer
+raises is `StaleItem` (409), and a read that failed says whether the row stands is not known (503). A dark row, whole or
+in part (sd:5954), is confirmed by Today's own read, `now_screen.document`, which turns each failed read into its dark
+row. A repo row starts in the checkout that read names; the rest start in this checkout.
 The launch is step 2 above, on `row_prompt`'s fixed text for the row's kind; no fleet value enters the prompt. No note
 is written: a Now row has no item, and herdr's workspace `fix-<kind>[-<name>]` is the record.
 """
@@ -38,6 +39,7 @@ import shlex
 import sqlite3
 import subprocess
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sd_db import operations, paths, workflow
@@ -75,12 +77,12 @@ ROW = {
     "worktree": ("Today's Now counts worktrees registered in a checkout's .git/worktrees whose directory is gone. Find each "
                  "in the checkouts local-project-dashboard/sd_dashboard/fleet.py reads (`git worktree list --porcelain` "
                  "marks it prunable), run `git worktree prune -v` in each, and report what was pruned. Change nothing else."),
-    "dark": ("Today's Now says its {source} collector could not be read. Find why: read "
+    "dark": ("Today's Now says its {source} collector could not be read, in whole or in part. Find why: read "
              "local-project-dashboard/sd_dashboard/now_screen.py and the collector it calls, reproduce the failure, fix "
              "the cause, and land the fix through the lane."),
 }
-#: The dark collectors a session is for; the pull request collector's Fix is its sync, in the page.
-DARK = ("repos", "sessions", "jobs")
+#: The dark rows a session is for, one per source Today lamps; the pull request collector's Fix is its sync, in the page.
+DARK = ("repos", "sessions", "jobs", "lane", "gate", "reports", "mail", "live")
 ROW_ID = re.compile(r"(?:(ahead|dirty|pinned):(.+):[1-9][0-9]{0,8}|worktrees:[1-9][0-9]{0,8}|dark:(%s))" % "|".join(DARK))
 #: What a source's read may raise, as `now_screen.document` guards each one.
 UNREAD = (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error)
@@ -160,13 +162,14 @@ def _row(connection, row: str, fleet, jobs):
     kind, name, source = found[1] or ("worktree" if row.startswith("worktrees:") else "dark"), found[2], found[3]
     if kind == "dark":
         try:
-            if source == "jobs":
-                now_screen._jobs(connection, jobs or operations.LaunchdBackend())
-            else:
-                (now_screen._repos if source == "repos" else now_screen._sessions)(fleet)
-        except UNREAD:
-            return CHECKOUT, f"fix-dark-{source}", row_prompt("dark", source=source)
-        raise workflow.StaleItem(f"the {source} collector reads now, so {row} is not a Now row; read Now again")
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            today = now_screen.document(connection, now=now, fleet=fleet, jobs=jobs or operations.LaunchdBackend())
+        except UNREAD as problem:
+            return 503, {"error": f"Today was not read, so whether {row} is still a Now row is not known: {problem}"}
+        # A row snoozed since the page read is still raised: the snooze hides it, it does not mend it.
+        if not any(raised["id"] == row and raised["kind"] == "dark" for raised in [*today["needs"], *today["snoozed"]]):
+            raise workflow.StaleItem(f"the {source} source reads now, so {row} is not a Now row; read Now again")
+        return CHECKOUT, f"fix-dark-{source}", row_prompt("dark", source=source)
     area = "sessions" if kind == "worktree" else "repos"
     try:
         document = fleet(area)
@@ -206,7 +209,7 @@ def row_request(values: dict, *, fleet=None, jobs=None):
     """`/api/now/fix`'s checks, before the server opens a writer: one Now row id that no other route fixes."""
     if set(values) != {"row"} or not isinstance(values["row"], str) or not ROW_ID.fullmatch(values["row"]):
         raise ValueError("Fix takes one Now row: a repo ahead, dirty or pinned, the abandoned worktrees, or a dark "
-                         "repos, sessions or jobs collector.")
+                         f"{', '.join(DARK)} row.")
     return lambda connection: start_row(connection, values["row"], fleet=fleet, jobs=jobs)
 
 
