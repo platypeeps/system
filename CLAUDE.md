@@ -45,6 +45,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
   - A satellite runs no hub-only agent: `SD_HUB_ONLY_AGENTS` in `local-machine-setup/machine-setup.sh` is the one list.
   - A verb that needs a lock or a directory beside the database refuses with `HubOnly` off the hub; do not add a remote path for it.
   - The hub's system and pack checkouts sit on a detached HEAD on purpose: pinned, moved only by the lane or `repo-sync.sh refresh` (sd:3097); never switch them to a branch or report it as a fault.
+  - Agents write only in worktrees: `local-machine-setup/checkout_guard.py`, a PreToolUse hook, refuses writes in those checkouts but git-ignored paths (sd:6001).
 - The workflow dashboard is the pack's, at `$SD_PACK_ROOT/dashboard/` (pack sd:5987); read its `RUNTIME.md` before changing the service.
   - `local-project-dashboard/` is gone; `machine-setup.sh doctor` fails config that names it, and `tests/test_retired_folder.py` fails a tracked line.
 - `local-*` folders run local services or tools; `network-testing` is iperf3/ping tooling.

@@ -2103,7 +2103,8 @@ open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$hud_config"
     fi
     # The settings baseline in claude_settings.py, the same on every machine:
     # deny rules (secret reads, GitHub issues, claude-mem work state), no
-    # attribution lines, the `sd today` hook, and DISABLE_AUTOUPDATER (the
+    # attribution lines, the `sd today` hook, the checkout_guard.py hook
+    # (sd:6001), and DISABLE_AUTOUPDATER (the
     # weekly `brew upgrade --cask --greedy` moves the claude-code@latest
     # cask). It adds missing entries after a
     # backup and never touches the operator's own; a STALE line is a rule an
@@ -2127,6 +2128,15 @@ open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$hud_config"
     # machine without it is drift, not a SKIP (sd:4738). The brew stage
     # installs what the profile lists; this names the gap for status.
     echo "  MISSING claude (brew install --cask claude-code@latest)"
+  fi
+  # sd is the one work-state store, so claude-mem's own stays off
+  # (sd:5995); its default is on. The plugin writes this file on its first
+  # run, and a machine without it has no claude-mem to switch off.
+  claude_mem="$HOME/.claude-mem/settings.json"
+  if [ -f "$claude_mem" ]; then
+    self_update_json "$claude_mem" CLAUDE_MEM_WORK_STATE_ENABLED '"false"'
+  else
+    echo "  SKIP    no $claude_mem (claude-mem not set up)"
   fi
   # opencode gets the same secret-read denies as a top-level permission.read
   # block, inserted as text so the operator's comments stay. A file with its

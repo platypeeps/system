@@ -56,7 +56,7 @@ After finishing, run it and quote the decisive output line; a partial pass is a 
 If the check changed, say why; if nothing ran, say "not verified".
 If it cannot be verified (external service, human decision), say what can be and what would settle the rest.
 Scope the check to everywhere the changed thing appears (every repo, inventory, derived store), enumerated from disk or the database, not from the string you typed.
-A bug fix or behaviour change lands with a test that failed before the fix; quote its failing line in the PR body's Test plan. Exempt: docs, deletions, renames, visual-only UI.
+A bug fix or behaviour change lands with a test that failed before the fix; quote its failing line in the PR body's Test plan. Exempt: docs, deletions, renames, pure styling (spacing, color); a missing control or a broken action needs a fail-first DOM test.
 
 # Standing authority (all repos I manage)
 
@@ -114,6 +114,7 @@ On a missed deadline, cancel a writer and confirm it stopped before a replacemen
 Ask a rollout's owner before editing files the rollout touches.
 Never auto-retry a ship on a locked repo, and never use `sd-ship --wait` outside the lane: both jump the lane's order.
 After a merge, once its builder has stopped, remove the clean worktree, its branches, its build output and unused agents without asking; keep unpushed unmerged work.
+A lead session ends after its day's merges; the next starts from `sd today` and its DB trail: idle teammates pile up (98 in one session) and no tool removes them.
 Put large uncommitted data (run outputs, logs, captures) under the bulk storage root, `<root>/<repo>/`; keep build output (`target/`, `node_modules/`) on the system disk.
 
 # Merge lane
