@@ -53,6 +53,8 @@ class TargetPruneTest(Harness):
         super().setUp()
         self.worktrees = self.tmp / "home" / "worktrees"
         self.trash = self.tmp / "home" / ".local" / "state" / "maintenance" / "prune-trash"
+        # No cargo runs, whatever runs on this machine.
+        _stub(self.bin / "pgrep", "exit 1\n")
 
     def cargo_target(self, worktree, *, idle=FOUR_DAYS, tag=True, under="target"):
         """A worktree with tracked files and a build tree last written `idle` ago."""
@@ -220,6 +222,7 @@ exec /bin/rm "$@"
         """sd:3536: the walks and the delete run under st_step."""
         _checkout, target = self.cargo_target("example-bounded")
         run = self.maintenance("# nothing to check\n")
+        self.assertRegex(run.stderr, r"\[step [\d:]+\] pgrep -x cargo\|rustc \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {self.worktrees} .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {target} -mmin -4320 .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {self.trash}/\S+ \(bound \d+s\)")
@@ -234,6 +237,27 @@ exec /bin/rm "$@"
         self.assertTrue((target / "CACHEDIR.TAG").is_file())
         self.assertIn(f"- build output prune: could not make a folder in {self.trash}; kept {target}",
                       run.stdout)
+
+    def test_a_running_cargo_skips_the_prune(self):
+        # sd:5994 round 7: a cargo that opened .cargo-lock before the move
+        # and waits on it would build against the moved copy. While cargo
+        # or rustc runs, the prune does nothing, with no finding.
+        _checkout, target = self.cargo_target("example-waiting")
+        _stub(self.bin / "pgrep", 'case "$*" in *cargo*) echo 4242; exit 0 ;; esac\nexit 1\n')
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file(), run.stdout + run.stderr)
+        self.assertEqual(self.actions(run), [])
+        self.assertEqual(self.attention(run), [])
+        self.assertFalse(self.trash.exists())
+
+    def test_a_process_probe_that_fails_skips_the_prune_and_says_so(self):
+        _checkout, target = self.cargo_target("example-unknown")
+        _stub(self.bin / "pgrep", "exit 3\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file())
+        self.assertIn("- build output prune: could not tell whether cargo runs; skipped", run.stdout)
 
     def stub_move(self, body):
         """Replace the copied prune_move.py; one argument is the sweep's check."""

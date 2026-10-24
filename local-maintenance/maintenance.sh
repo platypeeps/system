@@ -456,6 +456,19 @@ if [ -d "$WORKTREES" ]; then
     # new profile before the rename gets target/ back (76); if target/ exists
     # again, the copy stays in the trash (77). rename(2), not mv: mv copies
     # across volumes. A rename that fails keeps the folder.
+    # A cargo that opened a .cargo-lock before the move and waits on it gets
+    # the moved copy once the lock frees. So while cargo or rustc runs, this
+    # run prunes nothing more, with no finding. ponytail: a build that starts
+    # between this check and the rename fails once and reruns; target/ is a
+    # cache. The operator accepted that window (sd:5994 round 7).
+    cargo_rc=0
+    st_step 30 pgrep -x 'cargo|rustc' > /dev/null || cargo_rc=$?
+    if [ "$cargo_rc" -eq 0 ]; then
+      break
+    elif [ "$cargo_rc" -ne 1 ]; then
+      finding "build output prune: could not tell whether cargo runs; skipped"
+      break
+    fi
     if ! { mkdir -p "$PRUNE_TRASH" && bin=$(mktemp -d "$PRUNE_TRASH/XXXXXXXX"); } 2> "$TMPD/move.err"; then
       finding "build output prune: could not make a folder in $PRUNE_TRASH; kept $t"
       continue

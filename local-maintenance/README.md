@@ -59,7 +59,9 @@ keep state in them), and idle build output in worktrees (sd:5994).
 `run` deletes each cargo `target/` folder under `~/worktrees`, at depth 2
 or 3, that nothing wrote for 3 days; `check` names them. Only a folder
 holding cargo's `CACHEDIR.TAG` counts, and no link is followed; the
-checkout and its commits stay. An old time is no proof cargo is idle,
+checkout and its commits stay. While a `cargo` or `rustc` process runs,
+the run prunes nothing more, with no finding: a cargo waiting on a lock
+would get the moved copy. An old time is no proof cargo is idle,
 so the move uses cargo's own lock: it takes `flock(2)` on every
 `.cargo-lock` in the folder without waiting, and while it holds them,
 one rename(2) moves `target/` into
