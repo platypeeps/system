@@ -25,5 +25,5 @@ PAGE = Page(
     html="queue.html",
     item="sd:2585",
     api=(Api("/api/queue", _read), Api("/api/queue/move", write=_move)),
-    count="/api/queue",
+    # No rail badge (sd:5921): a blocked entry is a broken row of Today's Needs you, which counts it there.
 )
