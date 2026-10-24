@@ -12,13 +12,14 @@ import os
 import shutil
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 from sd_db import workflow
 from sd_dashboard import fix_session
 
-from test_now_screen import fleet_document, repo, tree
+from test_now_screen import JobsBackend, fleet_document, repo, tree
 from test_workflow_actions import BrowserSession
 
 DOUBLES = fix_session.CHECKOUT / "local-herdr" / "tests" / "doubles"
@@ -214,6 +215,10 @@ class TheNowRow(FixCase):
     def setUp(self):
         self.repos, self.trees, self.dark = [], [], set()
         self.fleet_backend = self.read_fleet
+        # A dark row is confirmed by Today's own read, which lists the jobs: a double, never launchd.
+        jobs = tempfile.TemporaryDirectory()
+        self.addCleanup(jobs.cleanup)
+        self.backend = JobsBackend(jobs.name)
         super().setUp()
 
     def read_fleet(self, area):
@@ -312,8 +317,71 @@ class TheNowRow(FixCase):
         self.assertEqual(self.post("/api/now/fix", {"row": "dirty:pushy:2"}, Origin="http://example.test")[0], 403)
         self.assertEqual(self.calls(), [])
 
+    def test_every_dark_row_today_raises_starts_a_session_while_the_read_still_raises_it(self):
+        """sd:5954: Today raised dark lane, gate, reports, mail and live rows and a partial repos row, and Fix on each was a
+        400 or a 409. Each is confirmed by Today's own read now and starts claude in this checkout on the dark prompt."""
+        from sd_dashboard import active_sessions, now_screen, today_mail, today_reports
+
+        def lane_down(connection, now):
+            raise OSError("sd-ship gave no answer")
+
+        def gate_down(connection, now):
+            return {"lanes": [], "gates": {"error": "sd gate status gave no answer"}, "problems": []}
+
+        def reports(connection, **_):
+            return {"problems": [], "problems_more": 0, "problems_capped": False, "problems_error": "database is locked",
+                    "briefs": [], "briefs_more": 0, "briefs_error": "", "briefs_skipped": 0}
+
+        def mail(connection, **_):
+            return {"mail": [], "mail_more": 0, "mail_unread": [{"repo": "hoa", "reason": "no alias"}], "mail_error": ""}
+
+        def live(connection, **_):
+            return {"rows": [], "sources": {"herdr": "herdr did not answer"}, "error": ""}
+
+        self.running()
+        cases = (("dark:lane", mock_lanes(lane_down)), ("dark:gate", mock_lanes(gate_down)),
+                 ("dark:reports", patch.object(today_reports, "document", reports)),
+                 ("dark:mail", patch.object(today_mail, "document", mail)),
+                 ("dark:live", patch.object(active_sessions, "document", live)))
+        for row, raised in cases:
+            with self.subTest(row=row):
+                with raised:
+                    status, _, answer = self.fix_row(row)
+                self.assertEqual(status, 200, answer)
+                source = row.split(":")[1]
+                self.assertEqual(answer["fix"]["workspace"], f"fix-dark-{source}")
+                self.assertEqual(self.calls()[-3][3], str(fix_session.CHECKOUT))
+                self.assertEqual(self.calls()[-1][3], fix_session.row_prompt("dark", source=source))
+                # Without the failure the read raises no such row: the click is stale.
+                self.assertEqual(self.fix_row(row)[0], 409)
+        self.repos.append({**repo("gone", error="git did not answer"), "path": str(self.work)})
+        status, _, answer = self.fix_row("dark:repos")
+        self.assertEqual(status, 200, answer)
+        self.assertNotIn("gone", self.calls()[-1][3], "no fleet value enters the prompt")
+        self.assertIn("in whole or in part", fix_session.row_prompt("dark", source="repos"))
+        self.assertTrue(all(fix_session.ROW_ID.fullmatch(f"dark:{source}") for source in now_screen.LAMP if source != "prs"),
+                        "a source Today lamps can go dark, so Fix takes its dark row")
+
+    def test_a_today_read_that_raised_is_not_known_and_launches_nothing(self):
+        from sd_dashboard import now_screen
+
+        self.running()
+        self.dark.add("repos")
+        with patch.object(now_screen, "document", side_effect=sqlite3.OperationalError("database is locked")):
+            status, _, answer = self.fix_row("dark:repos")
+        self.assertEqual(status, 503)
+        self.assertIn("Today was not read, so whether dark:repos is still a Now row is not known", answer["error"])
+        self.assertEqual(self.calls(), [])
+
     def test_no_running_session_is_a_503_in_herdr_sh_words(self):
         self.checkout(dirty=2)
         status, _, answer = self.fix_row("dirty:pushy:2")
         self.assertEqual(status, 503)
         self.assertEqual(answer["error"], "Fix failed: herdr.sh launch: session sd is not running; run herdr.sh start first")
+
+
+def mock_lanes(read):
+    """Today's lane read, as support.ScreenCase stands it in, failing as `read` does."""
+    from sd_dashboard import now_screen
+
+    return patch.object(now_screen, "_lanes", read)

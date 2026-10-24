@@ -356,6 +356,22 @@ R.lane = [lane.dataset.state, lane.title, val.html]; const ses = ELS['lamp-sessi
         self.assertEqual(out["R"]["ses"], ["unknown", "herdr: herdr did not answer"])
 
 
+class TheSnoozedDarkLamps(ReaderCase):
+    """sd:5954: a dark row snoozes now; a snoozed one still makes its lamp read unknown, never ok (sd:5939)."""
+
+    def test_a_snoozed_dark_row_keeps_its_lamp_unknown(self):
+        for source, lamp in (("lane", "lane"), ("live", "sessions")):
+            held = {**now_screen.unread_row(source, {"pack": "no answer"}), "band": "broken", "lamp": lamp,
+                    "seen": "0" * 16, "until": "2026-09-07T08:00:00Z"}
+            self.doc["snoozed"] = [held]
+            out = self.run_page("""const lane = El('div'), val = El('span'); lane.dataset = { src: 'lane' }; lane.querySelector = () => val;
+document.querySelectorAll = sel => sel === '.cell[data-src]' ? [lane] : [];
+refresh(); await flush();
+R.lane = lane.dataset.state; R.ses = ELS['lamp-sessions'].dataset.state;""")
+            with self.subTest(source=source):
+                self.assertEqual(out["R"]["lane" if lamp == "lane" else "ses"], "unknown")
+
+
 class TheFix(ReaderCase):
     """sd:3456: Fix on a work row Today lists posts /api/items/<id>/fix with the revision the Now read gave."""
 

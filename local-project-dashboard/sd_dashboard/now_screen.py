@@ -543,13 +543,15 @@ def work_needs(work: list[dict], live: set[int], today: str) -> list[dict]:
     """The work items as Needs you rows (sd:5921): one group row per kind, so a list of 142 reads as a few.
 
     Ready to send, past due, and in progress with no live session each collapse into one group row once there are two;
-    an item in progress with a session is In motion only. A past-due member with priority 1, or one more than
-    `LATE_DAYS` late that does not recur, breaks out as its own row, so a group never hides it. What is left, due
-    today and not started, is one queued group.
+    an item in progress with a session is In motion only, past due or not (sd:5954). A past-due member with priority 1,
+    or one more than `LATE_DAYS` late that does not recur, breaks out as its own row, so a group never hides it. What is
+    left, due today and not started, is one queued group.
     """
     ready, late, idle, due, alone = [], [], [], [], []
     for row in work:
         row = {**row, "source": "tasks", "at": row.get("since")}
+        if row["state"] == "in_progress" and row["item"] in live:
+            continue
         days = _late_days(row, today)
         if row["state"] == "ready_to_send":
             ready.append({**row, "rank": ATTENTION})
@@ -557,8 +559,7 @@ def work_needs(work: list[dict], live: set[int], today: str) -> list[dict]:
             row = {**row, "rank": ATTENTION}
             (alone if row.get("priority") == 1 or (days > LATE_DAYS and not row.get("recurring")) else late).append(row)
         elif row["state"] == "in_progress":
-            if row["item"] not in live:
-                idle.append({**row, "rank": QUIET})
+            idle.append({**row, "rank": QUIET})
         else:
             due.append({**row, "rank": QUIET})
 
@@ -753,13 +754,17 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     reports, reports_snoozed = snooze.split("today", report_rows(reported["problems"]), snoozes)
     threads, mail_snoozed = snooze.split("today", mail_rows(mail["mail"]), snoozes)
     live = {row["item"] for row in active.get("rows") or []}
-    dark = [dark_row("lane", sources["lane"])] if sources["lane"] else []
-    dark += unread_rows(sources, kept, queue, active, reported, mail)
+    # The dark rows a part read raises snooze as a dark collector does (sd:5954): each carries its `seen`, and a snoozed
+    # one names its lamp, so the lamp still reads unknown (sd:5939).
+    dark, dark_snoozed = snooze.split("today", [*([dark_row("lane", sources["lane"])] if sources["lane"] else []),
+                                                *unread_rows(sources, kept, queue, active, reported, mail)], snoozes)
+    held = [{**row, "lamp": LAMP.get(row["source"], "")} if row["kind"] == "dark" else row
+            for row in snoozed + dark_snoozed + work_snoozed + reports_snoozed + mail_snoozed]
     listed = needs([*shown, *dark, *reports, *threads], work=work, live=live, today=now[:10],
                    lanes=queue.get("lanes") or [], briefs=reported["briefs"])
     summary = lane_summary(queue)
     return {"now": now, "sources": sources, "observed": observed, "rows": shown, "active": active,
-            "snoozed": snoozed + work_snoozed + reports_snoozed + mail_snoozed, "snooze_error": snooze_error,
+            "snoozed": held, "snooze_error": snooze_error,
             "work": work, "work_error": work_error, "needs": listed, "lane": summary,
             "track": track(connection, now, rows=rows, briefs=reported["briefs"], active=active, lane=summary),
             "attention": _attention(listed), **mail, **reported}

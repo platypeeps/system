@@ -116,11 +116,13 @@ window.PAGE_FILTER = { '': 'Needs you' };
   }
 
   // The lamps (sd:5921): each number counts the rows its filter shows; a source that was not read is unknown, never ok.
+  // A snoozed dark row still names its lamp (sd:5954): the snooze hides the row, not the unread source.
+  const darkOn = lamp => NEEDS.find(r => r.lamp === lamp && r.kind === 'dark') || SNOOZED.find(r => r.lamp === lamp && r.kind === 'dark');
   function lamps() {
     const L = DOC.lane || {}, gates = L.gates || {}, why = { ...DOC.sources, reports: DOC.problems_error, mail: DOC.mail_error }, unread = DOC.mail_unread || [];
     document.querySelectorAll('.cell[data-src]').forEach(cell => {
       const s = cell.dataset.src, rows = NEEDS.filter(r => r.lamp === s && r.kind !== 'dark'), val = cell.querySelector('.val');
-      const dark = NEEDS.find(r => r.lamp === s && r.kind === 'dark'), seen = (DOC.observed || {})[s];
+      const dark = darkOn(s), seen = (DOC.observed || {})[s];
       if ((dark && !dark.partial) || why[s]) { cell.dataset.state = 'unknown'; cell.title = dark?.detail || why[s]; put(val, html`<span class="ph">not read</span>`); return; }
       if (seen) cell.title = `observed ${seen.at.slice(11, 16)} UTC${seen.stale ? ` · stale: ${seen.stale}` : ''}`; else cell.removeAttribute('title');
       const st = rows.map(r => STATE[r.band]);
@@ -141,7 +143,7 @@ window.PAGE_FILTER = { '': 'Needs you' };
       if (dark) { cell.dataset.state = 'unknown'; cell.title = cell.title || dark.detail; }
     });
     const a = ACTIVE || {}, items = new Set((a.rows || []).map(r => r.item)), ses = $('lamp-sessions');
-    const liveDark = NEEDS.find(r => r.lamp === 'sessions' && r.kind === 'dark');
+    const liveDark = darkOn('sessions');
     ses.dataset.state = a.error || liveDark ? 'unknown' : 'ok'; ses.title = a.error || liveDark?.detail || '';
     put(ses.querySelector('.val'), a.error ? html`<span class="ph">not read</span>` : html`<b>${items.size}</b> live<small>${plural((a.rows || []).length, 'session')}</small>`);
     const gate = $('lamp-gate'), load = (L.load || {}).load5, off = DOC.sources.lane || gates.error;
