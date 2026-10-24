@@ -31,6 +31,7 @@ class Harness(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / "local-maintenance").mkdir()
         shutil.copy(FOLDER / "maintenance.sh", self.tmp / "local-maintenance")
+        shutil.copy(FOLDER / "prune_move.py", self.tmp / "local-maintenance")
         shutil.copytree(LIB, self.tmp / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         self.sent = self.tmp / "notify-calls"
         _stub(self.tmp / "local-notify" / "notify.sh", f'printf "%s\\n" "$@" >> "{self.sent}"\n')

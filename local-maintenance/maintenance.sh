@@ -402,25 +402,6 @@ fi
 # folder stays. The delete runs only inside PRUNE_TRASH, which this step owns.
 WORKTREES="$HOME/worktrees"
 PRUNE_TRASH="$HOME/.local/state/maintenance/prune-trash"
-# PRUNE_MOVE SRC DST: flock every .cargo-lock under SRC, at depth 1 to 3, then
-# rename SRC to DST and release. Exit 75 when a lock is busy, 1 on any error.
-# shellcheck disable=SC2016 # python source
-PRUNE_MOVE='import fcntl, glob, os, sys
-src, dst = sys.argv[1:3]
-held = []
-try:
-    for pattern in (".cargo-lock", "*/.cargo-lock", "*/*/.cargo-lock"):
-        for path in glob.glob(os.path.join(glob.escape(src), pattern)):
-            held.append(os.open(path, os.O_RDONLY | os.O_NOFOLLOW))
-            fcntl.flock(held[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
-    os.rename(src, dst)
-except BlockingIOError:
-    sys.exit(75)
-except OSError as error:
-    sys.exit(str(error))
-finally:
-    for fd in held:
-        os.close(fd)'
 # A run stopped during a delete leaves its entry in the trash; the next run
 # deletes it. Only entries in the trash go, never a path under ~/worktrees.
 if [ -d "$PRUNE_TRASH" ]; then
@@ -458,7 +439,7 @@ if [ -d "$WORKTREES" ]; then
       continue
     fi
     # An old mtime is no proof cargo is idle, so the move uses cargo's own
-    # lock: flock(2) on each target/<profile>/.cargo-lock. PRUNE_MOVE takes
+    # lock: flock(2) on each target/<profile>/.cargo-lock. prune_move.py takes
     # them all without waiting and, while it holds them, renames target/ into
     # the trash. A busy lock is a running build: skip it, no finding. A cargo
     # that starts during the hold waits on the lock, then builds a fresh
@@ -469,7 +450,7 @@ if [ -d "$WORKTREES" ]; then
       continue
     fi
     move_rc=0
-    python3 -c "$PRUNE_MOVE" "$t" "$bin/target" 2> "$TMPD/move.err" || move_rc=$?
+    python3 "$DIR/prune_move.py" "$t" "$bin/target" 2> "$TMPD/move.err" || move_rc=$?
     if [ "$move_rc" -ne 0 ]; then
       rmdir "$bin" 2>/dev/null || true
       [ "$move_rc" -eq 75 ] ||
