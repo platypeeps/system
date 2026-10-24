@@ -2,6 +2,7 @@
 title: Today becomes one page to read and one list to act on; Queue slims to the lane tool
 created: 2026-10-23
 item: sd:5921
+branch: today-5921
 ---
 
 # Design — today-queue
