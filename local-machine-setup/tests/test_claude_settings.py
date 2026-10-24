@@ -140,6 +140,27 @@ class ClaudeSettingsBaseline(SyntheticHome):
 
         self.assertIn("ok      settings.json baseline", out)
 
+    def test_a_fresh_baseline_runs_the_checkout_guard_before_writes(self):
+        """sd:6001: agents do not write in the system and pack checkouts."""
+        guard = self.folder / "checkout_guard.py"
+        command = f"test ! -f {guard} || python3 {guard}"
+        self.settings.write_text("{}\n")
+
+        self.assertIn(f"MISSING settings.json hooks.PreToolUse {command}", self.run_tooling())
+        self.run_tooling("--apply")
+
+        groups = json.loads(self.settings.read_text())["hooks"]["PreToolUse"]
+        self.assertEqual(groups, [{"matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+                                   "hooks": [{"type": "command", "command": command}]}])
+        self.assertIn("ok      settings.json baseline", self.run_tooling("--apply"))
+
+    def test_the_guard_command_allows_when_its_file_is_gone(self):
+        """A moved or deleted checkout must not block every tool call: exit 2 would."""
+        missing = self.folder / "gone/checkout_guard.py"
+        result = subprocess.run(["sh", "-c", f"test ! -f {missing} || python3 {missing}"],
+                                input="{}", capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0)
+
     def test_a_fresh_baseline_turns_off_the_background_updater(self):
         """sd:3033: Claude Code updates in the weekly upgrade only."""
         self.settings.write_text("{}\n")
@@ -172,6 +193,45 @@ class ClaudeSettingsBaseline(SyntheticHome):
 
         self.assertIn("DIFFERS settings.json is not valid JSON", out)
         self.assertEqual(self.settings.read_text(), "{not json\n")
+
+
+class ClaudeMemWorkState(SyntheticHome):
+    """sd:5995: sd is the one work-state store, so claude-mem's own is off."""
+
+    def setUp(self):
+        super().setUp()
+        self.mem = self.home / ".claude-mem/settings.json"
+        self.mem.parent.mkdir()
+        self.mine = {"CLAUDE_MEM_WORKER_PORT": "37701", "CLAUDE_MEM_WORK_STATE_ENABLED": "true"}
+        self.mem.write_text(json.dumps(self.mine, indent=2) + "\n")
+
+    def test_a_dry_run_names_the_switch_and_writes_nothing(self):
+        out = self.run_tooling()
+
+        self.assertIn('DIFFERS {} CLAUDE_MEM_WORK_STATE_ENABLED is "true", want "false"'.format(self.mem), out)
+        self.assertEqual(json.loads(self.mem.read_text()), self.mine)
+
+    def test_apply_turns_work_state_off_and_keeps_the_other_keys(self):
+        self.run_tooling("--apply")
+
+        self.assertEqual(json.loads(self.mem.read_text()),
+                         {**self.mine, "CLAUDE_MEM_WORK_STATE_ENABLED": "false"})
+        self.assertEqual(len(list(self.mem.parent.glob("settings.json.bak-*"))), 1)
+        self.assertIn('ok      {} CLAUDE_MEM_WORK_STATE_ENABLED = "false"'.format(self.mem), self.run_tooling())
+
+    def test_an_unset_switch_is_missing(self):
+        """claude-mem's default is on, so a file without the key is drift."""
+        self.mem.write_text("{}\n")
+
+        self.assertIn('MISSING {} CLAUDE_MEM_WORK_STATE_ENABLED = "false"'.format(self.mem), self.run_tooling())
+
+    def test_no_claude_mem_settings_is_skipped_and_nothing_is_created(self):
+        self.mem.unlink()
+
+        out = self.run_tooling("--apply")
+
+        self.assertIn(f"SKIP    no {self.mem} (claude-mem not set up)", out)
+        self.assertFalse(self.mem.exists())
 
 
 OPENCODE = """{
