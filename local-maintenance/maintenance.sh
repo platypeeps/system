@@ -399,11 +399,25 @@ fi
 # stay, and the next build makes it again. Only a folder holding cargo's
 # CACHEDIR.TAG counts, at depth 2 or 3 (depth 1 is a checkout), and find
 # follows no link. A probe that fails or hits its bound is no answer: the
-# folder stays.
-# ponytail: the delete runs in place, so a stopped one leaves a partial
-# target/; cargo rebuilds what is missing, and a later run may leave it
-# if its CACHEDIR.TAG went first. A rename or recovery step would cost more.
+# folder stays. The delete runs only inside PRUNE_TRASH, which this step owns.
 WORKTREES="$HOME/worktrees"
+PRUNE_TRASH="$HOME/.local/state/maintenance/prune-trash"
+# A run stopped during a delete leaves its entry in the trash; the next run
+# deletes it. Only entries in the trash go, never a path under ~/worktrees.
+if [ -d "$PRUNE_TRASH" ]; then
+  if ! st_step 60 find "$PRUNE_TRASH" -mindepth 1 -maxdepth 1 -print > "$TMPD/trash"; then
+    finding "build output prune: could not list all of $PRUNE_TRASH"
+  fi
+  while IFS= read -r entry; do
+    if [ "$APPLY" -eq 0 ]; then
+      action "[dry-run] would remove $entry, left in the prune trash"
+    elif st_step 600 rm -rf "$entry"; then
+      action "removed $entry, left in the prune trash"
+    else
+      finding "build output prune: could not remove $entry"
+    fi
+  done < "$TMPD/trash"
+fi
 if [ -d "$WORKTREES" ]; then
   TARGETS="$TMPD/targets"
   # A walk that fails partway still listed real folders; each is checked
@@ -421,7 +435,7 @@ if [ -d "$WORKTREES" ]; then
     fi
     [ -z "$recent" ] || continue
     # An old mtime is no proof cargo is idle: a build can take its lock after
-    # the probe above. So, just before the delete, a process that holds the
+    # the probe above. So, just before the rename, a process that holds the
     # folder or a .cargo-lock in it keeps it. lsof exits 1 and prints nothing
     # when no process holds them; any other answer is unknown, and keeps it.
     if ! locks=$(st_step 60 find "$t" -maxdepth 3 -name .cargo-lock -type f); then
@@ -447,10 +461,27 @@ LOCKS
     fi
     if [ "$APPLY" -eq 0 ]; then
       action "[dry-run] would remove idle build output $t (untouched 3 days)"
-    elif st_step 600 rm -rf "$t"; then
+      continue
+    fi
+    # One rename takes target/ out of cargo's path: a cargo that starts after
+    # it makes a fresh target/ and never sees the files being deleted.
+    # rename(2), not mv: mv copies across volumes, and a copy is the long
+    # window the rename closes. A rename that fails keeps the folder.
+    # ponytail: a cargo that takes its lock between lsof and the rename, one
+    # syscall, fails that build once; the next build makes target/ again.
+    if ! { mkdir -p "$PRUNE_TRASH" && bin=$(mktemp -d "$PRUNE_TRASH/XXXXXXXX"); } 2> "$TMPD/rename.err"; then
+      finding "build output prune: could not make a folder in $PRUNE_TRASH; kept $t"
+      continue
+    fi
+    if ! perl -e 'rename($ARGV[0], $ARGV[1]) or die "$!\n"' "$t" "$bin/target" 2> "$TMPD/rename.err"; then
+      finding "build output prune: could not move $t into $PRUNE_TRASH ($(cat "$TMPD/rename.err")); kept"
+      rmdir "$bin" 2>/dev/null || true
+      continue
+    fi
+    if st_step 600 rm -rf "$bin"; then
       action "removed idle build output $t (untouched 3 days)"
     else
-      finding "build output prune: could not remove $t"
+      finding "build output prune: could not finish deleting $t; the next run deletes $bin"
     fi
   done < "$TARGETS"
 fi

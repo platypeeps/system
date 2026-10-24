@@ -60,11 +60,15 @@ keep state in them), and idle build output in worktrees (sd:5994).
 or 3, that nothing wrote for 3 days; `check` names them. Only a folder
 holding cargo's `CACHEDIR.TAG` counts, and no link is followed; the
 checkout and its commits stay. An old time is no proof cargo is idle,
-so just before the delete `lsof` asks whether a process holds the
+so just before the rename `lsof` asks whether a process holds the
 folder or a `.cargo-lock` in it; a holder, or an answer that is not a
-clean no, keeps the folder. The delete runs in place: a stopped one
-leaves a partial `target/`, which cargo rebuilds. A probe that fails is
-a finding, and the folder stays.
+clean no, keeps the folder. One rename(2) then moves `target/` into
+`~/.local/state/maintenance/prune-trash/`, and the delete runs there: a
+cargo that starts during it makes a fresh `target/`. A rename that
+fails (another volume) keeps the folder; nothing is copied. A run
+stopped during a delete leaves its entry in the trash, and the next run
+deletes entries there, never a path under `~/worktrees`. A probe that
+fails is a finding, and the folder stays.
 The walks and the delete run under `lib/bounded.sh`'s `st_step`.
 
 ## uv cache prune at login

@@ -27,6 +27,7 @@ class TargetPruneTest(Harness):
     def setUp(self):
         super().setUp()
         self.worktrees = self.tmp / "home" / "worktrees"
+        self.trash = self.tmp / "home" / ".local" / "state" / "maintenance" / "prune-trash"
         # lsof's answer for "nobody holds these": exit 1, nothing printed.
         self.lsof_calls = self.tmp / "lsof-calls"
         self.lsof("exit 1\n")
@@ -98,7 +99,7 @@ class TargetPruneTest(Harness):
     def test_a_target_a_process_holds_stays(self):
         # sd:5994 review: an old mtime is no proof cargo is not using the
         # folder; a build can take its lock after the idle probe. Just
-        # before the delete, a holder of the folder or a .cargo-lock keeps it.
+        # before the rename, a holder of the folder or a .cargo-lock keeps it.
         self.lsof('echo 4242\nexit 0\n')
         _checkout, target = self.cargo_target("example-held")
         run = self.maintenance("# nothing to check\n")
@@ -136,6 +137,55 @@ class TargetPruneTest(Harness):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertTrue((checkout / "notes.txt").is_file(), run.stdout + run.stderr)
 
+    def test_a_cargo_that_starts_during_the_delete_keeps_its_new_target(self):
+        # sd:5994 review round 3: rm -rf walks target/ for minutes, and a
+        # cargo can take its lock meanwhile. The stub rm stands in for that
+        # cargo: before the delete runs, it makes target/debug/.cargo-lock
+        # again. The delete must not reach the new target/.
+        _checkout, target = self.cargo_target("example-restart")
+        mark = self.tmp / "cargo-started"
+        _stub(self.bin / "rm", f'''if [ ! -e "{mark}" ]; then
+  : > "{mark}"; mkdir -p "{target}/debug" && : > "{target}/debug/.cargo-lock"
+fi
+exec /bin/rm "$@"
+''')
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue(mark.exists(), run.stdout + run.stderr)
+        self.assertTrue((target / "debug" / ".cargo-lock").is_file(), run.stdout + run.stderr)
+        self.assertFalse((target / "CACHEDIR.TAG").exists())
+        self.assertEqual(list(self.trash.iterdir()), [])
+
+    def test_a_leftover_in_the_trash_goes_and_worktrees_stay(self):
+        # A run stopped during a delete leaves its entry in the trash. The
+        # next run deletes entries there and nothing under ~/worktrees.
+        leftover = self.trash / "Ab12Cd34" / "target"
+        (leftover / "debug").mkdir(parents=True)
+        (leftover / "debug" / "example-0123").write_bytes(b"\0")
+        checkout, target = self.cargo_target("example-fresh", idle=60)
+        aside = self.worktrees / "x" / "target.idle-prune"
+        aside.mkdir(parents=True)
+        (aside / "notes.txt").write_text("uncommitted\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertFalse((self.trash / "Ab12Cd34").exists(), run.stdout + run.stderr)
+        self.assertIn(f"- removed {self.trash / 'Ab12Cd34'}, left in the prune trash", run.stdout)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file())
+        self.assertTrue((checkout / "Cargo.toml").is_file())
+        self.assertTrue((aside / "notes.txt").is_file())
+
+    def test_a_target_that_cannot_be_moved_stays_and_is_never_copied(self):
+        # rename(2) or nothing: mv would copy across volumes, and a copy is
+        # the long window the trash exists to close.
+        checkout, target = self.cargo_target("example-stuck")
+        checkout.chmod(0o555)
+        self.addCleanup(checkout.chmod, 0o755)
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file())
+        self.assertIn(f"- build output prune: could not move {target} into {self.trash}", run.stdout)
+        self.assertEqual(list(self.trash.rglob("CACHEDIR.TAG")), [])
+
     def test_an_idle_probe_that_fails_keeps_the_target_and_says_so(self):
         # A failed probe is no answer: it is not proof the folder is idle.
         _stub(self.bin / "find", 'case " $* " in *" -mmin "*) echo "find: probe failed" >&2; exit 1 ;; esac\n'
@@ -153,7 +203,7 @@ class TargetPruneTest(Harness):
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {self.worktrees} .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {target} -mmin -4320 .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] lsof -t -- {target} .* \(bound \d+s\)")
-        self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {target} \(bound \d+s\)")
+        self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {self.trash}/\S+ \(bound \d+s\)")
         self.assertNotIn("[step ", run.stdout)
 
     def test_no_worktrees_folder_is_a_clean_run(self):
