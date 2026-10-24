@@ -32,8 +32,9 @@ no answer is a reason to stay, never a pass.
   that says so, not a refusal of the area. A folder on a network mount
   (sd:5726: smbfs, nfs, afp, webdav, by one `mount`) gets no `du`, which
   ran past 120 s on an SMB share: one `df -kP <folder>` gives the share's
-  use instead. A mount table that did not answer measures no folder: none
-  is known to be local;
+  use instead. A local folder's `df -kP` runs before its `du`, and its
+  drive's use stands in when `du` does not finish (sd:5879). A mount table
+  that did not answer measures no folder: none is known to be local;
 - registered worktrees whose `HEAD` is in `origin/HEAD` and that still hold
   `target/`, `node_modules/` or `.venv/` (the 2026-09-25 rule: delete build
   output once the PR merges). Presence only: sizing build output needs a
@@ -418,20 +419,22 @@ def _network(mounts: dict[str, str] | None, root: Path) -> tuple[str, str] | Non
     return (point, mounts[point]) if point and mounts[point] in NETWORK_TYPES else None
 
 
-def _share(walk: Walk, root: Path, mount: tuple[str, str]) -> dict:
-    """A network folder's entry: the share's use from one `df -kP`, and no folders."""
-    entry = {"root": str(root), "folders": [], "error": "", "network": None}
+def _df(walk: Walk, root: Path, where: str) -> tuple[dict | None, str]:
+    """The use of the file system that holds `root`, from one `df -kP`, or None and why it was not read."""
     done = walk.run(["df", "-kP", str(root)], spare=True)
     if done is None:
-        entry["error"] = f"df did not finish inside the Disk budget on the {mount[1]} share"
-        return entry
+        return None, f"df did not finish inside the Disk budget on {where}"
     fields = (done.stdout.strip().splitlines() or [""])[-1].split()
     if done.returncode != 0 or len(fields) < 6 or not all(field.isdigit() for field in fields[1:4]):
-        entry["error"] = (done.stderr.strip().splitlines() or [f"df exited {done.returncode} on the {mount[1]} share"])[-1]
-        return entry
-    entry["network"] = {"type": mount[1], "mount": " ".join(fields[5:]), "size_kb": int(fields[1]),
-                        "used_kb": int(fields[2]), "avail_kb": int(fields[3])}
-    return entry
+        return None, (done.stderr.strip().splitlines() or [f"df exited {done.returncode} on {where}"])[-1]
+    return {"mount": " ".join(fields[5:]), "size_kb": int(fields[1]), "used_kb": int(fields[2]),
+            "avail_kb": int(fields[3])}, ""
+
+
+def _share(walk: Walk, root: Path, mount: tuple[str, str]) -> dict:
+    """A network folder's entry: the share's use from one `df -kP`, and no folders."""
+    use, error = _df(walk, root, f"the {mount[1]} share")
+    return {"root": str(root), "folders": [], "error": error, "network": use and {"type": mount[1], **use}}
 
 
 def _storage(walk: Walk, roots: list[Path]) -> list[dict]:
@@ -452,9 +455,14 @@ def _storage(walk: Walk, roots: list[Path]) -> list[dict]:
         elif not root.is_dir():
             entry["error"] = "the folder does not exist or is not mounted"
         else:
+            # sd:5879: du on a 2.1 TB local drive cannot finish inside the budget, so the drive's use, read first
+            # while the budget holds, stands in when it does not.
+            drive, _ = _df(walk, root, "the drive")
             done = walk.run(["du", "-k", "-d", "1", str(root)], spare=True)
             if done is None:
                 entry["error"] = "du did not finish inside the Disk budget"
+                if drive:
+                    entry.update(error="", drive=drive)
             else:
                 for line in done.stdout.splitlines():
                     size, _, name = line.partition("\t")

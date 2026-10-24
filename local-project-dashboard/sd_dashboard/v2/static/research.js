@@ -419,7 +419,7 @@ function drawClaims(p, s) {
       <span class="g g-${VERDICT[x.s][1]}" title="${claimTip(c, x)}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
       <button type="button" aria-describedby="claim-type-${x.s}">${x.text}</button>
       <span class="meta"><span>${x.doc}:${x.line}</span>${x.keys.map(k => chip(s, k))}</span></li>`)}</ul>${
-    c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown. ${c.moreError ? `The next claims were not read: ${c.moreError}. ` : ''}<button type="button" class="btn" data-more-claims${c.loading ? html` disabled` : ''}>${c.loading ? 'Reading…' : 'Show more'}</button></p>` : ''}${unread}`);
+    c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown. ${c.moreError ? `The next claims were not read: ${c.moreError}. ` : ''}<button type="button" class="linkbtn" data-more-claims${c.loading ? html` disabled` : ''}>${c.loading ? 'Reading…' : 'Show more'}</button></p>` : ''}${unread}`);
   document.getElementById('claims-for').textContent = `· ${plural(c.total, 'claim')}`;
 }
 // Show more (past the reader's print bound): the next claims, from the count already held, appended to the cached map.

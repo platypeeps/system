@@ -234,6 +234,32 @@ class PortListeners(unittest.TestCase):
                     if rows:
                         self.assertEqual(states["9101"], "LISTEN", output)
 
+    # sd:5840: the one `docker ps` also lists the running containers for the dashboard's Health > Containers.
+    def docker(self, body):
+        stub = self.bin / "docker"
+        stub.write_text("#!/bin/sh\n" + body)
+        stub.chmod(0o755)
+
+    def test_the_one_docker_ps_lists_each_running_container(self):
+        self.docker('[ "$1 $2" = "ps --no-trunc" ] || exit 91\n'
+                    "printf 'alpha\\tex/alpha:1\\tUp 2 hours\\talpha\\t/work/alpha\\t/host_mnt/work/alpha/data,alpha_vol\\n'\n"
+                    "printf 'loose\\tex/loose\\tUp 5 minutes\\t\\t\\t\\n'\n")
+        states, output = self.candidates({"rows": []})
+        self.assertIn("  DOCKER  read: 2 running\n", output)
+        self.assertIn("  CONTAINER\talpha\tex/alpha:1\tUp 2 hours\talpha\t/work/alpha\t"
+                      "/host_mnt/work/alpha/data,alpha_vol\n", output)
+        self.assertIn("  CONTAINER\tloose\tex/loose\tUp 5 minutes\t\t\t\n", output)
+        self.assertRegex(output, r"\+ local-alpha +9101 9103 +running")
+
+    def test_a_docker_ps_that_fails_is_unknown_with_its_reason_and_no_stderr(self):
+        self.docker('echo "SECRET daemon detail" >&2\nexit 1\n')
+        _, output = self.candidates({"rows": []})
+        self.assertIn("  DOCKER  unknown: docker ps failed; the daemon is not running or not reachable\n", output)
+        self.assertNotIn("CONTAINER\t", output)
+        (self.bin / "docker").unlink()
+        _, output = self.candidates({"rows": []})
+        self.assertIn("  DOCKER  unknown: docker is not installed\n", output)
+
 
 if __name__ == "__main__":
     unittest.main()

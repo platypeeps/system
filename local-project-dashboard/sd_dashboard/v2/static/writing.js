@@ -265,12 +265,12 @@ addEventListener('DOMContentLoaded', () => {
   }
   function askReason(p, to) {
     const opts = p.corrections;
-    put(dlg, html`<form method="dialog" class="dlg-form"><h2 id="dlg-h">Correct #${p.id}</h2>
+    put(dlg, html`<form method="dialog" class="dlg-form"><h2 id="dlg-h">Correct #${p.id}</h2>${window.shell.closeX}
       <p class="why">A correction sends the piece back and records why. Its review checks must be renewed afterwards.</p>
       <label class="label" for="to-in">Back to</label><select id="to-in">${opts.map(s => html`<option value="${s}"${s === (to || opts.at(-1)) ? html` selected` : ''}>${SL[s]}</option>`)}</select>
       <label class="label" for="why-in">Reason</label><textarea id="why-in" rows="3" required></textarea>
       <div class="cli"><code id="corr-cli"></code></div>
-      <div class="actions"><button class="btn quiet" value="cancel" type="submit" formnovalidate>Keep it</button><button class="btn" value="ok" type="submit">Correct</button></div></form>`);
+      <div class="actions"><button class="btn quiet" value="cancel" type="submit" formnovalidate data-cancel>Keep it</button><button class="btn" value="ok" type="submit">Correct</button></div></form>`);
     const sel = dlg.querySelector('#to-in'), why = dlg.querySelector('#why-in'), cli = dlg.querySelector('#corr-cli');
     const upd = () => { cli.textContent = `sd writing stage --piece ${p.piece} --stage ${sel.value} --correct --reason ${shq(why.value)}`; };
     sel.addEventListener('change', upd); why.addEventListener('input', upd); upd();

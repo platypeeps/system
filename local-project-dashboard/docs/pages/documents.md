@@ -12,8 +12,10 @@ build, node_modules, dist and storage (sd:2417). A `research.conf.py` that
 computes its data is read from the `docs/dashboard/research.json` its last
 render wrote, as on Research (sd:5666); with no manifest, or one from an older
 config, Details and the state slot say so and name `sd-research-kit render`.
-Open document opens the served page. Render is
-copy only. Request a document is copy only: the page files no item. Pin, hide
+Open document opens the served page. Render (sd:5884) runs
+the render as Research's does: it posts `/api/research/render` with the
+root's checkout key, one run at a time, and reads the list again when the run
+ends. Request a document is copy only: the page files no item. Pin, hide
 and tag (sd:3428) are the workflow database's `view` state, keyed
 `<root key>/<file>`: each row carries `pinned`, `hidden` and `tags`, and each
 command posts `/api/documents/view` with the fields it changes, offers Undo

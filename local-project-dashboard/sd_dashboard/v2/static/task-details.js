@@ -374,8 +374,18 @@
         consequence: () => 'Each task closes as done, with a cancelled receipt and your reason. No sd verb takes it back.',
         run: (o, v) => { const t = must(o);
           return landing(write(t.key, x => `/api/items/${x.id}/cancel-task`, { reason: v.reason }), () => `${label(t)} closed · sd task cancel ${t.id} --reason ${window.shell.shq(v.reason)}`); } },
+      // Park (sd:5906) sets parked_at to now through the item edit route, by hand, as the nightly prune does; its Undo
+      // unparks. The route takes a parked_at only from a pack with sd task edit --park (pack sd:5905).
+      { id: 'item.park', on: 'item', label: 'Park', risk: 'undo', executes: true, bulk: true, icon: 'archive',
+        when: o => { const t = T(o); return !t ? 'the task is no longer listed' : t.parked ? 'it is already parked' : t.status === 'done' ? 'it is done' : EDITABLE(t) || noEdit(t); },
+        cli: o => rowOr(o, t => `sd task edit ${t.id} --park`),
+        sends: o => `POST /api/items/${T(o).id} {parked_at: <now>}`,
+        run: o => { const t = must(o);
+          return landing(write(t.key, x => `/api/items/${x.id}`, { parked_at: new Date().toISOString() }), () => `${label(t)} parked · sd task edit ${t.id} --park`,
+            v => write(t.key, x => `/api/items/${x.id}`, { parked_at: null }, { rev: v.revision })); },
+        undo: undoOf },
       // Unpark (sd:3012) clears parked_at through the item edit route, as the item page's Unpark does (sd:3007). No Undo:
-      // only the nightly prune parks, so no write takes it back.
+      // Park is a separate command, so an unpark is taken back by Park.
       { id: 'item.unpark', on: 'item', label: 'Unpark', risk: 'safe', executes: true, bulk: true, icon: 'archive-restore',
         when: o => { const t = T(o); return !t ? 'the task is no longer listed' : !t.parked ? 'it is not parked' : true; },
         cli: o => rowOr(o, t => `sd task edit ${t.id} --unpark`),
@@ -520,17 +530,17 @@
         <h2>${t.title}</h2>
         ${host.note?.(t) || ''}
         <dl class="fields">
-          <dt>Id</dt><dd>#${t.id}</dd>
-          <dt><label for="det-title">Title</label></dt><dd><input id="det-title" class="fld" value="${t.title}" required${dis}></dd>
-          <dt><label for="det-status">Status</label></dt><dd><select id="det-status" class="fld"${gone ? html` disabled aria-describedby="det-off"` : ''}>${STATUSES.map(([s, name]) => { const L = legal(t, s);
+          <dt>Id${hint('Id', 'The item\'s number in the workflow database; every sd command names the item by it.')}</dt><dd>#${t.id}</dd>
+          <dt><label for="det-title">Title</label>${hint('Title', 'The name lists, the board and briefs show for this item.')}</dt><dd><input id="det-title" class="fld" value="${t.title}" required${dis}></dd>
+          <dt><label for="det-status">Status</label>${hint('Status', 'Where the work stands; a status this item cannot move to is off, with its reason.')}</dt><dd><select id="det-status" class="fld"${gone ? html` disabled aria-describedby="det-off"` : ''}>${STATUSES.map(([s, name]) => { const L = legal(t, s);
             return html`<option value="${s}"${s === t.status ? html` selected` : L.ok ? '' : html` disabled title="${L.reason}"`}>${name}</option>`; })}${SLABEL[t.status] ? '' : html`<option value="${t.status}" selected disabled>${slabel(t.status)}</option>`}</select></dd>
-          <dt><label for="det-p">Priority</label></dt><dd><select id="det-p" class="fld"${dis}>${t.p ? '' : html`<option value="" selected>not recorded</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select></dd>
-          <dt><label for="det-due">Due</label></dt><dd><input id="det-due" class="fld" type="date" value="${String(t.due || '')}"${dis}>${t.due || t.overdue ? html` <span class="why">${t.due ? dt : 'overdue · date not recorded'}</span>` : ''}</dd>
+          <dt><label for="det-p">Priority</label>${hint('Priority', 'P1 is the most important and P4 the least; P1 and P2 count as important.')}</dt><dd><select id="det-p" class="fld"${dis}>${t.p ? '' : html`<option value="" selected>not recorded</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select></dd>
+          <dt><label for="det-due">Due</label>${hint('Due', 'The date the work is due; a date within 7 days makes the item urgent.')}</dt><dd><input id="det-due" class="fld" type="date" value="${String(t.due || '')}"${dis}>${t.due || t.overdue ? html` <span class="why">${t.due ? dt : 'overdue · date not recorded'}</span>` : ''}</dd>
           ${repeatFields(t, off)}
-          <dt><label for="det-repo">Repo</label></dt><dd><select id="det-repo" class="fld"${t.kind === 'work' && !off ? html` disabled title="A work item belongs to the checkout its folder is in."` : dis}>${repoOptions(t, null)}</select></dd>
-          <dt>Urgent</dt><dd>${urgent(t) ? 'yes' : 'no'} <span class="why">(derived)</span></dd>
-          <dt><label for="det-q">Quadrant</label></dt><dd>${t.status === 'done' ? 'not placed' : html`<select id="det-q" class="fld"${dis}>${QUADS.map(q => html`<option value="${q[0]}"${q[0] === quadOf(t) ? html` selected` : ''}>${q[1]}</option>`)}</select>`}</dd>
-          ${t.assignment ? html`<dt>Assignment</dt><dd>${t.assignment}</dd>` : ''}
+          <dt><label for="det-repo">Repo</label>${hint('Repo', 'The checkout this item belongs to; a work item keeps the one its folder is in.')}</dt><dd><select id="det-repo" class="fld"${t.kind === 'work' && !off ? html` disabled title="A work item belongs to the checkout its folder is in."` : dis}>${repoOptions(t, null)}</select></dd>
+          <dt>Urgent${hint('Urgent', 'Set by the dashboard from the due date and the item\'s state, not by hand.')}</dt><dd>${urgent(t) ? 'yes' : 'no'} <span class="why">(derived)</span></dd>
+          <dt><label for="det-q">Quadrant</label>${hint('Quadrant', 'Where urgency and importance place the item; a move sets its priority or due date.')}</dt><dd>${t.status === 'done' ? 'not placed' : html`<select id="det-q" class="fld"${dis}>${QUADS.map(q => html`<option value="${q[0]}"${q[0] === quadOf(t) ? html` selected` : ''}>${q[1]}</option>`)}</select>`}</dd>
+          ${t.assignment ? html`<dt>Assignment${hint('Assignment', 'The state of the runner assignment working on this item.')}</dt><dd>${t.assignment}</dd>` : ''}
         </dl>
         ${off ? html`<p class="why" id="det-off">The fields are off: ${off}.</p>` : ''}
         <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>` : act}
@@ -553,9 +563,9 @@
       const why = off || (RECURS.includes(t.kind) ? '' : `a ${t.kind} item cannot recur`), dis = why ? html` disabled title="${why}"` : '';
       const rules = t.recurrence && !REPEATS.some(r => r[0] === t.recurrence) ? [...REPEATS, [t.recurrence, t.recurrence]] : REPEATS;
       const note = opens(t) || (!t.due && !repeats(t) && !why ? 'needs a due date' : '');
-      return html`<dt><label for="det-recur">Repeat</label></dt><dd><select id="det-recur" class="fld"${dis}><option value=""${t.recurrence ? '' : html` selected`}>Does not repeat</option>${
+      return html`<dt><label for="det-recur">Repeat</label>${hint('Repeat', 'How often the item comes back after it is done; it needs a due date.')}</dt><dd><select id="det-recur" class="fld"${dis}><option value=""${t.recurrence ? '' : html` selected`}>Does not repeat</option>${
         rules.map(([v, name]) => html`<option value="${v}"${v === t.recurrence ? html` selected` : ''}>${name}</option>`)}</select>${note ? html` <span class="why">${note}</span>` : ''}</dd>${
-        host.lead?.() && repeats(t) ? html`<dt><label for="det-lead">Lead</label></dt><dd><select id="det-lead" class="fld"${dis}>${
+        host.lead?.() && repeats(t) ? html`<dt><label for="det-lead">Lead</label>${hint('Lead', 'How many days before the due date the next one opens.')}</dt><dd><select id="det-lead" class="fld"${dis}>${
           [...new Set([...LEADS, t.lead ?? 0])].sort((a, b) => a - b).map(n => html`<option value="${n}"${n === (t.lead ?? 0) ? html` selected` : ''}>${n ? `${plural(n, 'day')} early` : 'On the due date'}</option>`)}</select></dd>` : ''}`;
     }
     // The repos a task can move to: every registered one (the capture's list) once read, else the ones these rows name.
@@ -661,7 +671,7 @@
       const lost = x.value && x.value.startsWith('of:') && !x.choices.some(c => c.value === x.value);
       return html`<h3><label for="det-exp">Experiments</label> ${src('Experiments', `sd task edit ${t.id} --experiment · fields.experiments; the row's link shows under Published once a drain records it`)}</h3>
         <select id="det-exp" class="fld"${off}>${x.value ? '' : html`<option value="" selected>not projected</option>`}${opt('yes', 'experiment')}${x.choices.map(c => opt(c.value, c.label))}${lost ? opt(x.value, `task of #${x.value.slice(3)}`) : ''}${x.value ? opt('off', 'off, keep the row') : ''}</select>
-        ${x.value ? html`<dl class="fields"><dt><label for="det-exp-row">Row</label></dt><dd><input id="det-exp-row" class="fld" value="${x.row || ''}" placeholder="a page id or URL"${off}></dd></dl>` : ''}
+        ${x.value ? html`<dl class="fields"><dt><label for="det-exp-row">Row</label>${hint('Row', 'The page id or URL of this item\'s row in the experiments database.')}</dt><dd><input id="det-exp-row" class="fld" value="${x.row || ''}" placeholder="a page id or URL"${off}></dd></dl>` : ''}
         ${x.reason ? html`<p class="why" id="det-exp-off">${x.reason}.</p>` : ''}`;
     }
     // build (sd:3977): a vault base row's stage, declared fields, body and its section of the vault mirror page.
@@ -670,11 +680,15 @@
       const b = d.base; if (!b) return '';
       const off = b.reason || (!live(t.key) && 'this task was not read again after the change') || (!b.stages.length && 'no move leaves this stage');
       return html`<h3>Base · ${b.kind} ${src('Base', `sd-db records render ${b.kind} · the kind's rules from sd plugin list --json`)}</h3>
-        <dl class="fields"><dt><label for="det-stage">Stage</label></dt><dd><select id="det-stage" class="fld"${off ? html` disabled aria-describedby="det-base-off"` : ''}><option value="${b.stage}" selected>${b.stage}</option>${b.stages.map(s => html`<option value="${s}">${s}</option>`)}</select></dd>
-          ${b.declared.map(f => html`<dt>${f}</dt><dd>${Array.isArray(b.fields[f]) ? b.fields[f].join(', ') : b.fields[f] ?? '—'}</dd>`)}
-          <dt>Mirror</dt><dd>${!b.mirror ? 'no vault named' : b.mirror.url ? html`<a href="${b.mirror.url}" target="_blank" rel="noopener">its section</a>` : html`<code>${b.mirror.path}</code>`}</dd></dl>
+        <dl class="fields"><dt><label for="det-stage">Stage</label>${hint('Stage', 'The row\'s stage in its base; a change moves the row.')}</dt><dd><select id="det-stage" class="fld"${off ? html` disabled aria-describedby="det-base-off"` : ''}><option value="${b.stage}" selected>${b.stage}</option>${b.stages.map(s => html`<option value="${s}">${s}</option>`)}</select></dd>
+          ${b.declared.map(f => html`<dt>${f}${hint(f, `A field the ${b.kind} base declares, as the row holds it.`)}</dt><dd>${Array.isArray(b.fields[f]) ? b.fields[f].join(', ') : b.fields[f] ?? '—'}</dd>`)}
+          <dt>Mirror${hint('Mirror', 'The section of the vault mirror page that shows this row.')}</dt><dd>${!b.mirror ? 'no vault named' : b.mirror.url ? html`<a href="${b.mirror.url}" target="_blank" rel="noopener">its section</a>` : html`<code>${b.mirror.path}</code>`}</dd></dl>
         ${off ? html`<p class="why" id="det-base-off">${off}.</p>` : ''}
         ${b.body ? html`<pre class="body">${b.body}</pre>` : ''}`;
+    }
+    // sd:5903: each Details field's label carries the same help icon, with one plain sentence on what the field holds.
+    function hint(name, text) {
+      return html`<button class="help" type="button" aria-label="Help: ${name}" data-help="${text}">${ICON('circle-help')}</button>`;
     }
     // Each Details section names its read in a help icon beside its heading; pressing the icon copies the command (sd:3444).
     function src(name, s) {
@@ -723,7 +737,7 @@
     // Edit: priority and due date. Save applies both with Undo; Cancel changes nothing.
     function askEdit(t) {
       put(dateDlg, html`<form method="dialog" class="date-form">
-        <h2 id="date-h">Edit ${label(t)}</h2>
+        <h2 id="date-h">Edit ${label(t)}</h2>${window.shell.closeX}
         <label class="label" for="pri-in">Priority</label>
         <select id="pri-in">${t.p ? '' : html`<option value="" selected>not recorded</option>`}${[1, 2, 3, 4].map(v => html`<option value="${v}"${t.p === v ? html` selected` : ''}>P${v}</option>`)}</select>
         <label class="label" for="due-in">Due date</label>
@@ -733,7 +747,7 @@
         <div class="actions">
           <button class="btn" value="set" type="submit">Save</button>
           ${t.due && !repeats(t) ? html`<button class="btn quiet" value="clear" type="submit" formnovalidate>Remove due date</button>` : ''}
-          <button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button>
+          <button class="btn quiet" value="cancel" type="submit" formnovalidate data-cancel>Cancel</button>
         </div></form>`);
       const f = dateDlg.querySelector('form');
       const change = clear => { const ch = {}, p = f.querySelector('#pri-in').value, d = f.querySelector('#due-in').value; if (p && +p !== t.p) ch.p = +p; if (clear) ch.due = null; else if (d && d !== t.due) ch.due = d; return ch; };
@@ -758,7 +772,7 @@
       let n = 0; while (withinWeek({ due: plus(n + 1) }) && n < 400) n++;
       const last = plus(n), min = into ? plus(0) : plus(n + 1), max = into ? last : '';
       put(dateDlg, html`<form method="dialog" class="date-form">
-        <h2 id="date-h">${label(t)} → ${name}</h2>
+        <h2 id="date-h">${label(t)} → ${name}</h2>${window.shell.closeX}
         <p class="why">${into ? 'Urgent means due within 7 days. Pick the real deadline.' : `Not urgent means due after ${fmt(last)}. ${t.due ? `The current deadline is ${fmt(t.due)}; moving it changes the obligation.` : ''}`}</p>
         ${!into && repeats(t) ? html`<p class="why">${NO_CLEAR}</p>` : ''}
         <label class="label" for="due-in">Due date</label>
@@ -766,7 +780,7 @@
         <div class="actions">
           <button class="btn" value="set" type="submit">Set date and move</button>
           ${!into && !repeats(t) ? html`<button class="btn quiet" value="none" type="submit" formnovalidate>Remove due date</button>` : ''}
-          <button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button>
+          <button class="btn quiet" value="cancel" type="submit" formnovalidate data-cancel>Cancel</button>
         </div></form>`);
       dateDlg.onclose = () => {
         const v = dateDlg.returnValue, d = dateDlg.querySelector('#due-in').value;
@@ -780,12 +794,12 @@
     // Move to: one button per status in board order, keys 1–5 as on the board. The move runs the status command, so it keeps Undo.
     function askMove(t) {
       put(dateDlg, html`<form method="dialog" class="date-form">
-        <h2 id="date-h">Move ${label(t)} to</h2>
+        <h2 id="date-h">Move ${label(t)} to</h2>${window.shell.closeX}
         <p class="why">Now in ${slabel(t.status)}. A column this task cannot take is off and says why.</p>
         <div class="moves">${STATUSES.map(([s, name], i) => { const L = legal(t, s); return html`<div class="mv">
           <button class="btn${L.ok ? '' : ' quiet'}" type="submit" value="${s}" data-move="${s}"${L.ok ? '' : html` disabled aria-describedby="mv-${s}"`}><span>${name}</span><kbd>${i + 1}</kbd></button>
           ${L.ok ? html`<code>${cliMove(t, s)}</code>` : html`<p class="why" id="mv-${s}">${L.reason}</p>`}</div>`; })}</div>
-        <div class="actions"><button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button></div></form>`);
+        <div class="actions"><button class="btn quiet" value="cancel" type="submit" formnovalidate data-cancel>Cancel</button></div></form>`);
       const f = dateDlg.querySelector('form');
       f.addEventListener('keydown', e => { const S = STATUSES[parseInt(e.key, 10) - 1], b = S && f.querySelector(`[data-move="${S[0]}"]`); if (b && !b.disabled) { e.preventDefault(); b.click(); } });
       dateDlg.onclose = () => {
@@ -797,7 +811,7 @@
     }
     document.addEventListener('adversarial:run', e => { if (e.detail.key === `task:${byKey(selected())?.id}`) renderDetails(); });
     return { shape, label, opens, STATUSES, SLABEL, slabel, QUADS, TODAY, plus, fmt, days, withinWeek, quadOf, dueText, legal, quadChange,
-      EDITABLE, repeats, DET, live, objectOf, putAll, readDet, redrawDet, adopt, write, renderDetails, fieldChange, move, toQuad, askEdit, STATUS_CMD };
+      EDITABLE, repeats, DET, live, objectOf, putAll, readDet, redrawDet, adopt, write, renderDetails, fieldChange, move, toQuad, askEdit, STATUS_CMD, COMPLETE };
   }
 
   window.taskDetails = { shape, attach };

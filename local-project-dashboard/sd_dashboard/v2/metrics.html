@@ -2,7 +2,7 @@
 <!--
   Metrics (sd:2119), at /metrics. Built from the design source's products/system/designs/pages/metrics.{html,css,js}.
   Data: /api/metrics (metrics_screen.document: sd usage's month, the 7-day window meter per day, the week's numbers,
-  the provider scorecard, skill use, age in status and observed activity), read when the page opens and
+  the provider scorecard, age in status and observed activity), read when the page opens and
   on Refresh, and the merge lane's gate runs per repository with the flaky heads (sd:5473). A part that did not read is
   unknown with its reason. By model has no reader and shows as unknown. Writes: Cap and Configure post /api/bills/<bill>/cap and /api/providers/configure with the
   registry revision the page read (sd:3387). Nothing here is sample data.
@@ -41,7 +41,7 @@
       <button class="chip" type="button" aria-disabled="true" aria-pressed="false" title="Most sources here are daily or weekly; 24h would be one reading">24h</button>
       <button class="chip" type="button" aria-pressed="true">7d</button>
       <button class="chip" type="button" aria-disabled="true" aria-pressed="false" title="30d switches on once the cost ledger holds 30 days of rows">30d</button>
-      <button class="help" type="button" aria-label="Help: time range" data-help="<b>One range for the page.</b> The trend and the week read 7 days. Skill use reads four Monday-start weeks. Spend and Usage stay calendar-month, as <code>sd usage</code> reads them."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+      <button class="help" type="button" aria-label="Help: time range" data-help="<b>One range for the page.</b> The trend and the week read 7 days. Spend and Usage stay calendar-month, as <code>sd usage</code> reads them."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
     </div>
   </div>
 
@@ -90,16 +90,6 @@
       <h3 class="sub gap" id="flaky-h">Flaky tests, by head</h3>
       <div class="scroll-x"><table class="tbl" id="flaky-table" aria-labelledby="flaky-h"><thead><tr><th scope="col">Item · repository</th><th scope="col">Head</th><th scope="col" class="hide-sm">Gate failed</th><th scope="col">Passed</th></tr></thead><tbody id="flaky-body"></tbody></table></div>
       <p class="foot-note">Per head, not per test: no store names the test that failed.</p>
-    </section>
-  </div>
-
-  <div id="view-skills" aria-label="Skills" hidden>
-    <section class="panel" id="skill-use" aria-labelledby="su-h">
-      <div class="panel-head"><div><h2 id="su-h">Skill use</h2><p id="su-sub"></p></div></div>
-      <div class="cols">
-        <div><p class="sub">All skills, per week</p><ul class="hbars" id="su-weeks"></ul></div>
-        <div><p class="sub">Most used this week</p><ul class="hbars" id="su-top"></ul></div>
-      </div>
     </section>
   </div>
 

@@ -79,7 +79,13 @@ def ports_snapshot():
                          {"name": "svc-b", "ports": ["9020"], "state": "stopped", "mark": "."}],
             "listeners": {"9010": {"state": "listening", "source": "lsof", "holder": "svc", "pid": 42},
                           "9020": {"state": "unknown"}},
-            "observed": {"complete": False, "ports": {"5000": [{"pid": 7, "command": "other", "address": "*:5000"}]}}}
+            "observed": {"complete": False, "ports": {"5000": [{"pid": 7, "command": "other", "address": "*:5000"}]}},
+            # sd:5840: the same docker ps's running containers, which Health > Containers lists.
+            "containers": {"read": True, "reason": "", "rows": [
+                {"name": "poc-db-1", "image": "ex/pgvector:pg16", "status": "Up 2 hours (healthy)", "project": "poc",
+                 "workdir": "/checkouts/group/experiment",
+                 "mounts": ["/host_mnt/checkouts/group/experiment/var/setup", "poc_dbdata", "/elsewhere/cache"]},
+                {"name": "loose", "image": "ex/loose", "status": "Up 5 minutes", "project": "", "workdir": "", "mounts": []}]}}
 
 
 def flag(check, value, flagged):
@@ -292,9 +298,9 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual([(a["id"], a["read"]) for a in areas],
                          [("disk", True), ("cred", True), ("wt", True),
                           ("br", True), ("dep", True), ("sec", True), ("ports", True), ("prot", True), ("svc", True),
-                          ("mir", True), ("doc", True)])
+                          ("ctr", True), ("mir", True), ("doc", True)])
         for area in areas:
-            if area["id"] not in ("wt", "br", "ports", "prot", "svc", "cred", "dep", "sec", "mir", "doc"):
+            if area["id"] not in ("wt", "br", "ports", "prot", "svc", "ctr", "cred", "dep", "sec", "mir", "doc"):
                 self.assertTrue(area["missing"], f"{area['id']} names nothing it does not read")
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
@@ -332,6 +338,26 @@ class TheDocument(Collectors, ScreenCase):
                                        "restart": {"allowed": False, "reason": "service is already unloaded; use Start to load it"}})
         self.assertEqual(rows["svc:com.example.gamma"]["detail"], "last exit 78")
         self.assertEqual(rows["svc:com.example.alpha"]["facts"]["PID"], "101")
+
+    def test_a_failed_run_once_or_scheduled_agent_is_a_warning_row_with_no_controls(self):
+        """sd:5882: pack sd:5880 makes a run-once agent `startup`; a failed run must not vanish, a healthy one stays off."""
+        killed = dict(service_of("com.example.sweep", "failed", category="scheduled", rev="6"),
+                      last_signal=9, reason="last run ended in SIGKILL")
+        _, rows = self.services(inventory={"services": [
+            service_of("com.example.alpha", "running", pid=101, start="service is already running"),
+            service_of("com.example.prune", "failed", last_exit=1, category="startup", rev="5"),
+            service_of("com.example.boot", "idle", category="startup"), killed,
+            service_of("com.example.daily", "idle", category="scheduled"),
+            service_of("com.example.sysfail", "failed", last_exit=2, scope="system", category="startup")],
+            "revision": "0" * 64})
+        self.assertEqual(list(rows), ["svc:com.example.alpha", "svc:com.example.prune", "svc:com.example.sweep"])
+        prune, sweep = rows["svc:com.example.prune"], rows["svc:com.example.sweep"]
+        self.assertEqual((prune["state"], prune["type"], prune["what"], prune["detail"]),
+                         ("warning", "launch agent", "prune · failed", "last exit 1"))
+        self.assertEqual((prune["kind"], prune["facts"]["Last exit"]), ("Run-once user LaunchAgent", "1"))
+        self.assertNotIn("can", prune)
+        self.assertEqual((sweep["state"], sweep["kind"], sweep["detail"]),
+                         ("warning", "Scheduled user LaunchAgent", "last run ended in SIGKILL"))
 
     def test_the_dashboard_row_is_stale_when_it_serves_another_commit_and_gives_the_kickstart_line(self):
         """sd:3707 with sd:3528: the row asks what `dashboard.sh health` asks, and its own service is copy only."""
@@ -446,6 +472,50 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual((areas[6]["error"], bool(areas[6]["rows"])), ("", True))
         areas = self.doc(fleet=lambda area: {"root": "/checkouts", "worktrees": [{"repo": "x"}]})["areas"]
         self.assertEqual(areas[2]["error"], "fleet collector returned an incomplete sessions document")
+
+    # sd:5840: Containers lists the running containers the Ports read's docker ps saw.
+    def containers(self, ports=ports_snapshot):
+        with patch.dict(os.environ, {"REPO_ROOT": "/checkouts"}):
+            return next(area for area in self.doc(ports=ports)["areas"] if area["id"] == "ctr")
+
+    def test_containers_name_each_running_container_and_the_checkouts_it_mounts(self):
+        area = self.containers()
+        self.assertEqual(health_screen.VIEW_OF["ctr"], "machine")
+        rows = {row["id"]: row for row in area["rows"]}
+        self.assertEqual(list(rows), ["ctr:poc-db-1", "ctr:loose"])
+        db = rows["ctr:poc-db-1"]
+        self.assertEqual((db["state"], db["type"], db["what"]), ("ok", "container", "poc-db-1"))
+        self.assertEqual(db["facts"], {"Image": "ex/pgvector:pg16", "Status": "Up 2 hours (healthy)", "Compose project": "poc",
+                                       "Working dir": "/checkouts/group/experiment", "Checkouts mounted": "1"})
+        self.assertEqual(db["list"], ["/checkouts/group/experiment/var/setup"])
+        self.assertEqual(db["list_head"], "Bind mounts under /checkouts")
+        self.assertIn("/checkouts/group/experiment/var/setup", db["detail"])
+        self.assertEqual(rows["ctr:loose"]["facts"]["Compose project"], "none")
+        self.assertEqual(area["extra"], {"running": 2, "holding": 1, "root": "/checkouts"})
+
+    def test_docker_not_read_is_the_containers_error_never_an_empty_area(self):
+        def down():
+            return {**ports_snapshot(), "containers": {"read": False, "rows": [],
+                    "reason": "docker ps failed; the daemon is not running or not reachable"}}
+        area = self.containers(ports=down)
+        self.assertEqual((area["rows"], area["error"]),
+                         ([], "docker ps failed; the daemon is not running or not reachable"))
+        lamp = health_screen._lamp(area)
+        self.assertEqual(lamp["state"], "unknown")
+
+    def test_no_running_container_is_one_ok_row(self):
+        area = self.containers(ports=lambda: {**ports_snapshot(), "containers": {"read": True, "reason": "", "rows": []}})
+        self.assertEqual([(row["id"], row["state"]) for row in area["rows"]], [("ctr:none", "ok")])
+
+    def test_ports_and_containers_share_one_collection(self):
+        calls = []
+
+        def counted():
+            calls.append(1)
+            return ports_snapshot()
+        areas = {area["id"]: area for area in self.doc(ports=counted)["areas"]}
+        self.assertEqual((bool(areas["ports"]["rows"]), bool(areas["ctr"]["rows"])), (True, True))
+        self.assertEqual(len(calls), 1, "Ports and Containers ran docker ps twice")
 
     def test_a_checkout_root_that_does_not_exist_is_not_read_rather_than_healthy(self):
         # The collector answers a missing REPO_ROOT with no worktrees, which would read as "checked 0 registrations".
@@ -864,11 +934,16 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual((text, source), (None, "<config>/project-dashboard/disk.conf"))
         self.assertEqual(problem, "not read: IsADirectoryError")
 
-    def test_a_du_that_does_not_finish_is_a_row_not_a_refusal_of_the_area(self):
+    #: `df -kP <folder>` on a local drive that holds 1.5 TiB, the size du cannot walk inside the budget (sd:5879);
+    #: printf format, so the percent sign is doubled.
+    DRIVE = "/dev/disk6s1 2147483648 1610612736 536870912 75%% /Volumes/store"
+
+    def stalled_du(self, drive):
+        """The real reader on a local folder whose du does not finish; `drive` is what `df -kP <folder>` prints."""
         store = Path(self.tmp.name) / "store"
         store.mkdir()
         listed = (f"storage|{store}\n", "<config>/project-dashboard/disk.conf", "")
-        stub = self.stub("df", f"cat <<'EOF'\n{self.DF}EOF\n")
+        stub = self.stub("df", f'if [ "$1" = -kP ]; then {drive}; else cat <<\'EOF\'\n{self.DF}EOF\nfi\n')
         self.stub("du", self.stalled())
         # The walk's clock holds still, so df spends none of the 1 s however
         # long it takes to start, and du alone meets its timeout (sd:2667).
@@ -878,7 +953,21 @@ class TheDocument(Collectors, ScreenCase):
         disk = doc["areas"][0]
         self.assertFalse(self.finished.exists(), "the page waited on du instead of stopping it")
         self.assertEqual(disk["error"], "")
-        rows = {row["id"]: row for row in disk["rows"]}
+        return store, {row["id"]: row for row in disk["rows"]}
+
+    def test_a_du_that_does_not_finish_on_a_local_folder_shows_the_drives_use(self):
+        """sd:5879: du on a 2.1 TB local SSD cannot finish in the 8 s budget; the operator ruled for the drive total."""
+        store, rows = self.stalled_du(f'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n{self.DRIVE}\\n"')
+        row = rows[f"rs:{store}"]
+        self.assertEqual((row["state"], row["type"]), ("queued", "volume"))
+        self.assertEqual(row["what"], "store: drive 1.50 TiB used of 2.00 TiB, 512.0 GiB free")
+        self.assertEqual(row["detail"], f"{store} · local drive at /Volumes/store · du did not finish inside the Disk budget; "
+                                        "folders not measured")
+        self.assertIn("du did not finish", row["note"])
+        self.assertEqual(row["cli"], f"df -h {store}")
+
+    def test_a_du_that_does_not_finish_and_no_df_is_a_row_not_a_refusal_of_the_area(self):
+        store, rows = self.stalled_du("exit 1")
         self.assertEqual(rows[f"rs:{store}"]["detail"], "du did not finish inside the Disk budget")
 
     MOUNT = ("/dev/disk3s5 on / (apfs, local, journaled)\n"
@@ -1002,7 +1091,7 @@ class TheDocument(Collectors, ScreenCase):
         doc = self.doc(fleet=slow(fleet_of(TREES)), ports=slow(ports_snapshot),
                        disk=slow(scan_of(DISK)), branches=slow(scan_of(BRANCHES)))
         self.assertEqual([(area["id"], area["error"], bool(area["rows"])) for area in doc["areas"] if area["read"]],
-                         [(key, "", True) for key in ("disk", "cred", "wt", "br", "dep", "sec", "ports", "prot", "svc", "mir", "doc")])
+                         [(key, "", True) for key in ("disk", "cred", "wt", "br", "dep", "sec", "ports", "prot", "svc", "ctr", "mir", "doc")])
 
     def test_a_reader_past_the_page_budget_is_its_area_error_and_the_page_does_not_wait(self):
         # The reader answers only once the page has returned, so a page that
@@ -1489,7 +1578,7 @@ window.shell.state = (s, at) => { OUT.states.push(s); (OUT.slots = OUT.slots || 
 
 SNOOZED_TYPES = ("check", "storage folder", "build output", "volume", "worktree registrations", "unread registrations",
                  "merged branches", "merged worktrees", "port", "branch protection", "dependabot alerts", "secret scanning", "credential", "service",
-                 "dashboard service", "vault mirror")
+                 "dashboard service", "launch agent", "vault mirror")
 
 
 def summary_of(doc):
@@ -2182,7 +2271,9 @@ ANSWER = path => path === '/api/health/summary' ? [200, SUMMARY_DOC] : new Promi
         out = self.run_page("OUT.gets = [];" + switch.format(v="machine") + "R.areas = BODY().html;"
                             + switch.format(v="checkouts") + "R.back = BODY().html; R.again = OUT.gets.slice();")
         self.assertEqual(out["R"]["again"], ["/api/health/machine", "/api/health/summary"], "a view opened before was read again")
-        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["areas"]), ["disk", "ports", "svc", "doc"])
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["areas"]), ["disk", "ports", "svc", "ctr", "doc"])
+        # sd:5840: Containers heads its rows with the count and the checkouts they mount.
+        self.assertRegex(out["R"]["areas"], r"<p class=\"counts\">2 containers running · \d mount a checkout under ")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["back"]), ["wt", "br"])
 
     def test_with_no_view_named_the_first_opens_and_an_area_value_opens_its_view(self):

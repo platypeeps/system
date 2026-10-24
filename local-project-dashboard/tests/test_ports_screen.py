@@ -97,6 +97,7 @@ RECORDED_CANDIDATES = {
         '  BUSY    port 9101 held by fixture-server (pid 321) — alpha beta cannot bind it\n'
         '  CLEAR   port 9102 no TCP listener observed\n'
         '  CLEAR   port 9103 no TCP listener observed\n'
+        '  DOCKER  unknown: docker ps failed; the daemon is not running or not reachable\n'
         '  add by hand: profiles/<profile>.service  (.service is never auto-captured)\n'
         '\n'
     ),
@@ -197,6 +198,8 @@ class PortInventory(unittest.TestCase):
     def test_unavailable_docker_is_unknown_not_stopped(self):
         _, snapshot = self.collect(PORT_TEST_DOCKER_FAIL="1")
         self.assertTrue(all(row["state"] == "unknown" for row in snapshot["services"]))
+        self.assertEqual((snapshot["containers"]["read"], snapshot["containers"]["reason"]),
+                         (False, "docker ps failed; the daemon is not running or not reachable"))
         self.assertNotIn("SECRET", json.dumps(snapshot))
 
 
@@ -231,6 +234,32 @@ class PortParser(unittest.TestCase):
         snapshot = collectors.parse_ports("  LISTEN port 99 SECRET raw output\n")
         self.assertEqual(snapshot["listeners"]["99"]["state"], "unknown")
         self.assertNotIn("SECRET", json.dumps(snapshot))
+
+    # sd:5840: the CONTAINER lines of the same `docker ps` feed Health > Containers.
+    def test_each_container_line_is_a_container_and_the_docker_line_proves_the_count(self):
+        output = (self.legacy("alpha beta").replace("  add by hand", "  DOCKER  read: 2 running\n"
+                  "  CONTAINER\tlocal-alpha\tex/alpha:1\tUp 2 hours\talpha\t/work/alpha\t/host_mnt/r/a/data,alpha_vol\n"
+                  "  CONTAINER\tloose\tex/loose\tUp 5 minutes\t\t\t\n  add by hand"))
+        snapshot = collectors.parse_ports(output)
+        self.assertEqual([row["name"] for row in snapshot["services"]], ["local-alpha", "local-beta"])
+        self.assertEqual(snapshot["containers"], {"read": True, "reason": "", "rows": [
+            {"name": "local-alpha", "image": "ex/alpha:1", "status": "Up 2 hours", "project": "alpha",
+             "workdir": "/work/alpha", "mounts": ["/host_mnt/r/a/data", "alpha_vol"]},
+            {"name": "loose", "image": "ex/loose", "status": "Up 5 minutes", "project": "", "workdir": "", "mounts": []}]})
+
+    def test_an_unread_or_short_container_list_is_not_read_with_its_reason(self):
+        unread = collectors.parse_ports(self.legacy("a b").replace(
+            "  add by hand", "  DOCKER  unknown: docker ps failed; the daemon is not running or not reachable\n  add by hand"))
+        self.assertEqual(unread["containers"], {"read": False, "rows": [],
+                         "reason": "docker ps failed; the daemon is not running or not reachable"})
+        short = collectors.parse_ports(self.legacy("a b").replace(
+            "  add by hand", "  DOCKER  read: 2 running\n  CONTAINER\tone\tex/one\tUp\t\t\t\n  CONTAINER\tbad\n  add by hand"))
+        self.assertEqual((short["containers"]["read"], short["containers"]["reason"]),
+                         (False, "docker ps listed 2 running containers and 1 line was read"))
+        # A machine-setup.sh from before sd:5840 prints no DOCKER line: unknown, never no containers.
+        older = collectors.parse_ports(self.legacy("a b"))
+        self.assertEqual((older["containers"]["read"], older["containers"]["rows"]), (False, []))
+        self.assertIn("no DOCKER line", older["containers"]["reason"])
 
     def test_unproven_listener_claims_are_unknown_and_values_are_escaped(self):
         snapshot = {"services": [{"name": "local-<script>", "ports": ["9000"], "state": "running", "mark": "+"}],

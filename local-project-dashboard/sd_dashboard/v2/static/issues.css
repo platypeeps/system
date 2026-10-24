@@ -1,12 +1,13 @@
 /* Your issues (sd:4628), on GitHub (sd:5781): one ledger of each repo's Jira and GitHub issues assigned to or filed by the
- * operator. Your mail (sd:4191) on Today is the same ledger; its subject is the link and opens the thread in Gmail. The rows are not selectable, so no row hover; the reference is the one link and opens the issue on its tracker.
+ * operator. Your mail (sd:4191) on Today is the same ledger; its subject is the link and opens the thread in Gmail, and its
+ * rows are not selectable. An issue row (sd:5877) is: the shared ledger's tr[data-id] look; its title opens Details.
  * Issue intake (sd:4840) on GitHub is the same ledger plus one row control, File as item (the shell's btn quiet sm): busy
  * disables it, a refusal is a line under it, and a filed row names its item where the button was.
  * Hallmark · component: issue row · genre: modern-minimal · theme: design.md instrument panel
  * states: default · hover (the reference link) · focus · active · disabled (filing) · error (not filed) · success (filed);
  * a failed read is a row naming it. */
 .issues-sec { margin-top: var(--space-xl); }
-.issues-sec .tally { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 0; font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-ink-2); }
+.issues-sec .tally { gap: var(--space-md); line-height: 1; }
 .issues tbody tr { cursor: default; }
 .issues tbody tr:hover td { background: transparent; }
 .issues td { vertical-align: top; height: auto; padding-block: var(--space-xs); }

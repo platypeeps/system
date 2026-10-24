@@ -6,7 +6,6 @@
 
 /* Section head: the h2 with its help icon on the left, the count on the right (sd:5281: a table's count is on its title
  * line). The views and the filter sit on the toolbar row above (shell.css). */
-.tally { margin: 0; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); }
 
 /* Ledger: one row per page, grouped by product; a product with a brief and no page gets one row of its own. */
 .ledger th.r { text-align: right; }

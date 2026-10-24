@@ -1425,7 +1425,20 @@ def parse_ports(txt):
     """
     rows, section, flagged, listeners = [], "", {}, {}
     complete, expected_rows = False, None
+    # sd:5840: the running containers, from the same `docker ps` the service states come from.
+    containers, docker = [], None
     for line in txt.split("\n"):
+        if line.startswith("  CONTAINER\t"):
+            fields = line.split("\t")[1:]
+            if len(fields) == 6:
+                name, image, status, project, workdir, mounts = (field[:240] for field in fields)
+                containers.append({"name": name, "image": image, "status": status, "project": project,
+                                   "workdir": workdir, "mounts": [mount for mount in mounts.split(",") if mount][:40]})
+            continue
+        said = re.fullmatch(r"  DOCKER  (read: (\d+) running|unknown: (.{1,200}))", line)
+        if said:
+            docker = said
+            continue
         if line.startswith("== "):
             section = line[3:].strip()
             continue
@@ -1477,8 +1490,18 @@ def parse_ports(txt):
                     row["flags"].append(flag)
                 row["conflicts"].append({"flag": flag, "port": port})
             listeners.setdefault(port, {"state": "unknown", "source": "unavailable", "holder": None, "pid": None})
+    if docker is None:
+        reason = "machine-setup.sh candidates service printed no DOCKER line; one from before sd:5840 does not"
+    elif docker[3]:
+        reason = docker[3]
+    elif int(docker[2]) != len(containers):
+        reason = (f"docker ps listed {docker[2]} running containers and {len(containers)} "
+                  f"{'line was' if len(containers) == 1 else 'lines were'} read")
+    else:
+        reason = ""
     return {"services": rows,
             "listeners": listeners, "complete": complete and expected_rows == len(rows),
+            "containers": {"read": not reason, "reason": reason, "rows": [] if reason else containers},
             "source": "local-machine-setup/machine-setup.sh candidates service",
             # Counted over the services, not over the lines: one BUSY port that
             # three services want is three services that cannot start.

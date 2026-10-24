@@ -58,3 +58,10 @@ as Evaluate's. A refresh installs nothing. Remove stops tracking and keeps
 the installed skills; its Undo tracks the repository again with its scope,
 without its last refresh. A list write with no answer is reported as not
 known, and the list is read again.
+
+The Usage view (sd:5881), the third after Catalog and Intake, was Metrics'
+Skills view. `GET /api/skills/usage` (`skills_screen.usage`) counts every
+`skill_use` row over four Monday-start weeks (`reads.skill_use_days`): all
+skills per week, this week first, and this week's ten most used, each a link
+to its catalog row. It is read the first time the view shows; a failed read
+is a row naming it. `/metrics#view=skills` opens this view with its query.
