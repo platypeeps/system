@@ -1,7 +1,7 @@
-// Each tab carries its lane count (sd:5524): Lanes the lanes with a row to show, Idle the rest (sd:5640).
-window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle' }];
-// Queue (sd:2585): /api/queue (queue_screen.py), one section per managed repository's lane, one row per item in its state:
-// merging, next, building, blocked, cancelled, landed. A lane with no row goes to the Idle table (sd:3284, sd:5640, sd:5650). Up, down, top, hold, release and cancel post /api/queue/move with the lane's
+// Queue (sd:2585): /api/queue (queue_screen.py). One ledger row per active lane (sd:5921): a merging · next · blocked pip
+// strip, the head of lane and its one primary action. The open lane's entries show in Details, one row per item in its
+// state: merging, next, building, blocked, cancelled, landed. Lanes with no row to draw fold into one Idle line under the
+// ledger. Up, down, top, hold, release and cancel post /api/queue/move with the lane's
 // revision; the server runs sd-ship lane move|hold|release|cancel|retry, refuses a stale revision, and the page reads again.
 // Cancel asks first (sd:3012). A cancelled row offers Re-queue (sd:3398) when the installed pack's retry takes a cancelled
 // entry (DOC.requeue, pack sd:3389): it posts action `requeue` with the head the row showed, and the server runs
@@ -16,7 +16,7 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle
 // the new entry back. Approve asks first: it grants the runner the merge to the default branch, which nothing takes back.
 // Show draws the active rows by default: merging, next (a held one keeps its place), building and blocked, each still
 // waiting on the runner, a builder or the operator. All adds the ended ones, cancelled and landed; ?show=all keeps it.
-// The badge and each lane's counts read every row, whatever Show draws; a lane with no row to draw goes to the Idle view.
+// Each lane's counts read every row, whatever Show draws (Queue has no rail badge since sd:5921).
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
@@ -27,7 +27,7 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle
   const dur = s => s == null ? 'not recorded' : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
   const TREND = { rising: '↑ rising', falling: '↓ falling', steady: '→ steady' };
   const ACTIVE = ['merging', 'next', 'building', 'blocked'];
-  let DOC = null, busy = false, show = 'active';
+  let DOC = null, busy = false, show = 'active', open = null; // open: the lane path Details shows
   const drawn = l => show === 'all' ? l.rows : l.rows.filter(r => ACTIVE.includes(r.state));
   const said = {}; // lane path -> { ok, text }: the last write's result, shown in its lane until the next one
 
@@ -35,10 +35,11 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle
   function controls(lane, r, last) {
     return html`<div class="ctl" role="group" aria-label="Order of sd:${String(r.item)}">${btn(lane, r, 'up', 'Move up', 'arrow-up', r.position === 1)}${btn(lane, r, 'down', 'Move down', 'arrow-down', r.position === last)}<button class="btn quiet sm" type="button" data-act="top" data-item="${String(r.item)}" data-repo="${lane.path}" aria-label="Move sd:${String(r.item)} to the top"${r.position === 1 || busy ? html` disabled` : ''}>Top</button><button class="btn quiet sm" type="button" data-act="${r.held ? 'release' : 'hold'}" data-item="${String(r.item)}" data-repo="${lane.path}"${busy ? html` disabled` : ''}>${r.held ? 'Release' : 'Hold'}</button><button class="btn quiet sm" type="button" data-act="cancel" data-item="${String(r.item)}" data-repo="${lane.path}" aria-label="Cancel sd:${String(r.item)} in this lane"${busy ? html` disabled` : ''}>Cancel…</button></div>`;
   }
+  const one = (lane, r, act, label, aria) => html`<button class="btn quiet sm" type="button" data-act="${act}" data-item="${String(r.item)}" data-head="${r.expected_head}" data-repo="${lane.path}" aria-label="${aria}"${busy ? html` disabled` : ''}>${label}</button>`;
+  const retry = (lane, r) => one(lane, r, 'retry', 'Retry', `Retry sd:${r.item}: queue it again at the same head`);
   function again(lane, r) {
     if (!DOC.retry) return html`<span></span>`;
-    const one = (act, label, aria) => html`<button class="btn quiet sm" type="button" data-act="${act}" data-item="${String(r.item)}" data-head="${r.expected_head}" data-repo="${lane.path}" aria-label="${aria}"${busy ? html` disabled` : ''}>${label}</button>`;
-    return html`<div class="ctl" role="group" aria-label="Unblock sd:${String(r.item)}">${one('retry', 'Retry', `Retry sd:${r.item}: queue it again at the same head`)}${lane.runner_merge === 'manual' ? one('approve', 'Approve…', `Approve sd:${r.item}: queue it again with the merge granted`) : ''}</div>`;
+    return html`<div class="ctl" role="group" aria-label="Unblock sd:${String(r.item)}">${retry(lane, r)}${lane.runner_merge === 'manual' ? one(lane, r, 'approve', 'Approve…', `Approve sd:${r.item}: queue it again with the merge granted`) : ''}</div>`;
   }
   function back(lane, r) {
     if (!DOC.requeue) return html`<span></span>`;
@@ -72,15 +73,42 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle
     const id = r.state === 'building' ? null : entryId(lane, r);
     return html`<li class="qrow" data-state="${r.state}"${r.held ? html` data-held=""` : ''}><span class="g g-${g[0]}" aria-hidden="true">${g[1]}</span><span class="st">${st}</span><span class="s"><span><span class="sr">${g[2] || g[0]} · </span>${subject}</span><small>${facts}</small></span><span class="ends">${ctl}${id ? window.shell.commands.rowActions(id) : ''}</span></li>`;
   }
+  const count = (l, st) => l.rows.filter(r => r.state === st).length;
   function lane(l) {
-    const last = l.rows.filter(r => r.state === 'next').length, s = said[l.path], rows = drawn(l);
-    const count = st => l.rows.filter(r => r.state === st).length;
-    return html`<section class="lane" aria-labelledby="lane-${l.repo}"><header><h2 id="lane-${l.repo}">${l.repo}</h2><span class="host">lane on ${l.host}</span><span class="n">${count('merging')} merging · ${last} next · ${count('blocked')} blocked · ${count('landed')} landed today</span><span class="src">${l.lane}</span></header>
+    const last = count(l, 'next'), s = said[l.path], rows = drawn(l), n = st => count(l, st);
+    return html`<section class="lane" aria-labelledby="lane-${l.repo}"><header><h2 id="lane-${l.repo}">${l.repo}</h2><span class="host">lane on ${l.host}</span><span class="n">${n('merging')} merging · ${last} next · ${n('blocked')} blocked · ${n('landed')} landed today</span><span class="src">${l.lane}</span></header>
       ${s ? (s.ok ? html`<p class="done" role="status">${s.text}</p>` : html`<p class="fail" role="alert">${s.text}</p>`) : ''}
       ${rows.length ? html`<ul class="qrows">${rows.map(r => row(l, r, last))}</ul>` : html`<p class="done">${l.rows.length ? 'Nothing active in this lane; All shows its ended rows.' : 'Nothing queued, gating or landed today in this lane.'}</p>`}</section>`;
   }
+  // A lane row (sd:5921): the head of lane is its first blocked entry, else the one merging, else the next ones, else a
+  // builder; the primary action is that entry's Retry or Release, else Entries, which opens the lane in Details.
+  function head(l) {
+    const first = st => l.rows.find(r => r.state === st), b = first('blocked'), m = first('merging'), g = first('building');
+    const next = l.rows.filter(r => r.state === 'next');
+    if (b) return [G.warning, `sd:${b.item} blocked${b.step ? ` at ${b.step}` : ''}: ${b.reason}`, DOC.retry ? retry(l, b) : null];
+    if (m) return [m.lease_passed ? G.caution : G.live, `sd:${m.item} merging · ${m.step || 'step not recorded'} on ${m.host || 'host not recorded'}`, m.claim ? free(l, m) : null];
+    if (next.length) return [G.queued, `next: ${next.map(r => `sd:${r.item}${r.held ? ' (held)' : ''}`).join(', ')}`, null];
+    if (g) return [G.live, `building: ${g.builder}`, null];
+    return [G.ok, `${count(l, 'landed')} landed, ${count(l, 'cancelled')} cancelled today`, null];
+  }
+  const pip = (n, on) => html`<span class="pip${n ? on : ''}">${String(n)}</span>`;
+  function laneRow(l) {
+    const [g, line, primary] = head(l), [m, n, b] = ['merging', 'next', 'blocked'].map(st => count(l, st));
+    return html`<tr data-lane="${l.path}"${open === l.path ? html` aria-selected="true"` : ''}><td class="g g-${g[0]}" title="${g[0]}">${g[1]}</td><td class="what"><button type="button" class="pick" data-open="${l.path}">${l.repo}</button><small>${l.host}</small></td><td class="pipe" aria-label="${m} merging, ${n} next, ${b} blocked">${pip(m, ' on')}${pip(n, ' on')}${pip(b, ' warn')}</td><td class="why">${line}</td><td class="num">${String(count(l, 'landed'))}</td><td class="act">${primary || html`<button class="btn quiet sm" type="button" data-open="${l.path}">Entries</button>`}</td></tr>`;
+  }
+  const IDLE_NAMED = 6; // idle lanes that landed today, by name, before "N more"
+  function idleLine(idle) {
+    const landed = idle.filter(l => count(l, 'landed')), quiet = idle.length - landed.length;
+    const named = landed.slice(0, IDLE_NAMED).map(l => `${l.repo} ${count(l, 'landed')}`).join(' · ');
+    return [landed.length ? `Idle, landed today: ${named}${landed.length > IDLE_NAMED ? ` · ${landed.length - IDLE_NAMED} more` : ''}.` : '',
+      quiet ? `Idle, quiet: ${plural(quiet, 'lane')}.` : ''].filter(Boolean).join(' ');
+  }
+  function details() {
+    const l = DOC && DOC.lanes.find(x => x.path === open);
+    put($('details'), l ? lane(l) : html`<p class="why">${DOC ? 'No lane is open: no lane has a row to show.' : 'No lane is open: the lanes were not read.'}</p>`);
+  }
   function draw() {
-    if (!DOC) { put($('readings'), html``); put($('show'), html``); put($('lanes'), html``); return; }
+    if (!DOC) { put($('readings'), html``); put($('show'), html``); put($('lanes'), html``); put($('idle'), html``); details(); return; }
     putEntries();
     const L = DOC.load, gates = DOC.gates;
     put($('readings'), html`<div><dt>load5</dt><dd>${L.load5.toFixed(1)}<small>1m ${L.load1.toFixed(1)} · 15m ${L.load15.toFixed(1)} · ${TREND[L.trend]}</small></dd></div>
@@ -89,20 +117,17 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle
     $('edits').textContent = DOC.edits;
     const every = DOC.lanes.flatMap(l => l.rows), chip = (v, n) => html`<button type="button" class="chip" data-show="${v}" aria-pressed="${String(show === v)}">${v} <span class="n">${String(n)}</span></button>`;
     put($('show'), html`<span class="label">Show</span><div class="chips">${chip('active', every.filter(r => ACTIVE.includes(r.state)).length)}${chip('all', every.length)}</div>`);
-    // A lane with nothing to show (and no write result) goes to the Idle view (sd:5640).
+    // A lane with nothing to show (and no write result) folds into the Idle line (sd:5640, sd:5921).
     const busyLanes = DOC.lanes.filter(l => drawn(l).length || said[l.path]), idle = DOC.lanes.filter(l => !busyLanes.includes(l));
-    put($('lanes'), html`${DOC.problems.map(p => html`<p class="fail" role="alert">▨ ${p.repo}: lane not read. ${p.error}</p>`)}${busyLanes.map(lane)}${
-      !DOC.lanes.length ? html`<p class="done">No managed repository's lane was read. sd-db repo managed PATH yes adds one.</p>`
-      : busyLanes.length ? '' : html`<p class="done">No lane has a row to show. ${plural(idle.length, 'idle lane')} ${idle.length === 1 ? 'is' : 'are'} under Idle.</p>`}`);
-    // The Idle table (sd:5650): one row per lane, hub first then by name, naming the machine, why it is idle and who merges.
-    const machine = l => l.host === 'hub' ? `${DOC.hub || 'hub'} (hub)` : l.host;
-    const why = l => { const n = st => l.rows.filter(r => r.state === st).length;
-      return l.rows.length ? `No active entry · ${n('landed')} landed, ${n('cancelled')} cancelled today` : 'Empty: nothing queued, gating or landed today'; };
-    const order = [...idle].sort((a, b) => (b.host === 'hub') - (a.host === 'hub') || a.host.localeCompare(b.host) || a.repo.localeCompare(b.repo));
-    put($('idle'), idle.length ? html`<table class="ledger idle"><thead><tr><th scope="col">Repository</th><th scope="col">Machine</th><th scope="col">State</th><th scope="col">Merge</th></tr></thead>
-      <tbody>${order.map(l => html`<tr><td><code>${l.repo}</code></td><td>${machine(l)}</td><td>${why(l)}</td><td>${l.runner_merge === 'manual' ? 'Approve to merge' : 'Runner merges'}</td></tr>`)}</tbody></table>`
-      : html`<p class="done">Every lane has a row to show.</p>`);
-    window.shell?.view.count('lanes', busyLanes.length); window.shell?.view.count('idle', idle.length);
+    busyLanes.sort((a, b) => (count(b, 'blocked') > 0) - (count(a, 'blocked') > 0) || (count(b, 'merging') > 0) - (count(a, 'merging') > 0));
+    if (!busyLanes.some(l => l.path === open)) open = busyLanes.length ? busyLanes[0].path : null;
+    put($('lanes'), html`${DOC.problems.map(p => html`<p class="fail" role="alert">▨ ${p.repo}: lane not read. ${p.error}</p>`)}${busyLanes.length
+      ? html`<table class="ledger lanes" aria-label="Active lanes"><thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Lane</th><th scope="col">Merging · Next · Blocked</th><th scope="col">Head of lane</th><th scope="col" class="num">Landed</th><th scope="col"><span class="sr">Act</span></th></tr></thead>
+      <tbody>${busyLanes.map(laneRow)}</tbody></table>`
+      : !DOC.lanes.length ? html`<p class="done">No managed repository's lane was read. sd-db repo managed PATH yes adds one.</p>`
+      : html`<p class="done">No lane has a row to show.</p>`}`);
+    put($('idle'), html`${idleLine(idle)}`);
+    details();
   }
 
   async function load() {
@@ -112,8 +137,6 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle
       DOC = await S.getJSON('/api/queue');
       S.state(DOC.problems.length ? { kind: 'partial', text: `${plural(DOC.problems.length, 'lane')} not read; the others are current.`, source: '/api/queue' } : null);
       put($('subhead'), html`${plural(DOC.managed, 'managed repository', 'managed repositories')} · read ${at(DOC.read)}`);
-      // The badge is the read's own (sd:3446, queue_screen._attention): blocked rows in every lane.
-      S.attention(DOC.attention || { state: 'unknown', n: 0, what: 'lanes not read' });
     } catch (err) {
       DOC = null;
       S.state({ kind: 'error', text: `The lanes were not read: ${err.message}. Read again retries it.`, source: '/api/queue' });
@@ -193,7 +216,12 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle
       const b = e.target.closest('button[data-show]'); if (!b || b.dataset.show === show) return;
       show = b.dataset.show; window.shell.url(show === 'all' ? { show } : {}); draw();
     });
-    $('lanes').addEventListener('click', e => { const b = e.target.closest('button[data-act]'); if (b && !b.disabled) act(b); });
+    // A write runs from the ledger's primary action or from Details; a lane name or Entries opens the lane in Details.
+    const press = e => {
+      const b = e.target.closest('button[data-act]'); if (b) { if (!b.disabled) { open = b.dataset.repo; act(b); } return; }
+      const o = e.target.closest('button[data-open]'); if (o) { open = o.dataset.open; draw(); window.shell.openPane('tab-details'); }
+    };
+    $('lanes').addEventListener('click', press); $('details').addEventListener('click', press);
     if (typeof setInterval === 'function') setInterval(() => { if (!document.hidden && !busy) load(); }, 30000);
     load();
   });

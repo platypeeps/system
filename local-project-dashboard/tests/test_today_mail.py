@@ -9,9 +9,7 @@ drawn table. The pack's own suite tests the setting.
 from __future__ import annotations
 
 import csv
-import json
 import os
-import re
 import sqlite3
 from pathlib import Path
 from unittest import mock
@@ -23,10 +21,8 @@ from sd_dashboard import now_screen, today_mail, v2
 
 from support import NOW, ScreenCase
 from test_now_screen import JobsBackend, fleet_document
-from test_v2_today import run_js
 
 V2 = Path(v2.__file__).resolve().parent
-MAIL_JS = (V2 / "static" / "mail.js").read_text(encoding="utf-8") if (V2 / "static" / "mail.js").exists() else ""
 
 ANVIL, KILN = "/home/example/repos/acme/anvil", "/home/example/repos/other/kiln"
 # The columns in the order mail-intake writes them today; a file from before this change reads the same.
@@ -222,48 +218,17 @@ class TheUnknowns(MailCase):
 
 
 class ThePage(MailCase):
-    def test_today_carries_the_mail_and_draws_it_from_its_read(self):
+    def test_today_lists_each_thread_as_a_needs_row_not_its_own_table(self):
+        # sd:5921: one list; mail.js and its table are gone.
         self.arrivals(arrival("t1", "acme", "2026-09-06T05:00:00-06:00"))
         with self.stub(), mock.patch.dict(os.environ, self.environ):
             today = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
                                         fleet=lambda area: fleet_document(area))
         self.assertEqual(([row["thread"] for row in today["mail"]], today["mail_error"], today["work_error"]), (["t1"], "", ""))
+        [row] = [row for row in today["needs"] if row["kind"] == "mail"]
+        self.assertEqual((row["id"], row["band"], row["lamp"], row["url"]),
+                         ("mail:t1", "look", "mail", today["mail"][0]["url"]))
         html = (V2 / "today.html").read_text(encoding="utf-8")
-        self.assertIn('<tbody id="mail">', html)
-        self.assertIn('id="mail-tally"', html)
-        scripts = re.findall(r'<script src="/ui/([a-z-]+\.js)"></script>', html)
-        self.assertLess(scripts.index("mail.js"), scripts.index("today.js"))
-        self.assertIn("mail:read", (V2 / "static" / "today.js").read_text(encoding="utf-8"))
-
-
-class TheTable(MailCase):
-    """mail.js under JavaScriptCore: it draws what Today's read hands it, escaped, and says each reason."""
-
-    PAGE = """
-var els = {}, listeners = {};
-document.getElementById = id => (els[id] = els[id] || { id, replaceChildren(f) { sunk.push([id, f.parsed]); } });
-document.addEventListener = (t, f) => { listeners[t] = f; };
-"""
-
-    def drawn(self, detail):
-        script = self.PAGE + MAIL_JS + f"listeners['mail:read']({{ detail: {json.dumps(detail)} }}); JSON.stringify(sunk)"
-        return dict(run_js(self, script))
-
-    def test_rows_link_the_subject_escape_it_and_count_the_rest(self):
-        self.arrivals(arrival("t1", "acme", "2026-09-06T05:00:00-06:00", subject="Invoice <b>due</b>"))
-        document = self.read()
-        drawn = self.drawn({**document, "mail_more": 3, "mail_unread": [{"repo": "kiln", "reason": "alias kiln is not in x.conf"}]})
-        self.assertIn('<a href="https://mail.google.com/mail/?authuser=me%40example.test#all/t1">Invoice &lt;b&gt;due&lt;/b&gt;</a>',
-                      drawn["mail"])
-        self.assertIn(">Pat Doe<", drawn["mail"])
-        self.assertIn(">anvil<", drawn["mail"])
-        self.assertIn("3 more wait in Gmail.", drawn["mail"])
-        self.assertIn("kiln: mail not read: alias kiln is not in x.conf", drawn["mail"])
-        self.assertIn("4 waiting", drawn["mail-tally"])
-
-    def test_a_failure_is_a_row_naming_it_and_none_is_said(self):
-        failed = self.drawn({"mail_error": "database is locked"})
-        self.assertIn("Mail could not be read: database is locked. Refresh tries again.", failed["mail"])
-        self.assertNotIn("waiting", failed["mail-tally"])
-        empty = self.drawn({"mail": [], "mail_more": 0, "mail_unread": [], "mail_error": ""})
-        self.assertIn("No thread waits on you in a repo with mail aliases.", empty["mail"])
+        self.assertNotIn('<tbody id="mail">', html)
+        self.assertNotIn("mail.js", html)
+        self.assertFalse((V2 / "static" / "mail.js").exists())
