@@ -98,13 +98,12 @@ class TargetPruneTest(Harness):
     def test_a_target_a_process_holds_stays(self):
         # sd:5994 review: an old mtime is no proof cargo is not using the
         # folder; a build can take its lock after the idle probe. Just
-        # before the rename, a holder of the folder or a .cargo-lock keeps it.
+        # before the delete, a holder of the folder or a .cargo-lock keeps it.
         self.lsof('echo 4242\nexit 0\n')
         _checkout, target = self.cargo_target("example-held")
         run = self.maintenance("# nothing to check\n")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertTrue((target / "CACHEDIR.TAG").is_file(), run.stdout + run.stderr)
-        self.assertFalse((target.parent / "target.idle-prune").exists())
         self.assertIn(f"- kept idle build output {target}: a process holds it", run.stdout)
         [call] = self.lsof_calls.read_text().splitlines()
         self.assertIn(f"{target}/debug/.cargo-lock", call.split())
@@ -126,30 +125,16 @@ class TargetPruneTest(Harness):
         self.assertTrue((target / "CACHEDIR.TAG").is_file())
         self.assertIn(f"- [dry-run] would remove idle build output {target} (untouched 3 days)", run.stdout)
 
-    def test_a_removal_stopped_partway_is_finished_next_run(self):
-        # The folder is renamed aside before it is deleted, so a run killed
-        # during the delete leaves a name only this step makes, and the next
-        # run removes it whatever its age or marker.
-        checkout, _target = self.cargo_target("example-stopped")
-        aside = checkout / "target.idle-prune"
-        (checkout / "target").rename(aside)
-        (aside / "CACHEDIR.TAG").unlink()
+    def test_a_folder_named_like_an_old_aside_stays(self):
+        # sd:5994 review round 2: nothing proves a run made a folder named
+        # target.idle-prune; at depth 2 it can be a checkout with work.
+        checkout = self.worktrees / "x" / "target.idle-prune"
+        checkout.mkdir(parents=True)
+        (checkout / "notes.txt").write_text("uncommitted\n")
+        _age(checkout, FOUR_DAYS)
         run = self.maintenance("# nothing to check\n")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertFalse(aside.exists(), run.stdout + run.stderr)
-        self.assertIn(f"- removed {aside}, left by an earlier run", run.stdout)
-
-    def test_an_idle_target_beside_a_leftover_aside_goes_with_it(self):
-        # The rename lands inside a leftover target.idle-prune; the one
-        # delete then takes both, and the leftover's turn finds nothing.
-        checkout, target = self.cargo_target("example-both")
-        aside = checkout / "target.idle-prune"
-        (aside / "debug").mkdir(parents=True)
-        run = self.maintenance("# nothing to check\n")
-        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertFalse(target.exists())
-        self.assertFalse(aside.exists(), run.stdout + run.stderr)
-        self.assertNotIn("could not remove", run.stdout)
+        self.assertTrue((checkout / "notes.txt").is_file(), run.stdout + run.stderr)
 
     def test_an_idle_probe_that_fails_keeps_the_target_and_says_so(self):
         # A failed probe is no answer: it is not proof the folder is idle.
@@ -168,7 +153,7 @@ class TargetPruneTest(Harness):
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {self.worktrees} .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {target} -mmin -4320 .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] lsof -t -- {target} .* \(bound \d+s\)")
-        self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {target}.idle-prune \(bound \d+s\)")
+        self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {target} \(bound \d+s\)")
         self.assertNotIn("[step ", run.stdout)
 
     def test_no_worktrees_folder_is_a_clean_run(self):

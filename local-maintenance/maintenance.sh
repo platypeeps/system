@@ -398,32 +398,22 @@ fi
 # lands. A target/ nothing wrote for 3 days goes; the checkout and its commits
 # stay, and the next build makes it again. Only a folder holding cargo's
 # CACHEDIR.TAG counts, at depth 2 or 3 (depth 1 is a checkout), and find
-# follows no link. It is renamed aside before the delete, so a run stopped
-# during the delete leaves target.idle-prune, which the next run removes.
-# A probe that fails or hits its bound is no answer: the folder stays.
+# follows no link. A probe that fails or hits its bound is no answer: the
+# folder stays.
+# ponytail: the delete runs in place, so a stopped one leaves a partial
+# target/; cargo rebuilds what is missing, and a later run may leave it
+# if its CACHEDIR.TAG went first. A rename or recovery step would cost more.
 WORKTREES="$HOME/worktrees"
 if [ -d "$WORKTREES" ]; then
   TARGETS="$TMPD/targets"
   # A walk that fails partway still listed real folders; each is checked
   # again below, and the failure is a finding of its own.
   if ! st_step 120 find "$WORKTREES" -mindepth 2 -maxdepth 3 -type d \
-      \( -name target -o -name target.idle-prune \) -prune -print > "$TARGETS"; then
+      -name target -prune -print > "$TARGETS"; then
     finding "build output prune: could not list all of $WORKTREES"
   fi
   while IFS= read -r t; do
     [ -d "$t" ] && [ ! -L "$t" ] || continue
-    case "$t" in
-      */target.idle-prune)
-        if [ "$APPLY" -eq 0 ]; then
-          action "[dry-run] would remove $t, left by an earlier run"
-        elif st_step 600 rm -rf "$t"; then
-          action "removed $t, left by an earlier run"
-        else
-          finding "build output prune: could not remove $t"
-        fi
-        continue
-        ;;
-    esac
     [ -f "$t/CACHEDIR.TAG" ] || continue
     if ! recent=$(st_step 300 find "$t" -mmin -4320 -print -quit); then
       finding "build output prune: could not read $t; kept"
@@ -431,7 +421,7 @@ if [ -d "$WORKTREES" ]; then
     fi
     [ -z "$recent" ] || continue
     # An old mtime is no proof cargo is idle: a build can take its lock after
-    # the probe above. So, just before the rename, a process that holds the
+    # the probe above. So, just before the delete, a process that holds the
     # folder or a .cargo-lock in it keeps it. lsof exits 1 and prints nothing
     # when no process holds them; any other answer is unknown, and keeps it.
     if ! locks=$(st_step 60 find "$t" -maxdepth 3 -name .cargo-lock -type f); then
@@ -457,7 +447,7 @@ LOCKS
     fi
     if [ "$APPLY" -eq 0 ]; then
       action "[dry-run] would remove idle build output $t (untouched 3 days)"
-    elif mv "$t" "$t.idle-prune" && st_step 600 rm -rf "$t.idle-prune"; then
+    elif st_step 600 rm -rf "$t"; then
       action "removed idle build output $t (untouched 3 days)"
     else
       finding "build output prune: could not remove $t"

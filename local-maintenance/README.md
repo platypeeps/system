@@ -62,9 +62,9 @@ holding cargo's `CACHEDIR.TAG` counts, and no link is followed; the
 checkout and its commits stay. An old time is no proof cargo is idle,
 so just before the delete `lsof` asks whether a process holds the
 folder or a `.cargo-lock` in it; a holder, or an answer that is not a
-clean no, keeps the folder. The folder is renamed to
-`target.idle-prune` before the delete, so the next run finishes a delete
-that was stopped. A probe that fails is a finding, and the folder stays.
+clean no, keeps the folder. The delete runs in place: a stopped one
+leaves a partial `target/`, which cargo rebuilds. A probe that fails is
+a finding, and the folder stays.
 The walks and the delete run under `lib/bounded.sh`'s `st_step`.
 
 ## uv cache prune at login
