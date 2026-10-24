@@ -447,7 +447,8 @@ function fetch(path, o) {
 SHELL = SETTLE_JS + FETCH_JS + ITEM_JS + r"""
 var REG = [], OBJ = new Map();
 var C = { register: (...cs) => { REG.push(...cs); }, put: o => { OBJ.set(o.id, o); }, get: id => OBJ.get(id), select() {}, pick() {},
-  rowActions: () => mk``, bar: () => mk`<div class="bar"></div>` };
+  rowActions: () => mk``, bar: () => mk`<div class="bar"></div>`,
+  offWhy: (c, o) => { const w = c.when ? c.when(o) : true; return w === true ? '' : (w || 'not available'); } };
 // A command with fields asks for them (shell.js's confirm): FIELD_VALUES is what the operator typed, and a required field left
 // empty keeps OK off, so nothing runs; a field's value is typed in already. One that asks first (shell.js's asksFirst) records its confirm and runs.
 var FIELD_VALUES = {};
@@ -637,7 +638,7 @@ class TheConfirmFields(unittest.TestCase):
     def confirm(self, body):
         self.assertIsNotNone(CONFIRM, "shell.js has no confirm:start block")
         script = "var window = globalThis;\n" + MARKUP_JS + r"""
-const { html } = window.markup, put = (el, m) => { el.html = String(m); };
+const { html } = window.markup, put = (el, m) => { el.html = String(m); }, CLOSE_X = '';
 var OUT = { focused: null, result: null, error: null };
 const yes = { disabled: false }, no = {}, line = { textContent: '' }, inputs = { reason: { value: '', tagName: 'INPUT' } }, L = {};
 const form = { elements: inputs, addEventListener: (t, f) => { (L[t] = L[t] || []).push(f); },
@@ -721,6 +722,12 @@ def state_answer(row, **changes):
     return {"item": item, "notes": [], "revision": "b" * 64}
 
 
+def field_help(html):
+    """Each Details field label (a `dt` of a `dl.fields`) as its text and whether it carries a help icon (sd:5903)."""
+    return [(re.sub(r"<[^>]+>", "", dt).strip(), 'class="help"' in dt)
+            for dl in re.findall(r'<dl class="fields">(.*?)</dl>', html, re.S) for dt in re.findall(r"<dt>(.*?)</dt>", dl, re.S)]
+
+
 class TheScript(ScreenCase):
     """tasks.js against the documents `tasks_screen` builds for the seeded database."""
 
@@ -775,6 +782,7 @@ class TheScript(ScreenCase):
             ["item.p3", "item", "undo", None, None, True, True],
             ["item.p4", "item", "undo", None, None, True, True],
             ["item.close", "item", "confirm", None, True, True, False],
+            ["item.park", "item", "undo", None, True, True, True],
             ["item.unpark", "item", "safe", None, True, True, False],
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.fix", "item", "safe", "f", True, True, False],
@@ -967,6 +975,17 @@ open({port}); await flush(); R.port = ELS.details.html;""")
         self.assertIn('<p class="why" id="det-off">The fields are off: message items use their own editing workflow.</p>', out["R"]["port"])
         self.assertRegex(out["R"]["port"], r'<select id="det-repo" class="fld" disabled')
         self.assertNotRegex(html, r'<select id="det-[a-z]+" class="fld" disabled')
+
+    def test_every_details_field_label_carries_help(self):
+        # sd:5903: each field in the Details lists carries the shared help icon, as each section heading does.
+        plan, port = self.ids["plan"], self.ids["port"]
+        self.schedule_plan(2)
+        self.details[str(plan)]["experiment"] = {"value": "yes", "row": None, "choices": [], "reason": None}
+        out = self.run_page(f"open({plan}); await flush(); R.plan = ELS.details.html; open({port}); await flush(); R.port = ELS.details.html;")
+        fields = field_help(out["R"]["plan"]) + field_help(out["R"]["port"])
+        self.assertEqual({name for name, _ in fields}, {"Id", "Title", "Status", "Priority", "Due", "Repeat", "Lead", "Repo",
+                                                        "Urgent", "Quadrant", "Row", "Assignment"})
+        self.assertEqual([name for name, helped in fields if not helped], [])
 
     def test_status_priority_and_edit_leave_the_act_bar_to_the_details_fields(self):
         """sd:5295: Status, Priority and Due are Details fields, so their commands are `bar: false`: off the Act bar, while
@@ -1610,6 +1629,52 @@ C.runBulk(cmd('item.unpark'), [C.get('{parked}'), C.get('{other}')]); await flus
                                         [f"/api/items/{other}", {"parked_at": None, "revision": revisions[other]}, 64]])
         self.assertEqual(out["bulkCli"], f"sd task edit {parked} --unpark && sd task edit {other} --unpark")
         self.assertEqual(out["toasts"], [["Unpark · 2 items", False]])
+
+    def test_a_card_marks_its_task_done_from_its_done_icon(self):
+        # sd:5917: a card's done icon is the Done command, Done -> next occurrence on a repeating task; the shell runs a
+        # data-cmd click, and the card's own click handler leaves it alone, so it opens no Details. Off, it is disabled.
+        plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]
+        out = self.run_page(f"""R.board = ELS['view-board'].html;
+ELS.main.listeners.click.forEach(f => f({{ target: {{ closest: s => s.includes('.tile-done') ? {{}} : s === '.card' ? {{ dataset: {{ key: '{ask}' }} }} : null }} }}));
+await flush(); R.gets = OUT.gets.slice();
+shellRun(cmd('item.status.done'), C.get('{ask}')); await flush();""", self.ECHO)
+        buttons = {key: b for b, key in re.findall(r'(<button class="icon-btn tile-done"[^>]*data-obj="(\d+)"[^>]*>)', out["R"]["board"])}
+        self.assertEqual(buttons[str(ask)], f'<button class="icon-btn tile-done" type="button" data-cmd="item.status.done" data-obj="{ask}" '
+                                            'aria-label="Mark Answer the question done">')
+        self.assertIn('data-cmd="item.status.done"', buttons[str(plan)])
+        self.assertRegex(buttons[str(port)], r' disabled title="A runner assignment is running\. Status is locked until it ends\.">$')
+        self.assertNotIn(f"/api/tasks/{ask}", out["R"]["gets"], "a click on the done icon opened the Details")
+        self.assertEqual([(p[0], p[1]["status"]) for p in out["posts"]], [(f"/api/items/{ask}/status", "done")])
+        self.assertTrue(out["toasts"][-1][1], "Done keeps its Undo")
+        self.schedule_plan(2)
+        board = self.run_page("R.board = ELS['view-board'].html;", search="?active=scheduled")["R"]["board"]
+        self.assertIn(f'data-cmd="item.complete" data-obj="{plan}" aria-label="Mark Plan the review done">', board,
+                      "a repeating task's Done opens its next occurrence")
+
+    def test_park_parks_a_listed_task_with_undo_and_is_off_for_a_parked_or_done_one(self):
+        # sd:5906: Park beside Unpark, by hand. It posts parked_at as now through the edit route, and Undo posts it back null.
+        parked = self.park()
+        done = self.item("Finished already", kind="task", priority=3)
+        workflow.change_status(self.connection, done, "done", who="test")
+        self.connection.commit()
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        plan = self.ids["plan"]
+        revision = {row["id"]: row["revision"] for row in self.doc["rows"]}[plan]
+        answer = """(path, body) => { const id = +path.split('/').pop(); return [200, { item: { id, status: 'planning', priority: 2, due: null, recurrence: null, parked_at: body.parked_at }, notes: [], revision: String(id % 10).repeat(64) }]; }"""
+        out = self.run_page(f"""const park = cmd('item.park');
+R.off = [park.when(C.get('{parked}')), C.get('{done}') ? park.when(C.get('{done}')) : 'not listed'];
+R.cli = park.cli(C.get('{plan}')); R.sends = park.sends(C.get('{plan}'));
+shellRun(park, C.get('{plan}')); await flush(); OUT.toasts[0].undo(); await flush();""", answer)
+        self.assertEqual(out["R"]["off"][0], "it is already parked")
+        self.assertIn(out["R"]["off"][1], ("it is done", "not listed"))
+        self.assertEqual(out["R"]["cli"], f"sd task edit {plan} --park")
+        self.assertEqual(out["R"]["sends"], f"POST /api/items/{plan} {{parked_at: <now>}}")
+        (first, body, _), (second, back, _) = out["posts"]
+        self.assertEqual((first, second), (f"/api/items/{plan}", f"/api/items/{plan}"))
+        self.assertRegex(body["parked_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$")
+        self.assertEqual(body["revision"], revision)
+        self.assertEqual(back["parked_at"], None)
+        self.assertTrue(out["toasts"][0][1], "Park offers no Undo")
 
     # sd:5649: Repeat and Lead in Details, Scope's Scheduled only, and the Lead (days) column the Columns menu shows.
     def schedule_plan(self, lead):

@@ -12,7 +12,7 @@
 .place-view { margin: 0 0 var(--space-xl); min-width: 0; }
 .place-view .sec-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); }
 .place-view .sec-head p { margin: 0; font-size: var(--text-sm); color: var(--color-muted); }
-.place-view .tally { margin: 0; font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-ink-2); }
+.place-view .tally { line-height: 1; }
 .place-view .note { margin: var(--space-xs) 0; font-size: var(--text-sm); color: var(--color-muted); }
 .place-view .state-unknown { margin: var(--space-xs) 0; padding: var(--space-xs) var(--space-sm); border-radius: var(--radius-sm); font-size: var(--text-sm); color: var(--color-ink-2);
   background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }

@@ -30,7 +30,7 @@
 @media (pointer: coarse) { .flowkey a, .track-table summary { display: inline-flex; align-items: center; min-height: var(--row-touch); } }
 
 /* Section heads */
-.tally { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 0; font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-ink-2); }
+.tally { gap: var(--space-md); line-height: 1; }
 .tally .i { vertical-align: -0.2em; }
 
 /* Now ledger */

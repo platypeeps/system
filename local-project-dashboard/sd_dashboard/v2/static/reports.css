@@ -25,7 +25,7 @@ section + section { margin-top: var(--space-2xl); }
 .cad .m small { display: block; font-size: var(--text-2xs); color: var(--color-muted); margin-top: 1px; }
 .cad .m.none { color: var(--color-muted); }
 .cad .m.unk { background: repeating-linear-gradient(135deg, transparent 0 6px, var(--color-well) 6px 7px); color: var(--color-muted); }
-.more-jobs { margin-top: var(--space-xs); }
+#cad-more { margin-top: var(--space-xs); }
 
 /* Filters */
 

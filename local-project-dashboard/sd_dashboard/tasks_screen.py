@@ -36,7 +36,8 @@ query of the store:
 Every write the page makes goes through a route `server.action_route`
 already answered for v1: status, edit (priority, due, recurrence), note
 resolve, work relink and cancel, task cancel (`/cancel-task`, the bulk
-Close of sd:3012), and Unpark (the edit route with `parked_at: null`, sd:3012).
+Close of sd:3012), Unpark (the edit route with `parked_at: null`, sd:3012), and Park (the
+same route with `parked_at` as now, sd:5906, which needs pack sd:5905).
 Fix (`/fix`, sd:3456) is new, and Reports and Today post it too: `fix_session`
 starts a herdr session for the item and adds a note. Draft email (`/draft-email`, sd:3463) is Tasks' alone:
 `email_draft` has claude write an email about a task or followup and saves it as a Gmail draft, never sent, with a note

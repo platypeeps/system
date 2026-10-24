@@ -5,7 +5,9 @@ one row per item as merging, next, building, blocked, cancelled or landed.
 `GET /api/queue` (`queue_screen.document`) runs `sd-ship -C <repo> lane list`
 per repository, reads the builder gate logs in the lane folder, the gate slots
 from `sd gate status --json` and the machine's load. A lane hosted on another
-machine still gets its section, from the hub's queue. Up, down, top, hold,
+machine still gets its section, from the hub's queue. An item that is done
+in the database, cancelled included, is never a blocked row, even when its
+newest lane entry failed (sd:5847). Up, down, top, hold,
 release and cancel, a blocked row's Retry and Approve, a cancelled row's
 Re-queue and a running row's Release post `/api/queue/move`, which runs
 `sd-ship lane move|hold|release|cancel|retry` and nothing else. Each write

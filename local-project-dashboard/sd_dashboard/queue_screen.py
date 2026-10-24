@@ -17,7 +17,8 @@ The six states, from each entry's `status`:
   next      `pending`, in queue order; a `held` one keeps its place and the runner skips it.
   building  a builder gate log in the lane folder, changed in the last `BUILDING_HOURS`: empty while its gate runs.
   blocked   the newest entry of an item that `failed`, was `skipped` or stopped `prepared`, in the last `BLOCKED_DAYS`,
-            with the first line of its reason.
+            with the first line of its reason. An item that is `done` in the database (cancel closes as `done`) is not
+            blocked, whatever its lane entry says: it closed after the lane stopped (sd:5847).
   cancelled the newest entry of an item that was `cancelled`, in the last `BLOCKED_DAYS`, with its head.
   landed    `merged` today, in this machine's zone, with the merge commit and the pull request its subject names.
 
@@ -69,6 +70,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sd_db import reads
 from sd_db.errors import SdDbError
 
 from . import pack_module
@@ -280,8 +282,18 @@ def _building(lane: Path, now: float) -> list[dict]:
     return sorted(rows, key=lambda row: -row["changed"])
 
 
-def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict]:
-    """The lane's rows in page order: merging, next, building, blocked, cancelled, landed."""
+def closed(connection, entries: list[dict]) -> set:
+    """The items whose newest entry is blocked and that are `done` in the database; a cancel closes as `done` too."""
+    items = sorted(item for item, row in newest(entries).items() if type(item) is int and row.get("status") in BLOCKED)
+    found = {item: reads.item_by_id(connection, item) for item in items}
+    return {item for item, row in found.items() if row is not None and row["status"] == "done"}
+
+
+def rows(entries: list[dict], *, path: str, lane: Path, now: float, done: frozenset | set = frozenset()) -> list[dict]:
+    """The lane's rows in page order: merging, next, building, blocked, cancelled, landed.
+
+    `done` holds the items that are `done` in the database: none of them is a blocked row (sd:5847).
+    """
     today = time.strftime("%Y-%m-%d", time.localtime(now))
     merging, following, blocked, cancelled, landed = [], [], [], [], []
     latest = newest(entries)
@@ -305,7 +317,7 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
             following.append({**base, "state": "next", "position": len(following) + 1, "held": bool(entry.get("held")),
                               "head": str(entry.get("expected_head") or "")[:12],
                               "gate": gate.get("status") or "not gated", "gate_summary": gate.get("summary") or gate.get("reason")})
-        elif status in BLOCKED and latest.get(item) is entry:
+        elif status in BLOCKED and latest.get(item) is entry and item not in done:
             finished = _when(entry.get("finished_at"))
             if finished and now - finished <= BLOCKED_DAYS * 86400:
                 who = WHO.get((status, entry.get("step"))) or WHO.get((status, None), "lane")
@@ -368,7 +380,7 @@ def document(connection, *, now: str = "") -> dict:
         entries = answer.get("entries") or []
         lanes.append({"repo": Path(path).name, "path": path, "lane": str(lane), "revision": revision(entries),
                       "runner_merge": managed[path]["runner_merge"], "host": managed[path]["lane_host"] or "hub",
-                      "rows": rows(entries, path=path, lane=lane, now=clock)})
+                      "rows": rows(entries, path=path, lane=lane, now=clock, done=closed(connection, entries))})
     return {"read": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock)), "load": _load(), "gates": gates,
             "lanes": lanes, "problems": problems, "root": str(root) if root else None, "edits": EDITS,
             "managed": len(managed),

@@ -1,7 +1,9 @@
 # Metrics
 
 Metrics is at `/metrics` (sd:2119): spend against budget, the week, the
-provider scorecard, skill use, the month's usage and age in status.
+provider scorecard, the month's usage and age in status. Skill use moved to
+the Skills page's Usage view (sd:5881); an old `/metrics#view=skills`
+address opens it there.
 `GET /api/metrics` (`metrics_screen.document`) reads sd.db and the provider
 registry beside it, and writes nothing.
 
@@ -9,8 +11,7 @@ Dollars are the month to date, as `sd usage` reads them (`usage.read`), so the
 page, the classic Usage screen and the CLI agree. The design asked for dollars
 this week by bill and provider; a week of spend would be a second computation
 of the same ledger, so the bars show the month. The window trend is the last
-7-day-window meter reading of each day for a week (`reads.meter_days`). Skill
-use counts four Monday-start weeks (`reads.skill_use_days`).
+7-day-window meter reading of each day for a week (`reads.meter_days`).
 
 Each part is guarded on its own: one that fails is unknown with its reason,
 and the page reports a partial read. By model has no reader and always shows

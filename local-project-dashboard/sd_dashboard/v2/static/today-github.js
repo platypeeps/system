@@ -1,10 +1,10 @@
-// GitHub's Pull requests view (sd:5608; Today's GitHub view until sd:5781): the operator's open pull requests and issues, and those merged or closed in the last 7
-// days, from /api/today/github (today_github.document). The reading calls no GitHub API: the rows are what sd shadow sync
-// and the Contributions collector stored; only Copilot review, pressed, asks GitHub. It loads before shell.js, and reads
-// when the view first shows and on Refresh. Each part shows its first CAP rows, newest activity first, and Show all opens
-// the rest in place; the parts with nothing in them share one line. An issue row's title links to GitHub, and a row's
-// item, when one is known, to Tasks. A row with no activity stamp says not recorded, never a time; a source that was not
-// read is a line naming it; a read that failed says why.
+// GitHub's Pull requests view (sd:5608; Today's GitHub view until sd:5781): the operator's open pull requests, and those
+// merged or closed in the last 7 days, from /api/today/github (today_github.document). The reading calls no GitHub API: the
+// rows are what sd shadow sync and the Contributions collector stored; only Copilot review, pressed, asks GitHub. It loads
+// before shell.js, and reads when the view first shows and on Refresh. sd:5899: one table, newest activity first, paged
+// by the shell's pager; its issues list on Your issues (issues.with_github). A row's item, when one is known, links to
+// Tasks. A row with no activity stamp says not recorded, never a time; a source that was not read is a line naming it; a
+// read that failed says why.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 // sd:5633: a pull request row's title, or a press on its row, opens its Details in the right pane: what the read carries,
 // a link to GitHub in a new tab, and its commands (Open on GitHub, Open item, Adversarial review, Copilot review, Merge,
@@ -16,64 +16,62 @@
 // sd:5669: Close original is off until the lane merged the copy (the row's landed, pr_close.landed). Its run reads the
 // preview, asks with the exact comment, then posts the preview's revision: one comment linking the lane's pull request and
 // its merge commit, then the close. A 502 may follow the comment, so the toast says Close original again resumes.
-// sd:5757: Show mine, the default, keeps the rows that are yours, assigned to you or waiting on you (a review asked of you);
-// Show all adds what others opened in a registered repo. ?gh=all keeps All across a reload.
+// sd:5757, sd:5899: Show mine, the default, keeps the rows assigned to you or opened by you (the read's `mine`); Show all
+// adds what others opened in a registered repo, a review asked of you among them. ?gh=all keeps All across a reload.
+// State open, the default, lists open pull requests; with closed adds those merged or closed in the window (?prs=closed).
 (() => {
   const { html, put, plural } = window.markup;
   const count = (shown, total, noun) => window.shell.list.count(shown, total, noun);
   const $ = id => document.getElementById(id);
-  // Status's cap (today-status.js): the rows a part shows before Show all.
-  const CAP = 5;
-  const HEAD = { pulls: 'Open pull requests', issues: 'Open issues', settled: 'Merged or closed' };
-  const ORDER = Object.keys(HEAD);
   const GLYPH = { caution: '▲', queued: '◌', ok: '●' };
-  const KIND = { pull: 'PR', issue: 'Issue' };
   // What each unread source leaves out, for its line.
   const UNREAD = { intake: 'Third-party issues in repos with GitHub issues on', delivery: 'Items of merged pull requests (delivery notes)',
     refs: 'Items filed under a GitHub ref' };
 
   let DOC = null, failed = '', reads = 0, started = false, PUT = new Set();
-  const OPEN = new Set();
+  // The pager's state (shell.list): page and size, from the address when the view first draws.
+  const SIZE = 25;
+  let ST = null;
+  const st = () => ST || (ST = window.shell.list.listParams(new URLSearchParams(location.search), { page: 1 }, { size: SIZE }));
   // The command objects' type, apart from Now's 'pull request' rows: Snooze and Now's commands do not apply here.
   const TYPE = 'github pull request';
   const oid = key => `gh:${key}`;
   const pulls = () => DOC && !DOC.error ? [...DOC.pulls, ...DOC.settled.filter(r => r.kind === 'pull')] : [];
   const pullOf = key => pulls().find(r => r.key === key);
   // The selected pull request's key: the page's one selection (pick) names it in ?row= as its object id.
-  const all = () => new URLSearchParams(location.search).get('gh') === 'all';
-  const mine = r => !String(r.why || '').startsWith('opened by');
-  const rowsOf = key => all() ? DOC[key] : DOC[key].filter(mine);
+  const param = k => new URLSearchParams(location.search).get(k);
+  const all = () => param('gh') === 'all', closed = () => param('prs') === 'closed';
+  const mine = r => !!r.mine;
+  // The table's rows: open pull requests, and with closed those settled in the window, before Show.
+  const listed = () => [...DOC.pulls, ...(closed() ? DOC.settled.filter(r => r.kind === 'pull') : [])];
+  const shown = () => listed().filter(r => all() || mine(r));
+  // A filter or the pager writes its params around the others (shell.url keeps ?row=).
+  function address(changes) {
+    const p = new URLSearchParams(location.search);
+    Object.entries(changes).forEach(([k, v]) => v ? p.set(k, v) : p.delete(k));
+    p.delete('page'); p.delete('size'); window.shell.list.listQuery(p, st(), { size: SIZE });
+    window.shell.url(p.toString());
+  }
   const chosen = () => { const id = new URLSearchParams(location.search).get('row') || ''; return id.startsWith('gh:') ? id.slice(3) : null; };
 
   const state = r => r.state !== 'open' ? 'ok' : r.why === 'waiting on you' ? 'caution' : 'queued';
   const when = r => r.at ? html`${r.at_what} <time class="rel" datetime="${r.at}"></time>` : html`<span class="ph">activity not recorded</span>`;
   const row = r => {
     const s = state(r);
-    const pr = r.kind === 'pull';
-    return html`<tr data-key="${r.key}"${pr ? html` data-id="${oid(r.key)}" data-pr aria-selected="${String(chosen() === r.key)}"` : ''}>
+    return html`<tr data-key="${r.key}" data-id="${oid(r.key)}" data-pr aria-selected="${String(chosen() === r.key)}">
       <td class="g g-${s}" title="${r.state}">${GLYPH[s]}</td>
-      <td class="what">${pr ? html`<button type="button" data-gh-open="${r.key}">${r.title || r.ref}</button>`
-        : r.url ? html`<a href="${r.url}" rel="noopener noreferrer">${r.title || r.ref}</a>` : r.title || r.ref}<span class="repo">${KIND[r.kind]} · ${r.ref}</span></td>
+      <td class="what"><button type="button" data-gh-open="${r.key}">${r.title || r.ref}</button><span class="repo">${r.ref}</span></td>
       <td class="detail">${r.state === 'open' ? r.why : html`${r.state} · ${r.why}`}${r.item ? html`<span class="sub"><a href="${window.shell.itemHref(r.item)}">sd:${r.item}</a></span>` : ''}</td>
       <td class="when">${when(r)}</td></tr>`;
   };
-
-  // The line under a part's heading: the window, and the settled rows it could not place.
-  function note(key) {
-    if (key !== 'settled') return '';
-    return html`<p class="st-line">The last ${DOC.days} days${DOC.undated ? html` · <span class="g-unknown">▨</span> ${plural(DOC.undated, 'merged or closed row')} with no date recorded, not placed` : ''}</p>`;
-  }
-  const shows = key => rowsOf(key).length || (key === 'settled' && DOC.undated);
-  function section(key) {
-    const rows = rowsOf(key), open = OPEN.has(key), shown = open ? rows : rows.slice(0, CAP);
-    return html`<section class="st-sec" id="gh-${key}" aria-labelledby="gh-${key}-h">
-      <div class="sec-head"><h3 id="gh-${key}-h">${HEAD[key]} <span class="n">${rows.length}</span></h3></div>
-      ${note(key)}
-      ${rows.length ? html`<table class="ledger st" aria-labelledby="gh-${key}-h">
-        <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Pull request or issue</th><th scope="col">Why</th><th scope="col">Activity</th></tr></thead>
-        <tbody>${shown.map(row)}</tbody></table>` : ''}
-      ${rows.length > CAP ? html`<button type="button" class="linkbtn more" data-gh-more="${key}" aria-expanded="${String(open)}">${open ? `Show the first ${CAP}` : `Show all ${rows.length}`}</button>` : ''}
-    </section>`;
+  // With closed, the window and the settled rows it could not place.
+  const note = () => closed() ? html`<p class="st-line">Merged or closed: the last ${DOC.days} days${DOC.undated ? html` · <span class="g-unknown">▨</span> ${plural(DOC.undated, 'merged or closed row')} with no date recorded, not placed` : ''}</p>` : '';
+  function table() {
+    const L = window.shell.list, rows = shown();
+    if (!rows.length) return html`<p class="st-line st-empty">No ${closed() ? '' : 'open '}pull request ${all() ? 'is listed' : 'is assigned to you or opened by you'}.</p>`;
+    return html`<table class="ledger st" aria-labelledby="github-h">
+      <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Pull request</th><th scope="col">Why</th><th scope="col">Activity</th></tr></thead>
+      <tbody>${L.pageOf(rows, st()).map(row)}</tbody></table>${L.pager(rows.length, st(), 'pull requests')}`;
   }
 
   // The counts, what waits on you, and when the GitHub collector last succeeded: a sync that is not fresh says so.
@@ -82,9 +80,8 @@
     const sync = c.last_success_at
       ? html`<span${fresh ? '' : html` class="g-caution"`}>${fresh ? '' : `▲ sync ${c.state} · `}synced <time class="rel" datetime="${c.last_success_at}"></time></span>`
       : html`<span class="g-unknown">▨ sync ${c.state || 'unknown'}${c.reason ? `: ${c.reason}` : ''}</span>`;
-    return html`${waiting ? html`<a class="g-caution" href="#gh-pulls">▲ ${waiting} waiting on you</a>` : ''}
-      <span>${count(rowsOf('pulls').length, DOC.pulls.length, 'open pull request')}</span><span>${count(rowsOf('issues').length, DOC.issues.length, 'open issue')}</span>
-      <span>${count(rowsOf('settled').length, DOC.settled.length, 'settled row')} in ${DOC.days} d</span>${sync}`;
+    return html`${waiting ? html`<span class="g-caution">▲ ${waiting} waiting on you</span>` : ''}
+      <span>${count(shown().length, listed().length, closed() ? 'pull request' : 'open pull request')}</span>${sync}`;
   }
 
   function draw() {
@@ -95,12 +92,13 @@
       return;
     }
     put($('github-tally'), tally());
-    const L = window.shell.list, n = f => ORDER.reduce((c, k) => c + DOC[k].filter(f).length, 0);
-    put($('github-filters'), L.fbar(L.fseg('gh', 'Show', [['mine', mine], ['all', () => true]].map(([v, f]) =>
-      ({ v, pressed: all() === (v === 'all'), label: html`${v} <span class="n">${String(n(f))}</span>` })))));
-    const full = ORDER.filter(shows), empty = ORDER.filter(k => !shows(k));
+    const L = window.shell.list, n = f => String(listed().filter(f).length);
+    const open = DOC.pulls.filter(r => all() || mine(r)).length, every = open + DOC.settled.filter(r => r.kind === 'pull' && (all() || mine(r))).length;
+    put($('github-filters'), L.fbar(html`${L.fseg('gh', 'Show', [['mine', mine], ['all', () => true]].map(([v, f]) =>
+      ({ v, pressed: all() === (v === 'all'), label: html`${v} <span class="n">${n(f)}</span>` })))}${L.fseg('prs', 'State', [['open', open], ['closed', every]].map(([v, c]) =>
+      ({ v, pressed: closed() === (v === 'closed'), label: html`${v === 'open' ? 'open' : 'with closed'} <span class="n">${String(c)}</span>` })))}`));
     const unread = Object.entries(DOC.unread || {});
-    put($('github-sections'), html`${unread.map(([k, why]) => html`<p class="st-line"><span class="g-unknown">▨</span> ${UNREAD[k] || k} not read: ${why}</p>`)}${full.map(section)}${empty.length ? html`<p class="st-line st-empty">Nothing in ${empty.map(k => HEAD[k]).join(' · ')}.</p>` : ''}`);
+    put($('github-sections'), html`${unread.map(([k, why]) => html`<p class="st-line"><span class="g-unknown">▨</span> ${UNREAD[k] || k} not read: ${why}</p>`)}${note()}${table()}`);
   }
 
   // ---------- Details (sd:5633) ----------
@@ -257,20 +255,17 @@
       if (r && r.checkout && e.detail?.key === `change:${r.checkout}`) details(key, false); });
     document.addEventListener('shell:open', e => { const id = String(e.detail || ''); if (id.startsWith('gh:') && pullOf(id.slice(3))) details(id.slice(3)); });
     $('github-filters').addEventListener('click', e => {
-      const b = e.target.closest('[data-f="gh"]'); if (!b) return;
-      window.shell.url(b.dataset.v === 'all' ? 'gh=all' : '');
+      const b = e.target.closest('[data-f="gh"], [data-f="prs"]'); if (!b) return;
+      st().page = 1;
+      address(b.dataset.f === 'gh' ? { gh: b.dataset.v === 'all' ? 'all' : '' } : { prs: b.dataset.v === 'closed' ? 'closed' : '' });
       draw();
-      $('github-filters').querySelector(`[data-v="${b.dataset.v}"]`)?.focus();
+      $('github-filters').querySelector(`[data-f="${b.dataset.f}"][data-v="${b.dataset.v}"]`)?.focus();
     });
     $('github-sections').addEventListener('click', e => {
       const opened = e.target.closest('[data-gh-open]'); if (opened) return details(opened.dataset.ghOpen);
-      const b = e.target.closest('button[data-gh-more]');
-      if (!b) { const tr = !e.target.closest('a, button') && e.target.closest('tr[data-pr]'); if (tr) details(tr.dataset.key); return; }
-      const key = b.dataset.ghMore;
-      if (OPEN.has(key)) OPEN.delete(key); else OPEN.add(key);
-      draw();
-      // The redraw made a new button: focus moves to it, so a keyboard reader keeps their place.
-      $('github-sections').querySelector(`button[data-gh-more="${key}"]`)?.focus();
+      // The pager (shell.list): a page or a size redraws, and focus stays on the new copy of the button.
+      if (window.shell.list.paging(e, st())) { address({}); return window.shell.list.keepFocus(e, draw); }
+      const tr = !e.target.closest('a, button') && e.target.closest('tr[data-pr]'); if (tr) details(tr.dataset.key);
     });
     draw();
   });

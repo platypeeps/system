@@ -1,4 +1,4 @@
-/* Hallmark · route: custom (bespoke, locked by foundation/ + v2 shell.css) · structure: annunciator + instrument panels (spend/windows, week, scorecard, CI, skill use, usage month, age) + evidence drawer
+/* Hallmark · route: custom (bespoke, locked by foundation/ + v2 shell.css) · structure: annunciator + instrument panels (spend/windows, week, scorecard, CI, usage month, age) + evidence drawer
  * theme: foundation tokens (dark default) · display/body: IBM Plex Sans · data: IBM Plex Mono · charts: hand-rolled SVG, series tokens
  * pre-emit critique: P5 H4 E4 S5 R5 V4
  * build (sd:2119): bar tracks are SVG rects sized by attribute, so no width is written through CSSOM; the age chart is the

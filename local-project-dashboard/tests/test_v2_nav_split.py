@@ -192,7 +192,7 @@ class TheRoutes(BrowserSession):
                 mock.patch.object(repos, "intake_issues", create=True, return_value={}):
             status, _, out = self.request("/api/github/issues", headers={"Cookie": self.cookie})
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(out), {"issues": [], "issues_error": "", "intake": [], "intake_error": ""})
+        self.assertEqual(json.loads(out), {"issues": [], "issues_error": "", "github_error": "", "intake": [], "intake_error": ""})
 
 
 if __name__ == "__main__":
