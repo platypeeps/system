@@ -31,7 +31,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_dashboard import pack_bin, queue_screen, v2
+from sd_dashboard import now_screen, pack_bin, queue_screen, v2
 from sd_db import upsert_repo
 
 from support import NOW, ScreenCase
@@ -284,7 +284,9 @@ class TheRows(Lane, ScreenCase):
         self.list([{**failed, "item": item} for item in (done, cancelled, still)])
         doc = self.doc()
         self.assertEqual([row["item"] for row in doc["lanes"][0]["rows"] if row["state"] == "blocked"], [still])
-        self.assertEqual(doc["attention"], {"state": "caution", "n": 1, "what": "blocked"})
+        # Queue has no badge since sd:5921; Today's Lane lamp and Needs you count the blocked entries.
+        self.assertEqual(now_screen.lane_summary(doc)["blocked"], 1)
+        self.assertEqual([row["item"] for row in now_screen.lane_rows(doc["lanes"])], [still])
 
     # sd:3398: a cancelled entry is a row, so Re-queue can name the head the operator cancelled.
     def test_a_cancelled_entry_carries_its_head_and_when_it_was_cancelled(self):
