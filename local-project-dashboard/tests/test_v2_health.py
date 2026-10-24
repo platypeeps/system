@@ -1564,10 +1564,10 @@ class TheScript(Collectors, ScreenCase):
     def test_every_command_is_registered_with_the_design_id_risk_and_key(self):
         out = self.run_page("""R.reg = REG.map(c => [c.id, c.on, c.risk, c.key || null, typeof c.executes === 'boolean' ? c.executes : null, !!c.bulk]);""")
         self.assertEqual(out["R"]["reg"], [
-            ["check.recheck", "check", "safe", "e", False, False],
-            ["storage folder.du", "storage folder", "safe", "b", False, False],
+            ["check.recheck", "check", "safe", "e", True, False],
+            ["storage folder.du", "storage folder", "safe", "b", True, False],
             ["build output.rm", "build output", "confirm", "r", True, False],
-            ["volume.df", "volume", "safe", "b", False, False],
+            ["volume.df", "volume", "safe", "b", True, False],
             ["worktree registrations.prune", "worktree registrations", "confirm", "p", True, False],
             ["merged branches.delete", "merged branches", "confirm", "d", True, False],
             ["merged worktrees.remove", "merged worktrees", "confirm", "r", True, False],
@@ -1575,12 +1575,12 @@ class TheScript(Collectors, ScreenCase):
             ["service.restart", "service", "confirm", "r", True, False],
             ["service.start", "service", "confirm", "s", True, False],
             ["dashboard service.kickstart", "dashboard service", "safe", "l", False, False],
-            ["port.inspect", "port", "safe", "i", False, False],
+            ["port.inspect", "port", "safe", "i", True, False],
             ["protection.settings", "branch protection", "safe", "o", False, False],
             ["collector.sync", "collector", "safe", "r", None, False],
             ["dependabot alerts.review", "dependabot alerts", "safe", "o", False, False],
             ["secret scanning.review", "secret scanning", "safe", "o", False, False],
-            ["credential.probe", "credential", "safe", "r", False, False],
+            ["credential.probe", "credential", "safe", "r", True, False],
         ] + [[f"{t}.snooze", t, "undo", "z", None, True] for t in SNOOZED_TYPES]
           + [[f"{t}.ignore", t, "undo", "h", None, True] for t in SNOOZED_TYPES]
           + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True],

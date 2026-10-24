@@ -1,7 +1,7 @@
 // Research (sd:2122): the design source's products/system/designs/v2/research.js at 7f50ad4, ported. Each change from the reference is
 // marked "build:". The board is /api/research (research_screen.py: collectors.collect_research, every checkout with a research.conf.py);
 // a project's ledger and claim map are /api/research/<checkout>, read when the project is selected. Never sample data. Nothing reads
-// review rounds yet, so they are unknown with the document's reason. Render runs in the checkout (sd:5632); Review is copy only; Start research is off.
+// review rounds yet, so they are unknown with the document's reason. Render runs in the checkout (sd:5632); Review runs the kit's checks (sd:5655); Run files the request (sd:5887).
 const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
@@ -661,8 +661,6 @@ const followRun = (run, o, verb) => (['done', 'failed'].includes(run.state)
     : (shell.toast(run.state === 'done' ? `Rendered · ${o.label}` : `Render failed · ${o.label}: ${run.reason || 'no reason recorded'}`), run.state === 'done' && load()))
   : setTimeout(() => window.shell.getJSON(`/api/research/deck/${encodeURIComponent(run.id)}`).then(next => followRun(next, o, verb),
     e => shell.toast(`${verb === 'review' ? 'Review' : 'Render'} ${run.id}: not read (${e.message}); whether it ended is not known`)), DECK_POLL));
-// build: Start research is off with this reason, and its risk is confirm, not undo: there is no queued run to take back.
-const START_OFF = 'the dashboard does not create items yet: copy the line into a terminal';
 // Draft experiment is a page action (the Experiments tab's header, sd:5631): it names its project, the one shown first. The server refuses a linked one (409).
 const PAGE = { id: 'research:page', type: 'research page', label: 'Research' };
 const CREATE = { id: 'experiment.create', on: 'research page', label: 'Draft experiment', does: 'Drafts a new experiment from a description; Apply writes it after you read it.', risk: 'safe', executes: true,
@@ -678,8 +676,13 @@ const REFRESH = { id: 'experiment.refresh', on: 'research page', label: 'Refresh
   run: () => expPost({ verb: 'list' }, 'Refresh', selected) };
 document.getElementById('refresh-exp').addEventListener('click', () => shell.commands.run(REFRESH, PAGE));
 const DRAFT = { id: 'draft:research', type: 'research request', label: 'new research', q: '', cmd: '' };
-const START = { id: 'research.start', on: 'research request', label: 'Run', does: 'Gives the line that files this research request; the dashboard files nothing.', key: 'r', icon: 'flask-conical', risk: 'confirm', executes: false, primary: () => true,
-  when: o => (!o.q ? 'type the question first' : !o.repo ? 'name the project: add repo:<name>' : START_OFF), cli: o => o.cmd, run: () => START_OFF };
+// sd:5887: Run files the task the line names through /api/items, as Capture does; Undo closes it, as sd task cancel does.
+const START = { id: 'research.start', on: 'research request', label: 'Run', does: 'Files this research request as a task; Undo closes it.', key: 'r', icon: 'flask-conical', risk: 'undo', executes: true, primary: () => true,
+  when: o => (!o.q ? 'type the question first' : !o.repo ? 'name the project: add repo:<name>' : true), cli: o => o.cmd,
+  sends: o => `POST /api/items {title, body${o.due ? ', due' : ''}}`,
+  run: o => window.shell.post('/api/items', { title: `Research: ${o.q}`, body: `repo=${scopeOf(o.repo)} depth=${o.depth} skill=sd-research-repo stage=draft`, ...(o.due ? { due: o.due } : {}) })
+    .then(out => ({ text: `Research filed · #${out.item.id} · ${o.q}`, item: out.item.id, revision: out.revision })),
+  undo: (o, v) => window.shell.post(`/api/items/${v.item}/cancel-task`, { reason: 'withdrawn on Research right after filing', revision: v.revision }) };
 function registerCommands() {
   const C = shell.commands;
   C.put(DRAFT); C.put(PAGE);
@@ -771,11 +774,9 @@ function renderShift() {
   reqEl.hidden = false;
   Object.assign(DRAFT, { q: o.q, repo, depth: o.depth, budget: o.budget, due: o.due,
     cmd: `sd task add ${shq('Research: ' + o.q)} --body ${shq(`repo=${scope} depth=${o.depth} skill=sd-research-repo stage=draft`)}${o.due ? ` --due ${shq(o.due)}` : ''}` });
-  // build: Start is off, so the preview shows the line with Copy in place of the Run button.
-  const why = START.when(DRAFT);
-  put(reqEl, html`<p class="why">Creates an item in ${scope}. Review rounds start at 0 of ${CAP}.</p>
-    ${o.q ? html`<div class="cli"><code>${DRAFT.cmd}</code><button class="icon-btn" type="button" data-copy="${DRAFT.cmd}" aria-label="Copy command">${I('copy')}</button></div>` : ''}
-    <p class="why">Not started here: ${why}.</p>`);
+  put(reqEl, html`<p class="why">Creates an item in ${scope}: Run files it, and Undo closes it. Review rounds start at 0 of ${CAP}.</p>
+    ${o.q ? html`<div class="cli"><code>${DRAFT.cmd}</code><button class="icon-btn" type="button" data-copy="${DRAFT.cmd}" aria-label="Copy command">${I('copy')}</button></div>
+    <div class="actions">${shell.commands.rowActions(DRAFT.id)}</div>` : ''}`);
 }
 input.addEventListener('input', () => {
   const g = guess(input.value.trim());

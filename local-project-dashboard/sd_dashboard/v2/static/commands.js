@@ -45,24 +45,51 @@
       run };
   }
 
-  // Show log: the cron-jobs wrapper prints the job's log; the line is copy only. run(o) shows where the page keeps it: the
-  // Details on Management, the job's row on Management > Schedules elsewhere (sd:2392). `job(o)` names { name }.
-  // The filter puts the row on Schedules' first page.
-  const openSchedule = job => { const to = window.shell.pages?.Management; if (!to) return 'Management is not built yet';
-    location.href = `${to}?q=${encodeURIComponent(job)}&row=${encodeURIComponent(`cron:${job}`)}#view=schedules`; return `${job} opens in Management > Schedules`; };
-  // The one cron-jobs line (sd:3525): Reports' report.log prints it too, so no page names the wrapper or a checkout path.
-  const logLine = name => `local-cron-jobs/cron-jobs.sh logs ${name}`;
-  function showLog({ job, run = o => openSchedule(job(o).name) }) {
-    return { id: 'jobs.log', on: 'job', label: 'Show log', does: 'Shows the job\'s log.', key: 'l', risk: 'safe', executes: false,
-      cli: o => logLine(job(o).name), run };
+  // Run (sd:5886): a button that gave a line to copy posts /api/actions/run {action, ...ids}; the server checks the ids against
+  // its own rows and runs a fixed command from its registry (run_actions.py), never a line from the page. The answer
+  // stays with the row while the page is open, and Details shows it after the row's facts: the label, the line, the exit
+  // and the output's tail. A 4xx ran nothing; a 504 ran past its bound, so whether a write landed is not known. `o` is
+  // the row the output belongs to. It answers the toast text.
+  const RAN = new Map();
+  let watched = null;
+  function drawRan(id) {
+    const details = document.getElementById('details'), had = details?.querySelector('.ran');
+    id = id || window.shell.commands.selected?.()?.id;
+    if (!details || had && had.dataset.obj === id) return;
+    had?.remove();
+    const r = id && RAN.get(id); if (!r) return;
+    const { html, put } = window.markup;
+    put(details, html`<section class="ran" data-obj="${id}" aria-live="polite"><h3>${r.label}</h3><p class="why">Exit ${r.exit} · <code>${r.line}</code>${r.cut ? ' · the last part shown' : ''}</p><pre class="code">${r.output || '(no output)'}</pre></section>`, 'append');
+  }
+  // The output shows at once, for a row or for an object no row selects (Scan's use surfaces); a later Details for the
+  // selected row draws that row's output again, or none.
+  function runAction(o, action, ids = {}) {
+    const details = document.getElementById('details');
+    // The page draws Details again on a select or a reread; the observer adds the row's output back, and skips its own.
+    const own = recs => recs.every(x => [...x.addedNodes, ...x.removedNodes].every(n => n.classList?.contains('ran')));
+    if (details && watched !== details && typeof MutationObserver === 'function') { watched = details; new MutationObserver(recs => own(recs) || drawRan()).observe(details, { childList: true }); }
+    return window.shell.post('/api/actions/run', { action, ...ids }).then(r => {
+      RAN.set(o.id, r); details?.querySelector('.ran')?.remove(); drawRan(o.id); window.shell.openPane('tab-details');
+      return `${r.label} · exit ${r.exit} · the output is in Details`;
+    }, err => { throw err.status === 504 ? new Error(`${err.message} Whether it finished is not known.`) : err; });
   }
 
-  // Print: launchd's whole record of the job, copy only. It is the row's act after exit 127, where Retry is not (sd:3392).
-  // `job(o)` names { service, exit }.
+  // Show log (sd:5886): the server runs the cron-jobs wrapper for an installed job and Details shows the log's last 200
+  // lines. Management passes its own run: its Details show the log already (sd:2392). `job(o)` names { name }.
+  const logLine = name => `local-cron-jobs/cron-jobs.sh logs ${name}`;
+  function showLog({ job, run }) {
+    return { id: 'jobs.log', on: 'job', label: 'Show log', does: run ? 'Shows the job\'s log in Details.' : 'Prints the job\'s last 200 log lines in Details.', key: 'l', risk: 'safe', executes: !run,
+      cli: o => logLine(job(o).name), sends: o => `POST /api/actions/run {action: job.log, job: ${job(o).name}}`,
+      run: run || (o => runAction(o, 'job.log', { job: job(o).name })) };
+  }
+
+  // Print (sd:5886): launchd's whole record of the job, in Details. It is the row's act after exit 127, where Retry is
+  // not (sd:3392). The server finds the service from the installed job, not from the row. `job(o)` names { name, service, exit }.
   function printJob({ job }) {
-    return { id: 'jobs.print', on: 'job', label: 'Print', does: 'Gives the line that prints launchd\'s full record of the job.', key: 'p', icon: 'terminal', risk: 'safe', executes: false, primary: o => job(o).exit === 127,
+    return { id: 'jobs.print', on: 'job', label: 'Print', does: 'Prints launchd\'s full record of the job in Details.', key: 'p', icon: 'terminal', risk: 'safe', executes: true, primary: o => job(o).exit === 127,
       when: o => !!job(o).service || 'the row names no launchd service', cli: o => `launchctl print ${job(o).service}`,
-      run: () => 'Copy it into a terminal: the dashboard does not show the whole launchd record' };
+      sends: o => `POST /api/actions/run {action: job.print, job: ${job(o).name}}`,
+      run: o => runAction(o, 'job.print', { job: job(o).name }) };
   }
 
   // Show assignment: `sd assignments get` prints what the page's Details show, so the line is copy only. run(o) shows it.
@@ -291,5 +318,5 @@
       ${state ? html`<p class="why">${state}</p>` : ''}</section>`;
   }
 
-  window.commands = { answered, fix, retry, showLog, logLine, printJob, showAssignment, openPullRequest, syncCollector, adversarialReview, reviewPane, published, PUB_STATE, pubLegend, publishCommands, publishPane };
+  window.commands = { answered, fix, retry, runAction, showLog, logLine, printJob, showAssignment, openPullRequest, syncCollector, adversarialReview, reviewPane, published, PUB_STATE, pubLegend, publishCommands, publishPane };
 })();
