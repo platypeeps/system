@@ -155,11 +155,12 @@ class CheckScript(CheckFixture):
                 self.assertIn(f"check.sh: {JOBS} jobs, {JOBS} at a time", done.stdout)
 
     def test_a_failing_job_in_a_lane_fails_the_check_and_is_named(self):
-        # An early leg, so jobs stay queued behind it; both its shards fail.
+        # An early leg, so jobs stay queued behind it. Both its shards fail;
+        # either may end first and stop the other.
         (self.root / "fail-repo-sync").touch()
         done = self.check(expect=1, SD_GATE_POOL_SIZE=str(max(2, self.cores // 2)))
-        self.assertIn("check.sh: repo-sync-1 exited 3", done.stderr)
-        self.assertRegex(done.stderr, r"check.sh: failed: repo-sync-1( repo-sync-2)?\n")
+        self.assertRegex(done.stderr, r"check.sh: repo-sync-[12] exited 3")
+        self.assertRegex(done.stderr, r"check.sh: failed: repo-sync-[12]( repo-sync-[12])?\n")
         # sd:3749: the jobs queued behind it never ran.
         self.assertLess(len(self.ran()), JOBS)
 
