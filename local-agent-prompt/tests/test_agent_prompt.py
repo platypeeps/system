@@ -305,6 +305,11 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("only filed", fixed)
         self.assertIn("leave the alert open", fixed)
         self.assertNotIn("then run `sd reports acknowledge N --resolve-followups`", source)
+        # Second lane review: it also closes followups the operator wrote, so the session lists
+        # them first and resolves only when every open one is its own fix.
+        self.assertIn("`sd note list N`", fixed)
+        self.assertIn("only when every open followup is one this session fixed", fixed)
+        self.assertNotIn("Once fixed, run `sd reports acknowledge N --resolve-followups`", source)
         self.assertTrue(any("work-<repo>" in line and "SendMessage" in line for line in rules), rules)
 
 

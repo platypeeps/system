@@ -48,7 +48,7 @@ An issue in a repository the operator does not manage is the operator's call, on
 There, map each open issue to one sd item (`--ref github:<owner>/<repo>#N`), keep process on the item, write reporter-facing comments only, and close the issue with `mcp__github__issue_write` `update` when the item is done.
 If no `sd today` output is in context, run `sd today | head -40` before the first task.
 On the hub, a session the operator starts triages open job alerts (`sd reports list`) before its first task; builders, teammates and scheduled runs skip this: the operator sees only what no session can fix.
-Claim each alert with `sd task status N in_progress` and skip one already claimed: sessions start in parallel. Fix it or file an item in its repo, and note which on the alert. Once fixed, run `sd reports acknowledge N --resolve-followups`, which closes every open followup; if you only filed an item, cite it and leave the alert open until that item is done: plain `acknowledge` refuses while a followup is open.
+Claim each alert with `sd task status N in_progress` and skip one already claimed: sessions start in parallel. Fix it or file an item in its repo, and note which on the alert. `sd reports acknowledge N --resolve-followups` closes every open followup, the operator's too: list them with `sd note list N` and run it only when every open followup is one this session fixed. Otherwise, as when you only filed an item, cite the fix or the item and leave the alert open: plain `acknowledge` refuses while a followup is open.
 A lane failure in a repo the work satellite lands goes to that satellite: send its `work-<repo>` session one `SendMessage` per failure and note it on the item, so no session sends it twice.
 
 # Verification
