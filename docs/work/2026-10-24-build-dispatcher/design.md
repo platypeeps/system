@@ -86,6 +86,7 @@ Inside one `BEGIN IMMEDIATE` the tick:
   It leaves the job's process group, so neither the job timeout nor launchd's exit cleanup reaches it.
 - The supervisor records its pid and process start, then walks the run's steps from its `step` column.
   Every write names the run id and needs `released_at IS NULL AND outcome IS NULL`, so a late old supervisor writes nothing.
+  A write that fails or changes no row stops the supervisor before its next external step (builder, commit, push, enqueue): it kills `builder_pgid` and exits.
 - It beats `heartbeat_at` every 30 s for its whole life.
 
 Steps, each written before it starts:
@@ -127,7 +128,8 @@ The run row logs the model.
   The supervisor kills the group at its next beat, keeps the worktree, ends the members `cancelled`, and moves the items to `ready` with a note.
 - Reap, each tick, for each unreleased run that fails liveness:
   1. CAS `outcome='interrupted'` where `heartbeat_at` is the value read; a lost CAS means the supervisor beat, so leave it.
-  2. Kill `builder_pgid` if any member lives.
+  2. Kill the supervisor's process group if its pid and start still match, then `builder_pgid` if any member lives.
+     Confirm both gone before step 3; a group that outlives KILL blocks the run, with no retry, so two writers never share the worktree.
   3. A loss in `worktree`, `building` or `fixing` retries once: a new run row, same worktree and branch, old lease released in the same transaction.
   4. A second loss, a timeout retried once, `error_max_turns` twice, or any step's unknown result twice:
      members `blocked`, items `blocked`, and an action note naming the step, the log and the worktree.
@@ -172,6 +174,7 @@ The run row logs the model.
 | Reviewing, fixing | review report, fix commits | review tool error; blockers after 3 rounds | unknown result retried once, then blocked; rounds spent: blocked with the blockers | `test_review_rounds_bound` |
 | Enqueuing | lane entry | killed after the lane wrote the entry | the resumed step reads `lane list` for the item at its head first: no second entry | `test_enqueue_resume_no_duplicate` |
 | Enqueued | lease released, members done | a late old supervisor finishes | its CAS names its own run and an open outcome: no row changes | `test_late_run_writes_nothing` |
+| Reap | outcome interrupted, supervisor killed | heartbeat stale while the supervisor still runs | reap kills its group and confirms it gone before a retry; its next failed write stops it anyway; a survivor blocks the run | `test_reap_kills_live_stale_supervisor` |
 | Reap | outcome interrupted, new attempt | tick killed between the CAS and the kill | next tick kills every group of an ended unreleased run before any retry | `test_reap_resumes_kill` |
 | Cancel | cancel_requested, members cancelled, items ready | supervisor dead at cancel | reap ends it as cancelled, not retried | `test_cancel_dead_supervisor` |
 | Checking | auto-pickup setting, push, item | killed after health failed | result not recorded, so the next tick runs the check again; off is written before the push | `test_health_failure_turns_off_first` |
