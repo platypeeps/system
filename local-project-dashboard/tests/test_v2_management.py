@@ -1901,7 +1901,7 @@ R.toast = lastToast().msg; R.left = pending.length; await lastToast().undo(); aw
                            "before": json.dumps(after, separators=(",", ":"))}])
         self.assertEqual((out["R"]["toast"], out["R"]["left"]), ("Written · review declaration · severity_floor → low", 0))
 
-    def test_write_after_a_new_reading_sends_that_reading_and_a_refusal_keeps_the_proposal(self):
+    def test_write_sends_the_latest_reading_and_keeps_a_refused_one(self):
         """sd:5958: Write sent the declaration the proposal was made on as `before`, so after a reread the server refused it
         (409), and the proposal was already gone from the list."""
         newer = '{\n  "categories": ["x"],\n  "severity_floor": "high"\n}\n'

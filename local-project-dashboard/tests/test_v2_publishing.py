@@ -596,7 +596,7 @@ class Copies(ScreenCase):
         self.assertIn("builds DOCS in code", choice["why"])
         self.assertIn("sd-research-kit render writes its designations", choice["why"])
 
-    def test_a_declared_entry_that_is_not_literal_shows_its_declared_designations(self):
+    def test_a_named_entry_shows_its_declared_designations(self):
         # The safe reader reads a named entry; the literal reader finds no entry to tick.
         choice = self.choice_of('_PLAN = {"src": "notes/PLAN.md", "out": "plan", "drive": {}, "notion": None}\nDOCS = [_PLAN]\n')
         self.assertEqual((choice["notion"], choice["drive"], choice["obsidian"]), (False, True, False))
@@ -940,7 +940,7 @@ R.kind = [un.risk, un.askFirst];""", row="'lab/plan.html'")
         self.assertEqual(out["R"]["kind"], ["undo", True])
         self.assertIn("nothing is queued", out["R"]["now"])
 
-    def test_a_designation_read_from_the_render_shows_and_refuses_ticking_with_why(self):
+    def test_a_render_flag_shows_and_ticking_says_why(self):
         """sd:5898: a config that builds DOCS in code shows the render's flags; a designated destination with no copy is a
         gap, every box refuses with the reason, and Obsidian, which the render does not flag, is not known for it."""
         why = "research.conf.py builds DOCS in code; add the key to the entry by hand"
