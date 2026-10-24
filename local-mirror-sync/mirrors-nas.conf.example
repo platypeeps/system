@@ -15,5 +15,11 @@
 # A promoted satellite pairs its SD_DB_BACKUP_DESTINATION folder with the
 # NAS's sd-backups folder, one folder to one folder, never a parent with the
 # share: the share's other folders are not in the source (sd:4683).
-#   /path/to/sd-backups|/Volumes/Offsite/Backup/sd-backups
-/Volumes/local/Backup|/Volumes/Offsite/Backup
+#   /path/to/sd-backups|/Volumes/Offsite/Backup/sd-backups|runner-journal/*.lock
+#
+# The third field keeps the snapshot's runner journal locks off the NAS
+# (sd:6048). They are empty files restore makes again; rsync's open of one
+# failed the copy on 2026-10-24, and offsite-verify passes a copy without
+# them. Leave mirrors-nas-hourly.conf without it: the NAS prune deletes an
+# hourly copy only when its file names match its manifest.
+/Volumes/local/Backup|/Volumes/Offsite/Backup|runner-journal/*.lock
