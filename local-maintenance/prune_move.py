@@ -4,8 +4,18 @@ maintenance.sh runs `python3 prune_move.py SRC DST`. Cargo locks a build
 with flock(2) on target/<profile>/.cargo-lock, so this takes every such lock
 without waiting and renames SRC to DST while it holds them all.
 
-Exit 0: moved. 75: a build holds a lock; nothing moved. 1: an error, named
-on stderr; nothing moved.
+A build can make and lock a new profile's lock after the first pass and
+before the rename. So after the rename this locks every lock in DST too.
+A busy or unreadable one sends DST back to SRC. After the rename no path
+leads into DST, so no build can lock there later.
+
+Exit 0: moved. 75: a build holds a lock; nothing moved. 76: a build started
+during the move; DST went back to SRC. 77: as 76, but SRC exists again, so
+DST stays where it is, named on stderr. 1: an error, named on stderr;
+nothing moved.
+
+`python3 prune_move.py DIR` only checks: exit 75 when a build holds a lock
+under DIR, 1 on an error, else 0.
 """
 
 from __future__ import annotations
@@ -17,7 +27,7 @@ import sys
 
 #: Where cargo puts its locks: the target, a profile, a target triple's profile.
 PATTERNS = (".cargo-lock", "*/.cargo-lock", "*/*/.cargo-lock")
-BUSY = 75
+BUSY, RESTORED, KEPT = 75, 76, 77
 
 
 class Busy(Exception):
@@ -65,15 +75,33 @@ def prepass(src: str) -> dict[tuple[int, int], int]:
 def move(src: str, dst: str, held: dict[tuple[int, int], int]) -> int:
     """Rename `src` to `dst` while the caller holds the prepass locks."""
     os.rename(src, dst)
-    return 0
+    return settle(src, dst, held)
+
+
+def settle(src: str, dst: str, held: dict[tuple[int, int], int]) -> int:
+    """After the rename, lock what a build locked in the window, or undo it."""
+    try:
+        lock_all(dst, held)
+        return 0
+    except (Busy, OSError) as error:
+        why = error
+    # rename(2) back fails on a SRC that holds anything, and replaces only
+    # an empty folder.
+    try:
+        os.rename(dst, src)
+        return RESTORED
+    except OSError as error:
+        print(f"{why}; {error}", file=sys.stderr)
+        return KEPT
 
 
 def main(argv: list[str]) -> int:
-    src, dst = argv[1:3]
     held: dict[tuple[int, int], int] = {}
     try:
-        held = prepass(src)
-        return move(src, dst, held)
+        held = prepass(argv[1])
+        if len(argv) == 2:
+            return 0
+        return move(argv[1], argv[2], held)
     except Busy:
         return BUSY
     except OSError as error:

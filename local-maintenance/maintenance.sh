@@ -403,7 +403,8 @@ fi
 WORKTREES="$HOME/worktrees"
 PRUNE_TRASH="$HOME/.local/state/maintenance/prune-trash"
 # A run stopped during a delete leaves its entry in the trash; the next run
-# deletes it. Only entries in the trash go, never a path under ~/worktrees.
+# deletes it, unless a build that started during a move still holds a lock
+# there. Only entries in the trash go, never a path under ~/worktrees.
 if [ -d "$PRUNE_TRASH" ]; then
   if ! st_step 60 find "$PRUNE_TRASH" -mindepth 1 -maxdepth 1 -print > "$TMPD/trash"; then
     finding "build output prune: could not list all of $PRUNE_TRASH"
@@ -411,6 +412,14 @@ if [ -d "$PRUNE_TRASH" ]; then
   while IFS= read -r entry; do
     if [ "$APPLY" -eq 0 ]; then
       action "[dry-run] would remove $entry, left in the prune trash"
+      continue
+    fi
+    free_rc=0
+    python3 "$DIR/prune_move.py" "$entry/target" 2> "$TMPD/move.err" || free_rc=$?
+    if [ "$free_rc" -eq 75 ]; then
+      continue
+    elif [ "$free_rc" -ne 0 ]; then
+      finding "build output prune: could not read the locks in $entry ($(tail -1 "$TMPD/move.err")); kept"
     elif st_step 600 rm -rf "$entry"; then
       action "removed $entry, left in the prune trash"
     else
@@ -443,24 +452,29 @@ if [ -d "$WORKTREES" ]; then
     # them all without waiting and, while it holds them, renames target/ into
     # the trash. A busy lock is a running build: skip it, no finding. A cargo
     # that starts during the hold waits on the lock, then builds a fresh
-    # target/, and never sees the files being deleted. rename(2), not mv: mv
-    # copies across volumes. A rename that fails keeps the folder.
+    # target/, and never sees the files being deleted. A build that locked a
+    # new profile before the rename gets target/ back (76); if target/ exists
+    # again, the copy stays in the trash (77). rename(2), not mv: mv copies
+    # across volumes. A rename that fails keeps the folder.
     if ! { mkdir -p "$PRUNE_TRASH" && bin=$(mktemp -d "$PRUNE_TRASH/XXXXXXXX"); } 2> "$TMPD/move.err"; then
       finding "build output prune: could not make a folder in $PRUNE_TRASH; kept $t"
       continue
     fi
     move_rc=0
     python3 "$DIR/prune_move.py" "$t" "$bin/target" 2> "$TMPD/move.err" || move_rc=$?
-    if [ "$move_rc" -ne 0 ]; then
-      rmdir "$bin" 2>/dev/null || true
-      [ "$move_rc" -eq 75 ] ||
-        finding "build output prune: could not move $t into $PRUNE_TRASH ($(tail -1 "$TMPD/move.err")); kept"
-      continue
-    fi
-    if st_step 600 rm -rf "$bin"; then
-      action "removed idle build output $t (untouched 3 days)"
-    else
-      finding "build output prune: could not finish deleting $t; the next run deletes $bin"
+    if [ "$move_rc" -eq 0 ]; then
+      if st_step 600 rm -rf "$bin"; then
+        action "removed idle build output $t (untouched 3 days)"
+      else
+        finding "build output prune: could not finish deleting $t; the next run deletes $bin"
+      fi
+    elif ! rmdir "$bin" 2>/dev/null; then
+      # Not empty: target/ moved and could not come back.
+      finding "build output prune: $t did not come back from $bin ($(tail -1 "$TMPD/move.err")); kept until no build holds a lock there"
+    elif [ "$move_rc" -eq 76 ]; then
+      action "kept idle build output $t: a build started during the move"
+    elif [ "$move_rc" -ne 75 ]; then
+      finding "build output prune: could not move $t into $PRUNE_TRASH ($(tail -1 "$TMPD/move.err")); kept"
     fi
   done < "$TARGETS"
 fi

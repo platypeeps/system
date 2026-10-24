@@ -64,12 +64,18 @@ so the move uses cargo's own lock: it takes `flock(2)` on every
 `.cargo-lock` in the folder without waiting, and while it holds them,
 one rename(2) moves `target/` into
 `~/.local/state/maintenance/prune-trash/`. A busy lock is a running
-build, and the folder stays. The delete runs in the trash: a cargo that
+build, and the folder stays. A build can lock a new profile after that
+pass and before the rename, so after the rename `prune_move.py` locks
+every `.cargo-lock` in the moved copy too. A busy or unreadable one moves
+`target/` back; if `target/` exists again, the copy stays in the trash,
+with a finding. After the rename no path leads into the trash, so no
+build can lock there later. The delete runs in the trash: a cargo that
 starts during the hold or the delete makes a fresh `target/`. A rename that
 fails (another volume) keeps the folder; nothing is copied. A run
 stopped during a delete leaves its entry in the trash, and the next run
-deletes entries there, never a path under `~/worktrees`. A probe that
-fails is a finding, and the folder stays.
+deletes entries there, never a path under `~/worktrees`, and none whose
+lock a build still holds. A probe that fails is a finding, and the folder
+stays.
 The walks and the delete run under `lib/bounded.sh`'s `st_step`.
 
 ## uv cache prune at login

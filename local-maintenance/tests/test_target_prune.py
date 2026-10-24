@@ -6,15 +6,23 @@ build output goes, and the next build makes it again. A folder counts as
 cargo's when it holds CACHEDIR.TAG, which cargo writes and git never tracks.
 """
 
+import contextlib
+import importlib.util
+import io
 import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import time
+import unittest
 
-from tests.test_report import Harness, _stub
+from tests.test_report import FOLDER, Harness, _stub
 
 FOUR_DAYS = 4 * 86400
+_SPEC = importlib.util.spec_from_file_location("prune_move", FOLDER / "prune_move.py")
+prune_move = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(prune_move)
 
 
 def _age(root, seconds):
@@ -23,6 +31,21 @@ def _age(root, seconds):
     for path in sorted(root.rglob("*"), reverse=True):
         os.utime(path, (when, when), follow_symlinks=False)
     os.utime(root, (when, when))
+
+
+def _hold(test, lock):
+    """A child that holds flock(2) on `lock`, as a running cargo build does."""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import fcntl, sys\n"
+         "f = open(sys.argv[1], 'r+')\n"
+         "fcntl.flock(f, fcntl.LOCK_EX)\n"
+         "print('locked', flush=True)\n"
+         "sys.stdin.read()\n", str(lock)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    test.addCleanup(holder.stdout.close)
+    test.addCleanup(holder.wait)
+    test.addCleanup(holder.stdin.close)
+    test.assertEqual(holder.stdout.readline(), "locked\n")
 
 
 class TargetPruneTest(Harness):
@@ -98,16 +121,7 @@ class TargetPruneTest(Harness):
         # as a running build does; the target stays, with no finding.
         _checkout, target = self.cargo_target("example-building")
         lock = target / "debug" / ".cargo-lock"
-        holder = subprocess.Popen(
-            [sys.executable, "-c", "import fcntl, sys\n"
-             "f = open(sys.argv[1], 'r+')\n"
-             "fcntl.flock(f, fcntl.LOCK_EX)\n"
-             "print('locked', flush=True)\n"
-             "sys.stdin.read()\n", str(lock)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        self.addCleanup(holder.wait)
-        self.addCleanup(holder.stdin.close)
-        self.assertEqual(holder.stdout.readline(), "locked\n")
+        _hold(self, lock)
         run = self.maintenance("# nothing to check\n")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertTrue((target / "CACHEDIR.TAG").is_file(), run.stdout + run.stderr)
@@ -211,12 +225,130 @@ exec /bin/rm "$@"
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {self.trash}/\S+ \(bound \d+s\)")
         self.assertNotIn("[step ", run.stdout)
 
+    def stub_move(self, body):
+        """Replace the copied prune_move.py; one argument is the sweep's check."""
+        (self.tmp / "local-maintenance" / "prune_move.py").write_text(
+            "import os, sys\nif len(sys.argv) == 2:\n    sys.exit(0)\n" + body)
+
+    def test_a_target_a_build_took_back_stays_and_is_named(self):
+        # prune_move.py 76: a build started during the move, and target/
+        # went back. No finding: nothing needs the operator.
+        _checkout, target = self.cargo_target("example-returned")
+        self.stub_move("sys.exit(76)\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file())
+        self.assertIn(f"- kept idle build output {target}: a build started during the move", run.stdout)
+        self.assertEqual(self.attention(run), [])
+        self.assertEqual(list(self.trash.iterdir()), [])
+
+    def test_a_target_that_cannot_come_back_stays_in_the_trash_and_says_so(self):
+        # prune_move.py 77: target/ moved, a build started, and target/
+        # exists again. The moved copy stays undeleted, with a finding.
+        _checkout, target = self.cargo_target("example-crowded")
+        self.stub_move("os.rename(sys.argv[1], sys.argv[2])\nos.mkdir(sys.argv[1])\n"
+                       "print('busy', file=sys.stderr)\nsys.exit(77)\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        [bin_] = list(self.trash.iterdir())
+        self.assertTrue((bin_ / "target" / "CACHEDIR.TAG").is_file(), run.stdout)
+        self.assertIn(f"- build output prune: {target} did not come back from {bin_} (busy); "
+                      "kept until no build holds a lock there", run.stdout)
+        self.assertNotIn("removed idle build output", run.stdout)
+
+    def test_a_trash_entry_a_build_still_locks_stays(self):
+        # A build that locked inside the moved copy may still run there; the
+        # sweep leaves the entry until its lock is free.
+        lock = self.trash / "Ab12Cd34" / "target" / "release" / ".cargo-lock"
+        lock.parent.mkdir(parents=True)
+        lock.write_bytes(b"")
+        _hold(self, lock)
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue(lock.is_file(), run.stdout + run.stderr)
+        self.assertNotIn("prune trash", run.stdout)
+        self.assertEqual(self.attention(run), [])
+
     def test_no_worktrees_folder_is_a_clean_run(self):
         run = self.maintenance("# nothing to check\n")
         self.assertIn("all checks clean", run.stdout)
 
 
-if __name__ == "__main__":
-    import unittest
+class LockWindowTest(unittest.TestCase):
+    """sd:5994 round 6: a build locks a new profile after the lock pass.
 
+    `cargo build --release` can make and lock target/release/.cargo-lock
+    after prune_move.py took the locks it found and before the rename. The
+    tests run the steps of prune_move.py in turn and start that build
+    between them.
+    """
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = pathlib.Path(tmp.name)
+        self.target = root / "worktrees" / "example" / "target"
+        (self.target / "debug" / "deps").mkdir(parents=True)
+        (self.target / "debug" / "deps" / "example-0123").write_bytes(b"\0" * 64)
+        (self.target / "debug" / ".cargo-lock").write_bytes(b"")
+        (self.target / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
+        self.bin = root / "prune-trash" / "Ab12Cd34"
+        self.bin.mkdir(parents=True)
+        self.dst = self.bin / "target"
+
+    def start_release_build(self):
+        lock = self.target / "release" / ".cargo-lock"
+        lock.parent.mkdir()
+        lock.write_bytes(b"")
+        _hold(self, lock)
+
+    def test_a_build_that_starts_in_the_window_gets_its_target_back(self):
+        held = prune_move.prepass(str(self.target))
+        self.addCleanup(prune_move.release, held)
+        self.start_release_build()
+        code = prune_move.move(str(self.target), str(self.dst), held)
+        self.assertTrue((self.target / "CACHEDIR.TAG").is_file(), "target/ not restored")
+        self.assertTrue((self.target / "release" / ".cargo-lock").is_file())
+        self.assertTrue((self.target / "debug" / "deps" / "example-0123").is_file())
+        self.assertFalse(self.dst.exists())
+        self.assertEqual(code, prune_move.RESTORED)
+
+    def test_a_build_in_the_window_and_a_new_target_keep_the_trash(self):
+        # target/ exists again by the time the check finds the build: the
+        # moved copy stays in the trash, undeleted, for the operator.
+        held = prune_move.prepass(str(self.target))
+        self.addCleanup(prune_move.release, held)
+        self.start_release_build()
+        os.rename(self.target, self.dst)
+        (self.target / "debug").mkdir(parents=True)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            code = prune_move.settle(str(self.target), str(self.dst), held)
+        self.assertEqual(code, prune_move.KEPT)
+        self.assertIn("release/.cargo-lock; [Errno", err.getvalue())
+        self.assertTrue((self.dst / "release" / ".cargo-lock").is_file())
+        self.assertTrue((self.dst / "debug" / "deps" / "example-0123").is_file())
+        self.assertEqual(os.listdir(self.target), ["debug"])
+
+    def test_a_quiet_window_moves_the_target(self):
+        held = prune_move.prepass(str(self.target))
+        self.addCleanup(prune_move.release, held)
+        code = prune_move.move(str(self.target), str(self.dst), held)
+        self.assertEqual(code, 0)
+        self.assertFalse(self.target.exists())
+        self.assertTrue((self.dst / "CACHEDIR.TAG").is_file())
+
+    def test_a_lock_the_check_cannot_open_restores_the_target(self):
+        # A failed read is no answer: the build may be there, so restore.
+        held = prune_move.prepass(str(self.target))
+        self.addCleanup(prune_move.release, held)
+        lock = self.target / "release" / ".cargo-lock"
+        lock.parent.mkdir()
+        lock.write_bytes(b"")
+        lock.chmod(0)
+        code = prune_move.move(str(self.target), str(self.dst), held)
+        self.assertEqual(code, prune_move.RESTORED)
+        self.assertTrue((self.target / "CACHEDIR.TAG").is_file())
+
+
+if __name__ == "__main__":
     unittest.main()
