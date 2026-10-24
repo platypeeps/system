@@ -1930,7 +1930,7 @@ R.left = pending.map(p => p.key);""" % json.dumps({"declaration": newer, "severi
                             answer=answer)
         return [(b["before"], b["value"]) for p, b, _ in out["posts"] if p == "/api/actions/run"], out
 
-    def test_a_declaration_cleared_since_the_proposal_is_not_written_back(self):
+    def test_a_cleared_declaration_is_not_written_back(self):
         # The blocker: the cleared declaration did not parse, so the line kept its old `after`, and Write sent it with
         # before '' -- the server took it and brought back the removed categories.
         sent, out = self.write_after("""DOC0.repos.find(r => r.path === repoParam).review = { declaration: '{"categories": ["x"], "severity_floor": "high"}', severity_floor: 'high' };
@@ -1940,7 +1940,7 @@ R.cli = cmd('declaration.write').cli(pending[0]); C.run(cmd('declaration.write')
         self.assertEqual(sent, [("", {"severity_floor": "low"})])
         self.assertNotIn("categories", out["R"]["cli"])
 
-    def test_a_declaration_that_stops_parsing_turns_write_off_and_keeps_the_proposal(self):
+    def test_a_declaration_that_stops_parsing_turns_write_off(self):
         sent, out = self.write_after("""propose('severity_floor', 'low');
 DOC0.repos.find(r => r.path === repoParam).review = { declaration: '{"severity_floor": "high",}' }; await reread();
 R.when = cmd('declaration.write').when(pending[0]); R.cli = cmd('declaration.write').cli(pending[0]);
@@ -1957,7 +1957,7 @@ C.run(cmd('declaration.write'), pending[0]); await flush();""")
         self.assertEqual(sent, [("", {"severity_floor": "high"})])
         self.assertEqual(out["R"]["left"], [])
 
-    def test_the_second_of_two_lines_writes_on_the_reading_the_first_left(self):
+    def test_the_second_line_writes_on_the_first_lines_reading(self):
         # The first Write lands and the page reads again; the second line is drafted on that reading and sends it.
         answer = """(p, b) => { if (p === '/api/actions/run') DOC0.repos.find(r => r.path === repoParam).review =
   { declaration: JSON.stringify(b.value, null, 2), severity_floor: b.value.severity_floor, automatic_deep: b.value.copilot_review?.automatic_deep };
