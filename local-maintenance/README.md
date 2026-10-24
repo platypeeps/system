@@ -1,9 +1,10 @@
 # local-maintenance
 
 Nightly machine upkeep in one sweep: pending macOS / App Store updates,
-docker prune (Sundays), backup freshness, certificate expiry, log rotation,
-disk space. Findings that need a human go to the run's report, which Reports
-and Today show; safe fixes (log rotation, docker prune) happen automatically.
+docker prune (Sundays), idle cargo build output in worktrees, backup
+freshness, certificate expiry, log rotation, disk space. Findings that need
+a human go to the run's report, which Reports and Today show; safe fixes
+(log rotation, docker prune, the build output) happen automatically.
 
 ## Usage
 
@@ -51,9 +52,33 @@ Built in, no conf needed: `softwareupdate -l`, `mas outdated`, AI session
 logs past their retention (`scan-for-secrets.sh prune`, which owns the
 retention and the directory list — 30 days for the transcripts, 7 for the
 codex shell-snapshot cache, and `~/.claude/projects` deliberately not in the
-list because Claude Code deletes its own), and on Sundays `docker system prune -f` (containers
+list because Claude Code deletes its own), on Sundays `docker system prune -f` (containers
 and dangling images only — volumes are never pruned, several local services
-keep state in them).
+keep state in them), and idle build output in worktrees (sd:5994).
+
+`run` deletes each cargo `target/` folder under `~/worktrees`, at depth 2
+or 3, that nothing wrote for 3 days; `check` names them. Only a folder
+holding cargo's `CACHEDIR.TAG` counts, and no link is followed; the
+checkout and its commits stay. While a `cargo` or `rustc` process runs,
+the run prunes nothing more, with no finding: a cargo waiting on a lock
+would get the moved copy. An old time is no proof cargo is idle,
+so the move uses cargo's own lock: it takes `flock(2)` on every
+`.cargo-lock` in the folder without waiting, and while it holds them,
+one rename(2) moves `target/` into
+`~/.local/state/maintenance/prune-trash/`. A busy lock is a running
+build, and the folder stays. A build can lock a new profile after that
+pass and before the rename, so after the rename `prune_move.py` locks
+every `.cargo-lock` in the moved copy too. A busy or unreadable one moves
+`target/` back; if `target/` exists again, the copy stays in the trash,
+with a finding. After the rename no path leads into the trash, so no
+build can lock there later. The delete runs in the trash: a cargo that
+starts during the hold or the delete makes a fresh `target/`. A rename that
+fails (another volume) keeps the folder; nothing is copied. A run
+stopped during a delete leaves its entry in the trash, and the next run
+deletes entries there, never a path under `~/worktrees`, and none whose
+lock a build still holds. A probe that fails is a finding, and the folder
+stays.
+The walks and the delete run under `lib/bounded.sh`'s `st_step`.
 
 ## uv cache prune at login
 

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Nightly machine maintenance: pending OS/App Store updates, docker prune
-# (Sundays), backup freshness, certificate expiry, log rotation, disk space.
+# (Sundays), idle cargo target/ folders in ~/worktrees, backup freshness,
+# certificate expiry, log rotation, disk space.
 # Checks come from maintenance.conf plus maintenance.<profile>.conf in
 # <config>/maintenance/ (outside the checkout);
 # findings go to the run's report, which Reports and Today show.
@@ -160,7 +161,8 @@ case "${1:-}" in
 usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
 
   run    run all checks, apply the safe fixes (rotate oversized logs; docker
-         system prune on Sundays), and print the findings that need a human
+         system prune on Sundays; delete cargo target/ folders under
+         ~/worktrees untouched for 3 days), and print the findings that need a human
          (what the maintenance-nightly cron job runs). With findings it prints
          an SD_REPORT_ATTENTION line, so the run's report reaches Reports and
          Today; nothing is mailed.
@@ -200,8 +202,9 @@ Beyond the conf: pending macOS updates (softwareupdate), pending App Store
 updates (mas outdated), AI session logs past their retention (deleted via
 scan-for-secrets.sh prune, which owns the retention and the directory list;
 ~/.claude/projects is not on it -- Claude Code deletes its own transcripts),
-and on Sundays `docker system prune -f` (images and containers only — volumes
-are never pruned).
+on Sundays `docker system prune -f` (images and containers only — volumes
+are never pruned), and cargo target/ folders under ~/worktrees that nothing
+wrote for 3 days (only a folder holding CACHEDIR.TAG; the checkout stays).
 HELPEOF
     exit 0
     ;;
@@ -388,6 +391,105 @@ if [ "$(date +%u)" = "7" ]; then
   else
     action "docker prune skipped — daemon not running"
   fi
+fi
+
+# Idle cargo build output in worktrees (sd:5994). A builder leaves a target/
+# of several GB in each worktree, and the worktree stays until its branch
+# lands. A target/ nothing wrote for 3 days goes; the checkout and its commits
+# stay, and the next build makes it again. Only a folder holding cargo's
+# CACHEDIR.TAG counts, at depth 2 or 3 (depth 1 is a checkout), and find
+# follows no link. A probe that fails or hits its bound is no answer: the
+# folder stays. The delete runs only inside PRUNE_TRASH, which this step owns.
+WORKTREES="$HOME/worktrees"
+PRUNE_TRASH="$HOME/.local/state/maintenance/prune-trash"
+# A run stopped during a delete leaves its entry in the trash; the next run
+# deletes it, unless a build that started during a move still holds a lock
+# there. Only entries in the trash go, never a path under ~/worktrees.
+if [ -d "$PRUNE_TRASH" ]; then
+  if ! st_step 60 find "$PRUNE_TRASH" -mindepth 1 -maxdepth 1 -print > "$TMPD/trash"; then
+    finding "build output prune: could not list all of $PRUNE_TRASH"
+  fi
+  while IFS= read -r entry; do
+    if [ "$APPLY" -eq 0 ]; then
+      action "[dry-run] would remove $entry, left in the prune trash"
+      continue
+    fi
+    free_rc=0
+    python3 "$DIR/prune_move.py" "$entry/target" 2> "$TMPD/move.err" || free_rc=$?
+    if [ "$free_rc" -eq 75 ]; then
+      continue
+    elif [ "$free_rc" -ne 0 ]; then
+      finding "build output prune: could not read the locks in $entry ($(tail -1 "$TMPD/move.err")); kept"
+    elif st_step 600 rm -rf "$entry"; then
+      action "removed $entry, left in the prune trash"
+    else
+      finding "build output prune: could not remove $entry"
+    fi
+  done < "$TMPD/trash"
+fi
+if [ -d "$WORKTREES" ]; then
+  TARGETS="$TMPD/targets"
+  # A walk that fails partway still listed real folders; each is checked
+  # again below, and the failure is a finding of its own.
+  if ! st_step 120 find "$WORKTREES" -mindepth 2 -maxdepth 3 -type d \
+      -name target -prune -print > "$TARGETS"; then
+    finding "build output prune: could not list all of $WORKTREES"
+  fi
+  while IFS= read -r t; do
+    [ -d "$t" ] && [ ! -L "$t" ] || continue
+    [ -f "$t/CACHEDIR.TAG" ] || continue
+    if ! recent=$(st_step 300 find "$t" -mmin -4320 -print -quit); then
+      finding "build output prune: could not read $t; kept"
+      continue
+    fi
+    [ -z "$recent" ] || continue
+    if [ "$APPLY" -eq 0 ]; then
+      action "[dry-run] would remove idle build output $t (untouched 3 days)"
+      continue
+    fi
+    # An old mtime is no proof cargo is idle, so the move uses cargo's own
+    # lock: flock(2) on each target/<profile>/.cargo-lock. prune_move.py takes
+    # them all without waiting and, while it holds them, renames target/ into
+    # the trash. A busy lock is a running build: skip it, no finding. A cargo
+    # that starts during the hold waits on the lock, then builds a fresh
+    # target/, and never sees the files being deleted. A build that locked a
+    # new profile before the rename gets target/ back (76); if target/ exists
+    # again, the copy stays in the trash (77). rename(2), not mv: mv copies
+    # across volumes. A rename that fails keeps the folder.
+    # A cargo that opened a .cargo-lock before the move and waits on it gets
+    # the moved copy once the lock frees. So while cargo or rustc runs, this
+    # run prunes nothing more, with no finding. ponytail: a build that starts
+    # between this check and the rename fails once and reruns; target/ is a
+    # cache. The operator accepted that window (sd:5994 round 7).
+    cargo_rc=0
+    st_step 30 pgrep -x 'cargo|rustc' > /dev/null || cargo_rc=$?
+    if [ "$cargo_rc" -eq 0 ]; then
+      break
+    elif [ "$cargo_rc" -ne 1 ]; then
+      finding "build output prune: could not tell whether cargo runs; skipped"
+      break
+    fi
+    if ! { mkdir -p "$PRUNE_TRASH" && bin=$(mktemp -d "$PRUNE_TRASH/XXXXXXXX"); } 2> "$TMPD/move.err"; then
+      finding "build output prune: could not make a folder in $PRUNE_TRASH; kept $t"
+      continue
+    fi
+    move_rc=0
+    python3 "$DIR/prune_move.py" "$t" "$bin/target" 2> "$TMPD/move.err" || move_rc=$?
+    if [ "$move_rc" -eq 0 ]; then
+      if st_step 600 rm -rf "$bin"; then
+        action "removed idle build output $t (untouched 3 days)"
+      else
+        finding "build output prune: could not finish deleting $t; the next run deletes $bin"
+      fi
+    elif ! rmdir "$bin" 2>/dev/null; then
+      # Not empty: target/ moved and could not come back.
+      finding "build output prune: $t did not come back from $bin ($(tail -1 "$TMPD/move.err")); kept until no build holds a lock there"
+    elif [ "$move_rc" -eq 76 ]; then
+      action "kept idle build output $t: a build started during the move"
+    elif [ "$move_rc" -ne 75 ]; then
+      finding "build output prune: could not move $t into $PRUNE_TRASH ($(tail -1 "$TMPD/move.err")); kept"
+    fi
+  done < "$TARGETS"
 fi
 
 # AI session logs. They accumulate every day and hold whatever scrolled past —
