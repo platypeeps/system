@@ -88,6 +88,9 @@ Inside one `BEGIN IMMEDIATE` the tick:
   Every write names the run id and needs `released_at IS NULL AND outcome IS NULL`, so a late old supervisor writes nothing.
   A write that fails or changes no row stops the supervisor before its next external step (builder, commit, push, enqueue): it kills `builder_pgid` and exits.
 - It beats `heartbeat_at` every 30 s for its whole life.
+- Every child a step starts (`claude -p`, `sd-review`, `sd-ship`, `git`) runs in its own process group;
+  the supervisor writes that group to `builder_pgid` and its start to `builder_start` before the child runs.
+  Cancel, timeout and reap act on that one column, so they reach whatever step is active.
 
 Steps, each written before it starts:
 
@@ -108,11 +111,14 @@ Steps, each written before it starts:
    At most `REVIEW_ROUNDS` (3) rounds.
 5. `enqueuing`: only after `kill(-builder_pgid, 0)` answers ESRCH, so no builder writes the branch.
    It checks the title (63) and the body (`sd-docs-lint --pr-body`), then `sd-ship -C <worktree> lane enqueue`.
-6. `enqueued`: in one transaction the lease is released, the members end `done`, and the items stay `in_progress`.
-   The lane moves them to `done` when it merges. The supervisor exits.
+6. `enqueued`: in one transaction the lease is released (the builder slot frees), the members end `done`, and the items stay `in_progress`.
+   The run stays open: `released_at` and `outcome` stay null until step 7 ends it. The supervisor exits.
+   Reap skips a run at `enqueued`, `checking` or `cleaning` with no live supervisor: no supervisor is expected while the lane holds it.
+   The lane moves the items to `done` when it merges.
 7. The tick watches the lane entry. On `merged`, an auto-pickup run gets `checking` (below); every run then gets `cleaning`:
    a fresh supervisor runs the entry's `remove` command once the worktree is clean.
    A lane `failed` or `skipped` entry ends the run `lane_failed`; the lane's own note names the step and reason.
+   Cleaning, or `lane_failed`, writes `released_at` and the outcome last, in one transaction.
 
 Model by work kind (Q60): `fields.work_kind` on the item, `mechanical` or anything else.
 A bundle runs Sonnet only when every member is `mechanical`; else Opus. The dialog may override per bundle.
@@ -125,7 +131,9 @@ The run row logs the model.
 - Timeout: the supervisor ends a `claude -p` past 60 min: TERM to `builder_pgid`, 20 s, KILL.
   `sd-review` keeps its own `--timeout`.
 - Cancel: `sd assignments cancel` on a running build sets `cancel_requested`.
-  The supervisor kills the group at its next beat, keeps the worktree, ends the members `cancelled`, and moves the items to `ready` with a note.
+  The supervisor kills the active step's group (`builder_pgid`) at its next beat and waits for ESRCH, then keeps the worktree,
+  ends the members `cancelled`, and moves the items to `ready` with a note. A group that outlives KILL blocks the run instead.
+  From `enqueuing` on, cancel is refused with the lane entry to cancel: the lane may already hold the branch.
 - Reap, each tick, for each unreleased run that fails liveness:
   1. CAS `outcome='interrupted'` where `heartbeat_at` is the value read; a lost CAS means the supervisor beat, so leave it.
   2. Kill the supervisor's process group if its pid and start still match, then `builder_pgid` if any member lives.
@@ -176,6 +184,9 @@ The run row logs the model.
 | Enqueued | lease released, members done | a late old supervisor finishes | its CAS names its own run and an open outcome: no row changes | `test_late_run_writes_nothing` |
 | Reap | outcome interrupted, supervisor killed | heartbeat stale while the supervisor still runs | reap kills its group and confirms it gone before a retry; its next failed write stops it anyway; a survivor blocks the run | `test_reap_kills_live_stale_supervisor` |
 | Reap | outcome interrupted, new attempt | tick killed between the CAS and the kill | next tick kills every group of an ended unreleased run before any retry | `test_reap_resumes_kill` |
+| Cancel | active step's group killed | cancel during reviewing or fixing | the step's child is in `builder_pgid` too: killed, ESRCH confirmed, then cancelled | `test_cancel_kills_the_review_child` |
+| Cancel | none | cancel at enqueuing or later | refused, naming the lane entry; nothing changes | `test_cancel_after_enqueue_refused` |
+| Enqueued | lease released, run open | reap sees no supervisor while the lane holds the run | reap skips enqueued, checking and cleaning runs; step 7 releases the run last | `test_reap_skips_enqueued_run` |
 | Cancel | cancel_requested, members cancelled, items ready | supervisor dead at cancel | reap ends it as cancelled, not retried | `test_cancel_dead_supervisor` |
 | Checking | auto-pickup setting, push, item | killed after health failed | result not recorded, so the next tick runs the check again; off is written before the push | `test_health_failure_turns_off_first` |
 | Two blocked | auto-pickup setting off | killed after the second block | the next tick counts the last two auto-pickup outcomes again and writes off | `test_two_blocked_runs_turn_off` |
