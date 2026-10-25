@@ -234,7 +234,7 @@ class ProfileTest(unittest.TestCase):
                 plist = plistlib.loads(fixture_config.render(template, label, "/home/someone", ROOT).encode())
                 self.assertEqual(plist["Label"], label)
                 arguments = plist["ProgramArguments"]
-                self.assertEqual(arguments[0], f"{ROOT}/local-project-dashboard/dashboard.sh")
+                self.assertEqual(arguments[0], "/home/someone/repos/platypeeps/sd-ai-command-pack/dashboard/dashboard.sh")
                 self.assertEqual(arguments[1], "serve")
                 self.assertEqual(arguments[arguments.index("--port") + 1], "8767")
                 self.assertNotIn("sd-ai-command-pack/bin/sd-dashboard", arguments[0])
@@ -403,7 +403,7 @@ class DoctorTest(unittest.TestCase):
     def test_a_dashboard_origin_under_funnel_is_a_failure(self):
         # sd:1413. The front door is tailnet-only; Funnel on its authority is
         # the dashboard on the public internet, which the runtime's own
-        # preflight refuses (local-project-dashboard/RUNTIME.md).
+        # preflight refuses (the pack's dashboard/RUNTIME.md).
         self.fixture.make_database()
         self.fixture.serve_status.write_text(ROUTE_UNDER_FUNNEL)
         code, out = self.doctor()
@@ -541,6 +541,7 @@ class DoctorTest(unittest.TestCase):
         # A machine with no sd agent, a satellite among them, still passes the
         # retired-folder check when no config names it.
         self.assertIn("ok      no config names the deleted local-sd-db", out)
+        self.assertIn("ok      no config names the deleted local-project-dashboard", out)
 
     # sd:3281: a missed machine shows up here, not as a job that runs a missing script.
 
@@ -599,6 +600,18 @@ class DoctorTest(unittest.TestCase):
         code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
         self.assertEqual(code, 1, out)
         self.assertIn(f"FAIL    {template} names the deleted local-sd-db", out)
+
+    # pack sd:5987: the dashboard moved to the pack the same way.
+    def test_a_plist_template_naming_the_old_dashboard_folder_fails(self):
+        self.fixture.make_database()
+        config = self.config_copy()
+        template = config / "machine-setup/launchagents/local.system-tools.sd-dashboard.plist"
+        template.write_text(template.read_text().replace(
+            "@PACK@/dashboard/dashboard.sh", "@ROOT@/local-project-dashboard/dashboard.sh"))
+        code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    {template} names the deleted local-project-dashboard"
+                      f" — repoint it to {self.fixture.pack}/dashboard/dashboard.sh", out)
 
     def test_a_job_folder_that_cannot_be_searched_is_not_a_pass(self):
         self.fixture.make_database()

@@ -75,7 +75,7 @@ no arguments and expects a live stdio server; printing usage would break it.
   (`$SYSTEM_TOOLS_CONFIG/ha-mcp/` when that is set; copy `.env.example` there)
   or the environment; `serve` and `check` fail naming whichever is missing.
   The workflow dashboard's Home page reads the same two values for its
-  `GET /api/states` call (`local-project-dashboard/docs/pages/home.md`).
+  `GET /api/states` call (the pack's `dashboard/docs/pages/home.md`).
 - `npx -y` re-resolves the package on each launch. It is cached after the first
   run; install `mcp-remote` globally if start-up latency ever matters.
 - `mcp-proxy` was tried first and did not work: its cached

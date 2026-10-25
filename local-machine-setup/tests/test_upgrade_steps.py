@@ -127,7 +127,8 @@ class UpgradeStepTest(unittest.TestCase):
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copytree(LIB, repo / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         write_exec(repo / "local-notify/notify.sh", NOTIFY_STUB)
-        write_exec(repo / "local-project-dashboard/dashboard.sh", DASHBOARD_STUB)
+        # The dashboard is the pack's (pack sd:5987), at SD_PACK_ROOT's default.
+        write_exec(base / "home/repos/platypeeps/sd-ai-command-pack/dashboard/dashboard.sh", DASHBOARD_STUB)
         write_exec(repo / "local-ai-apps/ai-apps.sh", AI_APPS_STUB)
         self.home = base / "home"
         self.state = self.home / ".config/machine-setup"

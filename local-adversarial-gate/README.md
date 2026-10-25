@@ -59,7 +59,7 @@ in its own checkout and still get the shared core.
 them codex uses its own configuration. `--effort` takes one lowercase word (`low`, `medium`,
 `high`): the value lands in a TOML override, where a quote or an `=` would be another one.
 `run` reads no config of its own. The dashboard's Adversarial review action (sd:5064,
-`local-project-dashboard/sd_dashboard/adversarial.py`) reads its model and effort from
+the pack's `dashboard/sd_dashboard/adversarial.py`) reads its model and effort from
 the workflow database settings `adversarial.model` and `adversarial.effort`, edited on the
 dashboard's Settings page (sd:5109), and falls back to `gpt-6-astra` and `high`.
 The dashboard lenses ask for `Recommendation:`, `Evidence:` and `Repo:` lines under each

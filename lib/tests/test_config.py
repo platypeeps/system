@@ -75,9 +75,8 @@ class LabelPrefix(unittest.TestCase):
              "*.sh", "*.py", ":(exclude)tests", ":(exclude)*/tests/*"],
             cwd=LIB.parent, capture_output=True, text=True)
         hits = sorted({line.split(":")[0] for line in done.stdout.splitlines()})
-        # The dashboard package installs into its own venv, with no lib/ beside
-        # it, so runtime.py keeps the one literal (see the comment there).
-        self.assertEqual(hits, ["local-project-dashboard/sd_dashboard/runtime.py"])
+        # The dashboard, which kept the one literal, is the pack's since pack sd:5987.
+        self.assertEqual(hits, [])
 
 
 class SharedValues(unittest.TestCase):

@@ -28,6 +28,13 @@ def example_names():
     return names
 
 
+#: Stage switches that a command pack tool reads, so no file here names
+#: them: the shell env still exports them for that tool.
+READ_IN_THE_PACK = {
+    "JEV_JOB_TRIAGE": "the pack's dashboard/dashboard.sh, since pack sd:5987",
+}
+
+
 class ShellEnvExampleTest(unittest.TestCase):
     def test_it_names_the_jev_key_and_the_label_prefix(self):
         names = example_names()
@@ -40,6 +47,8 @@ class ShellEnvExampleTest(unittest.TestCase):
         self.assertTrue(stages, "no Jev stage switch in shell-env.example")
         for name, value in sorted(stages.items()):
             self.assertEqual(value, OFF, f"{name} must default to off")
+            if name in READ_IN_THE_PACK:
+                continue
             # A tracked file outside docs, tests and this example names it:
             # a stage no caller reads any more is a stale line.
             hits = subprocess.run(
