@@ -355,7 +355,7 @@ class CheckoutGuard(unittest.TestCase):
                              ("pushd /usr && pushd && touch x", lane),
                              ("pushd /usr && pushd +1 && touch x", lane),
                              (f"pushd -n {lane} && popd && touch x", work),
-                             ("popd && touch x", work),
+                             ("popd && touch x", lane),
                              ("cd /usr && cd - && touch x", lane),
                              ("cd /usr && cd +1 && touch x", lane),
                              ("cd /usr && touch ~-/x", lane),
@@ -372,10 +372,10 @@ class CheckoutGuard(unittest.TestCase):
                              (f'for d in {repos}/sys*; do touch "$d/x"; done', work),
                              (f"D='{repos}/sys*'; rm -rf $D", work),
                              (f'D=/tmp; read D <<< {lane}; touch "$D/x"', work),
-                             ('D=/tmp; mapfile D < /dev/null; touch "$D/x"', work),
-                             ('D=/tmp; readarray D < /dev/null; touch "$D/x"', work),
+                             ('D=/tmp; mapfile D < /dev/null; touch "$D/x"', lane),
+                             ('D=/tmp; readarray D < /dev/null; touch "$D/x"', lane),
                              (f'D=/tmp; printf -v D %s {lane}; touch "$D/x"', work),
-                             ('getopts a: D; touch "$OPTARG/x"', work),
+                             ('getopts a: D; touch "$OPTARG/x"', lane),
                              (f'D=({lane}); touch "$D/x"', work),
                              (f'D=/tmp; D[0]={lane}; touch "$D/x"', work),
                              (f'declare -a D=({lane}); touch "$D/x"', work),
@@ -403,9 +403,9 @@ class CheckoutGuard(unittest.TestCase):
                              (f"D='$E'; E={lane}; eval \"cd $D\"; touch x", work),
                              (f"f() {{ cd {lane}; }}; f; touch x", work),
                              (f"function f {{ cd {lane}; }}; f; touch x", work),
-                             ('D=/tmp; source ./env.sh; touch "$D/x"', work),
-                             (". ./env.sh && touch x", work),
-                             ('eval "$(cat commands)"; touch x', work),
+                             ('D=/tmp; source ./env.sh; touch "$D/x"', lane),
+                             (". ./env.sh && touch x", lane),
+                             ('eval "$(cat commands)"; touch x', lane),
                              (f"cat > n.txt <<EOF\nx\nEOF\nrm -rf {lane}", work)):
             with self.subTest(command=command):
                 self.assertTrue(self.bash(command, cwd=cwd).startswith("deny: "), command)
@@ -430,9 +430,31 @@ class CheckoutGuard(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=lane, fixed=True), "allow")
 
+    def test_an_unknown_counts_only_near_a_root(self):
+        """Operator ruling on sd:6083 round 4: what the reader cannot know refuses
+        only when a world's folder is or may be in a root, or the text names one."""
+        lane, work = self.system, self.worktree
+        for command in ('touch "$(pwd)/x"', "f() { echo; }; f", "source ./env.sh && mkdir y"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=work), "allow")
+                self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "))
+        for command in (f"cd {lane} && f() {{ :; }}; f",
+                        f"pushd {lane} && popd && popd && touch x",
+                        f'touch "$(echo x)" {lane}/README.md',
+                        f'D=$(echo {lane}); touch "$D/x"'):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=work).startswith("deny: "), command)
+        for command in ('mkdir -p "$(git rev-parse --show-toplevel)/build"',
+                        "popd && touch x",
+                        'read D; touch "$D/x"',
+                        "cd \"$(mktemp -d)\" && touch x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=work), "allow")
+
     def test_growth_and_nesting_past_the_budget_are_refused_in_time(self):
         """sd:6083 round 4: a variable product, a brace product, a doubling value
-        and deep nesting each stop at the budget, not at memory or the stack."""
+        and deep nesting each stop at the budget, not at memory or the stack;
+        near a root that refuses, elsewhere it passes."""
         names = [f"A{i}" for i in range(20)]
         for command in ("".join(f"{name}=a; " for name in names)
                         + "touch " + "".join(f"${name}" for name in names),
@@ -441,9 +463,10 @@ class CheckoutGuard(unittest.TestCase):
                         "(" * 400 + "touch x" + ")" * 400):
             with self.subTest(command=command[:40]):
                 started = time.monotonic()
-                decision = self.decide("Bash", cwd=self.worktree, command=command)
-                self.assertTrue(decision.startswith("deny: checkout_guard cannot read"), decision)
-                self.assertLess(time.monotonic() - started, 10)
+                decision = self.decide("Bash", cwd=self.system, command=command)
+                self.assertTrue(decision.startswith("deny: "), decision)
+                self.assertEqual(self.decide("Bash", cwd=self.worktree, command=command), "allow")
+                self.assertLess(time.monotonic() - started, 20)
 
     def test_every_write_the_base_refused_is_refused(self):
         """Property over a shell grammar: where this guard allows, a real bash run in a
@@ -530,10 +553,11 @@ class CheckoutGuard(unittest.TestCase):
         Past it the writes are unknown, which is not a pass.
         """
         command = "".join(f"cd d{i}; " for i in range(16)) + "ls"
-        decision = self.bash(command, cwd=self.worktree)
+        decision = self.bash(command, cwd=self.system)
         self.assertTrue(decision.startswith("deny: checkout_guard cannot read this command"),
                         decision)
-        self.assertEqual(self.bash(command.replace("; ", " && "), cwd=self.worktree), "allow")
+        self.assertEqual(self.bash(command.replace("; ", " && "), cwd=self.system), "allow")
+        self.assertEqual(self.bash(command, cwd=self.worktree), "allow")  # no root near
 
 
 if __name__ == "__main__":

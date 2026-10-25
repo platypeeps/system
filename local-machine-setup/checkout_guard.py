@@ -29,12 +29,13 @@ agents write, so a copy of this file run from one protects nothing there.
   write in any of them (sd:6083).
 - A word expands as the shell expands it: braces, `~`, variables, splitting
   and globs. What the reader cannot know (input, `$( )`, arrays, `${..}`
-  forms, a stack entry) reads as unknown, and a write through it is denied.
+  forms, a stack entry) reads as unknown.
 
 Malformed input or a command shlex cannot split fails open: no decision, a
 warning on stderr, exit 0. A broken hook must not stop every session. A
 command the reader cannot follow within BUDGET steps, or that writes through
-an unknown, is denied: its writes are unknown, and a shorter command reads.
+an unknown, a function or `source`, is denied near a root: when a world's
+folder is in one, or the text names one. Elsewhere it passes.
 """
 
 import collections
@@ -114,10 +115,17 @@ class Unreadable(Exception):
 
 
 class Budget:
-    """The steps left: each command, world and expanded word spends some."""
+    """The steps left: each command, world and expanded word spends some.
+
+    It also keeps, for the whole read, the first thing the reader could not
+    know, and whether a world's folder was ever in a root (NEAR).
+    """
 
     def __init__(self):
-        self.left = BUDGET
+        self.left, self.unknown, self.near = BUDGET, None, False
+
+    def note(self, reason):
+        self.unknown = self.unknown or reason
 
     def __call__(self, steps):
         self.left -= steps
@@ -259,13 +267,28 @@ def ignored(root, full):
 
 
 def written(path, cwd, protected, variables=None, spend=None):
-    """The root a write to PATH may land in, or None."""
+    """The root a write to PATH may land in, UNKNOWN for a path the reader cannot
+    know, or None."""
+    found = None
     for full in resolve(path, cwd, environment() if variables is None else variables,
                         spend or Budget()):
         if full is None:
-            raise Unreadable("it writes to a path it cannot know")
+            found = UNKNOWN
+            continue
         root = inside(full, protected)
         if root is not None and not ignored(root, full):
+            return root
+    return found
+
+
+def named(text, protected):
+    """The root TEXT names by its path, also as `~/..` or `$HOME/..`, or None."""
+    home = os.path.expanduser("~")
+    for root in protected:
+        forms = {root}
+        if root.startswith(home + os.sep):
+            forms |= {prefix + root[len(home):] for prefix in ("~", "$HOME", "${HOME}")}
+        if any(form.casefold() in text.casefold() for form in forms):
             return root
     return None
 
@@ -452,8 +475,6 @@ def assigned(words, variables, spend):
     options = ""
     if head in DECLARERS:
         options = "".join(word[1:] for word in words[1:] if word[:1] in "-+")
-        if "n" in options and head != "export":
-            raise Unreadable("a name reference moves its writes to another name")
         words = [word for word in words[1:] if word[:1] not in "-+"]
     elif not all(ASSIGNMENT.match(word) for word in words):
         return {}
@@ -592,7 +613,9 @@ class Reader:
     def check(self, path, world):
         root = written(path, world.cwd, self.protected, world.variables(self.inherited),
                        self.spend)
-        if root:
+        if root == UNKNOWN:
+            self.spend.note("it writes to a path it cannot know")
+        elif root:
             raise Denied(root)
 
     def run(self, worlds, stops=()):
@@ -652,7 +675,7 @@ class Reader:
             return self.trailing(self.arms(worlds), worlds)
         if item[1][:1] == ["function"] or len(item[1]) == 1 and NAME.fullmatch(item[1][0]) and \
                 self.items[self.i + 1:self.i + 3] == [("op", "("), ("op", ")")]:
-            raise Unreadable("it defines a function, and the reader does not follow calls")
+            self.spend.note("it defines a function, and the reader does not follow calls")
         if item[1] and item[1][0] in KEYWORDS:
             self.keyword(item[1][0])  # a reserved word out of place: read past it
             return worlds
@@ -782,6 +805,9 @@ class Reader:
         here, out = not forked, set()  # a builtin's effect reaches this shell
         # every change may fail (a readonly variable, a missing folder, a bad
         # word): the world it started in stays beside the changed one
+        if name in DECLARERS - {"export"} and any("n" in word[1:] for word in command[1:]
+                                                  if word[:1] in "-+"):
+            self.spend.note("a name reference moves its writes to another name")
         if here:
             changes = assigned(command or words, world.variables(self.inherited), self.spend)
             if changes:
@@ -789,9 +815,11 @@ class Reader:
                 world = world.set(changes)
         variables = world.variables(self.inherited)
         if name in ("cd", "pushd", "popd") and here:
-            return out | {world._replace(ok=False)} | {
-                world.moved(folder, stack)
-                for folder, stack in self.moves(name, command[1:], world, variables)}
+            moves = self.moves(name, command[1:], world, variables)
+            self.spend.near |= any(folder and inside(folder, self.protected)
+                                   for folder, _ in moves)
+            return out | {world._replace(ok=False)} | {world.moved(folder, stack)
+                                                       for folder, stack in moves}
         if name == "exit" and here:
             return out
         if name == "eval" and here:  # its words expand, then read again
@@ -809,7 +837,8 @@ class Reader:
             folders, verb = git_target(command, world.cwd, variables, self.spend)
             for folder in folders if verb in GIT_WRITES else ():
                 if folder is None:
-                    raise Unreadable("git writes in a folder it cannot know")
+                    self.spend.note("git writes in a folder it cannot know")
+                    continue
                 root = inside(folder, self.protected)
                 if root:
                     raise Denied(root)
@@ -854,13 +883,25 @@ class Reader:
 
 
 def bash_root(command, cwd, protected):
+    """The root COMMAND writes in, or None.
+
+    What the reader cannot know refuses only near a root: when a world's
+    folder was in one, or the text names one. Elsewhere it passes (operator
+    ruling on sd:6083).
+    """
+    reader = Reader(command, protected)
+    reader.spend.near = inside(cwd, protected) is not None
     try:
-        Reader(command, protected).run({World(cwd, (("OLDPWD", frozenset([UNKNOWN])),
-                                                    ("PWD", frozenset([cwd]))), True)})
+        reader.run({World(cwd, (("OLDPWD", frozenset([UNKNOWN])), ("PWD", frozenset([cwd]))),
+                          True)})
     except Denied as denied:
         return denied.args[0]
+    except Unreadable as error:  # past the budget: the rest goes unread
+        reader.spend.note(str(error))
     except RecursionError:
-        raise Unreadable("it nests deeper than the reader goes") from None
+        reader.spend.note("it nests deeper than the reader goes")
+    if reader.spend.unknown and (reader.spend.near or named(command, protected)):
+        raise Unreadable(reader.spend.unknown)
     return None
 
 
@@ -873,7 +914,9 @@ def denied_root(payload):
     tool_input = payload["tool_input"]
     cwd = payload.get("cwd") or os.getcwd()
     if name in FILE_TOOLS:
-        return written(tool_input[FILE_TOOLS[name]], cwd, protected)
+        path = tool_input[FILE_TOOLS[name]]
+        root = written(path, cwd, protected)
+        return (inside(cwd, protected) or named(path, protected)) if root == UNKNOWN else root
     if name == "Bash":
         return bash_root(tool_input["command"], cwd, protected)
     return None
