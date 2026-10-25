@@ -162,6 +162,57 @@ class CheckoutGuard(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.worktree), "allow")
 
+    def test_a_change_that_may_not_happen_keeps_the_old_state(self):
+        """sd:6083: `&&`, `||`, `|`, `&` and `cd` may leave the folder and variables."""
+        self.env["DEST"] = str(self.system)
+        for command in ('false && DEST=/tmp; touch "$DEST/x"',
+                        "true || cd /tmp; touch x",
+                        "false && cd /tmp; mkdir x",
+                        f"cd {self.worktree}/new; touch x",
+                        "cd /tmp | true; touch x",
+                        'DEST=/tmp | true; touch "$DEST/x"',
+                        f"true | cd {self.worktree}; touch x",
+                        "cd /tmp & touch x",
+                        "true && cd /tmp & touch x",
+                        "(cd /tmp) & touch x",
+                        "(exit 1) || touch x"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=self.system), self.system)
+        self.assertDenied(self.bash(f"! cd {self.system} || touch x"), self.system)
+        for command in (f"cd {self.worktree} && touch x",
+                        f"cd {self.worktree} || exit 1; touch x",
+                        f"cd {self.worktree}/new && touch x",
+                        f"cd {self.worktree}/new || exit 1; touch x",
+                        f"cd {self.worktree} && git log | head; touch x",
+                        f"cd {self.worktree} &&\ngit log 2>&1 | tail -5 && touch x",
+                        f"(cd {self.worktree}) || touch x",
+                        f"DEST={self.worktree} && touch $DEST/x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=self.system), "allow")
+
+    def test_a_compound_command_may_not_run_its_body(self):
+        """sd:6083: `if`, `while`, `for`, `case` and `{ }` hid the command after them."""
+        self.env["DEST"] = str(self.system)
+        for command in ("if true; then rm README.md; fi",
+                        "if false; then DEST=/tmp; fi; touch \"$DEST/x\"",
+                        "if false; then :; elif true; then :; else cd /tmp; fi; touch x",
+                        "while false; do cd /tmp; done; touch x",
+                        "until true; do cd /tmp; done > log.txt",
+                        "{ rm README.md; }",
+                        "{ cd /tmp; } | cat; touch x",
+                        "case a in a) rm README.md;; esac",
+                        "case a in\n  b|c) cd /tmp\n  ;;\nesac\ntouch x"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=self.system), self.system)
+        self.assertDenied(self.bash(f"for d in /tmp {self.system}; do touch $d/x; done"),
+                          self.system)
+        for command in (f"if cd {self.worktree}; then touch x; fi",
+                        f"for d in /tmp {self.worktree}; do touch $d/x; done",
+                        f"{{ cd {self.worktree}; }}; touch x",
+                        "echo if then fi done"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=self.system), "allow")
+
     def test_a_copy_in_a_linked_worktree_protects_nothing_there(self):
         """A builder's worktree carries this file too; its `.git` is a file."""
         linked = self.worktree / "local-machine-setup"
@@ -181,6 +232,17 @@ class CheckoutGuard(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (0, ""))
         self.assertIn("checkout_guard: unreadable input, allowing", result.stderr)
         self.assertEqual(self.bash("echo 'unclosed > x", cwd=self.system), "allow")
+
+    def test_a_command_past_the_budget_is_denied_in_time(self):
+        """Each `cd` to a missing folder doubles the worlds; BUDGET bounds the work.
+
+        Past it the writes are unknown, which is not a pass.
+        """
+        command = "".join(f"cd d{i}; " for i in range(16)) + "ls"
+        decision = self.bash(command, cwd=self.worktree)
+        self.assertTrue(decision.startswith("deny: checkout_guard cannot read this command"),
+                        decision)
+        self.assertEqual(self.bash(command.replace("; ", " && "), cwd=self.worktree), "allow")
 
 
 if __name__ == "__main__":

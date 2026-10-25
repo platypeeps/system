@@ -21,11 +21,20 @@ agents write, so a copy of this file run from one protects nothing there.
   and `NAME=value`, alone or after `export` or `declare`, sets `$NAME` for
   later commands. A quoted or escaped operator is plain text. Fetch,
   worktree, branch and every read pass.
+- A change that may not happen keeps the old state beside the new one: a
+  command after `&&` or `||`, in an `if`, loop or `case` body, a pipeline
+  stage, a `&` job, and a `cd` to a folder that does not exist yet. The
+  reader carries every (folder, variables, status) world and denies a write
+  in any of them (sd:6083).
 
 Malformed input or a command shlex cannot split fails open: no decision, a
-warning on stderr, exit 0. A broken hook must not stop every session.
+warning on stderr, exit 0. A broken hook must not stop every session. A
+command whose worlds pass BUDGET is denied: its writes are unknown, and a
+shorter command reads.
 """
 
+import collections
+import functools
 import json
 import os
 import re
@@ -49,6 +58,10 @@ VARIABLE = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
 OPERATOR = set("();<>|&")
 HIDDEN = 0xE000  # a quoted operator character moves to the private-use plane
 UNHIDE = {HIDDEN + ord(char): char for char in OPERATOR}
+CONTROL = re.compile(r"&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|[<>]|;;&|;;|;&|&&|\|\||\|&|[;&|()]")
+KEYWORDS = {"if", "then", "elif", "else", "fi", "while", "until", "for", "select", "do", "done",
+            "case", "esac", "{", "}", "!"}
+BUDGET = 1024  # commands times worlds the reader may run; more reads as unsplittable
 
 
 def roots():
@@ -76,6 +89,7 @@ def inside(full, protected):
     return None
 
 
+@functools.lru_cache(maxsize=None)
 def ignored(root, full):
     """True only when git says it ignores the path; any failure is not ignored."""
     try:
@@ -136,19 +150,19 @@ def is_operator(token):
     return bool(token) and set(token) <= OPERATOR
 
 
-def commands(command):
-    """Each simple command as (words, redirect targets, the operator after it).
+def items(command):
+    """The command as ("cmd", words, redirect targets) and ("op", operator) items.
 
-    A `(` or `)` is an operator of its own, so a caller can open and close a
-    subshell; a quoted operator stays a word.
+    A quoted operator stays a word; a run such as `&&;` (`&&` then a newline)
+    splits into the shell's operators.
     """
     lexer = shlex.shlex(shield(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
     tokens = []
     for token in lexer:
-        tokens += re.findall(r"[()]|[^()]+", token) if is_operator(token) else [token]
-    words, targets, i = [], [], 0
+        tokens += CONTROL.findall(token) if is_operator(token) else [token]
+    out, words, targets, i = [], [], [], 0
     while i < len(tokens):
         token = tokens[i]
         if is_operator(token) and ("<" in token or ">" in token):
@@ -163,12 +177,16 @@ def commands(command):
                 if target and not (token.endswith("&") and (target.isdigit() or target == "-")):
                     targets.append(target.translate(UNHIDE))
         elif is_operator(token):
-            yield words, targets, token
+            if words or targets:
+                out.append(("cmd", words, targets))
+            out.append(("op", token))
             words, targets = [], []
         else:
             words.append(token.translate(UNHIDE))
         i += 1
-    yield words, targets, ""
+    if words or targets:
+        out.append(("cmd", words, targets))
+    return out
 
 
 def unwrap(words):
@@ -191,46 +209,274 @@ def git_target(words, cwd, variables):
     return cwd, words[i] if i < len(words) else ""
 
 
-def assign(words, variables):
-    """Set the variables a bare `NAME=value`, `export` or `declare` sets."""
+def assigned(words, variables):
+    """The variables a bare `NAME=value`, `export` or `declare` sets."""
     if words[:1] and words[0] in DECLARERS:
         words = words[1:]
     elif not all(ASSIGNMENT.match(word) for word in words):
-        return
+        return {}
+    variables, changes = dict(variables), {}
     for word in words:
         match = ASSIGNMENT.match(word)
         if match:
-            value = word[match.end():]
-            variables[match.group()[:-1]] = os.path.expanduser(expand(value, variables))
+            name = match.group()[:-1]
+            variables[name] = changes[name] = os.path.expanduser(expand(word[match.end():],
+                                                                        variables))
+    return changes
+
+
+class World(collections.namedtuple("World", "cwd changes ok")):
+    """One state the shell may be in: folder, variables set so far, last status."""
+
+    def variables(self, inherited):
+        return {**inherited, **dict(self.changes)}
+
+    def set(self, changes):
+        return self._replace(changes=tuple(sorted({**dict(self.changes), **changes}.items())))
+
+
+class Denied(Exception):
+    pass
+
+
+class TooMany(Exception):
+    pass
+
+
+def passed(worlds, ok):
+    return {world for world in worlds if world.ok == ok}
+
+
+def statuses(worlds):
+    """The exit statuses WORLDS end with; none left (all exited) reads as either."""
+    return {world.ok for world in worlds} or {True, False}
+
+
+def with_status(worlds, oks):
+    return {world._replace(ok=ok) for world in worlds for ok in oks}
+
+
+class Reader:
+    """Reads the command once, carrying every world the shell may be in.
+
+    A command that may not run (after `&&`, `||`, `if`, `while`, `for`, `case`)
+    leaves its world beside the one it changes; a pipeline stage and a `&` job
+    run in a subshell, so their changes may not last; a `cd` to a folder that
+    does not exist yet may fail. A write in any world is a write.
+    """
+
+    def __init__(self, command, protected):
+        self.items, self.protected, self.i, self.skip = items(command), protected, 0, 0
+        self.budget, self.inherited = BUDGET, dict(os.environ)
+
+    def peek(self):
+        if self.i >= len(self.items):
+            return ("end",)
+        item = self.items[self.i]
+        return ("cmd", item[1][self.skip:], item[2]) if item[0] == "cmd" else item
+
+    def advance(self):
+        self.i, self.skip = self.i + 1, 0
+
+    def op(self, *ops):
+        item = self.peek()
+        if item[0] == "op" and item[1] in ops:
+            self.advance()
+            return item[1]
+        return None
+
+    def newlines(self):
+        while self.op(";"):
+            pass
+
+    def keyword(self, *names):
+        """Consume a reserved word at the start of the next command."""
+        item = self.peek()
+        if item[0] != "cmd" or not item[1] or item[1][0] not in names:
+            return None
+        self.skip += 1
+        if len(item[1]) == 1 and not item[2]:
+            self.advance()
+        return item[1][0]
+
+    def at(self, stops):
+        item = self.peek()
+        return (item[0] == "op" and item[1] in stops) or (
+            item[0] == "cmd" and bool(item[1]) and item[1][0] in stops)
+
+    def check(self, path, world):
+        root = written(path, world.cwd, self.protected, world.variables(self.inherited))
+        if root:
+            raise Denied(root)
+
+    def run(self, worlds, stops=()):
+        """A list: and-or lists split by `;` or `&`, up to a word in STOPS."""
+        while True:
+            self.newlines()
+            if self.peek()[0] == "end" or self.at(stops):
+                return worlds
+            start = worlds
+            worlds = self.and_or(worlds)
+            if self.op("&"):
+                worlds = with_status(start, {True})
+
+    def and_or(self, worlds):
+        worlds = self.pipeline(worlds)
+        while True:
+            op = self.op("&&", "||")
+            if not op:
+                return worlds
+            self.newlines()
+            go = passed(worlds, op == "&&")
+            worlds = (worlds - go) | self.pipeline(go)
+
+    def pipeline(self, worlds):
+        negate = self.keyword("!")
+        out, stages = self.command(worlds), 1
+        while self.op("|", "|&"):
+            self.newlines()
+            out, stages = self.command(worlds), stages + 1
+        if stages > 1:
+            # bash runs every stage in a subshell; zsh keeps the last one
+            out |= with_status(worlds, statuses(out))
+        return {world._replace(ok=not world.ok) for world in out} if negate else out
+
+    def command(self, worlds):
+        self.budget -= len(worlds) + 1
+        if self.budget < 0:
+            raise TooMany(BUDGET)
+        item = self.peek()
+        if item[0] == "end":
+            return worlds
+        if item[0] == "op":
+            self.advance()
+            if item[1] != "(":
+                return worlds
+            inner = self.run(worlds, (")",))
+            self.op(")")
+            return self.trailing(with_status(worlds, statuses(inner)), worlds)
+        if self.keyword("{"):
+            out = self.run(worlds, ("}",))
+            self.keyword("}")
+            return self.trailing(out, worlds)
+        if self.keyword("if"):
+            return self.trailing(self.branches(worlds), worlds)
+        loop = self.keyword("while", "until", "for", "select")
+        if loop:
+            return self.trailing(self.loop(loop, worlds), worlds)
+        if self.keyword("case"):
+            return self.trailing(self.arms(worlds), worlds)
+        if item[1] and item[1][0] in KEYWORDS:
+            self.keyword(item[1][0])  # a reserved word out of place: read past it
+            return worlds
+        return self.simple(worlds)
+
+    def branches(self, worlds):
+        out, rest = set(), self.run(worlds, ("then",))
+        while self.keyword("then"):
+            out |= self.run(passed(rest, True), ("elif", "else", "fi"))
+            rest = passed(rest, False)
+            if self.keyword("elif"):
+                rest = self.run(rest, ("then",))
+        if self.keyword("else"):
+            out |= self.run(rest, ("fi",))
+            rest = set()
+        self.keyword("fi")
+        return out | with_status(rest, {True})
+
+    def loop(self, kind, worlds):
+        """A loop body runs zero, one or two times; a third pass reads like the second."""
+        out = set(worlds)
+        if kind in ("for", "select"):
+            header = self.peek()[1] if self.peek()[0] == "cmd" else []
+            if header:
+                self.advance()
+            if header[2:] and header[1] == "in" and re.fullmatch(r"[A-Za-z_]\w*", header[0]):
+                worlds = {world.set({header[0]: expand(value, world.variables(self.inherited))})
+                          for world in worlds for value in header[2:]}
+        start = (self.i, self.skip)
+        for _ in range(2):
+            self.i, self.skip = start
+            if kind in ("while", "until"):
+                cond = self.run(worlds, ("do",))
+                out |= cond
+                worlds = passed(cond, kind == "while")
+            self.newlines()
+            self.keyword("do")
+            worlds = self.run(worlds, ("done",))
+            out |= worlds
+        self.keyword("done")
+        return with_status(out, {True, False})
+
+    def arms(self, worlds):
+        """`case WORD in PATTERN) LIST ;; ... esac`: any arm, or none, runs."""
+        out = set(worlds)
+        self.advance()  # WORD in, and the first pattern when it shares the line
+        while self.peek()[0] != "end" and not self.keyword("esac"):
+            if self.op(")"):
+                out |= self.run(worlds, (";;", ";&", ";;&", "esac"))
+                self.op(";;", ";&", ";;&")
+            elif self.peek()[0] == "cmd":
+                self.advance()  # pattern words
+            else:
+                self.advance()  # `|` and `(` in a pattern, and newlines
+        return with_status(out, {True, False})
+
+    def trailing(self, out, worlds):
+        """A redirect after `)`, `}`, `fi`, `done` or `esac` opens before the body runs."""
+        item = self.peek()
+        if item[0] == "cmd" and not item[1]:
+            self.advance()
+            for world in worlds:
+                for target in item[2]:
+                    self.check(target, world)
+        return out
+
+    def simple(self, worlds):
+        _, words, targets = self.peek()
+        self.advance()
+        while self.op("("):  # $( ), <( ) and >( ) run in a subshell inside this command
+            self.run(worlds, (")",))
+            self.op(")")
+            item = self.peek()
+            if item[0] == "cmd":
+                self.advance()
+                words, targets = words + item[1], targets + item[2]
+        out = set()
+        for world in worlds:
+            for target in targets:
+                self.check(target, world)
+            changes = assigned(words, world.variables(self.inherited))
+            world = world.set(changes) if changes else world
+            variables = world.variables(self.inherited)
+            command = unwrap(words)
+            name = os.path.basename(command[0]) if command else ""
+            args = [word for word in command[1:] if not word.startswith("-")]
+            if name == "cd":
+                folder = resolve(args[0] if args else "~", world.cwd, variables)
+                out.add(world._replace(cwd=folder, ok=True))
+                if not os.path.isdir(folder):
+                    out.add(world._replace(ok=False))
+                continue
+            if name == "exit":
+                continue
+            if name == "git":
+                folder, verb = git_target(command, world.cwd, variables)
+                root = inside(folder, self.protected) if verb in GIT_WRITES else None
+                if root:
+                    raise Denied(root)
+            elif name in PATH_WRITERS or (name in LAST_ARG_WRITERS and args):
+                for path in args if name in PATH_WRITERS else args[-1:]:
+                    self.check(path, world)
+            out |= with_status({world}, {True, False})
+        return out
 
 
 def bash_root(command, cwd, protected):
-    variables, outer = dict(os.environ), []
-    for words, targets, operator in commands(command):
-        for target in targets:
-            root = written(target, cwd, protected, variables)
-            if root:
-                return root
-        assign(words, variables)
-        words = unwrap(words)
-        name = os.path.basename(words[0]) if words else ""
-        args = [word for word in words[1:] if not word.startswith("-")]
-        if name == "cd":
-            cwd = resolve(args[0] if args else "~", cwd, variables)
-        elif name == "git":
-            folder, verb = git_target(words, cwd, variables)
-            root = inside(folder, protected) if verb in GIT_WRITES else None
-            if root:
-                return root
-        elif name in PATH_WRITERS or (name in LAST_ARG_WRITERS and args):
-            for path in args if name in PATH_WRITERS else args[-1:]:
-                root = written(path, cwd, protected, variables)
-                if root:
-                    return root
-        if operator == "(":
-            outer.append((cwd, dict(variables)))
-        elif operator == ")" and outer:
-            cwd, variables = outer.pop()
+    try:
+        Reader(command, protected).run({World(cwd, (), True)})
+    except Denied as denied:
+        return denied.args[0]
     return None
 
 
@@ -249,21 +495,29 @@ def denied_root(payload):
     return None
 
 
+def deny(reason):
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+    }}))
+
+
 def main():
     try:
         root = denied_root(json.load(sys.stdin))
+    except TooMany:
+        deny(f"checkout_guard cannot read this command within {BUDGET} steps, so it cannot "
+             "tell whether it writes in a lane checkout (sd:6083). Split it into shorter "
+             "commands.")
+        return 0
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"checkout_guard: unreadable input, allowing: {error!r}", file=sys.stderr)
         return 0
     if root is not None:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                f"{root} is a lane checkout: the lane and repo-sync own it, and agents do "
-                "not write there (sd:6001). Work in a worktree: git -C "
-                f"{root} worktree add ~/worktrees/<repo>-<branch> -b <branch> origin/main"),
-        }}))
+        deny(f"{root} is a lane checkout: the lane and repo-sync own it, and agents do "
+             "not write there (sd:6001). Work in a worktree: git -C "
+             f"{root} worktree add ~/worktrees/<repo>-<branch> -b <branch> origin/main")
     return 0
 
 
