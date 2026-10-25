@@ -279,6 +279,29 @@ class HomePrep(unittest.TestCase):
         self.assertIn(f"sd:{code}", result_.stderr)
         self.assertEqual(len(self.notes(chore)), 1)
 
+    def test_a_malformed_entry_writes_no_note_and_fails(self):
+        good, drop = prepped(0)["items"][0], object()
+        for name, fields in (("no summary", {"summary": drop}),
+                             ("empty summary", {"summary": "  "}),
+                             ("summary not text", {"summary": 7}),
+                             ("checklist not a list", {"checklist": "Buy salt"}),
+                             ("drafts not text", {"drafts": [{"subject": "Salt"}]}),
+                             ("links null", {"links": None})):
+            with self.subTest(name):
+                # One item each: a note written by a failing row would hide the next.
+                chore = self.add(f"Fill the softener with salt ({name})", "--no-repo")
+                entry = {key: value for key, value in dict(good, id=chore, **fields).items() if value is not drop}
+                result_ = self.run_job(reply=result({"items": [entry]}))
+                self.assertEqual(result_.returncode, 1, result_.stdout + result_.stderr)
+                self.assertIn(f"sd:{chore}", result_.stderr)
+                self.assertEqual(self.notes(chore), [])
+
+    def test_an_entry_without_the_optional_lists_is_prepped(self):
+        chore = self.add("Fill the softener with salt", "--no-repo")
+        result_ = self.run_job(reply=result({"items": [{"id": chore, "summary": "Nothing to buy"}]}))
+        self.assertEqual(result_.returncode, 0, result_.stdout + result_.stderr)
+        self.assertEqual(self.notes(chore), [f"Prepped for {self.tomorrow}: Nothing to buy"])
+
     def test_an_item_missing_from_the_reply_fails_the_run(self):
         chore = self.add("Fill the softener with salt", "--no-repo")
         other = self.add("Clean the filter", "--no-repo")

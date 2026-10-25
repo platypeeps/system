@@ -103,13 +103,25 @@ def _reply(text):
     return found["items"]
 
 
+def _malformed(entry):
+    """Why an entry cannot be a note, or None: the note marks the item prepped (sd:6159)."""
+    if set(entry) - REPLY_KEYS - {"id"}:
+        return "holds unknown keys"
+    if not isinstance(entry.get("summary"), str) or not entry["summary"].strip():
+        return "has no summary"
+    for key in ("checklist", "drafts", "links"):
+        value = entry.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(line, str) for line in value):
+            return f"has a {key} that is not a list of text"
+    return None
+
+
 def _lines(entry, key):
-    value = entry.get(key) or []
-    return [str(line).strip() for line in value if str(line).strip()] if isinstance(value, list) else []
+    return [line.strip() for line in entry.get(key, []) if line.strip()]
 
 
 def _note(entry, due):
-    lines = [f"{MARK.format(due=due)} {str(entry.get('summary') or 'nothing to draft').strip()}"]
+    lines = [f"{MARK.format(due=due)} {entry['summary'].strip()}"]
     lines += [f"- {line}" for line in _lines(entry, "checklist")]
     lines += [f"Draft: {line}" for line in _lines(entry, "drafts")]
     lines += [f"Link: {line}" for line in _lines(entry, "links")]
@@ -136,9 +148,12 @@ def apply(sd, selected, result, due):
         if item not in wanted:
             print(f"home-prep: the reply names sd:{item}, which was not selected; no note", file=sys.stderr)
             continue
-        if item in noted or set(entry) - REPLY_KEYS - {"id"}:
-            print(f"home-prep: the reply's entry for sd:{item} is repeated or holds unknown keys; no note",
-                  file=sys.stderr)
+        if item in noted:
+            print(f"home-prep: the reply's entry for sd:{item} is repeated; no note", file=sys.stderr)
+            continue
+        malformed = _malformed(entry)
+        if malformed:
+            print(f"home-prep: the reply's entry for sd:{item} {malformed}; no note", file=sys.stderr)
             continue
         _run([sd, "task", "note", str(item), _note(entry, due)])
         noted.add(item)
