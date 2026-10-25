@@ -41,6 +41,8 @@
 # Failure reporting: on a non-zero exit the wrapper appends to
 # logs/failures.log; every run's report goes to the workflow database, where
 # a failure or an SD_REPORT_ATTENTION line opens a Reports row that Today shows.
+# A failure that did not grade its data safe also pushes to the phone through
+# local-notify, once until a run is not at risk (sd:5997).
 #
 # Local configuration (environment, or <config>/cron-jobs/.env; a value
 # already exported wins over .env). See .env.example.
@@ -463,6 +465,36 @@ notify_failure() { # job, exit code
   echo "$ts $job FAILED rc=$rc (log: logs/$job.log)" >> "$FAIL_LOG"
 }
 
+# The one push a run makes: to the phone, when a failure puts data at risk
+# (sd:5997). The report still carries every failure to Today (sd:3454). A run
+# that proved its data safe prints `SD_REPORT_ATTENTION: data safe, one step
+# failed: <step>`; any other failure is at risk (ruling on sd:6030). Only this
+# run's own lines grade it: a lost report starts the report at an older run.
+# logs/.<job>.pushed holds it to one push until a run is not at risk; it is
+# written after a push that went out, so a failed push is tried again.
+push_at_risk() { # job, exit code, log offset of this run's own output
+  local job="$1" rc="$2" pushed="$LOG_DIR/.$1.pushed"
+  if [ "$rc" -eq 0 ] || tail -c "+$(($3 + 1))" "$LOG_DIR/$job.log" 2>/dev/null \
+      | grep -q '^SD_REPORT_ATTENTION: data safe, one step failed: '; then
+    rm -f "$pushed"
+    return 0
+  fi
+  [ ! -f "$pushed" ] || return 0
+  # -c and -p: no Jev routing, and nothing from the log leaves the machine.
+  # ntfy alone and no -b, so exit 0 means the phone push went out: notify.sh
+  # counts a banner, or a skipped channel beside one, as delivered.
+  # Without the job's lock (fd 8), as tee: a notifier child left behind must
+  # not hold the next run off.
+  if st_bounded 60 sh "$ROOT/../local-notify/notify.sh" \
+      -t "$job failed on $(hostname -s): data at risk" -p high -c ntfy \
+      "exit $rc, and the run did not grade its data safe. Today has the report; log: local-cron-jobs/logs/$job.log" \
+      >/dev/null 2>&1 8>&-; then
+    date '+%Y-%m-%dT%H:%M:%S%z' > "$pushed" || true
+  else
+    echo "[$job] the at-risk push did not go out; the next failing run tries again" >&2
+  fi
+}
+
 # launchd points a job's stdout at its log (StandardOutPath in the plist); a
 # hand-run points it at the terminal, so nothing reached the log. The gap was
 # one-sided: notify_failure appends to failures.log on ANY run, while the
@@ -629,6 +661,7 @@ EXEC_JOB=""
 EXEC_STARTED=""
 EXEC_RUN=""
 EXEC_OFFSET=0
+EXEC_OWN_OFFSET=0
 
 # The job's lock is a kernel `flock` on `logs/.<job>.flock`, taken on fd 8
 # (sd:1251). The kernel releases it when the last process holding the file
@@ -756,6 +789,7 @@ exec_exit() {
   [ -z "$owed" ] || record_run_report "$owed" "$EXEC_RUN" "$EXEC_STARTED" \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$code" "$EXEC_OFFSET" \
     || report_unrecorded "$owed" "$EXEC_OFFSET"
+  [ -z "$owed" ] || push_at_risk "$owed" "$code" "$EXEC_OWN_OFFSET" || true
 }
 
 # launchd's own spawn counter for a job, or "" when launchd does not hold the
@@ -1168,6 +1202,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
   # stdout there.
   local report_offset=0 report_started report_run
   [ ! -f "$LOG_DIR/$job.log" ] || report_offset="$(wc -c < "$LOG_DIR/$job.log" | tr -d ' ')"
+  local own_offset="$report_offset"
   # A report the last run could not record starts this one (report_unrecorded).
   local lost
   lost="$(cat "$LOG_DIR/.$job.unreported" 2>/dev/null || true)"
@@ -1175,6 +1210,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
   report_started="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   report_run="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
   start_tee "$LOG_DIR/$job.log"
+  EXEC_OWN_OFFSET="$own_offset"
   EXEC_JOB="$job"
   EXEC_STARTED="$report_started"
   EXEC_RUN="$report_run"
@@ -1292,6 +1328,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
   stop_tee
   record_run_report "$job" "$report_run" "$report_started" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$rc" "$report_offset" \
     || report_unrecorded "$job" "$report_offset"
+  push_at_risk "$job" "$rc" "$own_offset" || true
   [ "$rc" -eq 0 ] || exit "$rc"
 }
 
