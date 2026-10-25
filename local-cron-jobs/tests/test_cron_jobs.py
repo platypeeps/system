@@ -2726,13 +2726,18 @@ class NeverSpawnedTest(unittest.TestCase):
 
 
 class FailureNotificationTest(unittest.TestCase):
-    """A failed run is recorded and reported, and posts nothing (sd:3454).
+    """A failed run is recorded and reported; only one at risk pushes (sd:5997).
 
-    The run's report carries the failure to Reports and Today, so the desktop
-    banner and the ntfy push are gone. The fixture's recording `osascript`
-    and `curl` would catch either one, on both PATHs a run can be started
-    with: the plain one `Fixture.exec_job` builds and `stub_env`'s.
+    sd:3454 moved every failure to the run's report. sd:5997 brings back one
+    push, for the critical case: a failure that did not grade itself with
+    `SD_REPORT_ATTENTION: data safe, one step failed: <step>` (ruling on
+    sd:6030). It goes through local-notify, once until a run is not at risk.
+    The fixture's recording `osascript` and `curl` catch any other post, on
+    both PATHs a run can be started with: the plain one `Fixture.exec_job`
+    builds and `stub_env`'s.
     """
+
+    SAFE = "SD_REPORT_ATTENTION: data safe, one step failed: NAS copy"
 
     def setUp(self):
         self.fx = Fixture()
@@ -2744,17 +2749,85 @@ class FailureNotificationTest(unittest.TestCase):
         curl = self.fx.quiet / "curl"
         curl.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{self.curl_log}'\n")
         curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
+        # local-notify beside the copy: one line per call, its words joined
+        # by `|`, and it exits NOTIFY_EXIT.
+        notify = self.fx.tmp / "local-notify" / "notify.sh"
+        notify.parent.mkdir()
+        self.notify_log = self.fx.tmp / "notify-calls.txt"
+        notify.write_text("#!/bin/sh\n"
+                          f"(IFS='|'; printf '%s\\n' \"$*\") >> '{self.notify_log}'\n"
+                          'exit "${NOTIFY_EXIT:-0}"\n')
 
-    def assert_recorded_and_silent(self):
+    def pushes(self):
+        return self.notify_log.read_text().splitlines() if self.notify_log.exists() else []
+
+    def job(self, command):
+        self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="{command}"\n')
+
+    def assert_recorded_and_no_other_post(self):
         self.assertEqual(self.fx.notifications(), [])
         self.assertFalse(self.curl_log.exists(), self.curl_log.read_text() if self.curl_log.exists() else "")
         self.assertIn("demo FAILED rc=3", (self.fx.folder / "logs" / "failures.log").read_text())
 
-    def test_a_failure_run_posts_nothing(self):
+    def test_a_failure_pushes_once_until_a_run_is_not_at_risk(self):
+        for _ in range(2):
+            self.assertEqual(self.fx.exec_job("demo").returncode, 3)
+        self.assert_recorded_and_no_other_post()
+        pushes = self.pushes()
+        self.assertEqual(len(pushes), 1, pushes)
+        words = pushes[0].split("|")
+        self.assertEqual(words[:7], ["-t", f"demo failed on {host_name()}: data at risk",
+                                     "-p", "high", "-c", "local,ntfy", "-b"], words)
+        self.assertIn("exit 3", words[7])
+        self.job("true")
+        self.assertEqual(self.fx.exec_job("demo").returncode, 0)
+        self.job("exit 3")
         self.assertEqual(self.fx.exec_job("demo").returncode, 3)
-        self.assert_recorded_and_silent()
+        self.assertEqual(len(self.pushes()), 2, self.pushes())
 
-    def test_a_failure_run_under_the_launchctl_stubs_posts_nothing(self):
+    def test_a_failure_graded_data_safe_pushes_nothing(self):
+        self.job(f"echo {self.SAFE}; exit 3")
+        self.assertEqual(self.fx.exec_job("demo").returncode, 3)
+        self.assert_recorded_and_no_other_post()
+        self.assertEqual(self.pushes(), [])
+
+    def test_a_grade_quoted_inside_a_line_does_not_count(self):
+        self.job(f"echo quoted: {self.SAFE}; exit 3")
+        self.assertEqual(self.fx.exec_job("demo").returncode, 3)
+        self.assertEqual(len(self.pushes()), 1, self.pushes())
+
+    def test_an_older_runs_grade_does_not_cover_this_run(self):
+        # A lost report starts this run's report at the older run's offset
+        # (sd:3537), so the report's span holds that run's grade. The push
+        # reads only this run's own lines.
+        log = self.fx.folder / "logs" / "demo.log"
+        log.write_text(f"[demo] an older run\n{self.SAFE}\n")
+        (self.fx.folder / "logs" / ".demo.unreported").write_text("0\n")
+        self.assertEqual(self.fx.exec_job("demo").returncode, 3)
+        self.assertEqual(len(self.pushes()), 1, self.pushes())
+
+    def test_a_push_that_failed_is_tried_by_the_next_failing_run(self):
+        for _ in range(2):
+            run = self.fx.exec_job("demo", {"NOTIFY_EXIT": "1"})
+            self.assertEqual(run.returncode, 3)
+            self.assertIn("at-risk push did not go out", run.stderr)
+        self.assertEqual(len(self.pushes()), 2, self.pushes())
+
+    def test_a_missing_notifier_is_named_and_keeps_the_exit_code(self):
+        (self.fx.tmp / "local-notify" / "notify.sh").unlink()
+        run = self.fx.exec_job("demo")
+        self.assertEqual(run.returncode, 3)
+        self.assertIn("at-risk push did not go out", run.stderr)
+
+    def test_a_failure_the_trap_reports_pushes_too(self):
+        # JOB_DIR that does not exist: the run ends before cmd_exec's end,
+        # and exec_exit writes its outcome and report.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n'
+                                  f'JOB_DIR="{self.fx.tmp / "no-such-directory"}"\n')
+        self.assertNotEqual(self.fx.exec_job("demo").returncode, 0)
+        self.assertEqual(len(self.pushes()), 1, self.pushes())
+
+    def test_a_failure_run_under_the_launchctl_stubs_pushes_once(self):
         agents = self.fx.home / "Library" / "LaunchAgents"
         agents.mkdir(parents=True, exist_ok=True)
         (agents / "local.system-tools.cron.demo.plist").write_text("<plist/>\n")
@@ -2763,7 +2836,13 @@ class FailureNotificationTest(unittest.TestCase):
             env=stub_env(self.fx, stub_bin(self.fx.tmp), 2),
             capture_output=True, text=True, timeout=60)
         self.assertEqual(run.returncode, 3, run.stderr)
-        self.assert_recorded_and_silent()
+        self.assert_recorded_and_no_other_post()
+        self.assertEqual(len(self.pushes()), 1, self.pushes())
+
+
+def host_name():
+    """`hostname -s`, as the script spells the host."""
+    return subprocess.run(["hostname", "-s"], capture_output=True, text=True, check=True).stdout.strip()
 
 
 class WatchdogTest(unittest.TestCase):
