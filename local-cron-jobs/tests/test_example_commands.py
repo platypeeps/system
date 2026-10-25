@@ -355,3 +355,46 @@ class GenaiTracesArchiveTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HourlyBackupGradeTest(unittest.TestCase):
+    """The hourly backup grades a failed NAS step data safe (sd:5997).
+
+    The snapshot is verified on the local disk before the NAS step runs, so
+    that step failing leaves the data safe, and the run says so with the
+    line the wrapper's push reads (ruling on sd:6030). A failed snapshot
+    prints no grade: its data is at risk. Both still fail the run.
+    """
+
+    JOB = EXAMPLES / "sd-db-backup-hourly.job"
+    SAFE = "SD_REPORT_ATTENTION: data safe, one step failed: NAS copy"
+
+    def run_job(self, snapshot_rc, preflight_rc):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        # The pack's sd-db at the default the job names, exiting SNAPSHOT_RC,
+        # and the interpreter offsite-verify runs under, exiting PREFLIGHT_RC.
+        sd_db = fx.home / "repos/platypeeps/sd-ai-command-pack/bin/sd-db"
+        sd_db.parent.mkdir(parents=True)
+        sd_db.write_text('#!/bin/sh\nexit "$SNAPSHOT_RC"\n')
+        sd_db.chmod(0o755)
+        python = fx.tmp / "preflight"
+        python.write_text('#!/bin/sh\nexit "$PREFLIGHT_RC"\n')
+        python.chmod(0o755)
+        fx.write_job(self.JOB.stem, self.JOB.read_text())
+        result = fx.exec_job(self.JOB.stem, {
+            "SNAPSHOT_RC": str(snapshot_rc), "PREFLIGHT_RC": str(preflight_rc),
+            "SD_DB_PYTHON": str(python),
+            "SD_DB_BACKUP_HOURLY_DESTINATION": str(fx.tmp / "backups"),
+            "SD_DB_BACKUP_HOURLY_NAS_FOLDER": str(fx.tmp / "nas")})
+        return result, (fx.folder / "logs" / f"{self.JOB.stem}.log").read_text().splitlines()
+
+    def test_a_failed_nas_step_after_the_snapshot_is_graded_data_safe(self):
+        result, log = self.run_job(0, 4)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertIn(self.SAFE, log)
+
+    def test_a_failed_snapshot_is_not_graded(self):
+        result, log = self.run_job(5, 0)
+        self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
+        self.assertNotIn(self.SAFE, log)
