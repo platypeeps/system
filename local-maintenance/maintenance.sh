@@ -204,7 +204,8 @@ scan-for-secrets.sh prune, which owns the retention and the directory list;
 ~/.claude/projects is not on it -- Claude Code deletes its own transcripts),
 on Sundays `docker system prune -f` (images and containers only — volumes
 are never pruned), and cargo target/ folders under ~/worktrees that nothing
-wrote for 3 days (only a folder holding CACHEDIR.TAG; the checkout stays).
+wrote or ran for 3 days (only a folder holding CACHEDIR.TAG; the checkout
+stays).
 HELPEOF
     exit 0
     ;;
@@ -395,8 +396,11 @@ fi
 
 # Idle cargo build output in worktrees (sd:5994). A builder leaves a target/
 # of several GB in each worktree, and the worktree stays until its branch
-# lands. A target/ nothing wrote for 3 days goes; the checkout and its commits
-# stay, and the next build makes it again. Only a folder holding cargo's
+# lands. A target/ nothing wrote or ran for 3 days goes; the checkout and its
+# commits stay, and the next build makes it again. An exec sets a file's
+# access time on APFS, so a file's atime counts as a run: a trial ran a
+# binary there each evening that nothing rebuilt (sd:6128). A folder's does
+# not: this walk reads each folder, which sets it. Only a folder holding cargo's
 # CACHEDIR.TAG counts, at depth 2 or 3 (depth 1 is a checkout), and find
 # follows no link. A probe that fails or hits its bound is no answer: the
 # folder stays. The delete runs only inside PRUNE_TRASH, which this step owns.
@@ -438,7 +442,7 @@ if [ -d "$WORKTREES" ]; then
   while IFS= read -r t; do
     [ -d "$t" ] && [ ! -L "$t" ] || continue
     [ -f "$t/CACHEDIR.TAG" ] || continue
-    if ! recent=$(st_step 300 find "$t" -mmin -4320 -print -quit); then
+    if ! recent=$(st_step 300 find "$t" '(' -mmin -4320 -o -type f -amin -4320 ')' -print -quit); then
       finding "build output prune: could not read $t; kept"
       continue
     fi
