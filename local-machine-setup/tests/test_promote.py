@@ -993,7 +993,15 @@ class Promote(PromoteCase):
 # A share that stalls: ls, du and test hang on any path under $STUB_STALL, as
 # an SMB root did for 2 h in machine-setup-update-nightly (sd:4786); every
 # other path gets the real command. test runs as the shell's builtin here.
-STALL = 'case "$*" in *"$STUB_STALL"*) exec sleep 120 ;; esac\n'
+# No clock tells a stall from a loaded machine (sd:6157): under the bound
+# (lib/bounded.sh's perl) a stalled probe exits 124 at once, as the bound
+# does at its limit; anywhere else it hangs, and the run outlives its 60 s.
+# So the bound is 30 s, which no probe that answers comes near.
+HANG = ('  case "$(ps -o args= -p "$PPID")" in "perl -e use strict; use POSIX ();"*) exit 124 ;; esac\n'
+        '  exec sleep 120 ;;\n')
+STALL = ('case "$*" in *"${STUB_SLOW:-//}"*) sleep 2 ;; esac\n'
+         'case "$*" in *"$STUB_STALL"*)\n' + HANG + 'esac\n')
+STALL_BOUND = 30
 STALL_STUBS = {"ls": STALL + 'exec "$STUB_REAL_LS" "$@"\n',
                "du": STALL + 'exec "$STUB_REAL_DU" "$@"\n',
                "test": STALL + 'test "$@"\n'}
@@ -1015,7 +1023,7 @@ class StalledShare(PromoteCase):
         """promote's dry run, which prints hub-ready, unattended: stdin is no terminal."""
         env = self.fixture.env(**self.promote_env(
             STUB_STALL=stall, STUB_REAL_LS=shutil.which("ls"), STUB_REAL_DU=shutil.which("du"),
-            MACHINE_SETUP_STEP_TIMEOUT="1", ST_BOUNDED_GRACE="1", **extra))
+            MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND), ST_BOUNDED_GRACE="1", **extra))
         try:
             result = subprocess.run([str(SCRIPT), "promote"], env=env, capture_output=True, text=True,
                                     cwd=str(self.tmp), stdin=subprocess.DEVNULL, timeout=60)
@@ -1023,6 +1031,14 @@ class StalledShare(PromoteCase):
             self.fail(f"hub-ready did not end within its bound while {stall} stalls")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         return result.stdout
+
+    def test_a_slow_probe_that_answers_is_no_stall(self):
+        """A loaded machine slows a probe that answers: it reads ok, never a
+        timeout. The gate read the hourly root's parent as timed out at
+        load 44 (sd:6157); STUB_SLOW stands in for the load."""
+        out = self.hub_ready(str(self.tmp / "nothing-stalls-here"), STUB_SLOW=str(self.hourly.parent))
+        self.assertIn(f"  ok      hourly backup root: {self.hourly}\n", out)
+        self.assertNotIn("NOT-READY", out)
 
     def test_a_stalled_backup_root_reads_not_readable_now(self):
         hourly = self.nas / "sd-backups-hourly"
@@ -1038,7 +1054,7 @@ class StalledShare(PromoteCase):
         out = self.hub_ready(str(self.nas))
         for root in ("sd-backups-hourly", "sd-backups"):
             self.assertIn(f"  NOT-READY backup root not readable: {self.nas}/{root}; its listing timed out\n", out)
-        self.assertIn("  NOT-READY no backup root answered in 1s; no dated snapshot read\n", out)
+        self.assertIn(f"  NOT-READY no backup root answered in {STALL_BOUND}s; no dated snapshot read\n", out)
         self.assertNotIn("ok      backup root readable", out)
         self.assertNotIn("ok      free disk", out)
 
@@ -1066,7 +1082,7 @@ class StalledShare(PromoteCase):
         local.mkdir()
         (self.config / "mirror-sync").mkdir(exist_ok=True)
         (self.config / "mirror-sync/mirrors-nas.conf").write_text(f"{local}|{share}\n")
-        write_stub(self.fixture.stubs, "sh", 'case "$*" in *"$STUB_STALL_SH"*) exec sleep 120 ;; esac\nexec /bin/sh "$@"\n')
+        write_stub(self.fixture.stubs, "sh", 'case "$*" in *"$STUB_STALL_SH"*)\n' + HANG + 'esac\nexec /bin/sh "$@"\n')
         out = self.hub_ready(str(self.tmp / "nothing-stalls-here"), STUB_STALL_SH=str(local))
         self.assertIn(f"  --      mirrors-nas.conf: {local} not readable now; its folders were not compared\n", out)
         self.assertNotIn("mirrors-nas.conf: " + str(share) + " holds", out)
