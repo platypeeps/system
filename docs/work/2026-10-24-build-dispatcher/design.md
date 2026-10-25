@@ -110,14 +110,19 @@ Steps, each written before it starts:
    Blockers start `fixing`: `claude -p --resume <session_id>` with the blockers, under the same bounds, then review again.
    At most `REVIEW_ROUNDS` (3) rounds.
 5. `enqueuing`: only after `kill(-builder_pgid, 0)` answers ESRCH, so no builder writes the branch.
-   It checks the title (63) and the body (`sd-docs-lint --pr-body`), then `sd-ship -C <worktree> lane enqueue`.
-6. `enqueued`: in one transaction the lease is released (the builder slot frees), the members end `done`, and the items stay `in_progress`.
+   The write into `enqueuing` is one CAS: `step` from `reviewing`, `outcome IS NULL`, `released_at IS NULL` and `cancel_requested IS NULL`.
+   No row changed means a cancel won: the run ends `cancelled`, its items go `ready`, and `sd-ship` never runs.
+   Then it checks the title (63) and the body (`sd-docs-lint --pr-body`), then `sd-ship -C <worktree> lane enqueue`.
+   No step before this one pushes: the brief forbids it, and `lane enqueue` publishes the head itself, behind this CAS.
+6. `enqueued`: a write that also requires `cancel_requested IS NULL` (pack sd:6093). In one transaction the lease is released (the builder slot frees), the members end `done`, and the items stay `in_progress`.
    The run stays open: `released_at` and `outcome` stay null until step 7 ends it. The supervisor exits.
    Reap skips a run at `enqueued` only: the lane holds it, and no supervisor is expected.
    The lane moves the items to `done` when it merges.
 7. The tick watches the lane entry. On `merged`, an auto-pickup run gets `checking` (below); every run then gets `cleaning`:
    the tick writes the step and a fresh `heartbeat_at` with a CAS on `step='enqueued'`, then spawns a supervisor.
    From then on the run is the supervisor's, and normal reap applies. Cleaning runs the entry's `remove` command once the worktree is clean.
+   Removal runs only after the lane recorded the merge, and cancel is refused from `enqueuing` on, so no cancel races it.
+   A `lane_failed` run keeps its worktree for Retry.
    A lane `failed` or `skipped` entry ends the run `lane_failed`; the lane's own note names the step and reason.
    Cleaning, or `lane_failed`, writes `released_at` and the outcome last, in one transaction.
 
@@ -131,10 +136,13 @@ The run row logs the model.
   and `heartbeat_at` is under 180 s old.
 - Timeout: the supervisor ends a `claude -p` past 60 min: TERM to `builder_pgid`, 20 s, KILL.
   `sd-review` keeps its own `--timeout`.
-- Cancel: `sd assignments cancel` on a running build sets `cancel_requested`.
+- Cancel: `sd assignments cancel` on a running build sets `cancel_requested` in one statement on the assignment's one unreleased run,
+  where `outcome IS NULL`, `released_at IS NULL` and `step` is `claimed`, `worktree`, `building`, `reviewing` or `fixing`.
+  No row changed means refused. With the enqueuing CAS this makes one winner: cancel, or enqueue, never both.
   The supervisor kills the active step's group (`builder_pgid`) at its next beat and waits for ESRCH, then keeps the worktree,
   ends the members `cancelled`, and moves the items to `ready` with a note. A group that outlives KILL blocks the run instead.
   From `enqueuing` on, cancel is refused with the lane entry to cancel: the lane may already hold the branch.
+  Every irreversible boundary sits behind that rule: the push and the lane entry (`enqueuing`) and the worktree removal (`cleaning`).
 - Reap, each tick, for each unreleased run that fails liveness, except a run at `enqueued`:
   1. CAS `outcome='interrupted'` where `heartbeat_at` is the value read; a lost CAS means the supervisor beat, so leave it.
   2. Kill the supervisor's process group if its pid and start still match, then `builder_pgid` if any member lives.
@@ -160,12 +168,12 @@ Every unreleased run row is owned by one process at a time. Reap acts only on a 
 | `claimed` | the spawned supervisor, before its first write | none yet | held | kill and confirm any recorded pid | fresh row at `worktree`; second loss: blocked | closed `cancelled`, items `ready` | `test_reap_unstarted_run` |
 | `worktree` | supervisor | `git` | held | kill and confirm | fresh row at `worktree`; second loss: blocked | kill, confirm, `cancelled`, items `ready` | `test_resume_worktree_fresh_row` |
 | `building` | supervisor | `claude -p` | held | kill and confirm | fresh row at `building`, same worktree; timeout and max-turns too; second loss: blocked | as `worktree` | `test_resume_building_fresh_row` |
-| `reviewing` | supervisor | `sd-review` | held | kill and confirm | fresh row at `reviewing`, round kept; second loss: blocked | as `worktree` | `test_resume_reviewing_keeps_round` |
-| `fixing` | supervisor | `claude -p --resume` | held | kill and confirm | fresh row at `reviewing`, round kept: the review reads the head the fix left; second loss: blocked | as `worktree` | `test_resume_fixing_reviews_again` |
-| `enqueuing` | supervisor | `sd-docs-lint`, `sd-ship` | held | kill and confirm | fresh row at `enqueuing`; it reads `lane list` for the item at its head first and records `enqueued` when the entry exists; second loss: blocked | refused, naming the lane entry | `test_enqueue_resume_no_duplicate` |
+| `reviewing` | supervisor | `sd-review` | held | kill and confirm | fresh row at `reviewing`, round kept; second loss: blocked | accepted; the enqueuing CAS needs `cancel_requested IS NULL`, so cancel wins: kill, confirm, `cancelled`, items `ready`, no enqueue | `test_resume_reviewing_keeps_round`, `test_cancel_before_enqueuing_wins` |
+| `fixing` | supervisor | `claude -p --resume` | held | kill and confirm | fresh row at `reviewing`, round kept: the review reads the head the fix left; second loss: blocked | as `reviewing`: cancel wins over a later enqueuing CAS | `test_resume_fixing_reviews_again`, `test_cancel_before_enqueuing_wins` |
+| `enqueuing` | supervisor | `sd-docs-lint`, `sd-ship` | held | kill and confirm | fresh row at `enqueuing`; it reads `lane list` for the item at its head first and records `enqueued` when the entry exists; second loss: blocked | refused: the cancel write needs a step before `enqueuing`; it names the lane entry | `test_enqueue_resume_no_duplicate`, `test_enqueuing_first_refuses_cancel` |
 | `enqueued` | lane | none; the lane's runner keeps its own | released | skip | none needed: the tick moves it to `checking`, `cleaning` or `lane_failed` | refused, naming the lane entry | `test_reap_skips_only_enqueued` |
 | `checking` | supervisor, fresh after the merge | `repo-sync.sh`, `dashboard.sh` | none | kill and confirm | fresh row at `checking`; second loss: health unknown, so auto-pickup off, push, item filed, then `cleaning` | refused: merged | `test_reap_kills_checking_group` |
-| `cleaning` | supervisor | `git worktree remove` | none | kill and confirm | fresh row at `cleaning`; second loss: outcome `done`, worktree kept with a note | refused: merged | `test_reap_kills_cleaning_group` |
+| `cleaning` | supervisor | `git worktree remove` | none | kill and confirm | fresh row at `cleaning`; second loss: outcome `done`, worktree kept with a note | refused: merged; removal runs only after the lane's merge | `test_reap_kills_cleaning_group`, `test_clean_only_after_merge` |
 | `interrupted`, unreleased | reap, closing it | the dead row's groups | held | kill and confirm, then recover | the recovery transaction | `cancel_requested`: closed `cancelled`, no fresh row | `test_reap_resumes_kill` |
 | `blocked`, unreleased (a group outlived KILL) | reap | the survivor | held | kill and confirm each tick | released once ESRCH answers; no fresh row | refused | `test_survivor_holds_lease` |
 | `done`, `blocked`, `cancelled`, `lane_failed`, `interrupted`, `timed_out`, released | none | none | released | refuse: reap reads only unreleased rows | none; Retry on a blocked run is `runner.requeue`, a new claim | refused | `test_reap_ignores_released` |
@@ -213,7 +221,11 @@ Every unreleased run row is owned by one process at a time. Reap acts only on a 
 | Recovery | old row released, fresh row at the resume step | a late old supervisor writes after recovery | its row's outcome is set, so the write guard changes nothing and it stops | `test_late_run_writes_nothing` |
 | Recovery, later step | fresh row at `reviewing`, `enqueuing`, `checking` or `cleaning` | the resumed step's supervisor dies too | a second loss at that step takes the ownership table's second-loss action | `test_second_loss_same_step` |
 | Cancel | active step's group killed | cancel during reviewing or fixing | the step's child is in `builder_pgid` too: killed, ESRCH confirmed, then cancelled | `test_cancel_kills_the_review_child` |
-| Cancel | none | cancel at enqueuing or later | refused, naming the lane entry; nothing changes | `test_cancel_after_enqueue_refused` |
+| Enqueuing CAS | `step` to `enqueuing` | cancel accepted during reviewing or fixing, before the next beat | the CAS needs `cancel_requested IS NULL`: no row changes, the run ends `cancelled`, items `ready`, no `sd-ship` | `test_cancel_before_enqueuing_wins` |
+| Cancel | none | cancel after the enqueuing CAS | the cancel write needs a step before `enqueuing`: refused, naming the lane entry; nothing changes | `test_enqueuing_first_refuses_cancel` |
+| Enqueued | members done, lease released | `cancel_requested` set on the row anyway | `enqueued()` refuses; the run blocks with a note naming the lane entry | `test_enqueued_refuses_cancel_requested` |
+| Push | remote branch | a push before the cancel check | no step before `enqueuing` pushes; `lane enqueue` publishes behind the CAS | `test_no_push_before_enqueuing` |
+| Cleaning removal | worktree removed | cancel during cleaning, or a lane entry not merged | cancel refused: merged; removal waits for the lane's `merged` | `test_clean_only_after_merge` |
 | Enqueued | lease released, run open | reap sees no supervisor while the lane holds the run | reap skips `enqueued` only; `checking` and `cleaning` get a supervisor and normal reap | `test_reap_skips_only_enqueued` |
 | Cancel | cancel_requested, members cancelled, items ready | supervisor dead at cancel | reap ends it as cancelled, not retried | `test_cancel_dead_supervisor` |
 | Checking | auto-pickup setting, push, item | killed after health failed | result not recorded, so the next tick runs the check again; off is written before the push | `test_health_failure_turns_off_first` |
