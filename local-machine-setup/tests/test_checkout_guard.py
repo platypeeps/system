@@ -17,6 +17,7 @@ import random
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -47,7 +48,7 @@ def denies(module, command, cwd, env, protected):
         except ValueError:
             return False
         except Exception as error:  # the budget refusal
-            if type(error).__name__ == "TooMany":
+            if type(error).__name__ == "Unreadable":
                 return True
             raise
 
@@ -331,7 +332,6 @@ class CheckoutGuard(unittest.TestCase):
                         'eval "D=/tmp"; touch "$D/x"',
                         f"cd {lane}; cd /tmp; touch x",
                         f"cd {lane}; pushd /tmp; touch x",
-                        f"pushd {lane}; popd; touch x",
                         f'set -- {lane}; touch "$1/x"',
                         f'set -- /tmp {lane}; shift; touch "$1/x"'):
             with self.subTest(command=command):
@@ -342,11 +342,112 @@ class CheckoutGuard(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=work), "allow")
         self.assertDenied(self.bash(f"cd {work}; touch x", cwd=lane), lane)
+        # a failed `popd` stays in the lane; one past the known stack is unknown
+        self.assertTrue(self.bash(f"pushd {lane}; popd; touch x", cwd=work).startswith("deny: "))
+
+    def test_state_the_reader_cannot_track_is_refused(self):
+        """sd:6083 round 4: the folder stack, `cd -`, `~`, CDPATH, braces, globs,
+        input, arrays, `${..}` forms, `$@`, `$( )`, a name from a variable, and
+        word splitting either resolve as the shell does or refuse."""
+        lane, work, repos = self.system, self.worktree, self.system.parent
+        self.env["PWD"] = str(work)  # the hook's own folder, not the shell's
+        for command, cwd in (("pushd /usr && popd && touch x", lane),
+                             ("pushd /usr && pushd && touch x", lane),
+                             ("pushd /usr && pushd +1 && touch x", lane),
+                             (f"pushd -n {lane} && popd && touch x", work),
+                             ("popd && touch x", work),
+                             ("cd /usr && cd - && touch x", lane),
+                             ("cd /usr && cd +1 && touch x", lane),
+                             ("cd /usr && touch ~-/x", lane),
+                             (f'cd {lane} && cd /usr && touch "$OLDPWD/x"', work),
+                             ('touch "$PWD/x"', lane),
+                             (f"HOME={lane}; touch ~/x", work),
+                             (f"HOME={lane}; cd && touch x", work),
+                             (f"export CDPATH={repos}; cd system && touch x", work),
+                             (f"touch {{/tmp,{lane}}}/x", work),
+                             (f"touch {repos}/{{sys,x}}{{tem,y}}/x", work),
+                             (f"touch {repos}/{{a..z}}ystem/x", work),
+                             (f"rm -rf {repos}/sys*", work),
+                             (f"rm -rf {repos}/sys?em", work),
+                             (f'for d in {repos}/sys*; do touch "$d/x"; done', work),
+                             (f"D='{repos}/sys*'; rm -rf $D", work),
+                             (f'D=/tmp; read D <<< {lane}; touch "$D/x"', work),
+                             ('D=/tmp; mapfile D < /dev/null; touch "$D/x"', work),
+                             ('D=/tmp; readarray D < /dev/null; touch "$D/x"', work),
+                             (f'D=/tmp; printf -v D %s {lane}; touch "$D/x"', work),
+                             ('getopts a: D; touch "$OPTARG/x"', work),
+                             (f'D=({lane}); touch "$D/x"', work),
+                             (f'D=/tmp; D[0]={lane}; touch "$D/x"', work),
+                             (f'declare -a D=({lane}); touch "$D/x"', work),
+                             (f'D={repos}; D+=/system; touch "$D/x"', work),
+                             (f'declare -n R=D; D={lane}; touch "$R/x"', work),
+                             (f'declare -u D; D={lane}; touch "$D/x"', work),
+                             (f"touch {str(lane).upper()}/x", work),
+                             (f'D={lane}; touch "${{D:-/tmp}}/x"', work),
+                             (f'D={lane}/; touch "${{D%/}}/x"', work),
+                             (f'set -- {lane}; touch "$@"', work),
+                             (f'set -- {lane}; touch "$*"', work),
+                             (f"set -- {lane}/; touch $1x", work),
+                             (f'set -- /tmp /tmp {lane}; n=2; shift $n; touch "$1/x"', work),
+                             (f'set -- {lane}; for d; do touch "$d/x"; done', work),
+                             (f'F="/tmp {lane}/x"; touch $F', work),
+                             (f"C=touch; $C {lane}/x", work),
+                             (f'C="rm -f"; $C {lane}/README.md', work),
+                             (f"C=cd; $C {lane}; touch x", work),
+                             (f'touch "$(echo {lane})/x"', work),
+                             (f"touch $(echo {lane})/x", work),
+                             (f"touch `echo {lane}`/x", work),
+                             (f'D=$(echo {lane}); touch "$D/x"', work),
+                             (f"$(echo touch) {lane}/x", work),
+                             (f"D='$E'; E={lane}; eval \"cd $D\"; touch x", work),
+                             (f"f() {{ cd {lane}; }}; f; touch x", work),
+                             (f"function f {{ cd {lane}; }}; f; touch x", work),
+                             ('D=/tmp; source ./env.sh; touch "$D/x"', work),
+                             (". ./env.sh && touch x", work),
+                             ('eval "$(cat commands)"; touch x', work),
+                             (f"cat > n.txt <<EOF\nx\nEOF\nrm -rf {lane}", work)):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=cwd).startswith("deny: "), command)
+        for command in ("pushd /usr && popd && touch x",
+                        f"pushd {repos} && pushd {work} && popd && popd && touch x",
+                        "cd /usr && cd - && touch x",
+                        "cd - && ls",
+                        f"mkdir -p {work}/{{a,b}}/{{1..3}}",
+                        "mkdir -p src/{a,b}",
+                        f"touch '{repos}/sys*' \"{{/tmp,{lane}}}\"",
+                        "rm -rf build/* && touch y.$$",
+                        "for f in *.txt; do touch \"$f.bak\"; done",
+                        "read D && echo \"$D\"",
+                        "D=(a b) && echo \"$D\"",
+                        f'D={work}; D+=/x; touch "$D"',
+                        "C=touch; $C x",
+                        f"cat > s.sh <<-EOF\n\tf() {{ rm -rf {lane}; }}\n\tEOF\ntouch y"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=work), "allow")
+        for command in ("D=(rm README.md)",  # an array runs nothing
+                        f"cd {work} && cat > n.txt <<'EOF'\nrm -rf {lane}\nEOF"):  # text
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=lane, fixed=True), "allow")
+
+    def test_growth_and_nesting_past_the_budget_are_refused_in_time(self):
+        """sd:6083 round 4: a variable product, a brace product, a doubling value
+        and deep nesting each stop at the budget, not at memory or the stack."""
+        names = [f"A{i}" for i in range(20)]
+        for command in ("".join(f"{name}=a; " for name in names)
+                        + "touch " + "".join(f"${name}" for name in names),
+                        "touch " + "{a,b}" * 30,
+                        "D=x; " + "D=$D$D; " * 24 + 'touch "$D"',
+                        "(" * 400 + "touch x" + ")" * 400):
+            with self.subTest(command=command[:40]):
+                started = time.monotonic()
+                decision = self.decide("Bash", cwd=self.worktree, command=command)
+                self.assertTrue(decision.startswith("deny: checkout_guard cannot read"), decision)
+                self.assertLess(time.monotonic() - started, 10)
 
     def test_every_write_the_base_refused_is_refused(self):
         """Property over a shell grammar: where this guard allows, a real bash run in a
         scratch tree writes nothing in the lane. That covers each write 13554b17 refused
-        and this guard allows (sd:6083 rounds 1 and 2)."""
+        and this guard allows (sd:6083 rounds 1, 2 and 4)."""
         lane, work = self.system, self.worktree
         (lane / "README.md").write_text("x\n")
         rng = random.Random(6083)
@@ -358,7 +459,11 @@ class CheckoutGuard(unittest.TestCase):
                   f"eval 'cd {lane}'", "unset D", 'cd "$D"', "timeout 5 touch y",
                   "env -i A=1 touch y", "builtin cd d1", "time cd d1", f"readonly D={lane}",
                   f"export D={work}", "unset D", "cd /nonexistent-6083", f"pushd {work}",
-                  "popd", f"set -- {lane}", "shift", 'touch "$1/y"']
+                  "popd", f"set -- {lane}", "shift", 'touch "$1/y"', "cd -", "pushd",
+                  "popd -n", f"pushd -n {lane}", "pushd +1", f"rm -f {lane.parent}/s*/READ*",
+                  f"touch {{{work},{lane}}}/y", f"read D <<< {lane}", "D+=/y", "touch ~-/y",
+                  "C=touch", "$C y", f"D=({lane})", f"set -- {lane}/", "touch $1y",
+                  f'F="{work} {lane}"', "touch $F"]
 
         def gen(depth):
             kind = min(rng.randrange(14 if depth < 3 else 1), 11)  # case weighs three
