@@ -64,8 +64,8 @@ st_obsidian_vault() {
 # exists. It exports the setup token as CUSTOM_CLAUDE_CODE_OAUTH_TOKEN, so a
 # day-to-day claude keeps its own login (sd:5786); this exports it as
 # CLAUDE_CODE_OAUTH_TOKEN when that is unset or empty (sd:5791). The token
-# goes in no argv, file or log. Returns 0. The dashboard keeps the same
-# mapping in sd_dashboard/claude_env.py, since its package may run outside
+# goes in no argv, file or log. Returns 0. The pack's dashboard keeps the
+# same mapping in sd_dashboard/claude_env.py, since its package may run outside
 # this checkout.
 st_shell_env() {
     # shellcheck source=/dev/null

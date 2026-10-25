@@ -19,6 +19,7 @@ import unittest
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
 
+# `print` names DEPLOY_TEST_PROGRAM as the loaded job's program when set.
 # `print` fails for a label named in DEPLOY_TEST_UNLOADED or stopped: a file
 # in DEPLOY_TEST_OUT, which `bootout` writes and `bootstrap` removes; like
 # launchd, `bootstrap` refuses an agent that is loaded. `kickstart` and `bootstrap` mark the restart so the
@@ -27,7 +28,8 @@ LAUNCHCTL = """#!/bin/sh
 echo "launchctl $*" >> "$DEPLOY_TEST_CALLS"
 case "$1" in
   print) case " $DEPLOY_TEST_UNLOADED " in *" ${2##*/} "*) exit 113 ;; esac
-         [ ! -e "$DEPLOY_TEST_OUT/${2##*/}" ] || exit 113 ;;
+         [ ! -e "$DEPLOY_TEST_OUT/${2##*/}" ] || exit 113
+         [ -z "$DEPLOY_TEST_PROGRAM" ] || echo "	program = $DEPLOY_TEST_PROGRAM" ;;
   bootout) touch "$DEPLOY_TEST_OUT/${2##*/}" ;;
   bootstrap) label=$(basename "$3" .plist)
              [ -e "$DEPLOY_TEST_OUT/$label" ] || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
@@ -75,8 +77,6 @@ class DeployTest(unittest.TestCase):
         self.repo = self.tmp / "repo"
         self.write("local-deploy/deploy.sh", (FOLDER / "deploy.sh").read_text())
         self.write("lib/config.sh", (FOLDER.parent / "lib" / "config.sh").read_text())
-        self.write("local-project-dashboard/dashboard.sh",
-                   ENTRYPOINT.format(name="dashboard.sh", status="DEPLOY_TEST_HEALTH"))
         self.git("init", "-q")
         self.commit()
         self.base = self.head()
@@ -88,6 +88,10 @@ class DeployTest(unittest.TestCase):
                            (self.python, PYTHON)):
             path.write_text(body)
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        # The dashboard is the command pack's since pack sd:5987.
+        dashboard = self.tmp / "pack" / "dashboard" / "dashboard.sh"
+        dashboard.parent.mkdir(parents=True)
+        dashboard.write_text(ENTRYPOINT.format(name="dashboard.sh", status="DEPLOY_TEST_HEALTH"))
         self.calls = self.tmp / "calls.txt"
         self.calls.touch()
         self.env = {"PATH": f"{stubs}:/usr/bin:/bin", "HOME": str(self.tmp),
@@ -96,7 +100,7 @@ class DeployTest(unittest.TestCase):
                     "DEPLOY_TEST_KICKED": str(self.tmp / "kicked"),
                     "DEPLOY_TEST_OUT": str(self.tmp / "out"),
                     "DEPLOY_TEST_PYTHON": str(self.python),
-                    "DEPLOY_WAIT": "1", "PYTHON": sys.executable, "XDG_STATE_HOME": str(self.tmp / "state")}
+                    "DEPLOY_WAIT": "1", "PYTHON": sys.executable, "SD_PACK_ROOT": str(self.tmp / "pack"), "XDG_STATE_HOME": str(self.tmp / "state")}
         self.state = self.tmp / "state" / "system" / "deploy" / "deployed"
         self.stopped = self.state.with_name("stopped")
         (self.tmp / "out").mkdir()
@@ -196,6 +200,30 @@ class DeployTest(unittest.TestCase):
         result = self.run_deploy("apply", DEPLOY_TEST_HEALTH="1")
         self.assertEqual(result.returncode, 1)
         self.assertIn("deploy: dashboard health failed; stopped", result.stderr)
+
+    # pack sd:5987 deletes local-project-dashboard: an agent that still runs
+    # it would not start again after a kickstart, so the running one stays.
+    OLD_PROGRAM = "/home/someone/repos/system/local-project-dashboard/dashboard.sh"
+
+    def assert_refused_old_dashboard(self, result):
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("deploy: not restarting test.example.sd-dashboard: it still runs local-project-dashboard",
+                      result.stderr)
+        self.assertIn("dashboard/dashboard.sh preflight, then install --apply --expected-fingerprint",
+                      result.stderr)
+        calls = self.calls.read_text()
+        self.assertNotIn("kickstart", calls)
+        self.assertNotIn("bootstrap", calls)
+
+    def test_apply_keeps_a_loaded_dashboard_that_runs_the_deleted_folder(self):
+        self.change({"local-project-dashboard/sd_dashboard/app.py": "x\n"})
+        self.assert_refused_old_dashboard(self.run_deploy("apply", DEPLOY_TEST_PROGRAM=self.OLD_PROGRAM))
+
+    def test_apply_keeps_a_dashboard_whose_installed_plist_runs_the_deleted_folder(self):
+        self.change({"local-project-dashboard/sd_dashboard/app.py": "x\n"})
+        (self.tmp / "Library/LaunchAgents/test.example.sd-dashboard.plist").write_text(
+            f"<plist><string>{self.OLD_PROGRAM}</string></plist>\n")
+        self.assert_refused_old_dashboard(self.run_deploy("apply"))
 
     def test_apply_skips_an_agent_that_is_not_loaded(self):
         self.change({"local-project-dashboard/sd_dashboard/app.py": "x\n"})
@@ -371,6 +399,21 @@ class DeployTest(unittest.TestCase):
     def test_a_missing_sd_serve_listener_after_bootstrap_boots_it_out_for_the_rerun(self):
         self.fail_a_start_then_rerun("test.example.sd-serve", "local-project-dashboard/sd_dashboard/app.py",
                                      DEPLOY_TEST_NO_LISTENER="1")
+
+    def test_a_stopped_dashboard_whose_plist_runs_the_deleted_folder_is_not_started(self):
+        """An older upgrade left the dashboard stopped; its plist still runs the
+        deleted folder, so the upgrade leaves it stopped and names the remedy."""
+        self.origin()
+        self.record(self.base)
+        self.stopped.parent.mkdir(parents=True, exist_ok=True)
+        self.stopped.write_text("test.example.sd-dashboard\n")
+        (self.tmp / "out" / "test.example.sd-dashboard").touch()
+        (self.tmp / "Library/LaunchAgents/test.example.sd-dashboard.plist").write_text(
+            f"<plist><string>{self.OLD_PROGRAM}</string></plist>\n")
+        result = self.run_upgrade()
+        self.assert_refused_old_dashboard(result)
+        self.assertIn("deploy: left stopped: test.example.sd-dashboard", result.stderr)
+        self.assertEqual(self.recorded(), self.base)
 
     def test_a_replay_bootstraps_no_marked_agent_that_launchd_holds(self):
         self.origin()

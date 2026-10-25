@@ -46,8 +46,8 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
   - A verb that needs a lock or a directory beside the database refuses with `HubOnly` off the hub; do not add a remote path for it.
   - The hub's system and pack checkouts sit on a detached HEAD on purpose: pinned, moved only by the lane or `repo-sync.sh refresh` (sd:3097); never switch them to a branch or report it as a fault.
   - Agents write only in worktrees: `local-machine-setup/checkout_guard.py`, a PreToolUse hook, refuses writes in those checkouts but git-ignored paths (sd:6001).
-- `local-project-dashboard` runs the workflow dashboard; `dashboard.sh test` runs its suite, and `preflight`, `install`, `health` manage the server.
-- Read `local-project-dashboard/RUNTIME.md` before changing the service.
+- The workflow dashboard is the pack's, at `$SD_PACK_ROOT/dashboard/` (pack sd:5987); read its `RUNTIME.md` before changing the service.
+  - `local-project-dashboard/` is gone; `machine-setup.sh doctor` fails config that names it, and `tests/test_retired_folder.py` fails a tracked line.
 - `local-*` folders run local services or tools; `network-testing` is iperf3/ping tooling.
 - `mezmo-*` folders are helpers for the Mezmo API and its test data; only they may name that product.
   - `tests/test_product_name.py` enforces it in the `make check` preflight; its `ALLOWED` entries carry their reasons.
@@ -127,4 +127,3 @@ These files load when you touch matching paths.
 | macOS TCC under launchd | `.claude/rules/macos-tcc.md` |
 | The 02:xx cron slot needs a scheduled wake | `.claude/rules/cron-wake.md` |
 | Jev switch, exit codes, test pins | `.claude/rules/jev.md` |
-| Dashboard pages and CSS: hallmark first | `.claude/rules/dashboard-ui.md` |

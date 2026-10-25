@@ -12,7 +12,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: ci-native.sh preflight
-       ci-native.sh leg repo-sync|dashboard|tools|shared
+       ci-native.sh leg repo-sync|tools|shared
 
   preflight  sd-docs-lint, the citation, Jev contract,
              product-name, ports and entrypoint-mode gates, the unwired-suite guard, and the venv at
@@ -81,8 +81,8 @@ fi
 python3 tests/test_jev_contract.py
 
 # The system's protection gap ids against the pack's, which owns them
-# (sd:1372): sd_db's GAP_IDS and the dashboard's GAPS columns, each
-# compared with ACKNOWLEDGEABLE_GAPS read from the pinned pack copy in
+# (sd:1372): sd_db's GAP_IDS compared with ACKNOWLEDGEABLE_GAPS read
+# from the pinned pack copy in
 # SD_ACCEPTANCE_PACK. Stdlib only, so it runs here before the venv.
 python3 tests/test_gap_vocabulary.py
 
@@ -304,9 +304,6 @@ case "$SUITE_LEG" in
     # A root suite that needs the venv's sd_db runs here, not in the
     # preflight; the guard above accepts a run_suite line naming it.
     run_suite findings-contract "$PYTHON" tests/test_findings_contract.py -v
-    ;;
-  dashboard)
-    run_suite dashboard sh local-project-dashboard/dashboard.sh test
     ;;
   repo-sync)
     # The longest suite, alone in its leg: in a tools shard it set the

@@ -506,10 +506,8 @@ for d in "$TOOLS_ROOT"/*/; do
   # A vendor folder drops its own prefix too (convention 1), and one that
   # keeps a helper beside its entrypoint was never swept (sd:3552).
   [ -f "$e" ] || e="$d/${name#*-}.sh"
-  # local-project-dashboard/dashboard.sh does not follow convention 1's name,
-  # and renaming it means editing and reloading launchd plists and the pack's sd-plugin.json, which was
-  # rejected. A folder with no <stem>.sh and exactly one *.sh at its root is
-  # taken to mean that one; anything else is skipped as before.
+  # A folder with no <stem>.sh and exactly one *.sh at its root is taken to
+  # mean that one; anything else is skipped as before.
   if [ ! -f "$e" ]; then
     n=0
     for f in "$d"/*.sh; do [ -f "$f" ] && { e=$f; n=$((n + 1)); }; done

@@ -39,6 +39,7 @@ The dashboard checks its own library when it starts: the pack's `lib/sd_db` and 
 
 - The label prefix is `SYSTEM_TOOLS_LABEL_PREFIX`, default `local.system-tools`.
 - A service whose agent launchd does not hold is skipped.
+- A dashboard agent, loaded or installed, that still runs the deleted `local-project-dashboard` is neither restarted nor started; `apply` exits 1 naming the pack's `dashboard.sh preflight` and `install`.
 - `apply` stops at the first failed check and exits 1 naming it.
 
 ## Upgrading the hub in one command

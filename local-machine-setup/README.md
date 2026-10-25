@@ -68,7 +68,7 @@ It also runs the `ai-apps.sh capture` the retired ai-apps-nightly job ran, and
 prints its diff. The `macos` stage turns self-update off in every cask that
 updates itself, where the app documents a switch. Both machines then move once a
 week, and grants are re-granted in one sitting. After the sweep, and in a quiet
-week too, it runs `local-project-dashboard/dashboard.sh
+week too, it runs the pack's `dashboard/dashboard.sh
 grants` and puts the result in the report. The cron job runs under launchd, where
 the probe's answer is the binary's own. A binary that lost Full Disk Access is named
 with its path, beside a new Claude Code Caskroom binary (the `claude-code@latest`

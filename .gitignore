@@ -75,12 +75,6 @@ local-dependabot/allowed-repos.conf
 local-maintenance/maintenance.conf
 local-maintenance/maintenance.*.conf
 local-mirror-sync/mirrors*.conf
-local-project-dashboard/disk.conf
-local-project-dashboard/documents.conf
-local-project-dashboard/home-tiles.conf
-local-project-dashboard/hoa-thresholds.conf
-local-project-dashboard/report-families.conf
-local-project-dashboard/realms.conf
 local-repo-sync/repos.*.conf
 local-scan-for-secrets/scan-for-secrets.conf
 local-scan-for-secrets/fixture-fingerprints

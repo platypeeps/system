@@ -1723,15 +1723,16 @@ stage_cron() {
   done
 }
 
-# A tracked plist as this machine installs it: @HOME@, @LABEL@ and @ROOT@
-# (this checkout) replaced, so one file serves any account name and any
+# A tracked plist as this machine installs it: @HOME@, @LABEL@, @ROOT@
+# (this checkout) and @PACK@ (the command pack checkout) replaced, so one file serves any account name and any
 # checkout location. A plist without placeholders comes out unchanged, which is
 # what a captured one is. Writes into $3 and prints nothing.
 sed_value() { printf '%s' "$1" | sed 's/[|&\\]/\\&/g'; }
 agent_render() { # label, tracked plist, rendered plist
   sed -e "s|@HOME@|$(sed_value "$HOME")|g" \
       -e "s|@LABEL@|$(sed_value "$1")|g" \
-      -e "s|@ROOT@|$(sed_value "$ROOT")|g" "$2" > "$3"
+      -e "s|@ROOT@|$(sed_value "$ROOT")|g" \
+      -e "s|@PACK@|$(sed_value "$SD_PACK_ROOT")|g" "$2" > "$3"
 }
 
 # The Label a plist names; exits non-zero when it names none or cannot be
@@ -2385,7 +2386,7 @@ stage_sd() {
         echo "  DIFFERS tailscale serve https:$SD_DASHBOARD_HTTPS_PORT already serves $held — not replacing it; free the port, then: $(basename "$SELF") update sd --apply"
       else
         echo "  MISSING tailscale serve https:$SD_DASHBOARD_HTTPS_PORT -> 127.0.0.1:$SD_DASHBOARD_PORT — the dashboard has no private front door"
-        # The flags local-project-dashboard/sd_dashboard/runtime.py adds and
+        # The flags the pack's dashboard/sd_dashboard/runtime.py adds and
         # disables the mount with, so either side can take it down again.
         run tailscale serve --bg "--https=$SD_DASHBOARD_HTTPS_PORT" --set-path=/ "http://127.0.0.1:$SD_DASHBOARD_PORT"
       fi
@@ -4694,7 +4695,7 @@ sd_sqlite() { sqlite3 "$SD_DB" "PRAGMA query_only = 1; $1"; }
 
 # Why a dashboard /health body says `"ok": false`. A failed database open
 # carries an `error`; the ordinary unhealthy answer carries none and states
-# its diagnostics as fields (local-project-dashboard/sd_dashboard/server.py,
+# its diagnostics as fields (the pack's dashboard/sd_dashboard/server.py,
 # _health), so each field that can make it unhealthy is named. A body with
 # neither says so rather than ending the line on a colon.
 sd_health_reason() { # body file
@@ -4793,7 +4794,7 @@ EOF
         # with, then restores the tailnet-only route; `tailscale funnel reset`
         # would also drop every other serve and Funnel mount.
         if printf '%s\n' "$serve" | grep -F "$origin" | grep -q 'Funnel on'; then
-          doctor_fail "dashboard origin $origin is PUBLIC under Funnel — the front door is tailnet-only; run: tailscale serve --bg --https=$SD_DASHBOARD_HTTPS_PORT --set-path=/ off, then: $(basename "$SELF") update sd --apply (not tailscale funnel reset, which drops every other mount too); see local-project-dashboard/RUNTIME.md"
+          doctor_fail "dashboard origin $origin is PUBLIC under Funnel — the front door is tailnet-only; run: tailscale serve --bg --https=$SD_DASHBOARD_HTTPS_PORT --set-path=/ off, then: $(basename "$SELF") update sd --apply (not tailscale funnel reset, which drops every other mount too); see $SD_PACK_ROOT/dashboard/RUNTIME.md"
         fi
         body=$(mktemp)
         code=$(curl -sS -m 10 -o "$body" -w '%{http_code}' "$origin/health" 2>"$body.err") || code=000
@@ -4806,7 +4807,7 @@ EOF
             doctor_fail "dashboard answers over $origin but reports unhealthy: $(sd_health_reason "$body")"
           fi
         elif grep -q 'Untrusted dashboard host' "$body"; then
-          echo "  WARN    dashboard answers over $origin with HTTP $code (Untrusted dashboard host) — the installed service runs a local-only configuration; see the private front door in local-project-dashboard/RUNTIME.md"
+          echo "  WARN    dashboard answers over $origin with HTTP $code (Untrusted dashboard host) — the installed service runs a local-only configuration; see the private front door in $SD_PACK_ROOT/dashboard/RUNTIME.md"
         else
           doctor_fail "dashboard answers over $origin with HTTP $code and not its health body"
         fi
@@ -4867,41 +4868,46 @@ doctor_sd_versions() {
   done
 }
 
-# Config that still names the deleted local-sd-db folder (sd:3281, sd:3371):
+# Config that still names a deleted folder: local-sd-db (sd:3281, sd:3371)
+# and local-project-dashboard (pack sd:5987), both the pack's now. It looks in
 # installed LaunchAgents, the plist templates and the cron job files. Each
 # fails when it runs, since the folder is gone. A machine whose config names
 # none passes; a folder that cannot be searched fails, because an unread
 # folder says nothing.
 doctor_retired_sd_db() {
+  doctor_retired local-sd-db "$SD_PACK_ROOT/bin/sd-db"
+  doctor_retired local-project-dashboard "$SD_PACK_ROOT/dashboard/dashboard.sh"
+}
+doctor_retired() { # the deleted folder, where its callers point now
   retired=""
   unknown=0
   for place in "$AGENT_DIR" "$SYSTEM_TOOLS_CONFIG/cron-jobs/jobs"; do
     [ -d "$place" ] || continue
-    if hits=$(grep -rlF -D skip local-sd-db "$place" 2>/dev/null); then
+    if hits=$(grep -rlF -D skip "$1" "$place" 2>/dev/null); then
       retired="$retired
 $hits"
     elif [ $? -ne 1 ]; then
-      doctor_fail "cannot search $place for config that names the deleted local-sd-db"
+      doctor_fail "cannot search $place for config that names the deleted $1"
       unknown=1
     fi
   done
   for plist in "$HOME/Library/LaunchAgents/$LABEL_PREFIX".*.plist; do
     [ -f "$plist" ] || continue
-    if grep -qF local-sd-db "$plist" 2>/dev/null; then
+    if grep -qF "$1" "$plist" 2>/dev/null; then
       retired="$retired
 $plist"
     elif [ $? -ne 1 ]; then
-      doctor_fail "cannot read $plist to check that it no longer names local-sd-db"
+      doctor_fail "cannot read $plist to check that it no longer names $1"
       unknown=1
     fi
   done
   if [ -z "$retired" ]; then
-    [ "$unknown" -eq 0 ] && echo "  ok      no config names the deleted local-sd-db"
+    [ "$unknown" -eq 0 ] && echo "  ok      no config names the deleted $1"
     return 0
   fi
   while IFS= read -r named; do
     [ -n "$named" ] || continue
-    doctor_fail "$named names the deleted local-sd-db — repoint it to $SD_PACK_ROOT/bin/sd-db, then reinstall it ($(basename "$SELF") update agents --apply for a plist, cron-jobs.sh install <job> for a job)"
+    doctor_fail "$named names the deleted $1 — repoint it to $2, then reinstall it ($(basename "$SELF") update agents --apply for a plist, cron-jobs.sh install <job> for a job)"
   done <<EOF
 $retired
 EOF
@@ -5627,7 +5633,7 @@ grants_report() {
   fi
   comm -13 "$tmp/python.before" "$tmp/python.after" | sed 's/^/  new python Cellar path: /' >> "$tmp/changed"
   g_rc=0
-  run_step 300 sh "$ROOT/local-project-dashboard/dashboard.sh" grants > "$tmp/grants.out" 2>&1 || g_rc=$?
+  run_step 300 sh "$SD_PACK_ROOT/dashboard/dashboard.sh" grants > "$tmp/grants.out" 2>&1 || g_rc=$?
   sed -n 's/.*Grant Full Disk Access to \(.*\) in System Settings.*/  Full Disk Access: \1/p' \
     "$tmp/grants.out" > "$tmp/regrant"
   {
@@ -6894,7 +6900,7 @@ if want is None or got is None or tuple(got) != tuple(want):
     elif grep -q '"service": *"sd-dashboard"' "$body"; then
       why="HTTP $code, unhealthy: $(sd_health_reason "$body")"
     elif grep -q 'Untrusted dashboard host' "$body"; then
-      why="HTTP $code, Untrusted dashboard host: the service runs a local-only configuration; see the private front door in local-project-dashboard/RUNTIME.md"
+      why="HTTP $code, Untrusted dashboard host: the service runs a local-only configuration; see the private front door in $SD_PACK_ROOT/dashboard/RUNTIME.md"
     else
       why="HTTP $code and not its health body"
     fi
@@ -7506,7 +7512,7 @@ for a in "$@"; do
   upgrade-report   cron flavor of upgrade: always applies, prints what got
                    upgraded / what failed / what is still outdated, with the
                    ai-apps inventory capture and the result of
-                   local-project-dashboard's `grants` probe; when nothing
+                   the pack dashboard's `grants` probe; when nothing
                    is outdated it only runs the capture and the probe;
                    leftovers, a failed step or a missing grant print one
                    SD_REPORT_ATTENTION line for Reports and Today, and a
@@ -7589,8 +7595,9 @@ configuration (outside this repo; nothing private is committed here):
     profiles/       common.<kind> and <profile>.<kind> manifests
     dotfiles/       common/ and <profile>/ trees, copied into $HOME
     envs/           common/ and <profile>/ <folder>.env templates
-    launchagents/   <label>.plist templates; @HOME@, @LABEL@ and @ROOT@ are
-                    replaced with $HOME, the label and this checkout's root
+    launchagents/   <label>.plist templates; @HOME@, @LABEL@, @ROOT@ and @PACK@
+                    are replaced with $HOME, the label, this checkout's root
+                    and the command pack checkout ($SD_PACK_ROOT)
     machine-setup.env  optional, sourced first; see machine-setup.env.example
     shell-env.example  optional, doctor's list of shell variables
     checklist.txt, decommission.txt  optional, appended to those verbs

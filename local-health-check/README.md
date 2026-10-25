@@ -66,10 +66,7 @@ say the sentence is never run and never raises a finding, which is what
 keeps the 30-odd entrypoints without a `status` verb — and the ones whose
 `status` is a report that exits 0 regardless — out of the nightly report.
 When a folder has no `<stem>.sh` but exactly one `*.sh` at its root, that
-one is taken as the entrypoint — for `local-project-dashboard/dashboard.sh`,
-whose name a launchd plist and the
-pack's `sd-plugin.json` hold, so a rename was rejected; any other shape is
-skipped.
+one is taken as the entrypoint; any other shape is skipped.
 
 To join: implement `status` as 0 healthy / 3 nothing to check / 1 broken,
 and add the sentence to `help`. Nothing here changes. To see who is in, read

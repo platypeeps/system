@@ -88,7 +88,7 @@ MACOS = """#!/bin/sh
 if [ "$1" = list ]; then echo 'one sh one.sh'; echo 'two sh two.sh'; exit 0; fi
 exec /bin/sh "$(dirname "$0")/ci-native.sh" macos "$1"
 """
-JOBS = 7 + (2 if platform.system() == "Darwin" else 0)
+JOBS = 6 + (2 if platform.system() == "Darwin" else 0)
 
 
 def git(*args, cwd):
@@ -155,10 +155,12 @@ class CheckScript(CheckFixture):
                 self.assertIn(f"check.sh: {JOBS} jobs, {JOBS} at a time", done.stdout)
 
     def test_a_failing_job_in_a_lane_fails_the_check_and_is_named(self):
-        (self.root / "fail-dashboard").touch()
+        # An early leg, so jobs stay queued behind it. Both its shards fail;
+        # either may end first and stop the other.
+        (self.root / "fail-repo-sync").touch()
         done = self.check(expect=1, SD_GATE_POOL_SIZE=str(max(2, self.cores // 2)))
-        self.assertIn("check.sh: leg-dashboard exited 3", done.stderr)
-        self.assertIn("check.sh: failed: leg-dashboard\n", done.stderr)
+        self.assertRegex(done.stderr, r"check.sh: repo-sync-[12] exited 3")
+        self.assertRegex(done.stderr, r"check.sh: failed: repo-sync-[12]( repo-sync-[12])?\n")
         # sd:3749: the jobs queued behind it never ran.
         self.assertLess(len(self.ran()), JOBS)
 
@@ -168,9 +170,9 @@ class CheckScript(CheckFixture):
         made = self.base / "made"
         (self.bin / "mktemp").write_text(f'#!/bin/sh\nd=$(/usr/bin/mktemp "$@") || exit\necho "$d" >> {made}\necho "$d"\n')
         (self.bin / "mktemp").chmod(0o755)
-        (self.root / "fail-dashboard").touch()
+        (self.root / "fail-shared").touch()
         done = self.check(expect=1)
-        self.assertIn("leg-dashboard exited 3", done.stderr)
+        self.assertIn("leg-shared exited 3", done.stderr)
         [work] = made.read_text().split()
         self.assertTrue(work.startswith("/tmp/system-check."), work)
         self.assertFalse(Path(work).exists(), work)
@@ -199,7 +201,7 @@ class FailFast(CheckFixture):
     def setUp(self):
         super().setUp()
         self.jobs = (["macos-one", "macos-two"] if platform.system() == "Darwin" else []) + [
-            "repo-sync-1", "repo-sync-2", "leg-dashboard", "tools-1", "tools-2", "tools-3", "leg-shared"]
+            "repo-sync-1", "repo-sync-2", "tools-1", "tools-2", "tools-3", "leg-shared"]
 
     def slow(self, *legs, ends_ok=(), ignores_term=()):
         for leg in legs:
@@ -209,10 +211,10 @@ class FailFast(CheckFixture):
         for leg in ignores_term:
             (self.root / f"ignores-term-{leg}").touch()
 
-    def all_slow_but_a_failing_dashboard(self, ends_ok=(), ignores_term=()):
-        """Every other job holds on; leg-dashboard fails once they all run."""
-        self.slow("repo-sync", "shared", "tools", "one", "two", ends_ok=ends_ok, ignores_term=ignores_term)
-        (self.root / "fail-dashboard").touch()
+    def all_slow_but_a_failing_shared(self, ends_ok=(), ignores_term=()):
+        """Every other job holds on; leg-shared fails once they all run."""
+        self.slow("repo-sync", "tools", "one", "two", ends_ok=ends_ok, ignores_term=ignores_term)
+        (self.root / "fail-shared").touch()
         (self.root / "fail-waits-for").write_text(f"{2 * (len(self.jobs) - 1)}\n")
 
     def pids(self):
@@ -229,19 +231,19 @@ class FailFast(CheckFixture):
         self.assertEqual([], alive, "a job's process outlived the run")
 
     def test_a_failure_stops_the_running_jobs_and_their_children(self):
-        self.all_slow_but_a_failing_dashboard()
+        self.all_slow_but_a_failing_shared()
         started = time.monotonic()
         done = self.check(expect=1)
         self.assertLess(time.monotonic() - started, 15, "the slow jobs ran out their time")
-        self.assertIn("check.sh: leg-dashboard exited 3", done.stderr)
-        self.assertIn("check.sh: failed: leg-dashboard\n", done.stderr)
-        others = [job for job in self.jobs if job != "leg-dashboard"]
+        self.assertIn("check.sh: leg-shared exited 3", done.stderr)
+        self.assertIn("check.sh: failed: leg-shared\n", done.stderr)
+        others = [job for job in self.jobs if job != "leg-shared"]
         for job in others:
             self.assertRegex(done.stdout, rf"(?m)^== {job} \(\d+s, stopped\)$")
         self.assertIn("check.sh: stopped: " + " ".join(others) + "\n", done.stderr)
-        self.assertRegex(done.stdout, r"(?m)^== leg-dashboard \(\d+s\)$")
-        self.assertIn("== tail of leg-dashboard", done.stdout)
-        self.assertNotIn("== tail of leg-shared", done.stdout)
+        self.assertRegex(done.stdout, r"(?m)^== leg-shared \(\d+s\)$")
+        self.assertIn("== tail of leg-shared", done.stdout)
+        self.assertNotIn("== tail of tools-1", done.stdout)
         self.assert_all_ended(self.pids())
 
     def test_after_a_failure_no_lane_claims_a_job(self):
@@ -255,19 +257,19 @@ class FailFast(CheckFixture):
 
     def test_a_job_that_ends_0_as_the_stop_reaches_it_passed(self):
         """The stop races the job's own finish: the job's status, 0, stands."""
-        self.all_slow_but_a_failing_dashboard(ends_ok=("shared",))
+        self.all_slow_but_a_failing_shared(ends_ok=("repo-sync",))
         done = self.check(expect=1)
-        self.assertRegex(done.stdout, r"(?m)^== leg-shared \(\d+s\)$")
-        self.assertNotRegex(done.stderr, r"check.sh: (failed|stopped):.* leg-shared( |$)")
+        self.assertRegex(done.stdout, r"(?m)^== repo-sync-1 \(\d+s\)$")
+        self.assertNotRegex(done.stderr, r"check.sh: (failed|stopped):.* repo-sync-1( |$)")
         self.assert_all_ended(self.pids())
 
     def test_a_job_that_ignores_sigterm_is_killed(self):
         """Codex review: TERM alone left the run waiting on such a job."""
-        self.all_slow_but_a_failing_dashboard(ignores_term=("shared",))
+        self.all_slow_but_a_failing_shared(ignores_term=("repo-sync",))
         started = time.monotonic()
         done = self.check(expect=1)
         self.assertLess(time.monotonic() - started, 20, "the run waited out the job that ignores SIGTERM")
-        self.assertRegex(done.stdout, r"(?m)^== leg-shared \(\d+s, stopped\)$")
+        self.assertRegex(done.stdout, r"(?m)^== repo-sync-1 \(\d+s, stopped\)$")
         self.assert_all_ended(self.pids())
 
     def test_what_a_passing_job_leaves_running_ends_with_it(self):
@@ -291,11 +293,11 @@ class FailFast(CheckFixture):
         """A lane checks for a stop, then claims; a stop landing between the two
         is seen by the job's leader, which then runs nothing."""
         (self.bin / "mkdir").write_text('#!/bin/sh\n/bin/mkdir "$@" || exit\n'
-                                        'case "$1" in */leg-dashboard.claim) /bin/mkdir "${1%/*}/stop" ;; esac\n')
+                                        'case "$1" in */leg-shared.claim) /bin/mkdir "${1%/*}/stop" ;; esac\n')
         (self.bin / "mkdir").chmod(0o755)
         done = self.check(expect=1)
-        self.assertNotIn("dashboard", [words[1] for words in self.ran()])
-        self.assertRegex(done.stdout, r"(?m)^== leg-dashboard \(\d+s, stopped\)$")
+        self.assertNotIn("shared", [words[1] for words in self.ran()])
+        self.assertRegex(done.stdout, r"(?m)^== leg-shared \(\d+s, stopped\)$")
         self.assertNotIn("check.sh: failed:", done.stderr)
 
     def test_a_signal_to_the_run_ends_every_job_and_removes_its_work_dir(self):
@@ -304,7 +306,7 @@ class FailFast(CheckFixture):
         made = self.base / "made"
         (self.bin / "mktemp").write_text(f'#!/bin/sh\nd=$(/usr/bin/mktemp "$@") || exit\necho "$d" >> {made}\necho "$d"\n')
         (self.bin / "mktemp").chmod(0o755)
-        self.slow("shared", "dashboard", "tools")
+        self.slow("shared", "repo-sync", "tools")
         for whom in ("group", "script"):
             with self.subTest(whom=whom):
                 for name in ("pids", "made"):
@@ -316,9 +318,9 @@ class FailFast(CheckFixture):
                                            stderr=subprocess.DEVNULL, start_new_session=True)
                 try:
                     deadline = time.monotonic() + 30
-                    while len(self.pids()) < 10 and time.monotonic() < deadline:
+                    while len(self.pids()) < 12 and time.monotonic() < deadline:
                         time.sleep(0.1)
-                    self.assertEqual(10, len(self.pids()), "the slow jobs did not start")
+                    self.assertEqual(12, len(self.pids()), "the slow jobs did not start")
                     if whom == "group":
                         os.killpg(process.pid, signal.SIGTERM)
                     else:
@@ -353,7 +355,7 @@ class OneSuite(CheckFixture):
         (self.root / "holds-repo-sync-repo-sync").touch()
         done = self.check("suite", "repo-sync")
         self.assertTrue((self.root / "preflight-ran").exists())
-        self.assertEqual([["leg", leg, "repo-sync"] for leg in ("repo-sync", "dashboard", "tools", "shared")], self.ran())
+        self.assertEqual([["leg", leg, "repo-sync"] for leg in ("repo-sync", "tools", "shared")], self.ran())
         self.assertIn("check.sh: suite repo-sync passed", done.stdout)
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.root / ".ci/pack"), self.pin)
 
@@ -374,9 +376,9 @@ class OneSuite(CheckFixture):
         self.assertNotIn("passed", done.stdout)
 
     def test_a_failing_suite_fails_the_run(self):
-        (self.root / "holds-dashboard-dashboard").touch()
-        (self.root / "fail-dashboard").touch()
-        done = self.check("suite", "dashboard", expect=3)
+        (self.root / "holds-shared-example").touch()
+        (self.root / "fail-shared").touch()
+        done = self.check("suite", "example", expect=3)
         self.assertNotIn("passed", done.stdout)
 
     def test_a_suite_that_reached_launchctl_fails_as_in_the_gate(self):
@@ -497,7 +499,7 @@ class LegWithSuiteOnly(unittest.TestCase):
                         "a pattern that matches no module runs no test")
 
     def test_a_leg_without_the_named_suite_runs_nothing(self):
-        for leg in ("shared", "dashboard", "tools"):
+        for leg in ("shared", "tools"):
             with self.subTest(leg=leg):
                 done = self.leg(leg, "repo-sync-1")
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
@@ -589,7 +591,7 @@ class ThePostMergeTarget(unittest.TestCase):
         self.assertEqual(len(lines), 3, run.stdout)
         for line, tool in zip(lines, ("local-repo-sync/repo-sync.sh refresh",
                                       "local-agent-prompt/agent-prompt.sh refresh --apply",
-                                      "local-project-dashboard/dashboard.sh health")):
+                                      '/dashboard/dashboard.sh" health')):
             with self.subTest(tool=tool):
                 self.assertIn(tool, line)
 

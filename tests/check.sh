@@ -19,7 +19,7 @@ PACK_CLONE="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 # ones start at once. repo-sync is a leg of its own (sd:3750): dealt into a
 # tools shard it held that shard to 13 minutes. Its two suites run as two
 # shards (sd:3962): whole, the leg took 450 s, the longest job of the gate.
-LEGS="repo-sync dashboard tools shared"
+LEGS="repo-sync tools shared"
 TOOLS_SHARDS=3
 REPO_SYNC_SHARDS=2
 
