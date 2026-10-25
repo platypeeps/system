@@ -387,6 +387,7 @@ case "$SUITE_LEG" in
     run_suite config-check sh local-config-check/config-check.sh test -v
     run_suite volume-probe sh local-volume-probe/volume-probe.sh test -v
     run_suite nightly-review sh local-nightly-review/nightly-review.sh test -v
+    run_suite home-prep sh local-home-prep/home-prep.sh test -v
     # mezmo-pipeline's suite is shell with its own tally, not
     # unittest, so run_suite's summary check cannot read it. It
     # stubs curl and makes no network call; the gate is a nonzero
