@@ -451,6 +451,62 @@ class CheckoutGuard(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=work), "allow")
 
+    def test_text_read_as_data_hides_no_command(self):
+        """sd:6083 round 5: a here-document body, a here-string, quotes, a
+        comment, arithmetic and `${..}` are data, but every `$( )` and
+        backquote the shell runs in them is read; a skipped body ends where
+        the shell ends it."""
+        lane, work = self.system, self.worktree
+        touch = f"touch {lane}/x"
+        for command in (f"cat <<EOF\n$({touch})\nEOF",
+                        f"cat <<EOF\n`{touch}`\nEOF",
+                        f"cat <<-EOF\n\t${{D:-$({touch})}}\n\tEOF",
+                        f'echo "$(cat <<EOF\n$({touch})\nEOF\n)"',
+                        f"cat <<<hello\n{touch}",
+                        f'cat <<< "$({touch})"',
+                        f'cat < "$({touch})"',
+                        f'echo "$({touch})"',
+                        f'echo "`{touch}`"',
+                        f"echo `{touch}`",
+                        f"echo `echo \\`{touch}\\``",
+                        f'echo $"$({touch})"',
+                        f'D="$({touch})"',
+                        f'echo "${{D:-$({touch})}}"',
+                        f'echo "$((1 + $({touch})))"',
+                        f'echo "$( (case a in a) ;; esac); {touch} )"',
+                        f"D=($({touch}))",
+                        f"echo $'\\''; {touch}",
+                        f"echo \\ #$({touch})",
+                        f"echo $((1<<2))\n{touch}",
+                        f"((D = 1 << 2))\n{touch}",
+                        f"echo $[1<<2]\n{touch}",
+                        f"echo ${{D:-<<x}}\n{touch}"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=work), lane)
+        for command in (f"cat <<'EOF'\n$({touch})\nEOF",  # 13554b17 read the body
+                        f'cat <<"EOF"\n$({touch})\nEOF',
+                        f"cat <<\\EOF\n$({touch})\nEOF"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=work, fixed=True), "allow")
+        for command in (f'cat <<E"O"F\n`{touch}`\nEOF',
+                        f"echo '$({touch})' $'`{touch}`' \"\\$({touch})\"",
+                        f"echo # $({touch})",
+                        "cat <<EOF\ndon't \"quote\" $(echo x)\nEOF"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=work), "allow")
+
+    def test_a_root_is_named_only_as_a_whole_path(self):
+        """sd:6083 round 5: `/lane-tools` names no root; `/lane`, `/lane/x` and
+        the `~`, `$HOME` and `${HOME}` forms do."""
+        self.env["HOME"] = str(self.system.parent.parent)
+        lane, unknown = self.system, 'touch "$(pwd)/x"; echo '
+        for form in (str(lane), "~/repos/system", "$HOME/repos/system", "${HOME}/repos/system"):
+            with self.subTest(form=form):
+                self.assertEqual(self.bash(unknown + form + "-tools", cwd=self.worktree), "allow")
+                self.assertTrue(self.bash(unknown + form, cwd=self.worktree).startswith("deny: "))
+                self.assertTrue(self.bash(unknown + form + "/x", cwd=self.worktree)
+                                .startswith("deny: "))
+
     def test_growth_and_nesting_past_the_budget_are_refused_in_time(self):
         """sd:6083 round 4: a variable product, a brace product, a doubling value
         and deep nesting each stop at the budget, not at memory or the stack;
@@ -460,7 +516,8 @@ class CheckoutGuard(unittest.TestCase):
                         + "touch " + "".join(f"${name}" for name in names),
                         "touch " + "{a,b}" * 30,
                         "D=x; " + "D=$D$D; " * 24 + 'touch "$D"',
-                        "(" * 400 + "touch x" + ")" * 400):
+                        "(" * 400 + "touch x" + ")" * 400,
+                        'echo "' + "$(" * 2000 + "touch x" + ")" * 2000 + '"'):
             with self.subTest(command=command[:40]):
                 started = time.monotonic()
                 decision = self.decide("Bash", cwd=self.system, command=command)
@@ -487,7 +544,10 @@ class CheckoutGuard(unittest.TestCase):
                   "popd -n", f"pushd -n {lane}", "pushd +1", f"rm -f {lane.parent}/s*/READ*",
                   f"touch {{{work},{lane}}}/y", f"read D <<< {lane}", "D+=/y", "touch ~-/y",
                   "C=touch", "$C y", f"D=({lane})", f"set -- {lane}/", "touch $1y",
-                  f'F="{work} {lane}"', "touch $F"]
+                  f'F="{work} {lane}"', "touch $F", 'echo "$(touch y)"', "echo \"`touch y`\"",
+                  'cat <<<"$(touch y)"', "cat <<<y\ntouch y", "cat <<EOF\n$(touch y)\nEOF\n",
+                  "cat <<'EOF'\n$(touch y)\nEOF\n", "echo $((1<<2))\ntouch y",
+                  "echo $'\\''; touch y"]
 
         def gen(depth):
             kind = min(rng.randrange(14 if depth < 3 else 1), 11)  # case weighs three

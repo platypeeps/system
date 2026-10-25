@@ -78,7 +78,9 @@ TILDE = re.compile(r"^~([+-]?)(\d*)(?=/|$)")
 SEQUENCE = re.compile(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?"
                       r"|([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?")
 GLOB = re.compile(r"[*?[]")
-HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([^\s'\";&|<>()]+)\2")  # not `<<<`
+CASE = re.compile(r"(case|esac)(?![^\s;&|()<>])")
+CLOSE = {"(": ")", "a(": ")", "a[": "]", "{": "}"}
+PATH_END = r"(?![^/\s'\"`;&|()<>{}\[\],:])"  # a `/` or the end of a word follows
 UNKNOWN = "\0"  # a value the reader cannot know; no shell word holds one
 LONGEST = 4096  # a longer value reads as unknown, so `D=$D$D` stops growing
 OPERATOR = set("();<>|&")
@@ -282,13 +284,17 @@ def written(path, cwd, protected, variables=None, spend=None):
 
 
 def named(text, protected):
-    """The root TEXT names by its path, also as `~/..` or `$HOME/..`, or None."""
+    """The root TEXT names as a whole path, also as `~/..` or `$HOME/..`, or None.
+
+    A form counts only where a `/` or the end of a word follows it, so
+    `/root-tools` names no root.
+    """
     home = os.path.expanduser("~")
     for root in protected:
         forms = {root}
         if root.startswith(home + os.sep):
             forms |= {prefix + root[len(home):] for prefix in ("~", "$HOME", "${HOME}")}
-        if any(form.casefold() in text.casefold() for form in forms):
+        if any(re.search(re.escape(form) + PATH_END, text, re.IGNORECASE) for form in forms):
             return root
     return None
 
@@ -300,40 +306,81 @@ def shield(command):
     and a quoted or escaped `~`, brace, comma or glob character, hide too:
     the shell expands none of them.
     An unquoted newline ends a command, and a `#` that starts a word starts a
-    comment to the end of its line, as the shell reads them. A here-document
-    body is text, not commands: it drops at the newline that starts it.
+    comment to the end of its line, as the shell reads them. Every `$( )`
+    and backquote the shell runs, in double quotes or an unquoted
+    here-document body too, comes out as an unquoted `$( )`, so the reader
+    reads its commands (sd:6083 round 5).
     """
-    out, quote, i, depth, bodies = [], None, 0, 0, []
+    return scan(command, 0)[0]
+
+
+def scan(command, i, nest=(), closer=False):
+    """(shielded text, index) for COMMAND from I; with CLOSER, up to and past the
+    `)` that closes a `$(`.
+
+    NEST holds the open `(`, and the `((`, `$[` and `${` forms, in which `<<`
+    is a shift or text, not a here-document. CASES holds the NEST depth of
+    each open `case`, where a `)` ends a pattern.
+    """
+    out, quote, ansi, depth, opened, bodies = [], None, False, 0, 0, []
+    nest, cases, boundary = list(nest), [], True
     while i < len(command):
         char = command[i]
-        heredoc = HEREDOC.match(command, i) if quote is None else None
-        if heredoc:
-            bodies.append((heredoc.group(3), heredoc.group(1) == "-"))
-            out.append(f"<< {heredoc.group(3)} ")
-            i = heredoc.end()
+        if quote != "'" and (command.startswith("$(", i) or char == "`"):
+            text, i = substitution(command, i, quote)
+            if quote == '"':  # end the quote around it, and open it again after
+                if len(out) == opened:
+                    out.pop()
+                else:
+                    out.append('"')
+                out.append(text)
+                if command[i:i + 1] == '"':
+                    quote, depth, i = None, 0, i + 1
+                else:
+                    out.append('"')
+                    opened = len(out)
+            else:
+                out.append(text)
+            boundary = False
             continue
+        if quote is None and command.startswith("<<<", i):  # a here-string is one word
+            out.append("<<<")
+            i, boundary = i + 3, True
+            continue
+        if quote is None and command.startswith("<<", i) and nest[-1:] in ([], ["("]):
+            tabs = command.startswith("<<-", i)
+            word, quoted, end = delimiter(command, i + 2 + tabs)
+            if word or quoted:
+                bodies.append((word, tabs, quoted))
+                out.append("<< _ ")
+                i, boundary = end, True
+                continue
         if char == "\n" and quote is None and bodies:
             out.append(";")
             i += 1
-            for delimiter, tabs in bodies:
+            for word, tabs, quoted in bodies:
+                lines = []
                 while i < len(command):
                     end = command.find("\n", i)
                     end = len(command) if end < 0 else end
                     line, i = command[i:end], end + 1
-                    if (line.lstrip("\t") if tabs else line) == delimiter:
+                    if (line.lstrip("\t") if tabs else line) == word:
                         break
-            bodies = []
+                    lines.append(line)
+                if not quoted:  # an unquoted body runs its substitutions
+                    out.append(expansions("\n".join(lines)))
+            bodies, boundary = [], True
             continue
-        if char == "\\" and quote != "'" and i + 1 < len(command):
+        if char == "\\" and i + 1 < len(command) and (quote != "'" or ansi):
             if quote is None and command[i + 1] == "\n":
                 i += 2
                 continue
-            out += [char, hide(command[i + 1], QUOTED)]
-            i += 2
+            out += [char, hide(command[i + 1], QUOTED + ("'" if ansi else ""))]
+            i, boundary = i + 2, False
             continue
         if quote:
             quote = None if char == quote else quote
-            depth = depth if quote else 0
+            depth, ansi = (depth, ansi) if quote else (0, False)
             # `${..}`, `$*` and `$?` expand in double quotes
             if quote == '"' and char not in OPERATOR and (out[-1:] == ["$"] or
                                                           depth and char in "{}"):
@@ -343,17 +390,85 @@ def shield(command):
                 out.append(hide(char, QUOTED if quote == "'" else DOUBLE))
         elif char == "$" and command[i + 1:i + 2] in ("'", '"'):
             out.append(hide(char, "$"))
+            ansi = command[i + 1] == "'"  # `$'..'` takes backslash escapes
         elif char in "'\"":
             quote = char
             out.append(char)
-        elif char == "#" and (not out or out[-1].isspace() or out[-1] in ";&|("):
+            opened = len(out)
+        elif char == "#" and boundary:
             end = command.find("\n", i)
             i = len(command) if end < 0 else end
             continue
         else:
+            word = CASE.match(command, i) if boundary else None
+            if word and word.group(1) == "case":
+                cases.append(len(nest))
+            elif word and cases:
+                cases.pop()
+            if char == ")" and cases and cases[-1] == len(nest):
+                pass  # a `case` pattern ends
+            elif char == ")" and not nest and closer:
+                return "".join(out), i + 1
+            elif nest and char == CLOSE[nest[-1]]:
+                nest.pop()
+            elif char == "(":
+                nest.append("a(" if command[i + 1:i + 2] == "(" or nest[-1:] == ["a("] else "(")
+            elif char in "[{" and (out[-1:] == ["$"] or nest[-1:] in (["a["], ["{"])):
+                nest.append("a[" if char == "[" else "{")
             out.append(";" if char == "\n" else char)
+        boundary = quote is None and (char.isspace() or char in ";&|(")
         i += 1
-    return "".join(out)
+    return "".join(out), i
+
+
+def substitution(command, i, quote):
+    """(`$( .. )` text, index past it) for the `$(`, `$((` or backquote at I."""
+    if command[i] == "`":
+        end = i + 1
+        while end < len(command) and command[end] != "`":
+            end += 2 if command[end] == "\\" else 1
+        # a backslash before `\`, a backquote or `$` (and `"` in double quotes) goes
+        body = re.sub(r'\\([\\`$"])' if quote == '"' else r"\\([\\`$])", r"\1",
+                      command[i + 1:end])
+        return "$(" + scan(body, 0)[0] + ")", end + 1
+    if command.startswith("$((", i):
+        text, end = scan(command, i + 3, ["a("], True)
+        return "$((" + text + ")", end
+    text, end = scan(command, i + 2, (), True)
+    return "$(" + text + ")", end
+
+
+def expansions(body):
+    """`: $(..) ..;`, the substitutions an unquoted here-document BODY runs."""
+    out, i = [":"], 0
+    while i < len(body):
+        if body.startswith("$(", i) or body[i] == "`":
+            text, i = substitution(body, i, None)
+            out.append(text)
+        else:
+            i += 2 if body[i] == "\\" else 1
+    return " ".join(out) + ";"
+
+
+def delimiter(command, i):
+    """(word, quoted, end) for the here-document delimiter at I; a quote or
+    backslash anywhere in it makes the body text."""
+    while i < len(command) and command[i] in " \t":
+        i += 1
+    word, quoted = [], False
+    while i < len(command) and not command[i].isspace() and command[i] not in ";&|<>()":
+        if command[i] in "'\"":
+            end = command.find(command[i], i + 1)
+            end = len(command) if end < 0 else end
+            word.append(command[i + 1:end])
+            i, quoted = end + 1, True
+        elif command[i] == "\\":
+            word.append(command[i + 1:i + 2])
+            i, quoted = i + 2, True
+        else:
+            word.append(command[i])
+            i += 1
+    return "".join(word), quoted, i
 
 
 def hide(char, literal=""):
@@ -557,9 +672,14 @@ class Reader:
     A write in any world is a write.
     """
 
-    def __init__(self, command, protected):
-        self.items, self.protected, self.i, self.skip = items(command), protected, 0, 0
-        self.spend, self.inherited, self.loops = Budget(), environment(), []
+    def __init__(self, command, protected, spend=None):
+        self.protected, self.i, self.skip = protected, 0, 0
+        self.spend, self.inherited, self.loops = spend or Budget(), environment(), []
+        try:
+            self.items = items(command)
+        except RecursionError:  # `$( )` nested past the stack: nothing reads
+            self.items = []
+            self.spend.note("it nests deeper than the reader goes")
 
     def peek(self):
         if self.i >= len(self.items):
@@ -760,10 +880,10 @@ class Reader:
     def nested(self, command, worlds):
         """Read the text `eval` runs in this shell; text that cannot split changes nothing."""
         try:
-            reader = Reader(command, self.protected)
+            reader = Reader(command, self.protected, self.spend)
         except ValueError:
             return with_status(worlds, {True, False})
-        reader.spend, reader.inherited, reader.loops = self.spend, self.inherited, self.loops
+        reader.inherited, reader.loops = self.inherited, self.loops
         return reader.run(worlds)
 
     def simple(self, worlds):
@@ -772,7 +892,11 @@ class Reader:
         while self.op("("):  # $( ), <( ) and >( ) run in a subshell inside this command
             if words and ASSIGNMENT.fullmatch(words[-1]):  # NAME=( ) is an array
                 while self.peek()[0] != "end" and not self.op(")"):
-                    self.advance()
+                    if self.op("("):  # an element's `$( )` or `<( )` runs
+                        self.run(worlds, (")",))
+                        self.op(")")
+                    else:
+                        self.advance()
                 words = words[:-1] + [words[-1] + UNKNOWN]
             else:
                 if words and words[-1].endswith("$"):  # what `$( )` prints is unknown
