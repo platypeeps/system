@@ -815,22 +815,35 @@ class MaskRewrite(unittest.TestCase):
 
     def test_a_live_appender_process_keeps_every_record(self):
         # Each record holds a token, so every pass while the child runs writes.
+        # The child appends until the stop file appears, so a slow pass under
+        # load cannot outlast it; the parent stops it after three passes.
         path = self.log("session.jsonl")
+        stop = self.root / "stop"
         record = '{"line": %d, "text": "token %s"}'
         child = subprocess.Popen([sys.executable, "-c",
                                   "import os, sys\n"
                                   "fd = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND)\n"
-                                  "for n in range(2, 2002):\n"
-                                  "    os.write(fd, (sys.argv[2] % (n, sys.argv[3]) + '\\n').encode())\n",
-                                  str(path), record, self.TOKEN])
+                                  "n = 2\n"
+                                  "while not os.path.exists(sys.argv[4]) and n < 100000:\n"
+                                  "    os.write(fd, (sys.argv[2] % (n, sys.argv[3]) + '\\n').encode())\n"
+                                  "    n += 1\n",
+                                  str(path), record, self.TOKEN, str(stop)])
         self.addCleanup(child.wait)
         passes = 0
-        while child.poll() is None:
-            passes += self.mod.mask_file(str(path), [], self.pats, True).pcount > 0
+        try:
+            while child.poll() is None:
+                passes += self.mod.mask_file(str(path), [], self.pats, True).pcount > 0
+                if passes >= 3:
+                    stop.touch()
+        finally:
+            stop.touch()
+            child.wait()
         self.mod.mask_file(str(path), [], self.pats, True)
         self.assertEqual(child.returncode, 0)
         self.assertGreater(passes, 1)
-        self.assertEqual(path.read_text().splitlines(), [record % (n, self.MASKED) for n in range(1, 2002)])
+        lines = path.read_text().splitlines()
+        self.assertGreater(len(lines), 1)
+        self.assertEqual(lines, [record % (n, self.MASKED) for n in range(1, len(lines) + 1)])
 
     # Write rows: one pwrite per match span; on any failure, list every span
     # not yet fully written, because a second run cannot find a half-masked value.

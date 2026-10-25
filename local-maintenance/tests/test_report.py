@@ -23,12 +23,15 @@ def _stub(path, body):
     return path
 
 
-class ReportTest(unittest.TestCase):
+class Harness(unittest.TestCase):
+    """A copy of the script with stubbed tools; no tests of its own."""
+
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="maintenance-report."))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / "local-maintenance").mkdir()
         shutil.copy(FOLDER / "maintenance.sh", self.tmp / "local-maintenance")
+        shutil.copy(FOLDER / "prune_move.py", self.tmp / "local-maintenance")
         shutil.copytree(LIB, self.tmp / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         self.sent = self.tmp / "notify-calls"
         _stub(self.tmp / "local-notify" / "notify.sh", f'printf "%s\\n" "$@" >> "{self.sent}"\n')
@@ -61,6 +64,8 @@ exec /bin/date "$@"
     def attention(self, run):
         return [line for line in run.stdout.splitlines() if line.startswith("SD_REPORT_ATTENTION: ")]
 
+
+class ReportTest(Harness):
     def test_a_finding_needs_attention_and_mails_nothing(self):
         run = self.maintenance(f"cert|{self.tmp}/missing.pem|30\n")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
