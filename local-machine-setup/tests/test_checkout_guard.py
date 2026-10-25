@@ -223,13 +223,11 @@ class CheckoutGuard(unittest.TestCase):
                         f"cd {self.worktree} || exit 1; touch x",
                         f"cd {self.worktree}/new && touch x",
                         f"cd {self.worktree}/new || exit 1; touch x",
-                        f"cd {self.worktree} && git log | head; touch x",
+                        f"cd {self.worktree} && git log | head && touch x",
                         f"cd {self.worktree} &&\ngit log 2>&1 | tail -5 && touch x",
                         f"DEST={self.worktree} && touch $DEST/x"):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.system), "allow")
-        self.assertEqual(self.bash(f"(cd {self.worktree}) || touch x", cwd=self.system,
-                                   fixed=True), "allow")
 
     def test_a_compound_command_may_not_run_its_body(self):
         """sd:6083: `if`, `while`, `for`, `case` and `{ }` hid the command after them."""
@@ -252,7 +250,7 @@ class CheckoutGuard(unittest.TestCase):
                         "echo if then fi done"):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.system), "allow")
-        self.assertEqual(self.bash(f"{{ cd {self.worktree}; }}; touch x", cwd=self.system,
+        self.assertEqual(self.bash(f"{{ cd {self.worktree}; }} && touch x", cwd=self.system,
                                    fixed=True), "allow")
 
     def test_a_skipped_word_or_a_branch_keeps_what_the_base_read(self):
@@ -307,14 +305,43 @@ class CheckoutGuard(unittest.TestCase):
                 self.assertDenied(self.bash(command, cwd=self.system), self.system)
         self.assertDenied(self.bash(f"eval \"cd {self.system}\"; touch x"), self.system)
         for command in ('mkdir "$HOME/x"',
-                        'D="$HOME"; mkdir -p "$D/x"',
+                        'D="$HOME" && mkdir -p "$D/x"',
                         f"command cd {self.worktree} && touch x",
-                        f"time cd {self.worktree}; touch x"):
+                        f"time cd {self.worktree} && touch x"):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.system), "allow")
-        for command in (f"builtin cd {self.worktree}; touch x", "command exit 0; touch x"):
+        for command in (f"builtin cd {self.worktree} && touch x", "command exit 0; touch x"):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.system, fixed=True), "allow")
+
+    def test_every_state_change_may_fail(self):
+        """sd:6083 round 3: an assignment, cd or eval may fail, so the world it started
+        in stays possible: `readonly` makes `export` fail, `cd` may meet a mode."""
+        lane, work = self.system, self.worktree
+        self.env["D"] = str(lane)
+        for command in (f"readonly D={lane}; export D=/tmp; touch \"$D/x\"",
+                        f"readonly D={lane}; unset D; touch \"$D/x\"",
+                        'D=/tmp; touch "$D/x"',
+                        'export D=/tmp; touch "$D/x"',
+                        'declare D=/tmp; touch "$D/x"',
+                        'local D=/tmp; touch "$D/x"',
+                        'typeset D=/tmp; touch "$D/x"',
+                        'readonly D=/tmp; touch "$D/x"',
+                        'unset D; mkdir -p "$D/x"',
+                        'eval "D=/tmp"; touch "$D/x"',
+                        f"cd {lane}; cd /tmp; touch x",
+                        f"cd {lane}; pushd /tmp; touch x",
+                        f"pushd {lane}; popd; touch x",
+                        f'set -- {lane}; touch "$1/x"',
+                        f'set -- /tmp {lane}; shift; touch "$1/x"'):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=work), lane)
+        for command in ("D=/tmp && touch \"$D/x\"",
+                        f"cd {work} && touch x",
+                        f'set -- /tmp {work} && shift && touch "$1/x"'):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=work), "allow")
+        self.assertDenied(self.bash(f"cd {work}; touch x", cwd=lane), lane)
 
     def test_every_write_the_base_refused_is_refused(self):
         """Property over a shell grammar: where this guard allows, a real bash run in a
@@ -329,7 +356,9 @@ class CheckoutGuard(unittest.TestCase):
                   'D="$HOME"', 'mkdir -p "$D"', "mkdir -p '~'", "env exit 0", "nohup exit 0",
                   "command exit 0", "env cd d1", "command cd d1", "nohup cd d1", "eval 'cd d1'",
                   f"eval 'cd {lane}'", "unset D", 'cd "$D"', "timeout 5 touch y",
-                  "env -i A=1 touch y", "builtin cd d1", "time cd d1"]
+                  "env -i A=1 touch y", "builtin cd d1", "time cd d1", f"readonly D={lane}",
+                  f"export D={work}", "unset D", "cd /nonexistent-6083", f"pushd {work}",
+                  "popd", f"set -- {lane}", "shift", 'touch "$1/y"']
 
         def gen(depth):
             kind = min(rng.randrange(14 if depth < 3 else 1), 11)  # case weighs three

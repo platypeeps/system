@@ -23,9 +23,10 @@ agents write, so a copy of this file run from one protects nothing there.
   worktree, branch and every read pass.
 - A change that may not happen keeps the old state beside the new one: a
   command after `&&` or `||`, in an `if`, loop or `case` body, a pipeline
-  stage, a `&` job, and a `cd` to a folder that does not exist yet. The
-  reader carries every (folder, variables, status) world and denies a write
-  in any of them (sd:6083).
+  stage, a `&` job, and every change itself, since an assignment, `export`,
+  `unset`, `set --`, `shift`, `cd`, `pushd` or `eval` may fail. The reader
+  carries every (folder, variables, status) world and denies a write in any
+  of them (sd:6083).
 
 Malformed input or a command shlex cannot split fails open: no decision, a
 warning on stderr, exit 0. A broken hook must not stop every session. A
@@ -35,6 +36,7 @@ shorter command reads.
 
 import collections
 import functools
+import itertools
 import json
 import os
 import re
@@ -80,13 +82,31 @@ def roots():
     return found
 
 
+def environment():
+    """The hook's own variables, each with its one value."""
+    return {name: frozenset([value]) for name, value in os.environ.items()}
+
+
 def expand(text, variables):
-    return VARIABLE.sub(lambda m: variables.get(m.group(1) or m.group(2), m.group(0)), text)
+    """Every way TEXT expands; VARIABLES maps a name to its possible values.
+
+    A name with no known value (missing, or None among its values) stays as
+    written, so its path stays under the folder.
+    """
+    names = sorted({m.group(1) or m.group(2) for m in VARIABLE.finditer(text)})
+    choices = [sorted(variables.get(name, {None}), key=str) for name in names]
+    out = []
+    for values in itertools.product(*choices):
+        value = dict(zip(names, values))
+        out.append(VARIABLE.sub(lambda m: value[m.group(1) or m.group(2)] or (
+            "" if value[m.group(1) or m.group(2)] == "" else m.group(0)), text))
+    return out
 
 
-def resolve(path, cwd, variables=os.environ):
-    path = os.path.expanduser(expand(path, variables)).translate(LITERAL)
-    return os.path.realpath(os.path.join(cwd, path))
+def resolve(path, cwd, variables=None):
+    """Every folder or file PATH may name."""
+    return [os.path.realpath(os.path.join(cwd, os.path.expanduser(text).translate(LITERAL)))
+            for text in expand(path, environment() if variables is None else variables)]
 
 
 def inside(full, protected):
@@ -108,13 +128,13 @@ def ignored(root, full):
     return result.returncode == 0
 
 
-def written(path, cwd, protected, variables=os.environ):
-    """The root a write to PATH lands in, or None."""
-    full = resolve(path, cwd, variables)
-    root = inside(full, protected)
-    if root is None or ignored(root, full):
-        return None
-    return root
+def written(path, cwd, protected, variables=None):
+    """The root a write to PATH may land in, or None."""
+    for full in resolve(path, cwd, variables):
+        root = inside(full, protected)
+        if root is not None and not ignored(root, full):
+            return root
+    return None
 
 
 def shield(command):
@@ -224,21 +244,36 @@ def unwrap(words):
 
 
 def git_target(words, cwd, variables):
-    """(folder, verb) for a git command; -C folders stack as git stacks them."""
-    i = 1
+    """(folders, verb) for a git command; -C folders stack as git stacks them."""
+    i, folders = 1, [cwd]
     while i < len(words) and words[i].startswith("-"):
         if words[i] == "-C" and i + 1 < len(words):
-            cwd = resolve(words[i + 1], cwd, variables)
+            folders = [full for folder in folders for full in resolve(words[i + 1], folder,
+                                                                      variables)]
             i += 2
         elif words[i] == "-c" and i + 1 < len(words):
             i += 2
         else:
             i += 1
-    return cwd, words[i] if i < len(words) else ""
+    return folders, words[i] if i < len(words) else ""
 
 
 def assigned(words, variables):
-    """The variables a bare `NAME=value`, `export` or `declare` sets."""
+    """The values a bare `NAME=value`, `export`, `declare`, `unset` or `set --` sets."""
+    if words[:1] == ["unset"]:
+        return {word: frozenset([""]) for word in words[1:] if not word.startswith("-")}
+    if words[:1] == ["set"]:
+        rest = words[1:]
+        if "--" in rest:
+            rest = rest[rest.index("--") + 1:]
+        elif not rest or rest[0].startswith(("-", "+")):
+            return {}
+        return {str(i): frozenset(expand(word, variables)) for i, word in enumerate(rest, 1)}
+    if words[:1] == ["shift"]:
+        count = int(words[1]) if words[1:2] and words[1].isdigit() else 1
+        known = [int(name) for name in variables if name.isdigit() and name != "0"]
+        return {str(i): variables.get(str(i + count), frozenset([""]))
+                for i in range(1, max(known, default=0) + 1)}
     if words[:1] and words[0] in DECLARERS:
         words = words[1:]
     elif not all(ASSIGNMENT.match(word) for word in words):
@@ -248,19 +283,38 @@ def assigned(words, variables):
         match = ASSIGNMENT.match(word)
         if match:
             name = match.group()[:-1]
-            variables[name] = changes[name] = os.path.expanduser(expand(word[match.end():],
-                                                                        variables))
+            variables[name] = changes[name] = frozenset(
+                os.path.expanduser(text) for text in expand(word[match.end():], variables))
     return changes
 
 
+def merged(worlds, inherited):
+    """One world per folder, each variable with every value it has in any of them.
+
+    An and-or list starts in every world whatever its status, so a `;` may
+    merge them: this keeps a run of assignments from doubling the worlds.
+    """
+    groups = {}
+    for world in worlds:
+        groups.setdefault(world.cwd, []).append(dict(world.changes))
+    out = set()
+    for cwd, maps in groups.items():
+        names = set().union(*maps)
+        changes = {name: frozenset().union(*(found.get(name, inherited.get(name, {None}))
+                                             for found in maps)) for name in names}
+        out.add(World(cwd, tuple(sorted(changes.items(), key=lambda item: item[0])), True))
+    return out
+
+
 class World(collections.namedtuple("World", "cwd changes ok")):
-    """One state the shell may be in: folder, variables set so far, last status."""
+    """One state the shell may be in: folder, each variable's possible values, last status."""
 
     def variables(self, inherited):
         return {**inherited, **dict(self.changes)}
 
     def set(self, changes):
-        return self._replace(changes=tuple(sorted({**dict(self.changes), **changes}.items())))
+        changes = {**dict(self.changes), **changes}
+        return self._replace(changes=tuple(sorted(changes.items(), key=lambda item: item[0])))
 
 
 class Denied(Exception):
@@ -289,13 +343,13 @@ class Reader:
 
     A command that may not run (after `&&`, `||`, `if`, `while`, `for`, `case`)
     leaves its world beside the one it changes; a pipeline stage and a `&` job
-    run in a subshell, so their changes may not last; a `cd` to a folder that
-    does not exist yet may fail. A write in any world is a write.
+    run in a subshell, so their changes may not last; and any change may fail.
+    A write in any world is a write.
     """
 
     def __init__(self, command, protected):
         self.items, self.protected, self.i, self.skip = items(command), protected, 0, 0
-        self.budget, self.inherited, self.loops = BUDGET, dict(os.environ), []
+        self.budget, self.inherited, self.loops = BUDGET, environment(), []
 
     def peek(self):
         if self.i >= len(self.items):
@@ -355,7 +409,7 @@ class Reader:
             self.newlines()
             if self.peek()[0] == "end" or self.at(stops):
                 return worlds
-            start = worlds
+            start = worlds = merged(worlds, self.inherited)
             worlds = self.and_or(worlds)
             if self.op("&"):
                 worlds = with_status(start, {True})
@@ -453,8 +507,9 @@ class Reader:
         """Each world once per value a `for NAME in WORDS` loop gives NAME."""
         if not header:
             return worlds
-        return {world.set({header[0]: expand(value, world.variables(self.inherited))})
-                for world in worlds for value in header[2:]}
+        return {world.set({header[0]: frozenset([text])})
+                for world in worlds for value in header[2:]
+                for text in expand(value, world.variables(self.inherited))}
 
     def arms(self, worlds):
         """`case WORD in PATTERN) LIST ;; ... esac`: any arm, or none, runs.
@@ -513,30 +568,33 @@ class Reader:
             name = os.path.basename(command[0]) if command else ""
             args = [word for word in command[1:] if not word.startswith("-")]
             here = not forked  # a builtin's effect reaches this shell
+            # every change may fail (a readonly variable, a missing folder, a bad
+            # word): the world it started in stays beside the changed one
             if here:
                 changes = assigned(command or words, world.variables(self.inherited))
-                if name == "unset":
-                    changes = {arg: "" for arg in args}
-                world = world.set(changes) if changes else world
-            variables = world.variables(self.inherited)
-            if name == "cd" and here:
-                folder = resolve(args[0] if args else "~", world.cwd, variables)
-                out.add(world._replace(cwd=folder, ok=True))
-                if not os.path.isdir(folder):
+                if changes:
                     out.add(world._replace(ok=False))
+                    world = world.set(changes)
+            variables = world.variables(self.inherited)
+            if name in ("cd", "pushd") and here:
+                out |= {world._replace(cwd=folder, ok=True)
+                        for folder in resolve(args[0] if args else "~", world.cwd, variables)}
+                out.add(world._replace(ok=False))
                 continue
             if name == "exit" and here:
                 continue
             if name == "eval" and here:
                 out |= self.nested(" ".join(command[1:]).translate(LITERAL), {world})
+                out.add(world._replace(ok=False))
                 continue
             if name in ("break", "continue") and here and self.loops:
                 self.loops[-1] |= with_status({world}, {True, False})
             if name == "git":
-                folder, verb = git_target(command, world.cwd, variables)
-                root = inside(folder, self.protected) if verb in GIT_WRITES else None
-                if root:
-                    raise Denied(root)
+                folders, verb = git_target(command, world.cwd, variables)
+                for folder in folders if verb in GIT_WRITES else ():
+                    root = inside(folder, self.protected)
+                    if root:
+                        raise Denied(root)
             elif name in PATH_WRITERS or (name in LAST_ARG_WRITERS and args):
                 for path in args if name in PATH_WRITERS else args[-1:]:
                     self.check(path, world)
