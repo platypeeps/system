@@ -51,13 +51,19 @@ GIT_WRITES = {"add", "am", "apply", "checkout", "cherry-pick", "clean", "commit"
               "pull", "rebase", "reset", "restore", "revert", "rm", "stash", "switch"}
 PATH_WRITERS = {"mkdir", "touch", "rm", "rmdir", "mv", "tee", "truncate"}
 LAST_ARG_WRITERS = {"cp", "ln", "install", "rsync"}
-WRAPPERS = {"rtk", "proxy", "command", "nohup", "time", "env", "exec"}
+PREFIXES = {"command", "builtin", "time"}  # run the command in this shell
+FORKS = {"rtk", "proxy", "nohup", "env", "exec", "nice", "timeout", "xargs", "sudo", "stdbuf"}
+VALUED = {"env": {"-u", "-P", "-S", "-C"}, "nice": {"-n"}, "timeout": {"-s", "-k"},
+          "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-U", "-r", "-t"},
+          "xargs": {"-n", "-I", "-J", "-L", "-P", "-R", "-S", "-s", "-E", "-d", "-a"},
+          "stdbuf": {"-i", "-o", "-e"}}  # options that take the next word
 DECLARERS = {"export", "readonly", "declare", "local", "typeset"}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 VARIABLE = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
 OPERATOR = set("();<>|&")
 HIDDEN = 0xE000  # a quoted operator character moves to the private-use plane
 UNHIDE = {HIDDEN + ord(char): char for char in OPERATOR}
+LITERAL = {HIDDEN + ord(char): char for char in "$~"}  # a quoted `$` or `~` expands to nothing
 CONTROL = re.compile(r"&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|[<>]|;;&|;;|;&|&&|\|\||\|&|[;&|()]")
 KEYWORDS = {"if", "then", "elif", "else", "fi", "while", "until", "for", "select", "do", "done",
             "case", "esac", "{", "}", "!"}
@@ -79,7 +85,8 @@ def expand(text, variables):
 
 
 def resolve(path, cwd, variables=os.environ):
-    return os.path.realpath(os.path.join(cwd, os.path.expanduser(expand(path, variables))))
+    path = os.path.expanduser(expand(path, variables)).translate(LITERAL)
+    return os.path.realpath(os.path.join(cwd, path))
 
 
 def inside(full, protected):
@@ -113,6 +120,8 @@ def written(path, cwd, protected, variables=os.environ):
 def shield(command):
     """Hide quoted and escaped operators from the lexer; drop comments.
 
+    A `$` in single quotes, after a backslash or before a quote (`$'..'`),
+    and a quoted or escaped `~`, hide too: the shell expands neither.
     An unquoted newline ends a command, and a `#` that starts a word starts a
     comment to the end of its line, as the shell reads them.
     """
@@ -123,12 +132,14 @@ def shield(command):
             if quote is None and command[i + 1] == "\n":
                 i += 2
                 continue
-            out += [char, hide(command[i + 1])]
+            out += [char, hide(command[i + 1], "$~")]
             i += 2
             continue
         if quote:
             quote = None if char == quote else quote
-            out.append(hide(char))
+            out.append(hide(char, "$~" if quote == "'" else "~"))
+        elif char == "$" and command[i + 1:i + 2] in ("'", '"'):
+            out.append(hide(char, "$"))
         elif char in "'\"":
             quote = char
             out.append(char)
@@ -142,8 +153,8 @@ def shield(command):
     return "".join(out)
 
 
-def hide(char):
-    return chr(HIDDEN + ord(char)) if char in OPERATOR else char
+def hide(char, literal=""):
+    return chr(HIDDEN + ord(char)) if char in OPERATOR or char in literal else char
 
 
 def is_operator(token):
@@ -190,9 +201,26 @@ def items(command):
 
 
 def unwrap(words):
-    while words and (ASSIGNMENT.match(words[0]) or words[0] in WRAPPERS):
-        words = words[1:]
-    return words
+    """(the command, forked): FORKED when a wrapper runs it in a child process.
+
+    A child's cd, exit, assignment or loop jump leaves this shell as it was.
+    """
+    forked = False
+    while words:
+        wrapper = os.path.basename(words[0])
+        if ASSIGNMENT.match(words[0]):
+            words = words[1:]
+            continue
+        if wrapper not in PREFIXES and wrapper not in FORKS:
+            break
+        forked, words = forked or wrapper in FORKS, words[1:]
+        while words and words[0].startswith("-") and words[0] != "--":
+            if wrapper == "command" and words[0] in ("-v", "-V"):
+                return [], forked  # prints what would run; runs nothing
+            words = words[2:] if words[0] in VALUED.get(wrapper, ()) else words[1:]
+        words = words[1 if words[:1] == ["--"] else 0:]
+        words = words[1:] if wrapper == "timeout" else words  # the duration
+    return words, forked
 
 
 def git_target(words, cwd, variables):
@@ -456,6 +484,17 @@ class Reader:
                     self.check(target, world)
         return out
 
+    def nested(self, command, worlds):
+        """Read the text `eval` runs in this shell; text that cannot split changes nothing."""
+        try:
+            reader = Reader(command, self.protected)
+        except ValueError:
+            return with_status(worlds, {True, False})
+        reader.budget, reader.inherited, reader.loops = self.budget, self.inherited, self.loops
+        out = reader.run(worlds)
+        self.budget = reader.budget
+        return out
+
     def simple(self, worlds):
         _, words, targets = self.peek()
         self.advance()
@@ -470,21 +509,28 @@ class Reader:
         for world in worlds:
             for target in targets:
                 self.check(target, world)
-            changes = assigned(words, world.variables(self.inherited))
-            world = world.set(changes) if changes else world
-            variables = world.variables(self.inherited)
-            command = unwrap(words)
+            command, forked = unwrap(words)
             name = os.path.basename(command[0]) if command else ""
             args = [word for word in command[1:] if not word.startswith("-")]
-            if name == "cd":
+            here = not forked  # a builtin's effect reaches this shell
+            if here:
+                changes = assigned(command or words, world.variables(self.inherited))
+                if name == "unset":
+                    changes = {arg: "" for arg in args}
+                world = world.set(changes) if changes else world
+            variables = world.variables(self.inherited)
+            if name == "cd" and here:
                 folder = resolve(args[0] if args else "~", world.cwd, variables)
                 out.add(world._replace(cwd=folder, ok=True))
                 if not os.path.isdir(folder):
                     out.add(world._replace(ok=False))
                 continue
-            if name == "exit":
+            if name == "exit" and here:
                 continue
-            if name in ("break", "continue") and self.loops:
+            if name == "eval" and here:
+                out |= self.nested(" ".join(command[1:]).translate(LITERAL), {world})
+                continue
+            if name in ("break", "continue") and here and self.loops:
                 self.loops[-1] |= with_status({world}, {True, False})
             if name == "git":
                 folder, verb = git_target(command, world.cwd, variables)

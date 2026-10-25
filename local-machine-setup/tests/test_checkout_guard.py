@@ -280,15 +280,56 @@ class CheckoutGuard(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.worktree), "allow")
 
+    def test_a_word_keeps_its_quotes_and_a_wrapper_its_child(self):
+        """sd:6083 round 2: quoted `$` and `~` stay text; a wrapper's child does not move
+        the shell, and `command`, `builtin` and `time` run in it."""
+        for command in ("D='$HOME'; mkdir -p \"$D\"",
+                        "export D='$HOME'; touch \"$D\"",
+                        "readonly D='$HOME'; touch \"$D\"",
+                        "declare D='~'; mkdir \"$D\"",
+                        "D=\\$HOME; mkdir \"$D\"",
+                        "D=\"\\$HOME\"; mkdir \"$D\"",
+                        "mkdir '$HOME'",
+                        "mkdir $'$HOME'",
+                        "mkdir '~' \"~\" \\~",
+                        "env exit 0; touch README.md",
+                        "nohup exit 0; touch README.md",
+                        "env cd /tmp; touch x",
+                        "nohup cd /tmp; touch x",
+                        "sudo -u nobody cd /tmp; touch x",
+                        "timeout 5 rm README.md",
+                        "nice -n 5 rm README.md",
+                        "env -i A=1 rm README.md",
+                        "echo README.md | xargs rm -f README.md",
+                        "eval 'rm README.md'",
+                        "D=/tmp; unset D; cd \"$D\"; touch x"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=self.system), self.system)
+        self.assertDenied(self.bash(f"eval \"cd {self.system}\"; touch x"), self.system)
+        for command in ('mkdir "$HOME/x"',
+                        'D="$HOME"; mkdir -p "$D/x"',
+                        f"command cd {self.worktree} && touch x",
+                        f"time cd {self.worktree}; touch x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=self.system), "allow")
+        for command in (f"builtin cd {self.worktree}; touch x", "command exit 0; touch x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=self.system, fixed=True), "allow")
+
     def test_every_write_the_base_refused_is_refused(self):
-        """Differential property over a shell grammar: where 13554b17 refused and this
-        guard allows, a real bash run in a scratch tree must write nothing in the lane."""
+        """Property over a shell grammar: where this guard allows, a real bash run in a
+        scratch tree writes nothing in the lane. That covers each write 13554b17 refused
+        and this guard allows (sd:6083 rounds 1 and 2)."""
         lane, work = self.system, self.worktree
         (lane / "README.md").write_text("x\n")
         rng = random.Random(6083)
         simple = [f"cd {lane}", f"cd {work}", "cd d1", "mkdir -p d1", "touch y", "rm -f README.md",
                   f"D={lane}", f"D={work}", 'touch "$D/y"', 'touch "$d/y"', "true", "false", ":",
-                  "echo $(touch z)", "break", "continue"]
+                  "echo $(touch z)", "break", "continue", "exit 0", "D='$HOME'", "D=\\$HOME",
+                  'D="$HOME"', 'mkdir -p "$D"', "mkdir -p '~'", "env exit 0", "nohup exit 0",
+                  "command exit 0", "env cd d1", "command cd d1", "nohup cd d1", "eval 'cd d1'",
+                  f"eval 'cd {lane}'", "unset D", 'cd "$D"', "timeout 5 touch y",
+                  "env -i A=1 touch y", "builtin cd d1", "time cd d1"]
 
         def gen(depth):
             kind = min(rng.randrange(14 if depth < 3 else 1), 11)  # case weighs three
@@ -309,9 +350,9 @@ class CheckoutGuard(unittest.TestCase):
         failures, before = [], snapshot()
         for module in (BASE, BRANCH):  # git ignores nothing these paths reach; skip its calls
             self.enterContext(mock.patch.object(module, "ignored", lambda root, full: False))
-        for _ in range(2000):
+        for _ in range(1200):
             command, cwd = gen(0), rng.choice([lane, work])
-            if not self.regressed(command, cwd):
+            if denies(BRANCH, command, cwd, self.env, (lane, self.pack)):
                 continue
             try:
                 subprocess.run(["bash", "-c", f"ulimit -t 1; {command}\nwait"], cwd=cwd, env=self.env,
@@ -326,7 +367,7 @@ class CheckoutGuard(unittest.TestCase):
             (lane / "README.md").write_text("x\n")
             for path in work.iterdir():
                 (shutil.rmtree if path.is_dir() else os.unlink)(path)
-        self.assertEqual(failures[:3], [], f"{len(failures)} regressions vs 13554b17")
+        self.assertEqual(failures[:3], [], f"{len(failures)} allowed writes in the lane")
 
     def test_a_copy_in_a_linked_worktree_protects_nothing_there(self):
         """A builder's worktree carries this file too; its `.git` is a file."""
