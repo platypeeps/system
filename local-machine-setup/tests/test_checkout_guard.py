@@ -120,6 +120,48 @@ class CheckoutGuard(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.system), "allow")
 
+    def test_a_quoted_operator_is_text(self):
+        """sd:6083: shlex drops the quotes, so `">"` read as a redirect."""
+        for command in ('printf "%s\\n" ">" README.md',
+                        "echo '|' rm README.md",
+                        "echo ';' touch x",
+                        "echo \\> README.md"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=self.system), "allow")
+        for command in ('echo "<" > README.md',
+                        "echo fix#2 && rm README.md",
+                        "echo $(echo a)#b; touch README.md",
+                        "ls # a comment\nrm README.md"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=self.system), self.system)
+        self.assertEqual(self.bash("# rm README.md", cwd=self.system), "allow")
+
+    def test_the_folder_returns_when_a_subshell_ends(self):
+        """sd:6083: a `cd` inside `( )` or `$( )` does not leak out."""
+        for command in (f"(cd {self.system} && cat README.md); mkdir output",
+                        f"echo $(cd {self.system}; pwd) > out.txt",
+                        f"(cd {self.system}; (cd /tmp); ls) && touch y"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command), "allow")
+        self.assertEqual(self.bash("printf x | tee >(cat) <(ls)", cwd=self.system), "allow")
+        self.assertDenied(self.bash("(cd /tmp) && mkdir x", cwd=self.system), self.system)
+        self.assertDenied(self.bash(f"(cd {self.system} && touch x)"), self.system)
+
+    def test_a_shell_variable_names_a_checkout(self):
+        """sd:6083: `$DEST` set in the command resolves like the shell does."""
+        for command in (f'DEST={self.system}; mkdir -p "$DEST/docs/work"',
+                        f'export DEST={self.pack} && echo x > "$DEST/n.md"',
+                        f"declare -x DEST={self.pack}; touch $DEST/x",
+                        f'D={self.system}; git -C "$D" commit -m x',
+                        f"B={self.system}; C=${{B}}/docs; touch $C/x"):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command).startswith("deny: "), command)
+        for command in (f'DEST={self.system} true; mkdir "$DEST/x"',
+                        f'(D={self.system}); mkdir "$D/x"',
+                        f'DEST={self.worktree}; touch "$DEST/x"'):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=self.worktree), "allow")
+
     def test_a_copy_in_a_linked_worktree_protects_nothing_there(self):
         """A builder's worktree carries this file too; its `.git` is a file."""
         linked = self.worktree / "local-machine-setup"

@@ -17,8 +17,10 @@ agents write, so a copy of this file run from one protects nothing there.
   `git -C` or the working folder; and mkdir, touch, rm, rmdir, mv, tee,
   truncate on a path inside a root, the last argument of cp, ln, install
   and rsync, and a `>` or `>>` target, each judged like a file tool's path.
-  `cd` inside the command moves the working folder. Fetch, worktree, branch
-  and every read pass.
+  `cd` inside the command moves the working folder until its subshell ends,
+  and `NAME=value`, alone or after `export` or `declare`, sets `$NAME` for
+  later commands. A quoted or escaped operator is plain text. Fetch,
+  worktree, branch and every read pass.
 
 Malformed input or a command shlex cannot split fails open: no decision, a
 warning on stderr, exit 0. A broken hook must not stop every session.
@@ -41,8 +43,12 @@ GIT_WRITES = {"add", "am", "apply", "checkout", "cherry-pick", "clean", "commit"
 PATH_WRITERS = {"mkdir", "touch", "rm", "rmdir", "mv", "tee", "truncate"}
 LAST_ARG_WRITERS = {"cp", "ln", "install", "rsync"}
 WRAPPERS = {"rtk", "proxy", "command", "nohup", "time", "env", "exec"}
+DECLARERS = {"export", "readonly", "declare", "local", "typeset"}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+VARIABLE = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
 OPERATOR = set("();<>|&")
+HIDDEN = 0xE000  # a quoted operator character moves to the private-use plane
+UNHIDE = {HIDDEN + ord(char): char for char in OPERATOR}
 
 
 def roots():
@@ -55,8 +61,12 @@ def roots():
     return found
 
 
-def resolve(path, cwd):
-    return os.path.realpath(os.path.join(cwd, os.path.expanduser(os.path.expandvars(path))))
+def expand(text, variables):
+    return VARIABLE.sub(lambda m: variables.get(m.group(1) or m.group(2), m.group(0)), text)
+
+
+def resolve(path, cwd, variables=os.environ):
+    return os.path.realpath(os.path.join(cwd, os.path.expanduser(expand(path, variables))))
 
 
 def inside(full, protected):
@@ -77,41 +87,88 @@ def ignored(root, full):
     return result.returncode == 0
 
 
-def written(path, cwd, protected):
+def written(path, cwd, protected, variables=os.environ):
     """The root a write to PATH lands in, or None."""
-    full = resolve(path, cwd)
+    full = resolve(path, cwd, variables)
     root = inside(full, protected)
     if root is None or ignored(root, full):
         return None
     return root
 
 
+def shield(command):
+    """Hide quoted and escaped operators from the lexer; drop comments.
+
+    An unquoted newline ends a command, and a `#` that starts a word starts a
+    comment to the end of its line, as the shell reads them.
+    """
+    out, quote, i = [], None, 0
+    while i < len(command):
+        char = command[i]
+        if char == "\\" and quote != "'" and i + 1 < len(command):
+            if quote is None and command[i + 1] == "\n":
+                i += 2
+                continue
+            out += [char, hide(command[i + 1])]
+            i += 2
+            continue
+        if quote:
+            quote = None if char == quote else quote
+            out.append(hide(char))
+        elif char in "'\"":
+            quote = char
+            out.append(char)
+        elif char == "#" and (not out or out[-1].isspace() or out[-1] in ";&|("):
+            end = command.find("\n", i)
+            i = len(command) if end < 0 else end
+            continue
+        else:
+            out.append(";" if char == "\n" else char)
+        i += 1
+    return "".join(out)
+
+
+def hide(char):
+    return chr(HIDDEN + ord(char)) if char in OPERATOR else char
+
+
+def is_operator(token):
+    return bool(token) and set(token) <= OPERATOR
+
+
 def commands(command):
-    """Each simple command as (words, redirect targets)."""
-    lexer = shlex.shlex(command.replace("\n", ";"), posix=True, punctuation_chars=True)
+    """Each simple command as (words, redirect targets, the operator after it).
+
+    A `(` or `)` is an operator of its own, so a caller can open and close a
+    subshell; a quoted operator stays a word.
+    """
+    lexer = shlex.shlex(shield(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
-    tokens = list(lexer)
+    lexer.commenters = ""
+    tokens = []
+    for token in lexer:
+        tokens += re.findall(r"[()]|[^()]+", token) if is_operator(token) else [token]
     words, targets, i = [], [], 0
     while i < len(tokens):
         token = tokens[i]
-        if token and set(token) <= OPERATOR:
+        if is_operator(token) and ("<" in token or ">" in token):
+            target = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if is_operator(target):
+                target = ""
+            else:
+                i += 1
             if ">" in token:
-                target = tokens[i + 1] if i + 1 < len(tokens) else ""
                 if words and words[-1].isdigit():
                     words.pop()
-                if not (token.endswith("&") and (target.isdigit() or target == "-")):
-                    targets.append(target)
-                i += 2
-                continue
-            if "<" in token:
-                i += 2
-                continue
-            yield words, targets
+                if target and not (token.endswith("&") and (target.isdigit() or target == "-")):
+                    targets.append(target.translate(UNHIDE))
+        elif is_operator(token):
+            yield words, targets, token
             words, targets = [], []
         else:
-            words.append(token)
+            words.append(token.translate(UNHIDE))
         i += 1
-    yield words, targets
+    yield words, targets, ""
 
 
 def unwrap(words):
@@ -120,12 +177,12 @@ def unwrap(words):
     return words
 
 
-def git_target(words, cwd):
+def git_target(words, cwd, variables):
     """(folder, verb) for a git command; -C folders stack as git stacks them."""
     i = 1
     while i < len(words) and words[i].startswith("-"):
         if words[i] == "-C" and i + 1 < len(words):
-            cwd = resolve(words[i + 1], cwd)
+            cwd = resolve(words[i + 1], cwd, variables)
             i += 2
         elif words[i] == "-c" and i + 1 < len(words):
             i += 2
@@ -134,29 +191,46 @@ def git_target(words, cwd):
     return cwd, words[i] if i < len(words) else ""
 
 
+def assign(words, variables):
+    """Set the variables a bare `NAME=value`, `export` or `declare` sets."""
+    if words[:1] and words[0] in DECLARERS:
+        words = words[1:]
+    elif not all(ASSIGNMENT.match(word) for word in words):
+        return
+    for word in words:
+        match = ASSIGNMENT.match(word)
+        if match:
+            value = word[match.end():]
+            variables[match.group()[:-1]] = os.path.expanduser(expand(value, variables))
+
+
 def bash_root(command, cwd, protected):
-    for words, targets in commands(command):
+    variables, outer = dict(os.environ), []
+    for words, targets, operator in commands(command):
         for target in targets:
-            root = written(target, cwd, protected)
+            root = written(target, cwd, protected, variables)
             if root:
                 return root
+        assign(words, variables)
         words = unwrap(words)
-        if not words:
-            continue
-        name = os.path.basename(words[0])
+        name = os.path.basename(words[0]) if words else ""
         args = [word for word in words[1:] if not word.startswith("-")]
         if name == "cd":
-            cwd = resolve(args[0] if args else "~", cwd)
+            cwd = resolve(args[0] if args else "~", cwd, variables)
         elif name == "git":
-            folder, verb = git_target(words, cwd)
+            folder, verb = git_target(words, cwd, variables)
             root = inside(folder, protected) if verb in GIT_WRITES else None
             if root:
                 return root
         elif name in PATH_WRITERS or (name in LAST_ARG_WRITERS and args):
             for path in args if name in PATH_WRITERS else args[-1:]:
-                root = written(path, cwd, protected)
+                root = written(path, cwd, protected, variables)
                 if root:
                     return root
+        if operator == "(":
+            outer.append((cwd, dict(variables)))
+        elif operator == ")" and outer:
+            cwd, variables = outer.pop()
     return None
 
 
