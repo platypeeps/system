@@ -390,6 +390,7 @@ class CheckoutGuard(unittest.TestCase):
                              (f"set -- {lane}/; touch $1x", work),
                              (f'set -- /tmp /tmp {lane}; n=2; shift $n; touch "$1/x"', work),
                              (f'set -- {lane}; for d; do touch "$d/x"; done', work),
+                             (f'F="/tmp {lane}"; set -- $F; touch "$2/x"', work),
                              (f'F="/tmp {lane}/x"; touch $F', work),
                              (f"C=touch; $C {lane}/x", work),
                              (f'C="rm -f"; $C {lane}/README.md', work),
