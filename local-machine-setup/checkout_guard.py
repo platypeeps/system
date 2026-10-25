@@ -267,7 +267,7 @@ class Reader:
 
     def __init__(self, command, protected):
         self.items, self.protected, self.i, self.skip = items(command), protected, 0, 0
-        self.budget, self.inherited = BUDGET, dict(os.environ)
+        self.budget, self.inherited, self.loops = BUDGET, dict(os.environ), []
 
     def peek(self):
         if self.i >= len(self.items):
@@ -303,6 +303,18 @@ class Reader:
         item = self.peek()
         return (item[0] == "op" and item[1] in stops) or (
             item[0] == "cmd" and bool(item[1]) and item[1][0] in stops)
+
+    def text(self, worlds):
+        """Read past a word list (case word, patterns, for words), running each `$( )`."""
+        words = []
+        while self.peek()[0] == "cmd":
+            words += self.peek()[1]
+            self.advance()
+            if not (words and words[-1].endswith("$") and self.op("(")):
+                break
+            self.run(worlds, (")",))
+            self.op(")")
+        return words
 
     def check(self, path, world):
         root = written(path, world.cwd, self.protected, world.variables(self.inherited))
@@ -386,15 +398,14 @@ class Reader:
 
     def loop(self, kind, worlds):
         """A loop body runs zero, one or two times; a third pass reads like the second."""
-        out = set(worlds)
+        out, header = set(worlds), []
         if kind in ("for", "select"):
-            header = self.peek()[1] if self.peek()[0] == "cmd" else []
-            if header:
-                self.advance()
-            if header[2:] and header[1] == "in" and re.fullmatch(r"[A-Za-z_]\w*", header[0]):
-                worlds = {world.set({header[0]: expand(value, world.variables(self.inherited))})
-                          for world in worlds for value in header[2:]}
+            header = self.text(worlds)
+            if not (header[2:] and header[1] == "in" and re.fullmatch(r"[A-Za-z_]\w*", header[0])):
+                header = []
+            worlds = self.bind(header, worlds)
         start = (self.i, self.skip)
+        self.loops.append(set())  # the worlds a `break` or `continue` leaves at
         for _ in range(2):
             self.i, self.skip = start
             if kind in ("while", "until"):
@@ -403,21 +414,34 @@ class Reader:
                 worlds = passed(cond, kind == "while")
             self.newlines()
             self.keyword("do")
-            worlds = self.run(worlds, ("done",))
+            worlds = self.run(worlds, ("done",)) | self.loops[-1]
             out |= worlds
+            worlds |= self.bind(header, worlds)  # the next pass takes the next value
+        self.loops.pop()
         self.keyword("done")
         return with_status(out, {True, False})
 
+    def bind(self, header, worlds):
+        """Each world once per value a `for NAME in WORDS` loop gives NAME."""
+        if not header:
+            return worlds
+        return {world.set({header[0]: expand(value, world.variables(self.inherited))})
+                for world in worlds for value in header[2:]}
+
     def arms(self, worlds):
-        """`case WORD in PATTERN) LIST ;; ... esac`: any arm, or none, runs."""
-        out = set(worlds)
-        self.advance()  # WORD in, and the first pattern when it shares the line
+        """`case WORD in PATTERN) LIST ;; ... esac`: any arm, or none, runs.
+
+        An arm after `;&` or `;;&` may also start where the arm before it ended.
+        """
+        out, carry = set(worlds), set()
+        self.text(worlds)  # WORD in, and the first pattern when it shares the line
         while self.peek()[0] != "end" and not self.keyword("esac"):
             if self.op(")"):
-                out |= self.run(worlds, (";;", ";&", ";;&", "esac"))
-                self.op(";;", ";&", ";;&")
+                arm = self.run(worlds | carry, (";;", ";&", ";;&", "esac"))
+                out |= arm
+                carry = arm if self.op(";;", ";&", ";;&") in (";&", ";;&") else set()
             elif self.peek()[0] == "cmd":
-                self.advance()  # pattern words
+                self.text(worlds)  # pattern words
             else:
                 self.advance()  # `|` and `(` in a pattern, and newlines
         return with_status(out, {True, False})
@@ -460,6 +484,8 @@ class Reader:
                 continue
             if name == "exit":
                 continue
+            if name in ("break", "continue") and self.loops:
+                self.loops[-1] |= with_status({world}, {True, False})
             if name == "git":
                 folder, verb = git_target(command, world.cwd, variables)
                 root = inside(folder, self.protected) if verb in GIT_WRITES else None

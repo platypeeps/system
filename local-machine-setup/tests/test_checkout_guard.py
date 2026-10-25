@@ -3,15 +3,22 @@
 The hook runs from a copy of itself inside a synthetic system checkout, with
 SD_PACK_ROOT naming a synthetic pack checkout. Each case feeds it one
 PreToolUse payload on stdin and reads its decision.
+
+Every Bash case also reads the command in process with this guard and with
+the 13554b17 guard (tests/fixtures), the first head of sd:6083: a write
+the old guard refused, this one must refuse too (sd:6083 round 1).
 """
 
+import importlib.util
 import json
 import os
 import pathlib
+import random
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 GUARD = HERE.parent / "checkout_guard.py"
@@ -19,6 +26,30 @@ GUARD = HERE.parent / "checkout_guard.py"
 
 def git(*args):
     subprocess.run(["git", *args], check=True, capture_output=True)
+
+
+def load(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+BRANCH = load(GUARD, "checkout_guard_branch")
+BASE = load(HERE / "fixtures/checkout_guard_13554b17.py", "checkout_guard_13554b17")
+
+
+def denies(module, command, cwd, env, protected):
+    """True when MODULE refuses COMMAND; a refusal past the budget counts."""
+    with mock.patch.dict(os.environ, env, clear=True):
+        try:
+            return module.bash_root(command, str(cwd), [str(root) for root in protected]) is not None
+        except ValueError:
+            return False
+        except Exception as error:  # the budget refusal
+            if type(error).__name__ == "TooMany":
+                return True
+            raise
 
 
 class CheckoutGuard(unittest.TestCase):
@@ -49,8 +80,17 @@ class CheckoutGuard(unittest.TestCase):
         output = json.loads(result.stdout)["hookSpecificOutput"]
         return output["permissionDecision"] + ": " + output["permissionDecisionReason"]
 
-    def bash(self, command, cwd=None):
-        return self.decide("Bash", cwd=cwd, command=command)
+    def bash(self, command, cwd=None, fixed=False):
+        """FIXED marks a command 13554b17 refused by mistake: the shell writes nothing there."""
+        decision = self.decide("Bash", cwd=cwd, command=command)
+        self.assertEqual(self.regressed(command, cwd or self.worktree), fixed,
+                         f"13554b17 refused, this guard allows: {command!r}")
+        return decision
+
+    def regressed(self, command, cwd):
+        protected = (self.system, self.pack)
+        return (denies(BASE, command, cwd, self.env, protected)
+                and not denies(BRANCH, command, cwd, self.env, protected))
 
     def assertDenied(self, decision, root):
         self.assertTrue(decision.startswith(f"deny: {root} is a lane checkout"), decision)
@@ -185,10 +225,11 @@ class CheckoutGuard(unittest.TestCase):
                         f"cd {self.worktree}/new || exit 1; touch x",
                         f"cd {self.worktree} && git log | head; touch x",
                         f"cd {self.worktree} &&\ngit log 2>&1 | tail -5 && touch x",
-                        f"(cd {self.worktree}) || touch x",
                         f"DEST={self.worktree} && touch $DEST/x"):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.system), "allow")
+        self.assertEqual(self.bash(f"(cd {self.worktree}) || touch x", cwd=self.system,
+                                   fixed=True), "allow")
 
     def test_a_compound_command_may_not_run_its_body(self):
         """sd:6083: `if`, `while`, `for`, `case` and `{ }` hid the command after them."""
@@ -208,10 +249,84 @@ class CheckoutGuard(unittest.TestCase):
                           self.system)
         for command in (f"if cd {self.worktree}; then touch x; fi",
                         f"for d in /tmp {self.worktree}; do touch $d/x; done",
-                        f"{{ cd {self.worktree}; }}; touch x",
                         "echo if then fi done"):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.system), "allow")
+        self.assertEqual(self.bash(f"{{ cd {self.worktree}; }}; touch x", cwd=self.system,
+                                   fixed=True), "allow")
+
+    def test_a_skipped_word_or_a_branch_keeps_what_the_base_read(self):
+        """sd:6083 round 1: case words, patterns, fallthrough, loop words, break."""
+        lane = self.system
+        for command in (f"case x in x) cd {lane} ;& y) touch x;; esac",
+                        f"case x in x) cd {lane} ;;& y) touch x;; esac",
+                        f"case $(touch {lane}/x) in x) :;; esac",
+                        f"case x in $(touch {lane}/x)) :;; esac",
+                        f"case x in\n(y) :;;\n$(touch {lane}/x)) :;;\nesac",
+                        f"for d in $(touch {lane}/x); do :; done",
+                        f"for d in a $(touch {lane}/x) b; do :; done",
+                        f"while :; do cd {lane}; break; cd /tmp; done; touch x",
+                        f"for d in a; do cd {lane}; continue; cd /tmp; done; touch x",
+                        f"[[ -n $(touch {lane}/x) ]]",
+                        f"(( $(touch {lane}/x) ))",
+                        f"D=$(touch {lane}/x)",
+                        f"echo > $(touch {lane}/x)"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command), lane)
+        self.assertDenied(self.bash("for d in repos system; do cd $d; done; touch x",
+                                    cwd=self.system.parent.parent), lane)
+        for command in ("case x in x) :;; y) touch x;; esac",
+                        f"while :; do cd {self.worktree}; break; done; touch x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=self.worktree), "allow")
+
+    def test_every_write_the_base_refused_is_refused(self):
+        """Differential property over a shell grammar: where 13554b17 refused and this
+        guard allows, a real bash run in a scratch tree must write nothing in the lane."""
+        lane, work = self.system, self.worktree
+        (lane / "README.md").write_text("x\n")
+        rng = random.Random(6083)
+        simple = [f"cd {lane}", f"cd {work}", "cd d1", "mkdir -p d1", "touch y", "rm -f README.md",
+                  f"D={lane}", f"D={work}", 'touch "$D/y"', 'touch "$d/y"', "true", "false", ":",
+                  "echo $(touch z)", "break", "continue"]
+
+        def gen(depth):
+            kind = min(rng.randrange(14 if depth < 3 else 1), 11)  # case weighs three
+            a = lambda: gen(depth + 1)
+            return [lambda: rng.choice(simple),
+                    lambda: f"{a()}; {a()}", lambda: f"{a()} && {a()}", lambda: f"{a()} || {a()}",
+                    lambda: f"{a()} | {a()}", lambda: f"{a()} & {a()}", lambda: f"! {a()}",
+                    lambda: rng.choice(["( {} )", "{{ {}; }}", "echo $({})"]).format(a()),
+                    lambda: f"if {a()}; then {a()}; elif {a()}; then {a()}; else {a()}; fi",
+                    lambda: f"for d in {lane} {work} d1; do {a()}; done",
+                    lambda: f"while {a()}; do {a()}; break; done",
+                    lambda: (f"case {rng.choice(['a', '$(' + a() + ')'])} in a) {a()} "
+                             f"{rng.choice([';;', ';&', ';;&'])} b|a) {a()};; esac")][kind]()
+
+        def snapshot():
+            return {str(path) for path in lane.rglob("*") if ".git" not in path.parts}
+
+        failures, before = [], snapshot()
+        for module in (BASE, BRANCH):  # git ignores nothing these paths reach; skip its calls
+            self.enterContext(mock.patch.object(module, "ignored", lambda root, full: False))
+        for _ in range(2000):
+            command, cwd = gen(0), rng.choice([lane, work])
+            if not self.regressed(command, cwd):
+                continue
+            try:
+                subprocess.run(["bash", "-c", f"ulimit -t 1; {command}\nwait"], cwd=cwd, env=self.env,
+                               capture_output=True, timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            after = snapshot()
+            if after != before:
+                failures.append((command, str(cwd), sorted(after ^ before)[:2]))
+            for path in sorted(after - before, reverse=True):
+                (shutil.rmtree if os.path.isdir(path) else os.unlink)(path)
+            (lane / "README.md").write_text("x\n")
+            for path in work.iterdir():
+                (shutil.rmtree if path.is_dir() else os.unlink)(path)
+        self.assertEqual(failures[:3], [], f"{len(failures)} regressions vs 13554b17")
 
     def test_a_copy_in_a_linked_worktree_protects_nothing_there(self):
         """A builder's worktree carries this file too; its `.git` is a file."""
