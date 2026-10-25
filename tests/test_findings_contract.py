@@ -59,7 +59,8 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(senders, [])
 
     def test_no_job_exits_1_to_fire_a_failure_push(self):
-        """The push is gone, so a path that fails a run to fire it is dead."""
+        """A failure pushes only when data is at risk (sd:5997), so a path
+        that fails a run to fire a push is wrong."""
         stale = [f"{name}:{number}" for name in tracked_scripts()
                  for number, line in enumerate((ROOT / name).read_text(errors="replace").splitlines(), 1)
                  if "failure push fires" in line]

@@ -103,7 +103,11 @@ database was unavailable.
 
 **On failure only:** a line in `failures.log`. A failed run, or one that
 prints `SD_REPORT_ATTENTION: <reason>`, files a report that needs attention;
-Today lists it until it is acknowledged. Nothing is mailed or pushed (sd:3454).
+Today lists it until it is acknowledged. Nothing is mailed (sd:3454). A
+failure that puts data at risk also pushes to the phone, once until a run is
+not at risk (sd:5997). A run proves its data safe with the line
+`SD_REPORT_ATTENTION: data safe, one step failed: <step>`; any other failure
+is at risk.
 
 A failing prompt job keeps its `claude -p` debug trace; a passing one deletes
 its own. The five newest surviving traces are kept, so a job failing every
