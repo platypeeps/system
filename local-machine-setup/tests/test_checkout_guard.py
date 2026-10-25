@@ -315,6 +315,26 @@ class CheckoutGuard(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.system, fixed=True), "allow")
 
+    def test_a_builtin_changes_the_shell_only_as_spelled(self):
+        """sd:6083 round 6: a path names a program, which runs in a child and
+        changes no shell state; the next command still runs."""
+        lane = self.system
+        for command in ("/usr/bin/exit 0; touch x",
+                        "./exit; touch x",
+                        "/usr/bin/time exit 0; touch x",
+                        "/usr/bin/command exit 0; touch x",
+                        "C=/usr/bin/exit; $C 0; touch x",
+                        f"/usr/bin/cd {self.worktree} && touch x",
+                        f"/usr/bin/command cd {self.worktree} && touch x",
+                        f"/usr/bin/time cd {self.worktree} && touch x",
+                        f"/usr/bin/eval 'cd {self.worktree}' && touch x",
+                        f"/usr/bin/pushd {self.worktree} && touch x",
+                        f"D={self.worktree}; /usr/bin/read D; cd \"$D\" && touch x",
+                        f"set -- {self.worktree}; /usr/bin/shift; cd \"$1\" && touch x",
+                        f"/usr/bin/export D={self.worktree}; cd \"$D\" && touch x"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=lane), lane)
+
     def test_every_state_change_may_fail(self):
         """sd:6083 round 3: an assignment, cd or eval may fail, so the world it started
         in stays possible: `readonly` makes `export` fail, `cd` may meet a mode."""

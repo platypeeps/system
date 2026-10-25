@@ -531,7 +531,8 @@ def unwrap(words):
             continue
         if wrapper not in PREFIXES and wrapper not in FORKS:
             break
-        forked, words = forked or wrapper in FORKS, words[1:]
+        # a path names a program, a child, not `command`, `builtin` or `time`
+        forked, words = forked or wrapper in FORKS or "/" in words[0], words[1:]
         while words and words[0].startswith("-") and words[0] != "--":
             if wrapper == "command" and words[0] in ("-v", "-V"):
                 return [], forked  # prints what would run; runs nothing
@@ -926,10 +927,11 @@ class Reader:
         """The worlds COMMAND leaves WORLD in; FORKED when it runs in a child."""
         name = os.path.basename(command[0]) if command else ""
         args = [word for word in command[1:] if not word.startswith("-")]
-        here, out = not forked, set()  # a builtin's effect reaches this shell
+        # a builtin's effect reaches this shell; a path names a program
+        here, out = not forked and "/" not in (command or [""])[0], set()
         # every change may fail (a readonly variable, a missing folder, a bad
         # word): the world it started in stays beside the changed one
-        if name in DECLARERS - {"export"} and any("n" in word[1:] for word in command[1:]
+        if here and name in DECLARERS - {"export"} and any("n" in word[1:] for word in command[1:]
                                                   if word[:1] in "-+"):
             self.spend.note("a name reference moves its writes to another name")
         if here:
