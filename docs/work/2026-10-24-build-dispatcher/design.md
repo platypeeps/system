@@ -33,7 +33,7 @@ They fit, so this design adds columns, not tables.
 | --- | --- | --- |
 | Queue row per pressed item | `assignment`: role `author`, lane `parallel`, scope `build` | nothing |
 | Bundle | members' `assignment.parent` names the lead assignment | nothing |
-| Run row per bundle attempt | `runner_run`: `run` is the attempt, `owner`, `work_path`, `supervisor_pid`, `supervisor_start`, `outcome`, `detail`, `cancel_requested`, `released_at` | `step`, `heartbeat_at`, `model`, `session_id`, `log_path`, `builder_pgid`, `final` (migration 042) |
+| Run row per bundle attempt | `runner_run`: `run` is the attempt, `owner`, `work_path`, `supervisor_pid`, `supervisor_start`, `outcome`, `detail`, `cancel_requested`, `released_at` | `step`, `heartbeat_at`, `model`, `session_id`, `log_path`, `builder_pgid`, `builder_start`, `review_round`, `final` (migration 042) |
 | Concurrency and branch lock | `runner_lease`, unique on active `(repo, branch)` | nothing |
 | Cost and tokens | `cost` rows, `source='run'`, keyed to the lead assignment; `reads.item_assignments` already sums them | nothing |
 | Item lock while queued or running | `workflow.change_status` refuses every status write while an assignment is queued or running (criterion 7.19) | nothing |
@@ -113,10 +113,11 @@ Steps, each written before it starts:
    It checks the title (63) and the body (`sd-docs-lint --pr-body`), then `sd-ship -C <worktree> lane enqueue`.
 6. `enqueued`: in one transaction the lease is released (the builder slot frees), the members end `done`, and the items stay `in_progress`.
    The run stays open: `released_at` and `outcome` stay null until step 7 ends it. The supervisor exits.
-   Reap skips a run at `enqueued`, `checking` or `cleaning` with no live supervisor: no supervisor is expected while the lane holds it.
+   Reap skips a run at `enqueued` only: the lane holds it, and no supervisor is expected.
    The lane moves the items to `done` when it merges.
 7. The tick watches the lane entry. On `merged`, an auto-pickup run gets `checking` (below); every run then gets `cleaning`:
-   a fresh supervisor runs the entry's `remove` command once the worktree is clean.
+   the tick writes the step and a fresh `heartbeat_at` with a CAS on `step='enqueued'`, then spawns a supervisor.
+   From then on the run is the supervisor's, and normal reap applies. Cleaning runs the entry's `remove` command once the worktree is clean.
    A lane `failed` or `skipped` entry ends the run `lane_failed`; the lane's own note names the step and reason.
    Cleaning, or `lane_failed`, writes `released_at` and the outcome last, in one transaction.
 
@@ -134,15 +135,40 @@ The run row logs the model.
   The supervisor kills the active step's group (`builder_pgid`) at its next beat and waits for ESRCH, then keeps the worktree,
   ends the members `cancelled`, and moves the items to `ready` with a note. A group that outlives KILL blocks the run instead.
   From `enqueuing` on, cancel is refused with the lane entry to cancel: the lane may already hold the branch.
-- Reap, each tick, for each unreleased run that fails liveness:
+- Reap, each tick, for each unreleased run that fails liveness, except a run at `enqueued`:
   1. CAS `outcome='interrupted'` where `heartbeat_at` is the value read; a lost CAS means the supervisor beat, so leave it.
   2. Kill the supervisor's process group if its pid and start still match, then `builder_pgid` if any member lives.
-     Confirm both gone before step 3; a group that outlives KILL blocks the run, with no retry, so two writers never share the worktree.
-  3. A loss in `worktree`, `building` or `fixing` retries once: a new run row, same worktree and branch, old lease released in the same transaction.
-  4. A second loss, a timeout retried once, `error_max_turns` twice, or any step's unknown result twice:
-     members `blocked`, items `blocked`, and an action note naming the step, the log and the worktree.
-  5. A loss in a later step needs no rebuild: a fresh supervisor resumes that step.
+     Confirm both gone before step 3. A group that outlives KILL sets `outcome='blocked'` and keeps the row and lease
+     unreleased; each tick kills again and releases once ESRCH answers, so two writers never share the worktree.
+  3. Recover, in one transaction (below).
+- Recovery is one transaction, whoever finds the loss: reap, or the supervisor itself on a timeout or `error_max_turns`.
+  It releases the old row (and its lease) with its outcome, then opens a fresh run row: `run` + 1, the same worktree and branch,
+  the resume step from the ownership table, the old `review_round` and `session_id`, a fresh `heartbeat_at`, no supervisor yet.
+  A step that holds a lease gets a new lease row for the fresh run. The tick spawns its supervisor.
+  The fresh row's `outcome` is null, so its supervisor passes the write guard; the old row's is set, so a late old writer writes nothing.
+- A second loss at the same step (a closed row of the assignment with that step and outcome `interrupted`, `timed_out` or
+  `error_max_turns`) opens no fresh row: the ownership table's second-loss action applies.
+- A run with `cancel_requested` set is closed `cancelled` instead; it opens no fresh row.
 - A permission denial is no retry: it files a `--kind question` note naming the denied tool, and blocks the item.
+
+### Run ownership by step
+
+Every unreleased run row is owned by one process at a time. Reap acts only on a row a supervisor owns.
+
+| Step | Owner | Group in `builder_pgid` | Lease | Reap when liveness fails | Recovery | Cancel | Test |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `claimed` | the spawned supervisor, before its first write | none yet | held | kill and confirm any recorded pid | fresh row at `worktree`; second loss: blocked | closed `cancelled`, items `ready` | `test_reap_unstarted_run` |
+| `worktree` | supervisor | `git` | held | kill and confirm | fresh row at `worktree`; second loss: blocked | kill, confirm, `cancelled`, items `ready` | `test_resume_worktree_fresh_row` |
+| `building` | supervisor | `claude -p` | held | kill and confirm | fresh row at `building`, same worktree; timeout and max-turns too; second loss: blocked | as `worktree` | `test_resume_building_fresh_row` |
+| `reviewing` | supervisor | `sd-review` | held | kill and confirm | fresh row at `reviewing`, round kept; second loss: blocked | as `worktree` | `test_resume_reviewing_keeps_round` |
+| `fixing` | supervisor | `claude -p --resume` | held | kill and confirm | fresh row at `reviewing`, round kept: the review reads the head the fix left; second loss: blocked | as `worktree` | `test_resume_fixing_reviews_again` |
+| `enqueuing` | supervisor | `sd-docs-lint`, `sd-ship` | held | kill and confirm | fresh row at `enqueuing`; it reads `lane list` for the item at its head first and records `enqueued` when the entry exists; second loss: blocked | refused, naming the lane entry | `test_enqueue_resume_no_duplicate` |
+| `enqueued` | lane | none; the lane's runner keeps its own | released | skip | none needed: the tick moves it to `checking`, `cleaning` or `lane_failed` | refused, naming the lane entry | `test_reap_skips_only_enqueued` |
+| `checking` | supervisor, fresh after the merge | `repo-sync.sh`, `dashboard.sh` | none | kill and confirm | fresh row at `checking`; second loss: health unknown, so auto-pickup off, push, item filed, then `cleaning` | refused: merged | `test_reap_kills_checking_group` |
+| `cleaning` | supervisor | `git worktree remove` | none | kill and confirm | fresh row at `cleaning`; second loss: outcome `done`, worktree kept with a note | refused: merged | `test_reap_kills_cleaning_group` |
+| `interrupted`, unreleased | reap, closing it | the dead row's groups | held | kill and confirm, then recover | the recovery transaction | `cancel_requested`: closed `cancelled`, no fresh row | `test_reap_resumes_kill` |
+| `blocked`, unreleased (a group outlived KILL) | reap | the survivor | held | kill and confirm each tick | released once ESRCH answers; no fresh row | refused | `test_survivor_holds_lease` |
+| `done`, `blocked`, `cancelled`, `lane_failed`, `interrupted`, `timed_out`, released | none | none | released | refuse: reap reads only unreleased rows | none; Retry on a blocked run is `runner.requeue`, a new claim | refused | `test_reap_ignores_released` |
 
 ### Auto-pickup
 
@@ -175,22 +201,24 @@ The run row logs the model.
 | Press | assignments queued | stale revision, item not ready, active assignment | whole selection refused, nothing written | `test_queue_refuses_whole_selection` |
 | Claim | run, lease, members running, items in_progress | tick killed in the transaction; a second claim races | SQLite rolls back; `BEGIN IMMEDIATE` serializes, the second sees the first's lease | `test_claim_race_respects_repo_cap` |
 | Claim | same | item moved after the press | its re-check fails, row count differs, rollback | `test_claim_rolls_back_moved_item` |
-| Spawn | supervisor pid and start | spawn fails, or dies before its first write | no beat for 180 s after `claimed`: reaped, retried once | `test_reap_unstarted_run` |
+| Spawn | supervisor pid and start | spawn fails, or dies before its first write | no beat for 180 s after the row's fresh `heartbeat_at`: reaped, a fresh row at the same step; second loss blocks | `test_reap_unstarted_run` |
 | Worktree | branch and folder on disk | git fails; killed after the add | retry finds the worktree on its branch and keeps it; another branch there blocks | `test_worktree_step_resumes` |
-| Building | builder process group, log | hang; supervisor dies with the builder alive | 60 min kill; reap kills the orphan group, retry once | `test_timeout_kills_group`, `test_reap_kills_orphan` |
+| Building | builder process group, log | hang; supervisor dies with the builder alive | 60 min kill; reap kills the orphan group; a fresh row retries once | `test_timeout_kills_group`, `test_reap_kills_orphan` |
 | Judge | `final`, cost row, report note | exit 0 with denials; no final line | denial: question note, blocked; no line is unknown, not a pass | `test_judge_last_line_not_exit` |
 | Reviewing, fixing | review report, fix commits | review tool error; blockers after 3 rounds | unknown result retried once, then blocked; rounds spent: blocked with the blockers | `test_review_rounds_bound` |
 | Enqueuing | lane entry | killed after the lane wrote the entry | the resumed step reads `lane list` for the item at its head first: no second entry | `test_enqueue_resume_no_duplicate` |
 | Enqueued | lease released, members done | a late old supervisor finishes | its CAS names its own run and an open outcome: no row changes | `test_late_run_writes_nothing` |
 | Reap | outcome interrupted, supervisor killed | heartbeat stale while the supervisor still runs | reap kills its group and confirms it gone before a retry; its next failed write stops it anyway; a survivor blocks the run | `test_reap_kills_live_stale_supervisor` |
-| Reap | outcome interrupted, new attempt | tick killed between the CAS and the kill | next tick kills every group of an ended unreleased run before any retry | `test_reap_resumes_kill` |
+| Reap | outcome interrupted, fresh row | tick killed between the CAS and the recovery transaction | the row is `interrupted` and unreleased, so the next tick kills, confirms and recovers it | `test_reap_resumes_kill` |
+| Recovery | old row released, fresh row at the resume step | a late old supervisor writes after recovery | its row's outcome is set, so the write guard changes nothing and it stops | `test_late_run_writes_nothing` |
+| Recovery, later step | fresh row at `reviewing`, `enqueuing`, `checking` or `cleaning` | the resumed step's supervisor dies too | a second loss at that step takes the ownership table's second-loss action | `test_second_loss_same_step` |
 | Cancel | active step's group killed | cancel during reviewing or fixing | the step's child is in `builder_pgid` too: killed, ESRCH confirmed, then cancelled | `test_cancel_kills_the_review_child` |
 | Cancel | none | cancel at enqueuing or later | refused, naming the lane entry; nothing changes | `test_cancel_after_enqueue_refused` |
-| Enqueued | lease released, run open | reap sees no supervisor while the lane holds the run | reap skips enqueued, checking and cleaning runs; step 7 releases the run last | `test_reap_skips_enqueued_run` |
+| Enqueued | lease released, run open | reap sees no supervisor while the lane holds the run | reap skips `enqueued` only; `checking` and `cleaning` get a supervisor and normal reap | `test_reap_skips_only_enqueued` |
 | Cancel | cancel_requested, members cancelled, items ready | supervisor dead at cancel | reap ends it as cancelled, not retried | `test_cancel_dead_supervisor` |
 | Checking | auto-pickup setting, push, item | killed after health failed | result not recorded, so the next tick runs the check again; off is written before the push | `test_health_failure_turns_off_first` |
 | Two blocked | auto-pickup setting off | killed after the second block | the next tick counts the last two auto-pickup outcomes again and writes off | `test_two_blocked_runs_turn_off` |
-| Cleaning | worktree removed | worktree dirty or held | left in place with a note; no retry until clean | `test_clean_keeps_dirty_worktree` |
+| Cleaning | worktree removed | worktree dirty or held | left in place with a note; the run ends `done` and releases | `test_clean_keeps_dirty_worktree` |
 
 Guards this skips or moves: `runner.claim` and `runner.release` are not called; their exclusive-lease and delivery logic does not apply to builds.
 `test_claim_respects_exclusive_lease` keeps the exclusive-lease rule for any other lease in the repo.
