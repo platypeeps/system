@@ -2776,9 +2776,9 @@ class FailureNotificationTest(unittest.TestCase):
         pushes = self.pushes()
         self.assertEqual(len(pushes), 1, pushes)
         words = pushes[0].split("|")
-        self.assertEqual(words[:7], ["-t", f"demo failed on {host_name()}: data at risk",
-                                     "-p", "high", "-c", "local,ntfy", "-b"], words)
-        self.assertIn("exit 3", words[7])
+        self.assertEqual(words[:6], ["-t", f"demo failed on {host_name()}: data at risk",
+                                     "-p", "high", "-c", "ntfy"], words)
+        self.assertIn("exit 3", words[6])
         self.job("true")
         self.assertEqual(self.fx.exec_job("demo").returncode, 0)
         self.job("exit 3")
@@ -2838,6 +2838,61 @@ class FailureNotificationTest(unittest.TestCase):
         self.assertEqual(run.returncode, 3, run.stderr)
         self.assert_recorded_and_no_other_post()
         self.assertEqual(len(self.pushes()), 1, self.pushes())
+
+
+class RealNotifierPushTest(unittest.TestCase):
+    """The marker stands for a push the phone got: ntfy delivered (sd:5997).
+
+    The real notify.sh runs here, beside the copy, with recording `curl`
+    and `osascript` stubs. A banner that showed while ntfy failed or had no
+    topic is not a push: the next failing run must try again.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        notify = self.fx.tmp / "local-notify" / "notify.sh"
+        notify.parent.mkdir()
+        shutil.copy(FOLDER.parent / "local-notify" / "notify.sh", notify)
+        self.curl_log = self.fx.tmp / "curl-calls.txt"
+        curl = self.fx.quiet / "curl"
+        curl.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{self.curl_log}'\n"
+                        'exit "${CURL_EXIT:-0}"\n')
+        curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
+        self.marker = self.fx.folder / "logs" / ".demo.pushed"
+
+    def topic(self):
+        (self.fx.config / "notify").mkdir()
+        (self.fx.config / "notify" / ".env").write_text("NTFY_TOPIC=example-topic\n")
+
+    def posts(self):
+        return self.curl_log.read_text().splitlines() if self.curl_log.exists() else []
+
+    def test_a_banner_while_ntfy_fails_is_not_a_push(self):
+        self.topic()
+        for _ in range(2):
+            run = self.fx.exec_job("demo", {"CURL_EXIT": "22"})
+            self.assertEqual(run.returncode, 3)
+            self.assertIn("at-risk push did not go out", run.stderr)
+            self.assertFalse(self.marker.exists())
+        self.assertEqual(len(self.posts()), 2, self.posts())
+
+    def test_no_ntfy_topic_is_not_a_push(self):
+        for _ in range(2):
+            run = self.fx.exec_job("demo")
+            self.assertEqual(run.returncode, 3)
+            self.assertIn("at-risk push did not go out", run.stderr)
+            self.assertFalse(self.marker.exists())
+        self.assertEqual(self.posts(), [])
+
+    def test_a_delivered_push_is_sent_once(self):
+        self.topic()
+        for _ in range(2):
+            self.assertEqual(self.fx.exec_job("demo").returncode, 3)
+        self.assertTrue(self.marker.exists())
+        self.assertEqual(len(self.posts()), 1, self.posts())
+        self.assertIn("example-topic", self.posts()[0])
 
 
 def host_name():

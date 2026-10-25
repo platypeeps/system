@@ -481,10 +481,12 @@ push_at_risk() { # job, exit code, log offset of this run's own output
   fi
   [ ! -f "$pushed" ] || return 0
   # -c and -p: no Jev routing, and nothing from the log leaves the machine.
+  # ntfy alone and no -b, so exit 0 means the phone push went out: notify.sh
+  # counts a banner, or a skipped channel beside one, as delivered.
   # Without the job's lock (fd 8), as tee: a notifier child left behind must
   # not hold the next run off.
   if st_bounded 60 sh "$ROOT/../local-notify/notify.sh" \
-      -t "$job failed on $(hostname -s): data at risk" -p high -c local,ntfy -b \
+      -t "$job failed on $(hostname -s): data at risk" -p high -c ntfy \
       "exit $rc, and the run did not grade its data safe. Today has the report; log: local-cron-jobs/logs/$job.log" \
       >/dev/null 2>&1 8>&-; then
     date '+%Y-%m-%dT%H:%M:%S%z' > "$pushed" || true

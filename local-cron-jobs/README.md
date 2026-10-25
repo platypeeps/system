@@ -212,8 +212,9 @@ One failure pushes to the phone: one that puts data at risk (sd:5997). A
 failed run that proved its data safe prints
 `SD_REPORT_ATTENTION: data safe, one step failed: <step>`, and any other
 failure is at risk (ruling on sd:6030). Only the run's own lines count. The
-wrapper pushes through `local-notify` with `-c local,ntfy -p high`, so it
-reaches the phone where `NTFY_TOPIC` is set in local-notify's `.env`. The
+wrapper pushes through `local-notify` with `-c ntfy -p high` and no `-b`,
+so it reaches the phone where `NTFY_TOPIC` is set in local-notify's `.env`,
+and only an ntfy delivery counts as sent. The
 push names the job, the host and the exit code, and no log line. It goes
 out once; `logs/.<job>.pushed` holds the next until a run passes or grades
 itself safe. A push that fails is named on stderr and tried by the next
