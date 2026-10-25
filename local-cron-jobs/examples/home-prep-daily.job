@@ -1,0 +1,12 @@
+# Home prep (sd:6029): at 18:00, one bounded Sonnet run preps the home items
+# due tomorrow (no repo, or a repo in HOME_PREP_REPOS). It makes Gmail drafts
+# and private docs only, sends nothing, and writes one `Prepped for <due>:`
+# note per item. The operator acts. `local-home-prep/README.md` has the steps.
+#
+# Hub only: it writes to the workflow database, and the workspace MCP server
+# that holds the account runs there. Run `home-prep.sh preview`, then one
+# `home-prep.sh run` by hand, and read its notes before installing this.
+JOB_SCHEDULE="0 18 * * *"
+# The model step is bounded at 30 min; selection and notes at 5 min each.
+JOB_TIMEOUT="45m"
+JOB_COMMAND="sh \"$ROOT/../local-home-prep/home-prep.sh\" run"
