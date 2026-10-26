@@ -510,7 +510,10 @@ checkout.
 Exit `3` means a removal was held. The nightly job lets that fire the failure
 banner, which is the intended trade: an entry disappearing from a machine is
 either a deliberate uninstall worth one `capture --apply` by hand, or a
-machine that has broken in a way worth knowing about tonight.
+machine that has broken in a way worth knowing about tonight. It fires once
+per held set: while the same removal stands, later nights print it and exit
+`0`, keeping it in `~/.config/machine-setup/autocapture-held`
+(`MACHINE_SETUP_STATE`); a changed set alerts again.
 
 ## Comparing and filing
 
