@@ -212,8 +212,6 @@ class CheckoutGuard(unittest.TestCase):
                         f"LOG={log}; echo hi > $LOG",
                         f'LOG={log}; touch "$LOG"',
                         f'export LOG={log}; echo hi >> "$LOG"',
-                        f'declare LOG={log}; echo hi > "$LOG"',
-                        f'readonly LOG={log}; echo hi > "$LOG"',
                         f'D=/tmp; LOG=$D/x.txt; echo hi > "$LOG"'):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=lane), "allow")
@@ -221,6 +219,8 @@ class CheckoutGuard(unittest.TestCase):
         for command in (f'LOG={log}; echo hi > "$LOG"',
                         f'readonly D={lane}; D={log}; touch "$D"',
                         f'local L={log}; touch "$L"',  # outside a function it fails
+                        f'declare LOG={log}; echo hi > "$LOG"',  # a declaration is unknown
+                        f'readonly LOG={log}; echo hi > "$LOG"',
                         f'export -Z L={log}; touch "$L"',  # a bad option fails
                         f'if false; then L={log}; fi; touch "$L"',
                         f'L={log} && source ./env.sh; touch "$L"'):  # it may set L
@@ -592,6 +592,28 @@ class CheckoutGuard(unittest.TestCase):
                 self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "), command)
                 self.assertEqual(self.bash(command, cwd=work), "allow")
 
+    def test_a_declaration_is_unknown(self):
+        """Lead review of 86680cc0: the reader does not follow what `readonly`,
+        `declare`, `typeset`, `local` or `export -n` do to a name, so each name
+        they touch is unknown, and every name after one that names none."""
+        lane, work = self.system, self.worktree
+        for command in (f'readonly D; export D=/tmp; touch "${{D:-{lane}}}/x"',  # round 4
+                        f'declare -r D; export D=/tmp; touch "${{D:-{lane}}}/x"',
+                        f'typeset -r D; export D=/tmp; touch "${{D:-{lane}}}/x"'):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=work).startswith("deny: "), command)
+        for command in ('D=/tmp; readonly; touch "$D/x"',
+                        'D=/tmp; declare -r; touch "$D/x"',
+                        'D=/tmp; typeset -r; touch "$D/x"',
+                        'D=/tmp; local D; touch "$D/x"',
+                        'D=/tmp; declare D; touch "$D/x"',
+                        'D=/tmp; export -n D; touch "$D/x"'):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "), command)
+        for command in ('readonly D=/tmp; touch "$D/x"', 'export D=/tmp; touch "$D/x"'):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=work), "allow", command)
+
     def test_a_parameter_form_is_read(self):
         """sd:6153: `${D:-w}`, `${D-w}`, `${D:+w}`, `${D+w}`, `${D:?w}`,
         `${D#p}`, `${D##p}`, `${D%p}`, `${D%%p}` and `${#D}` read as the
@@ -655,10 +677,9 @@ class CheckoutGuard(unittest.TestCase):
         """sd:6153 round 8: bash expands every `export` argument first, so
         `E=$D` takes D's value from before the command."""
         lane, work = self.system, self.worktree
-        for command in (f'D={lane}; export D=/tmp E=$D; touch "$E/x"',
-                        f'D={lane}; declare D=/tmp E=$D; touch "$E/x"'):
-            with self.subTest(command=command):
-                self.assertDenied(self.bash(command, cwd=work), lane)
+        self.assertDenied(self.bash(f'D={lane}; export D=/tmp E=$D; touch "$E/x"', cwd=work), lane)
+        decision = self.bash(f'D={lane}; declare D=/tmp E=$D; touch "$E/x"', cwd=work)
+        self.assertTrue(decision.startswith("deny: "), decision)  # a declaration is unknown
         self.assertDenied(self.bash(f'D=/tmp E={lane}; touch "$E/x"', cwd=work), lane)
 
     def test_a_reader_error_is_an_unknown(self):

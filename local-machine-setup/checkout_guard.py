@@ -18,8 +18,10 @@ agents write, so a copy of this file run from one protects nothing there.
   truncate on a path inside a root, the last argument of cp, ln, install
   and rsync, and a `>` or `>>` target, each judged like a file tool's path.
   `cd` inside the command moves the working folder until its subshell ends,
-  and `NAME=value`, alone or after `export` or `declare`, sets `$NAME` for
-  later commands. A quoted or escaped operator is plain text. Fetch,
+  and `NAME=value`, alone or after `export`, sets `$NAME` for later
+  commands; a name `readonly`, `declare`, `typeset`, `local` or
+  `export -n` touches is unknown, and so is every name after a bare
+  `readonly`. A quoted or escaped operator is plain text. Fetch,
   worktree, branch and every read pass.
 - A change that may not happen keeps the old state beside the new one: a
   command after `&&` or `||`, in an `if`, loop or `case` body, a pipeline
@@ -757,10 +759,18 @@ def assigned(words, variables, spend):
         return {str(i): frozenset().union(*(variables.get(str(i + count), frozenset([""]))
                                             if count is not None else unknown for count in counts))
                 for i in range(1, known + 1)}
-    options = ""
     if head in DECLARERS:
         options = "".join(word[1:] for word in words[1:] if word[:1] in "-+")
         words = [word for word in words[1:] if word[:1] not in "-+"]
+        if head != "export" or "n" in options:
+            # the reader does not follow what a declaration does to a name (a
+            # readonly one makes a later assignment fail): each name it
+            # touches is unknown, and every name after a bare `readonly`
+            # (lead ruling in review of 86680cc0, as on sd:6083)
+            names = [NAME.match(word).group() for word in words if NAME.match(word)]
+            if not names and (head == "readonly" or "r" in options):
+                return {name: unknown for name in [*variables, "*"]}
+            return {name: unknown for name in names}
     elif not all(ASSIGNMENT.match(word) for word in words):
         return {}
     incoming, variables, changes = variables, dict(variables), {}
@@ -769,13 +779,13 @@ def assigned(words, variables, spend):
         if not match:
             continue
         name = NAME.match(word).group()
-        if match.group(1) or set(options) & set("aA"):  # an array or one of its elements
+        if match.group(1):  # an array element
             variables[name] = changes[name] = unknown
             continue
         text = (("${%s}" % name if match.group().endswith("+=") else "")
                 + tilde(word[match.end():], assignment=True))
         values = expand(text, variables, spend)
-        if head in DECLARERS:  # bash expands every argument first; zsh in turn (sd:6153)
+        if head == "export":  # bash expands every argument first; zsh in turn (sd:6153)
             values += expand(text, incoming, spend)
         variables[name] = changes[name] = frozenset(os.path.expanduser(value) for value in values)
     return changes
@@ -804,13 +814,13 @@ def sticks(words, changes, variables):
     A plain assignment fails only on a readonly name. The reader cannot see
     which names the incoming shell holds readonly, so a name it may hold
     (its environment, set earlier, or anything after `source`) may fail; one
-    it does not hold, set to a known value, sticks. `local` outside a
-    function, an option, a read and the other builtins may fail.
+    it does not hold, set to a known value, sticks. Another declaration,
+    an option, a read and the other builtins may fail.
     """
     head = words[0]
-    if head not in DECLARERS - {"local"} and not ASSIGNMENT.match(head):
+    if head != "export" and not ASSIGNMENT.match(head):
         return False
-    if head in DECLARERS and any(word[:1] in "-+" for word in words[1:]):
+    if head == "export" and any(word[:1] in "-+" for word in words[1:]):
         return False
     return "*" not in variables and all(
         name not in variables and name not in READONLY and not any(UNKNOWN in value
