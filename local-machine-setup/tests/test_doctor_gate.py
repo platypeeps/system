@@ -8,6 +8,7 @@ snapshots are the pinned pack's own `sd-db backup` runs, taken at a set time.
 """
 
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -405,7 +406,8 @@ class BackupAge(PromoteCase):
     def test_no_checkpoint_at_all_is_not_ready_while_the_hub_answers(self):
         """The fixture's snapshots carry no readable manifest: no age, never ok."""
         line = self.age_line(**self.answering_hub())
-        self.assertEqual("  NOT-READY backup age unknown: no snapshot under the roots that answered has a checkpoint; "
+        self.assertEqual("  NOT-READY backup age unknown: no snapshot under the roots that answered passes "
+                         "restore's checks; "
                          "the hub answers, so its backups have not reached the roots in 24 h", line)
 
     def test_a_checkpoint_in_the_future_is_no_age(self):
@@ -444,6 +446,53 @@ class BackupAge(PromoteCase):
             (partial / "publications").mkdir()
             self.assertIn(f" in {partial}", self.age_line())
 
+    def test_a_snapshot_restore_would_refuse_is_not_the_newest(self):
+        """Review round 2: the line judges a snapshot as restore --newest does, hashes and all."""
+        hub = self.answering_hub()
+        older = self.snapshot(datetime.timedelta(hours=30))
+
+        def flip_a_byte(folder):
+            data = bytearray((folder / "sd.db").read_bytes())
+            data[-1] ^= 0xFF
+            (folder / "sd.db").write_bytes(bytes(data))
+
+        def cut_short(folder):
+            data = (folder / "sd.db").read_bytes()
+            (folder / "sd.db").write_bytes(data[:len(data) // 2])
+
+        def add_a_file(folder):
+            (folder / "stray.txt").write_text("written after the manifest\n")
+
+        for damage in (flip_a_byte, cut_short, add_a_file):
+            with self.subTest(damage.__name__):
+                bad = self.snapshot(datetime.timedelta(hours=1))
+                damage(bad)
+                line = self.age_line(**hub)
+                self.assertTrue(line.startswith("  NOT-READY backup age 30 h, 24 h or more: "), line)
+                self.assertIn(f" in {older};", line)
+                shutil.rmtree(bad)
+        with self.subTest("no snapshot passes"):
+            flip_a_byte(older)
+            self.assertEqual("  NOT-READY backup age unknown: no snapshot under the roots that answered passes "
+                             "restore's checks; the hub answers, so its backups have not reached the roots in 24 h",
+                             self.age_line(**hub))
+
+    def test_a_snapshot_newer_than_this_pack_is_not_ready_even_with_the_hub_down(self):
+        """restore --newest stops at it rather than restore an older one, so promote would fail."""
+        self.snapshot(datetime.timedelta(hours=30))
+        newer = self.snapshot(datetime.timedelta(hours=1))
+        data = bytearray((newer / "sd.db").read_bytes())
+        data[60:64] = (999999).to_bytes(4, "big")  # PRAGMA user_version, the schema version
+        (newer / "sd.db").write_bytes(bytes(data))
+        manifest = newer / "backup-manifest.json"
+        value = json.loads(manifest.read_text())
+        value["entries"]["sd.db"] = hashlib.sha256(bytes(data)).hexdigest()
+        manifest.write_text(json.dumps(value))
+        line = self.age_line()
+        self.assertTrue(line.startswith(f"  NOT-READY backup age unknown: {newer} is schema 999999, newer than "
+                                        "this pack ("), line)
+        self.assertTrue(line.endswith("); restore --newest stops there: update the pack"), line)
+
     def test_the_newest_checkpoint_wins_across_roots_whatever_the_names(self):
         """restore --newest orders by checkpoint, not by root or name."""
         nightly = self.nas / "sd-backups"
@@ -462,7 +511,8 @@ class BackupAge(PromoteCase):
         out = self.run_promote().stdout
         self.assertIn(f"  --      backup root not readable now: {self.hourly_nas}", out)
         self.assertNotIn("ok      backup age", out)
-        self.assertIn("  --      backup age unknown: no snapshot under the roots that answered has a checkpoint;", out)
+        self.assertIn("  --      backup age unknown: no snapshot under the roots that answered passes "
+                      "restore's checks;", out)
 
     def test_a_reader_that_times_out_gives_no_age(self):
         self.snapshot(datetime.timedelta(hours=1))
@@ -473,7 +523,7 @@ class BackupAge(PromoteCase):
         result = subprocess.run([str(SCRIPT), "promote"], env=env, capture_output=True, text=True,
                                 cwd=str(self.tmp), stdin=subprocess.DEVNULL, timeout=120)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertIn("  --      backup age not read: the snapshots' checkpoints were not read under", result.stdout)
+        self.assertIn("  --      backup age not read: the snapshots were not checked under", result.stdout)
         self.assertNotIn("ok      backup age", result.stdout)
         self.assertNotIn("NOT-READY", result.stdout)
 

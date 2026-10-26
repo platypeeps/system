@@ -403,8 +403,10 @@ Get the standby ready, once:
    Each line reads `ok`, `--` (cannot be read now) or `NOT-READY`; it is not counted as drift.
    - The gate line reads `ok` only for a pass under 8 days old; a failure, an older pass or no record is `NOT-READY`.
      A later try with no verdict adds "last try timed out" or "last try did not finish".
-   - The backup age line reads `ok` while the newest snapshot's checkpoint is under 24 hours old.
+   - The backup age line dates the snapshot `restore --newest` would restore: the newest that passes its checks, hashes included.
+     It reads `ok` while that snapshot's checkpoint is under 24 hours old.
      Older, it is `NOT-READY` while the hub answers, and `--` while the hub is down, since that snapshot is the best there is.
+     A snapshot newer than this pack's schema is `NOT-READY` either way: `restore --newest` stops there, so update the pack.
 
 Promote, once the hub is dead:
 

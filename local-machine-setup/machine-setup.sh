@@ -6712,56 +6712,82 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
   fi
 }
 
-# The backup age line (design, "Readiness inputs"): the newest checkpoint
-# among the snapshots under the roots that answered, as restore --newest
-# orders them. Read with the pack's own reader, under its interpreter, as
-# this repository opens no database (tests/test_one_store.py). A snapshot is
-# skipped when its manifest cannot be read, a file or folder it lists is not
-# there, or its database holds no checkpoint: the hourly NAS copy writes each
-# file under a temporary name and renames it whole, so a copy cut short
-# lacks a file. restore --newest still hashes what it restores. `ok` under
-# 24 h. Older, or no checkpoint at all, is NOT-READY while the hub answers:
+# The backup age line (design, "Readiness inputs"): the checkpoint of the
+# snapshot restore --newest would restore from the roots that answered. It
+# takes the candidates newest checkpoint first and judges each as
+# restore_newest does, with the pack's own checks under its interpreter, as
+# this repository opens no database (tests/test_one_store.py): a local copy,
+# its files hashed against the manifest, the schema stop, _check_backup and
+# check_restorable. The first that passes dates the line. On the share the
+# checks took 200 s; on a local copy of the 871 MB snapshot 1 s, and the
+# copy 6 s. The whole line, with about 250 checkpoints read on the NAS, took
+# 31 s to 62 s on the hub (2026-10-26), so it gets 180 s. `ok`
+# under 24 h. Older, or none passing, is NOT-READY while the hub answers:
 # its backups stalled. With the hub down it is the best there is, so `--`.
-# A read that fails or times out is no age: `--`, never ok.
+# A snapshot newer than this pack is NOT-READY either way: restore stops at
+# it. A read that fails or times out is no age: `--`, never ok.
 backup_age_line() {
   # The first word after the folder is for the test's interpreter stub.
   # shellcheck disable=SC2016 # Python, not shell
-  if ! hr_age=$(bound_step 60 "$SD_DB_PYTHON" -I -c 'import datetime, json, os, re, sys
+  if ! hr_age=$(bound_step 180 "$SD_DB_PYTHON" -I -c 'import datetime, json, shutil, sqlite3, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from sd_db.backup import _checkpoint
-best = None
-for root in filter(None, sys.argv[3].splitlines()):
+import sd_db.backup
+backup = sys.modules["sd_db.backup"]  # the package names a function backup too
+candidates = []
+for root in map(Path, filter(None, sys.argv[3].splitlines())):
     try:
-        names = os.listdir(root)
-    except OSError:
+        backup._retention_root(root)
+        entries = sorted(root.iterdir())
+    except (backup.BackupError, OSError):
         continue
-    for name in names:
-        folder = Path(root, name)
-        if folder.is_symlink() or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}([.][0-9]+)?", name):
+    for path in entries:
+        if path.is_symlink() or not backup.DATED_NAME.fullmatch(path.name):
             continue
         try:
-            entries = json.loads((folder / "backup-manifest.json").read_bytes())["entries"]
-            if any(not ((folder / n).is_dir() if h is None else (folder / n).is_file()) for n, h in entries.items()):
-                continue
-            taken = _checkpoint(folder)[0]
-        except Exception:
+            taken_at, current = backup._checkpoint(path)
+        except backup.BackupError:
             continue
-        if best is None or taken > best[0]:
-            best = (taken, folder)
-if best is None:
-    print("none")
-else:
-    age = datetime.datetime.now(datetime.timezone.utc) - best[0]
-    print(int(age.total_seconds()), best[0].isoformat(), best[1])' "$SD_PACK_ROOT/lib" backup-age "$hr_listed" 2>/dev/null) ||
+        candidates.append((taken_at, current, backup._directory_order(path), path))
+# restore_newest, less the restore: its order, its copy, its checks, its catches.
+for taken_at, _, _, path in sorted(candidates, reverse=True):
+    with tempfile.TemporaryDirectory(prefix="hub-ready-") as stage:
+        local = Path(stage) / path.name
+        try:
+            shutil.copytree(path, local, symlinks=True)
+            if json.loads((local / backup.BACKUP_MANIFEST).read_bytes()).get("entries") != backup._retention_inventory(
+                    local, moved=True):
+                raise backup.BackupError("its files differ from its manifest")
+        except (backup.BackupError, OSError, ValueError, AttributeError):
+            continue
+        check = backup.check_restorable(local / "sd.db")
+        if check.version is not None and check.version > backup.SCHEMA_VERSION:
+            print("newer", check.version, backup.SCHEMA_VERSION, path)
+            sys.exit(0)
+        try:
+            backup._check_backup(local, moved=True)
+            if not check.accepted:
+                continue
+        except (backup.BackupError, sqlite3.Error):
+            continue
+    age = datetime.datetime.now(datetime.timezone.utc) - taken_at
+    print(int(age.total_seconds()), taken_at.isoformat(), path)
+    sys.exit(0)
+print("none")' "$SD_PACK_ROOT/lib" backup-age "$hr_listed" 2>/dev/null) ||
      [ -z "$hr_age" ]; then
-    echo "  --      backup age not read: the snapshots' checkpoints were not read under $SD_DB_PYTHON in time"
+    echo "  --      backup age not read: the snapshots were not checked under $SD_DB_PYTHON in time"
     return 0
   fi
   hr_secs=${hr_age%% *}
   hr_why="its backups have not reached the roots in 24 h"
   case "$hr_secs" in
-    none) hr_what="backup age unknown: no snapshot under the roots that answered has a checkpoint" ;;
+    none) hr_what="backup age unknown: no snapshot under the roots that answered passes restore's checks" ;;
+    newer)
+      hr_rest=${hr_age#newer }
+      hr_theirs=${hr_rest%% *}
+      hr_rest=${hr_rest#* }
+      echo "  NOT-READY backup age unknown: ${hr_rest#* } is schema $hr_theirs, newer than this pack (${hr_rest%% *}); restore --newest stops there: update the pack"
+      return 0 ;;
     -[0-9]*|[0-9]*)
       hr_rest=${hr_age#* }
       hr_at="newest checkpoint ${hr_rest%% *} in ${hr_rest#* }"
