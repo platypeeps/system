@@ -130,6 +130,48 @@ class UrlCredentials(unittest.TestCase):
                 self.assertIn("URL with embedded credentials", result.stdout)
 
 
+class IdentifierExports(unittest.TestCase):
+    """A `*_KEY_ACCOUNT` export holds an account email, not a key (sd:6321).
+
+    The name contains `KEY`, so the env pass searched for the email and the
+    weekly scan failed with "YOURS: $..._KEY_ACCOUNT found in: ...".
+    """
+
+    #: Joined here, so this file is not a finding of the repository scan.
+    SECRET = "sk-" + "Zq7" * 12
+
+    def scan(self, path: str) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / "home" / ".config" / "shell").mkdir(parents=True)
+            (root / "tree").mkdir()
+            (root / "home" / ".config" / "shell" / "env.sh").write_text(
+                'export EXAMPLE_KEY_ACCOUNT="alice@example.test"\n'
+                'export EXAMPLE_API_KEY="%s"\n' % self.SECRET, encoding="utf-8")
+            (root / "tree" / "notes.json").write_text(
+                '{"email": "alice@example.test", "pasted": "%s"}\n' % self.SECRET, encoding="utf-8")
+            env = dict(os.environ, HOME=str(root / "home"), SYSTEM_TOOLS_CONFIG=str(root / "config"), PATH=path,
+                       JEV_SECRET_SCAN="0")
+            env.pop("S4S_CONF", None)
+            isolate_jev(env)
+            return subprocess.run(["sh", str(SCRIPT)], cwd=root / "tree", env=env,
+                                  capture_output=True, text=True, timeout=120)
+
+    SEARCHERS = UrlCredentials.SEARCHERS
+
+    def test_an_account_email_export_is_not_a_key(self) -> None:
+        for searcher, path in self.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(path)
+                self.assertNotIn("EXAMPLE_KEY_ACCOUNT", result.stdout + result.stderr)
+
+    def test_an_api_key_export_is_still_yours(self) -> None:
+        for searcher, path in self.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(path)
+                self.assertIn("YOURS: $EXAMPLE_API_KEY found in", result.stdout)
+
+
 class HuggingFaceToken(unittest.TestCase):
     """sd:4698: a Hugging Face token is hf_ and 34 letters or digits; a longer
     hf_ identifier in a Codex log is not one."""
