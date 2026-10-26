@@ -1220,8 +1220,6 @@ cmd_exec() { # invoked by launchd (and by `run`)
   record_attempt "$job"
   record_stamp "$job" "$EXEC_STARTED"
 
-  load_job "$job"
-
   # launchd starts jobs from launchd, not from a login shell, so no rc file is
   # read and the plist's PATH and HOME are the entire environment. Every
   # credential lived in ~/.bash_profile, which meant a job — and the Claude it
@@ -1231,8 +1229,11 @@ cmd_exec() { # invoked by launchd (and by `run`)
   # Not fatal when absent: a machine that has not split its profile yet still
   # runs its jobs exactly as before. st_shell_env (lib/config.sh) sources it
   # and maps its CUSTOM_CLAUDE_CODE_OAUTH_TOKEN to the name claude reads
-  # (sd:5791).
+  # (sd:5791). It comes before load_job: a job file reads its settings
+  # (SD_DB_BACKUP_NAS_FOLDER) when it loads.
   st_shell_env
+
+  load_job "$job"
 
   # launchd hands a job 256 open files (`launchctl limit maxfiles`), where a
   # login shell gets 1048576. Claude needs more than 256 and aborts at startup
