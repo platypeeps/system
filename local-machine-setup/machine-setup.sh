@@ -6802,13 +6802,17 @@ backup_age_line() {
   # shellcheck disable=SC2016 # Python, not shell
   if ! hr_age=$(tmp=$(mktemp -d "${TMPDIR:-/tmp}/hub-ready-XXXXXX") && trap_tmp &&
        bound_step 180 "$SD_DB_PYTHON" -I -c 'import datetime, sys, tempfile
+from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 try:
     import sd_db.backup
 except ImportError:
+    pass
+backup = sys.modules.get("sd_db.backup")  # the package names a function backup too
+# Only this pack answers: a copy installed in the interpreter is no pack of this lib/.
+if backup is None or not Path(backup.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve()):
     print("nolib")
     sys.exit(0)
-backup = sys.modules["sd_db.backup"]  # the package names a function backup too
 if not hasattr(backup, "newest_restorable"):
     print("old")
     sys.exit(0)

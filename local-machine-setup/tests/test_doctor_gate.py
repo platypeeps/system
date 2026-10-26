@@ -17,7 +17,7 @@ import socket
 import subprocess
 from pathlib import Path
 
-from tests.test_backbone import ROOT, SCRIPT, write_stub
+from tests.test_backbone import PACK, ROOT, SCRIPT, write_stub
 from tests.test_promote import GIT_STUB, SD_STUB, PromoteCase
 
 # test_backbone puts the pinned pack's lib/ on the path.
@@ -591,7 +591,9 @@ esac
             (lib / "sd_db/backup.py").write_text(backup_py)
         swap = write_stub(self.fixture.stubs, "swap-python", '''case "$5" in backup-age)
   a=$1 b=$2 c=$3; shift 4
-  exec "$STUB_REAL_PYTHON" "$a" "$b" "$c" "$STUB_LIB" "$@" ;;
+  exec "$STUB_REAL_PYTHON" "$a" "$b" "import os, sys
+sys.path.extend(filter(None, [os.environ.get('STUB_ELSEWHERE')]))
+$c" "$STUB_LIB" "$@" ;;
 esac
 ''' + f'exec "{self.prove}" "$@"\n')
         return self.age_line(SD_DB_PYTHON=swap, STUB_LIB=lib, **extra)
@@ -634,7 +636,11 @@ def newest_restorable(roots, *, report=None):
         pack = self.fixture.pack
         self.assertEqual(f"  --      backup age not read: {pack}/lib has no sd_db.backup.newest_restorable "
                          "(pack sd:6323); update the pack", self.age_line_from("SCHEMA_VERSION = 1\n"))
-        shutil.rmtree(self.tmp / "other-lib")
-        line = self.age_line_from(None)
-        self.assertTrue(line.startswith("  --      backup age not read: "), line)
-        self.assertTrue(line.endswith(f" imports no sd_db.backup from {pack}/lib"), line)
+        # The gate's interpreter has the pinned pack's sd_db installed: a copy
+        # it finds elsewhere is not this pack's, so still no answer.
+        for elsewhere in ("", str(PACK / "lib")):
+            with self.subTest(elsewhere=elsewhere):
+                shutil.rmtree(self.tmp / "other-lib", ignore_errors=True)
+                line = self.age_line_from(None, STUB_ELSEWHERE=elsewhere)
+                self.assertTrue(line.startswith("  --      backup age not read: "), line)
+                self.assertTrue(line.endswith(f" imports no sd_db.backup from {pack}/lib"), line)
