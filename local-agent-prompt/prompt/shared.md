@@ -171,6 +171,7 @@ Keep Aura changes local: never push the Aura checkout or open an upstream PR una
 # Generated HTML and UI
 
 Never publish a Claude artifact unless the user asks for one by name.
+Make every slide deck a native Google Slides file, imported from the built pptx: the operator presents and shares from Drive (operator 2026-10-26).
 Write generated HTML (reports, plans, review summaries) to `<repo>/docs/dashboard/`: it is gitignored, and the sd dashboard finds it on disk.
 A repo without that folder gets one plus a `.gitignore` line.
 Invoke the `hallmark` skill (`~/.agents/skills/hallmark`) before designing or changing a UI, a dashboard page or an HTML report.
