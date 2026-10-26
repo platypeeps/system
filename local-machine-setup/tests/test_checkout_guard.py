@@ -203,6 +203,33 @@ class CheckoutGuard(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=self.worktree), "allow")
 
+    def test_an_assignment_that_cannot_fail_sticks(self):
+        """sd:6270: a name the shell does not hold is readonly only when the
+        command makes it so, so `LOG=..` sticks and `"$LOG"` is its value,
+        not a file in the folder."""
+        lane, log = self.system, "/tmp/sd-6270.log"
+        for command in (f'LOG={log}; echo hi > "$LOG"',
+                        f"LOG={log}; echo hi > $LOG",
+                        f'LOG={log}; touch "$LOG"',
+                        f'export LOG={log}; echo hi >> "$LOG"',
+                        f'declare LOG={log}; echo hi > "$LOG"',
+                        f'readonly LOG={log}; echo hi > "$LOG"',
+                        f'D=/tmp; LOG=$D/x.txt; echo hi > "$LOG"'):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=lane), "allow")
+        self.env["LOG"] = str(lane / "held")  # the shell may hold it readonly
+        for command in (f'LOG={log}; echo hi > "$LOG"',
+                        f'readonly D={lane}; D={log}; touch "$D"',
+                        f'local L={log}; touch "$L"',  # outside a function it fails
+                        f'export -Z L={log}; touch "$L"',  # a bad option fails
+                        f'if false; then L={log}; fi; touch "$L"',
+                        f'L={log} && source ./env.sh; touch "$L"'):  # it may set L
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "), command)
+        # a name set before `source` may hold anything after it
+        self.assertTrue(self.bash(f'cd {lane} && L={log} && source ./env.sh && touch "$L"')
+                        .startswith("deny: "))
+
     def test_a_change_that_may_not_happen_keeps_the_old_state(self):
         """sd:6083: `&&`, `||`, `|`, `&` and `cd` may leave the folder and variables."""
         self.env["DEST"] = str(self.system)
@@ -329,11 +356,13 @@ class CheckoutGuard(unittest.TestCase):
                         f"/usr/bin/time cd {self.worktree} && touch x",
                         f"/usr/bin/eval 'cd {self.worktree}' && touch x",
                         f"/usr/bin/pushd {self.worktree} && touch x",
-                        f"D={self.worktree}; /usr/bin/read D; cd \"$D\" && touch x",
                         f"set -- {self.worktree}; /usr/bin/shift; cd \"$1\" && touch x",
                         f"/usr/bin/export D={self.worktree}; cd \"$D\" && touch x"):
             with self.subTest(command=command):
                 self.assertDenied(self.bash(command, cwd=lane), lane)
+        # `/usr/bin/read` leaves D as set; the builtin would make it unknown
+        self.assertEqual(self.bash(f"D={self.worktree}; /usr/bin/read D; cd \"$D\" && touch x",
+                                   cwd=lane), "allow")
 
     def test_every_state_change_may_fail(self):
         """sd:6083 round 3: an assignment, cd or eval may fail, so the world it started

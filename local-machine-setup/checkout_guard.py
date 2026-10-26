@@ -23,8 +23,9 @@ agents write, so a copy of this file run from one protects nothing there.
   worktree, branch and every read pass.
 - A change that may not happen keeps the old state beside the new one: a
   command after `&&` or `||`, in an `if`, loop or `case` body, a pipeline
-  stage, a `&` job, and every change itself, since an assignment, `export`,
-  `unset`, `set --`, `shift`, `cd`, `pushd` or `eval` may fail. The reader
+  stage, a `&` job, and every change itself, since `unset`, `set --`,
+  `shift`, `cd`, `pushd`, `eval` and an assignment to a name the shell may
+  hold readonly may fail. The reader
   carries every (folder, folder stack, variables, status) world and denies a
   write in any of them (sd:6083).
 - A word expands as the shell expands it: braces, `~`, variables, splitting
@@ -66,6 +67,7 @@ VALUED = {"env": {"-u", "-P", "-S", "-C"}, "nice": {"-n"}, "timeout": {"-s", "-k
           "xargs": {"-n", "-I", "-J", "-L", "-P", "-R", "-S", "-s", "-E", "-d", "-a"},
           "stdbuf": {"-i", "-o", "-e"}}  # options that take the next word
 DECLARERS = {"export", "readonly", "declare", "local", "typeset"}
+READONLY = {"BASHOPTS", "BASH_VERSINFO", "EUID", "PPID", "SHELLOPTS", "UID"}  # bash's own
 READS = {"read": ("REPLY",), "mapfile": ("MAPFILE",), "readarray": ("MAPFILE",),
          "getopts": ("OPTARG", "OPTIND"), "printf": ()}  # set names from input
 NAME = re.compile(r"[A-Za-z_]\w*")
@@ -612,6 +614,26 @@ def assigned(words, variables, spend):
     return changes
 
 
+def sticks(words, changes, variables):
+    """True when the assignment WORDS make cannot fail (sd:6270).
+
+    A plain assignment fails only on a readonly name. The reader cannot see
+    which names the incoming shell holds readonly, so a name it may hold
+    (its environment, set earlier, or anything after `source`) may fail; one
+    it does not hold, set to a known value, sticks. `local` outside a
+    function, an option, a read and the other builtins may fail.
+    """
+    head = words[0]
+    if head not in DECLARERS - {"local"} and not ASSIGNMENT.match(head):
+        return False
+    if head in DECLARERS and any(word[:1] in "-+" for word in words[1:]):
+        return False
+    return "*" not in variables and all(
+        name not in variables and name not in READONLY and not any(UNKNOWN in value
+                                                                   for value in values)
+        for name, values in changes.items())
+
+
 def merged(worlds, inherited):
     """One world per folder and stack, each variable with every value it has in any of them.
 
@@ -938,10 +960,11 @@ class Reader:
                                                   if word[:1] in "-+"):
             self.spend.note("a name reference moves its writes to another name")
         if here:
-            changes = assigned(command or words, world.variables(self.inherited), self.spend)
-            if changes:
+            variables = world.variables(self.inherited)
+            changes = assigned(command or words, variables, self.spend)
+            if changes and not sticks(command or words, changes, variables):
                 out.add(world._replace(ok=False))
-                world = world.set(changes)
+            world = world.set(changes) if changes else world
         variables = world.variables(self.inherited)
         if name in ("cd", "pushd", "popd") and here:
             moves = self.moves(name, command[1:], world, variables)
@@ -961,7 +984,8 @@ class Reader:
             for path in command[1:]:
                 self.check(path, world)
         if (UNKNOWN in name or name in ("source", ".")) and here:  # it may change anything
-            out.add(world.moved(None, ()).set({"*": frozenset([UNKNOWN])}))
+            # every name, set before or not, may hold anything after it
+            out.add(world.moved(None, ())._replace(changes=(("*", frozenset([UNKNOWN])),)))
         elif name == "git":
             folders, verb = git_target(command, world.cwd, variables, self.spend)
             for folder in folders if verb in GIT_WRITES else ():
