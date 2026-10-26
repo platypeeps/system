@@ -15,7 +15,7 @@ import sys
 
 from tests import fixture_config
 from tests.test_backbone import write_stub
-from tests.test_promote import (HUB, PREFIX, ROLE_AGENTS, ROLE_JOBS, SATELLITE_CASE, PromoteCase,
+from tests.test_promote import (ACCOUNTS, HUB, PREFIX, ROLE_AGENTS, ROLE_JOBS, SATELLITE_CASE, PromoteCase,
                                 run_stalled, stall_steps)
 
 # test_backbone puts the pinned pack's lib/ on the path.
@@ -193,6 +193,18 @@ class Undo(PromoteCase):
         self.assertIsNone(self.marker_step())
         self.assertIn("hand-back report", result.stdout)
         self.assertEqual(1, len(self.calls("backup --destination")))
+
+    def test_undo_lists_each_account_to_sign_out(self):
+        """sd:5986, #31094: the logins promote listed are signed out of by
+        hand; the report names each one, and the hand-back still ends."""
+        self.handed_back()
+        result = self.run_undo("--apply")
+        self.assertIn("  accounts    : sign out of each here by hand; the hand-back does not", result.stdout)
+        for name in ACCOUNTS:
+            self.assertRegex(result.stdout, rf"\n    {name}[^\n]*: [^\n]*(credentials|Clear authentication)")
+        self.assertIsNone(self.marker_step())
+        # The account agent stopped with the rest of the role.
+        self.assertNotIn(f"{PREFIX}.google-workspace-mcp", self.still_loaded())
 
     def test_a_hand_back_deletes_a_drill_folder_left_here(self):
         drill = self.fixture.home / ".local/state/sd/promote-drill/home/.local/share/sd"
