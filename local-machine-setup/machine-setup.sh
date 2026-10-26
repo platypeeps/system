@@ -6793,10 +6793,15 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
 # its backups stalled. With the hub down it is the best there is, so `--`.
 # A snapshot newer than this pack is NOT-READY either way: restore stops at
 # it. A read that fails or times out is no age: `--`, never ok.
+#
+# The copies go in a folder this shell makes and removes, in a subshell with
+# trap_tmp: the bound or a TERM kills Python before its own cleanup runs, and
+# a copy of up to 871 MB stayed behind on each stalled probe (sd:6325).
 backup_age_line() {
   # The first word after the folder is for the test's interpreter stub.
   # shellcheck disable=SC2016 # Python, not shell
-  if ! hr_age=$(bound_step 180 "$SD_DB_PYTHON" -I -c 'import datetime, json, shutil, sqlite3, sys, tempfile
+  if ! hr_age=$(tmp=$(mktemp -d "${TMPDIR:-/tmp}/hub-ready-XXXXXX") && trap_tmp &&
+       bound_step 180 "$SD_DB_PYTHON" -I -c 'import datetime, json, shutil, sqlite3, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import sd_db.backup
@@ -6818,7 +6823,7 @@ for root in map(Path, filter(None, sys.argv[3].splitlines())):
         candidates.append((taken_at, current, backup._directory_order(path), path))
 # restore_newest, less the restore: its order, its copy, its checks, its catches.
 for taken_at, _, _, path in sorted(candidates, reverse=True):
-    with tempfile.TemporaryDirectory(prefix="hub-ready-") as stage:
+    with tempfile.TemporaryDirectory(prefix="hub-ready-", dir=sys.argv[4]) as stage:
         local = Path(stage) / path.name
         try:
             shutil.copytree(path, local, symlinks=True)
@@ -6840,7 +6845,7 @@ for taken_at, _, _, path in sorted(candidates, reverse=True):
     age = datetime.datetime.now(datetime.timezone.utc) - taken_at
     print(int(age.total_seconds()), taken_at.isoformat(), path)
     sys.exit(0)
-print("none")' "$SD_PACK_ROOT/lib" backup-age "$hr_listed" 2>/dev/null) ||
+print("none")' "$SD_PACK_ROOT/lib" backup-age "$hr_listed" "$tmp" 2>/dev/null) ||
      [ -z "$hr_age" ]; then
     echo "  --      backup age not read: the snapshots were not checked under $SD_DB_PYTHON in time"
     return 0

@@ -15,6 +15,7 @@ import re
 import shutil
 import socket
 import subprocess
+from pathlib import Path
 
 from tests.test_backbone import ROOT, SCRIPT, write_stub
 from tests.test_promote import GIT_STUB, SD_STUB, PromoteCase
@@ -526,6 +527,53 @@ class BackupAge(PromoteCase):
         self.assertIn("  --      backup age not read: the snapshots were not checked under", result.stdout)
         self.assertNotIn("ok      backup age", result.stdout)
         self.assertNotIn("NOT-READY", result.stdout)
+
+    def stalled_copy(self, then="pass"):
+        """Promote with a reader that copies a snapshot, runs `then`, and hangs.
+
+        Returns the result, the run's own TMPDIR and the path of the copy: a
+        stop at the bound or a TERM leaves neither copy nor folder (sd:6325).
+        """
+        self.snapshot(datetime.timedelta(hours=1))
+        copied = self.tmp / "copied"
+        temp = self.tmp / "run-tmp"
+        temp.mkdir()
+        stall = write_stub(self.fixture.stubs, "stall-python", r'''case "$5" in backup-age)
+  code=$3; shift 3
+  exec "$STUB_REAL_PYTHON" -I -c "import os, shutil, signal, time
+_copy = shutil.copytree
+def copytree(source, local, **kwargs):
+    _copy(source, local, **kwargs)
+    open(os.environ['STUB_COPIED'], 'w').write(str(local))
+    $STUB_THEN
+    time.sleep(30)
+shutil.copytree = copytree
+$code" "$@" ;;
+esac
+''' + f'exec "{self.prove}" "$@"\n')
+        env = self.fixture.env(**self.promote_env(SD_DB_PYTHON=stall, MACHINE_SETUP_STEP_TIMEOUT="4",
+                                                  ST_BOUNDED_GRACE="1", TMPDIR=temp, STUB_COPIED=copied,
+                                                  STUB_THEN=then))
+        result = subprocess.run([str(SCRIPT), "promote"], env=env, capture_output=True, text=True,
+                                cwd=str(self.tmp), stdin=subprocess.DEVNULL, timeout=120, start_new_session=True)
+        self.assertTrue(copied.exists(), result.stdout + result.stderr)
+        return result, temp, Path(copied.read_text())
+
+    def assert_no_staging(self, temp, local):
+        self.assertFalse(local.exists(), local)
+        self.assertFalse(local.parent.exists(), local.parent)
+        self.assertEqual([], sorted(temp.glob("hub-ready-*")))
+
+    def test_a_reader_stopped_at_its_bound_leaves_no_copy(self):
+        result, temp, local = self.stalled_copy()
+        self.assertIn("  --      backup age not read: the snapshots were not checked under", result.stdout)
+        self.assert_no_staging(temp, local)
+
+    def test_a_run_terminated_during_the_copy_leaves_no_copy(self):
+        """cron-jobs TERMs a job's group at its limit; the reader dies in the copy."""
+        result, temp, local = self.stalled_copy("os.killpg(os.getpgid(os.getppid()), signal.SIGTERM)")
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assert_no_staging(temp, local)
 
     def test_no_interpreter_gives_no_age(self):
         self.snapshot(datetime.timedelta(hours=1))
