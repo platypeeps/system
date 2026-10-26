@@ -44,6 +44,10 @@ LIB = FOLDER.parent / "lib"
 # ends its bound at once (fixture_config.STALL); with BREW_WAIT, `brew
 # upgrade` waits for a signal instead. BREW_SLOW names one call that answers
 # 4 s late, past the 2 s bound these cases had: a loaded machine (sd:6253).
+# BREW_PKG names a cask whose installer calls sudo (sd:6312): upgrading it
+# needs SUDO_ASKPASS to print STUB_PASSWORD, or it refuses as sudo does with
+# no terminal. Each upgrade call made with SUDO_ASKPASS set is logged in
+# $BREW_LOG.askpass; an upgraded BREW_PKG leaves the outdated list.
 SUDO_REFUSED = r"""
 if [ "$*" = "$STUB_SUDO" ]; then
   echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
@@ -58,12 +62,28 @@ BREW_STUB = "#!/bin/sh\n" + STALL + r"""echo "$*" >> "$BREW_LOG"
 [ "$*" != "$BREW_FAIL" ] || exit 1
 """ + SUDO_REFUSED.replace("STUB_SUDO\"", "BREW_SUDO\"") + r"""
 case "$*" in
+  "upgrade --cask"*) [ -z "$SUDO_ASKPASS" ] || echo "$*" >> "$BREW_LOG.askpass" ;;
+esac
+case "$*" in
+  "upgrade --cask --greedy"|"upgrade --cask --greedy $BREW_PKG")
+    if [ -n "$BREW_PKG" ] && [ ! -e "$BREW_LOG.pkg" ]; then
+      if [ -n "$SUDO_ASKPASS" ] && [ "$("$SUDO_ASKPASS" "Password:")" = "$STUB_PASSWORD" ]; then
+        : > "$BREW_LOG.pkg"
+      else
+        echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
+        echo "sudo: a password is required" >&2
+        exit 1
+      fi
+    fi ;;
+esac
+case "$*" in
   "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || [ -e "$BREW_LOG.upgraded" ] || echo "${BREW_OUTDATED:-example-formula}"
                                 [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED"
                                 [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
   "list --pinned") [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED" ;;
   "uses --installed --recursive $STUB_PINNED") [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
-  "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK" ;;
+  "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK"
+                                     [ -z "$BREW_PKG" ] || [ -e "$BREW_LOG.pkg" ] || echo "$BREW_PKG" ;;
   "upgrade --cask --greedy") [ -z "$CLAUDE_NEW" ] || ln -sf "$CLAUDE_NEW" "$CLAUDE_LINK" ;;
   --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
   "cleanup --prune=all") [ -z "$BREW_CLEANUP_FAIL" ] || exit 1 ;;
@@ -105,6 +125,16 @@ AI_APPS_STUB = r"""#!/bin/sh
 echo "ai-apps $*" >> "$BREW_LOG"
 printf '%s\n' "${AI_APPS_OUT:-  none}"
 exit "${AI_APPS_RC:-0}"
+"""
+
+# `security` with the askpass item when STUB_KEYCHAIN holds its password;
+# without it, exit 44 (no item), or SECURITY_RC. `-w` prints the password.
+SECURITY_STUB = r"""#!/bin/sh
+echo "$*" >> "$SECURITY_LOG"
+[ -z "$SECURITY_RC" ] || exit "$SECURITY_RC"
+[ -n "$STUB_KEYCHAIN" ] || exit 44
+case " $* " in *" -w "*) echo "$STUB_KEYCHAIN" ;; esac
+exit 0
 """
 
 REFUSED = ("SD_DASHBOARD_PYTHON /opt/homebrew/bin/python3: cannot read /vault — macOS is asking for "
@@ -533,6 +563,57 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertNotIn("upgrade sweep exited nonzero", result.stdout)
         self.assertIn("needs sudo (cask) — run in a terminal:\n  brew upgrade --cask example-cask\n", result.stdout)
         self.assertEqual(self.findings(result), ["needs sudo, run in a terminal: brew upgrade --cask example-cask"])
+
+    def askpass_run(self, casks, keychain="example-password", **extra):
+        """upgrade-report with example-pkg outdated, its installer calling
+        sudo; CASKS is the allowlist, KEYCHAIN the item's password or None."""
+        self.security_log = self.tmp_path / "security.log"
+        write_exec(self.stubs / "security-stub", SECURITY_STUB)
+        return self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_PKG="example-pkg",
+                             STUB_PASSWORD="example-password", STUB_KEYCHAIN=keychain or "",
+                             MACHINE_SETUP_SUDO_CASKS=casks,
+                             MACHINE_SETUP_SECURITY=str(self.stubs / "security-stub"),
+                             SECURITY_LOG=str(self.security_log), **extra)
+
+    def askpass_calls(self):
+        log = pathlib.Path(f"{self.brew_log}.askpass")
+        return log.read_text().splitlines() if log.exists() else []
+
+    def test_an_allowed_cask_upgrades_with_the_keychain_password(self):
+        """sd:6312: a cask on the allowlist upgrades unattended through
+        SUDO_ASKPASS, which reads the login-Keychain item; the probe reads
+        the item's attributes, never its password, and the greedy sweep
+        after it runs without the askpass."""
+        result = self.askpass_run("other-cask example-pkg")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.askpass_calls(), ["upgrade --cask --greedy example-pkg"])
+        self.assertIn("upgrade --cask --greedy", self.brew_calls())
+        self.assertIn("upgraded (cask):\n  example-pkg\n", result.stdout)
+        self.assertEqual(self.findings(result), [])
+        probe, read = self.security_log.read_text().splitlines()
+        self.assertNotIn("-w", probe.split())
+        self.assertEqual(read.split()[-1], "-w")
+        self.assertIn("-s machine-setup-sudo", read)
+        self.assertNotIn("example-password", result.stdout + result.stderr)
+
+    def test_without_the_keychain_item_or_the_allowlist_sudo_stays_a_finding(self):
+        """sd:6312: no item, a probe that fails, or a cask off the allowlist
+        keeps today's needs-sudo finding, and no askpass runs."""
+        for casks, keychain, extra in (("example-pkg", None, {}),
+                                       ("example-pkg", "example-password", {"SECURITY_RC": "1"}),
+                                       ("other-cask", "example-password", {}),
+                                       ("", "example-password", {})):
+            with self.subTest(casks=casks, keychain=keychain, extra=extra):
+                for log in (self.brew_log, pathlib.Path(f"{self.brew_log}.askpass")):
+                    log.unlink(missing_ok=True)
+                result = self.askpass_run(casks, keychain, **extra)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.askpass_calls(), [])
+                self.assertEqual(self.findings(result),
+                                 ["needs sudo, run in a terminal: brew upgrade --cask example-pkg"])
+                if self.security_log.exists():
+                    self.assertNotIn("-w", self.security_log.read_text().split())
 
     def test_an_app_store_upgrade_that_needs_sudo_names_each_app(self):
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_SUDO="upgrade",

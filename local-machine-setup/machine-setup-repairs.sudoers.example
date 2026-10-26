@@ -1,0 +1,7 @@
+# /etc/sudoers.d/machine-setup-repairs: known repair commands that run as
+# root with no password, each with its exact arguments and no others
+# (sd:6312). Replace change-me with this machine's admin account. Install it
+# on each machine with visudo -cf: local-machine-setup/README.md, "Unattended
+# sudo". On an Intel Mac, brew is /usr/local/bin/brew.
+change-me ALL=(root) NOPASSWD: /opt/homebrew/bin/brew services restart tailscale
+change-me ALL=(root) NOPASSWD: /sbin/pfctl -sr

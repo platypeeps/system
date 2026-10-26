@@ -6,8 +6,9 @@ suite never reads the operator's copy: every case points SYSTEM_TOOLS_CONFIG at
 this folder's fixtures, or at a temporary copy when the case writes.
 
 Nor does it read the operator's Mac: env() points the apps scan at no folder,
-the Spotlight sudoers drop-in at no file and nsmb.conf at a fixture, and
-seal() fails a case that reaches a real `defaults`, `sudo` or `launchctl`.
+the sudoers drop-ins at no file, nsmb.conf at a fixture and `security` at a
+stub with no item, and seal() fails a case that reaches a real `defaults`,
+`sudo`, `launchctl` or `security`.
 """
 
 import pathlib
@@ -27,13 +28,19 @@ NO_APPLICATIONS = HERE / "fixtures" / "no-applications"
 # Names no file in a folder that does not exist, so the system stage never
 # sees this Mac's drop-in (sd:3307) and a stray write has nowhere to land.
 NO_SUDOERS = HERE / "fixtures" / "no-sudoers.d" / "machine-setup-spotlight-read"
+# The repair sudoers drop-in doctor looks for (sd:6312): no file, as above.
+NO_REPAIRS_SUDOERS = HERE / "fixtures" / "no-sudoers.d" / "machine-setup-repairs"
+# Stands in for `security`: it answers that the login Keychain holds no
+# item, so no case reads this Mac's Keychain (sd:6312).
+NO_KEYCHAIN = HERE / "fixtures" / "security-no-item"
 # Already as the system stage wants it, so no case reads this Mac's
 # /etc/nsmb.conf or adds a drift line for it; test_nsmb_conf sets its own.
 NSMB_CONF = HERE / "fixtures" / "nsmb.conf"
 # Commands that read this machine whatever $HOME says: `defaults` asks
-# cfprefsd, which answers for the login user, `sudo` reads as root, and
-# `launchctl` answers for the login user's launchd.
-MACHINE_READERS = ("defaults", "sudo", "launchctl")
+# cfprefsd, which answers for the login user, `sudo` reads as root,
+# `launchctl` answers for the login user's launchd, and `security` reads the
+# login Keychain.
+MACHINE_READERS = ("defaults", "sudo", "launchctl", "security")
 # A stub's stall, as the shell function `stall`. No clock tells a stall from
 # a loaded machine (sd:6157, sd:6253), so a case waits on the stall itself:
 # under the bound (lib/bounded.sh's perl) the stub sends the bound its alarm,
@@ -72,7 +79,9 @@ def env(config=CONFIG):
     return {"SYSTEM_TOOLS_CONFIG": str(config),
             "MACHINE_SETUP_APPLICATIONS_DIR": str(NO_APPLICATIONS),
             "MACHINE_SETUP_SPOTLIGHT_SUDOERS": str(NO_SUDOERS),
-            "MACHINE_SETUP_NSMB_CONF": str(NSMB_CONF)}
+            "MACHINE_SETUP_NSMB_CONF": str(NSMB_CONF),
+            "MACHINE_SETUP_REPAIRS_SUDOERS": str(NO_REPAIRS_SUDOERS),
+            "MACHINE_SETUP_SECURITY": str(NO_KEYCHAIN)}
 
 
 def seal(case, stubs):

@@ -522,7 +522,46 @@ checkout.
 Exit `3` means a removal was held. The nightly job lets that fire the failure
 banner, which is the intended trade: an entry disappearing from a machine is
 either a deliberate uninstall worth one `capture --apply` by hand, or a
-machine that has broken in a way worth knowing about tonight.
+machine that has broken in a way worth knowing about tonight. It fires once
+per held set: while the same removal stands, later nights print it and exit
+`0`, keeping it in `~/.config/machine-setup/autocapture-held`
+(`MACHINE_SETUP_STATE`); a changed set alerts again.
+
+### Unattended sudo
+
+A cask whose installer calls sudo, and a repair command that needs root,
+stop an unattended run: it has no terminal for the password. Two steps fix
+that. The operator does both by hand on **each machine**: the hub, each
+satellite and each setup-only machine. machine-setup writes neither: it
+never touches `/etc` or the Keychain.
+
+1. The askpass item. Store the admin password in the login Keychain:
+
+       security add-generic-password -a "$(id -un)" -s machine-setup-sudo \
+         -T /usr/bin/security -w
+
+   It asks for the password twice. Then list this machine's casks in
+   `MACHINE_SETUP_SUDO_CASKS` in `machine-setup.env` (see
+   `machine-setup.env.example`). The weekly `upgrade-report` upgrades
+   only those casks, and only when no terminal is attached. It sets
+   `SUDO_ASKPASS` to `sudo-askpass.sh`, which prints the item's
+   password to sudo. Without the item, the cask stays a "needs sudo"
+   finding, as before.
+2. The repair drop-in. Copy `machine-setup-repairs.sudoers.example`,
+   replace `change-me` with this machine's admin account, then check it
+   and install it:
+
+       cp machine-setup-repairs.sudoers.example /tmp/machine-setup-repairs
+       # edit the account name in /tmp/machine-setup-repairs
+       sudo visudo -cf /tmp/machine-setup-repairs
+       sudo install -m 440 -o root -g wheel /tmp/machine-setup-repairs \
+         /etc/sudoers.d/machine-setup-repairs
+
+   Each line allows one command with its exact arguments
+   (`brew services restart tailscale`, `pfctl -sr`) and nothing else.
+
+`doctor` checks both on each machine. A missing item or drop-in is a
+`WARN` that names the step, not a failure.
 
 ## Comparing and filing
 

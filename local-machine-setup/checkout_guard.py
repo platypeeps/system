@@ -12,7 +12,8 @@ its `.git` is a folder: a linked worktree, whose `.git` is a file, is where
 agents write, so a copy of this file run from one protects nothing there.
 
 - Write, Edit, MultiEdit and NotebookEdit on a path inside a root: denied,
-  unless git ignores the path (docs/dashboard/ takes generated HTML).
+  unless git ignores the path (docs/dashboard/ takes generated HTML). The
+  path is literal but a leading `~`: no shell reads it (sd:6292).
 - Bash: a git verb that moves the work tree or HEAD, aimed at a root by
   `git -C` or the working folder; and mkdir, touch, rm, rmdir, mv, tee,
   truncate on a path inside a root, the last argument of cp, ln, install
@@ -32,9 +33,10 @@ agents write, so a copy of this file run from one protects nothing there.
   A loop body runs zero, one or two times; what the second pass still
   changes is unknown after it.
 - A word expands as the shell expands it: braces, `~`, variables, the
-  `${..}` forms in parameter(), `$'..'` escapes, splitting and globs. What
-  the reader cannot know (input, xargs input, `$( )`, arrays, other `${..}`
-  forms, a stack entry) reads as unknown.
+  `${..}` forms in parameter(), `$'..'` escapes, splitting of a word that
+  holds an expansion, and globs. What the reader cannot know (input, xargs
+  input, `$( )`, arrays, other `${..}` forms, a stack entry) reads as
+  unknown.
 - `sh -c` and `bash -c` read their script in a child shell (sd:6153). A
   function definition is unknown: the reader does not follow functions.
 
@@ -344,8 +346,9 @@ def fields(word, variables, cwd, spend):
     """
     out = []
     for text in braces(word, spend):
+        live = VARIABLE.search(text)  # only an expansion splits: quoted spaces stay
         for value in expand(tilde(text), variables, spend):
-            pieces = value.split()
+            pieces = value.split() if live else []
             for piece in [value] + (pieces if len(pieces) > 1 else []):
                 out.append(piece)
                 relative = not piece.startswith("/")
@@ -389,12 +392,11 @@ def ignored(root, full):
     return result.returncode == 0
 
 
-def written(path, cwd, protected, variables=None, spend=None):
+def written(path, cwd, protected, variables, spend):
     """The root a write to PATH may land in, UNKNOWN for a path the reader cannot
     know, or None."""
     found = None
-    for full in resolve(path, cwd, environment() if variables is None else variables,
-                        spend or Budget()):
+    for full in resolve(path, cwd, variables, spend):
         if full is None:
             found = UNKNOWN
             continue
@@ -1380,13 +1382,11 @@ def denied_root(payload):
     name = payload["tool_name"]
     tool_input = payload["tool_input"]
     cwd = payload.get("cwd") or os.getcwd()
-    if name in FILE_TOOLS:
-        path = tool_input[FILE_TOOLS[name]]
-        try:
-            root = written(path, cwd, protected)
-        except Exception:  # a reader fault is an unknown, not a pass (sd:6153)
-            root = UNKNOWN
-        return (inside(cwd, protected) or named(path, protected)) if root == UNKNOWN else root
+    if name in FILE_TOOLS:  # the path is literal: no shell expands it (sd:6292)
+        path = os.path.expanduser(tool_input[FILE_TOOLS[name]])
+        full = os.path.realpath(os.path.join(cwd, path))
+        root = inside(full, protected)
+        return root if root is not None and not ignored(root, full) else None
     if name == "Bash":
         return bash_root(tool_input["command"], cwd, protected)
     return None

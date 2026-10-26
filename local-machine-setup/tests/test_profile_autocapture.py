@@ -37,8 +37,17 @@ STUB_MACHINE_SETUP = """#!/bin/sh
 set -eu
 printf '%s\\n' "$*" > "$SYSTEM_TOOLS_CONFIG/stub-args"
 echo "captured-entry" >> "$SYSTEM_TOOLS_CONFIG/machine-setup/profiles/personal.cron"
+[ -z "${STUB_OUT:-}" ] || printf '%s\n' "$STUB_OUT"
 exit "${STUB_RC:-0}"
 """
+
+# What capture prints for a held removal, as machine-setup.sh words it.
+HELD_CRON = """    HELD    personal.cron — 1 entry(s) would be removed:
+              - nightly-x
+              not written. Re-run without --additive to accept, or"""
+HELD_CASK = """    HELD    personal.cask — 1 entry(s) would be removed:
+              - some-cask
+              not written. Re-run without --additive to accept, or"""
 
 
 def git(cwd, *args):
@@ -74,6 +83,7 @@ class Fixture(unittest.TestCase):
             capture_output=True,
             text=True,
             env={**os.environ, "SYSTEM_TOOLS_CONFIG": str(self.config),
+                 "MACHINE_SETUP_STATE": str(pathlib.Path(self.tmp) / "state"),
                  **(env or {})},
         )
 
@@ -99,6 +109,48 @@ class Capture(Fixture):
         result = self.run_job(env={"STUB_RC": "3"})
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         self.assertNotIn("capture failed", result.stderr)
+
+    def test_a_held_removal_alerts_once_while_it_stands(self):
+        """REGRESSION: one held removal failed the job every night (sd:6307).
+
+        The first night it is held exits 3. The same held set again exits 0
+        and says so; a changed set alerts again, and so does one that
+        returns after a night with nothing held.
+        """
+        held = {"STUB_RC": "3", "STUB_OUT": HELD_CRON}
+        self.assertEqual(self.run_job(env=held).returncode, 3)
+        again = self.run_job(env=held)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("nightly-x", again.stdout)
+        self.assertIn("still held, reported before; not alerting again", again.stdout)
+        changed = {"STUB_RC": "3", "STUB_OUT": HELD_CRON + "\n" + HELD_CASK}
+        self.assertEqual(self.run_job(env=changed).returncode, 3)
+        self.assertEqual(self.run_job(env=changed).returncode, 0)
+        self.assertEqual(self.run_job().returncode, 0)
+        self.assertEqual(self.run_job(env=changed).returncode, 3)
+
+    def test_a_held_removal_it_cannot_name_or_record_alerts_every_time(self):
+        """REGRESSION: an unknown is not a repeat (sd:6307). A held exit whose
+        output names no held entry, and a state folder it cannot write,
+        alert each night."""
+        bare = {"STUB_RC": "3"}
+        self.assertEqual(self.run_job(env=bare).returncode, 3)
+        self.assertEqual(self.run_job(env=bare).returncode, 3)
+        blocked = pathlib.Path(self.tmp) / "blocked"
+        blocked.write_text("a file, not a folder\n")
+        held = {"STUB_RC": "3", "STUB_OUT": HELD_CRON, "MACHINE_SETUP_STATE": str(blocked)}
+        self.assertEqual(self.run_job(env=held).returncode, 3)
+        last = self.run_job(env=held)
+        self.assertEqual(last.returncode, 3, last.stdout + last.stderr)
+        self.assertIn("cannot record the held removal", last.stderr)
+
+    def test_a_failing_capture_keeps_the_held_record(self):
+        """PIN: a failed capture says nothing about what is held, so the
+        record stands and the next same held set stays quiet."""
+        held = {"STUB_RC": "3", "STUB_OUT": HELD_CRON}
+        self.assertEqual(self.run_job(env=held).returncode, 3)
+        self.assertEqual(self.run_job(env={"STUB_RC": "9"}).returncode, 9)
+        self.assertEqual(self.run_job(env=held).returncode, 0)
 
     def test_a_failing_capture_propagates(self):
         """REGRESSION: a failure must not read as success on a quiet night."""

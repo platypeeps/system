@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = (
     "network-testing/thunderbolt-bridge.sh",
     "local-machine-setup/profile-autocapture.sh",
+    "local-machine-setup/sudo-askpass.sh",
     "local-machine-setup/examples/dotfiles/work/.local/bin/sdm-login",
 )
 

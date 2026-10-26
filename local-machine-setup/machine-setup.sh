@@ -110,6 +110,13 @@ SPOTLIGHT_SUDOERS="${MACHINE_SETUP_SPOTLIGHT_SUDOERS:-/etc/sudoers.d/machine-set
 TIMEOUT_SUDOERS="${MACHINE_SETUP_TIMEOUT_SUDOERS:-/etc/sudoers.d/timestamp-timeout}"
 # The SMB client's defaults; the override exists for the tests too.
 NSMB_CONF="${MACHINE_SETUP_NSMB_CONF:-/etc/nsmb.conf}"
+# Unattended sudo, on every machine (sd:6312): the operator installs the
+# repair drop-in from machine-setup-repairs.sudoers.example and makes the
+# login-Keychain item SUDO_KEYCHAIN, which sudo-askpass.sh reads; this script
+# writes neither. The overrides exist for the tests too.
+REPAIRS_SUDOERS="${MACHINE_SETUP_REPAIRS_SUDOERS:-/etc/sudoers.d/machine-setup-repairs}"
+SUDO_KEYCHAIN=machine-setup-sudo
+SECURITY="${MACHINE_SETUP_SECURITY:-security}"
 # The PlistBuddy override exists for the tests too: CI runs on Linux, which
 # has no PlistBuddy, and the tests put a stand-in there.
 PLISTBUDDY="${MACHINE_SETUP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
@@ -5353,6 +5360,7 @@ cmd_doctor() {
   else
     echo "  WARN    $TIMEOUT_SUDOERS missing — run: machine-setup.sh update system --apply"
   fi
+  doctor_unattended_sudo
 
   fw=/usr/libexec/ApplicationFirewall/socketfilterfw
   if [ -x "$fw" ]; then
@@ -5594,6 +5602,64 @@ sweep_step() { # name, seconds, command...
   rm -f "$ss_out" "$ss_out.1" "$ss_out.2"
 }
 
+# 0 when the login Keychain holds SUDO_KEYCHAIN, 1 when it does not, 2 when
+# `security` gave no answer (its code in sk_rc): a failed probe is no "no".
+# It reads the item's attributes, never its password.
+sudo_keychain_item() {
+  sk_rc=0
+  bound_step 30 "$SECURITY" find-generic-password -a "$(id -un)" -s "$SUDO_KEYCHAIN" \
+    > /dev/null 2>&1 < /dev/null || sk_rc=$?
+  case $sk_rc in
+    0) return 0 ;;
+    44) return 1 ;;  # errSecItemNotFound
+    *) return 2 ;;
+  esac
+}
+
+# The casks in MACHINE_SETUP_SUDO_CASKS that brew calls outdated, upgraded
+# with SUDO_ASKPASS set to sudo-askpass.sh (sd:6312): an unattended run has no
+# terminal for sudo's password, and the Keychain item holds it. Only those
+# casks, and only on a run with no terminal; without the item, the greedy
+# sweep after it defers them for sudo, as before.
+askpass_upgrade() {
+  [ -n "${MACHINE_SETUP_SUDO_CASKS:-}" ] && [ "$APPLY" -eq 1 ] && [ "$ATTENDED" -eq 0 ] || return 0
+  if ! sudo_keychain_item; then
+    echo "  --      no askpass: Keychain item $SUDO_KEYCHAIN not read (security exit $sk_rc)"
+    return 0
+  fi
+  if ! au_out=$(bound_step 300 brew outdated --cask --greedy --quiet 2>/dev/null); then
+    failed="$failed, brew cask list"
+    return 0
+  fi
+  au_casks=$(printf '%s\n' "$au_out" | awk -v want="$MACHINE_SETUP_SUDO_CASKS" '
+      BEGIN { n = split(want, w, " "); for (i = 1; i <= n; i++) ok[w[i]] = 1 }
+      { name = $1; sub(/.*\//, "", name); if (name in ok) print name }' | tr '\n' ' ' | sed 's/ $//')
+  [ -n "$au_casks" ] || return 0
+  SUDO_ASKPASS="$DIR/sudo-askpass.sh"
+  export SUDO_ASKPASS
+  # shellcheck disable=SC2086 # one word per cask name
+  sweep_step "brew upgrade --cask (askpass)" 1800 brew upgrade --cask --greedy $au_casks
+  unset SUDO_ASKPASS
+}
+
+# Doctor's lines for unattended sudo (sd:6312), on each machine: the operator
+# makes the Keychain item and installs the repair drop-in there. A missing one
+# is a finding naming that step, not a failure.
+doctor_unattended_sudo() {
+  if sudo_keychain_item; then
+    echo "  ok      Keychain item $SUDO_KEYCHAIN (sudo askpass)"
+  elif [ "$sk_rc" -eq 44 ]; then
+    echo "  WARN    no Keychain item $SUDO_KEYCHAIN — run in a terminal: security add-generic-password -a \"\$(id -un)\" -s $SUDO_KEYCHAIN -T /usr/bin/security -w"
+  else
+    echo "  WARN    Keychain item $SUDO_KEYCHAIN unknown: security exited $sk_rc"
+  fi
+  if [ -e "$REPAIRS_SUDOERS" ]; then
+    echo "  ok      repair sudoers drop-in $REPAIRS_SUDOERS"
+  else
+    echo "  WARN    no repair sudoers drop-in at $REPAIRS_SUDOERS — install local-machine-setup/machine-setup-repairs.sudoers.example with visudo -cf (README: Unattended sudo)"
+  fi
+}
+
 # Maintenance sweep: refresh what is already installed. Dry run by default
 # like every other mutating verb. A step that fails or times out does not stop
 # the sweep; the steps after it still run, and the sweep exits 1 naming it.
@@ -5631,6 +5697,7 @@ cmd_upgrade() {
     # stage_macos turns off where the app holds a TCC grant (sd:3062). It
     # moves Claude Code too, the claude-code@latest cask, whose own updater
     # the settings baseline turns off (sd:3033, sd:4738).
+    askpass_upgrade
     sweep_step "brew upgrade --cask --greedy" 1800 brew upgrade --cask --greedy
     claude_quarantine || failed="$failed, claude quarantine"
     run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
@@ -7880,6 +7947,8 @@ environment:
                           (shared.env or the environment)
   MACHINE_SETUP_PYTHON    the python3 the obsidian stage reads the vault with
   MACHINE_SETUP_STEP_TIMEOUT  upgrade: one bound, in seconds, for every step
+  MACHINE_SETUP_SUDO_CASKS  upgrade: casks an unattended run upgrades with
+                          the Keychain item's password (space-separated)
   MACHINE_SETUP_RELEASE_BIN  release: where the bins go (default ~/.local/bin)
   MACHINE_SETUP_RELEASE_BASE  tests only: the URL that stands in for https://github.com
   SD_PACK_ROOT            the command pack checkout
@@ -7895,6 +7964,8 @@ environment:
                           Spotlight's VolumeConfiguration.plist
   MACHINE_SETUP_PLISTBUDDY  tests only: the PlistBuddy that edits it
   MACHINE_SETUP_SPOTLIGHT_SUDOERS  tests only: the Spotlight read drop-in
+  MACHINE_SETUP_REPAIRS_SUDOERS  tests only: the repair drop-in doctor checks
+  MACHINE_SETUP_SECURITY  tests only: the command that reads the Keychain
   MACHINE_SETUP_TIMEOUT_SUDOERS  tests only: the sudo grace-period drop-in
   MACHINE_SETUP_NSMB_CONF  tests only: the file that stands in for /etc/nsmb.conf
   MACHINE_SETUP_APPLICATIONS_DIR  tests only: the folder the apps scan reads
