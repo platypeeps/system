@@ -557,5 +557,9 @@ list, and `terra` is the one that reads a single conf instead of layering on
 - A checkout on a local branch with no upstream (sd:3744) has nothing to pull.
   sync fetches it, skips the pull, lists it under `kept:`, and does not count
   it as failed. A failed fetch still fails.
+- A pull that finds an `index.lock` held, by another git process or one that
+  died, is not a failure either (sd:6308). sync lists the checkout under
+  `skipped:` with the lock and its age and leaves the lock alone; the next
+  run tries again. A lock no git process holds is stale: remove it by hand.
 - The old script also had a commented-out `git log --since=` block writing to a
   `github-commit-audit/output` folder. It was dead and is not carried over.

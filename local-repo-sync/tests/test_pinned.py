@@ -345,6 +345,50 @@ class NoUpstreamBranchSyncTest(unittest.TestCase):
         self.assertNotIn("kept:", result.stdout)
 
 
+class HeldLockSyncTest(unittest.TestCase):
+    """A checkout whose index.lock another git process holds cannot be
+    pulled tonight; that failed the nightly sync (sd:6308)."""
+
+    def fixture(self):
+        f = PinFixture()
+        self.addCleanup(f.destroy)
+        return f
+
+    def test_a_held_index_lock_is_skipped_with_its_reason_not_failed(self):
+        """NEW. Listed as skipped with the lock and its age, the lock left
+        in place, the checkout where it was, and sync exits 0."""
+        f = self.fixture()
+        repo = f.repo()
+        before = f.head(repo)
+        f.advance_origin(repo)
+        lock = pathlib.Path(repo) / ".git/index.lock"
+        lock.write_text("")
+
+        result = f.run("sync", expect=0)
+
+        self.assertIn("skipped: 1 checkout(s), a git lock is held; not pulled", result.stdout)
+        self.assertRegex(result.stdout, r"\n  owner/proj: \S*/a/proj/\.git/index\.lock exists"
+                                        r" since \d{4}-\d\d-\d\d \d\d:\d\d ")
+        self.assertIn("all other repos synced", result.stdout)
+        self.assertNotIn("failed", result.stdout)
+        self.assertTrue(lock.exists(), "sync removed the lock")
+        self.assertEqual(before, f.head(repo))
+
+    def test_a_pull_that_fails_for_another_reason_still_fails(self):
+        """PIN. Only a held lock is a skip: a diverged default branch with a
+        lock elsewhere on disk is still a failure."""
+        f = self.fixture()
+        repo = f.repo()
+        f.commit(repo, "mine", "mine\n", "local work on main")
+        f.advance_origin(repo)
+        (f.tmp / "index.lock").write_text("")
+
+        result = f.run("sync", expect=1)
+
+        self.assertIn("failed: 1 repo(s)", result.stdout)
+        self.assertNotIn("skipped:", result.stdout)
+
+
 class RefreshTest(unittest.TestCase):
     def fixture(self):
         f = PinFixture()

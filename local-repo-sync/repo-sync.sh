@@ -554,6 +554,28 @@ pin_state() {
   echo "$p_line"
 }
 
+# Pulls checkout $1 and updates its submodules. Their stderr passes through
+# and stays in $TMPD/pull.err, where held_lock reads it.
+pull_one() {
+  p_rc=0
+  { bound_step 600 git -C "$1" pull --ff-only < /dev/null \
+      && bound_step 1800 git -C "$1" submodule update --init --recursive < /dev/null; } \
+      2> "$TMPD/pull.err" || p_rc=$?
+  cat "$TMPD/pull.err" >&2
+  return "$p_rc"
+}
+
+# The index.lock git output $1 says exists, with its age, or returns 1.
+held_lock() {
+  l_path=$(sed -n "s/^[a-z]*: Unable to create '\(.*index\.lock\)': File exists\.\$/\1/p" "$1" | head -1)
+  [ -n "$l_path" ] || return 1
+  if [ -e "$l_path" ]; then
+    echo "$l_path exists since $(date -r "$l_path" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || echo 'an unknown time')"
+  else
+    echo "$l_path was held, now gone"
+  fi
+}
+
 sync() {
   echo "profile : $PROFILE"
   echo "root    : $ROOT"
@@ -600,10 +622,16 @@ sync() {
       elif state=$(side_branch_diverged "$target"); then
         echo "$state; left alone"
         echo "$full_repo $state" >> "$DIVLOG"
-      elif ! { bound_step 600 git -C "$target" pull --ff-only < /dev/null \
-          && bound_step 1800 git -C "$target" submodule update --init --recursive < /dev/null; }; then
-        echo "!!! failed: $full_repo" >&2
-        echo "$full_repo" >> "$FAILLOG"
+      elif ! pull_one "$target"; then
+        # Another git process, or one that died, holds a lock: a skip the
+        # next run retries, not a failure; the lock stays (sd:6308).
+        if lock=$(held_lock "$TMPD/pull.err"); then
+          echo "skipped: $lock; not pulled"
+          echo "$full_repo: $lock" >> "$LOCKLOG"
+        else
+          echo "!!! failed: $full_repo" >&2
+          echo "$full_repo" >> "$FAILLOG"
+        fi
       fi
     else
       echo "=== cloning $full_repo"
@@ -629,12 +657,21 @@ sync() {
     echo "diverged: $(wc -l < "$DIVLOG" | tr -d ' ') checkout(s), left alone; rebase or merge by hand"
     sed 's/^/  /' "$DIVLOG"
   fi
+  if [ -s "$LOCKLOG" ]; then
+    echo "skipped: $(wc -l < "$LOCKLOG" | tr -d ' ') checkout(s), a git lock is held; not pulled, the next run tries again"
+    echo "  a lock no git process holds is stale: remove it by hand"
+    sed 's/^/  /' "$LOCKLOG"
+  fi
   if [ -s "$FAILLOG" ]; then
     echo "failed: $(wc -l < "$FAILLOG" | tr -d ' ') repo(s)"
     sed 's/^/  /' "$FAILLOG"
     return 1
   fi
-  echo "all repos synced"
+  if [ -s "$LOCKLOG" ]; then
+    echo "all other repos synced"
+  else
+    echo "all repos synced"
+  fi
 }
 
 # The SCHEMA_VERSION that the pack's lib/sd_db holds at commit $2 of checkout
@@ -2466,6 +2503,7 @@ case "$1" in
     PINLOG="$TMPD/pinlog"; : > "$PINLOG"
     DIVLOG="$TMPD/divlog"; : > "$DIVLOG"
     KEPTLOG="$TMPD/keptlog"; : > "$KEPTLOG"
+    LOCKLOG="$TMPD/locklog"; : > "$LOCKLOG"
     load_list
     sync
     ;;
@@ -2542,6 +2580,7 @@ case "$1" in
     PINLOG="$TMPD/pinlog"; : > "$PINLOG"
     DIVLOG="$TMPD/divlog"; : > "$DIVLOG"
     KEPTLOG="$TMPD/keptlog"; : > "$KEPTLOG"
+    LOCKLOG="$TMPD/locklog"; : > "$LOCKLOG"
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     SYNC_FAILED=0
     # The kinds of finding this run has, one per line, without a count; the
@@ -2697,7 +2736,9 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              with its own commits, that its upstream moved past is listed
              under "diverged:" and left alone, not failed (sd:3125).
              A branch with no upstream is fetched, not pulled, and listed
-             under "kept:", not failed (sd:3744).
+             under "kept:", not failed (sd:3744). A checkout whose pull
+             finds an index.lock held is listed under "skipped:" with the
+             lock and its age, and the lock stays (sd:6308).
              A pinned checkout is not a failure
   check      read-only: report which configured repos have no checkout
              (MISSING) and which sit on a different origin than the list
