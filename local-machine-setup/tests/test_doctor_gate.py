@@ -169,6 +169,44 @@ class DoctorGate(GateCase):
         self.run_gate(expect=1)
         self.assertFalse(self.gate_record.exists())
 
+    def test_a_system_failure_is_recorded_whatever_the_pack_check_does(self):
+        """Review round 1: a later stage with no verdict never discards a failure before it."""
+        later = {
+            "a slot timeout": {"STUB_GATE_pack": "75"},
+            "a check that did not start (125)": {"STUB_GATE_pack": "125"},
+            "a check that did not start (127)": {"STUB_GATE_pack": "127"},
+            "a signalled check (143)": {"STUB_GATE_pack": "143"},
+            "a signalled check (137)": {"STUB_GATE_pack": "137"},
+            "a moved checkout": {"STUB_MOVE": "pack"},
+            "an unread head": {"unread": "pack"},
+        }
+        for name, extra in later.items():
+            with self.subTest(name):
+                # An older pass, which the failure must replace.
+                self.write_gate_record("pass", datetime.timedelta(hours=2))
+                (self.heads / "pack").write_text(PACK_HEAD + "\n")
+                if extra.pop("unread", None):
+                    (self.heads / "pack").unlink()
+                out = self.run_gate(expect=1, STUB_MAKE_system="2", **extra).stdout
+                self.assertIn(f"  system: make check FAILED in {ROOT} at {SYSTEM_HEAD} (exit 2)", out)
+                self.assertIn("no pack verdict; the system failure is recorded", out)
+                record = self.record()
+                self.assertEqual(("fail", SYSTEM_HEAD, "2"),
+                                 (record["verdict"], record["system"], record["system_exit"]))
+                self.assertNotIn("pack", record)
+                line = self.gate_line()
+                self.assertTrue(line.startswith(f"  NOT-READY weekly gate FAILED, ended {record['ended']} "
+                                                f"(system {SYSTEM_HEAD[:12]} exit 2; pack no verdict)"), line)
+                self.run_promote("--apply", expect=1)
+                self.assertEqual([], self.calls("restore"))
+        with self.subTest("the run killed during the pack check"):
+            self.write_gate_record("pass", datetime.timedelta(hours=2))
+            self.run_gate(expect=-9, STUB_MAKE_system="2", STUB_GATE_pack="kill")
+            record = self.record()
+            self.assertEqual(("fail", "2"), (record["verdict"], record["system_exit"]))
+            self.assertNotIn("pack", record)
+            self.assertIn("NOT-READY weekly gate FAILED", self.gate_line())
+
 
 class GateLine(GateCase):
     """hub-ready's gate line: the record decides; the job's stamp adds a note."""
@@ -192,7 +230,7 @@ class GateLine(GateCase):
         self.run_gate(expect=1, STUB_MAKE_system="2")
         line = self.gate_line()
         self.assertIn(f"  NOT-READY weekly gate FAILED, ended {self.record()['ended']} "
-                      f"(system {SYSTEM_HEAD[:12]}, pack {PACK_HEAD[:12]}; exits 2 and 0)", line)
+                      f"(system {SYSTEM_HEAD[:12]} exit 2; pack {PACK_HEAD[:12]} exit 0)", line)
         self.assertNotIn("last try", line)
         self.run_promote("--apply", expect=1)
         self.assertEqual([], self.calls("restore"))
@@ -278,6 +316,12 @@ class GateLine(GateCase):
             "no exit": good.replace("pack_exit=0\n", ""),
             "a negative exit": good.replace("pack_exit=0", "pack_exit=-1"),
             "another verdict": good.replace("verdict=pass", "verdict=ok"),
+            "a pass with no pack stage": re.sub(r"pack=\S+\npack_exit=0\n", "", good),
+            "a pass naming an exit": good.replace("pack_exit=0", "pack_exit=2"),
+            "a failure whose stages passed": good.replace("verdict=pass", "verdict=fail"),
+            "a failure naming only the pack": re.sub(r"system=\S+\nsystem_exit=0\n", "",
+                                                     good.replace("verdict=pass", "verdict=fail")
+                                                     .replace("pack_exit=0", "pack_exit=2")),
         }
         for name, body in bodies.items():
             with self.subTest(name):

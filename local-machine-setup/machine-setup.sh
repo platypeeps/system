@@ -4949,6 +4949,7 @@ cmd_doctor_gate() {
   trap_tmp
   dg_verdict=pass
   dg_fields=""
+  dg_none=""
   for dg_name in system pack; do
     if [ "$dg_name" = system ]; then dg_dir=$ROOT; else dg_dir=$SD_PACK_ROOT; fi
     # The head is read once the slot is held, and again after the check: a
@@ -4959,14 +4960,21 @@ cmd_doctor_gate() {
       sh -c 'git -C "$1" rev-parse HEAD > "$2" && exec make -C "$1" check' sh "$dg_dir" "$tmp/$dg_name" || dg_rc=$?
     dg_head=$(cat "$tmp/$dg_name" 2>/dev/null) || dg_head=""
     dg_after=$(git -C "$dg_dir" rev-parse HEAD 2>/dev/null) || dg_after=""
+    # A stage with no verdict ends the run; a failure before it still stands.
     if [ "$dg_rc" -eq 75 ]; then
-      echo "  $dg_name: no gate slot came free in $DOCTOR_GATE_WAIT s (exit 75); no verdict recorded"
-      exit 75
+      dg_none="no gate slot came free in $DOCTOR_GATE_WAIT s (exit 75)"
     elif [ "$dg_rc" -ge 125 ] || [ -z "$dg_head" ]; then
-      echo "  $dg_name: make check in $dg_dir did not finish (exit $dg_rc); no verdict recorded"
-      exit 1
+      dg_none="make check in $dg_dir did not finish (exit $dg_rc)"
     elif [ "$dg_head" != "$dg_after" ]; then
-      echo "  $dg_name: $dg_dir moved from $dg_head to ${dg_after:-an unread head} during make check; no verdict recorded"
+      dg_none="$dg_dir moved from $dg_head to ${dg_after:-an unread head} during make check"
+    fi
+    if [ -n "$dg_none" ]; then
+      if [ "$dg_verdict" = fail ]; then
+        echo "  $dg_name: $dg_none; no $dg_name verdict; the system failure is recorded"
+        break
+      fi
+      echo "  $dg_name: $dg_none; no verdict recorded"
+      [ "$dg_rc" -eq 75 ] && exit 75
       exit 1
     fi
     if [ "$dg_rc" -eq 0 ]; then
@@ -4978,8 +4986,16 @@ cmd_doctor_gate() {
     dg_fields="${dg_fields}$dg_name=$dg_head
 ${dg_name}_exit=$dg_rc
 "
+    # A failure is recorded at once, so a later stage killed with no
+    # verdict cannot leave an older pass in its place.
+    [ "$dg_verdict" = pass ] || [ "$dg_name" = pack ] || doctor_gate_record
   done
-  # Written whole and renamed: a kill leaves the old record or the new one.
+  doctor_gate_record
+  [ "$dg_verdict" = pass ] || exit 1
+}
+
+# Written whole and renamed: a kill leaves the old record or the new one.
+doctor_gate_record() {
   mkdir -p "$(dirname "$DOCTOR_GATE_RECORD")"
   if printf 'verdict=%s\nended=%s\n%s' "$dg_verdict" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$dg_fields" \
        > "$DOCTOR_GATE_RECORD.new" && mv "$DOCTOR_GATE_RECORD.new" "$DOCTOR_GATE_RECORD"; then
@@ -4988,7 +5004,6 @@ ${dg_name}_exit=$dg_rc
     echo "  record: NOT written to $DOCTOR_GATE_RECORD; the verdict was $dg_verdict"
     exit 1
   fi
-  [ "$dg_verdict" = pass ] || exit 1
 }
 
 # The hub-ready gate line, from the record and the job's stamp: `ok` only
@@ -5016,17 +5031,24 @@ ended = None
 try:
     r = fields(record)
     ended = when(r.get("ended"))
-    heads = {name: r.get(name, "") for name in ("system", "pack")}
-    for name, head in heads.items():
-        if not HEAD.fullmatch(head) or not re.fullmatch(r"[0-9]+", r.get(name + "_exit", "")):
-            raise ValueError(f"no {name} head and exit")
     if r.get("verdict") not in ("pass", "fail"):
         raise ValueError(f"verdict {r.get('verdict')!r}")
-    named = f"system {heads['system'][:12]}, pack {heads['pack'][:12]}"
+    # A pass names both stages; a failure names each stage that reached a
+    # verdict, one of them failed, and a later one may have none.
+    ran = [name for name in ("system", "pack") if name in r or name + "_exit" in r]
+    for name in ran:
+        if not HEAD.fullmatch(r.get(name, "")) or not re.fullmatch(r"[0-9]+", r.get(name + "_exit", "")):
+            raise ValueError(f"no {name} head and exit")
+    if r["verdict"] == "pass" and (len(ran) < 2 or any(r[n + "_exit"] != "0" for n in ran)):
+        raise ValueError("a pass that names a stage with no pass")
+    if r["verdict"] == "fail" and (not ran or ran[0] != "system" or all(r[n + "_exit"] == "0" for n in ran)):
+        raise ValueError("a failure that names no failed stage")
+    named = f"system {r['system'][:12]}, pack {r.get('pack', '')[:12]}"
     age = now - ended
     if r["verdict"] == "fail":
-        exits = f"exits {r['system_exit']} and {r['pack_exit']}"
-        line = f"  NOT-READY weekly gate FAILED, ended {r['ended']} ({named}; {exits}): fix it, then {rerun}"
+        stages = "; ".join(f"{n} {r[n][:12]} exit {r[n + '_exit']}" if n in ran else f"{n} no verdict"
+                           for n in ("system", "pack"))
+        line = f"  NOT-READY weekly gate FAILED, ended {r['ended']} ({stages}): fix it, then {rerun}"
     elif age < datetime.timedelta(minutes=-5):
         line = f"  NOT-READY weekly gate record {record} ends {r['ended']}, in the future: {rerun}"
     elif age >= datetime.timedelta(days=8):
