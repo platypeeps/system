@@ -1,0 +1,14 @@
+# Weekly gate run on each machine that runs lane-run (system sd:5986):
+# `machine-setup.sh doctor gate` runs `make check` in the system checkout,
+# then in the pack, each in the machine's gate queue (`sd gate run
+# --max-wait 3600`). A pass or a real failure is the verdict the hub-ready
+# block reads on a failover standby; a slot timeout (exit 75) or a run
+# killed before its verdict records none, and hub-ready notes it from this
+# job's stamp. Any exit but 0 files a failure report that Today shows.
+#
+# JOB_TIMEOUT is above both gate waits (60 min each) plus both checks, so
+# the limit never stops a check that would finish. Mondays at 11:20, when
+# the machines are awake.
+JOB_SCHEDULE="20 11 * * 1"
+JOB_TIMEOUT="4h"
+JOB_COMMAND="sh \"$ROOT/../local-machine-setup/machine-setup.sh\" doctor gate"

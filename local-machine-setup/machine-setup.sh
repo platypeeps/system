@@ -4929,6 +4929,127 @@ cmd_doctor_sd() {
   echo "  no hard failures"
 }
 
+# `doctor gate`: the weekly gate run (sd:5986; design
+# docs/work/2026-10-25-hub-failover-full-role, "Weekly gate run"). `make
+# check` in the system checkout, then in the pack, each in the machine's gate
+# queue. The record holds the newest decisive run only: a pass (both exit 0)
+# or a real failure (an exit from 1 to 124 but 75). A slot timeout (75), a
+# check that did not start (125, 127), a signal (over 128) or a checkout that
+# moved under its check is no verdict and leaves the record as it was, so a
+# later try never hides an earlier failure. hub-ready reads it.
+DOCTOR_GATE_RECORD="${XDG_STATE_HOME:-$HOME/.local/state}/machine-setup/doctor-gate-last"
+# The weekly job's stamp (cron-jobs.sh record_stamp); a test points it elsewhere.
+DOCTOR_GATE_STAMP="${DOCTOR_GATE_STAMP:-$ROOT/local-cron-jobs/logs/.doctor-gate-weekly.stamp}"
+DOCTOR_GATE_WAIT=3600
+
+cmd_doctor_gate() {
+  echo "== doctor gate"
+  tmp=$(mktemp -d)
+  # A signal exits before the record is written: no verdict.
+  trap_tmp
+  dg_verdict=pass
+  dg_fields=""
+  for dg_name in system pack; do
+    if [ "$dg_name" = system ]; then dg_dir=$ROOT; else dg_dir=$SD_PACK_ROOT; fi
+    # The head is read once the slot is held, and again after the check: a
+    # checkout moved in between (repo-sync refresh after a merge) ran a mix.
+    dg_rc=0
+    # shellcheck disable=SC2016 # the inner script expands its own arguments
+    "$SD_PACK_ROOT/bin/sd" gate run --max-wait "$DOCTOR_GATE_WAIT" --label "doctor gate: $dg_name make check" -- \
+      sh -c 'git -C "$1" rev-parse HEAD > "$2" && exec make -C "$1" check' sh "$dg_dir" "$tmp/$dg_name" || dg_rc=$?
+    dg_head=$(cat "$tmp/$dg_name" 2>/dev/null) || dg_head=""
+    dg_after=$(git -C "$dg_dir" rev-parse HEAD 2>/dev/null) || dg_after=""
+    if [ "$dg_rc" -eq 75 ]; then
+      echo "  $dg_name: no gate slot came free in $DOCTOR_GATE_WAIT s (exit 75); no verdict recorded"
+      exit 75
+    elif [ "$dg_rc" -ge 125 ] || [ -z "$dg_head" ]; then
+      echo "  $dg_name: make check in $dg_dir did not finish (exit $dg_rc); no verdict recorded"
+      exit 1
+    elif [ "$dg_head" != "$dg_after" ]; then
+      echo "  $dg_name: $dg_dir moved from $dg_head to ${dg_after:-an unread head} during make check; no verdict recorded"
+      exit 1
+    fi
+    if [ "$dg_rc" -eq 0 ]; then
+      echo "  $dg_name: make check passed in $dg_dir at $dg_head"
+    else
+      echo "  $dg_name: make check FAILED in $dg_dir at $dg_head (exit $dg_rc)"
+      dg_verdict=fail
+    fi
+    dg_fields="${dg_fields}$dg_name=$dg_head
+${dg_name}_exit=$dg_rc
+"
+  done
+  # Written whole and renamed: a kill leaves the old record or the new one.
+  mkdir -p "$(dirname "$DOCTOR_GATE_RECORD")"
+  if printf 'verdict=%s\nended=%s\n%s' "$dg_verdict" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$dg_fields" \
+       > "$DOCTOR_GATE_RECORD.new" && mv "$DOCTOR_GATE_RECORD.new" "$DOCTOR_GATE_RECORD"; then
+    echo "  record: $dg_verdict, in $DOCTOR_GATE_RECORD"
+  else
+    echo "  record: NOT written to $DOCTOR_GATE_RECORD; the verdict was $dg_verdict"
+    exit 1
+  fi
+  [ "$dg_verdict" = pass ] || exit 1
+}
+
+# The hub-ready gate line, from the record and the job's stamp: `ok` only
+# for a pass that ended under 8 days ago. A stamp whose run started after the
+# record's end adds a note, and changes nothing else.
+gate_ready_line() {
+  python3 - "$DOCTOR_GATE_RECORD" "$DOCTOR_GATE_STAMP" "$(basename "$SELF")" <<'PYEOF'
+import datetime, re, sys
+record, stamp, script = sys.argv[1:4]
+STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+HEAD = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
+
+def fields(path):
+    with open(path, encoding="utf-8") as f:
+        return dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line)
+
+def when(text):
+    if not STAMP.fullmatch(text or ""):
+        raise ValueError(f"no UTC time: {text!r}")
+    return datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+
+now = datetime.datetime.now(datetime.timezone.utc)
+rerun = f"run {script} doctor gate"
+ended = None
+try:
+    r = fields(record)
+    ended = when(r.get("ended"))
+    heads = {name: r.get(name, "") for name in ("system", "pack")}
+    for name, head in heads.items():
+        if not HEAD.fullmatch(head) or not re.fullmatch(r"[0-9]+", r.get(name + "_exit", "")):
+            raise ValueError(f"no {name} head and exit")
+    if r.get("verdict") not in ("pass", "fail"):
+        raise ValueError(f"verdict {r.get('verdict')!r}")
+    named = f"system {heads['system'][:12]}, pack {heads['pack'][:12]}"
+    age = now - ended
+    if r["verdict"] == "fail":
+        exits = f"exits {r['system_exit']} and {r['pack_exit']}"
+        line = f"  NOT-READY weekly gate FAILED, ended {r['ended']} ({named}; {exits}): fix it, then {rerun}"
+    elif age < datetime.timedelta(minutes=-5):
+        line = f"  NOT-READY weekly gate record {record} ends {r['ended']}, in the future: {rerun}"
+    elif age >= datetime.timedelta(days=8):
+        line = f"  NOT-READY weekly gate last passed {r['ended']}, 8 days ago or more ({named}): {rerun}"
+    else:
+        line = f"  ok      weekly gate passed, ended {r['ended']} ({named})"
+except FileNotFoundError:
+    line = f"  NOT-READY no weekly gate verdict in {record}: {rerun}"
+except (OSError, ValueError, UnicodeDecodeError) as error:
+    ended = None
+    line = f"  NOT-READY weekly gate record {record} cannot be read ({error}): {rerun}"
+# A try after the record that wrote none: the note says why, from its stamp.
+try:
+    s = fields(stamp)
+    started = when(s.get("started"))
+    if ended is None or started > ended:
+        line += "; last try timed out" if s.get("exit") == "75" and s.get("ended") else "; last try did not finish"
+except (OSError, ValueError, UnicodeDecodeError):
+    pass
+print(line)
+PYEOF
+}
+
 cmd_doctor() {
   fails=0
   echo "== doctor"
@@ -6320,6 +6441,8 @@ hub_ready() {
     return 0
   fi
   echo "  ok      $SD_HUB_CONFIG names $1:$2"
+  hr_hub=$1
+  hr_hub_port=$2
   # The hub holds the setting; a dead hub cannot say, and promote checks it
   # again in the restored database before it takes the name.
   if hr_name=$(bound_step 30 sd config get sd.hub_name 2>/dev/null); then
@@ -6348,6 +6471,9 @@ hub_ready() {
   else
     echo "  NOT-READY no hub-pin tag in $ROOT: local-repo-sync/repo-sync.sh follow fetches it"
   fi
+  # The weekly gate run's newest verdict (Q16): a standby that cannot pass
+  # the gates it would run as hub is not ready.
+  gate_ready_line
   if hr_build=$(bound_step 60 "$SD_DB_PYTHON" -I -c "$SD_DB_RUN_LIB" "$SD_PACK_ROOT/lib" sd_db.satellite --hub "$1" --port "$2" 2>&1); then
     case "$hr_build" in
       *"matches the hub's"*) echo "  ok      sd_db build matches the hub's" ;;
@@ -6420,6 +6546,7 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
   hr_unread=""
   hr_stalled=""
   hr_answered=""
+  hr_listed=""
   # Every probe of a backup root or a NAS pair runs bounded: a stalled SMB
   # share hung the nightly run 2 h on one ls (sd:4786). 10 s for a listing or
   # a test, as the shares answer in 1 s when they answer; a timeout (124) is
@@ -6433,6 +6560,8 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
     hr_names=$(bound_step 10 ls "$hr_root" 2>/dev/null) || hr_rc=$?
     if [ "$hr_rc" -eq 0 ]; then
       hr_answered=1
+      hr_listed="$hr_listed$hr_root
+"
       echo "  ok      backup root readable: $hr_root"
       # dated names only, as the backup writes them
       hr_last=$(printf '%s\n' "$hr_names" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?$' | sort -t. -k1,1 -k2,2n | tail -1)
@@ -6557,6 +6686,79 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
     else
       echo "  NOT-READY free disk ${hr_free:-unknown} KiB, under twice $hr_newest ($hr_need KiB)"
     fi
+    backup_age_line
+  fi
+}
+
+# The backup age line (design, "Readiness inputs"): the newest checkpoint
+# among the snapshots under the roots that answered, as restore --newest
+# orders them. Read with the pack's own reader, under its interpreter, as
+# this repository opens no database (tests/test_one_store.py). A snapshot is
+# skipped when its manifest cannot be read, a file or folder it lists is not
+# there, or its database holds no checkpoint: the hourly NAS copy writes each
+# file under a temporary name and renames it whole, so a copy cut short
+# lacks a file. restore --newest still hashes what it restores. `ok` under
+# 24 h. Older, or no checkpoint at all, is NOT-READY while the hub answers:
+# its backups stalled. With the hub down it is the best there is, so `--`.
+# A read that fails or times out is no age: `--`, never ok.
+backup_age_line() {
+  # The first word after the folder is for the test's interpreter stub.
+  # shellcheck disable=SC2016 # Python, not shell
+  if ! hr_age=$(bound_step 60 "$SD_DB_PYTHON" -I -c 'import datetime, json, os, re, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from sd_db.backup import _checkpoint
+best = None
+for root in filter(None, sys.argv[3].splitlines()):
+    try:
+        names = os.listdir(root)
+    except OSError:
+        continue
+    for name in names:
+        folder = Path(root, name)
+        if folder.is_symlink() or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}([.][0-9]+)?", name):
+            continue
+        try:
+            entries = json.loads((folder / "backup-manifest.json").read_bytes())["entries"]
+            if any(not ((folder / n).is_dir() if h is None else (folder / n).is_file()) for n, h in entries.items()):
+                continue
+            taken = _checkpoint(folder)[0]
+        except Exception:
+            continue
+        if best is None or taken > best[0]:
+            best = (taken, folder)
+if best is None:
+    print("none")
+else:
+    age = datetime.datetime.now(datetime.timezone.utc) - best[0]
+    print(int(age.total_seconds()), best[0].isoformat(), best[1])' "$SD_PACK_ROOT/lib" backup-age "$hr_listed" 2>/dev/null) ||
+     [ -z "$hr_age" ]; then
+    echo "  --      backup age not read: the snapshots' checkpoints were not read under $SD_DB_PYTHON in time"
+    return 0
+  fi
+  hr_secs=${hr_age%% *}
+  hr_why="its backups have not reached the roots in 24 h"
+  case "$hr_secs" in
+    none) hr_what="backup age unknown: no snapshot under the roots that answered has a checkpoint" ;;
+    -[0-9]*|[0-9]*)
+      hr_rest=${hr_age#* }
+      hr_at="newest checkpoint ${hr_rest%% *} in ${hr_rest#* }"
+      if [ "$hr_secs" -lt -300 ]; then
+        hr_what="backup age unknown: $hr_at lies in the future"
+        hr_why="a clock is wrong"
+      elif [ "$hr_secs" -lt 86400 ]; then
+        [ "$hr_secs" -ge 0 ] || hr_secs=0
+        echo "  ok      backup age $((hr_secs / 3600)) h: $hr_at"
+        return 0
+      else
+        hr_what="backup age $((hr_secs / 3600)) h, 24 h or more: $hr_at"
+      fi ;;
+    *) echo "  --      backup age not read: $hr_age"; return 0 ;;
+  esac
+  if hub_answers "$hr_hub" "$hr_hub_port" "${PROMOTE_PROBE_SECONDS:-30}"; then
+    echo "  NOT-READY $hr_what; the hub answers, so $hr_why"
+  else
+    echo "  --      $hr_what; the hub does not answer, so promote restores the newest there is and its report names the checkpoint"
   fi
 }
 
@@ -7499,6 +7701,13 @@ for a in "$@"; do
                    another database, or an env.sh that fails when sourced,
                    is a FAIL
   doctor sd        those sd checks alone, exit 1 on any FAIL
+  doctor gate      the weekly gate run: make check in this checkout, then
+                   in the pack, each inside `sd gate run --max-wait 3600`;
+                   a pass or a real failure is written to
+                   ~/.local/state/machine-setup/doctor-gate-last, which
+                   hub-ready reads; a slot timeout exits 75, and it, a
+                   signal or a checkout that moved writes nothing; exits 0
+                   only on a pass
   test             run the unittest suite in tests/ (extra args go to unittest)
   upgrade          maintenance sweep: brew update/upgrade (casks with
                    --greedy, so self-updating ones move too, Claude Code's
@@ -7678,7 +7887,8 @@ case "$VERB" in
     case "$ARG" in
       "") cmd_doctor ;;
       sd) cmd_doctor_sd ;;
-      *)  die "doctor takes no argument, or 'sd' for the database and dashboard checks alone" ;;
+      gate) cmd_doctor_gate ;;
+      *)  die "doctor takes no argument, 'sd' for the database and dashboard checks alone, or 'gate' for the weekly gate run" ;;
     esac
     ;;
   # Python, not sh, for the same reason local-repo-sync tests

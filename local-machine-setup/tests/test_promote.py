@@ -134,6 +134,8 @@ SATELLITE_CASE = """case "$5" in sd_db.satellite)
   line=${STUB_SATELLITE_LINE-ok}
   [ "$line" != ok ] || line="  ok      sd_db fixture build 1 matches the hub's"
   echo "$line"; exit 0 ;;
+  # hub-ready's backup age line: the pinned pack's own checkpoint reader.
+  backup-age) exec "$STUB_REAL_PYTHON" "$@" ;;
 esac
 """
 PROVE_STUB = SATELLITE_CASE + 'shift 3\necho "prove $*" >> "$STUB_LOG"\nexit "${STUB_PROVE_RC:-0}"\n'
@@ -230,6 +232,18 @@ class PromoteCase(unittest.TestCase):
         # The satellite stage's Jev step finds its shadow file.
         (f.home / ".config/jev").mkdir(parents=True)
         (f.home / ".config/jev/shadow").write_text("on\n")
+        # A weekly gate pass from an hour ago; the job's stamp is not there.
+        self.gate_record = f.home / ".local/state/machine-setup/doctor-gate-last"
+        self.gate_stamp = self.tmp / "logs" / ".doctor-gate-weekly.stamp"
+        self.write_gate_record("pass", datetime.timedelta(hours=1))
+
+    def write_gate_record(self, verdict, ago, system_exit=0, pack_exit=0):
+        """The record `doctor gate` writes after a decisive run that ended `ago` before now."""
+        ended = (datetime.datetime.now(datetime.timezone.utc) - ago).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.gate_record.parent.mkdir(parents=True, exist_ok=True)
+        self.gate_record.write_text(f"verdict={verdict}\nended={ended}\nsystem={'c' * 40}\nsystem_exit={system_exit}\n"
+                                    f"pack={'d' * 40}\npack_exit={pack_exit}\n")
+        return ended
 
     @staticmethod
     def closed_port():
@@ -243,7 +257,7 @@ class PromoteCase(unittest.TestCase):
                 "XDG_STATE_HOME": self.fixture.home / ".local/state", "SD_LANE_ROOT": self.lanes,
                 "PROMOTE_PROBE_SECONDS": "1", "STUB_HUB_NAME": HUB, "STUB_REAL_GIT": shutil.which("git"),
                 "STUB_PIN": "a" * 40, "STUB_SYSTEM_HEAD": "a" * 40, "STUB_PIN_PACK": "b" * 40,
-                "STUB_PACK_HEAD": "b" * 40, **extra}
+                "STUB_PACK_HEAD": "b" * 40, "DOCTOR_GATE_STAMP": self.gate_stamp, **extra}
 
     def run_promote(self, *args, expect=0, **extra):
         result = self.fixture.run("promote", *args, **self.promote_env(**extra))
