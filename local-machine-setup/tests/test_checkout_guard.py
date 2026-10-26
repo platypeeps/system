@@ -483,11 +483,12 @@ class CheckoutGuard(unittest.TestCase):
         """Operator ruling on sd:6083 round 4: what the reader cannot know refuses
         only when a world's folder is or may be in a root, or the text names one."""
         lane, work = self.system, self.worktree
-        for command in ('touch "$(pwd)/x"', "f() { echo; }; f", "source ./env.sh && mkdir y"):
+        for command in ('touch "$(pwd)/x"', 'read D; cd "$D" && touch x',
+                        "source ./env.sh && mkdir y"):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=work), "allow")
                 self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "))
-        for command in (f"cd {lane} && f() {{ :; }}; f",
+        for command in (f'cd {lane} && read D; touch "$D"',
                         f"pushd {lane} && popd && popd && touch x",
                         f'touch "$(echo x)" {lane}/README.md',
                         f'D=$(echo {lane}); touch "$D/x"'):
@@ -543,6 +544,237 @@ class CheckoutGuard(unittest.TestCase):
                         "cat <<EOF\ndon't \"quote\" $(echo x)\nEOF"):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=work), "allow")
+
+    def test_a_shell_c_script_is_read_in_a_child(self):
+        """sd:6153: `sh -c` and `bash -c` run their script in a child: its
+        writes count, its `cd` and assignments stay there."""
+        lane, work = self.system, self.worktree
+        for command in (f"sh -c 'touch {lane}/x'",
+                        f'bash -lc "cd {lane} && rm README.md"',
+                        f"bash -e -o pipefail -c 'mkdir {lane}/d'",
+                        f"/bin/sh -c 'touch \"$1/x\"' sh {lane}",
+                        f'D={lane}; sh -c "touch $D/x"',
+                        f"timeout 5 zsh -c 'git -C {lane} commit -m x'",
+                        f"echo x | xargs sh -c 'touch {lane}/x'",
+                        f"sh -c 'sh -c \"touch {lane}/x\"'"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=work), lane)
+        for command in (f"sh -c 'cd {lane}'; touch x",
+                        f"bash -c 'touch \"$1/x\"' _ {work}",
+                        "sh -c 'echo hi > /tmp/sd-6153.log'",
+                        f"sh -c 'cd {work} && touch x'"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=work), "allow")
+        self.assertEqual(self.bash(f"sh -c 'cd {work} && touch x'", cwd=lane), "allow")
+
+    def test_a_function_body_is_read_where_it_is_called(self):
+        """sd:6153: a function runs its body at each call, in the caller's
+        folder and with the call's arguments; a definition alone runs nothing."""
+        lane, work = self.system, self.worktree
+        for command in (f"f() {{ touch {lane}/x; }}; f",
+                        f"function f {{ cd {lane}; }}; f; touch x",
+                        f"function f() {{ cd {lane}; }}\nf && touch x",
+                        f'f() {{ touch "$1/x"; }}; f {lane}',
+                        f"f() ( cd {lane} && touch x ); f",
+                        f"f() {{ touch x; }}; cd {lane} && f",
+                        f"f() {{ cat; }} > {lane}/x; f",
+                        f"my-f() {{ rm -rf {lane}; }}; my-f"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=work), lane)
+        for command, fixed in (("f() { echo hi; }; f", False),
+                               ("f() { rm -f README.md; }", False),
+                               (f"f() {{ cd {work}; }}; f && touch x", True),
+                               ('f() { touch "$1"; }; f /tmp/sd-6153', False)):
+            with self.subTest(command=command):  # FIXED: 13554b17 refused it
+                self.assertEqual(self.bash(command, cwd=lane, fixed=fixed), "allow")
+        self.assertTrue(self.bash("f() { f; }; f", cwd=lane).startswith("deny: "))
+        self.assertEqual(self.bash("f() { f; }; f", cwd=work), "allow")
+
+    def test_a_parameter_form_is_read(self):
+        """sd:6153: `${D:-w}`, `${D-w}`, `${D:+w}`, `${D+w}`, `${D:?w}`,
+        `${D#p}`, `${D##p}`, `${D%p}`, `${D%%p}` and `${#D}` read as the
+        shell reads them; any other form is unknown."""
+        lane, work = self.system, self.worktree
+        for command, fixed in (('D=/tmp; touch "${D:-README.md}/x"', True),
+                               ('D=; touch "${D:-/tmp}/x"', True),
+                               ('D=/tmp/; touch "${D%/}/x"', True),
+                               ('D=/tmp/a.txt; touch "${D%.txt}.log"', True),
+                               ('D=/tmp/x; touch "${D:+$D.bak}"', True),
+                               ('D=/tmp/x; touch "${D:+${D}.bak}"', True),
+                               ('D=README.md; touch "/tmp/${D##*/}"', False),
+                               ('D=/tmp; touch "${D?}/x" "${D:?unset}/y"', True),
+                               ('D=/tmp/a/b; touch "${D%%/a*}/x" "${D#/tmp}"', True),
+                               ('touch "/tmp/${#D}"', False)):
+            with self.subTest(command=command):  # FIXED: 13554b17 refused it
+                self.assertEqual(self.bash(command, cwd=lane, fixed=fixed), "allow")
+        for command in (f'D={lane}; touch "${{D:-/tmp}}/x"',
+                        f'touch "${{D:-{lane}}}/x"',
+                        f'D=; touch "${{D:-{lane}}}/x"',
+                        f'D=/tmp; touch "${{D:+{lane}}}/x"',
+                        f'D={lane}/a; touch "${{D%/a}}/x"',
+                        f'D=x{lane}; touch "${{D#x}}/x"',
+                        f'D={lane}/a/b; touch "${{D%%/a*}}/x"',
+                        f'D={lane}/a/b; touch "${{D%/*}}" "${{D##*/}}"',
+                        f'touch "${{D:={lane}}}/x"',
+                        f'D={lane}; touch "${{D/x/y}}/x"'):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=work).startswith("deny: "), command)
+        for command in ('touch "${D:=/tmp}/x"', 'D=/tmp; touch "${D:0:4}/x"'):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "), command)
+                self.assertEqual(self.bash(command, cwd=work), "allow")
+
+    def test_a_quoted_reserved_word_is_a_command(self):
+        """sd:6153 round 7: shlex drops the quotes, so `'case'` read as syntax
+        and hid the commands after it; a quoted `time` is a program."""
+        lane, work = self.system, self.worktree
+        for command in (f"'case'; touch {lane}/x",
+                        f"'if' true; touch {lane}/x",
+                        f"\\for x; touch {lane}/x",
+                        f'"done"; touch {lane}/x',
+                        f"''while; touch {lane}/x"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=work), lane)
+        self.assertDenied(self.bash("'time' exit 0; touch x", cwd=lane), lane)
+        self.assertEqual(self.bash("echo 'if' \"then\" fi; ls", cwd=lane), "allow")
+
+    def test_a_loop_past_two_passes_is_unknown(self):
+        """sd:6153 round 8: the reader runs a body twice; a value still
+        changing on the second pass may change on a third, so it is unknown."""
+        lane, repos = self.system, self.system.parent
+        for command in (f'D={repos}/; for c in s y s t e m; do D=$D$c; done; touch "$D/x"',
+                        f'D={repos}/; while :; do D=$D/s; done; touch "$D/x"'):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "), command)
+        self.assertEqual(self.bash('D=/tmp; for c in a b c; do D=/tmp/$c; done; touch "$D/x"',
+                                   cwd=lane), "allow")
+
+    def test_declaration_arguments_expand_before_it_runs(self):
+        """sd:6153 round 8: bash expands every `export` argument first, so
+        `E=$D` takes D's value from before the command."""
+        lane, work = self.system, self.worktree
+        for command in (f'D={lane}; export D=/tmp E=$D; touch "$E/x"',
+                        f'D={lane}; declare D=/tmp E=$D; touch "$E/x"'):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=work), lane)
+        self.assertDenied(self.bash(f'D=/tmp E={lane}; touch "$E/x"', cwd=work), lane)
+
+    def test_a_reader_error_is_an_unknown(self):
+        """sd:6153 round 7: an exception in the reader denied nothing; it is
+        an unknown, so it refuses near a root and passes elsewhere."""
+        lane, work = self.system, self.worktree
+        huge = "9" * 4500
+        for command in ("set -- a b; shift ²; touch \"$1\"",
+                        f"touch {{1..{huge}}}",
+                        f"touch {{a..z..{huge}}}",
+                        f"echo $((1 << {huge})); touch x"):
+            with self.subTest(command=command[:40]):
+                self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "), command[:40])
+                self.assertEqual(self.bash(command, cwd=work), "allow")
+        self.assertDenied(self.decide("Write", file_path=f"{lane}/{{1..{huge}}}"), lane)
+        protected = [str(lane), str(self.pack)]
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(BRANCH, "scan", side_effect=IndexError):
+            self.assertRaises(BRANCH.Unreadable, BRANCH.bash_root, "ls", str(lane), protected)
+            self.assertIsNone(BRANCH.bash_root("ls", str(work), protected))
+
+    def test_extreme_input_never_passes_a_write_near_a_root(self):
+        """Property over extreme words (huge numbers, unicode digits, deep
+        nesting, long values, NUL): a `touch` in the lane after them is
+        refused, and no input raises past the reader, within BUDGET's time."""
+        lane, work = self.system, self.worktree
+        rng = random.Random(6153)
+        huge = lambda: "1" + "0" * rng.choice([1, 18, 19, 300, 4299, 4400])
+        pieces = [lambda: f"{{1..{huge()}}}", lambda: f"{{0..9..{huge()}}}",
+                  lambda: f"{{-{huge()}..{huge()}}}", lambda: f"shift {huge()}",
+                  lambda: "shift ²", lambda: "set -- ٣ ¹",
+                  lambda: f"echo ${huge()}", lambda: "echo ${#D} " + "${D:-" * 50 + "x" + "}" * 50,
+                  lambda: "D=" + "x" * rng.choice([1, 4096, 100000]),
+                  lambda: f'D="${{D:-{huge()}}}"', lambda: "echo \0 $'\\0'",
+                  lambda: "f() { f; }; f", lambda: "sh -c " * 30 + "true",
+                  lambda: "for i in 1; do " * 40 + "D=$D$D; " + "done; " * 40,
+                  lambda: f"echo $(({huge()} ** {huge()}))", lambda: "'" + "if" * 500 + "'",
+                  lambda: "declare -i D=" + huge(), lambda: "${" * 300 + "D" + "}" * 300]
+        protected, started = [str(lane), str(self.pack)], time.monotonic()
+        for _ in range(150):
+            text = "; ".join(rng.choice(pieces)() for _ in range(rng.randrange(1, 4)))
+            with self.subTest(command=text[:60]), \
+                    mock.patch.dict(os.environ, self.env, clear=True):
+                try:
+                    root = BRANCH.bash_root(text + "\ntouch x", str(lane), protected)
+                except BRANCH.Unreadable:
+                    root = str(lane)
+                self.assertEqual(root, str(lane))
+                try:
+                    BRANCH.bash_root(text, str(work), protected)
+                except BRANCH.Unreadable:
+                    pass
+        self.assertLess(time.monotonic() - started, 120)
+
+    def test_every_word_form_resolves_or_is_unknown(self):
+        """sd:6153 class pass: an ANSI-C quote spells its escapes, xargs adds
+        words from its input, which the reader cannot know, a `$".."` is its
+        text, and `${D:=w}` sets D."""
+        lane, work, rest = self.system, self.worktree, str(self.system)[1:]
+        for command in (f"touch $'\\x2f'{rest}/x",
+                        f"mkdir $'\\057{rest}/d'",
+                        f"touch $'\\u002f'{rest}/x",
+                        f"D=$'\\x2f'{rest}; touch \"$D/x\""):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=work), lane)
+        for command in ("git ls-files | xargs rm", "find . | xargs -I{} cp {} {}.bak",
+                        "ls | xargs -n 1 touch"):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "), command)
+                self.assertEqual(self.bash(command, cwd=work), "allow")
+        for command in ("git ls-files | xargs wc -l", "echo $'a\\tb' > /tmp/sd-6153.txt",
+                        "printf $'%s\\n' x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=lane), "allow")
+        # `$".."` is its text; `${D:=w}` and `${D=w}` also set D
+        for command in (f'touch $"{lane}/x"', f': ${{D:={lane}}}; touch "$D/x"',
+                        f'D=; echo ${{D={lane}}} >/dev/null; touch "$D/x"'):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=work), lane)
+        header = f'for x in ${{D:={lane}}}; do :; done; touch "$D/x"'  # an unknown, near a root
+        self.assertTrue(self.bash(header, cwd=work).startswith("deny: "), header)
+        for command, fixed in (('touch $"/tmp/x"', True), ('D=/tmp; : ${D:=x}; touch "$D/y"', False)):
+            with self.subTest(command=command):  # FIXED: 13554b17 refused it
+                self.assertEqual(self.bash(command, cwd=lane, fixed=fixed), "allow")
+        # every redirect form writes its target; a process substitution runs
+        for command in (f"echo hi >> {lane}/x", f"echo hi 2>> {lane}/x", f"echo hi &> {lane}/x",
+                        f"echo hi >| {lane}/x", f"echo hi >& {lane}/x", f"exec 3<> {lane}/x",
+                        f"cat > >(tee {lane}/x)"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=work), lane)
+        # `$$`, `$?`, `$#` and `$!` are numbers; a name that is not ASCII is a command
+        for command in ("touch /tmp/$$ /tmp/$? /tmp/$# /tmp/$!", f"é={lane}; ls"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=lane if "$" in command else work), "allow")
+
+    def test_a_command_reads_what_its_line_hands_it(self):
+        """sd:6153 class pass: `D=x cmd` and `env D=x cmd` hand D to a child
+        shell, a function and `eval`; a trap body runs later, anywhere; `time`
+        and `coproc` run the compound command after them."""
+        lane, work = self.system, self.worktree
+        for command in (f"D={lane} sh -c 'touch \"$D/x\"'",
+                        f"env D={lane} sh -c 'touch \"$D/x\"'",
+                        f'f() {{ touch "$D/x"; }}; D={lane} f',
+                        f"D={lane} eval 'touch \"$D/x\"'",
+                        f'D=/tmp; f() {{ :; }}; D={lane} f; touch "$D/x"',
+                        f"trap 'touch {lane}/x' EXIT",
+                        f"trap 'cd {lane}' DEBUG; touch x",
+                        f"coproc {{ touch {lane}/x; }}",
+                        f"coproc X {{ touch {lane}/x; }}",
+                        f"coproc touch {lane}/x",
+                        f"time {{ touch {lane}/x; }}"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash(command, cwd=work), lane)
+        for command in ("D=/tmp sh -c 'touch \"$D/x\"'", 'f() { touch "$D/x"; }; D=/tmp f',
+                        "D=/tmp eval 'touch \"$D/x\"'", "trap 'rm -f /tmp/x' EXIT; ls",
+                        "time { ls; }"):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command, cwd=lane), "allow")
 
     def test_a_root_is_named_only_as_a_whole_path(self):
         """sd:6083 round 5: `/lane-tools` names no root; `/lane`, `/lane/x` and
@@ -609,7 +841,22 @@ class CheckoutGuard(unittest.TestCase):
                   f'F="{work} {lane}"', "touch $F", 'echo "$(touch y)"', "echo \"`touch y`\"",
                   'cat <<<"$(touch y)"', "cat <<<y\ntouch y", "cat <<EOF\n$(touch y)\nEOF\n",
                   "cat <<'EOF'\n$(touch y)\nEOF\n", "echo $((1<<2))\ntouch y",
-                  "echo $'\\''; touch y"]
+                  "echo $'\\''; touch y",
+                  # sd:6153: `sh -c`, functions, quoted reserved words, `${..}`,
+                  # loops past two passes, declaration arguments
+                  "sh -c 'touch y'", "bash -c 'cd d1 && touch y'", f"sh -c 'cd {lane}'",
+                  "sh -c 'touch \"$1\"' _ y", 'sh -c "touch $D/y"', "f() { touch y; }", "f",
+                  f"g() {{ cd {lane}; }}", "g", "function h { cd d1; }", "h", "'if' true",
+                  "'case'", "'time' exit 0", "\\for x", 'D=${D:-d1}', 'touch "${D:-y}"',
+                  'touch "${D%/}y"', 'touch "${D#*/}"', 'D=${D:+$D/a}', 'D=${D%/*}',
+                  "for i in 1 2 3; do D=$D/d1; done", f"export D={work} E=$D", 'touch "$E/y"',
+                  'echo "$(cd d1; touch y)"',
+                  # sd:6153 class pass: what a line hands its command, `${D:=w}`,
+                  # `$".."`, trap bodies, compounds after `time` and `coproc`
+                  "D=d1 sh -c 'touch \"$D/y\"'", f"D={lane} sh -c 'cd \"$D\" && touch y'",
+                  "D=d1 f", "D=d1 eval 'touch \"$D/y\"'", ": ${D:=d1}", f": ${{D:={lane}}}",
+                  'touch $"y"', "trap 'touch y' EXIT", f"trap 'cd {lane}' DEBUG",
+                  "coproc { touch y; }", "time { touch y; }"]
 
         def gen(depth):
             kind = min(rng.randrange(14 if depth < 3 else 1), 11)  # case weighs three

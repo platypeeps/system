@@ -25,21 +25,27 @@ agents write, so a copy of this file run from one protects nothing there.
   command after `&&` or `||`, in an `if`, loop or `case` body, a pipeline
   stage, a `&` job, and every change itself, since `unset`, `set --`,
   `shift`, `cd`, `pushd`, `eval` and an assignment to a name the shell may
-  hold readonly may fail. The reader
-  carries every (folder, folder stack, variables, status) world and denies a
-  write in any of them (sd:6083).
-- A word expands as the shell expands it: braces, `~`, variables, splitting
-  and globs. What the reader cannot know (input, `$( )`, arrays, `${..}`
+  hold readonly may fail. The reader carries every (folder, folder stack,
+  variables, status) world and denies a write in any of them (sd:6083).
+  A loop body runs zero, one or two times; what the second pass still
+  changes is unknown after it.
+- A word expands as the shell expands it: braces, `~`, variables, the
+  `${..}` forms in parameter(), `$'..'` escapes, splitting and globs. What
+  the reader cannot know (input, xargs input, `$( )`, arrays, other `${..}`
   forms, a stack entry) reads as unknown.
+- A function body runs at each call; `sh -c` and `bash -c` read their
+  script in a child shell (sd:6153).
 
 Malformed input or a command shlex cannot split fails open: no decision, a
 warning on stderr, exit 0. A broken hook must not stop every session. A
-command the reader cannot follow within BUDGET steps, or that writes through
-an unknown, a function or `source`, is denied near a root: when a world's
-folder is in one, or the text names one. Elsewhere it passes.
+command the reader cannot follow within BUDGET steps, that writes through
+an unknown or after `source`, or that the reader fails on, is denied near a
+root: when a world's folder is in one, or the text names one. Elsewhere it
+passes.
 """
 
 import collections
+import fnmatch
 import functools
 import glob
 import itertools
@@ -61,24 +67,34 @@ GIT_WRITES = {"add", "am", "apply", "checkout", "cherry-pick", "clean", "commit"
 PATH_WRITERS = {"mkdir", "touch", "rm", "rmdir", "mv", "tee", "truncate"}
 LAST_ARG_WRITERS = {"cp", "ln", "install", "rsync"}
 PREFIXES = {"command", "builtin", "time"}  # run the command in this shell
-FORKS = {"rtk", "proxy", "nohup", "env", "exec", "nice", "timeout", "xargs", "sudo", "stdbuf"}
+FORKS = {"rtk", "proxy", "nohup", "env", "exec", "nice", "timeout", "xargs", "sudo", "stdbuf",
+         "coproc"}
 VALUED = {"env": {"-u", "-P", "-S", "-C"}, "nice": {"-n"}, "timeout": {"-s", "-k"},
           "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-U", "-r", "-t"},
           "xargs": {"-n", "-I", "-J", "-L", "-P", "-R", "-S", "-s", "-E", "-d", "-a"},
           "stdbuf": {"-i", "-o", "-e"}}  # options that take the next word
 DECLARERS = {"export", "readonly", "declare", "local", "typeset"}
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}  # `-c SCRIPT` runs SCRIPT in a child
 READONLY = {"BASHOPTS", "BASH_VERSINFO", "EUID", "PPID", "SHELLOPTS", "UID"}  # bash's own
 READS = {"read": ("REPLY",), "mapfile": ("MAPFILE",), "readarray": ("MAPFILE",),
          "getopts": ("OPTARG", "OPTIND"), "printf": ()}  # set names from input
-NAME = re.compile(r"[A-Za-z_]\w*")
-ASSIGNMENT = re.compile(r"[A-Za-z_]\w*(\[[^]]*\])?\+?=")
-# $NAME, ${NAME}, $1; `$$`, `$?`, `$#` and `$!` are numbers; any other `$` form
-# (`${D%/}`, `$@`, `$(`) and a backquote read as unknown
-VARIABLE = re.compile(r"\$(?:\{(?P<braced>\w+)\}|(?P<name>[A-Za-z_]\w*|\d)|(?P<number>[$?#!])"
-                      r"|[{(@*-])|`")
-TILDE = re.compile(r"^~([+-]?)(\d*)(?=/|$)")
+NAME = re.compile(r"[A-Za-z_]\w*", re.ASCII)
+FUNCTION = re.compile(r"[^$`\\\0\uE07F]+")  # bash takes `my-f` and `a.b` too
+ASSIGNMENT = re.compile(r"[A-Za-z_]\w*(\[[^]]*\])?\+?=", re.ASCII)
+# $NAME, $1, ${NAME}, ${#NAME} and ${NAME<op>WORD} for the ops in parameter()
+# (a `?` double quotes hid counts), WORD holding no brace, `$` or backquote
+# but `$NAME` and `${NAME}`; `$$`, `$?`, `$#` and `$!` are numbers; any other
+# `$` form (`${D/a/b}`, `$@`, `$(`) and a backquote read as unknown
+REFERENCE = r"\$(?:\{(?P<braced>[A-Za-z_]\w*|[0-9])\}|(?P<name>[A-Za-z_]\w*|[0-9]))"
+WORD_REFERENCE = re.compile(REFERENCE, re.ASCII)
+DEFAULTED = re.compile(r"\$\{([A-Za-z_]\w*):?=", re.ASCII)  # `${D:=w}` and `${D=w}` set D
+VARIABLE = re.compile(r"\$(?:\{(?P<length>#)?(?P<braced>[A-Za-z_]\w*|[0-9]+)"
+                      r"(?:(?P<op>:?[-+=?\uE03F]|##?|%%?)(?P<word>(?:[^{}$`\\]|"
+                      + re.sub(r"\?P<\w+>", "?:", REFERENCE) + r")*))?\}"
+                      r"|(?P<name>[A-Za-z_]\w*|[0-9])|(?P<number>[$?#!])|[{(@*-])|`", re.ASCII)
+TILDE = re.compile(r"^~([+-]?)(\d*)(?=/|$)", re.ASCII)
 SEQUENCE = re.compile(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?"
-                      r"|([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?")
+                      r"|([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?", re.ASCII)
 GLOB = re.compile(r"[*?[]")
 CASE = re.compile(r"(case|esac)(?![^\s;&|()<>])")
 CLOSE = {"(": ")", "a(": ")", "a[": "]", "{": "}"}
@@ -90,13 +106,20 @@ OPERATOR = set("();<>|&")
 DOUBLE = "~{},*?["  # what double quotes keep from expanding
 QUOTED = DOUBLE + "$`"  # what single quotes or a backslash keep from expanding
 HIDDEN = 0xE000  # a quoted operator character moves to the private-use plane
-UNHIDE = {HIDDEN + ord(char): char for char in OPERATOR}
-LITERAL = {HIDDEN + ord(char): char for char in QUOTED}  # a quoted one expands to nothing
+MARK = chr(HIDDEN + 0x7F)  # a quote was here; a quoted reserved word keeps it
+UNHIDE = {HIDDEN + ord(char): char for char in OPERATOR} | {ord(MARK): None}
+LITERAL = {HIDDEN + ord(char): char for char in QUOTED} | {ord(MARK): None}
 LIVE = {HIDDEN + ord(char): char for char in "*?["}  # an unquoted `$D` may glob its value
 ESCAPED = {**LITERAL, **{HIDDEN + ord(char): glob.escape(char) for char in "*?["}}
+ANSI = re.compile(r"\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)",
+                  re.DOTALL)
+ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r",
+           "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
 CONTROL = re.compile(r"&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|[<>]|;;&|;;|;&|&&|\|\||\|&|[;&|()]")
 KEYWORDS = {"if", "then", "elif", "else", "fi", "while", "until", "for", "select", "do", "done",
             "case", "esac", "{", "}", "!"}
+RESERVED = KEYWORDS | {"in", "function", "time", "[[", "]]"}  # quoted, each is a command
+COMPOUND = {"{", "if", "while", "until", "for", "select", "case"}  # `time` or `coproc` may lead
 BUDGET = 1024  # commands times worlds the reader may run; more reads as unsplittable
 
 
@@ -119,6 +142,10 @@ class Unreadable(Exception):
     """The reader cannot follow the command; the reason completes `cannot read this command`."""
 
 
+class Unsplittable(ValueError):
+    """shlex cannot split the command: it fails open, like malformed input."""
+
+
 class Budget:
     """The steps left: each command, world and expanded word spends some.
 
@@ -138,6 +165,21 @@ class Budget:
             raise Unreadable(f"it takes more than {BUDGET} steps")
 
 
+def defaults(words, variables, spend):
+    """The names a `${D:=w}` or `${D=w}` in WORDS sets, each with the values
+    that form expands to; unknown where the reader cannot read the form."""
+    out = {}
+    for text in words:
+        for match in DEFAULTED.finditer(text):
+            form = VARIABLE.match(text, match.start())
+            values = [UNKNOWN]
+            if form and form.group("braced") == match.group(1):
+                values = [UNKNOWN if value == form.group(0) else value
+                          for value in expand(form.group(0), variables, spend)]
+            out[match.group(1)] = out.get(match.group(1), frozenset()) | frozenset(values)
+    return out
+
+
 def expand(text, variables, spend):
     """Every way TEXT expands; VARIABLES maps a name to its possible values.
 
@@ -146,23 +188,79 @@ def expand(text, variables, spend):
     is spent before it is made.
     """
     matches = list(VARIABLE.finditer(text))
-    names = sorted({m.group("braced") or m.group("name") for m in matches} - {None})
+    names = sorted({name for match in matches for name in referenced(match)})
     choices = [sorted(variables.get(name, variables.get("*", {None})), key=str) for name in names]
     spend(math.prod(map(len, choices)) - 1)
-
-    def value(match, chosen):
-        name = match.group("braced") or match.group("name")
-        if name:
-            found = chosen[name]
-            return match.group(0) if found is None else found.translate(LIVE)
-        return "0" if match.group("number") else UNKNOWN
-
     out = []
     for values in itertools.product(*choices):
-        chosen = dict(zip(names, values))
-        expanded = VARIABLE.sub(lambda match: value(match, chosen), text) if matches else text
-        out.append(UNKNOWN if len(expanded) > LONGEST else expanded)
+        chosen, parts, last = dict(zip(names, values)), [], 0
+        for match in matches:
+            parts += [[text[last:match.start()]], parameter(match, chosen)]
+            last = match.end()
+        parts.append([text[last:]])
+        spend(math.prod(map(len, parts)) - 1)
+        for pieces in itertools.product(*parts):
+            expanded = "".join(pieces)
+            out.append(UNKNOWN if len(expanded) > LONGEST else expanded)
     return out
+
+
+def referenced(match):
+    """The names a VARIABLE match reads: its own, and those in its WORD."""
+    name = match.group("braced") or match.group("name")
+    words = WORD_REFERENCE.finditer(match.group("word") or "")
+    return ([name] if name else []) + [ref.group("braced") or ref.group("name") for ref in words]
+
+
+def parameter(match, chosen):
+    """Every value one `$` form takes, CHOSEN giving each name one value (sd:6153).
+
+    `-` and `+` test for a set name, `:-` and `:+` for a non-empty one; an
+    empty value may be an unset name, so it takes both readings. `=` and `:=`
+    read as `-` and `:-`, and also set the name: Reader.simple. `#` and `%`
+    cut the shortest prefix or suffix the pattern matches, `##` and `%%` the
+    longest. A name with no known value stays as written, beside the WORD.
+    """
+    name = match.group("braced") or match.group("name")
+    if not name:
+        return ["0" if match.group("number") else UNKNOWN]
+    found, op = chosen[name], (match.group("op") or "").translate(LITERAL).replace("=", "-")
+    if match.group("length"):
+        return [UNKNOWN if op else "0" if found is None else str(len(found))]
+    if found is not None:
+        found = found.translate(LIVE).replace(MARK, "")
+    if not op:
+        return [match.group(0) if found is None else found]
+
+    def value(ref):
+        known = chosen[ref.group("braced") or ref.group("name")]
+        return ref.group(0) if known is None else known.translate(LIVE)
+
+    word = WORD_REFERENCE.sub(value, match.group("word"))
+    if found is None:
+        return [match.group(0)] + ([word, ""] if op[-1] == "+" else
+                                   [word] if op[-1] == "-" else [])
+    if op[-1] in "-+?":
+        empty = found == ""
+        if op == ":-":
+            return [word if empty else found]
+        if op == "-":
+            return [found, word] if empty else [found]
+        if op == ":+":
+            return [""] if empty else [word]
+        if op == "+":
+            return ["", word] if empty else [word]
+        return [found]
+    if UNKNOWN in word:
+        return [UNKNOWN]
+    pattern, text = word.translate(LITERAL), found.translate(LITERAL)
+    cuts = range(len(text) + 1) if op in ("#", "%") else range(len(text), -1, -1)
+    for cut in cuts:
+        if op[0] == "#" and fnmatch.fnmatchcase(text[:cut], pattern):
+            return [found[cut:]]
+        if op[0] == "%" and fnmatch.fnmatchcase(text[len(text) - cut:], pattern):
+            return [found[:len(text) - cut]]
+    return [found]
 
 
 def tilde(text):
@@ -213,7 +311,7 @@ def sequence(body, spend):
     numbers = range(low, high + (1 if high >= low else -1), step if high >= low else -step)
     if letters:
         return [chr(number) for number in numbers]
-    padded = any(re.match(r"-?0\d", end) for end in (first, last))
+    padded = any(re.match(r"-?0[0-9]", end) for end in (first, last))
     return [str(number).zfill(max(map(len, (first, last))) if padded else 0) for number in numbers]
 
 
@@ -307,9 +405,12 @@ def named(text, protected):
 def shield(command):
     """Hide quoted and escaped operators from the lexer; drop comments.
 
-    A `$` in single quotes, after a backslash or before a quote (`$'..'`),
-    and a quoted or escaped `~`, brace, comma or glob character, hide too:
-    the shell expands none of them.
+    A `$` in single quotes or after a backslash, and a quoted or escaped
+    `~`, brace, comma or glob character, hide too: the shell expands none
+    of them. A `$'..'` comes out single-quoted, its escapes spelled (`\x2f`
+    is `/`), and a `$".."` double-quoted: its `$` asks for a translation.
+    A quote or backslash leaves MARK in its word, so `'if'` reads as a
+    command, not a reserved word (sd:6153).
     An unquoted newline ends a command, and a `#` that starts a word starts a
     comment to the end of its line, as the shell reads them. Every `$( )`
     and backquote the shell runs, in double quotes or an unquoted
@@ -327,7 +428,7 @@ def scan(command, i, nest=(), closer=False):
     is a shift or text, not a here-document. CASES holds the NEST depth of
     each open `case`, where a `)` ends a pattern.
     """
-    out, quote, ansi, depth, opened, bodies = [], None, False, 0, 0, []
+    out, quote, depth, opened, bodies = [], None, 0, 0, []
     nest, cases, boundary = list(nest), [], True
     while i < len(command):
         char = command[i]
@@ -376,16 +477,24 @@ def scan(command, i, nest=(), closer=False):
                     out.append(expansions("\n".join(lines)))
             bodies, boundary = [], True
             continue
-        if char == "\\" and i + 1 < len(command) and (quote != "'" or ansi):
+        if quote is None and command.startswith("$'", i):  # its escapes spell characters
+            end = i + 2
+            while end < len(command) and command[end] != "'":
+                end += 2 if command[end] == "\\" else 1
+            text = ANSI.sub(escape, command[i + 2:end])
+            out += [MARK, "'", *("'\\''" if c == "'" else hide(c, QUOTED) for c in text), "'"]
+            i, boundary = end + 1, False
+            continue
+        if char == "\\" and i + 1 < len(command) and quote != "'":
             if quote is None and command[i + 1] == "\n":
                 i += 2
                 continue
-            out += [char, hide(command[i + 1], QUOTED + ("'" if ansi else ""))]
+            out += [MARK, char, hide(command[i + 1], QUOTED)]
             i, boundary = i + 2, False
             continue
         if quote:
             quote = None if char == quote else quote
-            depth, ansi = (depth, ansi) if quote else (0, False)
+            depth = depth if quote else 0
             # `${..}`, `$*` and `$?` expand in double quotes
             if quote == '"' and char not in OPERATOR and (out[-1:] == ["$"] or
                                                           depth and char in "{}"):
@@ -393,12 +502,12 @@ def scan(command, i, nest=(), closer=False):
                 out.append(char)
             else:
                 out.append(hide(char, QUOTED if quote == "'" else DOUBLE))
-        elif char == "$" and command[i + 1:i + 2] in ("'", '"'):
-            out.append(hide(char, "$"))
-            ansi = command[i + 1] == "'"  # `$'..'` takes backslash escapes
+        elif char == "$" and command[i + 1:i + 2] == '"':
+            i += 1  # `$".."` is its text, translated
+            continue
         elif char in "'\"":
             quote = char
-            out.append(char)
+            out += [MARK, char]
             opened = len(out)
         elif char == "#" and boundary:
             end = command.find("\n", i)
@@ -424,6 +533,19 @@ def scan(command, i, nest=(), closer=False):
         boundary = quote is None and (char.isspace() or char in ";&|(")
         i += 1
     return "".join(out), i
+
+
+def escape(match):
+    """The character one ANSI-C escape in `$'..'` spells; NUL is unknown."""
+    code = match.group(1)
+    if code[0] in "xuU" and len(code) > 1:
+        number = int(code[1:], 16)
+        return chr(number) if number <= 0x10FFFF else UNKNOWN
+    if code[0] in "01234567":
+        return chr(int(code, 8) & 0xFF)
+    if code[0] == "c" and len(code) > 1:
+        return chr(ord(code[1]) & 0x1F)
+    return ESCAPES.get(code, "\\" + code)
 
 
 def substitution(command, i, quote):
@@ -476,8 +598,20 @@ def delimiter(command, i):
     return "".join(word), quoted, i
 
 
+def digits(text):
+    """True for a run of ASCII digits; bash reads no other digits as a number."""
+    return text.isascii() and text.isdigit()
+
+
 def hide(char, literal=""):
     return chr(HIDDEN + ord(char)) if char in OPERATOR or char in literal else char
+
+
+def word(token):
+    """TOKEN as a word: quoted operators come back, and MARK stays only on a
+    quoted reserved word, which the shell runs as a command."""
+    text = token.translate(UNHIDE)
+    return text + MARK if MARK in token and text in RESERVED else text
 
 
 def is_operator(token):
@@ -494,8 +628,11 @@ def items(command):
     lexer.whitespace_split = True
     lexer.commenters = ""
     tokens = []
-    for token in lexer:
-        tokens += CONTROL.findall(token) if is_operator(token) else [token]
+    try:
+        for token in lexer:
+            tokens += CONTROL.findall(token) if is_operator(token) else [token]
+    except ValueError as error:
+        raise Unsplittable(error) from error
     out, words, targets, i = [], [], [], 0
     while i < len(tokens):
         token = tokens[i]
@@ -506,17 +643,17 @@ def items(command):
             else:
                 i += 1
             if ">" in token:
-                if words and words[-1].isdigit():
+                if words and digits(words[-1]):
                     words.pop()
-                if target and not (token.endswith("&") and (target.isdigit() or target == "-")):
-                    targets.append(target.translate(UNHIDE))
+                if target and not (token.endswith("&") and (digits(target) or target == "-")):
+                    targets.append(word(target))
         elif is_operator(token):
             if words or targets:
                 out.append(("cmd", words, targets))
             out.append(("op", token))
             words, targets = [], []
         else:
-            words.append(token.translate(UNHIDE))
+            words.append(word(token))
         i += 1
     if words or targets:
         out.append(("cmd", words, targets))
@@ -524,27 +661,40 @@ def items(command):
 
 
 def unwrap(words):
-    """(the command, forked): FORKED when a wrapper runs it in a child process.
+    """(the command, forked, handed): FORKED when a wrapper runs it in a child
+    process; HANDED the `NAME=value` words before it, or after `env`, which
+    the command sees set.
 
     A child's cd, exit, assignment or loop jump leaves this shell as it was.
+    xargs adds words from its input, unknown, at the end or in place of its
+    `-I`, `-J` or `-i` string (sd:6153).
     """
-    forked = False
+    forked, handed = False, []
     while words:
-        wrapper = os.path.basename(words[0])
+        wrapper = os.path.basename(words[0]).replace(MARK, "")
         if ASSIGNMENT.match(words[0]):
-            words = words[1:]
+            handed, words = handed + words[:1], words[1:]
             continue
         if wrapper not in PREFIXES and wrapper not in FORKS:
             break
-        # a path names a program, a child, not `command`, `builtin` or `time`
-        forked, words = forked or wrapper in FORKS or "/" in words[0], words[1:]
+        # a path or a quoted `time` names a program, a child, not `command`,
+        # `builtin` or `time`
+        forked = forked or wrapper in FORKS or "/" in words[0] or MARK in words[0]
+        words, replace = words[1:], None
         while words and words[0].startswith("-") and words[0] != "--":
             if wrapper == "command" and words[0] in ("-v", "-V"):
-                return [], forked  # prints what would run; runs nothing
+                return [], forked, handed  # prints what would run; runs nothing
+            if wrapper == "xargs" and words[0][:2] in ("-I", "-J"):
+                replace = words[0][2:] or (words[1:2] or [""])[0]
+            elif wrapper == "xargs" and words[0][:2] == "-i":
+                replace = words[0][2:] or "{}"
             words = words[2:] if words[0] in VALUED.get(wrapper, ()) else words[1:]
         words = words[1 if words[:1] == ["--"] else 0:]
         words = words[1:] if wrapper == "timeout" else words  # the duration
-    return words, forked
+        if wrapper == "xargs" and words:
+            words = [text.replace(replace, UNKNOWN) for text in words] if replace else \
+                words + [UNKNOWN]
+    return words, forked, handed
 
 
 def git_target(words, cwd, variables, spend):
@@ -587,9 +737,9 @@ def assigned(words, variables, spend):
             changes[str(i)] = frozenset(values)
         return changes
     if head == "shift":
-        counts = {int(text) if text.isdigit() else None
+        counts = {int(text) if digits(text) else None
                   for text in (expand(words[1], variables, spend) if words[1:] else ["1"])}
-        known = max((int(name) for name in variables if name.isdigit() and name != "0"), default=0)
+        known = max((int(name) for name in variables if digits(name) and name != "0"), default=0)
         return {str(i): frozenset().union(*(variables.get(str(i + count), frozenset([""]))
                                             if count is not None else unknown for count in counts))
                 for i in range(1, known + 1)}
@@ -599,7 +749,7 @@ def assigned(words, variables, spend):
         words = [word for word in words[1:] if word[:1] not in "-+"]
     elif not all(ASSIGNMENT.match(word) for word in words):
         return {}
-    variables, changes = dict(variables), {}
+    incoming, variables, changes = variables, dict(variables), {}
     for word in words:
         match = ASSIGNMENT.match(word)
         if not match:
@@ -609,8 +759,10 @@ def assigned(words, variables, spend):
             variables[name] = changes[name] = unknown
             continue
         text = ("${%s}" % name if match.group().endswith("+=") else "") + tilde(word[match.end():])
-        variables[name] = changes[name] = frozenset(
-            os.path.expanduser(value) for value in expand(text, variables, spend))
+        values = expand(text, variables, spend)
+        if head in DECLARERS:  # bash expands every argument first; zsh in turn (sd:6153)
+            values += expand(text, incoming, spend)
+        variables[name] = changes[name] = frozenset(os.path.expanduser(value) for value in values)
     return changes
 
 
@@ -701,6 +853,7 @@ class Reader:
     def __init__(self, command, protected, spend=None):
         self.protected, self.i, self.skip = protected, 0, 0
         self.spend, self.inherited, self.loops = spend or Budget(), environment(), []
+        self.functions, self.calls = {}, []  # name: body positions; the calls running
         try:
             self.items = items(command)
         except RecursionError:  # `$( )` nested past the stack: nothing reads
@@ -754,6 +907,8 @@ class Reader:
             words[-1] = words[-1][:-1] + UNKNOWN
             self.run(worlds, (")",))
             self.op(")")
+        if any(DEFAULTED.search(word) for word in words):
+            self.spend.note("a `${D:=w}` in a header sets D, and the reader does not follow that")
         return words
 
     def check(self, path, world):
@@ -808,6 +963,7 @@ class Reader:
             inner = self.run(worlds, (")",))
             self.op(")")
             return self.trailing(with_status(worlds, statuses(inner)), worlds)
+        self.lead()
         if self.keyword("{"):
             out = self.run(worlds, ("}",))
             self.keyword("}")
@@ -819,13 +975,99 @@ class Reader:
             return self.trailing(self.loop(loop, worlds), worlds)
         if self.keyword("case"):
             return self.trailing(self.arms(worlds), worlds)
-        if item[1][:1] == ["function"] or len(item[1]) == 1 and NAME.fullmatch(item[1][0]) and \
+        if item[1][:1] == ["function"] or len(item[1]) == 1 and not item[2] and \
+                FUNCTION.fullmatch(item[1][0]) and not ASSIGNMENT.match(item[1][0]) and \
                 self.items[self.i + 1:self.i + 3] == [("op", "("), ("op", ")")]:
-            self.spend.note("it defines a function, and the reader does not follow calls")
+            return self.define(worlds)
         if item[1] and item[1][0] in KEYWORDS:
             self.keyword(item[1][0])  # a reserved word out of place: read past it
             return worlds
         return self.simple(worlds)
+
+    def lead(self):
+        """Read past `time [-p]` or `coproc [NAME]` before a compound command:
+        the compound runs as bare, a coprocess in a child (sd:6153)."""
+        item = self.peek()
+        words = item[1] if item[0] == "cmd" else []
+        if words[:1] == ["time"]:
+            n = 2 if words[1:2] == ["-p"] else 1
+        elif words[:1] == ["coproc"]:
+            n = 2 if words[1:2] and words[1] not in COMPOUND else 1
+        else:
+            return
+        if words[n:n + 1] and words[n] in COMPOUND:
+            self.skip += n
+
+    def define(self, worlds):
+        """`NAME () BODY` or `function NAME [()] BODY`: the body runs at each
+        call, not here (sd:6153)."""
+        if self.keyword("function"):
+            item = self.peek()
+            name = item[1][0] if item[0] == "cmd" and item[1] else ""
+            self.keyword(name)
+        else:
+            name = self.peek()[1][0]
+            self.advance()
+        if self.op("("):
+            self.op(")")
+        self.newlines()
+        self.functions.setdefault(name, []).append((self.i, self.skip))
+        self.command(set())  # read past the body, running it in no world
+        return worlds
+
+    def call(self, name, args, world):
+        """The worlds function NAME's bodies leave WORLD in, called with ARGS.
+
+        A body runs where the call is, with the call's words as `$1`..; the
+        caller's `$1`.. come back after it. A call inside itself is unknown.
+        """
+        if name in self.calls:
+            self.spend.note("a function calls itself, and the reader does not follow that")
+            return {world}
+        variables = world.variables(self.inherited)
+        positional = {str(n): frozenset(fields(arg, variables, world.cwd, self.spend))
+                      for n, arg in enumerate(args, 1)}
+        caller = {key: variables.get(key, frozenset([None]))
+                  for key in {str(n) for n in range(1, 10)} | set(positional)}
+        start, out = (self.i, self.skip), set()
+        self.calls.append(name)
+        try:
+            for body in self.functions[name]:
+                self.i, self.skip = body
+                out |= self.command({world.set({**{str(n): frozenset([""])
+                                                   for n in range(1, 10)}, **positional})})
+        finally:
+            self.calls.pop()
+            self.i, self.skip = start
+        return {after.set(caller) for after in out}
+
+    def child(self, command, world, variables, handed=()):
+        """Read the script of `sh -c SCRIPT [NAME ARGS..]` in a child shell
+        (sd:6153): its writes count; its `cd` and variables stay there. The
+        child holds a name only if it was exported, so each set name may also
+        be unset there; a HANDED name is set."""
+        words, i, script = command, 1, False
+        while i < len(words) and words[i][:1] in "-+" and words[i] not in ("-", "--"):
+            flag, i = words[i], i + 1
+            if flag.startswith("--"):
+                i += flag in ("--rcfile", "--init-file")
+                continue
+            script = script or "c" in flag
+            i += sum(char in "oO" for char in flag[1:])  # -o NAME, -O NAME
+        i += words[i:i + 1] == ["--"]
+        if not script or i >= len(words):
+            return
+        exported = {NAME.match(word).group(0) for word in handed}
+        changes = {name: values if name in exported else values | {None}
+                   for name, values in world.changes if name != "*"}
+        changes.update({str(n): frozenset([""]) for n in range(10)})
+        for n, arg in enumerate(words[i + 1:]):
+            changes[str(n)] = frozenset(fields(arg, variables, world.cwd, self.spend))
+        inner = world._replace(changes=tuple(sorted(changes.items(), key=lambda item: item[0])))
+        if "*" in dict(world.changes):
+            inner = inner.set({"*": dict(world.changes)["*"]})
+        for text in expand(words[i], variables, self.spend):
+            self.nested(text.translate(LITERAL), {inner}, child=True)
 
     def branches(self, worlds):
         out, rest = set(), self.run(worlds, ("then",))
@@ -841,7 +1083,8 @@ class Reader:
         return out | with_status(rest, {True})
 
     def loop(self, kind, worlds):
-        """A loop body runs zero, one or two times; a third pass reads like the second."""
+        """A loop body runs zero, one or two times; a third pass reads like the
+        second, unless the second still changed something: that is unknown."""
         out, header = set(worlds), []
         if kind in ("for", "select"):
             header = self.text(worlds)
@@ -852,7 +1095,9 @@ class Reader:
             worlds = self.bind(header, worlds)
         start = (self.i, self.skip)
         self.loops.append(set())  # the worlds a `break` or `continue` leaves at
+        first = set()
         for _ in range(2):
+            first, out = out, set(out)
             self.i, self.skip = start
             if kind in ("while", "until"):
                 cond = self.run(worlds, ("do",))
@@ -865,7 +1110,25 @@ class Reader:
             worlds |= self.bind(header, worlds)  # the next pass takes the next value
         self.loops.pop()
         self.keyword("done")
-        return with_status(out, {True, False})
+        return with_status(out | self.widened(first, out), {True, False})
+
+    def widened(self, first, out):
+        """Worlds a third pass may reach (sd:6153 round 8): a variable the second
+        pass still changed may also hold an unknown, and a folder only the
+        second pass reached may lead to one the reader cannot know."""
+        before = {(world.cwd, world.stack): dict(world.changes)
+                  for world in merged(first, self.inherited)}
+        extra = set()
+        for world in merged(out, self.inherited):
+            old = before.get((world.cwd, world.stack))
+            if old is None:
+                extra.add(world.moved(None, ()))
+                continue
+            grown = {name: values | {UNKNOWN} for name, values in world.changes
+                     if old.get(name) != values}
+            if grown:
+                extra.add(world.set(grown))
+        return extra
 
     def bind(self, header, worlds):
         """Each world once per value a `for NAME in WORDS` loop gives NAME."""
@@ -903,13 +1166,16 @@ class Reader:
                     self.check(target, world)
         return out
 
-    def nested(self, command, worlds):
-        """Read the text `eval` runs in this shell; text that cannot split changes nothing."""
+    def nested(self, command, worlds, child=False):
+        """Read the text `eval` runs in this shell, or a CHILD shell runs; text
+        that cannot split changes nothing."""
         try:
             reader = Reader(command, self.protected, self.spend)
         except ValueError:
             return with_status(worlds, {True, False})
-        reader.inherited, reader.loops = self.inherited, self.loops
+        reader.inherited = self.inherited
+        if not child:  # a child knows no loop or function of this shell
+            reader.loops, reader.functions, reader.calls = self.loops, self.functions, self.calls
         return reader.run(worlds)
 
     def simple(self, worlds):
@@ -935,21 +1201,25 @@ class Reader:
                 words, targets = words + item[1], targets + item[2]
         out = set()
         for world in worlds:
+            names = defaults(words + targets, world.variables(self.inherited), self.spend)
+            world = world.set(names) if names else world  # the words expand first
             for target in targets:
                 self.check(target, world)
-            command, forked = unwrap(words)
+            command, forked, handed = unwrap(words)
             head = command[0] if command else ""
             if VARIABLE.search(head) or UNKNOWN in head:
                 # the name comes from an expansion: each value it may take, split
                 for text in expand(head, world.variables(self.inherited), self.spend):
-                    found, child = unwrap(text.split() + command[1:])
-                    out |= self.effect(world, found, forked or child, words)
+                    found, child, more = unwrap(text.split() + command[1:])
+                    out |= self.effect(world, found, forked or child, words, handed + more)
             else:
-                out |= self.effect(world, command, forked, words)
+                out |= self.effect(world, command, forked, words, handed)
         return out
 
-    def effect(self, world, command, forked, words):
-        """The worlds COMMAND leaves WORLD in; FORKED when it runs in a child."""
+    def effect(self, world, command, forked, words, handed=()):
+        """The worlds COMMAND leaves WORLD in; FORKED when it runs in a child.
+        HANDED are the `NAME=value` words before it, which a child shell, a
+        function and `eval` read set."""
         name = os.path.basename(command[0]) if command else ""
         args = [word for word in command[1:] if not word.startswith("-")]
         # a builtin's effect reaches this shell; a path names a program
@@ -966,6 +1236,7 @@ class Reader:
                 out.add(world._replace(ok=False))
             world = world.set(changes) if changes else world
         variables = world.variables(self.inherited)
+        seen = world.set(assigned(handed, variables, self.spend)) if handed else world
         if name in ("cd", "pushd", "popd") and here:
             moves = self.moves(name, command[1:], world, variables)
             self.spend.near |= any(folder and inside(folder, self.protected)
@@ -976,8 +1247,18 @@ class Reader:
             return out
         if name == "eval" and here:  # its words expand, then read again
             for text in expand(" ".join(command[1:]), variables, self.spend):
-                out |= self.nested(text.translate(LITERAL), {world})
+                out |= self.restored(self.nested(text.translate(LITERAL), {seen}), handed, world)
             return out | {world._replace(ok=False)}
+        if name == "trap" and here and len(args) > 1:
+            # the body runs later, in a folder and with values the reader
+            # cannot know, and may run again after each command (DEBUG)
+            later = world.moved(None, ())._replace(changes=(("*", frozenset([UNKNOWN])),))
+            for text in expand(args[0], variables, self.spend):
+                out |= self.nested(text.translate(LITERAL), {later})
+        if name in SHELLS:
+            self.child(command, seen, seen.variables(self.inherited), handed)
+        if here and name in self.functions:
+            return out | self.restored(self.call(name, command[1:], seen), handed, world)
         if name in ("break", "continue") and here and self.loops:
             self.loops[-1] |= with_status({world}, {True, False})
         if UNKNOWN in name:  # any command: it may write each word
@@ -1000,6 +1281,20 @@ class Reader:
                 self.check(path, world)
         return out | with_status({world}, {True, False})
 
+    def restored(self, worlds, handed, before):
+        """WORLDS after a command that saw HANDED set: bash puts each name
+        back as it was BEFORE, and POSIX mode keeps it, so it may hold both."""
+        if not handed:
+            return worlds
+        old = before.variables(self.inherited)
+        names = {NAME.match(word).group(0) for word in handed}
+        out = set()
+        for world in worlds:
+            now = world.variables(self.inherited)
+            out.add(world.set({name: frozenset(now.get(name, now.get("*", {None})))
+                               | frozenset(old.get(name, old.get("*", {None}))) for name in names}))
+        return out
+
     def moves(self, name, words, world, variables):
         """(folder, stack) pairs a `cd`, `pushd` or `popd` that works may leave.
 
@@ -1009,7 +1304,7 @@ class Reader:
         options = [word for word in words if word.startswith("-") and word not in ("-", "--")]
         args = [word for word in words if word not in options and word != "--"]
         stack = world.stack
-        if any(re.fullmatch(r"[+-]\d+", word) for word in words):
+        if any(re.fullmatch(r"[+-][0-9]+", word) for word in words):
             return [(None, ())]
         stays = "-n" in options  # the stack moves, the folder stays
         if name == "popd":
@@ -1042,19 +1337,23 @@ def bash_root(command, cwd, protected):
     folder was in one, or the text names one. Elsewhere it passes (operator
     ruling on sd:6083).
     """
-    reader = Reader(command, protected)
-    reader.spend.near = inside(cwd, protected) is not None
+    spend = Budget()
+    spend.near = inside(cwd, protected) is not None
     try:
-        reader.run({World(cwd, (("OLDPWD", frozenset([UNKNOWN])), ("PWD", frozenset([cwd]))),
-                          True)})
+        Reader(command, protected, spend).run(
+            {World(cwd, (("OLDPWD", frozenset([UNKNOWN])), ("PWD", frozenset([cwd]))), True)})
     except Denied as denied:
         return denied.args[0]
+    except Unsplittable:  # fails open, as malformed input does
+        raise
     except Unreadable as error:  # past the budget: the rest goes unread
-        reader.spend.note(str(error))
+        spend.note(str(error))
     except RecursionError:
-        reader.spend.note("it nests deeper than the reader goes")
-    if reader.spend.unknown and (reader.spend.near or named(command, protected)):
-        raise Unreadable(reader.spend.unknown)
+        spend.note("it nests deeper than the reader goes")
+    except Exception as error:  # a reader fault is an unknown, not a pass (sd:6153)
+        spend.note(f"the reader failed on it ({type(error).__name__})")
+    if spend.unknown and (spend.near or named(command, protected)):
+        raise Unreadable(spend.unknown)
     return None
 
 
@@ -1068,7 +1367,10 @@ def denied_root(payload):
     cwd = payload.get("cwd") or os.getcwd()
     if name in FILE_TOOLS:
         path = tool_input[FILE_TOOLS[name]]
-        root = written(path, cwd, protected)
+        try:
+            root = written(path, cwd, protected)
+        except Exception:  # a reader fault is an unknown, not a pass (sd:6153)
+            root = UNKNOWN
         return (inside(cwd, protected) or named(path, protected)) if root == UNKNOWN else root
     if name == "Bash":
         return bash_root(tool_input["command"], cwd, protected)
