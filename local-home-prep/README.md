@@ -57,3 +57,4 @@ A failed read is unknown, never "nothing due".
 | Apply | Some notes | The run stops after some notes | The rerun skips the noted items and asks only for the rest | `test_a_rerun_after_some_notes_preps_only_the_rest` |
 | Apply | Nothing | The reply names an item not selected | No note for it; a stderr line names it | `test_a_reply_naming_an_unselected_item_writes_no_note_for_it` |
 | Apply | The other notes | A selected item has no entry in the reply | The rest are noted; exit 1 naming it | `test_an_item_missing_from_the_reply_fails_the_run` |
+| Apply | The other notes | An entry lacks a summary, or a list holds other than text | No note for it, as the note marks it prepped; exit 1 naming it | `test_a_malformed_entry_writes_no_note_and_fails` |

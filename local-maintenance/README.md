@@ -57,11 +57,14 @@ and dangling images only — volumes are never pruned, several local services
 keep state in them), and idle build output in worktrees (sd:5994).
 
 `run` deletes each cargo `target/` folder under `~/worktrees`, at depth 2
-or 3, that nothing wrote for 3 days; `check` names them. Only a folder
-holding cargo's `CACHEDIR.TAG` counts, and no link is followed; the
-checkout and its commits stay. While a `cargo` or `rustc` process runs,
-the run prunes nothing more, with no finding: a cargo waiting on a lock
-would get the moved copy. An old time is no proof cargo is idle,
+or 3, that nothing wrote or ran for 3 days; `check` names them. An exec
+sets a file's access time on APFS, so a file accessed within 3 days keeps
+the folder: a trial ran a binary there each evening that nothing rebuilt
+(sd:6128). A folder's access time does not count, as the walk sets it.
+Only a folder holding cargo's `CACHEDIR.TAG` counts, and no link is
+followed; the checkout and its commits stay. While a `cargo` or `rustc`
+process runs, the run prunes nothing more, with no finding: a cargo
+waiting on a lock would get the moved copy. An old time is no proof cargo is idle,
 so the move uses cargo's own lock: it takes `flock(2)` on every
 `.cargo-lock` in the folder without waiting, and while it holds them,
 one rename(2) moves `target/` into
