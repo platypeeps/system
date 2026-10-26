@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stands in for `security` in the suite: the login Keychain holds no item
+# (errSecItemNotFound is exit 44). See fixture_config.NO_KEYCHAIN.
+exit 44
