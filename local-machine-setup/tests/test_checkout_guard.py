@@ -856,6 +856,22 @@ class CheckoutGuard(unittest.TestCase):
                     self.assertEqual(self.bash(unknown + prefix + form, cwd=self.worktree),
                                      "allow")
 
+    def test_a_root_in_a_parameter_word_is_named(self):
+        """sd:6284, lead review of b556cc6d: a root after `${NAME:-` and the
+        other word operators is a value, at any depth, so an unknown beside
+        it is near the root."""
+        lane, work = self.system, self.worktree
+        for command in (f'touch "${{D:-${{E:-{lane}}}}}/x"',  # round 5
+                        f'touch "${{D:=${{E:-{lane}}}}}/x"',
+                        f'D=/tmp; read D; touch "${{D:-{lane}}}/x"',  # sd:6284
+                        f'D=/tmp; read D; touch "${{D-{lane}}}/x"',
+                        f'D=/tmp; read D; touch "${{D:={lane}}}/x"',
+                        f'D=/tmp; read D; touch "${{D:+{lane}}}/x"',
+                        f'D=/tmp; read D; touch "${{D+{lane}}}/x"'):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=work).startswith("deny: "), command)
+        self.assertEqual(self.bash(f'D=/tmp; read D; touch "$D/x" a-{lane}', cwd=work), "allow")
+
     def test_growth_and_nesting_past_the_budget_are_refused_in_time(self):
         """sd:6083 round 4: a variable product, a brace product, a doubling value
         and deep nesting each stop at the budget, not at memory or the stack;
