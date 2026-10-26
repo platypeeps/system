@@ -156,6 +156,7 @@ Run `codex exec` as `timeout N codex exec -s read-only -o <out> "<prompt>" < /de
 No new `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` within a minute means it hung: stop it and fix stdin.
 Claude Code strips `CLAUDE_CODE_OAUTH_TOKEN` from Bash, and env.sh exports it as `CUSTOM_CLAUDE_CODE_OAUTH_TOKEN` so day-to-day claude keeps its own login: set it on the line that starts `claude`: `. "$HOME/.config/shell/env.sh" >/dev/null 2>&1; CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN" <cmd>`.
 Never copy that token into `settings.json`, a script or a log.
+Rotate no key or token exposed only in local files; rotate one exposed where others can read it (public GitHub, a shared cloud drive): local exposure stays on the operator's machines.
 Set up every recurring job through the `system` framework: a `.job` file for `local-cron-jobs` plus a line in the machine-setup profile (`machine-setup.sh status` shows no cron drift); never a claude.ai cloud routine (`RemoteTrigger`) or `CronCreate`: one framework keeps every machine's setup consistent.
 
 # Gen-AI experiments

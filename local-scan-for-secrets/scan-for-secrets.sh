@@ -415,12 +415,15 @@ S4S_KEY_SOURCES=""
 for _src in "$SHELL_ENV" "$PROFILE"; do
   [ -f "$_src" ] && S4S_KEY_SOURCES="$S4S_KEY_SOURCES $_src"
 done
+# A name ending _ACCOUNT (ANTHROPIC_KEY_ACCOUNT) holds an account email, an
+# identifier and not a secret: it matches KEY but is excluded below (sd:6321).
 S4S_PAIRS=""
 if [ -n "$S4S_KEY_SOURCES" ]; then
   # shellcheck disable=SC2086 # deliberate word-splitting of the source list
   S4S_PAIRS=$(
     sed -n 's/^[[:space:]]*export \([A-Za-z_][A-Za-z0-9_]*\)=\(.*\)$/\1=\2/p' $S4S_KEY_SOURCES \
     | grep -E '^[A-Za-z0-9_]*(KEY|TOKEN|SECRET|PASS|PAT|CRED)[A-Za-z0-9_]*=' \
+    | grep -vE '^[A-Za-z0-9_]*_ACCOUNT=' \
     | sort -u \
     | while IFS= read -r line; do
         name=${line%%=*}
@@ -729,6 +732,7 @@ if [ "$MODE" = refresh ]; then
     # shellcheck disable=SC2086 # deliberate word-splitting of the source list
     sed -n 's/^[[:space:]]*export \([A-Za-z_][A-Za-z0-9_]*\)=\(.*\)$/\1=\2/p' $S4S_KEY_SOURCES \
     | grep -E '^[A-Za-z0-9_]*(KEY|TOKEN|SECRET|PASS|PAT|CRED)[A-Za-z0-9_]*=' \
+    | grep -vE '^[A-Za-z0-9_]*_ACCOUNT=' \
     | grep -vE '^[A-Za-z0-9_]*PATH=' \
     | while IFS= read -r line; do
         name=${line%%=*}
@@ -752,6 +756,7 @@ if [ "$MODE" = refresh ]; then
     sed -n 's/^[[:space:]]*#[[:space:]]*export[[:space:]][[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' \
       $S4S_KEY_SOURCES 2>/dev/null \
     | grep -E '^[A-Za-z0-9_]*(KEY|TOKEN|SECRET|PASS|PAT|CRED)[A-Za-z0-9_]*$' \
+    | grep -vE '^[A-Za-z0-9_]*_ACCOUNT$' \
     | grep -vE '^[A-Za-z0-9_]*PATH$' \
     | sort -u \
     | while IFS= read -r n; do
