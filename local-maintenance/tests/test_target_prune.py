@@ -94,6 +94,32 @@ class TargetPruneTest(Harness):
         self.assertTrue(fresh.is_file())
         self.assertEqual(self.actions(run), [])
 
+    def test_a_target_whose_binary_ran_inside_3_days_stays(self):
+        # sd:6128: a trial ran target/release/<binary> each evening, and
+        # nothing rebuilt it; the run took the binary away. An exec sets the
+        # file's access time on APFS, and nothing else in target/ reads it.
+        _checkout, target = self.cargo_target("example-in-use")
+        binary = target / "release" / "example"
+        binary.parent.mkdir()
+        binary.write_bytes(b"\0")
+        _age(target, FOUR_DAYS)
+        old = binary.stat().st_mtime
+        os.utime(binary, (time.time() - 86400, old))
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue(binary.is_file(), run.stdout + run.stderr)
+        self.assertEqual(self.actions(run), [])
+
+    def test_a_folder_the_walk_read_is_not_in_use(self):
+        # The walk reads each folder, which sets its access time: only a
+        # file's counts, or no target would ever go.
+        _checkout, target = self.cargo_target("example-walked")
+        deps = target / "debug" / "deps"
+        os.utime(deps, (time.time(), deps.stat().st_mtime))
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertFalse(target.exists(), run.stdout + run.stderr)
+
     def test_a_target_cargo_did_not_write_stays(self):
         _checkout, target = self.cargo_target("example-untagged", tag=False)
         run = self.maintenance("# nothing to check\n")
@@ -224,7 +250,7 @@ exec /bin/rm "$@"
         run = self.maintenance("# nothing to check\n")
         self.assertRegex(run.stderr, r"\[step [\d:]+\] pgrep -x cargo\|rustc \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {self.worktrees} .* \(bound \d+s\)")
-        self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {target} -mmin -4320 .* \(bound \d+s\)")
+        self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {target} \( -mmin -4320 .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {self.trash}/\S+ \(bound \d+s\)")
         self.assertNotIn("[step ", run.stdout)
 
