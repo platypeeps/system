@@ -76,11 +76,16 @@ A nightly `machine-setup update` could then build a fresh database, whose unset 
   It prints the two heads it checked.
 - `local-cron-jobs/examples/doctor-gate-weekly.job` runs it.
   The hub's and the work satellite's profiles list it: the machines that run `lane-run`.
-- `hub-ready` gains one line from the job's `logs/.doctor-gate-weekly.stamp`:
-  - `ok` for `exit=0` ended within 8 days, naming the date and the heads.
-  - `--` for exit 75, a gate slot that never came free.
-  - `NOT-READY` for any other exit, no stamp, or one older than 8 days. Promote then refuses, as for every NOT-READY line.
-- The pass names its machine (a local stamp) and its heads (the log). It proves the toolchain, not today's pin. Risks says why.
+- The job's `logs/.doctor-gate-weekly.stamp` holds only the last run, so a later try would hide an earlier pass.
+  On exit 0, `doctor gate` also writes its newest pass to `${XDG_STATE_HOME:-~/.local/state}/machine-setup/doctor-gate-pass`:
+  the end time and the two heads, written to a temp file and renamed into place.
+- `hub-ready` gains one line that reads the newest pass first, then the stamp (lead ruling, 2026-10-25):
+  - `ok` while a pass ended within 8 days, naming its date and heads.
+  - A later run that exited 75, a gate slot that never came free, keeps that `ok` and adds "last try timed out".
+  - A later run that failed any other way reads `NOT-READY`: the machine failed the gate it would run (Q16).
+  - With no pass in 8 days, the line reads `NOT-READY`, whatever the last exit. Promote then refuses, as for every NOT-READY line.
+  - A pass record or stamp that cannot be read is no pass: `NOT-READY`, naming the file.
+- The pass names its machine (a local file) and its heads. It proves the toolchain, not today's pin. Risks says why.
 
 ### 3. The full role while promoted (system)
 
@@ -151,8 +156,9 @@ These rows cover what changes.
 | Undo 1 | role stopped, including the account agent | the agent's bootout fails | as for every role label: no snapshot, the role starts again | `test_a_role_label_the_satellite_profile_lists_stops_too` covers the list |
 | Undo end | logins listed | the operator skips a sign-out | the report names each one; the hand-back still ends. Risks says why | `test_undo_lists_each_account_to_sign_out` |
 | Weekly gate | stamp written | `make check` fails | NOT-READY; promote refuses until a pass | `test_a_failed_weekly_gate_is_not_ready` |
-| Weekly gate | stamp written | no gate slot within the wait: exit 75 | reads `--`, not a pass and not a fail | `test_a_gate_that_found_no_slot_is_unread` |
-| Weekly gate | none | no stamp, or one older than 8 days | NOT-READY, naming the job | `test_a_missing_or_stale_gate_stamp_is_not_ready` |
+| Weekly gate | stamp written; pass record kept | slot timeout: exit 75 | the last pass stands for 8 days, with "last try timed out", then NOT-READY | `test_a_slot_timeout_keeps_the_last_pass_for_8_days` |
+| Weekly gate | pass record | killed while writing the pass record | temp file and rename: the old record or the new one, never part | `test_a_pass_record_cut_short_keeps_the_old_one` |
+| Weekly gate | none | no pass in 8 days, or no pass record | NOT-READY, naming the job, whatever the last exit | `test_no_pass_in_8_days_is_not_ready` |
 | Older state | none | a pack without the write fence (rollback) | the returned hub writes locally, as today; NAS copies and `hub-pin` stay fenced | none new; named here |
 | Older state | none | `sd.hub_name` unset | the fence reads `off`: every write runs, as before | `test_an_unset_hub_name_writes` (pack) |
 
