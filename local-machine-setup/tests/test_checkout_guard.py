@@ -567,28 +567,30 @@ class CheckoutGuard(unittest.TestCase):
                 self.assertEqual(self.bash(command, cwd=work), "allow")
         self.assertEqual(self.bash(f"sh -c 'cd {work} && touch x'", cwd=lane), "allow")
 
-    def test_a_function_body_is_read_where_it_is_called(self):
-        """sd:6153: a function runs its body at each call, in the caller's
-        folder and with the call's arguments; a definition alone runs nothing."""
+    def test_a_function_definition_is_unknown(self):
+        """Lead review of 5a1f993f: the reader does not follow functions, so a
+        command that defines one is unknown: near a root it denies."""
         lane, work = self.system, self.worktree
-        for command in (f"f() {{ touch {lane}/x; }}; f",
+        for command in (f"f() {{ touch {lane}/x; }}; eval f",  # review round 3
+                        f'D={lane}; f() {{ local D=/tmp; }}; f && touch "$D/x"',
+                        f"cd() {{ touch {lane}/x; }}; cd /tmp",
+                        f"pushd() {{ touch {lane}/x; }}; pushd /tmp",
+                        f"popd() {{ touch {lane}/x; }}; popd",
+                        f"exit() {{ touch {lane}/x; }}; exit",
+                        f"eval() {{ touch {lane}/x; }}; eval true",
+                        f"f() {{ touch {lane}/x; }}; f",
                         f"function f {{ cd {lane}; }}; f; touch x",
                         f"function f() {{ cd {lane}; }}\nf && touch x",
                         f'f() {{ touch "$1/x"; }}; f {lane}',
                         f"f() ( cd {lane} && touch x ); f",
-                        f"f() {{ touch x; }}; cd {lane} && f",
                         f"f() {{ cat; }} > {lane}/x; f",
                         f"my-f() {{ rm -rf {lane}; }}; my-f"):
             with self.subTest(command=command):
-                self.assertDenied(self.bash(command, cwd=work), lane)
-        for command, fixed in (("f() { echo hi; }; f", False),
-                               ("f() { rm -f README.md; }", False),
-                               (f"f() {{ cd {work}; }}; f && touch x", True),
-                               ('f() { touch "$1"; }; f /tmp/sd-6153', False)):
-            with self.subTest(command=command):  # FIXED: 13554b17 refused it
-                self.assertEqual(self.bash(command, cwd=lane, fixed=fixed), "allow")
-        self.assertTrue(self.bash("f() { f; }; f", cwd=lane).startswith("deny: "))
-        self.assertEqual(self.bash("f() { f; }; f", cwd=work), "allow")
+                self.assertTrue(self.bash(command, cwd=work).startswith("deny: "), command)
+        for command in ("f() { echo hi; }; f", "f() { f; }; f", 'f() { touch "$1"; }; f /tmp/x'):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "), command)
+                self.assertEqual(self.bash(command, cwd=work), "allow")
 
     def test_a_parameter_form_is_read(self):
         """sd:6153: `${D:-w}`, `${D-w}`, `${D:+w}`, `${D+w}`, `${D:?w}`,
@@ -788,14 +790,12 @@ class CheckoutGuard(unittest.TestCase):
 
     def test_a_command_reads_what_its_line_hands_it(self):
         """sd:6153 class pass: `D=x cmd` and `env D=x cmd` hand D to a child
-        shell, a function and `eval`; a trap body runs later, anywhere; `time`
+        shell and `eval`; a trap body runs later, anywhere; `time`
         and `coproc` run the compound command after them."""
         lane, work = self.system, self.worktree
         for command in (f"D={lane} sh -c 'touch \"$D/x\"'",
                         f"env D={lane} sh -c 'touch \"$D/x\"'",
-                        f'f() {{ touch "$D/x"; }}; D={lane} f',
                         f"D={lane} eval 'touch \"$D/x\"'",
-                        f'D=/tmp; f() {{ :; }}; D={lane} f; touch "$D/x"',
                         f"trap 'touch {lane}/x' EXIT",
                         f"trap 'cd {lane}' DEBUG; touch x",
                         f"coproc {{ touch {lane}/x; }}",
@@ -804,7 +804,7 @@ class CheckoutGuard(unittest.TestCase):
                         f"time {{ touch {lane}/x; }}"):
             with self.subTest(command=command):
                 self.assertDenied(self.bash(command, cwd=work), lane)
-        for command in ("D=/tmp sh -c 'touch \"$D/x\"'", 'f() { touch "$D/x"; }; D=/tmp f',
+        for command in ("D=/tmp sh -c 'touch \"$D/x\"'",
                         "D=/tmp eval 'touch \"$D/x\"'", "trap 'rm -f /tmp/x' EXIT; ls",
                         "time { ls; }"):
             with self.subTest(command=command):

@@ -33,8 +33,8 @@ agents write, so a copy of this file run from one protects nothing there.
   `${..}` forms in parameter(), `$'..'` escapes, splitting and globs. What
   the reader cannot know (input, xargs input, `$( )`, arrays, other `${..}`
   forms, a stack entry) reads as unknown.
-- A function body runs at each call; `sh -c` and `bash -c` read their
-  script in a child shell (sd:6153).
+- `sh -c` and `bash -c` read their script in a child shell (sd:6153). A
+  function definition is unknown: the reader does not follow functions.
 
 Malformed input or a command shlex cannot split fails open: no decision, a
 warning on stderr, exit 0. A broken hook must not stop every session. A
@@ -885,7 +885,6 @@ class Reader:
     def __init__(self, command, protected, spend=None):
         self.protected, self.i, self.skip = protected, 0, 0
         self.spend, self.inherited, self.loops = spend or Budget(), environment(), []
-        self.functions, self.calls = {}, []  # name: body positions; the calls running
         try:
             self.items = items(command)
         except RecursionError:  # `$( )` nested past the stack: nothing reads
@@ -1031,46 +1030,20 @@ class Reader:
             self.skip += n
 
     def define(self, worlds):
-        """`NAME () BODY` or `function NAME [()] BODY`: the body runs at each
-        call, not here (sd:6153)."""
+        """`NAME () BODY` or `function NAME [()] BODY` is unknown: the reader
+        does not follow functions, so near a root it denies (lead ruling in
+        review of 5a1f993f, as on sd:6083)."""
+        self.spend.note("it defines a function, and the reader does not follow functions")
         if self.keyword("function"):
             item = self.peek()
-            name = item[1][0] if item[0] == "cmd" and item[1] else ""
-            self.keyword(name)
+            self.keyword(item[1][0] if item[0] == "cmd" and item[1] else "")
         else:
-            name = self.peek()[1][0]
             self.advance()
         if self.op("("):
             self.op(")")
         self.newlines()
-        self.functions.setdefault(name, []).append((self.i, self.skip))
         self.command(set())  # read past the body, running it in no world
         return worlds
-
-    def call(self, name, args, world):
-        """The worlds function NAME's bodies leave WORLD in, called with ARGS.
-
-        A body runs where the call is, with the call's words as `$1`..; the
-        caller's `$1`.. come back after it. A call inside itself is unknown.
-        """
-        if name in self.calls:
-            self.spend.note("a function calls itself, and the reader does not follow that")
-            return {world}
-        variables = world.variables(self.inherited)
-        positional = places(args, variables, self.spend)
-        caller = {key: variables.get(key, frozenset([None]))
-                  for key in {str(n) for n in range(1, 10)} | set(positional)}
-        start, out = (self.i, self.skip), set()
-        self.calls.append(name)
-        try:
-            for body in self.functions[name]:
-                self.i, self.skip = body
-                out |= self.command({world.set({**{str(n): frozenset([""])
-                                                   for n in range(1, 10)}, **positional})})
-        finally:
-            self.calls.pop()
-            self.i, self.skip = start
-        return {after.set(caller) for after in out}
 
     def child(self, command, world, variables, handed=()):
         """Read the script of `sh -c SCRIPT [NAME ARGS..]` in a child shell
@@ -1204,8 +1177,8 @@ class Reader:
         except ValueError:
             return with_status(worlds, {True, False})
         reader.inherited = self.inherited
-        if not child:  # a child knows no loop or function of this shell
-            reader.loops, reader.functions, reader.calls = self.loops, self.functions, self.calls
+        if not child:  # a child knows no loop of this shell
+            reader.loops = self.loops
         return reader.run(worlds)
 
     def simple(self, worlds):
@@ -1250,8 +1223,8 @@ class Reader:
 
     def effect(self, world, command, forked, words, handed=()):
         """The worlds COMMAND leaves WORLD in; FORKED when it runs in a child.
-        HANDED are the `NAME=value` words before it, which a child shell, a
-        function and `eval` read set."""
+        HANDED are the `NAME=value` words before it, which a child shell and
+        `eval` read set."""
         name = os.path.basename(command[0]) if command else ""
         args = [word for word in command[1:] if not word.startswith("-")]
         # a builtin's effect reaches this shell; a path names a program
@@ -1289,8 +1262,6 @@ class Reader:
                 out |= self.nested(text.translate(LITERAL), {later})
         if name in SHELLS:
             self.child(command, seen, seen.variables(self.inherited), handed)
-        if here and name in self.functions:
-            return out | self.restored(self.call(name, command[1:], seen), handed, world)
         if name in ("break", "continue") and here and self.loops:
             self.loops[-1] |= with_status({world}, {True, False})
         if UNKNOWN in name:  # any command: it may write each word
