@@ -36,6 +36,9 @@ change I made on this machine back into its profile*.
                                        # template or cron job file that still
                                        # names the deleted local-sd-db is a FAIL
 ./machine-setup.sh doctor sd           # those sd checks alone
+./machine-setup.sh doctor gate         # weekly gate run: make check here, then
+                                       # in the pack, in the gate queue; writes
+                                       # the verdict hub-ready reads
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
 ./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy, Claude Code among them), brew cleanup + mas upgrade
                                        # unattended (stdin not a terminal, as
@@ -393,8 +396,17 @@ Get the standby ready, once:
    Both keep their NAS copy, one folder to one folder, run additive (`MIRROR_SYNC_ADDITIVE=1`), as the hub's hourly copy is: `mirrors-nas-hourly.conf` pairs the hourly folder with the NAS's `sd-backups-hourly`, and `mirrors-nas.conf` pairs the nightly `sd-backups` folder with the NAS's `sd-backups`; without the nightly copy, offsite-verify fails the promoted hub's nightly check after 36 h.
    Never pair a parent folder with the NAS share: a pass with `--delete` trims the share to the source and deletes its other folders. `hub-ready` reads `NOT-READY` for a NAS pair whose destination holds a folder its source lacks.
 3. Set `OFFSITE_VERIFY_ROOT` in `<config>/mirror-sync/.env`: promote restores from its `sd-backups-hourly` and `sd-backups` folders.
-4. Run `machine-setup.sh promote` (a dry run) or `status`, and read the `hub-ready` block.
+4. Copy `local-cron-jobs/examples/doctor-gate-weekly.job` into the job folder of each machine that runs `lane-run`.
+   It runs `machine-setup.sh doctor gate`, which keeps the newest pass or failure in `~/.local/state/machine-setup/doctor-gate-last`.
+   A slot timeout or a killed run writes nothing there.
+5. Run `machine-setup.sh promote` (a dry run) or `status`, and read the `hub-ready` block.
    Each line reads `ok`, `--` (cannot be read now) or `NOT-READY`; it is not counted as drift.
+   - The gate line reads `ok` only for a pass under 8 days old; a failure, an older pass or no record is `NOT-READY`.
+     A later try with no verdict adds "last try timed out" or "last try did not finish".
+   - The backup age line dates the snapshot `restore --newest` would restore: the newest that passes its checks, hashes included.
+     It reads `ok` while that snapshot's checkpoint is under 24 hours old.
+     Older, it is `NOT-READY` while the hub answers, and `--` while the hub is down, since that snapshot is the best there is.
+     A snapshot newer than this pack's schema is `NOT-READY` either way: `restore --newest` stops there, so update the pack.
 
 Promote, once the hub is dead:
 
