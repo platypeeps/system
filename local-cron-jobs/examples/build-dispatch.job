@@ -1,0 +1,24 @@
+# Build dispatcher tick on the hub (sd:6098; design:
+# docs/work/2026-10-24-build-dispatcher/design.md). Each tick writes the
+# build-dispatch heartbeat, reaps lost runs, watches the lane for enqueued
+# runs, claims a bundle under the builder caps, and spawns one supervisor
+# per run that has none. No model runs in the tick; a supervisor runs the
+# builder, its review and its enqueue.
+#
+# Hub only: the claim writes the workflow database under BEGIN IMMEDIATE.
+# Name it in the hub's profile `.cron`, beside the sd-db backups.
+#
+# JOB_TIMEOUT bounds the tick: it reads the gate load, the lane list and
+# the database, and waits on nothing else. A supervisor starts in a new
+# session with the job's lock closed (`start_new_session`, `close_fds`),
+# so neither this limit nor the next slot reaches it; it bounds its own
+# builder at 60 minutes. A slot that finds the previous tick still active
+# logs `skipped` and exits 0.
+#
+# SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
+# after ~/.config/shell/env.sh; this file is sourced before env.sh is.
+# env.sh also exports CUSTOM_CLAUDE_CODE_OAUTH_TOKEN, which a supervisor
+# hands to its builder's environment alone.
+JOB_SCHEDULE="*/2 * * * *"
+JOB_TIMEOUT="90s"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-ai-command-pack}/bin/sd\" assignments dispatch"
