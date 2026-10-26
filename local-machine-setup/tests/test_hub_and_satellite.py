@@ -130,7 +130,8 @@ class TheHub(Case):
         stray.write_text('{"hub": "hub.example.test", "port": 8769}\n')
         drift = markers(self.run_stage("sd", "--apply"))
         self.assertEqual(drift, [f"  EXTRA   {stray} — this machine is the sd hub, and that file makes it "
-                                 "a satellite too; remove it"])
+                                 "a satellite too; remove it, or, to demote this hub, move "
+                                 f"{self.fixture.db} to sd.db.demoted-<date> next (README, 'Hub failover')"])
         self.assertTrue(stray.exists(), "the stage removed hub.json")
 
     def test_criterion_7_a_hub_json_on_the_hub_counts_one_extra_across_the_sd_stages(self):

@@ -2215,7 +2215,11 @@ SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # database; the cron stage installs them under `<prefix>.cron.`.
 # The satellite stage reports each one present as EXTRA; the agents and cron
 # stages skip each one on a satellite.
-SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly"
+# The full role (sd:5986) adds the account agent that holds the mail and
+# Drive logins, its watch job, and the builder jobs, which write the
+# database. The hub's other host jobs stay off the list: they pause until
+# the hub returns (#31095).
+SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build cron.build-dispatch"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
@@ -2265,6 +2269,22 @@ hub_role_labels() { # agent|cron
       agent:*) echo "$LABEL_PREFIX.$hr" ;;
     esac
   done
+}
+# The logins the hub role needs (sd:5986). No machine copies a login or a
+# secret, and readiness tests none (#31094): the operator logs in on the
+# promoted standby and signs out at the hand-back. One per line:
+# name|login|sign-out.
+ROLE_ACCOUNTS="work Google account, in workspace-mcp|in a Claude session here, call workspace-mcp's start_google_auth with it as user_google_email, then open the link it returns|delete its <address>.json in ~/.google_workspace_mcp/credentials
+personal Google account, in workspace-mcp|in a Claude session here, call workspace-mcp's start_google_auth with it as user_google_email, then open the link it returns|delete its <address>.json in ~/.google_workspace_mcp/credentials
+Slack, the Slack plugin's MCP server|in Claude Code, run /mcp, pick the Slack plugin's server, then Authenticate|in Claude Code, run /mcp, pick the Slack plugin's server, then Clear authentication
+Notion, the notion MCP server|in Claude Code, run /mcp, pick notion, then Authenticate|in Claude Code, run /mcp, pick notion, then Clear authentication"
+role_accounts() { # login|drill|signout
+  case "$1" in
+    login) echo "  accounts    : log in to each here by hand; no login or secret is copied from the hub"; ra_field=2 ;;
+    drill) echo "  accounts    : a promotion needs each login, made here by hand then; the drill makes none"; ra_field=2 ;;
+    *) echo "  accounts    : sign out of each here by hand; the hand-back does not"; ra_field=3 ;;
+  esac
+  printf '%s\n' "$ROLE_ACCOUNTS" | awk -F'|' -v f="$ra_field" '{ print "    " $1 ": " $f }'
 }
 # The agents this machine runs: its profile's, plus the hub role's while it
 # holds it.
@@ -2373,8 +2393,10 @@ stage_sd() {
   fi
   # Removed by hand, never here: on the hub it refuses every sd verb beside
   # the database (HubConflict), and the operator decides which role is wrong.
+  # It is also the README demotion's first step (sd:5986), so the line names
+  # the second; removing it there would let the stale database write again.
   if [ -e "$SD_HUB_CONFIG" ]; then
-    echo "  EXTRA   $SD_HUB_CONFIG — this machine is the sd hub, and that file makes it a satellite too; remove it"
+    echo "  EXTRA   $SD_HUB_CONFIG — this machine is the sd hub, and that file makes it a satellite too; remove it, or, to demote this hub, move $SD_DB to sd.db.demoted-<date> next (README, 'Hub failover')"
   fi
   if role_agents | grep -qxF "$LABEL_PREFIX.sd-dashboard"; then
     if ! command -v tailscale >/dev/null 2>&1; then
@@ -7223,6 +7245,7 @@ if want is None or got is None or tuple(got) != tuple(want):
   echo "  hub.json    : $(marker_get moved)"
   echo "  lanes       : enqueue each NULL-host repository's open pull requests again (sd-ship lane enqueue)"
   echo "  dispatch stays paused: read this, then run sd restore resume"
+  role_accounts login
   # The hold step: a NAS root not listed holds names of today this machine's
   # hourly job may take again, and the NAS copy would overwrite them; so does
   # a snapshot the job took here while it waited. The marker stays, and
@@ -7616,6 +7639,7 @@ if held is None:
   # A root still here holds what undo cannot name as its own: say so.
   undo_roots undo_kept
   echo "  this machine: a satellite of $hub again"
+  role_accounts signout
 }
 
 # The drill (design, "Drill"): promote's steps 1, 5, 6 and 9 against a
@@ -7709,6 +7733,7 @@ if row is None:
   drill_time "step 9  : one session served" "$at"
   drill_time "total   " "$began"
   echo "drill   : passed on $snapshot; $DRILL_HOME is deleted"
+  role_accounts drill
 }
 
 # ------------------------------------------------------------------ main ----
@@ -7777,12 +7802,14 @@ for a in "$@"; do
                    role; while a NAS root cannot be listed the marker
                    stays at its hold step and the NAS copies refuse; a
                    rerun goes on at the step the promote-intent marker
-                   names; without --apply prints the hub-ready lines
+                   names; its report lists each login to make by hand
+                   (sd:5986); without --apply prints the hub-ready lines
                    --undo hands the role back from a promoted satellite:
                    stops the hub role, writes the hand-back snapshot to
                    the NAS hourly root, puts hub.json back and gives up the
                    tailnet name; once the new hub serves that snapshot, it
-                   deletes the local records and runs `update satellite`;
+                   deletes the local records and runs `update satellite`,
+                   and lists each login to sign out of by hand;
                    a rerun goes on at the step the promote-undo marker names
                    --drill rehearses steps 1, 5, 6 and 9 on a standby
                    satellite: restores the newest snapshot into a
