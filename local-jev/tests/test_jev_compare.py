@@ -175,6 +175,10 @@ class CompareCase(MeteringCase):
             "JEV_COMPARE_OPENROUTER_URL": self.base + "/api/v1/chat/completions",
             "JEV_COMPARE_BASETEN_URL": self.base + "/v1/chat/completions",
             "JEV_COMPARE_TIMEOUT": "10",
+            # The arms write at once, while the case reads: past the meter's
+            # 250 ms a loaded gate dropped a row as contended (sd:6276), so
+            # a case waits on the writes, not a count at a fixed moment.
+            "JEV_METER_BUSY_MS": "30000",
             "PYTHONPATH": SD_DB_PATH,
             "PATH": f"{self.bin}:/usr/bin:/bin",
             "HOME": str(self.config),
@@ -550,6 +554,32 @@ class TheHaikuArm(CompareCase):
         self.assertIsNone(row["answer"])
         self.assertEqual((row["tokens_in"], row["tokens_out"]), (130, 11))
         self.assertAlmostEqual(row["usd"], 0.000185)
+
+    def test_a_ledger_held_for_a_moment_still_takes_every_row(self):
+        """A loaded gate holds the ledger past the meter's own bound; the
+        case's rows wait for it and none drops (sd:6276)."""
+        Arm.delay = 0.5     # the ledger locks before the arm can write
+
+        def hold():
+            # The lock starts once the arm has asked, after Jev's own row,
+            # so the arm's write meets it. SQLite connections stay in the
+            # thread that opened them.
+            end = time.monotonic() + CHILD_CEILING
+            while not Arm.seen and time.monotonic() < end:
+                time.sleep(0.01)
+            holder = connect(self.store)
+            try:
+                holder.execute("BEGIN IMMEDIATE")
+                time.sleep(3.0)
+                holder.execute("ROLLBACK")
+            finally:
+                holder.close()
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        self.addCleanup(thread.join)
+        row = self.haiku("anthropic", JEV_COMPARE_ANTHROPIC_KEY="k")
+        self.assertEqual(row["outcome"], "ok")
 
     def test_an_unknown_transport_is_invalid_and_sends_nothing(self):
         row = self.haiku("carrier-pigeon")
