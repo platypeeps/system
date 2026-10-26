@@ -342,6 +342,31 @@ class RefreshTest(unittest.TestCase):
                          [(row["host"], row["state"]) for row in doc["satellites"]])
         self.assertEqual({"2026-10-18T20:05:00Z"}, {row["followed"] for row in doc["satellites"]})
 
+    def test_a_finished_host_reads_done_beside_one_that_never_ran(self):
+        """NEW (sd:6355). Moved from the dashboard suite: a host's `check`
+        answers pending, `finish` writes its result, and `document` reads it as
+        `done` with the exit and line, beside a host that reported a run and
+        never answered, hosts in sorted order."""
+        f = self.fixture()
+        for host in ("sat-b", "sat-a"):
+            f.call("writes.record_state(connect(db), 'heartbeat', key='cron-chain:repo-sync-follow@' + values['host'], "
+                   "body={'run_id': 'r1', 'ended': '2026-10-18T20:05:00Z', 'item': None})", host=host)
+        wanted = f.ask()
+        self.assertEqual([0, wanted, 1],
+                         json.loads(f.call("print(json.dumps(sr.check(connect(db), 'sat-a')))")))
+        f.call("sr.finish(connect(db), 'sat-a', values['id'], 1, 0, 'machine-setup', 'done: 0 failures')",
+               id=wanted)
+        self.assertEqual([1, None, 0],
+                         json.loads(f.call("print(json.dumps(sr.check(connect(db), 'sat-a')))")))
+
+        doc = json.loads(f.call("print(json.dumps(sr.document(connect(db))))"))
+
+        rows = {row["host"]: row for row in doc["satellites"]}
+        self.assertEqual(("done", 0, "done: 0 failures"),
+                         (rows["sat-a"]["state"], rows["sat-a"]["result"]["exit"], rows["sat-a"]["result"]["line"]))
+        self.assertEqual(("never", "2026-10-18T20:05:00Z"), (rows["sat-b"]["state"], rows["sat-b"]["followed"]))
+        self.assertEqual(["sat-a", "sat-b"], [row["host"] for row in doc["satellites"]])
+
     def test_host_keys_are_setting_keys(self):
         """NEW. A host name with a hyphen or a leading digit still makes a valid setting key."""
         f = self.fixture()

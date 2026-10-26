@@ -2056,6 +2056,38 @@ class RunReportTest(unittest.TestCase):
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertIn("report was not recorded", result.stderr)
 
+    def test_a_refused_report_runs_the_job_once_and_leaves_no_lock(self):
+        # PIN (sd:6355). Pack sd:6044 moved this case here from the
+        # dashboard suite: a database that refuses the report must not
+        # run the job twice, change its exit, leave its lock or file a
+        # failure line for a run that succeeded.
+        launchctl = self.fx.quiet / "launchctl"
+        launchctl_calls = self.fx.tmp / "launchctl-calls"
+        launchctl.write_text(f"#!/bin/sh\necho \"$*\" >> '{launchctl_calls}'\nexit 1\n")
+        launchctl.chmod(launchctl.stat().st_mode | stat.S_IXUSR)
+        logs = self.fx.folder / "logs"
+        (logs / "demo.log").write_text("PREVIOUS RUN\n")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="* * * * *"\n'
+                                  "JOB_COMMAND=\"printf 'REPORT BODY\\n'\"\n")
+        result = self.exec_job(FAKE_SD_EXIT="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((logs / "demo.log").read_text().count("REPORT BODY"), 1)
+        argv = self.reports()[0].split()
+        self.assertEqual(argv[:3], ["reports", "ingest", "demo"])
+        self.assertEqual(argv[argv.index("--offset") + 1], str(len("PREVIOUS RUN\n")))
+        self.assertIn("report was not recorded", result.stderr)
+        self.assertIn("print gui/", launchctl_calls.read_text())
+        self.assertFalse((logs / ".demo.lock").exists())
+        self.assertFalse((logs / "failures.log").exists())
+        self.assertEqual(len(self.fx.notifications()), 1, self.fx.notifications())
+        self.assertIn("Job 'demo': report not recorded", self.fx.notifications()[0])
+        self.fx.write_job("demo", 'JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="exit 7"\n')
+        result = self.exec_job(FAKE_SD_EXIT="1")
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertEqual(len(self.reports()), 2)
+        self.assertEqual((logs / "failures.log").read_text().count("FAILED rc=7"), 1)
+        self.assertFalse((logs / ".demo.lock").exists())
+
     def test_a_prompt_jobs_reply_carries_its_attention_lines_to_the_report(self):
         # PIN (sd:5000). A prompt job raises attention on Today by writing
         # `SD_REPORT_ATTENTION:` lines in its reply (the vault's intel-weekly
