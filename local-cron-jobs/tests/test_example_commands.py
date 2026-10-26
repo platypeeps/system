@@ -12,8 +12,14 @@ run through `cron-jobs.sh exec` the way launchd runs it, with SD_PACK_ROOT
 set only in the fixture's env.sh.
 """
 
+import os
 import pathlib
 import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
 import time
 import unittest
 
@@ -88,6 +94,103 @@ class LaneRunJobTest(unittest.TestCase):
         result = fx.exec_job(self.JOB.stem)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(marker.read_text().splitlines(), ["lane run --hosted"])
+
+
+#: The pack the gate pins (`.sd-pack-rev`), which the hub runs once the pin lands.
+PINNED_PACK = pathlib.Path(os.environ.get("SD_ACCEPTANCE_PACK") or os.environ.get("SD_PACK_ROOT")
+                           or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+
+# A pack `sd` that records its words; with SPAWN_PID set, it starts a sleeper
+# through the pinned pack's own `build_run.spawn`, the call the tick makes for
+# a supervisor, then outlives the job's limit.
+FAKE_DISPATCH = """#!{python}
+import os, pathlib, sys, time
+with open(os.environ["PACK_MARKER"], "a") as out:
+    out.write(" ".join(sys.argv[1:]) + "\\n")
+if os.environ.get("SPAWN_PID"):
+    sys.path.insert(0, {lib!r})
+    from sd_db import build_run
+    pid = build_run.spawn([sys.executable, "-c", "import time; time.sleep(60)"],
+                          log=pathlib.Path(os.environ["SPAWN_PID"]).with_suffix(".log"))
+    pathlib.Path(os.environ["SPAWN_PID"]).write_text(str(pid))
+    time.sleep(30)
+"""
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+class BuildDispatchJobTest(unittest.TestCase):
+    """The hub's build-dispatch tick: `sd assignments dispatch` every two minutes (sd:6098).
+
+    The tick spawns each supervisor in a session of its own, so the job's
+    90 s limit and its lock must not reach one (design, Dispatcher).
+    """
+
+    JOB = EXAMPLES / "build-dispatch.job"
+
+    def test_the_job_ticks_every_two_minutes_with_a_90_second_limit(self):
+        text = self.JOB.read_text()
+        self.assertEqual(re.search(r'^JOB_SCHEDULE="([^"]+)"', text, re.M).group(1), "*/2 * * * *")
+        self.assertEqual(re.search(r'^JOB_TIMEOUT="([^"]+)"', text, re.M).group(1), "90s")
+
+    def run_job(self, job_text=None, **extra):
+        fx = self.fx = Fixture()
+        self.addCleanup(fx.destroy)
+        pack, self.marker = fx.tmp / "custom-pack", fx.tmp / "pack-ran"
+        sd = pack / "bin" / "sd"
+        sd.parent.mkdir(parents=True)
+        sd.write_text(FAKE_DISPATCH.format(python=sys.executable, lib=str(PINNED_PACK / "lib")))
+        sd.chmod(0o755)
+        env_sh = fx.home / ".config" / "shell" / "env.sh"
+        env_sh.parent.mkdir(parents=True)
+        env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{self.marker}"\n')
+        fx.write_job(self.JOB.stem, job_text or self.JOB.read_text())
+        return fx.exec_job(self.JOB.stem, extra_env=extra)
+
+    def test_the_job_runs_the_pack_sd_with_exactly_those_words(self):
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.marker.read_text().splitlines(), ["assignments dispatch"])
+
+    def test_the_pinned_pack_has_the_dispatch_and_supervise_verbs(self):
+        """The job names a verb of the pinned pack, not only of a later one."""
+        for verb in ("dispatch", "supervise"):
+            with self.subTest(verb=verb):
+                result = subprocess.run(
+                    [sys.executable, str(PINNED_PACK / "bin" / "sd"), "assignments", verb, "--help"],
+                    capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+                self.assertEqual(result.returncode, 0, f"{PINNED_PACK}: {result.stdout}{result.stderr}")
+
+    def test_a_spawned_supervisor_outlives_the_limit_and_holds_no_lock(self):
+        """A tick killed at its limit leaves its supervisor running, and the next slot runs.
+
+        The limit here is 2 s, not 90 s. A supervisor left in the job's process
+        group would die with the TERM; one that kept fd 8 open would hold the
+        job's flock, and every later slot would log `skipped`.
+        """
+        pid_file = pathlib.Path(tempfile.mkdtemp(prefix="build-dispatch.")) / "supervisor.pid"
+        self.addCleanup(shutil.rmtree, pid_file.parent, ignore_errors=True)
+        text = self.JOB.read_text().replace('JOB_TIMEOUT="90s"', 'JOB_TIMEOUT="2s"')
+        self.assertNotEqual(text, self.JOB.read_text())
+        result = self.run_job(text, SPAWN_PID=str(pid_file))
+        self.assertTrue(pid_file.exists(), result.stdout + result.stderr)
+        pid = int(pid_file.read_text())
+        self.addCleanup(lambda: alive(pid) and os.kill(pid, signal.SIGKILL))
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertTrue(alive(pid), "the supervisor died with the tick")
+        again = self.fx.exec_job(self.JOB.stem)
+        log = (self.fx.folder / "logs" / f"{self.JOB.stem}.log").read_text()
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertNotIn("skipped", log)
+        self.assertEqual(self.marker.read_text().splitlines(), ["assignments dispatch"] * 2)
 
 # A scan-for-secrets.sh that exits with SCAN_RC for `critical`, and records
 # each call; `mask` exits 0, so only the record shows it ran.
