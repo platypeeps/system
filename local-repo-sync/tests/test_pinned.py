@@ -11,10 +11,12 @@ NEW: written before pinning existed and seen to fail against the script
 without it.
 """
 
+import os
 import pathlib
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -343,6 +345,91 @@ class NoUpstreamBranchSyncTest(unittest.TestCase):
 
         self.assertIn("failed: 1 repo(s)", result.stdout)
         self.assertNotIn("kept:", result.stdout)
+
+
+class HeldLockSyncTest(unittest.TestCase):
+    """A checkout whose index.lock another git process holds cannot be
+    pulled tonight; that failed the nightly sync (sd:6308)."""
+
+    def fixture(self):
+        f = PinFixture()
+        self.addCleanup(f.destroy)
+        return f
+
+    def test_a_held_index_lock_is_skipped_with_its_reason_not_failed(self):
+        """NEW. Listed as skipped with the lock and its age, the lock left
+        in place, the checkout where it was, and sync exits 0."""
+        f = self.fixture()
+        repo = f.repo()
+        before = f.head(repo)
+        f.advance_origin(repo)
+        lock = pathlib.Path(repo) / ".git/index.lock"
+        lock.write_text("")
+
+        result = f.run("sync", expect=0)
+
+        self.assertIn("skipped: 1 checkout(s), a git lock is held; not pulled", result.stdout)
+        self.assertRegex(result.stdout, r"\n  owner/proj: \S*/a/proj/\.git/index\.lock exists"
+                                        r" since \d{4}-\d\d-\d\d \d\d:\d\d ")
+        self.assertIn("all other repos synced", result.stdout)
+        self.assertNotIn("failed", result.stdout)
+        self.assertTrue(lock.exists(), "sync removed the lock")
+        self.assertEqual(before, f.head(repo))
+
+    def held(self, f, hours):
+        """A checkout behind origin whose index.lock is HOURS old."""
+        repo = f.repo()
+        f.advance_origin(repo)
+        lock = pathlib.Path(repo) / ".git/index.lock"
+        lock.write_text("")
+        then = time.time() - hours * 3600
+        os.utime(lock, (then, then))
+        return repo, lock
+
+    def test_a_lock_younger_than_24_hours_is_skipped_with_its_age(self):
+        """NEW. Operator ruling on sd:6308: under 24 h is a skip that
+        lists the lock's age."""
+        f = self.fixture()
+        _, lock = self.held(f, 23)
+
+        result = f.run("sync", expect=0)
+
+        self.assertRegex(result.stdout, r"\n  owner/proj: \S*/a/proj/\.git/index\.lock exists"
+                                        r" since \d{4}-\d\d-\d\d \d\d:\d\d \S+, 23 h old\n")
+        self.assertNotIn("failed", result.stdout)
+        self.assertTrue(lock.exists())
+
+    def test_a_lock_older_than_24_hours_fails_naming_its_path_and_age(self):
+        """NEW. Operator ruling on sd:6308: a lock past 24 h is stale, so
+        the run fails with exit 1 and names the lock and its age; the lock
+        stays for the operator to remove."""
+        f = self.fixture()
+        repo, lock = self.held(f, 25)
+        before = f.head(repo)
+
+        result = f.run("sync", expect=1)
+
+        self.assertIn("failed: 1 repo(s)", result.stdout)
+        self.assertRegex(result.stdout, r"\n  owner/proj: \S*/a/proj/\.git/index\.lock exists"
+                                        r" since .*, 25 h old; past 24 h it is stale, remove it")
+        self.assertRegex(result.stderr, r"!!! failed: owner/proj: \S*index\.lock .*25 h old")
+        self.assertNotIn("skipped:", result.stdout)
+        self.assertTrue(lock.exists(), "sync removed the lock")
+        self.assertEqual(before, f.head(repo))
+
+    def test_a_pull_that_fails_for_another_reason_still_fails(self):
+        """PIN. Only a held lock is a skip: a diverged default branch with a
+        lock elsewhere on disk is still a failure."""
+        f = self.fixture()
+        repo = f.repo()
+        f.commit(repo, "mine", "mine\n", "local work on main")
+        f.advance_origin(repo)
+        (f.tmp / "index.lock").write_text("")
+
+        result = f.run("sync", expect=1)
+
+        self.assertIn("failed: 1 repo(s)", result.stdout)
+        self.assertNotIn("skipped:", result.stdout)
 
 
 class RefreshTest(unittest.TestCase):

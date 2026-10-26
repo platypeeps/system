@@ -17,6 +17,12 @@
 # which is exactly what makes them worth a notification -- the reverse of the
 # daily drift banner this replaces. Any other exit is a failed capture.
 #
+# A held removal alerts once: while the same held set stands, later nights
+# print it and exit 0, so one removal no one has ruled on fails no night after
+# the first (sd:6307). A changed set alerts again, and so does one that comes
+# back after a night with nothing held. A held exit whose output names nothing,
+# or a record the job cannot write, alerts every night: an unknown is no repeat.
+#
 # It takes no arguments.
 set -eu
 
@@ -26,7 +32,8 @@ case "${1:-}" in
   -h|--help|help)
     echo "usage: profile-autocapture.sh   (takes no arguments)"
     echo "Record additive profile-roster changes: machine-setup.sh capture --apply --additive."
-    echo "Exit 0 when it wrote or had nothing to do, 3 when a removal was held."
+    echo "Exit 0 when it wrote or had nothing to do, 3 when a removal was held;"
+    echo "the same held removal again exits 0 and says it is still held."
     exit 0 ;;
   "") ;;
   *)
@@ -44,9 +51,28 @@ if [ ! -d "$PROFILE_DIR" ]; then
   exit 1
 fi
 
+# The held set last alerted on, in machine-setup.sh's state folder.
+STATE_DIR="${MACHINE_SETUP_STATE:-$HOME/.config/machine-setup}"
+HELD_RECORD="$STATE_DIR/autocapture-held"
+
+out=$(mktemp "${TMPDIR:-/tmp}/profile-autocapture.XXXXXX")
+trap 'rm -f "$out"' EXIT
 rc=0
-sh "$DIR/machine-setup.sh" capture --apply --additive || rc=$?
-if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+sh "$DIR/machine-setup.sh" capture --apply --additive > "$out" || rc=$?
+cat "$out"
+if [ "$rc" -eq 0 ]; then
+  rm -f "$HELD_RECORD"
+elif [ "$rc" -eq 3 ]; then
+  # The held manifests and their entries, as capture names them.
+  held=$(grep -E '^    (HELD|REFUSED) |^              - ' "$out" || :)
+  if [ -n "$held" ] && [ "$held" = "$(cat "$HELD_RECORD" 2>/dev/null || :)" ]; then
+    echo "profile-autocapture: this removal is still held, reported before; not alerting again."
+    rc=0
+  elif [ -n "$held" ]; then
+    { mkdir -p "$STATE_DIR" && printf '%s\n' "$held" > "$HELD_RECORD"; } 2>/dev/null \
+      || echo "profile-autocapture: cannot record the held removal in $HELD_RECORD; it alerts again." >&2
+  fi
+else
   echo "profile-autocapture: capture failed (rc=$rc)." >&2
 fi
 exit "$rc"

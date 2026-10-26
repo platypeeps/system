@@ -120,6 +120,26 @@ class CheckoutGuard(unittest.TestCase):
                          "allow")
         self.assertEqual(self.decide("Read", file_path=str(self.system / "README.md")), "allow")
 
+    def test_a_path_with_a_space_splits_only_where_the_shell_splits(self):
+        """sd:6292: a file tool's path is literal, and a quoted or escaped
+        space splits no word, so no piece resolves against a session folder
+        in a root; an unquoted variable still splits."""
+        lane, work = self.system, self.worktree
+        outside = work / "briefs/a b.md"
+        for cwd in (lane, work):
+            with self.subTest(cwd=cwd):
+                self.assertEqual(self.decide("Write", cwd=cwd, file_path=str(outside), content="x"),
+                                 "allow")
+                self.assertEqual(self.decide("Edit", cwd=cwd, file_path=f"{work}/$D {{a,b}}/*"),
+                                 "allow")
+                self.assertEqual(self.bash(f'mv /tmp/x "{outside}"', cwd=cwd), "allow")
+                self.assertEqual(self.bash(f"mv /tmp/x {work}/briefs/a\\ b.md", cwd=cwd), "allow")
+        self.assertDenied(self.decide("Write", cwd=work, file_path=f"{lane}/a b.md"), lane)
+        self.assertDenied(self.decide("Write", cwd=lane, file_path="a b.md"), lane)
+        self.assertDenied(self.bash(f'D="/tmp/a {lane}/x"; touch $D'), lane)
+        self.env["HOME"] = str(lane.parent)
+        self.assertDenied(self.decide("Write", file_path="~/system/x.md"), lane)
+
     def test_git_verbs_that_move_the_work_tree_are_denied(self):
         for command in (f"git -C {self.system} checkout -b topic",
                         f"rtk git -C {self.pack} commit -m x",
