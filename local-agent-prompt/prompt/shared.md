@@ -92,6 +92,7 @@ Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual
 Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
 Bundle by default: a lane brief puts a repo's ready items in one PR, one commit per item, same-file tasks always together, one golden bless per bundle: each PR costs a review, a rebase and a serial gate; a change that moves state in steps still gets its own PR.
+Fold a newly filed or queued item into an open, not-yet-enqueued PR of its repo when it fits (same area, no state move, the PR is not in the lane): a commit on an enqueued PR restarts its review and gate, so then open the next bundle instead (operator 2026-10-25).
 Fix only blocking findings before merge; file the rest as sd items for the repo's next PR or a follow-up PR, not another review round: each round costs a full re-review.
 Rebuttals need no approval: reject a review finding with a reason a reader can check, in the document's Status or the PR thread.
 
