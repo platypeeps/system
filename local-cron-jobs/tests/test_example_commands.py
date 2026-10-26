@@ -501,3 +501,59 @@ class HourlyBackupGradeTest(unittest.TestCase):
         result, log = self.run_job(5, 0)
         self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
         self.assertNotIn(self.SAFE, log)
+
+
+class NightlyBackupGradeTest(unittest.TestCase):
+    """The nightly backup grades a failed NAS copy data safe (sd:6030).
+
+    Same contract as the hourly job: the snapshot is verified on the local
+    disk before the optional NAS copy runs, so that copy failing leaves the
+    data safe. A failed snapshot prints no grade. Both still fail the run.
+    """
+
+    JOB = EXAMPLES / "sd-db-backup.job"
+    SAFE = "SD_REPORT_ATTENTION: data safe, one step failed: NAS copy"
+
+    def run_job(self, snapshot_rc, preflight_rc, nas=True, env_sh=False):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        sd_db = fx.home / "repos/platypeeps/sd-ai-command-pack/bin/sd-db"
+        sd_db.parent.mkdir(parents=True)
+        sd_db.write_text('#!/bin/sh\nexit "$SNAPSHOT_RC"\n')
+        sd_db.chmod(0o755)
+        python = fx.tmp / "preflight"
+        python.write_text('#!/bin/sh\nexit "$PREFLIGHT_RC"\n')
+        python.chmod(0o755)
+        fx.write_job(self.JOB.stem, self.JOB.read_text())
+        env = {"SNAPSHOT_RC": str(snapshot_rc), "PREFLIGHT_RC": str(preflight_rc),
+               "SD_DB_PYTHON": str(python), "SD_DB_BACKUP_DESTINATION": str(fx.tmp / "backups")}
+        if nas and env_sh:
+            shell = fx.home / ".config/shell"
+            shell.mkdir(parents=True)
+            (shell / "env.sh").write_text(f'export SD_DB_BACKUP_NAS_FOLDER="{fx.tmp / "nas"}"\n')
+        elif nas:
+            env["SD_DB_BACKUP_NAS_FOLDER"] = str(fx.tmp / "nas")
+        result = fx.exec_job(self.JOB.stem, env)
+        return result, (fx.folder / "logs" / f"{self.JOB.stem}.log").read_text().splitlines()
+
+    def test_a_failed_nas_copy_after_the_snapshot_is_graded_data_safe(self):
+        result, log = self.run_job(0, 4)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertIn(self.SAFE, log)
+
+    def test_a_failed_snapshot_is_not_graded(self):
+        result, log = self.run_job(5, 0)
+        self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
+        self.assertNotIn(self.SAFE, log)
+
+    def test_a_nas_folder_set_in_env_sh_reaches_the_job(self):
+        # A launchd run's settings come from env.sh; the job file reads them
+        # when it loads, so env.sh must come first.
+        result, log = self.run_job(0, 4, env_sh=True)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertIn(self.SAFE, log)
+
+    def test_without_a_nas_folder_the_job_is_the_snapshot_alone(self):
+        result, log = self.run_job(0, 4, nas=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(self.SAFE, log)
