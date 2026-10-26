@@ -526,6 +526,19 @@ class CheckoutGuard(unittest.TestCase):
                 self.assertTrue(self.bash(unknown + form, cwd=self.worktree).startswith("deny: "))
                 self.assertTrue(self.bash(unknown + form + "/x", cwd=self.worktree)
                                 .startswith("deny: "))
+                self.assertTrue(self.bash(unknown + "D=" + form, cwd=self.worktree)
+                                .startswith("deny: "))
+
+    def test_a_root_is_named_only_from_a_path_boundary(self):
+        """sd:6236: `/backup/lane` names no root; a root form needs a boundary
+        before it as well as after it."""
+        self.env["HOME"] = str(self.system.parent.parent)
+        lane, unknown = self.system, 'touch "$(pwd)/x"; echo '
+        for form in (str(lane), "~/repos/system", "$HOME/repos/system", "${HOME}/repos/system"):
+            for prefix in ("/backup", "x", "a-", "/backup/"):
+                with self.subTest(form=form, prefix=prefix):
+                    self.assertEqual(self.bash(unknown + prefix + form, cwd=self.worktree),
+                                     "allow")
 
     def test_growth_and_nesting_past_the_budget_are_refused_in_time(self):
         """sd:6083 round 4: a variable product, a brace product, a doubling value

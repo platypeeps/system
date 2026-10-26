@@ -81,6 +81,7 @@ GLOB = re.compile(r"[*?[]")
 CASE = re.compile(r"(case|esac)(?![^\s;&|()<>])")
 CLOSE = {"(": ")", "a(": ")", "a[": "]", "{": "}"}
 PATH_END = r"(?![^/\s'\"`;&|()<>{}\[\],:])"  # a `/` or the end of a word follows
+PATH_START = r"(?<![^\s'\"`;&|()<>{}\[\],:=])"  # the start of a word or a value precedes
 UNKNOWN = "\0"  # a value the reader cannot know; no shell word holds one
 LONGEST = 4096  # a longer value reads as unknown, so `D=$D$D` stops growing
 OPERATOR = set("();<>|&")
@@ -286,15 +287,17 @@ def written(path, cwd, protected, variables=None, spend=None):
 def named(text, protected):
     """The root TEXT names as a whole path, also as `~/..` or `$HOME/..`, or None.
 
-    A form counts only where a `/` or the end of a word follows it, so
-    `/root-tools` names no root.
+    A form counts only where the start of a word or value precedes it and a
+    `/` or the end of a word follows it, so `/root-tools` and `/backup/root`
+    name no root (sd:6236).
     """
     home = os.path.expanduser("~")
     for root in protected:
         forms = {root}
         if root.startswith(home + os.sep):
             forms |= {prefix + root[len(home):] for prefix in ("~", "$HOME", "${HOME}")}
-        if any(re.search(re.escape(form) + PATH_END, text, re.IGNORECASE) for form in forms):
+        if any(re.search(PATH_START + re.escape(form) + PATH_END, text, re.IGNORECASE)
+               for form in forms):
             return root
     return None
 
