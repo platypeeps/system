@@ -15,12 +15,24 @@
 # owned snapshots, two weeks of nights. Only directories the backup wrote and
 # still verifies are deleted.
 #
-# An off-machine copy is not part of this job. To chain one after the
-# snapshot (so it never reads a half-written snapshot directory), put a
-# same-named sd-db-backup.job in a CRON_JOBS_EXTRA_DIRS directory; it
+# An off-machine copy is optional. Set SD_DB_BACKUP_NAS_FOLDER to the share's
+# backup folder and the job copies the backup root there after the snapshot,
+# so it never reads a half-written snapshot directory, and only after
+# offsite-verify's preflight shows the folder is on the expected share. The
+# copy is additive, with its own pair list, `mirrors-nas.conf`
+# (local-mirror-sync has the example). Left empty, the job takes the snapshot
+# only. A same-named sd-db-backup.job in a CRON_JOBS_EXTRA_DIRS directory
 # overrides this one.
+#
+# A failed copy after a verified snapshot grades the run: the data is safe on
+# the local disk, so the line keeps the phone push for a run at risk
+# (sd:5997, ruling on sd:6030). The run still fails, and Today shows it.
 JOB_SCHEDULE="10 2 * * *"
 SD_DB_BACKUP_MOUNT=""
 [ -n "${SD_DB_BACKUP_DESTINATION:-}" ] || SD_DB_BACKUP_MOUNT=" --require-mount /Volumes/local"
-JOB_COMMAND="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}\"$SD_DB_BACKUP_MOUNT --keep 14"
-unset SD_DB_BACKUP_MOUNT
+SD_DB_BACKUP_SNAPSHOT="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}\"$SD_DB_BACKUP_MOUNT --keep 14"
+SD_DB_BACKUP_NAS_FOLDER="${SD_DB_BACKUP_NAS_FOLDER-}"
+SD_DB_BACKUP_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$SD_DB_BACKUP_NAS_FOLDER\" && env MIRROR_SYNC_CONF=mirrors-nas.conf MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync"
+JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT && { $SD_DB_BACKUP_NAS || { rc=\$?; echo 'SD_REPORT_ATTENTION: data safe, one step failed: NAS copy'; exit \$rc; }; }"
+[ -n "$SD_DB_BACKUP_NAS_FOLDER" ] || JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT"
+unset SD_DB_BACKUP_MOUNT SD_DB_BACKUP_SNAPSHOT SD_DB_BACKUP_NAS SD_DB_BACKUP_NAS_FOLDER
