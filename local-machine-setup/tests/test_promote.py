@@ -33,7 +33,7 @@ ROLE_JOBS = ["sd-db-backup", "sd-db-backup-hourly", "offsite-verify", "shadow-sy
 # `tailscale set` can move it), `restore --newest` installs a database named
 # after the first root's newest folder, or fails with STUB_RESTORE_RC, or
 # never answers with STUB_RESTORE_HANG.
-SD_DB_STUB = r'''
+SD_DB_STUB = fixture_config.STALL + r'''
 echo "$*" >> "$STUB_LOG"
 case "$1" in
   fence)
@@ -46,7 +46,7 @@ case "$1" in
     case "$state" in holder|off) exit 0 ;; esac
     exit 1 ;;
   restore)
-    [ -z "$STUB_RESTORE_HANG" ] || exec sleep 120
+    [ -z "$STUB_RESTORE_HANG" ] || stall
     if [ -n "$STUB_RESTORE_RC" ]; then echo "sd-db: refused: fixture" >&2; exit "$STUB_RESTORE_RC"; fi
     # As the pack reports a root it cannot list, and goes on with the others.
     for r in "$@"; do case $r in restore|--newest) ;; *) [ -d "$r" ] || echo "sd-db: refused $r: [Errno 2] No such file or directory" ;; esac; done
@@ -993,15 +993,10 @@ class Promote(PromoteCase):
 # A share that stalls: ls, du and test hang on any path under $STUB_STALL, as
 # an SMB root did for 2 h in machine-setup-update-nightly (sd:4786); every
 # other path gets the real command. test runs as the shell's builtin here.
-# No clock tells a stall from a loaded machine (sd:6157): under the bound
-# (lib/bounded.sh's perl) a stalled probe exits 124 at once, as the bound
-# does at its limit; anywhere else it hangs, and the run outlives its 60 s.
-# So the bound is 30 s, which no probe that answers comes near.
-HANG = ('  case "$(ps -o args= -p "$PPID")" in "perl -e use strict; use POSIX ();"*) exit 124 ;; esac\n'
-        '  exec sleep 120 ;;\n')
-STALL = ('case "$*" in *"${STUB_SLOW:-//}"*) sleep 2 ;; esac\n'
-         'case "$*" in *"$STUB_STALL"*)\n' + HANG + 'esac\n')
-STALL_BOUND = 30
+# fixture_config.STALL says how a stall ends.
+STALL = (fixture_config.STALL + 'case "$*" in *"${STUB_SLOW:-//}"*) sleep 2 ;; esac\n'
+         'case "$*" in *"$STUB_STALL"*) stall ;; esac\n')
+STALL_BOUND = fixture_config.STALL_BOUND
 STALL_STUBS = {"ls": STALL + 'exec "$STUB_REAL_LS" "$@"\n',
                "du": STALL + 'exec "$STUB_REAL_DU" "$@"\n',
                "test": STALL + 'test "$@"\n'}
@@ -1082,7 +1077,8 @@ class StalledShare(PromoteCase):
         local.mkdir()
         (self.config / "mirror-sync").mkdir(exist_ok=True)
         (self.config / "mirror-sync/mirrors-nas.conf").write_text(f"{local}|{share}\n")
-        write_stub(self.fixture.stubs, "sh", 'case "$*" in *"$STUB_STALL_SH"*)\n' + HANG + 'esac\nexec /bin/sh "$@"\n')
+        write_stub(self.fixture.stubs, "sh", fixture_config.STALL
+                   + 'case "$*" in *"$STUB_STALL_SH"*) stall ;; esac\nexec /bin/sh "$@"\n')
         out = self.hub_ready(str(self.tmp / "nothing-stalls-here"), STUB_STALL_SH=str(local))
         self.assertIn(f"  --      mirrors-nas.conf: {local} not readable now; its folders were not compared\n", out)
         self.assertNotIn("mirrors-nas.conf: " + str(share) + " holds", out)
@@ -1120,14 +1116,16 @@ class StalledShare(PromoteCase):
 # hold the path in its own variable, and passes every other call to the real
 # command. `test` runs as the shell's builtin; `sh` stalls rm_target's child;
 # python3 stalls hold_names, from the STUB_STALL_PY_FROM-th matching call on
-# (the first by default).
+# (the first by default). A call whose arguments hold $STUB_SLOW answers 4 s
+# late, past the 3 s bound these cases had: a loaded machine (sd:6253).
+SLOW = fixture_config.STALL + 'case "$*" in *"${STUB_SLOW:-//}"*) sleep 4 ;; esac\n'
 STEP_STALL_STUBS = {
-    "test": 'case "$*" in *"${STUB_STALL_TEST:-//}"*) exec sleep 120 ;; esac\ntest "$@"\n',
-    "cp": 'case "$*" in *"${STUB_STALL_CP:-//}"*) exec sleep 120 ;; esac\nexec /bin/cp "$@"\n',
-    "sh": 'case "$*" in *"${STUB_STALL_SH:-//}"*) exec sleep 120 ;; esac\nexec /bin/sh "$@"\n',
-    "python3": 'case "$*" in *"${STUB_STALL_PY:-//}"*)\n'
+    "test": SLOW + 'case "$*" in *"${STUB_STALL_TEST:-//}"*) stall ;; esac\ntest "$@"\n',
+    "cp": SLOW + 'case "$*" in *"${STUB_STALL_CP:-//}"*) stall ;; esac\nexec /bin/cp "$@"\n',
+    "sh": SLOW + 'case "$*" in *"${STUB_STALL_SH:-//}"*) stall ;; esac\nexec /bin/sh "$@"\n',
+    "python3": SLOW + 'case "$*" in *"${STUB_STALL_PY:-//}"*)\n'
                '  n=$(( $(cat "$STUB_LOG.py" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_LOG.py"\n'
-               '  [ "$n" -lt "${STUB_STALL_PY_FROM:-1}" ] || exec sleep 120 ;;\nesac\n'
+               '  [ "$n" -lt "${STUB_STALL_PY_FROM:-1}" ] || stall ;;\nesac\n'
                'exec "$STUB_REAL_PYTHON3" "$@"\n',
 }
 
@@ -1139,13 +1137,14 @@ def stall_steps(case):
 
 
 def run_stalled(case, *args, expect=1, **extra):
-    """promote, unattended (stdin is no terminal), with every bound at 3 s.
-    A run that outlives 40 s did not end at its bound."""
+    """promote, unattended (stdin is no terminal), with every bound at
+    STALL_BOUND. A run that outlives 90 s did not end at its bound."""
     env = case.fixture.env(**case.promote_env(
-        MACHINE_SETUP_STEP_TIMEOUT="3", ST_BOUNDED_GRACE="1", STUB_REAL_PYTHON3=REAL_PYTHON3, **extra))
+        MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND), ST_BOUNDED_GRACE="1", STUB_REAL_PYTHON3=REAL_PYTHON3,
+        **extra))
     try:
         result = subprocess.run([str(SCRIPT), "promote", *args], env=env, capture_output=True, text=True,
-                                cwd=str(case.tmp), stdin=subprocess.DEVNULL, timeout=40)
+                                cwd=str(case.tmp), stdin=subprocess.DEVNULL, timeout=90)
     except subprocess.TimeoutExpired:
         case.fail("promote did not end within its bound while a share stalls")
     case.assertEqual(expect, result.returncode, result.stdout + result.stderr)
@@ -1226,6 +1225,14 @@ class StalledShareInSteps(PromoteCase):
         run_stalled(self, "--apply", expect=0)
         self.assertTrue((self.hourly / "2026-10-14.5" / "backup-manifest.json").exists())
         self.assertFalse((self.hourly / "2026-10-14.5.seeding").exists())
+        self.assertIsNone(self.marker_step())
+
+    def test_a_slow_step_that_answers_is_no_stall(self):
+        """A loaded machine slows a seed copy that answers: the seed is
+        whole, never a copy cut off at the bound (sd:6253)."""
+        self.restored()
+        run_stalled(self, "--apply", expect=0, STUB_SLOW=str(self.snapshot))
+        self.assertTrue((self.hourly / "2026-10-14.5" / "backup-manifest.json").exists())
         self.assertIsNone(self.marker_step())
 
     def test_a_stalled_hold_at_the_seed_stops_at_step_6(self):

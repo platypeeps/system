@@ -14,6 +14,7 @@ import tempfile
 import unittest
 
 from tests import fixture_config
+from tests.fixture_config import STALL, STALL_BOUND
 
 HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
@@ -181,9 +182,9 @@ class Obsidian(Case):
         # sd:4816. The read ran unbounded, so a vault on a stalled share hung
         # the nightly update; bounded, a timeout is no answer, never no vault.
         stall = self.base / "stall-python"
-        write_exec(stall, "#!/bin/sh\nexec sleep 30\n")
+        write_exec(stall, "#!/bin/sh\n" + STALL + "stall\n")
         result = self.run_script("update", "obsidian", OBSIDIAN_VAULT=str(self.vault),
-                                 MACHINE_SETUP_PYTHON=str(stall), MACHINE_SETUP_STEP_TIMEOUT="1",
+                                 MACHINE_SETUP_PYTHON=str(stall), MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND),
                                  ST_BOUNDED_GRACE="1")
         self.assertIn(f"  FAILED  the vault did not answer in time: {self.vault}; its plugins were not checked",
                       result.stdout)
@@ -220,8 +221,8 @@ class ITerm2(Case):
         # mount; bounded, a timeout is no answer, never no folder, and
         # iTerm2 is not repointed.
         stall = self.base / "stall-python"
-        write_exec(stall, "#!/bin/sh\nexec sleep 30\n")
-        result = self.run_stage(MACHINE_SETUP_PYTHON=str(stall), MACHINE_SETUP_STEP_TIMEOUT="1",
+        write_exec(stall, "#!/bin/sh\n" + STALL + "stall\n")
+        result = self.run_stage(MACHINE_SETUP_PYTHON=str(stall), MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND),
                                 ST_BOUNDED_GRACE="1")
         self.assertIn(f"  DIFFERS prefs folder {self.prefs} did not answer in time, state unknown",
                       result.stdout)
