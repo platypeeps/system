@@ -15,8 +15,9 @@ import re
 import shutil
 import socket
 import subprocess
+from pathlib import Path
 
-from tests.test_backbone import ROOT, SCRIPT, write_stub
+from tests.test_backbone import PACK, ROOT, SCRIPT, write_stub
 from tests.test_promote import GIT_STUB, SD_STUB, PromoteCase
 
 # test_backbone puts the pinned pack's lib/ on the path.
@@ -527,7 +528,119 @@ class BackupAge(PromoteCase):
         self.assertNotIn("ok      backup age", result.stdout)
         self.assertNotIn("NOT-READY", result.stdout)
 
+    def stalled_copy(self, then="pass"):
+        """Promote with a reader that copies a snapshot, runs `then`, and hangs.
+
+        Returns the result, the run's own TMPDIR and the path of the copy: a
+        stop at the bound or a TERM leaves neither copy nor folder (sd:6325).
+        """
+        self.snapshot(datetime.timedelta(hours=1))
+        copied = self.tmp / "copied"
+        temp = self.tmp / "run-tmp"
+        temp.mkdir()
+        stall = write_stub(self.fixture.stubs, "stall-python", r'''case "$5" in backup-age)
+  code=$3; shift 3
+  exec "$STUB_REAL_PYTHON" -I -c "import os, shutil, signal, time
+_copy = shutil.copytree
+def copytree(source, local, **kwargs):
+    _copy(source, local, **kwargs)
+    open(os.environ['STUB_COPIED'], 'w').write(str(local))
+    $STUB_THEN
+    time.sleep(30)
+shutil.copytree = copytree
+$code" "$@" ;;
+esac
+''' + f'exec "{self.prove}" "$@"\n')
+        env = self.fixture.env(**self.promote_env(SD_DB_PYTHON=stall, MACHINE_SETUP_STEP_TIMEOUT="4",
+                                                  ST_BOUNDED_GRACE="1", TMPDIR=temp, STUB_COPIED=copied,
+                                                  STUB_THEN=then))
+        result = subprocess.run([str(SCRIPT), "promote"], env=env, capture_output=True, text=True,
+                                cwd=str(self.tmp), stdin=subprocess.DEVNULL, timeout=120, start_new_session=True)
+        self.assertTrue(copied.exists(), result.stdout + result.stderr)
+        return result, temp, Path(copied.read_text())
+
+    def assert_no_staging(self, temp, local):
+        self.assertFalse(local.exists(), local)
+        self.assertFalse(local.parent.exists(), local.parent)
+        self.assertEqual([], sorted(temp.glob("hub-ready-*")))
+
+    def test_a_reader_stopped_at_its_bound_leaves_no_copy(self):
+        result, temp, local = self.stalled_copy()
+        self.assertIn("  --      backup age not read: the snapshots were not checked under", result.stdout)
+        self.assert_no_staging(temp, local)
+
+    def test_a_run_terminated_during_the_copy_leaves_no_copy(self):
+        """cron-jobs TERMs a job's group at its limit; the reader dies in the copy."""
+        result, temp, local = self.stalled_copy("os.killpg(os.getpgid(os.getppid()), signal.SIGTERM)")
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assert_no_staging(temp, local)
+
     def test_no_interpreter_gives_no_age(self):
         self.snapshot(datetime.timedelta(hours=1))
         out = self.run_promote(SD_DB_PYTHON=os.devnull).stdout
         self.assertIn("  --      backup age not read:", out)
+
+    def age_line_from(self, backup_py, **extra):
+        """The line with `backup_py` as the pack's sd_db/backup.py, or no sd_db when None."""
+        lib = self.tmp / "other-lib"
+        (lib / "sd_db").mkdir(parents=True)
+        if backup_py is None:
+            (lib / "sd_db").rmdir()
+        else:
+            (lib / "sd_db/__init__.py").write_text("")
+            (lib / "sd_db/backup.py").write_text(backup_py)
+        swap = write_stub(self.fixture.stubs, "swap-python", '''case "$5" in backup-age)
+  a=$1 b=$2 c=$3; shift 4
+  exec "$STUB_REAL_PYTHON" "$a" "$b" "import os, sys
+sys.path.extend(filter(None, [os.environ.get('STUB_ELSEWHERE')]))
+$c" "$STUB_LIB" "$@" ;;
+esac
+''' + f'exec "{self.prove}" "$@"\n')
+        return self.age_line(SD_DB_PYTHON=swap, STUB_LIB=lib, **extra)
+
+    def test_the_line_reads_the_packs_walk(self):
+        """sd:6331: the pack's newest_restorable picks the snapshot; no copy of its walk here."""
+        called = self.tmp / "called.json"
+        line = self.age_line_from('''import datetime, json, os, tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+SCHEMA_VERSION = 1
+
+
+@dataclass
+class Restorable:
+    snapshot: object
+    taken_at: object
+    refused: list
+    released: list
+    newer: object = None
+
+
+def newest_restorable(roots, *, report=None):
+    roots = [str(root) for root in roots]
+    Path(os.environ["STUB_CALLED"]).write_text(json.dumps({"roots": roots, "tmp": tempfile.gettempdir()}))
+    taken = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=5, minutes=1)
+    return Restorable(Path(roots[0]) / "2026-10-26.7", taken, [], [])
+''', STUB_CALLED=called, **self.answering_hub())
+        call = json.loads(called.read_text())
+        self.assertEqual(sorted([str(self.hourly_nas), str(self.nas / "sd-backups")]), sorted(call["roots"]))
+        self.assertTrue(line.startswith("  ok      backup age 5 h: newest checkpoint "), line)
+        self.assertTrue(line.endswith(f" in {call['roots'][0]}/2026-10-26.7"), line)
+        # Its copies go in the folder the shell removes (sd:6325).
+        self.assertTrue(Path(call["tmp"]).name.startswith("hub-ready-"), call["tmp"])
+
+    def test_an_older_pack_is_a_finding_not_a_traceback(self):
+        """A pack from before pack sd:6323 has no newest_restorable."""
+        self.snapshot(datetime.timedelta(hours=1))
+        pack = self.fixture.pack
+        self.assertEqual(f"  --      backup age not read: {pack}/lib has no sd_db.backup.newest_restorable "
+                         "(pack sd:6323); update the pack", self.age_line_from("SCHEMA_VERSION = 1\n"))
+        # The gate's interpreter has the pinned pack's sd_db installed: a copy
+        # it finds elsewhere is not this pack's, so still no answer.
+        for elsewhere in ("", str(PACK / "lib")):
+            with self.subTest(elsewhere=elsewhere):
+                shutil.rmtree(self.tmp / "other-lib", ignore_errors=True)
+                line = self.age_line_from(None, STUB_ELSEWHERE=elsewhere)
+                self.assertTrue(line.startswith("  --      backup age not read: "), line)
+                self.assertTrue(line.endswith(f" imports no sd_db.backup from {pack}/lib"), line)

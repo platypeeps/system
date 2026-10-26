@@ -304,6 +304,9 @@ case "$SUITE_LEG" in
     # A root suite that needs the venv's sd_db runs here, not in the
     # preflight; the guard above accepts a run_suite line naming it.
     run_suite findings-contract "$PYTHON" tests/test_findings_contract.py -v
+    # The design documents and the job table, against the pack's converter
+    # at SD_PACK_ROOT (sd:6355).
+    run_suite design-docs "$PYTHON" tests/test_design_docs.py -v
     ;;
   repo-sync)
     # The longest suite, alone in its leg: in a tools shard it set the
