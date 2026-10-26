@@ -22,6 +22,7 @@ Binding rulings, by note:
 - #28914: hourly snapshots already reach the NAS (`sd-backups-hourly`).
 - #28933 (Q67): the PR that implements this edits the rule lines it overrides; until then the old rules hold.
 - #28934 (Q68): the employer's device policy allows personal accounts and repos on the work satellite.
+- #31093, #31094, #31095 and #31089 answer this design's open questions; "Decided questions" lists them.
 
 The item's first text asked for a warm replica. Q55-Q56 replaced it; this design builds no replica.
 
@@ -49,8 +50,10 @@ Add three things: a write fence in the pack library, a weekly gate run with a `h
 
 - Every write through the `sd_db` library on a hub asks `hub.role` before it commits, as `sd-serve` already does for remote writes.
   It reuses `serve.FENCE_SECONDS`: one Tailscale probe per writing process per 5 s.
-- `holder` and `off` write. `elsewhere` and `unknown` refuse with `Fenced`.
+- Write unless fenced (#31093): `holder`, `off` and `unknown` write; `elsewhere` refuses with `Fenced`.
+  An unknown read counts as not fenced, so a Tailscale outage does not stop a healthy hub's writes.
   The refusal names the holder and the two demotion steps below.
+- The existing fence callers keep their rule: serve, NULL-host lanes, NAS copies and the `hub-pin` push still refuse on `unknown`.
 - This one guard covers every local writer: the CLI, the dashboard, job run reports and `task-actions`.
 - Reads stay allowed, so the old hub's dashboard still shows its stale records.
 - `sd-db restore` is the one exempt writer. Promote restores before this machine takes the hub's name.
@@ -87,9 +90,13 @@ A nightly `machine-setup update` could then build a fresh database, whose unset 
   - the build dispatcher's job, once system sd:6012's job file exists.
 - `hub-ready` already reads NOT-READY for a role label with no plist or job file.
   So the work satellite must hold these files before it is ready.
-- Interactive logins cannot move: workspace-mcp's two Google accounts, the Slack plugin and the Notion MCP.
-  Promote's loss report gains an **Accounts** block, listing each login to run on the work satellite.
+- Logins only after a promotion (#31094): workspace-mcp's two Google accounts, the Slack plugin and the Notion MCP
+  stay off the work satellite until a failover.
+  Promote's loss report gains an **Accounts** block: the manual login step for each, run on the work satellite.
+  `hub-ready` does not test them in advance.
   `promote --undo` gains the reverse: each login to sign out of before the hand-back ends.
+- The hub's other host jobs do not move (#31095): mail intake, briefs, home prep and HOA pause until the hub returns.
+  The role moves sd, workspace-mcp and the builder jobs only.
 - No secret is copied between machines. This keeps the old design's rule.
 
 ### 4. The rule lines (Q67)
@@ -106,12 +113,14 @@ a search on 2026-10-25 found none there, and none in the other files that `agent
 | Mail and Slack | the work mail, personal mail, Slack, Notion and Drive lines, each "… on `<hub>`" |
 | Mail and Slack | "A session on another machine asks `<hub>`'s session … only `<hub>` holds these credentials" |
 
-The edit names the role, not the machine:
+No repository PR can edit them (#31089):
 
-- `shared.md` gains one line under "Other machines": the hub is the machine whose `sd-db fence` reads `holder`.
-  After a promotion that is the work satellite, until `promote --undo` hands the role back.
-- The rollout rewrites "on `<hub>`" as "on the hub" in each machine's personal lines.
-  The work satellite's file is read through its session, never over SSH.
+- The implementing PR names the exact replacement lines in its body.
+  Each names the role, not the machine: "the hub, the machine whose `sd-db fence` reads `holder`",
+  with the failover exception for the promoted work satellite.
+- The lead applies them by hand on each machine when the PR merges, and records that on system sd:5986.
+  The work satellite's file is edited through its session, never over SSH.
+- `shared.md` does not change.
 - Session names stay as they are: on a promoted work satellite they remain `work-<repo>`.
   `SendMessage` finds them by name.
 
@@ -121,7 +130,8 @@ The edit names the role, not the machine:
 - Automatic failover. The operator decides that the hub is dead.
 - A `demote` verb. The two runbook steps stay, in the new order.
 - Copying any login or secret between machines.
-- The hub's other host jobs, such as mail intake, briefs and home prep. Open question 3 asks.
+- The hub's other host jobs: mail intake, briefs, home prep and HOA pause until the hub returns (#31095).
+- Testing the account logins before a failover (#31094).
 
 ## Failure table
 
@@ -131,7 +141,8 @@ These rows cover what changes.
 | Step | State moved | Failure | Recovery | Test |
 | --- | --- | --- | --- | --- |
 | Old hub returns | none: each write refuses | the fence reads `elsewhere` after the console rename | `Fenced`, naming the holder and the demotion steps; reads still work | `test_a_local_write_on_a_fenced_hub_refuses` (pack) |
-| Old hub returns | none | Tailscale logged out or cut off, so the fence reads `unknown` | refuses as `elsewhere` does; a failed probe is no answer | `test_an_unknown_fence_refuses_a_local_write` (pack) |
+| Old hub returns | stale local rows | Tailscale logged out or cut off, so the fence reads `unknown` | writes, by #31093; nothing leaves the machine, since serve, lanes, NAS copies and `hub-pin` refuse on `unknown`; the rows stay in `sd.db.demoted-<date>` | `test_an_unknown_fence_writes_locally` (pack) |
+| Healthy hub | none | Tailscale outage, so the fence reads `unknown` | local writes go on (#31093) | `test_an_unknown_fence_writes_locally` (pack) |
 | Old hub returns | none | a write already open when the fence turns | the check runs at commit, so that transaction rolls back | `test_a_write_open_across_the_rename_rolls_back` (pack) |
 | Promote 5 restore | `sd.db` installed | the write fence refuses restore, since the name is not taken yet | `sd-db restore` is exempt; every other write still asks | `test_restore_writes_before_the_name_is_taken` (pack) |
 | Promote 9 report | Accounts block printed | a login is not done when the operator reads it | nothing moved; the block repeats on every rerun until the marker goes | `test_the_report_lists_each_account_login` |
@@ -153,8 +164,8 @@ These rows cover what changes.
 2. **system: the weekly gate.** `feat(machine-setup): weekly doctor gate and its hub-ready line`.
    Fail-first: `test_a_failed_weekly_gate_is_not_ready`. Waits on nothing.
 3. **system: the full role and the rule lines.** `feat(machine-setup): promote moves accounts and builders`.
-   The role list, the Accounts and sign-out blocks, the demotion order in the README, and the `shared.md` line.
-   Its rollout rewrites each machine's personal lines (Q67). Waits on slice 1 in the pin.
+   The role list, the Accounts and sign-out blocks, and the demotion order in the README.
+   Its body names the replacement rule lines; the lead applies them at merge (#31089). Waits on slice 1 in the pin.
 4. **Drill.** One `promote --drill` on the work satellite after slice 3, quoted in slice 3's body.
 
 ## Acceptance criteria
@@ -163,13 +174,13 @@ These rows cover what changes.
 - [ ] On the live hub, the fence reads `holder` and a note writes.
 - [ ] `machine-setup.sh status` on the work satellite shows a `hub-ready` gate line that reads `ok`, with a date under 8 days old.
 - [ ] `promote --drill` on the work satellite passes, and its report lists the Accounts block.
-- [ ] After slice 3's rollout, a search for the hub's machine name in the "Machine roles" and "Mail and Slack" lines of each machine's personal block finds nothing.
+- [ ] After the lead applies slice 3's lines, a search for the hub's machine name in the "Machine roles" and "Mail and Slack" lines of each machine's personal block finds nothing.
 - [ ] `sd-docs-lint` passes from the repository root.
 
 ## Risks
 
-- **A Tailscale outage on the healthy hub stops its local writes.** The fence cannot tell that from a return.
-  Open question 1 asks. Remote writes already stop then, since satellites reach the hub over Tailscale.
+- **A returning hub with Tailscale off writes locally.** The fence reads `unknown`, which writes (#31093).
+  Accepted: failover is manual and rare, nothing leaves the machine, and demotion moves those rows aside.
 - **Probe cost.** One `tailscale status --json` per writing process per 5 s.
   A probe with Python start-up took 0.17 s on the hub on 2026-10-25. Slice 1 measures the probe alone and quotes it.
 - **Failed jobs on a returning hub.** Its jobs fail their sd writes and may push phone alerts.
@@ -179,12 +190,13 @@ These rows cover what changes.
 - **Logins left behind.** A sign-out the operator skips leaves a personal login on the work machine. Q68 allows it; the undo report names it.
 - **One machine runs both lane sets while promoted.** The old design accepts this; builders add load. The dispatcher's load cap bounds it.
 
-## Open questions
+## Decided questions
 
-Each is filed on system sd:5986 as a question note.
+The design left four questions; all are decided.
 
-1. Note #31081: when the fence cannot be read (`unknown`), may the hub still write locally? Recommended: refuse.
-2. Note #31082: do the account logins wait for a promotion, or stay on the work satellite all the time? Recommended: wait for a promotion.
-3. Note #31083: do the hub's other host jobs (mail intake, briefs, home prep) move with the role? Recommended: no, they wait for the hub.
-4. Note #31084: Q67 says the PR edits the rule lines, but those lines are untracked personal lines.
-   Recommended: the PR adds the role line to `shared.md`, and its rollout rewrites the personal lines.
+1. Write unless fenced: an unknown fence read counts as not fenced. Operator, #31093, answering #31081.
+2. Logins go on the work satellite only after a promotion; promote lists the manual step; readiness does not test them.
+   Operator, #31094, answering #31082.
+3. The other host jobs do not move; they pause until the hub returns. Operator, #31095, answering #31083.
+4. The implementing PR names the replacement rule lines in its body; the lead applies them by hand at merge.
+   Lead, #31089, answering #31084.
