@@ -477,7 +477,7 @@ class BackupAge(PromoteCase):
                              "restore's checks; the hub answers, so its backups have not reached the roots in 24 h",
                              self.age_line(**hub))
 
-    def test_a_snapshot_newer_than_this_pack_is_not_ready_even_with_the_hub_down(self):
+    def test_a_newer_schema_is_not_ready_even_with_the_hub_down(self):
         """restore --newest stops at it rather than restore an older one, so promote would fail."""
         self.snapshot(datetime.timedelta(hours=30))
         newer = self.snapshot(datetime.timedelta(hours=1))
