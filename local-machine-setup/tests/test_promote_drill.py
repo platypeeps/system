@@ -8,7 +8,7 @@ the pinned pack's own, so the drill's one session is real.
 import sys
 
 from tests.test_backbone import write_stub
-from tests.test_promote import SATELLITE_CASE, PromoteCase, run_stalled, stall_steps
+from tests.test_promote import ACCOUNTS, SATELLITE_CASE, PromoteCase, run_stalled, stall_steps
 
 NEWEST = "2026-10-14.5"
 
@@ -34,6 +34,14 @@ class Drill(PromoteCase):
         self.assertFalse(self.fixture.db.exists(), "the drill wrote the live database")
         self.assertEqual([], self.calls("tailscale set") + self.calls("launchctl"))
         self.assertEqual(1, len(self.calls("serve --loopback")))
+
+    def test_a_drill_lists_the_accounts_block(self):
+        """sd:5986 acceptance: the rehearsal shows the logins a promotion needs."""
+        out = self.run_drill().stdout
+        self.assertIn("  accounts    : a promotion needs each login, made here by hand then; the drill makes none", out)
+        for name in ACCOUNTS:
+            self.assertRegex(out, rf"\n    {name}[^\n]*: [^\n]*(start_google_auth|Authenticate)")
+        self.assertFalse((self.fixture.home / ".google_workspace_mcp").exists())
 
     def test_a_drill_passes_on_a_usb_root_while_the_nas_cannot_be_read(self):
         """sd:4012 round 3: the drill rehearses promote, which needs one readable root."""

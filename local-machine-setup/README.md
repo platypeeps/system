@@ -387,6 +387,8 @@ The hub role is a state, not a profile.
 A satellite holds it while it has no `hub.json`, has a local `sd.db`, and the pack's `sd-db fence` reads `holder`.
 While it holds the role, the `sd`, `cron` and `agents` stages add the hub's agents and jobs (`SD_HUB_ONLY_AGENTS`, less the iCloud mirror) on top of its own profile.
 A plist comes from the config folder's `launchagents/`, else from `examples/launchagents/`; job files come from the satellite's own `cron-jobs/jobs/`.
+The role is the sd services and backups, the `google-workspace-mcp` agent and its watch job, and the builder jobs `night-build` and `build-dispatch` (sd:5986).
+The hub's other host jobs, such as mail intake, briefs, home prep and HOA, do not move: they pause until the hub returns.
 
 Get the standby ready, once:
 
@@ -395,6 +397,9 @@ Get the standby ready, once:
    The hourly job sets `SD_DB_BACKUP_HOURLY_DESTINATION` to a folder on this machine; the nightly job sets `SD_DB_BACKUP_DESTINATION` the same way.
    Both keep their NAS copy, one folder to one folder, run additive (`MIRROR_SYNC_ADDITIVE=1`), as the hub's hourly copy is: `mirrors-nas-hourly.conf` pairs the hourly folder with the NAS's `sd-backups-hourly`, and `mirrors-nas.conf` pairs the nightly `sd-backups` folder with the NAS's `sd-backups`; without the nightly copy, offsite-verify fails the promoted hub's nightly check after 36 h.
    Never pair a parent folder with the NAS share: a pass with `--delete` trims the share to the source and deletes its other folders. `hub-ready` reads `NOT-READY` for a NAS pair whose destination holds a folder its source lacks.
+   Write the rest of the role's job files too: `workspace-mcp-watch`, `night-build` and `build-dispatch`.
+   Put the `<prefix>.google-workspace-mcp` plist in the config folder's `launchagents/`, and clone the server it runs.
+   Copy no login or secret from the hub: the logins wait for a promotion, and `hub-ready` does not test them.
 3. Set `OFFSITE_VERIFY_ROOT` in `<config>/mirror-sync/.env`: promote restores from its `sd-backups-hourly` and `sd-backups` folders.
 4. Copy `local-cron-jobs/examples/doctor-gate-weekly.job` into the job folder of each machine that runs `lane-run`.
    It runs `machine-setup.sh doctor gate`, which keeps the newest pass or failure in `~/.local/state/machine-setup/doctor-gate-last`.
@@ -427,6 +432,8 @@ This is the second guard: an old hub cut from the control plane already refuses,
    If a NAS root still cannot be listed, the hub serves but the promotion pauses: the NAS copies refuse until `promote --apply` runs again with the NAS back.
    That rerun stays paused while an hourly snapshot taken here has a name the NAS holds for another snapshot; it names the folder to move aside.
 6. Read the report. Enqueue each NULL-host repository's open pull requests again, then run `sd restore resume`.
+7. Log in to each account its `accounts` block names, by hand on the standby: the work and personal Google accounts in workspace-mcp, Slack and Notion.
+   The block repeats on every run until the marker goes.
 
 A run that stops leaves `~/.local/state/sd/promote-intent`, which names the next step; `promote --apply` goes on from there.
 `status` names the marker in its `hub-ready` block.
@@ -434,7 +441,7 @@ A run that stops leaves `~/.local/state/sd/promote-intent`, which names the next
 Rehearse it, on the standby:
 
 - Run `machine-setup.sh promote --drill`. It runs promote's steps 1, 5, 6 and 9 against a throwaway home, `~/.local/state/sd/promote-drill`: the preflight, the restore of the newest snapshot, and one session on a loopback server.
-  It prints each step's seconds and the total, and deletes the home, pass or fail. `hub.json`, launchd and Tailscale stay as they are.
+  It prints each step's seconds, the total and the `accounts` block a promotion would need, and deletes the home, pass or fail. `hub.json`, launchd and Tailscale stay as they are.
 - A drill killed before its cleanup leaves the home; `status` names it in its `hub-ready` block, and the next drill or `promote --undo` deletes it if it holds the drill's marker, `.sd-promote-drill`.
 - `local-cron-jobs/examples/promote-drill-monthly.job` runs it on the 1st; a miss files a failure report.
 
@@ -448,17 +455,23 @@ Hand the role back to a personal machine:
    Its hub profile stays as it is: the fence, not the profile, says it holds the role, and it installs the role's agents and jobs from its own lists.
 3. On the standby, run `promote --undo --apply` again. It deletes nothing until the local fence reads `elsewhere`, a session on the hub's name answers, and that hub's newest restore names the hand-back snapshot and holds its checkpoint.
 4. It then deletes the database files in `~/.local/share/sd/` and the snapshot folders `sd-db backup` wrote (they hold its `backup-manifest.json`) in the hub-role backup roots under `$HOME`, then each root left empty. It keeps anything else and lists it. It runs `update satellite --apply` and checks the stage's dry run.
+5. Sign out of each account its report's `accounts` block names. The hand-back ends without them, so do it then:
+   delete each Google account's `<address>.json` in `~/.google_workspace_mcp/credentials`, and clear Slack's and Notion's authentication in Claude Code's `/mcp`.
 
 A run that stops leaves `~/.local/state/sd/promote-undo`, which names the next step; `status` names it in its `hub-ready` block.
 If the snapshot fails, the hub role starts again and nothing is deleted.
 
 Make an old hub a satellite, so it can take the role back or rejoin:
 
-1. Move its `~/.local/share/sd/sd.db` to `sd.db.demoted-<date>`. It holds the writes after the last snapshot; copy any item or note back by hand.
-2. Copy `~/.config/sd/hub.json` from any satellite. Until it takes the role back, the sd stage reads `DIFFERS ... demoted` and builds no database.
+1. Copy `~/.config/sd/hub.json` from any satellite. From then on every `sd` command there refuses (`HubConflict`), so nothing writes the stale database.
+2. Move its `~/.local/share/sd/sd.db` to `sd.db.demoted-<date>`. It holds the writes after the last snapshot; copy any item or note back by hand.
+   Until it takes the role back, the sd stage reads `DIFFERS ... demoted` and builds no database.
    To rejoin for good, give it a satellite profile: take the `SD_HUB_ONLY_AGENTS` labels out of `<profile>.agent` and `<profile>.cron`, add `<profile>.satellite`, then run `machine-setup.sh update --apply`.
 
-Until then, the fence keeps a returning old hub from writing off the machine: its NAS copies and its `hub-pin` push refuse.
+Keep this order (sd:5986). Cut between the two steps, the machine writes nothing, and the sd stage names step 2.
+In the old order, a cut after the move left neither file, and a nightly `update` built a fresh database that wrote.
+
+Until then, the fence keeps a returning old hub from writing: its NAS copies and its `hub-pin` push refuse, and so does every local write through the pack's `sd_db` once the fence reads `elsewhere`.
 
 ### Drift alerts
 

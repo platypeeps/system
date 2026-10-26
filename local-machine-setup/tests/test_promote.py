@@ -26,8 +26,12 @@ HUB = "hub.example.test"
 
 def utc_today():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-ROLE_AGENTS = [f"{PREFIX}.sd-dashboard", f"{PREFIX}.sd-serve"]
-ROLE_JOBS = ["sd-db-backup", "sd-db-backup-hourly", "offsite-verify", "shadow-sync-nightly"]
+ROLE_AGENTS = [f"{PREFIX}.sd-dashboard", f"{PREFIX}.sd-serve", f"{PREFIX}.google-workspace-mcp"]
+ROLE_JOBS = ["sd-db-backup", "sd-db-backup-hourly", "offsite-verify", "shadow-sync-nightly",
+             "night-build", "build-dispatch", "workspace-mcp-watch"]
+# The logins the role needs and no machine copies (sd:5986, #31094): promote
+# lists each login, the hand-back each sign-out.
+ACCOUNTS = ("work Google account", "personal Google account", "Slack", "Notion")
 
 # The pack's bin/sd-db: `fence` prints the state in $STUB_FENCE (a file, so
 # `tailscale set` can move it), `restore --newest` installs a database named
@@ -436,6 +440,40 @@ class Promote(PromoteCase):
         self.assertIn("writes after this time are lost", result.stdout)
         self.assertIn("leases released: run-7", result.stdout)
         self.assertIsNone(self.marker_step())
+
+    # The full role (sd:5986): the account agent, the builder jobs and the logins.
+
+    def test_the_role_moves_the_account_agent_and_the_builder_jobs(self):
+        self.run_promote("--apply")
+        for label in ("google-workspace-mcp", "cron.night-build", "cron.build-dispatch", "cron.workspace-mcp-watch"):
+            self.assertIn(f"{PREFIX}.{label}", self.installed())
+
+    def test_a_standby_without_the_account_agents_plist_is_not_ready(self):
+        (self.config / f"machine-setup/launchagents/{PREFIX}.google-workspace-mcp.plist").unlink()
+        self.assertIn(f"NOT-READY no plist for {PREFIX}.google-workspace-mcp", self.run_promote().stdout)
+
+    def test_a_standby_without_a_builder_job_file_is_not_ready(self):
+        (self.config / "cron-jobs/jobs/night-build.job").unlink()
+        self.assertIn("NOT-READY no job file night-build.job", self.run_promote().stdout)
+
+    def test_readiness_reads_no_login(self):
+        """#31094: the logins wait for a promotion, so hub-ready names none."""
+        out = self.run_promote().stdout
+        for name in ACCOUNTS:
+            self.assertNotIn(name, out)
+
+    def test_the_report_lists_each_account_login(self):
+        """#31094: each login is made here by hand after the promotion, and
+        the block repeats on every run until the marker goes."""
+        _, _, gone, args, first = self.promote_from_usb()
+        again = self.run_promote(*args, expect=1, OFFSITE_VERIFY_ROOT=gone)
+        self.assertEqual("hold", self.marker_step())
+        for result in (first, again):
+            self.assertIn("  accounts    : log in to each here by hand; no login or secret is copied from the hub",
+                          result.stdout)
+            for name in ACCOUNTS:
+                self.assertRegex(result.stdout, rf"\n    {name}[^\n]*: [^\n]*(start_google_auth|Authenticate)")
+        self.assertFalse((self.fixture.home / ".google_workspace_mcp").exists())
 
     def test_an_apply_holds_the_lanes_first(self):
         """Step 2: the run goes through refresh_drain.py, which holds each lane's lock."""
@@ -1342,6 +1380,24 @@ class HubRole(unittest.TestCase):
         self.assertNotIn("remove it", out)
         self.assertEqual([], [line for line in self.log.read_text().splitlines() if line == "init"]
                          if self.log.exists() else [])
+
+    def test_a_demotion_cut_after_hub_json_writes_nothing(self):
+        """sd:5986: the README's demotion copies hub.json in first, then moves
+        the database aside. Cut between the two: no init, no role label, the
+        database as it was, and the sd stage names step 2, not hub.json's removal."""
+        (self.fixture.state / "profile").write_text("personal\n")
+        self.fixture.db.write_text("stale records\n")
+        hub_json = self.fixture.home / ".config/sd/hub.json"
+        hub_json.parent.mkdir(parents=True)
+        hub_json.write_text(json.dumps({"hub": HUB, "port": 8769}))
+        out = self.update("sd", "elsewhere")
+        for stage in ("agents", "cron"):
+            self.update(stage, "elsewhere")
+        self.assertIn(f"to demote this hub, move {self.fixture.db} to sd.db.demoted-<date> next", out)
+        self.assertEqual("stale records\n", self.fixture.db.read_text())
+        self.assertTrue(hub_json.exists())
+        self.assertEqual([], self.installed())
+        self.assertNotIn("init", self.log.read_text().splitlines() if self.log.exists() else [])
 
     def test_doctor_checks_the_sd_pieces_on_a_promoted_satellite(self):
         """sd:4648: the holder, not the profile, decides; a satellite still skips them."""
