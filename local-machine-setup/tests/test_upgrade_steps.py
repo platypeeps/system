@@ -21,6 +21,7 @@ import time
 import unittest
 
 from tests import fixture_config
+from tests.fixture_config import STALL, STALL_BOUND
 
 HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
@@ -39,18 +40,21 @@ LIB = FOLDER.parent / "lib"
 # claude cask's binary to its new Caskroom path (sd:4738).
 # BREW_FAIL names one call, its arguments as logged, that exits 1. BREW_SUDO
 # names one call that prints what sudo prints with no terminal and exits 1
-# (sd:5046); with STUB_SUDO_HANG it then hangs. MAS_SUDO is mas's.
+# (sd:5046); with STUB_SUDO_HANG it then stalls. MAS_SUDO is mas's. A stall
+# ends its bound at once (fixture_config.STALL); with BREW_WAIT, `brew
+# upgrade` waits for a signal instead. BREW_SLOW names one call that answers
+# 4 s late, past the 2 s bound these cases had: a loaded machine (sd:6253).
 SUDO_REFUSED = r"""
 if [ "$*" = "$STUB_SUDO" ]; then
   echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
   echo "sudo: a password is required" >&2
-  [ -z "$STUB_SUDO_HANG" ] || exec sleep 60
+  [ -z "$STUB_SUDO_HANG" ] || stall
   exit 1
 fi
 """
 
-BREW_STUB = r"""#!/bin/sh
-echo "$*" >> "$BREW_LOG"
+BREW_STUB = "#!/bin/sh\n" + STALL + r"""echo "$*" >> "$BREW_LOG"
+[ "$*" != "$BREW_SLOW" ] || sleep 4
 [ "$*" != "$BREW_FAIL" ] || exit 1
 """ + SUDO_REFUSED.replace("STUB_SUDO\"", "BREW_SUDO\"") + r"""
 case "$*" in
@@ -66,7 +70,8 @@ case "$*" in
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
            [ -z "$BREW_UPGRADES_ALL" ] || : > "$BREW_LOG.upgraded"
            [ -z "$BREW_NEW_PYTHON" ] || mkdir -p "$BREW_NEW_PYTHON"
-           [ -z "$BREW_HANG" ] || exec sleep 60 ;;
+           [ -z "$BREW_WAIT" ] || exec sleep 60
+           [ -z "$BREW_HANG" ] || stall ;;
 esac
 exit 0
 """
@@ -160,7 +165,7 @@ class UpgradeStepTest(unittest.TestCase):
     def run_verb(self, *args, **extra):
         return subprocess.run([str(self.folder / "machine-setup.sh"), *args],
                               env=self.env(**extra), capture_output=True, text=True,
-                              cwd=self.tmp.name, stdin=subprocess.DEVNULL, timeout=30)
+                              cwd=self.tmp.name, stdin=subprocess.DEVNULL, timeout=90)
 
     def sends(self):
         """Each notify call's arguments, one list per call."""
@@ -204,15 +209,24 @@ class UpgradeStepTest(unittest.TestCase):
 
     def test_a_hung_step_is_logged_stopped_and_the_sweep_goes_on(self):
         result = self.run_verb("upgrade", "--apply",
-                               MACHINE_SETUP_STEP_TIMEOUT="2", BREW_HANG="1")
+                               MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND), BREW_HANG="1")
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertRegex(result.stderr, STEP.format("brew upgrade", 2))
-        self.assertIn("timed out after 2s: brew upgrade", result.stderr)
+        self.assertRegex(result.stderr, STEP.format("brew upgrade", STALL_BOUND))
+        self.assertIn(f"timed out after {STALL_BOUND}s: brew upgrade", result.stderr)
         self.assertEqual(self.brew_calls(),
                          ["update", "list --pinned", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
         self.assertEqual(self.mas_log.read_text(), "upgrade\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
+
+    def test_a_slow_step_that_answers_is_no_stall(self):
+        """A loaded machine slows a step that answers: only the hung step
+        fails, never one cut off at the bound (sd:6253)."""
+        result = self.run_verb("upgrade", "--apply", MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND),
+                               BREW_HANG="1", BREW_SLOW="update")
+
+        self.assertIn("failed steps: brew upgrade\n", result.stdout)
+        self.assertNotIn("brew update exited", result.stderr)
 
     def test_the_sweep_runs_no_native_claude_update(self):
         """sd:4738: Claude Code is the claude-code@latest cask, which
@@ -258,12 +272,12 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertNotIn("outdated --cask --quiet", self.brew_calls())
 
     def test_the_report_names_a_hung_step_and_needs_attention(self):
-        result = self.run_verb("upgrade-report", MACHINE_SETUP_STEP_TIMEOUT="2", BREW_HANG="1")
+        result = self.run_verb("upgrade-report", MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND), BREW_HANG="1")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         # stderr is the job log; the sweep's own output goes into the report.
-        self.assertRegex(result.stderr, STEP.format("brew upgrade", 2))
-        self.assertIn("timed out after 2s: brew upgrade", result.stdout)
+        self.assertRegex(result.stderr, STEP.format("brew upgrade", STALL_BOUND))
+        self.assertIn(f"timed out after {STALL_BOUND}s: brew upgrade", result.stdout)
         found = self.findings(result)
         self.assertTrue(any(f.startswith("still outdated (") for f in found), found)
         self.assertEqual([f for f in found if not f.startswith("still outdated (")], [found[-1]])
@@ -492,7 +506,7 @@ class UpgradeStepTest(unittest.TestCase):
         # sends TERM to the whole group.
         process = subprocess.Popen(
             [str(self.folder / "machine-setup.sh"), "upgrade-report"],
-            env=self.env(BREW_HANG="1", BREW_STARTED=str(started)), cwd=self.tmp.name,
+            env=self.env(BREW_WAIT="1", BREW_STARTED=str(started)), cwd=self.tmp.name,
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, start_new_session=True)
         self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
@@ -565,7 +579,7 @@ class UpgradeStepTest(unittest.TestCase):
 
     def test_a_step_that_hangs_after_a_refused_sudo_is_a_failure(self):
         """A step stopped at its bound is unknown, not a deferral."""
-        result = self.run_verb("upgrade", "--apply", MACHINE_SETUP_STEP_TIMEOUT="2",
+        result = self.run_verb("upgrade", "--apply", MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND),
                                BREW_SUDO="upgrade", STUB_SUDO_HANG="1")
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)

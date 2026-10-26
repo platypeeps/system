@@ -34,6 +34,17 @@ NSMB_CONF = HERE / "fixtures" / "nsmb.conf"
 # cfprefsd, which answers for the login user, `sudo` reads as root, and
 # `launchctl` answers for the login user's launchd.
 MACHINE_READERS = ("defaults", "sudo", "launchctl")
+# A stub's stall, as the shell function `stall`. No clock tells a stall from
+# a loaded machine (sd:6157, sd:6253), so a case waits on the stall itself:
+# under the bound (lib/bounded.sh's perl) the stub sends the bound its alarm,
+# and the step times out at once through the bound's own path; anywhere else
+# it hangs, and the case's own timeout fails the run. So a case sets the
+# bound to STALL_BOUND, which no step that answers comes near.
+STALL = ('stall() {\n'
+         '  case "$(ps -o args= -p "$PPID")" in "perl -e use strict; use POSIX ();"*) kill -s ALRM "$PPID" ;; esac\n'
+         '  exec sleep 120\n'
+         '}\n')
+STALL_BOUND = 30
 
 
 def copy_config(base):

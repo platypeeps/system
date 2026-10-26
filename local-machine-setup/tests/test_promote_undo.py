@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 
+from tests import fixture_config
 from tests.test_backbone import write_stub
 from tests.test_promote import (HUB, PREFIX, ROLE_AGENTS, ROLE_JOBS, SATELLITE_CASE, PromoteCase,
                                 run_stalled, stall_steps)
@@ -672,7 +673,8 @@ class Undo(PromoteCase):
         self.handed_back()
         stall_steps(self)
         hang = write_stub(self.fixture.stubs, "hang-python",
-                          f'case "$*" in *"hand-back point"*) exec sleep 120 ;; esac\nexec "{self.python}" "$@"\n')
+                          fixture_config.STALL + f'case "$*" in *"hand-back point"*) stall ;; esac\n'
+                          f'exec "{self.python}" "$@"\n')
         result = self.run_stalled_undo("--apply", SD_DB_PYTHON=hang)
         self.assertIn("the hand-back checks did not answer in time; nothing deleted", result.stderr)
         self.assertEqual("3", self.marker_step())

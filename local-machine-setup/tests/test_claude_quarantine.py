@@ -19,6 +19,7 @@ import tempfile
 import unittest
 
 from tests import fixture_config
+from tests.fixture_config import STALL, STALL_BOUND
 
 HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
@@ -45,7 +46,7 @@ esac
 # Each check passes only for the path in GOOD, so a check of another binary
 # is no evidence for this one. BAD_SIGNATURE fails the verify, CODESIGN_TEAM
 # names another team, NOT_NOTARIZED makes Gatekeeper call it unnotarized, and
-# SPCTL_HANG never answers.
+# SPCTL_HANG stalls (fixture_config.STALL).
 CODESIGN_STUB = r"""#!/bin/sh
 echo "codesign $*" >> "$CALLS"
 for last; do :; done
@@ -58,9 +59,8 @@ case $1 in
 esac
 """
 
-SPCTL_STUB = r"""#!/bin/sh
-echo "spctl $*" >> "$CALLS"
-[ -z "$SPCTL_HANG" ] || exec sleep 30
+SPCTL_STUB = "#!/bin/sh\n" + STALL + r"""echo "spctl $*" >> "$CALLS"
+[ -z "$SPCTL_HANG" ] || stall
 for last; do :; done
 if [ "$last" = "$GOOD" ] && [ -z "$NOT_NOTARIZED" ]; then
   printf '%s: accepted\nsource=Notarized Developer ID\n' "$last" >&2
@@ -203,7 +203,7 @@ class ClaudeQuarantineTest(unittest.TestCase):
 
     def test_a_check_that_does_not_answer_keeps_the_quarantine(self):
         result = self.run_verb("update", "brew", "--apply", SPCTL_HANG="1",
-                               MACHINE_SETUP_STEP_TIMEOUT="1")
+                               MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND))
 
         self.assert_kept(result, "Gatekeeper did not say it is notarized")
         self.assertRegex(result.stderr, r"\[step [\d:]+\] spctl .* exited 124")
