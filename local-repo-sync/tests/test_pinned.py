@@ -11,10 +11,12 @@ NEW: written before pinning existed and seen to fail against the script
 without it.
 """
 
+import os
 import pathlib
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -371,6 +373,47 @@ class HeldLockSyncTest(unittest.TestCase):
                                         r" since \d{4}-\d\d-\d\d \d\d:\d\d ")
         self.assertIn("all other repos synced", result.stdout)
         self.assertNotIn("failed", result.stdout)
+        self.assertTrue(lock.exists(), "sync removed the lock")
+        self.assertEqual(before, f.head(repo))
+
+    def held(self, f, hours):
+        """A checkout behind origin whose index.lock is HOURS old."""
+        repo = f.repo()
+        f.advance_origin(repo)
+        lock = pathlib.Path(repo) / ".git/index.lock"
+        lock.write_text("")
+        then = time.time() - hours * 3600
+        os.utime(lock, (then, then))
+        return repo, lock
+
+    def test_a_lock_younger_than_24_hours_is_skipped_with_its_age(self):
+        """NEW. Operator ruling on sd:6308: under 24 h is a skip that
+        lists the lock's age."""
+        f = self.fixture()
+        _, lock = self.held(f, 23)
+
+        result = f.run("sync", expect=0)
+
+        self.assertRegex(result.stdout, r"\n  owner/proj: \S*/a/proj/\.git/index\.lock exists"
+                                        r" since \d{4}-\d\d-\d\d \d\d:\d\d \S+, 23 h old\n")
+        self.assertNotIn("failed", result.stdout)
+        self.assertTrue(lock.exists())
+
+    def test_a_lock_older_than_24_hours_fails_naming_its_path_and_age(self):
+        """NEW. Operator ruling on sd:6308: a lock past 24 h is stale, so
+        the run fails with exit 1 and names the lock and its age; the lock
+        stays for the operator to remove."""
+        f = self.fixture()
+        repo, lock = self.held(f, 25)
+        before = f.head(repo)
+
+        result = f.run("sync", expect=1)
+
+        self.assertIn("failed: 1 repo(s)", result.stdout)
+        self.assertRegex(result.stdout, r"\n  owner/proj: \S*/a/proj/\.git/index\.lock exists"
+                                        r" since .*, 25 h old; past 24 h it is stale, remove it")
+        self.assertRegex(result.stderr, r"!!! failed: owner/proj: \S*index\.lock .*25 h old")
+        self.assertNotIn("skipped:", result.stdout)
         self.assertTrue(lock.exists(), "sync removed the lock")
         self.assertEqual(before, f.head(repo))
 

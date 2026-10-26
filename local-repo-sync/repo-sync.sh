@@ -565,15 +565,32 @@ pull_one() {
   return "$p_rc"
 }
 
-# The index.lock git output $1 says exists, with its age, or returns 1.
+# A held index.lock this old is stale, not another git process at work: the
+# run fails on it (operator ruling on sd:6308).
+LOCK_STALE_HOURS=24
+
+# The index.lock git output $1 says exists, with its age. Returns 1 when $1
+# names none, 2 when the lock is LOCK_STALE_HOURS old or more, or its age
+# cannot be read: an unknown age is no young lock.
 held_lock() {
   l_path=$(sed -n "s/^[a-z]*: Unable to create '\(.*index\.lock\)': File exists\.\$/\1/p" "$1" | head -1)
   [ -n "$l_path" ] || return 1
-  if [ -e "$l_path" ]; then
-    echo "$l_path exists since $(date -r "$l_path" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || echo 'an unknown time')"
-  else
+  if [ ! -e "$l_path" ]; then
     echo "$l_path was held, now gone"
+    return 0
   fi
+  if ! l_mtime=$(date -r "$l_path" +%s 2>/dev/null); then
+    echo "$l_path exists, its age unreadable"
+    return 2
+  fi
+  l_hours=$(( ($(date +%s) - l_mtime) / 3600 ))
+  printf '%s exists since %s, %s h old' "$l_path" \
+    "$(date -r "$l_path" '+%Y-%m-%d %H:%M %Z')" "$l_hours"
+  if [ "$l_hours" -ge "$LOCK_STALE_HOURS" ]; then
+    echo "; past $LOCK_STALE_HOURS h it is stale, remove it by hand"
+    return 2
+  fi
+  echo
 }
 
 sync() {
@@ -623,11 +640,17 @@ sync() {
         echo "$state; left alone"
         echo "$full_repo $state" >> "$DIVLOG"
       elif ! pull_one "$target"; then
-        # Another git process, or one that died, holds a lock: a skip the
-        # next run retries, not a failure; the lock stays (sd:6308).
-        if lock=$(held_lock "$TMPD/pull.err"); then
+        # Another git process holds a lock: a skip the next run retries. A
+        # lock LOCK_STALE_HOURS old is stale and fails. Either way the lock
+        # stays (sd:6308).
+        lock_rc=0
+        lock=$(held_lock "$TMPD/pull.err") || lock_rc=$?
+        if [ "$lock_rc" -eq 0 ]; then
           echo "skipped: $lock; not pulled"
           echo "$full_repo: $lock" >> "$LOCKLOG"
+        elif [ "$lock_rc" -eq 2 ]; then
+          echo "!!! failed: $full_repo: $lock" >&2
+          echo "$full_repo: $lock" >> "$FAILLOG"
         else
           echo "!!! failed: $full_repo" >&2
           echo "$full_repo" >> "$FAILLOG"
@@ -659,7 +682,7 @@ sync() {
   fi
   if [ -s "$LOCKLOG" ]; then
     echo "skipped: $(wc -l < "$LOCKLOG" | tr -d ' ') checkout(s), a git lock is held; not pulled, the next run tries again"
-    echo "  a lock no git process holds is stale: remove it by hand"
+    echo "  one $LOCK_STALE_HOURS h old or more fails the run instead"
     sed 's/^/  /' "$LOCKLOG"
   fi
   if [ -s "$FAILLOG" ]; then
@@ -2738,7 +2761,8 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              A branch with no upstream is fetched, not pulled, and listed
              under "kept:", not failed (sd:3744). A checkout whose pull
              finds an index.lock held is listed under "skipped:" with the
-             lock and its age, and the lock stays (sd:6308).
+             lock and its age, and the lock stays (sd:6308); a lock 24 h
+             old or more fails the run, named with its age.
              A pinned checkout is not a failure
   check      read-only: report which configured repos have no checkout
              (MISSING) and which sit on a different origin than the list
