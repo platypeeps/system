@@ -76,16 +76,48 @@ A nightly `machine-setup update` could then build a fresh database, whose unset 
   It prints the two heads it checked.
 - `local-cron-jobs/examples/doctor-gate-weekly.job` runs it.
   The hub's and the work satellite's profiles list it: the machines that run `lane-run`.
-- The job's `logs/.doctor-gate-weekly.stamp` holds only the last run, so a later try would hide an earlier pass.
-  On exit 0, `doctor gate` also writes its newest pass to `${XDG_STATE_HOME:-~/.local/state}/machine-setup/doctor-gate-pass`:
-  the end time and the two heads, written to a temp file and renamed into place.
-- `hub-ready` gains one line that reads the newest pass first, then the stamp (lead ruling, 2026-10-25):
-  - `ok` while a pass ended within 8 days, naming its date and heads.
-  - A later run that exited 75, a gate slot that never came free, keeps that `ok` and adds "last try timed out".
-  - A later run that failed any other way reads `NOT-READY`: the machine failed the gate it would run (Q16).
-  - With no pass in 8 days, the line reads `NOT-READY`, whatever the last exit. Promote then refuses, as for every NOT-READY line.
-  - A pass record or stamp that cannot be read is no pass: `NOT-READY`, naming the file.
+- The job's `logs/.doctor-gate-weekly.stamp` holds only the last run, so a later try would hide an earlier verdict.
+  So `doctor gate` keeps one record of its own, the newest decisive run, in
+  `${XDG_STATE_HOME:-~/.local/state}/machine-setup/doctor-gate-last` (lead ruling, 2026-10-25):
+  - a decisive run is a pass (both checks exit 0) or a real failure (a check exits non-zero, other than 75);
+  - the record holds the verdict, the end time and the two heads, written to a temp file and renamed into place;
+  - a timeout (exit 75, no gate slot) and a run killed before its verdict never write it.
+- `hub-ready` gains one line from that record:
+  - `ok` only when the record is a pass that ended within 8 days, naming its date and heads.
+  - `NOT-READY` for a decisive failure, a pass older than 8 days, no record, or a record that cannot be read.
+    Promote then refuses, as for every NOT-READY line.
+  - A stamp newer than the record adds "last try timed out" (exit 75) or "last try did not finish" (any other exit).
+    The note changes nothing else.
+- So a pass Monday, a failure Tuesday and a timeout Wednesday read NOT-READY: Tuesday's failure is the record.
+- The job's timeout exceeds the gate wait plus both checks, so the job does not kill a check that would finish.
 - The pass names its machine (a local file) and its heads. It proves the toolchain, not today's pin. Risks says why.
+
+### Readiness inputs: the class pass
+
+Round 2 of the lane review found the same class twice:
+a readiness line read from a record that a later run can overwrite or skip.
+These are the inputs this design reads for readiness, and what each one reads from.
+
+| Input | Read from | A later run that writes it |
+| --- | --- | --- |
+| Weekly gate | `doctor-gate-last`, the newest decisive run | `doctor gate`, on a verdict only |
+| Role plists and job files (the new labels included) | the files on disk, read on each `status` | none; the operator places them |
+| Role labels loaded after promote | `launchctl print`, asked on each promote run at step 9 | none; launchd's live state |
+| Backup age | the newest snapshot's manifest checkpoint time, under the backup roots | the hourly backup and its NAS copy |
+| Account logins | nothing: readiness does not test them (#31094) | none |
+| The fence | `sd-db fence`, asked live by promote steps 7 to 9 | none; Tailscale's live state |
+
+Only two inputs are records that a later run writes: the weekly gate and the backups.
+The other inputs read live state on each run, so no earlier answer can stand in for a later one.
+
+Backup age is a new `hub-ready` line. Today the block only checks that some dated snapshot exists.
+If the hourly NAS copies stop, an old snapshot would still read `ok`, and a promotion would lose more than the 1 day Q55 allows:
+
+- `ok` while the newest snapshot's checkpoint is under 24 hours old, naming its age.
+- `NOT-READY` when it is older and the hub answers: the backups have stalled, so the standby is not ready.
+- With the hub down, an old snapshot is still the best one there is. The line then reads `--` and names the age.
+  The loss report names it too, so it never blocks a real failover.
+- A manifest that cannot be read is no checkpoint: `restore --newest` already skips that candidate, and the line reads the next one.
 
 ### 3. The full role while promoted (system)
 
@@ -155,10 +187,20 @@ These rows cover what changes.
 | Demote 2 | `sd.db` moved aside | the operator follows the old order from memory | the README and the `Fenced` text name only the new order, `hub.json` first | `test_the_refusal_names_hub_json_first` (pack) |
 | Undo 1 | role stopped, including the account agent | the agent's bootout fails | as for every role label: no snapshot, the role starts again | `test_a_role_label_the_satellite_profile_lists_stops_too` covers the list |
 | Undo end | logins listed | the operator skips a sign-out | the report names each one; the hand-back still ends. Risks says why | `test_undo_lists_each_account_to_sign_out` |
-| Weekly gate | stamp written | `make check` fails | NOT-READY; promote refuses until a pass | `test_a_failed_weekly_gate_is_not_ready` |
-| Weekly gate | stamp written; pass record kept | slot timeout: exit 75 | the last pass stands for 8 days, with "last try timed out", then NOT-READY | `test_a_slot_timeout_keeps_the_last_pass_for_8_days` |
-| Weekly gate | pass record | killed while writing the pass record | temp file and rename: the old record or the new one, never part | `test_a_pass_record_cut_short_keeps_the_old_one` |
-| Weekly gate | none | no pass in 8 days, or no pass record | NOT-READY, naming the job, whatever the last exit | `test_no_pass_in_8_days_is_not_ready` |
+| Weekly gate | record: a failure | `make check` fails | NOT-READY until a later pass; promote refuses | `test_a_failed_weekly_gate_is_not_ready` |
+| Weekly gate | stamp only; the record is unchanged | a later slot timeout (exit 75) | the record decides: a pass under 8 days stays `ok` with "last try timed out", and a failure stays NOT-READY | `test_a_timeout_after_a_failure_stays_not_ready` |
+| Weekly gate | stamp only | a pass, then a failure, then a timeout | the failure is the record, so the line reads NOT-READY | `test_pass_fail_timeout_reads_not_ready` |
+| Weekly gate | stamp only | a later run killed before its verdict | no record write; the old verdict stands, with "last try did not finish" | `test_a_killed_gate_run_keeps_the_last_verdict` |
+| Weekly gate | record | killed while writing the record | temp file and rename: the old record or the new one, never part | `test_a_record_cut_short_keeps_the_old_one` |
+| Weekly gate | none | no pass in 8 days, no record, or an unreadable record | NOT-READY, naming the record | `test_no_pass_in_8_days_is_not_ready` |
+| Readiness: role files | none | a later edit removes or breaks a plist or job file | read on each `status`, so the next read is NOT-READY; step 9 asks launchd for each label after the install | `test_a_role_label_with_no_plist_is_not_ready`; the old design's step-9 launchd tests |
+| Readiness: role files | none | `status` cut short mid-block | `status` is read-only, so nothing is left; the next run reads again | none new; read-only |
+| Readiness: backup age | newest snapshot | later hourly backups or NAS copies fail or stop | the newest checkpoint ages; past 24 hours with the hub up, NOT-READY | `test_a_stalled_backup_is_not_ready_while_the_hub_answers` |
+| Readiness: backup age | newest snapshot | a later copy is cut short and leaves a partial snapshot | its manifest does not verify, so the line and `restore --newest` read the next one | `test_a_partial_snapshot_is_not_the_newest` |
+| Readiness: backup age | none | the roots time out on listing | the existing lines read `--` or NOT-READY for the roots; no age reads `ok` | `test_an_unlisted_root_gives_no_age` |
+| Readiness: backup age | none | the hub is down and the snapshot is old | `--` with the age; the loss report names it; promote goes on | `test_an_old_snapshot_with_the_hub_down_does_not_block` |
+| Readiness: logins | none | not read (#31094) | promote's Accounts block lists each login on every run until the marker goes | `test_the_report_lists_each_account_login` |
+| Readiness: fence | none | Tailscale changes between steps | promote asks again on every run from step 7 (old design) | `test_a_rerun_at_step_9_asks_the_fence_again` |
 | Older state | none | a pack without the write fence (rollback) | the returned hub writes locally, as today; NAS copies and `hub-pin` stay fenced | none new; named here |
 | Older state | none | `sd.hub_name` unset | the fence reads `off`: every write runs, as before | `test_an_unset_hub_name_writes` (pack) |
 
@@ -167,8 +209,9 @@ These rows cover what changes.
 1. **pack: the write fence.** `feat(sd-db): fence local writes on a returning hub`.
    Fail-first: `test_a_local_write_on_a_fenced_hub_refuses`.
    Leaves working: the live hub reads `holder` and writes as today.
-2. **system: the weekly gate.** `feat(machine-setup): weekly doctor gate and its hub-ready line`.
-   Fail-first: `test_a_failed_weekly_gate_is_not_ready`. Waits on nothing.
+2. **system: the weekly gate and backup age.** `feat(machine-setup): hub-ready reads gate verdict, backup age`.
+   Fail-first: `test_pass_fail_timeout_reads_not_ready` and `test_a_stalled_backup_is_not_ready_while_the_hub_answers`.
+   Waits on nothing.
 3. **system: the full role and the rule lines.** `feat(machine-setup): promote moves accounts and builders`.
    The role list, the Accounts and sign-out blocks, and the demotion order in the README.
    Its body names the replacement rule lines; the lead applies them at merge (#31089). Waits on slice 1 in the pin.
@@ -179,6 +222,7 @@ These rows cover what changes.
 - [ ] On a test hub whose fence reads `elsewhere`, `sd task note 1 x` exits non-zero and names the demotion steps.
 - [ ] On the live hub, the fence reads `holder` and a note writes.
 - [ ] `machine-setup.sh status` on the work satellite shows a `hub-ready` gate line that reads `ok`, with a date under 8 days old.
+- [ ] With the hub up and the newest snapshot over 24 hours old, the backup age line reads NOT-READY.
 - [ ] `promote --drill` on the work satellite passes, and its report lists the Accounts block.
 - [ ] After the lead applies slice 3's lines, a search for the hub's machine name in the "Machine roles" and "Mail and Slack" lines of each machine's personal block finds nothing.
 - [ ] `sd-docs-lint` passes from the repository root.
