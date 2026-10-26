@@ -747,10 +747,44 @@ class CheckoutGuard(unittest.TestCase):
                         f"cat > >(tee {lane}/x)"):
             with self.subTest(command=command):
                 self.assertDenied(self.bash(command, cwd=work), lane)
-        # `$$`, `$?`, `$#` and `$!` are numbers; a name that is not ASCII is a command
-        for command in ("touch /tmp/$$ /tmp/$? /tmp/$# /tmp/$!", f"é={lane}; ls"):
+        # `$$`, `$?` and `$#` are numbers; a name that is not ASCII is a command
+        for command in ("touch /tmp/$$ /tmp/$? /tmp/$#", f"é={lane}; ls"):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=lane if "$" in command else work), "allow")
+
+    def test_a_partly_read_expansion_is_unknown(self):
+        """Lead review of cd702481: an expansion the reader models only in
+        part is unknown, not a known but wrong value; near a root it denies."""
+        lane, work = self.system, self.worktree
+        user = pathlib.Path.home().owner()
+        for command in (f'D={lane}; touch ${{D%%"*"}}/x',  # a quoted `*` is a `*`
+                        f'D={lane}; touch ${{D#"*"}}/x', f'D={lane}; touch ${{D##"*"}}/x',
+                        f'D={lane}; touch ${{D%"*"}}/x', f"D={lane}; touch ${{D%%'*'}}/x",
+                        f'D={lane}; touch "${{D%%"*"}}/x"',  # a quote nests in `"${..}"`
+                        f'P="*"; D={lane}; touch ${{D%%"$P"}}/x',
+                        f'cat {lane}/README.md; D={lane}x; touch ${{D%[[:alpha:]]}}/y',
+                        # a word that splits, vanishes or expands moves later places
+                        f'f() {{ touch "$2/x"; }}; D="/tmp {lane}"; f $D /tmp',
+                        f'f() {{ touch "$2/x"; }}; f {{/tmp,{lane}}} /tmp',
+                        f'f() {{ touch "$1/x"; }}; E=; f $E {lane}',
+                        f'f() {{ shift; touch "$1/x"; }}; D="a {lane}"; f $D /tmp',
+                        f'D="/tmp {lane}"; sh -c \'touch "$2/x"\' sh $D /tmp',
+                        f'D="/tmp {lane}"; set -- $D /tmp; touch "$2/x"',
+                        # a value the reader cannot know may be empty, or any length
+                        f'D=$(cat /dev/null); touch "${{D:+/tmp}}{lane}/x"',
+                        f'D=$(cat /dev/null); touch "${{D+/tmp}}{lane}/x"',
+                        f"touch {lane}$!/x",  # empty with no job in the background
+                        # `~` after a `:` in an assignment; IFS moves every split
+                        f'HOME={lane}; D=x:~; HOME=/tmp; touch "${{D#x:}}/z"',
+                        f"IFS=,; C=touch,{lane}/x; $C",
+                        f"IFS=,; D=/tmp,{lane}; touch $D"):
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=work).startswith("deny: "), command)
+        for command in ('D=$(cat /dev/null); touch "/tmp/${#D}"', 'f() { touch "$2/x"; }; f /* /tmp',
+                        f'D=x~{user}; touch "${{D#x}}/x"'):  # a `~` a value holds is text
+            with self.subTest(command=command):
+                self.assertTrue(self.bash(command, cwd=lane).startswith("deny: "), command)
+        self.assertEqual(self.bash(f"touch ~{user}/sd-6153-x", cwd=lane), "allow")
 
     def test_a_command_reads_what_its_line_hands_it(self):
         """sd:6153 class pass: `D=x cmd` and `env D=x cmd` hand D to a child
@@ -856,7 +890,11 @@ class CheckoutGuard(unittest.TestCase):
                   "D=d1 sh -c 'touch \"$D/y\"'", f"D={lane} sh -c 'cd \"$D\" && touch y'",
                   "D=d1 f", "D=d1 eval 'touch \"$D/y\"'", ": ${D:=d1}", f": ${{D:={lane}}}",
                   'touch $"y"', "trap 'touch y' EXIT", f"trap 'cd {lane}' DEBUG",
-                  "coproc { touch y; }", "time { touch y; }"]
+                  "coproc { touch y; }", "time { touch y; }",
+                  # review of cd702481: quoted patterns, moved places, `$!`, IFS
+                  'touch ${D%%"*"}/y', 'touch "${D%%"*"}/y"', 'k() { touch "$2/y"; }',
+                  "k $F d1", "k {d1,y} d1", "E=", "k $E y", "touch $!y", "IFS=,",
+                  f"F=d1,{lane}"]
 
         def gen(depth):
             kind = min(rng.randrange(14 if depth < 3 else 1), 11)  # case weighs three

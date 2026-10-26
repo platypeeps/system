@@ -93,6 +93,7 @@ VARIABLE = re.compile(r"\$(?:\{(?P<length>#)?(?P<braced>[A-Za-z_]\w*|[0-9]+)"
                       + re.sub(r"\?P<\w+>", "?:", REFERENCE) + r")*))?\}"
                       r"|(?P<name>[A-Za-z_]\w*|[0-9])|(?P<number>[$?#!])|[{(@*-])|`", re.ASCII)
 TILDE = re.compile(r"^~([+-]?)(\d*)(?=/|$)", re.ASCII)
+USER_TILDE = re.compile(r"~[A-Za-z_][\w.-]*(?=/|$)", re.ASCII)
 SEQUENCE = re.compile(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?"
                       r"|([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?", re.ASCII)
 GLOB = re.compile(r"[*?[]")
@@ -220,11 +221,18 @@ def parameter(match, chosen):
     read as `-` and `:-`, and also set the name: Reader.simple. `#` and `%`
     cut the shortest prefix or suffix the pattern matches, `##` and `%%` the
     longest. A name with no known value stays as written, beside the WORD.
+    A form the reader models only in part is unknown, never a known but
+    wrong value: any form of a value holding an unknown, and a pattern with
+    a quote, a `[` or a value that globs (lead review of cd702481). `$!` is
+    empty with no job in the background.
     """
     name = match.group("braced") or match.group("name")
     if not name:
-        return ["0" if match.group("number") else UNKNOWN]
+        number = match.group("number")
+        return ["", "0"] if number == "!" else ["0"] if number else [UNKNOWN]
     found, op = chosen[name], (match.group("op") or "").translate(LITERAL).replace("=", "-")
+    if found is not None and UNKNOWN in found and (op or match.group("length")):
+        return [UNKNOWN]  # it may be empty, or any length
     if match.group("length"):
         return [UNKNOWN if op else "0" if found is None else str(len(found))]
     if found is not None:
@@ -251,8 +259,10 @@ def parameter(match, chosen):
         if op == "+":
             return ["", word] if empty else [word]
         return [found]
-    if UNKNOWN in word:
-        return [UNKNOWN]
+    raw = match.group("word")
+    if UNKNOWN in word or "[" in word or any(HIDDEN <= ord(char) <= ord(MARK) for char in raw) \
+            or any(GLOB.search(value(ref)) for ref in WORD_REFERENCE.finditer(raw)):
+        return [UNKNOWN]  # a quote, a bracket fnmatch reads otherwise, a `"$P"` that globs
     pattern, text = word.translate(LITERAL), found.translate(LITERAL)
     cuts = range(len(text) + 1) if op in ("#", "%") else range(len(text), -1, -1)
     for cut in cuts:
@@ -263,8 +273,15 @@ def parameter(match, chosen):
     return [found]
 
 
-def tilde(text):
-    """`~`, `~+` and `~-` read HOME, PWD and OLDPWD; a stack entry `~N` is unknown."""
+def tilde(text, assignment=False):
+    """`~`, `~+` and `~-` read HOME, PWD and OLDPWD; a stack entry `~N` is
+    unknown; `~user` is that user's home. An ASSIGNMENT value expands each
+    `~` after a `:` too."""
+    if assignment:
+        return ":".join(tilde(part) for part in text.split(":"))
+    user = USER_TILDE.match(text)
+    if user:
+        return os.path.expanduser(user.group()) + text[user.end():]
     return TILDE.sub(lambda m: UNKNOWN if m.group(2) else
                      "${%s}" % {"": "HOME", "+": "PWD", "-": "OLDPWD"}[m.group(1)], text)
 
@@ -342,7 +359,7 @@ def resolve(path, cwd, variables, spend):
     """Every folder or file PATH may name; None for one the reader cannot know."""
     out = []
     for text in fields(path, variables, cwd, spend):
-        text = os.path.expanduser(text).translate(LITERAL)
+        text = text.translate(LITERAL)  # fields() read `~`; a `~` a value holds is text
         known = UNKNOWN not in text and (cwd is not None or os.path.isabs(text))
         out.append(os.path.realpath(os.path.join(cwd or "/", text)) if known else None)
     return out
@@ -492,16 +509,21 @@ def scan(command, i, nest=(), closer=False):
             out += [MARK, char, hide(command[i + 1], QUOTED)]
             i, boundary = i + 2, False
             continue
+        if quote == '"' and depth and char in "'\"":
+            out.append(UNKNOWN)  # a quote nests in `${..}`; the reader does not follow it
+            i, boundary = i + 1, False
+            continue
         if quote:
             quote = None if char == quote else quote
             depth = depth if quote else 0
-            # `${..}`, `$*` and `$?` expand in double quotes
+            # `${..}`, `$*` and `$?` expand in double quotes, and a pattern
+            # in `${..}` matches there as it does unquoted
             if quote == '"' and char not in OPERATOR and (out[-1:] == ["$"] or
                                                           depth and char in "{}"):
                 depth += {"{": 1, "}": -1}.get(char, 0)
                 out.append(char)
             else:
-                out.append(hide(char, QUOTED if quote == "'" else DOUBLE))
+                out.append(hide(char, QUOTED if quote == "'" else "~" if depth else DOUBLE))
         elif char == "$" and command[i + 1:i + 2] == '"':
             i += 1  # `$".."` is its text, translated
             continue
@@ -727,15 +749,7 @@ def assigned(words, variables, spend):
             rest = rest[rest.index("--") + 1:]
         elif not rest or rest[0].startswith(("-", "+")):
             return {}
-        changes = {}
-        for i, word in enumerate(rest, 1):
-            values = expand(word, variables, spend)
-            if len(braces(word, spend)) > 1 or any(
-                    len(value.split()) != 1 or GLOB.search(value) or UNKNOWN in value
-                    for value in values):  # it may make more words: later places are unknown
-                return {**changes, **{str(n): unknown for n in range(i, len(rest) + 10)}}
-            changes[str(i)] = frozenset(values)
-        return changes
+        return places(rest, variables, spend)
     if head == "shift":
         counts = {int(text) if digits(text) else None
                   for text in (expand(words[1], variables, spend) if words[1:] else ["1"])}
@@ -758,12 +772,30 @@ def assigned(words, variables, spend):
         if match.group(1) or set(options) & set("aA"):  # an array or one of its elements
             variables[name] = changes[name] = unknown
             continue
-        text = ("${%s}" % name if match.group().endswith("+=") else "") + tilde(word[match.end():])
+        text = (("${%s}" % name if match.group().endswith("+=") else "")
+                + tilde(word[match.end():], assignment=True))
         values = expand(text, variables, spend)
         if head in DECLARERS:  # bash expands every argument first; zsh in turn (sd:6153)
             values += expand(text, incoming, spend)
         variables[name] = changes[name] = frozenset(os.path.expanduser(value) for value in values)
     return changes
+
+
+def places(words, variables, spend, first=1):
+    """`$1`.. (from FIRST) as WORDS set them. A word that may make more or
+    fewer than one field (braces, a split, an empty or unknown value, a
+    glob) moves every later place, so those are unknown (lead review of
+    cd702481)."""
+    out = {}
+    for n, word in enumerate(words, first):
+        values = expand(tilde(word), variables, spend)
+        if len(braces(word, spend)) > 1 or any(
+                len(value.split()) != 1 or GLOB.search(value) or UNKNOWN in value
+                for value in values):
+            return {**out, **{str(k): frozenset([UNKNOWN])
+                              for k in range(n, first + len(words) + 9)}}
+        out[str(n)] = frozenset(values)
+    return out
 
 
 def sticks(words, changes, variables):
@@ -1025,8 +1057,7 @@ class Reader:
             self.spend.note("a function calls itself, and the reader does not follow that")
             return {world}
         variables = world.variables(self.inherited)
-        positional = {str(n): frozenset(fields(arg, variables, world.cwd, self.spend))
-                      for n, arg in enumerate(args, 1)}
+        positional = places(args, variables, self.spend)
         caller = {key: variables.get(key, frozenset([None]))
                   for key in {str(n) for n in range(1, 10)} | set(positional)}
         start, out = (self.i, self.skip), set()
@@ -1061,8 +1092,7 @@ class Reader:
         changes = {name: values if name in exported else values | {None}
                    for name, values in world.changes if name != "*"}
         changes.update({str(n): frozenset([""]) for n in range(10)})
-        for n, arg in enumerate(words[i + 1:]):
-            changes[str(n)] = frozenset(fields(arg, variables, world.cwd, self.spend))
+        changes.update(places(words[i + 1:], variables, self.spend, first=0))
         inner = world._replace(changes=tuple(sorted(changes.items(), key=lambda item: item[0])))
         if "*" in dict(world.changes):
             inner = inner.set({"*": dict(world.changes)["*"]})
@@ -1201,6 +1231,8 @@ class Reader:
                 words, targets = words + item[1], targets + item[2]
         out = set()
         for world in worlds:
+            if "IFS" in dict(world.changes):  # fields split where the reader does not
+                self.spend.note("IFS splits words in a way the reader does not follow")
             names = defaults(words + targets, world.variables(self.inherited), self.spend)
             world = world.set(names) if names else world  # the words expand first
             for target in targets:
