@@ -6780,19 +6780,19 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
 }
 
 # The backup age line (design, "Readiness inputs"): the checkpoint of the
-# snapshot restore --newest would restore from the roots that answered. It
-# takes the candidates newest checkpoint first and judges each as
-# restore_newest does, with the pack's own checks under its interpreter, as
-# this repository opens no database (tests/test_one_store.py): a local copy,
-# its files hashed against the manifest, the schema stop, _check_backup and
-# check_restorable. The first that passes dates the line. On the share the
-# checks took 200 s; on a local copy of the 871 MB snapshot 1 s, and the
-# copy 6 s. The whole line, with about 250 checkpoints read on the NAS, took
-# 31 s to 62 s on the hub (2026-10-26), so it gets 180 s. `ok`
-# under 24 h. Older, or none passing, is NOT-READY while the hub answers:
-# its backups stalled. With the hub down it is the best there is, so `--`.
-# A snapshot newer than this pack is NOT-READY either way: restore stops at
-# it. A read that fails or times out is no age: `--`, never ok.
+# snapshot restore --newest would restore from the roots that answered. The
+# pack's sd_db.backup.newest_restorable runs restore_newest's own walk, less
+# the restore, under the pack's interpreter, as this repository opens no
+# database (tests/test_one_store.py): newest checkpoint first, a local copy
+# of each, its files hashed against the manifest, the schema stop,
+# _check_backup and check_restorable (pack sd:6323). On the share the checks
+# took 200 s; on a local copy of the 871 MB snapshot 1 s, and the copy 6 s.
+# The whole line, with about 250 checkpoints read on the NAS, took 31 s to
+# 62 s on the hub (2026-10-26), so it gets 180 s. `ok` under 24 h. Older, or
+# none passing, is NOT-READY while the hub answers: its backups stalled. With
+# the hub down it is the best there is, so `--`. A snapshot newer than this
+# pack is NOT-READY either way: restore stops at it. A read that fails or
+# times out is no age, and a pack without the walk no answer: `--`, never ok.
 #
 # The copies go in a folder this shell makes and removes, in a subshell with
 # trap_tmp: the bound or a TERM kills Python before its own cleanup runs, and
@@ -6801,51 +6801,26 @@ backup_age_line() {
   # The first word after the folder is for the test's interpreter stub.
   # shellcheck disable=SC2016 # Python, not shell
   if ! hr_age=$(tmp=$(mktemp -d "${TMPDIR:-/tmp}/hub-ready-XXXXXX") && trap_tmp &&
-       bound_step 180 "$SD_DB_PYTHON" -I -c 'import datetime, json, shutil, sqlite3, sys, tempfile
-from pathlib import Path
+       bound_step 180 "$SD_DB_PYTHON" -I -c 'import datetime, sys, tempfile
 sys.path.insert(0, sys.argv[1])
-import sd_db.backup
-backup = sys.modules["sd_db.backup"]  # the package names a function backup too
-candidates = []
-for root in map(Path, filter(None, sys.argv[3].splitlines())):
-    try:
-        backup._retention_root(root)
-        entries = sorted(root.iterdir())
-    except (backup.BackupError, OSError):
-        continue
-    for path in entries:
-        if path.is_symlink() or not backup.DATED_NAME.fullmatch(path.name):
-            continue
-        try:
-            taken_at, current = backup._checkpoint(path)
-        except backup.BackupError:
-            continue
-        candidates.append((taken_at, current, backup._directory_order(path), path))
-# restore_newest, less the restore: its order, its copy, its checks, its catches.
-for taken_at, _, _, path in sorted(candidates, reverse=True):
-    with tempfile.TemporaryDirectory(prefix="hub-ready-", dir=sys.argv[4]) as stage:
-        local = Path(stage) / path.name
-        try:
-            shutil.copytree(path, local, symlinks=True)
-            if json.loads((local / backup.BACKUP_MANIFEST).read_bytes()).get("entries") != backup._retention_inventory(
-                    local, moved=True):
-                raise backup.BackupError("its files differ from its manifest")
-        except (backup.BackupError, OSError, ValueError, AttributeError):
-            continue
-        check = backup.check_restorable(local / "sd.db")
-        if check.version is not None and check.version > backup.SCHEMA_VERSION:
-            print("newer", check.version, backup.SCHEMA_VERSION, path)
-            sys.exit(0)
-        try:
-            backup._check_backup(local, moved=True)
-            if not check.accepted:
-                continue
-        except (backup.BackupError, sqlite3.Error):
-            continue
-    age = datetime.datetime.now(datetime.timezone.utc) - taken_at
-    print(int(age.total_seconds()), taken_at.isoformat(), path)
+try:
+    import sd_db.backup
+except ImportError:
+    print("nolib")
     sys.exit(0)
-print("none")' "$SD_PACK_ROOT/lib" backup-age "$hr_listed" "$tmp" 2>/dev/null) ||
+backup = sys.modules["sd_db.backup"]  # the package names a function backup too
+if not hasattr(backup, "newest_restorable"):
+    print("old")
+    sys.exit(0)
+tempfile.tempdir = sys.argv[4]  # the walk copies each candidate under it
+found = backup.newest_restorable(list(filter(None, sys.argv[3].splitlines())))
+if found.newer is not None:
+    print("newer", found.newer[1], backup.SCHEMA_VERSION, found.newer[0])
+elif found.snapshot is None:
+    print("none")
+else:
+    age = datetime.datetime.now(datetime.timezone.utc) - found.taken_at
+    print(int(age.total_seconds()), found.taken_at.isoformat(), found.snapshot)' "$SD_PACK_ROOT/lib" backup-age "$hr_listed" "$tmp" 2>/dev/null) ||
      [ -z "$hr_age" ]; then
     echo "  --      backup age not read: the snapshots were not checked under $SD_DB_PYTHON in time"
     return 0
@@ -6854,6 +6829,8 @@ print("none")' "$SD_PACK_ROOT/lib" backup-age "$hr_listed" "$tmp" 2>/dev/null) |
   hr_why="its backups have not reached the roots in 24 h"
   case "$hr_secs" in
     none) hr_what="backup age unknown: no snapshot under the roots that answered passes restore's checks" ;;
+    nolib) echo "  --      backup age not read: $SD_DB_PYTHON imports no sd_db.backup from $SD_PACK_ROOT/lib"; return 0 ;;
+    old) echo "  --      backup age not read: $SD_PACK_ROOT/lib has no sd_db.backup.newest_restorable (pack sd:6323); update the pack"; return 0 ;;
     newer)
       hr_rest=${hr_age#newer }
       hr_theirs=${hr_rest%% *}

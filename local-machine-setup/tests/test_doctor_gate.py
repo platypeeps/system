@@ -579,3 +579,62 @@ esac
         self.snapshot(datetime.timedelta(hours=1))
         out = self.run_promote(SD_DB_PYTHON=os.devnull).stdout
         self.assertIn("  --      backup age not read:", out)
+
+    def age_line_from(self, backup_py, **extra):
+        """The line with `backup_py` as the pack's sd_db/backup.py, or no sd_db when None."""
+        lib = self.tmp / "other-lib"
+        (lib / "sd_db").mkdir(parents=True)
+        if backup_py is None:
+            (lib / "sd_db").rmdir()
+        else:
+            (lib / "sd_db/__init__.py").write_text("")
+            (lib / "sd_db/backup.py").write_text(backup_py)
+        swap = write_stub(self.fixture.stubs, "swap-python", '''case "$5" in backup-age)
+  a=$1 b=$2 c=$3; shift 4
+  exec "$STUB_REAL_PYTHON" "$a" "$b" "$c" "$STUB_LIB" "$@" ;;
+esac
+''' + f'exec "{self.prove}" "$@"\n')
+        return self.age_line(SD_DB_PYTHON=swap, STUB_LIB=lib, **extra)
+
+    def test_the_line_reads_the_packs_walk(self):
+        """sd:6331: the pack's newest_restorable picks the snapshot; no copy of its walk here."""
+        called = self.tmp / "called.json"
+        line = self.age_line_from('''import datetime, json, os, tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+SCHEMA_VERSION = 1
+
+
+@dataclass
+class Restorable:
+    snapshot: object
+    taken_at: object
+    refused: list
+    released: list
+    newer: object = None
+
+
+def newest_restorable(roots, *, report=None):
+    roots = [str(root) for root in roots]
+    Path(os.environ["STUB_CALLED"]).write_text(json.dumps({"roots": roots, "tmp": tempfile.gettempdir()}))
+    taken = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=5, minutes=1)
+    return Restorable(Path(roots[0]) / "2026-10-26.7", taken, [], [])
+''', STUB_CALLED=called, **self.answering_hub())
+        call = json.loads(called.read_text())
+        self.assertEqual(sorted([str(self.hourly_nas), str(self.nas / "sd-backups")]), sorted(call["roots"]))
+        self.assertTrue(line.startswith("  ok      backup age 5 h: newest checkpoint "), line)
+        self.assertTrue(line.endswith(f" in {call['roots'][0]}/2026-10-26.7"), line)
+        # Its copies go in the folder the shell removes (sd:6325).
+        self.assertTrue(Path(call["tmp"]).name.startswith("hub-ready-"), call["tmp"])
+
+    def test_an_older_pack_is_a_finding_not_a_traceback(self):
+        """A pack from before pack sd:6323 has no newest_restorable."""
+        self.snapshot(datetime.timedelta(hours=1))
+        pack = self.fixture.pack
+        self.assertEqual(f"  --      backup age not read: {pack}/lib has no sd_db.backup.newest_restorable "
+                         "(pack sd:6323); update the pack", self.age_line_from("SCHEMA_VERSION = 1\n"))
+        shutil.rmtree(self.tmp / "other-lib")
+        line = self.age_line_from(None)
+        self.assertTrue(line.startswith("  --      backup age not read: "), line)
+        self.assertTrue(line.endswith(f" imports no sd_db.backup from {pack}/lib"), line)
