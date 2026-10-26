@@ -20,6 +20,7 @@ import tempfile
 import unittest
 
 from tests import fixture_config
+from tests.fixture_config import STALL, STALL_BOUND
 
 HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
@@ -27,9 +28,8 @@ LIB = FOLDER.parent / "lib"
 
 # $PYTHONS are installed (three by default), plus $FORMULAE. `pin` records
 # into $PINS; `list --pinned` reads it.
-BREW_STUB = r"""#!/bin/sh
-case "$*" in
-  "list --formula") [ -z "$LIST_HANG" ] || exec sleep 30
+BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
+  "list --formula") [ -z "$LIST_HANG" ] || stall
                     [ -z "$LIST_RC" ] || exit "$LIST_RC"
                     printf '%s\n' ${PYTHONS-python@3.12 python@3.14 python@3.15} $FORMULAE ;;
   "list --cask"|leaves|tap) : ;;
@@ -178,9 +178,9 @@ class BrewPinTest(unittest.TestCase):
     def test_a_brew_call_that_hangs_ends_at_its_bound_and_names_itself(self):
         """sd:3536: an unattended brew stage bounds each brew call."""
         result = self.run_verb("update", "brew", "--apply", LIST_HANG="1",
-                               MACHINE_SETUP_STEP_TIMEOUT="1")
+                               MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND))
 
-        self.assertRegex(result.stderr, r"\[step [\d:]+\] brew list --formula \(bound 1s\)")
+        self.assertRegex(result.stderr, rf"\[step [\d:]+\] brew list --formula \(bound {STALL_BOUND}s\)")
         self.assertRegex(result.stderr, r"\[step [\d:]+\] brew list --formula exited 124")
         self.assertFalse(self.pins.exists(), self.pins.read_text() if self.pins.exists() else "")
 
