@@ -60,9 +60,12 @@ class TheServeAgent(unittest.TestCase):
                 plist = plistlib.loads(fixture_config.render(template, LABEL, "/home/someone", ROOT).encode())
                 self.assertEqual(plist["Label"], LABEL)
                 # An absolute path into the pack (gap (f)), and no `--loopback`:
-                # the tailnet listener of step 7.
+                # the tailnet listener of step 7. Apple's bash starts it and
+                # stays, so macOS charges its checks to bash, not to Homebrew
+                # python (sd:6427).
                 self.assertEqual(plist["ProgramArguments"],
-                                 ["/home/someone/repos/platypeeps/sd-ai-command-pack/bin/sd-db", "serve"])
+                                 ["/bin/bash", "-c", '"$0" serve; exit $?',
+                                  "/home/someone/repos/platypeeps/sd-ai-command-pack/bin/sd-db"])
                 # launchd's own PATH holds no `tailscale`, which the listener runs.
                 self.assertIn("/opt/homebrew/bin", plist["EnvironmentVariables"]["PATH"].split(":"))
                 self.assertTrue(plist["KeepAlive"])

@@ -5,6 +5,10 @@ paths:
   - "local-mirror-sync/**"
   - "local-notify/**"
   - "local-obsidian-review/**"
+  - "local-kev/**"
+  - "local-cswap/**"
+  - "local-maintenance/**"
+  - "local-machine-setup/examples/launchagents/**"
 ---
 
 # macOS TCC under launchd
@@ -17,6 +21,8 @@ Nothing under launchd can click a prompt, so an ungranted read waits instead of 
   - Xcode's `/usr/bin/python3` fails as `Python.app`, as the inner binary, toggled, and after `tccutil reset`.
   - Non-Apple binaries (Homebrew `Python.app`, the `claude-code@latest` cask's `/opt/homebrew/bin/claude`) hold their grants.
     - The cask links to a versioned Caskroom binary; moving from the native `~/.local/bin/claude` to it, or a cask upgrade, needs a fresh grant for the new binary.
+- A LaunchAgent template starts `/bin/bash -c '"$0" ARGS; exit $?' SCRIPT`, so Apple's bash is the process charged, not a Homebrew binary that loses its grant on upgrade (sd:6427).
+  - `local-machine-setup/tests/test_launchagent_launchers.py` fails a template that starts or execs into another program.
 - **The vault interpreter is Homebrew python by elimination**, and each binary needs its own grant:
   - `DASHBOARD_PYTHON` in `<config>/project-dashboard/.env`, for `dashboard.sh tile` from a shell;
   - `SD_DASHBOARD_PYTHON` in the LaunchAgent, for the server and the tiles it runs as children;

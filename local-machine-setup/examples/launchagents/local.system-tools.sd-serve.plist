@@ -14,10 +14,15 @@
 <dict>
 	<key>Label</key>
 	<string>@LABEL@</string>
+	<!-- Apple's /bin/bash stays the process macOS charges file access
+	     to: a Homebrew binary loses its grant on each upgrade. `; exit $?`
+	     keeps bash from exec'ing its last command (sd:6427). -->
 	<key>ProgramArguments</key>
 	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>"$0" serve; exit $?</string>
 		<string>@HOME@/repos/platypeeps/sd-ai-command-pack/bin/sd-db</string>
-		<string>serve</string>
 	</array>
 	<key>EnvironmentVariables</key>
 	<dict>

@@ -363,6 +363,7 @@ A profile with a `.satellite` file is a satellite of that hub.
 The pack's `lib/sd_db` holds the server, its refusals and `hub.json` (`serve.py`, `hub.py`).
 
 On the hub, `local.system-tools.sd-serve` runs the pack's `bin/sd-db serve`, the tailnet listener on port 8769.
+It starts as `/bin/bash -c '"$0" serve; exit $?' <pack>/bin/sd-db`, so macOS charges its file access to Apple's bash, not to Homebrew python, whose grant each upgrade drops (sd:6427).
 It admits only the untagged nodes of the node's owner, by `tailscale whois`, and carries no token.
 
 1. Copy `examples/launchagents/local.system-tools.sd-serve.plist` to the config folder's `launchagents/`.
