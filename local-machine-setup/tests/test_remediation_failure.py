@@ -24,6 +24,9 @@ from tests import fixture_config
 
 HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
+# The folders machine-setup.sh reads from its repository in these cases:
+# itself, lib/ and the folders its envs stage seeds (ENVS).
+COPIED = ("local-machine-setup", "lib", "local-notify", "local-statusline")
 
 # Installs nothing; `install bad-formula` fails, every call is logged.
 BREW_STUB = r"""#!/bin/sh
@@ -69,6 +72,23 @@ def write_exec(path, body):
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def tracked_copy(target):
+    """The tracked files the script reads, copied under `target`.
+
+    No git-ignored file comes along: run from the checkout, live_env read
+    an ignored local-notify/.env there (sd:6394).
+    """
+    names = subprocess.run(["git", "-C", str(FOLDER.parent), "ls-files", "-z", "--",
+                            *COPIED], capture_output=True, text=True, check=True).stdout
+    for name in filter(None, names.split("\0")):
+        if "/tests/" in name:
+            continue
+        dst = target / name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(FOLDER.parent / name, dst)
+    return target
+
+
 class RemediationFailure(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -87,6 +107,7 @@ class RemediationFailure(unittest.TestCase):
         write_exec(self.stubs / "brew", BREW_STUB)
         write_exec(self.stubs / "launchctl", LAUNCHCTL_STUB)
         fixture_config.seal(self, self.stubs)
+        self.root = tracked_copy(self.base / "repo")
 
     def run_verb(self, *args, **extra):
         env = {
@@ -99,7 +120,7 @@ class RemediationFailure(unittest.TestCase):
             "LAUNCHCTL_LOG": str(self.launchctl_log),
             **extra,
         }
-        return subprocess.run([str(FOLDER / "machine-setup.sh"), *args], env=env,
+        return subprocess.run([str(self.root / "local-machine-setup/machine-setup.sh"), *args], env=env,
                               capture_output=True, text=True, cwd=self.tmp.name,
                               stdin=subprocess.DEVNULL, timeout=120)
 
@@ -376,6 +397,19 @@ exec /bin/cp "$@"
         self.assertEqual(list(dst.parent.glob("config.merge.*")), [])
         self.assertEqual(result.returncode, 1)
 
+    def test_the_envs_stage_reads_the_root_the_case_controls(self):
+        # sd:6394: the script ran from the checkout, so live_env's fallback
+        # read a git-ignored local-notify/.env there and the seed case saw
+        # DIFFERS where it wanted MISSING. A .env planted in the case's root
+        # is the one the stage reads.
+        template = self.config / "machine-setup/envs/personal/local-notify.env"
+        template.parent.mkdir(parents=True)
+        template.write_text("A=1\n")
+        (self.root / "local-notify/.env").write_text("A=2\n")
+        result = self.run_verb("update", "envs")
+        self.assertIn("  DIFFERS local-notify/.env", result.stdout,
+                      result.stdout + result.stderr)
+
     def test_a_failed_env_seed_records_no_template(self):
         template = self.config / "machine-setup/envs/personal/local-notify.env"
         template.parent.mkdir(parents=True)
@@ -492,12 +526,9 @@ exec /bin/cp "$@"
             "LAUNCHCTL_LOG": str(self.launchctl_log),
             "PRINT_RC": "0" if still_loaded else "113",
         }
-        # The folder alone, so cron-jobs.sh is missing and its step fails:
-        # nothing real is uninstalled.
-        folder = self.base / "repo/local-machine-setup"
-        shutil.copytree(FOLDER, folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
-        shutil.copytree(FOLDER.parent / "lib", self.base / "repo/lib",
-                        ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        # The case's root holds no local-cron-jobs, so cron-jobs.sh is
+        # missing and its step fails: nothing real is uninstalled.
+        folder = self.root / "local-machine-setup"
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(self.tmp.name)

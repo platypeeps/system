@@ -4960,12 +4960,12 @@ cmd_doctor_sd() {
 
 # `doctor gate`: the weekly gate run (sd:5986; design
 # docs/work/2026-10-25-hub-failover-full-role, "Weekly gate run"). `make
-# check` in the system checkout, then in the pack, each in the machine's gate
+# check` for the system checkout, then for the pack, each in the machine's gate
 # queue. The record holds the newest decisive run only: a pass (both exit 0)
 # or a real failure (an exit from 1 to 124 but 75). A slot timeout (75), a
-# check that did not start (125, 127), a signal (over 128) or a checkout that
-# moved under its check is no verdict and leaves the record as it was, so a
-# later try never hides an earlier failure. hub-ready reads it.
+# check that did not start (125, 127) or a signal (over 128) is no verdict
+# and leaves the record as it was, so a later try never hides an earlier
+# failure. hub-ready reads it.
 DOCTOR_GATE_RECORD="${XDG_STATE_HOME:-$HOME/.local/state}/machine-setup/doctor-gate-last"
 # The weekly job's stamp (cron-jobs.sh record_stamp); a test points it elsewhere.
 DOCTOR_GATE_STAMP="${DOCTOR_GATE_STAMP:-$ROOT/local-cron-jobs/logs/.doctor-gate-weekly.stamp}"
@@ -4974,28 +4974,31 @@ DOCTOR_GATE_WAIT=3600
 cmd_doctor_gate() {
   echo "== doctor gate"
   tmp=$(mktemp -d)
-  # A signal exits before the record is written: no verdict.
+  # A signal exits before the record is written: no verdict. The exit also
+  # drops the snapshots' worktree entries, which rm leaves behind.
   trap_tmp
+  trap 'rm -rf "$tmp"; git -C "$ROOT" worktree prune; git -C "$SD_PACK_ROOT" worktree prune' EXIT
   dg_verdict=pass
   dg_fields=""
   dg_none=""
   for dg_name in system pack; do
     if [ "$dg_name" = system ]; then dg_dir=$ROOT; else dg_dir=$SD_PACK_ROOT; fi
-    # The head is read once the slot is held, and again after the check: a
-    # checkout moved in between (repo-sync refresh after a merge) ran a mix.
+    # The head is read once the slot is held, and the check runs in a
+    # detached snapshot of it (sd:6395): repo-sync's refresh moves the
+    # checkout during a run of 45 minutes, and a move voided the verdict.
     dg_rc=0
+    dg_snap="$tmp/$dg_name.snap"
     # shellcheck disable=SC2016 # the inner script expands its own arguments
     "$SD_PACK_ROOT/bin/sd" gate run --max-wait "$DOCTOR_GATE_WAIT" --label "doctor gate: $dg_name make check" -- \
-      sh -c 'git -C "$1" rev-parse HEAD > "$2" && exec make -C "$1" check' sh "$dg_dir" "$tmp/$dg_name" || dg_rc=$?
+      sh -c 'h=$(git -C "$1" rev-parse HEAD) && echo "$h" > "$2" && git -C "$1" worktree add -q --detach "$3" "$h" && exec make -C "$3" check' \
+      sh "$dg_dir" "$tmp/$dg_name" "$dg_snap" || dg_rc=$?
+    [ ! -d "$dg_snap" ] || git -C "$dg_dir" worktree remove --force "$dg_snap" || :
     dg_head=$(cat "$tmp/$dg_name" 2>/dev/null) || dg_head=""
-    dg_after=$(git -C "$dg_dir" rev-parse HEAD 2>/dev/null) || dg_after=""
     # A stage with no verdict ends the run; a failure before it still stands.
     if [ "$dg_rc" -eq 75 ]; then
       dg_none="no gate slot came free in $DOCTOR_GATE_WAIT s (exit 75)"
     elif [ "$dg_rc" -ge 125 ] || [ -z "$dg_head" ]; then
       dg_none="make check in $dg_dir did not finish (exit $dg_rc)"
-    elif [ "$dg_head" != "$dg_after" ]; then
-      dg_none="$dg_dir moved from $dg_head to ${dg_after:-an unread head} during make check"
     fi
     if [ -n "$dg_none" ]; then
       if [ "$dg_verdict" = fail ]; then
@@ -7829,13 +7832,12 @@ for a in "$@"; do
                    another database, or an env.sh that fails when sourced,
                    is a FAIL
   doctor sd        those sd checks alone, exit 1 on any FAIL
-  doctor gate      the weekly gate run: make check in this checkout, then
-                   in the pack, each inside `sd gate run --max-wait 3600`;
-                   a pass or a real failure is written to
-                   ~/.local/state/machine-setup/doctor-gate-last, which
-                   hub-ready reads; a slot timeout exits 75, and it, a
-                   signal or a checkout that moved writes nothing; exits 0
-                   only on a pass
+  doctor gate      the weekly gate run: make check in a snapshot of this
+                   checkout's head, then of the pack's, each inside
+                   `sd gate run --max-wait 3600`; a pass or a real failure
+                   is written to ~/.local/state/machine-setup/doctor-gate-last,
+                   which hub-ready reads; a slot timeout exits 75, and it or
+                   a signal writes nothing; exits 0 only on a pass
   test             run the unittest suite in tests/ (extra args go to unittest)
   upgrade          maintenance sweep: brew update/upgrade (casks with
                    --greedy, so self-updating ones move too, Claude Code's

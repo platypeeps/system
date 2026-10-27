@@ -44,19 +44,22 @@ if [ "$1 $2" = "gate run" ]; then
 fi
 '''
 
-# make -C <dir> check: exits STUB_MAKE_<which>; STUB_MOVE=<which> moves that
-# checkout's head while its check runs.
+# make -C <snapshot> check: exits STUB_MAKE_<which>; STUB_MOVE=<which> moves
+# that checkout's head while its check runs.
 MAKE_STUB = r'''
 echo "make $*" >> "$STUB_LOG"
-case "$2" in "$SD_PACK_ROOT") which=pack ;; *) which=system ;; esac
+case "$2" in *pack.snap) which=pack ;; *) which=system ;; esac
 [ "${STUB_MOVE:-}" != "$which" ] || echo "$STUB_MOVED_HEAD" > "$STUB_HEADS/$which"
 eval "exit \${STUB_MAKE_$which:-0}"
 '''
 
-# git: the two heads from files while STUB_HEADS is set, so a check can move one.
+# git: the two heads from files while STUB_HEADS is set, so a check can move
+# one; a snapshot's worktree add and remove are logged, and add makes the folder.
 GIT_HEADS = r'''
 if [ -n "${STUB_HEADS:-}" ]; then
   case "$*" in
+    *" worktree add "*) echo "git $*" >> "$STUB_LOG"; mkdir "$7"; exit ;;
+    *" worktree "*) echo "git $*" >> "$STUB_LOG"; exit ;;
     "-C $SD_PACK_ROOT rev-parse HEAD") cat "$STUB_HEADS/pack"; exit ;;
     *" rev-parse HEAD") cat "$STUB_HEADS/system"; exit ;;
   esac
@@ -138,8 +141,16 @@ class DoctorGate(GateCase):
         self.assertEqual(2, len(gated), gated)
         for line, folder in zip(gated, (ROOT, self.fixture.pack)):
             self.assertIn("gate run --max-wait 3600 --label", line)
-            self.assertTrue(line.endswith(f"sh {folder} " + line.rsplit(" ", 1)[1]), line)
-        self.assertEqual([f"make -C {ROOT} check", f"make -C {self.fixture.pack} check"], self.makes())
+            self.assertTrue(line.endswith(f"sh {folder} " + " ".join(line.rsplit(" ", 2)[1:])), line)
+        # Each check runs in a snapshot of the head it read, removed after.
+        worktrees = [line for line in self.calls("git -C") if line.startswith("git -C")]
+        added = [line for line in worktrees if " worktree add " in line]
+        snaps = [line.split()[-2] for line in added]
+        self.assertEqual([f"git -C {ROOT} worktree add -q --detach {snaps[0]} {SYSTEM_HEAD}",
+                          f"git -C {self.fixture.pack} worktree add -q --detach {snaps[1]} {PACK_HEAD}"], added)
+        self.assertEqual([f"make -C {snap} check" for snap in snaps], self.makes())
+        for folder, snap in zip((ROOT, self.fixture.pack), snaps):
+            self.assertIn(f"git -C {folder} worktree remove --force {snap}", worktrees)
         self.assertFalse(self.gate_record.with_name("doctor-gate-last.new").exists())
 
     def test_a_failed_check_records_a_failure_and_exits_1(self):
@@ -160,11 +171,15 @@ class DoctorGate(GateCase):
                 self.run_gate(expect=1, STUB_GATE_pack=code)
                 self.assertFalse(self.gate_record.exists())
 
-    def test_a_checkout_moved_during_its_check_writes_no_record(self):
-        """repo-sync's refresh moved the checkout under the check: it ran a mix."""
-        out = self.run_gate(expect=1, STUB_MOVE="system", STUB_MAKE_system="2").stdout
-        self.assertIn(f"moved from {SYSTEM_HEAD} to {MOVED_HEAD} during make check; no verdict recorded", out)
-        self.assertFalse(self.gate_record.exists())
+    def test_a_checkout_moved_during_its_check_still_gets_a_verdict(self):
+        """sd:6395: repo-sync's refresh moved a checkout under its check.
+
+        The check runs in a snapshot of the head it read, so the move
+        cannot void the verdict.
+        """
+        out = self.run_gate(STUB_MOVE="system").stdout
+        self.assertIn(f"  system: make check passed in {ROOT} at {SYSTEM_HEAD}", out)
+        self.assertEqual(("pass", SYSTEM_HEAD), (self.record()["verdict"], self.record()["system"]))
 
     def test_an_unread_head_writes_no_record(self):
         (self.heads / "pack").unlink()
@@ -179,7 +194,6 @@ class DoctorGate(GateCase):
             "a check that did not start (127)": {"STUB_GATE_pack": "127"},
             "a signalled check (143)": {"STUB_GATE_pack": "143"},
             "a signalled check (137)": {"STUB_GATE_pack": "137"},
-            "a moved checkout": {"STUB_MOVE": "pack"},
             "an unread head": {"unread": "pack"},
         }
         for name, extra in later.items():
