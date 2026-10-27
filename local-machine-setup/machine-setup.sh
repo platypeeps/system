@@ -1798,6 +1798,15 @@ stage_agents() {
   fi
   rendered=$(mktemp -d)
   echo "$agents" | while read -r label; do
+    # A profile from before sd:6466 may still name a herdr agent, and its
+    # template may sit in the config folder. Never install or start it: it
+    # would contend with a terminal's server for the socket. Unloading it
+    # ends every session, so that is the operator's step.
+    case $label in
+      *.herdr)
+        echo "  DIFFERS $label — retired (sd:6466); drop it from the profile, delete $HOME/Library/LaunchAgents/$label.plist, and let logout unload it (unloading now ends every herdr session)"
+        continue ;;
+    esac
     # A guard: no satellite profile lists a hub-only agent today, and one
     # that adds it later must not start a second dashboard.
     # Skipped, not removed: the satellite stage reports one already here.

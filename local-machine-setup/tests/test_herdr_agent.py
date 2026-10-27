@@ -75,6 +75,23 @@ class HerdrAgentTest(unittest.TestCase):
         self.assertIn("DIFFERS homebrew.mxcl.herdr is loaded", out)
         self.assertEqual([call for call in self.calls() if not call.startswith("launchctl print")], [])
 
+    def test_a_profile_that_still_names_a_herdr_agent_is_told_to_retire_it(self):
+        """A profile and template from before sd:6466 are neither installed
+        nor started; the stage names the manual steps."""
+        label = "local.system-tools.herdr"
+        (self.config / "machine-setup/profiles/personal.agent").write_text(label + "\n")
+        agents = self.config / "machine-setup/launchagents"
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / f"{label}.plist").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>'
+            f"<key>Label</key><string>{label}</string></dict></plist>\n")
+
+        out = self.run_stage("--apply")
+
+        self.assertIn(f"DIFFERS {label} — retired (sd:6466)", out)
+        self.assertFalse((self.home / f"Library/LaunchAgents/{label}.plist").exists())
+        self.assertEqual([call for call in self.calls() if not call.startswith("launchctl print")], [])
+
     def test_an_exit_0_that_names_no_service_is_not_brew_herdr(self):
         """Evidence: a print that names no service, as a stub's bare
         `exit 0`, reports no drift."""
