@@ -3,7 +3,8 @@
 # build-dispatch heartbeat, reaps lost runs, watches the lane for enqueued
 # runs, claims a bundle under the builder caps, and spawns one supervisor
 # per run that has none. No model runs in the tick; a supervisor runs the
-# builder, its review and its enqueue.
+# builder, its review and its enqueue, or a draft run's read-only spec
+# (sd:6013).
 #
 # Hub only: the claim writes the workflow database under BEGIN IMMEDIATE.
 # Name it in the hub's profile `.cron`, beside the sd-db backups.
