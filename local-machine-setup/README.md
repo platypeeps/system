@@ -355,6 +355,11 @@ a narrower glob, so `candidates agent` reported `0 on this machine` while two
 were running. One `owned_agent_plists` helper now answers for both `capture`
 and `candidates`, so they cannot drift apart.
 
+`examples/launchagents/local.system-tools.herdr.plist` starts the herdr server as `/bin/bash -c '<herdr> server; exit $?'`, in place of brew services' `homebrew.mxcl.herdr`.
+macOS then charges each session's file access to Apple's bash, not to herdr, whose grant each upgrade drops (sd:6427).
+The `agents` stage reports a loaded `homebrew.mxcl.herdr` as `DIFFERS` and holds `<prefix>.herdr` (`HELD`) while it runs: two servers would contend for one socket.
+It never stops herdr itself; `brew services stop herdr` ends every herdr session, so the operator runs it.
+
 ### The sd hub and its satellites
 
 One machine runs each profile.

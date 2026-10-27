@@ -1800,6 +1800,16 @@ agent_replace() { # label, src, dst
 stage_agents() {
   echo "== agents"
   hub_ask
+  # brew services' homebrew.mxcl.herdr starts herdr itself, so macOS charges
+  # every session's file access to herdr, whose grant each upgrade drops;
+  # <prefix>.herdr starts it under Apple's /bin/bash (sd:6427). Reported,
+  # never stopped here: stopping herdr ends every session on the machine.
+  # Until it is stopped, <prefix>.herdr waits: two servers, one socket.
+  brew_herdr=0
+  if launchctl print "gui/$(id -u)/homebrew.mxcl.herdr" >/dev/null 2>&1; then
+    brew_herdr=1
+    echo "  DIFFERS homebrew.mxcl.herdr is loaded — brew services starts herdr itself; run 'brew services stop herdr' (it ends every herdr session), then list $LABEL_PREFIX.herdr in the profile and run 'update agents --apply'"
+  fi
   agents=$(role_agents)
   if [ -z "$agents" ]; then
     echo "  no launch agents in this profile"
@@ -1812,6 +1822,10 @@ stage_agents() {
     # Skipped, not removed: the satellite stage reports one already here.
     if sd_hub_only "$label" && is_satellite && ! hub_holder; then
       echo "  SKIP    $label — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
+      continue
+    fi
+    if [ "$label" = "$LABEL_PREFIX.herdr" ] && [ "$brew_herdr" -eq 1 ]; then
+      echo "  HELD    $label — not started while homebrew.mxcl.herdr runs"
       continue
     fi
     src=$(agent_source "$label")
