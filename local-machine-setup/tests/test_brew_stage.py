@@ -7,7 +7,7 @@ codex) is removed (sd:6433).
 
 The script runs from a copy of this folder under a temporary root; `brew` is
 a stub that logs each install and pin in a file, `python3` a stub that
-prints $PY_VERSION, and the firewall tool a stub that prints $FW_LIST.
+reports $PY_PREFIX as its install path, and the firewall tool a stub that prints $FW_LIST.
 """
 
 import pathlib
@@ -48,15 +48,15 @@ EXIT_1_STUB = "#!/bin/sh\nexit 1\n"
 
 FIREWALL_STUB = "#!/bin/sh\n[ \"$1\" = --listapps ] && printf '%b' \"$FW_LIST\"\nexit 0\n"
 
-# The Python.app the stubbed python3 reports: the stub runs this interpreter.
-PYTHON_APP = sys.base_prefix + "/Resources/Python.app"
+# The install path the stubbed python3 reports by default, and its app.
+PY_PREFIX = "/opt/homebrew/opt/python@3.15/Frameworks/Python.framework/Versions/3.15"
+PYTHON_APP = PY_PREFIX + "/Resources/Python.app"
 
-# `python3 --version` prints $PY_VERSION, or fails with PY_RC; every other
-# call is the real interpreter's, as other stages run python3.
+# Asked for sys.base_prefix, python3 prints $PY_PREFIX; every other call is
+# the real interpreter's, as other stages run python3.
 PYTHON3_STUB = f"""#!/bin/sh
-if [ "$*" = --version ]; then
-  [ -z "$PY_RC" ] || exit "$PY_RC"
-  echo "${{PY_VERSION:-Python 3.15.2}}"
+if [ "$*" = "-c import sys; print(sys.base_prefix)" ]; then
+  echo "${{PY_PREFIX:-{PY_PREFIX}}}"
   exit 0
 fi
 exec {sys.executable} "$@"
@@ -133,9 +133,20 @@ class BrewStageTest(unittest.TestCase):
         self.assertNotIn("pinned", again.stdout)
 
     def test_the_pin_follows_the_python_on_path(self):
-        self.run_verb("update", "brew", "--apply", PY_VERSION="Python 3.14.8")
+        self.run_verb("update", "brew", "--apply",
+                      PY_PREFIX="/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14")
 
         self.assertEqual(self.pin_calls(), ["pin python@3.14"])
+
+    def test_a_python_brew_does_not_own_is_never_pinned(self):
+        """Review: Apple's or pyenv's python3 named a formula by version alone."""
+        for prefix in ("/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9",
+                       f"{self.home}/.pyenv/versions/3.15.2"):
+            with self.subTest(prefix):
+                result = self.run_verb("update", "brew", "--apply", PY_PREFIX=prefix)
+
+                self.assertNotIn("not pinned", result.stdout)
+                self.assertEqual(self.pin_calls(), [])
 
     def test_status_counts_an_unpinned_python_as_drift(self):
         unpinned = self.run_verb("status")

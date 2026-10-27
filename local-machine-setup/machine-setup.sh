@@ -588,9 +588,16 @@ valid_profile() {
 # so sd-serve admitted no satellite, and its file grants dropped. Upgrade it
 # deliberately: unpin, upgrade, allow the new Python.app in the firewall.
 
-# The formula PATH python3 belongs to, as python@X.Y; empty when unknown.
+# Where PATH python3 is installed (sys.base_prefix); empty when it fails.
+python_prefix() {
+  python3 -c 'import sys; print(sys.base_prefix)' 2>/dev/null || :
+}
+
+# The Homebrew formula PATH python3 belongs to, as python@X.Y, read from its
+# install path (.../opt/python@X.Y/... or .../Cellar/python@X.Y/...); empty
+# for Apple's, pyenv's or any other python, whose pin is not brew's.
 serving_python() {
-  python3 --version 2>/dev/null | sed -n 's/^Python \([0-9]*\.[0-9]*\)\..*/python@\1/p'
+  python_prefix | sed -nE 's#.*/(opt|Cellar)/(python@[0-9][0-9.]*)/.*#\2#p'
 }
 
 # Each formula an older brew stage pinned (python@* other than the serving
@@ -616,7 +623,9 @@ unpinned_python() {
 FIREWALL="${MACHINE_SETUP_SOCKETFILTERFW:-/usr/libexec/ApplicationFirewall/socketfilterfw}"
 blocked_python() {
   [ -x "$FIREWALL" ] || return 0
-  _app=$(python3 -c 'import sys; print(sys.base_prefix + "/Resources/Python.app")' 2>/dev/null) || return 0
+  _app=$(python_prefix)
+  [ -n "$_app" ] || return 0
+  _app="$_app/Resources/Python.app"
   "$FIREWALL" --listapps 2>/dev/null | grep -A1 -F "$_app" | grep -q 'Block incoming' && echo "$_app"
   return 0
 }
