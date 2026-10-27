@@ -5776,6 +5776,17 @@ cmd_upgrade() {
   failed=""
   if command -v brew >/dev/null 2>&1; then
     run_step 600 brew update || failed="$failed, brew update"
+    # The brew stage's unpin (sd:6433) first: the weekly sweep can run
+    # before the nightly update --apply, and a stale python pin fails
+    # `brew upgrade` on a dependent that needs a newer one (sd:6448).
+    if pins=$(stale_pins); then
+      for f in $pins; do
+        echo "  DIFFERS $f pinned"
+        run_step 300 brew unpin "$f" || failed="$failed, brew unpin $f"
+      done
+    else
+      failed="$failed, brew pin list"
+    fi
     if pin_serving_python; then
       sweep_step "brew upgrade" 1800 brew upgrade
     else

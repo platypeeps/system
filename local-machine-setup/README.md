@@ -84,6 +84,9 @@ command to run in a terminal, such as `brew upgrade --cask example-cask` (sd:504
 After the cask upgrade the sweep runs the brew stage's quarantine check on `claude`:
 a quarantined binary under launchd waits on a Gatekeeper prompt no one can answer
 with the screen locked (sd:4787).
+Before `brew upgrade` the sweep removes each pin the brew stage would
+(`DIFFERS <formula> pinned`, then `brew unpin`): it can run before the
+nightly `update --apply`, and a stale python pin fails `brew upgrade` (sd:6448).
 The sweep also moves each unpinned `.release` entry to its latest tag, and the
 report lists those under `upgraded (release)`; a tag it cannot read is
 `outdated (release): unknown`, not current.
