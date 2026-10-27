@@ -187,6 +187,37 @@ class TilesTest(unittest.TestCase):
         self.assertIn("follow: system already at the hub's pin", out.stdout)
         self.assertEqual(f.runs(), 0)
 
+    def test_a_line_the_file_cannot_read_is_flagged_not_silent(self):
+        """NEW (review round 1). A line parse refuses is a failure named
+        with its line, never a silent success; the lines it read are
+        still answered."""
+        f = self.fixture()
+        f.conf(f"bogus\ntile|work|sim|Simulator|{f.app}|-\nact|sim|Start|true\n")
+        f.ask()
+        out = f.follow()
+        self.assertIn("!!! failed: tile requests: tiles: place-tiles.conf: line 1: expected tile|", out.stdout)
+        self.assertIn("SD_REPORT_ATTENTION: repo-sync on ", out.stdout)
+        self.assertEqual(f.answer()["state"], "running")
+
+    def test_the_documented_line_with_a_host_runs_here_and_another_hosts_is_left(self):
+        """NEW (review round 1). The line the README documents, with this
+        machine as its <host>, is answered; a tile on another host is not
+        this machine's to answer, and is no failure. Needs the pack with
+        host lines (pack sd:6387): the pin after the pack PR, or
+        SD_ACCEPTANCE_PACK naming that pack before it."""
+        f = self.fixture()
+        f.conf(f"tile|work|sim|Simulator|{f.app}|-|{HOST}\n"
+               "act|sim|Start|sh -c \"echo ran >> runs\"\n"
+               f"tile|work|far|Far|{f.app}|-|x{HOST}\nact|far|Start|sh -c \"echo far >> runs\"\n")
+        f.ask()
+        f.ask(tile="far", rid="cd34")
+        out = f.follow()
+        self.assertNotIn("!!!", out.stdout)
+        self.assertEqual(f.answer()["state"], "running")
+        f.ended()
+        self.assertEqual(f.runs(), 1)
+        self.assertIsNone(f.answer(tile="far"), "another host's tile was answered here")
+
     def test_no_file_here_asks_nothing(self):
         """NEW. A satellite with no place-tiles.conf does not reach the hub for
         tiles: no row is read or written, and follow says nothing of tiles."""

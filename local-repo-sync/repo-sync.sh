@@ -1755,7 +1755,8 @@ tiles_answer() {
     0) ;;
     3) echo "follow: tile requests not read: the hub did not answer; the next run asks again" ;;
     4) echo "follow: tile requests not read: the hub refuses this build; the next run asks again" ;;
-    *) t_why=$(tail -1 "$TMPD/tiles.err" 2>/dev/null || :)
+    *) cat "$TMPD/tiles.err" 2>/dev/null || :
+       t_why=$(tail -1 "$TMPD/tiles.err" 2>/dev/null || :)
        flag "!!! failed: tile requests: ${t_why:-satellite_tiles.py exited $t_rc}"
        echo "SD_REPORT_ATTENTION: repo-sync on $(hostname -s): tile requests failed: ${t_why:-exit $t_rc}" ;;
   esac

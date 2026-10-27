@@ -158,9 +158,14 @@ class Action:
 
 
 def answer(connection, host, tiles, config, text):
-    """`(lines, failures)`: each action's line, and each action whose rows did not read or write."""
-    lines, failures = [], []
-    for tile in tiles.parse(text)[0]:
+    """`(lines, failures)`: each action's line, and each line the file could not read or action whose rows did not.
+
+    A line parse refuses is a failure, never a silent success: a pack whose parse knows no `<host>` field
+    refuses the documented host line, and its tile would otherwise go unanswered with nothing said.
+    """
+    parsed, problems = tiles.parse(text)
+    lines, failures = [], [f"tiles: {pathlib.Path(config).name}: {problem}" for problem in problems]
+    for tile in parsed:
         if tile.get("host") and tile["host"] != host:
             continue
         for act in tile["actions"]:
