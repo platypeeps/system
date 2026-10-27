@@ -87,8 +87,7 @@ class BrewStageTest(unittest.TestCase):
         self.stubs = base / "stubs"
         write_exec(self.stubs / "brew", BREW_STUB)
         write_exec(self.stubs / "python3", PYTHON3_STUB)
-        self.firewall = base / "socketfilterfw"
-        write_exec(self.firewall, FIREWALL_STUB)
+        write_exec(self.stubs / "socketfilterfw", FIREWALL_STUB)
         for name in ("defaults", "sudo", "launchctl", "mas"):
             write_exec(self.stubs / name, EXIT_1_STUB)
         fixture_config.seal(self, self.stubs)
@@ -102,7 +101,6 @@ class BrewStageTest(unittest.TestCase):
             "LANG": "en_US.UTF-8",
             **fixture_config.env(self.config_root),
             "PINS": str(self.pins),
-            "MACHINE_SETUP_SOCKETFILTERFW": str(self.firewall),
             **extra,
         }
         return subprocess.run([str(self.folder / "machine-setup.sh"), *args], env=env,

@@ -620,13 +620,14 @@ unpinned_python() {
 
 # The Python.app PATH python3 runs when the application firewall blocks its
 # incoming connections; fixing it needs sudo, so it is reported only.
-FIREWALL="${MACHINE_SETUP_SOCKETFILTERFW:-/usr/libexec/ApplicationFirewall/socketfilterfw}"
 blocked_python() {
-  [ -x "$FIREWALL" ] || return 0
+  _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
+  if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
+  [ -x "$_fw" ] || return 0
   _app=$(python_prefix)
   [ -n "$_app" ] || return 0
   _app="$_app/Resources/Python.app"
-  "$FIREWALL" --listapps 2>/dev/null | grep -A1 -F "$_app" | grep -q 'Block incoming' && echo "$_app"
+  "$_fw" --listapps 2>/dev/null | grep -A1 -F "$_app" | grep -q 'Block incoming' && echo "$_app"
   return 0
 }
 
@@ -7965,7 +7966,6 @@ environment:
   MACHINE_SETUP_TIMEOUT_SUDOERS  tests only: the sudo grace-period drop-in
   MACHINE_SETUP_NSMB_CONF  tests only: the file that stands in for /etc/nsmb.conf
   MACHINE_SETUP_APPLICATIONS_DIR  tests only: the folder the apps scan reads
-  MACHINE_SETUP_SOCKETFILTERFW  tests only: the firewall tool the python check reads
 HELPEOF
       exit 0
       ;;
