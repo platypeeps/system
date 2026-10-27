@@ -1805,8 +1805,9 @@ stage_agents() {
   # <prefix>.herdr starts it under Apple's /bin/bash (sd:6427). Reported,
   # never stopped here: stopping herdr ends every session on the machine.
   # Until it is stopped, <prefix>.herdr waits: two servers, one socket.
+  # A loaded service's print names it; an exit 0 alone is no evidence.
   brew_herdr=0
-  if launchctl print "gui/$(id -u)/homebrew.mxcl.herdr" >/dev/null 2>&1; then
+  if launchctl print "gui/$(id -u)/homebrew.mxcl.herdr" 2>/dev/null | grep -q 'homebrew\.mxcl\.herdr'; then
     brew_herdr=1
     echo "  DIFFERS homebrew.mxcl.herdr is loaded — brew services starts herdr itself; run 'brew services stop herdr' (it ends every herdr session), then list $LABEL_PREFIX.herdr in the profile and run 'update agents --apply'"
   fi

@@ -8,6 +8,7 @@ It never stops herdr: that ends every session on the machine.
 
 `launchctl` is a stub that logs its calls; `print` answers loaded for
 homebrew.mxcl.herdr when BREW_HERDR is set, and not loaded for anything else.
+BREW_HERDR=silent exits 0 and prints nothing, as test_backbone's stub does.
 """
 
 import os
@@ -27,7 +28,9 @@ LABEL = f"{fixture_config.LABEL_PREFIX}.herdr"
 LAUNCHCTL = r"""#!/bin/sh
 echo "launchctl $*" >> "$LAUNCHCTL_LOG"
 case "$1:$2" in
-  print:*/homebrew.mxcl.herdr) [ -n "$BREW_HERDR" ] ;;
+  print:*/homebrew.mxcl.herdr)
+    [ -n "$BREW_HERDR" ] || exit 113
+    [ "$BREW_HERDR" = silent ] || echo "$2 = {" ;;
   print:*) exit 113 ;;
 esac
 """
@@ -90,6 +93,14 @@ class HerdrAgentTest(unittest.TestCase):
         out = self.run_stage(BREW_HERDR="1")
 
         self.assertIn("DIFFERS homebrew.mxcl.herdr is loaded", out)
+
+    def test_an_exit_0_that_names_no_service_is_not_brew_herdr(self):
+        """Evidence: a print that names no service, as a stub's bare
+        `exit 0`, neither reports drift nor holds the launcher."""
+        out = self.run_stage("--apply", BREW_HERDR="silent")
+
+        self.assertNotIn("homebrew.mxcl.herdr", out)
+        self.assertIn(f"MISSING {LABEL}", out)
 
 
 if __name__ == "__main__":
