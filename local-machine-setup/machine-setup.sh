@@ -5727,10 +5727,29 @@ doctor_unattended_sudo() {
   else
     echo "  WARN    Keychain item $SUDO_KEYCHAIN unknown: security exited $sk_rc"
   fi
-  if [ -e "$REPAIRS_SUDOERS" ]; then
+  if [ ! -e "$REPAIRS_SUDOERS" ]; then
+    echo "  WARN    no repair sudoers drop-in at $REPAIRS_SUDOERS — install local-machine-setup/machine-setup-repairs.sudoers.example with visudo -cf (README: Unattended sudo)"
+    return 0
+  fi
+  # Its brew line must name this machine's brew: one copied from an Apple
+  # silicon Mac names /opt/homebrew, absent on an Intel Mac (sd:6475). sudo
+  # lists the user's rules; `sudo -n -l <command>` passes any command that
+  # (ALL) ALL allows, password or not.
+  ds_brew=$(bound_step 60 brew --prefix 2>/dev/null) || ds_brew=
+  if [ -z "$ds_brew" ]; then
+    echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS unknown: brew --prefix gave no answer"
+    return 0
+  fi
+  ds_cmd="$ds_brew/bin/brew services restart tailscale"
+  ds_rc=0
+  ds_list=$(bound_step 30 sudo -n -l 2>/dev/null) || ds_rc=$?
+  if [ "$ds_rc" -ne 0 ]; then
+    echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS unknown: sudo -n -l exited $ds_rc"
+  elif printf '%s\n' "$ds_list" | awk -v want="NOPASSWD: $ds_cmd" '{ sub(/[ \t]+$/, "") }
+      substr($0, length($0) - length(want) + 1) == want { found = 1 } END { exit !found }'; then
     echo "  ok      repair sudoers drop-in $REPAIRS_SUDOERS"
   else
-    echo "  WARN    no repair sudoers drop-in at $REPAIRS_SUDOERS — install local-machine-setup/machine-setup-repairs.sudoers.example with visudo -cf (README: Unattended sudo)"
+    echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS does not allow $ds_cmd without a password — fix its brew path: sudo visudo -f $REPAIRS_SUDOERS"
   fi
 }
 

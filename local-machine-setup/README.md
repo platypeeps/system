@@ -567,12 +567,13 @@ never touches `/etc` or the Keychain.
    `SUDO_ASKPASS` to `sudo-askpass.sh`, which prints the item's
    password to sudo. Without the item, the cask stays a "needs sudo"
    finding, as before.
-2. The repair drop-in. Copy `machine-setup-repairs.sudoers.example`,
-   replace `change-me` with this machine's admin account, then check it
-   and install it:
+2. The repair drop-in. Write `machine-setup-repairs.sudoers.example`
+   with this machine's admin account for `change-me` and its brew prefix
+   for `HOMEBREW_PREFIX` (`/opt/homebrew`, or `/usr/local` on an Intel
+   Mac), then check it and install it:
 
-       cp machine-setup-repairs.sudoers.example /tmp/machine-setup-repairs
-       # edit the account name in /tmp/machine-setup-repairs
+       sed -e "s/change-me/$(id -un)/" -e "s|HOMEBREW_PREFIX|$(brew --prefix)|" \
+         machine-setup-repairs.sudoers.example > /tmp/machine-setup-repairs
        sudo visudo -cf /tmp/machine-setup-repairs
        sudo install -m 440 -o root -g wheel /tmp/machine-setup-repairs \
          /etc/sudoers.d/machine-setup-repairs
@@ -581,7 +582,9 @@ never touches `/etc` or the Keychain.
    (`brew services restart tailscale`, `pfctl -sr`) and nothing else.
 
 `doctor` checks both on each machine. A missing item or drop-in is a
-`WARN` that names the step, not a failure.
+`WARN` that names the step, not a failure. So is a drop-in whose brew
+line names another prefix: `sudo -n -l` lists no password-free
+`$(brew --prefix)/bin/brew services restart tailscale`.
 
 ## Comparing and filing
 
