@@ -88,6 +88,8 @@ LOG_DIR="$ROOT/logs"
 FAIL_LOG="$LOG_DIR/failures.log"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
+# The program launchd starts for every job (sd:6456); see job-launch.c.
+JOB_LAUNCH="$HOME/.local/libexec/system-tools/job-launch"
 
 # Homebrew's prefix is /opt/homebrew on Apple Silicon and /usr/local on Intel.
 # Both were spelled into the plist PATH so one of them always matched, which
@@ -385,7 +387,7 @@ xml_escape() { # text: the text with &, < and > as XML entities
 }
 
 write_plist() { # job name
-  local job="$1" label plist x_label x_root x_job x_log x_path x_home x_config
+  local job="$1" label plist x_label x_root x_job x_log x_path x_home x_config x_launch
   label="$(label_for "$job")"
   plist="$(plist_for "$job")"
   # Every value below is XML text: a path holding `&` or `<` made a plist
@@ -393,6 +395,7 @@ write_plist() { # job name
   x_label="$(xml_escape "$label")"; x_root="$(xml_escape "$ROOT")"; x_job="$(xml_escape "$job")"
   x_log="$(xml_escape "$LOG_DIR/$job.log")"; x_path="$(xml_escape "$JOB_PATH")"
   x_home="$(xml_escape "$HOME")"; x_config="$(xml_escape "$SYSTEM_TOOLS_CONFIG")"
+  x_launch="$(xml_escape "$JOB_LAUNCH")"
   {
     cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -404,6 +407,7 @@ write_plist() { # job name
 
     <key>ProgramArguments</key>
     <array>
+        <string>$x_launch</string>
         <string>/bin/bash</string>
         <string>$x_root/cron-jobs.sh</string>
         <string>exec</string>
@@ -1388,9 +1392,23 @@ hold_job_lock() { # job
   return 1
 }
 
+# Builds the job launcher once. Never rebuilt: its Full Disk Access grant is
+# keyed by its code hash, so a rebuild drops the grant (sd:6456). After a
+# change to job-launch.c, delete the binary, install, and grant it again.
+ensure_job_launch() {
+  [ ! -x "$JOB_LAUNCH" ] || return 0
+  mkdir -p "$(dirname "$JOB_LAUNCH")"
+  if ! cc -O2 -o "$JOB_LAUNCH" "$ROOT/job-launch.c"; then
+    echo "cron-jobs.sh: cannot build $JOB_LAUNCH from $ROOT/job-launch.c (cc failed); nothing installed" >&2
+    return 1
+  fi
+  echo "built: $JOB_LAUNCH; grant it Full Disk Access (System Settings > Privacy & Security)"
+}
+
 cmd_install() {
   local job="$1" err
   load_job "$job"
+  ensure_job_launch || return 1
   # Before the plist is written: a refused install leaves the file launchd
   # holds, so `verify` still reads it STALE and the next install retries.
   hold_job_lock "$job" || return 1

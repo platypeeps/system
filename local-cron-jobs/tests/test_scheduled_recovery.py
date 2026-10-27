@@ -29,6 +29,8 @@ class ScheduledRecovery(unittest.TestCase):
         self.cron = self.root / "system/local-cron-jobs"
         self.cron.mkdir(parents=True)
         shutil.copy2(SYSTEM / "local-cron-jobs/cron-jobs.sh", self.cron / "cron-jobs.sh")
+        # `install` builds the job launcher from its source (sd:6456).
+        shutil.copy2(SYSTEM / "local-cron-jobs/job-launch.c", self.cron / "job-launch.c")
         # cron-jobs.sh sources the shared config and bounded-step helpers
         # from its checkout.
         (self.cron.parent / "lib").mkdir()

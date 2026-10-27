@@ -1561,6 +1561,8 @@ for name in sorted(names):
 # Every plist local-cron-jobs has rendered carries it, so an agent installed
 # before this check is recognised without being rewritten. A new marker key
 # would have made every installed plist STALE and reloaded every job at once.
+# Since sd:6456 the command starts with the job-launch binary; a plist from
+# before it still counts as ours, so the stage finds it STALE and rewrites it.
 # Exits 0 for ours, 1 for another installer's, and anything else when it
 # cannot tell (an unreadable plist, no python3); callers treat that as not ours.
 cron_plist_ours() { # plist path, job name
@@ -1574,6 +1576,9 @@ except Exception as e:
     print(f"cannot read {path}: {e}", file=sys.stderr)
     sys.exit(2)
 args = plist.get("ProgramArguments") if isinstance(plist, dict) else None
+if (isinstance(args, list) and len(args) == 5 and isinstance(args[0], str)
+        and args[0].endswith("/job-launch")):
+    args = args[1:]
 ours = (isinstance(plist, dict) and plist.get("Label") == label
         and isinstance(args, list) and len(args) == 4
         and args[0] == "/bin/bash"

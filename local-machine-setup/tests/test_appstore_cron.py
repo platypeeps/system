@@ -103,12 +103,14 @@ class StageTest(unittest.TestCase):
     def plist_path(self, job):
         return self.agents / f"{fixture_config.LABEL_PREFIX}.cron.{job}.plist"
 
-    def install_plist(self, job):
-        """A plist in the shape local-cron-jobs' write_plist renders."""
+    def install_plist(self, job, launcher=True):
+        """A plist in the shape local-cron-jobs' write_plist renders; without
+        the launcher, the shape it rendered before sd:6456."""
+        head = ["/opt/example/libexec/job-launch"] if launcher else []
         self.plist_path(job).write_bytes(plistlib.dumps({
             "Label": f"{fixture_config.LABEL_PREFIX}.cron.{job}",
-            "ProgramArguments": ["/bin/bash", "/opt/example/local-cron-jobs/cron-jobs.sh",
-                                 "exec", job],
+            "ProgramArguments": head + ["/bin/bash", "/opt/example/local-cron-jobs/cron-jobs.sh",
+                                        "exec", job],
             "RunAtLoad": False,
         }))
 
@@ -363,12 +365,19 @@ class CronOwnershipTest(StageTest):
         self.assertIn("uninstall dropped-job", log)
         self.assertNotIn("uninstall foreign-job", log)
 
+    def test_a_plist_from_before_the_launcher_is_still_ours(self):
+        # sd:6456: plists rendered before job-launch must not turn FOREIGN.
+        self.install_plist("dropped-job", launcher=False)
+        result = self.run_stage("cron", "--apply")
+        self.assertIn("EXTRA   dropped-job", result.stdout)
+        self.assertIn("uninstall dropped-job", self.cron_log.read_text())
+
     def test_a_plist_that_runs_another_job_is_not_ours(self):
         # The right shape under the wrong name: the mark binds label and job.
         self.install_plist("renamed-job")
         path = self.plist_path("renamed-job")
         plist = plistlib.loads(path.read_bytes())
-        plist["ProgramArguments"][3] = "other-name"
+        plist["ProgramArguments"][-1] = "other-name"
         path.write_bytes(plistlib.dumps(plist))
         result = self.run_stage("cron", "--apply")
         self.assertIn("FOREIGN renamed-job", result.stdout)
