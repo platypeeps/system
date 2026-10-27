@@ -97,7 +97,7 @@ Deliberate deviations:
 
 ## Planned work lives in `docs/work/`
 
-- A change with a shape worth agreeing on first gets one `docs/work/<YYYY-MM-DD>-<slug>/design.md` from the pack template `skills/sd-plan/templates/design.md`; older folders keep their `prd.md` and `implement.md`.
+- A change that moves state in steps gets one `docs/work/<YYYY-MM-DD>-<slug>/design.md` from the pack template `skills/sd-plan/templates/design.md`; older folders keep their `prd.md` and `implement.md`.
 - Check with the command pack's `sd-docs-lint` from the repository root, with no `--work-dir`; an absolute value reads zero references and passes silently.
 - Never add `.github/sd-docs-lint.json`; that opt-in sends `docs/work` prose to a third party.
 
