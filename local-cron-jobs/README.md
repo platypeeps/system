@@ -507,11 +507,6 @@ with an MCP initialize and restarts the agent once when that goes unanswered.
   exports the variable since the hook shipped; until 2026-09-11 nothing here
   did. `JOB_COMMAND` jobs are untouched. `./cron-jobs.sh test` is the check:
   a fake `CLAUDE_BIN` records the environment it was started with.
-- The same call sets `CLAUDE_CODE_SHELL=/bin/bash`: macOS charges a job's
-  file access to its Bash-tool shell, and Homebrew bash's grant drops on
-  each upgrade, while Apple's `/bin/bash` keeps one identity (sd:6427).
-  Only the tool's own commands run under bash 3.2; scripts keep their
-  shebangs.
 - Auth: uses the `claude` CLI's stored account. **cswap-auto rotates accounts**
   (see `local-cswap`) — a job that fires right after a switch runs on whatever
   account is active. Skills pinned to one account's connectors (Notion, Drive)

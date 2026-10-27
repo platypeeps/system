@@ -168,13 +168,18 @@ class ClaudeSettingsBaseline(SyntheticHome):
 
         self.assertEqual(json.loads(self.settings.read_text())["env"].get("DISABLE_AUTOUPDATER"), "1")
 
-    def test_a_fresh_baseline_runs_the_tool_shell_as_apple_bash(self):
-        """sd:6427: macOS charges a tool shell's file access to it; Homebrew
-        bash's grant drops on each upgrade, Apple's /bin/bash keeps one."""
-        self.settings.write_text("{}\n")
+    def test_the_retired_tool_shell_goes_and_an_operators_own_stays(self):
+        """sd:6466: macOS charges the process launchd or the terminal
+        started, not the tool shell, so Apple's bash bought nothing."""
+        self.settings.write_text(json.dumps({"env": {"CLAUDE_CODE_SHELL": "/bin/bash"}}) + "\n")
+        out = self.run_tooling()
+        self.assertIn("STALE   settings.json env.CLAUDE_CODE_SHELL (retired)", out)
         self.run_tooling("--apply")
+        self.assertNotIn("CLAUDE_CODE_SHELL", json.loads(self.settings.read_text())["env"])
 
-        self.assertEqual(json.loads(self.settings.read_text())["env"].get("CLAUDE_CODE_SHELL"), "/bin/bash")
+        self.settings.write_text(json.dumps({"env": {"CLAUDE_CODE_SHELL": "/bin/zsh"}}) + "\n")
+        self.run_tooling("--apply")
+        self.assertEqual(json.loads(self.settings.read_text())["env"]["CLAUDE_CODE_SHELL"], "/bin/zsh")
 
     def test_an_operators_updater_setting_is_left_alone(self):
         self.settings.write_text(json.dumps({"env": {"DISABLE_AUTOUPDATER": "0", "OTHER": "x"}}) + "\n")
@@ -182,7 +187,7 @@ class ClaudeSettingsBaseline(SyntheticHome):
 
         self.assertNotIn("env.DISABLE_AUTOUPDATER", out)
         self.assertEqual(json.loads(self.settings.read_text())["env"],
-                         {"DISABLE_AUTOUPDATER": "0", "OTHER": "x", "CLAUDE_CODE_SHELL": "/bin/bash"})
+                         {"DISABLE_AUTOUPDATER": "0", "OTHER": "x"})
 
     def test_a_second_apply_changes_nothing(self):
         self.run_tooling("--apply")
