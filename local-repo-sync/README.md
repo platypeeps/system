@@ -327,6 +327,31 @@ read or write exits 1 and is named, never read as "nothing pending". The
 full update's cron stage cannot boot the running job out: cron-jobs refuses
 to reinstall a job while its run holds the lock (sd:3317).
 
+### Run a dashboard tile's actions on this machine
+
+A realm place's Overview tile on the hub can name this machine as its host:
+`tile|<realm>|<tile>|<label>|<folder>|<url or ->|<host>` in the hub's
+`<config>/project-dashboard/place-tiles.conf` (pack sd:6387). Its buttons then
+run nothing on the hub. Each writes a request row,
+`place_tiles.request.<host>.<realm>.<tile>.<action>`, which names the tile and
+the action, never a command.
+
+Before it follows, each satellite `follow` run asks `satellite_tiles.py
+answer`. It reads the rows for the tiles and actions this machine's own
+place-tiles.conf names, so copy the tile and act lines here with this
+machine's folder. It runs only those act lines, as the dashboard runs a local
+one, and writes `place_tiles.result.<...>`: `starting`, then `running` with
+its start time, or `refused` with why nothing ran. A later run writes `done`
+with the exit and the end of the output once the command ends. The command
+runs in its own session, so a server that Start leaves running outlives the
+job.
+
+A run stopped after `starting` and before its start is tried once more as
+attempt 2, then written as refused; one stopped after its start is adopted,
+not run twice. A hub that does not answer is said and skipped; any other
+failure is flagged with an `SD_REPORT_ATTENTION` line, and follow goes on. A
+satellite with no place-tiles.conf does not ask the hub.
+
 ## Hygiene
 
 Agents leave worktrees and branches behind. `hygiene` sweeps each conf
@@ -506,6 +531,8 @@ bare-origin fixtures, one origin shared by a hub and a satellite checkout.
 `tests/test_satellite_refresh.py` covers Refresh satellites on those fixtures,
 with the real `satellite_refresh.py` against a real database at the pinned
 pack's schema, opened through `REPO_SYNC_SD_DB`; the hub is never reached.
+`tests/test_satellite_tiles.py` covers tile requests the same way, with the
+pinned pack's real `place_tiles` running the act lines.
 `tests/test_refresh_migrate.py` covers the backup, migrate and recovery
 against a real database and the pinned pack's real `bin/sd-db` and `lib/sd_db`
 (`SD_ACCEPTANCE_PACK`, else `.ci/pack`), with fixture migrations after its last.

@@ -85,12 +85,18 @@ FENCE_STUB = ('#!/bin/sh\n[ "$1" = fence ] || exit 2\n'
 # satellite. Exits SATELLITE_REFRESH_RC, 1 (nothing pending) when unset;
 # test_satellite_refresh.py runs the real one against a real database.
 SATELLITE_REFRESH_STUB = 'import os, sys\nsys.exit(int(os.environ.get("SATELLITE_REFRESH_RC", "1")))\n'
+# satellite_tiles.py's stand-in (pack sd:6387): exits SATELLITE_TILES_RC, 0
+# (nothing asked) when unset, with SATELLITE_TILES_ERR on stderr;
+# test_satellite_tiles.py runs the real one against a real database.
+SATELLITE_TILES_STUB = ('import os, sys\nsys.stderr.write(os.environ.get("SATELLITE_TILES_ERR", ""))\n'
+                        'sys.exit(int(os.environ.get("SATELLITE_TILES_RC", "0")))\n')
 
 
 class FollowFixture(DrainFixture):
     def __init__(self):
         super().__init__()
         (self.folder / "satellite_refresh.py").write_text(SATELLITE_REFRESH_STUB)
+        (self.folder / "satellite_tiles.py").write_text(SATELLITE_TILES_STUB)
 
     def satellite(self):
         config = self.tmp / "home" / ".config" / "sd"

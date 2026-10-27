@@ -1740,6 +1740,27 @@ refresh_answer() {
   return "$r_code"
 }
 
+# --- tile actions on their host (pack sd:6387) --------------------------------
+# A hub tile line that names this machine as its host runs its buttons here:
+# the hub writes a request row, and satellite_tiles.py runs the act line of
+# this machine's own place-tiles.conf and writes the result back. It runs
+# before follow, since a drain execs; the drained child does not run it again.
+# A start returns at once: the command runs in its own session. A failure is
+# flagged with an SD_REPORT_ATTENTION line, so Reports shows it, and follow
+# goes on.
+tiles_answer() {
+  t_rc=0
+  st_bounded 120 python3 "$DIR/satellite_tiles.py" answer < /dev/null 2> "$TMPD/tiles.err" || t_rc=$?
+  case "$t_rc" in
+    0) ;;
+    3) echo "follow: tile requests not read: the hub did not answer; the next run asks again" ;;
+    4) echo "follow: tile requests not read: the hub refuses this build; the next run asks again" ;;
+    *) t_why=$(tail -1 "$TMPD/tiles.err" 2>/dev/null || :)
+       flag "!!! failed: tile requests: ${t_why:-satellite_tiles.py exited $t_rc}"
+       echo "SD_REPORT_ATTENTION: repo-sync on $(hostname -s): tile requests failed: ${t_why:-exit $t_rc}" ;;
+  esac
+}
+
 # --- hygiene (sd:1987) ------------------------------------------------------
 # Sweeps what agents leave behind in each conf checkout: worktree
 # registrations whose directory is gone, locks held by a dead process,
@@ -2558,6 +2579,9 @@ case "$1" in
     TMPD=$(mktemp -d)
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     load_list
+    if is_satellite && [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
+      tiles_answer
+    fi
     # A satellite asks for a refresh request first (sd:5108). Nothing pending,
     # or a hub that does not answer, runs follow as before: a laptop away from
     # the tailnet has nothing to answer, as the satellite stage's SKIP says. A
@@ -2902,6 +2926,9 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              writes the result to the hub (satellite_refresh.py, sd:5108).
              A failed step writes its failure; a hub that does not answer
              skips the request until the next run.
+             First it answers the hub's tile requests for this machine
+             (satellite_tiles.py, pack sd:6387): it runs only an act line
+             of its own place-tiles.conf and writes the result back.
   test       run the regression suite in tests/ (unittest; override the
              interpreter with PYTHON). Covers reconcile, list and nightly
              against fixture trees and a stub sd-db; sync's clone path is not covered,
