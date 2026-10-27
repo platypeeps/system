@@ -160,14 +160,16 @@ class BuildDispatchJobTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.marker.read_text().splitlines(), ["assignments dispatch"])
 
-    def test_the_pinned_pack_has_the_dispatch_and_supervise_verbs(self):
-        """The job names a verb of the pinned pack, not only of a later one."""
-        for verb in ("dispatch", "supervise"):
-            with self.subTest(verb=verb):
-                result = subprocess.run(
-                    [sys.executable, str(PINNED_PACK / "bin" / "sd"), "assignments", verb, "--help"],
-                    capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-                self.assertEqual(result.returncode, 0, f"{PINNED_PACK}: {result.stdout}{result.stderr}")
+    def test_the_pinned_pack_has_the_dispatch_verb_and_its_supervise_flag(self):
+        """The job names a verb of the pinned pack, not only of a later one.
+
+        The tick spawns its supervisors as `dispatch --supervise RUN` (pack #1669).
+        """
+        result = subprocess.run(
+            [sys.executable, str(PINNED_PACK / "bin" / "sd"), "assignments", "dispatch", "--help"],
+            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        self.assertEqual(result.returncode, 0, f"{PINNED_PACK}: {result.stdout}{result.stderr}")
+        self.assertIn("--supervise", result.stdout)
 
     def test_a_spawned_supervisor_outlives_the_limit_and_holds_no_lock(self):
         """A tick killed at its limit leaves its supervisor running, and the next slot runs.
