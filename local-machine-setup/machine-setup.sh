@@ -1800,11 +1800,26 @@ PY
 # Boots a job out. Succeeds when launchd holds no job under the label
 # afterwards: the bootout did it, or the job was never loaded, which makes
 # bootout fail. A job still loaded is reported FAILED and returns 1, so the
-# caller does not bootstrap over it or remove its plist.
+# caller does not bootstrap over it or remove its plist. A bootout that
+# succeeds can return while launchd still holds the job, and a bootstrap
+# then fails with exit 5 (sd:6454), so it waits up to 10 s for the label to
+# leave.
 agent_bootout() { # label
   ab_rc=0
   try_run launchctl bootout "gui/$(id -u)/$1" 2>/dev/null || ab_rc=$?
-  [ "$ab_rc" -ne 0 ] || return 0
+  if [ "$ab_rc" -eq 0 ]; then
+    [ "$APPLY" -eq 1 ] || return 0
+    ab_n=0
+    while launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1; do
+      if [ "$ab_n" -ge 10 ]; then
+        note_failure "launchctl bootout gui/$(id -u)/$1 (still loaded after ${ab_n}s)" "$ab_rc"
+        return 1
+      fi
+      ab_n=$((ab_n + 1))
+      sleep 1
+    done
+    return 0
+  fi
   launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1 || return 0
   note_failure "launchctl bootout gui/$(id -u)/$1" "$ab_rc"
   return 1

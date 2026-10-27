@@ -32,7 +32,9 @@ def first_agent():
     raise AssertionError(f"no {PROFILE}.agent label has a plist in launchagents/")
 
 
-class AgentsForceTest(unittest.TestCase):
+class AgentCase(unittest.TestCase):
+    """The profile's first agent, installed and then edited by hand."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -50,16 +52,22 @@ class AgentsForceTest(unittest.TestCase):
         self.plist = plist
         plist.write_text(rendered + "<!-- edited -->\n")
 
-    def run_stage(self, *flags, path=None):
+    def run_agents(self, *flags, path=None, **extra):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
             "PATH": path or os.environ.get("PATH", "/usr/bin:/bin"),
             "LANG": "en_US.UTF-8",
             **fixture_config.env(),
+            **extra,
         }
-        result = subprocess.run([str(SCRIPT), "update", "agents", *flags], env=env,
-                                capture_output=True, text=True, cwd=self.tmp.name)
+        return subprocess.run([str(SCRIPT), "update", "agents", *flags], env=env,
+                              capture_output=True, text=True, cwd=self.tmp.name, timeout=120)
+
+
+class AgentsForceTest(AgentCase):
+    def run_stage(self, *flags, path=None):
+        result = self.run_agents(*flags, path=path)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout.splitlines()
 
@@ -86,7 +94,8 @@ class AgentsForceTest(unittest.TestCase):
         stubs.mkdir()
         calls = pathlib.Path(self.tmp.name) / "launchctl.log"
         stub = stubs / "launchctl"
-        stub.write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\nexit 0\n')
+        # print: launchd holds no job by that label, as after a bootout.
+        stub.write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n[ "$1" != print ] || exit 113\nexit 0\n')
         stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
         edited = self.plist.read_text()
         lines = self.run_stage("--apply", "--force",
@@ -102,7 +111,73 @@ class AgentsForceTest(unittest.TestCase):
         uid = os.getuid()
         self.assertEqual([call for call in calls.read_text().splitlines()
                           if call.split()[-1].split("/")[-1] in (self.label, f"{self.label}.plist")],
-                         [f"bootout gui/{uid}/{self.label}", f"bootstrap gui/{uid} {self.plist}"])
+                         [f"bootout gui/{uid}/{self.label}", f"print gui/{uid}/{self.label}",
+                          f"bootstrap gui/{uid} {self.plist}"])
+
+
+# launchd after a bootout that returns before the job is gone (sd:6454):
+# print still names $STUB_LABEL $STUB_PRINTS more times, and its bootstrap
+# fails exit 5 until then. Every call is logged.
+UNLOADING_STUB = r"""#!/bin/sh
+echo "$*" >> "$STUB_LOG"
+left=$(cat "$STUB_LOG.left" 2>/dev/null || echo 0)
+case "$1 ${2##*/} ${3:-}" in
+  "bootout $STUB_LABEL "*) echo "$STUB_PRINTS" > "$STUB_LOG.left" ;;
+  "print $STUB_LABEL "*) [ "$left" -gt 0 ] || exit 113
+                        echo $((left - 1)) > "$STUB_LOG.left"
+                        echo "$2 = {" ;;
+  "print "*) exit 113 ;;
+  "bootstrap "*"/$STUB_LABEL.plist") [ "$left" -eq 0 ] || exit 5 ;;
+esac
+exit 0
+"""
+
+
+class BootoutWaitTest(AgentCase):
+    """sd:6454: STALE sd-serve, kev and cswap-auto each failed `launchctl
+    bootstrap` with exit 5 straight after their bootout; a bootstrap seconds
+    later exited 0."""
+
+    def replace(self, prints):
+        """`update agents --apply --force`, whose bootout leaves the job
+        printing PRINTS more times."""
+        stubs = pathlib.Path(self.tmp.name) / "stubs"
+        stubs.mkdir()
+        stub = stubs / "launchctl"
+        stub.write_text(UNLOADING_STUB)
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        self.calls = pathlib.Path(self.tmp.name) / "launchctl.log"
+        return self.run_agents("--apply", "--force",
+                               path=f"{stubs}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+                               STUB_LOG=str(self.calls), STUB_LABEL=self.label,
+                               STUB_PRINTS=str(prints))
+
+    def mine(self):
+        return [call for call in self.calls.read_text().splitlines()
+                if call.split()[-1].split("/")[-1] in (self.label, f"{self.label}.plist")]
+
+    def test_the_bootstrap_waits_until_launchd_lets_the_job_go(self):
+        result = self.replace(prints=2)
+
+        self.assertNotIn("FAILED", result.stdout, result.stdout + result.stderr)
+        uid = os.getuid()
+        self.assertEqual(self.mine(), [f"bootout gui/{uid}/{self.label}"]
+                         + [f"print gui/{uid}/{self.label}"] * 3
+                         + [f"bootstrap gui/{uid} {self.plist}"])
+        self.assertEqual(self.plist.read_text(), self.rendered)
+
+    def test_a_job_that_never_leaves_fails_and_keeps_its_plist(self):
+        """The wait is bounded; past it the bootout is a failure, and the
+        new plist is not put in place, so the next run retries."""
+        edited = self.plist.read_text()
+        result = self.replace(prints=1000)
+
+        uid = os.getuid()
+        self.assertIn(f"  FAILED  launchctl bootout gui/{uid}/{self.label} (still loaded after 10s)",
+                      result.stdout, result.stdout + result.stderr)
+        self.assertNotIn(f"bootstrap gui/{uid} {self.plist}", self.mine())
+        self.assertEqual(self.plist.read_text(), edited)
+        self.assertFalse(self.plist.with_name(self.plist.name + ".new").exists())
 
 
 class ForceHelp(unittest.TestCase):
