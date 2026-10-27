@@ -560,10 +560,12 @@ never touches `/etc` or the Keychain.
        security add-generic-password -a "$(id -un)" -s machine-setup-sudo \
          -T /usr/bin/security -w
 
-   It asks for the password twice. Then list this machine's casks in
+   It asks for the password twice. Then list this machine's casks with
+   a pkg installer, such as `zoom` or `google-drive`, in
    `MACHINE_SETUP_SUDO_CASKS` in `machine-setup.env` (see
-   `machine-setup.env.example`). The weekly `upgrade-report` upgrades
-   only those casks, and only when no terminal is attached. It sets
+   `machine-setup.env.example`). An app-bundle cask needs no sudo.
+   The weekly `upgrade-report` upgrades only those casks, and only
+   when no terminal is attached. It sets
    `SUDO_ASKPASS` to `sudo-askpass.sh`, which prints the item's
    password to sudo. Without the item, the cask stays a "needs sudo"
    finding, as before.
@@ -582,8 +584,9 @@ never touches `/etc` or the Keychain.
    (`brew services restart tailscale`, `pfctl -sr`) and nothing else.
 
 `doctor` checks both on each machine. A missing item or drop-in is a
-`WARN` that names the step, not a failure. So is a drop-in whose brew
-line names another prefix: `sudo -n -l` lists no password-free
+`WARN` that names the step, not a failure. So is an item with no
+`MACHINE_SETUP_SUDO_CASKS` list, and a drop-in whose brew line names
+another prefix: `sudo -n -l` lists no password-free
 `$(brew --prefix)/bin/brew services restart tailscale`.
 
 ## Comparing and filing

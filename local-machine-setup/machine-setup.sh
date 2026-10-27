@@ -5722,6 +5722,18 @@ askpass_upgrade() {
 doctor_unattended_sudo() {
   if sudo_keychain_item; then
     echo "  ok      Keychain item $SUDO_KEYCHAIN (sudo askpass)"
+    # The item does nothing without the list (sd:6474). The ruling: list
+    # the casks with a pkg installer; an app-bundle cask needs no sudo.
+    case "${MACHINE_SETUP_SUDO_CASKS:-}" in
+      "") ds_casks="unset" ;;
+      change-me) ds_casks="is change-me" ;;
+      *) ds_casks= ;;
+    esac
+    if [ -n "$ds_casks" ]; then
+      echo "  WARN    MACHINE_SETUP_SUDO_CASKS $ds_casks — the weekly upgrade defers every cask whose pkg installer calls sudo; list those casks in machine-setup.env, e.g. \"zoom google-drive\" (README: Unattended sudo)"
+    else
+      echo "  ok      MACHINE_SETUP_SUDO_CASKS: $MACHINE_SETUP_SUDO_CASKS"
+    fi
   elif [ "$sk_rc" -eq 44 ]; then
     echo "  WARN    no Keychain item $SUDO_KEYCHAIN — run in a terminal: security add-generic-password -a \"\$(id -un)\" -s $SUDO_KEYCHAIN -T /usr/bin/security -w"
   else
