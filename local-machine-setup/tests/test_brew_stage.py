@@ -27,7 +27,8 @@ FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
 
 # $PYTHONS are installed (three by default), plus $FORMULAE. `pin` and
-# `install` record into $PINS; `list --pinned` reads it.
+# `install` record into $PINS; `list --pinned` reads it, and `unpin` logs
+# into $PINS.unpin and drops the pin.
 BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
   "list --formula") [ -z "$LIST_HANG" ] || stall
                     [ -z "$LIST_RC" ] || exit "$LIST_RC"
@@ -36,6 +37,9 @@ BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
   "list --pinned") [ -z "$PINNED_RC" ] || exit "$PINNED_RC"
                    sed -n 's/^pin //p' "$PINS" 2>/dev/null ;;
   "pin "*|"install "*) echo "$*" >> "$PINS" ;;
+  "unpin "*) echo "$*" >> "$PINS.unpin"
+             grep -vx "pin ${2}" "$PINS" > "$PINS.new" || :
+             mv "$PINS.new" "$PINS" ;;
   --prefix) echo /usr/local ;;
 esac
 exit 0
@@ -108,7 +112,7 @@ class BrewStageTest(unittest.TestCase):
         script = (FOLDER / "machine-setup.sh").read_text()
 
         self.assertNotIn("BREW_PINNED", script)
-        self.assertNotRegex(script, r"brew (un)?pin |list --pinned")
+        self.assertNotRegex(script, r"brew pin ")
 
     def test_the_brew_stage_pins_nothing(self):
         result = self.run_verb("update", "brew", "--apply", formulae="opencode codex jq")
@@ -123,6 +127,49 @@ class BrewStageTest(unittest.TestCase):
         self.assertNotRegex(result.stdout, r"(?m)^pins$")
         self.assertNotIn("unpinned", result.stdout)
         self.assertNotIn("python  :", result.stdout)
+
+    def unpin_calls(self):
+        log = pathlib.Path(f"{self.pins}.unpin")
+        return log.read_text().splitlines() if log.exists() else []
+
+    def test_a_pin_the_old_stage_made_is_unpinned_under_apply(self):
+        """sd:6433 review: a machine the old stage ran on keeps python@3.15
+        pinned, and a bare `brew upgrade` fails on a dependent that needs
+        a newer one. A pin made by hand on another formula stays."""
+        self.pins.write_text("pin python@3.15\npin opencode\npin jq\n")
+        dry = self.run_verb("update", "brew", formulae="opencode jq")
+
+        self.assertIn("DIFFERS python@3.15 pinned", dry.stdout)
+        self.assertIn("DIFFERS opencode pinned", dry.stdout)
+        self.assertNotIn("jq pinned", dry.stdout)
+        self.assertEqual(self.unpin_calls(), [])
+
+        result = self.run_verb("update", "brew", "--apply", formulae="opencode jq")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.unpin_calls(), ["unpin python@3.15", "unpin opencode"])
+        again = self.run_verb("update", "brew", formulae="opencode jq")
+        self.assertNotIn("pinned", again.stdout)
+
+    def test_status_counts_a_pin_the_old_stage_made_as_drift(self):
+        self.pins.write_text("pin python@3.15\n")
+        pinned = self.run_verb("status")
+        self.pins.write_text("")
+        clean = self.run_verb("status")
+
+        self.assertIn("  pinned  : python@3.15", pinned.stdout)
+        self.assertNotIn("pinned  :", clean.stdout)
+        drift = [int(r.stdout.split("drift   : ")[1].split()[0]) for r in (pinned, clean)]
+        self.assertEqual(drift[0] - drift[1], 1)
+
+    def test_a_pin_list_brew_cannot_give_unpins_nothing(self):
+        """sd:3536: a failed list is unknown, not "nothing pinned"."""
+        result = self.run_verb("update", "brew", "--apply", PINNED_RC="1")
+
+        self.assertIn("FAILED  brew stage: brew could not list its pins; none unpinned", result.stdout)
+        self.assertEqual(self.unpin_calls(), [])
+        status = self.run_verb("status", PINNED_RC="1")
+        self.assertIn("pinned  : unknown (brew could not list its pins)", status.stdout)
 
     def test_a_list_brew_cannot_give_changes_nothing(self):
         """sd:3536: read as empty, a failed list installed every formula again."""

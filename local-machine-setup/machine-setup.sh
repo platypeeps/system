@@ -589,6 +589,18 @@ valid_profile() {
 # python under Apple's /bin/bash, which macOS charges instead (sd:6427); the
 # pack dashboard's launcher is pack sd:6444. Until that lands, a python
 # upgrade still drops the dashboard's grant: an accepted risk.
+
+# One-time migration (sd:6433): each formula the old brew stage pinned
+# (python@*, opencode, codex) that is still pinned, one per line. A bare
+# `brew upgrade` fails on a dependent that needs a newer pinned python.
+# Delete it, its stage_brew and cmd_status callers, once every machine's
+# status shows no `pinned` line. Fails when brew cannot list its pins:
+# unknown, not "none pinned" (sd:3536).
+stale_pins() {
+  _sp=$(bound_step 300 brew list --pinned 2>/dev/null) || return 1
+  printf '%s\n' "$_sp" | sed 's|.*/||' | grep -E '^(python@.*|opencode|codex)$' || :
+}
+
 stage_brew() {
   echo "== brew"
   command -v brew >/dev/null 2>&1 || {
@@ -644,6 +656,15 @@ stage_brew() {
   # Every run, not only after an install: the nightly update clears a cask
   # moved by hand, or before this check existed.
   claude_quarantine || note_failure "brew stage: claude keeps com.apple.quarantine; launchd jobs would wait on a Gatekeeper prompt" 1
+
+  if ! pins=$(stale_pins); then
+    note_failure "brew stage: brew could not list its pins; none unpinned" 1
+    return 0
+  fi
+  for f in $pins; do
+    echo "  DIFFERS $f pinned"
+    run bound_step 300 brew unpin "$f"
+  done
 }
 
 # Tools from an upstream GitHub release archive, for a machine where brew
@@ -6172,7 +6193,9 @@ cmd_status() {
     status_line missing "$mc"
     status_line extra "$xc"
     [ -n "$mc$xc" ] || echo "  ok      in sync"
-    for v in "$mt" "$mb" "$xb" "$mc" "$xc"; do
+    sp=$(stale_pins) || sp="unknown (brew could not list its pins)"
+    status_line pinned "$sp"
+    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
