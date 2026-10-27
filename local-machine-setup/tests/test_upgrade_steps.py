@@ -30,10 +30,8 @@ LIB = FOLDER.parent / "lib"
 # One formula is outdated, so upgrade-report runs the sweep. With BREW_HANG
 # set, `brew upgrade` never finishes; with BREW_QUIET, nothing is outdated.
 # BREW_GREEDY_CASK names a cask with `auto_updates true`: brew lists it as
-# outdated only when asked with --greedy. BREW_DEPENDENT names an outdated
-# formula that depends on the pinned one (awscli on python@3.14). STUB_PINNED
-# names the pinned one; not BREW_PINNED, which the script sets, so an exported
-# value would reach the stub as the script's whole list (sd:3542).
+# outdated only when asked with --greedy. STUB_PINNED names an outdated
+# formula pinned by hand, which machine-setup no longer reads (sd:6433).
 # BREW_OUTDATED renames the outdated formula; BREW_UPGRADES_ALL makes
 # `brew upgrade` clear it; BREW_CLEANUP_FAIL fails `brew cleanup`.
 # CLAUDE_LINK and CLAUDE_NEW: `brew upgrade --cask --greedy` relinks the
@@ -78,10 +76,8 @@ case "$*" in
 esac
 case "$*" in
   "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || [ -e "$BREW_LOG.upgraded" ] || echo "${BREW_OUTDATED:-example-formula}"
-                                [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED"
-                                [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
+                                [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED" ;;
   "list --pinned") [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED" ;;
-  "uses --installed --recursive $STUB_PINNED") [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
   "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK"
                                      [ -z "$BREW_PKG" ] || [ -e "$BREW_LOG.pkg" ] || echo "$BREW_PKG" ;;
   "upgrade --cask --greedy") [ -z "$CLAUDE_NEW" ] || ln -sf "$CLAUDE_NEW" "$CLAUDE_LINK" ;;
@@ -245,7 +241,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertRegex(result.stderr, STEP.format("brew upgrade", STALL_BOUND))
         self.assertIn(f"timed out after {STALL_BOUND}s: brew upgrade", result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "list --pinned", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
+                         ["update", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
         self.assertEqual(self.mas_log.read_text(), "upgrade\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
 
@@ -267,7 +263,7 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "list --pinned", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
+                         ["update", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
         self.assertNotIn("claude update", result.stderr)
 
     def test_a_quiet_week_runs_no_native_claude_update(self):
@@ -467,49 +463,18 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("grants", self.brew_calls())
         self.assertIn("ai-apps inventory capture FAILED (exit 1)", result.stdout)
 
-    def test_a_pinned_formula_is_held_not_failed(self):
-        """sd:3062: python@3.14 is pinned, so a newer version is held on
-        purpose; the report says so, and does not count it as left over."""
+    def test_a_hand_pinned_formula_is_left_over_not_held(self):
+        """sd:6433: machine-setup keeps no pins, so the sweep asks brew for
+        none and runs one bare `brew upgrade`; a pin made by hand is brew's
+        to skip, and the report lists it as still outdated."""
         result = self.run_verb("upgrade-report", STUB_PINNED="python@3.14")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        body = result.stdout
-        self.assertIn("held (pinned):\n  python@3.14", body)
-        self.assertNotIn("still outdated (formula) — held back or failed:\n  example-formula\n  python@3.14", body)
-        self.assertEqual(self.findings(result), ["still outdated (formula): example-formula"])
-
-    def test_a_formula_a_pin_holds_back_is_left_out_of_the_upgrade(self):
-        """sd:3329: brew upgrade refused awscli while python@3.14 was pinned
-        and outdated ("You must `brew unpin python@3.14`") and exited 1, so
-        the step failed every week. The sweep now upgrades the rest by name."""
-        result = self.run_verb("upgrade", "--apply", STUB_PINNED="python@3.14", BREW_DEPENDENT="awscli")
-
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        calls = self.brew_calls()
-        self.assertIn("upgrade example-formula", calls)
-        self.assertNotIn("upgrade", calls)
-        self.assertEqual([c for c in calls if c.startswith("upgrade") and "awscli" in c], [])
-        self.assertIn("held    awscli python@3.14", result.stdout)
-
-    def test_the_report_lists_a_formula_a_pin_holds_back_as_held(self):
-        result = self.run_verb("upgrade-report", STUB_PINNED="python@3.14", BREW_DEPENDENT="awscli")
-
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        body = result.stdout
-        self.assertIn("held (pinned):\n  awscli\n  python@3.14", body)
-        self.assertIn("still outdated (formula) — held back or failed:\n  example-formula\n", body)
-        self.assertNotIn("failed steps", body)
-        self.assertEqual(self.findings(result), ["still outdated (formula): example-formula"])
-
-    def test_a_pin_list_brew_cannot_give_upgrades_no_formula(self):
-        """sd:3536: read as no pins, a failed list ran a bare brew upgrade,
-        which a pin's dependent fails (sd:3329)."""
-        result = self.run_verb("upgrade", "--apply", STUB_PINNED="python@3.14",
-                               BREW_DEPENDENT="awscli", BREW_FAIL="list --pinned")
-
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertEqual([c for c in self.brew_calls() if c.startswith("upgrade") and "--cask" not in c], [])
-        self.assertIn("failed steps: brew formula lists", result.stdout)
+        self.assertNotIn("list --pinned", self.brew_calls())
+        self.assertIn("upgrade", self.brew_calls())
+        self.assertNotIn("held (pinned)", result.stdout)
+        self.assertIn("still outdated (formula) — held back or failed:\n  example-formula\n  python@3.14",
+                      result.stdout)
 
     def test_an_outdated_list_that_did_not_answer_is_not_a_quiet_week(self):
         """sd:3536: a failed mas outdated read as nothing outdated."""
@@ -518,15 +483,6 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertNotIn("nothing outdated", result.stdout)
         self.assertIn("outdated (mas): unknown, the list did not answer", result.stdout)
         self.assertIn("outdated list failed (mas)", self.attention(result)[0])
-
-    def test_a_week_with_only_a_pinned_formula_outdated_is_quiet(self):
-        result = self.run_verb("upgrade-report", BREW_QUIET="1", STUB_PINNED="python@3.14")
-
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("nothing outdated", result.stdout)
-        self.assertIn("held (pinned):\n  python@3.14", result.stdout)
-        self.assertEqual(self.sends(), [])
-        self.assertEqual(self.attention(result), [])
 
     def test_a_term_mid_step_exits_without_writing_into_the_removed_temp_dir(self):
         """The job's limit ends the run; the TERM trap used to remove the

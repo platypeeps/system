@@ -176,7 +176,7 @@ Run in order. Pass one as the second argument to run it alone.
 
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
-| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.15: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; the pin follows Homebrew's default python, and `status` names a PATH `python3` of another version, sd:5047; opencode and codex: the pack's merge gate runs a live test against the installed binary, sd:3542; a cask install is not pinned, and codex is a cask on the operator's machines; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed); the `claude-code@latest` cask's `claude` loses `com.apple.quarantine` only when `codesign` verifies it, `spctl` calls it notarized and its team is `Q6L2SF6YDW`, else the stage fails naming the check (sd:4787) | — |
+| `brew` | taps, formulae and casks; it pins no formula (sd:6433): LaunchAgents start python under Apple's `/bin/bash`, which macOS charges instead (sd:6427); the `claude-code@latest` cask's `claude` loses `com.apple.quarantine` only when `codesign` verifies it, `spctl` calls it notarized and its team is `Q6L2SF6YDW`, else the stage fails naming the check (sd:4787) | — |
 | `release` | the `.release` tools: an entry is `ok` when each bin is in `~/.local/bin` (`MACHINE_SETUP_RELEASE_BIN`) and its tag, owner/repo and asset are recorded under the state folder's `release/`, `MISSING` when not, `DIFFERS` when the recorded tag is not the pinned one or the line names another owner/repo or asset; a record that holds the tag alone reinstalls once. `--apply` downloads the archive, checks its `.sha256` when the release publishes one, takes exactly one executable file per bin, moves every bin into place, then writes the record; a failed step installs nothing new and records nothing. Runs right after `brew`, so later stages find what it installs | `curl`, `tar`, `unzip` |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
@@ -497,8 +497,8 @@ a `defaults write` it would have made, or an `extra` line. A would-be action
 alone does not count — `[dry-run] mas install <id>` looked like a note rather
 than a finding, which is why every stage now names what is missing before
 offering to fix it. `tests/test_status_drift.py` fails a `[dry-run]` line with
-no drift word on it or above it. `status` checks taps, formulae, casks and
-pins in a brew block of its own.
+no drift word on it or above it. `status` checks taps, formulae and casks
+in a brew block of its own.
 
 `status --fail-on-drift` exits 1 when anything drifted. A cron job that runs
 it as its last step, after `update --apply`, turns drift the update could not
