@@ -23,6 +23,8 @@ Nothing under launchd can click a prompt, so an ungranted read waits instead of 
     - The cask links to a versioned Caskroom binary; moving from the native `~/.local/bin/claude` to it, or a cask upgrade, needs a fresh grant for the new binary.
 - A LaunchAgent template starts `/bin/bash -c '"$0" ARGS; exit $?' SCRIPT`, so Apple's bash is the process charged, not a Homebrew binary that loses its grant on upgrade (sd:6427).
   - `local-machine-setup/tests/test_launchagent_launchers.py` fails a template that starts or execs into another program.
+- **Apple's `/bin/bash` covers only Apple children under launchd**: Homebrew and uv python under it are charged to themselves (sd:6456).
+  - A non-Apple parent passes its grant on, so cron jobs start under `job-launch`, granted once and never rebuilt.
 - **The vault interpreter is Homebrew python by elimination**, and each binary needs its own grant:
   - `DASHBOARD_PYTHON` in `<config>/project-dashboard/.env`, for `dashboard.sh tile` from a shell;
   - `SD_DASHBOARD_PYTHON` in the LaunchAgent, for the server and the tiles it runs as children;

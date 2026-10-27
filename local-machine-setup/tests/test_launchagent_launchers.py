@@ -64,7 +64,7 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual({name: why for name, why in faults.items() if why}, {})
 
     def test_the_cron_runner_execs_no_program(self):
-        # Every cron plist is [/bin/bash, cron-jobs.sh, exec, JOB]; the
+        # Every cron plist is [job-launch, /bin/bash, cron-jobs.sh, exec, JOB]; the
         # cron stage knows its plists by that shape (cron_plist_ours).
         self.assertEqual(program_execs(REPO / "local-cron-jobs/cron-jobs.sh"), [])
 

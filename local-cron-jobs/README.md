@@ -193,7 +193,16 @@ finds the job file under a non-default root too (sd:2519). A plist installed
 before that names no root, and `verify` reports it `STALE` until `install`
 rewrites it.
 
-Every plist runs `/bin/bash <dir>/local-cron-jobs/cron-jobs.sh exec <name>`.
+Every plist runs `~/.local/libexec/system-tools/job-launch /bin/bash
+<dir>/local-cron-jobs/cron-jobs.sh exec <name>`. Under launchd, Apple's
+`/bin/bash` passes its Full Disk Access only to Apple tools: Homebrew python
+under it is charged to itself and loses its grant on each upgrade.
+`job-launch` (`job-launch.c`) is not an Apple binary, so its one grant covers
+every program a job runs (sd:6456). `install` builds it when it is missing
+and never rebuilds it, because a rebuild drops the grant. Grant it Full Disk
+Access once per machine. After a change to `job-launch.c`, delete the binary,
+run `install`, and grant it again.
+
 The `local-machine-setup` cron stage reads that command to tell its own agents
 from another installer's agent under the same label prefix. It uninstalls only
 its own. Change the command in `write_plist` together with `cron_plist_ours` in
