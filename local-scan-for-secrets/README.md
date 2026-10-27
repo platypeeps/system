@@ -63,13 +63,17 @@ in this mode — the generic defaults are `CRITICAL_EXCLUDE_PATHS` in the
 script. Test files and fixture folders under `~/repos` (`tests/`, `fixtures/`,
 `test_*.py`, `*_test.*`) are skipped in this mode too, so a new fake key in a
 test does not fail the weekly run; a real key pasted into one goes unflagged (sd:5493).
+Claude and Codex transcripts (`~/.claude/projects`, `~/.codex/sessions`,
+`~/.codex/archived_sessions`, Claude Desktop's session dirs) are skipped too: they
+quote keys from tool output and the operator keeps them, so they held the
+weekly alert open; `mask` still masks them (sd:6473).
 Your own additions (and extra sanctioned secrets globs) go in
 `<config>/scan-for-secrets/scan-for-secrets.conf`, outside the checkout
 (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`): copy
 `scan-for-secrets.conf.example` there and set `S4S_EXTRA_CRITICAL_EXCLUDE_PATHS`
 and `S4S_EXTRA_SECRETS_GLOBS`, or point `S4S_CONF` at another file. Rule for adding: not your remote AND no local files of yours
 inside (check gitignored files too — `git status` does not show a
-dropped-in `.env`). ripgrep only, the grep fallback cannot path-exclude.
+dropped-in `.env`). The grep fallback drops these paths from its hits.
 
 `mask` mode rewrites YOUR key values (the `~/.bash_profile` exports pass 2
 searches for) to `<masked:$VARNAME>` — but only in files that are safe to

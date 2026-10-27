@@ -522,6 +522,49 @@ class CriticalTargetsAfterAMissingDir(unittest.TestCase):
                 self.assertIn(".codex/log/codex-tui.log:1:", out)
 
 
+class CriticalSkipsTranscripts(unittest.TestCase):
+    """sd:6473: the weekly critical scan skips Claude and Codex transcripts, which quote keys from tool output
+    and which the operator keeps, so they held the weekly alert open; a key elsewhere, in ~/.codex too, is still
+    reported by both passes."""
+
+    FAKE = "hf_" + "FixtureKeyForTheScanSuite012345678"
+    #: No credential format matches it, so only the env pass can find it.
+    VALUE = "plain" + "Q9x" * 10
+    TRANSCRIPTS = [".claude/projects/-proj/abc.jsonl", ".codex/sessions/2026/10/27/rollout-a.jsonl",
+                   ".codex/archived_sessions/rollout-b.jsonl",
+                   "Library/Application Support/Claude/claude-code-sessions/s/t.json",
+                   "Library/Application Support/Claude/local-agent-mode-sessions/s/t.jsonl"]
+    KEPT = [".codex/log/codex-tui.log", "repos/owner/project/src/e.py"]
+
+    def scan(self, path: str) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            (home / ".config" / "shell").mkdir(parents=True)
+            (home / ".config" / "shell" / "env.sh").write_text(f'export EXAMPLE_API_KEY="{self.VALUE}"\n')
+            (home / "scratch").mkdir()
+            for name in self.TRANSCRIPTS + self.KEPT:
+                (home / name).parent.mkdir(parents=True, exist_ok=True)
+                (home / name).write_text(f'{{"key": "{self.FAKE}", "pasted": "{self.VALUE}"}}\n')
+            env = dict(os.environ, HOME=str(home), SYSTEM_TOOLS_CONFIG=str(home / "config"), PATH=path,
+                       S4S_SCRATCH_ROOTS=str(home / "scratch"), JEV_SECRET_SCAN="0")
+            env.pop("S4S_CONF", None)
+            isolate_jev(env)
+            return subprocess.run(["sh", str(SCRIPT), "critical"], cwd=home, env=env,
+                                  capture_output=True, text=True, timeout=300)
+
+    def test_a_key_in_a_transcript_is_skipped_and_elsewhere_is_reported(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(path)
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 2, out)
+                for name in self.KEPT:
+                    self.assertIn(f"{name}:", out)  # the pattern pass: path:line
+                    self.assertIn(f"YOURS: $EXAMPLE_API_KEY found in: {name}\n", out)
+                for name in self.TRANSCRIPTS:
+                    self.assertNotIn(name, out)
+
+
 class Recorder(BaseHTTPRequestHandler):
     """A stub endpoint that answers a System One request and keeps each body."""
 
