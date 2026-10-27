@@ -583,17 +583,21 @@ valid_profile() {
 
 # ---------------------------------------------------------------- stages ----
 
-# The python@X.Y that PATH python3 runs stays pinned (sd:6463). Each upgrade
+# The python@X.Y that sd-serve's python3 runs stays pinned (sd:6463). Each upgrade
 # is a new Python.app to macOS: the application firewall blocked the new one,
 # so sd-serve admitted no satellite, and its file grants dropped. Upgrade it
 # deliberately: unpin, upgrade, allow the new Python.app in the firewall.
 
-# Where PATH python3 is installed (sys.base_prefix); empty when it fails.
+# Where sd-serve's python3 is installed (sys.base_prefix); empty when it
+# fails. Found on the PATH its installed plist sets, as launchd finds it, else
+# on the caller's (sd:6463 review).
 python_prefix() {
-  python3 -c 'import sys; print(sys.base_prefix)' 2>/dev/null || :
+  _pp=$(plutil -extract EnvironmentVariables.PATH raw -o - \
+    "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-serve.plist" 2>/dev/null) || _pp=$PATH
+  PATH=$_pp python3 -c 'import sys; print(sys.base_prefix)' 2>/dev/null || :
 }
 
-# The Homebrew formula PATH python3 belongs to, as python@X.Y, read from its
+# The Homebrew formula sd-serve's python3 belongs to, as python@X.Y, read from its
 # install path (.../opt/python@X.Y/... or .../Cellar/python@X.Y/...); empty
 # for Apple's, pyenv's or any other python, whose pin is not brew's.
 serving_python() {
@@ -618,7 +622,7 @@ unpinned_python() {
   printf '%s\n' "$_sp" | sed 's|.*/||' | grep -qx "$_py" || echo "$_py"
 }
 
-# The Python.app PATH python3 runs when the application firewall blocks its
+# The Python.app sd-serve's python3 runs when the application firewall blocks its
 # incoming connections; fixing it needs sudo, so it is reported only.
 blocked_python() {
   _fw=/usr/libexec/ApplicationFirewall/socketfilterfw

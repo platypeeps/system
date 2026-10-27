@@ -11,6 +11,7 @@ reports $PY_PREFIX as its install path, and the firewall tool a stub that prints
 """
 
 import pathlib
+import plistlib
 import shutil
 import stat
 import subprocess
@@ -159,6 +160,21 @@ class BrewStageTest(unittest.TestCase):
     def test_the_pin_follows_the_python_on_path(self):
         self.run_verb("update", "brew", "--apply",
                       PY_PREFIX="/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14")
+
+        self.assertEqual(self.pin_calls(), ["pin python@3.14"])
+
+    def test_the_pin_follows_sd_serves_path_not_the_callers(self):
+        """sd:6463 review: sd-serve's plist sets its own PATH; a caller's
+        python3 named another formula."""
+        served = self.stubs.parent / "served"
+        write_exec(served / "python3", PYTHON3_STUB.replace(
+            "${PY_PREFIX:-", "${SERVED_PREFIX:-"))
+        agents = self.home / "Library/LaunchAgents"
+        agents.mkdir(parents=True)
+        (agents / f"{fixture_config.LABEL_PREFIX}.sd-serve.plist").write_bytes(plistlib.dumps(
+            {"Label": "x", "EnvironmentVariables": {"PATH": f"{served}:/usr/bin:/bin"}}))
+        self.run_verb("update", "brew", "--apply",
+                      SERVED_PREFIX="/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14")
 
         self.assertEqual(self.pin_calls(), ["pin python@3.14"])
 
