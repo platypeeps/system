@@ -25,8 +25,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
 
-# $PYTHONS are installed (three by default), plus $FORMULAE. `pin` and
-# `install` record into $PINS; `list --pinned` reads it, and `unpin` logs
+# $PYTHONS are installed (three by default), plus $FORMULAE. `pin`,
+# `install` and a bare `upgrade` record into $PINS; `list --pinned` reads it, and `unpin` logs
 # into $PINS.unpin and drops the pin.
 BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
   "list --formula") [ -z "$LIST_HANG" ] || stall
@@ -35,7 +35,7 @@ BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
   "list --cask"|leaves|tap) : ;;
   "list --pinned") [ -z "$PINNED_RC" ] || exit "$PINNED_RC"
                    sed -n 's/^pin //p' "$PINS" 2>/dev/null ;;
-  "pin "*|"install "*) echo "$*" >> "$PINS" ;;
+  "pin "*|"install "*|upgrade) echo "$*" >> "$PINS" ;;
   "unpin "*) echo "$*" >> "$PINS.unpin"
              grep -vx "pin ${2}" "$PINS" > "$PINS.new" || :
              mv "$PINS.new" "$PINS" ;;
@@ -138,6 +138,12 @@ class BrewStageTest(unittest.TestCase):
         self.run_verb("update", "brew", "--apply")
 
         self.assertEqual(self.pins.read_text().splitlines()[:2], ["pin python@3.15", "install jq"])
+
+    def test_the_upgrade_sweep_pins_the_python_first(self):
+        """Review class pass: a bare `brew upgrade` moved an unpinned python."""
+        self.run_verb("upgrade", "--apply")
+
+        self.assertEqual(self.pins.read_text().splitlines()[:2], ["pin python@3.15", "upgrade"])
 
     def test_the_pin_follows_the_python_on_path(self):
         self.run_verb("update", "brew", "--apply",
