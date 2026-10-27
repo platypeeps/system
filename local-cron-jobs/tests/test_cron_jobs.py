@@ -90,6 +90,12 @@ class Fixture:
         self.jobs.mkdir(parents=True)
         self.home = self.tmp / "home"
         self.home.mkdir()
+        # `install` builds the job launcher when it is missing (sd:6456);
+        # a stub here keeps every other install test off the compiler.
+        launcher = self.home / ".local" / "libexec" / "system-tools" / "job-launch"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\nexec \"$@\"\n")
+        launcher.chmod(0o755)
         self.claude = self.tmp / "claude"
         self.claude.write_text(FAKE_CLAUDE)
         self.claude.chmod(self.claude.stat().st_mode | stat.S_IXUSR)
@@ -3632,6 +3638,66 @@ class UsageTest(unittest.TestCase):
         self.assertEqual(bare.stderr.strip(), helped.stdout.splitlines()[0])
         for verb in ("verify", "exec <job>", "watchdog", "test"):
             self.assertIn(verb, bare.stderr)
+
+
+class JobLaunchTest(unittest.TestCase):
+    """sd:6456. launchd starts job-launch, which runs cron-jobs.sh as a child.
+
+    REGRESSION. Under launchd Apple's /bin/bash passes its Full Disk Access
+    only to Apple tools; Homebrew python under it was charged to itself and
+    lost its grant on each upgrade. `install` builds the launcher once and
+    never rebuilds it: a rebuild changes its code hash and drops its grant.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="manual"\nJOB_COMMAND="true"\n')
+        self.plist = self.fx.home / "Library" / "LaunchAgents" / "local.system-tools.cron.demo.plist"
+        self.launcher = self.fx.home / ".local" / "libexec" / "system-tools" / "job-launch"
+        self.stubs = stub_bin(self.fx.tmp)
+        self.launcher.unlink()
+        self.cc_log = self.fx.tmp / "cc-calls"
+        # A stub compiler: records its arguments and writes the -o file.
+        (self.stubs / "cc").write_text(
+            '#!/bin/sh\necho "$*" >> "$CC_LOG"\n'
+            'while [ $# -gt 0 ]; do [ "$1" = -o ] && { printf x > "$2"; chmod +x "$2"; }; shift; done\n')
+        (self.stubs / "cc").chmod(0o755)
+
+    def install(self):
+        env = {"PATH": self.fx.path(self.stubs), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "CRON_TEST_HELD": "0", "CRON_TEST_RUNS": "0",
+               "CRON_TEST_BOOTSTRAP_COUNT": str(self.fx.tmp / "bootstrap-count"), "CC_LOG": str(self.cc_log)}
+        return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                              env=env, capture_output=True, text=True, timeout=60)
+
+    def test_the_plist_starts_the_launcher_with_apple_bash_as_its_child(self):
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = plistlib.loads(self.plist.read_bytes())["ProgramArguments"]
+        self.assertEqual(args, [str(self.launcher), "/bin/bash",
+                                str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"])
+
+    def test_install_builds_a_missing_launcher_and_names_the_grant(self):
+        result = self.install()
+        self.assertTrue(os.access(self.launcher, os.X_OK), result.stdout + result.stderr)
+        self.assertIn(f"-o {self.launcher} {self.fx.folder / 'job-launch.c'}", self.cc_log.read_text())
+        self.assertIn("grant it Full Disk Access", result.stdout)
+
+    def test_install_never_rebuilds_a_launcher_that_exists(self):
+        self.launcher.write_text("granted")
+        self.launcher.chmod(0o755)
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.cc_log.exists())
+        self.assertEqual(self.launcher.read_text(), "granted")
+
+    def test_a_failed_build_installs_nothing(self):
+        (self.stubs / "cc").write_text("#!/bin/sh\nexit 1\n")
+        result = self.install()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("cannot build", result.stderr)
+        self.assertFalse(self.plist.exists())
 
 
 class ManualScheduleTest(unittest.TestCase):
