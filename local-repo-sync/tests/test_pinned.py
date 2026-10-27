@@ -386,11 +386,73 @@ class HeldLockSyncTest(unittest.TestCase):
         os.utime(lock, (then, then))
         return repo, lock
 
+    def hold(self, f, cwd):
+        """A process named git, as pgrep sees it, running in CWD until the
+        case ends. A symlink keeps sleep's signature, which a
+        copy loses on macOS."""
+        holder = f.tmp / "holder"
+        holder.mkdir(exist_ok=True)
+        git = holder / "git"
+        if not git.exists():
+            git.symlink_to(shutil.which("sleep"))
+        proc = subprocess.Popen([str(git), "300"], cwd=cwd)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        return proc
+
+    def test_a_stale_lock_no_git_process_holds_is_removed_and_pulled(self):
+        """NEW. sd:6480: a lock LOCK_CLEAR_MINUTES old in a checkout no
+        git process works in was left by a git that died. sync removes
+        it, says so, pulls, and exits 0."""
+        f = self.fixture()
+        repo, lock = self.held(f, 1)
+        f.git(repo, "fetch", "-q")
+        want = f.git(repo, "rev-parse", "origin/main")
+
+        result = f.run("sync", expect=0)
+
+        self.assertRegex(result.stdout, r"removed stale \S*/a/proj/\.git/index\.lock,"
+                                        r" 60 min old, no git process in it; pulling again")
+        self.assertFalse(lock.exists(), "sync kept the stale lock")
+        self.assertEqual(want, f.head(repo))
+        self.assertIn("all repos synced", result.stdout)
+
+    def test_an_old_lock_a_git_process_works_in_is_kept(self):
+        """NEW. sd:6480: a git whose cwd is the checkout may hold the lock,
+        so an hour-old lock stays and is skipped as before."""
+        f = self.fixture()
+        repo, lock = self.held(f, 1)
+        self.hold(f, repo)
+        before = f.head(repo)
+
+        result = f.run("sync", expect=0)
+
+        self.assertIn("skipped: 1 checkout(s), a git lock is held", result.stdout)
+        self.assertNotIn("removed", result.stdout)
+        self.assertTrue(lock.exists(), "sync removed a lock a git process may hold")
+        self.assertEqual(before, f.head(repo))
+
+    def test_an_old_lock_is_kept_when_the_process_probe_fails(self):
+        """NEW. sd:6480: lsof failing on a live git is an unknown answer,
+        not "no git here", so the lock stays."""
+        f = self.fixture()
+        _, lock = self.held(f, 1)
+        self.hold(f, f.tmp)
+        (f.bin / "lsof").write_text("#!/bin/sh\nexit 1\n")
+        (f.bin / "lsof").chmod(0o755)
+
+        result = f.run("sync", expect=0)
+
+        self.assertNotIn("removed", result.stdout)
+        self.assertIn("skipped: 1 checkout(s), a git lock is held", result.stdout)
+        self.assertTrue(lock.exists())
+
     def test_a_lock_younger_than_24_hours_is_skipped_with_its_age(self):
         """NEW. Operator ruling on sd:6308: under 24 h is a skip that
         lists the lock's age."""
         f = self.fixture()
-        _, lock = self.held(f, 23)
+        repo, lock = self.held(f, 23)
+        self.hold(f, repo)
 
         result = f.run("sync", expect=0)
 
@@ -405,6 +467,7 @@ class HeldLockSyncTest(unittest.TestCase):
         stays for the operator to remove."""
         f = self.fixture()
         repo, lock = self.held(f, 25)
+        self.hold(f, repo)
         before = f.head(repo)
 
         result = f.run("sync", expect=1)
