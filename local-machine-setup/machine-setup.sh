@@ -583,22 +583,42 @@ valid_profile() {
 
 # ---------------------------------------------------------------- stages ----
 
-# No formula is pinned (sd:6433). Pins held Homebrew python at one build
-# because each upgrade dropped its macOS grants (sd:3062), and opencode and
-# codex under the pack gate's live test (sd:3542). LaunchAgents now start
-# python under Apple's /bin/bash, which macOS charges instead (sd:6427); the
-# pack dashboard's launcher is pack sd:6444. Until that lands, a python
-# upgrade still drops the dashboard's grant: an accepted risk.
+# The python@X.Y that PATH python3 runs stays pinned (sd:6463). Each upgrade
+# is a new Python.app to macOS: the application firewall blocked the new one,
+# so sd-serve admitted no satellite, and its file grants dropped. Upgrade it
+# deliberately: unpin, upgrade, allow the new Python.app in the firewall.
 
-# One-time migration (sd:6433): each formula the old brew stage pinned
-# (python@*, opencode, codex) that is still pinned, one per line. A bare
+# The formula PATH python3 belongs to, as python@X.Y; empty when unknown.
+serving_python() {
+  python3 --version 2>/dev/null | sed -n 's/^Python \([0-9]*\.[0-9]*\)\..*/python@\1/p'
+}
+
+# Each formula an older brew stage pinned (python@* other than the serving
+# one, opencode, codex) that is still pinned, one per line. A bare
 # `brew upgrade` fails on a dependent that needs a newer pinned python.
-# Delete it, its stage_brew and cmd_status callers, once every machine's
-# status shows no `pinned` line. Fails when brew cannot list its pins:
-# unknown, not "none pinned" (sd:3536).
+# Fails when brew cannot list its pins: unknown, not "none pinned" (sd:3536).
 stale_pins() {
   _sp=$(bound_step 300 brew list --pinned 2>/dev/null) || return 1
-  printf '%s\n' "$_sp" | sed 's|.*/||' | grep -E '^(python@.*|opencode|codex)$' || :
+  printf '%s\n' "$_sp" | sed 's|.*/||' | grep -E '^(python@.*|opencode|codex)$' \
+    | grep -vx "$(serving_python)" || :
+}
+
+# The serving python@X.Y when brew has it installed and not pinned.
+unpinned_python() {
+  _py=$(serving_python)
+  [ -n "$_py" ] || return 0
+  _sp=$(bound_step 300 brew list --pinned 2>/dev/null) || return 1
+  printf '%s\n' "$_sp" | sed 's|.*/||' | grep -qx "$_py" || echo "$_py"
+}
+
+# The Python.app PATH python3 runs when the application firewall blocks its
+# incoming connections; fixing it needs sudo, so it is reported only.
+FIREWALL="${MACHINE_SETUP_SOCKETFILTERFW:-/usr/libexec/ApplicationFirewall/socketfilterfw}"
+blocked_python() {
+  [ -x "$FIREWALL" ] || return 0
+  _app=$(python3 -c 'import sys; print(sys.base_prefix + "/Resources/Python.app")' 2>/dev/null) || return 0
+  "$FIREWALL" --listapps 2>/dev/null | grep -A1 -F "$_app" | grep -q 'Block incoming' && echo "$_app"
+  return 0
 }
 
 stage_brew() {
@@ -665,6 +685,16 @@ stage_brew() {
     echo "  DIFFERS $f pinned"
     run bound_step 300 brew unpin "$f"
   done
+  if ! py=$(unpinned_python); then
+    note_failure "brew stage: brew could not list its pins; python not pinned" 1
+    return 0
+  fi
+  if [ -n "$py" ]; then
+    echo "  DIFFERS $py not pinned"
+    run bound_step 300 brew pin "$py"
+  fi
+  bp=$(blocked_python)
+  [ -z "$bp" ] || echo "  DIFFERS firewall blocks $bp; allow it: System Settings > Network > Firewall > Options"
 }
 
 # Tools from an upstream GitHub release archive, for a machine where brew
@@ -6195,7 +6225,11 @@ cmd_status() {
     [ -n "$mc$xc" ] || echo "  ok      in sync"
     sp=$(stale_pins) || sp="unknown (brew could not list its pins)"
     status_line pinned "$sp"
-    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp"; do
+    up=$(unpinned_python) || up="unknown (brew could not list its pins)"
+    status_line unpinned "$up"
+    bp=$(blocked_python)
+    status_line blocked "$bp"
+    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp" "$up" "$bp"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
@@ -7914,6 +7948,7 @@ environment:
   MACHINE_SETUP_TIMEOUT_SUDOERS  tests only: the sudo grace-period drop-in
   MACHINE_SETUP_NSMB_CONF  tests only: the file that stands in for /etc/nsmb.conf
   MACHINE_SETUP_APPLICATIONS_DIR  tests only: the folder the apps scan reads
+  MACHINE_SETUP_SOCKETFILTERFW  tests only: the firewall tool the python check reads
 HELPEOF
       exit 0
       ;;
