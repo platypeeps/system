@@ -70,7 +70,9 @@ GUARD_PATH = shlex.quote(os.path.join(os.path.dirname(os.path.abspath(__file__))
 GUARD = f"test ! -f {GUARD_PATH} || python3 {GUARD_PATH}"
 GUARD_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit"
 #: Claude Code updates in the weekly upgrade only (sd:3033); this stops its background updater.
-ENV = {"DISABLE_AUTOUPDATER": "1"}
+#: macOS charges a tool shell's file access to the shell: Homebrew bash's grant drops on
+#: each upgrade, Apple's /bin/bash keeps one identity (sd:6427). The login shell stays.
+ENV = {"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_SHELL": "/bin/bash"}
 #: The same paths for opencode's read permission, whose `*` also matches `/`.
 OPENCODE_READ_DENY = ["*" + rule[5:-1].removeprefix("//**/").removeprefix("~/").replace("**", "*").lstrip("*")
                       for rule in SECRET_READ_DENY]

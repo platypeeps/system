@@ -583,47 +583,22 @@ valid_profile() {
 
 # ---------------------------------------------------------------- stages ----
 
-# Formulae kept pinned (sd:3062). Homebrew python is ad-hoc signed, so every
-# patch upgrade drops the macOS grants its binary held; the operator unpins
-# and re-grants on purpose. The python@ entry follows Homebrew's default
-# python on purpose: that moves about once a year, relinking python3 to the
-# new version, and the operator then moves the pin and re-grants Full Disk
-# Access; status names a python3 the pin does not match (sd:5047).
-# python@3.12 is left as it is. opencode and codex
-# are listed because the pack's merge gate runs a live test against the
-# installed binary, and the weekly upgrade must not move it under the gate
-# (sd:3542); the upgrade report lists what a pin holds back. A cask install
-# cannot be pinned, so only a formula install is held: codex is a cask on
-# the operator's machines, so its entry holds nothing there (sd:4738).
-BREW_PINNED="python@3.15 opencode codex"
+# No formula is pinned (sd:6433). Pins held Homebrew python at one build
+# because each upgrade dropped its macOS grants (sd:3062), and opencode and
+# codex under the pack gate's live test (sd:3542). LaunchAgents now start
+# python under Apple's /bin/bash, which macOS charges instead (sd:6427); the
+# pack dashboard's launcher is pack sd:6444. Until that lands, a python
+# upgrade still drops the dashboard's grant: an accepted risk.
 
-# Each BREW_PINNED formula that is installed and not pinned, one per line.
-# Fails when brew cannot list either: unknown, not "nothing to pin" (sd:3536).
-unpinned_formulae() {
-  _have=$(bound_step 300 brew list --formula 2>/dev/null) || return 1
-  _pinned=$(bound_step 300 brew list --pinned 2>/dev/null) || return 1
-  for _f in $BREW_PINNED; do
-    printf '%s\n' "$_have" | sed 's|.*/||' | grep -qx "$_f" || continue
-    printf '%s\n' "$_pinned" | sed 's|.*/||' | grep -qx "$_f" || echo "$_f"
-  done
-}
-
-# The drift line when PATH's python3 is not the python@ entry in BREW_PINNED
-# (sd:5047), else nothing: also when no python@ is pinned, it is not
-# installed, or no python3 is on PATH. Fails when brew or python3 cannot
-# answer: unknown, not a match. Reports only; moving the pin is the operator's.
-python_pin_drift() {
-  # shellcheck disable=SC2086 # one word per formula
-  _pp=$(printf '%s\n' $BREW_PINNED | grep '^python@' | head -1)
-  [ -n "$_pp" ] || return 0
-  command -v python3 >/dev/null 2>&1 || return 0
-  _have=$(bound_step 300 brew list --formula 2>/dev/null) || return 1
-  printf '%s\n' "$_have" | sed 's|.*/||' | grep -qx "$_pp" || return 0
-  _pv=$(bound_step 60 python3 --version 2>&1) || return 1
-  _pv=$(printf '%s\n' "$_pv" | sed -n 's/^Python \([0-9]*\.[0-9]*\).*/\1/p')
-  [ -n "$_pv" ] || return 1
-  [ "$_pv" = "${_pp#python@}" ] \
-    || echo "python3 is $_pv, pin is $_pp: move the pin and re-grant Full Disk Access"
+# One-time migration (sd:6433): each formula the old brew stage pinned
+# (python@*, opencode, codex) that is still pinned, one per line. A bare
+# `brew upgrade` fails on a dependent that needs a newer pinned python.
+# Delete it, its stage_brew and cmd_status callers, once every machine's
+# status shows no `pinned` line. Fails when brew cannot list its pins:
+# unknown, not "none pinned" (sd:3536).
+stale_pins() {
+  _sp=$(bound_step 300 brew list --pinned 2>/dev/null) || return 1
+  printf '%s\n' "$_sp" | sed 's|.*/||' | grep -E '^(python@.*|opencode|codex)$' || :
 }
 
 stage_brew() {
@@ -682,17 +657,13 @@ stage_brew() {
   # moved by hand, or before this check existed.
   claude_quarantine || note_failure "brew stage: claude keeps com.apple.quarantine; launchd jobs would wait on a Gatekeeper prompt" 1
 
-  if ! unpinned=$(unpinned_formulae); then
-    note_failure "brew stage: brew could not list its pins; none changed" 1
+  if ! pins=$(stale_pins); then
+    note_failure "brew stage: brew could not list its pins; none unpinned" 1
     return 0
   fi
-  for f in $BREW_PINNED; do
-    if printf '%s\n' "$unpinned" | grep -qx "$f"; then
-      echo "  DIFFERS $f not pinned"
-      run bound_step 300 brew pin "$f"
-    elif printf '%s\n' "$installed" | grep -qx "$f"; then
-      echo "  ok      pinned $f"
-    fi
+  for f in $pins; do
+    echo "  DIFFERS $f pinned"
+    run bound_step 300 brew unpin "$f"
   done
 }
 
@@ -1806,6 +1777,17 @@ agent_replace() { # label, src, dst
 stage_agents() {
   echo "== agents"
   hub_ask
+  # brew services' homebrew.mxcl.herdr starts herdr itself, so macOS charges
+  # every session's file access to herdr, whose grant each upgrade drops;
+  # <prefix>.herdr starts it under Apple's /bin/bash (sd:6427). Reported,
+  # never stopped here: stopping herdr ends every session on the machine.
+  # Until it is stopped, <prefix>.herdr waits: two servers, one socket.
+  # A loaded service's print names it; an exit 0 alone is no evidence.
+  brew_herdr=0
+  if launchctl print "gui/$(id -u)/homebrew.mxcl.herdr" 2>/dev/null | grep -q 'homebrew\.mxcl\.herdr'; then
+    brew_herdr=1
+    echo "  DIFFERS homebrew.mxcl.herdr is loaded — brew services starts herdr itself; run 'brew services stop herdr' (it ends every herdr session), then list $LABEL_PREFIX.herdr in the profile and run 'update agents --apply'"
+  fi
   agents=$(role_agents)
   if [ -z "$agents" ]; then
     echo "  no launch agents in this profile"
@@ -1818,6 +1800,10 @@ stage_agents() {
     # Skipped, not removed: the satellite stage reports one already here.
     if sd_hub_only "$label" && is_satellite && ! hub_holder; then
       echo "  SKIP    $label — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
+      continue
+    fi
+    if [ "$label" = "$LABEL_PREFIX.herdr" ] && [ "$brew_herdr" -eq 1 ]; then
+      echo "  HELD    $label — not started while homebrew.mxcl.herdr runs"
       continue
     fi
     src=$(agent_source "$label")
@@ -5702,28 +5688,7 @@ cmd_upgrade() {
   failed=""
   if command -v brew >/dev/null 2>&1; then
     run_step 600 brew update || failed="$failed, brew update"
-    holds=""
-    # A pin or outdated list brew could not give leaves the formulae as they
-    # are, named as a failed step (sd:3536).
-    if [ "$APPLY" -eq 1 ] && ! holds=$(pinned_holds); then
-      failed="$failed, brew formula lists"
-    elif [ -z "$holds" ]; then
-      sweep_step "brew upgrade" 1800 brew upgrade
-    else
-      # One line: a newline in an awk -v value is an error in macOS awk.
-      holds=$(printf '%s\n' "$holds" | tr '\n' ' ' | sed 's/ $//')
-      echo "  held    $holds"
-      if ! rest=$(run_step 300 brew outdated --formula --quiet 2>/dev/null); then
-        failed="$failed, brew formula lists"
-        rest=""
-      fi
-      rest=$(printf '%s\n' "$rest" | awk -v holds="$holds" 'BEGIN { n = split(holds, h, " "); for (i = 1; i <= n; i++) held[h[i]] = 1 }
-          NF { name = $0; sub(/.*\//, "", name); if (!(name in held)) print }')
-      if [ -n "$rest" ]; then
-        # shellcheck disable=SC2086 # one word per formula name
-        sweep_step "brew upgrade" 1800 brew upgrade $rest
-      fi
-    fi
+    sweep_step "brew upgrade" 1800 brew upgrade
     # --greedy takes casks with `auto_updates true` too, whose own updaters
     # stage_macos turns off where the app holds a TCC grant (sd:3062). It
     # moves Claude Code too, the claude-code@latest cask, whose own updater
@@ -5750,27 +5715,6 @@ cmd_upgrade() {
   fi
 }
 
-# pinned_holds: what a pin holds back, one sorted short name per line: each
-# pinned formula, and each installed formula that depends on a pinned formula
-# with a newer version. brew upgrade refuses such a dependent ("You must `brew
-# unpin python@3.14` as installing awscli requires the latest version of
-# pinned dependencies") and exits 1, so cmd_upgrade leaves these out and
-# upgrades the rest by name (sd:3329). Fails when a read fails: what a pin
-# holds is then unknown, not nothing (sd:3536).
-pinned_holds() {
-  _pins=$(run_step 300 brew list --pinned 2>/dev/null) || return 1
-  [ -n "$_pins" ] || return 0
-  _outdated=$(run_step 300 brew outdated --formula --quiet 2>/dev/null) || return 1
-  _holds=$(printf '%s\n' "$_pins" | sed 's|.*/||')
-  for _p in $_holds; do
-    printf '%s\n' "$_outdated" | sed 's|.*/||' | grep -qx "$_p" || continue
-    _uses=$(run_step 300 brew uses --installed --recursive "$_p" 2>/dev/null) || return 1
-    _holds="$_holds
-$_uses"
-  done
-  printf '%s\n' "$_holds" | sed 's|.*/||; /^$/d' | sort -u
-}
-
 # outdated_lists before|after: what brew and mas call outdated, one sorted
 # file per kind under $tmp. Each query is a bounded step; one that fails or
 # times out leaves its file empty and names its kind in unknown.<when>: an
@@ -5779,13 +5723,7 @@ $_uses"
 outdated_lists() {
   : > "$tmp/unknown.$1"
   run_step 300 brew outdated --formula --quiet > "$tmp/raw" 2>/dev/null || echo formula >> "$tmp/unknown.$1"
-  sort "$tmp/raw" > "$tmp/formula.all.$1"
-  # A pinned formula with a newer version is held on purpose (BREW_PINNED),
-  # not left over: it and the formulae it holds back go to their own list,
-  # out of the counts.
-  pinned_holds > "$tmp/pinned" || echo formula >> "$tmp/unknown.$1"
-  comm -12 "$tmp/formula.all.$1" "$tmp/pinned" > "$tmp/held.$1"
-  comm -23 "$tmp/formula.all.$1" "$tmp/pinned" > "$tmp/formula.$1"
+  sort "$tmp/raw" > "$tmp/formula.$1"
   run_step 300 brew outdated --cask --greedy --quiet > "$tmp/raw" 2>/dev/null || echo cask >> "$tmp/unknown.$1"
   sort "$tmp/raw" > "$tmp/cask.$1"
   : > "$tmp/mas.$1"
@@ -5818,14 +5756,6 @@ sudo_commands() {
     mas) awk '{ id = $1; $1 = ""; sub(/^ /, "")
                 if (id ~ /^[0-9]+$/) print "mas upgrade " id "  # " $0; else print "mas upgrade  # " id " " $0 }' "$tmp/mas.after" ;;
   esac
-}
-
-# held_section before|after: the pinned formulae a newer version waits for.
-held_section() {
-  [ -s "$tmp/held.$1" ] || return 0
-  printf '\nheld (pinned):\n'
-  sed 's/^/  /' "$tmp/held.$1"
-  printf '  unpin with brew unpin <formula>, upgrade, then re-grant its binary\n'
 }
 
 # grant_paths before|after: the paths whose change drops a macOS grant, one
@@ -5944,7 +5874,6 @@ cmd_upgrade_report() {
       && [ ! -s "$tmp/unknown.before" ]; then
     rc=0
     echo "nothing outdated — no upgrade"
-    held_section before
     inventory_capture || rc=1
     cat "$tmp/inventory"
     grants_report
@@ -5967,7 +5896,6 @@ cmd_upgrade_report() {
   {
     printf 'machine-setup upgrade report — %s on %s\n' \
       "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)"
-    held_section after
     for kind in formula cask mas release; do
       # A list that did not answer, before or after, has no upgraded diff.
       if grep -qx "$kind" "$tmp/unknown.before" "$tmp/unknown.after"; then
@@ -6265,13 +6193,9 @@ cmd_status() {
     status_line missing "$mc"
     status_line extra "$xc"
     [ -n "$mc$xc" ] || echo "  ok      in sync"
-    up=$(unpinned_formulae) || up="unknown (brew could not list its pins)"
-    echo "pins"
-    status_line unpinned "$up"
-    [ -n "$up" ] || echo "  ok      $BREW_PINNED pinned or not installed"
-    pd=$(python_pin_drift) || pd="python3 version unknown (brew or python3 did not answer)"
-    status_line python "$pd"
-    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$up" "$pd"; do
+    sp=$(stale_pins) || sp="unknown (brew could not list its pins)"
+    status_line pinned "$sp"
+    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else

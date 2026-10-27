@@ -176,7 +176,7 @@ Run in order. Pass one as the second argument to run it alone.
 
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
-| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.15: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; the pin follows Homebrew's default python, and `status` names a PATH `python3` of another version, sd:5047; opencode and codex: the pack's merge gate runs a live test against the installed binary, sd:3542; a cask install is not pinned, and codex is a cask on the operator's machines; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed); the `claude-code@latest` cask's `claude` loses `com.apple.quarantine` only when `codesign` verifies it, `spctl` calls it notarized and its team is `Q6L2SF6YDW`, else the stage fails naming the check (sd:4787) | — |
+| `brew` | taps, formulae and casks; it pins no formula (sd:6433): LaunchAgents start python under Apple's `/bin/bash`, which macOS charges instead (sd:6427); a pin the old stage made (`python@*`, `opencode`, `codex`) reads `DIFFERS <formula> pinned`, `--apply` runs `brew unpin`, and `status` counts it, until every machine shows none; the `claude-code@latest` cask's `claude` loses `com.apple.quarantine` only when `codesign` verifies it, `spctl` calls it notarized and its team is `Q6L2SF6YDW`, else the stage fails naming the check (sd:4787) | — |
 | `release` | the `.release` tools: an entry is `ok` when each bin is in `~/.local/bin` (`MACHINE_SETUP_RELEASE_BIN`) and its tag, owner/repo and asset are recorded under the state folder's `release/`, `MISSING` when not, `DIFFERS` when the recorded tag is not the pinned one or the line names another owner/repo or asset; a record that holds the tag alone reinstalls once. `--apply` downloads the archive, checks its `.sha256` when the release publishes one, takes exactly one executable file per bin, moves every bin into place, then writes the record; a failed step installs nothing new and records nothing. Runs right after `brew`, so later stages find what it installs | `curl`, `tar`, `unzip` |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
@@ -190,7 +190,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
 | `macos` | turn self-update off in installed apps that hold a TCC grant, set the screen saver idle time to 0 on every profile (`defaults -currentHost`, no manifest line), then apply `defaults` settings | `python3` |
-| `tooling` | fnm node versions, rtk hooks, a missing `claude` as `MISSING` naming the `claude-code@latest` cask (sd:4738), the Claude Code HUD (claude-hud plugin, `local-statusline` as `statusLine`, and a seeded display config when none exists), the `claude_settings.py` baseline merged into `~/.claude/settings.json` (with `checkout_guard.py`, the PreToolUse hook that refuses agent writes in the system and pack checkouts, sd:6001) and its secret-read denies into opencode's `opencode.json` (adds missing entries only, after a backup), claude-mem's `CLAUDE_MEM_WORK_STATE_ENABLED` held at `"false"` where `~/.claude-mem/settings.json` exists (sd:5995), the mailto handler, the global npm CLIs; node versions, the handler and the CLIs come from `.node`, `.mailto` and `.npm` | `fnm`, `npm`, `rtk`, `claude`, `opencode`, `duti` |
+| `tooling` | fnm node versions, rtk hooks, a missing `claude` as `MISSING` naming the `claude-code@latest` cask (sd:4738), the Claude Code HUD (claude-hud plugin, `local-statusline` as `statusLine`, and a seeded display config when none exists), the `claude_settings.py` baseline merged into `~/.claude/settings.json` (with `CLAUDE_CODE_SHELL=/bin/bash`, so the Bash tool's file access is charged to Apple's bash, sd:6427, and `checkout_guard.py`, the PreToolUse hook that refuses agent writes in the system and pack checkouts, sd:6001) and its secret-read denies into opencode's `opencode.json` (adds missing entries only, after a backup), claude-mem's `CLAUDE_MEM_WORK_STATE_ENABLED` held at `"false"` where `~/.claude-mem/settings.json` exists (sd:5995), the mailto handler, the global npm CLIs; node versions, the handler and the CLIs come from `.node`, `.mailto` and `.npm` | `fnm`, `npm`, `rtk`, `claude`, `opencode`, `duti` |
 | `system` | useLS, sudo grace period, firewall + stealth (needs sudo once), 700 on the credential dirs, `soft=yes` and `kloglevel=1` under `[default]` in `/etc/nsmb.conf` so a dead NAS SMB session cannot hang shutdown (adds missing keys after a dated backup, keeps every other line, a key set another way is `DIFFERS`; applies at the next mount, sd:4843), Spotlight privacy exclusions from `<profile>.spotlight` | `plutil`, `PlistBuddy`, `launchctl` |
 | `obsidian` | report vault plugins vs `<profile>.obsidian` (report-only) | `python3` |
 | `iterm2` | point iTerm2 at the synced prefs folder in `<profile>.iterm2` | — |
@@ -355,6 +355,11 @@ a narrower glob, so `candidates agent` reported `0 on this machine` while two
 were running. One `owned_agent_plists` helper now answers for both `capture`
 and `candidates`, so they cannot drift apart.
 
+`examples/launchagents/local.system-tools.herdr.plist` starts the herdr server as `/bin/bash -c '<herdr> server; exit $?'`, in place of brew services' `homebrew.mxcl.herdr`.
+macOS then charges each session's file access to Apple's bash, not to herdr, whose grant each upgrade drops (sd:6427).
+The `agents` stage reports a loaded `homebrew.mxcl.herdr` as `DIFFERS` and holds `<prefix>.herdr` (`HELD`) while it runs: two servers would contend for one socket.
+It never stops herdr itself; `brew services stop herdr` ends every herdr session, so the operator runs it.
+
 ### The sd hub and its satellites
 
 One machine runs each profile.
@@ -363,6 +368,7 @@ A profile with a `.satellite` file is a satellite of that hub.
 The pack's `lib/sd_db` holds the server, its refusals and `hub.json` (`serve.py`, `hub.py`).
 
 On the hub, `local.system-tools.sd-serve` runs the pack's `bin/sd-db serve`, the tailnet listener on port 8769.
+It starts as `/bin/bash -c '"$0" serve; exit $?' <pack>/bin/sd-db`, so macOS charges its file access to Apple's bash, not to Homebrew python, whose grant each upgrade drops (sd:6427).
 It admits only the untagged nodes of the node's owner, by `tailscale whois`, and carries no token.
 
 1. Copy `examples/launchagents/local.system-tools.sd-serve.plist` to the config folder's `launchagents/`.
@@ -491,8 +497,8 @@ a `defaults write` it would have made, or an `extra` line. A would-be action
 alone does not count — `[dry-run] mas install <id>` looked like a note rather
 than a finding, which is why every stage now names what is missing before
 offering to fix it. `tests/test_status_drift.py` fails a `[dry-run]` line with
-no drift word on it or above it. `status` checks taps, formulae, casks and
-pins in a brew block of its own.
+no drift word on it or above it. `status` checks taps, formulae and casks
+in a brew block of its own.
 
 `status --fail-on-drift` exits 1 when anything drifted. A cron job that runs
 it as its last step, after `update --apply`, turns drift the update could not

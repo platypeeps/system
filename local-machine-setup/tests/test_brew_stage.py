@@ -1,14 +1,14 @@
-"""machine-setup keeps Homebrew python pinned (sd:3062).
+"""The brew stage: taps, formulae and casks, and no pins (sd:6433).
 
-Homebrew python is ad-hoc signed, so every patch upgrade drops the macOS
-grants its binary held. The operator unpins and re-grants on purpose, so the
-brew stage converges `brew pin python@3.15`, and `status` counts an unpinned
-one as drift. python@3.12 stays as it is. The pin follows Homebrew's default
-python, so `status` names a PATH python3 of another version (sd:5047).
+machine-setup pinned Homebrew python, opencode and codex (sd:3062,
+sd:3542). LaunchAgents now start python under Apple's /bin/bash
+(sd:6427), so its grant no longer rides on one Homebrew build, and the
+operator removed every pin. A pin the stage made would come back on the
+next run, so these cases fail one.
 
 The script runs from a copy of this folder under a temporary root; `brew` is
-a stub that keeps its pins in a file, and `python3` a stub that prints
-$PY_VERSION.
+a stub that logs each install and pin in a file, and `python3` a stub that
+prints $PY_VERSION.
 """
 
 import pathlib
@@ -26,8 +26,9 @@ HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
 
-# $PYTHONS are installed (three by default), plus $FORMULAE. `pin` records
-# into $PINS; `list --pinned` reads it.
+# $PYTHONS are installed (three by default), plus $FORMULAE. `pin` and
+# `install` record into $PINS; `list --pinned` reads it, and `unpin` logs
+# into $PINS.unpin and drops the pin.
 BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
   "list --formula") [ -z "$LIST_HANG" ] || stall
                     [ -z "$LIST_RC" ] || exit "$LIST_RC"
@@ -36,6 +37,9 @@ BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
   "list --pinned") [ -z "$PINNED_RC" ] || exit "$PINNED_RC"
                    sed -n 's/^pin //p' "$PINS" 2>/dev/null ;;
   "pin "*|"install "*) echo "$*" >> "$PINS" ;;
+  "unpin "*) echo "$*" >> "$PINS.unpin"
+             grep -vx "pin ${2}" "$PINS" > "$PINS.new" || :
+             mv "$PINS.new" "$PINS" ;;
   --prefix) echo /usr/local ;;
 esac
 exit 0
@@ -61,7 +65,7 @@ def write_exec(path, body):
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-class BrewPinTest(unittest.TestCase):
+class BrewStageTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -98,63 +102,74 @@ class BrewPinTest(unittest.TestCase):
                               capture_output=True, text=True, cwd=self.tmp.name,
                               stdin=subprocess.DEVNULL, timeout=120)
 
-    def test_the_brew_stage_pins_python_and_leaves_3_12(self):
-        result = self.run_verb("update", "brew", "--apply")
+    def pin_calls(self):
+        text = self.pins.read_text() if self.pins.exists() else ""
+        return [line for line in text.splitlines() if line.startswith("pin ")]
 
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.pins.read_text().splitlines(), ["pin python@3.15"])
+    def test_the_script_keeps_no_pin_list(self):
+        """sd:6433: LaunchAgents start python under /bin/bash (sd:6427), so
+        no Homebrew formula is held at a version for its grant any more."""
+        script = (FOLDER / "machine-setup.sh").read_text()
 
-        again = self.run_verb("update", "brew", "--apply")
+        self.assertNotIn("BREW_PINNED", script)
+        self.assertNotRegex(script, r"brew pin ")
 
-        self.assertIn("ok      pinned python@3.15", again.stdout)
-        self.assertEqual(self.pins.read_text().splitlines(), ["pin python@3.15"])
-
-    def test_the_brew_stage_pins_the_agent_clis_the_pack_gate_runs(self):
-        # REGRESSION sd:3542: the weekly upgrade moved opencode under the pack gate's live test.
+    def test_the_brew_stage_pins_nothing(self):
         result = self.run_verb("update", "brew", "--apply", formulae="opencode codex jq")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.pins.read_text().splitlines(),
-                         ["pin python@3.15", "pin opencode", "pin codex"])
+        self.assertEqual(self.pin_calls(), [])
+        self.assertNotIn("pinned", result.stdout)
 
-    def test_status_counts_an_unpinned_python_as_drift(self):
-        unpinned = self.run_verb("status")
-        self.pins.write_text("pin python@3.15\n")
-        pinned = self.run_verb("status")
+    def test_status_reports_no_pins_and_no_python_version(self):
+        result = self.run_verb("status", PY_VERSION="Python 3.16.0")
 
-        self.assertIn("unpinned: python@3.15", unpinned.stdout)
-        self.assertNotIn("unpinned", pinned.stdout)
-        before = int(unpinned.stdout.split("drift   : ")[1].split()[0])
-        after = int(pinned.stdout.split("drift   : ")[1].split()[0])
-        self.assertEqual(before - after, 1)
-
-
-    def drift(self, result):
-        return int(result.stdout.split("drift   : ")[1].split()[0])
-
-    def test_status_names_a_python3_that_is_not_the_pinned_python(self):
-        """sd:5047: Homebrew's default python moved to 3.15 and relinked
-        python3 off the pinned 3.14, which dropped its Full Disk Access."""
-        self.pins.write_text("pin python@3.15\n")
-        moved = self.run_verb("status", PY_VERSION="Python 3.16.0")
-        same = self.run_verb("status", PY_VERSION="Python 3.15.2")
-
-        self.assertIn("  python  : python3 is 3.16, pin is python@3.15: move the pin and re-grant "
-                      "Full Disk Access", moved.stdout)
-        self.assertNotIn("python3 is", same.stdout)
-        self.assertEqual(self.drift(moved) - self.drift(same), 1)
-
-    def test_a_python3_that_cannot_answer_is_unknown(self):
-        self.pins.write_text("pin python@3.15\n")
-        result = self.run_verb("status", PY_RC="1")
-
-        self.assertIn("  python  : python3 version unknown (brew or python3 did not answer)", result.stdout)
-
-    def test_no_pinned_python_installed_checks_no_python3(self):
-        result = self.run_verb("status", PYTHONS="python@3.12", PY_VERSION="Python 3.16.0")
-
+        self.assertNotRegex(result.stdout, r"(?m)^pins$")
+        self.assertNotIn("unpinned", result.stdout)
         self.assertNotIn("python  :", result.stdout)
 
+    def unpin_calls(self):
+        log = pathlib.Path(f"{self.pins}.unpin")
+        return log.read_text().splitlines() if log.exists() else []
+
+    def test_a_pin_the_old_stage_made_is_unpinned_under_apply(self):
+        """sd:6433 review: a machine the old stage ran on keeps python@3.15
+        pinned, and a bare `brew upgrade` fails on a dependent that needs
+        a newer one. A pin made by hand on another formula stays."""
+        self.pins.write_text("pin python@3.15\npin opencode\npin jq\n")
+        dry = self.run_verb("update", "brew", formulae="opencode jq")
+
+        self.assertIn("DIFFERS python@3.15 pinned", dry.stdout)
+        self.assertIn("DIFFERS opencode pinned", dry.stdout)
+        self.assertNotIn("jq pinned", dry.stdout)
+        self.assertEqual(self.unpin_calls(), [])
+
+        result = self.run_verb("update", "brew", "--apply", formulae="opencode jq")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.unpin_calls(), ["unpin python@3.15", "unpin opencode"])
+        again = self.run_verb("update", "brew", formulae="opencode jq")
+        self.assertNotIn("pinned", again.stdout)
+
+    def test_status_counts_a_pin_the_old_stage_made_as_drift(self):
+        self.pins.write_text("pin python@3.15\n")
+        pinned = self.run_verb("status")
+        self.pins.write_text("")
+        clean = self.run_verb("status")
+
+        self.assertIn("  pinned  : python@3.15", pinned.stdout)
+        self.assertNotIn("pinned  :", clean.stdout)
+        drift = [int(r.stdout.split("drift   : ")[1].split()[0]) for r in (pinned, clean)]
+        self.assertEqual(drift[0] - drift[1], 1)
+
+    def test_a_pin_list_brew_cannot_give_unpins_nothing(self):
+        """sd:3536: a failed list is unknown, not "nothing pinned"."""
+        result = self.run_verb("update", "brew", "--apply", PINNED_RC="1")
+
+        self.assertIn("FAILED  brew stage: brew could not list its pins; none unpinned", result.stdout)
+        self.assertEqual(self.unpin_calls(), [])
+        status = self.run_verb("status", PINNED_RC="1")
+        self.assertIn("pinned  : unknown (brew could not list its pins)", status.stdout)
 
     def test_a_list_brew_cannot_give_changes_nothing(self):
         """sd:3536: read as empty, a failed list installed every formula again."""
@@ -165,15 +180,6 @@ class BrewPinTest(unittest.TestCase):
                       result.stdout)
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertFalse(self.pins.exists(), self.pins.read_text() if self.pins.exists() else "")
-
-    def test_a_pin_list_brew_cannot_give_pins_nothing(self):
-        """sd:3536: read as nothing pinned, a failed list pinned again."""
-        result = self.run_verb("update", "brew", "--apply", PINNED_RC="1")
-
-        self.assertIn("FAILED  brew stage: brew could not list its pins; none changed", result.stdout)
-        self.assertFalse(self.pins.exists(), self.pins.read_text() if self.pins.exists() else "")
-        status = self.run_verb("status", PINNED_RC="1")
-        self.assertIn("unpinned: unknown (brew could not list its pins)", status.stdout)
 
     def test_a_brew_call_that_hangs_ends_at_its_bound_and_names_itself(self):
         """sd:3536: an unattended brew stage bounds each brew call."""

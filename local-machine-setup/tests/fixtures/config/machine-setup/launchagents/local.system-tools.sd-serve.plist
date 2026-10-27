@@ -6,8 +6,10 @@
 	<string>@LABEL@</string>
 	<key>ProgramArguments</key>
 	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>"$0" serve; exit $?</string>
 		<string>@HOME@/repos/platypeeps/sd-ai-command-pack/bin/sd-db</string>
-		<string>serve</string>
 	</array>
 	<key>EnvironmentVariables</key>
 	<dict>
