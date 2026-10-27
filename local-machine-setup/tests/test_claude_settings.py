@@ -166,14 +166,23 @@ class ClaudeSettingsBaseline(SyntheticHome):
         self.settings.write_text("{}\n")
         self.run_tooling("--apply")
 
-        self.assertEqual(json.loads(self.settings.read_text())["env"], {"DISABLE_AUTOUPDATER": "1"})
+        self.assertEqual(json.loads(self.settings.read_text())["env"].get("DISABLE_AUTOUPDATER"), "1")
+
+    def test_a_fresh_baseline_runs_the_tool_shell_as_apple_bash(self):
+        """sd:6427: macOS charges a tool shell's file access to it; Homebrew
+        bash's grant drops on each upgrade, Apple's /bin/bash keeps one."""
+        self.settings.write_text("{}\n")
+        self.run_tooling("--apply")
+
+        self.assertEqual(json.loads(self.settings.read_text())["env"].get("CLAUDE_CODE_SHELL"), "/bin/bash")
 
     def test_an_operators_updater_setting_is_left_alone(self):
         self.settings.write_text(json.dumps({"env": {"DISABLE_AUTOUPDATER": "0", "OTHER": "x"}}) + "\n")
         out = self.run_tooling("--apply")
 
         self.assertNotIn("env.DISABLE_AUTOUPDATER", out)
-        self.assertEqual(json.loads(self.settings.read_text())["env"], {"DISABLE_AUTOUPDATER": "0", "OTHER": "x"})
+        self.assertEqual(json.loads(self.settings.read_text())["env"],
+                         {"DISABLE_AUTOUPDATER": "0", "OTHER": "x", "CLAUDE_CODE_SHELL": "/bin/bash"})
 
     def test_a_second_apply_changes_nothing(self):
         self.run_tooling("--apply")
