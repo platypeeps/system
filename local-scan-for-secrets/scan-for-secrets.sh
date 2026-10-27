@@ -230,11 +230,14 @@ targets() {
   done
   [ -d bin ]   && printf 'bin\n'
   [ -d repos ] && printf 'repos\n'
+  # `if`, not `[ -d ] &&`: a missing last dir left the loop at status 1, and
+  # set -e ended the list there under $(targets), so the grep fallback never
+  # scanned the session logs (sd:6490).
   printf '%s\n' "$HOME_CONFIG_DIRS" | while IFS= read -r d; do
-    [ -d "$d" ] && printf '%s\n' "$d"
+    if [ -d "$d" ]; then printf '%s\n' "$d"; fi
   done
   printf '%s\n' "$AI_LOG_DIRS" | while IFS= read -r d; do
-    [ -d "$d" ] && printf '%s\n' "$d"
+    if [ -d "$d" ]; then printf '%s\n' "$d"; fi
   done
   agent_scratch_dirs
   return 0

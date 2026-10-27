@@ -496,6 +496,32 @@ class CriticalSkipsTestFiles(unittest.TestCase):
             self.assertNotIn(f"repos/owner/project/{name}", out)
 
 
+class CriticalTargetsAfterAMissingDir(unittest.TestCase):
+    """sd:6490: a missing last config dir left the target list's loop at status 1, and set -e then ended the
+    list there, so the grep fallback never scanned the AI session logs."""
+
+    FAKE = "hf_" + "FixtureKeyForTheScanSuite012345678"
+
+    def test_the_session_logs_are_scanned_without_the_config_dirs(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary).resolve()
+                (home / "scratch").mkdir()
+                # A target before the config dirs: with none, the list was empty and grep searched all of $HOME.
+                (home / "repos").mkdir()
+                (home / ".codex" / "log").mkdir(parents=True)
+                (home / ".codex" / "log" / "codex-tui.log").write_text(f'key = "{self.FAKE}"\n')
+                env = dict(os.environ, HOME=str(home), SYSTEM_TOOLS_CONFIG=str(home / "config"), PATH=path,
+                           S4S_SCRATCH_ROOTS=str(home / "scratch"), JEV_SECRET_SCAN="0")
+                env.pop("S4S_CONF", None)
+                isolate_jev(env)
+                result = subprocess.run(["sh", str(SCRIPT), "critical"], cwd=home, env=env,
+                                        capture_output=True, text=True, timeout=300)
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 2, out)
+                self.assertIn(".codex/log/codex-tui.log:1:", out)
+
+
 class Recorder(BaseHTTPRequestHandler):
     """A stub endpoint that answers a System One request and keeps each body."""
 
