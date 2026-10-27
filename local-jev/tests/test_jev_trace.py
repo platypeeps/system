@@ -220,7 +220,9 @@ class ACollectorThatFails(TraceCase):
         did = jev_trace.export({"primitive": "noul"},
                                {"JEV_TRACES_URL": url, "JEV_TRACES_TIMEOUT": "0.3"})
         self.assertEqual(did, jev_trace.FAILED)
-        self.assertLess(time.monotonic() - started, 1.0)
+        # The trickle lasts 3 s; a ceiling below it with room for a loaded
+        # machine still tells the bound from the whole body (sd:6469).
+        self.assertLess(time.monotonic() - started, 2.0)
 
     def test_export_never_raises(self):
         self.assertEqual(jev_trace.export({"primitive": "noul"},

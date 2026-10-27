@@ -682,7 +682,10 @@ class TheCallerDoesNotWait(CompareCase):
                                 env=env, timeout=30)
         elapsed = time.monotonic() - started
         self.assertEqual((result.returncode, result.stdout), (0, "0.97\n"), result.stderr)
-        self.assertLess(elapsed, 2.5, "the caller waited for the arm")
+        # A caller that waited for the arm took at least its delay; below
+        # that is the caller's own start-up, which a loaded machine slows
+        # (sd:6469).
+        self.assertLess(elapsed, Arm.delay, "the caller waited for the arm")
         kev = self.by_arm(self.wait_rows(2))["kev"]
         self.assertGreaterEqual(kev["duration_ms"], 4000)
 
