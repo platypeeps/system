@@ -631,13 +631,14 @@ blocked_python() {
   return 0
 }
 
-# Pin the serving python when it is not; fails when brew cannot list its pins.
-# Runs before anything that installs or upgrades formulae (sd:6463 review).
+# Pin the serving python when it is not; fails when brew cannot list its pins
+# or the pin fails. Runs before anything that installs or upgrades formulae,
+# and those are skipped when it fails (sd:6463 review).
 pin_serving_python() {
   _py=$(unpinned_python) || return 1
   [ -n "$_py" ] || return 0
   echo "  DIFFERS $_py not pinned"
-  run bound_step 300 brew pin "$_py"
+  run_ok bound_step 300 brew pin "$_py"
 }
 
 stage_brew() {
@@ -658,7 +659,7 @@ stage_brew() {
 
   # Before any install: one that needs a newer python would upgrade it first.
   if ! pin_serving_python; then
-    note_failure "brew stage: brew could not list its pins; nothing changed" 1
+    note_failure "brew stage: the serving python is not pinned; nothing changed" 1
     return 0
   fi
 
@@ -5735,8 +5736,11 @@ cmd_upgrade() {
   failed=""
   if command -v brew >/dev/null 2>&1; then
     run_step 600 brew update || failed="$failed, brew update"
-    pin_serving_python || failed="$failed, brew pin list"
-    sweep_step "brew upgrade" 1800 brew upgrade
+    if pin_serving_python; then
+      sweep_step "brew upgrade" 1800 brew upgrade
+    else
+      failed="$failed, python pin (brew upgrade skipped)"
+    fi
     # --greedy takes casks with `auto_updates true` too, whose own updaters
     # stage_macos turns off where the app holds a TCC grant (sd:3062). It
     # moves Claude Code too, the claude-code@latest cask, whose own updater

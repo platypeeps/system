@@ -35,7 +35,9 @@ BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
   "list --cask"|leaves|tap) : ;;
   "list --pinned") [ -z "$PINNED_RC" ] || exit "$PINNED_RC"
                    sed -n 's/^pin //p' "$PINS" 2>/dev/null ;;
-  "pin "*|"install "*|upgrade) echo "$*" >> "$PINS" ;;
+  "pin "*) [ -z "$PIN_RC" ] || exit "$PIN_RC"
+          echo "$*" >> "$PINS" ;;
+  "install "*|upgrade) echo "$*" >> "$PINS" ;;
   "unpin "*) echo "$*" >> "$PINS.unpin"
              grep -vx "pin ${2}" "$PINS" > "$PINS.new" || :
              mv "$PINS.new" "$PINS" ;;
@@ -143,6 +145,17 @@ class BrewStageTest(unittest.TestCase):
 
         self.assertEqual(self.pins.read_text().splitlines()[:2], ["pin python@3.15", "upgrade"])
 
+    def test_a_failed_pin_installs_and_upgrades_nothing(self):
+        """Review: a failed `brew pin` let installs and the sweep move python."""
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("jq\n")
+        stage = self.run_verb("update", "brew", "--apply", PIN_RC="1")
+        sweep = self.run_verb("upgrade", "--apply", PIN_RC="1")
+
+        self.assertIn("FAILED  brew stage: the serving python is not pinned; nothing changed", stage.stdout)
+        self.assertIn("python pin (brew upgrade skipped)", sweep.stdout)
+        self.assertNotEqual(sweep.returncode, 0)
+        self.assertFalse(self.pins.exists(), self.pins.read_text() if self.pins.exists() else "")
+
     def test_the_pin_follows_the_python_on_path(self):
         self.run_verb("update", "brew", "--apply",
                       PY_PREFIX="/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14")
@@ -221,7 +234,7 @@ class BrewStageTest(unittest.TestCase):
         """sd:3536: a failed list is unknown, not "nothing pinned"."""
         result = self.run_verb("update", "brew", "--apply", PINNED_RC="1")
 
-        self.assertIn("FAILED  brew stage: brew could not list its pins; nothing changed", result.stdout)
+        self.assertIn("FAILED  brew stage: the serving python is not pinned; nothing changed", result.stdout)
         self.assertEqual(self.unpin_calls(), [])
         status = self.run_verb("status", PINNED_RC="1")
         self.assertIn("pinned  : unknown (brew could not list its pins)", status.stdout)
