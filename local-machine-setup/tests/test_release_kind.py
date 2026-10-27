@@ -142,6 +142,14 @@ def make_tar(path, members):
     return path
 
 
+def make_bare(path, members):
+    """The one member's bytes as the asset itself: a release that ships a bare executable."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    [(_, data, _)] = archive_members(members)
+    path.write_bytes(data)
+    return path
+
+
 def make_zip(path, members):
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w") as z:
@@ -375,6 +383,27 @@ class ReleaseStage(Case):
         self.assertEqual(result.returncode, 0, self.out(result))
         self.assertEqual(self.installed("example"), TOOL.format("2.0.0"))
         self.assertEqual(self.record(), "v2.0.0")
+
+    def test_a_bare_executable_asset_is_installed_as_its_one_bin(self):
+        (self.profiles / "personal.release").write_text(f"example {REPO} example-macos-x86_64\n")
+        self.release("v3.0.0", "example-macos-x86_64", self.tools("3.0.0", "example"), archive=make_bare)
+
+        result = self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(result.returncode, 0, self.out(result))
+        self.assertEqual(self.installed("example"), TOOL.format("3.0.0"))
+        self.assertTrue(os.access(self.bin / "example", os.X_OK))
+        self.assertEqual(self.record_line(), f"v3.0.0 {REPO} example-macos-x86_64")
+
+    def test_a_bare_executable_asset_with_two_bins_is_a_failure(self):
+        (self.profiles / "personal.release").write_text(f"example,example-helper {REPO} example-macos-x86_64\n")
+        self.release("v3.0.0", "example-macos-x86_64", self.tools("3.0.0", "example"), archive=make_bare)
+
+        result = self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn("FAILED  release: cannot read the line 'example,example-helper", result.stdout)
+        self.assertIsNone(self.installed("example"))
 
     def test_an_unreadable_latest_tag_installs_nothing(self):
         self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz",

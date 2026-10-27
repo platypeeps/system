@@ -701,7 +701,8 @@ stage_brew() {
 # `<bins> <owner/repo> <asset> [<tag>]`: <bins> a comma list of the
 # executables to take from the archive, the first naming the entry; <asset>
 # the archive's name, where {version} is the tag less a leading v and {tag}
-# the tag; <tag> pins the entry, and the upgrade sweep moves only unpinned
+# the tag, or a bare executable's name when <bins> names one bin (herdr
+# publishes one, sd:6439); <tag> pins the entry, and the upgrade sweep moves only unpinned
 # ones. An entry is ok when each bin is in RELEASE_BIN and its record names
 # its tag, owner/repo and asset. A record an older version wrote holds the
 # tag alone, so that entry reinstalls once (sd:4916).
@@ -718,7 +719,7 @@ stage_release() {
   rs_bad=$(printf '%s\n' "$rel" | release_conflicts names)
   printf '%s\n' "$rel" | while IFS= read -r line; do
     if ! release_parse "$line"; then
-      note_failure "release: cannot read the line '$line' (want <bins> <owner/repo> <asset .tar.gz|.tgz|.zip> [<tag>])" 1
+      note_failure "release: cannot read the line '$line' (want <bins> <owner/repo> <asset .tar.gz|.tgz|.zip, or a bare executable for one bin> [<tag>])" 1
       continue
     fi
     ! printf '%s\n' "$rs_bad" | grep -qxF "$rl_name" || continue
@@ -775,7 +776,11 @@ EOF
   [ -n "$rl_asset" ] && [ -z "$rl_extra" ] || return 1
   case ",$rl_bins," in *,,*|*,.,*|*,..,*|*[!A-Za-z0-9._,-]*) return 1 ;; esac
   case "$rl_repo" in */*/*|/*|*/|.*|*/.*|*[!A-Za-z0-9._/-]*) return 1 ;; ?*/?*) ;; *) return 1 ;; esac
-  case "$rl_asset" in *[!A-Za-z0-9._{}+-]*) return 1 ;; *.tar.gz|*.tgz|*.zip) ;; *) return 1 ;; esac
+  case "$rl_asset" in
+    *[!A-Za-z0-9._{}+-]*) return 1 ;;
+    *.tar.gz|*.tgz|*.zip) ;;
+    *) case "$rl_bins" in *,*) return 1 ;; esac ;;  # a bare executable is one bin
+  esac
   [ -z "$rl_tag" ] || release_tag_ok "$rl_tag"
 }
 
@@ -858,7 +863,8 @@ release_fetch() { # name, bins, owner/repo, asset, tag (into $ri_tmp)
       else
         ditto -x -k "$ri_tmp/$rf_asset" "$ri_tmp/x"
       fi ;;
-    *) tar -xzf "$ri_tmp/$rf_asset" -C "$ri_tmp/x" ;;
+    *.tar.gz|*.tgz) tar -xzf "$ri_tmp/$rf_asset" -C "$ri_tmp/x" ;;
+    *) cp "$ri_tmp/$rf_asset" "$ri_tmp/x/$2" && chmod 755 "$ri_tmp/x/$2" ;;
   esac || { echo "  release $1: cannot unpack $rf_asset"; return 1; }
   rf_bins=$(printf '%s\n' "$2" | tr ',' ' ')
   for rf_b in $rf_bins; do
