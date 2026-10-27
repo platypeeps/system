@@ -646,6 +646,17 @@ stage_brew() {
     return 0
   fi
 
+  # Pin the serving python before any install: an install that needs a newer
+  # python would otherwise upgrade it first (sd:6463 review).
+  if ! py=$(unpinned_python); then
+    note_failure "brew stage: brew could not list its pins; nothing changed" 1
+    return 0
+  fi
+  if [ -n "$py" ]; then
+    echo "  DIFFERS $py not pinned"
+    run bound_step 300 brew pin "$py"
+  fi
+
   manifest tap | while read -r t; do
     if printf '%s\n' "$taps" | grep -qx "$t"; then
       echo "  ok      tap $t"
@@ -694,14 +705,6 @@ stage_brew() {
     echo "  DIFFERS $f pinned"
     run bound_step 300 brew unpin "$f"
   done
-  if ! py=$(unpinned_python); then
-    note_failure "brew stage: brew could not list its pins; python not pinned" 1
-    return 0
-  fi
-  if [ -n "$py" ]; then
-    echo "  DIFFERS $py not pinned"
-    run bound_step 300 brew pin "$py"
-  fi
   bp=$(blocked_python)
   [ -z "$bp" ] || echo "  DIFFERS firewall blocks $bp; allow it: System Settings > Network > Firewall > Options"
 }

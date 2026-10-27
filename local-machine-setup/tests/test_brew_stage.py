@@ -132,6 +132,13 @@ class BrewStageTest(unittest.TestCase):
         again = self.run_verb("update", "brew", formulae="opencode codex jq")
         self.assertNotIn("pinned", again.stdout)
 
+    def test_the_python_is_pinned_before_any_install(self):
+        """Review: an install that needs a newer python upgraded it first."""
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("jq\n")
+        self.run_verb("update", "brew", "--apply")
+
+        self.assertEqual(self.pins.read_text().splitlines()[:2], ["pin python@3.15", "install jq"])
+
     def test_the_pin_follows_the_python_on_path(self):
         self.run_verb("update", "brew", "--apply",
                       PY_PREFIX="/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14")
@@ -210,7 +217,7 @@ class BrewStageTest(unittest.TestCase):
         """sd:3536: a failed list is unknown, not "nothing pinned"."""
         result = self.run_verb("update", "brew", "--apply", PINNED_RC="1")
 
-        self.assertIn("FAILED  brew stage: brew could not list its pins; none unpinned", result.stdout)
+        self.assertIn("FAILED  brew stage: brew could not list its pins; nothing changed", result.stdout)
         self.assertEqual(self.unpin_calls(), [])
         status = self.run_verb("status", PINNED_RC="1")
         self.assertIn("pinned  : unknown (brew could not list its pins)", status.stdout)
