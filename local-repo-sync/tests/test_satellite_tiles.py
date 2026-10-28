@@ -229,6 +229,25 @@ class TilesTest(unittest.TestCase):
         self.assertIsNone(f.answer())
 
 
+class ExitForTest(unittest.TestCase):
+    """How answer's exception becomes the exit follow reads."""
+
+    def fenced(self, text):
+        return type("Fenced", (Exception,), {})(text)
+
+    def test_a_hub_that_cannot_name_itself_is_silence_not_a_failure(self):
+        """NEW (pack sd:6551). A tailscaled blip on the hub fences it as unknown
+        for a moment; that is the hub's silence, so the next run asks again."""
+        error = self.fenced("refused: this machine is not the hub: Tailscale does not name this node, "
+                            "so it cannot match hub.example.test: this node is not connected")
+        self.assertEqual(satellite_tiles.UNREACHABLE, satellite_tiles._exit_for(error))
+
+    def test_a_hub_that_names_another_node_is_still_a_failure(self):
+        """A hub the fence names elsewhere has been replaced: that is flagged."""
+        error = self.fenced("refused: this machine is not the hub: sd.hub_name names other.example.test")
+        self.assertEqual(satellite_tiles.FAILED, satellite_tiles._exit_for(error))
+
+
 class TilesHookTest(unittest.TestCase):
     """follow's hook with satellite_tiles.py's stand-in (test_follow's stub)."""
 
