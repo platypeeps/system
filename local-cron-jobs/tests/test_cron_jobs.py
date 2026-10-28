@@ -496,6 +496,21 @@ class PromptJobDebugFileTest(unittest.TestCase):
         self.assertNotEqual(sixth, fifth)
         self.assertEqual(self.debug_files(), sorted(older[1:] + [fifth, sixth]))
 
+    def test_the_prune_lists_from_the_log_dir_not_the_job_dir(self):
+        # REGRESSION (sd:6437). macOS `ls` opens its cwd, and a job's
+        # JOB_DIR in the ~/Documents vault drew a Full Disk Access denial
+        # for /bin/ls at the end of every such run.
+        calls = self.fx.tmp / "ls-cwd"
+        path = self.stub_path("ls", f'#!/bin/sh\npwd >> "{calls}"\nexec /bin/ls "$@"\n')
+        job_dir = self.fx.tmp / "vault"
+        job_dir.mkdir()
+        self.fx.write_job("nightly", PROMPT_JOB + f'JOB_DIR="{job_dir}"\n')
+        result = self.fx.exec_job("nightly", {"PATH": path})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cwds = {pathlib.Path(line).resolve() for line in calls.read_text().splitlines()}
+        self.assertEqual(cwds, {self.logs.resolve()})
+        self.assertEqual(len(self.debug_files()), 1)
+
 
 # The quarantine stubs record each call in $CALLS. A file's quarantine is a
 # file beside it, `<path>.quarantine`; XATTR_FAIL fails the read of the

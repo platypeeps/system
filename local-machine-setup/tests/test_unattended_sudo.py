@@ -85,6 +85,17 @@ class Doctor(Case):
                               r"fix its brew path: sudo visudo -f \S+machine-setup-repairs\n")
         self.assertNotIn("  ok      repair sudoers drop-in", out)
 
+    def test_the_restart_line_is_dead_with_the_tailscale_app_cask(self):
+        """sd:6554, sd:6475: the app's daemon is no brew service, so the
+        drop-in's restart line repairs nothing there."""
+        (self.profiles / "personal.cask").write_text("tailscale-app\n")
+        out = self.doctor(keychain="example-password", sudoers=True)
+        self.assertRegex(out, r"  WARN    repair sudoers drop-in \S+ allows brew services restart "
+                              r"tailscale, dead with the tailscale-app cask — drop that line")
+        out = self.doctor(keychain="example-password", sudoers=True, rule="    (root) NOPASSWD: /sbin/pfctl -sr")
+        self.assertIn("  ok      repair sudoers drop-in ", out)
+        self.assertNotIn("does not allow", out)
+
     def test_an_unread_sudo_listing_is_unknown_not_ok(self):
         out = self.doctor(keychain="example-password", sudoers=True, SUDO_RC="1")
         self.assertRegex(out, r"  WARN    repair sudoers drop-in \S+ unknown: sudo -n -l exited 1\n")

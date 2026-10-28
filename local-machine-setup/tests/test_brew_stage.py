@@ -246,6 +246,56 @@ class BrewStageTest(unittest.TestCase):
                 self.assertNotIn("not pinned", result.stdout)
                 self.assertEqual(self.pin_calls(), [])
 
+    def tailscale_profile(self, brew="", cask="tailscale-app\n"):
+        profiles = self.config_root / "machine-setup/profiles"
+        (profiles / "personal.brew").write_text(brew)
+        (profiles / "personal.cask").write_text(cask)
+        link = self.home / ".local/bin/tailscale"
+        app = self.stubs.parent / "Applications"
+        return link, app, {"MACHINE_SETUP_APPLICATIONS_DIR": str(app)}
+
+    def test_the_tailscale_app_cask_gets_a_cli_link(self):
+        """sd:6554: the cask ships no CLI; sd-db and repo-sync.sh call
+        `tailscale` from PATH, and only a hand-made link gave them one."""
+        link, app, env = self.tailscale_profile()
+        target = str(app / "Tailscale.app/Contents/MacOS/Tailscale")
+
+        dry = self.run_verb("update", "brew", **env)
+        self.assertIn(f"MISSING tailscale CLI link {link} -> {target}", dry.stdout)
+        self.assertFalse(link.is_symlink())
+        self.run_verb("update", "brew", "--apply", **env)
+
+        self.assertEqual(str(link.readlink()), target)
+        again = self.run_verb("update", "brew", **env)
+        self.assertIn(f"ok      tailscale CLI link {link}", again.stdout)
+
+    def test_a_foreign_tailscale_file_is_reported_not_replaced(self):
+        link, _, env = self.tailscale_profile()
+        link.parent.mkdir(parents=True)
+        link.write_text("mine\n")
+
+        result = self.run_verb("update", "brew", "--apply", **env)
+
+        self.assertIn(f"DIFFERS {link} is not a link to ", result.stdout)
+        self.assertEqual(link.read_text(), "mine\n")
+
+    def test_the_formula_retires_the_cli_link(self):
+        """sd:6554: the formula's own CLI replaces the link."""
+        link, app, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        link.parent.mkdir(parents=True)
+        link.symlink_to(app / "Tailscale.app/Contents/MacOS/Tailscale")
+
+        dry = self.run_verb("update", "brew", **env)
+        self.assertIn(f"EXTRA   tailscale CLI link {link}", dry.stdout)
+        self.run_verb("update", "brew", "--apply", formulae="tailscale", **env)
+
+        self.assertFalse(link.is_symlink())
+
+    def test_no_tailscale_in_the_profile_leaves_no_link_line(self):
+        _, _, env = self.tailscale_profile(cask="")
+
+        self.assertNotIn("tailscale CLI link", self.run_verb("update", "brew", **env).stdout)
+
     def test_status_counts_an_unpinned_python_as_drift(self):
         unpinned = self.run_verb("status")
         self.pins.write_text("pin python@3.15\n")
