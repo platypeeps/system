@@ -2440,13 +2440,12 @@ sd_database_elsewhere() {
   done
 }
 
-# Whether the application firewall lets EXE take incoming connections: it
-# is off, or it lists EXE as allowed. A probe that fails is no.
+# Whether the application firewall lists EXE as allowed incoming
+# connections. A firewall that is off counts for nothing: the system stage
+# turns it on (sd:6492 review). A probe that fails is no.
 firewall_allows() { # exe
   _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
   if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
-  _st=$("$_fw" --getglobalstate 2>/dev/null) || return 1
-  case $_st in *disabled*) return 0 ;; esac
   _ls=$("$_fw" --listapps 2>/dev/null) || return 1
   printf '%s\n' "$_ls" | awk -v want="$1" '
     hit { ok = /Allow incoming/; done = 1; exit }

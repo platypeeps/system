@@ -337,7 +337,9 @@ class BrewStageTest(unittest.TestCase):
         for fw in ({"FW_LIST": ""},
                    {"FW_LIST": f"1 : {exe} \\n             (Block incoming connections)\\n"},
                    {"FW_LIST": f"1 : {exe}t \\n             (Allow incoming connections)\\n"},
-                   {"FW_RC": "1"}):
+                   {"FW_RC": "1"},
+                   # Off now, but the system stage turns it on (review round 2).
+                   {"FW_STATE": "Firewall is disabled. (State = 0)", "FW_LIST": ""}):
             with self.subTest(fw=fw):
                 result = self.sd_stage("--apply", **fw)
 
@@ -349,8 +351,9 @@ class BrewStageTest(unittest.TestCase):
     def test_an_allowed_python_goes_on_sd_serves_path(self):
         where = self.home / ".local/share/sd-serve/python"
         exe = f"{where}/cpython-3.15.2-macos-aarch64-none/bin/python3.15"
-        for fw in ({"FW_LIST": f"1 : {exe} \\n             (Allow incoming connections)\\n"},
-                   {"FW_STATE": "Firewall is disabled. (State = 0)"}):
+        allow = f"1 : {exe} \\n             (Allow incoming connections)\\n"
+        for fw in ({"FW_LIST": allow},
+                   {"FW_LIST": allow, "FW_STATE": "Firewall is disabled. (State = 0)"}):
             with self.subTest(fw=fw):
                 shutil.rmtree(where / "bin", ignore_errors=True)
                 dry = self.sd_stage(**fw)
