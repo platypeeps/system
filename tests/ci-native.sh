@@ -381,7 +381,14 @@ case "$SUITE_LEG" in
     run_suite network-testing sh network-testing/network-testing.sh test -v
     run_suite lib "$PYTHON" lib/tests/test_config.py -v
     run_suite lib-bounded "$PYTHON" lib/tests/test_bounded.py -v
-    run_suite machine-setup sh local-machine-setup/machine-setup.sh test -v
+    # machine-setup alone took 887 s against sd-check's 900 s (sd:6504):
+    # [p-z] took 569 s and [!p-z] 301 s, so promote's modules run on
+    # their own. test_doctor_gate runs promote too, and promote's cron
+    # installs lock the checkout's logs/, so it stays with them. The
+    # three patterns cover every module once.
+    run_suite machine-setup-1 sh local-machine-setup/machine-setup.sh test -v -p 'test_[!dp-z]*.py'
+    run_suite machine-setup-2 sh local-machine-setup/machine-setup.sh test -v -p 'test_[dp]*.py'
+    run_suite machine-setup-3 sh local-machine-setup/machine-setup.sh test -v -p 'test_[q-z]*.py'
     run_suite mock-mcp sh local-mock-mcp/mock-mcp.sh test -v
     run_suite fluentbit sh local-fluentbit/fluentbit.sh test -v
     run_suite opentelemetry-demo sh local-opentelemetry-demo/opentelemetry-demo.sh test -v

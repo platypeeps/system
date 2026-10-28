@@ -455,6 +455,10 @@ EOF
         <key>SYSTEM_TOOLS_CONFIG</key>
         <string>$x_config</string>
     </dict>
+
+    <!-- Unset (Standard) throttles the job; lane gates ran ~8x slow (sd:6504). -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
 </dict>
 </plist>
 EOF
