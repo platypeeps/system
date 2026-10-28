@@ -14,4 +14,4 @@ Reply with one JSON object and nothing else:
 
 - `subject`: a stable key for the idea, at most 200 characters, one line; the same idea on another night gets the same subject.
 - `text`: its first line becomes the task title; at most 4 KiB; no line starts with `Option:`, `Subject:` or `Evidence:`.
-- `evidence`: at most five lines, one source each.
+- `evidence`: at most four lines, one source each.
