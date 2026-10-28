@@ -38,11 +38,11 @@ with the provider they identify.
                session start, so it is a cache of the exported shell env
                and not a record. Reported, never paged on. ~/.bash_profile itself is
                excluded in this mode (it is the key source, it would
-               match itself), as are third-party checkouts and test
-               fixtures (see CRITICAL_EXCLUDE_PATHS in this script, plus
+               match itself), as are third-party checkouts, test
+               fixtures and Claude and Codex transcripts (see
+               CRITICAL_EXCLUDE_PATHS in this script, plus
                S4S_EXTRA_CRITICAL_EXCLUDE_PATHS in
-               <config>/scan-for-secrets/scan-for-secrets.conf;
-               rg only — the grep fallback cannot path-exclude).
+               <config>/scan-for-secrets/scan-for-secrets.conf).
                File-size cap raised to 20M for the logs.
   mask         replace YOUR key values (shell env exports) with
                <masked:\$VARNAME>, and any string matching the known
@@ -230,11 +230,14 @@ targets() {
   done
   [ -d bin ]   && printf 'bin\n'
   [ -d repos ] && printf 'repos\n'
+  # `if`, not `[ -d ] &&`: a missing last dir left the loop at status 1, and
+  # set -e ended the list there under $(targets), so the grep fallback never
+  # scanned the session logs (sd:6490).
   printf '%s\n' "$HOME_CONFIG_DIRS" | while IFS= read -r d; do
-    [ -d "$d" ] && printf '%s\n' "$d"
+    if [ -d "$d" ]; then printf '%s\n' "$d"; fi
   done
   printf '%s\n' "$AI_LOG_DIRS" | while IFS= read -r d; do
-    [ -d "$d" ] && printf '%s\n' "$d"
+    if [ -d "$d" ]; then printf '%s\n' "$d"; fi
   done
   agent_scratch_dirs
   return 0
@@ -259,7 +262,15 @@ SECRETS_GLOBS=".env .env.local .env.development .env.staging .env.production .en
 # Rule for adding: not your remote AND no local files of yours inside.
 # Test files and fixture folders in any repo are skipped too (sd:5493): their keys are fakes, and one new fixture
 # failed the Monday run until its path was listed. A real key pasted into a test goes unflagged; -a does not change it.
+# Claude and Codex transcripts are skipped too (sd:6473): they quote keys from tool output, the operator keeps
+# them, and they held the weekly alert open. `mask` still masks them. `?` stands for the space in
+# "Application Support": the list splits on whitespace.
 CRITICAL_EXCLUDE_PATHS="
+.claude/projects
+.codex/sessions
+.codex/archived_sessions
+Library/Application?Support/Claude/local-agent-mode-sessions
+Library/Application?Support/Claude/claude-code-sessions
 .gemini/extensions
 .codex/.tmp
 .codex/tool-venvs
@@ -1373,6 +1384,19 @@ TRANSIENT_PATH_RE='/claude-[^/]*/[^/]*/[^/]*/scratchpad/|^\.codex/shell_snapshot
 # holding `:` or `:12:` stays one field; `path:line:match` split on `:` did not.
 US=$(printf '\037')
 to_fields() { tr '\0' '\037' | sed "s/$US\([0-9][0-9]*\):/$US\1$US/"; }
+# grep's --exclude matches basenames only, so the grep fallback drops the critical paths from its hits here, in
+# both passes; a case pattern's `*` crosses `/`, as ripgrep's `**` does (sd:5493: the gate has no rg and
+# reported every fixture). A hit is a path, or a path and more fields after a US.
+drop_critical_excludes() {
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    path=${hit%%"$US"*}; path=${path#./}; keep=1
+    set -f
+    for p in $CRITICAL_EXCLUDE_PATHS; do case $path in ($p|$p/*) keep=0; break ;; esac; done
+    set +f
+    [ "$keep" = 0 ] || printf '%s\n' "$hit"
+  done
+}
 echo "== pattern scan"
 if [ "$HAVE_RG" = 1 ]; then
   PATTERN_ARGS=$(printf '%s\n' "$PATTERNS" | sed 's/^/-e\n/')
@@ -1393,17 +1417,8 @@ TARGETS_EOF
   RE=$(ere_patterns | paste -sd '|' -)
   # shellcheck disable=SC2086
   OUT=$(grep -rEIno --null $EX_D $EX_G -e "$RE" "$@" 2>/dev/null | to_fields || true)
-  # grep's --exclude matches basenames only, so the critical paths are dropped from the hits here; a case
-  # pattern's `*` crosses `/`, as ripgrep's `**` does (sd:5493: the gate has no rg and reported every fixture).
   if [ "$MODE" = critical ]; then
-    OUT=$(printf '%s\n' "$OUT" | while IFS= read -r hit; do
-      [ -n "$hit" ] || continue
-      path=${hit%%"$US"*}; path=${path#./}; keep=1
-      set -f
-      for p in $CRITICAL_EXCLUDE_PATHS; do case $path in ($p|$p/*) keep=0; break ;; esac; done
-      set +f
-      [ "$keep" = 0 ] || printf '%s\n' "$hit"
-    done)
+    OUT=$(printf '%s\n' "$OUT" | drop_critical_excludes)
   fi
 fi
 # The Hugging Face match ends with its boundary character; the value is the
@@ -1562,6 +1577,9 @@ TARGETS_EOF
         [ $# -gt 0 ] || set -- .
         # shellcheck disable=SC2086
         HITS=$(grep -rIlF $EX_D $EX_G -e "$val" "$@" 2>/dev/null || true)
+        if [ "$MODE" = critical ]; then
+          HITS=$(printf '%s\n' "$HITS" | drop_critical_excludes)
+        fi
       fi
       T_HITS=""
       if [ "$MODE" = critical ] && [ -n "$HITS" ]; then
