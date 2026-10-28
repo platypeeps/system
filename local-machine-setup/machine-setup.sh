@@ -775,25 +775,41 @@ tailscale_runs_app() {
 }
 
 # The tailscale-app cask ships no CLI, and sd-db, repo-sync.sh and this
-# script call `tailscale` from PATH (sd:6554). The link goes in ~/.local/bin,
-# first on JOB_PATH and the login PATH; the formula's own CLI replaces it.
+# script call `tailscale` from PATH (sd:6554). A wrapper goes in
+# ~/.local/bin, first on JOB_PATH and the login PATH: through a symlink the
+# app dies, its bundle identifier unknown (sd:6583). The wrapper is the
+# user's own file, so no sudo; mv reported a link root-owned because it
+# stats the app binary behind it. The formula's own CLI replaces it.
 tailscale_cli_link() {
   tl_link="$HOME/.local/bin/tailscale"
   tl_app="$APPLICATIONS_DIR/Tailscale.app/Contents/MacOS/Tailscale"
-  tl_ours=0
-  [ ! -L "$tl_link" ] || [ "$(readlink "$tl_link")" != "$tl_app" ] || tl_ours=1
+  tl_exec="exec \"$tl_app\" \"\$@\""
+  tl_ours=0 tl_stale=0
+  if [ -L "$tl_link" ]; then
+    [ "$(readlink "$tl_link")" != "$tl_app" ] || tl_stale=1
+  elif [ -f "$tl_link" ] &&
+       [ "$(cat "$tl_link")" = "$(printf '#!/bin/sh\n%s' "$tl_exec")" ]; then
+    # Only the whole wrapper this writes is ours: one with the operator's
+    # own lines around the exec line stays theirs, never deleted.
+    tl_ours=1
+  fi
   if tailscale_runs_app; then
     if [ "$tl_ours" -eq 1 ]; then
-      echo "  ok      tailscale CLI link $tl_link"
-    elif [ -e "$tl_link" ] || [ -L "$tl_link" ]; then
-      echo "  DIFFERS $tl_link is not a link to $tl_app; move it aside"
+      echo "  ok      tailscale CLI wrapper $tl_link"
+    elif [ "$tl_stale" -eq 0 ] && { [ -e "$tl_link" ] || [ -L "$tl_link" ]; }; then
+      echo "  DIFFERS $tl_link is not a wrapper for $tl_app; move it aside"
     else
-      echo "  MISSING tailscale CLI link $tl_link -> $tl_app"
-      run mkdir -p "${tl_link%/*}"
-      run ln -s "$tl_app" "$tl_link"
+      if [ "$tl_stale" -eq 1 ]; then
+        echo "  STALE   tailscale CLI link $tl_link; the app dies through a symlink, so a wrapper replaces it"
+      else
+        echo "  MISSING tailscale CLI wrapper $tl_link: $tl_exec"
+      fi
+      # rm first: a write through the old symlink would land in the app.
+      run sh -c 'mkdir -p "${1%/*}" && rm -f "$1" &&
+        printf "#!/bin/sh\n%s\n" "$2" > "$1" && chmod 755 "$1"' sh "$tl_link" "$tl_exec"
     fi
-  elif [ "$tl_ours" -eq 1 ]; then
-    echo "  EXTRA   tailscale CLI link $tl_link; the profile runs no tailscale-app cask"
+  elif [ "$tl_ours" -eq 1 ] || [ "$tl_stale" -eq 1 ]; then
+    echo "  EXTRA   tailscale CLI wrapper $tl_link; the profile runs no tailscale-app cask"
     run rm "$tl_link"
   fi
 }
