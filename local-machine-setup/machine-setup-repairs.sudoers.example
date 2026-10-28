@@ -6,3 +6,7 @@
 # visudo -cf. Install it on each machine.
 change-me ALL=(root) NOPASSWD: HOMEBREW_PREFIX/bin/brew services restart tailscale
 change-me ALL=(root) NOPASSWD: /sbin/pfctl -sr
+# mosh-server's firewall rule, again after each mosh upgrade (sd:6538).
+change-me ALL=(root) NOPASSWD: /usr/libexec/ApplicationFirewall/socketfilterfw --remove HOMEBREW_PREFIX/Cellar/mosh/*/bin/mosh-server
+change-me ALL=(root) NOPASSWD: /usr/libexec/ApplicationFirewall/socketfilterfw --add HOMEBREW_PREFIX/Cellar/mosh/*/bin/mosh-server
+change-me ALL=(root) NOPASSWD: /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp HOMEBREW_PREFIX/Cellar/mosh/*/bin/mosh-server

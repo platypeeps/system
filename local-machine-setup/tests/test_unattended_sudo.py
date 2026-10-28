@@ -192,11 +192,17 @@ class Sudoers(unittest.TestCase):
         """Exact arguments only: an absolute path, its arguments, no
         wildcard; sudoers then allows those arguments and no others."""
         rules = self.rendered("/opt/homebrew")
-        self.assertEqual(len(rules), 2, rules)
-        for rule in rules:
+        self.assertEqual(len(rules), 5, rules)
+        for rule in rules[:2]:
             self.assertRegex(rule, r"^example ALL=\(root\) NOPASSWD: /\S+( [^*?\[\]\\,:=]+)+$")
         self.assertTrue(rules[0].endswith("NOPASSWD: /opt/homebrew/bin/brew services restart tailscale"))
         self.assertTrue(rules[1].endswith("NOPASSWD: /sbin/pfctl -sr"), rules[1])
+        # The one wildcard, mosh's Cellar version, by the operator's ruling:
+        # each mosh upgrade is a new folder (sd:6538).
+        fw = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+        exe = "/opt/homebrew/Cellar/mosh/*/bin/mosh-server"
+        self.assertEqual(rules[2:], [f"example ALL=(root) NOPASSWD: {fw} --{verb} {exe}"
+                                     for verb in ("remove", "add", "unblockapp")])
 
     def test_the_brew_rule_follows_the_machines_brew_prefix(self):
         """sd:6475: the example named /opt/homebrew/bin/brew, dead on an

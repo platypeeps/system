@@ -655,6 +655,32 @@ blocked_python() {
   return 0
 }
 
+# mosh-server, when the profile installs mosh, as the firewall must admit
+# it (sd:6538). Each upgrade is a new unsigned Cellar file, and the firewall
+# matches a rule only on a signature, so even an allowed listing drops it.
+# Repairs under --apply: an ad-hoc signature (the file is the user's), then
+# the rule again through the repair drop-in's sudo -n (sd:6312).
+mosh_firewall() {
+  manifest brew | grep -qx mosh || return 0
+  _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
+  if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
+  [ -x "$_fw" ] || return 0
+  _bp=$(bound_step 60 brew --prefix 2>/dev/null) || return 0
+  [ -x "$_bp/opt/mosh/bin/mosh-server" ] || return 0
+  _ms="$(cd -P "$_bp/opt/mosh/bin" && pwd)/mosh-server"
+  if ! codesign -dv "$_ms" >/dev/null 2>&1; then
+    echo "  DIFFERS firewall drops $_ms: unsigned"
+    run_ok chmod u+w "$_ms" && run_ok codesign -s - -f "$_ms" || return 0
+  elif firewall_allows "$_ms"; then
+    echo "  ok      firewall allows $_ms"
+    return 0
+  else
+    echo "  DIFFERS firewall drops $_ms: not allowed"
+  fi
+  run_ok sudo -n "$_fw" --remove "$_ms" && run_ok sudo -n "$_fw" --add "$_ms" \
+    && run_ok sudo -n "$_fw" --unblockapp "$_ms" || :
+}
+
 # Pin the serving python when it is not; fails when brew cannot list its pins
 # or the pin fails. Runs before anything that installs or upgrades formulae,
 # and those are skipped when it fails (sd:6463 review).
@@ -737,6 +763,7 @@ stage_brew() {
   done
   bp=$(blocked_python)
   [ -z "$bp" ] || echo "  DIFFERS firewall blocks $bp; allow it: System Settings > Network > Firewall > Options"
+  mosh_firewall
   tailscale_cli_link
 }
 
@@ -748,25 +775,41 @@ tailscale_runs_app() {
 }
 
 # The tailscale-app cask ships no CLI, and sd-db, repo-sync.sh and this
-# script call `tailscale` from PATH (sd:6554). The link goes in ~/.local/bin,
-# first on JOB_PATH and the login PATH; the formula's own CLI replaces it.
+# script call `tailscale` from PATH (sd:6554). A wrapper goes in
+# ~/.local/bin, first on JOB_PATH and the login PATH: through a symlink the
+# app dies, its bundle identifier unknown (sd:6583). The wrapper is the
+# user's own file, so no sudo; mv reported a link root-owned because it
+# stats the app binary behind it. The formula's own CLI replaces it.
 tailscale_cli_link() {
   tl_link="$HOME/.local/bin/tailscale"
   tl_app="$APPLICATIONS_DIR/Tailscale.app/Contents/MacOS/Tailscale"
-  tl_ours=0
-  [ ! -L "$tl_link" ] || [ "$(readlink "$tl_link")" != "$tl_app" ] || tl_ours=1
+  tl_exec="exec \"$tl_app\" \"\$@\""
+  tl_ours=0 tl_stale=0
+  if [ -L "$tl_link" ]; then
+    [ "$(readlink "$tl_link")" != "$tl_app" ] || tl_stale=1
+  elif [ -f "$tl_link" ] &&
+       [ "$(cat "$tl_link")" = "$(printf '#!/bin/sh\n%s' "$tl_exec")" ]; then
+    # Only the whole wrapper this writes is ours: one with the operator's
+    # own lines around the exec line stays theirs, never deleted.
+    tl_ours=1
+  fi
   if tailscale_runs_app; then
     if [ "$tl_ours" -eq 1 ]; then
-      echo "  ok      tailscale CLI link $tl_link"
-    elif [ -e "$tl_link" ] || [ -L "$tl_link" ]; then
-      echo "  DIFFERS $tl_link is not a link to $tl_app; move it aside"
+      echo "  ok      tailscale CLI wrapper $tl_link"
+    elif [ "$tl_stale" -eq 0 ] && { [ -e "$tl_link" ] || [ -L "$tl_link" ]; }; then
+      echo "  DIFFERS $tl_link is not a wrapper for $tl_app; move it aside"
     else
-      echo "  MISSING tailscale CLI link $tl_link -> $tl_app"
-      run mkdir -p "${tl_link%/*}"
-      run ln -s "$tl_app" "$tl_link"
+      if [ "$tl_stale" -eq 1 ]; then
+        echo "  STALE   tailscale CLI link $tl_link; the app dies through a symlink, so a wrapper replaces it"
+      else
+        echo "  MISSING tailscale CLI wrapper $tl_link: $tl_exec"
+      fi
+      # rm first: a write through the old symlink would land in the app.
+      run sh -c 'mkdir -p "${1%/*}" && rm -f "$1" &&
+        printf "#!/bin/sh\n%s\n" "$2" > "$1" && chmod 755 "$1"' sh "$tl_link" "$tl_exec"
     fi
-  elif [ "$tl_ours" -eq 1 ]; then
-    echo "  EXTRA   tailscale CLI link $tl_link; the profile runs no tailscale-app cask"
+  elif [ "$tl_ours" -eq 1 ] || [ "$tl_stale" -eq 1 ]; then
+    echo "  EXTRA   tailscale CLI wrapper $tl_link; the profile runs no tailscale-app cask"
     run rm "$tl_link"
   fi
 }
@@ -6428,7 +6471,10 @@ cmd_status() {
     status_line unpinned "$up"
     bp=$(blocked_python)
     status_line blocked "$bp"
-    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp" "$up" "$bp"; do
+    # Its report half only: status --apply stays read-only.
+    mf=$(APPLY=0; mosh_firewall | grep DIFFERS || :)
+    [ -z "$mf" ] || printf '%s\n' "$mf"
+    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp" "$up" "$bp" "$mf"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
