@@ -737,6 +737,38 @@ stage_brew() {
   done
   bp=$(blocked_python)
   [ -z "$bp" ] || echo "  DIFFERS firewall blocks $bp; allow it: System Settings > Network > Firewall > Options"
+  tailscale_cli_link
+}
+
+# True when the profile runs Tailscale as the tailscale-app cask, not the
+# brew formula (sd:6475).
+tailscale_runs_app() {
+  ! manifest brew | sed 's|.*/||' | grep -qx tailscale &&
+    manifest cask | grep -qx tailscale-app
+}
+
+# The tailscale-app cask ships no CLI, and sd-db, repo-sync.sh and this
+# script call `tailscale` from PATH (sd:6554). The link goes in ~/.local/bin,
+# first on JOB_PATH and the login PATH; the formula's own CLI replaces it.
+tailscale_cli_link() {
+  tl_link="$HOME/.local/bin/tailscale"
+  tl_app="$APPLICATIONS_DIR/Tailscale.app/Contents/MacOS/Tailscale"
+  tl_ours=0
+  [ ! -L "$tl_link" ] || [ "$(readlink "$tl_link")" != "$tl_app" ] || tl_ours=1
+  if tailscale_runs_app; then
+    if [ "$tl_ours" -eq 1 ]; then
+      echo "  ok      tailscale CLI link $tl_link"
+    elif [ -e "$tl_link" ] || [ -L "$tl_link" ]; then
+      echo "  DIFFERS $tl_link is not a link to $tl_app; move it aside"
+    else
+      echo "  MISSING tailscale CLI link $tl_link -> $tl_app"
+      run mkdir -p "${tl_link%/*}"
+      run ln -s "$tl_app" "$tl_link"
+    fi
+  elif [ "$tl_ours" -eq 1 ]; then
+    echo "  EXTRA   tailscale CLI link $tl_link; the profile runs no tailscale-app cask"
+    run rm "$tl_link"
+  fi
 }
 
 # Tools from an upstream GitHub release archive, for a machine where brew
@@ -5843,6 +5875,14 @@ doctor_unattended_sudo() {
   ds_list=$(bound_step 30 sudo -n -l 2>/dev/null) || ds_rc=$?
   if [ "$ds_rc" -ne 0 ]; then
     echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS unknown: sudo -n -l exited $ds_rc"
+  elif tailscale_runs_app; then
+    # The app's daemon is no brew service: the line repairs nothing here
+    # (sd:6475), so its absence is ok and its presence a dead line.
+    if printf '%s\n' "$ds_list" | grep -qF "services restart tailscale"; then
+      echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS allows brew services restart tailscale, dead with the tailscale-app cask — drop that line: sudo visudo -f $REPAIRS_SUDOERS"
+    else
+      echo "  ok      repair sudoers drop-in $REPAIRS_SUDOERS (tailscale-app: no brew restart line)"
+    fi
   elif printf '%s\n' "$ds_list" | awk -v want="NOPASSWD: $ds_cmd" '{ sub(/[ \t]+$/, "") }
       substr($0, length($0) - length(want) + 1) == want { found = 1 } END { exit !found }'; then
     echo "  ok      repair sudoers drop-in $REPAIRS_SUDOERS"
