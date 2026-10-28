@@ -46,7 +46,7 @@ BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
   "unpin "*) echo "$*" >> "$PINS.unpin"
              grep -vx "pin ${2}" "$PINS" > "$PINS.new" || :
              mv "$PINS.new" "$PINS" ;;
-  --prefix) echo /usr/local ;;
+  --prefix) echo "${BREW_PREFIX:-/usr/local}" ;;
 esac
 exit 0
 """
@@ -57,6 +57,7 @@ EXIT_1_STUB = "#!/bin/sh\nexit 1\n"
 # (enabled by default); FW_RC fails both.
 FIREWALL_STUB = r"""#!/bin/sh
 [ -z "$FW_RC" ] || exit "$FW_RC"
+[ -z "$FW_LOG" ] || echo "$*" >> "$FW_LOG"
 case "$1" in
   --listapps) printf '%b' "$FW_LIST" ;;
   --getglobalstate) echo "${FW_STATE:-Firewall is enabled. (State = 1)}" ;;
@@ -102,6 +103,24 @@ mkdir -p "$UV_PYTHON_BIN_DIR" "${exe%/*}"
 printf '#!/bin/sh\n' > "$exe"
 printf '#!/bin/sh\necho "%s"\n' "$exe" > "$UV_PYTHON_BIN_DIR/python3"
 chmod +x "$exe" "$UV_PYTHON_BIN_DIR/python3"
+"""
+
+
+# codesign: `-dv FILE` fails, as for an unsigned file, until `-s - -f FILE`
+# signs it; each signing is logged in $SIGN_LOG.
+CODESIGN_STUB = r"""#!/bin/sh
+case "$1" in
+  -dv) [ -e "$2.signed" ] || { echo "$2: code object is not signed at all" >&2; exit 1; } ;;
+  -s) echo "$*" >> "$SIGN_LOG"; touch "$4.signed" ;;
+esac
+exit 0
+"""
+
+# sudo -n CMD runs CMD, as the repair drop-in allows it (sd:6312).
+SUDO_N_STUB = """#!/bin/sh
+[ "$1" = -n ] || exit 1
+shift
+exec "$@"
 """
 
 
@@ -298,6 +317,68 @@ class BrewStageTest(unittest.TestCase):
         status = self.run_verb("status", **blocked)
         self.assertIn(f"  blocked : {PYTHON_APP}", status.stdout)
         self.assertNotIn("blocked", self.run_verb("status", **allowed).stdout)
+
+    def mosh_server(self):
+        """mosh in the profile, installed under a brew prefix in the
+        temporary root as brew links it: opt/mosh names its Cellar folder."""
+        profiles = self.config_root / "machine-setup/profiles"
+        (profiles / "personal.brew").write_text("mosh\n")
+        prefix = self.stubs.parent / "brew"
+        exe = prefix / "Cellar/mosh/1.4.0_43/bin/mosh-server"
+        write_exec(exe, "#!/bin/sh\n")
+        exe.chmod(0o555)
+        (prefix / "opt").mkdir()
+        (prefix / "opt/mosh").symlink_to(prefix / "Cellar/mosh/1.4.0_43")
+        exe = exe.resolve()  # as the stage names it: /var is /private/var
+        write_exec(self.stubs / "codesign", CODESIGN_STUB)
+        self.sign_log = self.stubs.parent / "sign.log"
+        self.fw_log = self.stubs.parent / "fw.log"
+        return exe, {"BREW_PREFIX": str(prefix), "FORMULAE": "mosh",
+                     "SIGN_LOG": str(self.sign_log), "FW_LOG": str(self.fw_log)}
+
+    def test_an_unsigned_mosh_server_is_signed_and_allowed(self):
+        """sd:6538: each mosh upgrade is a new unsigned mosh-server, which
+        the firewall drops even when listed as allowed: it matches a rule
+        only on a signature. The stage reports it and, under --apply, signs
+        it ad hoc and adds it again through the repair drop-in's sudo -n."""
+        exe, env = self.mosh_server()
+        allowed = {"FW_LIST": f"1 : {exe} \\n             (Allow incoming connections)\\n"}
+
+        dry = self.run_verb("update", "brew", **env, **allowed)
+        self.assertIn(f"DIFFERS firewall drops {exe}: unsigned", dry.stdout)
+        self.assertIn(f"[dry-run] codesign -s - -f {exe}", dry.stdout)
+        self.assertFalse(self.sign_log.exists())
+        status = self.run_verb("status", **env, **allowed)
+        self.assertIn(f"DIFFERS firewall drops {exe}", status.stdout)
+
+        write_exec(self.stubs / "sudo", SUDO_N_STUB)
+        self.fw_log.unlink(missing_ok=True)
+        fixed = self.run_verb("update", "brew", "--apply", **env, **allowed)
+        self.assertEqual(fixed.returncode, 0, fixed.stdout + fixed.stderr)
+        self.assertEqual(self.sign_log.read_text(), f"-s - -f {exe}\n")
+        self.assertEqual([l for l in self.fw_log.read_text().splitlines() if l != "--listapps"],
+                         [f"--remove {exe}", f"--add {exe}", f"--unblockapp {exe}"])
+        self.assertTrue(exe.stat().st_mode & stat.S_IWUSR)
+
+        again = self.run_verb("update", "brew", **env, **allowed)
+        self.assertIn(f"ok      firewall allows {exe}", again.stdout)
+        self.assertNotIn("DIFFERS firewall", again.stdout)
+
+    def test_a_signed_mosh_server_the_firewall_blocks_is_allowed_again(self):
+        """sd:6538: a signed mosh-server absent from the list, or blocked."""
+        exe, env = self.mosh_server()
+        (exe.parent / "mosh-server.signed").touch()
+        blocked = {"FW_LIST": f"1 : {exe} \\n             (Block incoming connections)\\n"}
+        for listing in ({"FW_LIST": ""}, blocked):
+            stage = self.run_verb("update", "brew", **env, **listing)
+            self.assertIn(f"DIFFERS firewall drops {exe}: not allowed", stage.stdout)
+
+    def test_no_mosh_in_the_profile_checks_nothing(self):
+        """sd:6538: a machine without mosh probes no mosh-server."""
+        exe, env = self.mosh_server()
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("")
+        stage = self.run_verb("update", "brew", **env, FW_LIST="")
+        self.assertNotIn("mosh-server", stage.stdout)
 
     def serve_from_uv(self):
         """sd-serve installed with its PATH starting at its uv python."""

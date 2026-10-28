@@ -586,6 +586,10 @@ never touches `/etc` or the Keychain.
 
    Each line allows one command with its exact arguments
    (`brew services restart tailscale`, `pfctl -sr`) and nothing else.
+   The three `socketfilterfw` lines take any mosh version in the Cellar:
+   each mosh upgrade is a new unsigned `mosh-server`, which the firewall
+   drops. The brew stage signs it ad hoc and adds its rule again under
+   `--apply` (sd:6538). Reinstall the drop-in to pick them up.
 
 `doctor` checks both on each machine. A missing item or drop-in is a
 `WARN` that names the step, not a failure. So is an item with no
