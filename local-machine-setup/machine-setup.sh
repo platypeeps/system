@@ -1869,16 +1869,14 @@ agent_replace() { # label, src, dst
 stage_agents() {
   echo "== agents"
   hub_ask
-  # brew services' homebrew.mxcl.herdr starts herdr itself, so macOS charges
-  # every session's file access to herdr, whose grant each upgrade drops;
-  # <prefix>.herdr starts it under Apple's /bin/bash (sd:6427). Reported,
-  # never stopped here: stopping herdr ends every session on the machine.
-  # Until it is stopped, <prefix>.herdr waits: two servers, one socket.
+  # brew services' homebrew.mxcl.herdr starts herdr from launchd, so macOS
+  # charges every session's file access to herdr, whose grant each upgrade
+  # drops. With no agent, the first herdr client starts the server from a
+  # terminal, whose grant covers it (sd:6466). Reported, never stopped here:
+  # stopping herdr ends every session on the machine.
   # A loaded service's print names it; an exit 0 alone is no evidence.
-  brew_herdr=0
   if launchctl print "gui/$(id -u)/homebrew.mxcl.herdr" 2>/dev/null | grep -q 'homebrew\.mxcl\.herdr'; then
-    brew_herdr=1
-    echo "  DIFFERS homebrew.mxcl.herdr is loaded — brew services starts herdr itself; run 'brew services stop herdr' (it ends every herdr session), then list $LABEL_PREFIX.herdr in the profile and run 'update agents --apply'"
+    echo "  DIFFERS homebrew.mxcl.herdr is loaded — launchd starts herdr, outside the terminal's grant; run 'brew services stop herdr' (it ends every herdr session); the next herdr client starts the server"
   fi
   agents=$(role_agents)
   if [ -z "$agents" ]; then
@@ -1887,15 +1885,20 @@ stage_agents() {
   fi
   rendered=$(mktemp -d)
   echo "$agents" | while read -r label; do
+    # A profile from before sd:6466 may still name a herdr agent, and its
+    # template may sit in the config folder. Never install or start it: it
+    # would contend with a terminal's server for the socket. Unloading it
+    # ends every session, so that is the operator's step.
+    case $label in
+      *.herdr)
+        echo "  DIFFERS $label — retired (sd:6466); drop it from the profile, delete $HOME/Library/LaunchAgents/$label.plist, and let logout unload it (unloading now ends every herdr session)"
+        continue ;;
+    esac
     # A guard: no satellite profile lists a hub-only agent today, and one
     # that adds it later must not start a second dashboard.
     # Skipped, not removed: the satellite stage reports one already here.
     if sd_hub_only "$label" && is_satellite && ! hub_holder; then
       echo "  SKIP    $label — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
-      continue
-    fi
-    if [ "$label" = "$LABEL_PREFIX.herdr" ] && [ "$brew_herdr" -eq 1 ]; then
-      echo "  HELD    $label — not started while homebrew.mxcl.herdr runs"
       continue
     fi
     src=$(agent_source "$label")
