@@ -25,6 +25,8 @@ OPTIONS = ["Approve", "Reject"]
 PROPOSED = "Proposed label: Approve"
 #: The nightly batch's ceiling; `sd-db review file` drops the rest and says so.
 LIMIT = 5
+#: The model's evidence lines kept: `sd-db review file` takes 5, and PROPOSED is one (sd:6602).
+EVIDENCE = 4
 #: How long a rejection keeps a subject out, as `sd-db review file` reads it.
 SUPPRESS_DAYS = 90
 #: A batch is open 7 days at most, so an older one holds no newer ruling.
@@ -92,13 +94,13 @@ def _reply(text):
         evidence = question.get("evidence", []) if isinstance(question, dict) else None
         if (not isinstance(question, dict) or set(question) - QUESTION_KEYS
                 or not isinstance(question.get("subject"), str) or not isinstance(question.get("text"), str)
-                or not isinstance(evidence, list) or len(evidence) > 5 or not all(isinstance(e, str) for e in evidence)):
+                or not isinstance(evidence, list) or not all(isinstance(e, str) for e in evidence)):
             dropped.append(number)
             print(f"nightly-review: suggestion {number} dropped: it must hold subject and text, "
-                  "and evidence (at most 5 strings) at most", file=sys.stderr)
+                  "and evidence a list of strings at most", file=sys.stderr)
             continue
         questions.append({"subject": question["subject"], "text": question["text"],
-                          "evidence": [*evidence, PROPOSED], "options": list(OPTIONS)})
+                          "evidence": [*evidence[:EVIDENCE], PROPOSED], "options": list(OPTIONS)})
     if dropped and not questions:
         raise Refused(f"every suggestion was malformed: {', '.join(map(str, dropped))}")
     return questions

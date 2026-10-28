@@ -177,6 +177,19 @@ class NightlyReview(unittest.TestCase):
         self.assertEqual([q["subject"] for q in found[0]["questions"]], [f"idea:{n}" for n in range(1, 6)])
         self.assertIn("idea:6: past the limit of 5", result.stdout)
 
+    def test_long_evidence_keeps_four_lines_so_the_label_line_fits(self):
+        # sd:6602: five lines plus the label made six, and sd-db refused the whole batch.
+        good = SUGGESTIONS["questions"][0]
+        for count in (5, 9):
+            with self.subTest(count=count):
+                for path in (self.batch, self.batch.with_name(self.batch.stem + ".reply")):
+                    path.unlink(missing_ok=True)
+                lines = [f"source {n}" for n in range(1, count + 1)]
+                result = self.run_job(reply={"questions": [{**good, "evidence": lines}]})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                filed = json.loads(self.batch.read_text(encoding="utf-8"))["questions"]
+                self.assertEqual(filed[0]["evidence"], [*lines[:4], "Proposed label: Approve"])
+
     # ------------------------------------------------------------ failures are unknown, not "no suggestions"
 
     def test_a_failed_model_run_writes_no_file_files_nothing_and_fails(self):
@@ -199,7 +212,7 @@ class NightlyReview(unittest.TestCase):
     def test_one_malformed_suggestion_drops_itself_and_the_rest_file(self):
         # sd:5732: an extra key on suggestion 2 refused the whole night's batch.
         good = SUGGESTIONS["questions"][0]
-        for bad in ({**good, "rank": 2}, {**good, "evidence": "one string"}, {**good, "evidence": ["e"] * 6}):
+        for bad in ({**good, "rank": 2}, {**good, "evidence": "one string"}):
             with self.subTest(bad=bad):
                 for path in (self.batch, self.batch.with_name(self.batch.stem + ".reply")):
                     path.unlink(missing_ok=True)
