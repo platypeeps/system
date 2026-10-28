@@ -14,6 +14,7 @@ a stub that logs each install and pin in a file, `python3` a stub that
 reports $PY_PREFIX as its install path, and the firewall tool a stub that prints $FW_LIST.
 """
 
+import os
 import pathlib
 import plistlib
 import shutil
@@ -254,20 +255,46 @@ class BrewStageTest(unittest.TestCase):
         app = self.stubs.parent / "Applications"
         return link, app, {"MACHINE_SETUP_APPLICATIONS_DIR": str(app)}
 
-    def test_the_tailscale_app_cask_gets_a_cli_link(self):
+    def test_the_tailscale_app_cask_gets_a_cli_wrapper(self):
         """sd:6554: the cask ships no CLI; sd-db and repo-sync.sh call
-        `tailscale` from PATH, and only a hand-made link gave them one."""
+        `tailscale` from PATH. sd:6583: through a symlink the app dies, so
+        it is a user-owned wrapper that execs the app's full path."""
         link, app, env = self.tailscale_profile()
         target = str(app / "Tailscale.app/Contents/MacOS/Tailscale")
+        exec_line = f'exec "{target}" "$@"'
+        sudo_log = self.home / "sudo.log"
+        write_exec(self.stubs / "sudo", f'#!/bin/sh\necho "$*" >> "{sudo_log}"\nexit 1\n')
 
         dry = self.run_verb("update", "brew", **env)
-        self.assertIn(f"MISSING tailscale CLI link {link} -> {target}", dry.stdout)
-        self.assertFalse(link.is_symlink())
+        self.assertIn(f"MISSING tailscale CLI wrapper {link}: {exec_line}", dry.stdout)
+        self.assertFalse(link.exists() or link.is_symlink())
         self.run_verb("update", "brew", "--apply", **env)
 
-        self.assertEqual(str(link.readlink()), target)
+        self.assertFalse(link.is_symlink())
+        self.assertEqual(link.read_text(), f"#!/bin/sh\n{exec_line}\n")
+        self.assertTrue(os.access(link, os.X_OK))
+        self.assertEqual(link.stat().st_uid, os.getuid())
+        self.assertNotIn("tailscale", sudo_log.read_text() if sudo_log.exists() else "")
         again = self.run_verb("update", "brew", **env)
-        self.assertIn(f"ok      tailscale CLI link {link}", again.stdout)
+        self.assertIn(f"ok      tailscale CLI wrapper {link}", again.stdout)
+
+    def test_the_old_symlink_is_replaced_by_the_wrapper(self):
+        """sd:6583: #547 left a symlink that kills the app; the write must
+        not go through it into the app binary."""
+        link, app, env = self.tailscale_profile()
+        target = app / "Tailscale.app/Contents/MacOS/Tailscale"
+        target.parent.mkdir(parents=True)
+        target.write_text("app\n")
+        link.parent.mkdir(parents=True)
+        link.symlink_to(target)
+
+        dry = self.run_verb("update", "brew", **env)
+        self.assertIn(f"STALE   tailscale CLI link {link}", dry.stdout)
+        self.run_verb("update", "brew", "--apply", **env)
+
+        self.assertFalse(link.is_symlink())
+        self.assertIn(f'exec "{target}" "$@"', link.read_text())
+        self.assertEqual(target.read_text(), "app\n")
 
     def test_a_foreign_tailscale_file_is_reported_not_replaced(self):
         link, _, env = self.tailscale_profile()
@@ -276,25 +303,43 @@ class BrewStageTest(unittest.TestCase):
 
         result = self.run_verb("update", "brew", "--apply", **env)
 
-        self.assertIn(f"DIFFERS {link} is not a link to ", result.stdout)
+        self.assertIn(f"DIFFERS {link} is not a wrapper for ", result.stdout)
         self.assertEqual(link.read_text(), "mine\n")
 
-    def test_the_formula_retires_the_cli_link(self):
-        """sd:6554: the formula's own CLI replaces the link."""
+    def test_the_formula_retires_the_cli_wrapper(self):
+        """sd:6554: the formula's own CLI replaces the wrapper."""
         link, app, env = self.tailscale_profile(brew="tailscale\n", cask="")
         link.parent.mkdir(parents=True)
-        link.symlink_to(app / "Tailscale.app/Contents/MacOS/Tailscale")
+        link.write_text(f'#!/bin/sh\nexec "{app}/Tailscale.app/Contents/MacOS/Tailscale" "$@"\n')
 
         dry = self.run_verb("update", "brew", **env)
-        self.assertIn(f"EXTRA   tailscale CLI link {link}", dry.stdout)
+        self.assertIn(f"EXTRA   tailscale CLI wrapper {link}", dry.stdout)
         self.run_verb("update", "brew", "--apply", formulae="tailscale", **env)
 
-        self.assertFalse(link.is_symlink())
+        self.assertFalse(link.exists())
 
-    def test_no_tailscale_in_the_profile_leaves_no_link_line(self):
+    def test_a_modified_wrapper_is_the_operator_s_and_kept(self):
+        """Review: a wrapper with the exec line plus the operator's own
+        lines is not ours; dropping the cask must not delete it."""
+        link, app, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        exec_line = f'exec "{app}/Tailscale.app/Contents/MacOS/Tailscale" "$@"'
+        mine = f"#!/bin/sh\necho start >> /tmp/ts.log\n{exec_line}\n"
+        link.parent.mkdir(parents=True)
+        link.write_text(mine)
+
+        gone = self.run_verb("update", "brew", "--apply", formulae="tailscale", **env)
+        self.assertNotIn("EXTRA   tailscale CLI wrapper", gone.stdout)
+        self.assertEqual(link.read_text(), mine)
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("")
+        (self.config_root / "machine-setup/profiles/personal.cask").write_text("tailscale-app\n")
+        kept = self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn(f"DIFFERS {link} is not a wrapper for ", kept.stdout)
+        self.assertEqual(link.read_text(), mine)
+
+    def test_no_tailscale_in_the_profile_leaves_no_wrapper_line(self):
         _, _, env = self.tailscale_profile(cask="")
 
-        self.assertNotIn("tailscale CLI link", self.run_verb("update", "brew", **env).stdout)
+        self.assertNotIn("tailscale CLI", self.run_verb("update", "brew", **env).stdout)
 
     def test_status_counts_an_unpinned_python_as_drift(self):
         unpinned = self.run_verb("status")
