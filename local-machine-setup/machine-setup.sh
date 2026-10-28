@@ -655,6 +655,32 @@ blocked_python() {
   return 0
 }
 
+# mosh-server, when the profile installs mosh, as the firewall must admit
+# it (sd:6538). Each upgrade is a new unsigned Cellar file, and the firewall
+# matches a rule only on a signature, so even an allowed listing drops it.
+# Repairs under --apply: an ad-hoc signature (the file is the user's), then
+# the rule again through the repair drop-in's sudo -n (sd:6312).
+mosh_firewall() {
+  manifest brew | grep -qx mosh || return 0
+  _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
+  if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
+  [ -x "$_fw" ] || return 0
+  _bp=$(bound_step 60 brew --prefix 2>/dev/null) || return 0
+  [ -x "$_bp/opt/mosh/bin/mosh-server" ] || return 0
+  _ms="$(cd -P "$_bp/opt/mosh/bin" && pwd)/mosh-server"
+  if ! codesign -dv "$_ms" >/dev/null 2>&1; then
+    echo "  DIFFERS firewall drops $_ms: unsigned"
+    run_ok chmod u+w "$_ms" && run_ok codesign -s - -f "$_ms" || return 0
+  elif firewall_allows "$_ms"; then
+    echo "  ok      firewall allows $_ms"
+    return 0
+  else
+    echo "  DIFFERS firewall drops $_ms: not allowed"
+  fi
+  run_ok sudo -n "$_fw" --remove "$_ms" && run_ok sudo -n "$_fw" --add "$_ms" \
+    && run_ok sudo -n "$_fw" --unblockapp "$_ms" || :
+}
+
 # Pin the serving python when it is not; fails when brew cannot list its pins
 # or the pin fails. Runs before anything that installs or upgrades formulae,
 # and those are skipped when it fails (sd:6463 review).
@@ -737,6 +763,7 @@ stage_brew() {
   done
   bp=$(blocked_python)
   [ -z "$bp" ] || echo "  DIFFERS firewall blocks $bp; allow it: System Settings > Network > Firewall > Options"
+  mosh_firewall
 }
 
 # Tools from an upstream GitHub release archive, for a machine where brew
@@ -6388,7 +6415,10 @@ cmd_status() {
     status_line unpinned "$up"
     bp=$(blocked_python)
     status_line blocked "$bp"
-    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp" "$up" "$bp"; do
+    # Its report half only: status --apply stays read-only.
+    mf=$(APPLY=0; mosh_firewall | grep DIFFERS || :)
+    [ -z "$mf" ] || printf '%s\n' "$mf"
+    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp" "$up" "$bp" "$mf"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
