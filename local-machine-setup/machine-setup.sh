@@ -2440,22 +2440,50 @@ sd_database_elsewhere() {
   done
 }
 
-# sd-serve's python (SERVE_PYTHON_DIR), installed once by uv before the
-# agents stage loads sd-serve. Never upgraded here: each new binary needs a
-# new firewall allow. Until it is there, sd-serve's PATH falls through to
-# brew's python3, as before.
+# Whether the application firewall lets EXE take incoming connections: it
+# is off, or it lists EXE as allowed. A probe that fails is no.
+firewall_allows() { # exe
+  _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
+  if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
+  _st=$("$_fw" --getglobalstate 2>/dev/null) || return 1
+  case $_st in *disabled*) return 0 ;; esac
+  _ls=$("$_fw" --listapps 2>/dev/null) || return 1
+  printf '%s\n' "$_ls" | awk -v want="$1" '
+    hit { ok = /Allow incoming/; done = 1; exit }
+    { l = $0; sub(/^[0-9]+ : /, "", l); sub(/[ \t]+$/, "", l); hit = (l == want) }
+    END { exit !(done && ok) }'
+}
+
+# sd-serve's python (SERVE_PYTHON_DIR), installed once by uv into uv-bin,
+# where sd-serve never looks. Its python3 goes into bin, first on
+# sd-serve's PATH, only once the firewall allows the binary: a binary it
+# has not allowed admits no satellite (sd:6492 review). The link names the
+# real binary, so a later uv install moves nothing sd-serve runs. Never
+# upgraded here; until then sd-serve's PATH falls through to brew's python3.
 serve_python() {
   if [ -x "$SERVE_PYTHON_DIR/bin/python3" ]; then
     echo "  ok      sd-serve python $SERVE_PYTHON_DIR/bin/python3"
     return 0
   fi
-  echo "  MISSING sd-serve python $SERVE_PYTHON_VERSION at $SERVE_PYTHON_DIR — sd-serve runs brew's python3 until it is there"
-  if ! command -v "$UV" >/dev/null 2>&1; then
-    echo "  --      no uv to install it (the brew stage installs uv); then: $(basename "$SELF") update sd --apply"
-    return 0
+  if [ ! -x "$SERVE_PYTHON_DIR/uv-bin/python3" ]; then
+    echo "  MISSING sd-serve python $SERVE_PYTHON_VERSION at $SERVE_PYTHON_DIR — sd-serve runs brew's python3 until it is there"
+    if ! command -v "$UV" >/dev/null 2>&1; then
+      echo "  --      no uv to install it (the brew stage installs uv); then: $(basename "$SELF") update sd --apply"
+      return 0
+    fi
+    run_ok bound_step 900 env UV_PYTHON_INSTALL_DIR="$SERVE_PYTHON_DIR" UV_PYTHON_BIN_DIR="$SERVE_PYTHON_DIR/uv-bin" \
+      "$UV" python install "$SERVE_PYTHON_VERSION" --default || return 0
+    [ -x "$SERVE_PYTHON_DIR/uv-bin/python3" ] || return 0
   fi
-  run bound_step 900 env UV_PYTHON_INSTALL_DIR="$SERVE_PYTHON_DIR" UV_PYTHON_BIN_DIR="$SERVE_PYTHON_DIR/bin" \
-    "$UV" python install "$SERVE_PYTHON_VERSION" --default
+  sp_exe=$("$SERVE_PYTHON_DIR/uv-bin/python3" -c 'import os, sys; print(os.path.realpath(sys.executable))' 2>/dev/null) || sp_exe=
+  if [ -z "$sp_exe" ]; then
+    note_failure "$SERVE_PYTHON_DIR/uv-bin/python3 (gave no executable path)" 1
+  elif firewall_allows "$sp_exe"; then
+    echo "  MISSING sd-serve python on its PATH, $SERVE_PYTHON_DIR/bin/python3 — the firewall allows $sp_exe"
+    run_ok mkdir -p "$SERVE_PYTHON_DIR/bin" && run ln -s "$sp_exe" "$SERVE_PYTHON_DIR/bin/python3"
+  else
+    echo "  DIFFERS sd-serve python $sp_exe is not allowed in the firewall — sd-serve stays on brew's python3; allow it in System Settings > Network > Firewall > Options, then: $(basename "$SELF") update sd --apply"
+  fi
 }
 
 stage_sd() {

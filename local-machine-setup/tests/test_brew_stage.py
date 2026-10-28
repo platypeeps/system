@@ -53,7 +53,16 @@ exit 0
 
 EXIT_1_STUB = "#!/bin/sh\nexit 1\n"
 
-FIREWALL_STUB = "#!/bin/sh\n[ \"$1\" = --listapps ] && printf '%b' \"$FW_LIST\"\nexit 0\n"
+# The firewall tool: --listapps prints $FW_LIST, --getglobalstate $FW_STATE
+# (enabled by default); FW_RC fails both.
+FIREWALL_STUB = r"""#!/bin/sh
+[ -z "$FW_RC" ] || exit "$FW_RC"
+case "$1" in
+  --listapps) printf '%b' "$FW_LIST" ;;
+  --getglobalstate) echo "${FW_STATE:-Firewall is enabled. (State = 1)}" ;;
+esac
+exit 0
+"""
 
 # The install path the stubbed python3 reports by default, and its app.
 PY_PREFIX = "/opt/homebrew/opt/python@3.15/Frameworks/Python.framework/Versions/3.15"
@@ -83,13 +92,16 @@ esac
 exec {sys.executable} "$@"
 """
 
-# uv: `python install` with UV_PYTHON_BIN_DIR set leaves a python3 there.
-# Each call, with the two directories, is logged in $UV_LOG.
+# uv: `python install` puts a python under UV_PYTHON_INSTALL_DIR and a
+# python3 in UV_PYTHON_BIN_DIR that prints that python's real path, as the
+# stage asks it. Each call, with the two directories, is logged in $UV_LOG.
 UV_STUB = r"""#!/bin/sh
 echo "$* install=$UV_PYTHON_INSTALL_DIR bin=$UV_PYTHON_BIN_DIR" >> "$UV_LOG"
-mkdir -p "$UV_PYTHON_BIN_DIR"
-printf '#!/bin/sh\n' > "$UV_PYTHON_BIN_DIR/python3"
-chmod +x "$UV_PYTHON_BIN_DIR/python3"
+exe="$UV_PYTHON_INSTALL_DIR/cpython-3.15.2-macos-aarch64-none/bin/python3.15"
+mkdir -p "$UV_PYTHON_BIN_DIR" "${exe%/*}"
+printf '#!/bin/sh\n' > "$exe"
+printf '#!/bin/sh\necho "%s"\n' "$exe" > "$UV_PYTHON_BIN_DIR/python3"
+chmod +x "$exe" "$UV_PYTHON_BIN_DIR/python3"
 """
 
 
@@ -280,26 +292,31 @@ class BrewStageTest(unittest.TestCase):
         self.assertIn(f"  blocked : {exe}", status.stdout)
         self.assertNotIn("blocked", self.run_verb("status", **served, **allowed).stdout)
 
-    def test_the_sd_stage_installs_sd_serves_python_once(self):
-        """sd:6492: uv installs it under the folder the sd-serve plist's
-        PATH starts with, before the agents stage loads sd-serve."""
-        uv_log = self.stubs.parent / "uv.log"
+    def sd_stage(self, *flags, **extra):
+        self.uv_log = self.stubs.parent / "uv.log"
         write_exec(self.stubs / "uv-stub", UV_STUB)
-        uv = {"MACHINE_SETUP_UV": str(self.stubs / "uv-stub"), "UV_LOG": str(uv_log)}
+        return self.run_verb("update", "sd", *flags, MACHINE_SETUP_UV=str(self.stubs / "uv-stub"),
+                             UV_LOG=str(self.uv_log), **extra)
+
+    def uv_calls(self):
+        return self.uv_log.read_text().splitlines() if self.uv_log.exists() else []
+
+    def test_the_sd_stage_installs_sd_serves_python_once(self):
+        """sd:6492: uv installs it beside the folder the sd-serve plist's PATH
+        starts with, before the agents stage loads sd-serve."""
         where = self.home / ".local/share/sd-serve/python"
 
-        dry = self.run_verb("update", "sd", **uv)
+        dry = self.sd_stage()
         self.assertIn(f"  MISSING sd-serve python 3.15 at {where} — sd-serve runs brew's python3 "
                       "until it is there", dry.stdout)
         self.assertIn("python install 3.15 --default", dry.stdout)
-        self.assertFalse(uv_log.exists())
+        self.assertEqual(self.uv_calls(), [])
 
-        self.run_verb("update", "sd", "--apply", **uv)
-        self.assertEqual(uv_log.read_text().splitlines(),
-                         [f"python install 3.15 --default install={where} bin={where}/bin"])
-        again = self.run_verb("update", "sd", "--apply", **uv)
-        self.assertIn(f"  ok      sd-serve python {where}/bin/python3", again.stdout)
-        self.assertEqual(len(uv_log.read_text().splitlines()), 1)
+        self.sd_stage("--apply")
+        self.assertEqual(self.uv_calls(),
+                         [f"python install 3.15 --default install={where} bin={where}/uv-bin"])
+        self.sd_stage("--apply")
+        self.assertEqual(len(self.uv_calls()), 1)
 
         template = fixture_config.render(fixture_config.AGENTS / f"{fixture_config.LABEL_PREFIX}.sd-serve.plist",
                                          "x", self.home, FOLDER.parent)
@@ -308,6 +325,45 @@ class BrewStageTest(unittest.TestCase):
         for text in (template, example):
             path = plistlib.loads(text.encode())["EnvironmentVariables"]["PATH"]
             self.assertEqual(path.split(":")[0], f"{where}/bin")
+
+    def test_sd_serve_stays_on_brew_python_until_the_firewall_allows_the_new_one(self):
+        """sd:6492 review: an unattended run installed the uv python where
+        sd-serve's PATH finds it, and sd-serve restarted under a binary the
+        firewall had not allowed, so it admitted no satellite. The PATH
+        folder gets its python3 only once the firewall allows that binary;
+        an entry that blocks it, no entry, or a probe that fails, is no."""
+        where = self.home / ".local/share/sd-serve/python"
+        exe = f"{where}/cpython-3.15.2-macos-aarch64-none/bin/python3.15"
+        for fw in ({"FW_LIST": ""},
+                   {"FW_LIST": f"1 : {exe} \\n             (Block incoming connections)\\n"},
+                   {"FW_LIST": f"1 : {exe}t \\n             (Allow incoming connections)\\n"},
+                   {"FW_RC": "1"}):
+            with self.subTest(fw=fw):
+                result = self.sd_stage("--apply", **fw)
+
+                self.assertIn(f"  DIFFERS sd-serve python {exe} is not allowed in the firewall — "
+                              "sd-serve stays on brew's python3; allow it in System Settings > Network > "
+                              "Firewall > Options, then: machine-setup.sh update sd --apply", result.stdout)
+                self.assertFalse(pathlib.Path(f"{where}/bin/python3").exists(follow_symlinks=False))
+
+    def test_an_allowed_python_goes_on_sd_serves_path(self):
+        where = self.home / ".local/share/sd-serve/python"
+        exe = f"{where}/cpython-3.15.2-macos-aarch64-none/bin/python3.15"
+        for fw in ({"FW_LIST": f"1 : {exe} \\n             (Allow incoming connections)\\n"},
+                   {"FW_STATE": "Firewall is disabled. (State = 0)"}):
+            with self.subTest(fw=fw):
+                shutil.rmtree(where / "bin", ignore_errors=True)
+                dry = self.sd_stage(**fw)
+                self.assertFalse((where / "bin/python3").exists())
+
+                result = self.sd_stage("--apply", **fw)
+
+                self.assertIn(f"  MISSING sd-serve python on its PATH, {where}/bin/python3 — "
+                              f"the firewall allows {exe}", result.stdout)
+                self.assertEqual(str((where / "bin/python3").readlink()), exe)
+                self.assertIn(f"  ok      sd-serve python {where}/bin/python3",
+                              self.sd_stage(**fw).stdout)
+        self.assertEqual(len(self.uv_calls()), 1)
 
     def test_the_sd_stage_without_uv_says_so_and_installs_nothing(self):
         result = self.run_verb("update", "sd", "--apply")
