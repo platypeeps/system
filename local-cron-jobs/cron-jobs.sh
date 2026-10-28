@@ -186,11 +186,13 @@ agent_quarantine() { # job binary
 # the binary writes no debug log unless --debug-file asks). A passed run
 # keeps its file too, so a stall can be compared with a passing run
 # (sd:5293); this keeps the newest five per job, so the log dir stays bounded.
+# It lists from the log dir: macOS ls opens its cwd, and a JOB_DIR in the
+# vault drew a Full Disk Access denial for /bin/ls on each run (sd:6437).
 prune_debug_files() { # job
   local old
   # shellcheck disable=SC2012 # the names are this script's own (job, UTC stamp, pid): no whitespace, and ls -t is the mtime order wanted
-  ls -t "$LOG_DIR/$1".debug.*.log 2>/dev/null | tail -n +6 | while IFS= read -r old; do
-    rm -f "$old"
+  (cd "$LOG_DIR" && ls -t "$1".debug.*.log 2>/dev/null) | tail -n +6 | while IFS= read -r old; do
+    rm -f "$LOG_DIR/$old"
   done
 }
 
