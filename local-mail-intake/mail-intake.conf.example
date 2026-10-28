@@ -19,6 +19,10 @@ me|change-me@example.com
 alias|board|change-me@example.com
 alias|committee|change-me@example.com
 
+# A member who writes to you directly, not through an alias, is missed unless
+# they have a row too: one per person, since a label holds one address.
+# alias|<name>|change-me@example.com
+
 # 21 days, not 7. A board thread can sit for a fortnight and still be live, and
 # the window only bounds what a fetch looks at — the thread state remembers
 # what it has already reported, so a wide window costs a little time and never
