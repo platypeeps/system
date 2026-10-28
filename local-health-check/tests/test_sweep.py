@@ -19,6 +19,7 @@ suites: the CI wrapper asserts a unittest summary and refuses skips.
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -31,10 +32,15 @@ from .procgroup import kill_group
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "health-check.sh"
 STATUS_BOUND = 2
-# How long past the bound the hang fixture may be seen alive before the
-# sweep is judged not to have enforced it. The stages after the hang in the
-# sweep are a `help` probe and a `status` that exit at once.
-BOUND_MARGIN = 5
+# The bound the sweep falls back to when the override is not honoured.
+DEFAULT_BOUND = int(re.search(r"HEALTH_CHECK_STATUS_BOUND:-(\d+)",
+                              SCRIPT.read_text()).group(1))
+# How long after the hang began the run may end and still count as bounded
+# by STATUS_BOUND: half the default, so a run under the default fails. The
+# rest of the run -- the kill's one-second grace, the probes after the hang,
+# the report -- is scheduler time, and at load 20 it took 7.0 s past a 2 s
+# bound when the ceiling was the bound plus five (sd:6469).
+BOUNDED_WITHIN = DEFAULT_BOUND / 2
 # The outer guard: a `check` that does not return in this long means the
 # bound did not fire at all (the fixture sleeps 600), and the process group
 # is killed so the suite reports a failure instead of hanging with it.
@@ -340,7 +346,8 @@ esac
     def test_bound_is_enforced_from_the_moment_the_hang_began(self):
         started = int(self.hang_started.read_text().strip())
         waited = self.finished_at - started
-        self.assertLess(waited, STATUS_BOUND + BOUND_MARGIN,
+        self.assertLess(STATUS_BOUND, BOUNDED_WITHIN)
+        self.assertLess(waited, BOUNDED_WITHIN,
                         f"check ran {waited:.1f}s past the hang fixture's start")
 
     def test_nothing_the_run_spawned_survives_it(self):

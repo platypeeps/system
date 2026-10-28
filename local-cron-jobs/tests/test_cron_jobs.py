@@ -269,14 +269,13 @@ class PromptJobEnvironmentTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.fx.claude_env().get("SD_HANDOFF_RESTORE"), "0")
 
-    def test_prompt_job_runs_its_tool_shell_as_apple_bash(self):
-        # sd:6427. macOS charged a job's file access to its Bash-tool shell,
-        # Homebrew bash, whose grant drops on each brew bash upgrade; Apple's
-        # /bin/bash keeps one identity. An inherited value is overridden.
+    def test_prompt_job_leaves_the_tool_shell_alone(self):
+        # sd:6466. job-launch is charged for the whole job, whatever shell
+        # claude's Bash tool runs, so the job sets none.
         self.fx.write_job("nightly", PROMPT_JOB)
-        result = self.fx.exec_job("nightly", {"CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash"})
+        result = self.fx.exec_job("nightly")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.fx.claude_env().get("CLAUDE_CODE_SHELL"), "/bin/bash")
+        self.assertNotIn("CLAUDE_CODE_SHELL", self.fx.claude_env())
 
     def test_env_sh_custom_token_reaches_claude_as_claude_code_oauth_token(self):
         # sd:5791. env.sh exports the setup token as
@@ -327,8 +326,8 @@ class PromptJobResultLineTest(unittest.TestCase):
         result = self.run_saying("did things\nRESULT: ok")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("did things", result.stdout)
-        # sd:6427: this branch starts claude too.
-        self.assertEqual(self.fx.claude_env().get("CLAUDE_CODE_SHELL"), "/bin/bash")
+        # sd:6466: this branch starts claude too.
+        self.assertNotIn("CLAUDE_CODE_SHELL", self.fx.claude_env())
 
     def test_a_failed_result_line_fails_the_run(self):
         result = self.run_saying("RESULT: ok\nRESULT: failed, step 3: portal login")

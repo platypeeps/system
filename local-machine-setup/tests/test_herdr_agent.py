@@ -1,19 +1,16 @@
-"""brew services' herdr is drift, and the bash launcher waits for it (sd:6427).
+"""No agent starts herdr, and brew services' herdr is drift (sd:6466).
 
-brew services' homebrew.mxcl.herdr starts herdr itself, so macOS charges every
-session's file access to herdr, whose grant each upgrade drops. The
-<prefix>.herdr agent starts it under Apple's /bin/bash. The agents stage
-reports a loaded homebrew.mxcl.herdr, and starts no second server beside it.
-It never stops herdr: that ends every session on the machine.
+A server launchd starts is charged to herdr, whose grant each upgrade drops;
+one the first herdr client starts from a terminal is covered by the
+terminal's grant. The agents stage reports a loaded homebrew.mxcl.herdr and
+never stops it: that ends every session on the machine.
 
 `launchctl` is a stub that logs its calls; `print` answers loaded for
 homebrew.mxcl.herdr when BREW_HERDR is set, and not loaded for anything else.
 BREW_HERDR=silent exits 0 and prints nothing, as test_backbone's stub does.
 """
 
-import os
 import pathlib
-import shutil
 import stat
 import subprocess
 import tempfile
@@ -23,7 +20,6 @@ from tests import fixture_config
 
 HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
-LABEL = f"{fixture_config.LABEL_PREFIX}.herdr"
 
 LAUNCHCTL = r"""#!/bin/sh
 echo "launchctl $*" >> "$LAUNCHCTL_LOG"
@@ -42,9 +38,7 @@ class HerdrAgentTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         base = pathlib.Path(self.tmp.name)
         self.config = fixture_config.copy_config(base)
-        agents = self.config / "machine-setup"
-        (agents / "profiles/personal.agent").write_text(f"{LABEL}\n")
-        shutil.copy(FOLDER / f"examples/launchagents/{LABEL}.plist", agents / f"launchagents/{LABEL}.plist")
+        (self.config / "machine-setup/profiles/personal.agent").write_text("# none\n")
         self.home = base / "home"
         self.state = self.home / ".config/machine-setup"
         self.state.mkdir(parents=True)
@@ -71,37 +65,39 @@ class HerdrAgentTest(unittest.TestCase):
     def calls(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
 
-    def test_a_loaded_brew_herdr_is_drift_and_holds_the_launcher(self):
+    def test_no_herdr_agent_ships(self):
+        """sd:6466: under Apple's bash, herdr was still charged to itself."""
+        self.assertEqual(list((FOLDER / "examples/launchagents").glob("*herdr*")), [])
+
+    def test_a_loaded_brew_herdr_is_drift_and_is_not_stopped(self):
         out = self.run_stage("--apply", BREW_HERDR="1")
 
         self.assertIn("DIFFERS homebrew.mxcl.herdr is loaded", out)
-        self.assertIn(f"HELD    {LABEL}", out)
-        self.assertFalse((self.home / f"Library/LaunchAgents/{LABEL}.plist").exists())
         self.assertEqual([call for call in self.calls() if not call.startswith("launchctl print")], [])
 
-    def test_with_brew_herdr_stopped_the_launcher_installs(self):
+    def test_a_profile_that_still_names_a_herdr_agent_is_told_to_retire_it(self):
+        """A profile and template from before sd:6466 are neither installed
+        nor started; the stage names the manual steps."""
+        label = "local.system-tools.herdr"
+        (self.config / "machine-setup/profiles/personal.agent").write_text(label + "\n")
+        agents = self.config / "machine-setup/launchagents"
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / f"{label}.plist").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>'
+            f"<key>Label</key><string>{label}</string></dict></plist>\n")
+
         out = self.run_stage("--apply")
 
-        self.assertNotIn("homebrew.mxcl.herdr", out)
-        self.assertIn(f"MISSING {LABEL}", out)
-        dst = self.home / f"Library/LaunchAgents/{LABEL}.plist"
-        self.assertIn("<string>/opt/homebrew/opt/herdr/bin/herdr server; exit $?</string>", dst.read_text())
-        self.assertIn(f"launchctl bootstrap gui/{os.getuid()} {dst}", self.calls())
-
-    def test_a_profile_without_the_launcher_still_reports_brew_herdr(self):
-        (self.config / "machine-setup/profiles/personal.agent").write_text("# none\n")
-        out = self.run_stage(BREW_HERDR="1")
-
-        self.assertIn("DIFFERS homebrew.mxcl.herdr is loaded", out)
+        self.assertIn(f"DIFFERS {label} — retired (sd:6466)", out)
+        self.assertFalse((self.home / f"Library/LaunchAgents/{label}.plist").exists())
+        self.assertEqual([call for call in self.calls() if not call.startswith("launchctl print")], [])
 
     def test_an_exit_0_that_names_no_service_is_not_brew_herdr(self):
         """Evidence: a print that names no service, as a stub's bare
-        `exit 0`, neither reports drift nor holds the launcher."""
-        out = self.run_stage("--apply", BREW_HERDR="silent")
+        `exit 0`, reports no drift."""
+        out = self.run_stage(BREW_HERDR="silent")
 
         self.assertNotIn("homebrew.mxcl.herdr", out)
-        self.assertIn(f"MISSING {LABEL}", out)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,9 @@ macOS charges a file-access check to the program launchd started, as the
 responsible process. A Homebrew binary's grant is keyed by its code hash,
 so each upgrade drops it: sd-serve started bin/sd-db, whose `env python3`
 shebang made Homebrew python responsible. Apple's /bin/bash and /bin/sh keep
-one identity. A template starts one of them, either as
+one identity, but pass a grant only to Apple children (sd:6456); an agent
+that reads protected paths starts under job-launch instead. A template
+starts one of them, either as
 `/bin/bash -c '"$0" ARGS; exit $?' SCRIPT`, where `; exit $?` stops bash
 from exec'ing its last command, or on a script that execs no program.
 """
