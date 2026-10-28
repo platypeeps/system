@@ -4,8 +4,8 @@
 file lacks; `claude_settings.py merge SETTINGS` adds those entries in place.
 `opencode-missing` and `opencode-merge` do the same for opencode.json.
 Only missing entries are added: an entry the operator set, to any value, is
-left alone. The one removal is a rule the baseline itself retired
-(RETIRED_DENY), reported as STALE. The stage backs the file up first.
+left alone. The removals are what the baseline itself retired (RETIRED_DENY,
+RETIRED_ENV at the value it wrote), reported as STALE. The stage backs the file up first.
 
 `local-missing FILE` and `local-merge FILE` do the same for the shared keys of
 a repo's CLAUDE.local.md block (the repos stage, sd:3030). Here the source
@@ -70,9 +70,11 @@ GUARD_PATH = shlex.quote(os.path.join(os.path.dirname(os.path.abspath(__file__))
 GUARD = f"test ! -f {GUARD_PATH} || python3 {GUARD_PATH}"
 GUARD_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit"
 #: Claude Code updates in the weekly upgrade only (sd:3033); this stops its background updater.
-#: macOS charges a tool shell's file access to the shell: Homebrew bash's grant drops on
-#: each upgrade, Apple's /bin/bash keeps one identity (sd:6427). The login shell stays.
-ENV = {"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_SHELL": "/bin/bash"}
+ENV = {"DISABLE_AUTOUPDATER": "1"}
+#: Env values an older baseline wrote and this one takes back out, where unchanged. The
+#: tool shell was Apple's bash for its file grant (sd:6427), but macOS charges the process
+#: launchd or the terminal started, not the shell (sd:6466); it cost bash 5.
+RETIRED_ENV = {"CLAUDE_CODE_SHELL": "/bin/bash"}
 #: The same paths for opencode's read permission, whose `*` also matches `/`.
 OPENCODE_READ_DENY = ["*" + rule[5:-1].removeprefix("//**/").removeprefix("~/").replace("**", "*").lstrip("*")
                       for rule in SECRET_READ_DENY]
@@ -108,6 +110,8 @@ def missing(settings):
     if "includeCoAuthoredBy" not in settings:
         gaps.append("includeCoAuthoredBy")
     gaps += [f"env.{key}" for key in ENV if key not in settings.get("env", {})]
+    gaps += [f"STALE env.{key} (retired)" for key, value in RETIRED_ENV.items()
+             if settings.get("env", {}).get(key) == value]
     if SESSION_START not in hook_commands(settings, "SessionStart"):
         gaps.append(f"hooks.SessionStart {SESSION_START}")
     if GUARD not in hook_commands(settings, "PreToolUse"):
@@ -126,6 +130,9 @@ def merge(settings):
     env = settings.setdefault("env", {})
     for key, value in ENV.items():
         env.setdefault(key, value)
+    for key, value in RETIRED_ENV.items():
+        if env.get(key) == value:
+            del env[key]
     if SESSION_START not in hook_commands(settings, "SessionStart"):
         hook = {"hooks": [{"type": "command", "command": SESSION_START}]}
         settings.setdefault("hooks", {}).setdefault("SessionStart", []).append(hook)

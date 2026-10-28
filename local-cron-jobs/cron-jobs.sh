@@ -1276,10 +1276,6 @@ cmd_exec() { # invoked by launchd (and by `run`)
     # that inherits is its own business. Through `env`, because an
     # assignment before a shell function such as run_bounded is not scoped
     # to that call in sh.
-    # CLAUDE_CODE_SHELL=/bin/bash the same way (sd:6427): macOS charged a
-    # job's file access to its Bash-tool shell, Homebrew bash, whose grant
-    # drops on each brew bash upgrade; Apple's /bin/bash keeps one identity.
-    # Only the tool's own commands get bash 3.2; scripts keep their shebangs.
     # JOB_RESULT_OK: `claude -p` exits 0 whatever the prompt concluded, so a
     # job whose prompt ends its reply with a `RESULT: ` line can have that
     # line judged. The reply is kept in a file for the check and printed
@@ -1290,7 +1286,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
       rc=1
     elif [ -n "$JOB_RESULT_OK" ]; then
       run_bounded "$job" "$JOB_TIMEOUT_SECONDS" \
-        env SD_HANDOFF_RESTORE=0 CLAUDE_CODE_SHELL=/bin/bash "$claude_bin" -p "$JOB_PROMPT" \
+        env SD_HANDOFF_RESTORE=0 "$claude_bin" -p "$JOB_PROMPT" \
         --dangerously-skip-permissions \
         --debug-file "$debug_file" \
         ${JOB_MODEL:+--model "$JOB_MODEL"} \
@@ -1310,7 +1306,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
       rm -f "$reply"
     else
       run_bounded "$job" "$JOB_TIMEOUT_SECONDS" \
-        env SD_HANDOFF_RESTORE=0 CLAUDE_CODE_SHELL=/bin/bash "$claude_bin" -p "$JOB_PROMPT" \
+        env SD_HANDOFF_RESTORE=0 "$claude_bin" -p "$JOB_PROMPT" \
         --dangerously-skip-permissions \
         --debug-file "$debug_file" \
         ${JOB_MODEL:+--model "$JOB_MODEL"} \
