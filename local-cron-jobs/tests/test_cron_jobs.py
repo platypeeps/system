@@ -500,13 +500,15 @@ class PromptJobDebugFileTest(unittest.TestCase):
 
 # The quarantine stubs record each call in $CALLS. A file's quarantine is a
 # file beside it, `<path>.quarantine`; XATTR_FAIL fails the read of the
-# names. Every check passes only for the path in GOOD; BAD_SIGNATURE fails the
-# verify.
+# names; RACED makes the delete find the flag already gone, as when another
+# job cleared it first. Every check passes only for the path in GOOD;
+# BAD_SIGNATURE fails the verify.
 QUARANTINE_STUBS = {
     "xattr": r"""#!/bin/sh
 echo "xattr $*" >> "$CALLS"
 case $1 in
-  -d) [ "$2" = com.apple.quarantine ] && rm "$3.quarantine" ;;
+  -d) [ "$2" = com.apple.quarantine ] && rm "$3.quarantine"
+      [ -z "$RACED" ] || { echo "xattr: $3: No such xattr: $2" >&2; exit 1; } ;;
   -*) exit 2 ;;
   *) [ -z "$XATTR_FAIL" ] || exit 1
      [ ! -e "$1.quarantine" ] || echo com.apple.quarantine ;;
@@ -607,6 +609,15 @@ class AgentQuarantineTest(unittest.TestCase):
                                    r"team Q6L2SF6YDW: clearing")
         # Each check's step line reaches the job log.
         self.assertRegex(self.log, r"\[step [\d:]+\] spctl --assess .*\(bound 120s\)")
+
+    def test_a_flag_another_job_cleared_first_runs_the_agent(self):
+        # REGRESSION (sd:6482). Three jobs share the 12:00 slot; one cleared
+        # the flag, and the others' delete found it gone and failed the job.
+        result = self.run_job(RACED="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls_of("claude"), ["claude ran"], self.log)
+        self.assertNotIn("quarantine kept", self.log)
 
     def test_a_failed_check_fails_the_job_at_once(self):
         # REGRESSION (sd:4815). The runner started the quarantined binary.

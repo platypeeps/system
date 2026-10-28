@@ -44,6 +44,12 @@ st_claude_quarantine() { # binary
   else
     echo "  DIFFERS claude quarantined; signed, notarized, team $CLAUDE_TEAM: clearing"
     cq_clear "$_cq" && return 0
+    # Jobs that share a slot race to clear it; a loser finds it gone (sd:6482).
+    if _cq_names=$(xattr "$_cq" 2>/dev/null) \
+        && ! printf '%s\n' "$_cq_names" | grep -qx com.apple.quarantine; then
+      echo "  ok      claude quarantine cleared by another run"
+      return 0
+    fi
     _cq_why="xattr could not clear it"
   fi
   echo "  DIFFERS claude quarantine kept on $_cq: $_cq_why"
