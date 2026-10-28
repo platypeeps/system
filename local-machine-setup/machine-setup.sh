@@ -787,7 +787,10 @@ tailscale_cli_link() {
   tl_ours=0 tl_stale=0
   if [ -L "$tl_link" ]; then
     [ "$(readlink "$tl_link")" != "$tl_app" ] || tl_stale=1
-  elif [ -f "$tl_link" ] && grep -qxF "$tl_exec" "$tl_link"; then
+  elif [ -f "$tl_link" ] &&
+       [ "$(cat "$tl_link")" = "$(printf '#!/bin/sh\n%s' "$tl_exec")" ]; then
+    # Only the whole wrapper this writes is ours: one with the operator's
+    # own lines around the exec line stays theirs, never deleted.
     tl_ours=1
   fi
   if tailscale_runs_app; then

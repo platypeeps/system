@@ -318,6 +318,24 @@ class BrewStageTest(unittest.TestCase):
 
         self.assertFalse(link.exists())
 
+    def test_a_modified_wrapper_is_the_operator_s_and_kept(self):
+        """Review: a wrapper with the exec line plus the operator's own
+        lines is not ours; dropping the cask must not delete it."""
+        link, app, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        exec_line = f'exec "{app}/Tailscale.app/Contents/MacOS/Tailscale" "$@"'
+        mine = f"#!/bin/sh\necho start >> /tmp/ts.log\n{exec_line}\n"
+        link.parent.mkdir(parents=True)
+        link.write_text(mine)
+
+        gone = self.run_verb("update", "brew", "--apply", formulae="tailscale", **env)
+        self.assertNotIn("EXTRA   tailscale CLI wrapper", gone.stdout)
+        self.assertEqual(link.read_text(), mine)
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("")
+        (self.config_root / "machine-setup/profiles/personal.cask").write_text("tailscale-app\n")
+        kept = self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn(f"DIFFERS {link} is not a wrapper for ", kept.stdout)
+        self.assertEqual(link.read_text(), mine)
+
     def test_no_tailscale_in_the_profile_leaves_no_wrapper_line(self):
         _, _, env = self.tailscale_profile(cask="")
 
