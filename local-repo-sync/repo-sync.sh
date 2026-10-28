@@ -566,8 +566,62 @@ pull_one() {
 }
 
 # A held index.lock this old is stale, not another git process at work: the
-# run fails on it (operator ruling on sd:6308).
+# run fails on it (operator ruling on sd:6308). clear_stale_lock removes
+# most such locks first; this catches one it cannot prove free.
 LOCK_STALE_HOURS=24
+
+# A checkout's index.lock this old, which no git process works in, is left
+# by a git that died: sync removes it and pulls again (sd:6480). A live git
+# that holds a lock longer is seen by git_busy; the age covers a writer it
+# does not see, such as an editor's own git library, which holds a lock
+# for seconds.
+LOCK_CLEAR_MINUTES=10
+
+# Whether a git process of this user works in checkout $1: its cwd or an
+# open file lies under $1. `git -C $1` changes into $1 first, and a git that
+# holds the lock has it open, so a command line naming $1 needs no check.
+# Returns 0 when one does, 1 when none does, and 2 when a probe fails: an
+# unknown answer is no "none". Another user's git is not looked at: lsof
+# cannot read it without root, and it does not work in this user's
+# checkouts.
+git_busy() {
+  g_real=$(cd "$1" 2>/dev/null && pwd -P) || return 2
+  g_rc=0
+  g_pids=$(pgrep -u "$(id -u)" -x git) || g_rc=$?
+  [ "$g_rc" -ne 1 ] || return 1
+  [ "$g_rc" -eq 0 ] || return 2
+  for g_pid in $g_pids; do
+    if ! lsof -nP -a -p "$g_pid" -Fn > "$TMPD/git_busy" 2>/dev/null; then
+      # A git that exited since the listing is not at work; one that runs
+      # and cannot be read is unknown.
+      ps -p "$g_pid" > /dev/null 2>&1 && return 2
+      continue
+    fi
+    sed -n 's/^n//p' "$TMPD/git_busy" | awk -v a="$1" -v b="$g_real" '
+      $0 == a || $0 == b || index($0, a "/") == 1 || index($0, b "/") == 1 { f = 1 }
+      END { exit !f }' && return 0
+  done
+  return 1
+}
+
+# Removes checkout $1's own index.lock when the pull in $TMPD/pull.err met
+# a held lock, the lock is LOCK_CLEAR_MINUTES old or more, and git_busy
+# says no git process works in $1 (sd:6480). Returns 1, and touches
+# nothing, when any of that is not so or cannot be read; held_lock then
+# reports the lock as before.
+clear_stale_lock() {
+  c_lock="$1/.git/index.lock"
+  grep -q "Unable to create '.*index\.lock': File exists\." "$TMPD/pull.err" || return 1
+  [ -f "$c_lock" ] || return 1
+  c_mtime=$(date -r "$c_lock" +%s 2>/dev/null) || return 1
+  c_min=$(( ($(date +%s) - c_mtime) / 60 ))
+  [ "$c_min" -ge "$LOCK_CLEAR_MINUTES" ] || return 1
+  c_rc=0
+  git_busy "$1" || c_rc=$?
+  [ "$c_rc" -eq 1 ] || return 1
+  rm -f "$c_lock" || return 1
+  echo "removed stale $c_lock, $c_min min old, no git process in it; pulling again"
+}
 
 # The index.lock git output $1 says exists, with its age. Returns 1 when $1
 # names none, 2 when the lock is LOCK_STALE_HOURS old or more, or its age
@@ -639,10 +693,11 @@ sync() {
       elif state=$(side_branch_diverged "$target"); then
         echo "$state; left alone"
         echo "$full_repo $state" >> "$DIVLOG"
-      elif ! pull_one "$target"; then
+      elif ! pull_one "$target" && ! { clear_stale_lock "$target" && pull_one "$target"; }; then
         # Another git process holds a lock: a skip the next run retries. A
         # lock LOCK_STALE_HOURS old is stale and fails. Either way the lock
-        # stays (sd:6308).
+        # stays (sd:6308); clear_stale_lock already removed one it could
+        # prove free (sd:6480).
         lock_rc=0
         lock=$(held_lock "$TMPD/pull.err") || lock_rc=$?
         if [ "$lock_rc" -eq 0 ]; then

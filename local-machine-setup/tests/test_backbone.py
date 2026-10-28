@@ -173,6 +173,12 @@ class Fixture:
         return subprocess.run([str(SCRIPT), *args], env=self.env(**extra), capture_output=True, text=True,
                               cwd=str(self.tmp.name))
 
+    def install_serve_python(self):
+        """sd-serve's own python, as the sd stage's uv install leaves it (sd:6492)."""
+        served = self.home / ".local/share/sd-serve/python/bin"
+        served.mkdir(parents=True)
+        write_stub(served, "python3", "exit 0\n")
+
     def make_database(self, *, schema=None):
         """`sd-db init` as the library does it. A schema other than the
         current one is set last, through the library, after which the
@@ -286,6 +292,7 @@ class SetupAndStatusTest(unittest.TestCase):
 
     def test_a_home_with_the_pieces_reports_no_drift_on_them(self):
         self.fixture.make_database()
+        self.fixture.install_serve_python()
         self.fixture.serve_status.write_text(ROUTE_PRESENT)
         out = self.stage_lines("update", "sd")
         self.assertNotRegex(out, DRIFT_WORDS)
@@ -328,6 +335,7 @@ class SetupAndStatusTest(unittest.TestCase):
 
     def test_a_service_config_naming_this_database_is_not_drift(self):
         self.fixture.make_database()
+        self.fixture.install_serve_python()
         self.fixture.serve_status.write_text(ROUTE_PRESENT)
         self.fixture.write_service_config("dashboard", self.fixture.db)
         out = self.stage_lines("update", "sd")

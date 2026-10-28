@@ -269,14 +269,13 @@ class PromptJobEnvironmentTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.fx.claude_env().get("SD_HANDOFF_RESTORE"), "0")
 
-    def test_prompt_job_runs_its_tool_shell_as_apple_bash(self):
-        # sd:6427. macOS charged a job's file access to its Bash-tool shell,
-        # Homebrew bash, whose grant drops on each brew bash upgrade; Apple's
-        # /bin/bash keeps one identity. An inherited value is overridden.
+    def test_prompt_job_leaves_the_tool_shell_alone(self):
+        # sd:6466. job-launch is charged for the whole job, whatever shell
+        # claude's Bash tool runs, so the job sets none.
         self.fx.write_job("nightly", PROMPT_JOB)
-        result = self.fx.exec_job("nightly", {"CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash"})
+        result = self.fx.exec_job("nightly")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.fx.claude_env().get("CLAUDE_CODE_SHELL"), "/bin/bash")
+        self.assertNotIn("CLAUDE_CODE_SHELL", self.fx.claude_env())
 
     def test_env_sh_custom_token_reaches_claude_as_claude_code_oauth_token(self):
         # sd:5791. env.sh exports the setup token as
@@ -327,8 +326,8 @@ class PromptJobResultLineTest(unittest.TestCase):
         result = self.run_saying("did things\nRESULT: ok")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("did things", result.stdout)
-        # sd:6427: this branch starts claude too.
-        self.assertEqual(self.fx.claude_env().get("CLAUDE_CODE_SHELL"), "/bin/bash")
+        # sd:6466: this branch starts claude too.
+        self.assertNotIn("CLAUDE_CODE_SHELL", self.fx.claude_env())
 
     def test_a_failed_result_line_fails_the_run(self):
         result = self.run_saying("RESULT: ok\nRESULT: failed, step 3: portal login")
@@ -496,6 +495,21 @@ class PromptJobDebugFileTest(unittest.TestCase):
         sixth = self.debug_file_argument()
         self.assertNotEqual(sixth, fifth)
         self.assertEqual(self.debug_files(), sorted(older[1:] + [fifth, sixth]))
+
+    def test_the_prune_lists_from_the_log_dir_not_the_job_dir(self):
+        # REGRESSION (sd:6437). macOS `ls` opens its cwd, and a job's
+        # JOB_DIR in the ~/Documents vault drew a Full Disk Access denial
+        # for /bin/ls at the end of every such run.
+        calls = self.fx.tmp / "ls-cwd"
+        path = self.stub_path("ls", f'#!/bin/sh\npwd >> "{calls}"\nexec /bin/ls "$@"\n')
+        job_dir = self.fx.tmp / "vault"
+        job_dir.mkdir()
+        self.fx.write_job("nightly", PROMPT_JOB + f'JOB_DIR="{job_dir}"\n')
+        result = self.fx.exec_job("nightly", {"PATH": path})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cwds = {pathlib.Path(line).resolve() for line in calls.read_text().splitlines()}
+        self.assertEqual(cwds, {self.logs.resolve()})
+        self.assertEqual(len(self.debug_files()), 1)
 
 
 # The quarantine stubs record each call in $CALLS. A file's quarantine is a
@@ -1565,16 +1579,16 @@ class HostJobsTest(unittest.TestCase):
         self.assertNotIn("no such job", done.stdout + done.stderr)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
-    def test_the_plist_runs_the_job_at_standard_priority(self):
-        """launchd's Background process type ran a CPU loop about 100 times
-        slower than Standard on the hub, and lane gates under it hit their
-        hour limit (sd:3173). A job's plist names no ProcessType, so launchd
-        uses Standard."""
+    def test_the_plist_runs_the_job_at_interactive_priority(self):
+        """launchd throttles a job with no ProcessType (Standard): repo-sync's
+        gate suite ran 155 tests in 237 s from a terminal but reached 142 in
+        32 min as a launchd job, so lane gates hit their hour limit (sd:6504;
+        Background was worse still, sd:3173). A job's plist says Interactive."""
         self.fx.write_job("demo", self.JOB.format("true"))
         result = self.run_script("install", "demo")
         self.assertEqual(result.returncode, 0, result.stderr)
         plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
-        self.assertNotIn("ProcessType", plistlib.loads(plist.read_bytes()))
+        self.assertEqual("Interactive", plistlib.loads(plist.read_bytes()).get("ProcessType"))
 
     def test_plist_values_are_xml_escaped(self):
         """A config root named with `&`, `<` and `>` still renders a plist

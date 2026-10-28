@@ -28,9 +28,10 @@ with a digit gets an `x`. Each row also holds its names, and a row that names
 another action is refused, never answered. The pack's `place_tiles.key` spells
 the same rule; a change to it changes both.
 
-`USAGE` names the verb. It exits 0, 3 when the hub does not answer, 4 when
-the hub refuses this build, and 2 on any other failure, named on stderr. The
-database is the hub's, through `sd_db.connect`, or `REPO_SYNC_SD_DB` when set.
+`USAGE` names the verb. It exits 0, 3 when the hub does not answer or cannot
+name itself, 4 when the hub refuses this build, and 2 on any other failure,
+named on stderr. The database is the hub's, through `sd_db.connect`, or
+`REPO_SYNC_SD_DB` when set.
 `sd_db` and `sd_dashboard` come from `$SD_PACK_ROOT`.
 """
 
@@ -185,6 +186,10 @@ def answer(connection, host, tiles, config, text):
 def _exit_for(error):
     name = type(error).__name__
     if name == "HubUnreachable":
+        return UNREACHABLE
+    # A hub whose tailscaled cannot name it for a moment fences as unknown:
+    # silence too (pack sd:6551). A fence that names another node still fails.
+    if name == "Fenced" and "Tailscale does not name this node" in str(error):
         return UNREACHABLE
     if name == "BuildMismatch":
         return MISMATCH

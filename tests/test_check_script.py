@@ -88,7 +88,7 @@ MACOS = """#!/bin/sh
 if [ "$1" = list ]; then echo 'one sh one.sh'; echo 'two sh two.sh'; exit 0; fi
 exec /bin/sh "$(dirname "$0")/ci-native.sh" macos "$1"
 """
-JOBS = 6 + (2 if platform.system() == "Darwin" else 0)
+JOBS = 7 + (2 if platform.system() == "Darwin" else 0)
 
 
 def git(*args, cwd):
@@ -201,7 +201,7 @@ class FailFast(CheckFixture):
     def setUp(self):
         super().setUp()
         self.jobs = (["macos-one", "macos-two"] if platform.system() == "Darwin" else []) + [
-            "repo-sync-1", "repo-sync-2", "tools-1", "tools-2", "tools-3", "leg-shared"]
+            "repo-sync-1", "repo-sync-2", "tools-1", "tools-2", "tools-3", "tools-4", "leg-shared"]
 
     def slow(self, *legs, ends_ok=(), ignores_term=()):
         for leg in legs:
@@ -318,9 +318,9 @@ class FailFast(CheckFixture):
                                            stderr=subprocess.DEVNULL, start_new_session=True)
                 try:
                     deadline = time.monotonic() + 30
-                    while len(self.pids()) < 12 and time.monotonic() < deadline:
+                    while len(self.pids()) < 14 and time.monotonic() < deadline:
                         time.sleep(0.1)
-                    self.assertEqual(12, len(self.pids()), "the slow jobs did not start")
+                    self.assertEqual(14, len(self.pids()), "the slow jobs did not start")
                     if whom == "group":
                         os.killpg(process.pid, signal.SIGTERM)
                     else:

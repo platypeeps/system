@@ -6,7 +6,9 @@ upgrade cases are in test_upgrade_steps. A tracked sudoers example names the
 known repair commands. The operator creates the item and installs the
 drop-in on each machine; doctor says on each machine whether both are there.
 
-`security` is a stub here: no case reads a real Keychain.
+`security` is a stub here: no case reads a real Keychain. The drop-in's
+brew line follows this machine's brew prefix (sd:6475): /opt/homebrew on
+Apple silicon, /usr/local on Intel. `sudo` and `brew` are stubs too.
 """
 
 import pathlib
@@ -32,18 +34,38 @@ case " $* " in *" -w "*) echo "$STUB_KEYCHAIN" ;; esac
 exit 0
 """
 
+# `sudo -n -l` prints SUDO_LIST, sudo's listing of this user's rules, or exits
+# SUDO_RC; `brew --prefix` prints BREW_PREFIX. Every other call fails.
+SUDO_STUB = r"""#!/bin/sh
+echo "sudo $*" >> "$CALL_LOG"
+[ "$*" = "-n -l" ] || exit 1
+[ -z "$SUDO_RC" ] || exit "$SUDO_RC"
+printf '%s\n' "User example may run the following commands on example:" "$SUDO_LIST"
+"""
+BREW_STUB = r"""#!/bin/sh
+echo "brew $*" >> "$CALL_LOG"
+[ "$*" = --prefix ] && [ -n "$BREW_PREFIX" ] && echo "$BREW_PREFIX"
+"""
+RESTART = "services restart tailscale"
+
 
 class Doctor(Case):
-    def doctor(self, keychain="", sudoers=False, **extra):
+    def run_doctor(self, keychain="", sudoers=False, prefix="/usr/local",
+               rule=f"    (root) NOPASSWD: /usr/local/bin/brew {RESTART}", **extra):
         write_exec(self.stubs / "security-stub", SECURITY_STUB)
+        write_exec(self.stubs / "sudo", SUDO_STUB)
+        write_exec(self.stubs / "brew", BREW_STUB)
+        extra = {"BREW_PREFIX": prefix, "SUDO_LIST": rule, "SUDO_RC": "", **extra}
         drop_in = self.base / "sudoers.d/machine-setup-repairs"
         if sudoers:
-            drop_in.parent.mkdir()
+            drop_in.parent.mkdir(exist_ok=True)
             drop_in.write_text("# installed\n")
-        result = self.run_script("doctor", fnm_have="18 20 24", STUB_KEYCHAIN=keychain,
-                                 MACHINE_SETUP_SECURITY=str(self.stubs / "security-stub"),
-                                 MACHINE_SETUP_REPAIRS_SUDOERS=str(drop_in), **extra)
-        return result.stdout
+        return self.run_script("doctor", fnm_have="18 20 24", STUB_KEYCHAIN=keychain,
+                               MACHINE_SETUP_SECURITY=str(self.stubs / "security-stub"),
+                               MACHINE_SETUP_REPAIRS_SUDOERS=str(drop_in), **extra)
+
+    def doctor(self, *args, **kw):
+        return self.run_doctor(*args, **kw).stdout
 
     def test_both_present_are_ok(self):
         out = self.doctor(keychain="example-password", sudoers=True)
@@ -51,6 +73,34 @@ class Doctor(Case):
         self.assertIn("  ok      repair sudoers drop-in ", out)
         self.assertNotIn("example-password", out)
         self.assertNotIn(" -w", self.call_log.read_text())
+
+    def test_a_drop_in_for_another_brew_prefix_is_a_finding(self):
+        """sd:6475: terra's drop-in allowed /opt/homebrew/bin/brew, which an
+        Intel Mac does not have; the repair asked for a password while
+        doctor said ok."""
+        out = self.doctor(keychain="example-password", sudoers=True,
+                          rule=f"    (root) NOPASSWD: /opt/homebrew/bin/brew {RESTART}")
+        self.assertRegex(out, r"  WARN    repair sudoers drop-in \S+machine-setup-repairs does not "
+                              rf"allow /usr/local/bin/brew {RESTART} without a password — "
+                              r"fix its brew path: sudo visudo -f \S+machine-setup-repairs\n")
+        self.assertNotIn("  ok      repair sudoers drop-in", out)
+
+    def test_the_restart_line_is_dead_with_the_tailscale_app_cask(self):
+        """sd:6554, sd:6475: the app's daemon is no brew service, so the
+        drop-in's restart line repairs nothing there."""
+        (self.profiles / "personal.cask").write_text("tailscale-app\n")
+        out = self.doctor(keychain="example-password", sudoers=True)
+        self.assertRegex(out, r"  WARN    repair sudoers drop-in \S+ allows brew services restart "
+                              r"tailscale, dead with the tailscale-app cask — drop that line")
+        out = self.doctor(keychain="example-password", sudoers=True, rule="    (root) NOPASSWD: /sbin/pfctl -sr")
+        self.assertIn("  ok      repair sudoers drop-in ", out)
+        self.assertNotIn("does not allow", out)
+
+    def test_an_unread_sudo_listing_is_unknown_not_ok(self):
+        out = self.doctor(keychain="example-password", sudoers=True, SUDO_RC="1")
+        self.assertRegex(out, r"  WARN    repair sudoers drop-in \S+ unknown: sudo -n -l exited 1\n")
+        out = self.doctor(keychain="example-password", sudoers=True, prefix="")
+        self.assertRegex(out, r"  WARN    repair sudoers drop-in \S+ unknown: brew --prefix gave no answer\n")
 
     def test_each_missing_one_is_a_finding_naming_the_step(self):
         """A missing item or drop-in is a WARN, not a FAIL: the operator's
@@ -63,6 +113,30 @@ class Doctor(Case):
                               r"install local-machine-setup/machine-setup-repairs\.sudoers\.example "
                               r"with visudo -cf")
         self.assertNotIn("FAIL    no Keychain", out)
+
+    def test_an_item_with_no_cask_list_is_a_finding_naming_what_to_set(self):
+        """sd:6474: with the item there and the list unset or change-me, the
+        weekly upgrade upgraded no cask with the askpass, and doctor said
+        ok. The ruling: list the casks with a pkg installer."""
+        want = ("  WARN    MACHINE_SETUP_SUDO_CASKS {} — the weekly upgrade defers every cask "
+                "whose pkg installer calls sudo; list those casks in machine-setup.env, "
+                'e.g. "zoom google-drive" (README: Unattended sudo)\n')
+        for casks, shown in (("", "unset"), ("change-me", "is change-me")):
+            with self.subTest(casks=casks):
+                result = self.run_doctor(keychain="example-password", MACHINE_SETUP_SUDO_CASKS=casks)
+                self.assertIn(want.format(shown), result.stdout)
+                self.assertNotIn("FAIL    MACHINE_SETUP_SUDO_CASKS", result.stdout)
+        result = self.run_doctor(keychain="example-password", MACHINE_SETUP_SUDO_CASKS="zoom")
+        self.assertIn("  ok      MACHINE_SETUP_SUDO_CASKS: zoom\n", result.stdout)
+        result = self.run_doctor(keychain="", MACHINE_SETUP_SUDO_CASKS="")
+        self.assertNotIn("MACHINE_SETUP_SUDO_CASKS", result.stdout)
+
+    def test_no_cask_list_leaves_the_doctor_verdict_alone(self):
+        verdicts = []
+        for casks in ("", "zoom"):
+            result = self.run_doctor(keychain="example-password", MACHINE_SETUP_SUDO_CASKS=casks)
+            verdicts.append((result.returncode, result.stdout.splitlines()[-1]))
+        self.assertEqual(verdicts[0], verdicts[1])
 
     def test_a_keychain_that_does_not_answer_is_unknown_not_missing(self):
         out = self.doctor(SECURITY_RC="51")
@@ -99,16 +173,37 @@ class Askpass(unittest.TestCase):
 
 
 class Sudoers(unittest.TestCase):
+    def rendered(self, prefix):
+        """The drop-in the README's install step writes on a machine whose
+        `brew --prefix` is PREFIX, its rules only (sd:6475)."""
+        readme = (FOLDER / "README.md").read_text()
+        step = re.search(r"^ +(sed .+?\n.+? > )/tmp/machine-setup-repairs$", readme, re.M)
+        self.assertIsNotNone(step, "README: no sed step that writes /tmp/machine-setup-repairs")
+        tmp = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        write_exec(tmp / "bin/brew", f'#!/bin/sh\n[ "$*" = --prefix ] && echo {prefix}\n')
+        write_exec(tmp / "bin/id", '#!/bin/sh\n[ "$*" = -un ] && echo example\n')
+        out = tmp / "drop-in"
+        subprocess.run(["sh", "-c", step.group(1) + str(out)], cwd=FOLDER, check=True,
+                       env={"PATH": f"{tmp / 'bin'}:/usr/bin:/bin"}, timeout=30)
+        return [line for line in out.read_text().splitlines()
+                if line.strip() and not line.startswith("#")]
+
     def test_each_rule_is_nopasswd_for_one_exact_command(self):
         """Exact arguments only: an absolute path, its arguments, no
         wildcard; sudoers then allows those arguments and no others."""
-        rules = [line for line in SUDOERS.read_text().splitlines()
-                 if line.strip() and not line.startswith("#")]
+        rules = self.rendered("/opt/homebrew")
         self.assertEqual(len(rules), 2, rules)
         for rule in rules:
-            self.assertRegex(rule, r"^change-me ALL=\(root\) NOPASSWD: /\S+( [^*?\[\]\\,:=]+)+$")
-        self.assertIn("NOPASSWD: /opt/homebrew/bin/brew services restart tailscale", rules[0])
+            self.assertRegex(rule, r"^example ALL=\(root\) NOPASSWD: /\S+( [^*?\[\]\\,:=]+)+$")
+        self.assertTrue(rules[0].endswith("NOPASSWD: /opt/homebrew/bin/brew services restart tailscale"))
         self.assertTrue(rules[1].endswith("NOPASSWD: /sbin/pfctl -sr"), rules[1])
+
+    def test_the_brew_rule_follows_the_machines_brew_prefix(self):
+        """sd:6475: the example named /opt/homebrew/bin/brew, dead on an
+        Intel Mac, where brew is /usr/local/bin/brew."""
+        self.assertNotIn("/opt/homebrew", SUDOERS.read_text())
+        rules = self.rendered("/usr/local")
+        self.assertEqual(rules[0], "example ALL=(root) NOPASSWD: /usr/local/bin/brew services restart tailscale")
 
 
 class EveryMachine(unittest.TestCase):

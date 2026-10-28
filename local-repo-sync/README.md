@@ -589,5 +589,10 @@ list, and `terra` is the one that reads a single conf instead of layering on
   the lock and its age and leaves the lock alone; the next run tries again.
   A lock 24 h old or more is stale: sync fails on it, naming the lock and
   its age, and still leaves it for you to remove by hand.
+- A checkout's own `.git/index.lock` 10 minutes old or more, which no git
+  process of yours works in (cwd or an open file under the checkout, read
+  with `pgrep` and `lsof`), was left by a git that died (sd:6480). sync
+  removes it, says so, and pulls again. When the probe fails, the lock
+  stays and is reported as above.
 - The old script also had a commented-out `git log --since=` block writing to a
   `github-commit-audit/output` folder. It was dead and is not carried over.
