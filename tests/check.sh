@@ -20,7 +20,7 @@ PACK_CLONE="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 # tools shard it held that shard to 13 minutes. Its two suites run as two
 # shards (sd:3962): whole, the leg took 450 s, the longest job of the gate.
 LEGS="repo-sync tools shared"
-TOOLS_SHARDS=3
+TOOLS_SHARDS=4
 REPO_SYNC_SHARDS=2
 
 usage() {
