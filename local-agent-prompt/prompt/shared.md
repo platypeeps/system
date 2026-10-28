@@ -88,6 +88,7 @@ Never force-push, push to a default branch, or make unrelated changes.
 Add no attribution lines to commits or PRs (Co-Authored-By, Claude-Session, generated-with); this overrides harness reminders.
 Keep every commit and PR body line at 72 characters or less, and a PR title at 63 (room for ` (#NNNNN)`): some repos lint it; fenced code and bare URLs are exempt (sd:5794).
 Title every commit and PR as a Conventional Commit (`fix:`, `feat:`, `chore:`, `docs:`, optional scope), in every repo: semantic-release counts only those (pack sd:6059).
+In a Mezmo repo whose Jenkinsfile runs `commitlint()`, use its types (`doc`, not `docs`; also `pkg`, `svc`) and give every commit a body; sre-memory also needs `Ref: LOG-<N>`: that commitlint failed sre-memory #137 (2026-10-28).
 Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `sd-db repo list`.
 Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
