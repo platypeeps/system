@@ -117,6 +117,13 @@ NSMB_CONF="${MACHINE_SETUP_NSMB_CONF:-/etc/nsmb.conf}"
 REPAIRS_SUDOERS="${MACHINE_SETUP_REPAIRS_SUDOERS:-/etc/sudoers.d/machine-setup-repairs}"
 SUDO_KEYCHAIN=machine-setup-sudo
 SECURITY="${MACHINE_SETUP_SECURITY:-security}"
+# sd-serve's own python (sd:6492): uv installs it once at this fixed path,
+# outside Homebrew, and the sd-serve plist's PATH starts with its bin. A brew
+# upgrade then moves no binary the firewall allows, and brew python moves
+# freely. The uv override exists for the tests, so none downloads a python.
+SERVE_PYTHON_VERSION=3.15
+SERVE_PYTHON_DIR="$HOME/.local/share/sd-serve/python"
+UV="${MACHINE_SETUP_UV:-uv}"
 # The PlistBuddy override exists for the tests too: CI runs on Linux, which
 # has no PlistBuddy, and the tests put a stand-in there.
 PLISTBUDDY="${MACHINE_SETUP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
@@ -587,14 +594,21 @@ valid_profile() {
 # is a new Python.app to macOS: the application firewall blocked the new one,
 # so sd-serve admitted no satellite, and its file grants dropped. Upgrade it
 # deliberately: unpin, upgrade, allow the new Python.app in the firewall.
+# sd-serve's own uv python (SERVE_PYTHON_DIR, sd:6492) is no formula, so
+# with it nothing is pinned, and python@X.Y's old pin reads stale.
 
-# Where sd-serve's python3 is installed (sys.base_prefix); empty when it
-# fails. Found on the PATH its installed plist sets, as launchd finds it, else
-# on the caller's (sd:6463 review).
-python_prefix() {
+# Runs python3 -c CODE as sd-serve does: on the PATH its installed plist
+# sets, as launchd finds it, else on the caller's (sd:6463 review). Prints
+# nothing when it fails.
+serve_python3() { # code
   _pp=$(plutil -extract EnvironmentVariables.PATH raw -o - \
     "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-serve.plist" 2>/dev/null) || _pp=$PATH
-  PATH=$_pp python3 -c 'import sys; print(sys.base_prefix)' 2>/dev/null || :
+  PATH=$_pp python3 -c "$1" 2>/dev/null || :
+}
+
+# Where sd-serve's python3 is installed (sys.base_prefix); empty when it fails.
+python_prefix() {
+  serve_python3 'import sys; print(sys.base_prefix)'
 }
 
 # The Homebrew formula sd-serve's python3 belongs to, as python@X.Y, read from its
@@ -622,15 +636,21 @@ unpinned_python() {
   printf '%s\n' "$_sp" | sed 's|.*/||' | grep -qx "$_py" || echo "$_py"
 }
 
-# The Python.app sd-serve's python3 runs when the application firewall blocks its
-# incoming connections; fixing it needs sudo, so it is reported only.
+# What sd-serve's python3 runs as, to the application firewall, when the
+# firewall blocks its incoming connections; fixing it needs sudo, so it is
+# reported only. A framework build, as brew's, runs as its Python.app; any
+# other, as the uv one (sd:6492), as its executable, listed by its real path.
 blocked_python() {
   _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
   if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
   [ -x "$_fw" ] || return 0
   _app=$(python_prefix)
-  [ -n "$_app" ] || return 0
-  _app="$_app/Resources/Python.app"
+  case $_app in
+    "") return 0 ;;
+    */Python.framework/*) _app="$_app/Resources/Python.app" ;;
+    *) _app=$(serve_python3 'import os, sys; print(os.path.realpath(sys.executable))')
+       [ -n "$_app" ] || return 0 ;;
+  esac
   "$_fw" --listapps 2>/dev/null | grep -A1 -F "$_app" | grep -q 'Block incoming' && echo "$_app"
   return 0
 }
@@ -2417,6 +2437,24 @@ sd_database_elsewhere() {
   done
 }
 
+# sd-serve's python (SERVE_PYTHON_DIR), installed once by uv before the
+# agents stage loads sd-serve. Never upgraded here: each new binary needs a
+# new firewall allow. Until it is there, sd-serve's PATH falls through to
+# brew's python3, as before.
+serve_python() {
+  if [ -x "$SERVE_PYTHON_DIR/bin/python3" ]; then
+    echo "  ok      sd-serve python $SERVE_PYTHON_DIR/bin/python3"
+    return 0
+  fi
+  echo "  MISSING sd-serve python $SERVE_PYTHON_VERSION at $SERVE_PYTHON_DIR — sd-serve runs brew's python3 until it is there"
+  if ! command -v "$UV" >/dev/null 2>&1; then
+    echo "  --      no uv to install it (the brew stage installs uv); then: $(basename "$SELF") update sd --apply"
+    return 0
+  fi
+  run bound_step 900 env UV_PYTHON_INSTALL_DIR="$SERVE_PYTHON_DIR" UV_PYTHON_BIN_DIR="$SERVE_PYTHON_DIR/bin" \
+    "$UV" python install "$SERVE_PYTHON_VERSION" --default
+}
+
 stage_sd() {
   echo "== sd"
   hub_ask
@@ -2454,6 +2492,9 @@ stage_sd() {
     echo "  MISSING $AGENT_DIR/$LABEL_PREFIX.sd-serve.plist — copy it from $DIR/examples/launchagents/"
   else
     echo "  ok      $LABEL_PREFIX.sd-serve in $PROFILE.agent"
+  fi
+  if hub_role || manifest agent | grep -qxF "$LABEL_PREFIX.sd-serve"; then
+    serve_python
   fi
   # Removed by hand, never here: on the hub it refuses every sd verb beside
   # the database (HubConflict), and the operator decides which role is wrong.
@@ -8033,6 +8074,7 @@ environment:
   MACHINE_SETUP_SPOTLIGHT_SUDOERS  tests only: the Spotlight read drop-in
   MACHINE_SETUP_REPAIRS_SUDOERS  tests only: the repair drop-in doctor checks
   MACHINE_SETUP_SECURITY  tests only: the command that reads the Keychain
+  MACHINE_SETUP_UV  tests only: the uv that installs sd-serve's python
   MACHINE_SETUP_TIMEOUT_SUDOERS  tests only: the sudo grace-period drop-in
   MACHINE_SETUP_NSMB_CONF  tests only: the file that stands in for /etc/nsmb.conf
   MACHINE_SETUP_APPLICATIONS_DIR  tests only: the folder the apps scan reads

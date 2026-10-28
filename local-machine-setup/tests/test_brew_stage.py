@@ -5,6 +5,10 @@ Python.app, which the application firewall blocked, so sd-serve admitted
 no satellite. Any other pin an older stage made (python@*, opencode,
 codex) is removed (sd:6433).
 
+sd-serve may run its own uv python instead (sd:6492): the sd stage installs it
+outside Homebrew, and its plist's PATH starts with it. No formula then holds
+sd-serve, so nothing is pinned, and python@X.Y's old pin reads stale.
+
 The script runs from a copy of this folder under a temporary root; `brew` is
 a stub that logs each install and pin in a file, `python3` a stub that
 reports $PY_PREFIX as its install path, and the firewall tool a stub that prints $FW_LIST.
@@ -63,6 +67,29 @@ if [ "$*" = "-c import sys; print(sys.base_prefix)" ]; then
   exit 0
 fi
 exec {sys.executable} "$@"
+"""
+
+# sd-serve's uv python, as the sd stage installs it (sd:6492): a plain
+# executable, which the firewall lists by its real path.
+UV_PREFIX = "{home}/.local/share/sd-serve/python/cpython-3.15.2-macos-aarch64-none"
+UV_EXE = UV_PREFIX + "/bin/python3.15"
+# Asked for its install path or its executable's real path, python3 prints
+# $SERVED_PREFIX or $SERVED_EXE; every other call is the real interpreter's.
+SERVED_STUB = f"""#!/bin/sh
+case "$*" in
+  "-c import sys; print(sys.base_prefix)") echo "$SERVED_PREFIX"; exit 0 ;;
+  "-c import os, sys; print(os.path.realpath(sys.executable))") echo "$SERVED_EXE"; exit 0 ;;
+esac
+exec {sys.executable} "$@"
+"""
+
+# uv: `python install` with UV_PYTHON_BIN_DIR set leaves a python3 there.
+# Each call, with the two directories, is logged in $UV_LOG.
+UV_STUB = r"""#!/bin/sh
+echo "$* install=$UV_PYTHON_INSTALL_DIR bin=$UV_PYTHON_BIN_DIR" >> "$UV_LOG"
+mkdir -p "$UV_PYTHON_BIN_DIR"
+printf '#!/bin/sh\n' > "$UV_PYTHON_BIN_DIR/python3"
+chmod +x "$UV_PYTHON_BIN_DIR/python3"
 """
 
 
@@ -209,6 +236,84 @@ class BrewStageTest(unittest.TestCase):
         status = self.run_verb("status", **blocked)
         self.assertIn(f"  blocked : {PYTHON_APP}", status.stdout)
         self.assertNotIn("blocked", self.run_verb("status", **allowed).stdout)
+
+    def serve_from_uv(self):
+        """sd-serve installed with its PATH starting at its uv python."""
+        served = self.home / ".local/share/sd-serve/python/bin"
+        write_exec(served / "python3", SERVED_STUB)
+        agents = self.home / "Library/LaunchAgents"
+        agents.mkdir(parents=True)
+        (agents / f"{fixture_config.LABEL_PREFIX}.sd-serve.plist").write_bytes(plistlib.dumps(
+            {"Label": "x", "EnvironmentVariables": {"PATH": f"{served}:{self.stubs}:/usr/bin:/bin"}}))
+        prefix = UV_PREFIX.format(home=self.home)
+        return {"SERVED_PREFIX": prefix, "SERVED_EXE": UV_EXE.format(home=self.home)}
+
+    def test_a_uv_serving_python_pins_nothing_and_unpins_the_brew_one(self):
+        """sd:6492: brew owns no uv python, so the stage pins nothing, and
+        the pin sd:6463 left on python@3.15 reads stale and goes."""
+        served = self.serve_from_uv()
+        self.pins.write_text("pin python@3.15\n")
+
+        result = self.run_verb("update", "brew", "--apply", **served)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("not pinned", result.stdout)
+        self.assertIn("DIFFERS python@3.15 pinned", result.stdout)
+        self.assertEqual(self.pin_calls(), [])
+        self.assertEqual(self.unpin_calls(), ["unpin python@3.15"])
+        status = self.run_verb("status", **served)
+        self.assertNotIn("unpinned:", status.stdout)
+        self.assertNotIn("pinned  :", status.stdout)
+
+    def test_a_firewall_block_on_a_uv_serving_python_names_its_binary(self):
+        """sd:6492: a uv python is a plain executable, which the firewall
+        lists by its real path; it has no Python.app."""
+        served = self.serve_from_uv()
+        exe = served["SERVED_EXE"]
+        blocked = {"FW_LIST": f"1 : {exe} \\n             (Block incoming connections)\\n"}
+        allowed = {"FW_LIST": f"1 : {exe} \\n             (Allow incoming connections)\\n"}
+
+        stage = self.run_verb("update", "brew", **served, **blocked)
+        self.assertIn(f"DIFFERS firewall blocks {exe};", stage.stdout)
+        self.assertNotIn("Python.app", stage.stdout)
+        status = self.run_verb("status", **served, **blocked)
+        self.assertIn(f"  blocked : {exe}", status.stdout)
+        self.assertNotIn("blocked", self.run_verb("status", **served, **allowed).stdout)
+
+    def test_the_sd_stage_installs_sd_serves_python_once(self):
+        """sd:6492: uv installs it under the folder the sd-serve plist's
+        PATH starts with, before the agents stage loads sd-serve."""
+        uv_log = self.stubs.parent / "uv.log"
+        write_exec(self.stubs / "uv-stub", UV_STUB)
+        uv = {"MACHINE_SETUP_UV": str(self.stubs / "uv-stub"), "UV_LOG": str(uv_log)}
+        where = self.home / ".local/share/sd-serve/python"
+
+        dry = self.run_verb("update", "sd", **uv)
+        self.assertIn(f"  MISSING sd-serve python 3.15 at {where} — sd-serve runs brew's python3 "
+                      "until it is there", dry.stdout)
+        self.assertIn("python install 3.15 --default", dry.stdout)
+        self.assertFalse(uv_log.exists())
+
+        self.run_verb("update", "sd", "--apply", **uv)
+        self.assertEqual(uv_log.read_text().splitlines(),
+                         [f"python install 3.15 --default install={where} bin={where}/bin"])
+        again = self.run_verb("update", "sd", "--apply", **uv)
+        self.assertIn(f"  ok      sd-serve python {where}/bin/python3", again.stdout)
+        self.assertEqual(len(uv_log.read_text().splitlines()), 1)
+
+        template = fixture_config.render(fixture_config.AGENTS / f"{fixture_config.LABEL_PREFIX}.sd-serve.plist",
+                                         "x", self.home, FOLDER.parent)
+        example = fixture_config.render(FOLDER / f"examples/launchagents/{fixture_config.LABEL_PREFIX}.sd-serve.plist",
+                                        "x", self.home, FOLDER.parent)
+        for text in (template, example):
+            path = plistlib.loads(text.encode())["EnvironmentVariables"]["PATH"]
+            self.assertEqual(path.split(":")[0], f"{where}/bin")
+
+    def test_the_sd_stage_without_uv_says_so_and_installs_nothing(self):
+        result = self.run_verb("update", "sd", "--apply")
+
+        self.assertIn("  --      no uv to install it (the brew stage installs uv)", result.stdout)
+        self.assertNotIn("python install", result.stdout)
 
     def unpin_calls(self):
         log = pathlib.Path(f"{self.pins}.unpin")

@@ -95,6 +95,7 @@ class TheHub(Case):
     def setUp(self):
         super().setUp()
         self.fixture.make_database()
+        self.fixture.install_serve_python()
         self.fixture.serve_status.write_text(ROUTE_PRESENT)
         self.agents = self.fixture.home / "Library/LaunchAgents"
         self.agents.mkdir(parents=True)

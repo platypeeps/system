@@ -9,7 +9,9 @@
      node's Tailscale address, port 8769, and admits only the untagged nodes
      of this node's owner, by `tailscale whois`; it carries no token (step 7
      of the second-machine plan, sd:1335). PATH
-     finds `tailscale`: launchd gives the agent only what this file names. -->
+     finds `tailscale`: launchd gives the agent only what this file names.
+     It starts with sd-serve's own python, which the sd stage installs with
+     uv outside Homebrew, so a brew upgrade never moves it (sd:6492). -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -27,7 +29,7 @@
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
-		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<string>@HOME@/.local/share/sd-serve/python/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 	</dict>
 	<key>RunAtLoad</key>
 	<true/>
