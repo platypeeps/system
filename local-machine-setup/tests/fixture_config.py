@@ -6,8 +6,8 @@ suite never reads the operator's copy: every case points SYSTEM_TOOLS_CONFIG at
 this folder's fixtures, or at a temporary copy when the case writes.
 
 Nor does it read the operator's Mac: env() points the apps scan at no folder,
-the sudoers drop-ins at no file, nsmb.conf at a fixture and `security` at a
-stub with no item, and seal() fails a case that reaches a real `defaults`,
+the sudoers drop-ins and uv at no file, nsmb.conf at a fixture and `security`
+at a stub with no item, and seal() fails a case that reaches a real `defaults`,
 `sudo`, `launchctl` or `security`.
 """
 
@@ -33,6 +33,9 @@ NO_REPAIRS_SUDOERS = HERE / "fixtures" / "no-sudoers.d" / "machine-setup-repairs
 # Stands in for `security`: it answers that the login Keychain holds no
 # item, so no case reads this Mac's Keychain (sd:6312).
 NO_KEYCHAIN = HERE / "fixtures" / "security-no-item"
+# Names no file, so the sd stage finds no uv and no case downloads
+# sd-serve's python (sd:6492); test_brew_stage stubs it.
+NO_UV = HERE / "fixtures" / "no-uv"
 # Already as the system stage wants it, so no case reads this Mac's
 # /etc/nsmb.conf or adds a drift line for it; test_nsmb_conf sets its own.
 NSMB_CONF = HERE / "fixtures" / "nsmb.conf"
@@ -81,7 +84,8 @@ def env(config=CONFIG):
             "MACHINE_SETUP_SPOTLIGHT_SUDOERS": str(NO_SUDOERS),
             "MACHINE_SETUP_NSMB_CONF": str(NSMB_CONF),
             "MACHINE_SETUP_REPAIRS_SUDOERS": str(NO_REPAIRS_SUDOERS),
-            "MACHINE_SETUP_SECURITY": str(NO_KEYCHAIN)}
+            "MACHINE_SETUP_SECURITY": str(NO_KEYCHAIN),
+            "MACHINE_SETUP_UV": str(NO_UV)}
 
 
 def seal(case, stubs):

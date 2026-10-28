@@ -16,6 +16,7 @@ paths:
 ## launchd plists hold absolute paths
 
 - Every installed LaunchAgent passes `SYSTEM_TOOLS_CONFIG` in its environment (`@CONFIG@` in a `*.plist.template`, or the plist a tool builds): launchd gives the agent only the environment the plist names.
+- A plist that runs work (cron jobs, lane gates, builds) sets `ProcessType` Interactive: launchd throttles an unset key (Standard) about 10x and Background about 100x, and lane gates hit their hour limit both times (sd:3175, sd:6504).
 - The label prefix is `SYSTEM_TOOLS_LABEL_PREFIX` (default `local.system-tools`), kept once in `<config>/shared.env`; read it with `st_label_prefix` (shell) or `label_prefix()` (Python), never from a tool's own `.env`.
 - Renaming a script or folder a plist references requires reinstalling the plist.
 - The pack's registry holds this repo's root; the dashboard is the pack's, and its LaunchAgent template names `@PACK@/dashboard/dashboard.sh`.

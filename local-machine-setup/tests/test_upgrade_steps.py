@@ -241,7 +241,8 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertRegex(result.stderr, STEP.format("brew upgrade", STALL_BOUND))
         self.assertIn(f"timed out after {STALL_BOUND}s: brew upgrade", result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
+                         ["update", "list --pinned", "upgrade", "upgrade --cask --greedy",
+                          "cleanup --prune=all"])
         self.assertEqual(self.mas_log.read_text(), "upgrade\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
 
@@ -263,7 +264,8 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
+                         ["update", "list --pinned", "upgrade", "upgrade --cask --greedy",
+                          "cleanup --prune=all"])
         self.assertNotIn("claude update", result.stderr)
 
     def test_a_quiet_week_runs_no_native_claude_update(self):
@@ -464,17 +466,53 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("ai-apps inventory capture FAILED (exit 1)", result.stdout)
 
     def test_a_hand_pinned_formula_is_left_over_not_held(self):
-        """sd:6433: machine-setup keeps no pins, so the sweep asks brew for
-        none and runs one bare `brew upgrade`; a pin made by hand is brew's
-        to skip, and the report lists it as still outdated."""
-        result = self.run_verb("upgrade-report", STUB_PINNED="python@3.14")
+        """sd:6433: machine-setup keeps no pins, so the sweep runs one bare
+        `brew upgrade`; a pin made by hand that no older brew stage made is
+        brew's to skip, and the report lists it as still outdated."""
+        result = self.run_verb("upgrade-report", STUB_PINNED="example-pinned")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertNotIn("list --pinned", self.brew_calls())
+        self.assertNotIn("unpin example-pinned", self.brew_calls())
         self.assertIn("upgrade", self.brew_calls())
         self.assertNotIn("held (pinned)", result.stdout)
-        self.assertIn("still outdated (formula) — held back or failed:\n  example-formula\n  python@3.14",
+        self.assertIn("still outdated (formula) — held back or failed:\n  example-formula\n  example-pinned",
                       result.stdout)
+
+    def test_the_sweep_unpins_an_older_stage_pin_before_brew_upgrade(self):
+        """sd:6448: a python pin an older brew stage made fails a bare `brew
+        upgrade` on a dependent that needs a newer python. The weekly upgrade
+        ran before the nightly `update --apply` removed it (sd:6433)."""
+        for verb in ("upgrade", "upgrade-report"):
+            with self.subTest(verb=verb):
+                self.brew_log.unlink(missing_ok=True)
+                args = (verb, "--apply") if verb == "upgrade" else (verb,)
+                result = self.run_verb(*args, STUB_PINNED="python@3.14")
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = self.brew_calls()
+                self.assertIn("unpin python@3.14", calls)
+                self.assertLess(calls.index("unpin python@3.14"), calls.index("upgrade"))
+                self.assertIn("  DIFFERS python@3.14 pinned\n", result.stdout)
+
+    def test_a_dry_run_names_the_unpin_and_makes_none(self):
+        result = self.run_verb("upgrade", STUB_PINNED="python@3.14")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  [dry-run] brew unpin python@3.14\n", result.stdout)
+        self.assertNotIn("unpin python@3.14", self.brew_calls())
+
+    def test_a_pin_list_or_unpin_that_fails_is_a_failed_step_not_none(self):
+        """A pin list brew did not give is unknown (sd:3536); the sweep goes
+        on and names the step."""
+        for fail, step in (("list --pinned", "brew pin list"),
+                           ("unpin python@3.14", "brew unpin python@3.14")):
+            with self.subTest(fail=fail):
+                self.brew_log.unlink(missing_ok=True)
+                result = self.run_verb("upgrade", "--apply", STUB_PINNED="python@3.14", BREW_FAIL=fail)
+
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("upgrade", self.brew_calls())
+                self.assertRegex(result.stdout, rf"  failed steps: (.*, )?{step}(,|\n)")
 
     def test_an_outdated_list_that_did_not_answer_is_not_a_quiet_week(self):
         """sd:3536: a failed mas outdated read as nothing outdated."""
@@ -628,8 +666,11 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("  [dry-run] brew upgrade --cask --greedy", result.stdout)
-        self.assertEqual(self.brew_calls(), [])
-        self.assertNotIn("[step", result.stdout + result.stderr)
+        # The pin list is a read, bounded as reads are: the dry run names
+        # what it would unpin (sd:6448). Nothing else runs.
+        self.assertEqual(self.brew_calls(), ["list --pinned"])
+        self.assertEqual(re.findall(r"\[step [^]]+\] (.+?) \(bound", result.stdout + result.stderr),
+                         ["brew list --pinned"])
 
 
 if __name__ == "__main__":

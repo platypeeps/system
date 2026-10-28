@@ -117,6 +117,13 @@ NSMB_CONF="${MACHINE_SETUP_NSMB_CONF:-/etc/nsmb.conf}"
 REPAIRS_SUDOERS="${MACHINE_SETUP_REPAIRS_SUDOERS:-/etc/sudoers.d/machine-setup-repairs}"
 SUDO_KEYCHAIN=machine-setup-sudo
 SECURITY="${MACHINE_SETUP_SECURITY:-security}"
+# sd-serve's own python (sd:6492): uv installs it once at this fixed path,
+# outside Homebrew, and the sd-serve plist's PATH starts with its bin. A brew
+# upgrade then moves no binary the firewall allows, and brew python moves
+# freely. The uv override exists for the tests, so none downloads a python.
+SERVE_PYTHON_VERSION=3.15
+SERVE_PYTHON_DIR="$HOME/.local/share/sd-serve/python"
+UV="${MACHINE_SETUP_UV:-uv}"
 # The PlistBuddy override exists for the tests too: CI runs on Linux, which
 # has no PlistBuddy, and the tests put a stand-in there.
 PLISTBUDDY="${MACHINE_SETUP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
@@ -587,14 +594,21 @@ valid_profile() {
 # is a new Python.app to macOS: the application firewall blocked the new one,
 # so sd-serve admitted no satellite, and its file grants dropped. Upgrade it
 # deliberately: unpin, upgrade, allow the new Python.app in the firewall.
+# sd-serve's own uv python (SERVE_PYTHON_DIR, sd:6492) is no formula, so
+# with it nothing is pinned, and python@X.Y's old pin reads stale.
 
-# Where sd-serve's python3 is installed (sys.base_prefix); empty when it
-# fails. Found on the PATH its installed plist sets, as launchd finds it, else
-# on the caller's (sd:6463 review).
-python_prefix() {
+# Runs python3 -c CODE as sd-serve does: on the PATH its installed plist
+# sets, as launchd finds it, else on the caller's (sd:6463 review). Prints
+# nothing when it fails.
+serve_python3() { # code
   _pp=$(plutil -extract EnvironmentVariables.PATH raw -o - \
     "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-serve.plist" 2>/dev/null) || _pp=$PATH
-  PATH=$_pp python3 -c 'import sys; print(sys.base_prefix)' 2>/dev/null || :
+  PATH=$_pp python3 -c "$1" 2>/dev/null || :
+}
+
+# Where sd-serve's python3 is installed (sys.base_prefix); empty when it fails.
+python_prefix() {
+  serve_python3 'import sys; print(sys.base_prefix)'
 }
 
 # The Homebrew formula sd-serve's python3 belongs to, as python@X.Y, read from its
@@ -622,15 +636,21 @@ unpinned_python() {
   printf '%s\n' "$_sp" | sed 's|.*/||' | grep -qx "$_py" || echo "$_py"
 }
 
-# The Python.app sd-serve's python3 runs when the application firewall blocks its
-# incoming connections; fixing it needs sudo, so it is reported only.
+# What sd-serve's python3 runs as, to the application firewall, when the
+# firewall blocks its incoming connections; fixing it needs sudo, so it is
+# reported only. A framework build, as brew's, runs as its Python.app; any
+# other, as the uv one (sd:6492), as its executable, listed by its real path.
 blocked_python() {
   _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
   if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
   [ -x "$_fw" ] || return 0
   _app=$(python_prefix)
-  [ -n "$_app" ] || return 0
-  _app="$_app/Resources/Python.app"
+  case $_app in
+    "") return 0 ;;
+    */Python.framework/*) _app="$_app/Resources/Python.app" ;;
+    *) _app=$(serve_python3 'import os, sys; print(os.path.realpath(sys.executable))')
+       [ -n "$_app" ] || return 0 ;;
+  esac
   "$_fw" --listapps 2>/dev/null | grep -A1 -F "$_app" | grep -q 'Block incoming' && echo "$_app"
   return 0
 }
@@ -1800,11 +1820,26 @@ PY
 # Boots a job out. Succeeds when launchd holds no job under the label
 # afterwards: the bootout did it, or the job was never loaded, which makes
 # bootout fail. A job still loaded is reported FAILED and returns 1, so the
-# caller does not bootstrap over it or remove its plist.
+# caller does not bootstrap over it or remove its plist. A bootout that
+# succeeds can return while launchd still holds the job, and a bootstrap
+# then fails with exit 5 (sd:6454), so it waits up to 10 s for the label to
+# leave.
 agent_bootout() { # label
   ab_rc=0
   try_run launchctl bootout "gui/$(id -u)/$1" 2>/dev/null || ab_rc=$?
-  [ "$ab_rc" -ne 0 ] || return 0
+  if [ "$ab_rc" -eq 0 ]; then
+    [ "$APPLY" -eq 1 ] || return 0
+    ab_n=0
+    while launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1; do
+      if [ "$ab_n" -ge 10 ]; then
+        note_failure "launchctl bootout gui/$(id -u)/$1 (still loaded after ${ab_n}s)" "$ab_rc"
+        return 1
+      fi
+      ab_n=$((ab_n + 1))
+      sleep 1
+    done
+    return 0
+  fi
   launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1 || return 0
   note_failure "launchctl bootout gui/$(id -u)/$1" "$ab_rc"
   return 1
@@ -2405,6 +2440,51 @@ sd_database_elsewhere() {
   done
 }
 
+# Whether the application firewall lists EXE as allowed incoming
+# connections. A firewall that is off counts for nothing: the system stage
+# turns it on (sd:6492 review). A probe that fails is no.
+firewall_allows() { # exe
+  _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
+  if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
+  _ls=$("$_fw" --listapps 2>/dev/null) || return 1
+  printf '%s\n' "$_ls" | awk -v want="$1" '
+    hit { ok = /Allow incoming/; done = 1; exit }
+    { l = $0; sub(/^[0-9]+ : /, "", l); sub(/[ \t]+$/, "", l); hit = (l == want) }
+    END { exit !(done && ok) }'
+}
+
+# sd-serve's python (SERVE_PYTHON_DIR), installed once by uv into uv-bin,
+# where sd-serve never looks. Its python3 goes into bin, first on
+# sd-serve's PATH, only once the firewall allows the binary: a binary it
+# has not allowed admits no satellite (sd:6492 review). The link names the
+# real binary, so a later uv install moves nothing sd-serve runs. Never
+# upgraded here; until then sd-serve's PATH falls through to brew's python3.
+serve_python() {
+  if [ -x "$SERVE_PYTHON_DIR/bin/python3" ]; then
+    echo "  ok      sd-serve python $SERVE_PYTHON_DIR/bin/python3"
+    return 0
+  fi
+  if [ ! -x "$SERVE_PYTHON_DIR/uv-bin/python3" ]; then
+    echo "  MISSING sd-serve python $SERVE_PYTHON_VERSION at $SERVE_PYTHON_DIR — sd-serve runs brew's python3 until it is there"
+    if ! command -v "$UV" >/dev/null 2>&1; then
+      echo "  --      no uv to install it (the brew stage installs uv); then: $(basename "$SELF") update sd --apply"
+      return 0
+    fi
+    run_ok bound_step 900 env UV_PYTHON_INSTALL_DIR="$SERVE_PYTHON_DIR" UV_PYTHON_BIN_DIR="$SERVE_PYTHON_DIR/uv-bin" \
+      "$UV" python install "$SERVE_PYTHON_VERSION" --default || return 0
+    [ -x "$SERVE_PYTHON_DIR/uv-bin/python3" ] || return 0
+  fi
+  sp_exe=$("$SERVE_PYTHON_DIR/uv-bin/python3" -c 'import os, sys; print(os.path.realpath(sys.executable))' 2>/dev/null) || sp_exe=
+  if [ -z "$sp_exe" ]; then
+    note_failure "$SERVE_PYTHON_DIR/uv-bin/python3 (gave no executable path)" 1
+  elif firewall_allows "$sp_exe"; then
+    echo "  MISSING sd-serve python on its PATH, $SERVE_PYTHON_DIR/bin/python3 — the firewall allows $sp_exe"
+    run_ok mkdir -p "$SERVE_PYTHON_DIR/bin" && run ln -s "$sp_exe" "$SERVE_PYTHON_DIR/bin/python3"
+  else
+    echo "  DIFFERS sd-serve python $sp_exe is not allowed in the firewall — sd-serve stays on brew's python3; allow it in System Settings > Network > Firewall > Options, then: $(basename "$SELF") update sd --apply"
+  fi
+}
+
 stage_sd() {
   echo "== sd"
   hub_ask
@@ -2442,6 +2522,9 @@ stage_sd() {
     echo "  MISSING $AGENT_DIR/$LABEL_PREFIX.sd-serve.plist — copy it from $DIR/examples/launchagents/"
   else
     echo "  ok      $LABEL_PREFIX.sd-serve in $PROFILE.agent"
+  fi
+  if hub_role || manifest agent | grep -qxF "$LABEL_PREFIX.sd-serve"; then
+    serve_python
   fi
   # Removed by hand, never here: on the hub it refuses every sd verb beside
   # the database (HubConflict), and the operator decides which role is wrong.
@@ -5725,15 +5808,46 @@ askpass_upgrade() {
 doctor_unattended_sudo() {
   if sudo_keychain_item; then
     echo "  ok      Keychain item $SUDO_KEYCHAIN (sudo askpass)"
+    # The item does nothing without the list (sd:6474). The ruling: list
+    # the casks with a pkg installer; an app-bundle cask needs no sudo.
+    case "${MACHINE_SETUP_SUDO_CASKS:-}" in
+      "") ds_casks="unset" ;;
+      change-me) ds_casks="is change-me" ;;
+      *) ds_casks= ;;
+    esac
+    if [ -n "$ds_casks" ]; then
+      echo "  WARN    MACHINE_SETUP_SUDO_CASKS $ds_casks — the weekly upgrade defers every cask whose pkg installer calls sudo; list those casks in machine-setup.env, e.g. \"zoom google-drive\" (README: Unattended sudo)"
+    else
+      echo "  ok      MACHINE_SETUP_SUDO_CASKS: $MACHINE_SETUP_SUDO_CASKS"
+    fi
   elif [ "$sk_rc" -eq 44 ]; then
     echo "  WARN    no Keychain item $SUDO_KEYCHAIN — run in a terminal: security add-generic-password -a \"\$(id -un)\" -s $SUDO_KEYCHAIN -T /usr/bin/security -w"
   else
     echo "  WARN    Keychain item $SUDO_KEYCHAIN unknown: security exited $sk_rc"
   fi
-  if [ -e "$REPAIRS_SUDOERS" ]; then
+  if [ ! -e "$REPAIRS_SUDOERS" ]; then
+    echo "  WARN    no repair sudoers drop-in at $REPAIRS_SUDOERS — install local-machine-setup/machine-setup-repairs.sudoers.example with visudo -cf (README: Unattended sudo)"
+    return 0
+  fi
+  # Its brew line must name this machine's brew: one copied from an Apple
+  # silicon Mac names /opt/homebrew, absent on an Intel Mac (sd:6475). sudo
+  # lists the user's rules; `sudo -n -l <command>` passes any command that
+  # (ALL) ALL allows, password or not.
+  ds_brew=$(bound_step 60 brew --prefix 2>/dev/null) || ds_brew=
+  if [ -z "$ds_brew" ]; then
+    echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS unknown: brew --prefix gave no answer"
+    return 0
+  fi
+  ds_cmd="$ds_brew/bin/brew services restart tailscale"
+  ds_rc=0
+  ds_list=$(bound_step 30 sudo -n -l 2>/dev/null) || ds_rc=$?
+  if [ "$ds_rc" -ne 0 ]; then
+    echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS unknown: sudo -n -l exited $ds_rc"
+  elif printf '%s\n' "$ds_list" | awk -v want="NOPASSWD: $ds_cmd" '{ sub(/[ \t]+$/, "") }
+      substr($0, length($0) - length(want) + 1) == want { found = 1 } END { exit !found }'; then
     echo "  ok      repair sudoers drop-in $REPAIRS_SUDOERS"
   else
-    echo "  WARN    no repair sudoers drop-in at $REPAIRS_SUDOERS — install local-machine-setup/machine-setup-repairs.sudoers.example with visudo -cf (README: Unattended sudo)"
+    echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS does not allow $ds_cmd without a password — fix its brew path: sudo visudo -f $REPAIRS_SUDOERS"
   fi
 }
 
@@ -5748,6 +5862,17 @@ cmd_upgrade() {
   failed=""
   if command -v brew >/dev/null 2>&1; then
     run_step 600 brew update || failed="$failed, brew update"
+    # The brew stage's unpin (sd:6433) first: the weekly sweep can run
+    # before the nightly update --apply, and a stale python pin fails
+    # `brew upgrade` on a dependent that needs a newer one (sd:6448).
+    if pins=$(stale_pins); then
+      for f in $pins; do
+        echo "  DIFFERS $f pinned"
+        run_step 300 brew unpin "$f" || failed="$failed, brew unpin $f"
+      done
+    else
+      failed="$failed, brew pin list"
+    fi
     if pin_serving_python; then
       sweep_step "brew upgrade" 1800 brew upgrade
     else
@@ -7979,6 +8104,7 @@ environment:
   MACHINE_SETUP_SPOTLIGHT_SUDOERS  tests only: the Spotlight read drop-in
   MACHINE_SETUP_REPAIRS_SUDOERS  tests only: the repair drop-in doctor checks
   MACHINE_SETUP_SECURITY  tests only: the command that reads the Keychain
+  MACHINE_SETUP_UV  tests only: the uv that installs sd-serve's python
   MACHINE_SETUP_TIMEOUT_SUDOERS  tests only: the sudo grace-period drop-in
   MACHINE_SETUP_NSMB_CONF  tests only: the file that stands in for /etc/nsmb.conf
   MACHINE_SETUP_APPLICATIONS_DIR  tests only: the folder the apps scan reads
