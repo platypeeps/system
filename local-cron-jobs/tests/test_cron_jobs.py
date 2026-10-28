@@ -1553,16 +1553,16 @@ class HostJobsTest(unittest.TestCase):
         self.assertNotIn("no such job", done.stdout + done.stderr)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
-    def test_the_plist_runs_the_job_at_standard_priority(self):
-        """launchd's Background process type ran a CPU loop about 100 times
-        slower than Standard on the hub, and lane gates under it hit their
-        hour limit (sd:3173). A job's plist names no ProcessType, so launchd
-        uses Standard."""
+    def test_the_plist_runs_the_job_at_interactive_priority(self):
+        """launchd throttles a job with no ProcessType (Standard): repo-sync's
+        gate suite ran 155 tests in 237 s from a terminal but reached 142 in
+        32 min as a launchd job, so lane gates hit their hour limit (sd:6504;
+        Background was worse still, sd:3173). A job's plist says Interactive."""
         self.fx.write_job("demo", self.JOB.format("true"))
         result = self.run_script("install", "demo")
         self.assertEqual(result.returncode, 0, result.stderr)
         plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
-        self.assertNotIn("ProcessType", plistlib.loads(plist.read_bytes()))
+        self.assertEqual("Interactive", plistlib.loads(plist.read_bytes()).get("ProcessType"))
 
     def test_plist_values_are_xml_escaped(self):
         """A config root named with `&`, `<` and `>` still renders a plist
