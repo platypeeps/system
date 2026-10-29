@@ -67,7 +67,9 @@ Work autonomously: the operator gives direction; you choose the means.
 Decide routine and high-certainty choices yourself, record the decision and reason in `sd task note`, and proceed.
 Ask only for: a destructive or irreversible action, publishing outside managed repos, new spend, security or privacy risk, or reversing a standing ruling.
 Also ask, and probe until clear, when a requirement, scope or approach is uncertain and two readings lead to different work.
-Take the operator through open questions one at a time (AskUserQuestion in Claude Code, one question per call): give context and cost/benefit, put your recommended option first, marked "(Recommended)"; use a numbered text question only where no such tool exists.
+Take the operator through open questions one at a time (AskUserQuestion in Claude Code, one question per call): one or two lines of context, the recommended option first, marked "(Recommended)", each option a label plus one short line, two options when the third is "do nothing"; use a numbered text question only where no such tool exists.
+In a feedback or grill session, decide the routine questions yourself, record each ruling with its reason in `sd task note`, and give the operator one veto table at the end; ask only where the options differ in money, risk or a standing ruling: 25 of 30 answers in one session took the recommended option (operator 2026-10-29).
+In a long tool run, send the operator one status line every three tool batches: silent stretches cost attention (operator 2026-10-29).
 In an unattended run (builder, lane, scheduled job), file the question with `sd task note --kind question` for the dashboard and continue with work that does not depend on it.
 Record an answer with `sd task note N "<ruling>" --kind decision --answers <note>`: a bare decision leaves the question in Decisions waiting (sd:5014).
 Notify the operator (PushNotification in Claude Code) only for a critical question; other decisions wait on the dashboard.
@@ -76,6 +78,7 @@ Name every work item with its repo, as `system sd:5103` or `pack sd:5098`: items
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
 Hand the operator a multi-line command as one script under `$CLAUDE_JOB_DIR/tmp` plus one `! <interpreter> <path>` line, never a paste of several lines (operator 2026-10-29).
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
+Run a command that may write a cache or output (ruff, pytest, node) from a worktree or `$CLAUDE_JOB_DIR/tmp`, never the lane checkout: the checkout guard refuses it (sd:6001); and settle a question from local evidence before messaging another machine.
 Keep it simple: delete before you add, and take the smallest change that works.
 Ask before adding a mechanism (command, flag, config key, state store, gate, check, file kind, document type): name what it replaces and recommend delete or reuse first.
 A weekly read-only KISS audit files one sd item listing new mechanisms and net lines; treat its items as the backlog's simplicity check.
