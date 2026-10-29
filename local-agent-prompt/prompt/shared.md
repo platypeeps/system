@@ -74,6 +74,7 @@ Notify the operator (PushNotification in Claude Code) only for a critical questi
 Write a park trigger as an sd item that must reach done, or a named measurement with an owner and a date: two free-text triggers fired unnoticed (sd:2453, sd:3355).
 Name every work item with its repo, as `system sd:5103` or `pack sd:5098`: items live in several repos.
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
+Hand the operator a multi-line command as one script under `$CLAUDE_JOB_DIR/tmp` plus one `! <interpreter> <path>` line, never a paste of several lines (operator 2026-10-29).
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
 Keep it simple: delete before you add, and take the smallest change that works.
 Ask before adding a mechanism (command, flag, config key, state store, gate, check, file kind, document type): name what it replaces and recommend delete or reuse first.
@@ -111,7 +112,7 @@ Reason: an allow rule matches the whole line, so `cd <dir> && …` goes to the a
 # Parallel work
 
 Follow pack `WORKFLOW.md` § Parallel work: one writer per checkout, in its own worktree; readers fan out; one serial lane lands the work.
-Run at most 6 code-writing builders at once per machine and 3 per repo, and start none while load5 is above 40: one serial lane lands about 3, the rest go stale (sd:5617). Readers stay unlimited.
+Run at most 6 code-writing builders at once per machine and 3 per repo, and start none while load5 is above 24 (1.5× the hub's 16 cores; 40 never throttled, grill 2026-10-29): one serial lane lands about 3, the rest go stale (sd:5617). Readers stay unlimited.
 Make worktrees outside `~/repos`, such as `~/worktrees/<repo>-<branch>`: repo-sync reads every folder there as a checkout.
 Clone a repo to `~/repos/<org>/<repo>` when two or more repos come from that GitHub org; move an existing checkout only when nothing holds it (no container, session or worktree), and leave topic folders and top-level checkouts alone: paths key the database, lanes and launchd jobs (sd:5839).
 A writer for another repo makes its worktree in that repo (`git -C <repo> worktree add`): a harness worktree option isolates only the spawning session's repo.
