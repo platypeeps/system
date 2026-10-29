@@ -33,6 +33,9 @@ nothing is mailed (sd:3454). A clean run prints no such line.
   a `bug_type` other than a crash (309, or 109 legacy) is left out too, such
   as a weekly usage-analytics batch (58), and so is a simulated fault
   (`"is_simulated":1`, as an `ExcUserFault_` report), whose process ran on
+  - a codex child that dyld aborted because the codex sandbox blocked its
+    library (`parentProc` codex, `blocked by sandbox`) is its own finding,
+    not an app crash
 - every `$SYSTEM_TOOLS_LABEL_PREFIX.*` (default `local.system-tools.*`)
   LaunchAgent: loaded, and last exit code clean
 - disk0 SMART status
