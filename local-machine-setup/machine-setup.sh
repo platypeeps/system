@@ -2007,6 +2007,17 @@ stage_agents() {
       else
         rm -f "$dst.new"
       fi
+    # The pack's `dashboard.sh install` writes the dashboard's plist (its
+    # bash start, --config and env) and verifies the server it loads, so its
+    # bytes are the pack's, not drift; the template only bootstraps a
+    # machine without one (sd:6707). Whether launchd runs it is still asked.
+    elif [ "$label" = "$LABEL_PREFIX.sd-dashboard" ]; then
+      if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+        echo "  ok      $label — the pack's dashboard installer owns this plist"
+      else
+        echo "  UNLOADED $label — plist present but launchd is not running it"
+        run launchctl bootstrap "gui/$(id -u)" "$dst"
+      fi
     elif ! cmp -s "$src" "$dst"; then
       if matches_record "agents/$label" "$dst"; then
           echo "  STALE   $label — untouched here, repo moved ahead"
