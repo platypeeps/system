@@ -248,8 +248,11 @@ recent_report() { # <file> <cutoff or empty> <mtime days>
 # An .ips report's first line names its bug_type (sd:5323): 309 is a crash,
 # 109 the legacy one; 58, a weekly usage-analytics batch, is not. A header
 # with no readable bug_type is unknown, so it still counts, as before.
+# A simulated fault (ExcUserFault_, "is_simulated":1) left its process running (sd:6647).
 crash_report() { # <file>
-  _t=$(head -n 1 "$1" 2>/dev/null | sed -En 's/.*"bug_type"[[:space:]]*:[[:space:]]*"?([0-9]+).*/\1/p')
+  _h=$(head -n 1 "$1" 2>/dev/null)
+  ! printf '%s\n' "$_h" | grep -Eq '"is_simulated"[[:space:]]*:[[:space:]]*1([^0-9]|$)' || return 1
+  _t=$(printf '%s\n' "$_h" | sed -En 's/.*"bug_type"[[:space:]]*:[[:space:]]*"?([0-9]+).*/\1/p')
   [ -z "$_t" ] || [ "$_t" = 309 ] || [ "$_t" = 109 ]
 }
 for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do

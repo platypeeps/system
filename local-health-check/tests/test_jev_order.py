@@ -567,6 +567,24 @@ esac
         for app in ("New-Crash", "Legacy-Crash", "No-Header"):
             self.assertIn(app + "(1) ", out)
 
+    def test_simulated_user_fault_is_no_crash(self):
+        """sd:6647: an ExcUserFault_ report carries bug_type 309 but marks its
+        header "is_simulated":1; the process ran on, so it is no crash. A real
+        309 report of a faulted process still counts under its name."""
+        reports = self.tmp / "reports-simulated"
+        reports.mkdir()
+        for name, header in (("ExcUserFault_Sim-App", '{"bug_type":"309","is_simulated":1,"app_name":"Sim-App"}'),
+                             ("ExcUserFault_Spaced-App", '{"bug_type":"309", "is_simulated" : 1}'),
+                             ("ExcUserFault_Real-App", '{"bug_type":"309","is_simulated":0}'),
+                             ("Real-Crash", '{"app_name":"Real-Crash","bug_type":"309"}')):
+            (reports / (name + stamped(hours=1) + ".ips")).write_text(header + "\n{}\n")
+        out = self.run_check("simulated", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                             verb="run")["out"]
+        self.assertNotIn("Sim-App", out)
+        self.assertNotIn("Spaced-App", out)
+        self.assertIn("Real-App(1) ", out)
+        self.assertIn("Real-Crash(1) ", out)
+
     def test_crashes_of_one_process_with_different_pids_count_as_one_app(self):
         """sd:5253: a process named with its pid (`.claude-mem-<pid>.tmp`) is one app, not one per pid."""
         reports = self.tmp / "reports-pids"
