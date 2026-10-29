@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # The cask claude's Gatekeeper quarantine, cleared only after its checks
 # pass. Source it; it defines one function and one variable and runs nothing
 # else.

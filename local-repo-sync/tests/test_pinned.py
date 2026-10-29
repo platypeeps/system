@@ -926,7 +926,7 @@ class ConsumersTest(unittest.TestCase):
         before = self.f.head(self.pack)
         self.schema(6)
         result = self.f.run("refresh", expect=1)
-        self.assertIn(f"is at schema 6, above the 5 of the pack's lib/ at origin/main; nothing moved", result.stdout)
+        self.assertIn("is at schema 6, above the 5 of the pack's lib/ at origin/main; nothing moved", result.stdout)
         self.assertIn(f"no migrate goes down: move the default branch of {self.pack}'s origin to a commit whose "
                       "lib/ is at schema 6 or later, or restore a backup at schema 5 with the sd-db of a pack whose "
                       "lib/ is at schema 5, then refresh again\n", result.stdout)

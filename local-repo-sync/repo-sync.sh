@@ -776,7 +776,6 @@ refresh_one() {
     echo "=== $r_dir is on $r_br, not pinned; left alone"
     return 0
   fi
-  r_old=$(git -C "$r_dir" rev-parse HEAD)
   r_short=$(git -C "$r_dir" rev-parse --short HEAD)
   echo "=== refresh $r_dir (pinned at $r_short)"
   # A tracked change would ride along to the new commit, or block the switch
@@ -1744,7 +1743,7 @@ refresh_answer() {
     *) flag "!!! failed: refresh request not read: $(tail -1 "$TMPD/ask.err")"
        return 1 ;;
   esac
-  r_id= r_attempt=
+  r_id='' r_attempt=''
   read -r _ r_id r_attempt < "$TMPD/ask" || :
   case "$r_id:$r_attempt" in
     *[!0-9a-f:]*|:*|*:) flag "!!! failed: refresh request not read: satellite_refresh.py check said '$(cat "$TMPD/ask")'"
@@ -1769,6 +1768,7 @@ refresh_answer() {
     # first, and no step outlives the update holding the drain's lane locks.
     # Still under cron-jobs' 10 s grace at the job's limit. The update runs
     # with the default grace, not this one.
+    # shellcheck disable=SC2034 # read by st_bounded in this subshell
     (ST_BOUNDED_GRACE=$((ST_BOUNDED_DEFAULT_GRACE + 3))
      bound_step "$REFRESH_SETUP_BOUND" env -u ST_BOUNDED_GRACE sh "$r_ms" update --apply) \
       < /dev/null > "$TMPD/setup" 2>&1 || r_code=$?
@@ -2058,6 +2058,7 @@ hyg_inuse() {
         done
         continue
       fi
+      # shellcheck disable=SC3067 # macOS sh is bash, which has test -O
       [ -d "$h_p" ] && [ -O "$h_p" ] && return 1
     done
   elif command -v lsof >/dev/null 2>&1; then
@@ -2102,6 +2103,7 @@ hyg_not_build() {
 hyg_lane() {
   command -v sd >/dev/null 2>&1 || return 0
   h_bulk=$(sd config get sd.bulk_storage_root 2>/dev/null) || return 0
+  # shellcheck disable=SC2088 # a literal ~ in a value, expanded here
   case "$h_bulk" in "~"|"~/"*) h_bulk="$HOME${h_bulk#"~"}" ;; esac
   [ -n "$h_bulk" ] && [ -d "$h_bulk" ] || return 0
   echo "=== lane storage ($h_bulk)"
@@ -2422,7 +2424,7 @@ hyg_repo() {
       fi
     fi
     h_item=$(hyg_item_number "$b_name")
-    if [ -n "$h_item" ] && [ "$(hyg_item_state "$h_item")" = done ]; then
+    if [ -n "$h_item" ] && [ "$(hyg_item_state "$h_item")" = "done" ]; then
       hyg_list "DONE     branch $b_name $b_sha (sd:$h_item is done; a landing candidate)"
     fi
   done < "$HYG_TMP/branches"

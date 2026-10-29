@@ -47,7 +47,8 @@ Environment:
                      CPUs / cap jobs run at once
 
 `make check` runs `check.sh run`. Each needs python3.15, git, sqlite3, lsof,
-ps and rsync on PATH, and network access when no local clone holds the pin.
+ps, rsync, shellcheck and ruff on PATH, and network access when no local
+clone holds the pin.
 USAGE
 }
 
@@ -73,6 +74,10 @@ python="$(command -v python3.15 || true)"
 [ -n "$python" ] || { echo "check.sh: python3.15 is not on PATH; the suites need 3.15" >&2; exit 1; }
 for tool in git sqlite3 lsof ps rsync; do
   command -v "$tool" > /dev/null || { echo "check.sh: $tool is not on PATH; the suites call it" >&2; exit 1; }
+done
+# The preflight's lint (sd:6742).
+for tool in shellcheck ruff; do
+  command -v "$tool" > /dev/null || { echo "check.sh: $tool is not on PATH; the lint needs it: brew install $tool" >&2; exit 1; }
 done
 
 env_dir="$ROOT/.ci"
@@ -176,7 +181,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 tool_path="$env_dir/bin"
-for tool in git sqlite3 lsof ps rsync make; do
+for tool in git sqlite3 lsof ps rsync make shellcheck ruff; do
   tool_path="$tool_path:$(dirname "$(command -v "$tool")")"
 done
 tool_path="$tool_path:/usr/bin:/bin:/usr/sbin:/sbin"

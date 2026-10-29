@@ -6,7 +6,6 @@ nothing reads the real tools or the real config. The last runs `list` over
 the real tree, which reads only committed example files.
 """
 
-import os
 import shutil
 import subprocess
 import tempfile

@@ -49,6 +49,7 @@ run() {
     echo "nightly-review: sd.bulk_storage_root is not set; set it with: sd config set sd.bulk_storage_root <folder>" >&2
     return 1
   }
+  # shellcheck disable=SC2088 # a literal ~ in a value, expanded here
   case "$bulk" in "~"|"~/"*) bulk="$HOME${bulk#"~"}" ;; esac
   [ -d "$bulk" ] || {
     echo "nightly-review: the bulk storage root $bulk is not a folder; is its volume mounted?" >&2

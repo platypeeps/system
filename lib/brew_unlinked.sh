@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # Readers of a `brew doctor` output. Source it; it defines functions and runs
 # nothing else.
 #

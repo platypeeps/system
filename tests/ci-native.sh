@@ -15,7 +15,7 @@ Usage: ci-native.sh preflight
        ci-native.sh leg repo-sync|tools|shared
 
   preflight  sd-docs-lint, the citation, Jev contract,
-             product-name, ports and entrypoint-mode gates, the unwired-suite guard, and the venv at
+             product-name, ports, entrypoint-mode and lint gates, the unwired-suite guard, and the venv at
              $CI_WORK_ROOT/venv with the pack's lib/ (sd_db) installed
   leg NAME   every run_suite line of one leg, under the preflight's venv
 
@@ -148,6 +148,11 @@ python3 tests/test_env_precedence.py
 # and git only, so it runs here before the venv, and the guard below
 # demands this line.
 python3 tests/test_check_script.py
+
+# Lint: shellcheck warnings on tracked *.sh, ruff E9,F on tracked *.py
+# (sd:6742). Both are Homebrew tools that tests/check.sh puts on PATH;
+# the rest is stdlib and git, so it runs here before the venv.
+python3 tests/test_lint.py
 
 # The run_suite lines at the bottom are a hand-maintained list, and
 # a folder that grows a suite without a line here is never run --

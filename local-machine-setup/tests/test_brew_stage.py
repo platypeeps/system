@@ -532,7 +532,7 @@ class BrewStageTest(unittest.TestCase):
                    {"FW_LIST": allow, "FW_STATE": "Firewall is disabled. (State = 0)"}):
             with self.subTest(fw=fw):
                 shutil.rmtree(where / "bin", ignore_errors=True)
-                dry = self.sd_stage(**fw)
+                self.sd_stage(**fw)
                 self.assertFalse((where / "bin/python3").exists())
 
                 result = self.sd_stage("--apply", **fw)

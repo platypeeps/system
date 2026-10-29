@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # Bounded steps for unattended jobs. Source it; it defines functions and two
 # variables and runs nothing else.
 #

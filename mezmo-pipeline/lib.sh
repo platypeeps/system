@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # Shared helpers for pipeline.sh. Sourced, never executed — no shebang, no
 # `set -e` here; the entrypoint owns both.
 #

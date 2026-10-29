@@ -342,7 +342,7 @@ exec /bin/cp "$@"
         out = result.stdout
         self.assertEqual(plist.read_text(), "<plist>older</plist>\n", out)
         self.assertEqual(record.read_text(), before)
-        self.assertIn(f"  FAILED  launchctl bootout gui/", out, out + result.stderr)
+        self.assertIn("  FAILED  launchctl bootout gui/", out, out + result.stderr)
         self.assertIn(f"/{label} (exit 5)\n", out)
         self.assertEqual([line for line in self.log(self.launchctl_log) if line.startswith("bootstrap ")], [], out)
         self.assertEqual(result.returncode, 1)
@@ -362,7 +362,7 @@ exec /bin/cp "$@"
         write_exec(self.stubs / "cp", failing("cp"))
         result = self.run_verb("update", "dotfiles", "--apply", "--force", FAIL_TARGET=str(dst))
         out = result.stdout
-        self.assertIn(f"  FAILED  cp ", out, out + result.stderr)
+        self.assertIn("  FAILED  cp ", out, out + result.stderr)
         self.assertEqual(dst.read_text(), "[user]\n\tname = Edited here\n")
         self.assertFalse((self.state / "installed/dotfiles_.gitconfig.sha").exists(), out)
         self.assertEqual(result.returncode, 1)

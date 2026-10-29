@@ -35,6 +35,7 @@ load_env() {
 # EXPORT_TLS_<n> from FLUENTBIT_EXPORT_URL_<n>, the output plugin's fields.
 split_url() {
   eval "url=\$FLUENTBIT_EXPORT_URL_$1"
+  # shellcheck disable=SC2034 # tls and port are read by the eval below
   case "$url" in
     https://*) tls=on;  port=443; rest="${url#https://}" ;;
     http://*)  tls=off; port=80;  rest="${url#http://}" ;;
@@ -44,6 +45,7 @@ split_url() {
   uri="${rest#"$hostport"}"
   [ -n "$uri" ] || uri=/
   host="${hostport%%:*}"
+  # shellcheck disable=SC2034 # read by the eval below
   [ "$host" = "$hostport" ] || port="${hostport#*:}"
   eval "EXPORT_HOST_$1=\$host EXPORT_PORT_$1=\$port EXPORT_URI_$1=\$uri EXPORT_TLS_$1=\$tls"
 }
@@ -90,6 +92,7 @@ case "${1:-}" in
                 EXPORT_HOST_1 EXPORT_HOST_2 EXPORT_PORT_1 EXPORT_PORT_2 \
                 EXPORT_URI_1 EXPORT_URI_2 EXPORT_TLS_1 EXPORT_TLS_2; do
       eval "value=\$$name"
+      # shellcheck disable=SC2154 # the eval above assigns value
       script="$script
 s|\\\${$name}|$(sed_escape "$value")|"
     done

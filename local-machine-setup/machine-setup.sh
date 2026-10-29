@@ -1562,6 +1562,7 @@ leak_guards() {
     repo=${row%%  *}
     url=${row#*  }
     url=${url%%  *}
+    # shellcheck disable=SC2088 # a literal ~ in a value, expanded here
     case $repo in
       "~/"*) dir="$HOME/${repo#\~/}" ;;
       *) dir=$repo ;;
@@ -1632,6 +1633,7 @@ local_blocks() {
   # and a path may hold one.
   printf '%s\n' "$rows" | sed -n 's/^sd-db: //p' | awk -F '  ' '$NF == "auto" {print $1}' |
   while IFS= read -r repo; do
+    # shellcheck disable=SC2088 # a literal ~ in a value, expanded here
     case $repo in
       "~/"*) dir="$HOME/${repo#\~/}" ;;
       *) dir=$repo ;;
@@ -2518,6 +2520,7 @@ sd_config_database() { # config
 # with --config. The service would then open a file
 # this stage never built and doctor never checked.
 sd_database_elsewhere() {
+  # shellcheck disable=SC2043 # a list of one, kept a list
   for sde_name in dashboard; do
     manifest agent | grep -qxF "$LABEL_PREFIX.sd-$sde_name" || continue
     sde_conf="$HOME/.config/sd/$sde_name.json"
@@ -5000,18 +5003,14 @@ doctor_sd() {
   # cannot find it runs on a broken PATH and has checked nothing (sd:1413).
   if ! command -v sqlite3 >/dev/null 2>&1; then
     doctor_fail "sqlite3 MISSING from PATH — database not checked; macOS ships /usr/bin/sqlite3, so put /usr/bin on PATH and re-run: $(basename "$SELF") doctor sd"
-    db_ok=0
   elif [ ! -f "$SD_DB" ]; then
     doctor_fail "database MISSING at $SD_DB — run: $(basename "$SELF") update sd --apply"
-    db_ok=0
   else
     integrity=$(sd_sqlite 'PRAGMA integrity_check;' 2>&1 | head -3 | tr '\n' ' ' | sed 's/ $//')
     if [ "$integrity" = ok ]; then
       echo "  ok      database $SD_DB passes integrity_check"
-      db_ok=1
     else
       doctor_fail "database $SD_DB integrity_check: $integrity — restore a dated backup: sd-db restore <backup root>/<date> (SD_DB_BACKUP_ROOT, or the pack's default)"
-      db_ok=0
     fi
   fi
   # A here-document and not a pipe, so doctor_fail counts in this shell.

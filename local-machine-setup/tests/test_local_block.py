@@ -7,7 +7,6 @@ the block. A manual repo, a repo not checked out and a file git does not ignore
 are never written. `sd-db repo list` is a stub, the pack's `bin/sd-db`; the repos are fixtures.
 """
 
-import pathlib
 import subprocess
 
 from tests import fixture_config

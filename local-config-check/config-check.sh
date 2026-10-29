@@ -108,6 +108,7 @@ evaluate() {
         cc_env=$1; cc_req=$2; cc_opt=$3; cc_sd=$4
         unset cc_self cc_link cc_root DIR
         set -a
+        # shellcheck disable=SC1090 # the config file, named at run time
         . "$cc_env" >/dev/null 2>&1 </dev/null
         set +a
         for cc_v in $cc_req $cc_opt; do
@@ -124,6 +125,7 @@ evaluate() {
                 *_MARKER_DIR) ;;
                 *_DIR|*_REPO|*_FILE|*_SRC|*_SOURCE|*_DESTINATION)
                     cc_p=$cc_val
+                    # shellcheck disable=SC2088 # a literal ~ in a value, expanded here
                     case "$cc_p" in "~/"*) cc_p="$HOME/${cc_p#"~/"}" ;; esac
                     [ -e "$cc_p" ] || echo "path $cc_v"
                     ;;
@@ -136,7 +138,7 @@ evaluate() {
                     ;;
             esac
         done
-        echo done
+        echo "done"
     ) 2>/dev/null || true
 }
 
@@ -265,7 +267,7 @@ case "${1:-}" in
         [ "$cc_n_broken" -eq 0 ] || exit 1
         ;;
     status)
-        # shellcheck disable=SC2086
+        # shellcheck disable=SC2086,SC2046
         run_checks 1 $(tool_folders)
         cc_conf=$((cc_n_ok + cc_n_broken))
         if [ "$cc_n_broken" -gt 0 ]; then
