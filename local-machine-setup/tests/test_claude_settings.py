@@ -263,9 +263,28 @@ class OpeningBrace(unittest.TestCase):
         import time
         import claude_settings
 
-        started = time.monotonic()
+        # CPU time, not the wall clock: a loaded gate's stalls are not the
+        # pattern's (sd:6738).
+        started = time.process_time()
         self.assertIsNone(claude_settings.OPENING_BRACE.match("//" * 5000 + "x"))
-        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertLess(time.process_time() - started, 1.0)
+
+    def test_time_spent_descheduled_is_not_charged_to_the_pattern(self):
+        # sd:6738: a loaded gate stalls the process between instructions.
+        # The stall is a sleep here; the bound is on what the pattern costs.
+        import time
+        from unittest import mock
+        import claude_settings
+
+        real = claude_settings.OPENING_BRACE
+
+        class Stalled:
+            def match(self, text):
+                time.sleep(1.1)
+                return real.match(text)
+
+        with mock.patch.object(claude_settings, "OPENING_BRACE", Stalled()):
+            self.test_a_long_run_of_comment_starts_without_a_brace_fails_fast()
 
     def test_comments_and_space_before_the_brace_are_kept(self):
         import claude_settings
