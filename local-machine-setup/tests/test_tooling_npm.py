@@ -16,6 +16,7 @@ Homebrew's is, and the keg's node stub logs the arguments it gets.
 """
 
 import pathlib
+import re
 import shutil
 import stat
 import subprocess
@@ -68,13 +69,13 @@ class ToolingNpmTest(unittest.TestCase):
         shutil.copytree(LIB, repo / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         self.config_root = fixture_config.copy_config(base)
         self.profiles = self.config_root / "machine-setup/profiles"
-        (self.profiles / "common.brew").write_text("git\nnode@22\n")
+        (self.profiles / "common.brew").write_text("git\nnode\n")
         self.home = base / "home"
         self.state = self.home / ".config/machine-setup"
         self.state.mkdir(parents=True)
         (self.state / "profile").write_text("personal\n")
         self.prefix = base / "brew-prefix"
-        self.npm = self.prefix / "opt/node@22/bin/npm"
+        self.npm = self.prefix / "opt/node/bin/npm"
         write_exec(self.npm, NPM_SCRIPT)
         write_exec(self.npm.parent / "node", NODE_STUB)
         self.npm_log = base / "npm.log"
@@ -128,8 +129,28 @@ class ToolingNpmTest(unittest.TestCase):
 
         self.assertEqual(self.installs(), [f"install -g {ABSENT}@1.2.3"], out)
 
+    def test_the_example_manifest_names_the_unversioned_node(self):
+        """A versioned node formula goes deprecated in turn: node@22 did
+        (sd:6797). `node` follows the current release and never does."""
+        text = (FOLDER / "examples/profiles/common.brew").read_text()
+        lines = [ln.split("#")[0].strip() for ln in text.splitlines()]
+        nodes = [ln for ln in lines if re.fullmatch(r"node(@[0-9]+)?", ln)]
+        self.assertEqual(nodes, ["node"])
+
+    def test_a_versioned_keg_runs_its_own_npm(self):
+        (self.profiles / "common.brew").write_text("git\nnode@24\n")
+        self.npm.unlink()
+        keg = self.prefix / "opt/node@24/bin"
+        write_exec(keg / "npm", NPM_SCRIPT)
+        write_exec(keg / "node", NODE_STUB)
+        (self.profiles / "personal.npm").write_text(f"{ABSENT}\n")
+
+        out = self.tooling("--apply")
+
+        self.assertEqual(self.installs(), [f"install -g {ABSENT}"], out)
+
     def test_npm_runs_on_the_node_of_its_own_keg(self):
-        """node@22 is keg-only: `env node` must not find fnm's node, or none."""
+        """A keg-only node@N is off PATH: `env node` must not find fnm's."""
         wrong = self.stubs.parent / "wrong-node.log"
         write_exec(self.stubs / "node", f'#!/bin/sh\necho "$*" >> "{wrong}"\nexit 1\n')
         (self.profiles / "personal.npm").write_text(f"{PRESENT}\n{ABSENT}\n")

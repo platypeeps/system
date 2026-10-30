@@ -1,6 +1,7 @@
 # Homebrew formulae every machine gets. mas is here because the appstore
-# stage cannot run without it. node@22 supplies the npm for .npm files.
+# stage cannot run without it. node supplies the npm for .npm files: the
+# unversioned formula, as node@22 went deprecated (sd:6797).
 git
 jq
 mas
-node@22
+node

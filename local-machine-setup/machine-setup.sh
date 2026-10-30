@@ -2239,7 +2239,8 @@ stage_tooling() {
     echo "  MISSING npm (none from a Homebrew node formula in the brew manifest; the brew stage installs it)"
   else
     # The keg's bin first, in a subshell: npm is a `#!/usr/bin/env node`
-    # script, and node@22 is keg-only, so `env` would find fnm's node or none.
+    # script, and a node@<major> is keg-only, so `env` would find fnm's node
+    # or none.
     (
       PATH="$nb:$PATH"
       for p in $npm_pkgs; do

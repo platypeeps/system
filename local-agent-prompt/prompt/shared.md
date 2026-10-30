@@ -133,6 +133,7 @@ Shift failures left (sd:5617, sd:5825): each builder merges `origin/main` and re
 The runner lands PRs (`repo.runner_merge=auto` on every managed repo): `sd-ship lane enqueue` the item, then keep one background `sd-ship lane watch --item A --item B …` naming every item you have in that lane, restarted after each enqueue, after an sd outage and after any exit without `ok: true`; build no hand-run chains.
 Bare `lane watch` never exits (a block sat 1.5 h), and a hub build mismatch ends a watch with `ok: false` (`hub_unavailable`).
 Request Copilot only on a PR the operator names, once, on the final head (`sd-ship prepare --copilot-review request`); never re-request after a push.
+Request a person's review only after every review already requested on the head (Greptile, Copilot, codex) has finished and each finding is fixed, filed or answered in the thread: dhable approved sre-memory #144 over two open Greptile P1s (operator 2026-10-30).
 Builders run only foreground test runs of 10 minutes or less, never `run_in_background`, Monitor or `sleep`: a background exit did not wake idle teammates (4 h stalls); the lane runs the full gate.
 Count gates with `sd gate status --json` (`holders`, `waiters`), never `pgrep`: a pattern matches the shell that runs it.
 Stop a ship chain by its process group (`kill -- -<pgid>`): a killed shell alone leaves its children holding a gate slot.
