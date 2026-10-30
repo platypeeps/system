@@ -747,10 +747,24 @@ class FenceBacktracking(unittest.TestCase):
     def test_indent_heavy_comment_without_a_closing_fence_parses_at_once(self):
         # Code scanning py/redos: the old pattern took seconds at 20 tabs and
         # grew about sevenfold per two more.
+        # CPU time, not the wall clock: a loaded gate's stalls are not the
+        # pattern's (sd:6738).
         body = "```yaml\nsd-hold:\n" + "\t" * 40
-        started = time.monotonic()
+        started = time.process_time()
         self.assertIsNone(holds.parse_record("o/r", 1, "open", {"id": 1, "user": {"login": "x"}, "body": body}))
-        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertLess(time.process_time() - started, 0.5)
+
+    def test_time_spent_descheduled_is_not_charged_to_the_pattern(self):
+        # sd:6738: a loaded gate stalls the process between instructions.
+        # The stall is a sleep here; the bound is on what the pattern costs.
+        real = holds.parse_record
+
+        def stalled(*args):
+            time.sleep(0.6)
+            return real(*args)
+
+        with unittest.mock.patch.object(holds, "parse_record", stalled):
+            self.test_indent_heavy_comment_without_a_closing_fence_parses_at_once()
 
 
 
