@@ -189,6 +189,11 @@ which may be 3 hours old. A missing hourly folder fails the run, as a missing
 nightly one does. Schedule the run away from :50, when the hourly copy is
 writing its newest directory.
 
+The pack's restore gives its copy a fixed deadline. A restore that times
+out is retried twice, two minutes apart, before it fails: on 2026-10-30 the
+06:00 load tripped it on a sound snapshot (sd:6829). Any other refusal fails
+at once.
+
 Running the whole verb matters because its parts do not add up to it. The
 database validator alone passes a snapshot whose runner journal holds a
 `.partial` file, which restore refuses with "interrupted journal write requires
