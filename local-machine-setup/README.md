@@ -131,8 +131,14 @@ overrides it for machine-setup.
 
 The config folder can be a git checkout of its own. `capture` then refuses to
 write from a checkout behind its upstream. A file it changes that git does not
-hold as it is (no checkout, untracked, or edited) keeps a dated `.bak-<stamp>`
-copy beside it. `profile-autocapture.sh` never commits either way.
+hold as it is (no checkout, untracked, or edited) keeps a dated copy.
+`profile-autocapture.sh` never commits either way.
+
+Every copy machine-setup keeps before an overwrite goes to
+`<config>/machine-setup/backups/<host>/<name>.<stamp>`, `<host>` being the
+lower-cased `hostname -s`. `update --apply` moves any `.bak-` or `.pre-` copy
+left elsewhere in the config folder there, and removes copies older than 30
+days. `status` prints the count per host.
 
 LaunchAgent labels start with `$SYSTEM_TOOLS_LABEL_PREFIX` (default
 `local.system-tools`). A template in `launchagents/` may use `@LABEL@`,
@@ -798,9 +804,9 @@ on this machine, and
 
   | marker | meaning | `update --apply` |
   |---|---|---|
-  | `STALE` | machine still matches the record — the repo moved | refreshes it, keeping a `.bak-<stamp>` copy |
+  | `STALE` | machine still matches the record — the repo moved | refreshes it, keeping a dated copy in `backups/<host>/` |
   | `DIFFERS` | machine no longer matches the record — edited here | leaves it; `capture --apply` to keep the edit, `--force` to discard it |
-  | `DIFFERS` (no record) | nothing recorded says which moved | leaves it, and says so rather than guessing; `--force` overwrites it, keeping a `.bak-<stamp>` copy (`dotfiles` and `agents`) |
+  | `DIFFERS` (no record) | nothing recorded says which moved | leaves it, and says so rather than guessing; `--force` overwrites it, keeping a dated copy in `backups/<host>/` (`dotfiles` and `agents`) |
 
   A record is written whenever the file is installed **and** whenever the two
   already agree under `--apply`, so an existing machine seeds itself instead of

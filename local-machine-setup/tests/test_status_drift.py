@@ -183,6 +183,17 @@ class StatusDrift(unittest.TestCase):
         present = self.drift(self.status().stdout)
         self.assertEqual(missing - present, 1)
 
+    def test_status_counts_the_backups_of_each_host_outside_the_drift(self):
+        # sd:6731: one backups/<host>/ folder per machine; status counts them.
+        before = self.drift(self.status().stdout)
+        for host, names in (("hosta", ("a.1", "b.2")), ("hostb", ("c.3",))):
+            (self.config / "machine-setup/backups" / host).mkdir(parents=True)
+            for name in names:
+                (self.config / "machine-setup/backups" / host / name).write_text("x\n")
+        out = self.status().stdout
+        self.assertIn("backups : hosta 2\nbackups : hostb 1\n", out)
+        self.assertEqual(self.drift(out), before)
+
     def in_place_only(self):
         """A machine whose one drift is a file edited in place: the system
         stage alone, with its other findings settled, and a repeating wake."""

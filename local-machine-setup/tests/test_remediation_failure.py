@@ -177,6 +177,41 @@ class RemediationFailure(unittest.TestCase):
         self.assertIn("  FAILED  agent-prompt.sh refresh --apply (exit 1)\n", result.stdout)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
+    def test_update_moves_stray_copies_to_backups_and_prunes_old_ones(self):
+        # sd:6731: one backups/<host>/ folder, pruned at 30 days. A copy left
+        # beside a profile moves there with its clock restarted.
+        write_exec(self.stubs / "hostname", "#!/bin/sh\necho FixtureHost\n")
+        backups = self.config / "machine-setup/backups/fixturehost"
+        backups.mkdir(parents=True)
+        old, young = backups / "personal.brew.20200101000000", backups / "personal.cask.20990101000000"
+        old.write_text("old\n")
+        young.write_text("young\n")
+        os.utime(old, (time.time() - 31 * 86400,) * 2)
+        stray = self.profiles / "personal.cron.pre-example-2020-01-01"
+        stray.write_text("stray\n")
+        os.utime(stray, (time.time() - 400 * 86400,) * 2)
+        result = self.run_verb("update", "prompts", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(old.exists(), result.stdout)
+        self.assertTrue(young.exists())
+        self.assertFalse(stray.exists())
+        self.assertEqual((backups / stray.name).read_text(), "stray\n")
+        self.assertIn("  pruned  backups/fixturehost/personal.brew.20200101000000", result.stdout)
+
+    def test_migration_overwrites_no_copy_of_the_same_name(self):
+        # Review of sd:6731: two strays of one name, and one already in
+        # backups/, each keep their bytes.
+        write_exec(self.stubs / "hostname", "#!/bin/sh\necho FixtureHost\n")
+        backups = self.config / "machine-setup/backups/fixturehost"
+        backups.mkdir(parents=True)
+        (backups / "x.bak-1").write_text("kept\n")
+        (self.profiles / "x.bak-1").write_text("profiles\n")
+        (self.config / "machine-setup/dotfiles/x.bak-1").write_text("dotfiles\n")
+        result = self.run_verb("update", "prompts", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(sorted(p.read_text() for p in backups.iterdir()),
+                         ["dotfiles\n", "kept\n", "profiles\n"], result.stdout)
+
     def test_a_plist_whose_label_is_not_its_name_is_not_installed(self):
         # sd:3547: launchd loads a plist under its own Label. One that differs
         # read UNLOADED every run, and its bootstrap failed on the label
@@ -236,7 +271,7 @@ class RemediationFailure(unittest.TestCase):
         # Under set -e a failed backup ended the run before the overwrite.
         # run now goes on, so the backup's failure must still stop the copy.
         label, plist = self.stale_agent()
-        write_exec(self.stubs / "cp", '#!/bin/sh\ncase "$*" in *.bak-*) exit 1 ;; esac\nexec /bin/cp "$@"\n')
+        write_exec(self.stubs / "cp", '#!/bin/sh\ncase "$*" in */backups/*) exit 1 ;; esac\nexec /bin/cp "$@"\n')
         result = self.run_verb("update", "agents", "--apply")
         out = result.stdout
         self.assertIn(f"  FAILED  backup_file {plist} (exit 1)\n", out, out + result.stderr)
@@ -527,7 +562,7 @@ exec /bin/cp "$@"
         (self.home / ".claude/plugins/cache/x/claude-hud/1.0").mkdir(parents=True)
         (self.home / ".claude/plugins/claude-hud").mkdir(parents=True)
         (self.home / ".claude/plugins/claude-hud/config.json").write_text("{}\n")
-        write_exec(self.stubs / "cp", '#!/bin/sh\ncase "$*" in *.bak-*) exit 1 ;; esac\n'
+        write_exec(self.stubs / "cp", '#!/bin/sh\ncase "$*" in */backups/*) exit 1 ;; esac\n'
                    f'exec {shutil.which("cp")} "$@"\n')
         result = self.run_verb("update", "tooling", "--apply", CLAUDE_LOG=str(self.base / "claude.log"))
         out = result.stdout
