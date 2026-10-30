@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # Shared config location for every tool in this repository. Source it; it
 # defines functions and one variable and runs nothing else.
 #

@@ -10,7 +10,6 @@ test_status.py.
 """
 
 import gzip
-import os
 import re
 import unittest
 

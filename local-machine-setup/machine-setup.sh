@@ -380,10 +380,47 @@ matches_record() { # key, file
 }
 
 # One dated copy before any overwrite. Cheap, and the only thing standing
-# between --force and a file nobody can get back.
+# between --force and a file nobody can get back. Copies go to one folder per
+# machine, never beside the file: ten .bak- and .pre- copies sat among the
+# live profiles (sd:6731). The copy's mtime is when it was made: prune
+# reads it, and cp -p kept the file's own, so a copy of a file unedited
+# for a month went at the next update.
+BACKUP_DIR="$CONFIG_DIR/backups/$(hostname -s | tr '[:upper:]' '[:lower:]')"
 backup_file() { # path
   [ -e "$1" ] || return 0
-  cp -p "$1" "$1.bak-$(date +%Y%m%d%H%M%S)"
+  mkdir -p "$BACKUP_DIR" || return
+  bf_to=$(backup_dest "$(basename "$1").$(date +%Y%m%d%H%M%S)")
+  cp -p "$1" "$bf_to" && touch "$bf_to"
+}
+
+# A path in BACKUP_DIR that holds nothing yet: <name>, else <name>-2, -3.
+# Two copies of one name, made in one second or moved from two folders,
+# would otherwise overwrite each other.
+backup_dest() { # name
+  bd_to="$BACKUP_DIR/$1" bd_n=1
+  while [ -e "$bd_to" ] || [ -L "$bd_to" ]; do bd_n=$((bd_n + 1)); bd_to="$BACKUP_DIR/$1-$bd_n"; done
+  printf '%s\n' "$bd_to"
+}
+
+# Moves a .bak- or .pre- copy left beside a config file into this machine's
+# backups folder, its clock restarted so it gets its 30 days there, then
+# removes copies older than that. Runs with every update --apply (sd:6731).
+prune_backups() {
+  [ "$APPLY" -eq 1 ] && [ -d "$CONFIG_DIR" ] || return 0
+  find "$CONFIG_DIR" -path "$CONFIG_DIR/backups" -prune -o -mindepth 1 -maxdepth 2 \
+      \( -name '*.bak-*' -o -name '*.pre-*' \) -print 2>/dev/null |
+    while IFS= read -r pb; do
+      mkdir -p "$BACKUP_DIR" && pb_to=$(backup_dest "$(basename "$pb")") &&
+        touch "$pb" && mv "$pb" "$pb_to" &&
+        echo "  moved   ${pb#"$CONFIG_DIR"/} to backups/$(basename "$BACKUP_DIR")/$(basename "$pb_to")" ||
+        note_failure "move $pb to $BACKUP_DIR" "$?"
+    done
+  [ -d "$BACKUP_DIR" ] || return 0
+  find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -mtime +30 -print 2>/dev/null |
+    while IFS= read -r pb; do
+      rm -rf "$pb" && echo "  pruned  backups/$(basename "$BACKUP_DIR")/$(basename "$pb") (older than 30 days)" ||
+        note_failure "rm -rf $pb" "$?"
+    done
 }
 
 # capture rewrites files in the config folder, which need not be a git
@@ -1461,7 +1498,16 @@ stage_prompts() {
   if [ -x "$ROOT/local-agent-prompt/agent-prompt.sh" ]; then
     if [ "$APPLY" -eq 1 ]; then
       # The pipe hides the tool's exit status; the braces keep it (sd:3543).
-      { "$ROOT/local-agent-prompt/agent-prompt.sh" refresh --apply || note_failure "agent-prompt.sh refresh --apply" "$?"; } | sed 's/^/  /'
+      # Exit 2 is a refusal for blocks edited in place alone: it waits for a
+      # person, as an in-place dotfile does, and status asks for attention
+      # for its DIFFERS line (sd:6730). Any other exit is a failure; output
+      # cannot tell, as a target's read error goes to stderr only.
+      ap_rc=0
+      ap_out=$("$ROOT/local-agent-prompt/agent-prompt.sh" refresh --apply) || ap_rc=$?
+      [ "$ap_rc" -eq 0 ] || [ "$ap_rc" -eq 2 ] ||
+        ap_out="$ap_out
+$(note_failure "agent-prompt.sh refresh --apply" "$ap_rc")"
+      printf '%s\n' "$ap_out" | sed 's/^/  /'
     else
       "$ROOT/local-agent-prompt/agent-prompt.sh" status | sed 's/^/  /'
     fi
@@ -1562,6 +1608,7 @@ leak_guards() {
     repo=${row%%  *}
     url=${row#*  }
     url=${url%%  *}
+    # shellcheck disable=SC2088 # a literal ~ in a value, expanded here
     case $repo in
       "~/"*) dir="$HOME/${repo#\~/}" ;;
       *) dir=$repo ;;
@@ -1632,6 +1679,7 @@ local_blocks() {
   # and a path may hold one.
   printf '%s\n' "$rows" | sed -n 's/^sd-db: //p' | awk -F '  ' '$NF == "auto" {print $1}' |
   while IFS= read -r repo; do
+    # shellcheck disable=SC2088 # a literal ~ in a value, expanded here
     case $repo in
       "~/"*) dir="$HOME/${repo#\~/}" ;;
       *) dir=$repo ;;
@@ -2518,6 +2566,7 @@ sd_config_database() { # config
 # with --config. The service would then open a file
 # this stage never built and doctor never checked.
 sd_database_elsewhere() {
+  # shellcheck disable=SC2043 # a list of one, kept a list
   for sde_name in dashboard; do
     manifest agent | grep -qxF "$LABEL_PREFIX.sd-$sde_name" || continue
     sde_conf="$HOME/.config/sd/$sde_name.json"
@@ -3551,6 +3600,7 @@ cmd_update() {
   echo "repo    : $ROOT"
   [ "$APPLY" -eq 1 ] || echo "mode    : DRY RUN — nothing will change; re-run with --apply"
   echo
+  prune_backups
   do_stages "$1"
 }
 
@@ -5000,18 +5050,14 @@ doctor_sd() {
   # cannot find it runs on a broken PATH and has checked nothing (sd:1413).
   if ! command -v sqlite3 >/dev/null 2>&1; then
     doctor_fail "sqlite3 MISSING from PATH — database not checked; macOS ships /usr/bin/sqlite3, so put /usr/bin on PATH and re-run: $(basename "$SELF") doctor sd"
-    db_ok=0
   elif [ ! -f "$SD_DB" ]; then
     doctor_fail "database MISSING at $SD_DB — run: $(basename "$SELF") update sd --apply"
-    db_ok=0
   else
     integrity=$(sd_sqlite 'PRAGMA integrity_check;' 2>&1 | head -3 | tr '\n' ' ' | sed 's/ $//')
     if [ "$integrity" = ok ]; then
       echo "  ok      database $SD_DB passes integrity_check"
-      db_ok=1
     else
       doctor_fail "database $SD_DB integrity_check: $integrity — restore a dated backup: sd-db restore <backup root>/<date> (SD_DB_BACKUP_ROOT, or the pack's default)"
-      db_ok=0
     fi
   fi
   # A here-document and not a pipe, so doctor_fail counts in this shell.
@@ -6431,6 +6477,11 @@ cmd_status() {
   echo "profile : $PROFILE"
   echo "repo    : $ROOT"
   echo "state   : $STATE_FILE"
+  # Backup copies per machine, outside the drift count (sd:6731).
+  for sb in "$CONFIG_DIR"/backups/*/; do
+    [ -d "$sb" ] || continue
+    echo "backups : $(basename "$sb") $(find "$sb" -mindepth 1 -maxdepth 1 | grep -c . || :)"
+  done
   echo
 
   if command -v brew >/dev/null 2>&1; then
@@ -7993,6 +8044,9 @@ for a in "$@"; do
                    --force overwrites a DIFFERS dotfile or launch agent too,
                    keeping a .bak- copy; a .env is never overwritten, only
                    given the keys its template added
+                   every copy goes to <config>/machine-setup/backups/<host>/;
+                   --apply moves .bak- and .pre- copies found elsewhere in the
+                   config folder there and removes copies over 30 days old
   capture          write this machine's current state back into its profile,
                    so a change made on one machine reaches the others
                    --additive writes roster entries that appeared and refuses
@@ -8008,7 +8062,7 @@ for a in "$@"; do
                    those commits may be what changed the manifests
                    --stale-ok writes anyway
                    a file it changes that git does not hold as it is keeps a
-                   dated .bak- copy beside it
+                   dated copy in backups/<host>/
   status           drift report: what the profile wants vs what is installed
                    --fail-on-drift exits 1 when drift exists (for cron);
                    in-place drift (DIFFERS) prints an SD_REPORT_ATTENTION

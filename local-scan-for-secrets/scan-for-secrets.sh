@@ -685,7 +685,6 @@ fi
 # (.env and friends) so a rotated key in ~/.bash_profile propagates in one
 # step. Only existing assignments are updated — refresh never adds a variable
 # and never creates a file.
-REFRESH_NAME_GLOBS=".env .env.* *.env .envrc"
 # Templates and committed samples: never written, they are documentation.
 REFRESH_SKIP_RE='\.(example|sample|template|dist|defaults|bak.*|old.*|orig)$|\.env\.example$'
 # file-side name -> ~/.bash_profile name, for projects that spell a key
@@ -699,6 +698,7 @@ GOOGLE_GENAI_API_KEY=GEMINI_API_KEY'
 # found by globbing — a rotation has to reach these too, so they are named
 # explicitly. Missing files are skipped silently, ~ is expanded.
 # A symlink to one of these files needs no entry of its own.
+# shellcheck disable=SC2088 # literal ~ paths, expanded where read
 REFRESH_JSON_TARGETS='~/.config/codexbar/config.json
 ~/.config/zed/settings.json
 ~/.config/opencode/opencode.json
@@ -878,6 +878,7 @@ CAND_EOF
   if [ "$HERE" = 0 ]; then
     while IFS= read -r j; do
       [ -n "$j" ] || continue
+      # shellcheck disable=SC2088 # a literal ~ in a value, expanded here
       case "$j" in "~/"*) j="$HOME/${j#\~/}" ;; esac
       [ -f "$j" ] || continue
       if git -C "$(dirname "$j")" ls-files --error-unmatch "$(basename "$j")" >/dev/null 2>&1; then
@@ -1392,6 +1393,7 @@ drop_critical_excludes() {
     [ -n "$hit" ] || continue
     path=${hit%%"$US"*}; path=${path#./}; keep=1
     set -f
+    # shellcheck disable=SC2254 # each excluded path is a glob
     for p in $CRITICAL_EXCLUDE_PATHS; do case $path in ($p|$p/*) keep=0; break ;; esac; done
     set +f
     [ "$keep" = 0 ] || printf '%s\n' "$hit"

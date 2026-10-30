@@ -876,7 +876,7 @@ class LifecycleCase(unittest.TestCase):
 
     def test_cleanup_stays_in_the_configured_account(self):
         policy = render("sandbox")
-        volume = f"arn:aws:ec2:us-east-1:999988887777:volume/probe"
+        volume = "arn:aws:ec2:us-east-1:999988887777:volume/probe"
         self.assertEqual(self.decision(policy, "ec2:DeleteVolume", volume, {"aws:ResourceTag/claude-managed": "true"}), "implicitDeny")
 
     def test_snapshot_tags_cannot_change(self):

@@ -26,7 +26,6 @@ machine rather than trusting that it was only the findings.
 import hashlib
 import json
 import pathlib
-import re
 import subprocess
 import tempfile
 import unittest

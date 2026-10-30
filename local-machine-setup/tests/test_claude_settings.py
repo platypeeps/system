@@ -53,11 +53,14 @@ class SyntheticHome(unittest.TestCase):
         write_exec(self.stubs / "claude", "#!/bin/sh\nexit 0\n")
         fixture_config.seal(self, self.stubs)
         self.cwd = tmp.name
+        # A copy: --apply keeps its backups under the config folder (sd:6731).
+        self.config_root = fixture_config.copy_config(base)
+        self.backup_dir = self.config_root / "machine-setup/backups"
 
     def run_tooling(self, *flags):
         env = {"HOME": str(self.home), "MACHINE_SETUP_STATE": str(self.state),
                "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
-               **fixture_config.env(), "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX}
+               **fixture_config.env(self.config_root), "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX}
         result = subprocess.run([str(self.folder / "machine-setup.sh"), "update", "tooling", *flags],
                                 env=env, capture_output=True, text=True, cwd=self.cwd,
                                 stdin=subprocess.DEVNULL, timeout=60)
@@ -68,7 +71,8 @@ class SyntheticHome(unittest.TestCase):
 
 class ClaudeSettingsBaseline(SyntheticHome):
     def backups(self):
-        return sorted(self.claude.glob("settings.json.bak-*"))
+        return sorted(p for p in self.backup_dir.glob("*/settings.json.*")
+                      if "CLAUDE_MEM" not in p.read_text())
 
     def test_a_dry_run_names_each_missing_entry_and_writes_nothing(self):
         out = self.run_tooling()
@@ -230,7 +234,8 @@ class ClaudeMemWorkState(SyntheticHome):
 
         self.assertEqual(json.loads(self.mem.read_text()),
                          {**self.mine, "CLAUDE_MEM_WORK_STATE_ENABLED": "false"})
-        self.assertEqual(len(list(self.mem.parent.glob("settings.json.bak-*"))), 1)
+        self.assertEqual(len([p for p in self.backup_dir.glob("*/settings.json.*")
+                              if "CLAUDE_MEM" in p.read_text()]), 1)
         self.assertIn('ok      {} CLAUDE_MEM_WORK_STATE_ENABLED = "false"'.format(self.mem), self.run_tooling())
 
     def test_an_unset_switch_is_missing(self):
@@ -302,7 +307,7 @@ class OpencodeReadDeny(SyntheticHome):
         self.config.write_text(OPENCODE)
 
     def backups(self):
-        return sorted(self.config.parent.glob("opencode.json.bak-*"))
+        return sorted(self.backup_dir.glob("*/opencode.json.*"))
 
     def test_a_dry_run_names_each_missing_deny_and_writes_nothing(self):
         out = self.run_tooling()

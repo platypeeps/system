@@ -273,7 +273,7 @@ class DoctorCron(Case):
         (self.jobs / HOST / "host-job.job").write_text('JOB_SCHEDULE="0 23 * * *"\n')
         self.run_script("doctor")
         checked = [c.rsplit(".", 1)[-1] for c in self.calls()
-                   if c.startswith(f"launchctl print gui/") and ".cron." in c]
+                   if c.startswith("launchctl print gui/") and ".cron." in c]
         self.assertEqual(sorted(checked), ["host-job", "shared-job"])
 
 

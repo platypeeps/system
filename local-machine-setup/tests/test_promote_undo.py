@@ -506,7 +506,7 @@ class Undo(PromoteCase):
         self.run_undo("--apply", expect=1)
         self.assertEqual("3", self.marker_step())
         backup = next(i for i, line in enumerate(self.log.read_text().splitlines()) if "backup --destination" in line)
-        stopped = [i for i, line in enumerate(self.log.read_text().splitlines()) if f"bootout gui/" in line and line.endswith(label)]
+        stopped = [i for i, line in enumerate(self.log.read_text().splitlines()) if "bootout gui/" in line and line.endswith(label)]
         self.assertTrue(stopped and stopped[0] < backup, "the listed role label was not stopped before the snapshot")
 
     def test_a_role_that_does_not_start_again_is_named(self):

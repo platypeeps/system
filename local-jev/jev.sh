@@ -37,6 +37,7 @@ st_source_env jev
 KEV_ENV_FILE="$(st_config_dir kev)/.env"
 kev_value() {
   [ -f "$KEV_ENV_FILE" ] || return 0
+  # shellcheck disable=SC1090 # the config file, named at run time
   ( unset "$1"; . "$KEV_ENV_FILE" >/dev/null 2>&1; eval "printf '%s' \"\${$1:-}\"" ) || true
 }
 # Set-ness decides the fallback, not the value: an exported empty KEV_API_KEY
@@ -50,6 +51,7 @@ if [ -z "${JEV_COMPARE_KEV_URL:-}" ]; then
 fi
 for var in KEV_MODEL KEV_API_KEY JEV_COMPARE_KEV_URL; do
   eval "value=\${$var:-}"
+  # shellcheck disable=SC2163 # exports the variable var names
   [ -z "$value" ] || export "$var"
 done
 

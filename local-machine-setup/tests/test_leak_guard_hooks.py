@@ -12,7 +12,6 @@ that answers per repository; the repositories are fixtures.
 """
 
 import os
-import pathlib
 import shutil
 import subprocess
 from unittest import mock

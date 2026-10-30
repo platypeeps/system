@@ -76,6 +76,7 @@ run() {
     "${WORKSPACE_MCP_URL:-http://127.0.0.1:8083/mcp}")
   dirs=""
   for repo in ${HOME_PREP_REPOS:-}; do
+    # shellcheck disable=SC2088 # a literal ~ in a value, expanded here
     case "$repo" in "~/"*) repo="$HOME/${repo#"~/"}" ;; esac
     [ -d "$repo" ] && dirs="$dirs $repo"
   done

@@ -13,7 +13,6 @@ request, and seen to fail against the script without it.
 """
 
 import fcntl
-import json
 import pathlib
 import shutil
 import sys
@@ -183,7 +182,7 @@ class TilesTest(unittest.TestCase):
                                                "realm": "work", "tile": "sim", "action": "Stop"})
         out = f.follow()
         self.assertIn("!!! failed: tile requests: tiles: sim Start: ValueError", out.stdout)
-        self.assertIn(f"SD_REPORT_ATTENTION: repo-sync on ", out.stdout)
+        self.assertIn("SD_REPORT_ATTENTION: repo-sync on ", out.stdout)
         self.assertIn("follow: system already at the hub's pin", out.stdout)
         self.assertEqual(f.runs(), 0)
 

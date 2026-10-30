@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC3043 # `local`: a deliberate deviation (CLAUDE.md)
 # cron-jobs — run headless Claude Code jobs on a schedule via macOS launchd,
 # fully independent of Claude Desktop or any open terminal.
 #
@@ -1252,6 +1253,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
   # unlimited, so raising the soft one needs no privilege and no sudo
   # `launchctl limit` change; -S is required, since a bare `ulimit -n` lowers
   # the hard limit too and that direction is one-way.
+  # shellcheck disable=SC3045 # macOS sh is bash, which has ulimit -S
   ulimit -S -n 65536 2>/dev/null || true
 
   cd "${JOB_DIR:-$HOME}" || {
@@ -1615,6 +1617,7 @@ failure_resolved() { # job, failure-timestamp
   [ -f "$AGENT_DIR/$(label_for "$job").plist" ] || return 0
   last=$(grep -oE "^\[$job\] [0-9T:+-]+ done" "$LOG_DIR/$job.log" 2>/dev/null \
     | tail -1 | awk '{print $2}')
+  # shellcheck disable=SC3012 # macOS sh is bash, which has [ \> ]
   [ -n "$last" ] && [ "$last" \> "$ts" ]
 }
 

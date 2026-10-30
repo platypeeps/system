@@ -352,7 +352,7 @@ class C4Lift(HoldsCase):
     def test_c4_a_record_left_at_lifting_with_the_comment_posted_is_resumed_without_a_second_comment(self):
         detail = f"{TODAY} {self.DETAIL}"
         cid = self.add_pull(308, block(self.PROBE, extra=[f"lifting: {detail}"]),
-                            more=[comment(7001, f"sd-hold-lifted #308: `issue-closed ...` -- closed")])
+                            more=[comment(7001, "sd-hold-lifted #308: `issue-closed ...` -- closed")])
         log = self.run_holds()
         writes = self.journal()
         self.assertEqual([(w["method"], w["path"]) for w in writes], [

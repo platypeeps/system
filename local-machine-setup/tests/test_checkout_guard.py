@@ -232,7 +232,7 @@ class CheckoutGuard(unittest.TestCase):
                         f"LOG={log}; echo hi > $LOG",
                         f'LOG={log}; touch "$LOG"',
                         f'export LOG={log}; echo hi >> "$LOG"',
-                        f'D=/tmp; LOG=$D/x.txt; echo hi > "$LOG"'):
+                        'D=/tmp; LOG=$D/x.txt; echo hi > "$LOG"'):
             with self.subTest(command=command):
                 self.assertEqual(self.bash(command, cwd=lane), "allow")
         self.env["LOG"] = str(lane / "held")  # the shell may hold it readonly

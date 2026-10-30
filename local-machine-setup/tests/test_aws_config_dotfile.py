@@ -60,6 +60,7 @@ class AwsConfigDotfileTest(unittest.TestCase):
         self.state.mkdir(parents=True)
         (self.state / "profile").write_text("personal\n")
         self.config = self.home / ".aws/config"
+        self.config_root = fixture_config.copy_config(pathlib.Path(self.tmp.name) / "dotfile-case")
 
     def run_stage(self, *flags):
         env = {
@@ -67,7 +68,7 @@ class AwsConfigDotfileTest(unittest.TestCase):
             "MACHINE_SETUP_STATE": str(self.state),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "LANG": "en_US.UTF-8",
-            **fixture_config.env(),
+            **fixture_config.env(self.config_root),
         }
         result = subprocess.run([str(SCRIPT), "update", "dotfiles", *flags], env=env,
                                 capture_output=True, text=True, cwd=self.tmp.name)
@@ -145,7 +146,7 @@ class AwsConfigDotfileTest(unittest.TestCase):
         self.assertEqual(self.run_stage("--apply", "--force"),
                          ["  DIFFERS .aws/config — nothing recorded; --force overwrites (backup kept)"])
         self.assertEqual(self.config.read_text(), signed_in(tracked()))
-        self.assertEqual(len(list(self.config.parent.glob("config.bak-*"))), 1)
+        self.assertEqual(len(list(self.config_root.glob("machine-setup/backups/*/config.*"))), 1)
         self.assertEqual(self.run_stage(), ["  ok      .aws/config"])
 
     def test_force_fills_an_empty_config(self):

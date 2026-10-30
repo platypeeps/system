@@ -102,12 +102,14 @@ PINNED_PACK = pathlib.Path(os.environ.get("SD_ACCEPTANCE_PACK") or os.environ.ge
 
 # A pack `sd` that records its words; with SPAWN_PID set, it starts a sleeper
 # through the pinned pack's own `build_run.spawn`, the call the tick makes for
-# a supervisor, then outlives the job's limit.
+# a supervisor, then outlives the job's limit. SPAWN_STALL seconds pass first,
+# as a loaded gate delays the tick's start.
 FAKE_DISPATCH = """#!{python}
 import os, pathlib, sys, time
 with open(os.environ["PACK_MARKER"], "a") as out:
     out.write(" ".join(sys.argv[1:]) + "\\n")
 if os.environ.get("SPAWN_PID"):
+    time.sleep(float(os.environ.get("SPAWN_STALL", "0")))
     sys.path.insert(0, {lib!r})
     from sd_db import build_run
     pid = build_run.spawn([sys.executable, "-c", "import time; time.sleep(60)"],
@@ -174,15 +176,18 @@ class BuildDispatchJobTest(unittest.TestCase):
     def test_a_spawned_supervisor_outlives_the_limit_and_holds_no_lock(self):
         """A tick killed at its limit leaves its supervisor running, and the next slot runs.
 
-        The limit here is 2 s, not 90 s. A supervisor left in the job's process
+        The limit here is 10 s, not 90 s. A supervisor left in the job's process
         group would die with the TERM; one that kept fd 8 open would hold the
-        job's flock, and every later slot would log `skipped`.
+        job's flock, and every later slot would log `skipped`. The fake stalls
+        3 s before it spawns, as a loaded gate delays Python's start and the
+        sd_db import: a 2 s limit killed the tick before the spawn (sd:6742).
         """
         pid_file = pathlib.Path(tempfile.mkdtemp(prefix="build-dispatch.")) / "supervisor.pid"
         self.addCleanup(shutil.rmtree, pid_file.parent, ignore_errors=True)
-        text = self.JOB.read_text().replace('JOB_TIMEOUT="90s"', 'JOB_TIMEOUT="2s"')
+        # ponytail: a wall-clock limit; a load that delays the spawn 10 s still fails it.
+        text = self.JOB.read_text().replace('JOB_TIMEOUT="90s"', 'JOB_TIMEOUT="10s"')
         self.assertNotEqual(text, self.JOB.read_text())
-        result = self.run_job(text, SPAWN_PID=str(pid_file))
+        result = self.run_job(text, SPAWN_PID=str(pid_file), SPAWN_STALL="3")
         self.assertTrue(pid_file.exists(), result.stdout + result.stderr)
         pid = int(pid_file.read_text())
         self.addCleanup(lambda: alive(pid) and os.kill(pid, signal.SIGKILL))

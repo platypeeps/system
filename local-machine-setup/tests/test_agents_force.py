@@ -57,6 +57,7 @@ class AgentCase(unittest.TestCase):
         self.rendered = rendered
         self.plist = plist
         plist.write_text(rendered + "<!-- edited -->\n")
+        self.config_root = fixture_config.copy_config(self.tmp.name)
 
     def run_agents(self, *flags, path=None, **extra):
         env = {
@@ -64,7 +65,7 @@ class AgentCase(unittest.TestCase):
             "MACHINE_SETUP_STATE": str(self.state),
             "PATH": path or os.environ.get("PATH", "/usr/bin:/bin"),
             "LANG": "en_US.UTF-8",
-            **fixture_config.env(),
+            **fixture_config.env(self.config_root),
             **extra,
         }
         return subprocess.run([str(SCRIPT), "update", "agents", *flags], env=env,
@@ -109,7 +110,7 @@ class AgentsForceTest(AgentCase):
         self.assertEqual(self.verdict(lines),
                          [f"  DIFFERS {self.label} — nothing recorded; --force overwrites (backup kept)"])
         self.assertEqual(self.plist.read_text(), self.rendered)
-        backups = list(self.plist.parent.glob(f"{self.label}.plist.bak-*"))
+        backups = list(self.config_root.glob(f"machine-setup/backups/*/{self.label}.plist.*"))
         self.assertEqual([backup.read_text() for backup in backups], [edited])
         record = self.state / "installed" / f"agents_{self.label}.sha"
         self.assertEqual(record.read_text().strip(), hashlib.sha256(self.rendered.encode()).hexdigest())

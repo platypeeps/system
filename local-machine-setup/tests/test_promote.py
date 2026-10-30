@@ -9,7 +9,6 @@ case stops the run there and checks the next run finishes it or undoes it.
 
 import datetime
 import json
-import os
 import pathlib
 import shutil
 import socket
@@ -18,7 +17,7 @@ import sys
 import unittest
 
 from tests import fixture_config
-from tests.test_backbone import PACK, ROOT, ROUTE_PRESENT, SCRIPT, Fixture, write_stub
+from tests.test_backbone import PACK, ROUTE_PRESENT, SCRIPT, Fixture, write_stub
 
 PREFIX = fixture_config.LABEL_PREFIX
 HUB = "hub.example.test"
@@ -705,7 +704,7 @@ class Promote(PromoteCase):
         """The A decision on sd:4044: promote refuses while sd.hub_name is unset."""
         self.fence.write_text("off\n")
         result = self.run_promote("--apply", expect=1)
-        self.assertIn(f"sd.hub_name is unset in the restored database", result.stderr)
+        self.assertIn("sd.hub_name is unset in the restored database", result.stderr)
         self.assertIn(f"sd config set sd.hub_name {HUB}", result.stderr)
         self.assertEqual("7", self.marker_step())
         self.assertEqual([], self.calls("tailscale set"))

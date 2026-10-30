@@ -52,6 +52,8 @@ class ToolingClaudeHudTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         base = pathlib.Path(self.tmp.name)
+        # A copy: --apply keeps its backups under the config folder (sd:6731).
+        self.config_root = fixture_config.copy_config(base)
         self.repo = base / "repo"
         self.folder = self.repo / "local-machine-setup"
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
@@ -79,7 +81,7 @@ class ToolingClaudeHudTest(unittest.TestCase):
             "MACHINE_SETUP_STATE": str(self.state),
             "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
             "LANG": "en_US.UTF-8",
-            **fixture_config.env(),
+            **fixture_config.env(self.config_root),
             "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX,
             "CLAUDE_LOG": str(self.claude_log),
             "STATUSLINE_LOG": str(self.statusline_log),

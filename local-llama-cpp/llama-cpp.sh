@@ -68,6 +68,7 @@ fi
 # Print host:port for the named node's rpc worker, or fail naming the variable.
 node_addr() {
   eval "addr=\${$1:-}"
+  # shellcheck disable=SC2154 # the eval above assigns addr
   case "$addr" in
     ""|change-me)
       st_missing "$1" llama-cpp .env

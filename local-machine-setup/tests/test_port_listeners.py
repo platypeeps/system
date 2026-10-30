@@ -19,7 +19,6 @@ netstat lists as LISTEN that lsof did not name is not CLEAR either.
 """
 
 import json
-import os
 import pathlib
 import shutil
 import subprocess

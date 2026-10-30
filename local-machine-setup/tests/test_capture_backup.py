@@ -3,7 +3,7 @@
 capture rewrites manifests, dotfiles, agent plists and macOS values in the
 config folder. In a git checkout the old version is one `git diff` away; in a
 plain folder an overwrite had no way back. Each file capture changes there now
-gets a dated `.bak-<stamp>` copy, an unchanged one is not rewritten, and a file
+gets a dated copy in backups/<host>/ (sd:6731), an unchanged one is not rewritten, and a file
 git tracks with no local edit gets none.
 
 capture runs from a copy of this folder under a temporary root. brew, git
@@ -11,11 +11,13 @@ capture runs from a copy of this folder under a temporary root. brew, git
 fixture_config.seal fails a case that reaches a real one.
 """
 
+import os
 import pathlib
 import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 from tests import fixture_config
@@ -66,6 +68,8 @@ class CaptureBackup(unittest.TestCase):
         write_stub(self.stubs, "defaults", "#!/bin/sh\nexit 1\n")
         write_stub(self.stubs, "sudo", "#!/bin/sh\nexit 1\n")
         write_stub(self.stubs, "launchctl", "#!/bin/sh\nexit 0\n")
+        write_stub(self.stubs, "hostname", "#!/bin/sh\necho FixtureHost\n")
+        self.backups = self.config_root / "machine-setup/backups/fixturehost"
         fixture_config.seal(self, self.stubs)
 
     def capture(self):
@@ -82,9 +86,23 @@ class CaptureBackup(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
 
-    @staticmethod
-    def copies(path):
-        return sorted(path.parent.glob(path.name + ".bak-*"))
+    def copies(self, path):
+        return sorted(self.backups.glob(path.name + ".[0-9]*"))
+
+    def test_a_copy_goes_to_the_hosts_backups_folder_not_beside_the_profile(self):
+        # sd:6731: ten .bak- and .pre- copies sat among the live profiles.
+        self.capture()
+        self.assertEqual([p.read_text() for p in self.copies(self.brew)], [OLD_BREW])
+        self.assertEqual([p.name for p in self.profiles.iterdir() if ".bak" in p.name], [])
+
+    def test_a_copy_of_an_old_file_starts_its_30_days_when_it_is_made(self):
+        # Review of sd:6731: cp -p kept the file's own mtime, so a copy of a
+        # file last edited 40 days ago was pruned on the next update.
+        old = time.time() - 40 * 86400
+        os.utime(self.brew, (old, old))
+        self.capture()
+        [copy] = self.copies(self.brew)
+        self.assertGreater(copy.stat().st_mtime, time.time() - 3600)
 
     def test_a_plain_folder_keeps_a_copy_of_each_file_capture_changes(self):
         self.capture()

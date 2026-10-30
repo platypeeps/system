@@ -111,7 +111,8 @@ If you edit a prompt in place instead — Claude Code's `/memory` writes
 rather than guessing which part of the file is the shared part.
 
 **`refresh` never overwrites a block that was edited in place.** It reports
-`DIFFERS` and exits 1 before writing, the same way the `dotfiles` stage in
+`DIFFERS` and exits 2 before writing (1 when a target is `UNKNOWN` or
+cannot be read), the same way the `dotfiles` stage in
 `local-machine-setup` refuses to overwrite a file the machine and repo disagree
 on. Discarding the edit takes `refresh --force`. This matters because the
 `prompts` stage calls `refresh --apply` on every `machine-setup update --apply`,

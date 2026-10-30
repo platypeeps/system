@@ -7,7 +7,6 @@ branch that edits preferences.plist never runs. Nothing touches real
 network configuration.
 """
 
-import os
 import subprocess
 import tempfile
 import textwrap
