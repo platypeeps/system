@@ -3604,6 +3604,69 @@ class JobTimeoutTest(unittest.TestCase):
         run.wait(timeout=10)
 
 
+class TimeoutBreakerTest(unittest.TestCase):
+    """Three timeouts in a row open a job's breaker (sd:6831).
+
+    REGRESSION. A hung /Volumes/local held build-dispatch to its 90 s limit
+    for 12.6 hours on 2026-10-27/28: every two-minute slot spawned a run
+    that timed out, 383 rc=124 lines in failures.log. Now the third
+    timeout in a row logs one `breaker open` line; later slots skip until
+    a probe is due, and a probe's timeout adds no failures.log line.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.logs = self.fx.folder / "logs"
+        self.ran = self.fx.tmp / "ran"
+        self.state = self.logs / ".demo.timeouts"
+
+    def job(self, rc):
+        self.fx.write_job("demo", 'JOB_SCHEDULE="*/2 * * * *"\n'
+                          f'JOB_COMMAND="echo x >> {self.ran}; exit {rc}"\n')
+
+    def runs(self):
+        return len(self.ran.read_text().splitlines()) if self.ran.exists() else 0
+
+    def failures(self):
+        path = self.logs / "failures.log"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_three_timeouts_open_the_breaker_and_later_slots_skip(self):
+        self.job(124)
+        for _ in range(3):
+            self.assertEqual(self.fx.exec_job("demo").returncode, 124)
+        result = self.fx.exec_job("demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("skipped: breaker open after 3 timeouts in a row", result.stderr)
+        self.assertEqual(self.runs(), 3)
+        failures = self.failures()
+        self.assertEqual(len(failures), 4, failures)
+        self.assertIn("demo breaker open: 3 timeouts in a row", failures[-1])
+
+    def test_a_due_probe_runs_and_its_timeout_logs_no_new_failure(self):
+        self.job(124)
+        self.state.write_text(f"3 {int(time.time()) - 3600}\n")
+        result = self.fx.exec_job("demo")
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual(self.failures(), [])
+        self.assertEqual(self.state.read_text().split()[0], "4")
+
+    def test_a_probe_that_passes_closes_the_breaker(self):
+        self.job(0)
+        self.state.write_text(f"3 {int(time.time()) - 3600}\n")
+        self.assertEqual(self.fx.exec_job("demo").returncode, 0)
+        self.assertFalse(self.state.exists())
+
+    def test_another_failure_resets_the_count(self):
+        self.job(124)
+        self.state.write_text(f"2 {int(time.time())}\n")
+        self.job(1)
+        self.assertEqual(self.fx.exec_job("demo").returncode, 1)
+        self.assertFalse(self.state.exists())
+
+
 class JobPathTest(unittest.TestCase):
     """The PATH a plist gives its job, built from this machine's Homebrew.
 

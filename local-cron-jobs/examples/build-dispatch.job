@@ -13,8 +13,10 @@
 # the database, and stats the bulk storage root for run logs. A hung
 # volume there held every tick to this limit for 12 hours (sd:6705);
 # until the pack bounds that probe (pack sd:6749), a run of rc=124 lines
-# here points at the volume first. A supervisor starts in a new
-# session with the job's lock closed (`start_new_session`, `close_fds`),
+# here points at the volume first; after three in a row the breaker
+# skips slots and probes every 30 minutes (sd:6831). A supervisor
+# starts in a new session with the job's lock closed
+# (`start_new_session`, `close_fds`),
 # so neither this limit nor the next slot reaches it; it bounds its own
 # builder at 60 minutes. A slot that finds the previous tick still active
 # logs `skipped` and exits 0.

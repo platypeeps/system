@@ -138,6 +138,11 @@ time, command), so the log names what hung.
 Anything still running 10 seconds later gets KILL, with a second log line.
 The run then fails with exit 124, and the failure reporting below applies.
 Killing the group releases the lock, so the next slot runs as scheduled.
+Three timeouts in a row open the job's breaker (sd:6831): failures.log gets
+one `breaker open` line, and later slots log `skipped: breaker open` and exit 0.
+Every 30 minutes one slot runs as a probe; its timeout adds no failures.log
+line, and any other outcome closes the breaker. `logs/.<job>.timeouts` holds
+the count; delete it to close the breaker by hand.
 Set `JOB_TIMEOUT` below the job's interval: `20m` for a job that runs hourly.
 `JOB_TIMEOUT=0` runs the job without a limit, as before.
 A limit that is not `N`, `Ns`, `Nm` or `Nh` fails the run and names the variable.
