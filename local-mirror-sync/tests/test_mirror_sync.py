@@ -1966,6 +1966,60 @@ class OffsiteVerify(Fixture):
         self.assertEqual(result.returncode, 1)
         self.assertIn("unsafe run journal entry", result.stderr)
 
+    def run_with_restore_timeouts(self, root: Path, timeouts: int) -> subprocess.CompletedProcess:
+        """Run the verifier with `restore` timing out its first `timeouts` calls.
+
+        A `sitecustomize` on PYTHONPATH wraps the pack's `restore` before the
+        script imports it, and makes `time.sleep` a no-op so the pause between
+        attempts costs the test nothing (sd:6829).
+        """
+        site = self.work / "site"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            "import sys, time\n"
+            f"sys.path.insert(0, {str(PACK / 'lib')!r})\n"
+            "import importlib\n"
+            "backup = importlib.import_module('sd_db.backup')\n"
+            "from sd_db.errors import BackupError\n"
+            "real = backup.restore\n"
+            f"left = [{timeouts}]\n"
+            "def restore(*args, **kwargs):\n"
+            "    if left[0] > 0:\n"
+            "        left[0] -= 1\n"
+            "        raise BackupError('restore timed out; stop database writers and retry')\n"
+            "    return real(*args, **kwargs)\n"
+            "backup.restore = restore\n"
+            "time.sleep = lambda seconds: None\n"
+        )
+        environment = dict(os.environ, HOME=str(self.work / "home"),
+                           PYTHONPATH=os.pathsep.join(
+                               [str(site), os.environ.get("PYTHONPATH", "")]))
+        return subprocess.run(
+            [sys.executable, str(OFFSITE_VERIFY), "--root", str(root), "--allow-local-root"],
+            capture_output=True, text=True, env=environment,
+        )
+
+    def test_a_restore_timeout_is_retried_and_then_passes(self) -> None:
+        # 2026-10-30 06:01: the restore's 30-second copy deadline tripped
+        # under the 06:00 load and raised a false "data at risk" alarm; the
+        # 06:35 rerun passed every check.
+        root = self.build_share()
+
+        result = self.run_with_restore_timeouts(root, timeouts=1)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("restore attempt 1 of 3 timed out; retrying", result.stdout)
+        self.assertNotIn("FAIL", result.stdout + result.stderr)
+
+    def test_a_restore_that_times_out_every_attempt_still_fails(self) -> None:
+        # The retry is bounded: a restore that never finishes is still a failure.
+        root = self.build_share()
+
+        result = self.run_with_restore_timeouts(root, timeouts=99)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("restore refused this snapshot: restore timed out", result.stderr)
+
     def test_a_snapshot_from_an_older_schema_still_counts(self) -> None:
         # Most of what a share holds was taken before the last migration.
         # `restore` validates such a snapshot against the shape it claims and

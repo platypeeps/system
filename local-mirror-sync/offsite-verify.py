@@ -40,6 +40,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -361,6 +362,31 @@ def _prove_restore(snapshot: Path, report: Report) -> None:
     except ImportError as error:
         report.fail(f"the sd_db restore verb could not be imported ({error})")
         return
+    for attempt in range(1, RESTORE_ATTEMPTS + 1):
+        error = _restore_once(snapshot, report, restore)
+        if error is None or attempt == RESTORE_ATTEMPTS or RESTORE_TIMEOUT not in str(error):
+            break
+        report.lines.append(
+            f"note  restore attempt {attempt} of {RESTORE_ATTEMPTS} timed out;"
+            f" retrying in {RESTORE_PAUSE_SECONDS}s"
+        )
+        time.sleep(RESTORE_PAUSE_SECONDS)
+    if error is not None:
+        kind = "restore refused this snapshot" if isinstance(error, BackupError) else "restore failed"
+        report.fail(f"{kind}: {error}")
+
+
+#: The pack's restore gives its copy a fixed deadline (`RESTORE_SECONDS`).
+#: Under the 06:00 load it tripped on a sound snapshot and raised a false
+#: "data at risk" alarm, and the rerun passed (sd:6829). Only that timeout
+#: is retried, a few minutes apart; every other refusal is the answer.
+RESTORE_TIMEOUT = "restore timed out"
+RESTORE_ATTEMPTS = 3
+RESTORE_PAUSE_SECONDS = 120
+
+
+def _restore_once(snapshot: Path, report: Report, restore) -> Exception | None:
+    """One restore into a fresh throwaway home; the error, or None on success."""
     work = Path(tempfile.mkdtemp(prefix="offsite-restore-"))
     try:
         local = work / "snapshot"
@@ -374,19 +400,18 @@ def _prove_restore(snapshot: Path, report: Report) -> None:
             shutil.copytree(snapshot, local, symlinks=True, ignore=_ignore_runner_locks)
         except OSError as error:
             report.fail(f"snapshot directory could not be copied off the share: {error}")
-            return
+            return None
         home = work / "home"
         home.mkdir()
         try:
             restored = restore(local, home=home)
         except Exception as error:  # noqa: BLE001 - any refusal is the answer
-            kind = "restore refused this snapshot" if isinstance(error, BackupError) else "restore failed"
-            report.fail(f"{kind}: {error}")
-            return
+            return error
         report.check(
             Path(restored).is_file() and Path(restored).stat().st_size > 0,
             f"a full restore of {snapshot.name} into a throwaway home succeeded",
         )
+        return None
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -807,7 +832,8 @@ def main(argv: list[str] | None = None) -> int:
         for failure in report.failures:
             print(f"  {failure}", file=sys.stderr)
         return 1
-    print(f"offsite-verify: all {len(report.lines)} checks passed")
+    checks = sum(line.startswith("ok") for line in report.lines)
+    print(f"offsite-verify: all {checks} checks passed")
     return 0
 
 

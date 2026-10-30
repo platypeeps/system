@@ -476,6 +476,44 @@ notify_failure() { # job, exit code
   echo "$ts $job FAILED rc=$rc (log: logs/$job.log)" >> "$FAIL_LOG"
 }
 
+# The timeout breaker (sd:6831). A hung volume held build-dispatch to its
+# limit for 12.6 hours: every two-minute slot spawned a run that timed out,
+# 383 failures.log lines. logs/.<job>.timeouts holds "<count> <epoch>" of
+# the timeouts (rc=124) in a row; any other outcome removes it. From the
+# third, a slot runs only as a probe, once BREAKER_PROBE_SECONDS have passed
+# since the last timeout; the others skip and exit 0. failures.log gets one
+# `breaker open` line and no line for a probe's timeout. A daily job never
+# waits on it: its next slot is always past the probe time.
+BREAKER_AFTER=3
+BREAKER_PROBE_SECONDS=1800
+BREAKER_COUNT=0
+breaker_allows() { # job; sets BREAKER_COUNT
+  local count=0 last=0
+  read -r count last < "$LOG_DIR/.$1.timeouts" 2>/dev/null || true
+  case "$count$last" in ''|*[!0-9]*) return 0 ;; esac
+  BREAKER_COUNT="$count"
+  [ "$count" -lt "$BREAKER_AFTER" ] || [ "$(($(date +%s) - last))" -ge "$BREAKER_PROBE_SECONDS" ]
+}
+
+breaker_record() { # job, exit code; logs the failure unless the breaker is open
+  local job="$1" rc="$2" state="$LOG_DIR/.$1.timeouts" count=0 last=0
+  if [ "$rc" -ne 124 ]; then
+    rm -f "$state"
+    [ "$rc" -eq 0 ] || notify_failure "$job" "$rc"
+    return 0
+  fi
+  read -r count last < "$state" 2>/dev/null || true
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  count=$((count + 1))
+  echo "$count $(date +%s)" > "$state" || true
+  if [ "$count" -le "$BREAKER_AFTER" ]; then
+    notify_failure "$job" "$rc"
+  fi
+  if [ "$count" -eq "$BREAKER_AFTER" ]; then
+    echo "$(date '+%Y-%m-%dT%H:%M:%S%z') $job breaker open: $count timeouts in a row; one probe run per ${BREAKER_PROBE_SECONDS}s until one ends otherwise" >> "$FAIL_LOG"
+  fi
+}
+
 # The one push a run makes: to the phone, when a failure puts data at risk
 # (sd:5997). The report still carries every failure to Today (sd:3454). A run
 # that proved its data safe prints `SD_REPORT_ATTENTION: data safe, one step
@@ -1207,6 +1245,10 @@ cmd_exec() { # invoked by launchd (and by `run`)
     echo "[$job] could not take the lock on $lock (perl exit $taken)" >&2
     exit 1
   fi
+  if ! breaker_allows "$job"; then
+    echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') skipped: breaker open after $BREAKER_COUNT timeouts in a row; next probe after ${BREAKER_PROBE_SECONDS}s" >&2
+    exit 0
+  fi
   trap exec_exit EXIT
 
   # Mirror a hand-run into the job log; no-op when launchd already points
@@ -1329,8 +1371,9 @@ cmd_exec() { # invoked by launchd (and by `run`)
 
   if [ "$rc" -ne 0 ]; then
     echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') FAILED rc=$rc"
-    notify_failure "$job" "$rc"
+    breaker_record "$job" "$rc"
   else
+    breaker_record "$job" "$rc"
     echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') done"
   fi
   # The exit code this run reached, written down by the run that reached it.
