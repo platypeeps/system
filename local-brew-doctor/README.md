@@ -17,11 +17,14 @@ into `<config>/cron-jobs/jobs/` and run `cron-jobs.sh install brew-doctor-nightl
 - **Auto-fixed**: broken symlinks and stale files (`brew cleanup
   --prune=all`), unlinked kegs that still have a formula (`brew link`,
   never `--overwrite` — an orphaned keg once clobbered a cask binary here).
-- **Report-only**: deprecated/disabled formulae and casks,
+- **Report-only**: disabled formulae and casks, and deprecated ones whose
+  disable date (`brew info --json=v2`) is within 30 days or unknown,
   untrusted taps (trust is a security decision), kegs with no formula, and
   anything else `brew doctor` raises.
 - **Ignored**: Homebrew's Intel x86_64 platform warning; it repeats every
-  night on an Intel Mac and nothing here can clear it (sd:4785).
+  night on an Intel Mac and nothing here can clear it (sd:4785). A
+  deprecation whose disable date is more than 30 days away; it would
+  repeat every night with nothing to do yet (sd:6795).
 
 The summary goes to the job log with one line per warning, `SD_REPORT_ATTENTION:
 brew doctor on <host>: <its first line> [<checksum>]`, and one per item it

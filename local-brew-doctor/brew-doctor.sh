@@ -24,7 +24,8 @@ usage: brew-doctor.sh run
           report-only, printed as a summary when present, with an
           SD_REPORT_ATTENTION line so the run's report reaches Reports and
           Today:
-            - deprecated/disabled formulae and casks
+            - disabled formulae and casks, and deprecated ones whose
+              disable date is within 30 days or unknown
             - untrusted taps (trusting is a security decision)
             - kegs with no formula, and anything else brew doctor raises
         Exits 0; nothing is mailed.
@@ -120,6 +121,39 @@ if ! doctor_answered "$d_rc" "$tmp/doctor2"; then
 fi
 st_drop_platform_warning "$tmp/doctor2" > "$tmp/kept2"
 mv "$tmp/kept2" "$tmp/doctor2"
+
+# Deprecations: doctor lists a deprecated formula or cask every night from the
+# day brew deprecates it, often a year before its disable date (sd:6795).
+# Drop one whose disable date is more than DISABLE_DAYS away; keep a disabled
+# one, one with no date, and all of them when brew info does not answer.
+DISABLE_DAYS=30
+for kind in formulae casks; do
+  flag=--formula; [ "$kind" = formulae ] || flag=--cask
+  names=$(sed -n "/^Warning: Some installed $kind are deprecated or disabled/,/^Warning:/p" "$tmp/doctor2" |
+    sed 1d | grep '^  [^ ]' | tr -d ' ' || :)
+  [ -n "$names" ] || continue
+  # shellcheck disable=SC2086 # one argument per name
+  st_step 120 brew info --json=v2 "$flag" $names < /dev/null > "$tmp/info" 2>/dev/null || continue
+  far=$(python3 -c '
+import datetime, json, sys
+info = json.load(open(sys.argv[1]))
+limit = datetime.date.today() + datetime.timedelta(days=int(sys.argv[2]))
+for it in info.get("formulae", []) + info.get("casks", []):
+    d = it.get("disable_date")
+    if not it.get("disabled") and d and datetime.date.fromisoformat(d) > limit:
+        print(it.get("name") or it.get("token"))
+' "$tmp/info" "$DISABLE_DAYS" 2>/dev/null) || continue
+  # Drop the far names, and the warning itself when it lists none left.
+  awk -v k="$kind" -v far=" $(printf "%s" "$far" | tr "\n" " ") " '
+    function flush() { if (kept) printf "%s", buf; buf = ""; inblk = 0 }
+    /^Warning:/ { flush(); inblk = index($0, "Some installed " k " are deprecated or disabled") > 0 }
+    !inblk { print; next }
+    /^  [^ ]/ { n = $0; gsub(/ /, "", n); if (index(far, " " n " ")) next; kept = 1 }
+    /^Warning:/ { kept = 0 }
+    { buf = buf $0 "\n" }
+    END { flush() }' "$tmp/doctor2" > "$tmp/kept2"
+  mv "$tmp/kept2" "$tmp/doctor2"
+done
 if ! grep -q '^Warning:' "$tmp/doctor2"; then
   echo "brew doctor: clean after auto-fixes"
   exit 0
