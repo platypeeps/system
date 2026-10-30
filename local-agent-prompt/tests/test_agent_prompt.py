@@ -119,8 +119,23 @@ class PromptDistribution(unittest.TestCase):
         target = self.targets["claude"]
         target.write_bytes(target.read_bytes().replace(BEGIN, BEGIN + b"\nPersonal edit", 1))
         before = self.snapshot()
-        result = self.run_script("refresh", "--apply", expected=1)
+        # Exit 2: refused for edits alone, which wait for a person; the
+        # prompts stage of machine-setup tells that from a failure (sd:6730).
+        result = self.run_script("refresh", "--apply", expected=2)
         self.assertIn("DIFFERS", result.stdout)
+        self.assertEqual(before, self.snapshot())
+
+    def test_an_edit_beside_a_broken_target_is_a_failure(self):
+        # A state error prints to stderr only; it must not pass as an edit.
+        self.run_script("refresh", "--apply")
+        target = self.targets["claude"]
+        target.write_bytes(target.read_bytes().replace(BEGIN, BEGIN + b"\nPersonal edit", 1))
+        broken = self.targets["codex"]
+        broken.write_bytes(broken.read_bytes() + BEGIN + b"\n")
+        before = self.snapshot()
+        result = self.run_script("refresh", "--apply", expected=1)
+        self.assertIn("DIFFERS claude", result.stdout)
+        self.assertIn("invalid managed block markers", result.stderr)
         self.assertEqual(before, self.snapshot())
 
     def test_unknown_managed_block_refuses_without_changes(self):
@@ -140,7 +155,7 @@ class PromptDistribution(unittest.TestCase):
         before = self.snapshot()
         for args in (("refresh",), ("refresh", "--apply")):
             with self.subTest(args=args):
-                result = self.run_script(*args, expected=1)
+                result = self.run_script(*args, expected=2)
                 self.assertIn("DIFFERS codex", result.stdout)
                 self.assertIn("DIFFERS copilot", result.stdout)
                 self.assertEqual(before, self.snapshot())
@@ -179,7 +194,7 @@ class PromptDistribution(unittest.TestCase):
         self.assertEqual(hashlib.sha256(managed).hexdigest(), (self.state / "claude.sha").read_text().strip())
         target.write_bytes(content.replace(BEGIN, BEGIN + b"\nPersonal edit", 1))
         before = self.snapshot()
-        self.assertIn("DIFFERS claude", self.run_script("refresh", "--apply", expected=1).stdout)
+        self.assertIn("DIFFERS claude", self.run_script("refresh", "--apply", expected=2).stdout)
         self.assertEqual(before, self.snapshot())
 
     def test_managed_crlf_is_an_edit_not_current_or_stale(self):
@@ -189,7 +204,7 @@ class PromptDistribution(unittest.TestCase):
         self.assertIn("DIFFERS codex", self.run_script("status").stdout)
         self.move_source()
         before = self.snapshot()
-        self.assertIn("DIFFERS codex", self.run_script("refresh", "--apply", expected=1).stdout)
+        self.assertIn("DIFFERS codex", self.run_script("refresh", "--apply", expected=2).stdout)
         self.assertEqual(before, self.snapshot())
 
     def test_force_replaces_managed_edit_and_preserves_non_utf8_outside(self):

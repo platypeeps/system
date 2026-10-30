@@ -147,6 +147,36 @@ class RemediationFailure(unittest.TestCase):
         self.assertNotIn("FAILED", result.stdout)
         self.assertNotIn("did not finish", result.stdout)
 
+    def agent_prompt_refuses(self, body, rc=1):
+        write_exec(self.root / "local-agent-prompt/agent-prompt.sh", f"#!/bin/sh\n{body}exit {rc}\n")
+        return self.run_verb("update", "prompts", "--apply")
+
+    EDITED = ("echo '  DIFFERS claude /h/.claude/CLAUDE.md \u2014 block edited in place; keep it with'\n"
+              "echo \"          'capture claude --apply', or discard it with 'refresh --force'\"\n")
+
+    def test_an_agent_prompt_block_edited_in_place_is_not_a_failed_run(self):
+        # sd:6730: refresh refuses a block edited in place and exits 1; that
+        # waits for a person to pick a side, as an in-place dotfile does, and
+        # status asks for attention for it (sd:5064).
+        # refresh exits 2 for that refusal alone.
+        result = self.agent_prompt_refuses(self.EDITED, rc=2)
+        self.assertIn("  DIFFERS claude /h/.claude/CLAUDE.md", result.stdout)
+        self.assertNotIn("FAILED", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_an_edit_does_not_hide_a_refresh_that_failed_otherwise(self):
+        # Review of sd:6730: an edited target printed DIFFERS while another
+        # target's error went to stderr only; the DIFFERS line passed it.
+        result = self.agent_prompt_refuses(
+            self.EDITED + "echo 'agent-prompt.sh: /h/.codex/AGENTS.md: invalid managed block markers' >&2\n")
+        self.assertIn("  FAILED  agent-prompt.sh refresh --apply (exit 1)\n", result.stdout)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_an_agent_prompt_refresh_that_fails_otherwise_is_a_failed_run(self):
+        result = self.agent_prompt_refuses("echo 'agent-prompt.sh: no prompt/shared.md to distribute' >&2\n")
+        self.assertIn("  FAILED  agent-prompt.sh refresh --apply (exit 1)\n", result.stdout)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
     def test_a_plist_whose_label_is_not_its_name_is_not_installed(self):
         # sd:3547: launchd loads a plist under its own Label. One that differs
         # read UNLOADED every run, and its bootstrap failed on the label

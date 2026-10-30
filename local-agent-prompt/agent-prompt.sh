@@ -298,18 +298,24 @@ cmd_refresh() {
   [ "$APPLY" -eq 1 ] || echo "mode    : DRY RUN — nothing will be written; re-run with --apply"
   # Inspect every target before recording even unchanged hashes. This prevents
   # known conflicts from leaving an order-dependent, partly refreshed fleet.
+  # Exit 2 when the only refusals are blocks edited in place: they wait for a
+  # person, and machine-setup's prompts stage tells them from a failure
+  # (sd:6730). An UNKNOWN target or a target that cannot be read is 1.
+  pf_rc=0
   targets | (
-    failed=0
+    failed=0 edited=0
     while IFS='|' read -r label path; do
       installed "$label" "$path" || continue
-      if st=$(state "$label" "$path"); then
-        refresh_conflict "$st" "$label" "$path" || failed=1
-      else
+      if ! st=$(state "$label" "$path"); then
         failed=1
+      elif ! refresh_conflict "$st" "$label" "$path"; then
+        if [ "$st" = edited ]; then edited=1; else failed=1; fi
       fi
     done
-    [ "$failed" -eq 0 ]
-  ) || return 1
+    [ "$failed" -eq 0 ] || exit 1
+    [ "$edited" -eq 0 ] || exit 2
+  ) || pf_rc=$?
+  [ "$pf_rc" -eq 0 ] || return "$pf_rc"
   targets | while IFS='|' read -r label path; do
     if ! installed "$label" "$path"; then
       echo "  SKIP    $label — not installed on this machine"
@@ -421,9 +427,10 @@ instructions file. The source of truth is prompt/shared.md in this folder.
 
   --apply    actually write. WITHOUT IT REFRESH AND CAPTURE ARE DRY RUNS.
   --force    (refresh) overwrite a block that was edited in place. Without it
-             refresh reports all known conflicts and exits 1 before writing,
+             refresh reports all known conflicts and exits before writing,
              so an edit made
-             through Claude Code's /memory is never silently discarded.
+             through Claude Code's /memory is never silently discarded:
+             2 when every refusal is DIFFERS, 1 for UNKNOWN or an error.
 
 A target that differs from shared.md is one of three things, and which one is
 decided by the sha256 of the block as it was last written, kept in
