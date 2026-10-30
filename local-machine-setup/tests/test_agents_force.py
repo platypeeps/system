@@ -25,8 +25,11 @@ PROFILE = "personal"
 
 
 def first_agent():
+    """The first agent whose plist the stage owns: the pack's installer writes sd-dashboard's (sd:6707)."""
     for line in (fixture_config.PROFILES / f"{PROFILE}.agent").read_text().splitlines():
         label = line.strip()
+        if label.endswith(".sd-dashboard"):
+            continue
         if label and not label.startswith("#") and (fixture_config.AGENTS / f"{label}.plist").is_file():
             return label
     raise AssertionError(f"no {PROFILE}.agent label has a plist in launchagents/")
@@ -35,6 +38,9 @@ def first_agent():
 class AgentCase(unittest.TestCase):
     """The profile's first agent, installed and then edited by hand."""
 
+    def agent(self):
+        return first_agent()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -42,7 +48,7 @@ class AgentCase(unittest.TestCase):
         self.state = self.home / ".config/machine-setup"
         self.state.mkdir(parents=True)
         (self.state / "profile").write_text(f"{PROFILE}\n")
-        self.label = first_agent()
+        self.label = self.agent()
         plist = self.home / "Library/LaunchAgents" / f"{self.label}.plist"
         plist.parent.mkdir(parents=True)
         # Installed as the stage would render it, then edited by hand.
@@ -178,6 +184,35 @@ class BootoutWaitTest(AgentCase):
         self.assertNotIn(f"bootstrap gui/{uid} {self.plist}", self.mine())
         self.assertEqual(self.plist.read_text(), edited)
         self.assertFalse(self.plist.with_name(self.plist.name + ".new").exists())
+
+
+class PackOwnedDashboardTest(AgentCase):
+    """sd:6707: the pack's `dashboard.sh install` writes the sd-dashboard
+    plist (its `/bin/bash -c` start, sd:6444, its `--config` and env), so a
+    plist that differs from the template is no drift, and --force must not
+    put the template back over the pack's verified install."""
+
+    def agent(self):
+        return f"{fixture_config.LABEL_PREFIX}.sd-dashboard"
+
+    def run_loaded(self, *flags):
+        stubs = pathlib.Path(self.tmp.name) / "stubs"
+        stubs.mkdir(exist_ok=True)
+        stub = stubs / "launchctl"
+        # print: launchd runs every job; anything else is recorded and passes.
+        stub.write_text('#!/bin/sh\n[ "$1" != print ] || { echo "$2 = {"; exit 0; }\nexit 0\n')
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        result = self.run_agents(*flags, path=f"{stubs}:{os.environ.get('PATH', '/usr/bin:/bin')}")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout.splitlines()
+
+    def test_a_pack_written_plist_is_no_drift(self):
+        for flags in ((), ("--force",)):
+            lines = self.run_loaded(*flags)
+            mine = [line for line in lines if f" {self.label}" in line]
+            self.assertIn(f"  ok      {self.label} — the pack's dashboard installer owns this plist", mine, lines)
+            self.assertFalse([line for line in mine if "DIFFERS" in line or " cp " in line], mine)
+        self.assertTrue(self.plist.read_text().endswith("<!-- edited -->\n"))
 
 
 class ForceHelp(unittest.TestCase):
