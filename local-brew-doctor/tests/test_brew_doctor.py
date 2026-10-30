@@ -5,18 +5,20 @@ The script runs from a copy beside a copy of lib/; `brew` is a stub on PATH
 that answers from BREW_* variables and counts its `doctor` runs.
 """
 
+import json
 import pathlib
 import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import date
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
 LIB = FOLDER.parent / "lib"
 
 # The first doctor run warns of an unlinked keg and exits BREW_FIRST_RC; the
 # second prints BREW_RECHECK and exits BREW_RECHECK_RC. `info` exits BREW_INFO_RC, or ends
-# itself with a TERM when that is "term".
+# itself with a TERM when that is "term"; `info --json=v2` prints BREW_INFO_JSON.
 BREW_STUB = r"""#!/bin/sh
 case "$1" in
   doctor)
@@ -27,7 +29,8 @@ case "$1" in
     fi
     printf '%b' "$BREW_RECHECK" >&2
     exit "${BREW_RECHECK_RC:-0}" ;;
-  info) [ "$BREW_INFO_RC" != term ] || kill -TERM $$
+  info) if [ "$2" = --json=v2 ]; then printf '%s' "$BREW_INFO_JSON"; exit 0; fi
+        [ "$BREW_INFO_RC" != term ] || kill -TERM $$
         exit "${BREW_INFO_RC:-0}" ;;
   link) echo "link $2" >> "$LINKS" ;;
 esac
@@ -107,6 +110,40 @@ class BrewDoctorTest(unittest.TestCase):
         self.assertIn("skip: brew info example-keg did not answer (exit 143)", run.stdout)
         self.assertNotIn("orphan", run.stdout)
         self.assertFalse(self.links.exists())
+
+    def test_a_deprecation_disabled_months_away_is_not_reported(self):
+        """icu4c@78 and node@22 alerted nightly a year before their disable date (sd:6795)."""
+        soon = date.today().isoformat()
+        info = {"formulae": [{"name": "far-formula", "disabled": False, "disable_date": "2099-01-01"},
+                             {"name": "near-formula", "disabled": False, "disable_date": soon},
+                             {"name": "gone-formula", "disabled": True, "disable_date": "2099-01-01"}],
+                "casks": [{"token": "far-cask", "disabled": False, "disable_date": "2099-01-01"}]}
+        recheck = ("Warning: Some installed formulae are deprecated or disabled.\n"
+                   "You should find replacements for the following formulae:\n"
+                   "  far-formula\n  near-formula\n  gone-formula\n\n"
+                   "Warning: Some installed casks are deprecated or disabled.\n"
+                   "You should find replacements for the following casks:\n  far-cask\n\n")
+        run = self.run_doctor(BREW_RECHECK=recheck, BREW_RECHECK_RC="1", BREW_INFO_JSON=json.dumps(info))
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("formulae are deprecated or disabled.: near-formula", run.stdout)
+        self.assertIn("formulae are deprecated or disabled.: gone-formula", run.stdout)
+        self.assertNotIn("far-formula", run.stdout)
+        self.assertNotIn("casks are deprecated", run.stdout)
+
+    def test_only_distant_deprecations_are_clean(self):
+        info = {"formulae": [{"name": "far-formula", "disabled": False, "disable_date": "2099-01-01"}], "casks": []}
+        recheck = ("Warning: Some installed formulae are deprecated or disabled.\n"
+                   "You should find replacements for the following formulae:\n  far-formula\n")
+        run = self.run_doctor(BREW_RECHECK=recheck, BREW_RECHECK_RC="1", BREW_INFO_JSON=json.dumps(info))
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("brew doctor: clean after auto-fixes", run.stdout)
+        self.assertNotIn("SD_REPORT_ATTENTION", run.stdout)
+
+    def test_a_deprecation_whose_info_did_not_answer_stays_reported(self):
+        recheck = ("Warning: Some installed formulae are deprecated or disabled.\n"
+                   "You should find replacements for the following formulae:\n  far-formula\n")
+        run = self.run_doctor(BREW_RECHECK=recheck, BREW_RECHECK_RC="1", BREW_INFO_JSON="not json")
+        self.assertIn("formulae are deprecated or disabled.: far-formula", run.stdout)
 
 
 if __name__ == "__main__":
