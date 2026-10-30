@@ -87,7 +87,7 @@ class HomePrep(unittest.TestCase):
         return done
 
     def add(self, title, *args, due=None):
-        done = self.pack("sd", "task", "add", "--json", "--due", due or self.tomorrow, *args, title)
+        done = self.pack("sd", "task", "add", "--json", "--priority", "3", "--due", due or self.tomorrow, *args, title)
         return json.loads(done.stdout)["item"]["id"]
 
     def notes(self, item):

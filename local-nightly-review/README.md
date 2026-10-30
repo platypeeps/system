@@ -25,6 +25,9 @@ into this machine's `<config>/cron-jobs/jobs/<host>/` on the hub, then run
 1. **Apply.** `sd-db review apply nightly` files one task for each Approve
    ruling, under the ref `review-approved:<note>`. It expires a suggestion that
    waited 7 days without a ruling, and closes each settled batch.
+   Then `sd-db review priorities` (pack sd:6726) applies priority rulings,
+   closes items left unranked for 30 days, and files one batch of P1-P4
+   questions.
 2. **Review.** This step runs only when today's batch file does not exist yet.
    It lists the subjects the queue rejected in the last 90 days, through
    `sd store items` and `sd-db review export`. Then `claude -p` runs on Sonnet
