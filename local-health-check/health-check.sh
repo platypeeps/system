@@ -263,8 +263,13 @@ for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   # One name per process (sd:5064): a JetsamEvent report is memory pressure,
   # not a crash, and an ExcUserFault_ report names the process it faulted.
   # A pid before the extension (.claude-mem-<pid>.tmp) is no part of the name (sd:5253).
+  # A codex child that dyld aborted because the codex sandbox blocked its
+  # library is that defect, not an app crash (sd:6729): it gets its own line.
   find "$d" -maxdepth 1 -name '*.ips' ! -name 'JetsamEvent*' 2>/dev/null | while read -r p; do
-    ! recent_report "$p" "$CUT_DAY" 1 || ! crash_report "$p" || basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//; s/-[0-9][0-9]*\(\.[A-Za-z0-9_]*\)$/\1/' >> "$TMPD/crashes"
+    recent_report "$p" "$CUT_DAY" 1 && crash_report "$p" || continue
+    _to=crashes
+    ! grep -Eq '"parentProc"[[:space:]]*:[[:space:]]*"codex"' "$p" || ! grep -q '(blocked by sandbox)' "$p" || _to=codex-sandbox
+    basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//; s/-[0-9][0-9]*\(\.[A-Za-z0-9_]*\)$/\1/' >> "$TMPD/$_to"
   done
 done
 if [ -s "$TMPD/panics" ]; then
@@ -280,6 +285,13 @@ if [ -s "$TMPD/crashes" ]; then
     "read the report in Console.app > Crash Reports; if one app repeats, update or reinstall it" \
     "app crash report(s) in the last day: $(wc -l < "$TMPD/crashes" | tr -d ' ') report(s) from $(sort -u "$TMPD/crashes" | wc -l | tr -d ' ') app(s)" \
     "$(sort -u "$TMPD/crashes" | sed 's/^/app crash report(s) in the last day: /')"
+fi
+if [ -s "$TMPD/codex-sandbox" ]; then
+  apps=$(sort "$TMPD/codex-sandbox" | uniq -c | sort -rn | awk '{ n = $1; sub(/^ *[0-9]+ /, ""); printf "%s(%s) ", $0, n }')
+  finding "codex sandbox blocked a child's library load in the last day: $apps" \
+    "the codex seatbelt denied a Homebrew dylib, so the child died at launch (sd:6729); give codex a shell without Homebrew libraries or allow the path" \
+    "codex sandbox blocked a child's library load in the last day: $(wc -l < "$TMPD/codex-sandbox" | tr -d ' ') report(s)" \
+    "$(sort -u "$TMPD/codex-sandbox" | sed "s/^/codex sandbox blocked a child's library load in the last day: /")"
 fi
 
 # --- launchd job health --------------------------------------------------

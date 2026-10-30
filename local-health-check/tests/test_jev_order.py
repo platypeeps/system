@@ -585,6 +585,29 @@ esac
         self.assertIn("Real-App(1) ", out)
         self.assertIn("Real-Crash(1) ", out)
 
+    def test_codex_sandbox_library_block_is_its_own_finding(self):
+        """sd:6729: a codex child that dyld aborts at launch because the codex
+        sandbox blocked its library is that defect, not an app crash. The same
+        abort under another parent, or another dyld reason, still counts."""
+        reports = self.tmp / "reports-codex-sandbox"
+        reports.mkdir()
+        head = '{"app_name":"bash","bug_type":"309"}\n'
+        blocked = ('"termination" : {"namespace":"DYLD","reasons":["Library not loaded: '
+                   "/opt/homebrew/*/libreadline.8.dylib\",\"Reason: tried: '/opt/homebrew/*/"
+                   "libreadline.8.dylib' (blocked by sandbox)\"]}")
+        for name, body in (("bash", '{\n  "parentProc" : "codex",\n  ' + blocked + "\n}\n"),
+                           ("Sbx-Other", '{\n  "parentProc" : "claude",\n  ' + blocked + "\n}\n"),
+                           ("node", '{\n  "parentProc" : "codex",\n  "termination" : {"namespace":"DYLD",'
+                                    '"reasons":["(no such file)"]}\n}\n')):
+            (reports / (name + stamped(hours=1) + ".ips")).write_text(head + body)
+        out = self.run_check("codex-sandbox", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                             verb="run")["out"]
+        crashes = [l for l in out.splitlines() if l.startswith("- app crash report(s)")]
+        self.assertNotIn("bash(1) ", crashes[0])
+        self.assertIn("codex sandbox blocked a child's library load in the last day: bash(1) ", out)
+        self.assertIn("Sbx-Other(1) ", out)
+        self.assertIn("node(1) ", out)
+
     def test_crashes_of_one_process_with_different_pids_count_as_one_app(self):
         """sd:5253: a process named with its pid (`.claude-mem-<pid>.tmp`) is one app, not one per pid."""
         reports = self.tmp / "reports-pids"
