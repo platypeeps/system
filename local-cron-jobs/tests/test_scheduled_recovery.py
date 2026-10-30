@@ -86,6 +86,15 @@ class ScheduledRecovery(unittest.TestCase):
         self.assertEqual(calendar, [{"Minute": 50}])
         self.assertEqual(self.run_job("verify", "sd-db-backup-hourly").returncode, 0)
 
+    def test_shadow_sync_runs_at_two_twenty_and_hourly_in_the_day(self):
+        # sd:6750: a nightly pass left GitHub rows a day stale in working hours.
+        result = self.run_job("install", "shadow-sync-nightly")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        path = self.fixture.path / f"Library/LaunchAgents/{PREFIX}shadow-sync-nightly.plist"
+        calendar = plistlib.loads(path.read_bytes())["StartCalendarInterval"]
+        hours = [2, *range(8, 20)]
+        self.assertEqual(calendar, [{"Hour": hour, "Minute": 20} for hour in hours])
+
     def hourly_command(self, **environment):
         return self.job_command("sd-db-backup-hourly", **environment)
 
