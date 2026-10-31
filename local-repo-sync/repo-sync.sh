@@ -1449,12 +1449,39 @@ push_pins() {
   fi
   p_sha=$(git -C "$p_sys" rev-parse HEAD)
   p_pack_sha=$(git -C "$p_pack" rev-parse HEAD)
+  # The last pin satellites were asked for (sd:6949). It moves only once
+  # the push and the request both pass, so a refresh that failed either
+  # leaves it, and the next one asks again. A first run takes the old tag.
+  p_old=$(git -C "$p_sys" rev-parse -q --verify "$APPLY_BASE" 2> /dev/null \
+    || git -C "$p_sys" rev-parse -q --verify 'refs/tags/hub-pin^{commit}' 2> /dev/null || :)
+  [ -z "$p_old" ] || git -C "$p_sys" update-ref "$APPLY_BASE" "$p_old"
   if git -C "$p_sys" tag -f -a -m "hub-pin: the system and pack a hub refresh moved to (sd:3100)" \
       -m "pack=$p_pack_sha" hub-pin "$p_sha" > /dev/null \
       && bound_step 300 git -C "$p_sys" push -q origin +refs/tags/hub-pin < /dev/null; then
     echo "hub-pin : system $(git -C "$p_sys" rev-parse --short HEAD), pack $(git -C "$p_pack" rev-parse --short HEAD), for satellites"
   else
     flag "!!! failed: push of the hub-pin tag in $p_sys; satellites keep the old pins; run refresh again"
+    return 1
+  fi
+  request_apply "$p_sys" "$p_old" "$p_sha" || return 1
+  git -C "$p_sys" update-ref "$APPLY_BASE" "$p_sha"
+}
+
+APPLY_BASE=refs/repo-sync/apply-base
+
+# When the pin moved across a change to local-machine-setup/, asks every
+# satellite for a full `machine-setup.sh update --apply` (sd:6949): the
+# Refresh satellites request (sd:5108), which each satellite's follow
+# answers on its next run, or when it is back online. A step that needs sudo
+# prints its DEFER line there and runs nothing. A first pin, with no old one
+# to compare, asks nothing; a diff that cannot answer asks.
+request_apply() {
+  [ -n "$2" ] && [ "$2" != "$3" ] || return 0
+  if git -C "$1" diff --quiet "$2" "$3" -- local-machine-setup 2> /dev/null; then return 0; fi
+  if q_ask=$(refresh_ask request 2>&1); then
+    echo "satellites: machine-setup changed; refresh requested ($q_ask)"
+  else
+    flag "!!! failed: machine-setup changed and no refresh request was written: $(printf '%s\n' "$q_ask" | tail -1); use Refresh satellites in the dashboard"
     return 1
   fi
 }

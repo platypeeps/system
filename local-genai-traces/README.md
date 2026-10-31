@@ -9,9 +9,13 @@ OpenTelemetry Collector receives OTLP and sends every span to two places:
   outside Phoenix. It rotates at 100 MB and keeps every old file until
   `archive` moves it to the permanent record (below).
 
+Metrics and log events, such as Claude Code's native OTel export, go to
+`storage/raw/metrics.jsonl` and `storage/raw/logs.jsonl` with the same
+rotation and archive rules. Phoenix takes traces only.
+
 ```
-experiment --OTLP grpc :4337 / http :4338--> collector --> Phoenix :6016
-                                                    \--> storage/raw/traces.jsonl
+experiment --OTLP grpc :4337 / http :4338--> collector --> Phoenix :6016 (traces)
+                                                    \--> storage/raw/{traces,metrics,logs}.jsonl
                                                     \--> second OTLP destination (optional)
 ```
 
@@ -37,9 +41,9 @@ Phoenix keeps 30 days. The raw traces are kept for good in `GENAI_TRACES_ARCHIVE
 `archive` never creates it.
 
 `./genai-traces.sh archive` moves each rotated file,
-`storage/raw/traces-<UTC time>-<reason>.jsonl`, to
-`<archive>/traces-<UTC time>-<reason>.jsonl.gz`, so names sort by time. It never
-moves the live `traces.jsonl`. It checks each gzip against its source
+`storage/raw/<signal>-<UTC time>-<reason>.jsonl` for traces, metrics and
+logs, to `<archive>/<signal>-<UTC time>-<reason>.jsonl.gz`, so names sort
+by time. It never moves a live `<signal>.jsonl`. It checks each gzip against its source
 before removing the source, deletes nothing in the archive, and refuses to
 write over a file with the same name. A rerun moves nothing twice; a run
 stopped midway finishes on the next. Exit 3 means nothing to do: the
