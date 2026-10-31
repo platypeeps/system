@@ -45,6 +45,16 @@ esac
 
 EXIT_1_STUB = "#!/bin/sh\nexit 1\n"
 
+COMMERCE = "/Library/Preferences/com.apple.commerce"
+
+# The repair drop-in's rule: `sudo -n defaults ...` runs the defaults stub;
+# every other sudo call fails, as a run with no ticket does.
+REPAIR_SUDO_STUB = r"""#!/bin/sh
+[ "$1" = -n ] && [ "$2" = defaults ] || exit 1
+shift
+exec "$@"
+"""
+
 # A sandboxed app's container refuses a write from a terminal without Full
 # Disk Access: `defaults write` to $REFUSED_DOMAIN exits 1 and writes nothing.
 REFUSING_DEFAULTS_STUB = DEFAULTS_STUB.replace(
@@ -83,6 +93,8 @@ class SelfUpdateOffTest(unittest.TestCase):
             (self.apps / app).mkdir(parents=True)
         (self.apps / "iTerm.app/Contents/Frameworks/Sparkle.framework").mkdir(parents=True)
         self.defaults_db = base / "defaults.db"
+        # App Store auto-update already off; its own cases set it on.
+        self.defaults_db.write_text(f"{COMMERCE} AutoUpdate 0\n")
         self.zed = self.home / ".config/zed/settings.json"
         self.zed.parent.mkdir(parents=True)
         self.zed.write_text(ZED_JSONC)
@@ -326,6 +338,39 @@ class SelfUpdateOffTest(unittest.TestCase):
         self.run_verb("update", "macos", "--apply")
         out = self.run_verb("status").stdout
         return int(out.split("drift   : ")[1].split()[0])
+
+    def test_app_store_auto_update_on_is_drift_and_apply_turns_it_off(self):
+        # sd:6958: the App Store installed updates on its own schedule;
+        # maintenance-nightly installs them. macOS's own settings stay.
+        self.defaults_db.write_text(f"{COMMERCE} AutoUpdate 1\n")
+        write_exec(self.stubs / "sudo", REPAIR_SUDO_STUB)
+
+        status = self.run_verb("status")
+        self.assertIn(f"DIFFERS App Store auto-update on: {COMMERCE} AutoUpdate is not 0",
+                      status.stdout)
+        self.assertIn(f"[dry-run] sudo defaults write {COMMERCE} AutoUpdate -bool false",
+                      status.stdout)
+        self.assertIn(f"{COMMERCE} AutoUpdate 1", self.defaults_db.read_text())
+
+        result = self.run_verb("update", "macos", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"{COMMERCE} AutoUpdate 0", self.defaults_db.read_text().splitlines())
+        self.assertNotIn("SoftwareUpdate", self.defaults_db.read_text())
+
+        again = self.run_verb("update", "macos", "--apply")
+        self.assertIn(f"  ok      {COMMERCE} AutoUpdate = 0", again.stdout)
+
+    def test_app_store_auto_update_unset_without_sudo_defers_the_one_command(self):
+        self.defaults_db.write_text("")
+
+        result = self.run_verb("update", "macos", "--apply")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("DIFFERS App Store auto-update on", result.stdout)
+        self.assertIn(f"DEFER   needs sudo: sudo defaults write {COMMERCE} AutoUpdate -bool false",
+                      result.stdout)
+        self.assertNotIn("commerce", self.defaults_db.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()
