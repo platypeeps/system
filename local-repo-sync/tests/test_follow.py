@@ -257,10 +257,11 @@ class HubPushTest(unittest.TestCase):
         f.advance_origin(system, path=path)
         log = f.tmp / "ask.log"
         (f.folder / "satellite_refresh.py").write_text(
-            "import sys\n"
+            "import os, sys\n"
             f"open({str(log)!r}, 'a').write(sys.argv[1] + '\\n')\n"
-            "print('ab12') if not " + str(rc) + " else sys.stderr.write('HubUnreachable: no answer\\n')\n"
-            f"sys.exit({rc})\n")
+            f"rc = int(os.environ.get('ASK_RC', {rc}))\n"
+            "print('ab12') if not rc else sys.stderr.write('HubUnreachable: no answer\\n')\n"
+            "sys.exit(rc)\n")
         return f, log, system
 
     def test_a_pin_across_machine_setup_asks_satellites_to_apply(self):
@@ -292,6 +293,33 @@ class HubPushTest(unittest.TestCase):
         self.assertIn("!!! failed: machine-setup changed and no refresh request was written: "
                       "HubUnreachable: no answer; use Refresh satellites in the dashboard", result.stdout)
         self.assertEqual(f.head(system), f.hub_pin(system)[0])
+
+    def test_a_push_that_failed_still_asks_on_the_next_refresh(self):
+        """NEW (sd:6949, review round 1). A failed hub-pin push moves the
+        local tag; the next refresh still compares from the last pin it
+        asked for, so it publishes and asks."""
+        f, log, system = self.apply_case("local-machine-setup/stage.sh")
+        f.wrap_git("before", "*push*hub-pin*", '[ -z "$PUSH_FAIL" ] || { echo "push refused" >&2; exit 1; }')
+
+        f.run("refresh", expect=1, extra_env={"PUSH_FAIL": "1"})
+        self.assertFalse(log.exists())
+        result = f.run("refresh", expect=0)
+
+        self.assertEqual("request\n", log.read_text())
+        self.assertIn("refresh requested (ab12)", result.stdout)
+        self.assertEqual(f.head(system), f.hub_pin(system)[0])
+
+    def test_a_request_that_failed_is_asked_again_on_the_next_refresh(self):
+        """NEW (sd:6949, review round 1). A request the database refused
+        is asked again by the next refresh, with the pin already out; one
+        that succeeded is not asked twice."""
+        f, log, _ = self.apply_case("local-machine-setup/stage.sh", rc=3)
+
+        f.run("refresh", expect=1)
+        f.run("refresh", expect=0, extra_env={"ASK_RC": "0"})
+        f.run("refresh", expect=0, extra_env={"ASK_RC": "0"})
+
+        self.assertEqual("request\nrequest\n", log.read_text())
 
     def test_a_failed_push_exits_1_and_says_satellites_keep_the_old_pins(self):
         """NEW. A push the origin refuses fails the refresh by name."""

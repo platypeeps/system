@@ -313,7 +313,10 @@ so a lane merge there reaches every satellite with no hand-run script. A
 satellite that is offline answers on its first `follow` back. A step that
 needs sudo runs nothing there and prints its `DEFER needs sudo` line. A
 first pin asks nothing; a request the hub's database refuses fails the
-refresh and names the dashboard control.
+refresh and names the dashboard control. The comparison starts at the
+system checkout's `refs/repo-sync/apply-base`, the last pin satellites
+were asked for; it moves only once the push and the request both pass,
+so the next refresh after a failed one asks again.
 
 1. `follow` asks `satellite_refresh.py check` whether the request is
    answered. A request this host's `refresh.result.<host>` row does not name

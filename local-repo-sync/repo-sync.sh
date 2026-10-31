@@ -1449,7 +1449,12 @@ push_pins() {
   fi
   p_sha=$(git -C "$p_sys" rev-parse HEAD)
   p_pack_sha=$(git -C "$p_pack" rev-parse HEAD)
-  p_old=$(git -C "$p_sys" rev-parse -q --verify 'refs/tags/hub-pin^{commit}' 2> /dev/null || :)
+  # The last pin satellites were asked for (sd:6949). It moves only once
+  # the push and the request both pass, so a refresh that failed either
+  # leaves it, and the next one asks again. A first run takes the old tag.
+  p_old=$(git -C "$p_sys" rev-parse -q --verify "$APPLY_BASE" 2> /dev/null \
+    || git -C "$p_sys" rev-parse -q --verify 'refs/tags/hub-pin^{commit}' 2> /dev/null || :)
+  [ -z "$p_old" ] || git -C "$p_sys" update-ref "$APPLY_BASE" "$p_old"
   if git -C "$p_sys" tag -f -a -m "hub-pin: the system and pack a hub refresh moved to (sd:3100)" \
       -m "pack=$p_pack_sha" hub-pin "$p_sha" > /dev/null \
       && bound_step 300 git -C "$p_sys" push -q origin +refs/tags/hub-pin < /dev/null; then
@@ -1458,8 +1463,11 @@ push_pins() {
     flag "!!! failed: push of the hub-pin tag in $p_sys; satellites keep the old pins; run refresh again"
     return 1
   fi
-  request_apply "$p_sys" "$p_old" "$p_sha"
+  request_apply "$p_sys" "$p_old" "$p_sha" || return 1
+  git -C "$p_sys" update-ref "$APPLY_BASE" "$p_sha"
 }
+
+APPLY_BASE=refs/repo-sync/apply-base
 
 # When the pin moved across a change to local-machine-setup/, asks every
 # satellite for a full `machine-setup.sh update --apply` (sd:6949): the
