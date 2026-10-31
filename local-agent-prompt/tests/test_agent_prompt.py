@@ -328,5 +328,14 @@ class SharedPolicy(unittest.TestCase):
         self.assertTrue(any("work-<repo>" in line and "SendMessage" in line for line in rules), rules)
 
 
+    def test_sd_task_writes_run_alone_on_the_line(self):
+        # sd:6887: auto mode denied `cd <dir> && sd task note`: the allow rule matches the whole line.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        section = source.split("# sd lane commands take `-C <dir>`", 1)[1].split("\n# ", 1)[0]
+        rule = next((line for line in section.splitlines() if "sd task add|note|status" in line), "")
+        self.assertIn("alone on the line", rule)
+        self.assertIn("--belongs-to", rule)
+
+
 if __name__ == "__main__":
     unittest.main()
