@@ -228,6 +228,15 @@ class HomePrep(unittest.TestCase):
         servers = json.loads(flag["--mcp-config"])["mcpServers"]
         self.assertEqual(list(servers), ["workspace-mcp"])
 
+    def test_the_prompt_names_the_one_bash_command_the_run_holds(self):
+        """dontAsk denies any other Bash call, and a denial fails the run."""
+        chore = self.add("Fill the softener with salt", "--no-repo")
+        result_ = self.run_job(reply=result(prepped(chore)))
+        self.assertEqual(result_.returncode, 0, result_.stdout + result_.stderr)
+        self.assertIn("Bash(sd task show:*)", self.claude_args()[self.claude_args().index("--allowedTools") + 1])
+        self.assertIn("Bash runs only `sd task show <n>`", self.prompt())
+        self.assertIn("read files with Read, Grep and Glob", self.prompt())
+
     def test_a_run_writes_one_prepped_note_per_item(self):
         chore = self.add("Fill the softener with salt", "--no-repo")
         hoa = self.add("Board packet: draft the agenda mail", "--belongs-to", str(self.hoa))
