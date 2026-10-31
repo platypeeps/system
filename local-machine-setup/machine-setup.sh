@@ -2220,6 +2220,13 @@ node_link_one() { # target, link
 telemetry_endpoint() {
   TELEMETRY_ENDPOINT="" TELEMETRY_PROTOCOL="" TELEMETRY_OTEL=""
   plain_hub || hub_holder || return 0
+  # Claude exports metrics and logs, codex logs: a collector with a traces
+  # pipeline alone drops both (sd:6942 adds the other two).
+  if ! awk '/^  pipelines:/ { p = 1; next } p && /^    metrics:/ { m = 1 } p && /^    logs:/ { l = 1 }
+            END { exit !(m && l) }' "$ROOT/local-genai-traces/collector.yaml" 2>/dev/null; then
+    echo "  SKIP    agent telemetry: genai-traces has no metrics and logs pipelines (sd:6942)"
+    return 0
+  fi
   te_out=$(sh "$ROOT/local-genai-traces/genai-traces.sh" endpoint 2>/dev/null </dev/null) || {
     echo "  SKIP    agent telemetry: genai-traces.sh endpoint did not answer"
     return 0

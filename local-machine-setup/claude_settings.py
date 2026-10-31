@@ -249,35 +249,43 @@ def codex_otel(endpoint, protocol):
     return f'[otel]\nenvironment = "sd-workflow"\nexporter = {exporter}\nlog_user_prompt = false\n'
 
 
-def codex_section(text):
-    """(start, end) line indexes of the [otel] table in config.toml, or None."""
-    lines = text.splitlines(keepends=True)
-    starts = [i for i, line in enumerate(lines) if line.strip() == "[otel]"]
-    if not starts:
-        return None
-    end = next((i for i in range(starts[0] + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
-    while end > starts[0] + 1 and not lines[end - 1].strip():
-        end -= 1
-    return starts[0], end
+#: A table header line, and one in the otel hierarchy: [otel], [otel.exporter.otlp-grpc],
+#: [[otel.x]]; a quoted "otel" too.
+TOML_HEADER = re.compile(r"\s*\[")
+OTEL_HEADER = re.compile(r'\s*\[\[?\s*"?otel"?\s*[.\]]')
+
+
+def codex_split(text):
+    """(rest, otel, at): the lines outside and inside every otel table, and where the first began.
+
+    The child tables go with [otel]: one left beside the inline exporter made the file
+    invalid. A dotted `otel.` key at the root is not seen.
+    """
+    rest, otel, inside, at = [], [], False, None
+    for line in text.splitlines(keepends=True):
+        if TOML_HEADER.match(line):
+            inside = bool(OTEL_HEADER.match(line))
+            if inside and at is None:
+                at = len(rest)
+        (otel if inside else rest).append(line)
+    return rest, otel, at
 
 
 def codex_gap(text, block):
-    """'' when config.toml holds BLOCK as its [otel] table; else MISSING or STALE."""
-    section = codex_section(text)
-    if section is None:
+    """'' when config.toml's otel tables are BLOCK alone; else MISSING or STALE."""
+    _, otel, at = codex_split(text)
+    if at is None:
         return "MISSING [otel]"
-    lines = text.splitlines(keepends=True)
-    return "" if "".join(lines[section[0]:section[1]]) == block else "STALE [otel]"
+    return "" if "".join(otel).rstrip("\n") + "\n" == block else "STALE [otel]"
 
 
 def codex_merge(text, block):
-    """The source wins: the [otel] table is replaced whole, or appended; the rest stays."""
-    section = codex_section(text)
-    lines = text.splitlines(keepends=True)
-    if section is None:
-        separator = "" if not text or text.endswith("\n\n") else "\n" if text.endswith("\n") else "\n\n"
-        return text + separator + block
-    return "".join(lines[:section[0]]) + block + "".join(lines[section[1]:])
+    """The source wins: every otel table goes, and BLOCK stands where the first was."""
+    rest, _, at = codex_split(text)
+    at = len(rest) if at is None else at
+    before, after = "".join(rest[:at]), "".join(rest[at:])
+    separator = "" if not before or before.endswith("\n\n") else "\n" if before.endswith("\n") else "\n\n"
+    return before + separator + block + ("\n" + after if after else "")
 
 
 def pref_gap(text, key, value):

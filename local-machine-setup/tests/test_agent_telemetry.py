@@ -10,6 +10,7 @@ down. `genai-traces.sh` and `codex` are stubs.
 import json
 import socket
 import subprocess
+import tomllib
 import unittest
 
 from tests.test_claude_settings import SyntheticHome, write_exec
@@ -36,6 +37,10 @@ OTEL_ENV = {
     "OTEL_LOG_USER_PROMPTS": "0",
     "OTEL_LOG_TOOL_DETAILS": "0",
 }
+# genai-traces' collector with the pipelines sd:6942 adds, and without them.
+COLLECTOR = ("service:\n  pipelines:\n    traces:\n      receivers: [otlp]\n"
+             "    metrics:\n      receivers: [otlp]\n    logs:\n      receivers: [otlp]\n")
+TRACES_ONLY = "service:\n  pipelines:\n    traces:\n      receivers: [otlp]\n"
 CODEX_OTEL = ('[otel]\nenvironment = "sd-workflow"\n'
               'exporter = { otlp-grpc = { endpoint = "http://127.0.0.1:4337" } }\n'
               'log_user_prompt = false\n')
@@ -47,6 +52,8 @@ class HubTelemetry(SyntheticHome):
     def setUp(self):
         super().setUp()
         write_exec(self.repo / "local-genai-traces/genai-traces.sh", TRACES_STUB)
+        self.collector = self.repo / "local-genai-traces/collector.yaml"
+        self.collector.write_text(COLLECTOR)
         write_exec(self.stubs / "codex", "#!/bin/sh\nexit 0\n")
         self.codex = self.home / ".codex/config.toml"
         self.codex.parent.mkdir(parents=True)
@@ -90,6 +97,37 @@ class HubTelemetry(SyntheticHome):
         self.run_tooling("--apply")
         self.assertNotIn("CLAUDE_CODE_ENABLE_TELEMETRY", self.settings.read_text())
         self.assertIn('exporter = "none"', self.codex.read_text())
+
+
+    def test_a_collector_without_metrics_and_logs_pipelines_gets_no_telemetry(self):
+        """Claude exports metrics and logs, codex logs: a traces-only collector drops them."""
+        self.collector.write_text(TRACES_ONLY)
+        out = self.run_tooling("--apply")
+        self.assertIn("SKIP    agent telemetry: genai-traces has no metrics and logs pipelines", out)
+        self.assertNotIn("CLAUDE_CODE_ENABLE_TELEMETRY", self.settings.read_text())
+        self.assertIn('exporter = "none"', self.codex.read_text())
+
+    def assert_codex_otel_replaced(self, before):
+        """Nested [otel.*] tables go with [otel]: a leftover child made the file invalid."""
+        self.codex.write_text(before)
+        self.run_tooling("--apply")
+        config = tomllib.loads(self.codex.read_text())
+        self.assertEqual(config["otel"], tomllib.loads(CODEX_OTEL)["otel"])
+        self.assertEqual(config["model"], "gpt-5")
+        self.assertEqual(config["tui"], {"notifications": True})
+        out = self.run_tooling("--apply")
+        self.assertIn("ok      codex config.toml [otel]", out)
+
+    def test_a_nested_grpc_exporter_table_is_replaced_whole(self):
+        self.assert_codex_otel_replaced(
+            'model = "gpt-5"\n\n[otel]\nenvironment = "dev"\n\n[otel.exporter.otlp-grpc]\n'
+            'endpoint = "http://127.0.0.1:1"\n\n[tui]\nnotifications = true\n')
+
+    def test_a_nested_http_exporter_table_with_no_parent_header_is_replaced_whole(self):
+        self.assert_codex_otel_replaced(
+            'model = "gpt-5"\n\n[otel.exporter.otlp-http]\nendpoint = "http://127.0.0.1:1/v1/logs"\n'
+            'protocol = "binary"\n\n[tui]\nnotifications = true\n\n[otel.exporter.otlp-http.headers]\n'
+            '"x-a" = "b"\n')
 
 
 class DoctorTelemetry(Case):
