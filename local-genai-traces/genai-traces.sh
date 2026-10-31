@@ -1,6 +1,6 @@
 #!/bin/sh
 # Always-on Gen-AI trace collection: an OTel Collector that feeds Phoenix and
-# a raw OTLP JSON file. Experiments on this machine export here.
+# raw OTLP JSON files (traces, metrics and logs). Experiments on this machine export here.
 # OTLP on 127.0.0.1:4337 (grpc) / :4338 (http), Phoenix UI on :6016.
 # Optional values, such as a second OTLP destination, come from
 # $SYSTEM_TOOLS_CONFIG/genai-traces/.env — see .env.example.
@@ -192,8 +192,8 @@ archive_one() {
   rm -f "$1" || return 1
 }
 
-# archive: move each rotated raw file (traces-<UTC time>-<reason>.jsonl,
-# never the live traces.jsonl) into GENAI_TRACES_ARCHIVE_DIR as <name>.gz.
+# archive: move each rotated raw file (<signal>-<UTC time>-<reason>.jsonl
+# for traces, metrics and logs, never a live <signal>.jsonl) into GENAI_TRACES_ARCHIVE_DIR as <name>.gz.
 # Names are the collector's, so they sort by time. Exits 3 when there is
 # nothing to do (unset, or the folder missing: an unmounted share), 1 when
 # a file failed or the backlog is a fault (below).
@@ -207,7 +207,8 @@ ARCHIVE_ALARM=20
 # backlog_fault: print why the backlog is a fault and return 0, else 1.
 backlog_fault() {
   count=0
-  for src in "$DIR"/storage/raw/traces-*.jsonl; do
+  for src in "$DIR"/storage/raw/traces-*.jsonl "$DIR"/storage/raw/metrics-*.jsonl \
+      "$DIR"/storage/raw/logs-*.jsonl; do
     [ -f "$src" ] && count=$((count + 1))
   done
   if [ "$count" -ge "$ARCHIVE_ALARM" ]; then
@@ -248,7 +249,8 @@ archive() {
   esac
   moved=0
   failed=0
-  for src in "$DIR"/storage/raw/traces-*.jsonl; do
+  for src in "$DIR"/storage/raw/traces-*.jsonl "$DIR"/storage/raw/metrics-*.jsonl \
+      "$DIR"/storage/raw/logs-*.jsonl; do
     [ -f "$src" ] || continue
     if archive_one "$src" "$dest/$(basename "$src").gz"; then
       moved=$((moved + 1))
@@ -411,7 +413,7 @@ usage: genai-traces.sh start|stop|status|update|archive|endpoint|tail|test
                (start and update always recreate the collector, so it
                reads the current collector.yaml)
   archive      move each rotated raw file (storage/raw/traces-*.jsonl,
-               never the live traces.jsonl) into GENAI_TRACES_ARCHIVE_DIR,
+               metrics-*.jsonl, logs-*.jsonl; never a live one) into GENAI_TRACES_ARCHIVE_DIR,
                gzipped and checked; the only deleter of rotated files, it
                deletes nothing there. Exits 0 done, 3 nothing to do (unset,
                or the folder missing: share not mounted), 1 when a file

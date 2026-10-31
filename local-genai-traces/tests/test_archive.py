@@ -223,7 +223,7 @@ class RotationAndDocs(unittest.TestCase):
         # max_backups 0 and no max_days: timberjack's millRunOnce returns
         # before deleting anything. archive is the only deleter.
         text = (FOLDER / "collector.yaml").read_text(encoding="utf-8")
-        self.assertEqual(re.search(r"max_backups: (\d+)", text).group(1), "0")
+        self.assertEqual(set(re.findall(r"max_backups: (\d+)", text)), {"0"})
         self.assertNotIn("max_days:", text)
 
     def test_help_lists_archive(self):
