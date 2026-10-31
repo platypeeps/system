@@ -111,6 +111,7 @@ Land Dependabot PRs through `sd-ship`. Who, why and how to revert: `~/repos/syst
 Run `sd-ship`, `sd-check`, `sd-review` and `sd-pr-state` in another checkout as `<command> -C <absolute dir> …`, `-C` first and once.
 Reason: an allow rule matches the whole line, so `cd <dir> && …` goes to the auto-mode classifier, which denies it.
 `sd` and `sd-docs-lint` take no `-C`; run them from the checkout.
+Run `sd task add|note|status` alone on the line, with no `cd` and no chain; file for another repo with `--belongs-to <path>`: the allow rule matches the whole line, so a prefixed note went to the classifier and was denied (system sd:6887).
 
 # Parallel work
 
