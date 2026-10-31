@@ -1,5 +1,5 @@
 #!/bin/sh
-# Nightly machine maintenance: pending OS/App Store updates, docker prune
+# Nightly machine maintenance: installs pending OS/App Store updates, docker prune
 # (Sundays), idle cargo target/ folders in ~/worktrees, backup freshness,
 # certificate expiry, log rotation, disk space.
 # Checks come from maintenance.conf plus maintenance.<profile>.conf in
@@ -199,7 +199,9 @@ directives, # comments allowed; a leading ~/ expands to $HOME:
                                       in place so open writers keep going)
 
 Beyond the conf: pending macOS updates (softwareupdate), pending App Store
-updates (mas outdated), AI session logs past their retention (deleted via
+updates (mas outdated); `run` installs both through sudo -A and
+local-machine-setup's askpass, except a macOS update that needs a
+restart, which stays a finding. Also AI session logs past their retention (deleted via
 scan-for-secrets.sh prune, which owns the retention and the directory list;
 ~/.claude/projects is not on it -- Claude Code deletes its own transcripts),
 on Sundays `docker system prune -f` (images and containers only — volumes
@@ -355,12 +357,39 @@ exec 3>&2
 # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
 ST_STEP_FD3=1
 
+# `run` installs what is pending (sd:6927) as root through sudo -A, which
+# asks machine-setup's askpass for the Keychain item's password (sd:6312).
+# Without the item sudo refuses, and the update stays a finding with
+# sudo's reason. An update that needs a restart stays a finding: a restart
+# is the operator's call.
+SUDO_ASKPASS="$DIR/../local-machine-setup/sudo-askpass.sh"
+export SUDO_ASKPASS
+
 # Pending macOS updates. softwareupdate needs the network and ~10-60s.
 SU="$TMPD/su"
 if st_step 300 softwareupdate -l > "$SU" 2>&1; then :; fi
 if grep -q '^\* Label' "$SU"; then
-  finding "macOS updates pending:"
-  grep '^\* Label' "$SU" | sed 's/^\* Label: /    /' | tee -a "$KEYS" >> "$FINDINGS"
+  # One line per update, "restart <label>" or "- <label>": the Title line
+  # under a label says "Action: restart" when it needs one.
+  awk '/^\* Label: / { if (l != "") print r " " l; l = substr($0, 10); r = "-"; next }
+       l != "" && /Action: restart/ { r = "restart" }
+       END { if (l != "") print r " " l }' "$SU" > "$TMPD/su.labels"
+  : > "$TMPD/su.left"
+  while read -r act label; do
+    if [ "$APPLY" -eq 1 ] && [ "$act" != restart ]; then
+      if st_step 1800 sudo -A softwareupdate -i "$label" > "$TMPD/su.out" 2>&1; then
+        action "installed macOS update $label"
+        continue
+      fi
+      finding "macOS update install failed: $label: $(grep -v '^\[step ' "$TMPD/su.out" | tail -1)" \
+        "macOS update install failed: $label"
+    fi
+    echo "    $label" >> "$TMPD/su.left"
+  done < "$TMPD/su.labels"
+  if [ -s "$TMPD/su.left" ]; then
+    finding "macOS updates pending:"
+    tee -a "$KEYS" < "$TMPD/su.left" >> "$FINDINGS"
+  fi
 elif ! grep -q 'No new software available' "$SU"; then
   finding "softwareupdate check failed: $(grep -v '^\[step ' "$SU" | tail -1)"
 fi
@@ -371,6 +400,19 @@ if command -v mas >/dev/null 2>&1; then
   MAS="$TMPD/mas"
   mas_rc=0
   st_step 120 mas outdated > "$MAS" 2>/dev/null || mas_rc=$?
+  if [ "$mas_rc" -eq 0 ] && [ "$APPLY" -eq 1 ] && [ -s "$MAS" ]; then
+    # mas upgrades as root and reads SUDO_UID for whose apps they are.
+    if ! st_step 2400 sudo -A mas upgrade > "$TMPD/mas.out" 2>&1; then
+      finding "App Store upgrade failed: $(grep -v '^\[step ' "$TMPD/mas.out" | tail -1)" \
+        "App Store upgrade failed"
+    fi
+    mv "$MAS" "$MAS.before"
+    st_step 120 mas outdated > "$MAS" 2>/dev/null || mas_rc=$?
+    # An app the check no longer lists was upgraded.
+    grep -vxF -f "$MAS" "$MAS.before" | while IFS= read -r app; do
+      echo "- upgraded App Store app $app"
+    done >> "$ACTIONS"
+  fi
   if [ "$mas_rc" -ne 0 ]; then
     finding "App Store update check failed (mas outdated exit $mas_rc)"
   elif [ -s "$MAS" ]; then

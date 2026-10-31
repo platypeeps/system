@@ -21,6 +21,9 @@ job's limit, a boot-out, a reboot) or whose `finish` was lost: it runs once
 more as attempt 2. A run still `running` at attempt 2 is written as failed
 and not run again, until a new request.
 
+The hub's refresh asks `request` when the pin it publishes moved across a
+change to local-machine-setup/ (sd:6949); it prints the new id.
+
 `USAGE` names the verbs. `check` prints `pending <request> <attempt>` and exits 0, or exits 1 when
 nothing is pending. Every verb exits 3 when the hub does not answer, 4 when
 the hub refuses this build (follow moves the pack to the hub's), and 2 on any
@@ -48,6 +51,7 @@ LINE = 300
 
 PENDING, NONE, FAILED, UNREACHABLE, MISMATCH = 0, 1, 2, 3, 4
 USAGE = """usage: satellite_refresh.py check
+       satellite_refresh.py request
        satellite_refresh.py start <request> <attempt>
        satellite_refresh.py finish <request> <attempt> <exit> <step> <line>"""
 
@@ -208,7 +212,7 @@ def _exit_for(error):
 
 
 def main(argv):
-    verbs = {"check": 0, "start": 2, "finish": 5}
+    verbs = {"check": 0, "request": 0, "start": 2, "finish": 5}
     if len(argv) < 2 or argv[1] not in verbs or len(argv) - 2 != verbs[argv[1]]:
         print(USAGE, file=sys.stderr)
         return FAILED
@@ -226,6 +230,9 @@ def main(argv):
                 if state == PENDING:
                     print(f"pending {request_id} {attempt}")
                 return state
+            if verb == "request":
+                print(request(connection)["id"])
+                return 0
             if verb == "start":
                 start(connection, host, args[0], int(args[1]))
             else:

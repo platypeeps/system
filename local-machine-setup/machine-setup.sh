@@ -5971,22 +5971,27 @@ sudo_keychain_item() {
   esac
 }
 
-# The casks in MACHINE_SETUP_SUDO_CASKS that brew calls outdated, upgraded
-# with SUDO_ASKPASS set to sudo-askpass.sh (sd:6312): an unattended run has no
-# terminal for sudo's password, and the Keychain item holds it. Only those
-# casks, and only on a run with no terminal; without the item, the greedy
-# sweep after it defers them for sudo, as before.
+# The casks that need sudo and that brew calls outdated, upgraded with
+# SUDO_ASKPASS set to sudo-askpass.sh (sd:6312): an unattended run has no
+# terminal for sudo's password, and the Keychain item holds it. Only on a
+# run with no terminal; without the item, the greedy sweep after it defers
+# them for sudo, as before. sudo_casks names them (sd:6927).
 askpass_upgrade() {
-  [ -n "${MACHINE_SETUP_SUDO_CASKS:-}" ] && [ "$APPLY" -eq 1 ] && [ "$ATTENDED" -eq 0 ] || return 0
+  [ "$APPLY" -eq 1 ] && [ "$ATTENDED" -eq 0 ] || return 0
   if ! sudo_keychain_item; then
     echo "  --      no askpass: Keychain item $SUDO_KEYCHAIN not read (security exit $sk_rc)"
     return 0
   fi
+  if ! au_want=$(sudo_casks); then
+    failed="$failed, brew cask info"
+    return 0
+  fi
+  [ -n "$au_want" ] || return 0
   if ! au_out=$(bound_step 300 brew outdated --cask --greedy --quiet 2>/dev/null); then
     failed="$failed, brew cask list"
     return 0
   fi
-  au_casks=$(printf '%s\n' "$au_out" | awk -v want="$MACHINE_SETUP_SUDO_CASKS" '
+  au_casks=$(printf '%s\n' "$au_out" | awk -v want="$au_want" '
       BEGIN { n = split(want, w, " "); for (i = 1; i <= n; i++) ok[w[i]] = 1 }
       { name = $1; sub(/.*\//, "", name); if (name in ok) print name }' | tr '\n' ' ' | sed 's/ $//')
   [ -n "$au_casks" ] || return 0
@@ -5997,24 +6002,42 @@ askpass_upgrade() {
   unset SUDO_ASKPASS
 }
 
+# sudo_casks: the installed casks whose upgrade calls sudo, space-separated
+# (sd:6927): a pkg installer or a pkgutil uninstall, or an artifact whose
+# target lies outside the brew prefix, $HOME and /Applications, such as
+# docker-desktop's /usr/local/bin on Apple silicon. Plus the optional
+# MACHINE_SETUP_SUDO_CASKS, for a cask the rule misses. Exit 1 when brew
+# info does not answer.
+sudo_casks() {
+  sc_prefix=$(bound_step 60 brew --prefix 2>/dev/null) || return 1
+  sc_info=$(bound_step 300 brew info --json=v2 --installed --cask 2>/dev/null) || return 1
+  printf '%s' "$sc_info" | python3 -c '
+import json, sys
+extra = sys.argv[1].split() if sys.argv[1] != "change-me" else []
+roots = [r.rstrip("/") + "/" for r in sys.argv[2:] if r]
+def needs_sudo(artifacts):
+    for a in artifacts:
+        if not isinstance(a, dict):
+            continue
+        if "pkg" in a:
+            return True
+        if any(isinstance(u, dict) and "pkgutil" in u for u in a.get("uninstall", [])):
+            return True
+        t = a.get("target")
+        if isinstance(t, str) and t.startswith("/") and not any(t.startswith(r) for r in roots):
+            return True
+    return False
+casks = [c["token"] for c in json.load(sys.stdin).get("casks", []) if needs_sudo(c.get("artifacts", []))]
+print(" ".join(casks + [c for c in extra if c not in casks]))' \
+    "${MACHINE_SETUP_SUDO_CASKS:-}" "$sc_prefix" "$HOME" /Applications
+}
+
 # Doctor's lines for unattended sudo (sd:6312), on each machine: the operator
 # makes the Keychain item and installs the repair drop-in there. A missing one
 # is a finding naming that step, not a failure.
 doctor_unattended_sudo() {
   if sudo_keychain_item; then
     echo "  ok      Keychain item $SUDO_KEYCHAIN (sudo askpass)"
-    # The item does nothing without the list (sd:6474). The ruling: list
-    # the casks with a pkg installer; an app-bundle cask needs no sudo.
-    case "${MACHINE_SETUP_SUDO_CASKS:-}" in
-      "") ds_casks="unset" ;;
-      change-me) ds_casks="is change-me" ;;
-      *) ds_casks= ;;
-    esac
-    if [ -n "$ds_casks" ]; then
-      echo "  WARN    MACHINE_SETUP_SUDO_CASKS $ds_casks — the weekly upgrade defers every cask whose pkg installer calls sudo; list those casks in machine-setup.env, e.g. \"zoom google-drive\" (README: Unattended sudo)"
-    else
-      echo "  ok      MACHINE_SETUP_SUDO_CASKS: $MACHINE_SETUP_SUDO_CASKS"
-    fi
   elif [ "$sk_rc" -eq 44 ]; then
     echo "  WARN    no Keychain item $SUDO_KEYCHAIN — run in a terminal: security add-generic-password -a \"\$(id -un)\" -s $SUDO_KEYCHAIN -T /usr/bin/security -w"
   else
@@ -8299,8 +8322,9 @@ environment:
                           (shared.env or the environment)
   MACHINE_SETUP_PYTHON    the python3 the obsidian stage reads the vault with
   MACHINE_SETUP_STEP_TIMEOUT  upgrade: one bound, in seconds, for every step
-  MACHINE_SETUP_SUDO_CASKS  upgrade: casks an unattended run upgrades with
-                          the Keychain item's password (space-separated)
+  MACHINE_SETUP_SUDO_CASKS  upgrade: casks an unattended run also upgrades
+                          with the Keychain item's password, beyond those
+                          brew info shows need sudo (space-separated)
   MACHINE_SETUP_RELEASE_BIN  release: where the bins go (default ~/.local/bin)
   MACHINE_SETUP_RELEASE_BASE  tests only: the URL that stands in for https://github.com
   SD_PACK_ROOT            the command pack checkout

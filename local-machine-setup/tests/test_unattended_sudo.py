@@ -1,7 +1,7 @@
 """Unattended sudo on every managed machine (sd:6312).
 
 The weekly upgrade reads the admin password from a login-Keychain item
-through sudo-askpass.sh, for the casks in MACHINE_SETUP_SUDO_CASKS only; the
+through sudo-askpass.sh, for the casks that need sudo (sd:6927); the
 upgrade cases are in test_upgrade_steps. A tracked sudoers example names the
 known repair commands. The operator creates the item and installs the
 drop-in on each machine; doctor says on each machine whether both are there.
@@ -114,29 +114,14 @@ class Doctor(Case):
                               r"with visudo -cf")
         self.assertNotIn("FAIL    no Keychain", out)
 
-    def test_an_item_with_no_cask_list_is_a_finding_naming_what_to_set(self):
-        """sd:6474: with the item there and the list unset or change-me, the
-        weekly upgrade upgraded no cask with the askpass, and doctor said
-        ok. The ruling: list the casks with a pkg installer."""
-        want = ("  WARN    MACHINE_SETUP_SUDO_CASKS {} — the weekly upgrade defers every cask "
-                "whose pkg installer calls sudo; list those casks in machine-setup.env, "
-                'e.g. "zoom google-drive" (README: Unattended sudo)\n')
-        for casks, shown in (("", "unset"), ("change-me", "is change-me")):
+    def test_doctor_asks_for_no_cask_list(self):
+        """sd:6927: the casks that need sudo come from brew info, so the
+        hand list is optional and doctor says nothing about it."""
+        for casks in ("", "change-me", "zoom"):
             with self.subTest(casks=casks):
                 result = self.run_doctor(keychain="example-password", MACHINE_SETUP_SUDO_CASKS=casks)
-                self.assertIn(want.format(shown), result.stdout)
-                self.assertNotIn("FAIL    MACHINE_SETUP_SUDO_CASKS", result.stdout)
-        result = self.run_doctor(keychain="example-password", MACHINE_SETUP_SUDO_CASKS="zoom")
-        self.assertIn("  ok      MACHINE_SETUP_SUDO_CASKS: zoom\n", result.stdout)
-        result = self.run_doctor(keychain="", MACHINE_SETUP_SUDO_CASKS="")
-        self.assertNotIn("MACHINE_SETUP_SUDO_CASKS", result.stdout)
-
-    def test_no_cask_list_leaves_the_doctor_verdict_alone(self):
-        verdicts = []
-        for casks in ("", "zoom"):
-            result = self.run_doctor(keychain="example-password", MACHINE_SETUP_SUDO_CASKS=casks)
-            verdicts.append((result.returncode, result.stdout.splitlines()[-1]))
-        self.assertEqual(verdicts[0], verdicts[1])
+                self.assertIn("  ok      Keychain item machine-setup-sudo (sudo askpass)", result.stdout)
+                self.assertNotIn("MACHINE_SETUP_SUDO_CASKS", result.stdout)
 
     def test_a_keychain_that_does_not_answer_is_unknown_not_missing(self):
         out = self.doctor(SECURITY_RC="51")

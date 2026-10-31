@@ -408,6 +408,18 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(("done", 1, "machine-setup", failed.strip()),
                          (row["state"], row["exit"], row["step"], row["line"]))
 
+    def test_the_request_verb_writes_a_new_request(self):
+        """NEW (sd:6949). `request`, which the hub's refresh asks after a pin
+        across local-machine-setup/, writes the row and prints its id."""
+        f = self.fixture()
+        env = {**os.environ, "SD_PACK_ROOT": str(f.sd_pack), "REPO_SYNC_SD_DB": str(f.database)}
+
+        out = subprocess.run([sys.executable, str(f.folder / "satellite_refresh.py"), "request"],
+                             capture_output=True, text=True, env=env, check=False)
+
+        self.assertEqual(0, out.returncode, out.stderr)
+        self.assertEqual(f.setting("refresh.request")["id"], out.stdout.strip())
+
     def test_exit_codes_name_the_hub_failures(self):
         """NEW. A hub that does not answer exits 3 and a refused build 4, so
         follow can tell them from a failure, which exits 2."""
