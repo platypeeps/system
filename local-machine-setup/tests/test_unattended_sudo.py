@@ -177,16 +177,19 @@ class Sudoers(unittest.TestCase):
         """Exact arguments only: an absolute path, its arguments, no
         wildcard; sudoers then allows those arguments and no others."""
         rules = self.rendered("/opt/homebrew")
-        self.assertEqual(len(rules), 5, rules)
-        for rule in rules[:2]:
+        self.assertEqual(len(rules), 6, rules)
+        for rule in rules[:3]:
             self.assertRegex(rule, r"^example ALL=\(root\) NOPASSWD: /\S+( [^*?\[\]\\,:=]+)+$")
         self.assertTrue(rules[0].endswith("NOPASSWD: /opt/homebrew/bin/brew services restart tailscale"))
         self.assertTrue(rules[1].endswith("NOPASSWD: /sbin/pfctl -sr"), rules[1])
+        self.assertTrue(rules[2].endswith("NOPASSWD: /usr/bin/defaults write "
+                                          "/Library/Preferences/com.apple.commerce "
+                                          "AutoUpdate -bool false"), rules[2])
         # The one wildcard, mosh's Cellar version, by the operator's ruling:
         # each mosh upgrade is a new folder (sd:6538).
         fw = "/usr/libexec/ApplicationFirewall/socketfilterfw"
         exe = "/opt/homebrew/Cellar/mosh/*/bin/mosh-server"
-        self.assertEqual(rules[2:], [f"example ALL=(root) NOPASSWD: {fw} --{verb} {exe}"
+        self.assertEqual(rules[3:], [f"example ALL=(root) NOPASSWD: {fw} --{verb} {exe}"
                                      for verb in ("remove", "add", "unblockapp")])
 
     def test_the_brew_rule_follows_the_machines_brew_prefix(self):
@@ -219,3 +222,17 @@ class EveryMachine(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AppStoreAutoUpdate(Case):
+    """sd:6958: the App Store installed updates on its own schedule while
+    maintenance-nightly installs them; doctor names the remedy."""
+
+    def test_auto_update_on_or_unset_is_a_warning_and_off_is_quiet(self):
+        want = "  WARN    App Store auto-update on — run: machine-setup.sh update macos --apply\n"
+        for value in ("1", ""):
+            with self.subTest(value=value):
+                out = self.run_script("doctor", fnm_have="18 20 24", APPSTORE_AUTOUPDATE=value).stdout
+                self.assertIn(want, out)
+        out = self.run_script("doctor", fnm_have="18 20 24", APPSTORE_AUTOUPDATE="0").stdout
+        self.assertNotIn("App Store auto-update", out)

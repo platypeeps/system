@@ -3500,6 +3500,29 @@ stage_screensaver_off() {
   fi
 }
 
+# App Store updates install at maintenance-nightly's time, not the App
+# Store's own (sd:6958). macOS's own install settings stay as they are, by
+# the operator's ruling. Root-owned: --apply writes it through the repair
+# drop-in's sudo -n, else sudo_run asks once or defers with the command.
+APPSTORE_PREFS=/Library/Preferences/com.apple.commerce
+appstore_autoupdate_off() {
+  norm_eq bool "$(defaults read "$APPSTORE_PREFS" AutoUpdate 2>/dev/null || :)" false
+}
+
+stage_appstore_autoupdate_off() {
+  if appstore_autoupdate_off; then
+    echo "  ok      $APPSTORE_PREFS AutoUpdate = 0"
+    return 0
+  fi
+  echo "  DIFFERS App Store auto-update on: $APPSTORE_PREFS AutoUpdate is not 0"
+  if [ "$APPLY" -eq 1 ] &&
+     sudo -n defaults write "$APPSTORE_PREFS" AutoUpdate -bool false </dev/null 2>/dev/null; then
+    return 0
+  fi
+  sudo_run "sudo defaults write $APPSTORE_PREFS AutoUpdate -bool false" \
+    defaults write "$APPSTORE_PREFS" AutoUpdate -bool false
+}
+
 # One key in a JSON settings file: ok, or MISSING/DIFFERS and the merge.
 self_update_json() { # file key json-value
   if app_data_blocked "$1"; then
@@ -3581,6 +3604,7 @@ stage_macos() {
   command -v defaults >/dev/null 2>&1 || { echo "  defaults MISSING (not macOS?)"; return 0; }
   stage_self_update
   stage_screensaver_off
+  stage_appstore_autoupdate_off
   entries=$(manifest macos)
   if [ -z "$entries" ]; then
     echo "  no macOS settings in this profile"
@@ -5716,6 +5740,9 @@ cmd_doctor() {
     echo "  WARN    $TIMEOUT_SUDOERS missing — run: machine-setup.sh update system --apply"
   fi
   doctor_unattended_sudo
+  if command -v defaults >/dev/null 2>&1 && ! appstore_autoupdate_off; then
+    echo "  WARN    App Store auto-update on — run: machine-setup.sh update macos --apply"
+  fi
 
   fw=/usr/libexec/ApplicationFirewall/socketfilterfw
   if [ -x "$fw" ]; then
