@@ -18,6 +18,7 @@ accident; a PIN passing against old code is expected, not a defect.
 """
 
 import fcntl
+import json
 import os
 import pathlib
 import plistlib
@@ -303,6 +304,49 @@ class PromptJobEnvironmentTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("SD_HANDOFF_RESTORE=", marker.read_text())
         self.assertFalse(self.fx.claude_was_called())
+
+
+class JobTelemetryTagTest(unittest.TestCase):
+    """Each run tags its OTel resource with sd.job (sd:6944).
+
+    claude reads OTEL_RESOURCE_ATTRIBUTES from settings.json's env, which
+    beats the process environment, so a prompt job passes the tagged value
+    through --settings; a command job gets it in its environment.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+
+    def settings_env(self, env):
+        path = self.fx.home / ".claude" / "settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"env": env}))
+
+    def test_a_prompt_job_hands_claude_the_tagged_attributes(self):
+        self.settings_env({"OTEL_RESOURCE_ATTRIBUTES": "service.namespace=sd-workflow,host.name=hub"})
+        self.fx.write_job("nightly", PROMPT_JOB)
+        result = self.fx.exec_job("nightly")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = self.fx.claude_argv()
+        self.assertIn("--settings", argv, argv)
+        self.assertEqual(json.loads(argv[argv.index("--settings") + 1]),
+                         {"env": {"OTEL_RESOURCE_ATTRIBUTES":
+                                  "service.namespace=sd-workflow,host.name=hub,sd.job=nightly"}})
+
+    def test_without_the_telemetry_block_claude_gets_no_settings_flag(self):
+        self.settings_env({"DISABLE_AUTOUPDATER": "1"})
+        self.fx.write_job("nightly", PROMPT_JOB)
+        result = self.fx.exec_job("nightly")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--settings", self.fx.claude_argv())
+
+    def test_a_command_job_gets_the_tag_in_its_environment(self):
+        marker = self.fx.tmp / "command-env"
+        self.fx.write_job("plain", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="env > {marker}"\n')
+        result = self.fx.exec_job("plain", {"OTEL_RESOURCE_ATTRIBUTES": "host.name=hub"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("OTEL_RESOURCE_ATTRIBUTES=host.name=hub,sd.job=plain\n", marker.read_text())
 
 
 class PromptJobResultLineTest(unittest.TestCase):

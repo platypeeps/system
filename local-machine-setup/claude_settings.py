@@ -12,6 +12,9 @@ a repo's CLAUDE.local.md block (the repos stage, sd:3030). Here the source
 wins: a shared key with another value is rewritten. The repo's other keys, its
 comments and every line outside the block stay as they are.
 
+`codex-missing FILE ENDPOINT PROTOCOL` and `codex-merge` hold the [otel] table of
+codex's config.toml at the hub's exporter (sd:6944); the source wins, the rest stays.
+
 `pref-missing FILE KEY VALUE` and `pref-merge FILE KEY VALUE` hold one
 top-level KEY of an app's JSON settings at a JSON VALUE (the macos stage
 turns self-update off with them, sd:3062). Unlike the baseline, a KEY set to
@@ -25,6 +28,11 @@ import re
 import shlex
 import shutil
 import sys
+
+try:
+    import tomllib
+except ImportError:  # /usr/bin's 3.9: a codex merge is refused, not written by the scan alone
+    tomllib = None
 
 #: Claude Code's file tools may not read these (was the pack's fleet stamp, sd:3010).
 SECRET_READ_DENY = [
@@ -75,6 +83,24 @@ ENV = {"DISABLE_AUTOUPDATER": "1"}
 #: tool shell was Apple's bash for its file grant (sd:6427), but macOS charges the process
 #: launchd or the terminal started, not the shell (sd:6466); it cost bash 5.
 RETIRED_ENV = {"CLAUDE_CODE_SHELL": "/bin/bash"}
+#: The hub's sessions export metrics and logs to genai-traces (sd:6944); the stage passes
+#: `--otel ENDPOINT PROTOCOL HOST` on the hub only. The source wins here: a key with another
+#: value is rewritten, so the endpoint follows genai-traces and prompts stay out of the logs.
+#: cron-jobs.sh adds sd.job to OTEL_RESOURCE_ATTRIBUTES through --settings: this env beats
+#: the process environment.
+def otel_env(endpoint, protocol, host):
+    return {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+        "OTEL_EXPORTER_OTLP_PROTOCOL": protocol,
+        "OTEL_RESOURCE_ATTRIBUTES": f"service.namespace=sd-workflow,host.name={host}",
+        "OTEL_LOG_USER_PROMPTS": "0",
+        "OTEL_LOG_TOOL_DETAILS": "0",
+    }
+
+
 #: The same paths for opencode's read permission, whose `*` also matches `/`.
 OPENCODE_READ_DENY = ["*" + rule[5:-1].removeprefix("//**/").removeprefix("~/").replace("**", "*").lstrip("*")
                       for rule in SECRET_READ_DENY]
@@ -102,7 +128,7 @@ def hook_commands(settings, event):
     return [hook.get("command") for group in groups for hook in group.get("hooks", [])]
 
 
-def missing(settings):
+def missing(settings, otel=None):
     deny = settings.get("permissions", {}).get("deny", [])
     gaps = [f"permissions.deny {rule}" for rule in SECRET_READ_DENY + TOOL_DENY if rule not in deny]
     gaps += [f"STALE permissions.deny {rule} (retired)" for rule in RETIRED_DENY if rule in deny]
@@ -112,6 +138,8 @@ def missing(settings):
     gaps += [f"env.{key}" for key in ENV if key not in settings.get("env", {})]
     gaps += [f"STALE env.{key} (retired)" for key, value in RETIRED_ENV.items()
              if settings.get("env", {}).get(key) == value]
+    gaps += [("env." if key not in settings.get("env", {}) else "STALE env.") + f"{key}={value}"
+             for key, value in (otel or {}).items() if settings.get("env", {}).get(key) != value]
     if SESSION_START not in hook_commands(settings, "SessionStart"):
         gaps.append(f"hooks.SessionStart {SESSION_START}")
     if GUARD not in hook_commands(settings, "PreToolUse"):
@@ -119,7 +147,7 @@ def missing(settings):
     return gaps
 
 
-def merge(settings):
+def merge(settings, otel=None):
     deny = settings.setdefault("permissions", {}).setdefault("deny", [])
     deny[:] = [rule for rule in deny if rule not in RETIRED_DENY]
     deny += [rule for rule in SECRET_READ_DENY + TOOL_DENY if rule not in deny]
@@ -133,6 +161,7 @@ def merge(settings):
     for key, value in RETIRED_ENV.items():
         if env.get(key) == value:
             del env[key]
+    env.update(otel or {})
     if SESSION_START not in hook_commands(settings, "SessionStart"):
         hook = {"hooks": [{"type": "command", "command": SESSION_START}]}
         settings.setdefault("hooks", {}).setdefault("SessionStart", []).append(hook)
@@ -216,6 +245,96 @@ def opencode_merge(text):
     return merged
 
 
+def codex_otel(endpoint, protocol):
+    """The [otel] table codex exports its logs with (sd:6944): grpc, or OTLP/HTTP's binary."""
+    if protocol == "grpc":
+        exporter = f'{{ otlp-grpc = {{ endpoint = "{endpoint}" }} }}'
+    else:
+        exporter = f'{{ otlp-http = {{ endpoint = "{endpoint}/v1/logs", protocol = "binary" }} }}'
+    return f'[otel]\nenvironment = "sd-workflow"\nexporter = {exporter}\nlog_user_prompt = false\n'
+
+
+#: A table header line, and one in the otel hierarchy: [otel], [otel.exporter.otlp-grpc],
+#: [[otel.x]], with the key bare, "quoted" or 'quoted' and spaces around the dots.
+#: A key is bare, "basic" or 'literal'; a quoted one may hold `,`, `=` or brackets, so
+#: [projects."/a,b"] is a header and `[1, 2],` an array line.
+OTEL_KEY = r"""(?:otel|"otel"|'otel')"""
+TOML_KEY = r"""(?:[A-Za-z0-9_-]+|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')"""
+TOML_DOTTED = TOML_KEY + r"(?:\s*\.\s*" + TOML_KEY + r")*"
+TOML_HEADER = re.compile(
+    r"\s*(?:\[\s*" + TOML_DOTTED + r"\s*\]|\[\[\s*" + TOML_DOTTED + r"\s*\]\])\s*(?:#.*)?$")
+OTEL_HEADER = re.compile(r"\s*\[\[?\s*" + OTEL_KEY + r"\s*[.\]]")
+#: otel set at the root by a dotted key or an inline table: no table to replace.
+OTEL_ROOT_KEY = re.compile(r"\s*" + OTEL_KEY + r"\s*[.=]")
+
+
+def codex_split(text):
+    """(rest, otel, at): the lines outside and inside every otel table, and where the first began.
+
+    The child tables go with [otel]: one left beside the inline exporter made the file
+    invalid.
+    """
+    rest, otel, inside, at = [], [], False, None
+    for line in text.splitlines(keepends=True):
+        if TOML_HEADER.match(line):
+            inside = bool(OTEL_HEADER.match(line))
+            if inside and at is None:
+                at = len(rest)
+        (otel if inside else rest).append(line)
+    return rest, otel, at
+
+
+def codex_unsupported(text):
+    """Why the line scan cannot rewrite this file safely, or ''.
+
+    ponytail: a line scan, not a TOML parser; what it cannot read it reports for a
+    hand edit instead. The merge it writes must pass tomllib, so /usr/bin's 3.9 refuses.
+    """
+    lines = text.splitlines()
+    root = next((i for i, line in enumerate(lines) if TOML_HEADER.match(line)), len(lines))
+    if any(OTEL_ROOT_KEY.match(line) for line in lines[:root]):
+        return "sets otel by a root key"
+    if '"""' in text or "'''" in text:
+        return "has a multi-line string"
+    return ""
+
+
+def codex_gap(text, block):
+    """'' when config.toml's otel tables are BLOCK alone; else MISSING, STALE or DIFFERS."""
+    why = codex_unsupported(text)
+    if why:
+        return f"DIFFERS codex config.toml {why}; set [otel] by hand"
+    _, otel, at = codex_split(text)
+    if at is not None and "".join(otel).rstrip("\n") + "\n" == block:
+        return ""
+    if tomllib is None:
+        return "DIFFERS codex config.toml [otel] needs Python 3.11+ (tomllib) to check the merge; set [otel] by hand"
+    return "MISSING [otel]" if at is None else "STALE [otel]"
+
+
+def codex_merge(text, block):
+    """The source wins: every otel table goes, and BLOCK stands where the first was."""
+    rest, _, at = codex_split(text)
+    at = len(rest) if at is None else at
+    before, after = "".join(rest[:at]), "".join(rest[at:])
+    separator = "" if not before or before.endswith("\n\n") else "\n" if before.endswith("\n") else "\n\n"
+    return before + separator + block + ("\n" + after if after else "")
+
+
+def toml_holds(before, text, block):
+    """TEXT parses, its otel is BLOCK's and the rest is BEFORE's; False without tomllib."""
+    if tomllib is None:
+        return False
+    try:
+        old, new = tomllib.loads(before), tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return False
+    if new.pop("otel", None) != tomllib.loads(block)["otel"]:
+        return False
+    old.pop("otel", None)
+    return new == old
+
+
 def pref_gap(text, key, value):
     """'' when KEY holds VALUE; else what the file has instead."""
     config = load_jsonc(text) if text.strip() else {}
@@ -262,7 +381,22 @@ def main(argv):
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write(merged)
         return
-    verb, path = argv
+    if argv[:1] in (["codex-missing"], ["codex-merge"]):
+        verb, path, endpoint, protocol = argv
+        text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+        block = codex_otel(endpoint, protocol)
+        gap = codex_gap(text, block)
+        if verb == "codex-missing":
+            print(gap)
+        elif gap.startswith("DIFFERS"):
+            sys.exit(f"claude_settings.py: {gap}")
+        elif gap:
+            merged = codex_merge(text, block)
+            if codex_gap(merged, block) or not toml_holds(text, merged, block):
+                sys.exit("claude_settings.py: the merged config.toml does not hold [otel]; set it by hand")
+            write(path, merged)
+        return
+    verb, path, *extra = argv
     if verb.startswith("local-"):
         try:
             text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
@@ -286,11 +420,14 @@ def main(argv):
             write(path, opencode_merge(text))
         return
     settings = json.loads(text)
+    otel = otel_env(*extra[1:]) if extra[:1] == ["--otel"] and len(extra) == 4 else None
+    if extra and otel is None:
+        sys.exit("usage: claude_settings.py missing|merge FILE [--otel ENDPOINT PROTOCOL HOST]")
     if verb == "missing":
-        for gap in missing(settings):
+        for gap in missing(settings, otel):
             print(gap)
-    elif verb == "merge" and missing(settings):
-        write(path, json.dumps(merge(settings), indent=2, ensure_ascii=False) + "\n")
+    elif verb == "merge" and missing(settings, otel):
+        write(path, json.dumps(merge(settings, otel), indent=2, ensure_ascii=False) + "\n")
     elif verb != "merge":
         sys.exit("usage: claude_settings.py missing|merge|opencode-missing|opencode-merge|local-missing|local-merge FILE"
                  f" | pref-missing|pref-merge FILE KEY VALUE (got {verb})")

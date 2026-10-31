@@ -1302,6 +1302,19 @@ cmd_exec() { # invoked by launchd (and by `run`)
     echo "[$job] JOB_DIR is not a usable directory: ${JOB_DIR:-$HOME}" >&2
     exit 1
   }
+  # Each run tags its OTel resource with sd.job (sd:6944). A command job and
+  # its children read OTEL_RESOURCE_ATTRIBUTES from the environment; claude
+  # reads it from settings.json's env, which beats the environment, so a
+  # prompt job hands claude the tagged value through --settings, set only
+  # when settings.json carries the attributes (the hub's telemetry block).
+  local otel_settings=""
+  otel_settings="$(python3 -c 'import json, sys
+attrs = json.load(open(sys.argv[1])).get("env", {}).get("OTEL_RESOURCE_ATTRIBUTES", "")
+if attrs:
+    print(json.dumps({"env": {"OTEL_RESOURCE_ATTRIBUTES": attrs + ",sd.job=" + sys.argv[2]}}))' \
+    "$HOME/.claude/settings.json" "$job" 2>/dev/null)" || otel_settings=""
+  OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+$OTEL_RESOURCE_ATTRIBUTES,}sd.job=$job"
+  export OTEL_RESOURCE_ATTRIBUTES
   echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') starting (cwd: $PWD)"
   local rc=0 claude_bin debug_file="$LOG_DIR/$job.debug.$report_run.log"
   if [ -n "$JOB_COMMAND" ]; then
@@ -1340,6 +1353,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
         --dangerously-skip-permissions \
         --debug-file "$debug_file" \
         ${JOB_MODEL:+--model "$JOB_MODEL"} \
+        ${otel_settings:+--settings "$otel_settings"} \
         $JOB_CLAUDE_ARGS > "$reply" || rc=$?
       cat "$reply"
       if [ "$rc" -eq 0 ]; then
@@ -1360,6 +1374,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
         --dangerously-skip-permissions \
         --debug-file "$debug_file" \
         ${JOB_MODEL:+--model "$JOB_MODEL"} \
+        ${otel_settings:+--settings "$otel_settings"} \
         $JOB_CLAUDE_ARGS || rc=$?
     fi
     # Every run keeps its trace, pruned to five per job; the job log never
