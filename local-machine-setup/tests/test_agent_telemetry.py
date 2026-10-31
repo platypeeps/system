@@ -137,6 +137,17 @@ class HubTelemetry(SyntheticHome):
                 self.assert_codex_otel_replaced(
                     f'model = "gpt-5"\n\n{header}\n{body}\n\n[tui]\nnotifications = true\n')
 
+    def test_a_quoted_table_key_with_header_characters_survives(self):
+        """A `,`, `=` or bracket in a quoted key once made [projects."…"] otel's."""
+        for path in ("/a,b", "/a=b", "/a[b]", "/a]b", "/a,'b"):
+            with self.subTest(path=path):
+                self.assert_codex_otel_replaced(
+                    f'model = "gpt-5"\n\n[otel]\nexporter = "none"\n\n'
+                    f'[projects."{path}"]\ntrust_level = "trusted"\n\n'
+                    '[tui]\nnotifications = true\n')
+                projects = tomllib.loads(self.codex.read_text())["projects"]
+                self.assertEqual(projects, {path: {"trust_level": "trusted"}})
+
     def test_a_root_otel_key_is_reported_and_left_alone(self):
         """A dotted or inline root key cannot be replaced by table: the file stays as it is."""
         for key in ("otel.exporter = 'none'", "otel = { exporter = 'none' }", "'otel'.exporter = 'none'"):

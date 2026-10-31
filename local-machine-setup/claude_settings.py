@@ -251,9 +251,13 @@ def codex_otel(endpoint, protocol):
 
 #: A table header line, and one in the otel hierarchy: [otel], [otel.exporter.otlp-grpc],
 #: [[otel.x]], with the key bare, "quoted" or 'quoted' and spaces around the dots.
-#: A comma or `=` makes it an array line, not a header.
+#: A key is bare, "basic" or 'literal'; a quoted one may hold `,`, `=` or brackets, so
+#: [projects."/a,b"] is a header and `[1, 2],` an array line.
 OTEL_KEY = r"""(?:otel|"otel"|'otel')"""
-TOML_HEADER = re.compile(r"\s*\[\[?[^\[\]=,]*\]\]?\s*(?:#.*)?$")
+TOML_KEY = r"""(?:[A-Za-z0-9_-]+|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')"""
+TOML_DOTTED = TOML_KEY + r"(?:\s*\.\s*" + TOML_KEY + r")*"
+TOML_HEADER = re.compile(
+    r"\s*(?:\[\s*" + TOML_DOTTED + r"\s*\]|\[\[\s*" + TOML_DOTTED + r"\s*\]\])\s*(?:#.*)?$")
 OTEL_HEADER = re.compile(r"\s*\[\[?\s*" + OTEL_KEY + r"\s*[.\]]")
 #: otel set at the root by a dotted key or an inline table: no table to replace.
 OTEL_ROOT_KEY = re.compile(r"\s*" + OTEL_KEY + r"\s*[.=]")
@@ -310,16 +314,21 @@ def codex_merge(text, block):
     return before + separator + block + ("\n" + after if after else "")
 
 
-def toml_holds(text, block):
-    """TEXT parses and its otel is BLOCK's, where tomllib exists (3.11+); True without it."""
+def toml_holds(before, text, block):
+    """TEXT parses, its otel is BLOCK's and the rest is BEFORE's, where tomllib exists (3.11+);
+    True without it."""
     try:
         import tomllib
     except ImportError:
         return True
     try:
-        return tomllib.loads(text).get("otel") == tomllib.loads(block)["otel"]
+        old, new = tomllib.loads(before), tomllib.loads(text)
     except tomllib.TOMLDecodeError:
         return False
+    if new.pop("otel", None) != tomllib.loads(block)["otel"]:
+        return False
+    old.pop("otel", None)
+    return new == old
 
 
 def pref_gap(text, key, value):
@@ -379,7 +388,7 @@ def main(argv):
             sys.exit(f"claude_settings.py: {gap}")
         elif gap:
             merged = codex_merge(text, block)
-            if codex_gap(merged, block) or not toml_holds(merged, block):
+            if codex_gap(merged, block) or not toml_holds(text, merged, block):
                 sys.exit("claude_settings.py: the merged config.toml does not hold [otel]; set it by hand")
             write(path, merged)
         return
