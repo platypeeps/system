@@ -38,6 +38,9 @@ class Harness(unittest.TestCase):
         self.bin = self.tmp / "bin"
         _stub(self.bin / "softwareupdate", 'echo "No new software available."\n')
         _stub(self.bin / "mas", "exit 0\n")
+        # sudo records each call and runs nothing, so no test reaches the real one.
+        self.sudo_calls = self.tmp / "sudo-calls"
+        _stub(self.bin / "sudo", f'echo "$SUDO_ASKPASS $*" >> "{self.sudo_calls}"\n')
         _stub(self.bin / "docker", "exit 1\n")
         _stub(self.bin / "hostname", 'echo "fixturehost"\n')
         # FAKE_DAY stands for the run's date, which the reason must not carry.
@@ -160,6 +163,84 @@ class ReportTest(Harness):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("missing.pem missing", run.stdout)
         self.assertEqual(self.attention(run), [])
+
+
+#: softwareupdate -l lists one update that needs no restart and one that does.
+SU_LIST = (
+    "Software Update found the following new or updated software:",
+    "* Label: Command Line Tools for Xcode 27.2-27.2",
+    "\tTitle: Command Line Tools for Xcode 27.2, Version: 27.2, Size: 521120KiB, Recommended: YES, ",
+    "* Label: macOS Example 27.3-27D50",
+    "\tTitle: macOS Example 27.3, Version: 27.3, Size: 9000000KiB, Recommended: YES, Action: restart, ",
+)
+
+
+class InstallTest(Harness):
+    """sd:6927: `run` installs pending macOS updates that need no restart and
+    upgrades App Store apps, through sudo -A and machine-setup's askpass;
+    `check` installs nothing, and what stays pending stays a finding."""
+
+    def setUp(self):
+        super().setUp()
+        lines = " ".join(f"'{line}'" for line in SU_LIST)
+        _stub(self.bin / "softwareupdate", f'[ "$1" = -l ] && {{ printf "%s\\n" {lines}; exit 0; }}\nexit 0\n')
+        # mas lists Xcode until `mas upgrade` ran.
+        done = self.tmp / "mas-upgraded"
+        _stub(self.bin / "mas", f'case "$1" in\n'
+              f'  outdated) [ -f "{done}" ] || echo "497799835  Xcode  (27.1 -> 27.2)" ;;\n'
+              f'  upgrade) : > "{done}" ;;\nesac\n')
+        _stub(self.bin / "sudo", f'echo "$SUDO_ASKPASS $*" >> "{self.sudo_calls}"\n'
+              '[ -n "$SUDO_REFUSE" ] && { echo "sudo: no password was provided" >&2; exit 1; }\n'
+              '[ "$1" = -A ] && shift\nexec "$@"\n')
+
+    def calls(self):
+        return self.sudo_calls.read_text().splitlines() if self.sudo_calls.exists() else []
+
+    def test_run_installs_what_needs_no_restart(self):
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        askpass = str(self.tmp / "local-maintenance" / ".." / "local-machine-setup" / "sudo-askpass.sh")
+        self.assertEqual(self.calls(), [
+            f"{askpass} -A softwareupdate -i Command Line Tools for Xcode 27.2-27.2",
+            f"{askpass} -A mas upgrade"])
+        self.assertIn("- installed macOS update Command Line Tools for Xcode 27.2-27.2", run.stdout)
+        self.assertIn("- upgraded App Store app 497799835  Xcode  (27.1 -> 27.2)", run.stdout)
+        self.assertEqual(self.attention(run), [
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: macOS updates pending:",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: macOS updates pending: macOS Example 27.3-27D50"])
+
+    def test_each_install_runs_bounded(self):
+        run = self.maintenance("# nothing to check\n")
+        self.assertRegex(run.stderr, r"\[step [\d:]+\] sudo -A softwareupdate -i Command Line Tools"
+                                     r" for Xcode 27.2-27.2 \(bound 1800s\)")
+        self.assertRegex(run.stderr, r"\[step [\d:]+\] sudo -A mas upgrade \(bound 2400s\)")
+
+    def test_check_installs_nothing(self):
+        run = self.maintenance("# nothing to check\n", "check")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertIn("    Command Line Tools for Xcode 27.2-27.2", run.stdout)
+        self.assertIn("    497799835  Xcode  (27.1 -> 27.2)", run.stdout)
+
+    def test_a_refused_install_stays_pending_with_its_reason(self):
+        run = self.maintenance("# nothing to check\n", SUDO_REFUSE="1")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        # The report names sudo's reason; the key leaves it out, so the
+        # reason of the report does not move with the message (sd:4182).
+        self.assertIn("- macOS update install failed: Command Line Tools for Xcode 27.2-27.2:"
+                      " sudo: no password was provided", run.stdout)
+        self.assertIn("- App Store upgrade failed: sudo: no password was provided", run.stdout)
+        self.assertEqual(self.attention(run), [
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: macOS update install failed:"
+            " Command Line Tools for Xcode 27.2-27.2",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: macOS updates pending:",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: macOS updates pending:"
+            " Command Line Tools for Xcode 27.2-27.2",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: macOS updates pending: macOS Example 27.3-27D50",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store upgrade failed",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:"
+            " 497799835  Xcode  (27.1 -> 27.2)"])
 
 
 if __name__ == "__main__":
