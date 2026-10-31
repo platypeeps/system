@@ -7,10 +7,12 @@ satellite gets neither. doctor warns when the block is on and genai-traces is
 down. `genai-traces.sh` and `codex` are stubs.
 """
 
+import http.server
 import json
 import socket
 import subprocess
 import sys
+import threading
 import tomllib
 import unittest
 from unittest import mock
@@ -18,15 +20,24 @@ from unittest import mock
 from tests.test_claude_settings import SyntheticHome, write_exec
 from tests.test_profile_prefs import Case
 
-# `endpoint` prints what the real one prints by default; `status` exits $TRACES_STATUS.
+# `endpoint` prints what the real one prints by default, `endpoint tailnet`
+# a satellite's hub (unless $TRACES_TAILNET is not 0); `status` exits
+# $TRACES_STATUS.
+TAILNET = "https://hub.example.test:4339"
 TRACES_STUB = """#!/bin/sh
+case "$1 $2" in
+  "endpoint tailnet") [ "${TRACES_TAILNET:-0}" = 0 ] || exit 1
+            echo OTEL_EXPORTER_OTLP_ENDPOINT=%s
+            echo OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf ;;
+esac
 case "$1" in
-  endpoint) echo OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4337
+  endpoint) [ -n "$2" ] && exit 0
+            echo OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4337
             echo OTEL_EXPORTER_OTLP_PROTOCOL=grpc
             echo PHOENIX_UI=http://127.0.0.1:6016 ;;
   status) exit "${TRACES_STATUS:-0}" ;;
 esac
-"""
+""" % TAILNET
 HOST = subprocess.run(["hostname", "-s"], capture_output=True, text=True).stdout.strip().lower() \
     or socket.gethostname().split(".")[0].lower()
 OTEL_ENV = {
@@ -104,11 +115,28 @@ class HubTelemetry(SyntheticHome):
         self.assertIn("ok      codex config.toml [otel]", out)
         self.assertEqual((self.settings.read_bytes(), self.codex.read_bytes()), before)
 
-    def test_a_satellite_gets_no_telemetry(self):
+    def satellite(self):
         hub_json = self.home / ".config/sd/hub.json"
         hub_json.parent.mkdir(parents=True)
-        hub_json.write_text("{}\n")
+        hub_json.write_text('{"hub": "hub.example.test", "port": 8769}\n')
+
+    def test_a_satellite_exports_to_the_hub_over_the_tailnet(self):
+        """sd:6945: hub.json names the hub, and both agents export there."""
+        self.satellite()
         self.run_tooling("--apply")
+        env = json.loads(self.settings.read_text())["env"]
+        want = {**OTEL_ENV, "OTEL_EXPORTER_OTLP_ENDPOINT": TAILNET,
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf"}
+        self.assertEqual({key: env.get(key) for key in want}, want)
+        otel = tomllib.loads(self.codex.read_text())["otel"]
+        self.assertEqual(otel["exporter"]["otlp-http"]["endpoint"], TAILNET + "/v1/logs")
+
+    def test_a_satellite_whose_hub_has_no_name_gets_no_telemetry(self):
+        self.satellite()
+        write_exec(self.repo / "local-genai-traces/genai-traces.sh",
+                   TRACES_STUB.replace("${TRACES_TAILNET:-0}", "1"))
+        out = self.run_tooling("--apply")
+        self.assertIn("SKIP    agent telemetry: genai-traces.sh endpoint tailnet did not answer", out)
         self.assertNotIn("CLAUDE_CODE_ENABLE_TELEMETRY", self.settings.read_text())
         self.assertIn('exporter = "none"', self.codex.read_text())
 
@@ -196,6 +224,48 @@ class TomlHolds(unittest.TestCase):
         before = 'model = "gpt-5"\n'
         with mock.patch.object(claude_settings, "tomllib", None):
             self.assertFalse(claude_settings.toml_holds(before, before + "\n" + CODEX_OTEL, CODEX_OTEL))
+
+
+class Answer(http.server.BaseHTTPRequestHandler):
+    """The collector's OTLP/HTTP receiver: any HTTP answer is an answer."""
+
+    def do_GET(self):
+        self.send_response(405)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+class DoctorSatelliteTelemetry(Case):
+    """sd:6945: a satellite's doctor asks the hub's endpoint, not genai-traces here."""
+
+    def doctor(self, endpoint):
+        write_exec(self.folder.parent / "local-genai-traces/genai-traces.sh", TRACES_STUB)
+        hub_json = self.home / ".config/sd/hub.json"
+        hub_json.parent.mkdir(parents=True)
+        hub_json.write_text('{"hub": "hub.example.test", "port": 8769}\n')
+        settings = self.home / ".claude/settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({"env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                                                "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint}}, indent=2))
+        return self.run_script("doctor", TRACES_STATUS="3").stdout
+
+    def test_an_endpoint_that_answers_is_ok(self):
+        server = http.server.HTTPServer(("127.0.0.1", 0), Answer)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+        out = self.doctor(endpoint)
+        self.assertIn(f"  ok      agent telemetry: the hub's collector answers over {endpoint}", out)
+        self.assertNotIn("WARN    agent telemetry", out)
+
+    def test_an_endpoint_that_does_not_answer_warns(self):
+        server = http.server.HTTPServer(("127.0.0.1", 0), Answer)
+        endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+        server.server_close()
+        self.assertIn(f"  WARN    agent telemetry is on but {endpoint} does not answer", self.doctor(endpoint))
 
 
 class DoctorTelemetry(Case):

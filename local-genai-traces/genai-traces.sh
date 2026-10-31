@@ -17,6 +17,9 @@ GENAI_TRACES_GRPC_PORT="${GENAI_TRACES_GRPC_PORT:-4337}"
 GENAI_TRACES_HTTP_PORT="${GENAI_TRACES_HTTP_PORT:-4338}"
 GENAI_TRACES_UI_PORT="${GENAI_TRACES_UI_PORT:-6016}"
 GENAI_TRACES_HEALTH_PORT="${GENAI_TRACES_HEALTH_PORT:-13137}"
+# The hub's tailscale serve front for OTLP/HTTP, which satellites export to
+# (sd:6945); machine-setup's sd stage adds the route on the hub.
+GENAI_TRACES_TAILNET_PORT="${GENAI_TRACES_TAILNET_PORT:-4339}"
 # Phoenix deletes traces older than this many days (0 keeps them forever).
 # It reads the value only when it creates its default policy, on a new store.
 GENAI_TRACES_RETENTION_DAYS="${GENAI_TRACES_RETENTION_DAYS:-30}"
@@ -376,8 +379,23 @@ case "$1" in
       grpc) url="http://127.0.0.1:$GENAI_TRACES_GRPC_PORT"; proto=grpc ;;
       http) url="http://127.0.0.1:$GENAI_TRACES_HTTP_PORT"; proto=http/protobuf ;;
       docker) url="http://host.docker.internal:$GENAI_TRACES_GRPC_PORT"; proto=grpc ;;
+      tailnet)
+        # A satellite's: the hub its hub.json names, never a tracked file.
+        # A bare name takes the tailnet's MagicDNS suffix, since the HTTPS
+        # certificate names the full one.
+        hub=$(python3 -c 'import json, subprocess, sys
+hub = json.load(open(sys.argv[1]))["hub"].strip().rstrip(".")
+if "." not in hub:
+    out = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10, check=True)
+    hub += "." + json.loads(out.stdout)["MagicDNSSuffix"].strip(".")
+print(hub)' "$HOME/.config/sd/hub.json" 2>/dev/null) || hub=
+        if [ -z "$hub" ]; then
+          echo "local-genai-traces: no hub name: $HOME/.config/sd/hub.json is missing or unreadable, or tailscale gave no MagicDNS suffix for its bare name" >&2
+          exit 1
+        fi
+        url="https://$hub:$GENAI_TRACES_TAILNET_PORT"; proto=http/protobuf ;;
       *)
-        echo "usage: $(basename "$0") endpoint [grpc|http|docker]" >&2
+        echo "usage: $(basename "$0") endpoint [grpc|http|docker|tailnet]" >&2
         exit 1
         ;;
     esac
@@ -419,14 +437,18 @@ usage: genai-traces.sh start|stop|status|update|archive|endpoint|tail|test
                or the folder missing: share not mounted), 1 when a file
                could not be archived, or when 20 wait with the folder
                unset or missing
-  endpoint [grpc|http|docker]
+  endpoint [grpc|http|docker|tailnet]
                print OTEL_EXPORTER_OTLP_ENDPOINT and _PROTOCOL for an
-               experiment (grpc by default), and the Phoenix URL
+               experiment (grpc by default), and the Phoenix URL;
+               tailnet is a satellite's: the hub its ~/.config/sd/hub.json
+               names, over the hub's tailscale serve route
   tail [n]     follow the raw OTLP JSON file (storage/raw/traces.jsonl)
   test         run this folder's tests
 
 environment: GENAI_TRACES_GRPC_PORT (4337), GENAI_TRACES_HTTP_PORT (4338),
              GENAI_TRACES_UI_PORT (6016), GENAI_TRACES_HEALTH_PORT (13137),
+             GENAI_TRACES_TAILNET_PORT (4339; the hub's tailscale serve
+             HTTPS port to the OTLP HTTP one),
              GENAI_TRACES_RETENTION_DAYS (30; Phoenix reads it on a new store)
 
 config:      <config>/genai-traces/.env, or the environment; see .env.example

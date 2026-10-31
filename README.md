@@ -94,7 +94,7 @@ the second column; the third column is free text.
 | local-graphiti-mcp | `6381`, `3004`, `8085` | bundled FalkorDB, its UI, MCP HTTP |
 | local-kev | `8009` | Kev's documented port, on loopback |
 | local-llama-cpp | `8084`, `50052` | server (override with `PORT`), RPC |
-| local-machine-setup | `8443` | Tailscale HTTPS front for the dashboard |
+| local-machine-setup | `8443`, `4339` | Tailscale HTTPS fronts for the dashboard and for satellites' agent telemetry |
 | local-milvus | `19530`, `9091`, `2379`, `8000` | gRPC, metrics, etcd, Attu UI |
 | local-mock-mcp | `9992` | mock MCP server |
 | local-opentelemetry-collector | `4317`, `4318`, `55679` | OTLP gRPC, OTLP HTTP, zPages |
