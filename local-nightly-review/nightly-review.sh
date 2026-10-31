@@ -26,7 +26,9 @@ nightly-review.sh — the nightly review job: suggestions to approve in the dash
 Usage: nightly-review.sh <command>
 
   run    1. apply: `sd-db review apply nightly` files a task for each approval,
-            expires suggestions unruled after 7 days, and closes settled batches.
+            expires suggestions unruled after 7 days, and closes settled batches;
+            `sd-db review priorities` applies priority rulings, closes items
+            unranked 30 days, and files one batch of P1-P4 questions.
          2. review: unless today's batch file exists, `claude -p` on Sonnet with
             read-only tools reads the past day and replies with suggestions; the
             reply becomes <bulk root>/system/nightly-review/<date>.json.
@@ -59,6 +61,8 @@ run() {
   mkdir -p "$(dirname "$batch")"
 
   st_step 120 "$PACK/bin/sd-db" review apply "$QUEUE"
+  # The pack's priority sweep (pack sd:6726): rulings, stale closes, questions.
+  st_step 120 "$PACK/bin/sd-db" review priorities
 
   # Once a day: a batch file in place means the model ran, so a rerun only
   # files it. A `.part` is a reply never renamed, and is asked for again.

@@ -132,6 +132,12 @@ class NightlyReview(unittest.TestCase):
         self.assertEqual(found[0]["item"]["title"], f"Nightly review {self.today}")
         self.assertTrue(found[0]["header"]["source"].startswith("system@"), found[0]["header"])
 
+    def test_a_run_sweeps_priorities_after_apply(self):
+        # sd:6751: the pack's nightly priority sweep (pack sd:6726) runs from this job.
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("sd-db: priority sweep ranked", result.stdout)
+
     def test_a_second_run_the_same_day_runs_no_model_and_files_nothing_new(self):
         first = self.run_job()
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
