@@ -1,5 +1,5 @@
-# Nightly machine upkeep (local-maintenance): pending macOS/App Store
-# updates, backup freshness, cert expiry, disk space, log rotation, idle
+# Nightly machine upkeep (local-maintenance): installs pending macOS/App
+# Store updates, backup freshness, cert expiry, disk space, log rotation, idle
 # cargo target/ folders in ~/worktrees, and a Sunday docker prune. Findings print an SD_REPORT_ATTENTION line, so the
 # run's report reaches Reports and Today; the job exits 0 with findings.
 JOB_SCHEDULE="45 3 * * *"

@@ -9,6 +9,7 @@ copy of lib/ and a stub notify.sh that only logs, so no mail leaves. `brew`
 and `mas` are stubs on PATH.
 """
 
+import json
 import os
 import pathlib
 import re
@@ -46,6 +47,7 @@ LIB = FOLDER.parent / "lib"
 # needs SUDO_ASKPASS to print STUB_PASSWORD, or it refuses as sudo does with
 # no terminal. Each upgrade call made with SUDO_ASKPASS set is logged in
 # $BREW_LOG.askpass; an upgraded BREW_PKG leaves the outdated list.
+# BREW_INFO is what `brew info --json=v2 --installed --cask` prints.
 SUDO_REFUSED = r"""
 if [ "$*" = "$STUB_SUDO" ]; then
   echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
@@ -82,6 +84,8 @@ case "$*" in
                                      [ -z "$BREW_PKG" ] || [ -e "$BREW_LOG.pkg" ] || echo "$BREW_PKG" ;;
   "upgrade --cask --greedy") [ -z "$CLAUDE_NEW" ] || ln -sf "$CLAUDE_NEW" "$CLAUDE_LINK" ;;
   --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
+  --prefix) echo "${BREW_PREFIX:-/opt/homebrew}" ;;
+  "info --json=v2 --installed --cask") if [ -n "$BREW_INFO" ]; then echo "$BREW_INFO"; else echo '{"casks": []}'; fi ;;
   "cleanup --prune=all") [ -z "$BREW_CLEANUP_FAIL" ] || exit 1 ;;
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
            [ -z "$BREW_UPGRADES_ALL" ] || : > "$BREW_LOG.upgraded"
@@ -608,6 +612,39 @@ class UpgradeStepTest(unittest.TestCase):
                                  ["needs sudo, run in a terminal: brew upgrade --cask example-pkg"])
                 if self.security_log.exists():
                     self.assertNotIn("-w", self.security_log.read_text().split())
+
+    def test_the_casks_that_need_sudo_come_from_brew_info(self):
+        """sd:6927: with no hand list, the askpass upgrade takes the casks
+        whose artifacts hold a pkg installer or a pkgutil uninstall, or put
+        a file outside a folder this user writes (/usr/local/bin on Apple
+        silicon); an app in /Applications or a binary in the brew prefix
+        needs no sudo. MACHINE_SETUP_SUDO_CASKS adds to the derived set."""
+        info = json.dumps({"casks": [
+            {"token": "example-pkg", "artifacts": [{"pkg": ["Example.pkg"]}]},
+            {"token": "example-pkgutil", "artifacts": [
+                {"uninstall": [{"pkgutil": "com.example.pkg", "quit": "com.example"}]},
+                {"app": ["Util.app"], "target": "/Applications/Util.app"}]},
+            {"token": "example-root", "artifacts": [
+                {"app": ["Root.app"], "target": "/Applications/Root.app"},
+                {"binary": ["/Applications/Root.app/bin/root", {"target": "/usr/local/bin/root"}],
+                 "target": "/usr/local/bin/root"}]},
+            {"token": "example-app", "artifacts": [
+                {"app": ["Plain.app"], "target": "/Applications/Plain.app"},
+                {"binary": ["/Applications/Plain.app/bin/plain"], "target": "/opt/homebrew/bin/plain"},
+                {"zap": [{"trash": "/Library/Example"}]}]},
+            {"token": "example-extra", "artifacts": [{"app": ["Extra.app"], "target": "/Applications/Extra.app"}]},
+        ]})
+        outdated = "example-root\nexample-app\nexample-pkgutil\nexample-extra"
+        for casks, want in (("", ["example-root", "example-pkgutil", "example-pkg"]),
+                            ("change-me", ["example-root", "example-pkgutil", "example-pkg"]),
+                            ("example-extra", ["example-root", "example-pkgutil", "example-extra", "example-pkg"])):
+            with self.subTest(casks=casks):
+                pathlib.Path(f"{self.brew_log}.askpass").unlink(missing_ok=True)
+                self.brew_log.unlink(missing_ok=True)
+                result = self.askpass_run(casks, BREW_INFO=info, BREW_GREEDY_CASK=outdated)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                [call] = self.askpass_calls()
+                self.assertEqual(call, "upgrade --cask --greedy " + " ".join(want))
 
     def test_an_app_store_upgrade_that_needs_sudo_names_each_app(self):
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_SUDO="upgrade",

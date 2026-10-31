@@ -1,6 +1,6 @@
 # local-maintenance
 
-Nightly machine upkeep in one sweep: pending macOS / App Store updates,
+Nightly machine upkeep in one sweep: install pending macOS / App Store updates,
 docker prune (Sundays), idle cargo build output in worktrees, backup
 freshness, certificate expiry, log rotation, disk space. Findings that need
 a human go to the run's report, which Reports and Today show; safe fixes
@@ -55,6 +55,15 @@ codex shell-snapshot cache, and `~/.claude/projects` deliberately not in the
 list because Claude Code deletes its own), on Sundays `docker system prune -f` (containers
 and dangling images only — volumes are never pruned, several local services
 keep state in them), and idle build output in worktrees (sd:5994).
+
+`run` installs the pending updates it finds (sd:6927):
+`sudo -A softwareupdate -i <label>` for each macOS update that needs no
+restart, and `sudo -A mas upgrade`. sudo reads the password through
+`local-machine-setup/sudo-askpass.sh`, from the login-Keychain item that
+machine-setup's "Unattended sudo" step makes. Without the item sudo
+refuses, and the update stays a finding with sudo's reason. A macOS
+update that needs a restart stays a finding: the restart is yours.
+`check` installs nothing.
 
 `run` deletes each cargo `target/` folder under `~/worktrees`, at depth 2
 or 3, that nothing wrote or ran for 3 days; `check` names them. An exec
