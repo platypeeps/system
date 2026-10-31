@@ -47,6 +47,7 @@ ROOT = Path(__file__).resolve().parent.parent
 #: (folder, port) -> why this folder names the port without binding it.
 ALLOWED = {
     ("local-machine-setup", 8767): "checks the Tailscale route to the dashboard's port",
+    ("local-genai-traces", 4339): "names the hub's tailnet route, which local-machine-setup serves",
     ("mezmo-aura", 4337): "points Aura's exporter at the local-genai-traces collector",
 }
 

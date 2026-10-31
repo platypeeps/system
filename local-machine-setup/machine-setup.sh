@@ -2213,13 +2213,21 @@ node_link_one() { # target, link
 # global npm CLIs of the .npm files, which status reports through this stage.
 # Everything is idempotent — present things are skipped, not reinstalled.
 # The hub's OTLP endpoint and protocol, the one value both agents' exports
-# take (sd:6944): `genai-traces.sh endpoint` answers it. Sets
-# TELEMETRY_ENDPOINT, TELEMETRY_PROTOCOL and TELEMETRY_OTEL (the
-# claude_settings.py arguments); all three are empty off the hub, where
-# sessions export nothing until the satellite item (sd:6945).
+# take (sd:6944): `genai-traces.sh endpoint` answers it, on the hub its
+# loopback one, on a satellite (hub.json) the hub's tailnet route
+# (sd:6945). Sets TELEMETRY_ENDPOINT, TELEMETRY_PROTOCOL and
+# TELEMETRY_OTEL (the claude_settings.py arguments); all three are empty
+# on a machine that is neither. A hub that is down drops the export; the
+# OTel exporters send in the background, so no session waits on it.
 telemetry_endpoint() {
   TELEMETRY_ENDPOINT="" TELEMETRY_PROTOCOL="" TELEMETRY_OTEL=""
-  plain_hub || hub_holder || return 0
+  if plain_hub || hub_holder; then
+    te_kind=
+  elif [ -e "$SD_HUB_CONFIG" ]; then
+    te_kind=tailnet
+  else
+    return 0
+  fi
   # Claude exports metrics and logs, codex logs: a collector with a traces
   # pipeline alone drops both (sd:6942 adds the other two).
   if ! awk '/^  pipelines:/ { p = 1; next } p && /^    metrics:/ { m = 1 } p && /^    logs:/ { l = 1 }
@@ -2227,8 +2235,9 @@ telemetry_endpoint() {
     echo "  SKIP    agent telemetry: genai-traces has no metrics and logs pipelines (sd:6942)"
     return 0
   fi
-  te_out=$(sh "$ROOT/local-genai-traces/genai-traces.sh" endpoint 2>/dev/null </dev/null) || {
-    echo "  SKIP    agent telemetry: genai-traces.sh endpoint did not answer"
+  # shellcheck disable=SC2086 # te_kind is empty or one word
+  te_out=$(sh "$ROOT/local-genai-traces/genai-traces.sh" endpoint $te_kind 2>/dev/null </dev/null) || {
+    echo "  SKIP    agent telemetry: genai-traces.sh endpoint${te_kind:+ $te_kind} did not answer"
     return 0
   }
   TELEMETRY_ENDPOINT=$(printf '%s\n' "$te_out" | sed -n 's/^OTEL_EXPORTER_OTLP_ENDPOINT=//p')
@@ -2591,9 +2600,9 @@ SD_DB_RUN_LIB='import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run
 # :87670 target contains :8767). Prints `route <origin>` for that pair;
 # otherwise `held <origin> <handler>` when the port serves something else;
 # otherwise nothing. Reads stdin, so the stage and doctor parse one status
-# read the same way.
-sd_serve_scan() {
-  awk -v want=":$SD_DASHBOARD_HTTPS_PORT" -v target="http://127.0.0.1:$SD_DASHBOARD_PORT" '
+# read the same way. Another route passes its HTTPS port and target.
+sd_serve_scan() { # [https port, target]
+  awk -v want=":${1:-$SD_DASHBOARD_HTTPS_PORT}" -v target="${2:-http://127.0.0.1:$SD_DASHBOARD_PORT}" '
     function ours(o) { return length(o) > length(want) && substr(o, length(o) - length(want) + 1) == want }
     /^[a-z][a-z0-9+.-]*:\/\// { origin = $1; mine = ours(origin); next }
     !mine { next }
@@ -2602,8 +2611,11 @@ sd_serve_scan() {
     END { if (route != "") print "route " route; else if (held != "") print "held " held }
   '
 }
-sd_route_origin() { sd_serve_scan | sed -n 's/^route //p'; }
-sd_route_holder() { sd_serve_scan | sed -n 's/^held //p'; }
+sd_route_origin() { sd_serve_scan "$@" | sed -n 's/^route //p'; }
+sd_route_holder() { sd_serve_scan "$@" | sed -n 's/^held //p'; }
+# Satellites' agent telemetry reaches the hub's genai-traces through this
+# HTTPS port (sd:6945); `genai-traces.sh endpoint tailnet` names the same.
+GENAI_TRACES_TAILNET_PORT="${GENAI_TRACES_TAILNET_PORT:-4339}"
 
 # The `database` an sd service config names, or nothing when the file or the
 # key is absent. plutil reads JSON; every profile with an sd agent is a Mac.
@@ -2739,6 +2751,25 @@ stage_sd() {
         # The flags the pack's dashboard/sd_dashboard/runtime.py adds and
         # disables the mount with, so either side can take it down again.
         run tailscale serve --bg "--https=$SD_DASHBOARD_HTTPS_PORT" --set-path=/ "http://127.0.0.1:$SD_DASHBOARD_PORT"
+      fi
+      # The satellites' OTLP/HTTP front door to genai-traces (sd:6945): the
+      # collector stays on loopback. It follows the hub role as the
+      # dashboard's route does.
+      tr_target=$(sh "$ROOT/local-genai-traces/genai-traces.sh" endpoint http 2>/dev/null </dev/null |
+        sed -n 's/^OTEL_EXPORTER_OTLP_ENDPOINT=//p') || tr_target=
+      if [ -z "$tr_target" ]; then
+        echo "  SKIP    telemetry route: genai-traces.sh endpoint http did not answer"
+      else
+        tr_origin=$(printf '%s\n' "$serve" | sd_route_origin "$GENAI_TRACES_TAILNET_PORT" "$tr_target")
+        tr_held=$(printf '%s\n' "$serve" | sd_route_holder "$GENAI_TRACES_TAILNET_PORT" "$tr_target")
+        if [ -n "$tr_origin" ]; then
+          echo "  ok      tailscale serve $tr_origin -> ${tr_target#http://}"
+        elif [ -n "$tr_held" ]; then
+          echo "  DIFFERS tailscale serve https:$GENAI_TRACES_TAILNET_PORT already serves $tr_held — not replacing it; free the port, or set GENAI_TRACES_TAILNET_PORT here and on every satellite, then: $(basename "$SELF") update sd --apply"
+        else
+          echo "  MISSING tailscale serve https:$GENAI_TRACES_TAILNET_PORT -> ${tr_target#http://} — satellites' agent telemetry has no way in"
+          run tailscale serve --bg "--https=$GENAI_TRACES_TAILNET_PORT" --set-path=/ "$tr_target"
+        fi
       fi
     fi
   fi
@@ -5450,6 +5481,18 @@ PYEOF
 # unseen (sd:6944). A WARN, not a FAIL: the sessions run the same without it.
 doctor_telemetry() {
   grep -q '"CLAUDE_CODE_ENABLE_TELEMETRY": *"1"' "$HOME/.claude/settings.json" 2>/dev/null || return 0
+  # A satellite exports to the hub (sd:6945): any HTTP answer from its
+  # endpoint is the collector's receiver; 000 is none.
+  if [ -e "$SD_HUB_CONFIG" ]; then
+    dt_ep=$(sed -n 's/.*"OTEL_EXPORTER_OTLP_ENDPOINT": *"\([^"]*\)".*/\1/p' "$HOME/.claude/settings.json" | head -1)
+    dt_code=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' "$dt_ep/v1/logs" 2>/dev/null) || dt_code=000
+    if [ -n "$dt_ep" ] && [ "$dt_code" != 000 ]; then
+      echo "  ok      agent telemetry: the hub's collector answers over $dt_ep"
+    else
+      echo "  WARN    agent telemetry is on but ${dt_ep:-no endpoint} does not answer — sessions drop their telemetry until it does; on the hub run: $(basename "$SELF") update sd --apply, and local-genai-traces/genai-traces.sh start"
+    fi
+    return 0
+  fi
   if sh "$ROOT/local-genai-traces/genai-traces.sh" status >/dev/null 2>&1 </dev/null; then
     echo "  ok      agent telemetry: genai-traces answers"
   else
@@ -8363,6 +8406,8 @@ environment:
                           (default notify on PATH)
   SD_DASHBOARD_PORT, SD_DASHBOARD_HTTPS_PORT  sd: the dashboard's loopback
                           port and its tailscale serve port (8767, 8443)
+  GENAI_TRACES_TAILNET_PORT  sd: the hub's tailscale serve port to
+                          genai-traces' OTLP HTTP port, for satellites (4339)
   MACHINE_SETUP_SPOTLIGHT_PLIST  tests only: the plist that stands in for
                           Spotlight's VolumeConfiguration.plist
   MACHINE_SETUP_PLISTBUDDY  tests only: the PlistBuddy that edits it

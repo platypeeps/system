@@ -24,7 +24,7 @@ experiment --OTLP grpc :4337 / http :4338--> collector --> Phoenix :6016 (traces
 ```sh
 ./genai-traces.sh start      # once; the containers then come back with Docker
 ./genai-traces.sh status
-./genai-traces.sh endpoint   # the variables an experiment exports (grpc|http|docker)
+./genai-traces.sh endpoint   # the variables an experiment exports (grpc|http|docker|tailnet)
 ./genai-traces.sh tail       # follow the raw file
 ./genai-traces.sh archive    # move rotated raw files to the permanent archive
 ```
@@ -122,6 +122,12 @@ file go on. Clear the endpoint and run `start` to turn it off.
   `status` reports 1 while the marker says started and the containers are missing.
 - **Ports.** 4317/4318 belong to `local-opentelemetry-collector`. This service
   takes 4337/4338, 6016 and 13137 (collector health), so both can run at once.
+- **Satellites reach the hub's collector over the tailnet.** On the hub,
+  `machine-setup.sh update sd --apply` adds a private `tailscale serve`
+  route, HTTPS 4339 to OTLP/HTTP 4338; the collector stays on loopback.
+  `endpoint tailnet` prints `https://<hub>:4339`, the hub named by the
+  satellite's `~/.config/sd/hub.json`, and machine-setup points the
+  satellite's agents there. A hub that is down drops the export.
 - **Containers reach it through the host.** A container exports to
   `http://host.docker.internal:4337`; `127.0.0.1` inside a container is the
   container itself.

@@ -51,6 +51,9 @@ ROUTE_PRESENT = (
     "\n"
     "https://host.example-tailnet.invalid:8443 (tailnet only)\n"
     "|-- / proxy http://127.0.0.1:8767\n"
+    "\n"
+    "https://host.example-tailnet.invalid:4339 (tailnet only)\n"
+    "|-- / proxy http://127.0.0.1:4338\n"
 )
 ROUTE_ABSENT = (
     "https://host.example-tailnet.invalid (Funnel on)\n"
@@ -273,6 +276,20 @@ class SetupAndStatusTest(unittest.TestCase):
         self.assertIn("[dry-run] tailscale serve --bg --https=8443 --set-path=/ http://127.0.0.1:8767", out)
         self.assertFalse(self.fixture.db.exists(), "a dry run created the database")
 
+    def test_setup_lists_the_telemetry_route_as_an_action(self):
+        """sd:6945: satellites export OTLP/HTTP to the hub over the tailnet."""
+        out = self.stage_lines("setup", "sd")
+        self.assertIn("MISSING tailscale serve https:4339 -> 127.0.0.1:4338", out)
+        self.assertIn("[dry-run] tailscale serve --bg --https=4339 --set-path=/ http://127.0.0.1:4338", out)
+
+    def test_a_telemetry_port_held_by_another_route_is_named_and_not_replaced(self):
+        self.fixture.serve_status.write_text(
+            "https://host.example-tailnet.invalid:4339 (tailnet only)\n"
+            "|-- / proxy http://127.0.0.1:9999\n")
+        out = self.stage_lines("update", "sd")
+        self.assertIn("DIFFERS tailscale serve https:4339 already serves https://host.example-tailnet.invalid:4339", out)
+        self.assertNotIn("[dry-run] tailscale serve --bg --https=4339", out)
+
     def test_setup_lists_the_dashboard_agent_as_an_action(self):
         out = self.stage_lines("setup", "agents")
         label = "local.system-tools.sd-dashboard"
@@ -298,6 +315,7 @@ class SetupAndStatusTest(unittest.TestCase):
         self.assertNotRegex(out, DRIFT_WORDS)
         self.assertIn("ok      database", out)
         self.assertIn("ok      tailscale serve https://host.example-tailnet.invalid:8443 -> 127.0.0.1:8767", out)
+        self.assertIn("ok      tailscale serve https://host.example-tailnet.invalid:4339 -> 127.0.0.1:4338", out)
 
     def test_a_profile_without_sd_agents_skips(self):
         (self.fixture.state / "profile").write_text("work\n")
@@ -323,8 +341,8 @@ class SetupAndStatusTest(unittest.TestCase):
                 self.fixture.serve_status.write_text(status)
                 out = self.stage_lines("update", "sd")
                 self.assertIn("DIFFERS tailscale serve https:8443 already serves https://host.example-tailnet.invalid:8443", out)
-                self.assertNotIn("ok      tailscale serve", out)
-                self.assertNotIn("[dry-run] tailscale serve", out)
+                self.assertNotIn("ok      tailscale serve https://host.example-tailnet.invalid:8443", out)
+                self.assertNotIn("[dry-run] tailscale serve --bg --https=8443", out)
 
     def test_a_service_config_naming_another_database_is_drift(self):
         self.fixture.make_database()
