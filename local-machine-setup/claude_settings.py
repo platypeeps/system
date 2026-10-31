@@ -282,8 +282,8 @@ def codex_split(text):
 def codex_unsupported(text):
     """Why the line scan cannot rewrite this file safely, or ''.
 
-    ponytail: a line scan, not a TOML parser (machine-setup runs /usr/bin's 3.9, which
-    has no tomllib); what it cannot read it reports for a hand edit instead.
+    ponytail: a line scan, not a TOML parser; what it cannot read it reports for a
+    hand edit instead. The merge it writes must pass tomllib, so /usr/bin's 3.9 refuses.
     """
     lines = text.splitlines()
     root = next((i for i, line in enumerate(lines) if TOML_HEADER.match(line)), len(lines))
@@ -300,9 +300,11 @@ def codex_gap(text, block):
     if why:
         return f"DIFFERS codex config.toml {why}; set [otel] by hand"
     _, otel, at = codex_split(text)
-    if at is None:
-        return "MISSING [otel]"
-    return "" if "".join(otel).rstrip("\n") + "\n" == block else "STALE [otel]"
+    if at is not None and "".join(otel).rstrip("\n") + "\n" == block:
+        return ""
+    if not has_tomllib():
+        return "DIFFERS codex config.toml [otel] needs Python 3.11+ (tomllib) to check the merge; set [otel] by hand"
+    return "MISSING [otel]" if at is None else "STALE [otel]"
 
 
 def codex_merge(text, block):
@@ -314,13 +316,21 @@ def codex_merge(text, block):
     return before + separator + block + ("\n" + after if after else "")
 
 
-def toml_holds(before, text, block):
-    """TEXT parses, its otel is BLOCK's and the rest is BEFORE's, where tomllib exists (3.11+);
-    True without it."""
+def has_tomllib():
+    """Whether this Python has tomllib (3.11+): the line scan alone does not rewrite."""
     try:
         import tomllib
     except ImportError:
-        return True
+        return False
+    return True
+
+
+def toml_holds(before, text, block):
+    """TEXT parses, its otel is BLOCK's and the rest is BEFORE's; False without tomllib."""
+    try:
+        import tomllib
+    except ImportError:
+        return False
     try:
         old, new = tomllib.loads(before), tomllib.loads(text)
     except tomllib.TOMLDecodeError:

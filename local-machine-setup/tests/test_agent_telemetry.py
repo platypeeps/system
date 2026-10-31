@@ -10,8 +10,10 @@ down. `genai-traces.sh` and `codex` are stubs.
 import json
 import socket
 import subprocess
+import sys
 import tomllib
 import unittest
+from unittest import mock
 
 from tests.test_claude_settings import SyntheticHome, write_exec
 from tests.test_profile_prefs import Case
@@ -58,6 +60,18 @@ class HubTelemetry(SyntheticHome):
         self.codex = self.home / ".codex/config.toml"
         self.codex.parent.mkdir(parents=True)
         self.codex.write_text('model = "gpt-5"\n\n[otel]\nexporter = "none"\n\n[tui]\nnotifications = true\n')
+        # The stage's python3 is this one, with tomllib, whatever /usr/bin holds.
+        self.python3(with_tomllib=True)
+
+    def python3(self, with_tomllib):
+        """Stub python3 as this interpreter; a tomllib.py first on its path hides the real one."""
+        hide = ""
+        if not with_tomllib:
+            blocker = self.stubs.parent / "no-tomllib"
+            blocker.mkdir(exist_ok=True)
+            (blocker / "tomllib.py").write_text('raise ImportError("no tomllib")\n')
+            hide = f'PYTHONPATH="{blocker}" '
+        write_exec(self.stubs / "python3", f'#!/bin/sh\n{hide}exec "{sys.executable}" "$@"\n')
 
     def test_a_dry_run_names_the_block_and_writes_nothing(self):
         out = self.run_tooling()
@@ -164,6 +178,24 @@ class HubTelemetry(SyntheticHome):
         self.codex.write_text(before)
         self.run_tooling("--apply")
         self.assertEqual(self.codex.read_text(), before)
+
+    def test_a_merge_without_tomllib_is_refused(self):
+        """/usr/bin's 3.9 has no tomllib: the line scan alone must not rewrite the file."""
+        self.python3(with_tomllib=False)
+        before = self.codex.read_text()
+        out = self.run_tooling("--apply")
+        self.assertIn("DIFFERS codex config.toml [otel] needs Python 3.11+ (tomllib) "
+                      "to check the merge; set [otel] by hand", out)
+        self.assertEqual(self.codex.read_text(), before)
+
+
+class TomlHolds(unittest.TestCase):
+    def test_no_tomllib_holds_nothing(self):
+        """Fail closed: without tomllib no merge is checked, so none holds."""
+        import claude_settings
+        before = 'model = "gpt-5"\n'
+        with mock.patch.dict(sys.modules, {"tomllib": None}):
+            self.assertFalse(claude_settings.toml_holds(before, before + "\n" + CODEX_OTEL, CODEX_OTEL))
 
 
 class DoctorTelemetry(Case):
