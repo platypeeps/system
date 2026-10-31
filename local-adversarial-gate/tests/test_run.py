@@ -28,7 +28,7 @@ import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "adversarial-gate.sh"
-# How long a hung fake may hold `run --timeout 1` before the bound is judged
+# How long a hung fake may hold `run --timeout BOUND` before the bound is judged
 # not to have fired. The fake sleeps far longer than this, so a run that
 # comes back inside it came back because the script cut it off.
 BOUND_MARGIN = 10
@@ -43,6 +43,9 @@ CUT_OFF = 124
 # seen. KILL is immediate, but a grandchild whose parent is already dead is
 # reaped by launchd on its own schedule, and until then kill -0 finds it.
 GONE_MARGIN = 3
+# The `--timeout` the hung case passes: past the fake's 1 s start, with room
+# for a loaded machine, and well inside BOUND_MARGIN.
+BOUND = 4
 
 REFUSAL = "adversarial-gate: run: --out is required"
 
@@ -81,8 +84,11 @@ class _Collector(http.server.BaseHTTPRequestHandler):
 # starts a grandchild in the background and writes that pid, then blocks in
 # a foreground grandchild. `sleep` and not `exec sleep`, so the fake itself
 # stays the child and the sleeps are its children -- a bound that ends only
-# the child leaves both of them running and holding the pipe.
-HUNG_CODEX = """printf '%s\\n' "$@" > "$CODEX_ARGV"
+# the child leaves both of them running and holding the pipe. The first
+# `sleep 1` stands in for a slow start: under gate load a 1 s bound fired
+# before the fake recorded its argv (sd:6887 review), so BOUND must clear it.
+HUNG_CODEX = """sleep 1
+printf '%s\\n' "$@" > "$CODEX_ARGV"
 sleep 60 &
 echo $! > "$CODEX_GRANDCHILD"
 sleep 60
@@ -266,15 +272,15 @@ class RunAgainstAFakeCodex(unittest.TestCase):
         # ended only the launcher and left its tree running does not pass.
         out = self.tmp / "adversarial.md"
         result, elapsed = self.run_gate(
-            "--repo", str(self.repo), "--out", str(out), "--timeout", "1",
+            "--repo", str(self.repo), "--out", str(out), "--timeout", str(BOUND),
             body=HUNG_CODEX,
         )
         self.assertTrue(self.argv_log.exists(), "codex was never reached: " + result.stderr)
         self.assertEqual(result.returncode, CUT_OFF, result.stderr)
-        self.assertIn("did not answer within 1 s", result.stderr)
+        self.assertIn(f"did not answer within {BOUND} s", result.stderr)
         self.assertLess(
             elapsed, BOUND_MARGIN,
-            f"run --timeout 1 took {elapsed:.1f}s: the bound did not fire",
+            f"run --timeout {BOUND} took {elapsed:.1f}s: the bound did not fire",
         )
         pid = int(self.grandchild.read_text())
         deadline = time.monotonic() + GONE_MARGIN
