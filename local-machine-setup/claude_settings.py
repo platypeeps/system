@@ -29,6 +29,11 @@ import shlex
 import shutil
 import sys
 
+try:
+    import tomllib
+except ImportError:  # /usr/bin's 3.9: a codex merge is refused, not written by the scan alone
+    tomllib = None
+
 #: Claude Code's file tools may not read these (was the pack's fleet stamp, sd:3010).
 SECRET_READ_DENY = [
     "Read(//**/.env)",
@@ -302,7 +307,7 @@ def codex_gap(text, block):
     _, otel, at = codex_split(text)
     if at is not None and "".join(otel).rstrip("\n") + "\n" == block:
         return ""
-    if not has_tomllib():
+    if tomllib is None:
         return "DIFFERS codex config.toml [otel] needs Python 3.11+ (tomllib) to check the merge; set [otel] by hand"
     return "MISSING [otel]" if at is None else "STALE [otel]"
 
@@ -316,20 +321,9 @@ def codex_merge(text, block):
     return before + separator + block + ("\n" + after if after else "")
 
 
-def has_tomllib():
-    """Whether this Python has tomllib (3.11+): the line scan alone does not rewrite."""
-    try:
-        import tomllib
-    except ImportError:
-        return False
-    return True
-
-
 def toml_holds(before, text, block):
     """TEXT parses, its otel is BLOCK's and the rest is BEFORE's; False without tomllib."""
-    try:
-        import tomllib
-    except ImportError:
+    if tomllib is None:
         return False
     try:
         old, new = tomllib.loads(before), tomllib.loads(text)

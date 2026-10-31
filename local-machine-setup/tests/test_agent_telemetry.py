@@ -194,7 +194,7 @@ class TomlHolds(unittest.TestCase):
         """Fail closed: without tomllib no merge is checked, so none holds."""
         import claude_settings
         before = 'model = "gpt-5"\n'
-        with mock.patch.dict(sys.modules, {"tomllib": None}):
+        with mock.patch.object(claude_settings, "tomllib", None):
             self.assertFalse(claude_settings.toml_holds(before, before + "\n" + CODEX_OTEL, CODEX_OTEL))
 
 
