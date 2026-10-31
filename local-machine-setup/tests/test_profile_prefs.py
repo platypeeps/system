@@ -44,6 +44,8 @@ case "$*" in
   "read com.apple.LaunchServices/com.apple.launchservices.secure LSHandlers")
     printf '    {\n        LSHandlerRoleAll = "%s";\n        LSHandlerURLScheme = mailto;\n    },\n' "$LS_MAILTO"
     exit 0 ;;
+  "read /Library/Preferences/com.apple.commerce AutoUpdate")
+    [ -n "$APPSTORE_AUTOUPDATE" ] && echo "$APPSTORE_AUTOUPDATE" && exit 0 ;;
 esac
 exit 1
 """

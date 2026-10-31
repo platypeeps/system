@@ -6,6 +6,8 @@
 # visudo -cf. Install it on each machine.
 change-me ALL=(root) NOPASSWD: HOMEBREW_PREFIX/bin/brew services restart tailscale
 change-me ALL=(root) NOPASSWD: /sbin/pfctl -sr
+# App Store auto-update off; maintenance-nightly installs (sd:6958).
+change-me ALL=(root) NOPASSWD: /usr/bin/defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool false
 # mosh-server's firewall rule, again after each mosh upgrade (sd:6538).
 change-me ALL=(root) NOPASSWD: /usr/libexec/ApplicationFirewall/socketfilterfw --remove HOMEBREW_PREFIX/Cellar/mosh/*/bin/mosh-server
 change-me ALL=(root) NOPASSWD: /usr/libexec/ApplicationFirewall/socketfilterfw --add HOMEBREW_PREFIX/Cellar/mosh/*/bin/mosh-server
