@@ -12,6 +12,9 @@ a repo's CLAUDE.local.md block (the repos stage, sd:3030). Here the source
 wins: a shared key with another value is rewritten. The repo's other keys, its
 comments and every line outside the block stay as they are.
 
+`codex-missing FILE ENDPOINT PROTOCOL` and `codex-merge` hold the [otel] table of
+codex's config.toml at the hub's exporter (sd:6944); the source wins, the rest stays.
+
 `pref-missing FILE KEY VALUE` and `pref-merge FILE KEY VALUE` hold one
 top-level KEY of an app's JSON settings at a JSON VALUE (the macos stage
 turns self-update off with them, sd:3062). Unlike the baseline, a KEY set to
@@ -75,6 +78,24 @@ ENV = {"DISABLE_AUTOUPDATER": "1"}
 #: tool shell was Apple's bash for its file grant (sd:6427), but macOS charges the process
 #: launchd or the terminal started, not the shell (sd:6466); it cost bash 5.
 RETIRED_ENV = {"CLAUDE_CODE_SHELL": "/bin/bash"}
+#: The hub's sessions export metrics and logs to genai-traces (sd:6944); the stage passes
+#: `--otel ENDPOINT PROTOCOL HOST` on the hub only. The source wins here: a key with another
+#: value is rewritten, so the endpoint follows genai-traces and prompts stay out of the logs.
+#: cron-jobs.sh adds sd.job to OTEL_RESOURCE_ATTRIBUTES through --settings: this env beats
+#: the process environment.
+def otel_env(endpoint, protocol, host):
+    return {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+        "OTEL_EXPORTER_OTLP_PROTOCOL": protocol,
+        "OTEL_RESOURCE_ATTRIBUTES": f"service.namespace=sd-workflow,host.name={host}",
+        "OTEL_LOG_USER_PROMPTS": "0",
+        "OTEL_LOG_TOOL_DETAILS": "0",
+    }
+
+
 #: The same paths for opencode's read permission, whose `*` also matches `/`.
 OPENCODE_READ_DENY = ["*" + rule[5:-1].removeprefix("//**/").removeprefix("~/").replace("**", "*").lstrip("*")
                       for rule in SECRET_READ_DENY]
@@ -102,7 +123,7 @@ def hook_commands(settings, event):
     return [hook.get("command") for group in groups for hook in group.get("hooks", [])]
 
 
-def missing(settings):
+def missing(settings, otel=None):
     deny = settings.get("permissions", {}).get("deny", [])
     gaps = [f"permissions.deny {rule}" for rule in SECRET_READ_DENY + TOOL_DENY if rule not in deny]
     gaps += [f"STALE permissions.deny {rule} (retired)" for rule in RETIRED_DENY if rule in deny]
@@ -112,6 +133,8 @@ def missing(settings):
     gaps += [f"env.{key}" for key in ENV if key not in settings.get("env", {})]
     gaps += [f"STALE env.{key} (retired)" for key, value in RETIRED_ENV.items()
              if settings.get("env", {}).get(key) == value]
+    gaps += [("env." if key not in settings.get("env", {}) else "STALE env.") + f"{key}={value}"
+             for key, value in (otel or {}).items() if settings.get("env", {}).get(key) != value]
     if SESSION_START not in hook_commands(settings, "SessionStart"):
         gaps.append(f"hooks.SessionStart {SESSION_START}")
     if GUARD not in hook_commands(settings, "PreToolUse"):
@@ -119,7 +142,7 @@ def missing(settings):
     return gaps
 
 
-def merge(settings):
+def merge(settings, otel=None):
     deny = settings.setdefault("permissions", {}).setdefault("deny", [])
     deny[:] = [rule for rule in deny if rule not in RETIRED_DENY]
     deny += [rule for rule in SECRET_READ_DENY + TOOL_DENY if rule not in deny]
@@ -133,6 +156,7 @@ def merge(settings):
     for key, value in RETIRED_ENV.items():
         if env.get(key) == value:
             del env[key]
+    env.update(otel or {})
     if SESSION_START not in hook_commands(settings, "SessionStart"):
         hook = {"hooks": [{"type": "command", "command": SESSION_START}]}
         settings.setdefault("hooks", {}).setdefault("SessionStart", []).append(hook)
@@ -216,6 +240,46 @@ def opencode_merge(text):
     return merged
 
 
+def codex_otel(endpoint, protocol):
+    """The [otel] table codex exports its logs with (sd:6944): grpc, or OTLP/HTTP's binary."""
+    if protocol == "grpc":
+        exporter = f'{{ otlp-grpc = {{ endpoint = "{endpoint}" }} }}'
+    else:
+        exporter = f'{{ otlp-http = {{ endpoint = "{endpoint}/v1/logs", protocol = "binary" }} }}'
+    return f'[otel]\nenvironment = "sd-workflow"\nexporter = {exporter}\nlog_user_prompt = false\n'
+
+
+def codex_section(text):
+    """(start, end) line indexes of the [otel] table in config.toml, or None."""
+    lines = text.splitlines(keepends=True)
+    starts = [i for i, line in enumerate(lines) if line.strip() == "[otel]"]
+    if not starts:
+        return None
+    end = next((i for i in range(starts[0] + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    while end > starts[0] + 1 and not lines[end - 1].strip():
+        end -= 1
+    return starts[0], end
+
+
+def codex_gap(text, block):
+    """'' when config.toml holds BLOCK as its [otel] table; else MISSING or STALE."""
+    section = codex_section(text)
+    if section is None:
+        return "MISSING [otel]"
+    lines = text.splitlines(keepends=True)
+    return "" if "".join(lines[section[0]:section[1]]) == block else "STALE [otel]"
+
+
+def codex_merge(text, block):
+    """The source wins: the [otel] table is replaced whole, or appended; the rest stays."""
+    section = codex_section(text)
+    lines = text.splitlines(keepends=True)
+    if section is None:
+        separator = "" if not text or text.endswith("\n\n") else "\n" if text.endswith("\n") else "\n\n"
+        return text + separator + block
+    return "".join(lines[:section[0]]) + block + "".join(lines[section[1]:])
+
+
 def pref_gap(text, key, value):
     """'' when KEY holds VALUE; else what the file has instead."""
     config = load_jsonc(text) if text.strip() else {}
@@ -262,7 +326,17 @@ def main(argv):
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write(merged)
         return
-    verb, path = argv
+    if argv[:1] in (["codex-missing"], ["codex-merge"]):
+        verb, path, endpoint, protocol = argv
+        text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+        block = codex_otel(endpoint, protocol)
+        gap = codex_gap(text, block)
+        if verb == "codex-missing":
+            print(gap)
+        elif gap:
+            write(path, codex_merge(text, block))
+        return
+    verb, path, *extra = argv
     if verb.startswith("local-"):
         try:
             text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
@@ -286,11 +360,14 @@ def main(argv):
             write(path, opencode_merge(text))
         return
     settings = json.loads(text)
+    otel = otel_env(*extra[1:]) if extra[:1] == ["--otel"] and len(extra) == 4 else None
+    if extra and otel is None:
+        sys.exit("usage: claude_settings.py missing|merge FILE [--otel ENDPOINT PROTOCOL HOST]")
     if verb == "missing":
-        for gap in missing(settings):
+        for gap in missing(settings, otel):
             print(gap)
-    elif verb == "merge" and missing(settings):
-        write(path, json.dumps(merge(settings), indent=2, ensure_ascii=False) + "\n")
+    elif verb == "merge" and missing(settings, otel):
+        write(path, json.dumps(merge(settings, otel), indent=2, ensure_ascii=False) + "\n")
     elif verb != "merge":
         sys.exit("usage: claude_settings.py missing|merge|opencode-missing|opencode-merge|local-missing|local-merge FILE"
                  f" | pref-missing|pref-merge FILE KEY VALUE (got {verb})")

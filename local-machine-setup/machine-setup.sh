@@ -2212,6 +2212,27 @@ node_link_one() { # target, link
 # rtk hooks, and the mailto handler (via duti, in common.brew). Also the
 # global npm CLIs of the .npm files, which status reports through this stage.
 # Everything is idempotent — present things are skipped, not reinstalled.
+# The hub's OTLP endpoint and protocol, the one value both agents' exports
+# take (sd:6944): `genai-traces.sh endpoint` answers it. Sets
+# TELEMETRY_ENDPOINT, TELEMETRY_PROTOCOL and TELEMETRY_OTEL (the
+# claude_settings.py arguments); all three are empty off the hub, where
+# sessions export nothing until the satellite item (sd:6945).
+telemetry_endpoint() {
+  TELEMETRY_ENDPOINT="" TELEMETRY_PROTOCOL="" TELEMETRY_OTEL=""
+  plain_hub || hub_holder || return 0
+  te_out=$(sh "$ROOT/local-genai-traces/genai-traces.sh" endpoint 2>/dev/null </dev/null) || {
+    echo "  SKIP    agent telemetry: genai-traces.sh endpoint did not answer"
+    return 0
+  }
+  TELEMETRY_ENDPOINT=$(printf '%s\n' "$te_out" | sed -n 's/^OTEL_EXPORTER_OTLP_ENDPOINT=//p')
+  TELEMETRY_PROTOCOL=$(printf '%s\n' "$te_out" | sed -n 's/^OTEL_EXPORTER_OTLP_PROTOCOL=//p')
+  [ -n "$TELEMETRY_ENDPOINT" ] && [ -n "$TELEMETRY_PROTOCOL" ] || {
+    TELEMETRY_ENDPOINT="" TELEMETRY_PROTOCOL=""
+    return 0
+  }
+  TELEMETRY_OTEL="--otel $TELEMETRY_ENDPOINT $TELEMETRY_PROTOCOL $(hostname -s | tr '[:upper:]' '[:lower:]')"
+}
+
 stage_tooling() {
   echo "== tooling"
   if command -v fnm >/dev/null 2>&1; then
@@ -2338,14 +2359,19 @@ open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$hud_config"
     # cask). It adds missing entries after a
     # backup and never touches the operator's own; a STALE line is a rule an
     # older baseline added, which merge takes back out (RETIRED_DENY).
+    # On the hub the baseline adds the OTel export to genai-traces (sd:6944);
+    # telemetry_endpoint reads the one endpoint codex gets too.
+    telemetry_endpoint
     if [ -f "$HOME/.claude/settings.json" ]; then
-      if gaps=$(python3 "$DIR/claude_settings.py" missing "$HOME/.claude/settings.json" 2>/dev/null); then
+      # shellcheck disable=SC2086 # TELEMETRY_OTEL is empty or three words
+      if gaps=$(python3 "$DIR/claude_settings.py" missing "$HOME/.claude/settings.json" $TELEMETRY_OTEL 2>/dev/null); then
         if [ -z "$gaps" ]; then
           echo "  ok      settings.json baseline"
         else
           printf '%s\n' "$gaps" | sed -e 's/^STALE /  STALE   settings.json /' -e t -e 's/^/  MISSING settings.json /'
           if run_ok backup_file "$HOME/.claude/settings.json"; then
-            run python3 "$DIR/claude_settings.py" merge "$HOME/.claude/settings.json"
+            # shellcheck disable=SC2086
+            run python3 "$DIR/claude_settings.py" merge "$HOME/.claude/settings.json" $TELEMETRY_OTEL
           fi
         fi
       else
@@ -2366,6 +2392,23 @@ open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$hud_config"
     self_update_json "$claude_mem" CLAUDE_MEM_WORK_STATE_ENABLED '"false"'
   else
     echo "  SKIP    no $claude_mem (claude-mem not set up)"
+  fi
+  # Codex on the hub exports its logs to the same endpoint, prompts left out
+  # (sd:6944). The [otel] table is the source's: another one is replaced.
+  codex_toml="$HOME/.codex/config.toml"
+  if [ -n "$TELEMETRY_ENDPOINT" ] && command -v codex >/dev/null 2>&1 && [ -f "$codex_toml" ]; then
+    gap=$(python3 "$DIR/claude_settings.py" codex-missing "$codex_toml" "$TELEMETRY_ENDPOINT" "$TELEMETRY_PROTOCOL" 2>/dev/null) \
+      || gap="DIFFERS config.toml does not read"
+    case $gap in
+      '') echo "  ok      codex config.toml [otel]" ;;
+      DIFFERS*) echo "  $gap; [otel] not checked" ;;
+      *)
+        case $gap in MISSING*) echo "  MISSING codex config.toml [otel]" ;; *) echo "  STALE   codex config.toml [otel]" ;; esac
+        if run_ok backup_file "$codex_toml"; then
+          run python3 "$DIR/claude_settings.py" codex-merge "$codex_toml" "$TELEMETRY_ENDPOINT" "$TELEMETRY_PROTOCOL"
+        fi
+        ;;
+    esac
   fi
   # opencode gets the same secret-read denies as a top-level permission.read
   # block, inserted as text so the operator's comments stay. A file with its
@@ -5372,6 +5415,17 @@ print(line)
 PYEOF
 }
 
+# Sessions that export OTel need genai-traces up, or every export fails
+# unseen (sd:6944). A WARN, not a FAIL: the sessions run the same without it.
+doctor_telemetry() {
+  grep -q '"CLAUDE_CODE_ENABLE_TELEMETRY": *"1"' "$HOME/.claude/settings.json" 2>/dev/null || return 0
+  if sh "$ROOT/local-genai-traces/genai-traces.sh" status >/dev/null 2>&1 </dev/null; then
+    echo "  ok      agent telemetry: genai-traces answers"
+  else
+    echo "  WARN    agent telemetry is on but genai-traces status is not 0 — run: local-genai-traces/genai-traces.sh start"
+  fi
+}
+
 cmd_doctor() {
   fails=0
   echo "== doctor"
@@ -5438,6 +5492,7 @@ cmd_doctor() {
   else
     echo "  --      docker not checked (not installed, no services in this profile)"
   fi
+  doctor_telemetry
 
   if command -v fnm >/dev/null 2>&1; then
     echo "  ok      fnm ($(fnm current 2>/dev/null || echo no default node))"

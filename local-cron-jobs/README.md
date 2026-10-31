@@ -128,6 +128,11 @@ JOB_RESULT_OK=""             # optional ERE the reply's last `RESULT: ` line mus
 JOB_TIMEOUT=""               # optional run limit: N seconds, or Ns, Nm, Nh; 0 = none
 ```
 
+Each run appends `sd.job=<name>` to `OTEL_RESOURCE_ATTRIBUTES`, so its OTel
+export names the job (sd:6944). A command job gets it in its environment. A
+prompt job's claude gets it through `--settings`, since settings.json's env
+beats the environment; only where settings.json sets the attributes.
+
 A run that hangs would hold the job's lock, and every later slot would log
 `skipped: previous run still active` and exit 0. `JOB_TIMEOUT` bounds each run.
 A job that sets none gets `CRON_JOBS_JOB_TIMEOUT` from `.env`, else two hours.
