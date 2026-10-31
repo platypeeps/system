@@ -307,6 +307,14 @@ setting row in the hub's workflow database, `refresh.request`, with a new id.
 Every satellite answers it on its next `follow` run; nothing runs SSH. The
 rows and the verbs that read and write them are `satellite_refresh.py`.
 
+The hub's refresh writes the same request itself when the `hub-pin` it
+pushes moved system across a change to `local-machine-setup/` (sd:6949),
+so a lane merge there reaches every satellite with no hand-run script. A
+satellite that is offline answers on its first `follow` back. A step that
+needs sudo runs nothing there and prints its `DEFER needs sudo` line. A
+first pin asks nothing; a request the hub's database refuses fails the
+refresh and names the dashboard control.
+
 1. `follow` asks `satellite_refresh.py check` whether the request is
    answered. A request this host's `refresh.result.<host>` row does not name
    as done is pending. The dashboard lists each host whose
