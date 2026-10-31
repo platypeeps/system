@@ -250,16 +250,20 @@ def codex_otel(endpoint, protocol):
 
 
 #: A table header line, and one in the otel hierarchy: [otel], [otel.exporter.otlp-grpc],
-#: [[otel.x]]; a quoted "otel" too.
-TOML_HEADER = re.compile(r"\s*\[")
-OTEL_HEADER = re.compile(r'\s*\[\[?\s*"?otel"?\s*[.\]]')
+#: [[otel.x]], with the key bare, "quoted" or 'quoted' and spaces around the dots.
+#: A comma or `=` makes it an array line, not a header.
+OTEL_KEY = r"""(?:otel|"otel"|'otel')"""
+TOML_HEADER = re.compile(r"\s*\[\[?[^\[\]=,]*\]\]?\s*(?:#.*)?$")
+OTEL_HEADER = re.compile(r"\s*\[\[?\s*" + OTEL_KEY + r"\s*[.\]]")
+#: otel set at the root by a dotted key or an inline table: no table to replace.
+OTEL_ROOT_KEY = re.compile(r"\s*" + OTEL_KEY + r"\s*[.=]")
 
 
 def codex_split(text):
     """(rest, otel, at): the lines outside and inside every otel table, and where the first began.
 
     The child tables go with [otel]: one left beside the inline exporter made the file
-    invalid. A dotted `otel.` key at the root is not seen.
+    invalid.
     """
     rest, otel, inside, at = [], [], False, None
     for line in text.splitlines(keepends=True):
@@ -271,8 +275,26 @@ def codex_split(text):
     return rest, otel, at
 
 
+def codex_unsupported(text):
+    """Why the line scan cannot rewrite this file safely, or ''.
+
+    ponytail: a line scan, not a TOML parser (machine-setup runs /usr/bin's 3.9, which
+    has no tomllib); what it cannot read it reports for a hand edit instead.
+    """
+    lines = text.splitlines()
+    root = next((i for i, line in enumerate(lines) if TOML_HEADER.match(line)), len(lines))
+    if any(OTEL_ROOT_KEY.match(line) for line in lines[:root]):
+        return "sets otel by a root key"
+    if '"""' in text or "'''" in text:
+        return "has a multi-line string"
+    return ""
+
+
 def codex_gap(text, block):
-    """'' when config.toml's otel tables are BLOCK alone; else MISSING or STALE."""
+    """'' when config.toml's otel tables are BLOCK alone; else MISSING, STALE or DIFFERS."""
+    why = codex_unsupported(text)
+    if why:
+        return f"DIFFERS codex config.toml {why}; set [otel] by hand"
     _, otel, at = codex_split(text)
     if at is None:
         return "MISSING [otel]"
@@ -286,6 +308,18 @@ def codex_merge(text, block):
     before, after = "".join(rest[:at]), "".join(rest[at:])
     separator = "" if not before or before.endswith("\n\n") else "\n" if before.endswith("\n") else "\n\n"
     return before + separator + block + ("\n" + after if after else "")
+
+
+def toml_holds(text, block):
+    """TEXT parses and its otel is BLOCK's, where tomllib exists (3.11+); True without it."""
+    try:
+        import tomllib
+    except ImportError:
+        return True
+    try:
+        return tomllib.loads(text).get("otel") == tomllib.loads(block)["otel"]
+    except tomllib.TOMLDecodeError:
+        return False
 
 
 def pref_gap(text, key, value):
@@ -341,8 +375,13 @@ def main(argv):
         gap = codex_gap(text, block)
         if verb == "codex-missing":
             print(gap)
+        elif gap.startswith("DIFFERS"):
+            sys.exit(f"claude_settings.py: {gap}")
         elif gap:
-            write(path, codex_merge(text, block))
+            merged = codex_merge(text, block)
+            if codex_gap(merged, block) or not toml_holds(merged, block):
+                sys.exit("claude_settings.py: the merged config.toml does not hold [otel]; set it by hand")
+            write(path, merged)
         return
     verb, path, *extra = argv
     if verb.startswith("local-"):

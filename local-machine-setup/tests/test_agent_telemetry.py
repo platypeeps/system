@@ -130,6 +130,31 @@ class HubTelemetry(SyntheticHome):
             '"x-a" = "b"\n')
 
 
+    def test_quoted_and_spaced_otel_headers_are_replaced_whole(self):
+        for header in ("['otel']", '["otel"]', "[ otel ]", "[ 'otel' . exporter . otlp-grpc ]"):
+            with self.subTest(header=header):
+                body = "exporter = 'none'" if "exporter" not in header else 'endpoint = "http://127.0.0.1:1"'
+                self.assert_codex_otel_replaced(
+                    f'model = "gpt-5"\n\n{header}\n{body}\n\n[tui]\nnotifications = true\n')
+
+    def test_a_root_otel_key_is_reported_and_left_alone(self):
+        """A dotted or inline root key cannot be replaced by table: the file stays as it is."""
+        for key in ("otel.exporter = 'none'", "otel = { exporter = 'none' }", "'otel'.exporter = 'none'"):
+            with self.subTest(key=key):
+                before = f'model = "gpt-5"\n{key}\n\n[tui]\nnotifications = true\n'
+                self.codex.write_text(before)
+                out = self.run_tooling("--apply")
+                self.assertIn("DIFFERS codex config.toml sets otel by a root key; set [otel] by hand", out)
+                self.assertEqual(self.codex.read_text(), before)
+
+    def test_a_merge_that_would_not_parse_is_refused(self):
+        """An [otel] line inside a multi-line string fools the scanner; tomllib catches it."""
+        before = 'model = "gpt-5"\nnotes = """\n[otel]\n"""\n\n[tui]\nnotifications = true\n'
+        self.codex.write_text(before)
+        self.run_tooling("--apply")
+        self.assertEqual(self.codex.read_text(), before)
+
+
 class DoctorTelemetry(Case):
     def doctor(self, status):
         write_exec(self.folder.parent / "local-genai-traces/genai-traces.sh", TRACES_STUB)

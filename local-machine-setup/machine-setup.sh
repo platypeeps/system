@@ -2405,10 +2405,10 @@ open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$hud_config"
   codex_toml="$HOME/.codex/config.toml"
   if [ -n "$TELEMETRY_ENDPOINT" ] && command -v codex >/dev/null 2>&1 && [ -f "$codex_toml" ]; then
     gap=$(python3 "$DIR/claude_settings.py" codex-missing "$codex_toml" "$TELEMETRY_ENDPOINT" "$TELEMETRY_PROTOCOL" 2>/dev/null) \
-      || gap="DIFFERS config.toml does not read"
+      || gap="DIFFERS codex config.toml does not read; [otel] not checked"
     case $gap in
       '') echo "  ok      codex config.toml [otel]" ;;
-      DIFFERS*) echo "  $gap; [otel] not checked" ;;
+      DIFFERS*) echo "  $gap" ;;
       *)
         case $gap in MISSING*) echo "  MISSING codex config.toml [otel]" ;; *) echo "  STALE   codex config.toml [otel]" ;; esac
         if run_ok backup_file "$codex_toml"; then
