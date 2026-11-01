@@ -1,13 +1,14 @@
-"""The brew stage: taps, formulae and casks, and one pin (sd:6463).
+"""The brew stage: taps, formulae and casks, and no pins (sd:7059).
 
-The python@X.Y that PATH python3 runs stays pinned: each upgrade is a new
-Python.app, which the application firewall blocked, so sd-serve admitted
-no satellite. Any other pin an older stage made (python@*, opencode,
-codex) is removed (sd:6433).
+No python is pinned. sd:6463 pinned the one sd-serve runs: each upgrade is
+a new Python.app, which the application firewall blocked, so sd-serve
+admitted no satellite. The operator ruled no pins on any machine; the
+stage allows a blocked Python.app again instead, through the repair
+drop-in's sudo -n. Any pin an older stage made (python@*, opencode, codex)
+is removed (sd:6433).
 
 sd-serve may run its own uv python instead (sd:6492): the sd stage installs it
-outside Homebrew, and its plist's PATH starts with it. No formula then holds
-sd-serve, so nothing is pinned, and python@X.Y's old pin reads stale.
+outside Homebrew, and its plist's PATH starts with it.
 
 The script runs from a copy of this folder under a temporary root; `brew` is
 a stub that logs each install and pin in a file, `python3` a stub that
@@ -179,73 +180,42 @@ class BrewStageTest(unittest.TestCase):
 
         self.assertNotIn("BREW_PINNED", script)
 
-    def test_the_brew_stage_pins_only_the_serving_python(self):
-        """sd:6463: an unpinned upgrade blocked sd-serve in the firewall."""
-        dry = self.run_verb("update", "brew", formulae="opencode codex jq")
-        self.assertIn("DIFFERS python@3.15 not pinned", dry.stdout)
-        self.assertEqual(self.pin_calls(), [])
+    def test_the_serving_python_is_unpinned_not_pinned(self):
+        """sd:7059: the operator ruled no pins; sd:6463's pin goes too."""
+        self.pins.write_text("pin python@3.15\n")
 
-        result = self.run_verb("update", "brew", "--apply", formulae="opencode codex jq")
+        result = self.run_verb("update", "brew", "--apply")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.pin_calls(), ["pin python@3.15"])
-        again = self.run_verb("update", "brew", formulae="opencode codex jq")
-        self.assertNotIn("pinned", again.stdout)
+        self.assertIn("DIFFERS python@3.15 pinned", result.stdout)
+        self.assertNotIn("not pinned", result.stdout)
+        self.assertEqual(self.pin_calls(), [])
+        self.assertEqual(self.unpin_calls(), ["unpin python@3.15"])
 
-    def test_the_python_is_pinned_before_any_install(self):
-        """Review: an install that needs a newer python upgraded it first."""
-        (self.config_root / "machine-setup/profiles/personal.brew").write_text("jq\n")
-        self.run_verb("update", "brew", "--apply")
-
-        self.assertEqual(self.pins.read_text().splitlines()[:2], ["pin python@3.15", "install jq"])
-
-    def test_the_upgrade_sweep_pins_the_python_first(self):
-        """Review class pass: a bare `brew upgrade` moved an unpinned python."""
+    def test_the_upgrade_sweep_pins_nothing_before_brew_upgrade(self):
+        """sd:7059: the sweep pinned the serving python before `brew upgrade`."""
         self.run_verb("upgrade", "--apply")
 
-        self.assertEqual(self.pins.read_text().splitlines()[:2], ["pin python@3.15", "upgrade"])
+        self.assertEqual(self.pins.read_text().splitlines(), ["upgrade"])
 
-    def test_a_failed_pin_installs_and_upgrades_nothing(self):
-        """Review: a failed `brew pin` let installs and the sweep move python."""
-        (self.config_root / "machine-setup/profiles/personal.brew").write_text("jq\n")
-        stage = self.run_verb("update", "brew", "--apply", PIN_RC="1")
-        sweep = self.run_verb("upgrade", "--apply", PIN_RC="1")
+    def test_a_blocked_brew_python_app_is_allowed_again_under_apply(self):
+        """sd:7059: an upgrade makes a new Python.app, which the firewall
+        blocked (sd:6463); the stage adds it again through sudo -n."""
+        fw_log = self.stubs.parent / "fw.log"
+        blocked = {"FW_LIST": f"1 : {PYTHON_APP} \\n             (Block incoming connections)\\n",
+                   "FW_LOG": str(fw_log)}
 
-        self.assertIn("FAILED  brew stage: the serving python is not pinned; nothing changed", stage.stdout)
-        self.assertIn("python pin (brew upgrade skipped)", sweep.stdout)
-        self.assertNotEqual(sweep.returncode, 0)
-        self.assertFalse(self.pins.exists(), self.pins.read_text() if self.pins.exists() else "")
+        dry = self.run_verb("update", "brew", **blocked)
+        self.assertIn("[dry-run] sudo -n ", dry.stdout)
+        self.assertFalse([l for l in fw_log.read_text().splitlines() if l != "--listapps"])
 
-    def test_the_pin_follows_the_python_on_path(self):
-        self.run_verb("update", "brew", "--apply",
-                      PY_PREFIX="/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14")
-
-        self.assertEqual(self.pin_calls(), ["pin python@3.14"])
-
-    def test_the_pin_follows_sd_serves_path_not_the_callers(self):
-        """sd:6463 review: sd-serve's plist sets its own PATH; a caller's
-        python3 named another formula."""
-        served = self.stubs.parent / "served"
-        write_exec(served / "python3", PYTHON3_STUB.replace(
-            "${PY_PREFIX:-", "${SERVED_PREFIX:-"))
-        agents = self.home / "Library/LaunchAgents"
-        agents.mkdir(parents=True)
-        (agents / f"{fixture_config.LABEL_PREFIX}.sd-serve.plist").write_bytes(plistlib.dumps(
-            {"Label": "x", "EnvironmentVariables": {"PATH": f"{served}:/usr/bin:/bin"}}))
-        self.run_verb("update", "brew", "--apply",
-                      SERVED_PREFIX="/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14")
-
-        self.assertEqual(self.pin_calls(), ["pin python@3.14"])
-
-    def test_a_python_brew_does_not_own_is_never_pinned(self):
-        """Review: Apple's or pyenv's python3 named a formula by version alone."""
-        for prefix in ("/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9",
-                       f"{self.home}/.pyenv/versions/3.15.2"):
-            with self.subTest(prefix):
-                result = self.run_verb("update", "brew", "--apply", PY_PREFIX=prefix)
-
-                self.assertNotIn("not pinned", result.stdout)
-                self.assertEqual(self.pin_calls(), [])
+        write_exec(self.stubs / "sudo", SUDO_N_STUB)
+        for verb in (("update", "brew", "--apply"), ("upgrade", "--apply")):
+            with self.subTest(verb=verb):
+                fw_log.unlink()
+                result = self.run_verb(*verb, **blocked)
+                self.assertEqual([l for l in fw_log.read_text().splitlines() if l != "--listapps"],
+                                 [f"--add {PYTHON_APP}", f"--unblockapp {PYTHON_APP}"], result.stdout)
 
     def tailscale_profile(self, brew="", cask="tailscale-app\n"):
         profiles = self.config_root / "machine-setup/profiles"
@@ -341,19 +311,8 @@ class BrewStageTest(unittest.TestCase):
 
         self.assertNotIn("tailscale CLI", self.run_verb("update", "brew", **env).stdout)
 
-    def test_status_counts_an_unpinned_python_as_drift(self):
-        unpinned = self.run_verb("status")
-        self.pins.write_text("pin python@3.15\n")
-        clean = self.run_verb("status")
-
-        self.assertIn("  unpinned: python@3.15", unpinned.stdout)
-        self.assertNotIn("unpinned", clean.stdout)
-        drift = [int(r.stdout.split("drift   : ")[1].split()[0]) for r in (unpinned, clean)]
-        self.assertEqual(drift[0] - drift[1], 1)
-
     def test_a_firewall_block_on_the_serving_python_is_reported(self):
-        """sd:6463: fixing it needs sudo, so it is reported, never changed."""
-        self.pins.write_text("pin python@3.15\n")
+        """sd:6463: status reports it; the stage fixes it only under --apply."""
         blocked = {"FW_LIST": f"1 : {PYTHON_APP} \\n             (Block incoming connections)\\n"}
         allowed = {"FW_LIST": f"1 : {PYTHON_APP} \\n             (Allow incoming connections)\\n"}
 
@@ -557,31 +516,31 @@ class BrewStageTest(unittest.TestCase):
     def test_a_pin_the_old_stage_made_is_unpinned_under_apply(self):
         """sd:6433 review: a machine the old stage ran on keeps an older
         python pinned, and a bare `brew upgrade` fails on a dependent that
-        needs a newer one. The serving python and a pin made by hand on
-        another formula stay."""
+        needs a newer one. A pin made by hand on another formula stays; the
+        serving python's goes too (sd:7059)."""
         self.pins.write_text("pin python@3.12\npin python@3.15\npin opencode\npin jq\n")
         dry = self.run_verb("update", "brew", formulae="opencode jq")
 
         self.assertIn("DIFFERS python@3.12 pinned", dry.stdout)
         self.assertIn("DIFFERS opencode pinned", dry.stdout)
-        self.assertNotIn("python@3.15 pinned", dry.stdout)
+        self.assertIn("DIFFERS python@3.15 pinned", dry.stdout)
         self.assertNotIn("jq pinned", dry.stdout)
         self.assertEqual(self.unpin_calls(), [])
 
         result = self.run_verb("update", "brew", "--apply", formulae="opencode jq")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.unpin_calls(), ["unpin python@3.12", "unpin opencode"])
+        self.assertEqual(self.unpin_calls(), ["unpin python@3.12", "unpin python@3.15", "unpin opencode"])
         again = self.run_verb("update", "brew", formulae="opencode jq")
         self.assertNotIn("pinned", again.stdout)
 
     def test_status_counts_a_pin_the_old_stage_made_as_drift(self):
-        self.pins.write_text("pin python@3.15\npin python@3.12\n")
-        pinned = self.run_verb("status")
         self.pins.write_text("pin python@3.15\n")
+        pinned = self.run_verb("status")
+        self.pins.write_text("")
         clean = self.run_verb("status")
 
-        self.assertIn("  pinned  : python@3.12", pinned.stdout)
+        self.assertIn("  pinned  : python@3.15", pinned.stdout)
         self.assertNotIn("pinned  :", clean.stdout)
         drift = [int(r.stdout.split("drift   : ")[1].split()[0]) for r in (pinned, clean)]
         self.assertEqual(drift[0] - drift[1], 1)
@@ -590,7 +549,7 @@ class BrewStageTest(unittest.TestCase):
         """sd:3536: a failed list is unknown, not "nothing pinned"."""
         result = self.run_verb("update", "brew", "--apply", PINNED_RC="1")
 
-        self.assertIn("FAILED  brew stage: the serving python is not pinned; nothing changed", result.stdout)
+        self.assertIn("FAILED  brew stage: brew could not list its pins; none unpinned", result.stdout)
         self.assertEqual(self.unpin_calls(), [])
         status = self.run_verb("status", PINNED_RC="1")
         self.assertIn("pinned  : unknown (brew could not list its pins)", status.stdout)
