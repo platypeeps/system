@@ -1,6 +1,6 @@
 """The brew stage: taps, formulae and casks, and one pin (sd:6463).
 
-The python@X.Y that PATH python3 runs stays pinned: each upgrade is a new
+The python@X.Y that sd-serve's python3 runs stays pinned: each upgrade is a new
 Python.app, which the application firewall blocked, so sd-serve admitted
 no satellite. Any other pin an older stage made (python@*, opencode,
 codex) is removed (sd:6433).
@@ -153,6 +153,10 @@ class BrewStageTest(unittest.TestCase):
         for name in ("defaults", "sudo", "launchctl", "mas"):
             write_exec(self.stubs / name, EXIT_1_STUB)
         fixture_config.seal(self, self.stubs)
+        # sd-serve installed, on the caller's PATH: the machine it runs on.
+        self.serve_plist = self.home / f"Library/LaunchAgents/{fixture_config.LABEL_PREFIX}.sd-serve.plist"
+        self.serve_plist.parent.mkdir(parents=True)
+        self.serve_plist.write_bytes(plistlib.dumps({"Label": "x"}))
 
     def run_verb(self, *args, formulae="", **extra):
         env = {
@@ -229,13 +233,27 @@ class BrewStageTest(unittest.TestCase):
         write_exec(served / "python3", PYTHON3_STUB.replace(
             "${PY_PREFIX:-", "${SERVED_PREFIX:-"))
         agents = self.home / "Library/LaunchAgents"
-        agents.mkdir(parents=True)
         (agents / f"{fixture_config.LABEL_PREFIX}.sd-serve.plist").write_bytes(plistlib.dumps(
             {"Label": "x", "EnvironmentVariables": {"PATH": f"{served}:/usr/bin:/bin"}}))
         self.run_verb("update", "brew", "--apply",
                       SERVED_PREFIX="/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14")
 
         self.assertEqual(self.pin_calls(), ["pin python@3.14"])
+
+    def test_a_machine_without_sd_serve_pins_no_python(self):
+        """A satellite runs no sd-serve, so no python is held back there:
+        the caller's python3 got pinned, and `brew upgrade` then refused
+        sphinx-doc on terra. A pin the stage left behind goes."""
+        self.serve_plist.unlink()
+        self.pins.write_text("pin python@3.15\n")
+
+        result = self.run_verb("update", "brew", "--apply")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("not pinned", result.stdout)
+        self.assertIn("DIFFERS python@3.15 pinned", result.stdout)
+        self.assertEqual(self.pin_calls(), [])
+        self.assertEqual(self.unpin_calls(), ["unpin python@3.15"])
 
     def test_a_python_brew_does_not_own_is_never_pinned(self):
         """Review: Apple's or pyenv's python3 named a formula by version alone."""
@@ -430,7 +448,6 @@ class BrewStageTest(unittest.TestCase):
         served = self.home / ".local/share/sd-serve/python/bin"
         write_exec(served / "python3", SERVED_STUB)
         agents = self.home / "Library/LaunchAgents"
-        agents.mkdir(parents=True)
         (agents / f"{fixture_config.LABEL_PREFIX}.sd-serve.plist").write_bytes(plistlib.dumps(
             {"Label": "x", "EnvironmentVariables": {"PATH": f"{served}:{self.stubs}:/usr/bin:/bin"}}))
         prefix = UV_PREFIX.format(home=self.home)
