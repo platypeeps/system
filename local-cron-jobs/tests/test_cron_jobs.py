@@ -3703,6 +3703,15 @@ class TimeoutBreakerTest(unittest.TestCase):
         self.assertEqual(self.fx.exec_job("demo").returncode, 0)
         self.assertFalse(self.state.exists())
 
+    def test_a_job_with_no_timeouts_logs_no_missing_state_file(self):
+        # sd:6938: bash opens `< file` before `2>/dev/null`, so every
+        # run without a state file printed "No such file or directory".
+        for rc in (0, 124):
+            self.state.unlink(missing_ok=True)
+            self.job(rc)
+            result = self.fx.exec_job("demo")
+            self.assertNotIn(".demo.timeouts", result.stdout + result.stderr)
+
     def test_another_failure_resets_the_count(self):
         self.job(124)
         self.state.write_text(f"2 {int(time.time())}\n")
