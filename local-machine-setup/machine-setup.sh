@@ -734,10 +734,31 @@ if not f.get("installed"):
 print(f["full_name"])'
 }
 
-# formula_plan LIST: each profile formula as `state name [installed]`, given
-# LIST, what `brew list --formula` printed. ok: installed under its bare
-# name, as a tap-qualified one lists, or the one brew resolves it to;
-# missing: not installed; unknown: brew could not tell.
+# pours_from_bottle NAME: 0 when NAME and each formula its install would add
+# or upgrade pour from a bottle here, 1 when one needs a source build, 2 when
+# brew gave no answer (sd:7103). The dry run lists them, with the build
+# dependencies of one that builds; brew info marks each `(bottled)` by this
+# machine's bottle tag, or an older one it can pour. A formula that ships no
+# bottle, as many in a tap, counts as a build.
+pours_from_bottle() {
+  pb_plan=$(bound_step 300 env HOMEBREW_NO_AUTO_UPDATE=1 brew install --dry-run "$1" 2>/dev/null) || return 2
+  pb_names=$(printf '%s\n' "$pb_plan" | awk '/^==> Would (install|upgrade) / { on = 1; next }
+      /^==>/ { on = 0 } on && NF { print $1 }' | sort -u)
+  [ -n "$pb_names" ] || return 2
+  # shellcheck disable=SC2086 # one word per formula name
+  pb_info=$(bound_step 300 env HOMEBREW_NO_ANALYTICS=1 brew info --formula $pb_names 2>/dev/null) || return 2
+  pb_heads=$(printf '%s\n' "$pb_info" | grep -E '^==> [^ ]+( [^ ]+)?: ' || :)
+  # One heading per formula, or the answer is not about these.
+  [ "$(printf '%s\n' "$pb_heads" | grep -c .)" = "$(printf '%s\n' "$pb_names" | grep -c .)" ] || return 2
+  if printf '%s\n' "$pb_heads" | grep -qv '(bottled)'; then return 1; fi
+}
+
+# formula_plan LIST [any]: each profile formula as `state name [installed]`,
+# given LIST, what `brew list --formula` printed. ok: installed under its
+# bare name, as a tap-qualified one lists, or the one brew resolves it to;
+# bottle: missing, and it pours from bottles; source: missing, and it needs
+# a source build, which only the weekly upgrade runs (sd:7103); missing,
+# with `any`, which asks no bottle; unknown: brew could not tell.
 formula_plan() {
   fp_have=$(printf '%s\n' "$1" | sed 's|.*/||')
   manifest brew | while read -r fp_f; do
@@ -748,11 +769,35 @@ formula_plan() {
     fp_rc=0
     fp_name=$(formula_installed "$fp_f") || fp_rc=$?
     case $fp_rc in
-      0) echo "ok $fp_f ${fp_name##*/}" ;;
-      1) echo "missing $fp_f" ;;
+      0) echo "ok $fp_f ${fp_name##*/}"; continue ;;
+      1) ;;
+      *) echo "unknown $fp_f"; continue ;;
+    esac
+    if [ "${2:-}" = any ]; then
+      echo "missing $fp_f"
+      continue
+    fi
+    fp_rc=0
+    pours_from_bottle "$fp_f" || fp_rc=$?
+    case $fp_rc in
+      0) echo "bottle $fp_f" ;;
+      1) echo "source $fp_f" ;;
       *) echo "unknown $fp_f" ;;
     esac
   done
+}
+
+# The profile's formulae that are not installed, one per line, for the
+# upgrade sweep: the brew stage leaves one that needs a source build to it
+# (sd:7103). None with no usable profile. Fails when brew cannot tell for
+# one; the rest still print.
+formula_wants() {
+  (load_profile) >/dev/null 2>&1 || return 0
+  load_profile
+  fw_list=$(bound_step 300 brew list --formula 2>/dev/null) || return 1
+  fw_plan=$(formula_plan "$fw_list" any)
+  printf '%s\n' "$fw_plan" | awk '$1 == "missing" { print $2 }'
+  ! printf '%s\n' "$fw_plan" | grep -q '^unknown '
 }
 
 stage_brew() {
@@ -784,10 +829,11 @@ stage_brew() {
   formula_plan "$formulae" | while read -r fs f fn; do
     case $fs in
       ok) if [ "$fn" = "${f##*/}" ]; then echo "  ok      $f"; else echo "  ok      $f ($fn)"; fi ;;
-      missing) echo "  MISSING $f"
-               run bound_step 1800 brew install "$f" ;;
+      bottle) echo "  MISSING $f"
+              run bound_step 1800 brew install "$f" ;;
+      source) echo "  DIFFERS $f needs a source build; the weekly upgrade installs it" ;;
       *) echo "  MISSING $f"
-         note_failure "brew stage: brew info $f gave no answer; not installed" 1 ;;
+         note_failure "brew stage: brew could not tell whether $f is installed or pours from a bottle; not installed" 1 ;;
     esac
   done
 
@@ -6050,6 +6096,10 @@ codex_quarantine() {
 # whose build fails, is also recorded in BUILD_FAILED as `kind line`: the
 # report names that line, not sudo, for what the step left (sd:7056). A step
 # can hold both, as `brew upgrade` also upgrades casks.
+# The bound of a sweep step that may build from source: 6 h, twice the one
+# run measured, `brew install node` on an Intel Mac with no bottles: 3h00m,
+# llvm 1h31m of it (sd:7103). The brew stage builds nothing from source.
+SOURCE_BUILD_BOUND=21600
 SUDO_REFUSED='sudo: a terminal is required|sudo: a password is required|sudo: no tty present'
 BUILD_FAILED=""
 
@@ -6246,7 +6296,12 @@ cmd_upgrade() {
     else
       failed="$failed, brew pin list"
     fi
-    sweep_step "brew upgrade" 1800 brew upgrade
+    sweep_step "brew upgrade" "$SOURCE_BUILD_BOUND" brew upgrade
+    # The profile's missing formulae: the brew stage leaves one that needs a
+    # source build to this sweep (sd:7103).
+    fw=$(formula_wants) || failed="$failed, brew formula list"
+    # shellcheck disable=SC2086 # one word per formula name
+    [ -z "$fw" ] || sweep_step "brew install" "$SOURCE_BUILD_BOUND" brew install $fw
     python_firewall || failed="$failed, python firewall"
     # --greedy takes casks with `auto_updates true` too, whose own updaters
     # stage_macos turns off where the app holds a TCC grant (sd:3062). It
@@ -6436,10 +6491,12 @@ cmd_upgrade_report() {
   run_step 600 brew update >/dev/null 2>&1 || :
   outdated_lists before
   grant_paths before
+  # A formula the brew stage left to this sweep is no quiet week (sd:7103).
+  formula_wants > "$tmp/wants.before" || echo missing >> "$tmp/unknown.before"
 
   if [ ! -s "$tmp/formula.before" ] && [ ! -s "$tmp/cask.before" ] \
       && [ ! -s "$tmp/mas.before" ] && [ ! -s "$tmp/release.before" ] \
-      && [ ! -s "$tmp/unknown.before" ]; then
+      && [ ! -s "$tmp/wants.before" ] && [ ! -s "$tmp/unknown.before" ]; then
     rc=0
     echo "nothing outdated — no upgrade"
     inventory_capture || rc=1
@@ -6459,6 +6516,8 @@ cmd_upgrade_report() {
   inventory_capture || inv_rc=1
 
   outdated_lists after
+  : > "$tmp/wants.after"
+  [ ! -s "$tmp/wants.before" ] || formula_wants > "$tmp/wants.after" || echo missing >> "$tmp/unknown.after"
   grants_report
 
   {
@@ -6487,6 +6546,15 @@ cmd_upgrade_report() {
         sed 's/^/  /' "$tmp/$kind.after"
       fi
     done
+    comm -23 "$tmp/wants.before" "$tmp/wants.after" > "$tmp/wants.done"
+    if [ -s "$tmp/wants.done" ]; then
+      printf '\ninstalled (formula):\n'
+      sed 's/^/  /' "$tmp/wants.done"
+    fi
+    if [ -s "$tmp/wants.after" ]; then
+      printf '\nstill missing (formula):\n'
+      sed 's/^/  /' "$tmp/wants.after"
+    fi
     if [ "$rc" -ne 0 ]; then
       printf '\nupgrade sweep exited nonzero; last output:\n'
       tail -30 "$tmp/out" | sed 's/^/  /'
@@ -6514,6 +6582,7 @@ cmd_upgrade_report() {
         sed "s/^/still outdated ($kind): /" "$tmp/$kind.after"
       fi
     done
+    sed 's/^/still missing (formula): /' "$tmp/wants.after"
     if [ "$rc" -ne 0 ]; then
       echo "upgrade sweep failed [$(tail -30 "$tmp/out" | grep -v '^\[step ' | cksum | cut -d' ' -f1)]"
     fi
@@ -6765,7 +6834,10 @@ cmd_status() {
       ub="brew list --formula did not answer"
     fi
     { manifest brew; printf '%s\n' "$fp" | awk '$1 == "ok" { print $3 }'; } | sed 's|.*/||' | sort -u > "$tmp/want.brew"
-    mb=$(printf '%s\n' "$fp" | awk '$1 == "missing" { sub(/.*\//, "", $2); print $2 }')
+    mb=$(printf '%s\n' "$fp" | awk '$1 == "bottle" { sub(/.*\//, "", $2); print $2 }')
+    # Waits for the weekly upgrade, by ruling (sd:7103): in-place drift, an
+    # attention line, not a nightly failure.
+    sb=$(printf '%s\n' "$fp" | awk '$1 == "source" { print $2 }')
     ub="$ub$(printf '%s\n' "$fp" | awk '$1 == "unknown" { sub(/.*\//, "", $2); print $2 }')"
     # Extra is what someone installed by name: a build-only dependency is a
     # leaf too, and was reported as drift (sd:5049).
@@ -6774,7 +6846,12 @@ cmd_status() {
     status_line missing "$mb"
     status_line unknown "$ub"
     status_line extra "$xb"
-    [ -n "$mb$ub$xb" ] || echo "  ok      in sync"
+    for f in $sb; do
+      echo "  DIFFERS $f needs a source build; the weekly upgrade installs it"
+      differs="${differs}DIFFERS $f needs a source build; the weekly upgrade installs it
+"
+    done
+    [ -n "$mb$ub$xb$sb" ] || echo "  ok      in sync"
 
     bound_step 300 brew list --cask 2>/dev/null | sort > "$tmp/have.cask"
     manifest cask > "$tmp/want.cask"
@@ -6791,7 +6868,7 @@ cmd_status() {
     # Its report half only: status --apply stays read-only.
     mf=$(APPLY=0; mosh_firewall | grep DIFFERS || :)
     [ -z "$mf" ] || printf '%s\n' "$mf"
-    for v in "$mt" "$mb" "$ub" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf"; do
+    for v in "$mt" "$mb" "$ub" "$sb" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else

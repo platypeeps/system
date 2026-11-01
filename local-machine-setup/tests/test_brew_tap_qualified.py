@@ -37,7 +37,7 @@ QUALIFIED = f"{TAP}/{FORMULA}"
 
 # Installed, and reported the way brew actually reports it: bare from
 # `list --formula`, tap-qualified from `leaves`. Any other formula brew
-# info reports not installed.
+# info reports not installed, and pours from a bottle.
 BREW_STUB = f"""#!/bin/sh
 case "$*" in
   "list --formula") printf '%s\\n' {FORMULA} ;;
@@ -46,6 +46,8 @@ case "$*" in
   tap) printf '%s\\n' {TAP} ;;
   "info --json=v2 --formula "*)
     printf '{{"formulae": [{{"name": "%s", "full_name": "%s", "installed": []}}]}}\\n' "$4" "$4" ;;
+  "install --dry-run "*) printf '==> Would install 1 formula:\\n%s 1.0\\n' "$3" ;;
+  "info --formula "*) printf '==> %s: stable 1.0 (bottled)\\n' "$3" ;;
   --prefix) echo /usr/local ;;
 esac
 exit 0

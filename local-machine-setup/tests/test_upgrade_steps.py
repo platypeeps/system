@@ -300,7 +300,7 @@ class UpgradeStepTest(unittest.TestCase):
         result = self.run_verb("upgrade", "--apply", BREW_GREEDY_CASK="example-cask")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        for command, bound in (("brew update", 600), ("brew upgrade", 1800),
+        for command, bound in (("brew update", 600), ("brew upgrade", 21600),
                                ("brew upgrade --cask --greedy example-cask", 1800),
                                ("brew cleanup --prune=all", 600), ("mas upgrade", 1200)):
             self.assertRegex(result.stderr, STEP.format(re.escape(command), bound))
