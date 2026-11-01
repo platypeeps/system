@@ -3432,6 +3432,7 @@ report_deferred() {
 # `brew upgrade --cask --greedy`, so brew is the one updater: both machines
 # change together, and the macOS privacy (TCC) grants an update drops are
 # re-granted in one sitting. An app that is not installed is skipped.
+# BREW_SKIPPED_CASKS below is the one exception.
 #
 # One row per app: cask|app|mechanism|target|key|value.
 # - sparkle: target is the defaults domain. Sparkle keeps the user's choice
@@ -3456,6 +3457,19 @@ report_deferred() {
 # Beyond Compare, iStat Menus, Malwarebytes, Piezo and Sync with their own
 # updaters; Firefox, Google Chrome, Google Drive and Zoom, whose switches are
 # system-wide managed policy; and the CLIs copilot-cli and gcloud-cli. Updater agents are never removed to stop an app.
+#
+# The exception (sd:7058, operator ruling 2026-11-01): Google Chrome and Slack
+# keep their own updaters on, and brew no longer upgrades them. Both sit
+# root-owned in /Applications, which the operator keeps, so brew's upgrade
+# needs sudo for them. BREW_SKIPPED_CASKS is the one list: the --greedy sweep,
+# the askpass sweep and the outdated report all drop these names.
+BREW_SKIPPED_CASKS="google-chrome slack"
+drop_brew_skipped() { # stdin: one cask per line, as `brew outdated --quiet` prints
+  awk -v skip="$BREW_SKIPPED_CASKS" '
+    BEGIN { n = split(skip, s, " "); for (i = 1; i <= n; i++) drop[s[i]] = 1 }
+    { name = $1; sub(/.*\//, "", name); if (!(name in drop)) print }'
+}
+
 self_update_rows() {
   printf '%s\n' \
     "appcleaner|AppCleaner.app|sparkle|net.freemacsoft.AppCleaner" \
@@ -6095,7 +6109,7 @@ askpass_upgrade() {
     failed="$failed, brew cask list"
     return 0
   fi
-  au_casks=$(printf '%s\n' "$au_out" | awk -v want="$au_want" '
+  au_casks=$(printf '%s\n' "$au_out" | drop_brew_skipped | awk -v want="$au_want" '
       BEGIN { n = split(want, w, " "); for (i = 1; i <= n; i++) ok[w[i]] = 1 }
       { name = $1; sub(/.*\//, "", name); if (name in ok) print name }' | tr '\n' ' ' | sed 's/ $//')
   [ -n "$au_casks" ] || return 0
@@ -6212,8 +6226,16 @@ cmd_upgrade() {
     # stage_macos turns off where the app holds a TCC grant (sd:3062). It
     # moves Claude Code too, the claude-code@latest cask, whose own updater
     # the settings baseline turns off (sd:3033, sd:4738).
+    # The cask names are listed, not left to brew, so that
+    # BREW_SKIPPED_CASKS stay out of the sweep (sd:7058).
     askpass_upgrade
-    sweep_step "brew upgrade --cask --greedy" 1800 brew upgrade --cask --greedy
+    if cu_out=$(bound_step 300 brew outdated --cask --greedy --quiet 2>/dev/null); then
+      cu_casks=$(printf '%s\n' "$cu_out" | drop_brew_skipped | tr '\n' ' ' | sed 's/ $//')
+      # shellcheck disable=SC2086 # one word per cask name
+      [ -z "$cu_casks" ] || sweep_step "brew upgrade --cask --greedy" 1800 brew upgrade --cask --greedy $cu_casks
+    else
+      failed="$failed, brew cask list"
+    fi
     claude_quarantine || failed="$failed, claude quarantine"
     run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   else
@@ -6244,7 +6266,7 @@ outdated_lists() {
   run_step 300 brew outdated --formula --quiet > "$tmp/raw" 2>/dev/null || echo formula >> "$tmp/unknown.$1"
   sort "$tmp/raw" > "$tmp/formula.$1"
   run_step 300 brew outdated --cask --greedy --quiet > "$tmp/raw" 2>/dev/null || echo cask >> "$tmp/unknown.$1"
-  sort "$tmp/raw" > "$tmp/cask.$1"
+  drop_brew_skipped < "$tmp/raw" | sort > "$tmp/cask.$1"
   : > "$tmp/mas.$1"
   if command -v mas >/dev/null 2>&1; then
     run_step 300 mas outdated > "$tmp/raw" 2>/dev/null || echo mas >> "$tmp/unknown.$1"

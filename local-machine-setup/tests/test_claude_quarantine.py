@@ -28,6 +28,7 @@ TEAM = "Q6L2SF6YDW"
 
 BREW_STUB = r"""#!/bin/sh
 echo "brew $*" >> "$CALLS"
+[ "$*" != "outdated --cask --greedy --quiet" ] || echo claude-code@latest
 exit 0
 """
 
@@ -151,7 +152,7 @@ class ClaudeQuarantineTest(unittest.TestCase):
         self.assert_cleared(result)
         calls = self.calls.read_text().splitlines()
         # After the cask upgrade, not before it: the new version is the one to check.
-        self.assertLess(calls.index("brew upgrade --cask --greedy"),
+        self.assertLess(calls.index("brew upgrade --cask --greedy claude-code@latest"),
                         calls.index(f"xattr -d com.apple.quarantine {self.claude}"))
 
     def test_the_brew_stage_clears_a_verified_quarantine(self):
