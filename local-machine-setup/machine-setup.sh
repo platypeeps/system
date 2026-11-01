@@ -636,10 +636,12 @@ valid_profile() {
 
 # Runs python3 -c CODE as sd-serve does: on the PATH its installed plist
 # sets, as launchd finds it, else on the caller's (sd:6463 review). Prints
-# nothing when it fails.
+# nothing when it fails, or when no sd-serve plist is installed: a machine
+# that runs no sd-serve has no python to hold back.
 serve_python3() { # code
-  _pp=$(plutil -extract EnvironmentVariables.PATH raw -o - \
-    "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-serve.plist" 2>/dev/null) || _pp=$PATH
+  _pl="$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-serve.plist"
+  [ -f "$_pl" ] || return 0
+  _pp=$(plutil -extract EnvironmentVariables.PATH raw -o - "$_pl" 2>/dev/null) || _pp=$PATH
   PATH=$_pp python3 -c "$1" 2>/dev/null || :
 }
 
