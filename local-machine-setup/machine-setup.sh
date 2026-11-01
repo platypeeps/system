@@ -773,6 +773,7 @@ stage_brew() {
   # Every run, not only after an install: the nightly update clears a cask
   # moved by hand, or before this check existed.
   claude_quarantine || note_failure "brew stage: claude keeps com.apple.quarantine; launchd jobs would wait on a Gatekeeper prompt" 1
+  codex_quarantine || note_failure "brew stage: codex keeps com.apple.quarantine; launchd jobs would wait on a Gatekeeper prompt" 1
 
   if ! pins=$(stale_pins); then
     note_failure "brew stage: brew could not list its pins; none unpinned" 1
@@ -5985,9 +5986,10 @@ run_step() { # seconds, command...
   fi
 }
 
-# The cask claude keeps no Gatekeeper quarantine that a launchd job would wait
-# on, cleared only when its checks pass: lib/claude_quarantine.sh (sd:4787),
-# which the cron runner runs too (sd:4815). Sourced on first use like
+# The cask claude, and each file in the codex cask's bin/, keeps no
+# Gatekeeper quarantine that a launchd job would wait on, cleared only when
+# its checks pass: lib/claude_quarantine.sh (sd:4787, sd:7095), which the
+# cron runner runs for claude too (sd:4815). Sourced on first use like
 # lib/bounded.sh. A check runs bounded and the clear keeps the dry run.
 cq_check() { bound_step "$@"; }
 cq_clear() { try_run xattr -d com.apple.quarantine "$1"; }
@@ -5995,6 +5997,11 @@ claude_quarantine() {
   # shellcheck source=/dev/null
   command -v st_claude_quarantine >/dev/null 2>&1 || . "$ROOT/lib/claude_quarantine.sh"
   st_claude_quarantine "$(command -v claude 2>/dev/null)"
+}
+codex_quarantine() {
+  # shellcheck source=/dev/null
+  command -v st_codex_quarantine >/dev/null 2>&1 || . "$ROOT/lib/claude_quarantine.sh"
+  st_codex_quarantine "$(command -v codex 2>/dev/null)"
 }
 
 # An upgrade step: run_step, and a failure adds NAME to $failed. A cask with a
@@ -6217,6 +6224,7 @@ cmd_upgrade() {
       failed="$failed, brew cask list"
     fi
     claude_quarantine || failed="$failed, claude quarantine"
+    codex_quarantine || failed="$failed, codex quarantine"
     run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   else
     echo "  brew MISSING — https://brew.sh"

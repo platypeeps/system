@@ -81,9 +81,9 @@ nothing is mailed or pushed (sd:3454). A missing grant does not fail the job.
 A step that fails because sudo has no terminal (a cask with a pkg installer,
 `mas upgrade`) is deferred, not failed: the report names each leftover as a
 command to run in a terminal, such as `brew upgrade --cask example-cask` (sd:5046).
-After the cask upgrade the sweep runs the brew stage's quarantine check on `claude`:
-a quarantined binary under launchd waits on a Gatekeeper prompt no one can answer
-with the screen locked (sd:4787).
+After the cask upgrade the sweep runs the brew stage's quarantine check on `claude`
+and each file in the `codex` cask's `bin/`: a quarantined binary under launchd
+waits on a Gatekeeper prompt no one can answer with the screen locked (sd:4787, sd:7095).
 Before `brew upgrade` the sweep removes each pin the brew stage would
 (`DIFFERS <formula> pinned`, then `brew unpin`): it can run before the
 nightly `update --apply`, and a stale python pin fails `brew upgrade` (sd:6448).
@@ -185,7 +185,7 @@ Run in order. Pass one as the second argument to run it alone.
 
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
-| `brew` | taps, formulae and casks; it pins nothing (sd:7059). Each upgrade of the `python@X.Y` sd-serve runs is a new `Python.app`, which the application firewall blocked, so sd-serve admitted no satellite (sd:6463): where sd-serve is installed, one the firewall does not allow (blocked, or not listed, as after an upgrade) reads `DIFFERS firewall does not allow <path>`, `status` counts it, and `--apply` (here and in `upgrade`) adds and allows a brew `Python.app` through the repair drop-in's `sudo -n`; any other path is left for the operator (System Settings > Network > Firewall > Options). Any other pin the old stage made (`python@*`, `opencode`, `codex`) reads `DIFFERS <formula> pinned`, `--apply` runs `brew unpin`, and `status` counts it, until every machine shows none; the `claude-code@latest` cask's `claude` loses `com.apple.quarantine` only when `codesign` verifies it, `spctl` calls it notarized and its team is `Q6L2SF6YDW`, else the stage fails naming the check (sd:4787) | — |
+| `brew` | taps, formulae and casks; it pins nothing (sd:7059). Each upgrade of the `python@X.Y` sd-serve runs is a new `Python.app`, which the application firewall blocked, so sd-serve admitted no satellite (sd:6463): where sd-serve is installed, one the firewall does not allow (blocked, or not listed, as after an upgrade) reads `DIFFERS firewall does not allow <path>`, `status` counts it, and `--apply` (here and in `upgrade`) adds and allows a brew `Python.app` through the repair drop-in's `sudo -n`; any other path is left for the operator (System Settings > Network > Firewall > Options). Any other pin the old stage made (`python@*`, `opencode`, `codex`) reads `DIFFERS <formula> pinned`, `--apply` runs `brew unpin`, and `status` counts it, until every machine shows none; the `claude-code@latest` cask's `claude` loses `com.apple.quarantine` only when `codesign` verifies it, `spctl` calls it notarized and its team is `Q6L2SF6YDW`, else the stage fails naming the check (sd:4787); each file in the `bin/` of the `codex` cask version that `codex` links into gets the same checks with team `2DC432GLL2` (sd:7095) | — |
 | `release` | the `.release` tools: an entry is `ok` when each bin is in `~/.local/bin` (`MACHINE_SETUP_RELEASE_BIN`) and its tag, owner/repo and asset are recorded under the state folder's `release/`, `MISSING` when not, `DIFFERS` when the recorded tag is not the pinned one or the line names another owner/repo or asset; a record that holds the tag alone reinstalls once. `--apply` downloads the archive, checks its `.sha256` when the release publishes one, takes exactly one executable file per bin, moves every bin into place, then writes the record; a failed step installs nothing new and records nothing. Runs right after `brew`, so later stages find what it installs | `curl`, `tar`, `unzip` |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
