@@ -53,10 +53,12 @@ LIB_QUARANTINE = FOLDER.parent / "lib" / "claude_quarantine.sh"
 # started with, NUL-separated so a value holding a newline cannot split. It
 # writes the file `--debug-file` names, as the real binary does, and exits
 # with FAKE_CLAUDE_EXIT (0 when unset), so a failing run can be staged.
-# FAKE_CLAUDE_SAY, when set, is its reply on stdout.
+# FAKE_CLAUDE_SAY, when set, is its reply on stdout; FAKE_CLAUDE_RUN, when
+# set, is a command it runs after that.
 FAKE_CLAUDE = """#!/bin/sh
 printf '%s\\n' "$@" > "$FAKE_CLAUDE_LOG.argv"
 [ -z "$FAKE_CLAUDE_SAY" ] || printf '%s\\n' "$FAKE_CLAUDE_SAY"
+[ -z "$FAKE_CLAUDE_RUN" ] || eval "$FAKE_CLAUDE_RUN"
 env -0 > "$FAKE_CLAUDE_LOG.env"
 while [ $# -gt 0 ]; do
   [ "$1" != "--debug-file" ] || echo "fake trace" > "$2"
@@ -239,6 +241,8 @@ PROMPT_JOB = 'JOB_SCHEDULE="0 3 * * *"\nJOB_PROMPT="/sd-digest nightly"\n'
 # `$PPID`: the workload's parent is the perl that enforces JOB_TIMEOUT, and the
 # runner is that perl's parent (sd:2018).
 KILL_THE_RUNNER = "kill -9 $(ps -o ppid= -p $PPID)"
+# The same, with the TERM launchd sends a job at shutdown (sd:7105).
+TERM_THE_RUNNER = "kill -TERM $(ps -o ppid= -p $PPID)"
 
 
 class PromptJobEnvironmentTest(unittest.TestCase):
@@ -386,6 +390,16 @@ class PromptJobResultLineTest(unittest.TestCase):
     def test_an_agent_failure_keeps_its_own_exit_code(self):
         result = self.fx.exec_job("nightly", {"FAKE_CLAUDE_SAY": "RESULT: ok", "FAKE_CLAUDE_EXIT": "7"})
         self.assertEqual(result.returncode, 7, result.stdout)
+
+    def test_a_runner_ended_mid_reply_grades_the_log_not_the_reply(self):
+        # sd:7105. The reply file is stdout while the agent runs, and the
+        # trap fires there: the grade has to reach the job's log.
+        result = self.fx.exec_job("nightly", {"FAKE_CLAUDE_SAY": "RESULT: ok",
+                                              "FAKE_CLAUDE_RUN": f"{TERM_THE_RUNNER}; sleep 1"})
+        self.assertEqual(result.returncode, -signal.SIGTERM, result.stderr)
+        log = (self.fx.folder / "logs" / "nightly.log").read_text()
+        self.assertRegex(log, r"(?m)^SD_REPORT_ATTENTION: data safe, one step failed: ")
+        self.assertRegex(log, r"FAILED rc=[0-9]+")
 
     def test_without_the_setting_the_reply_is_not_judged(self):
         self.fx.write_job("nightly", PROMPT_JOB)
@@ -2943,6 +2957,32 @@ class FailureNotificationTest(unittest.TestCase):
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n'
                                   f'JOB_DIR="{self.fx.tmp / "no-such-directory"}"\n')
         self.assertNotEqual(self.fx.exec_job("demo").returncode, 0)
+        self.assertEqual(len(self.pushes()), 1, self.pushes())
+
+    def test_a_runner_ended_by_a_signal_is_interrupted_not_at_risk(self):
+        # sd:7105. A shutdown sends launchd's TERM to the runner while the
+        # job runs: the runner died, its trap graded the run at risk and it
+        # paged. The job sleeps so the runner dies while it still waits.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
+                                  f"JOB_COMMAND='{TERM_THE_RUNNER}; sleep 1'\n")
+        run = self.fx.exec_job("demo")
+        self.assertEqual(run.returncode, -signal.SIGTERM, run.stderr)
+        log = (self.fx.folder / "logs" / "demo.log").read_text()
+        self.assertRegex(log, r"(?m)^SD_REPORT_ATTENTION: data safe, one step failed: "
+                              r"interrupted by a signal")
+        self.assertRegex(log, r"FAILED rc=[0-9]+")
+        self.assertEqual(self.pushes(), [])
+        # The next run's real failure is still at risk, and pushes.
+        self.job("exit 3")
+        self.assertEqual(self.fx.exec_job("demo").returncode, 3)
+        self.assertEqual(len(self.pushes()), 1, self.pushes())
+
+    def test_a_job_ended_by_a_signal_is_still_at_risk(self):
+        # Only the runner's own end is an interruption: a workload that a
+        # TERM ended is a failure like any other (ruling on sd:6030).
+        self.job("kill -TERM \\$\\$")
+        self.assertEqual(self.fx.exec_job("demo").returncode, 143)
+        self.assertNotIn("data safe", (self.fx.folder / "logs" / "demo.log").read_text())
         self.assertEqual(len(self.pushes()), 1, self.pushes())
 
     def test_a_failure_run_under_the_launchctl_stubs_pushes_once(self):

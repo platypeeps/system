@@ -809,14 +809,26 @@ waitpid($pid, 0);
 exit 124;'
 
 # Runs a command under the job's limit; 0 runs it directly, as before sd:2018.
+#
+# EXEC_IN_JOB is set while the runner waits on the workload (sd:7105). The
+# wait sits in an `||` list, so `set -e` cannot end the runner there: an exit
+# that finds it set is a signal to the runner itself, such as launchd's TERM
+# at shutdown. Bash runs the EXIT trap then with `$?` 0, which exec_exit
+# turned into the rc=1 of a run that had failed. A TERM trap would tell the
+# signal apart, but bash defers a trap until the foreground child exits, and
+# the job then runs on until launchd's SIGKILL leaves no outcome at all.
+EXEC_IN_JOB=""
 run_bounded() { # job, seconds, command...
-  local job="$1" limit="$2"
+  local job="$1" limit="$2" rc=0
   shift 2
+  EXEC_IN_JOB=1
   if [ "$limit" -eq 0 ]; then
-    "$@"
-    return
+    "$@" || rc=$?
+  else
+    perl -e "$RUN_BOUNDED" "$job" "$limit" "${CRON_JOBS_TIMEOUT_GRACE:-10}" "$@" || rc=$?
   fi
-  perl -e "$RUN_BOUNDED" "$job" "$limit" "${CRON_JOBS_TIMEOUT_GRACE:-10}" "$@"
+  EXEC_IN_JOB=""
+  return "$rc"
 }
 
 exec_exit() {
@@ -828,6 +840,14 @@ exec_exit() {
     # would be the log and the record disagreeing about the same run -- which
     # is the class of defect the record exists to end.
     [ "$code" -ne 0 ] || code=1
+    # A signal ended the runner mid-job: interrupted, not a failure that
+    # puts data at risk. The next slot runs the job again and grades its own
+    # failure as before (sd:7105). The grade line is the one a safe run
+    # prints (sd:6030), so the report and push_at_risk read it.
+    if [ -n "$EXEC_IN_JOB" ]; then
+      echo "[$EXEC_JOB] $(date '+%Y-%m-%dT%H:%M:%S%z') interrupted: a signal ended the runner while the job ran"
+      echo "SD_REPORT_ATTENTION: data safe, one step failed: interrupted by a signal to the runner (shutdown, unload or ^C)"
+    fi
     echo "[$EXEC_JOB] $(date '+%Y-%m-%dT%H:%M:%S%z') FAILED rc=$code"
     notify_failure "$EXEC_JOB" "$code" || true
     record_outcome "$EXEC_JOB" "$code"
@@ -1344,17 +1364,22 @@ if attrs:
     # line judged. The reply is kept in a file for the check and printed
     # after the agent exits, so such a job's log fills at the end, not live.
     local reply="$LOG_DIR/.$job.reply"
-    # shellcheck disable=SC2086 # word-splitting of extra args is deliberate
+    # The child opens the reply, not this shell: a signal to the runner runs
+    # exec_exit with this shell's stdout, which has to be the log, and a
+    # hand-run's tee waited for ever on the copy of the FIFO that bash kept
+    # while a redirect on run_bounded stood (sd:7105).
+    # shellcheck disable=SC2086,SC2016 # extra args split on purpose; sh -c source
     if ! agent_quarantine "$job" "$claude_bin"; then
       rc=1
     elif [ -n "$JOB_RESULT_OK" ]; then
       run_bounded "$job" "$JOB_TIMEOUT_SECONDS" \
+        sh -c 'reply="$1"; shift; exec "$@" > "$reply"' sh "$reply" \
         env SD_HANDOFF_RESTORE=0 "$claude_bin" -p "$JOB_PROMPT" \
         --dangerously-skip-permissions \
         --debug-file "$debug_file" \
         ${JOB_MODEL:+--model "$JOB_MODEL"} \
         ${otel_settings:+--settings "$otel_settings"} \
-        $JOB_CLAUDE_ARGS > "$reply" || rc=$?
+        $JOB_CLAUDE_ARGS || rc=$?
       cat "$reply"
       if [ "$rc" -eq 0 ]; then
         local result
