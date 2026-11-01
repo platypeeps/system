@@ -489,7 +489,7 @@ BREAKER_PROBE_SECONDS=1800
 BREAKER_COUNT=0
 breaker_allows() { # job; sets BREAKER_COUNT
   local count=0 last=0
-  read -r count last < "$LOG_DIR/.$1.timeouts" 2>/dev/null || true
+  read -r count last 2>/dev/null < "$LOG_DIR/.$1.timeouts" || true
   case "$count$last" in ''|*[!0-9]*) return 0 ;; esac
   BREAKER_COUNT="$count"
   [ "$count" -lt "$BREAKER_AFTER" ] || [ "$(($(date +%s) - last))" -ge "$BREAKER_PROBE_SECONDS" ]
@@ -502,7 +502,7 @@ breaker_record() { # job, exit code; logs the failure unless the breaker is open
     [ "$rc" -eq 0 ] || notify_failure "$job" "$rc"
     return 0
   fi
-  read -r count last < "$state" 2>/dev/null || true
+  read -r count last 2>/dev/null < "$state" || true
   case "$count" in ''|*[!0-9]*) count=0 ;; esac
   count=$((count + 1))
   echo "$count $(date +%s)" > "$state" || true
