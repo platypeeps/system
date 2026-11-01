@@ -627,12 +627,11 @@ valid_profile() {
 
 # ---------------------------------------------------------------- stages ----
 
-# The python@X.Y that sd-serve's python3 runs stays pinned (sd:6463). Each upgrade
-# is a new Python.app to macOS: the application firewall blocked the new one,
-# so sd-serve admitted no satellite, and its file grants dropped. Upgrade it
-# deliberately: unpin, upgrade, allow the new Python.app in the firewall.
-# sd-serve's own uv python (SERVE_PYTHON_DIR, sd:6492) is no formula, so
-# with it nothing is pinned, and python@X.Y's old pin reads stale.
+# No python is pinned (operator ruling, sd:7059). Each upgrade of the
+# python@X.Y sd-serve runs is a new Python.app, which the application
+# firewall blocked, so sd-serve admitted no satellite (sd:6463); the brew
+# stage and the upgrade sweep allow it again instead (python_firewall).
+# sd-serve's own uv python (SERVE_PYTHON_DIR, sd:6492) is no formula.
 
 # Runs python3 -c CODE as sd-serve does: on the PATH its installed plist
 # sets, as launchd finds it, else on the caller's (sd:6463 review). Prints
@@ -648,36 +647,23 @@ python_prefix() {
   serve_python3 'import sys; print(sys.base_prefix)'
 }
 
-# The Homebrew formula sd-serve's python3 belongs to, as python@X.Y, read from its
-# install path (.../opt/python@X.Y/... or .../Cellar/python@X.Y/...); empty
-# for Apple's, pyenv's or any other python, whose pin is not brew's.
-serving_python() {
-  python_prefix | sed -nE 's#.*/(opt|Cellar)/(python@[0-9][0-9.]*)/.*#\2#p'
-}
-
-# Each formula an older brew stage pinned (python@* other than the serving
-# one, opencode, codex) that is still pinned, one per line. A bare
+# Each formula an older brew stage pinned (python@*, opencode, codex) that
+# is still pinned, one per line. A bare
 # `brew upgrade` fails on a dependent that needs a newer pinned python.
 # Fails when brew cannot list its pins: unknown, not "none pinned" (sd:3536).
 stale_pins() {
   _sp=$(bound_step 300 brew list --pinned 2>/dev/null) || return 1
   printf '%s\n' "$_sp" | sed 's|.*/||' | grep -E '^(python@.*|opencode|codex)$' \
-    | grep -vx "$(serving_python)" || :
-}
-
-# The serving python@X.Y when brew has it installed and not pinned.
-unpinned_python() {
-  _py=$(serving_python)
-  [ -n "$_py" ] || return 0
-  _sp=$(bound_step 300 brew list --pinned 2>/dev/null) || return 1
-  printf '%s\n' "$_sp" | sed 's|.*/||' | grep -qx "$_py" || echo "$_py"
+    || :
 }
 
 # What sd-serve's python3 runs as, to the application firewall, when the
-# firewall blocks its incoming connections; fixing it needs sudo, so it is
-# reported only. A framework build, as brew's, runs as its Python.app; any
-# other, as the uv one (sd:6492), as its executable, listed by its real path.
-blocked_python() {
+# firewall does not allow it: blocked, or not listed, as a new Python.app
+# after an upgrade is (sd:7059 review). A framework build, as brew's, runs
+# as its Python.app; any other, as the uv one (sd:6492), as its executable,
+# listed by its real path. Nothing where sd-serve is not installed.
+unallowed_python() {
+  [ -f "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-serve.plist" ] || return 0
   _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
   if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
   [ -x "$_fw" ] || return 0
@@ -688,8 +674,7 @@ blocked_python() {
     *) _app=$(serve_python3 'import os, sys; print(os.path.realpath(sys.executable))')
        [ -n "$_app" ] || return 0 ;;
   esac
-  "$_fw" --listapps 2>/dev/null | grep -A1 -F "$_app" | grep -q 'Block incoming' && echo "$_app"
-  return 0
+  firewall_allows "$_app" || echo "$_app"
 }
 
 # mosh-server, when the profile installs mosh, as the firewall must admit
@@ -718,14 +703,18 @@ mosh_firewall() {
     && run_ok sudo -n "$_fw" --unblockapp "$_ms" || :
 }
 
-# Pin the serving python when it is not; fails when brew cannot list its pins
-# or the pin fails. Runs before anything that installs or upgrades formulae,
-# and those are skipped when it fails (sd:6463 review).
-pin_serving_python() {
-  _py=$(unpinned_python) || return 1
-  [ -n "$_py" ] || return 0
-  echo "  DIFFERS $_py not pinned"
-  run_ok bound_step 300 brew pin "$_py"
+# sd-serve's python when the firewall does not allow it, reported; a brew
+# Python.app is added and allowed under --apply through the repair drop-in's
+# sudo -n (sd:7059). A uv python's fix stays the operator's (sd:6492).
+# Fails when the allow does, so the upgrade sweep counts it.
+python_firewall() {
+  _bp=$(unallowed_python)
+  [ -n "$_bp" ] || return 0
+  echo "  DIFFERS firewall does not allow $_bp; allow it: System Settings > Network > Firewall > Options"
+  case $_bp in */Python.framework/*/Resources/Python.app) ;; *) return 0 ;; esac
+  _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
+  if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
+  run_ok sudo -n "$_fw" --add "$_bp" && run_ok sudo -n "$_fw" --unblockapp "$_bp"
 }
 
 stage_brew() {
@@ -744,11 +733,6 @@ stage_brew() {
     return 0
   fi
 
-  # Before any install: one that needs a newer python would upgrade it first.
-  if ! pin_serving_python; then
-    note_failure "brew stage: the serving python is not pinned; nothing changed" 1
-    return 0
-  fi
 
   manifest tap | while read -r t; do
     if printf '%s\n' "$taps" | grep -qx "$t"; then
@@ -798,8 +782,7 @@ stage_brew() {
     echo "  DIFFERS $f pinned"
     run bound_step 300 brew unpin "$f"
   done
-  bp=$(blocked_python)
-  [ -z "$bp" ] || echo "  DIFFERS firewall blocks $bp; allow it: System Settings > Network > Firewall > Options"
+  python_firewall || :
   mosh_firewall
   tailscale_cli_link
 }
@@ -6217,11 +6200,8 @@ cmd_upgrade() {
     else
       failed="$failed, brew pin list"
     fi
-    if pin_serving_python; then
-      sweep_step "brew upgrade" 1800 brew upgrade
-    else
-      failed="$failed, python pin (brew upgrade skipped)"
-    fi
+    sweep_step "brew upgrade" 1800 brew upgrade
+    python_firewall || failed="$failed, python firewall"
     # --greedy takes casks with `auto_updates true` too, whose own updaters
     # stage_macos turns off where the app holds a TCC grant (sd:3062). It
     # moves Claude Code too, the claude-code@latest cask, whose own updater
@@ -6748,14 +6728,12 @@ cmd_status() {
     [ -n "$mc$xc" ] || echo "  ok      in sync"
     sp=$(stale_pins) || sp="unknown (brew could not list its pins)"
     status_line pinned "$sp"
-    up=$(unpinned_python) || up="unknown (brew could not list its pins)"
-    status_line unpinned "$up"
-    bp=$(blocked_python)
-    status_line blocked "$bp"
+    bp=$(unallowed_python)
+    status_line "not allowed" "$bp"
     # Its report half only: status --apply stays read-only.
     mf=$(APPLY=0; mosh_firewall | grep DIFFERS || :)
     [ -z "$mf" ] || printf '%s\n' "$mf"
-    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp" "$up" "$bp" "$mf"; do
+    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
