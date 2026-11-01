@@ -2127,8 +2127,6 @@ stage_services() {
     return 0
   fi
   command -v docker >/dev/null 2>&1 || { echo "  docker MISSING"; return 0; }
-  # `svc`, not `s`: do_stages iterates `for s in $STAGES`. A pipeline subshell
-  # happens to shield it here, but the appstore stage lost that bet already.
   echo "$svcs" | while read -r svc; do
     name=$(echo "$svc" | sed 's/^local-//')
     entry="$ROOT/$svc/$name.sh"
@@ -3394,18 +3392,20 @@ if not stat.S_ISREG(mode(os.path.join(sys.argv[1], "com.googlecode.iterm2.plist"
   fi
 }
 
+# ds_ names: every stage shares these globals, and a stage that set `want`
+# skipped every stage after it (sd:7041).
 do_stages() {
-  want="$1"
-  if [ -n "$want" ]; then
+  ds_want="$1"
+  if [ -n "$ds_want" ]; then
     case " $STAGES " in
-      *" $want "*) ;;
-      *) die "unknown stage '$want' (stages: $STAGES)" ;;
+      *" $ds_want "*) ;;
+      *) die "unknown stage '$ds_want' (stages: $STAGES)" ;;
     esac
   fi
   FAILED_LOG=$(mktemp)
-  for s in $STAGES; do
-    if [ -n "$want" ] && [ "$want" != "$s" ]; then continue; fi
-    "stage_$s"
+  for ds_stage in $STAGES; do
+    if [ -n "$ds_want" ] && [ "$ds_want" != "$ds_stage" ]; then continue; fi
+    "stage_$ds_stage"
     echo
   done
   report_deferred
