@@ -672,7 +672,7 @@ class BrewStageTest(unittest.TestCase):
         self.assertIn("  MISSING example-formula\n", result.stdout)
         self.assertEqual(self.installs(), ["install example-formula"])
 
-    def test_a_missing_formula_that_needs_a_source_build_waits_for_the_upgrade(self):
+    def test_a_formula_to_build_from_source_waits_for_the_upgrade(self):
         """sd:7103: an Intel Mac has no bottles, and one `brew install node`
         built llvm, rust and node for 3 h; the nightly stage's 1800 s bound
         killed it. By ruling only the weekly upgrade builds from source."""
@@ -711,7 +711,7 @@ class BrewStageTest(unittest.TestCase):
         self.assertRegex(result.stdout, r"SD_REPORT_ATTENTION: drift on \S+: DIFFERS example-formula needs a "
                                         r"source build; the weekly upgrade installs it\n")
 
-    def test_the_upgrade_sweep_installs_a_missing_formula_with_the_long_bound(self):
+    def test_the_upgrade_installs_a_missing_formula_with_the_long_bound(self):
         """sd:7103: the weekly sweep builds what the brew stage left, bounded
         at 6 h, twice the 3 h measured on an Intel Mac."""
         self.missing_formula()
