@@ -3313,7 +3313,7 @@ stage_iterm2() {
   echo "== iterm2"
   dir=$(manifest iterm2 | head -1)
   if [ -z "$dir" ]; then
-    echo "  no iTerm2 prefs folder in this profile"
+    echo "  ok      iTerm2 prefs stay local (no synced folder in $PROFILE.iterm2)"
     return 0
   fi
   if [ ! -d "$APPLICATIONS_DIR/iTerm.app" ]; then
