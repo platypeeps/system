@@ -6040,6 +6040,9 @@ sweep_step() { # name, seconds, command...
   ss_rc=0
   run_step "$@" > "$ss_out.1" 2> "$ss_out.2" || ss_rc=$?
   cat "$ss_out.1"; cat "$ss_out.2" >&2
+  # The command without its bound: matched on the bound, every error was a
+  # formula's (sd:7071).
+  shift
   ss_err=
   if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ]; then
     ss_err=$(build_error "$ss_out.1" "$ss_out.2")
@@ -6055,7 +6058,6 @@ sweep_step() { # name, seconds, command...
     failed="$failed, $ss_name"
   fi
   if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ] && cat "$ss_out.1" "$ss_out.2" | grep -Eq "$SUDO_REFUSED"; then
-    shift
     DEFERRED="$DEFERRED    $*
 "
     echo "  DEFER   needs sudo: $*"
