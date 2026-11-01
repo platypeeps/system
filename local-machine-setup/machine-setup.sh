@@ -705,6 +705,7 @@ mosh_firewall() {
 # A firewall rule that blocks sd-serve's python, reported; a brew
 # Python.app is allowed again under --apply through the repair drop-in's
 # sudo -n (sd:7059). A uv python's fix stays the operator's (sd:6492).
+# Fails when the allow does, so the upgrade sweep counts it.
 python_firewall() {
   _bp=$(blocked_python)
   [ -n "$_bp" ] || return 0
@@ -712,7 +713,7 @@ python_firewall() {
   case $_bp in */Python.framework/*/Resources/Python.app) ;; *) return 0 ;; esac
   _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
   if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
-  run_ok sudo -n "$_fw" --add "$_bp" && run_ok sudo -n "$_fw" --unblockapp "$_bp" || :
+  run_ok sudo -n "$_fw" --add "$_bp" && run_ok sudo -n "$_fw" --unblockapp "$_bp"
 }
 
 stage_brew() {
@@ -780,7 +781,7 @@ stage_brew() {
     echo "  DIFFERS $f pinned"
     run bound_step 300 brew unpin "$f"
   done
-  python_firewall
+  python_firewall || :
   mosh_firewall
   tailscale_cli_link
 }
@@ -6151,7 +6152,7 @@ cmd_upgrade() {
       failed="$failed, brew pin list"
     fi
     sweep_step "brew upgrade" 1800 brew upgrade
-    python_firewall
+    python_firewall || failed="$failed, python firewall"
     # --greedy takes casks with `auto_updates true` too, whose own updaters
     # stage_macos turns off where the app holds a TCC grant (sd:3062). It
     # moves Claude Code too, the claude-code@latest cask, whose own updater

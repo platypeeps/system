@@ -217,6 +217,18 @@ class BrewStageTest(unittest.TestCase):
                 self.assertEqual([l for l in fw_log.read_text().splitlines() if l != "--listapps"],
                                  [f"--add {PYTHON_APP}", f"--unblockapp {PYTHON_APP}"], result.stdout)
 
+    def test_a_refused_firewall_allow_fails_the_upgrade_sweep(self):
+        """sd:7059 review: a refused sudo -n printed FAILED, yet the sweep
+        exited 0, though sd-serve stays blocked."""
+        blocked = {"FW_LIST": f"1 : {PYTHON_APP} \\n             (Block incoming connections)\\n",
+                   "FW_LOG": str(self.stubs.parent / "fw.log")}
+        write_exec(self.stubs / "sudo", "#!/bin/sh\nexit 1\n")
+
+        result = self.run_verb("upgrade", "--apply", **blocked)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("python firewall", result.stdout + result.stderr)
+
     def tailscale_profile(self, brew="", cask="tailscale-app\n"):
         profiles = self.config_root / "machine-setup/profiles"
         (profiles / "personal.brew").write_text(brew)
