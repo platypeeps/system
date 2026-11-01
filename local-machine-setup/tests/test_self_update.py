@@ -194,6 +194,17 @@ class SelfUpdateOffTest(unittest.TestCase):
 
         self.assertEqual(env_sh.read_text(), "export OTHER=1\nexport AGY_CLI_DISABLE_AUTO_UPDATE=1\n")
 
+    def test_an_env_row_leaves_the_stages_after_macos_to_run(self):
+        # sd:7041: the env row set do_stages' `want`, so every update after
+        # the macos stage skipped tooling, system, obsidian and iterm2.
+        write_exec(self.stubs / "agy", EXIT_1_STUB)
+
+        result = self.run_verb("update")
+
+        self.assertIn("AGY_CLI_DISABLE_AUTO_UPDATE", result.stdout)
+        for stage in ("tooling", "system", "obsidian", "iterm2"):
+            self.assertIn(f"== {stage}\n", result.stdout)
+
     def test_an_env_row_for_a_command_not_installed_is_skipped(self):
         env_sh = self.home / ".config/shell/env.sh"
         env_sh.parent.mkdir(parents=True, exist_ok=True)
