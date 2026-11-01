@@ -35,11 +35,24 @@ LIB = FOLDER.parent / "lib"
 # $PYTHONS are installed (three by default), plus $FORMULAE. `pin`,
 # `install` and a bare `upgrade` record into $PINS; `list --pinned` reads it, and `unpin` logs
 # into $PINS.unpin and drops the pin.
+# `info --json=v2 --formula NAME` reports NAME installed as INSTALLED when
+# $ALIASES holds NAME=INSTALLED, else not installed; INFO_RC fails it.
+# $LEAVES is what `leaves --installed-on-request` prints.
 BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
   "list --formula") [ -z "$LIST_HANG" ] || stall
                     [ -z "$LIST_RC" ] || exit "$LIST_RC"
                     printf '%s\n' ${PYTHONS-python@3.12 python@3.14 python@3.15} $FORMULAE ;;
   "list --cask"|leaves|tap) : ;;
+  "leaves --installed-on-request") printf '%s\n' $LEAVES ;;
+  "info --json=v2 --formula "*)
+    [ -z "$INFO_RC" ] || exit "$INFO_RC"
+    to=""
+    for a in $ALIASES; do [ "${a%%=*}" != "$4" ] || to=${a#*=}; done
+    if [ -n "$to" ]; then
+      printf '{"formulae": [{"name": "%s", "full_name": "%s", "installed": [{"version": "1"}]}]}\n' "$to" "$to"
+    else
+      printf '{"formulae": [{"name": "%s", "full_name": "%s", "installed": []}]}\n' "${4##*/}" "$4"
+    fi ;;
   "list --pinned") [ -z "$PINNED_RC" ] || exit "$PINNED_RC"
                    sed -n 's/^pin //p' "$PINS" 2>/dev/null ;;
   "pin "*) [ -z "$PIN_RC" ] || exit "$PIN_RC"
@@ -582,6 +595,46 @@ class BrewStageTest(unittest.TestCase):
         self.assertEqual(self.unpin_calls(), [])
         status = self.run_verb("status", PINNED_RC="1")
         self.assertIn("pinned  : unknown (brew could not list its pins)", status.stdout)
+
+    def alias_profile(self):
+        """The profile names python, an alias of the installed python@3.15."""
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("python\n")
+        return {"ALIASES": "python=python@3.15"}
+
+    def test_a_formula_named_by_its_alias_is_installed(self):
+        """sd:7093: `brew list` prints python@3.15, so the profile's python
+        read as missing and was installed again every night."""
+        env = self.alias_profile()
+
+        result = self.run_verb("update", "brew", "--apply", **env)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  ok      python (python@3.15)\n", result.stdout)
+        self.assertNotIn("MISSING python", result.stdout)
+        self.assertNotIn("install python", self.pins.read_text() if self.pins.exists() else "")
+
+    def test_status_counts_an_aliased_formula_neither_missing_nor_extra(self):
+        """sd:7093: status read python as missing and python@3.15, a leaf
+        installed on request, as extra."""
+        env = self.alias_profile()
+
+        result = self.run_verb("status", LEAVES="python@3.15", **env)
+
+        block = result.stdout.split("brew formulae\n", 1)[1].split("casks\n", 1)[0]
+        self.assertEqual(block, "  ok      in sync\n", result.stdout)
+
+    def test_a_formula_brew_info_cannot_resolve_is_unknown_not_installed(self):
+        """A failed probe is no "no" (sd:3536): nothing is installed, and the
+        run fails naming it."""
+        env = self.alias_profile()
+
+        result = self.run_verb("update", "brew", "--apply", INFO_RC="1", **env)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED  brew stage: brew info python gave no answer; not installed", result.stdout)
+        self.assertNotIn("install python", self.pins.read_text() if self.pins.exists() else "")
+        status = self.run_verb("status", INFO_RC="1", **env)
+        self.assertIn("  unknown : python\n", status.stdout)
 
     def test_a_list_brew_cannot_give_changes_nothing(self):
         """sd:3536: read as empty, a failed list installed every formula again."""

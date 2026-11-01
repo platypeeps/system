@@ -36,13 +36,16 @@ FORMULA = "example-formula"
 QUALIFIED = f"{TAP}/{FORMULA}"
 
 # Installed, and reported the way brew actually reports it: bare from
-# `list --formula`, tap-qualified from `leaves`.
+# `list --formula`, tap-qualified from `leaves`. Any other formula brew
+# info reports not installed.
 BREW_STUB = f"""#!/bin/sh
 case "$*" in
   "list --formula") printf '%s\\n' {FORMULA} ;;
   "list --cask") : ;;
   leaves|"leaves --installed-on-request") printf '%s\\n' {QUALIFIED} ;;
   tap) printf '%s\\n' {TAP} ;;
+  "info --json=v2 --formula "*)
+    printf '{{"formulae": [{{"name": "%s", "full_name": "%s", "installed": []}}]}}\\n' "$4" "$4" ;;
   --prefix) echo /usr/local ;;
 esac
 exit 0

@@ -717,6 +717,44 @@ python_firewall() {
   run_ok sudo -n "$_fw" --add "$_bp" && run_ok sudo -n "$_fw" --unblockapp "$_bp"
 }
 
+# formula_installed NAME: brew's name for the installed formula that NAME
+# names, printed, and 0; 1 when none is; 2 when brew info gave no answer: a
+# failed probe is no "no" (sd:3536). brew resolves an alias or an old name,
+# as `python` names python@3.15, which `brew list` prints (sd:7093).
+formula_installed() {
+  fx_json=$(bound_step 300 brew info --json=v2 --formula "$1" 2>/dev/null) || return 2
+  printf '%s' "$fx_json" | python3 -c '
+import json, sys
+try:
+    f = json.load(sys.stdin)["formulae"][0]
+except (ValueError, KeyError, IndexError, TypeError):
+    sys.exit(2)
+if not f.get("installed"):
+    sys.exit(1)
+print(f["full_name"])'
+}
+
+# formula_plan LIST: each profile formula as `state name [installed]`, given
+# LIST, what `brew list --formula` printed. ok: installed under its bare
+# name, as a tap-qualified one lists, or the one brew resolves it to;
+# missing: not installed; unknown: brew could not tell.
+formula_plan() {
+  fp_have=$(printf '%s\n' "$1" | sed 's|.*/||')
+  manifest brew | while read -r fp_f; do
+    if printf '%s\n' "$fp_have" | grep -qx "${fp_f##*/}"; then
+      echo "ok $fp_f ${fp_f##*/}"
+      continue
+    fi
+    fp_rc=0
+    fp_name=$(formula_installed "$fp_f") || fp_rc=$?
+    case $fp_rc in
+      0) echo "ok $fp_f ${fp_name##*/}" ;;
+      1) echo "missing $fp_f" ;;
+      *) echo "unknown $fp_f" ;;
+    esac
+  done
+}
+
 stage_brew() {
   echo "== brew"
   command -v brew >/dev/null 2>&1 || {
@@ -743,15 +781,14 @@ stage_brew() {
     fi
   done
 
-  installed=$(printf '%s\n' "$formulae" | sed 's|.*/||' | sort)
-  manifest brew | while read -r f; do
-    # Casks and versioned formulae report under their bare name.
-    if echo "$installed" | grep -qx "$(echo "$f" | sed 's|.*/||')"; then
-      echo "  ok      $f"
-    else
-      echo "  MISSING $f"
-      run bound_step 1800 brew install "$f"
-    fi
+  formula_plan "$formulae" | while read -r fs f fn; do
+    case $fs in
+      ok) if [ "$fn" = "${f##*/}" ]; then echo "  ok      $f"; else echo "  ok      $f ($fn)"; fi ;;
+      missing) echo "  MISSING $f"
+               run bound_step 1800 brew install "$f" ;;
+      *) echo "  MISSING $f"
+         note_failure "brew stage: brew info $f gave no answer; not installed" 1 ;;
+    esac
   done
 
   installed_casks=$(printf '%s\n' "$installed_casks" | sort)
@@ -6716,17 +6753,28 @@ cmd_status() {
     # `sort -u`, not `sort`: manifest dedupes before this strips the tap, so a
     # profile naming one formula both ways left the same bare name twice and
     # comm reported the duplicate as missing for a formula that was installed.
-    bound_step 300 brew list --formula 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/have.brew"
-    manifest brew | sed 's|.*/||' | sort -u > "$tmp/want.brew"
+    # formula_plan resolves the rest: an alias, as `python`, is installed as
+    # python@3.15, which is then wanted, not extra (sd:7093). A list brew
+    # could not give is unknown, not every formula missing.
     echo "brew formulae"
-    mb=$(comm -13 "$tmp/have.brew" "$tmp/want.brew")
+    ub=""
+    if fl=$(bound_step 300 brew list --formula 2>/dev/null); then
+      fp=$(formula_plan "$fl")
+    else
+      fp=""
+      ub="brew list --formula did not answer"
+    fi
+    { manifest brew; printf '%s\n' "$fp" | awk '$1 == "ok" { print $3 }'; } | sed 's|.*/||' | sort -u > "$tmp/want.brew"
+    mb=$(printf '%s\n' "$fp" | awk '$1 == "missing" { sub(/.*\//, "", $2); print $2 }')
+    ub="$ub$(printf '%s\n' "$fp" | awk '$1 == "unknown" { sub(/.*\//, "", $2); print $2 }')"
     # Extra is what someone installed by name: a build-only dependency is a
     # leaf too, and was reported as drift (sd:5049).
     bound_step 300 brew leaves --installed-on-request 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/leaves.brew"
     xb=$(comm -23 "$tmp/leaves.brew" "$tmp/want.brew")
     status_line missing "$mb"
+    status_line unknown "$ub"
     status_line extra "$xb"
-    [ -n "$mb$xb" ] || echo "  ok      in sync"
+    [ -n "$mb$ub$xb" ] || echo "  ok      in sync"
 
     bound_step 300 brew list --cask 2>/dev/null | sort > "$tmp/have.cask"
     manifest cask > "$tmp/want.cask"
@@ -6743,7 +6791,7 @@ cmd_status() {
     # Its report half only: status --apply stays read-only.
     mf=$(APPLY=0; mosh_firewall | grep DIFFERS || :)
     [ -z "$mf" ] || printf '%s\n' "$mf"
-    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf"; do
+    for v in "$mt" "$mb" "$ub" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else

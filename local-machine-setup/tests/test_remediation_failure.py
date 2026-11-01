@@ -28,11 +28,14 @@ FOLDER = HERE.parent
 # itself, lib/ and the folders its envs stage seeds (ENVS).
 COPIED = ("local-machine-setup", "lib", "local-notify", "local-statusline")
 
-# Installs nothing; `install bad-formula` fails, every call is logged.
+# Installs nothing; `install bad-formula` fails, every call is logged. brew
+# info reports each formula not installed.
 BREW_STUB = r"""#!/bin/sh
 printf '%s\n' "$*" >> "$BREW_LOG"
 case "$*" in
   "install bad-formula") echo "Error: bad-formula: download failed" >&2; exit 1 ;;
+  "info --json=v2 --formula "*)
+    printf '{"formulae": [{"name": "%s", "full_name": "%s", "installed": []}]}\n' "$4" "$4" ;;
 esac
 exit 0
 """
