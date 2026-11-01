@@ -753,37 +753,41 @@ pours_from_bottle() {
   if printf '%s\n' "$pb_heads" | grep -qv '(bottled)'; then return 1; fi
 }
 
-# formula_plan LIST [any]: each profile formula as `state name [installed]`,
-# given LIST, what `brew list --formula` printed. ok: installed under its
-# bare name, as a tap-qualified one lists, or the one brew resolves it to;
-# bottle: missing, and it pours from bottles; source: missing, and it needs
-# a source build, which only the weekly upgrade runs (sd:7103); missing,
-# with `any`, which asks no bottle; unknown: brew could not tell.
+# formula_state LIST NAME [any]: the profile formula NAME as `state name
+# [installed]`, given LIST, what `brew list --formula` printed. ok: installed
+# under its bare name, as a tap-qualified one lists, or the one brew resolves
+# it to; bottle: missing, and it pours from bottles; source: missing, and it
+# needs a source build, which only the weekly upgrade runs (sd:7103);
+# missing, with `any`, which asks no bottle; unknown: brew could not tell.
+formula_state() {
+  if printf '%s\n' "$1" | sed 's|.*/||' | grep -qx "${2##*/}"; then
+    echo "ok $2 ${2##*/}"
+    return 0
+  fi
+  fs_rc=0
+  fs_name=$(formula_installed "$2") || fs_rc=$?
+  case $fs_rc in
+    0) echo "ok $2 ${fs_name##*/}"; return 0 ;;
+    1) ;;
+    *) echo "unknown $2"; return 0 ;;
+  esac
+  if [ "${3:-}" = any ]; then
+    echo "missing $2"
+    return 0
+  fi
+  fs_rc=0
+  pours_from_bottle "$2" || fs_rc=$?
+  case $fs_rc in
+    0) echo "bottle $2" ;;
+    1) echo "source $2" ;;
+    *) echo "unknown $2" ;;
+  esac
+}
+
+# formula_plan LIST [any]: formula_state for each profile formula.
 formula_plan() {
-  fp_have=$(printf '%s\n' "$1" | sed 's|.*/||')
   manifest brew | while read -r fp_f; do
-    if printf '%s\n' "$fp_have" | grep -qx "${fp_f##*/}"; then
-      echo "ok $fp_f ${fp_f##*/}"
-      continue
-    fi
-    fp_rc=0
-    fp_name=$(formula_installed "$fp_f") || fp_rc=$?
-    case $fp_rc in
-      0) echo "ok $fp_f ${fp_name##*/}"; continue ;;
-      1) ;;
-      *) echo "unknown $fp_f"; continue ;;
-    esac
-    if [ "${2:-}" = any ]; then
-      echo "missing $fp_f"
-      continue
-    fi
-    fp_rc=0
-    pours_from_bottle "$fp_f" || fp_rc=$?
-    case $fp_rc in
-      0) echo "bottle $fp_f" ;;
-      1) echo "source $fp_f" ;;
-      *) echo "unknown $fp_f" ;;
-    esac
+    formula_state "$1" "$fp_f" "${2:-}"
   done
 }
 
@@ -826,16 +830,28 @@ stage_brew() {
     fi
   done
 
-  formula_plan "$formulae" | while read -r fs f fn; do
-    case $fs in
-      ok) if [ "$fn" = "${f##*/}" ]; then echo "  ok      $f"; else echo "  ok      $f ($fn)"; fi ;;
-      bottle) echo "  MISSING $f"
-              run bound_step 1800 brew install "$f" ;;
-      source) echo "  DIFFERS $f needs a source build; the weekly upgrade installs it" ;;
-      *) echo "  MISSING $f"
-         note_failure "brew stage: brew could not tell whether $f is installed or pours from a bottle; not installed" 1 ;;
-    esac
-  done
+  # Each formula's bottle check and its install read one Homebrew state
+  # (sd:7103 review): the check runs just before the install, after the
+  # one before it, and both with auto-update off, so the install pulls no
+  # newer version the check never saw, which might have no bottle. The
+  # weekly upgrade's `brew update` refreshes that state. A subshell, as
+  # the export must not reach the stages after this one.
+  (
+    HOMEBREW_NO_AUTO_UPDATE=1
+    export HOMEBREW_NO_AUTO_UPDATE
+    manifest brew | while read -r f; do
+      # shellcheck disable=SC2046 # `state name [installed]`, one word each
+      set -- $(formula_state "$formulae" "$f")
+      case $1 in
+        ok) if [ "$3" = "${f##*/}" ]; then echo "  ok      $f"; else echo "  ok      $f ($3)"; fi ;;
+        bottle) echo "  MISSING $f"
+                run bound_step 1800 brew install "$f" ;;
+        source) echo "  DIFFERS $f needs a source build; the weekly upgrade installs it" ;;
+        *) echo "  MISSING $f"
+           note_failure "brew stage: brew could not tell whether $f is installed or pours from a bottle; not installed" 1 ;;
+      esac
+    done
+  )
 
   installed_casks=$(printf '%s\n' "$installed_casks" | sort)
   manifest cask | while read -r c; do

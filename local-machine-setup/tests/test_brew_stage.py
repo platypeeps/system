@@ -43,8 +43,11 @@ LIB = FOLDER.parent / "lib"
 # brew info fails once an install was tried.
 # `install --dry-run NAME` would install NAME and $DEPS, or fails with
 # DRY_RC; `info --formula NAMES` heads each `(bottled)` unless $UNBOTTLED
-# names it (sd:7103).
-BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
+# names it (sd:7103); it would also upgrade $DEPS_UPGRADE.
+# With $CALLS, each call is logged there with its auto-update switch, and an
+# install sleeps INSTALL_SLEEP seconds, then logs `done`.
+BREW_STUB = "#!/bin/sh\n" + STALL + r"""[ -z "$CALLS" ] || echo "$* auto=${HOMEBREW_NO_AUTO_UPDATE:-on}" >> "$CALLS"
+case "$*" in
   "list --formula") [ -z "$LIST_HANG" ] || stall
                     [ -z "$LIST_RC" ] || exit "$LIST_RC"
                     printf '%s\n' ${PYTHONS-python@3.12 python@3.14 python@3.15} $FORMULAE
@@ -69,7 +72,8 @@ BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
     [ -z "$DRY_RC" ] || exit "$DRY_RC"
     printf '==> Would install 1 formula:\n%s 1.0\n' "$3"
     [ -z "$DEPS" ] || printf '==> Would install dependencies for %s:\n' "$3"
-    for d in $DEPS; do printf '%s    1.0\n' "$d"; done ;;
+    for d in $DEPS; do printf '%s    1.0\n' "$d"; done
+    [ -z "$DEPS_UPGRADE" ] || printf '==> Would upgrade 1 dependency:\n%s 1.0 -> 2.0\n' "$DEPS_UPGRADE" ;;
   "info --formula "*)
     shift 2
     for n; do
@@ -80,6 +84,7 @@ BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
     done ;;
   "install --cask "*|upgrade) echo "$*" >> "$PINS" ;;
   "install "*) echo "$*" >> "$PINS"
+               [ -z "$INSTALL_SLEEP" ] || { sleep "$INSTALL_SLEEP"; echo "done $*" >> "$CALLS"; }
                [ -z "$INSTALL_RC" ] || exit "$INSTALL_RC" ;;
   "unpin "*) echo "$*" >> "$PINS.unpin"
              grep -vx "pin ${2}" "$PINS" > "$PINS.new" || :
@@ -752,6 +757,48 @@ class BrewStageTest(unittest.TestCase):
         self.assertNotIn("installed (formula)", result.stdout)
         self.assertIn("\nmissing (formula): unknown, the list did not answer\n", result.stdout)
         self.assertIn("outdated list failed (missing)", result.stdout)
+
+    def calls(self):
+        path = self.stubs.parent / "calls"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_the_install_reads_the_homebrew_state_its_bottle_check_read(self):
+        """sd:7103 review: the check ran with auto-update off and the install
+        with it on, so the install could refresh to a version the check
+        never saw, with no bottle, and build it in the nightly run."""
+        self.missing_formula()
+
+        result = self.run_verb("update", "brew", "--apply", CALLS=str(self.stubs.parent / "calls"))
+
+        self.assertEqual(self.installs(), ["install example-formula"], result.stdout + result.stderr)
+        formula = [c for c in self.calls() if "example-formula" in c and not c.startswith("info --json")]
+        self.assertEqual(formula, ["install --dry-run example-formula auto=1",
+                                   "info --formula example-formula auto=1",
+                                   "install example-formula auto=1"])
+
+    def test_each_formula_is_checked_after_the_install_before_it(self):
+        """sd:7103 review: the checks ran in a pipeline beside the installs,
+        so a check could read the state before an install that was still
+        running."""
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("example-a\nexample-b\n")
+
+        self.run_verb("update", "brew", "--apply", CALLS=str(self.stubs.parent / "calls"), INSTALL_SLEEP="2")
+
+        calls = [c.rsplit(" auto=", 1)[0] for c in self.calls()]
+        done = calls.index("done install example-a")
+        self.assertEqual([c for c in calls[:done] if "example-b" in c], [], calls)
+        self.assertIn("install example-b", calls[done:])
+
+    def test_a_dependency_upgrade_that_needs_a_build_defers_the_formula(self):
+        """An install also upgrades an outdated dependency; one with no bottle
+        builds, so the formula waits for the weekly run."""
+        self.missing_formula()
+
+        result = self.run_verb("update", "brew", "--apply", DEPS_UPGRADE="example-old", UNBOTTLED="example-old")
+
+        self.assertIn("  DIFFERS example-formula needs a source build; the weekly upgrade installs it\n",
+                      result.stdout)
+        self.assertEqual(self.installs(), [])
 
     def test_a_list_brew_cannot_give_changes_nothing(self):
         """sd:3536: read as empty, a failed list installed every formula again."""
