@@ -658,10 +658,12 @@ stale_pins() {
 }
 
 # What sd-serve's python3 runs as, to the application firewall, when the
-# firewall blocks its incoming connections; fixing it needs sudo, so it is
-# reported only. A framework build, as brew's, runs as its Python.app; any
-# other, as the uv one (sd:6492), as its executable, listed by its real path.
-blocked_python() {
+# firewall does not allow it: blocked, or not listed, as a new Python.app
+# after an upgrade is (sd:7059 review). A framework build, as brew's, runs
+# as its Python.app; any other, as the uv one (sd:6492), as its executable,
+# listed by its real path. Nothing where sd-serve is not installed.
+unallowed_python() {
+  [ -f "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-serve.plist" ] || return 0
   _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
   if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
   [ -x "$_fw" ] || return 0
@@ -672,8 +674,7 @@ blocked_python() {
     *) _app=$(serve_python3 'import os, sys; print(os.path.realpath(sys.executable))')
        [ -n "$_app" ] || return 0 ;;
   esac
-  "$_fw" --listapps 2>/dev/null | grep -A1 -F "$_app" | grep -q 'Block incoming' && echo "$_app"
-  return 0
+  firewall_allows "$_app" || echo "$_app"
 }
 
 # mosh-server, when the profile installs mosh, as the firewall must admit
@@ -702,14 +703,14 @@ mosh_firewall() {
     && run_ok sudo -n "$_fw" --unblockapp "$_ms" || :
 }
 
-# A firewall rule that blocks sd-serve's python, reported; a brew
-# Python.app is allowed again under --apply through the repair drop-in's
+# sd-serve's python when the firewall does not allow it, reported; a brew
+# Python.app is added and allowed under --apply through the repair drop-in's
 # sudo -n (sd:7059). A uv python's fix stays the operator's (sd:6492).
 # Fails when the allow does, so the upgrade sweep counts it.
 python_firewall() {
-  _bp=$(blocked_python)
+  _bp=$(unallowed_python)
   [ -n "$_bp" ] || return 0
-  echo "  DIFFERS firewall blocks $_bp; allow it: System Settings > Network > Firewall > Options"
+  echo "  DIFFERS firewall does not allow $_bp; allow it: System Settings > Network > Firewall > Options"
   case $_bp in */Python.framework/*/Resources/Python.app) ;; *) return 0 ;; esac
   _fw=/usr/libexec/ApplicationFirewall/socketfilterfw
   if command -v socketfilterfw >/dev/null 2>&1; then _fw=$(command -v socketfilterfw); fi
@@ -6664,8 +6665,8 @@ cmd_status() {
     [ -n "$mc$xc" ] || echo "  ok      in sync"
     sp=$(stale_pins) || sp="unknown (brew could not list its pins)"
     status_line pinned "$sp"
-    bp=$(blocked_python)
-    status_line blocked "$bp"
+    bp=$(unallowed_python)
+    status_line "not allowed" "$bp"
     # Its report half only: status --apply stays read-only.
     mf=$(APPLY=0; mosh_firewall | grep DIFFERS || :)
     [ -z "$mf" ] || printf '%s\n' "$mf"

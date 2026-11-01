@@ -204,16 +204,19 @@ class BrewStageTest(unittest.TestCase):
         fw_log = self.stubs.parent / "fw.log"
         blocked = {"FW_LIST": f"1 : {PYTHON_APP} \\n             (Block incoming connections)\\n",
                    "FW_LOG": str(fw_log)}
+        self.serve_from_brew()
 
         dry = self.run_verb("update", "brew", **blocked)
         self.assertIn("[dry-run] sudo -n ", dry.stdout)
         self.assertFalse([l for l in fw_log.read_text().splitlines() if l != "--listapps"])
 
         write_exec(self.stubs / "sudo", SUDO_N_STUB)
-        for verb in (("update", "brew", "--apply"), ("upgrade", "--apply")):
-            with self.subTest(verb=verb):
-                fw_log.unlink()
-                result = self.run_verb(*verb, **blocked)
+        unlisted = {"FW_LIST": "", "FW_LOG": str(fw_log)}
+        for verb, listing in ((("update", "brew", "--apply"), blocked), (("upgrade", "--apply"), blocked),
+                              (("update", "brew", "--apply"), unlisted)):
+            with self.subTest(verb=verb, listed=bool(listing["FW_LIST"])):
+                fw_log.unlink(missing_ok=True)
+                result = self.run_verb(*verb, **listing)
                 self.assertEqual([l for l in fw_log.read_text().splitlines() if l != "--listapps"],
                                  [f"--add {PYTHON_APP}", f"--unblockapp {PYTHON_APP}"], result.stdout)
 
@@ -223,6 +226,7 @@ class BrewStageTest(unittest.TestCase):
         blocked = {"FW_LIST": f"1 : {PYTHON_APP} \\n             (Block incoming connections)\\n",
                    "FW_LOG": str(self.stubs.parent / "fw.log")}
         write_exec(self.stubs / "sudo", "#!/bin/sh\nexit 1\n")
+        self.serve_from_brew()
 
         result = self.run_verb("upgrade", "--apply", **blocked)
 
@@ -324,15 +328,21 @@ class BrewStageTest(unittest.TestCase):
         self.assertNotIn("tailscale CLI", self.run_verb("update", "brew", **env).stdout)
 
     def test_a_firewall_block_on_the_serving_python_is_reported(self):
-        """sd:6463: status reports it; the stage fixes it only under --apply."""
+        """sd:6463: status reports it; the stage fixes it only under --apply.
+        sd:7059 review: an unlisted one, as after an upgrade, too; none
+        where sd-serve is not installed."""
         blocked = {"FW_LIST": f"1 : {PYTHON_APP} \\n             (Block incoming connections)\\n"}
         allowed = {"FW_LIST": f"1 : {PYTHON_APP} \\n             (Allow incoming connections)\\n"}
+        self.assertNotIn("not allowed", self.run_verb("status", **blocked).stdout)
+        self.serve_from_brew()
 
-        stage = self.run_verb("update", "brew", **blocked)
-        self.assertIn(f"DIFFERS firewall blocks {PYTHON_APP}", stage.stdout)
-        status = self.run_verb("status", **blocked)
-        self.assertIn(f"  blocked : {PYTHON_APP}", status.stdout)
-        self.assertNotIn("blocked", self.run_verb("status", **allowed).stdout)
+        for listing in (blocked, {"FW_LIST": ""}):
+            with self.subTest(listed=bool(listing["FW_LIST"])):
+                stage = self.run_verb("update", "brew", **listing)
+                self.assertIn(f"DIFFERS firewall does not allow {PYTHON_APP}", stage.stdout)
+                status = self.run_verb("status", **listing)
+                self.assertIn(f"  not allowed: {PYTHON_APP}", status.stdout)
+        self.assertNotIn("not allowed", self.run_verb("status", **allowed).stdout)
 
     def mosh_server(self):
         """mosh in the profile, installed under a brew prefix in the
@@ -396,6 +406,13 @@ class BrewStageTest(unittest.TestCase):
         stage = self.run_verb("update", "brew", **env, FW_LIST="")
         self.assertNotIn("mosh-server", stage.stdout)
 
+    def serve_from_brew(self):
+        """sd-serve installed with its PATH at the stub brew python3."""
+        agents = self.home / "Library/LaunchAgents"
+        agents.mkdir(parents=True)
+        (agents / f"{fixture_config.LABEL_PREFIX}.sd-serve.plist").write_bytes(plistlib.dumps(
+            {"Label": "x", "EnvironmentVariables": {"PATH": f"{self.stubs}:/usr/bin:/bin"}}))
+
     def serve_from_uv(self):
         """sd-serve installed with its PATH starting at its uv python."""
         served = self.home / ".local/share/sd-serve/python/bin"
@@ -433,11 +450,11 @@ class BrewStageTest(unittest.TestCase):
         allowed = {"FW_LIST": f"1 : {exe} \\n             (Allow incoming connections)\\n"}
 
         stage = self.run_verb("update", "brew", **served, **blocked)
-        self.assertIn(f"DIFFERS firewall blocks {exe};", stage.stdout)
+        self.assertIn(f"DIFFERS firewall does not allow {exe};", stage.stdout)
         self.assertNotIn("Python.app", stage.stdout)
         status = self.run_verb("status", **served, **blocked)
-        self.assertIn(f"  blocked : {exe}", status.stdout)
-        self.assertNotIn("blocked", self.run_verb("status", **served, **allowed).stdout)
+        self.assertIn(f"  not allowed: {exe}", status.stdout)
+        self.assertNotIn("not allowed", self.run_verb("status", **served, **allowed).stdout)
 
     def sd_stage(self, *flags, **extra):
         self.uv_log = self.stubs.parent / "uv.log"
