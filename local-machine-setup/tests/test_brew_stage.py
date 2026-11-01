@@ -39,6 +39,8 @@ LIB = FOLDER.parent / "lib"
 # $ALIASES holds NAME=INSTALLED, else not installed; INFO_RC fails it.
 # $LEAVES is what `leaves --installed-on-request` prints. With
 # INSTALLS_STICK, `list --formula` also lists each formula installed.
+# INSTALL_RC fails an install after logging it; with INFO_RC_AFTER_INSTALL,
+# brew info fails once an install was tried.
 # `install --dry-run NAME` would install NAME and $DEPS, or fails with
 # DRY_RC; `info --formula NAMES` heads each `(bottled)` unless $UNBOTTLED
 # names it (sd:7103).
@@ -51,6 +53,7 @@ BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
   "leaves --installed-on-request") printf '%s\n' $LEAVES ;;
   "info --json=v2 --formula "*)
     [ -z "$INFO_RC" ] || exit "$INFO_RC"
+    [ -z "$INFO_RC_AFTER_INSTALL" ] || ! grep -q '^install [^-]' "$PINS" 2>/dev/null || exit "$INFO_RC_AFTER_INSTALL"
     to=""
     for a in $ALIASES; do [ "${a%%=*}" != "$4" ] || to=${a#*=}; done
     if [ -n "$to" ]; then
@@ -75,7 +78,9 @@ BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
         *) printf '==> %s: stable 1.0 (bottled)\nNot installed\n==> Dependencies\n' "$n" ;;
       esac
     done ;;
-  "install "*|upgrade) echo "$*" >> "$PINS" ;;
+  "install --cask "*|upgrade) echo "$*" >> "$PINS" ;;
+  "install "*) echo "$*" >> "$PINS"
+               [ -z "$INSTALL_RC" ] || exit "$INSTALL_RC" ;;
   "unpin "*) echo "$*" >> "$PINS.unpin"
              grep -vx "pin ${2}" "$PINS" > "$PINS.new" || :
              mv "$PINS.new" "$PINS" ;;
@@ -734,6 +739,19 @@ class BrewStageTest(unittest.TestCase):
         self.assertEqual(self.installs(), ["install example-formula"], result.stdout + result.stderr)
         self.assertIn("\ninstalled (formula):\n  example-formula\n", result.stdout)
         self.assertNotIn("still missing", result.stdout)
+
+    def test_a_failed_install_brew_cannot_recheck_is_not_reported_installed(self):
+        """sd:7132: the snapshot after the sweep failed, so it was empty, and
+        the report listed the formula whose install failed as installed."""
+        self.missing_formula()
+        write_exec(self.stubs / "mas", "#!/bin/sh\nexit 0\n")
+
+        result = self.run_verb("upgrade-report", INSTALL_RC="1", INFO_RC_AFTER_INSTALL="1")
+
+        self.assertEqual(self.installs(), ["install example-formula"], result.stdout + result.stderr)
+        self.assertNotIn("installed (formula)", result.stdout)
+        self.assertIn("\nmissing (formula): unknown, the list did not answer\n", result.stdout)
+        self.assertIn("outdated list failed (missing)", result.stdout)
 
     def test_a_list_brew_cannot_give_changes_nothing(self):
         """sd:3536: read as empty, a failed list installed every formula again."""

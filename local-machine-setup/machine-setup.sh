@@ -6546,7 +6546,15 @@ cmd_upgrade_report() {
         sed 's/^/  /' "$tmp/$kind.after"
       fi
     done
-    comm -23 "$tmp/wants.before" "$tmp/wants.after" > "$tmp/wants.done"
+    # A snapshot that did not answer leaves out what it could not tell:
+    # diffed, a failed install read as installed (sd:7132).
+    if grep -qx missing "$tmp/unknown.before" "$tmp/unknown.after"; then
+      printf '\nmissing (formula): unknown, the list did not answer\n'
+      : > "$tmp/wants.done"
+      : > "$tmp/wants.after"
+    else
+      comm -23 "$tmp/wants.before" "$tmp/wants.after" > "$tmp/wants.done"
+    fi
     if [ -s "$tmp/wants.done" ]; then
       printf '\ninstalled (formula):\n'
       sed 's/^/  /' "$tmp/wants.done"
