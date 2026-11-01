@@ -6,9 +6,13 @@ could answer, and every agent job behind it hit its limit. The operator's
 ruling: after each install or upgrade, check the signature, the notarization
 and the team; clear the flag only when all three pass, else keep it and say so.
 
+The codex cask's bin/ files carry the same flag after each upgrade, and
+Gatekeeper blocked codex-code-mode-host (sd:7095): the same rule clears each
+of them, with OpenAI's team.
+
 The script runs from a copy of this folder under a temporary root. `brew`,
-`mas`, `codesign`, `spctl` and `xattr` are stubs on PATH; `claude` on PATH
-links into a temporary Caskroom, as the cask links it.
+`mas`, `codesign`, `spctl` and `xattr` are stubs on PATH; `claude` and
+`codex` on PATH link into a temporary Caskroom, as the casks link them.
 """
 
 import pathlib
@@ -25,6 +29,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
 TEAM = "Q6L2SF6YDW"
+CODEX_TEAM = "2DC432GLL2"
 
 BREW_STUB = r"""#!/bin/sh
 echo "brew $*" >> "$CALLS"
@@ -44,18 +49,23 @@ case $1 in
 esac
 """
 
-# Each check passes only for the path in GOOD, so a check of another binary
-# is no evidence for this one. BAD_SIGNATURE fails the verify, CODESIGN_TEAM
-# names another team, NOT_NOTARIZED makes Gatekeeper call it unnotarized, and
+# Each check passes only for a path in GOOD, a colon-separated list, so a
+# check of another binary is no evidence for this one. BAD_SIGNATURE fails
+# the verify, CODESIGN_TEAM (claude) and CODEX_SIGN_TEAM (a codex cask file)
+# name another team, NOT_NOTARIZED makes Gatekeeper call it unnotarized, and
 # SPCTL_HANG stalls (fixture_config.STALL).
 CODESIGN_STUB = r"""#!/bin/sh
 echo "codesign $*" >> "$CALLS"
 for last; do :; done
-[ "$last" = "$GOOD" ] || exit 1
+case ":$GOOD:" in *":$last:"*) ;; *) exit 1 ;; esac
+case $last in
+  */Caskroom/codex/*) team=${CODEX_SIGN_TEAM:-2DC432GLL2} ;;
+  *) team=${CODESIGN_TEAM:-Q6L2SF6YDW} ;;
+esac
 case $1 in
   --verify) [ -z "$BAD_SIGNATURE" ] ;;
-  -dv) echo "Identifier=com.anthropic.claude-code" >&2
-       echo "TeamIdentifier=${CODESIGN_TEAM:-Q6L2SF6YDW}" >&2 ;;
+  -dv) echo "Identifier=example.test.binary" >&2
+       echo "TeamIdentifier=$team" >&2 ;;
   *) exit 2 ;;
 esac
 """
@@ -63,7 +73,8 @@ esac
 SPCTL_STUB = "#!/bin/sh\n" + STALL + r"""echo "spctl $*" >> "$CALLS"
 [ -z "$SPCTL_HANG" ] || stall
 for last; do :; done
-if [ "$last" = "$GOOD" ] && [ -z "$NOT_NOTARIZED" ]; then
+case ":$GOOD:" in *":$last:"*) good=1 ;; *) good= ;; esac
+if [ -n "$good" ] && [ -z "$NOT_NOTARIZED" ]; then
   printf '%s: accepted\nsource=Notarized Developer ID\n' "$last" >&2
 else
   printf '%s: rejected\nsource=Unnotarized Developer ID\n' "$last" >&2
@@ -80,7 +91,7 @@ def write_exec(path, body):
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-class ClaudeQuarantineTest(unittest.TestCase):
+class QuarantineCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -132,6 +143,8 @@ class ClaudeQuarantineTest(unittest.TestCase):
         lines = self.calls.read_text().splitlines() if self.calls.exists() else []
         return [line for line in lines if line.split(" ", 1)[0] == tool]
 
+
+class ClaudeQuarantineTest(QuarantineCase):
     def assert_cleared(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"claude quarantined; signed, notarized, team {TEAM}: clearing", result.stdout)
@@ -239,6 +252,82 @@ class ClaudeQuarantineTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertNotIn("claude", result.stdout.replace(str(self.folder), ""))
         self.assertEqual(self.calls_of("xattr") + self.calls_of("codesign") + self.calls_of("spctl"), [])
+
+
+class CodexQuarantineTest(QuarantineCase):
+    """The codex cask: every file in the bin/ of the version `codex` on PATH
+    links to, each checked against OpenAI's team (sd:7095)."""
+
+    def setUp(self):
+        super().setUp()
+        # Only codex is quarantined here; ClaudeQuarantineTest covers claude.
+        self.quarantine.unlink()
+        caskroom = pathlib.Path(self.tmp.name) / "Caskroom/codex"
+        self.old_codex = caskroom / "0.164.0/bin/codex"
+        bin_dir = caskroom / "0.165.0/bin"
+        self.codex = [bin_dir / name for name in ("codex", "codex-code-mode-host", "codex-exec-server")]
+        for binary in (self.old_codex, *self.codex):
+            write_exec(binary, "#!/bin/sh\nexit 0\n")
+            pathlib.Path(f"{binary}.quarantine").touch()
+        (self.stubs / "codex").symlink_to(self.codex[0])
+
+    def run_verb(self, *args, **extra):
+        good = ":".join(str(path) for path in (self.claude, self.old_codex, *self.codex))
+        return super().run_verb(*args, **{"GOOD": good, **extra})
+
+    def flagged(self, path):
+        return pathlib.Path(f"{path}.quarantine").exists()
+
+    def assert_codex_cleared(self, result):
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for path in self.codex:
+            self.assertIn(f"{path.name} quarantined; signed, notarized, team {CODEX_TEAM}: clearing",
+                          result.stdout)
+            self.assertFalse(self.flagged(path), result.stdout)
+            self.assertIn(f"xattr -d com.apple.quarantine {path}", self.calls_of("xattr"))
+            self.assertIn(f"codesign --verify --strict {path}", self.calls_of("codesign"))
+        # Another version's files are not the ones `codex` runs.
+        self.assertTrue(self.flagged(self.old_codex))
+        self.assertNotIn(str(self.old_codex), self.calls.read_text())
+
+    def test_the_weekly_upgrade_clears_every_codex_bin_file(self):
+        result = self.run_verb("upgrade", "--apply")
+
+        self.assert_codex_cleared(result)
+        calls = self.calls.read_text().splitlines()
+        self.assertLess(calls.index("brew upgrade --cask --greedy claude-code@latest"),
+                        calls.index(f"xattr -d com.apple.quarantine {self.codex[0]}"))
+
+    def test_the_brew_stage_clears_every_codex_bin_file(self):
+        result = self.run_verb("update", "brew", "--apply")
+
+        self.assert_codex_cleared(result)
+
+    def test_another_team_keeps_the_codex_quarantine(self):
+        """Anthropic's team is a real team, and not OpenAI's."""
+        stage = self.run_verb("update", "brew", "--apply", CODEX_SIGN_TEAM=TEAM)
+        upgrade = self.run_verb("upgrade", "--apply", CODEX_SIGN_TEAM=TEAM)
+
+        for result in (stage, upgrade):
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            for path in self.codex:
+                self.assertIn(f"DIFFERS {path.name} quarantine kept on {path}: its team is not {CODEX_TEAM}",
+                              result.stdout)
+                self.assertTrue(self.flagged(path), result.stdout)
+        self.assertIn("FAILED  brew stage: codex keeps com.apple.quarantine", stage.stdout)
+        self.assertIn("failed steps: codex quarantine", upgrade.stdout)
+        self.assertEqual([c for c in self.calls_of("xattr") if c.startswith("xattr -d")], [])
+
+    def test_no_codex_cask_is_silent(self):
+        (self.stubs / "codex").unlink()
+        none = self.run_verb("upgrade", "--apply")
+        write_exec(self.stubs / "codex", "#!/bin/sh\nexit 0\n")
+        native = self.run_verb("update", "brew", "--apply")
+
+        for result in (none, native):
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("codex", result.stdout.replace(str(self.folder), ""))
+        self.assertNotIn("Caskroom/codex", self.calls.read_text())
 
 
 if __name__ == "__main__":
