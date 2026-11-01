@@ -6005,7 +6005,27 @@ claude_quarantine() {
 # password, so the step fails with sudo's own refusal. That step is deferred
 # like sudo_run's, not failed, and the report names what to run in a terminal
 # (sd:5046). Any other failure, and a step stopped at its bound, stays failed.
+# A failure that prints an `Error:` line sudo did not cause, such as a formula
+# whose build fails, is also recorded in BUILD_FAILED as `kind line`: the
+# report names that line, not sudo, for what the step left (sd:7056). A step
+# can hold both, as `brew upgrade` also upgrades casks.
 SUDO_REFUSED='sudo: a terminal is required|sudo: a password is required|sudo: no tty present'
+BUILD_FAILED=""
+
+# build_error FILE...: the first `Error:` line that does not name sudo, with
+# the line after it when it ends in a colon; empty when there is none.
+build_error() {
+  cat "$@" | awk '
+    /^Error:/ && tolower($0) !~ /sudo/ && !n { n = 1; line = $0; want = ($0 ~ /:$/); next }
+    want { sub(/^[ \t]+/, ""); if ($0 != "") { line = line " " $0; want = 0 } }
+    END { print line }'
+}
+
+# build_failure KIND: the error line a step of that kind recorded, or nothing.
+build_failure() {
+  printf '%s' "$BUILD_FAILED" | sed -n "s/^$1 //p" | head -n 1
+}
+
 sweep_step() { # name, seconds, command...
   ss_name=$1; shift
   if [ "$ATTENDED" -eq 1 ]; then
@@ -6016,12 +6036,26 @@ sweep_step() { # name, seconds, command...
   ss_rc=0
   run_step "$@" > "$ss_out.1" 2> "$ss_out.2" || ss_rc=$?
   cat "$ss_out.1"; cat "$ss_out.2" >&2
+  ss_err=
+  if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ]; then
+    ss_err=$(build_error "$ss_out.1" "$ss_out.2")
+  fi
+  if [ -n "$ss_err" ]; then
+    case "$*" in
+      mas\ *) ss_kind=mas ;;
+      brew\ upgrade\ --cask*) ss_kind=cask ;;
+      *) ss_kind=formula ;;
+    esac
+    BUILD_FAILED="$BUILD_FAILED$ss_kind $ss_err
+"
+    failed="$failed, $ss_name"
+  fi
   if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ] && cat "$ss_out.1" "$ss_out.2" | grep -Eq "$SUDO_REFUSED"; then
     shift
     DEFERRED="$DEFERRED    $*
 "
     echo "  DEFER   needs sudo: $*"
-  elif [ "$ss_rc" -ne 0 ]; then
+  elif [ "$ss_rc" -ne 0 ] && [ -z "$ss_err" ]; then
     failed="$failed, $ss_name"
   fi
   rm -f "$ss_out" "$ss_out.1" "$ss_out.2"
@@ -6392,7 +6426,11 @@ cmd_upgrade_report() {
         printf '\nupgraded (%s):\n' "$kind"
         sed 's/^/  /' "$tmp/$kind.done"
       fi
-      if [ -s "$tmp/$kind.after" ] && sudo_kind "$kind"; then
+      bf=$(build_failure "$kind")
+      if [ -s "$tmp/$kind.after" ] && [ -n "$bf" ]; then
+        printf '\nbuild failure (%s) — %s:\n' "$kind" "$bf"
+        sed 's/^/  /' "$tmp/$kind.after"
+      elif [ -s "$tmp/$kind.after" ] && sudo_kind "$kind"; then
         printf '\nneeds sudo (%s) — run in a terminal:\n' "$kind"
         sudo_commands "$kind" | sed 's/^/  /'
       elif [ -s "$tmp/$kind.after" ]; then
@@ -6418,7 +6456,10 @@ cmd_upgrade_report() {
   unknown=$(sort -u "$tmp/unknown.before" "$tmp/unknown.after" | tr '\n' ' ' | sed 's/ $//')
   {
     for kind in formula cask mas release; do
-      if sudo_kind "$kind"; then
+      bf=$(build_failure "$kind")
+      if [ -n "$bf" ]; then
+        awk -v k="$kind" -v e="$bf" '{ print "build failure (" k "): " $0 ": " e }' "$tmp/$kind.after"
+      elif sudo_kind "$kind"; then
         sudo_commands "$kind" | sed 's/^/needs sudo, run in a terminal: /'
       else
         sed "s/^/still outdated ($kind): /" "$tmp/$kind.after"

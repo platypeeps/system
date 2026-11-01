@@ -48,6 +48,8 @@ LIB = FOLDER.parent / "lib"
 # no terminal. Each upgrade call made with SUDO_ASKPASS set is logged in
 # $BREW_LOG.askpass; an upgraded BREW_PKG leaves the outdated list.
 # BREW_INFO is what `brew info --json=v2 --installed --cask` prints.
+# BREW_BUILD_FAIL names one call that prints BREW_BUILD_TEXT on stderr and
+# exits 1, as a formula whose build fails does (sd:7056).
 SUDO_REFUSED = r"""
 if [ "$*" = "$STUB_SUDO" ]; then
   echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
@@ -60,6 +62,7 @@ fi
 BREW_STUB = "#!/bin/sh\n" + STALL + r"""echo "$*" >> "$BREW_LOG"
 [ "$*" != "$BREW_SLOW" ] || sleep 4
 [ "$*" != "$BREW_FAIL" ] || exit 1
+[ "$*" != "$BREW_BUILD_FAIL" ] || { printf '%s\n' "$BREW_BUILD_TEXT" >&2; exit 1; }
 """ + SUDO_REFUSED.replace("STUB_SUDO\"", "BREW_SUDO\"") + r"""
 case "$*" in
   "upgrade --cask"*) [ -z "$SUDO_ASKPASS" ] || echo "$*" >> "$BREW_LOG.askpass" ;;
@@ -141,6 +144,12 @@ REFUSED = ("SD_DASHBOARD_PYTHON /opt/homebrew/bin/python3: cannot read /vault �
            "Documents access and nothing under launchd can answer the prompt. Grant Full Disk "
            "Access to /opt/homebrew/bin/python3 in System Settings > Privacy & Security, then "
            "restart the agent.")
+
+OMLX_LINE = "Error: An exception occurred within a child process: SystemExit: exit"
+OMLX_TEXT = "==> Upgrading omlx\nError: An exception occurred within a child process:\n  SystemExit: exit\n"
+SUDO_TEXT = ("sudo: a terminal is required to read the password; either use the -S option to read from "
+             "standard input or configure an askpass helper\nsudo: a password is required\n"
+             "Error: Failure while executing; `/usr/bin/sudo -E -- /bin/rm -f` exited with 1.\n")
 
 STEP = r"\[step \d\d:\d\d:\d\d\] {} \(bound {}s\)"
 
@@ -697,6 +706,37 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("failed steps: brew upgrade", result.stdout)
         self.assertNotIn("DEFER", result.stdout)
+
+    def test_a_build_failure_is_not_a_sudo_deferral(self):
+        """sd:7056: a formula whose build fails is a failure with its error
+        line, not a command for the operator's terminal."""
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade",
+                               BREW_BUILD_TEXT=OMLX_TEXT)
+
+        self.assertNotIn("needs sudo", result.stdout)
+        self.assertNotIn("DEFER", result.stdout)
+        found = self.findings(result)
+        self.assertEqual(found[0], f"build failure (formula): example-formula: {OMLX_LINE}")
+        self.assertEqual(len(found), 2, found)
+        self.assertIn(f"build failure (formula) — {OMLX_LINE}:\n  example-formula\n", result.stdout)
+
+    def test_a_build_failure_beside_a_refused_sudo_is_not_a_sudo_deferral(self):
+        """sd:7056: `brew upgrade` also upgrades casks, so one run can hold a
+        sudo refusal and a failed build. The formula left over is not a
+        sudo command."""
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade",
+                               BREW_BUILD_TEXT=SUDO_TEXT + OMLX_TEXT)
+
+        self.assertNotIn("needs sudo, run in a terminal: brew upgrade example-formula", result.stdout)
+        self.assertEqual(self.findings(result)[0], f"build failure (formula): example-formula: {OMLX_LINE}")
+
+    def test_a_refused_sudo_in_a_formula_upgrade_still_needs_sudo(self):
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade",
+                               BREW_BUILD_TEXT=SUDO_TEXT)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("needs sudo (formula) — run in a terminal:\n  brew upgrade example-formula\n", result.stdout)
+        self.assertEqual(self.findings(result), ["needs sudo, run in a terminal: brew upgrade example-formula"])
 
     def test_a_dry_run_runs_no_step(self):
         result = self.run_verb("upgrade")
