@@ -3415,6 +3415,7 @@ report_deferred() {
 # `brew upgrade --cask --greedy`, so brew is the one updater: both machines
 # change together, and the macOS privacy (TCC) grants an update drops are
 # re-granted in one sitting. An app that is not installed is skipped.
+# BREW_SKIPPED_CASKS below is the one exception.
 #
 # One row per app: cask|app|mechanism|target|key|value.
 # - sparkle: target is the defaults domain. Sparkle keeps the user's choice
@@ -3439,6 +3440,19 @@ report_deferred() {
 # Beyond Compare, iStat Menus, Malwarebytes, Piezo and Sync with their own
 # updaters; Firefox, Google Chrome, Google Drive and Zoom, whose switches are
 # system-wide managed policy; and the CLIs copilot-cli and gcloud-cli. Updater agents are never removed to stop an app.
+#
+# The exception (sd:7058, operator ruling 2026-11-01): Google Chrome and Slack
+# keep their own updaters on, and brew no longer upgrades them. Both sit
+# root-owned in /Applications, which the operator keeps, so brew's upgrade
+# needs sudo for them. BREW_SKIPPED_CASKS is the one list: the --greedy sweep,
+# the askpass sweep and the outdated report all drop these names.
+BREW_SKIPPED_CASKS="google-chrome slack"
+drop_brew_skipped() { # stdin: one cask per line, as `brew outdated --quiet` prints
+  awk -v skip="$BREW_SKIPPED_CASKS" '
+    BEGIN { n = split(skip, s, " "); for (i = 1; i <= n; i++) drop[s[i]] = 1 }
+    { name = $1; sub(/.*\//, "", name); if (!(name in drop)) print }'
+}
+
 self_update_rows() {
   printf '%s\n' \
     "appcleaner|AppCleaner.app|sparkle|net.freemacsoft.AppCleaner" \
@@ -5988,7 +6002,27 @@ claude_quarantine() {
 # password, so the step fails with sudo's own refusal. That step is deferred
 # like sudo_run's, not failed, and the report names what to run in a terminal
 # (sd:5046). Any other failure, and a step stopped at its bound, stays failed.
+# A failure that prints an `Error:` line sudo did not cause, such as a formula
+# whose build fails, is also recorded in BUILD_FAILED as `kind line`: the
+# report names that line, not sudo, for what the step left (sd:7056). A step
+# can hold both, as `brew upgrade` also upgrades casks.
 SUDO_REFUSED='sudo: a terminal is required|sudo: a password is required|sudo: no tty present'
+BUILD_FAILED=""
+
+# build_error FILE...: the first `Error:` line that does not name sudo, with
+# the line after it when it ends in a colon; empty when there is none.
+build_error() {
+  cat "$@" | awk '
+    /^Error:/ && tolower($0) !~ /sudo/ && !n { n = 1; line = $0; want = ($0 ~ /:$/); next }
+    want { sub(/^[ \t]+/, ""); if ($0 != "") { line = line " " $0; want = 0 } }
+    END { print line }'
+}
+
+# build_failure KIND: the error line a step of that kind recorded, or nothing.
+build_failure() {
+  printf '%s' "$BUILD_FAILED" | sed -n "s/^$1 //p" | head -n 1
+}
+
 sweep_step() { # name, seconds, command...
   ss_name=$1; shift
   if [ "$ATTENDED" -eq 1 ]; then
@@ -5999,12 +6033,26 @@ sweep_step() { # name, seconds, command...
   ss_rc=0
   run_step "$@" > "$ss_out.1" 2> "$ss_out.2" || ss_rc=$?
   cat "$ss_out.1"; cat "$ss_out.2" >&2
+  ss_err=
+  if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ]; then
+    ss_err=$(build_error "$ss_out.1" "$ss_out.2")
+  fi
+  if [ -n "$ss_err" ]; then
+    case "$*" in
+      mas\ *) ss_kind=mas ;;
+      brew\ upgrade\ --cask*) ss_kind=cask ;;
+      *) ss_kind=formula ;;
+    esac
+    BUILD_FAILED="$BUILD_FAILED$ss_kind $ss_err
+"
+    failed="$failed, $ss_name"
+  fi
   if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ] && cat "$ss_out.1" "$ss_out.2" | grep -Eq "$SUDO_REFUSED"; then
     shift
     DEFERRED="$DEFERRED    $*
 "
     echo "  DEFER   needs sudo: $*"
-  elif [ "$ss_rc" -ne 0 ]; then
+  elif [ "$ss_rc" -ne 0 ] && [ -z "$ss_err" ]; then
     failed="$failed, $ss_name"
   fi
   rm -f "$ss_out" "$ss_out.1" "$ss_out.2"
@@ -6044,7 +6092,7 @@ askpass_upgrade() {
     failed="$failed, brew cask list"
     return 0
   fi
-  au_casks=$(printf '%s\n' "$au_out" | awk -v want="$au_want" '
+  au_casks=$(printf '%s\n' "$au_out" | drop_brew_skipped | awk -v want="$au_want" '
       BEGIN { n = split(want, w, " "); for (i = 1; i <= n; i++) ok[w[i]] = 1 }
       { name = $1; sub(/.*\//, "", name); if (name in ok) print name }' | tr '\n' ' ' | sed 's/ $//')
   [ -n "$au_casks" ] || return 0
@@ -6158,8 +6206,16 @@ cmd_upgrade() {
     # stage_macos turns off where the app holds a TCC grant (sd:3062). It
     # moves Claude Code too, the claude-code@latest cask, whose own updater
     # the settings baseline turns off (sd:3033, sd:4738).
+    # The cask names are listed, not left to brew, so that
+    # BREW_SKIPPED_CASKS stay out of the sweep (sd:7058).
     askpass_upgrade
-    sweep_step "brew upgrade --cask --greedy" 1800 brew upgrade --cask --greedy
+    if cu_out=$(bound_step 300 brew outdated --cask --greedy --quiet 2>/dev/null); then
+      cu_casks=$(printf '%s\n' "$cu_out" | drop_brew_skipped | tr '\n' ' ' | sed 's/ $//')
+      # shellcheck disable=SC2086 # one word per cask name
+      [ -z "$cu_casks" ] || sweep_step "brew upgrade --cask --greedy" 1800 brew upgrade --cask --greedy $cu_casks
+    else
+      failed="$failed, brew cask list"
+    fi
     claude_quarantine || failed="$failed, claude quarantine"
     run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   else
@@ -6190,7 +6246,7 @@ outdated_lists() {
   run_step 300 brew outdated --formula --quiet > "$tmp/raw" 2>/dev/null || echo formula >> "$tmp/unknown.$1"
   sort "$tmp/raw" > "$tmp/formula.$1"
   run_step 300 brew outdated --cask --greedy --quiet > "$tmp/raw" 2>/dev/null || echo cask >> "$tmp/unknown.$1"
-  sort "$tmp/raw" > "$tmp/cask.$1"
+  drop_brew_skipped < "$tmp/raw" | sort > "$tmp/cask.$1"
   : > "$tmp/mas.$1"
   if command -v mas >/dev/null 2>&1; then
     run_step 300 mas outdated > "$tmp/raw" 2>/dev/null || echo mas >> "$tmp/unknown.$1"
@@ -6372,7 +6428,11 @@ cmd_upgrade_report() {
         printf '\nupgraded (%s):\n' "$kind"
         sed 's/^/  /' "$tmp/$kind.done"
       fi
-      if [ -s "$tmp/$kind.after" ] && sudo_kind "$kind"; then
+      bf=$(build_failure "$kind")
+      if [ -s "$tmp/$kind.after" ] && [ -n "$bf" ]; then
+        printf '\nbuild failure (%s) — %s:\n' "$kind" "$bf"
+        sed 's/^/  /' "$tmp/$kind.after"
+      elif [ -s "$tmp/$kind.after" ] && sudo_kind "$kind"; then
         printf '\nneeds sudo (%s) — run in a terminal:\n' "$kind"
         sudo_commands "$kind" | sed 's/^/  /'
       elif [ -s "$tmp/$kind.after" ]; then
@@ -6398,7 +6458,10 @@ cmd_upgrade_report() {
   unknown=$(sort -u "$tmp/unknown.before" "$tmp/unknown.after" | tr '\n' ' ' | sed 's/ $//')
   {
     for kind in formula cask mas release; do
-      if sudo_kind "$kind"; then
+      bf=$(build_failure "$kind")
+      if [ -n "$bf" ]; then
+        awk -v k="$kind" -v e="$bf" '{ print "build failure (" k "): " $0 ": " e }' "$tmp/$kind.after"
+      elif sudo_kind "$kind"; then
         sudo_commands "$kind" | sed 's/^/needs sudo, run in a terminal: /'
       else
         sed "s/^/still outdated ($kind): /" "$tmp/$kind.after"

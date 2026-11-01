@@ -40,7 +40,7 @@ change I made on this machine back into its profile*.
                                        # in the pack, in the gate queue; writes
                                        # the verdict hub-ready reads
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
-./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy, Claude Code among them), brew cleanup + mas upgrade
+./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy, Claude Code among them, Chrome and Slack not), brew cleanup + mas upgrade
                                        # unattended (stdin not a terminal, as
                                        # under cron), each brew, mas, curl and
                                        # remote git call of every verb is logged
@@ -702,6 +702,16 @@ them; a key it already sets with comments around it is `DIFFERS` and left for
 a hand. The rows, and the casks left on for want of a documented switch, are in
 `self_update_rows` in `machine-setup.sh`; an app that is not installed is
 skipped. Updater agents are never deleted to stop an app.
+
+Google Chrome and Slack are the exception (sd:7058): their own updaters stay on
+and brew no longer upgrades them. Both are root-owned in `/Applications`, which
+the operator keeps, so brew's upgrade needs sudo for them. The `--greedy` sweep
+names the outdated casks without them, and the askpass sweep and the outdated
+report leave them out. `BREW_SKIPPED_CASKS` in `machine-setup.sh` is the one
+list.
+
+A formula or cask whose build fails is named with its first `Error:` line in
+the report, as `build failure`; only a sudo refusal reads `needs sudo` (sd:7056).
 
 ## Standalone applications
 

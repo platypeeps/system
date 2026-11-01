@@ -31,7 +31,8 @@ LIB = FOLDER.parent / "lib"
 # One formula is outdated, so upgrade-report runs the sweep. With BREW_HANG
 # set, `brew upgrade` never finishes; with BREW_QUIET, nothing is outdated.
 # BREW_GREEDY_CASK names a cask with `auto_updates true`: brew lists it as
-# outdated only when asked with --greedy. STUB_PINNED names an outdated
+# outdated only when asked with --greedy; with BREW_CASKS_DONE, an
+# `upgrade --cask --greedy` clears it (sd:7058 names the casks it upgrades). STUB_PINNED names an outdated
 # formula pinned by hand, which machine-setup no longer reads (sd:6433).
 # BREW_OUTDATED renames the outdated formula; BREW_UPGRADES_ALL makes
 # `brew upgrade` clear it; BREW_CLEANUP_FAIL fails `brew cleanup`.
@@ -48,6 +49,8 @@ LIB = FOLDER.parent / "lib"
 # no terminal. Each upgrade call made with SUDO_ASKPASS set is logged in
 # $BREW_LOG.askpass; an upgraded BREW_PKG leaves the outdated list.
 # BREW_INFO is what `brew info --json=v2 --installed --cask` prints.
+# BREW_BUILD_FAIL names one call that prints BREW_BUILD_TEXT on stderr and
+# exits 1, as a formula whose build fails does (sd:7056).
 SUDO_REFUSED = r"""
 if [ "$*" = "$STUB_SUDO" ]; then
   echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
@@ -60,6 +63,7 @@ fi
 BREW_STUB = "#!/bin/sh\n" + STALL + r"""echo "$*" >> "$BREW_LOG"
 [ "$*" != "$BREW_SLOW" ] || sleep 4
 [ "$*" != "$BREW_FAIL" ] || exit 1
+[ "$*" != "$BREW_BUILD_FAIL" ] || { printf '%s\n' "$BREW_BUILD_TEXT" >&2; exit 1; }
 """ + SUDO_REFUSED.replace("STUB_SUDO\"", "BREW_SUDO\"") + r"""
 case "$*" in
   "upgrade --cask"*) [ -z "$SUDO_ASKPASS" ] || echo "$*" >> "$BREW_LOG.askpass" ;;
@@ -80,9 +84,10 @@ case "$*" in
   "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || [ -e "$BREW_LOG.upgraded" ] || echo "${BREW_OUTDATED:-example-formula}"
                                 [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED" ;;
   "list --pinned") [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED" ;;
-  "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK"
+  "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || [ -e "$BREW_LOG.casks" ] || echo "$BREW_GREEDY_CASK"
                                      [ -z "$BREW_PKG" ] || [ -e "$BREW_LOG.pkg" ] || echo "$BREW_PKG" ;;
-  "upgrade --cask --greedy") [ -z "$CLAUDE_NEW" ] || ln -sf "$CLAUDE_NEW" "$CLAUDE_LINK" ;;
+  "upgrade --cask --greedy"*) [ -z "$CLAUDE_NEW" ] || ln -sf "$CLAUDE_NEW" "$CLAUDE_LINK"
+                              [ -z "$BREW_CASKS_DONE" ] || : > "$BREW_LOG.casks" ;;
   --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
   --prefix) echo "${BREW_PREFIX:-/opt/homebrew}" ;;
   "info --json=v2 --installed --cask") if [ -n "$BREW_INFO" ]; then echo "$BREW_INFO"; else echo '{"casks": []}'; fi ;;
@@ -141,6 +146,12 @@ REFUSED = ("SD_DASHBOARD_PYTHON /opt/homebrew/bin/python3: cannot read /vault �
            "Documents access and nothing under launchd can answer the prompt. Grant Full Disk "
            "Access to /opt/homebrew/bin/python3 in System Settings > Privacy & Security, then "
            "restart the agent.")
+
+OMLX_LINE = "Error: An exception occurred within a child process: SystemExit: exit"
+OMLX_TEXT = "==> Upgrading omlx\nError: An exception occurred within a child process:\n  SystemExit: exit\n"
+SUDO_TEXT = ("sudo: a terminal is required to read the password; either use the -S option to read from "
+             "standard input or configure an askpass helper\nsudo: a password is required\n"
+             "Error: Failure while executing; `/usr/bin/sudo -E -- /bin/rm -f` exited with 1.\n")
 
 STEP = r"\[step \d\d:\d\d:\d\d\] {} \(bound {}s\)"
 
@@ -245,7 +256,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertRegex(result.stderr, STEP.format("brew upgrade", STALL_BOUND))
         self.assertIn(f"timed out after {STALL_BOUND}s: brew upgrade", result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "list --pinned", "upgrade", "upgrade --cask --greedy",
+                         ["update", "list --pinned", "upgrade", "outdated --cask --greedy --quiet",
                           "cleanup --prune=all"])
         self.assertEqual(self.mas_log.read_text(), "upgrade\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
@@ -268,7 +279,7 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "list --pinned", "upgrade", "upgrade --cask --greedy",
+                         ["update", "list --pinned", "upgrade", "outdated --cask --greedy --quiet",
                           "cleanup --prune=all"])
         self.assertNotIn("claude update", result.stderr)
 
@@ -284,11 +295,11 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertFalse(self.notify_log.exists())
 
     def test_each_step_has_its_own_default_bound(self):
-        result = self.run_verb("upgrade", "--apply")
+        result = self.run_verb("upgrade", "--apply", BREW_GREEDY_CASK="example-cask")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for command, bound in (("brew update", 600), ("brew upgrade", 1800),
-                               ("brew upgrade --cask --greedy", 1800),
+                               ("brew upgrade --cask --greedy example-cask", 1800),
                                ("brew cleanup --prune=all", 600), ("mas upgrade", 1200)):
             self.assertRegex(result.stderr, STEP.format(re.escape(command), bound))
 
@@ -300,7 +311,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("nothing outdated", result.stdout)
         self.assertIn("outdated --cask --greedy --quiet", self.brew_calls())
-        self.assertIn("upgrade --cask --greedy", self.brew_calls())
+        self.assertIn("upgrade --cask --greedy example-cask", self.brew_calls())
         self.assertNotIn("outdated --cask --quiet", self.brew_calls())
 
     def test_the_report_names_a_hung_step_and_needs_attention(self):
@@ -334,7 +345,8 @@ class UpgradeStepTest(unittest.TestCase):
         sd:3454 sends it to Reports and Today instead of a push; the job
         still exits 0."""
         caskroom = self.claude_moves_to("1.0.0", "1.0.1")
-        result = self.run_verb("upgrade-report", GRANTS_OUT=REFUSED, GRANTS_RC="1", NOTIFY_FAIL="1")
+        result = self.run_verb("upgrade-report", GRANTS_OUT=REFUSED, GRANTS_RC="1", NOTIFY_FAIL="1",
+                               BREW_GREEDY_CASK="claude-code@latest", BREW_CASKS_DONE="1")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.sends(), [])
@@ -360,7 +372,8 @@ class UpgradeStepTest(unittest.TestCase):
         The cask moves in the sweep, and the stub's upgrade clears the
         outdated list, so the next night is quiet (sd:4738)."""
         caskroom = self.claude_moves_to("1.0.0", "1.0.1")
-        update_night = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+        update_night = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", GRANTS_OUT=REFUSED, GRANTS_RC="1",
+                                    BREW_GREEDY_CASK="claude-code@latest", BREW_CASKS_DONE="1")
         next_night = self.run_verb("upgrade-report", GRANTS_OUT=REFUSED, GRANTS_RC="1")
         self.assertIn(f"Claude Code: {caskroom / '1.0.0/claude'} -> {caskroom / '1.0.1/claude'}", update_night.stdout)
         self.assertNotIn(f"-> {caskroom / '1.0.1/claude'}", next_night.stdout)
@@ -555,7 +568,7 @@ class UpgradeStepTest(unittest.TestCase):
         a pkg installer fails `brew upgrade --cask --greedy`. The report asks
         the operator to run the cask's upgrade in a terminal."""
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_GREEDY_CASK="example-cask",
-                               BREW_SUDO="upgrade --cask --greedy")
+                               BREW_SUDO="upgrade --cask --greedy example-cask")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("upgrade sweep exited nonzero", result.stdout)
@@ -580,13 +593,13 @@ class UpgradeStepTest(unittest.TestCase):
     def test_an_allowed_cask_upgrades_with_the_keychain_password(self):
         """sd:6312: a cask on the allowlist upgrades unattended through
         SUDO_ASKPASS, which reads the login-Keychain item; the probe reads
-        the item's attributes, never its password, and the greedy sweep
-        after it runs without the askpass."""
+        the item's attributes, never its password, and nothing is left
+        for the greedy sweep after it."""
         result = self.askpass_run("other-cask example-pkg")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.askpass_calls(), ["upgrade --cask --greedy example-pkg"])
-        self.assertIn("upgrade --cask --greedy", self.brew_calls())
+        self.assertNotIn("upgrade --cask --greedy", self.brew_calls())
         self.assertIn("upgraded (cask):\n  example-pkg\n", result.stdout)
         self.assertEqual(self.findings(result), [])
         probe, read = self.security_log.read_text().splitlines()
@@ -656,12 +669,13 @@ class UpgradeStepTest(unittest.TestCase):
                          ["needs sudo, run in a terminal: mas upgrade 497799835  # Example App (1.0 -> 1.1)"])
 
     def test_a_sweep_that_needs_sudo_defers_the_step_and_exits_0(self):
-        result = self.run_verb("upgrade", "--apply", BREW_SUDO="upgrade --cask --greedy")
+        result = self.run_verb("upgrade", "--apply", BREW_GREEDY_CASK="example-cask",
+                               BREW_SUDO="upgrade --cask --greedy example-cask")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("  DEFER   needs sudo: brew upgrade --cask --greedy", result.stdout)
+        self.assertIn("  DEFER   needs sudo: brew upgrade --cask --greedy example-cask", result.stdout)
         self.assertIn("deferred — 1 action(s) still need sudo. Run these, then re-run:\n"
-                      "    brew upgrade --cask --greedy\n"
+                      "    brew upgrade --cask --greedy example-cask\n"
                       "    machine-setup.sh upgrade --apply\n", result.stdout)
         self.assertNotIn("failed steps", result.stdout)
         # The step's own output still reaches the report.
@@ -670,7 +684,7 @@ class UpgradeStepTest(unittest.TestCase):
 
     def test_a_failure_beside_a_refused_sudo_still_fails_the_sweep(self):
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_GREEDY_CASK="example-cask",
-                               BREW_SUDO="upgrade --cask --greedy", BREW_CLEANUP_FAIL="1")
+                               BREW_SUDO="upgrade --cask --greedy example-cask", BREW_CLEANUP_FAIL="1")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         found = self.findings(result)
@@ -682,7 +696,7 @@ class UpgradeStepTest(unittest.TestCase):
         """sd:5046: only sudo's own refusal is an action; any other failure of
         the same step stays a failed sweep with its leftovers."""
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_GREEDY_CASK="example-cask",
-                               BREW_FAIL="upgrade --cask --greedy")
+                               BREW_FAIL="upgrade --cask --greedy example-cask")
 
         found = self.findings(result)
         self.assertEqual(found[0], "still outdated (cask): example-cask")
@@ -698,16 +712,77 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("failed steps: brew upgrade", result.stdout)
         self.assertNotIn("DEFER", result.stdout)
 
-    def test_a_dry_run_runs_no_step(self):
-        result = self.run_verb("upgrade")
+    def test_a_build_failure_is_not_a_sudo_deferral(self):
+        """sd:7056: a formula whose build fails is a failure with its error
+        line, not a command for the operator's terminal."""
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade",
+                               BREW_BUILD_TEXT=OMLX_TEXT)
+
+        self.assertNotIn("needs sudo", result.stdout)
+        self.assertNotIn("DEFER", result.stdout)
+        found = self.findings(result)
+        self.assertEqual(found[0], f"build failure (formula): example-formula: {OMLX_LINE}")
+        self.assertEqual(len(found), 2, found)
+        self.assertIn(f"build failure (formula) — {OMLX_LINE}:\n  example-formula\n", result.stdout)
+
+    def test_a_build_failure_beside_a_refused_sudo_is_not_a_sudo_deferral(self):
+        """sd:7056: `brew upgrade` also upgrades casks, so one run can hold a
+        sudo refusal and a failed build. The formula left over is not a
+        sudo command."""
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade",
+                               BREW_BUILD_TEXT=SUDO_TEXT + OMLX_TEXT)
+
+        self.assertNotIn("needs sudo, run in a terminal: brew upgrade example-formula", result.stdout)
+        self.assertEqual(self.findings(result)[0], f"build failure (formula): example-formula: {OMLX_LINE}")
+
+    def test_a_refused_sudo_in_a_formula_upgrade_still_needs_sudo(self):
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade",
+                               BREW_BUILD_TEXT=SUDO_TEXT)
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("  [dry-run] brew upgrade --cask --greedy", result.stdout)
-        # The pin list is a read, bounded as reads are: the dry run names
-        # what it would unpin (sd:6448). Nothing else runs.
-        self.assertEqual(self.brew_calls(), ["list --pinned"])
+        self.assertIn("needs sudo (formula) — run in a terminal:\n  brew upgrade example-formula\n", result.stdout)
+        self.assertEqual(self.findings(result), ["needs sudo, run in a terminal: brew upgrade example-formula"])
+
+    def test_the_upgrade_plan_leaves_chrome_and_slack_to_their_own_updaters(self):
+        """sd:7058: the two casks stay root-owned, so brew's upgrade needs
+        sudo for them; their own updaters move them. Other self-updating
+        casks still upgrade."""
+        result = self.run_verb("upgrade", BREW_GREEDY_CASK="google-chrome\nexample-cask\nslack")
+
+        self.assertIn("  [dry-run] brew upgrade --cask --greedy example-cask\n", result.stdout)
+        self.assertNotIn("google-chrome", result.stdout)
+        self.assertNotIn("slack", result.stdout)
+
+    def test_a_week_with_only_chrome_and_slack_outdated_is_quiet(self):
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", BREW_GREEDY_CASK="google-chrome\nslack")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing outdated", result.stdout)
+        self.assertEqual([c for c in self.brew_calls() if c.startswith("upgrade")], [])
+
+    def test_the_report_leaves_chrome_and_slack_out_of_the_cask_leftovers(self):
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_SUDO="upgrade --cask --greedy example-cask",
+                               BREW_GREEDY_CASK="google-chrome\nexample-cask\nslack")
+
+        self.assertEqual(self.findings(result), ["needs sudo, run in a terminal: brew upgrade --cask example-cask"])
+        self.assertIn("upgrade --cask --greedy example-cask", self.brew_calls())
+
+    def test_the_askpass_sweep_leaves_chrome_and_slack_out(self):
+        result = self.askpass_run("google-chrome slack", BREW_GREEDY_CASK="google-chrome\nslack")
+
+        self.assertEqual(self.askpass_calls(), [], result.stdout + result.stderr)
+
+    def test_a_dry_run_runs_no_step(self):
+        result = self.run_verb("upgrade", BREW_GREEDY_CASK="example-cask")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  [dry-run] brew upgrade --cask --greedy example-cask", result.stdout)
+        # The pin list and the outdated casks are reads, bounded as reads
+        # are: the dry run names what it would unpin (sd:6448) and upgrade
+        # (sd:7058). Nothing else runs.
+        self.assertEqual(self.brew_calls(), ["list --pinned", "outdated --cask --greedy --quiet"])
         self.assertEqual(re.findall(r"\[step [^]]+\] (.+?) \(bound", result.stdout + result.stderr),
-                         ["brew list --pinned"])
+                         ["brew list --pinned", "brew outdated --cask --greedy --quiet"])
 
 
 if __name__ == "__main__":
