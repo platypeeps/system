@@ -177,7 +177,7 @@ class Sudoers(unittest.TestCase):
         """Exact arguments only: an absolute path, its arguments, no
         wildcard; sudoers then allows those arguments and no others."""
         rules = self.rendered("/opt/homebrew")
-        self.assertEqual(len(rules), 6, rules)
+        self.assertEqual(len(rules), 8, rules)
         for rule in rules[:3]:
             self.assertRegex(rule, r"^example ALL=\(root\) NOPASSWD: /\S+( [^*?\[\]\\,:=]+)+$")
         self.assertTrue(rules[0].endswith("NOPASSWD: /opt/homebrew/bin/brew services restart tailscale"))
@@ -185,12 +185,16 @@ class Sudoers(unittest.TestCase):
         self.assertTrue(rules[2].endswith("NOPASSWD: /usr/bin/defaults write "
                                           "/Library/Preferences/com.apple.commerce "
                                           "AutoUpdate -bool false"), rules[2])
-        # The one wildcard, mosh's Cellar version, by the operator's ruling:
-        # each mosh upgrade is a new folder (sd:6538).
+        # Wildcards only in a version, by the operator's rulings: each mosh
+        # upgrade is a new folder (sd:6538); python is no longer pinned, so
+        # each python@X.Y is a new Python.app (sd:7059).
         fw = "/usr/libexec/ApplicationFirewall/socketfilterfw"
         exe = "/opt/homebrew/Cellar/mosh/*/bin/mosh-server"
-        self.assertEqual(rules[3:], [f"example ALL=(root) NOPASSWD: {fw} --{verb} {exe}"
-                                     for verb in ("remove", "add", "unblockapp")])
+        app = "/opt/homebrew/opt/python@*/Frameworks/Python.framework/Versions/*/Resources/Python.app"
+        self.assertEqual(rules[3:6], [f"example ALL=(root) NOPASSWD: {fw} --{verb} {exe}"
+                                      for verb in ("remove", "add", "unblockapp")])
+        self.assertEqual(rules[6:], [f"example ALL=(root) NOPASSWD: {fw} --{verb} {app}"
+                                     for verb in ("add", "unblockapp")])
 
     def test_the_brew_rule_follows_the_machines_brew_prefix(self):
         """sd:6475: the example named /opt/homebrew/bin/brew, dead on an
