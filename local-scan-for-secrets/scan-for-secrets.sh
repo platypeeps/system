@@ -1309,7 +1309,8 @@ mask_tag() {
 
 rg_args() { # shared ripgrep flags: unignored + hidden (secrets live in
             # gitignored dotfiles), binaries auto-skipped, size-capped.
-  set -- --no-config --no-ignore --hidden --max-filesize "$MAX_SIZE" -n -o
+            # -H: one file left in the target list still reports its path (sd:7227).
+  set -- --no-config --no-ignore --hidden --max-filesize "$MAX_SIZE" -H -n -o
   for d in $EXCLUDE_DIRS;  do set -- "$@" -g "!$d/"; done
   for g in $EXCLUDE_GLOBS; do set -- "$@" -g "!$g";  done
   if [ "$SCAN_SECRETS_FILES" = 0 ]; then
@@ -1386,23 +1387,40 @@ TRANSIENT_PATH_RE='/claude-[^/]*/[^/]*/[^/]*/scratchpad/|^\.codex/shell_snapshot
 US=$(printf '\037')
 to_fields() { tr '\0' '\037' | sed "s/$US\([0-9][0-9]*\):/$US\1$US/"; }
 # grep's --exclude matches basenames only, so the grep fallback drops the critical paths from its hits here, in
-# both passes; a case pattern's `*` crosses `/`, as ripgrep's `**` does (sd:5493: the gate has no rg and
-# reported every fixture). A hit is a path, or a path and more fields after a US.
-drop_critical_excludes() {
-  while IFS= read -r hit; do
-    [ -n "$hit" ] || continue
-    path=${hit%%"$US"*}; path=${path#./}; keep=1
-    set -f
-    # shellcheck disable=SC2254 # each excluded path is a glob
-    for p in $CRITICAL_EXCLUDE_PATHS; do case $path in ($p|$p/*) keep=0; break ;; esac; done
-    set +f
-    [ "$keep" = 0 ] || printf '%s\n' "$hit"
+# both passes (sd:5493: the gate has no rg and reported every fixture). ripgrep ignores -g for a file named as
+# an argument, so its target list goes through here too (sd:7227). A line is a path, or a path and more
+# fields after a US.
+# The entries read as ripgrep reads them: `**/` spans folders (or none), `*` and `?` stop at `/`, an entry with
+# no `/` matches at any depth, and an entry covers what is below it. One awk regex, built once. A shell case
+# pattern's `*` crossed `/` and hid repos/x/test_support/prod.py.
+S4S_EXCLUDE_RE=""
+if [ "$MODE" = critical ]; then
+  S4S_D1=$(printf '\001'); S4S_D2=$(printf '\002')
+  set -f
+  for p in $CRITICAL_EXCLUDE_PATHS; do
+    r=$(printf '%s' "$p" | sed -e 's/[]^$+(){}|\\.[]/\\&/g' -e "s#\*\*/#$S4S_D1#g" -e "s#\*\*#$S4S_D2#g" \
+      -e 's#\*#[^/]*#g' -e 's#?#[^/]#g' -e "s#$S4S_D1#(.*/)?#g" -e "s#$S4S_D2#.*#g")
+    case $p in (*/*) ;; (*) r="(.*/)?$r" ;; esac
+    S4S_EXCLUDE_RE="$S4S_EXCLUDE_RE${S4S_EXCLUDE_RE:+|}$r"
   done
+  set +f
+  [ -z "$S4S_EXCLUDE_RE" ] || S4S_EXCLUDE_RE="^($S4S_EXCLUDE_RE)(/.*)?\$"
+fi
+export S4S_EXCLUDE_RE
+drop_critical_excludes() {
+  LC_ALL=C awk -F "$US" 'BEGIN { re = ENVIRON["S4S_EXCLUDE_RE"] }
+    $0 == "" { next } { p = $1; sub(/^\.\//, "", p); if (re == "" || p !~ re) print }'
+}
+# The files ripgrep searches. Every target excluded searches /dev/null, not the cwd.
+rg_targets() {
+  if [ "$MODE" != critical ]; then targets; return 0; fi
+  t=$(targets | drop_critical_excludes)
+  printf '%s\n' "${t:-/dev/null}"
 }
 echo "== pattern scan"
 if [ "$HAVE_RG" = 1 ]; then
   PATTERN_ARGS=$(printf '%s\n' "$PATTERNS" | sed 's/^/-e\n/')
-  OUT=$( { rg_args; printf '%s\n' "$PATTERN_ARGS"; targets; } | tr '\n' '\0' \
+  OUT=$( { rg_args; printf '%s\n' "$PATTERN_ARGS"; rg_targets; } | tr '\n' '\0' \
         | xargs -0 rg --null 2>/dev/null | to_fields || true )
 else
   EX_D=""; for d in $EXCLUDE_DIRS; do EX_D="$EX_D --exclude-dir=$d"; done
@@ -1419,10 +1437,9 @@ TARGETS_EOF
   RE=$(ere_patterns | paste -sd '|' -)
   # shellcheck disable=SC2086
   OUT=$(grep -rEIno --null $EX_D $EX_G -e "$RE" "$@" 2>/dev/null | to_fields || true)
-fi
-# Both searchers: ripgrep ignores -g on a file named as an argument, and the dotfiles in targets are named (sd:7227).
-if [ "$MODE" = critical ]; then
-  OUT=$(printf '%s\n' "$OUT" | drop_critical_excludes)
+  if [ "$MODE" = critical ]; then
+    OUT=$(printf '%s\n' "$OUT" | drop_critical_excludes)
+  fi
 fi
 # The Hugging Face match ends with its boundary character; the value is the
 # 37 before it. Bytes, since that character may be a multibyte one.
@@ -1564,7 +1581,7 @@ if [ -n "$S4S_PAIRS" ]; then
       name=${pair%%=*}
       val=${pair#*=}
       if [ "$HAVE_RG" = 1 ]; then
-        HITS=$( { rg_args; printf -- '-F\n%s\n' "$val"; targets; } | tr '\n' '\0' \
+        HITS=$( { rg_args; printf -- '-F\n%s\n' "$val"; rg_targets; } | tr '\n' '\0' \
                | xargs -0 rg -l 2>/dev/null || true )
       else
         EX_D=""; for d in $EXCLUDE_DIRS; do EX_D="$EX_D --exclude-dir=$d"; done
@@ -1580,9 +1597,9 @@ TARGETS_EOF
         [ $# -gt 0 ] || set -- .
         # shellcheck disable=SC2086
         HITS=$(grep -rIlF $EX_D $EX_G -e "$val" "$@" 2>/dev/null || true)
-      fi
-      if [ "$MODE" = critical ]; then
-        HITS=$(printf '%s\n' "$HITS" | drop_critical_excludes)
+        if [ "$MODE" = critical ]; then
+          HITS=$(printf '%s\n' "$HITS" | drop_critical_excludes)
+        fi
       fi
       T_HITS=""
       if [ "$MODE" = critical ] && [ -n "$HITS" ]; then
