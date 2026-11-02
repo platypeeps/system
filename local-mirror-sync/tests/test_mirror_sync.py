@@ -3204,6 +3204,19 @@ class NasFullCopy(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("a\nb", self.lists()[0])
 
+    def test_a_name_with_a_0x01_byte_is_left_out_and_logged(self) -> None:
+        """sd:7136: a newline travels as 0x01, so a name that held 0x01 came
+        back with a newline: "a\\x01b" and "a\\nb" became one name twice."""
+        self.tree("a\x01b", "a\nb", "c", "d\x01e/f")
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.lists(), [["a\nb", "c", "repo-storage", "repo-storage/system"]],
+                         "a 0x01 name and a 0x01 folder's contents stay out")
+        [err] = self.log_dir.glob("*.err")
+        text = err.read_text()
+        self.assertIn("left out 2 names that hold a 0x01 byte", text)
+        self.assertIn("./a^Ab", text)
+
     def test_a_cursor_past_the_last_name_completes_the_pass(self) -> None:
         """Older state: the tree shrank below the saved cursor."""
         self.tree("a")

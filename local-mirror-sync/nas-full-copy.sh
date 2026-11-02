@@ -107,16 +107,25 @@ mounted() { # path fstype
 # Every source name, one per line in byte order, without the volume's own
 # folders. A newline in a name travels as \001, so each name stays one line;
 # next_chunk's caller turns the chunk back into NUL-separated names for -0.
+# A name that holds \001 would come back with a newline, so the same find
+# leaves it, and a folder's contents with it, out of the list, and stderr
+# counts them and shows the first three (sd:7136).
 # Exits non-zero when find or sort fails: a short list is not a full pass.
 list_source() ( # file
   LC_ALL=C; export LC_ALL
+  a=$(printf '\001')
   (cd "$SRC" && find . -mindepth 1 \( -path ./.Spotlight-V100 -o -path ./.Trashes \
       -o -path ./.fseventsd -o -path ./.TemporaryItems -o -path ./.DocumentRevisions-V100 \) \
-      -prune -o -print0) > "$1.find" \
+      -prune -o -name "*$a*" -prune -exec sh -c 'printf "%s\0" "$@" >&3' sh {} + \
+      -o -print0) > "$1.find" 3> "$1.refused" \
     && tr '\n\0' '\001\n' < "$1.find" > "$1.lines" \
     && sort -o "$1" "$1.lines"
   listed=$?
-  rm -f "$1.find" "$1.lines"
+  if [ -s "$1.refused" ]; then
+    echo "left out $(tr -cd '\0' < "$1.refused" | wc -c | tr -d ' ') names that hold a 0x01 byte; the first:" >&2
+    tr '\0\n' '\n\037' < "$1.refused" | head -n 3 | cat -v >&2
+  fi
+  rm -f "$1.find" "$1.lines" "$1.refused"
   exit "$listed"
 )
 
