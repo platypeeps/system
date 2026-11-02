@@ -101,10 +101,12 @@ esac
 exit 0
 """
 
-# MAS_OUTDATED is what `mas outdated` prints.
+# MAS_OUTDATED is what `mas outdated` prints. MAS_BUILD_FAIL names one call
+# that prints MAS_BUILD_TEXT on stderr and exits 1 (sd:7071).
 MAS_STUB = r"""#!/bin/sh
 echo "$*" >> "$MAS_LOG"
 [ "$*" != "$MAS_FAIL" ] || exit 1
+[ "$*" != "$MAS_BUILD_FAIL" ] || { printf '%s\n' "$MAS_BUILD_TEXT" >&2; exit 1; }
 """ + SUDO_REFUSED.replace("STUB_SUDO\"", "MAS_SUDO\"") + r"""
 [ "$*" != outdated ] || [ -z "$MAS_OUTDATED" ] || echo "$MAS_OUTDATED"
 exit 0
@@ -298,7 +300,7 @@ class UpgradeStepTest(unittest.TestCase):
         result = self.run_verb("upgrade", "--apply", BREW_GREEDY_CASK="example-cask")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        for command, bound in (("brew update", 600), ("brew upgrade", 1800),
+        for command, bound in (("brew update", 600), ("brew upgrade", 21600),
                                ("brew upgrade --cask --greedy example-cask", 1800),
                                ("brew cleanup --prune=all", 600), ("mas upgrade", 1200)):
             self.assertRegex(result.stderr, STEP.format(re.escape(command), bound))
@@ -734,6 +736,24 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertNotIn("needs sudo, run in a terminal: brew upgrade example-formula", result.stdout)
         self.assertEqual(self.findings(result)[0], f"build failure (formula): example-formula: {OMLX_LINE}")
+
+    def test_an_app_store_or_cask_error_is_not_a_formula_build_failure(self):
+        """sd:7071: the kind was read from the command after the step's
+        name, which still began with its bound, so every error was a
+        formula's and named the formula left over."""
+        mas_line = "Error: Example App: download failed"
+        for kind, env in (("mas", {"MAS_BUILD_FAIL": "upgrade", "MAS_BUILD_TEXT": mas_line,
+                                   "MAS_OUTDATED": "497799835 Example App (1.0 -> 1.1)"}),
+                          ("cask", {"BREW_GREEDY_CASK": "example-cask", "BREW_BUILD_TEXT": mas_line,
+                                    "BREW_BUILD_FAIL": "upgrade --cask --greedy example-cask"})):
+            with self.subTest(kind=kind):
+                self.brew_log.unlink(missing_ok=True)
+                result = self.run_verb("upgrade-report", **env)
+
+                found = self.findings(result)
+                self.assertIn("still outdated (formula): example-formula", found, result.stdout)
+                self.assertNotIn("build failure (formula)", result.stdout)
+                self.assertIn(f"build failure ({kind}) — {mas_line}:\n", result.stdout)
 
     def test_a_refused_sudo_in_a_formula_upgrade_still_needs_sudo(self):
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade",

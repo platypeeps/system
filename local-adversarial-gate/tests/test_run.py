@@ -43,8 +43,8 @@ CUT_OFF = 124
 # seen. KILL is immediate, but a grandchild whose parent is already dead is
 # reaped by launchd on its own schedule, and until then kill -0 finds it.
 GONE_MARGIN = 3
-# The `--timeout` the hung case passes: past the fake's 1 s start, with room
-# for a loaded machine, and well inside BOUND_MARGIN.
+# The `--timeout` the hung case passes: room for a fake that starts late
+# on a loaded machine, and well inside BOUND_MARGIN.
 BOUND = 4
 
 REFUSAL = "adversarial-gate: run: --out is required"
@@ -80,17 +80,18 @@ class _Collector(http.server.BaseHTTPRequestHandler):
         pass
 
 # A codex that never answers, and that has the shape of the real one: a
-# launcher with a process tree under it. It records that it was reached,
-# starts a grandchild in the background and writes that pid, then blocks in
-# a foreground grandchild. `sleep` and not `exec sleep`, so the fake itself
-# stays the child and the sleeps are its children -- a bound that ends only
-# the child leaves both of them running and holding the pipe. The first
-# `sleep 1` stands in for a slow start: under gate load a 1 s bound fired
-# before the fake recorded its argv (sd:6887 review), so BOUND must clear it.
-HUNG_CODEX = """sleep 1
-printf '%s\\n' "$@" > "$CODEX_ARGV"
-sleep 60 &
+# launcher with a process tree under it. It builds the tree first -- starts
+# a grandchild in the background and writes its pid, then records that it
+# was reached -- and only then blocks in a foreground grandchild. `sleep`
+# and not `exec sleep`, so the fake itself stays the child and the sleeps
+# are its children -- a bound that ends only the child leaves both of them
+# running and holding the pipe. The tree comes before anything slow, and
+# nothing sleeps ahead of it: the bound is wall time, and a fake that
+# paused before it wrote the pid was cut off without one under gate load
+# (sd:6887, sd:7135).
+HUNG_CODEX = """sleep 60 &
 echo $! > "$CODEX_GRANDCHILD"
+printf '%s\\n' "$@" > "$CODEX_ARGV"
 sleep 60
 """
 

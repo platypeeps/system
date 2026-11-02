@@ -782,10 +782,15 @@ class PartialInstall(Case):
 
 
 # `brew list --formula` and `brew leaves` both name $BREW_HAVE; every install
-# is logged.
+# is logged. brew info reports any other formula not installed, and
+# pouring from a bottle (sd:7103).
 BREW_STUB = r"""#!/bin/sh
 case "$*" in
   "list --formula"|leaves|"leaves --installed-on-request") for f in $BREW_HAVE; do echo "$f"; done ;;
+  "info --json=v2 --formula "*)
+    printf '{"formulae": [{"name": "%s", "full_name": "%s", "installed": []}]}\n' "$4" "$4" ;;
+  "install --dry-run "*) printf '==> Would install 1 formula:\n%s 1.0\n' "$3" ;;
+  "info --formula "*) printf '==> %s: stable 1.0 (bottled)\n' "$3" ;;
   install*) echo "brew $*" >> "$CURL_LOG" ;;
   --prefix) echo /usr/local ;;
 esac

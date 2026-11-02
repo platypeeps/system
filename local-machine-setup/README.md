@@ -45,7 +45,8 @@ change I made on this machine back into its profile*.
                                        # under cron), each brew, mas, curl and
                                        # remote git call of every verb is logged
                                        # as it starts and stopped at its bound
-                                       # (60-1800 s, or MACHINE_SETUP_STEP_TIMEOUT
+                                       # (60-1800 s, a step that may build from
+                                       # source 6 h, or MACHINE_SETUP_STEP_TIMEOUT
                                        # seconds); from a terminal it is not, so
                                        # a sudo prompt can still be answered
 ./machine-setup.sh upgrade-report      # upgrade + report summary (cron: weekly)
@@ -87,6 +88,13 @@ waits on a Gatekeeper prompt no one can answer with the screen locked (sd:4787, 
 Before `brew upgrade` the sweep removes each pin the brew stage would
 (`DIFFERS <formula> pinned`, then `brew unpin`): it can run before the
 nightly `update --apply`, and a stale python pin fails `brew upgrade` (sd:6448).
+Only this sweep builds a formula from source (sd:7103): the brew stage installs a
+missing formula only when it and each formula its install adds pour from a bottle
+here, and names one that would build as `DIFFERS <formula> needs a source build`,
+which status turns into an attention line, not a failed nightly. The sweep then
+installs each profile formula still missing. That step and `brew upgrade` each
+have a 6 h bound: twice one `brew install node` on an Intel Mac with no bottles
+(3 h). The weekly job's `JOB_TIMEOUT` must exceed the bounds it can hit.
 The sweep also moves each unpinned `.release` entry to its latest tag, and the
 report lists those under `upgraded (release)`; a tag it cannot read is
 `outdated (release): unknown`, not current.
