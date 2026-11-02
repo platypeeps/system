@@ -58,7 +58,9 @@ keep state in them), and idle build output in worktrees (sd:5994).
 
 `run` installs the pending updates it finds (sd:6927):
 `sudo -A softwareupdate -i <label>` for each macOS update that needs no
-restart, and `sudo -A mas upgrade`. sudo reads the password through
+restart, and `sudo -A mas upgrade <id>` for each App Store app, one at a
+time under a 600 s bound, so one stuck download holds up no other app
+(sd:7188). sudo reads the password through
 `local-machine-setup/sudo-askpass.sh`, from the login-Keychain item that
 machine-setup's "Unattended sudo" step makes. Without the item sudo
 refuses, and the update stays a finding with sudo's reason. A macOS

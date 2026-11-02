@@ -2407,6 +2407,19 @@ stage_tooling() {
       done
     )
   fi
+  # Xcode ships without the Metal compiler; a formula built with custom
+  # kernels (omlx) fails without it. Every profile that installs Xcode
+  # (App Store id 497799835) gets the component.
+  if manifest mas | grep -q '^497799835[[:space:]]'; then
+    if ! bound_step 60 xcodebuild -version >/dev/null 2>&1; then
+      echo "  SKIP    Metal toolchain: xcodebuild fails (Xcode not installed yet, or not selected: sudo xcode-select -s /Applications/Xcode.app)"
+    elif bound_step 60 xcrun metal --version >/dev/null 2>&1; then
+      echo "  ok      Metal toolchain"
+    else
+      echo "  MISSING Metal toolchain (xcodebuild -downloadComponent MetalToolchain, about 840 MB)"
+      run bound_step 1800 xcodebuild -downloadComponent MetalToolchain
+    fi
+  fi
   if command -v rtk >/dev/null 2>&1; then
     if [ -f "$HOME/.claude/settings.json" ] && grep -q 'rtk' "$HOME/.claude/settings.json" 2>/dev/null; then
       echo "  ok      rtk hook present in ~/.claude/settings.json"
