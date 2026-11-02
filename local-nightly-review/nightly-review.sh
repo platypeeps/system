@@ -32,6 +32,7 @@ Usage: nightly-review.sh <command>
          2. review: unless today's batch file exists, `claude -p` on Sonnet with
             read-only tools reads the past day and replies with suggestions; the
             reply becomes <bulk root>/system/nightly-review/<date>.json.
+            Each try has 300 s; one that hits the bound gets one more try.
          3. file: `sd-db review file` files that batch, at most 5 suggestions,
             dropping a subject rejected in the last 90 days.
          Exits 0 when the batch is filed, already filed, or empty; non-zero
@@ -80,9 +81,18 @@ run() {
     } > "$tmp/prompt"
     # --allowedTools only adds grants: --restricted drops the inherited settings files and code-running tools,
     # --strict-mcp-config the MCP servers, and --tools names all the model has (sd:3638 review).
-    (cd "$ROOT" && st_step 1200 "${CLAUDE_BIN:-claude}" -p "$(cat "$tmp/prompt")" --model sonnet \
-      --restricted --strict-mcp-config --tools 'Read,Grep,Glob,Bash' --add-dir "$bulk" "$HOME/.claude/projects" \
-      --allowedTools "$TOOLS" --disallowedTools 'Write Edit NotebookEdit' < /dev/null > "$tmp/reply")
+    # The prompt goes in on stdin, a file at EOF, so st_step logs the flags and not the prompt.
+    # A good run took 14-53 s; the three that hit the old 1200 s bound hung before any tool
+    # call, and a rerun passed each time. So 300 s a try, and one more try after a hang (sd:7269).
+    for try in 1 2; do
+      rc=0
+      (cd "$ROOT" && st_step 300 "${CLAUDE_BIN:-claude}" -p --model sonnet \
+        --restricted --strict-mcp-config --tools 'Read,Grep,Glob,Bash' --add-dir "$bulk" "$HOME/.claude/projects" \
+        --allowedTools "$TOOLS" --disallowedTools 'Write Edit NotebookEdit' < "$tmp/prompt" > "$tmp/reply") || rc=$?
+      [ "$rc" -eq 124 ] && [ "$try" -eq 1 ] || break
+      echo "nightly-review: the model hung; trying once more" >&2
+    done
+    [ "$rc" -eq 0 ] || return "$rc"
     # The raw reply stays beside the batch, so a refused one can be read the next morning (sd:5732).
     cp "$tmp/reply" "${batch%.json}.reply"
     source="system@$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
