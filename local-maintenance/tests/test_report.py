@@ -202,7 +202,7 @@ class InstallTest(Harness):
         askpass = str(self.tmp / "local-maintenance" / ".." / "local-machine-setup" / "sudo-askpass.sh")
         self.assertEqual(self.calls(), [
             f"{askpass} -A softwareupdate -i Command Line Tools for Xcode 27.2-27.2",
-            f"{askpass} -A mas upgrade"])
+            f"{askpass} -A mas upgrade 497799835"])
         self.assertIn("- installed macOS update Command Line Tools for Xcode 27.2-27.2", run.stdout)
         self.assertIn("- upgraded App Store app 497799835  Xcode  (27.1 -> 27.2)", run.stdout)
         self.assertEqual(self.attention(run), [
@@ -213,7 +213,7 @@ class InstallTest(Harness):
         run = self.maintenance("# nothing to check\n")
         self.assertRegex(run.stderr, r"\[step [\d:]+\] sudo -A softwareupdate -i Command Line Tools"
                                      r" for Xcode 27.2-27.2 \(bound 1800s\)")
-        self.assertRegex(run.stderr, r"\[step [\d:]+\] sudo -A mas upgrade \(bound 2400s\)")
+        self.assertRegex(run.stderr, r"\[step [\d:]+\] sudo -A mas upgrade 497799835 \(bound 600s\)")
 
     def test_check_installs_nothing(self):
         run = self.maintenance("# nothing to check\n", "check")
@@ -229,7 +229,7 @@ class InstallTest(Harness):
         # reason of the report does not move with the message (sd:4182).
         self.assertIn("- macOS update install failed: Command Line Tools for Xcode 27.2-27.2:"
                       " sudo: no password was provided", run.stdout)
-        self.assertIn("- App Store upgrade failed: sudo: no password was provided", run.stdout)
+        self.assertIn("- App Store upgrade failed: Xcode: sudo: no password was provided", run.stdout)
         self.assertEqual(self.attention(run), [
             "SD_REPORT_ATTENTION: maintenance on fixturehost: macOS update install failed:"
             " Command Line Tools for Xcode 27.2-27.2",
@@ -237,10 +237,90 @@ class InstallTest(Harness):
             "SD_REPORT_ATTENTION: maintenance on fixturehost: macOS updates pending:"
             " Command Line Tools for Xcode 27.2-27.2",
             "SD_REPORT_ATTENTION: maintenance on fixturehost: macOS updates pending: macOS Example 27.3-27D50",
-            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store upgrade failed",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store upgrade failed: Xcode",
             "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:",
             "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:"
             " 497799835  Xcode  (27.1 -> 27.2)"])
+
+
+#: mas outdated as the hub listed it on 2026-11-02: mas pads its columns to the
+#: longest name, so PeakHour's line changes once SimpleMind Pro is gone.
+MAS_BOTH = ("1560576252  PeakHour        (6.2.1  -> 6.2.2)",
+            " 434808346  SimpleMind Pro  (2.10.2 -> 2.10.3)")
+MAS_PEAKHOUR = ("1560576252  PeakHour  (6.2.1 -> 6.2.2)",)
+
+
+class AppStoreUpgradeTest(Harness):
+    """sd:7188: `run` upgrades one App Store app at a time, by id, under a
+    bound of its own, and reports an app as upgraded only when a check
+    after the upgrades no longer lists its id."""
+
+    def setUp(self):
+        super().setUp()
+        state = self.tmp / "mas-state"
+        state.mkdir()
+        both = " ".join(f"'{line}'" for line in MAS_BOTH)
+        peakhour = " ".join(f"'{line}'" for line in MAS_PEAKHOUR)
+        # PeakHour never upgrades. With PEAKHOUR_HANGS its download hangs, and
+        # an upgrade of all apps hangs with it, as storedownloadd did.
+        # OUTDATED_FAILS fails each check after the first upgrade.
+        _stub(self.bin / "mas", f'''S="{state}"
+case "$1" in
+  outdated)
+    [ -n "$OUTDATED_FAILS" ] && [ -f "$S/upgrade" ] && {{ echo "mas: no network" >&2; exit 1; }}
+    if [ -f "$S/simplemind" ]; then printf "%s\\n" {peakhour}; else printf "%s\\n" {both}; fi ;;
+  upgrade)
+    : > "$S/upgrade"
+    case "$2" in
+      1560576252) [ -n "$PEAKHOUR_HANGS" ] && sleep 20 ;;
+      434808346) : > "$S/simplemind" ;;
+      "") [ -n "$PEAKHOUR_HANGS" ] && {{ sleep 20; exit 1; }}; : > "$S/simplemind" ;;
+    esac ;;
+esac
+exit 0
+''')
+        _stub(self.bin / "sudo", f'echo "$*" >> "{self.sudo_calls}"\n[ "$1" = -A ] && shift\nexec "$@"\n')
+
+    def upgraded(self, run):
+        return [line for line in run.stdout.splitlines() if line.startswith("- upgraded App Store app ")]
+
+    def test_a_hung_app_does_not_hold_the_next(self):
+        run = self.maintenance("# nothing to check\n", PEAKHOUR_HANGS="1", MAINTENANCE_MAS_BOUND="2")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(self.sudo_calls.read_text().splitlines(),
+                         ["-A mas upgrade 1560576252", "-A mas upgrade 434808346"])
+        self.assertIn("- App Store upgrade failed: PeakHour: timed out after 2s:"
+                      " sudo -A mas upgrade 1560576252", run.stdout)
+        self.assertEqual(self.upgraded(run),
+                         ["- upgraded App Store app  434808346  SimpleMind Pro  (2.10.2 -> 2.10.3)"])
+        self.assertEqual(self.attention(run), [
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store upgrade failed: PeakHour",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:"
+            " 1560576252  PeakHour  (6.2.1 -> 6.2.2)"])
+
+    def test_an_app_still_listed_is_not_upgraded_when_its_padding_moves(self):
+        """The 04:25 run on 2026-11-02 said PeakHour upgraded; it stayed pending."""
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(self.upgraded(run),
+                         ["- upgraded App Store app  434808346  SimpleMind Pro  (2.10.2 -> 2.10.3)"])
+
+    def test_a_line_without_an_id_upgrades_nothing(self):
+        """`mas upgrade` with no id takes every app at once, the hang this
+        fixes; a line that starts with no id is listed, not upgraded."""
+        _stub(self.bin / "mas", 'case "$1" in outdated) printf "%s\\n" "" "Warning: example" ;; esac\n')
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertFalse(self.sudo_calls.exists(), self.sudo_calls.read_text() if self.sudo_calls.exists() else "")
+        self.assertEqual(self.upgraded(run), [])
+
+    def test_a_failed_check_after_the_upgrades_upgraded_nothing(self):
+        """A check that failed lists nothing, which is not 'all upgraded'."""
+        run = self.maintenance("# nothing to check\n", OUTDATED_FAILS="1")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(self.upgraded(run), [])
+        self.assertIn("- App Store update check failed (mas outdated exit 1)", run.stdout)
 
 
 if __name__ == "__main__":

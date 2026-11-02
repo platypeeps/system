@@ -401,17 +401,37 @@ if command -v mas >/dev/null 2>&1; then
   mas_rc=0
   st_step 120 mas outdated > "$MAS" 2>/dev/null || mas_rc=$?
   if [ "$mas_rc" -eq 0 ] && [ "$APPLY" -eq 1 ] && [ -s "$MAS" ]; then
-    # mas upgrades as root and reads SUDO_UID for whose apps they are.
-    if ! st_step 2400 sudo -A mas upgrade > "$TMPD/mas.out" 2>&1; then
-      finding "App Store upgrade failed: $(grep -v '^\[step ' "$TMPD/mas.out" | tail -1)" \
-        "App Store upgrade failed"
-    fi
+    # One app at a time, by the id in the first field (sd:7188): an update
+    # storedownloadd never finishes holds mas at 0% until its bound, and
+    # with all apps in one call every other app waited behind it.
+    # ponytail: 600 s per app, enough for an Xcode-sized download; a night
+    # with more than about ten stuck apps reaches the job's 2 h limit.
+    # MAINTENANCE_MAS_BOUND is for the tests.
+    mas_bound=${MAINTENANCE_MAS_BOUND:-600}
+    while IFS= read -r app; do
+      id=$(echo "$app" | awk '{ print $1 }')
+      # No id would make `mas upgrade` take every app at once again.
+      case $id in ''|*[!0-9]*) continue ;; esac
+      name=$(echo "$app" | sed -e 's/^ *[0-9]* *//' -e 's/ *([^()]*)$//')
+      # mas upgrades as root and reads SUDO_UID for whose apps they are.
+      if ! st_step "$mas_bound" sudo -A mas upgrade "$id" < /dev/null > "$TMPD/mas.out" 2>&1; then
+        finding "App Store upgrade failed: $name: $(grep -v '^\[step ' "$TMPD/mas.out" | tail -1)" \
+          "App Store upgrade failed: $name"
+      fi
+    done < "$MAS"
     mv "$MAS" "$MAS.before"
     st_step 120 mas outdated > "$MAS" 2>/dev/null || mas_rc=$?
-    # An app the check no longer lists was upgraded.
-    grep -vxF -f "$MAS" "$MAS.before" | while IFS= read -r app; do
-      echo "- upgraded App Store app $app"
-    done >> "$ACTIONS"
+    # An app the check no longer lists by id was upgraded. mas pads its
+    # columns to the longest name listed, so a line can change while its
+    # app stays pending. A failed check lists nothing and proves nothing.
+    if [ "$mas_rc" -eq 0 ]; then
+      while IFS= read -r app; do
+        id=$(echo "$app" | awk '{ print $1 }')
+        case $id in ''|*[!0-9]*) continue ;; esac
+        awk -v id="$id" '$1 == id { found = 1 } END { exit !found }' "$MAS" ||
+          echo "- upgraded App Store app $app"
+      done < "$MAS.before" >> "$ACTIONS"
+    fi
   fi
   if [ "$mas_rc" -ne 0 ]; then
     finding "App Store update check failed (mas outdated exit $mas_rc)"
