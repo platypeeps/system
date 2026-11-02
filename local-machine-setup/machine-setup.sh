@@ -743,7 +743,10 @@ print(name)'
 # brew gave no answer (sd:7103). The dry run lists them, with the build
 # dependencies of one that builds; brew info marks each `(bottled)` by this
 # machine's bottle tag, or an older one it can pour. A formula that ships no
-# bottle, as many in a tap, counts as a build.
+# bottle, as many in a tap, counts as a build. `(bottled)` already needs the
+# bottle's cellar and prefix to fit this one, as the install's pour does
+# (software_spec.rb bottled?, compatible_locations?), so no cellar check
+# here (sd:7142).
 pours_from_bottle() {
   # The nightly install's switches (stage_brew): no refresh, and no
   # dependents check, which rebuilds a dependent with broken linkage from
