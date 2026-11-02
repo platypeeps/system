@@ -585,15 +585,17 @@ never touches `/etc` or the Keychain.
    It asks for the password twice. The weekly `upgrade-report` then
    upgrades the casks that need sudo, and only when no terminal is
    attached. `brew info --json=v2 --installed --cask` names them: a pkg
-   installer or a pkgutil uninstall, such as `zoom`, or a file put
-   outside the brew prefix, `$HOME` and `/Applications`, such as
-   `docker-desktop`'s `/usr/local/bin` links (sd:6927). A cask the rule
+   installer or a pkgutil uninstall, such as `zoom`, a kext or a file put
+   or deleted outside the brew prefix, `$HOME` and `/Applications`, such
+   as `docker-desktop`'s `/usr/local/bin` links (sd:6927) and `dropbox`'s
+   `/Library/DropboxHelperTools` (sd:7248). A cask the rule
    misses, such as an app bundle another updater left owned by root,
    goes in the optional `MACHINE_SETUP_SUDO_CASKS` in
    `machine-setup.env`, which adds to that set. It sets
    `SUDO_ASKPASS` to `sudo-askpass.sh`, which prints the item's
-   password to sudo. Without the item, the cask stays a "needs sudo"
-   finding, as before.
+   password to sudo. Each App Store upgrade needs root too, so it runs
+   as `sudo -A mas upgrade <id>` with the same askpass. Without the item,
+   the cask or app stays a "needs sudo" finding, as before.
 2. The repair drop-in. Write `machine-setup-repairs.sudoers.example`
    with this machine's admin account for `change-me` and its brew prefix
    for `HOMEBREW_PREFIX` (`/opt/homebrew`, or `/usr/local` on an Intel
