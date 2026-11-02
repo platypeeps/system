@@ -1586,8 +1586,24 @@ cmd_list() {
 # in "done" (sd:1201). Reading the log makes the exit code and the log agree,
 # because the log is the one record both paths write.
 last_outcome() { # job
-  grep -oE "^\[$1\] [0-9T:+-]+ (done|FAILED rc=[0-9]+)" "$LOG_DIR/$1.log" 2>/dev/null \
-    | tail -1 | awk '{print $3}'
+  last_log_line "$1" '(done|FAILED rc=[0-9]+)' | awk '{print $3}'
+}
+
+# The newest "[job] <time> <outcome>" line, outcome being an ERE. local-maintenance
+# rotates an oversized log by copying its tail to <job>.log.1 and emptying
+# <job>.log, so a run that finished just before the rotation is on record only
+# in the .1 file (sd:7235: a nightly job that exited 0 at 02:50 was called
+# "never finished" after the 03:45 rotation). The live log is newer than the
+# .1 file, so it answers first and the .1 file only when the live log has no
+# such line. The job's `.stamp` holds a run's times too, but not what the
+# log records for a run that skipped or died, and its time is UTC where the
+# log's carries the offset the callers compare; the log stays the one source.
+last_log_line() { # job, outcome ERE
+  local f line
+  for f in "$LOG_DIR/$1.log" "$LOG_DIR/$1.log.1"; do
+    line=$(grep -oE "^\[$1\] [0-9T:+-]+ $2" "$f" 2>/dev/null | tail -1)
+    if [ -n "$line" ]; then printf '%s\n' "$line"; return 0; fi
+  done
 }
 
 # Exit codes are CLAUDE.md convention 6, and local-health-check reads them:
@@ -1717,8 +1733,7 @@ failure_resolved() { # job, failure-timestamp
   # No plist here: the job was retired or uninstalled and will never log
   # `done` again, so its old failure is nothing to act on (sd:3212).
   [ -f "$AGENT_DIR/$(label_for "$job").plist" ] || return 0
-  last=$(grep -oE "^\[$job\] [0-9T:+-]+ done" "$LOG_DIR/$job.log" 2>/dev/null \
-    | tail -1 | awk '{print $2}')
+  last=$(last_log_line "$job" 'done' | awk '{print $2}')
   # shellcheck disable=SC3012 # macOS sh is bash, which has [ \> ]
   [ -n "$last" ] && [ "$last" \> "$ts" ]
 }
@@ -1749,7 +1764,7 @@ cmd_logs() {
 # with the exceptions the README names (pack sd:4641). The host stays in each
 # line, as every host files under one job name.
 cmd_watchdog() {
-  local job dom dow max log age ref now stale last at since=""
+  local job dom dow max age ref now stale last at since=""
   now=$(date +%s)
   stale="$LOG_DIR/.watchdog-stale"
   : > "$stale"
@@ -1767,9 +1782,7 @@ cmd_watchdog() {
     if [ "$dow" != "*" ]; then max=$((8 * 86400))
     elif [ "$dom" != "*" ]; then max=$((32 * 86400))
     else max=$((26 * 3600)); fi
-    log="$LOG_DIR/$job.log"
-    last=$(grep -oE "^\[$job\] [0-9T:+-]+ (done|FAILED rc=[0-9]+)" "$log" 2>/dev/null \
-      | tail -1 | awk '{print $2}')
+    last=$(last_log_line "$job" '(done|FAILED rc=[0-9]+)' | awk '{print $2}')
     if [ -z "$last" ]; then
       at=$(stat -f %m "$(plist_for "$job")")
       ref="never finished a run, installed"

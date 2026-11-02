@@ -183,8 +183,12 @@ order_failures || note "failure order skipped: the ordering itself failed"
     # Only the job's own lines count: a line an earlier digest copied in
     # puts a job name where the time goes, and letters sort after "2026"
     # (sd:5043).
-    runs=$(awk -v c="$cutoff" -v job="$job" '$1 == "[" job "]" && $2 >= c && $3 == "done"' "$log" | wc -l | tr -d ' ')
-    fails=$(awk -v c="$cutoff" -v job="$job" '$1 == "[" job "]" && $2 >= c && $3 ~ /^FAILED/' "$log" | wc -l | tr -d ' ')
+    # local-maintenance rotates an oversized log into <job>.log.1 and empties
+    # the live one, so the week's earlier runs sit in the .1 file (sd:7235).
+    set -- "$log"
+    [ ! -f "$log.1" ] || set -- "$log" "$log.1"
+    runs=$(awk -v c="$cutoff" -v job="$job" '$1 == "[" job "]" && $2 >= c && $3 == "done"' "$@" | wc -l | tr -d ' ')
+    fails=$(awk -v c="$cutoff" -v job="$job" '$1 == "[" job "]" && $2 >= c && $3 ~ /^FAILED/' "$@" | wc -l | tr -d ' ')
     [ "$runs" = "0" ] && [ "$fails" = "0" ] && continue
     if [ "$fails" != "0" ]; then
       printf '  %-30s %s ok / %s FAILED\n' "$job" "$runs" "$fails"

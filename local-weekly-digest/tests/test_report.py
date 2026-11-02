@@ -96,6 +96,18 @@ class ReportTest(unittest.TestCase):
                 if line.startswith("  ") and line.split()[0] in ("weekly-digest", "example-job")}
         self.assertEqual(rows, {"weekly-digest": "1 ok", "example-job": "0 ok / 1 FAILED"})
 
+    def test_runs_in_the_rotated_log_count(self):
+        """sd:7235: maintenance moves a log's tail to <job>.log.1 and empties
+        the live log, so the week's runs before the rotation sit in the .1
+        file."""
+        now = datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+        logs = pathlib.Path(self.env["WEEKLY_DIGEST_CRON_LOGS"])
+        (logs / "demo.log").write_text(f"[demo] {now} done\n")
+        (logs / "demo.log.1").write_text(f"[demo] {now} done\n[demo] {now} FAILED rc=1\n")
+        run = self.digest("check")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertRegex(run.stdout, r"(?m)^  demo +2 ok / 1 FAILED$")
+
 
 if __name__ == "__main__":
     unittest.main()

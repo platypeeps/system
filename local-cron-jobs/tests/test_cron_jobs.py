@@ -957,6 +957,24 @@ class StatusExitCodeTest(unittest.TestCase):
                   ("2026-09-19T11:50:36-0600", "done")])
         self.assertEqual(self.status("demo").returncode, 0)
 
+    def test_a_success_in_the_rotated_log_exits_0(self):
+        # sd:7235: maintenance moved the tail to demo.log.1 and emptied
+        # demo.log; the last run's "done" must still end the ladder.
+        self.install()
+        self.log([])
+        (self.fx.folder / "logs" / "demo.log.1").write_text(
+            "[demo] 2026-09-19T08:07:32-0600 done\n")
+        self.assertEqual(self.status("demo").returncode, 0)
+
+    def test_a_failure_resolved_in_the_rotated_log_is_not_listed(self):
+        self.install()
+        self.log([])
+        (self.fx.folder / "logs" / "demo.log.1").write_text(
+            "[demo] 2026-09-19T08:07:32-0600 done\n")
+        (self.fx.folder / "logs" / "failures.log").write_text(
+            "2026-09-19T05:30:05-0600 demo FAILED rc=1 (log: logs/demo.log)\n")
+        self.assertNotIn("demo FAILED", self.status().stdout)
+
     def test_an_installed_job_with_no_recorded_run_exits_1(self):
         # REGRESSION (the #486 Codex review, third round). 0 here retires
         # launchd's counter in local-health-check, so an installed job with
@@ -3233,6 +3251,33 @@ class WatchdogTest(unittest.TestCase):
             f"[demo] {self.stamp(3 * 86400)} done\n[demo] {self.stamp(3600)} FAILED rc=2\n")
         run = self.watchdog()
         self.assertIn("ok      demo", run.stdout)
+
+    def test_a_run_finished_before_the_log_rotated_still_counts(self):
+        """sd:7235: maintenance rotates a log by copying its tail to
+        <job>.log.1 and truncating <job>.log, so a run that finished before
+        the rotation is on record only in the .1 file."""
+        self.install("demo", 5 * 86400)
+        logs = self.fx.folder / "logs"
+        (logs / "demo.log").write_text("")
+        (logs / "demo.log.1").write_text(f"[demo] {self.stamp(3600)} done\n")
+        run = self.watchdog()
+        self.assertIn("ok      demo", run.stdout)
+        self.assertNotIn("never finished", run.stdout)
+
+    def test_the_live_log_wins_over_the_rotated_one(self):
+        self.install("demo", 5 * 86400)
+        logs = self.fx.folder / "logs"
+        (logs / "demo.log").write_text(f"[demo] {self.stamp(3 * 86400)} done\n")
+        (logs / "demo.log.1").write_text(f"[demo] {self.stamp(3600)} done\n")
+        run = self.watchdog()
+        self.assertIn("STALE   demo (last finished run 72h ago)", run.stdout)
+
+    def test_a_run_in_progress_after_rotation_does_not_hide_the_last_one(self):
+        self.install("demo", 5 * 86400)
+        logs = self.fx.folder / "logs"
+        (logs / "demo.log").write_text(f"[demo] {self.stamp(60)} starting (cwd: /tmp)\n")
+        (logs / "demo.log.1").write_text(f"[demo] {self.stamp(3600)} FAILED rc=2\n")
+        self.assertIn("ok      demo", self.watchdog().stdout)
 
     def test_a_log_without_an_outcome_measures_from_install(self):
         self.install("demo", 3 * 86400)
