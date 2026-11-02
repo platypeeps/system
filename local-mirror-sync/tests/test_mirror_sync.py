@@ -3217,6 +3217,21 @@ class NasFullCopy(unittest.TestCase):
         self.assertIn("left out 2 names that hold a 0x01 byte", text)
         self.assertIn("./a^Ab", text)
 
+    def test_a_symlink_to_nothing_is_left_out_and_logged(self) -> None:
+        """sd:7185: openrsync stats each --files-from name through its link,
+        so one link to a missing target failed every chunk it was in."""
+        self.tree("a", "c")
+        (self.src / "dead").symlink_to(self.work / "missing")
+        (self.src / "live").symlink_to("a")
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.lists(), [["a", "c", "live", "repo-storage", "repo-storage/system"]],
+                         "a link to nothing stays out; a working link stays in")
+        [err] = self.log_dir.glob("*.err")
+        text = err.read_text()
+        self.assertIn("left out 1 links whose target is missing", text)
+        self.assertIn("./dead", text)
+
     def test_a_cursor_past_the_last_name_completes_the_pass(self) -> None:
         """Older state: the tree shrank below the saved cursor."""
         self.tree("a")
