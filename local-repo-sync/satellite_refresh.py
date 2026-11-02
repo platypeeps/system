@@ -152,24 +152,44 @@ def document(connection):
     return {"request": wanted, "satellites": rows}
 
 
+def _answer(connection, key, host):
+    """`check`'s answer from the rows as they read; a stopped last attempt is `(None, request, result)`."""
+    held = _read(connection, [REQUEST, key])
+    wanted = _parse(REQUEST, held[REQUEST])
+    result = _owned(key, held[key], host)
+    if wanted is None or result.get("request") == wanted["id"] and result.get("state") == "done":
+        return NONE, None, 0
+    if result.get("request") != wanted["id"]:
+        return PENDING, wanted["id"], 1
+    attempt = int(result.get("attempt") or 1)
+    if attempt < ATTEMPTS:
+        return PENDING, wanted["id"], attempt + 1
+    return None, wanted["id"], result
+
+
 def check(connection, host):
-    """`(PENDING, request, attempt)` or `(NONE, None, 0)`."""
+    """`(PENDING, request, attempt)` or `(NONE, None, 0)`.
+
+    It reads with no write lock, and takes one only to write a stopped last
+    attempt (sd:7187). Each satellite checks twice every five minutes, and
+    a `BEGIN IMMEDIATE` for that read failed with "database is locked"
+    whenever a hub writer held the lock past the busy timeout. The write
+    reads the rows again under the lock.
+    """
     from sd_db import database
 
     key = host_key(host)
+    answer = _answer(connection, key, host)
+    if answer[0] is not None:
+        return answer
     with database.transaction(connection):
-        held = _read(connection, [REQUEST, key])
-        wanted = _parse(REQUEST, held[REQUEST])
-        result = _owned(key, held[key], host)
-        if wanted is None or result.get("request") == wanted["id"] and result.get("state") == "done":
-            return NONE, None, 0
-        if result.get("request") != wanted["id"]:
-            return PENDING, wanted["id"], 1
+        answer = _answer(connection, key, host)
+        if answer[0] is not None:
+            return answer
+        _, request_id, result = answer
         attempt = int(result.get("attempt") or 1)
-        if attempt < ATTEMPTS:
-            return PENDING, wanted["id"], attempt + 1
         # The last attempt was stopped too: written as failed, run no more.
-        _write(connection, host, wanted["id"], attempt, "done", started=result.get("started"),
+        _write(connection, host, request_id, attempt, "done", started=result.get("started"),
                code=1, step="interrupted",
                line=f"attempt {attempt} stopped before it finished (the job's limit, a boot-out or a reboot); "
                     "run `repo-sync.sh follow` and `machine-setup.sh update --apply` by hand, or ask again")
