@@ -35,8 +35,10 @@ LIB = FOLDER.parent / "lib"
 # $PYTHONS are installed (three by default), plus $FORMULAE. `pin`,
 # `install` and a bare `upgrade` record into $PINS; `list --pinned` reads it, and `unpin` logs
 # into $PINS.unpin and drops the pin.
-# `info --json=v2 --formula NAME` reports NAME installed as INSTALLED when
-# $ALIASES holds NAME=INSTALLED, else not installed; INFO_RC fails it.
+# `info --json=v2 --formula NAMES` reports each NAME installed as INSTALLED
+# when $ALIASES holds NAME=INSTALLED, installed with a build option when
+# $OPTIONS names it, else not installed; INFO_RC fails it, and INFO_JSON
+# replaces its answer.
 # $LEAVES is what `leaves --installed-on-request` prints. With
 # INSTALLS_STICK, `list --formula` also lists each formula installed.
 # INSTALL_RC fails an install after logging it; with INFO_RC_AFTER_INSTALL,
@@ -60,13 +62,23 @@ case "$*" in
   "info --json=v2 --formula "*)
     [ -z "$INFO_RC" ] || exit "$INFO_RC"
     [ -z "$INFO_RC_AFTER_INSTALL" ] || ! grep -q '^install [^-]' "$PINS" 2>/dev/null || exit "$INFO_RC_AFTER_INSTALL"
-    to=""
-    for a in $ALIASES; do [ "${a%%=*}" != "$4" ] || to=${a#*=}; done
-    if [ -n "$to" ]; then
-      printf '{"formulae": [{"name": "%s", "full_name": "%s", "installed": [{"version": "1"}]}]}\n' "$to" "$to"
-    else
-      printf '{"formulae": [{"name": "%s", "full_name": "%s", "installed": []}]}\n' "${4##*/}" "$4"
-    fi ;;
+    [ -z "$INFO_JSON" ] || { echo "$INFO_JSON"; exit 0; }
+    shift 3
+    sep=""
+    printf '{"formulae": ['
+    for n; do
+      to=""
+      for a in $ALIASES; do [ "${a%%=*}" != "$n" ] || to=${a#*=}; done
+      if [ -n "$to" ]; then
+        printf '%s{"name": "%s", "full_name": "%s", "installed": [{"version": "1", "used_options": []}]}' "$sep" "$to" "$to"
+      elif case " $OPTIONS " in *" $n "*) true ;; *) false ;; esac; then
+        printf '%s{"name": "%s", "full_name": "%s", "installed": [{"version": "1", "used_options": ["--with-example"]}]}' "$sep" "${n##*/}" "$n"
+      else
+        printf '%s{"name": "%s", "full_name": "%s", "installed": []}' "$sep" "${n##*/}" "$n"
+      fi
+      sep=", "
+    done
+    printf ']}\n' ;;
   "list --pinned") [ -z "$PINNED_RC" ] || exit "$PINNED_RC"
                    sed -n 's/^pin //p' "$PINS" 2>/dev/null ;;
   "pin "*) [ -z "$PIN_RC" ] || exit "$PIN_RC"
@@ -824,6 +836,35 @@ class BrewStageTest(unittest.TestCase):
         self.assertIn("  DIFFERS example-formula needs a source build; the weekly upgrade installs it\n",
                       result.stdout)
         self.assertEqual(self.installs(), [])
+
+    def test_a_dependency_installed_with_options_defers_the_formula(self):
+        """Lead review of sd:7103: brew builds a dependency from source when
+        its installed keg was built with options, which an upgrade keeps
+        (formula_installer.rb install_bottle_for?), though brew info marks
+        it `(bottled)`."""
+        self.missing_formula()
+
+        result = self.run_verb("update", "brew", "--apply", DEPS_UPGRADE="example-old", OPTIONS="example-old")
+
+        self.assertIn("  DIFFERS example-formula needs a source build; the weekly upgrade installs it\n",
+                      result.stdout)
+        self.assertEqual(self.installs(), [])
+
+    def test_a_malformed_formula_record_is_unknown_not_missing(self):
+        """Lead review of sd:7103: a null record, or an installed one with no
+        full_name, exited 1, read as "not installed", and installed it."""
+        self.missing_formula()
+        records = ('{"formulae": [null]}',
+                   '{"formulae": [{"name": "example-formula", "installed": [{"version": "1"}]}]}',
+                   '{"formulae": [{"full_name": "example-formula", "installed": null}]}')
+        for record in records:
+            with self.subTest(record=record):
+                self.pins.unlink(missing_ok=True)
+                result = self.run_verb("update", "brew", "--apply", INFO_JSON=record)
+
+                self.assertIn("FAILED  brew stage: brew could not tell whether example-formula is installed "
+                              "or pours from a bottle; not installed", result.stdout)
+                self.assertEqual(self.installs(), [])
 
     def test_a_list_brew_cannot_give_changes_nothing(self):
         """sd:3536: read as empty, a failed list installed every formula again."""

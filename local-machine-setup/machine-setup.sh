@@ -718,20 +718,24 @@ python_firewall() {
 }
 
 # formula_installed NAME: brew's name for the installed formula that NAME
-# names, printed, and 0; 1 when none is; 2 when brew info gave no answer: a
-# failed probe is no "no" (sd:3536). brew resolves an alias or an old name,
-# as `python` names python@3.15, which `brew list` prints (sd:7093).
+# names, printed, and 0; 1 when none is; 2 when brew info gave no answer, or
+# one that is not a formula record: a failed probe is no "no" (sd:3536).
+# brew resolves an alias or an old name, as `python` names python@3.15,
+# which `brew list` prints (sd:7093).
 formula_installed() {
   fx_json=$(bound_step 300 brew info --json=v2 --formula "$1" 2>/dev/null) || return 2
   printf '%s' "$fx_json" | python3 -c '
 import json, sys
 try:
     f = json.load(sys.stdin)["formulae"][0]
+    kegs, name = f["installed"], f["full_name"]
 except (ValueError, KeyError, IndexError, TypeError):
     sys.exit(2)
-if not f.get("installed"):
+if not isinstance(kegs, list) or not isinstance(name, str) or not name:
+    sys.exit(2)
+if not kegs:
     sys.exit(1)
-print(f["full_name"])'
+print(name)'
 }
 
 # pours_from_bottle NAME: 0 when NAME and each formula its install would add
@@ -757,6 +761,22 @@ pours_from_bottle() {
   # One heading per formula, or the answer is not about these.
   [ "$(printf '%s\n' "$pb_heads" | grep -c .)" = "$(printf '%s\n' "$pb_names" | grep -c .)" ] || return 2
   if printf '%s\n' "$pb_heads" | grep -qv '(bottled)'; then return 1; fi
+  # brew builds one from source when an installed keg of it was built with
+  # options, which the install keeps, though brew info marks it `(bottled)`
+  # (formula_installer.rb install_bottle_for?).
+  # shellcheck disable=SC2086 # one word per formula name
+  pb_json=$(bound_step 300 env HOMEBREW_NO_ANALYTICS=1 brew info --json=v2 --formula $pb_names 2>/dev/null) || return 2
+  printf '%s' "$pb_json" | python3 -c '
+import json, sys
+try:
+    fs = json.load(sys.stdin)["formulae"]
+    kegs = [k for f in fs for k in f["installed"]]
+    opts = [k["used_options"] for k in kegs]
+except (ValueError, KeyError, TypeError):
+    sys.exit(2)
+if len(fs) != int(sys.argv[1]) or not all(isinstance(o, list) for o in opts):
+    sys.exit(2)
+sys.exit(1 if any(opts) else 0)' "$(printf '%s\n' "$pb_names" | grep -c .)"
 }
 
 # formula_state LIST NAME [any]: the profile formula NAME as `state name
