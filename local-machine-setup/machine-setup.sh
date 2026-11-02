@@ -6161,6 +6161,9 @@ codex_quarantine() {
 # run measured, `brew install node` on an Intel Mac with no bottles: 3h00m,
 # llvm 1h31m of it (sd:7103). The brew stage builds nothing from source.
 SOURCE_BUILD_BOUND=21600
+# One App Store app's upgrade, as maintenance.sh's per-app bound (sd:7188):
+# enough for an Xcode-sized download.
+MAS_APP_BOUND=600
 SUDO_REFUSED='sudo: a terminal is required|sudo: a password is required|sudo: no tty present'
 BUILD_FAILED=""
 
@@ -6385,7 +6388,17 @@ cmd_upgrade() {
     echo "  brew MISSING — https://brew.sh"
   fi
   if command -v mas >/dev/null 2>&1; then
-    sweep_step "mas upgrade" 1200 mas upgrade
+    # One bounded call per app, by id (sd:7199): in one call for all, an
+    # update storedownloadd never finishes held every other app behind it
+    # until the bound (sd:7188). A line with no id is skipped, as `mas
+    # upgrade` with no id takes every app at once.
+    if mas_list=$(bound_step 300 mas outdated 2>/dev/null); then
+      for mas_id in $(printf '%s\n' "$mas_list" | awk '$1 ~ /^[0-9]+$/ { print $1 }'); do
+        sweep_step "mas upgrade $mas_id" "$MAS_APP_BOUND" mas upgrade "$mas_id"
+      done
+    else
+      failed="$failed, mas outdated"
+    fi
   else
     echo "  mas MISSING (brew install mas)"
   fi
@@ -6413,7 +6426,9 @@ outdated_lists() {
   : > "$tmp/mas.$1"
   if command -v mas >/dev/null 2>&1; then
     run_step 300 mas outdated > "$tmp/raw" 2>/dev/null || echo mas >> "$tmp/unknown.$1"
-    sort "$tmp/raw" > "$tmp/mas.$1"
+    # mas pads its columns to the longest name listed: a line changes when
+    # another app leaves the list, so compare the trimmed line (sd:7199).
+    sed -e 's/^ *//' -e 's/  */ /g' "$tmp/raw" | sort > "$tmp/mas.$1"
   fi
   # The .release entries whose latest tag is not the one installed (sd:4853).
   release_outdated > "$tmp/raw" || echo release >> "$tmp/unknown.$1"

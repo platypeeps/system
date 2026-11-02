@@ -220,7 +220,7 @@ class InstallTest(Harness):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual(self.calls(), [])
         self.assertIn("    Command Line Tools for Xcode 27.2-27.2", run.stdout)
-        self.assertIn("    497799835  Xcode  (27.1 -> 27.2)", run.stdout)
+        self.assertIn("    497799835 Xcode (27.1 -> 27.2)", run.stdout)
 
     def test_a_refused_install_stays_pending_with_its_reason(self):
         run = self.maintenance("# nothing to check\n", SUDO_REFUSE="1")
@@ -240,7 +240,7 @@ class InstallTest(Harness):
             "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store upgrade failed: Xcode",
             "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:",
             "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:"
-            " 497799835  Xcode  (27.1 -> 27.2)"])
+            " 497799835 Xcode (27.1 -> 27.2)"])
 
 
 #: mas outdated as the hub listed it on 2026-11-02: mas pads its columns to the
@@ -297,7 +297,7 @@ exit 0
             "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store upgrade failed: PeakHour",
             "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:",
             "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:"
-            " 1560576252  PeakHour  (6.2.1 -> 6.2.2)"])
+            " 1560576252 PeakHour (6.2.1 -> 6.2.2)"])
 
     def test_an_app_still_listed_is_not_upgraded_when_its_padding_moves(self):
         """The 04:25 run on 2026-11-02 said PeakHour upgraded; it stayed pending."""
@@ -305,6 +305,21 @@ exit 0
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual(self.upgraded(run),
                          ["- upgraded App Store app  434808346  SimpleMind Pro  (2.10.2 -> 2.10.3)"])
+
+    def test_a_pending_app_keeps_one_key_whatever_mas_pads(self):
+        """sd:7199: the key of 'App Store updates pending' held mas's column
+        padding, so PeakHour's key changed once SimpleMind Pro left the
+        list, and the open report for it was replaced."""
+        padded = " ".join(f"'{line}'" for line in MAS_BOTH)
+        _stub(self.bin / "mas", f'case "$1" in outdated) printf "%s\\n" {padded} ;; esac\n')
+        before = self.maintenance("# nothing to check\n")
+        _stub(self.bin / "mas", f'case "$1" in outdated) printf "%s\\n" '
+                                f'"{MAS_PEAKHOUR[0]}" ;; esac\n')
+        after = self.maintenance("# nothing to check\n")
+        key = "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending: " \
+              "1560576252 PeakHour (6.2.1 -> 6.2.2)"
+        self.assertIn(key, self.attention(before))
+        self.assertIn(key, self.attention(after))
 
     def test_a_line_without_an_id_upgrades_nothing(self):
         """`mas upgrade` with no id takes every app at once, the hang this
