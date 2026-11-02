@@ -43,12 +43,9 @@ CUT_OFF = 124
 # seen. KILL is immediate, but a grandchild whose parent is already dead is
 # reaped by launchd on its own schedule, and until then kill -0 finds it.
 GONE_MARGIN = 3
-# The `--timeout` the hung case passes: past the fake's 1 s start, with room
-# for a loaded machine, and well inside BOUND_MARGIN.
+# The `--timeout` the hung case passes: room for a fake that starts late
+# on a loaded machine, and well inside BOUND_MARGIN.
 BOUND = 4
-# How many times the hung case runs the bound before it calls the fake
-# starved every time: it reads the pid of a tree the fake had to build first.
-HUNG_ATTEMPTS = 5
 
 REFUSAL = "adversarial-gate: run: --out is required"
 
@@ -83,17 +80,18 @@ class _Collector(http.server.BaseHTTPRequestHandler):
         pass
 
 # A codex that never answers, and that has the shape of the real one: a
-# launcher with a process tree under it. It records that it was reached,
-# starts a grandchild in the background and writes that pid, then blocks in
-# a foreground grandchild. `sleep` and not `exec sleep`, so the fake itself
-# stays the child and the sleeps are its children -- a bound that ends only
-# the child leaves both of them running and holding the pipe. The first
-# `sleep 1` stands in for a slow start: under gate load a 1 s bound fired
-# before the fake recorded its argv (sd:6887 review), so BOUND must clear it.
-HUNG_CODEX = """sleep 1
-printf '%s\\n' "$@" > "$CODEX_ARGV"
-sleep 60 &
+# launcher with a process tree under it. It builds the tree first -- starts
+# a grandchild in the background and writes its pid, then records that it
+# was reached -- and only then blocks in a foreground grandchild. `sleep`
+# and not `exec sleep`, so the fake itself stays the child and the sleeps
+# are its children -- a bound that ends only the child leaves both of them
+# running and holding the pipe. The tree comes before anything slow, and
+# nothing sleeps ahead of it: the bound is wall time, and a fake that
+# paused before it wrote the pid was cut off without one under gate load
+# (sd:6887, sd:7135).
+HUNG_CODEX = """sleep 60 &
 echo $! > "$CODEX_GRANDCHILD"
+printf '%s\\n' "$@" > "$CODEX_ARGV"
 sleep 60
 """
 
@@ -264,44 +262,6 @@ class RunAgainstAFakeCodex(unittest.TestCase):
         self.assertFalse((ledger.parent / "jev-corpus").exists(), "the run wrote a corpus")
         self.assertEqual(collector.posts, [], "the run posted spans")
 
-    def run_hung_gate(self, out, body=HUNG_CODEX, extra=None):
-        """Run the bound against `body` until the fake had built its tree.
-
-        The bound is wall time, and a gate slot can starve the fake for
-        longer than BOUND: the fake is then cut off before it writes the
-        pid the case reads, and there is no tree to look for (sd:7135). A
-        run that never built its tree proves nothing about the bound, so it
-        is run again, and the case fails only when every attempt was starved.
-        """
-        for _ in range(HUNG_ATTEMPTS):
-            self.argv_log.unlink(missing_ok=True)
-            self.grandchild.unlink(missing_ok=True)
-            result, elapsed = self.run_gate(
-                "--repo", str(self.repo), "--out", str(out), "--timeout", str(BOUND),
-                body=body, extra=extra,
-            )
-            if self.grandchild.exists() and self.grandchild.read_text().strip().isdigit():
-                return result, elapsed
-        self.fail(f"the fake was cut off before it built its tree in {HUNG_ATTEMPTS} runs")
-
-    def test_a_codex_starved_past_the_bound_is_run_again(self):
-        # sd:7135. The first run of this fake sits in its start for longer
-        # than the bound, as a starved process does under gate load, and is
-        # cut off before it writes its grandchild pid. Before, the case
-        # then read a pid file that was never written and died with
-        # FileNotFoundError; now that run is not counted.
-        stalled = self.tmp / "codex.stalled"
-        body = (
-            'if [ ! -e "$CODEX_STALLED" ]; then : > "$CODEX_STALLED"; sleep 60; fi\n'
-            + HUNG_CODEX
-        )
-        result, _ = self.run_hung_gate(
-            self.tmp / "adversarial.md", body=body, extra={"CODEX_STALLED": str(stalled)},
-        )
-        self.assertTrue(stalled.exists(), "the first run was not the starved one")
-        self.assertEqual(result.returncode, CUT_OFF, result.stderr)
-        self.assertTrue(self.argv_log.exists(), "codex was never reached: " + result.stderr)
-
     def test_timeout_cuts_off_a_codex_that_never_answers(self):
         # sd:790. Before, `--timeout` was parsed and never applied: this fake
         # sleeps for longer than the outer guard, and the script waited for it.
@@ -312,7 +272,10 @@ class RunAgainstAFakeCodex(unittest.TestCase):
         # exits with; and the fake's grandchild is gone, so a bound that
         # ended only the launcher and left its tree running does not pass.
         out = self.tmp / "adversarial.md"
-        result, elapsed = self.run_hung_gate(out)
+        result, elapsed = self.run_gate(
+            "--repo", str(self.repo), "--out", str(out), "--timeout", str(BOUND),
+            body=HUNG_CODEX,
+        )
         self.assertTrue(self.argv_log.exists(), "codex was never reached: " + result.stderr)
         self.assertEqual(result.returncode, CUT_OFF, result.stderr)
         self.assertIn(f"did not answer within {BOUND} s", result.stderr)
