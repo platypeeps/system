@@ -521,8 +521,8 @@ breaker_record() { # job, exit code; logs the failure unless the breaker is open
 # run's own lines grade it: a lost report starts the report at an older run.
 # logs/.<job>.pushed holds it to one push until a run is not at risk; it is
 # written after a push that went out, so a failed push is tried again.
-push_at_risk() { # job, exit code, log offset of this run's own output
-  local job="$1" rc="$2" pushed="$LOG_DIR/.$1.pushed"
+push_at_risk() { # job, exit code, log offset of this run's own output, [cause; ]
+  local job="$1" rc="$2" cause="${4:-}" pushed="$LOG_DIR/.$1.pushed"
   if [ "$rc" -eq 0 ] || tail -c "+$(($3 + 1))" "$LOG_DIR/$job.log" 2>/dev/null \
       | grep -q '^SD_REPORT_ATTENTION: data safe, one step failed: '; then
     rm -f "$pushed"
@@ -536,7 +536,7 @@ push_at_risk() { # job, exit code, log offset of this run's own output
   # not hold the next run off.
   if st_bounded 60 sh "$ROOT/../local-notify/notify.sh" \
       -t "$job failed on $(hostname -s): data at risk" -p high -c ntfy \
-      "exit $rc, and the run did not grade its data safe. Today has the report; log: local-cron-jobs/logs/$job.log" \
+      "${cause}exit $rc, and the run did not grade its data safe. Today has the report; log: local-cron-jobs/logs/$job.log" \
       >/dev/null 2>&1 8>&-; then
     date '+%Y-%m-%dT%H:%M:%S%z' > "$pushed" || true
   else
@@ -808,15 +808,45 @@ while (1) {
 waitpid($pid, 0);
 exit 124;'
 
-# Runs a command under the job's limit; 0 runs it directly, as before sd:2018.
+# Runs a command under the job's limit. 0 sets no limit; it still runs
+# under perl, so a runner a signal ended can stop it (stop_workload).
+#
+# EXEC_IN_JOB is set while the runner waits on the workload (sd:7105). The
+# wait sits in an `||` list, so `set -e` cannot end the runner there: an exit
+# that finds it set is a signal to the runner itself, such as launchd's TERM
+# at shutdown or bootout, or a HUP. Bash runs the EXIT trap then with `$?`
+# 0. A TERM trap would tell the signal apart, but bash defers a trap until
+# the foreground child exits, and the job then runs on until launchd's
+# SIGKILL leaves no outcome at all. An INT to the runner alone does not end
+# it: bash waits for the job and goes on.
+EXEC_IN_JOB=""
+INTERRUPTED="interrupted by a signal to the runner (shutdown, unload or ^C)"
 run_bounded() { # job, seconds, command...
-  local job="$1" limit="$2"
+  local job="$1" limit="$2" rc=0
   shift 2
-  if [ "$limit" -eq 0 ]; then
-    "$@"
-    return
-  fi
-  perl -e "$RUN_BOUNDED" "$job" "$limit" "${CRON_JOBS_TIMEOUT_GRACE:-10}" "$@"
+  EXEC_IN_JOB=1
+  perl -e "$RUN_BOUNDED" "$job" "$limit" "${CRON_JOBS_TIMEOUT_GRACE:-10}" "$@" || rc=$?
+  EXEC_IN_JOB=""
+  return "$rc"
+}
+
+# The workload of a runner a signal ended (sd:7105). Left alone it ran on
+# with nobody to report how it ended. TERM to the perl of run_bounded, which
+# passes it on to the job's group, and wait the grace period for it; a job
+# still running then is named in the log. The perl is a zombie once it
+# exits, as this shell is in its trap and reaps nothing, so `ps` and not
+# `kill -0` tells whether it is gone.
+stop_workload() { # job
+  local pid tries=0 grace="${CRON_JOBS_TIMEOUT_GRACE:-10}"
+  pid="$(pgrep -P "$$" -x perl 2>/dev/null | head -n 1)" || true
+  [ -n "$pid" ] || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  while [ "$tries" -lt "$((grace * 10))" ]; do
+    case "$(ps -o stat= -p "$pid" 2>/dev/null)" in '' | Z*) return 0 ;; esac
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  echo "[$1] $(date '+%Y-%m-%dT%H:%M:%S%z') the job still runs ${grace}s after TERM (perl pid $pid); its end goes unreported"
 }
 
 exec_exit() {
@@ -828,6 +858,14 @@ exec_exit() {
     # would be the log and the record disagreeing about the same run -- which
     # is the class of defect the record exists to end.
     [ "$code" -ne 0 ] || code=1
+    # A signal ended the runner mid-job (sd:7105). The cause is named in the
+    # log, the report and the push; the grade stays the job's own: at risk
+    # unless it already logged its data-safe line (ruling on sd:6030).
+    if [ -n "$EXEC_IN_JOB" ]; then
+      echo "[$EXEC_JOB] $(date '+%Y-%m-%dT%H:%M:%S%z') $INTERRUPTED"
+      echo "SD_REPORT_ATTENTION: $INTERRUPTED"
+      stop_workload "$EXEC_JOB"
+    fi
     echo "[$EXEC_JOB] $(date '+%Y-%m-%dT%H:%M:%S%z') FAILED rc=$code"
     notify_failure "$EXEC_JOB" "$code" || true
     record_outcome "$EXEC_JOB" "$code"
@@ -838,7 +876,8 @@ exec_exit() {
   [ -z "$owed" ] || record_run_report "$owed" "$EXEC_RUN" "$EXEC_STARTED" \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$code" "$EXEC_OFFSET" \
     || report_unrecorded "$owed" "$EXEC_OFFSET"
-  [ -z "$owed" ] || push_at_risk "$owed" "$code" "$EXEC_OWN_OFFSET" || true
+  [ -z "$owed" ] || push_at_risk "$owed" "$code" "$EXEC_OWN_OFFSET" \
+    "${EXEC_IN_JOB:+$INTERRUPTED; }" || true
 }
 
 # launchd's own spawn counter for a job, or "" when launchd does not hold the
@@ -1344,17 +1383,22 @@ if attrs:
     # line judged. The reply is kept in a file for the check and printed
     # after the agent exits, so such a job's log fills at the end, not live.
     local reply="$LOG_DIR/.$job.reply"
-    # shellcheck disable=SC2086 # word-splitting of extra args is deliberate
+    # The child opens the reply, not this shell: a signal to the runner runs
+    # exec_exit with this shell's stdout, which has to be the log, and a
+    # hand-run's tee waited for ever on the copy of the FIFO that bash kept
+    # while a redirect on run_bounded stood (sd:7105).
+    # shellcheck disable=SC2086,SC2016 # extra args split on purpose; sh -c source
     if ! agent_quarantine "$job" "$claude_bin"; then
       rc=1
     elif [ -n "$JOB_RESULT_OK" ]; then
       run_bounded "$job" "$JOB_TIMEOUT_SECONDS" \
+        sh -c 'reply="$1"; shift; exec "$@" > "$reply"' sh "$reply" \
         env SD_HANDOFF_RESTORE=0 "$claude_bin" -p "$JOB_PROMPT" \
         --dangerously-skip-permissions \
         --debug-file "$debug_file" \
         ${JOB_MODEL:+--model "$JOB_MODEL"} \
         ${otel_settings:+--settings "$otel_settings"} \
-        $JOB_CLAUDE_ARGS > "$reply" || rc=$?
+        $JOB_CLAUDE_ARGS || rc=$?
       cat "$reply"
       if [ "$rc" -eq 0 ]; then
         local result

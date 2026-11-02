@@ -53,10 +53,12 @@ LIB_QUARANTINE = FOLDER.parent / "lib" / "claude_quarantine.sh"
 # started with, NUL-separated so a value holding a newline cannot split. It
 # writes the file `--debug-file` names, as the real binary does, and exits
 # with FAKE_CLAUDE_EXIT (0 when unset), so a failing run can be staged.
-# FAKE_CLAUDE_SAY, when set, is its reply on stdout.
+# FAKE_CLAUDE_SAY, when set, is its reply on stdout; FAKE_CLAUDE_RUN, when
+# set, is a command it runs after that.
 FAKE_CLAUDE = """#!/bin/sh
 printf '%s\\n' "$@" > "$FAKE_CLAUDE_LOG.argv"
 [ -z "$FAKE_CLAUDE_SAY" ] || printf '%s\\n' "$FAKE_CLAUDE_SAY"
+[ -z "$FAKE_CLAUDE_RUN" ] || eval "$FAKE_CLAUDE_RUN"
 env -0 > "$FAKE_CLAUDE_LOG.env"
 while [ $# -gt 0 ]; do
   [ "$1" != "--debug-file" ] || echo "fake trace" > "$2"
@@ -239,6 +241,8 @@ PROMPT_JOB = 'JOB_SCHEDULE="0 3 * * *"\nJOB_PROMPT="/sd-digest nightly"\n'
 # `$PPID`: the workload's parent is the perl that enforces JOB_TIMEOUT, and the
 # runner is that perl's parent (sd:2018).
 KILL_THE_RUNNER = "kill -9 $(ps -o ppid= -p $PPID)"
+# The same, with the TERM launchd sends a job at shutdown (sd:7105).
+TERM_THE_RUNNER = "kill -TERM $(ps -o ppid= -p $PPID)"
 
 
 class PromptJobEnvironmentTest(unittest.TestCase):
@@ -386,6 +390,17 @@ class PromptJobResultLineTest(unittest.TestCase):
     def test_an_agent_failure_keeps_its_own_exit_code(self):
         result = self.fx.exec_job("nightly", {"FAKE_CLAUDE_SAY": "RESULT: ok", "FAKE_CLAUDE_EXIT": "7"})
         self.assertEqual(result.returncode, 7, result.stdout)
+
+    def test_a_runner_ended_mid_reply_grades_the_log_not_the_reply(self):
+        # sd:7105. The reply file is stdout while the agent runs, and the
+        # trap fires there: the grade has to reach the job's log.
+        result = self.fx.exec_job("nightly", {"FAKE_CLAUDE_SAY": "RESULT: ok",
+                                              "FAKE_CLAUDE_RUN": f"{TERM_THE_RUNNER}; sleep 1"})
+        self.assertEqual(result.returncode, -signal.SIGTERM, result.stderr)
+        log = (self.fx.folder / "logs" / "nightly.log").read_text()
+        self.assertIn("\nSD_REPORT_ATTENTION: interrupted by a signal to the runner", log)
+        self.assertNotIn("data safe", log)
+        self.assertRegex(log, r"FAILED rc=[0-9]+")
 
     def test_without_the_setting_the_reply_is_not_judged(self):
         self.fx.write_job("nightly", PROMPT_JOB)
@@ -2943,6 +2958,130 @@ class FailureNotificationTest(unittest.TestCase):
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n'
                                   f'JOB_DIR="{self.fx.tmp / "no-such-directory"}"\n')
         self.assertNotEqual(self.fx.exec_job("demo").returncode, 0)
+        self.assertEqual(len(self.pushes()), 1, self.pushes())
+
+    INTERRUPTED = "interrupted by a signal to the runner (shutdown, unload or ^C)"
+
+    def interrupt(self, signal_name, before=""):
+        """A run whose job sends `signal_name` to its runner, then sleeps so
+        the runner dies while it still waits."""
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
+                                  f"JOB_COMMAND='{before}kill -{signal_name} "
+                                  "$(ps -o ppid= -p $PPID); sleep 1'\n")
+        return self.fx.exec_job("demo")
+
+    def log(self):
+        return (self.fx.folder / "logs" / "demo.log").read_text()
+
+    def assert_interrupted(self):
+        log = self.log()
+        self.assertRegex(log, r"\[demo\] \S+ " + re.escape(self.INTERRUPTED) + "\n")
+        self.assertIn(f"\nSD_REPORT_ATTENTION: {self.INTERRUPTED}\n", log)
+        self.assertRegex(log, r"FAILED rc=[0-9]+")
+
+    def test_a_runner_ended_by_a_signal_names_it_and_stays_at_risk(self):
+        # sd:7105. A shutdown sends launchd's TERM to the runner while the
+        # job runs. The log, the report and the push name that cause; the
+        # grade stays the job's, at risk (ruling on sd:6030).
+        for name, number in (("TERM", signal.SIGTERM), ("HUP", signal.SIGHUP)):
+            with self.subTest(name):
+                (self.fx.folder / "logs" / ".demo.pushed").unlink(missing_ok=True)
+                self.notify_log.unlink(missing_ok=True)
+                run = self.interrupt(name)
+                self.assertEqual(run.returncode, -number, run.stderr)
+                self.assert_interrupted()
+                self.assertNotIn("data safe", self.log())
+                pushes = self.pushes()
+                self.assertEqual(len(pushes), 1, pushes)
+                self.assertTrue(pushes[0].split("|")[6].startswith(
+                    f"{self.INTERRUPTED}; exit 1, "), pushes)
+        # The next run's own failure pushes as before.
+        self.job("true")
+        self.assertEqual(self.fx.exec_job("demo").returncode, 0)
+        self.job("exit 3")
+        self.assertEqual(self.fx.exec_job("demo").returncode, 3)
+        self.assertEqual(len(self.pushes()), 2, self.pushes())
+
+    def test_an_interrupted_job_that_logged_its_data_safe_pushes_nothing(self):
+        run = self.interrupt("TERM", before=f"echo {self.SAFE}; ")
+        self.assertEqual(run.returncode, -signal.SIGTERM, run.stderr)
+        self.assert_interrupted()
+        self.assertEqual(self.pushes(), [])
+
+    def term_the_runner_from_outside(self, sleep, timeout_line=""):
+        """A run TERMed by another process, launchd's way, while its job
+        sleeps for `sleep`. Returns once the runner has exited."""
+        began = self.fx.tmp / "job-began"
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n' + timeout_line
+                          + f"JOB_COMMAND=': > {began}; exec sleep {sleep}'\n")
+        self.addCleanup(subprocess.run, ["pkill", "-9", "-f", f"^sleep {sleep.replace('.', '[.]')}$"])
+        run = subprocess.Popen(
+            ["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+            env={"PATH": self.fx.path(), "HOME": str(self.fx.home),
+                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "SD_REPORT_BIN": "/usr/bin/true"},
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 10
+        while not began.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(began.exists(), "the job starts")
+        os.kill(run.pid, signal.SIGTERM)
+        self.assertEqual(run.wait(timeout=30), -signal.SIGTERM)
+
+    def test_a_runner_ended_by_a_signal_stops_its_job(self):
+        # Left alone, the job ran on with nobody to report its end.
+        for sleep, timeout_line in (("53.1", ""), ("53.2", 'JOB_TIMEOUT="0"\n')):
+            with self.subTest(timeout_line or "default limit"):
+                self.term_the_runner_from_outside(sleep, timeout_line)
+                self.assertEqual(pids_of(f"sleep {sleep}"), [], f"sleep {sleep} outlived its runner")
+                self.assert_interrupted()
+
+    def test_a_terminal_interrupt_ends_the_job_and_stays_at_risk(self):
+        # ^C reaches the hand-run's whole group: the runner, perl and tee.
+        # Bash waits for the job, which perl ends with INT, and the job's own
+        # exit grades the run; the runner is not the one interrupted. The
+        # marker is a builtin's: a `touch` the job waits on swallowed the INT
+        # in 5 of 30 runs, and `sleep` started after it. INT is set back to
+        # its default, as a terminal has it: the gate runs suites as
+        # background legs, which inherit INT ignored, and a non-interactive
+        # sh cannot take that back, so the job never saw the INT.
+        began = self.fx.tmp / "job-began"
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
+                                  f"JOB_COMMAND=': > {began}; exec sleep 54.1'\n")
+        self.addCleanup(subprocess.run, ["pkill", "-9", "-f", "^sleep 54[.]1$"])
+        run = subprocess.Popen(
+            ["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+            env={"PATH": self.fx.path(), "HOME": str(self.fx.home),
+                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "SD_REPORT_BIN": "/usr/bin/true"},
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+        self.addCleanup(kill_group, run.pid)
+        deadline = time.monotonic() + 10
+        while not began.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(began.exists(), "the job starts")
+        os.killpg(run.pid, signal.SIGINT)
+        run.wait(timeout=30)
+        self.assertEqual(pids_of("sleep 54.1"), [], "sleep 54.1 outlived the run")
+        self.assertIn("demo FAILED rc=130", (self.fx.folder / "logs" / "failures.log").read_text())
+        self.assertNotIn(self.INTERRUPTED, self.log())
+        self.assertEqual(len(self.pushes()), 1, self.pushes())
+
+    def test_a_job_that_outlasts_the_grace_period_is_named(self):
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
+                                  "JOB_COMMAND='trap \"\" TERM; kill -TERM "
+                                  "$(ps -o ppid= -p $PPID); sleep 3'\n")
+        run = self.fx.exec_job("demo", {"CRON_JOBS_TIMEOUT_GRACE": "1"})
+        self.assertEqual(run.returncode, -signal.SIGTERM, run.stderr)
+        self.assert_interrupted()
+        self.assertRegex(self.log(), r"\[demo\] \S+ the job still runs 1s after TERM "
+                                     r"\(perl pid \d+\); its end goes unreported")
+
+    def test_a_job_ended_by_a_signal_is_still_at_risk(self):
+        # Only the runner's own end is an interruption: a workload that a
+        # TERM ended is a failure like any other (ruling on sd:6030).
+        self.job("kill -TERM \\$\\$")
+        self.assertEqual(self.fx.exec_job("demo").returncode, 143)
+        self.assertNotIn("data safe", (self.fx.folder / "logs" / "demo.log").read_text())
         self.assertEqual(len(self.pushes()), 1, self.pushes())
 
     def test_a_failure_run_under_the_launchctl_stubs_pushes_once(self):

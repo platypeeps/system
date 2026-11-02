@@ -230,7 +230,12 @@ A job with findings prints that line and exits 0; nothing is mailed or pushed
 One failure pushes to the phone: one that puts data at risk (sd:5997). A
 failed run that proved its data safe prints
 `SD_REPORT_ATTENTION: data safe, one step failed: <step>`, and any other
-failure is at risk (ruling on sd:6030). Only the run's own lines count. The
+failure is at risk (ruling on sd:6030). Only the run's own lines count. A
+signal that ends the runner while the job runs, such as launchd's TERM at
+shutdown, is named as the cause in the log, the report and the push
+(`interrupted by a signal to the runner`), and the grade stays the job's.
+The wrapper sends the job TERM and waits `CRON_JOBS_TIMEOUT_GRACE`
+seconds for it; a job still running then is named in the log (sd:7105). The
 wrapper pushes through `local-notify` with `-c ntfy -p high` and no `-b`,
 so it reaches the phone where `NTFY_TOPIC` is set in local-notify's `.env`,
 and only an ntfy delivery counts as sent. The
