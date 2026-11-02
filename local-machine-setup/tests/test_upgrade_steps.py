@@ -886,7 +886,7 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("failed steps: rustup update stable\n", result.stdout)
-        self.assertEqual(self.mas_log.read_text(), "upgrade\n")
+        self.assertIn("  afterwards: machine-setup.sh status", result.stdout)
 
     def test_no_rustup_means_no_rustup_call(self):
         result = self.run_verb("upgrade", "--apply", RUSTUP_LOG=str(self.tmp_path / "rustup.log"))
