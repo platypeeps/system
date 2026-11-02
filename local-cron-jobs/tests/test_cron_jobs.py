@@ -3040,7 +3040,10 @@ class FailureNotificationTest(unittest.TestCase):
         # Bash waits for the job, which perl ends with INT, and the job's own
         # exit grades the run; the runner is not the one interrupted. The
         # marker is a builtin's: a `touch` the job waits on swallowed the INT
-        # in 5 of 30 runs, and `sleep` started after it.
+        # in 5 of 30 runs, and `sleep` started after it. INT is set back to
+        # its default, as a terminal has it: the gate runs suites as
+        # background legs, which inherit INT ignored, and a non-interactive
+        # sh cannot take that back, so the job never saw the INT.
         began = self.fx.tmp / "job-began"
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
                                   f"JOB_COMMAND=': > {began}; exec sleep 54.1'\n")
@@ -3049,7 +3052,8 @@ class FailureNotificationTest(unittest.TestCase):
             ["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
             env={"PATH": self.fx.path(), "HOME": str(self.fx.home),
                  "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "SD_REPORT_BIN": "/usr/bin/true"},
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
         self.addCleanup(kill_group, run.pid)
         deadline = time.monotonic() + 10
         while not began.exists() and time.monotonic() < deadline:
