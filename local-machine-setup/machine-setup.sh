@@ -741,7 +741,13 @@ print(f["full_name"])'
 # machine's bottle tag, or an older one it can pour. A formula that ships no
 # bottle, as many in a tap, counts as a build.
 pours_from_bottle() {
-  pb_plan=$(bound_step 300 env HOMEBREW_NO_AUTO_UPDATE=1 brew install --dry-run "$1" 2>/dev/null) || return 2
+  # The nightly install's switches (stage_brew): no refresh, and no
+  # dependents check, which rebuilds a dependent with broken linkage from
+  # source, bottle or not; the weekly upgrade keeps it.
+  pb_plan=$(bound_step 300 env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 \
+    brew install --dry-run "$1" 2>/dev/null) || return 2
+  # A dependent brew would rebuild from source all the same.
+  ! printf '%s\n' "$pb_plan" | grep -q '^==> Reinstalling .* with broken linkage from source:' || return 1
   pb_names=$(printf '%s\n' "$pb_plan" | awk '/^==> Would (install|upgrade) / { on = 1; next }
       /^==>/ { on = 0 } on && NF { print $1 }' | sort -u)
   [ -n "$pb_names" ] || return 2
@@ -834,11 +840,14 @@ stage_brew() {
   # (sd:7103 review): the check runs just before the install, after the
   # one before it, and both with auto-update off, so the install pulls no
   # newer version the check never saw, which might have no bottle. The
-  # weekly upgrade's `brew update` refreshes that state. A subshell, as
-  # the export must not reach the stages after this one.
+  # weekly upgrade's `brew update` refreshes that state. With the
+  # dependents check off, the install rebuilds no dependent with broken
+  # linkage from source; the weekly upgrade keeps that check. A subshell,
+  # as the exports must not reach the stages after this one.
   (
     HOMEBREW_NO_AUTO_UPDATE=1
-    export HOMEBREW_NO_AUTO_UPDATE
+    HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1
+    export HOMEBREW_NO_AUTO_UPDATE HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK
     manifest brew | while read -r f; do
       # shellcheck disable=SC2046 # `state name [installed]`, one word each
       set -- $(formula_state "$formulae" "$f")

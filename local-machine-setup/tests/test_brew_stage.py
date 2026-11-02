@@ -44,9 +44,12 @@ LIB = FOLDER.parent / "lib"
 # `install --dry-run NAME` would install NAME and $DEPS, or fails with
 # DRY_RC; `info --formula NAMES` heads each `(bottled)` unless $UNBOTTLED
 # names it (sd:7103); it would also upgrade $DEPS_UPGRADE.
-# With $CALLS, each call is logged there with its auto-update switch, and an
+# DRY_BROKEN names a dependent the dry run would reinstall from source for
+# broken linkage.
+# With $CALLS, each call is logged there with its auto-update and dependents
+# check switches, and an
 # install sleeps INSTALL_SLEEP seconds, then logs `done`.
-BREW_STUB = "#!/bin/sh\n" + STALL + r"""[ -z "$CALLS" ] || echo "$* auto=${HOMEBREW_NO_AUTO_UPDATE:-on}" >> "$CALLS"
+BREW_STUB = "#!/bin/sh\n" + STALL + r"""[ -z "$CALLS" ] || echo "$* auto=${HOMEBREW_NO_AUTO_UPDATE:-on} deps=${HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK:-on}" >> "$CALLS"
 case "$*" in
   "list --formula") [ -z "$LIST_HANG" ] || stall
                     [ -z "$LIST_RC" ] || exit "$LIST_RC"
@@ -73,7 +76,8 @@ case "$*" in
     printf '==> Would install 1 formula:\n%s 1.0\n' "$3"
     [ -z "$DEPS" ] || printf '==> Would install dependencies for %s:\n' "$3"
     for d in $DEPS; do printf '%s    1.0\n' "$d"; done
-    [ -z "$DEPS_UPGRADE" ] || printf '==> Would upgrade 1 dependency:\n%s 1.0 -> 2.0\n' "$DEPS_UPGRADE" ;;
+    [ -z "$DEPS_UPGRADE" ] || printf '==> Would upgrade 1 dependency:\n%s 1.0 -> 2.0\n' "$DEPS_UPGRADE"
+    [ -z "$DRY_BROKEN" ] || printf '==> Reinstalling 1 dependent with broken linkage from source:\n%s\n' "$DRY_BROKEN" ;;
   "info --formula "*)
     shift 2
     for n; do
@@ -772,9 +776,9 @@ class BrewStageTest(unittest.TestCase):
 
         self.assertEqual(self.installs(), ["install example-formula"], result.stdout + result.stderr)
         formula = [c for c in self.calls() if "example-formula" in c and not c.startswith("info --json")]
-        self.assertEqual(formula, ["install --dry-run example-formula auto=1",
-                                   "info --formula example-formula auto=1",
-                                   "install example-formula auto=1"])
+        self.assertEqual(formula, ["install --dry-run example-formula auto=1 deps=1",
+                                   "info --formula example-formula auto=1 deps=1",
+                                   "install example-formula auto=1 deps=1"])
 
     def test_each_formula_is_checked_after_the_install_before_it(self):
         """sd:7103 review: the checks ran in a pipeline beside the installs,
@@ -788,6 +792,27 @@ class BrewStageTest(unittest.TestCase):
         done = calls.index("done install example-a")
         self.assertEqual([c for c in calls[:done] if "example-b" in c], [], calls)
         self.assertIn("install example-b", calls[done:])
+
+    def test_a_dependent_to_rebuild_for_broken_linkage_defers_the_formula(self):
+        """Lead review of sd:7103: after an install brew rebuilds a dependent
+        with broken linkage from source, bottle or not; the dry run's
+        heading for it was read as the end of the plan."""
+        self.missing_formula()
+
+        result = self.run_verb("update", "brew", "--apply", DRY_BROKEN="example-dependent")
+
+        self.assertIn("  DIFFERS example-formula needs a source build; the weekly upgrade installs it\n",
+                      result.stdout)
+        self.assertEqual(self.installs(), [])
+
+    def test_the_weekly_install_keeps_the_dependents_check(self):
+        """The weekly sweep may build, so it still rebuilds broken dependents
+        and refreshes Homebrew first."""
+        self.missing_formula()
+
+        result = self.run_verb("upgrade", "--apply", CALLS=str(self.stubs.parent / "calls"))
+
+        self.assertIn("install example-formula auto=on deps=on", self.calls(), result.stdout + result.stderr)
 
     def test_a_dependency_upgrade_that_needs_a_build_defers_the_formula(self):
         """An install also upgrades an outdated dependency; one with no bottle
