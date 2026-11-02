@@ -32,6 +32,8 @@ into this machine's `<config>/cron-jobs/jobs/<host>/` on the hub, then run
    It lists the subjects the queue rejected in the last 90 days, through
    `sd store items` and `sd-db review export`. Then `claude -p` runs on Sonnet
    with read-only tools and `prompt.md`, and replies with suggestions as JSON.
+   The prompt goes in on stdin, so the job log names the flags only. Each try
+   is bounded at 300 s; a try that hits the bound gets one more try (sd:7269).
    `nightly_review.py batch` writes the reply as
    `<bulk root>/system/nightly-review/<date>.json`, through a `.part` file and a
    rename. The job sets every field but the questions: queue `nightly`, mode

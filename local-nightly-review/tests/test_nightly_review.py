@@ -23,14 +23,19 @@ PACK = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd
 sys.path.insert(0, str(PACK / "lib"))
 from sd_db import connect, review, workflow  # noqa: E402
 
-# A `claude` that records its arguments and prompt, then prints the reply
-# file and exits with CLAUDE_RC.
+# A `claude` that records its arguments and its stdin, the prompt, then
+# prints the reply file. Call n exits with the nth word of CLAUDE_RC, or its
+# last word past the end: "124 0" is a run that hit its bound, then one that
+# passed (st_step passes the bound's 124 on as the command's own code).
 FAKE_CLAUDE = """#!/bin/sh
 printf '%s\\n' "$@" > "$CLAUDE_ARGS"
-for arg in "$@"; do last=$arg; done
+cat > "$CLAUDE_STDIN"
 echo x >> "$CLAUDE_CALLS"
+n=$(wc -l < "$CLAUDE_CALLS")
+rc=0
+for code in ${CLAUDE_RC:-0}; do rc=$code; n=$((n - 1)); [ "$n" -gt 0 ] || break; done
 [ -f "$CLAUDE_REPLY" ] && cat "$CLAUDE_REPLY"
-exit "${CLAUDE_RC:-0}"
+exit "$rc"
 """
 
 SUGGESTIONS = {"questions": [
@@ -56,10 +61,12 @@ class NightlyReview(unittest.TestCase):
         self.reply = self.tmp / "reply"
         self.calls = self.tmp / "claude-calls"
         self.args = self.tmp / "claude-args"
+        self.stdin = self.tmp / "claude-stdin"
         self.env = {key: value for key, value in os.environ.items()
                     if key not in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "SYSTEM_TOOLS_CONFIG", "CLAUDE_BIN")}
         self.env.update(HOME=str(self.home), PATH=f"{self.bin}:{os.environ['PATH']}", SD_PACK_ROOT=str(PACK),
-                        CLAUDE_REPLY=str(self.reply), CLAUDE_CALLS=str(self.calls), CLAUDE_ARGS=str(self.args))
+                        CLAUDE_REPLY=str(self.reply), CLAUDE_CALLS=str(self.calls), CLAUDE_ARGS=str(self.args),
+                        CLAUDE_STDIN=str(self.stdin))
         self.pack(PACK, "sd-db", "init")
         self.pack(PACK, "sd", "config", "set", "sd.bulk_storage_root", str(self.bulk))
         self.today = date.today().isoformat()
@@ -147,7 +154,7 @@ class NightlyReview(unittest.TestCase):
         self.assertEqual(len(self.batches()), 1)
         self.assertIn("filed already", second.stdout)
 
-    def test_the_model_gets_sonnet_no_write_tool_and_no_stdin(self):
+    def test_the_model_gets_sonnet_and_no_write_tool(self):
         result = self.run_job()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         args = self.args.read_text().splitlines()
@@ -167,6 +174,36 @@ class NightlyReview(unittest.TestCase):
         self.assertIn("--restricted", args)
         self.assertIn("--strict-mcp-config", args)
         self.assertEqual(args[args.index("--tools") + 1], "Read,Grep,Glob,Bash")
+
+    def test_the_log_names_the_model_step_without_its_prompt(self):
+        # sd:7269: the prompt was an argument, so st_step wrote all of it into the job log three times.
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("You are the nightly review", self.stdin.read_text())
+        self.assertNotIn("nightly review", self.args.read_text())
+        step = [line for line in result.stderr.splitlines() if " claude -p " in line]
+        self.assertEqual(len(step), 1, result.stderr)
+        self.assertIn("--model sonnet", step[0])
+        self.assertTrue(step[0].endswith("(bound 300s)"), step[0])
+        self.assertNotIn("nightly review", result.stdout + result.stderr)
+
+    def test_a_model_run_that_hangs_gets_one_more_try(self):
+        # sd:7269: three runs hung before any tool call until the 1200 s bound; a rerun passed each time.
+        result = self.run_job(rc="124 0")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.model_runs(), 2)
+        self.assertIn("trying once more", result.stderr)
+        self.assertEqual(len(self.batches()[0]["questions"]), 2)
+
+    def test_a_second_hang_or_any_other_failure_fails_with_no_retry_after(self):
+        for rc, runs in (("124", 2), ("1", 1)):
+            with self.subTest(rc=rc):
+                self.calls.unlink(missing_ok=True)
+                result = self.run_job(rc=rc)
+                self.assertEqual(result.returncode, int(rc), result.stdout + result.stderr)
+                self.assertEqual(self.model_runs(), runs)
+                self.assertFalse(self.batch.exists())
+                self.assertEqual(self.batches(), [])
 
     def test_a_run_with_no_suggestions_files_nothing_and_passes(self):
         result = self.run_job(reply={"questions": []})
@@ -359,7 +396,7 @@ class NightlyReview(unittest.TestCase):
         # The batch is closed by apply; its rejection still counts.
         result = self.run_job()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        prompt = self.args.read_text()
+        prompt = self.stdin.read_text()
         self.assertIn("- lane:repeat-blocker", prompt)
         self.assertNotIn("ops:kept-open", prompt)
         today = next(found for found in self.batches() if found["header"]["batch"] == self.today)
