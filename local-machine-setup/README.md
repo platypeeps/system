@@ -40,7 +40,7 @@ change I made on this machine back into its profile*.
                                        # in the pack, in the gate queue; writes
                                        # the verdict hub-ready reads
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
-./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy, Claude Code among them, Chrome and Slack not), brew cleanup + mas upgrade + rustup update stable
+./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy, Claude Code among them, Chrome and Slack not), brew cleanup + one `mas upgrade <id>` per outdated app, 600 s each + rustup update stable (sd:7199, sd:7230)
                                        # unattended (stdin not a terminal, as
                                        # under cron), each brew, mas, curl and
                                        # remote git call of every verb is logged

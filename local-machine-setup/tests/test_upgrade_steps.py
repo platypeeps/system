@@ -101,14 +101,19 @@ esac
 exit 0
 """
 
-# MAS_OUTDATED is what `mas outdated` prints. MAS_BUILD_FAIL names one call
-# that prints MAS_BUILD_TEXT on stderr and exits 1 (sd:7071).
-MAS_STUB = r"""#!/bin/sh
-echo "$*" >> "$MAS_LOG"
+# MAS_OUTDATED is what `mas outdated` prints, MAS_OUTDATED_AFTER what it
+# prints once an upgrade ran. MAS_BUILD_FAIL names one call that prints
+# MAS_BUILD_TEXT on stderr and exits 1 (sd:7071); MAS_HANG one that stalls.
+MAS_STUB = "#!/bin/sh\n" + STALL + r"""echo "$*" >> "$MAS_LOG"
 [ "$*" != "$MAS_FAIL" ] || exit 1
+[ "$*" != "$MAS_HANG" ] || stall
 [ "$*" != "$MAS_BUILD_FAIL" ] || { printf '%s\n' "$MAS_BUILD_TEXT" >&2; exit 1; }
 """ + SUDO_REFUSED.replace("STUB_SUDO\"", "MAS_SUDO\"") + r"""
-[ "$*" != outdated ] || [ -z "$MAS_OUTDATED" ] || echo "$MAS_OUTDATED"
+case "$*" in
+  upgrade*) : > "$MAS_LOG.upgraded" ;;
+  outdated) if [ -n "$MAS_OUTDATED_AFTER" ] && [ -e "$MAS_LOG.upgraded" ]; then echo "$MAS_OUTDATED_AFTER"
+            elif [ -n "$MAS_OUTDATED" ]; then echo "$MAS_OUTDATED"; fi ;;
+esac
 exit 0
 """
 
@@ -266,7 +271,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(self.brew_calls(),
                          ["update", "list --pinned", "upgrade", "outdated --cask --greedy --quiet",
                           "cleanup --prune=all"])
-        self.assertEqual(self.mas_log.read_text(), "upgrade\n")
+        self.assertEqual(self.mas_log.read_text(), "outdated\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
 
     def test_a_slow_step_that_answers_is_no_stall(self):
@@ -303,12 +308,14 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertFalse(self.notify_log.exists())
 
     def test_each_step_has_its_own_default_bound(self):
-        result = self.run_verb("upgrade", "--apply", BREW_GREEDY_CASK="example-cask")
+        result = self.run_verb("upgrade", "--apply", BREW_GREEDY_CASK="example-cask",
+                               MAS_OUTDATED="497799835 Example App (1.0 -> 1.1)")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for command, bound in (("brew update", 600), ("brew upgrade", 21600),
                                ("brew upgrade --cask --greedy example-cask", 1800),
-                               ("brew cleanup --prune=all", 600), ("mas upgrade", 1200)):
+                               ("brew cleanup --prune=all", 600), ("mas outdated", 300),
+                               ("mas upgrade 497799835", 600)):
             self.assertRegex(result.stderr, STEP.format(re.escape(command), bound))
 
     def test_a_self_updating_cask_is_outdated_and_upgraded(self):
@@ -433,11 +440,12 @@ class UpgradeStepTest(unittest.TestCase):
         again = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_CLEANUP_FAIL="1",
                                              FAKE_DAY="2026-10-13"))
         upgraded.unlink()
-        other = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_FAIL="upgrade",
-                                             FAKE_DAY="2026-10-13"))
+        other = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_FAIL="upgrade 111",
+                                             MAS_OUTDATED="111 Alpha (1.0 -> 1.1)", FAKE_DAY="2026-10-13"))
         self.assertRegex(" ".join(first), r"^upgrade on \S+: upgrade sweep failed \[\d+\]$")
         self.assertEqual(again, first)
-        self.assertRegex(" ".join(other), r"^upgrade on \S+: upgrade sweep failed \[\d+\]$")
+        [failed] = [line for line in other if "upgrade sweep failed" in line]
+        self.assertRegex(failed, r"^upgrade on \S+: upgrade sweep failed \[\d+\]$")
         self.assertNotEqual(other, first)
 
     def test_a_formula_and_a_cask_of_one_name_are_two_findings(self):
@@ -545,7 +553,8 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertNotIn("nothing outdated", result.stdout)
         self.assertIn("outdated (mas): unknown, the list did not answer", result.stdout)
-        self.assertIn("outdated list failed (mas)", self.attention(result)[0])
+        self.assertTrue(any("outdated list failed (mas)" in line for line in self.attention(result)),
+                        self.attention(result))
 
     def test_a_term_mid_step_exits_without_writing_into_the_removed_temp_dir(self):
         """The job's limit ends the run; the TERM trap used to remove the
@@ -668,17 +677,60 @@ class UpgradeStepTest(unittest.TestCase):
                 self.assertEqual(call, "upgrade --cask --greedy " + " ".join(want))
 
     def test_an_app_store_upgrade_that_needs_sudo_names_each_app(self):
-        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_SUDO="upgrade",
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_SUDO="upgrade 497799835",
                                MAS_OUTDATED="497799835 Example App (1.0 -> 1.1)")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.mas_log.read_text().splitlines().count("upgrade"), 1)
+        self.assertEqual(self.mas_log.read_text().splitlines().count("upgrade 497799835"), 1)
         self.assertEqual(self.findings(result),
                          ["needs sudo, run in a terminal: mas upgrade 497799835  # Example App (1.0 -> 1.1)"])
 
+    def test_the_weekly_sweep_upgrades_each_app_store_app_by_id(self):
+        """sd:7199: one `mas upgrade` for every app held all of them behind
+        one stuck download. Each app is its own bounded call, by the id in
+        the first field; a line with no id would make `mas upgrade` take
+        every app at once, so it is skipped."""
+        result = self.run_verb("upgrade", "--apply",
+                               MAS_OUTDATED="  111  Alpha     (1.0 -> 1.1)\n 222  Be  (2.0 -> 2.1)\nNo Id (1 -> 2)")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.mas_log.read_text().splitlines(), ["outdated", "upgrade 111", "upgrade 222"])
+
+    def test_a_stuck_app_store_download_costs_only_its_own_app(self):
+        result = self.run_verb("upgrade", "--apply", MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND),
+                               MAS_HANG="upgrade 111",
+                               MAS_OUTDATED="111 Alpha (1.0 -> 1.1)\n222 Beta (2.0 -> 2.1)")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"timed out after {STALL_BOUND}s: mas upgrade 111", result.stderr)
+        self.assertIn("upgrade 222", self.mas_log.read_text().splitlines())
+        self.assertIn("failed steps: mas upgrade 111\n", result.stdout)
+
+    def test_an_outdated_list_that_fails_in_the_sweep_is_a_failed_step(self):
+        """sd:3536: a list mas did not give is unknown, not nothing to do."""
+        result = self.run_verb("upgrade", "--apply", MAS_FAIL="outdated")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed steps: mas outdated\n", result.stdout)
+        self.assertEqual(self.mas_log.read_text().splitlines(), ["outdated"])
+
+    def test_mas_column_padding_is_no_part_of_an_app_store_key(self):
+        """sd:7199: mas pads its columns to the longest name listed, so the
+        left-over line of an app that stayed pending changed when another
+        app left the list: it read as upgraded and as a new finding."""
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1",
+                               MAS_OUTDATED="111  Alpha       (1.0 -> 1.1)\n222  Long Name  (2.0 -> 2.1)",
+                               MAS_OUTDATED_AFTER="111  Alpha  (1.0 -> 1.1)")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.findings(result), ["still outdated (mas): 111 Alpha (1.0 -> 1.1)"])
+        self.assertIn("upgraded (mas):\n  222 Long Name (2.0 -> 2.1)\n", result.stdout)
+        self.assertNotIn("upgraded (mas):\n  111", result.stdout)
+
     def test_a_sweep_that_needs_sudo_defers_the_step_and_exits_0(self):
         result = self.run_verb("upgrade", "--apply", BREW_GREEDY_CASK="example-cask",
-                               BREW_SUDO="upgrade --cask --greedy example-cask")
+                               BREW_SUDO="upgrade --cask --greedy example-cask",
+                               MAS_OUTDATED="497799835 Example App (1.0 -> 1.1)")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("  DEFER   needs sudo: brew upgrade --cask --greedy example-cask", result.stdout)
@@ -688,7 +740,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertNotIn("failed steps", result.stdout)
         # The step's own output still reaches the report.
         self.assertIn("sudo: a password is required", result.stdout + result.stderr)
-        self.assertEqual(self.mas_log.read_text(), "upgrade\n", "the steps after it still run")
+        self.assertIn("upgrade 497799835", self.mas_log.read_text().splitlines(), "the steps after it still run")
 
     def test_a_failure_beside_a_refused_sudo_still_fails_the_sweep(self):
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_GREEDY_CASK="example-cask",
@@ -748,7 +800,7 @@ class UpgradeStepTest(unittest.TestCase):
         name, which still began with its bound, so every error was a
         formula's and named the formula left over."""
         mas_line = "Error: Example App: download failed"
-        for kind, env in (("mas", {"MAS_BUILD_FAIL": "upgrade", "MAS_BUILD_TEXT": mas_line,
+        for kind, env in (("mas", {"MAS_BUILD_FAIL": "upgrade 497799835", "MAS_BUILD_TEXT": mas_line,
                                    "MAS_OUTDATED": "497799835 Example App (1.0 -> 1.1)"}),
                           ("cask", {"BREW_GREEDY_CASK": "example-cask", "BREW_BUILD_TEXT": mas_line,
                                     "BREW_BUILD_FAIL": "upgrade --cask --greedy example-cask"})):
@@ -805,10 +857,12 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("  [dry-run] brew upgrade --cask --greedy example-cask", result.stdout)
         # The pin list and the outdated casks are reads, bounded as reads
         # are: the dry run names what it would unpin (sd:6448) and upgrade
-        # (sd:7058). Nothing else runs.
+        # (sd:7058), and the App Store apps it would upgrade by id (sd:7199).
+        # Nothing else runs.
         self.assertEqual(self.brew_calls(), ["list --pinned", "outdated --cask --greedy --quiet"])
+        self.assertEqual(self.mas_log.read_text().splitlines(), ["outdated"])
         self.assertEqual(re.findall(r"\[step [^]]+\] (.+?) \(bound", result.stdout + result.stderr),
-                         ["brew list --pinned", "brew outdated --cask --greedy --quiet"])
+                         ["brew list --pinned", "brew outdated --cask --greedy --quiet", "mas outdated"])
 
 
     def rustup_calls(self):
