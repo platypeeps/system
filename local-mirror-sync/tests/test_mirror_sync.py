@@ -3001,8 +3001,11 @@ class NasFullCopy(unittest.TestCase):
         self.notified = self.work / "notified"
         # STUB_RCS: one exit code per call, in order (sd:2268); STUB_RC after them.
         # STUB_DROP_SHARE: the call takes the share out of the mount table.
+        # Each call's --files-from list is kept as rsync-calls.list<n>.
         self.stub(stubs / "rsync", '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_CALLS"\n'
-                                   'n=$(wc -l < "$STUB_CALLS")\nset -- ${STUB_RCS:-} ""\nshift $(( n - 1 < $# - 1 ? n - 1 : $# - 1 ))\n'
+                                   'n=$(( $(wc -l < "$STUB_CALLS") ))\n'
+                                   'for a; do case $a in --files-from=*) cp "${a#--files-from=}" "$STUB_CALLS.list$n";; esac; done\n'
+                                   'set -- ${STUB_RCS:-} ""\nshift $(( n - 1 < $# - 1 ? n - 1 : $# - 1 ))\n'
                                    '[ -z "${STUB_DROP_SHARE:-}" ] || { grep -v smbfs "$STUB_MOUNTS" > "$STUB_MOUNTS.new"; '
                                    'mv "$STUB_MOUNTS.new" "$STUB_MOUNTS"; }\n'
                                    'exit "${1:-${STUB_RC:-0}}"\n')
@@ -3046,6 +3049,19 @@ class NasFullCopy(unittest.TestCase):
 
     def attempts(self) -> int:
         return len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
+
+    def lists(self) -> list[list[str]]:
+        """Each rsync call's --files-from names, NUL-separated (rsync -0)."""
+        out = []
+        for n in range(1, self.attempts() + 1):
+            listed = Path(f"{self.calls}.list{n}")
+            out.append([name for name in listed.read_bytes().decode().split("\0") if name] if listed.exists() else [])
+        return out
+
+    def tree(self, *names: str) -> None:
+        for name in names:
+            (self.src / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.src / name).write_text(name)
 
     @property
     def state_dir(self) -> Path:
@@ -3110,15 +3126,105 @@ class NasFullCopy(unittest.TestCase):
         result = self.run_copy()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         call = self.calls.read_text().split()
-        self.assertIn("-rlt", call)
+        self.assertIn("-lt", call)
         self.assertEqual([flag for flag in call if flag.startswith("--delete")], [])
-        self.assertIn("--exclude=/repo-storage/system/nas-full-copy/", call)
         self.assertTrue(self.log_dir.is_dir(), "the per-file logs sit on the source disk")
 
+    def test_rsync_copies_the_listed_names_and_recurses_into_none(self) -> None:
+        """sd:7088: one -r run from the top looked up all 2.29M entries over
+        SMB, about 14 h, and every night restarted at the top: no run since
+        2026-10-17 got past 30% of the tree. Each rsync now copies a list."""
+        self.tree("a", "d/b", ".Trashes/t", ".fseventsd/f", "repo-storage/system/nas-full-copy/old.log")
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        call = self.calls.read_text().split()
+        self.assertEqual([word for word in call if word.startswith("-r")], [])
+        self.assertIn("-0", call)
+        self.assertEqual(self.lists(), [["a", "d", "d/b", "repo-storage", "repo-storage/system"]],
+                         "volume folders and the log folder stay out")
+
     def test_a_log_folder_outside_the_source_is_not_excluded(self) -> None:
+        self.tree("repo-storage/system/nas-full-copy/x")
         result = self.run_copy(NAS_COPY_LOG_DIR=str(self.work / "logs"))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual([word for word in self.calls.read_text().split() if word.startswith("--exclude=/repo-storage")], [])
+        self.assertIn("repo-storage/system/nas-full-copy/x", self.lists()[0])
+
+    def forget_calls(self) -> None:
+        for path in self.work.glob("rsync-calls*"):
+            path.unlink()
+
+    def test_a_closed_window_resumes_after_the_last_copied_chunk(self) -> None:
+        self.tree("a", "b", "c", "d")
+        closed = self.run_copy(STUB_RCS="0 124", NAS_COPY_CHUNK="2")
+        self.assertEqual(closed.returncode, 0, closed.stdout + closed.stderr)
+        self.assertIn("continues tomorrow night", closed.stdout)
+        self.assertEqual(self.lists(), [["a", "b"], ["c", "d"]])
+        self.forget_calls()
+        resumed = self.run_copy(NAS_COPY_CHUNK="2")
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertEqual(self.lists(), [["c", "d"], ["repo-storage", "repo-storage/system"]],
+                         "the next night starts at the chunk the window closed on")
+        self.assertIn("complete:", resumed.stdout)
+        self.assertEqual(len(self.notified.read_text().splitlines()), 1)
+
+    def test_a_completed_pass_starts_the_next_at_the_top(self) -> None:
+        self.tree("a", "b", "c")
+        first = self.run_copy(NAS_COPY_CHUNK="2")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(self.lists(), [["a", "b"], ["c", "repo-storage"], ["repo-storage/system"]])
+        self.assertEqual((self.state_dir / "state").read_text().strip(), "synced")
+        self.forget_calls()
+        second = self.run_copy(NAS_COPY_CHUNK="2")
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(self.lists()[0], ["a", "b"])
+
+    def test_a_retry_resumes_at_the_failed_chunk(self) -> None:
+        self.tree("a", "b", "c", "d")
+        result = self.run_copy(STUB_RCS="0 23 0", NAS_COPY_CHUNK="2")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.lists(), [["a", "b"], ["c", "d"], ["c", "d"], ["repo-storage", "repo-storage/system"]])
+        self.assertIn("complete:", result.stdout)
+
+    def test_names_resume_in_byte_order_not_as_numbers_or_escapes(self) -> None:
+        # awk compares "9" and "10" as numbers, and -v reads "\b" as an escape.
+        self.tree("10", "9", "a\\b", "a\\c")
+        self.run_copy(STUB_RCS="0 0 124", NAS_COPY_CHUNK="1")
+        self.assertEqual(self.lists(), [["10"], ["9"], ["a\\b"]])
+        self.forget_calls()
+        self.run_copy(STUB_RCS="124", NAS_COPY_CHUNK="1")
+        self.assertEqual(self.lists(), [["a\\b"]])
+        self.forget_calls()
+        (self.state_dir / "cursor").write_text("a\\b\n")
+        self.run_copy(STUB_RCS="124", NAS_COPY_CHUNK="1")
+        self.assertEqual(self.lists(), [["a\\c"]])
+
+    def test_a_name_with_a_newline_is_one_entry(self) -> None:
+        self.tree("a\nb")
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("a\nb", self.lists()[0])
+
+    def test_a_cursor_past_the_last_name_completes_the_pass(self) -> None:
+        """Older state: the tree shrank below the saved cursor."""
+        self.tree("a")
+        self.state_dir.mkdir(parents=True)
+        (self.state_dir / "cursor").write_text("zz\n")
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.attempts(), 0)
+        self.assertIn("complete:", result.stdout)
+        self.assertFalse((self.state_dir / "cursor").exists(), "the next pass starts at the top")
+
+    def test_a_source_that_cannot_be_listed_is_a_failure_not_a_pass(self) -> None:
+        self.tree("a", "locked/x")
+        (self.src / "locked").chmod(0)
+        self.addCleanup((self.src / "locked").chmod, 0o755)
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED", result.stdout)
+        self.assertNotIn("complete:", result.stdout)
+        self.assertEqual(self.attempts(), 0)
+        self.assertEqual((self.state_dir / "state").read_text().strip(), "incomplete")
 
     def test_state_and_lock_sit_in_the_state_folder_not_the_config_folder(self) -> None:
         result = self.run_copy()
