@@ -420,6 +420,27 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(0, out.returncode, out.stderr)
         self.assertEqual(f.setting("refresh.request")["id"], out.stdout.strip())
 
+    def test_check_reads_while_another_writer_holds_the_lock(self):
+        """NEW (sd:7187). check takes no write lock to read: terra's check
+        failed "database is locked" while a hub writer held the lock past
+        the busy timeout. Held through the check, the lock fails nothing."""
+        f = self.fixture()
+        wanted = f.ask()
+        env = {**os.environ, "SD_PACK_ROOT": str(f.sd_pack), "REPO_SYNC_SD_DB": str(f.database)}
+        # Another writer, through the pack's own open, holds the lock until its stdin closes.
+        writer = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); from sd_db import connect; "
+             "c = connect(sys.argv[2]); c.execute('BEGIN IMMEDIATE'); print('held', flush=True); sys.stdin.read()",
+             str(f.sd_pack / "lib"), str(f.database)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(writer.kill)
+        self.assertEqual("held\n", writer.stdout.readline())
+
+        out = subprocess.run([sys.executable, str(f.folder / "satellite_refresh.py"), "check"],
+                             capture_output=True, text=True, env=env, check=False, timeout=60)
+        writer.communicate("", timeout=60)
+
+        self.assertEqual((0, f"pending {wanted} 1\n"), (out.returncode, out.stdout), out.stderr)
+
     def test_exit_codes_name_the_hub_failures(self):
         """NEW. A hub that does not answer exits 3 and a refused build 4, so
         follow can tell them from a failure, which exits 2."""
