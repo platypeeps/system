@@ -1419,9 +1419,10 @@ TARGETS_EOF
   RE=$(ere_patterns | paste -sd '|' -)
   # shellcheck disable=SC2086
   OUT=$(grep -rEIno --null $EX_D $EX_G -e "$RE" "$@" 2>/dev/null | to_fields || true)
-  if [ "$MODE" = critical ]; then
-    OUT=$(printf '%s\n' "$OUT" | drop_critical_excludes)
-  fi
+fi
+# Both searchers: ripgrep ignores -g on a file named as an argument, and the dotfiles in targets are named (sd:7227).
+if [ "$MODE" = critical ]; then
+  OUT=$(printf '%s\n' "$OUT" | drop_critical_excludes)
 fi
 # The Hugging Face match ends with its boundary character; the value is the
 # 37 before it. Bytes, since that character may be a multibyte one.
@@ -1579,9 +1580,9 @@ TARGETS_EOF
         [ $# -gt 0 ] || set -- .
         # shellcheck disable=SC2086
         HITS=$(grep -rIlF $EX_D $EX_G -e "$val" "$@" 2>/dev/null || true)
-        if [ "$MODE" = critical ]; then
-          HITS=$(printf '%s\n' "$HITS" | drop_critical_excludes)
-        fi
+      fi
+      if [ "$MODE" = critical ]; then
+        HITS=$(printf '%s\n' "$HITS" | drop_critical_excludes)
       fi
       T_HITS=""
       if [ "$MODE" = critical ] && [ -n "$HITS" ]; then
