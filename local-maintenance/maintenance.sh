@@ -437,7 +437,9 @@ if command -v mas >/dev/null 2>&1; then
     finding "App Store update check failed (mas outdated exit $mas_rc)"
   elif [ -s "$MAS" ]; then
     finding "App Store updates pending:"
-    sed 's/^/    /' "$MAS" | tee -a "$KEYS" >> "$FINDINGS"
+    # mas pads its columns to the longest name listed; a key that kept the
+    # padding moved when another app left the list (sd:7199).
+    sed -e 's/^ *//' -e 's/  */ /g' -e 's/^/    /' "$MAS" | tee -a "$KEYS" >> "$FINDINGS"
   fi
 fi
 
