@@ -6338,6 +6338,15 @@ doctor_unattended_sudo() {
   fi
 }
 
+# Rust comes from rustup alone. Brew upgrades rustup itself, so no
+# self-update; nothing else moved the stable toolchain (sd:7230). No outdated
+# list tracks it, so upgrade-report calls it in a quiet week too.
+rustup_sweep() {
+  if command -v rustup >/dev/null 2>&1; then
+    sweep_step "rustup update stable" 600 rustup update stable --no-self-update
+  fi
+}
+
 # Maintenance sweep: refresh what is already installed. Dry run by default
 # like every other mutating verb. A step that fails or times out does not stop
 # the sweep; the steps after it still run, and the sweep exits 1 naming it.
@@ -6402,11 +6411,7 @@ cmd_upgrade() {
   else
     echo "  mas MISSING (brew install mas)"
   fi
-  # Rust comes from rustup alone. Brew upgrades rustup itself, so no
-  # self-update; nothing else moved the stable toolchain (sd:7230).
-  if command -v rustup >/dev/null 2>&1; then
-    sweep_step "rustup update stable" 600 rustup update stable --no-self-update
-  fi
+  rustup_sweep
   release_sweep
   echo
   report_deferred upgrade
@@ -6580,12 +6585,20 @@ cmd_upgrade_report() {
       && [ ! -s "$tmp/wants.before" ] && [ ! -s "$tmp/unknown.before" ]; then
     rc=0
     echo "nothing outdated — no upgrade"
+    # The rustup toolchain is in no inventory, so a quiet week still moves it.
+    failed=""
+    rustup_sweep > "$tmp/out" 2>&1
+    cat "$tmp/out"
     inventory_capture || rc=1
     cat "$tmp/inventory"
     grants_report
     cat "$tmp/grants"
     grants_push
     : > "$tmp/findings"
+    if [ -n "$failed" ]; then
+      rc=1
+      echo "upgrade sweep failed [$(grep -v '^\[step ' "$tmp/out" | cksum | cut -d' ' -f1)]" > "$tmp/findings"
+    fi
     upgrade_attention
     return "$rc"
   fi

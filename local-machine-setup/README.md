@@ -97,7 +97,8 @@ have a 6 h bound: twice one `brew install node` on an Intel Mac with no bottles
 (3 h). The weekly job's `JOB_TIMEOUT` must exceed the bounds it can hit.
 When `rustup` is on PATH, the sweep runs `rustup update stable --no-self-update`
 under a 600 s bound: brew upgrades rustup itself, and nothing else moved the
-stable toolchain (sd:7230).
+stable toolchain (sd:7230). No outdated list tracks it, so a quiet week runs
+this step too.
 The sweep also moves each unpinned `.release` entry to its latest tag, and the
 report lists those under `upgraded (release)`; a tag it cannot read is
 `outdated (release): unknown`, not current.

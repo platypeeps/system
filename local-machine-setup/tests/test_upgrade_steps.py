@@ -895,6 +895,31 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(self.rustup_calls(), [])
         self.assertNotIn("rustup", result.stdout + result.stderr)
 
+    def test_a_quiet_week_still_updates_stable_rust(self):
+        """Rust is in no outdated list, so upgrade-report must not skip it
+        when brew, the App Store and .release are all current."""
+        write_exec(self.stubs / "rustup", RUSTUP_STUB)
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", RUSTUP_LOG=str(self.tmp_path / "rustup.log"))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing outdated", result.stdout)
+        self.assertEqual(self.rustup_calls(), ["update stable --no-self-update"])
+        self.assertEqual(self.attention(result), [])
+
+    def test_a_failed_rustup_update_in_a_quiet_week_needs_attention(self):
+        write_exec(self.stubs / "rustup", RUSTUP_STUB)
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", RUSTUP_LOG=str(self.tmp_path / "rustup.log"),
+                               RUSTUP_RC="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(self.findings(result)[0], r"^upgrade sweep failed \[\d+\]$")
+
+    def test_a_quiet_week_with_no_rustup_makes_no_call(self):
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", RUSTUP_LOG=str(self.tmp_path / "rustup.log"))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.rustup_calls(), [])
+
     def test_a_dry_run_makes_no_rustup_call(self):
         write_exec(self.stubs / "rustup", RUSTUP_STUB)
         result = self.run_verb("upgrade", RUSTUP_LOG=str(self.tmp_path / "rustup.log"))
