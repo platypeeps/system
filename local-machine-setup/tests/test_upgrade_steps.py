@@ -112,6 +112,12 @@ echo "$*" >> "$MAS_LOG"
 exit 0
 """
 
+# rustup logs each call to RUSTUP_LOG and exits RUSTUP_RC (sd:7230).
+RUSTUP_STUB = r"""#!/bin/sh
+echo "$*" >> "$RUSTUP_LOG"
+exit "${RUSTUP_RC:-0}"
+"""
+
 # One block per call, each ended by a "--" line. NOTIFY_FAIL fails every send.
 NOTIFY_STUB = r"""#!/bin/sh
 printf '%s\n' "$@" -- >> "$NOTIFY_LOG"
@@ -803,6 +809,45 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(self.brew_calls(), ["list --pinned", "outdated --cask --greedy --quiet"])
         self.assertEqual(re.findall(r"\[step [^]]+\] (.+?) \(bound", result.stdout + result.stderr),
                          ["brew list --pinned", "brew outdated --cask --greedy --quiet"])
+
+
+    def rustup_calls(self):
+        log = self.tmp_path / "rustup.log"
+        return log.read_text().splitlines() if log.exists() else []
+
+    def test_the_sweep_updates_stable_rust_with_no_self_update(self):
+        """sd:7230: rust comes from rustup alone, and nothing else moved its
+        stable toolchain; brew upgrades rustup itself."""
+        write_exec(self.stubs / "rustup", RUSTUP_STUB)
+        result = self.run_verb("upgrade", "--apply", RUSTUP_LOG=str(self.tmp_path / "rustup.log"))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.rustup_calls(), ["update stable --no-self-update"])
+        self.assertRegex(result.stderr, STEP.format(re.escape("rustup update stable --no-self-update"), 600))
+
+    def test_a_failed_rustup_update_is_a_failed_step_and_the_sweep_goes_on(self):
+        write_exec(self.stubs / "rustup", RUSTUP_STUB)
+        result = self.run_verb("upgrade", "--apply", RUSTUP_LOG=str(self.tmp_path / "rustup.log"),
+                               RUSTUP_RC="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed steps: rustup update stable\n", result.stdout)
+        self.assertEqual(self.mas_log.read_text(), "upgrade\n")
+
+    def test_no_rustup_means_no_rustup_call(self):
+        result = self.run_verb("upgrade", "--apply", RUSTUP_LOG=str(self.tmp_path / "rustup.log"))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.rustup_calls(), [])
+        self.assertNotIn("rustup", result.stdout + result.stderr)
+
+    def test_a_dry_run_makes_no_rustup_call(self):
+        write_exec(self.stubs / "rustup", RUSTUP_STUB)
+        result = self.run_verb("upgrade", RUSTUP_LOG=str(self.tmp_path / "rustup.log"))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  [dry-run] rustup update stable --no-self-update", result.stdout)
+        self.assertEqual(self.rustup_calls(), [])
 
 
 if __name__ == "__main__":

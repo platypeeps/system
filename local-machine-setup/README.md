@@ -40,7 +40,7 @@ change I made on this machine back into its profile*.
                                        # in the pack, in the gate queue; writes
                                        # the verdict hub-ready reads
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
-./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy, Claude Code among them, Chrome and Slack not), brew cleanup + mas upgrade
+./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy, Claude Code among them, Chrome and Slack not), brew cleanup + mas upgrade + rustup update stable
                                        # unattended (stdin not a terminal, as
                                        # under cron), each brew, mas, curl and
                                        # remote git call of every verb is logged
@@ -95,6 +95,9 @@ which status turns into an attention line, not a failed nightly. The sweep then
 installs each profile formula still missing. That step and `brew upgrade` each
 have a 6 h bound: twice one `brew install node` on an Intel Mac with no bottles
 (3 h). The weekly job's `JOB_TIMEOUT` must exceed the bounds it can hit.
+When `rustup` is on PATH, the sweep runs `rustup update stable --no-self-update`
+under a 600 s bound: brew upgrades rustup itself, and nothing else moved the
+stable toolchain (sd:7230).
 The sweep also moves each unpinned `.release` entry to its latest tag, and the
 report lists those under `upgraded (release)`; a tag it cannot read is
 `outdated (release): unknown`, not current.

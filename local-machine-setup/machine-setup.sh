@@ -6389,6 +6389,11 @@ cmd_upgrade() {
   else
     echo "  mas MISSING (brew install mas)"
   fi
+  # Rust comes from rustup alone. Brew upgrades rustup itself, so no
+  # self-update; nothing else moved the stable toolchain (sd:7230).
+  if command -v rustup >/dev/null 2>&1; then
+    sweep_step "rustup update stable" 600 rustup update stable --no-self-update
+  fi
   release_sweep
   echo
   report_deferred upgrade
