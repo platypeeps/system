@@ -102,7 +102,7 @@ exit 0
 """
 
 # MAS_OUTDATED is what `mas outdated` prints, MAS_OUTDATED_AFTER what it
-# prints once an upgrade ran. MAS_BUILD_FAIL names one call that prints
+# prints once an upgrade ran, `none` for nothing. MAS_BUILD_FAIL names one call that prints
 # MAS_BUILD_TEXT on stderr and exits 1 (sd:7071); MAS_HANG one that stalls.
 MAS_STUB = "#!/bin/sh\n" + STALL + r"""echo "$*" >> "$MAS_LOG"
 [ "$*" != "$MAS_FAIL" ] || exit 1
@@ -111,7 +111,8 @@ MAS_STUB = "#!/bin/sh\n" + STALL + r"""echo "$*" >> "$MAS_LOG"
 """ + SUDO_REFUSED.replace("STUB_SUDO\"", "MAS_SUDO\"") + r"""
 case "$*" in
   upgrade*) : > "$MAS_LOG.upgraded" ;;
-  outdated) if [ -n "$MAS_OUTDATED_AFTER" ] && [ -e "$MAS_LOG.upgraded" ]; then echo "$MAS_OUTDATED_AFTER"
+  outdated) if [ -n "$MAS_OUTDATED_AFTER" ] && [ -e "$MAS_LOG.upgraded" ]; then
+              [ "$MAS_OUTDATED_AFTER" = none ] || echo "$MAS_OUTDATED_AFTER"
             elif [ -n "$MAS_OUTDATED" ]; then echo "$MAS_OUTDATED"; fi ;;
 esac
 exit 0
@@ -153,6 +154,21 @@ echo "$*" >> "$SECURITY_LOG"
 [ -n "$STUB_KEYCHAIN" ] || exit 44
 case " $* " in *" -w "*) echo "$STUB_KEYCHAIN" ;; esac
 exit 0
+"""
+
+# `sudo -A COMMAND...` runs COMMAND as root once SUDO_ASKPASS prints
+# STUB_PASSWORD; as root, mas calls no sudo of its own, so MAS_SUDO is
+# cleared. Each call is logged in $MAS_LOG.sudo; any other call refuses as
+# sudo does with no terminal.
+SUDO_STUB = r"""#!/bin/sh
+echo "$*" >> "$MAS_LOG.sudo"
+if [ "$1" = -A ] && [ -n "$SUDO_ASKPASS" ] && [ "$("$SUDO_ASKPASS" "Password:")" = "$STUB_PASSWORD" ]; then
+  shift
+  MAS_SUDO= exec "$@"
+fi
+echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
+echo "sudo: a password is required" >&2
+exit 1
 """
 
 REFUSED = ("SD_DASHBOARD_PYTHON /opt/homebrew/bin/python3: cannot read /vault — macOS is asking for "
@@ -676,6 +692,29 @@ class UpgradeStepTest(unittest.TestCase):
                 [call] = self.askpass_calls()
                 self.assertEqual(call, "upgrade --cask --greedy " + " ".join(want))
 
+    def test_an_uninstall_that_deletes_outside_home_or_unloads_a_kext_needs_sudo(self):
+        """sd:7248: dropbox's uninstall deletes /Library/DropboxHelperTools
+        and unloads a kext, so its upgrade calls sudo; the rule read only
+        pkg, pkgutil and artifact targets. An uninstall that deletes under
+        $HOME, the brew prefix or /Applications, or a zap, needs none."""
+        info = json.dumps({"casks": [
+            {"token": "example-delete", "artifacts": [
+                {"uninstall": [{"quit": "com.example", "delete": ["/Library/ExampleHelperTools"]}]},
+                {"app": ["Delete.app"], "target": "/Applications/Delete.app"}]},
+            {"token": "example-rmdir", "artifacts": [{"uninstall": [{"rmdir": "/Library/Example"}]}]},
+            {"token": "example-kext", "artifacts": [{"uninstall": [{"kext": "com.example.kext"}]}]},
+            {"token": "example-home", "artifacts": [
+                {"uninstall": [{"delete": ["~/Library/Example", "/Applications/Home.app",
+                                           "/opt/homebrew/etc/example"], "rmdir": "~/Example"}]},
+                {"zap": [{"trash": "/Library/Example", "rmdir": "/Library/Example"}]}]},
+        ]})
+        outdated = "example-home\nexample-kext\nexample-rmdir\nexample-delete"
+        result = self.askpass_run("", BREW_INFO=info, BREW_GREEDY_CASK=outdated)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [call] = self.askpass_calls()
+        self.assertEqual(call, "upgrade --cask --greedy example-kext example-rmdir example-delete")
+
     def test_an_app_store_upgrade_that_needs_sudo_names_each_app(self):
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_SUDO="upgrade 497799835",
                                MAS_OUTDATED="497799835 Example App (1.0 -> 1.1)")
@@ -684,6 +723,48 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(self.mas_log.read_text().splitlines().count("upgrade 497799835"), 1)
         self.assertEqual(self.findings(result),
                          ["needs sudo, run in a terminal: mas upgrade 497799835  # Example App (1.0 -> 1.1)"])
+
+    def mas_askpass_run(self, keychain="example-password", **extra):
+        """upgrade-report with one App Store app outdated, whose upgrade
+        calls sudo; KEYCHAIN is the item's password or None."""
+        self.security_log = self.tmp_path / "security.log"
+        write_exec(self.stubs / "security-stub", SECURITY_STUB)
+        write_exec(self.stubs / "sudo", SUDO_STUB)
+        return self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_SUDO="upgrade 497799835",
+                             MAS_OUTDATED="497799835 Example App (1.0 -> 1.1)", MAS_OUTDATED_AFTER="none",
+                             STUB_PASSWORD="example-password", STUB_KEYCHAIN=keychain or "",
+                             MACHINE_SETUP_SECURITY=str(self.stubs / "security-stub"),
+                             SECURITY_LOG=str(self.security_log), **extra)
+
+    def sudo_calls(self):
+        log = pathlib.Path(f"{self.mas_log}.sudo")
+        return log.read_text().splitlines() if log.exists() else []
+
+    def test_an_app_store_app_upgrades_with_the_keychain_password(self):
+        """sd:7248: mas upgrades need root, and an unattended run left each
+        one a needs-sudo finding. With the Keychain item, each app runs as
+        `sudo -A mas upgrade <id>` through sudo-askpass.sh."""
+        result = self.mas_askpass_run()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.sudo_calls(), [f"-A {self.stubs / 'mas'} upgrade 497799835"])
+        self.assertIn("upgraded (mas):\n  497799835 Example App (1.0 -> 1.1)\n", result.stdout)
+        self.assertEqual(self.findings(result), [])
+        self.assertNotIn("example-password", result.stdout + result.stderr)
+
+    def test_without_the_keychain_item_an_app_store_app_stays_a_finding(self):
+        """sd:7248: no item, or a probe that fails, keeps today's line, and
+        no sudo runs."""
+        for keychain, extra in ((None, {}), ("example-password", {"SECURITY_RC": "1"})):
+            with self.subTest(keychain=keychain, extra=extra):
+                for log in (self.mas_log, pathlib.Path(f"{self.mas_log}.sudo"),
+                            pathlib.Path(f"{self.mas_log}.upgraded")):
+                    log.unlink(missing_ok=True)
+                result = self.mas_askpass_run(keychain, **extra)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.sudo_calls(), [])
+                self.assertEqual(self.findings(result),
+                                 ["needs sudo, run in a terminal: mas upgrade 497799835  # Example App (1.0 -> 1.1)"])
 
     def test_the_weekly_sweep_upgrades_each_app_store_app_by_id(self):
         """sd:7199: one `mas upgrade` for every app held all of them behind

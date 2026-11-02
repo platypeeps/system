@@ -6,7 +6,8 @@
 # machine-setup-sudo, account `id -un`, which the operator creates on each
 # machine (README: Unattended sudo); without the item it prints nothing and
 # exits with security's code, so sudo refuses as it would with no terminal.
-# machine-setup.sh sets it only for the casks that need sudo (sudo_casks).
+# machine-setup.sh sets it only for the casks that need sudo (sudo_casks)
+# and the App Store upgrades (sd:7248).
 set -eu
 
 case "${1:-}" in

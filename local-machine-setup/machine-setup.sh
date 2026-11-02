@@ -6200,7 +6200,7 @@ sweep_step() { # name, seconds, command...
   fi
   if [ -n "$ss_err" ]; then
     case "$*" in
-      mas\ *) ss_kind=mas ;;
+      mas\ *|sudo\ -A\ */mas\ *) ss_kind=mas ;;
       brew\ upgrade\ --cask*) ss_kind=cask ;;
       *) ss_kind=formula ;;
     esac
@@ -6232,17 +6232,29 @@ sudo_keychain_item() {
   esac
 }
 
+# 0 when sudo can read its password through sudo-askpass.sh (sd:6312): an
+# --apply run with no terminal, and the Keychain item holds the password.
+# The item is probed once a run; ASKPASS_READY keeps the answer.
+askpass_ready() {
+  [ "$APPLY" -eq 1 ] && [ "$ATTENDED" -eq 0 ] || return 1
+  if [ -z "$ASKPASS_READY" ]; then
+    if sudo_keychain_item; then
+      ASKPASS_READY=yes
+    else
+      ASKPASS_READY=no
+      echo "  --      no askpass: Keychain item $SUDO_KEYCHAIN not read (security exit $sk_rc)"
+    fi
+  fi
+  [ "$ASKPASS_READY" = yes ]
+}
+
 # The casks that need sudo and that brew calls outdated, upgraded with
 # SUDO_ASKPASS set to sudo-askpass.sh (sd:6312): an unattended run has no
 # terminal for sudo's password, and the Keychain item holds it. Only on a
 # run with no terminal; without the item, the greedy sweep after it defers
 # them for sudo, as before. sudo_casks names them (sd:6927).
 askpass_upgrade() {
-  [ "$APPLY" -eq 1 ] && [ "$ATTENDED" -eq 0 ] || return 0
-  if ! sudo_keychain_item; then
-    echo "  --      no askpass: Keychain item $SUDO_KEYCHAIN not read (security exit $sk_rc)"
-    return 0
-  fi
+  askpass_ready || return 0
   if ! au_want=$(sudo_casks); then
     failed="$failed, brew cask info"
     return 0
@@ -6264,9 +6276,11 @@ askpass_upgrade() {
 }
 
 # sudo_casks: the installed casks whose upgrade calls sudo, space-separated
-# (sd:6927): a pkg installer or a pkgutil uninstall, or an artifact whose
-# target lies outside the brew prefix, $HOME and /Applications, such as
-# docker-desktop's /usr/local/bin on Apple silicon. Plus the optional
+# (sd:6927): a pkg installer, an uninstall that runs pkgutil or unloads a
+# kext, or an artifact target or uninstall delete or rmdir outside the brew
+# prefix, $HOME and /Applications, such as docker-desktop's /usr/local/bin
+# on Apple silicon and dropbox's /Library/DropboxHelperTools (sd:7248). A
+# zap runs only on `brew uninstall --zap`, not on upgrade. Plus the optional
 # MACHINE_SETUP_SUDO_CASKS, for a cask the rule misses. Exit 1 when brew
 # info does not answer.
 sudo_casks() {
@@ -6276,16 +6290,24 @@ sudo_casks() {
 import json, sys
 extra = sys.argv[1].split() if sys.argv[1] != "change-me" else []
 roots = [r.rstrip("/") + "/" for r in sys.argv[2:] if r]
+def outside(path):
+    return isinstance(path, str) and path.startswith("/") and not any(path.startswith(r) for r in roots)
 def needs_sudo(artifacts):
     for a in artifacts:
         if not isinstance(a, dict):
             continue
         if "pkg" in a:
             return True
-        if any(isinstance(u, dict) and "pkgutil" in u for u in a.get("uninstall", [])):
-            return True
-        t = a.get("target")
-        if isinstance(t, str) and t.startswith("/") and not any(t.startswith(r) for r in roots):
+        for u in a.get("uninstall", []):
+            if not isinstance(u, dict):
+                continue
+            if "pkgutil" in u or "kext" in u:
+                return True
+            for key in ("delete", "rmdir"):
+                paths = u.get(key, [])
+                if any(outside(p) for p in ([paths] if isinstance(paths, str) else paths)):
+                    return True
+        if outside(a.get("target")):
             return True
     return False
 casks = [c["token"] for c in json.load(sys.stdin).get("casks", []) if needs_sudo(c.get("artifacts", []))]
@@ -6356,6 +6378,7 @@ cmd_upgrade() {
   [ "$APPLY" -eq 1 ] || echo "mode    : DRY RUN — nothing will change; re-run with --apply"
   echo
   failed=""
+  ASKPASS_READY=""
   if command -v brew >/dev/null 2>&1; then
     run_step 600 brew update || failed="$failed, brew update"
     # The brew stage's unpin (sd:6433) first: the weekly sweep can run
@@ -6401,10 +6424,25 @@ cmd_upgrade() {
     # update storedownloadd never finishes held every other app behind it
     # until the bound (sd:7188). A line with no id is skipped, as `mas
     # upgrade` with no id takes every app at once.
+    # Each upgrade needs root; mas asks sudo itself, which has no terminal
+    # in an unattended run. With the askpass item, each runs as root
+    # through sudo -A instead (sd:7248); without it, sweep_step defers it.
     if mas_list=$(bound_step 300 mas outdated 2>/dev/null); then
-      for mas_id in $(printf '%s\n' "$mas_list" | awk '$1 ~ /^[0-9]+$/ { print $1 }'); do
-        sweep_step "mas upgrade $mas_id" "$MAS_APP_BOUND" mas upgrade "$mas_id"
+      mas_ids=$(printf '%s\n' "$mas_list" | awk '$1 ~ /^[0-9]+$/ { print $1 }')
+      mas_path=
+      if [ -n "$mas_ids" ] && askpass_ready; then
+        mas_path=$(command -v mas)
+        SUDO_ASKPASS="$DIR/sudo-askpass.sh"
+        export SUDO_ASKPASS
+      fi
+      for mas_id in $mas_ids; do
+        if [ -n "$mas_path" ]; then
+          sweep_step "mas upgrade $mas_id (askpass)" "$MAS_APP_BOUND" sudo -A "$mas_path" upgrade "$mas_id"
+        else
+          sweep_step "mas upgrade $mas_id" "$MAS_APP_BOUND" mas upgrade "$mas_id"
+        fi
       done
+      unset SUDO_ASKPASS
     else
       failed="$failed, mas outdated"
     fi
