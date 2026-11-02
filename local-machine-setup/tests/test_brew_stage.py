@@ -35,16 +35,73 @@ LIB = FOLDER.parent / "lib"
 # $PYTHONS are installed (three by default), plus $FORMULAE. `pin`,
 # `install` and a bare `upgrade` record into $PINS; `list --pinned` reads it, and `unpin` logs
 # into $PINS.unpin and drops the pin.
-BREW_STUB = "#!/bin/sh\n" + STALL + r"""case "$*" in
+# `info --json=v2 --formula NAMES` reports each NAME installed as INSTALLED
+# when $ALIASES holds NAME=INSTALLED, installed with a build option when
+# $OPTIONS names it, else not installed; INFO_RC fails it, and INFO_JSON
+# replaces its answer.
+# $LEAVES is what `leaves --installed-on-request` prints. With
+# INSTALLS_STICK, `list --formula` also lists each formula installed.
+# INSTALL_RC fails an install after logging it; with INFO_RC_AFTER_INSTALL,
+# brew info fails once an install was tried.
+# `install --dry-run NAME` would install NAME and $DEPS, or fails with
+# DRY_RC; `info --formula NAMES` heads each `(bottled)` unless $UNBOTTLED
+# names it (sd:7103); it would also upgrade $DEPS_UPGRADE.
+# DRY_BROKEN names a dependent the dry run would reinstall from source for
+# broken linkage.
+# With $CALLS, each call is logged there with its auto-update and dependents
+# check switches, and an
+# install sleeps INSTALL_SLEEP seconds, then logs `done`.
+BREW_STUB = "#!/bin/sh\n" + STALL + r"""[ -z "$CALLS" ] || echo "$* auto=${HOMEBREW_NO_AUTO_UPDATE:-on} deps=${HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK:-on}" >> "$CALLS"
+case "$*" in
   "list --formula") [ -z "$LIST_HANG" ] || stall
                     [ -z "$LIST_RC" ] || exit "$LIST_RC"
-                    printf '%s\n' ${PYTHONS-python@3.12 python@3.14 python@3.15} $FORMULAE ;;
+                    printf '%s\n' ${PYTHONS-python@3.12 python@3.14 python@3.15} $FORMULAE
+                    [ -z "$INSTALLS_STICK" ] || sed -n 's/^install \([^-]\)/\1/p' "$PINS" 2>/dev/null ;;
   "list --cask"|leaves|tap) : ;;
+  "leaves --installed-on-request") printf '%s\n' $LEAVES ;;
+  "info --json=v2 --formula "*)
+    [ -z "$INFO_RC" ] || exit "$INFO_RC"
+    [ -z "$INFO_RC_AFTER_INSTALL" ] || ! grep -q '^install [^-]' "$PINS" 2>/dev/null || exit "$INFO_RC_AFTER_INSTALL"
+    [ -z "$INFO_JSON" ] || { echo "$INFO_JSON"; exit 0; }
+    shift 3
+    sep=""
+    printf '{"formulae": ['
+    for n; do
+      to=""
+      for a in $ALIASES; do [ "${a%%=*}" != "$n" ] || to=${a#*=}; done
+      if [ -n "$to" ]; then
+        printf '%s{"name": "%s", "full_name": "%s", "installed": [{"version": "1", "used_options": []}]}' "$sep" "$to" "$to"
+      elif case " $OPTIONS " in *" $n "*) true ;; *) false ;; esac; then
+        printf '%s{"name": "%s", "full_name": "%s", "installed": [{"version": "1", "used_options": ["--with-example"]}]}' "$sep" "${n##*/}" "$n"
+      else
+        printf '%s{"name": "%s", "full_name": "%s", "installed": []}' "$sep" "${n##*/}" "$n"
+      fi
+      sep=", "
+    done
+    printf ']}\n' ;;
   "list --pinned") [ -z "$PINNED_RC" ] || exit "$PINNED_RC"
                    sed -n 's/^pin //p' "$PINS" 2>/dev/null ;;
   "pin "*) [ -z "$PIN_RC" ] || exit "$PIN_RC"
           echo "$*" >> "$PINS" ;;
-  "install "*|upgrade) echo "$*" >> "$PINS" ;;
+  "install --dry-run "*)
+    [ -z "$DRY_RC" ] || exit "$DRY_RC"
+    printf '==> Would install 1 formula:\n%s 1.0\n' "$3"
+    [ -z "$DEPS" ] || printf '==> Would install dependencies for %s:\n' "$3"
+    for d in $DEPS; do printf '%s    1.0\n' "$d"; done
+    [ -z "$DEPS_UPGRADE" ] || printf '==> Would upgrade 1 dependency:\n%s 1.0 -> 2.0\n' "$DEPS_UPGRADE"
+    [ -z "$DRY_BROKEN" ] || printf '==> Reinstalling 1 dependent with broken linkage from source:\n%s\n' "$DRY_BROKEN" ;;
+  "info --formula "*)
+    shift 2
+    for n; do
+      case " $UNBOTTLED " in
+        *" $n "*) printf '==> %s: stable 1.0\nNot installed\n' "$n" ;;
+        *) printf '==> %s: stable 1.0 (bottled)\nNot installed\n==> Dependencies\n' "$n" ;;
+      esac
+    done ;;
+  "install --cask "*|upgrade) echo "$*" >> "$PINS" ;;
+  "install "*) echo "$*" >> "$PINS"
+               [ -z "$INSTALL_SLEEP" ] || { sleep "$INSTALL_SLEEP"; echo "done $*" >> "$CALLS"; }
+               [ -z "$INSTALL_RC" ] || exit "$INSTALL_RC" ;;
   "unpin "*) echo "$*" >> "$PINS.unpin"
              grep -vx "pin ${2}" "$PINS" > "$PINS.new" || :
              mv "$PINS.new" "$PINS" ;;
@@ -582,6 +639,232 @@ class BrewStageTest(unittest.TestCase):
         self.assertEqual(self.unpin_calls(), [])
         status = self.run_verb("status", PINNED_RC="1")
         self.assertIn("pinned  : unknown (brew could not list its pins)", status.stdout)
+
+    def alias_profile(self):
+        """The profile names python, an alias of the installed python@3.15."""
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("python\n")
+        return {"ALIASES": "python=python@3.15"}
+
+    def test_a_formula_named_by_its_alias_is_installed(self):
+        """sd:7093: `brew list` prints python@3.15, so the profile's python
+        read as missing and was installed again every night."""
+        env = self.alias_profile()
+
+        result = self.run_verb("update", "brew", "--apply", **env)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  ok      python (python@3.15)\n", result.stdout)
+        self.assertNotIn("MISSING python", result.stdout)
+        self.assertNotIn("install python", self.pins.read_text() if self.pins.exists() else "")
+
+    def test_status_counts_an_aliased_formula_neither_missing_nor_extra(self):
+        """sd:7093: status read python as missing and python@3.15, a leaf
+        installed on request, as extra."""
+        env = self.alias_profile()
+
+        result = self.run_verb("status", LEAVES="python@3.15", **env)
+
+        block = result.stdout.split("brew formulae\n", 1)[1].split("casks\n", 1)[0]
+        self.assertEqual(block, "  ok      in sync\n", result.stdout)
+
+    def test_a_formula_brew_info_cannot_resolve_is_unknown_not_installed(self):
+        """A failed probe is no "no" (sd:3536): nothing is installed, and the
+        run fails naming it."""
+        env = self.alias_profile()
+
+        result = self.run_verb("update", "brew", "--apply", INFO_RC="1", **env)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED  brew stage: brew could not tell whether python is installed or pours from "
+                      "a bottle; not installed", result.stdout)
+        self.assertNotIn("install python", self.pins.read_text() if self.pins.exists() else "")
+        status = self.run_verb("status", INFO_RC="1", **env)
+        self.assertIn("  unknown : python\n", status.stdout)
+
+    def missing_formula(self):
+        """The profile names example-formula, which is not installed."""
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("example-formula\n")
+
+    def installs(self):
+        text = self.pins.read_text() if self.pins.exists() else ""
+        return [line for line in text.splitlines() if line.startswith("install ")]
+
+    def test_a_missing_formula_that_pours_from_bottles_is_installed(self):
+        self.missing_formula()
+
+        result = self.run_verb("update", "brew", "--apply", DEPS="example-dep")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  MISSING example-formula\n", result.stdout)
+        self.assertEqual(self.installs(), ["install example-formula"])
+
+    def test_a_formula_to_build_from_source_waits_for_the_upgrade(self):
+        """sd:7103: an Intel Mac has no bottles, and one `brew install node`
+        built llvm, rust and node for 3 h; the nightly stage's 1800 s bound
+        killed it. By ruling only the weekly upgrade builds from source."""
+        self.missing_formula()
+        for unbottled in ("example-formula", "example-dep"):
+            with self.subTest(unbottled=unbottled):
+                self.pins.unlink(missing_ok=True)
+                result = self.run_verb("update", "brew", "--apply", DEPS="example-dep", UNBOTTLED=unbottled)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("  DIFFERS example-formula needs a source build; the weekly upgrade installs it\n",
+                              result.stdout)
+                self.assertEqual(self.installs(), [])
+
+    def test_a_bottle_brew_cannot_tell_installs_nothing_and_fails(self):
+        """A failed probe is no "no" (sd:3536), and no "yes"."""
+        self.missing_formula()
+
+        result = self.run_verb("update", "brew", "--apply", DRY_RC="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED  brew stage: brew could not tell whether example-formula is installed or "
+                      "pours from a bottle; not installed", result.stdout)
+        self.assertEqual(self.installs(), [])
+
+    def test_status_reports_a_source_build_as_attention_not_missing(self):
+        """sd:7103: the formula waits for the weekly run by ruling, so the
+        nightly status names it for attention and does not fail on it."""
+        self.missing_formula()
+
+        result = self.run_verb("status", "--fail-on-drift", UNBOTTLED="example-formula")
+
+        block = result.stdout.split("brew formulae\n", 1)[1].split("casks\n", 1)[0]
+        self.assertEqual(block, "  DIFFERS example-formula needs a source build; the weekly upgrade installs it\n",
+                         result.stdout)
+        self.assertRegex(result.stdout, r"SD_REPORT_ATTENTION: drift on \S+: DIFFERS example-formula needs a "
+                                        r"source build; the weekly upgrade installs it\n")
+
+    def test_the_upgrade_installs_a_missing_formula_with_the_long_bound(self):
+        """sd:7103: the weekly sweep builds what the brew stage left, bounded
+        at 6 h, twice the 3 h measured on an Intel Mac."""
+        self.missing_formula()
+
+        result = self.run_verb("upgrade", "--apply", UNBOTTLED="example-formula")
+
+        self.assertEqual(self.installs(), ["install example-formula"], result.stdout + result.stderr)
+        for command in ("brew upgrade", "brew install example-formula"):
+            self.assertRegex(result.stderr, r"\[step \d\d:\d\d:\d\d\] " + command + r" \(bound 21600s\)")
+
+    def test_a_week_with_only_a_missing_formula_is_no_quiet_week(self):
+        """sd:7103: upgrade-report skipped the sweep when nothing was
+        outdated, so a formula the brew stage left to it never got built."""
+        self.missing_formula()
+        write_exec(self.stubs / "mas", "#!/bin/sh\nexit 0\n")
+
+        result = self.run_verb("upgrade-report", UNBOTTLED="example-formula", INSTALLS_STICK="1")
+
+        self.assertNotIn("nothing outdated", result.stdout)
+        self.assertEqual(self.installs(), ["install example-formula"], result.stdout + result.stderr)
+        self.assertIn("\ninstalled (formula):\n  example-formula\n", result.stdout)
+        self.assertNotIn("still missing", result.stdout)
+
+    def test_a_failed_install_brew_cannot_recheck_is_not_reported_installed(self):
+        """sd:7132: the snapshot after the sweep failed, so it was empty, and
+        the report listed the formula whose install failed as installed."""
+        self.missing_formula()
+        write_exec(self.stubs / "mas", "#!/bin/sh\nexit 0\n")
+
+        result = self.run_verb("upgrade-report", INSTALL_RC="1", INFO_RC_AFTER_INSTALL="1")
+
+        self.assertEqual(self.installs(), ["install example-formula"], result.stdout + result.stderr)
+        self.assertNotIn("installed (formula)", result.stdout)
+        self.assertIn("\nmissing (formula): unknown, the list did not answer\n", result.stdout)
+        self.assertIn("outdated list failed (missing)", result.stdout)
+
+    def calls(self):
+        path = self.stubs.parent / "calls"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_the_install_reads_the_homebrew_state_its_bottle_check_read(self):
+        """sd:7103 review: the check ran with auto-update off and the install
+        with it on, so the install could refresh to a version the check
+        never saw, with no bottle, and build it in the nightly run."""
+        self.missing_formula()
+
+        result = self.run_verb("update", "brew", "--apply", CALLS=str(self.stubs.parent / "calls"))
+
+        self.assertEqual(self.installs(), ["install example-formula"], result.stdout + result.stderr)
+        formula = [c for c in self.calls() if "example-formula" in c and not c.startswith("info --json")]
+        self.assertEqual(formula, ["install --dry-run example-formula auto=1 deps=1",
+                                   "info --formula example-formula auto=1 deps=1",
+                                   "install example-formula auto=1 deps=1"])
+
+    def test_each_formula_is_checked_after_the_install_before_it(self):
+        """sd:7103 review: the checks ran in a pipeline beside the installs,
+        so a check could read the state before an install that was still
+        running."""
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("example-a\nexample-b\n")
+
+        self.run_verb("update", "brew", "--apply", CALLS=str(self.stubs.parent / "calls"), INSTALL_SLEEP="2")
+
+        calls = [c.rsplit(" auto=", 1)[0] for c in self.calls()]
+        done = calls.index("done install example-a")
+        self.assertEqual([c for c in calls[:done] if "example-b" in c], [], calls)
+        self.assertIn("install example-b", calls[done:])
+
+    def test_a_dependent_to_rebuild_for_broken_linkage_defers_the_formula(self):
+        """Lead review of sd:7103: after an install brew rebuilds a dependent
+        with broken linkage from source, bottle or not; the dry run's
+        heading for it was read as the end of the plan."""
+        self.missing_formula()
+
+        result = self.run_verb("update", "brew", "--apply", DRY_BROKEN="example-dependent")
+
+        self.assertIn("  DIFFERS example-formula needs a source build; the weekly upgrade installs it\n",
+                      result.stdout)
+        self.assertEqual(self.installs(), [])
+
+    def test_the_weekly_install_keeps_the_dependents_check(self):
+        """The weekly sweep may build, so it still rebuilds broken dependents
+        and refreshes Homebrew first."""
+        self.missing_formula()
+
+        result = self.run_verb("upgrade", "--apply", CALLS=str(self.stubs.parent / "calls"))
+
+        self.assertIn("install example-formula auto=on deps=on", self.calls(), result.stdout + result.stderr)
+
+    def test_a_dependency_upgrade_that_needs_a_build_defers_the_formula(self):
+        """An install also upgrades an outdated dependency; one with no bottle
+        builds, so the formula waits for the weekly run."""
+        self.missing_formula()
+
+        result = self.run_verb("update", "brew", "--apply", DEPS_UPGRADE="example-old", UNBOTTLED="example-old")
+
+        self.assertIn("  DIFFERS example-formula needs a source build; the weekly upgrade installs it\n",
+                      result.stdout)
+        self.assertEqual(self.installs(), [])
+
+    def test_a_dependency_installed_with_options_defers_the_formula(self):
+        """Lead review of sd:7103: brew builds a dependency from source when
+        its installed keg was built with options, which an upgrade keeps
+        (formula_installer.rb install_bottle_for?), though brew info marks
+        it `(bottled)`."""
+        self.missing_formula()
+
+        result = self.run_verb("update", "brew", "--apply", DEPS_UPGRADE="example-old", OPTIONS="example-old")
+
+        self.assertIn("  DIFFERS example-formula needs a source build; the weekly upgrade installs it\n",
+                      result.stdout)
+        self.assertEqual(self.installs(), [])
+
+    def test_a_malformed_formula_record_is_unknown_not_missing(self):
+        """Lead review of sd:7103: a null record, or an installed one with no
+        full_name, exited 1, read as "not installed", and installed it."""
+        self.missing_formula()
+        records = ('{"formulae": [null]}',
+                   '{"formulae": [{"name": "example-formula", "installed": [{"version": "1"}]}]}',
+                   '{"formulae": [{"full_name": "example-formula", "installed": null}]}')
+        for record in records:
+            with self.subTest(record=record):
+                self.pins.unlink(missing_ok=True)
+                result = self.run_verb("update", "brew", "--apply", INFO_JSON=record)
+
+                self.assertIn("FAILED  brew stage: brew could not tell whether example-formula is installed "
+                              "or pours from a bottle; not installed", result.stdout)
+                self.assertEqual(self.installs(), [])
 
     def test_a_list_brew_cannot_give_changes_nothing(self):
         """sd:3536: read as empty, a failed list installed every formula again."""

@@ -717,6 +717,119 @@ python_firewall() {
   run_ok sudo -n "$_fw" --add "$_bp" && run_ok sudo -n "$_fw" --unblockapp "$_bp"
 }
 
+# formula_installed NAME: brew's name for the installed formula that NAME
+# names, printed, and 0; 1 when none is; 2 when brew info gave no answer, or
+# one that is not a formula record: a failed probe is no "no" (sd:3536).
+# brew resolves an alias or an old name, as `python` names python@3.15,
+# which `brew list` prints (sd:7093).
+formula_installed() {
+  fx_json=$(bound_step 300 brew info --json=v2 --formula "$1" 2>/dev/null) || return 2
+  printf '%s' "$fx_json" | python3 -c '
+import json, sys
+try:
+    f = json.load(sys.stdin)["formulae"][0]
+    kegs, name = f["installed"], f["full_name"]
+except (ValueError, KeyError, IndexError, TypeError):
+    sys.exit(2)
+if not isinstance(kegs, list) or not isinstance(name, str) or not name:
+    sys.exit(2)
+if not kegs:
+    sys.exit(1)
+print(name)'
+}
+
+# pours_from_bottle NAME: 0 when NAME and each formula its install would add
+# or upgrade pour from a bottle here, 1 when one needs a source build, 2 when
+# brew gave no answer (sd:7103). The dry run lists them, with the build
+# dependencies of one that builds; brew info marks each `(bottled)` by this
+# machine's bottle tag, or an older one it can pour. A formula that ships no
+# bottle, as many in a tap, counts as a build.
+pours_from_bottle() {
+  # The nightly install's switches (stage_brew): no refresh, and no
+  # dependents check, which rebuilds a dependent with broken linkage from
+  # source, bottle or not; the weekly upgrade keeps it.
+  pb_plan=$(bound_step 300 env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 \
+    brew install --dry-run "$1" 2>/dev/null) || return 2
+  # A dependent brew would rebuild from source all the same.
+  ! printf '%s\n' "$pb_plan" | grep -q '^==> Reinstalling .* with broken linkage from source:' || return 1
+  pb_names=$(printf '%s\n' "$pb_plan" | awk '/^==> Would (install|upgrade) / { on = 1; next }
+      /^==>/ { on = 0 } on && NF { print $1 }' | sort -u)
+  [ -n "$pb_names" ] || return 2
+  # shellcheck disable=SC2086 # one word per formula name
+  pb_info=$(bound_step 300 env HOMEBREW_NO_ANALYTICS=1 brew info --formula $pb_names 2>/dev/null) || return 2
+  pb_heads=$(printf '%s\n' "$pb_info" | grep -E '^==> [^ ]+( [^ ]+)?: ' || :)
+  # One heading per formula, or the answer is not about these.
+  [ "$(printf '%s\n' "$pb_heads" | grep -c .)" = "$(printf '%s\n' "$pb_names" | grep -c .)" ] || return 2
+  if printf '%s\n' "$pb_heads" | grep -qv '(bottled)'; then return 1; fi
+  # brew builds one from source when an installed keg of it was built with
+  # options, which the install keeps, though brew info marks it `(bottled)`
+  # (formula_installer.rb install_bottle_for?).
+  # shellcheck disable=SC2086 # one word per formula name
+  pb_json=$(bound_step 300 env HOMEBREW_NO_ANALYTICS=1 brew info --json=v2 --formula $pb_names 2>/dev/null) || return 2
+  printf '%s' "$pb_json" | python3 -c '
+import json, sys
+try:
+    fs = json.load(sys.stdin)["formulae"]
+    kegs = [k for f in fs for k in f["installed"]]
+    opts = [k["used_options"] for k in kegs]
+except (ValueError, KeyError, TypeError):
+    sys.exit(2)
+if len(fs) != int(sys.argv[1]) or not all(isinstance(o, list) for o in opts):
+    sys.exit(2)
+sys.exit(1 if any(opts) else 0)' "$(printf '%s\n' "$pb_names" | grep -c .)"
+}
+
+# formula_state LIST NAME [any]: the profile formula NAME as `state name
+# [installed]`, given LIST, what `brew list --formula` printed. ok: installed
+# under its bare name, as a tap-qualified one lists, or the one brew resolves
+# it to; bottle: missing, and it pours from bottles; source: missing, and it
+# needs a source build, which only the weekly upgrade runs (sd:7103);
+# missing, with `any`, which asks no bottle; unknown: brew could not tell.
+formula_state() {
+  if printf '%s\n' "$1" | sed 's|.*/||' | grep -qx "${2##*/}"; then
+    echo "ok $2 ${2##*/}"
+    return 0
+  fi
+  fs_rc=0
+  fs_name=$(formula_installed "$2") || fs_rc=$?
+  case $fs_rc in
+    0) echo "ok $2 ${fs_name##*/}"; return 0 ;;
+    1) ;;
+    *) echo "unknown $2"; return 0 ;;
+  esac
+  if [ "${3:-}" = any ]; then
+    echo "missing $2"
+    return 0
+  fi
+  fs_rc=0
+  pours_from_bottle "$2" || fs_rc=$?
+  case $fs_rc in
+    0) echo "bottle $2" ;;
+    1) echo "source $2" ;;
+    *) echo "unknown $2" ;;
+  esac
+}
+
+# formula_plan LIST [any]: formula_state for each profile formula.
+formula_plan() {
+  manifest brew | while read -r fp_f; do
+    formula_state "$1" "$fp_f" "${2:-}"
+  done
+}
+
+# The profile's formulae that are not installed, one per line, for the
+# upgrade sweep: the brew stage leaves one that needs a source build to it
+# (sd:7103). None with no usable profile. Fails when brew cannot tell for
+# one; the rest still print.
+formula_wants() {
+  (load_profile) >/dev/null 2>&1 || return 0
+  load_profile
+  fw_list=$(bound_step 300 brew list --formula 2>/dev/null) || return 1
+  fw_plan=$(formula_plan "$fw_list" any)
+  printf '%s\n' "$fw_plan" | awk '$1 == "missing" { print $2 }'
+  ! printf '%s\n' "$fw_plan" | grep -q '^unknown '
+}
+
 stage_brew() {
   echo "== brew"
   command -v brew >/dev/null 2>&1 || {
@@ -743,16 +856,31 @@ stage_brew() {
     fi
   done
 
-  installed=$(printf '%s\n' "$formulae" | sed 's|.*/||' | sort)
-  manifest brew | while read -r f; do
-    # Casks and versioned formulae report under their bare name.
-    if echo "$installed" | grep -qx "$(echo "$f" | sed 's|.*/||')"; then
-      echo "  ok      $f"
-    else
-      echo "  MISSING $f"
-      run bound_step 1800 brew install "$f"
-    fi
-  done
+  # Each formula's bottle check and its install read one Homebrew state
+  # (sd:7103 review): the check runs just before the install, after the
+  # one before it, and both with auto-update off, so the install pulls no
+  # newer version the check never saw, which might have no bottle. The
+  # weekly upgrade's `brew update` refreshes that state. With the
+  # dependents check off, the install rebuilds no dependent with broken
+  # linkage from source; the weekly upgrade keeps that check. A subshell,
+  # as the exports must not reach the stages after this one.
+  (
+    HOMEBREW_NO_AUTO_UPDATE=1
+    HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1
+    export HOMEBREW_NO_AUTO_UPDATE HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK
+    manifest brew | while read -r f; do
+      # shellcheck disable=SC2046 # `state name [installed]`, one word each
+      set -- $(formula_state "$formulae" "$f")
+      case $1 in
+        ok) if [ "$3" = "${f##*/}" ]; then echo "  ok      $f"; else echo "  ok      $f ($3)"; fi ;;
+        bottle) echo "  MISSING $f"
+                run bound_step 1800 brew install "$f" ;;
+        source) echo "  DIFFERS $f needs a source build; the weekly upgrade installs it" ;;
+        *) echo "  MISSING $f"
+           note_failure "brew stage: brew could not tell whether $f is installed or pours from a bottle; not installed" 1 ;;
+      esac
+    done
+  )
 
   installed_casks=$(printf '%s\n' "$installed_casks" | sort)
   manifest cask | while read -r c; do
@@ -6013,6 +6141,10 @@ codex_quarantine() {
 # whose build fails, is also recorded in BUILD_FAILED as `kind line`: the
 # report names that line, not sudo, for what the step left (sd:7056). A step
 # can hold both, as `brew upgrade` also upgrades casks.
+# The bound of a sweep step that may build from source: 6 h, twice the one
+# run measured, `brew install node` on an Intel Mac with no bottles: 3h00m,
+# llvm 1h31m of it (sd:7103). The brew stage builds nothing from source.
+SOURCE_BUILD_BOUND=21600
 SUDO_REFUSED='sudo: a terminal is required|sudo: a password is required|sudo: no tty present'
 BUILD_FAILED=""
 
@@ -6040,6 +6172,9 @@ sweep_step() { # name, seconds, command...
   ss_rc=0
   run_step "$@" > "$ss_out.1" 2> "$ss_out.2" || ss_rc=$?
   cat "$ss_out.1"; cat "$ss_out.2" >&2
+  # The command without its bound: matched on the bound, every error was a
+  # formula's (sd:7071).
+  shift
   ss_err=
   if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ]; then
     ss_err=$(build_error "$ss_out.1" "$ss_out.2")
@@ -6055,7 +6190,6 @@ sweep_step() { # name, seconds, command...
     failed="$failed, $ss_name"
   fi
   if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ] && cat "$ss_out.1" "$ss_out.2" | grep -Eq "$SUDO_REFUSED"; then
-    shift
     DEFERRED="$DEFERRED    $*
 "
     echo "  DEFER   needs sudo: $*"
@@ -6207,7 +6341,12 @@ cmd_upgrade() {
     else
       failed="$failed, brew pin list"
     fi
-    sweep_step "brew upgrade" 1800 brew upgrade
+    sweep_step "brew upgrade" "$SOURCE_BUILD_BOUND" brew upgrade
+    # The profile's missing formulae: the brew stage leaves one that needs a
+    # source build to this sweep (sd:7103).
+    fw=$(formula_wants) || failed="$failed, brew formula list"
+    # shellcheck disable=SC2086 # one word per formula name
+    [ -z "$fw" ] || sweep_step "brew install" "$SOURCE_BUILD_BOUND" brew install $fw
     python_firewall || failed="$failed, python firewall"
     # --greedy takes casks with `auto_updates true` too, whose own updaters
     # stage_macos turns off where the app holds a TCC grant (sd:3062). It
@@ -6397,10 +6536,12 @@ cmd_upgrade_report() {
   run_step 600 brew update >/dev/null 2>&1 || :
   outdated_lists before
   grant_paths before
+  # A formula the brew stage left to this sweep is no quiet week (sd:7103).
+  formula_wants > "$tmp/wants.before" || echo missing >> "$tmp/unknown.before"
 
   if [ ! -s "$tmp/formula.before" ] && [ ! -s "$tmp/cask.before" ] \
       && [ ! -s "$tmp/mas.before" ] && [ ! -s "$tmp/release.before" ] \
-      && [ ! -s "$tmp/unknown.before" ]; then
+      && [ ! -s "$tmp/wants.before" ] && [ ! -s "$tmp/unknown.before" ]; then
     rc=0
     echo "nothing outdated — no upgrade"
     inventory_capture || rc=1
@@ -6420,6 +6561,8 @@ cmd_upgrade_report() {
   inventory_capture || inv_rc=1
 
   outdated_lists after
+  : > "$tmp/wants.after"
+  [ ! -s "$tmp/wants.before" ] || formula_wants > "$tmp/wants.after" || echo missing >> "$tmp/unknown.after"
   grants_report
 
   {
@@ -6448,6 +6591,23 @@ cmd_upgrade_report() {
         sed 's/^/  /' "$tmp/$kind.after"
       fi
     done
+    # A snapshot that did not answer leaves out what it could not tell:
+    # diffed, a failed install read as installed (sd:7132).
+    if grep -qx missing "$tmp/unknown.before" "$tmp/unknown.after"; then
+      printf '\nmissing (formula): unknown, the list did not answer\n'
+      : > "$tmp/wants.done"
+      : > "$tmp/wants.after"
+    else
+      comm -23 "$tmp/wants.before" "$tmp/wants.after" > "$tmp/wants.done"
+    fi
+    if [ -s "$tmp/wants.done" ]; then
+      printf '\ninstalled (formula):\n'
+      sed 's/^/  /' "$tmp/wants.done"
+    fi
+    if [ -s "$tmp/wants.after" ]; then
+      printf '\nstill missing (formula):\n'
+      sed 's/^/  /' "$tmp/wants.after"
+    fi
     if [ "$rc" -ne 0 ]; then
       printf '\nupgrade sweep exited nonzero; last output:\n'
       tail -30 "$tmp/out" | sed 's/^/  /'
@@ -6475,6 +6635,7 @@ cmd_upgrade_report() {
         sed "s/^/still outdated ($kind): /" "$tmp/$kind.after"
       fi
     done
+    sed 's/^/still missing (formula): /' "$tmp/wants.after"
     if [ "$rc" -ne 0 ]; then
       echo "upgrade sweep failed [$(tail -30 "$tmp/out" | grep -v '^\[step ' | cksum | cut -d' ' -f1)]"
     fi
@@ -6714,17 +6875,36 @@ cmd_status() {
     # `sort -u`, not `sort`: manifest dedupes before this strips the tap, so a
     # profile naming one formula both ways left the same bare name twice and
     # comm reported the duplicate as missing for a formula that was installed.
-    bound_step 300 brew list --formula 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/have.brew"
-    manifest brew | sed 's|.*/||' | sort -u > "$tmp/want.brew"
+    # formula_plan resolves the rest: an alias, as `python`, is installed as
+    # python@3.15, which is then wanted, not extra (sd:7093). A list brew
+    # could not give is unknown, not every formula missing.
     echo "brew formulae"
-    mb=$(comm -13 "$tmp/have.brew" "$tmp/want.brew")
+    ub=""
+    if fl=$(bound_step 300 brew list --formula 2>/dev/null); then
+      fp=$(formula_plan "$fl")
+    else
+      fp=""
+      ub="brew list --formula did not answer"
+    fi
+    { manifest brew; printf '%s\n' "$fp" | awk '$1 == "ok" { print $3 }'; } | sed 's|.*/||' | sort -u > "$tmp/want.brew"
+    mb=$(printf '%s\n' "$fp" | awk '$1 == "bottle" { sub(/.*\//, "", $2); print $2 }')
+    # Waits for the weekly upgrade, by ruling (sd:7103): in-place drift, an
+    # attention line, not a nightly failure.
+    sb=$(printf '%s\n' "$fp" | awk '$1 == "source" { print $2 }')
+    ub="$ub$(printf '%s\n' "$fp" | awk '$1 == "unknown" { sub(/.*\//, "", $2); print $2 }')"
     # Extra is what someone installed by name: a build-only dependency is a
     # leaf too, and was reported as drift (sd:5049).
     bound_step 300 brew leaves --installed-on-request 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/leaves.brew"
     xb=$(comm -23 "$tmp/leaves.brew" "$tmp/want.brew")
     status_line missing "$mb"
+    status_line unknown "$ub"
     status_line extra "$xb"
-    [ -n "$mb$xb" ] || echo "  ok      in sync"
+    for f in $sb; do
+      echo "  DIFFERS $f needs a source build; the weekly upgrade installs it"
+      differs="${differs}DIFFERS $f needs a source build; the weekly upgrade installs it
+"
+    done
+    [ -n "$mb$ub$xb$sb" ] || echo "  ok      in sync"
 
     bound_step 300 brew list --cask 2>/dev/null | sort > "$tmp/have.cask"
     manifest cask > "$tmp/want.cask"
@@ -6741,7 +6921,7 @@ cmd_status() {
     # Its report half only: status --apply stays read-only.
     mf=$(APPLY=0; mosh_firewall | grep DIFFERS || :)
     [ -z "$mf" ] || printf '%s\n' "$mf"
-    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf"; do
+    for v in "$mt" "$mb" "$ub" "$sb" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
