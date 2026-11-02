@@ -110,6 +110,9 @@ mounted() { # path fstype
 # A name that holds \001 would come back with a newline, so the same find
 # leaves it, and a folder's contents with it, out of the list, and stderr
 # counts them and shows the first three (sd:7136).
+# A link to a missing target stays out the same way: openrsync stats each
+# --files-from name through its link, and that one error ends the chunk, so
+# the link failed every night (sd:7185). It holds no data to copy.
 # Exits non-zero when find or sort fails: a short list is not a full pass.
 list_source() ( # file
   LC_ALL=C; export LC_ALL
@@ -117,15 +120,25 @@ list_source() ( # file
   (cd "$SRC" && find . -mindepth 1 \( -path ./.Spotlight-V100 -o -path ./.Trashes \
       -o -path ./.fseventsd -o -path ./.TemporaryItems -o -path ./.DocumentRevisions-V100 \) \
       -prune -o -name "*$a*" -prune -exec sh -c 'printf "%s\0" "$@" >&3' sh {} + \
-      -o -print0) > "$1.find" 3> "$1.refused" \
+      -o -type l -exec sh -c 'for f; do [ -e "$f" ] || printf "%s\0" "$f"; done >&4' sh {} + -false \
+      -o -print0) > "$1.find" 3> "$1.refused" 4> "$1.dead" \
     && tr '\n\0' '\001\n' < "$1.find" > "$1.lines" \
+    && if [ -s "$1.dead" ]; then
+         tr '\n\0' '\001\n' < "$1.dead" > "$1.deadlines" \
+           && { grep -vxF -f "$1.deadlines" "$1.lines" > "$1.kept" || [ $? -eq 1 ]; } \
+           && mv "$1.kept" "$1.lines"
+       fi \
     && sort -o "$1" "$1.lines"
   listed=$?
   if [ -s "$1.refused" ]; then
     echo "left out $(tr -cd '\0' < "$1.refused" | wc -c | tr -d ' ') names that hold a 0x01 byte; the first:" >&2
     tr '\0\n' '\n\037' < "$1.refused" | head -n 3 | cat -v >&2
   fi
-  rm -f "$1.find" "$1.lines" "$1.refused"
+  if [ -s "$1.dead" ]; then
+    echo "left out $(tr -cd '\0' < "$1.dead" | wc -c | tr -d ' ') links whose target is missing; the first:" >&2
+    tr '\0\n' '\n\037' < "$1.dead" | head -n 3 | cat -v >&2
+  fi
+  rm -f "$1.find" "$1.lines" "$1.refused" "$1.dead" "$1.deadlines" "$1.kept"
   exit "$listed"
 )
 
