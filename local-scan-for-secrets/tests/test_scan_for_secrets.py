@@ -496,6 +496,83 @@ class CriticalSkipsTestFiles(unittest.TestCase):
             self.assertNotIn(f"repos/owner/project/{name}", out)
 
 
+class CriticalExcludeNamesADotfile(unittest.TestCase):
+    """sd:7227: ripgrep ignores `-g '!glob'` for a file named as an argument, and critical mode names each
+    top-level dotfile. An excluded dotfile was still reported by the pattern scan and the env-export scan."""
+
+    #: Joined here, so this file is not a finding of the repository scan.
+    FAKE = "hf_" + "FixtureKeyForTheScanSuite012345678"
+
+    def scan(self, path: str, exclude: str) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            (home / ".config" / "shell").mkdir(parents=True)
+            (home / ".config" / "shell" / "env.sh").write_text(
+                f'export EXAMPLE_API_KEY="{self.FAKE}"\n', encoding="utf-8")
+            (home / ".excluded.json").write_text(f'{{"key": "{self.FAKE}"}}\n', encoding="utf-8")
+            (home / ".kept.json").write_text(f'{{"key": "{self.FAKE}"}}\n', encoding="utf-8")
+            conf = home / "scan.conf"
+            conf.write_text(f'S4S_EXTRA_CRITICAL_EXCLUDE_PATHS="{exclude}"\n', encoding="utf-8")
+            env = dict(os.environ, HOME=str(home), SYSTEM_TOOLS_CONFIG=str(home / "config"), PATH=path,
+                       S4S_CONF=str(conf), S4S_SCRATCH_ROOTS=str(home / "scratch"), JEV_SECRET_SCAN="0")
+            isolate_jev(env)
+            return subprocess.run(["sh", str(SCRIPT), "critical"], cwd=home, env=env,
+                                  capture_output=True, text=True, timeout=300)
+
+    def test_an_excluded_dotfile_is_not_reported_by_either_scan(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(path, ".excluded.json")
+                out = result.stdout + result.stderr
+                self.assertNotIn(".excluded.json", out)
+                self.assertIn(".kept.json:1:", out)  # the pattern scan
+                self.assertIn("YOURS: $EXAMPLE_API_KEY found in: .kept.json", out)  # the env scan
+                self.assertEqual(result.returncode, 2, out)
+
+    def test_an_exclude_that_names_every_hit_leaves_a_clean_exit(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(path, ".excluded.json\n.kept.json")
+                out = result.stdout + result.stderr
+                self.assertNotIn(".json", out)
+                self.assertEqual(result.returncode, 0, out)
+
+
+class CriticalExcludeKeepsAGlobsOwnReach(unittest.TestCase):
+    """sd:7227 review: `*` in a critical exclude stops at `/`, as in ripgrep. `repos/**/test_*.py` skips test
+    files, not production code in a folder named `test_support`; the grep fallback filtered with a shell case
+    pattern whose `*` crossed `/`, and so hid both."""
+
+    FAKE = CriticalExcludeNamesADotfile.FAKE
+    KEPT = ["repos/x/test_support/production.py", "repos/x/test_pkg/sub/mod.py"]
+    # service_test.d is a folder the `*_test.*` entry names, so what is below it goes too, in ripgrep as here.
+    SKIPPED = ["repos/x/test_a.py", "repos/x/b_test.go", "repos/x/service_test.d/production.yaml"]
+
+    def test_a_folder_named_like_a_test_file_is_still_scanned(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary).resolve()
+                (home / ".config" / "shell").mkdir(parents=True)
+                (home / ".config" / "shell" / "env.sh").write_text(
+                    f'export EXAMPLE_API_KEY="{self.FAKE}"\n', encoding="utf-8")
+                for name in self.KEPT + self.SKIPPED:
+                    (home / name).parent.mkdir(parents=True, exist_ok=True)
+                    (home / name).write_text(f'key = "{self.FAKE}"\n', encoding="utf-8")
+                env = dict(os.environ, HOME=str(home), SYSTEM_TOOLS_CONFIG=str(home / "config"), PATH=path,
+                           S4S_SCRATCH_ROOTS=str(home / "scratch"), JEV_SECRET_SCAN="0")
+                env.pop("S4S_CONF", None)
+                isolate_jev(env)
+                result = subprocess.run(["sh", str(SCRIPT), "critical"], cwd=home, env=env,
+                                        capture_output=True, text=True, timeout=300)
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 2, out)
+                for name in self.KEPT:
+                    self.assertIn(f"{name}:1:", out)  # the pattern scan
+                    self.assertIn(f"found in: {name}", out)  # the env scan
+                for name in self.SKIPPED:
+                    self.assertNotIn(name, out)
+
+
 class CriticalTargetsAfterAMissingDir(unittest.TestCase):
     """sd:6490: a missing last config dir left the target list's loop at status 1, and set -e then ended the
     list there, so the grep fallback never scanned the AI session logs."""
