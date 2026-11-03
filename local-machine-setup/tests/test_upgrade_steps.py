@@ -102,7 +102,8 @@ exit 0
 """
 
 # MAS_OUTDATED is what `mas outdated` prints, MAS_OUTDATED_AFTER what it
-# prints once an upgrade ran, `none` for nothing. MAS_BUILD_FAIL names one call that prints
+# prints once an upgrade ran, `none` for nothing. With MAS_APP_EXE, each
+# upgrade logs in $MAS_LOG.app whether that executable ran (sd:7330). MAS_BUILD_FAIL names one call that prints
 # MAS_BUILD_TEXT on stderr and exits 1 (sd:7071); MAS_HANG one that stalls.
 MAS_STUB = "#!/bin/sh\n" + STALL + r"""echo "$*" >> "$MAS_LOG"
 [ "$*" != "$MAS_FAIL" ] || exit 1
@@ -110,7 +111,10 @@ MAS_STUB = "#!/bin/sh\n" + STALL + r"""echo "$*" >> "$MAS_LOG"
 [ "$*" != "$MAS_BUILD_FAIL" ] || { printf '%s\n' "$MAS_BUILD_TEXT" >&2; exit 1; }
 """ + SUDO_REFUSED.replace("STUB_SUDO\"", "MAS_SUDO\"") + r"""
 case "$*" in
-  upgrade*) : > "$MAS_LOG.upgraded" ;;
+  upgrade*) : > "$MAS_LOG.upgraded"
+            if [ -n "$MAS_APP_EXE" ]; then
+              if pgrep -f "$MAS_APP_EXE" > /dev/null; then echo running; else echo quit; fi >> "$MAS_LOG.app"
+            fi ;;
   outdated) if [ -n "$MAS_OUTDATED_AFTER" ] && [ -e "$MAS_LOG.upgraded" ]; then
               [ "$MAS_OUTDATED_AFTER" = none ] || echo "$MAS_OUTDATED_AFTER"
             elif [ -n "$MAS_OUTDATED" ]; then echo "$MAS_OUTDATED"; fi ;;
@@ -776,6 +780,68 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.mas_log.read_text().splitlines(), ["outdated", "upgrade 111", "upgrade 222"])
+
+    def running_app(self, ignores_term=False):
+        """Alpha, App Store id 111, in a folder for /Applications, with a
+        process whose arguments name its executable, as the app's own do
+        (sd:7330). Spotlight's id for a bundle is its Contents/adamid file;
+        `open` logs each call. Returns the run's extra variables."""
+        apps = self.tmp_path / "Applications"
+        self.bundle = apps / "Alpha.app"
+        exe = self.bundle / "Contents/MacOS/Alpha"
+        write_exec(exe, "#!/bin/sh\nexit 0\n")
+        (self.bundle / "Contents/adamid").write_text("111")
+        write_exec(self.stubs / "mdls", '#!/bin/sh\n[ "$1 $2 $3" = "-raw -name kMDItemAppStoreAdamID" ] || exit 2\n'
+                   'cat "$4/Contents/adamid" 2>/dev/null || printf "(null)"\n')
+        self.opened = self.tmp_path / "open.log"
+        write_exec(self.stubs / "open", f'#!/bin/sh\necho "$*" >> "{self.opened}"\n')
+        script = '$SIG{TERM} = "IGNORE" if $ARGV[1]; $| = 1; print "ready\\n"; sleep 120'
+        self.app = subprocess.Popen(["perl", "-e", script, str(exe), "1" if ignores_term else ""],
+                                    stdout=subprocess.PIPE, text=True)
+        app = self.app
+        self.addCleanup(lambda: app.poll() is None and (app.kill(), app.wait()))
+        self.assertEqual(app.stdout.readline(), "ready\n")
+        return {"MACHINE_SETUP_APPLICATIONS_DIR": str(apps), "MAS_APP_EXE": str(exe),
+                "MAS_OUTDATED": "111 Alpha (1.0 -> 1.1)"}
+
+    def app_at_upgrade(self):
+        log = pathlib.Path(f"{self.mas_log}.app")
+        return log.read_text().splitlines() if log.exists() else []
+
+    def opens(self):
+        return self.opened.read_text().splitlines() if self.opened.exists() else []
+
+    def test_a_running_app_quits_before_its_upgrade_and_opens_after(self):
+        result = self.run_verb("upgrade", "--apply", **self.running_app())
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.app.wait(timeout=5), -signal.SIGTERM)
+        self.assertEqual(self.app_at_upgrade(), ["quit"])
+        self.assertEqual(self.opens(), [f"-g {self.bundle}"])
+
+    def test_a_failed_upgrade_still_opens_the_app(self):
+        result = self.run_verb("upgrade", "--apply", MAS_FAIL="upgrade 111", **self.running_app())
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed steps: mas upgrade 111\n", result.stdout)
+        self.assertEqual(self.opens(), [f"-g {self.bundle}"])
+
+    def test_an_app_that_does_not_quit_is_skipped_and_named(self):
+        result = self.run_verb("upgrade", "--apply", ST_MAS_QUIT_WAIT="1",
+                               **self.running_app(ignores_term=True))
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("upgrade 111", self.mas_log.read_text().splitlines())
+        self.assertIsNone(self.app.poll(), "the app is never KILLed")
+        self.assertIn("  FAILED  Alpha did not quit within 1 s; mas upgrade 111 skipped\n", result.stdout)
+        self.assertIn("failed steps: mas upgrade 111 (Alpha did not quit)\n", result.stdout)
+
+    def test_a_dry_run_leaves_a_running_app_alone(self):
+        result = self.run_verb("upgrade", **self.running_app())
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIsNone(self.app.poll())
+        self.assertEqual(self.opens(), [])
 
     def test_a_stuck_app_store_download_costs_only_its_own_app(self):
         result = self.run_verb("upgrade", "--apply", MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND),

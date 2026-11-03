@@ -10,6 +10,7 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
 . "$DIR/../lib/bounded.sh"
+. "$DIR/../lib/mas_app.sh"
 
 CONF_DIR="$(st_config_dir maintenance)"
 CONF="$CONF_DIR/maintenance.conf"
@@ -408,16 +409,24 @@ if command -v mas >/dev/null 2>&1; then
     # with more than about ten stuck apps reaches the job's 2 h limit.
     # MAINTENANCE_MAS_BOUND is for the tests.
     mas_bound=${MAINTENANCE_MAS_BOUND:-600}
+    # MAINTENANCE_APPLICATIONS_DIR is for the tests too.
+    mas_apps=${MAINTENANCE_APPLICATIONS_DIR:-/Applications}
     while IFS= read -r app; do
       id=$(echo "$app" | awk '{ print $1 }')
       # No id would make `mas upgrade` take every app at once again.
       case $id in ''|*[!0-9]*) continue ;; esac
       name=$(echo "$app" | sed -e 's/^ *[0-9]* *//' -e 's/ *([^()]*)$//')
+      # A running app makes the installer ask, and no one answers under
+      # launchd (sd:7330): it quits first, and opens again after.
+      if ! st_mas_quit "$mas_apps" "$id" "$name"; then
+        finding "App Store upgrade skipped: $name: it did not quit within ${ST_MAS_QUIT_WAIT:-15} s" \
+          "App Store upgrade skipped: $name"
       # mas upgrades as root and reads SUDO_UID for whose apps they are.
-      if ! st_step "$mas_bound" sudo -A mas upgrade "$id" < /dev/null > "$TMPD/mas.out" 2>&1; then
+      elif ! st_step "$mas_bound" sudo -A mas upgrade "$id" < /dev/null > "$TMPD/mas.out" 2>&1; then
         finding "App Store upgrade failed: $name: $(grep -v '^\[step ' "$TMPD/mas.out" | tail -1)" \
           "App Store upgrade failed: $name"
       fi
+      st_mas_reopen || finding "App Store app not reopened: $name" "App Store app not reopened: $name"
     done < "$MAS"
     mv "$MAS" "$MAS.before"
     st_step 120 mas outdated > "$MAS" 2>/dev/null || mas_rc=$?
