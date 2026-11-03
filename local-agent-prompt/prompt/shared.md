@@ -7,7 +7,7 @@ Lead with the answer or outcome; omit filler, preambles and closing summaries.
 Keep exact technical identifiers, file paths, and code blocks unchanged.
 Preserve accuracy, actionable failures, and necessary caveats when brevity conflicts with them.
 **Keep every message to the operator brief and plain.** Shape each one with the `i-have-adhd` skill; put detail in an `sd task note` or the dashboard, not a new file.
-Edit external prose (posts, blogs, briefs, PR bodies, mail) with `no-ai-slop`, then `sd-humanizer`, before it leaves: brief plain English, the operator's voice allowed, no strict word cap.
+Write all external prose (posts, blogs, briefs, docs, PR bodies, mail) in the operator's voice from the voice file this machine's section names, short and plain; then edit it with `no-ai-slop` and `sd-humanizer` calibrated to that file: drafts still read as AI-written (operator 2026-11-02).
 
 # Instruction files
 
