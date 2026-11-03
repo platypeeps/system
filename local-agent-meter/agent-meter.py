@@ -55,6 +55,7 @@ was read. Slot numbers follow `cswap swap` and `cswap move`.
 import argparse
 import datetime
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -161,24 +162,49 @@ def run_json(cmd, timeout, echo=True):
         return None, "unparseable output: %s" % r.stdout.strip()[:500]
 
 
+def is_number(value):
+    """A real, finite number: not a bool, a string, NaN or an infinity.
+    `json.loads` accepts NaN and Infinity, so a JSON reply can hold them."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
+
+
+def is_pct(value):
+    """None (no window yet) or a finite number."""
+    return value is None or is_number(value)
+
+
+def is_time(value):
+    return value is None or isinstance(value, str)
+
+
 def account_entry(account):
     """The fields of one cswap account the ledger keeps, and no other.
 
     A whitelist on purpose: cswap's entry also holds the email, the
     organization name and its UUID, and none of them may reach the ledger.
-    A missing or non-integer number raises, failing the whole read."""
+    A malformed value (a number that is not an integer, a pct that is not
+    a finite number, a time that is not a string) raises TypeError,
+    failing the whole read: one bad field makes the reply unknown."""
     number = account["number"]
     if not isinstance(number, int) or isinstance(number, bool):
         raise TypeError("account number is not an integer")
     usage = account.get("usage") or {}
     week = usage.get("sevenDay") or {}
-    return {"number": number, "active": bool(account.get("active")),
-            "status": account.get("usageStatus"),
-            "pct": week.get("pct"), "resetsAt": week.get("resetsAt"),
-            "expectedPct": week.get("expectedPct"),
-            "scoped": {s["name"]: s.get("pct") for s in usage.get("scoped") or []
-                       if isinstance(s, dict) and isinstance(s.get("name"), str)},
-            "fetchedAt": account.get("usageFetchedAt")}
+    entry = {"number": number, "active": bool(account.get("active")),
+             "status": account.get("usageStatus"),
+             "pct": week.get("pct"), "resetsAt": week.get("resetsAt"),
+             "expectedPct": week.get("expectedPct"),
+             "scoped": {s["name"]: s.get("pct") for s in usage.get("scoped") or []
+                        if isinstance(s, dict) and isinstance(s.get("name"), str)},
+             "fetchedAt": account.get("usageFetchedAt")}
+    pcts = [entry["pct"], entry["expectedPct"], *entry["scoped"].values()]
+    if not all(is_pct(value) for value in pcts):
+        raise TypeError("a pct is not a finite number")
+    if not (is_time(entry["resetsAt"]) and is_time(entry["fetchedAt"])
+            and is_time(entry["status"])):
+        raise TypeError("a time or status is not a string")
+    return entry
 
 
 def read_accounts(timeout):
@@ -193,7 +219,10 @@ def read_accounts(timeout):
     if err is not None:
         return None, err
     try:
-        return [account_entry(account) for account in data["accounts"]], None
+        accounts = data["accounts"]
+        if not isinstance(accounts, list):
+            raise TypeError("accounts is not a list")
+        return [account_entry(account) for account in accounts], None
     except (TypeError, KeyError, AttributeError) as e:
         # The exception's class only: a message can quote a value.
         return None, "unexpected cswap shape: %s" % type(e).__name__
@@ -377,25 +406,36 @@ def report_accounts(a) -> None:
         sys.exit(1)
     windows = {}   # number -> {reset: (read_at, pct, expectedPct)}
     active = {}    # number -> (read_at, active) of its latest reading
+    # Skip, never raise: one malformed reading costs that reading only.
+    malformed = (ValueError, KeyError, TypeError, AttributeError, OverflowError)
     for line in lines:
         try:
             record = json.loads(line)
             stamp = record["ts"]
             accounts = record.get("accounts") or []
-        except (ValueError, KeyError, TypeError, AttributeError):
+            if not isinstance(accounts, list):
+                continue
+        except malformed:
             continue
         for account in accounts:
             try:
                 number, pct, reset = account["number"], account.get("pct"), account.get("resetsAt")
-                read_at = parse_time(account.get("fetchedAt") or stamp)
-                if pct is None or not reset:
+                expected = account.get("expectedPct")
+                if not isinstance(number, int) or isinstance(number, bool):
                     continue
+                if not (is_number(pct) and is_pct(expected)) or not reset:
+                    continue
+                read_at = parse_time(account.get("fetchedAt") or stamp)
                 key = window_key(parse_time(reset))
-            except (ValueError, KeyError, TypeError, AttributeError):
+                # Both print in local time; a date at the edge of the
+                # calendar overflows there, so try it here.
+                local(key), local(read_at)
+                (key - read_at).total_seconds()
+            except malformed:
                 continue
             seen = windows.setdefault(number, {}).get(key)
             if seen is None or read_at >= seen[0]:
-                windows[number][key] = (read_at, pct, account.get("expectedPct"))
+                windows[number][key] = (read_at, pct, expected)
             if number not in active or read_at >= active[number][0]:
                 active[number] = (read_at, bool(account.get("active")))
     if not windows:

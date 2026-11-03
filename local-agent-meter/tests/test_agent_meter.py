@@ -497,6 +497,65 @@ class MeterRun(unittest.TestCase):
         self.assertIn("used >= 40% (last read 2.0 h after)", done.stdout)
         self.assertNotIn("-2.0", done.stdout)
 
+    # Malformed values, collector and report (review of 5295f10e).
+
+    #: Values no pct, expectedPct or number may hold. NaN and Infinity
+    #: are here because `json.loads` accepts them.
+    EXTREME = ("27", True, False, float("nan"), float("inf"), float("-inf"),
+               [], {}, [27])
+
+    def test_a_malformed_cswap_value_is_an_error_entry_not_a_reading(self):
+        cases = [("accounts", v) for v in (5, "x", {}, None, [5], ["x"])]
+        cases += [(field, v) for field in ("number", "pct", "expectedPct", "scoped")
+                  for v in self.EXTREME]
+        cases += [("number", 1.0), ("number", None), ("resetsAt", 5)]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                reply = json.loads(json.dumps(CSWAP_LIST))
+                if field == "accounts":
+                    reply["accounts"] = value
+                elif field == "number":
+                    reply["accounts"][0]["number"] = value
+                elif field == "scoped":
+                    reply["accounts"][0]["usage"]["scoped"][0]["pct"] = value
+                else:
+                    reply["accounts"][0]["usage"]["sevenDay"][field] = value
+                self.cswap_fixture.write_text(json.dumps(reply), encoding="utf-8")
+                self.out.unlink(missing_ok=True)
+                done = self.run_meter("--no-db")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                (record,) = self.lines()
+                self.assertIsNone(record["accounts"])
+                self.assertIn("unexpected cswap shape", record["errors"]["cswap"])
+                self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
+
+    def test_one_malformed_ledger_entry_cannot_break_the_report(self):
+        good = {"number": 2, "active": True, "status": "ok", "pct": 9.0,
+                "resetsAt": "2099-01-01T03:00:00+00:00", "expectedPct": 5.0,
+                "scoped": {}, "fetchedAt": None}
+        bad_records = [5, "x", None, [], {"ts": 5, "accounts": [good | {"number": 1}]},
+                       {"ts": "2026-10-28T08:00:00Z", "accounts": 5},
+                       {"ts": "2026-10-28T08:00:00Z", "accounts": "xy"},
+                       {"ts": "2026-10-28T08:00:00Z", "accounts": [5, "x", None, []]}]
+        for field in ("number", "pct", "expectedPct", "resetsAt", "fetchedAt"):
+            for value in self.EXTREME + ("9999-12-31T23:59:59+00:00",
+                                         "0001-01-01T00:00:00+00:00", 1e308):
+                bad_records.append({"ts": "2026-10-28T08:00:00Z",
+                                    "accounts": [good | {"number": 1, field: value}]})
+        for bad in bad_records:
+            with self.subTest(bad=bad):
+                with self.out.open("w", encoding="utf-8") as f:
+                    f.write(json.dumps(bad) + "\n")
+                    f.write(json.dumps({"ts": "2026-10-28T08:00:00Z",
+                                        "accounts": [good]}) + "\n")
+                done = self.run_accounts()
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
+                self.assertIn("account 2 (active)", done.stdout)
+                self.assertIn("9% used, 5% expected", done.stdout)
+                self.assertNotIn("nan", done.stdout)
+                self.assertNotIn("inf%", done.stdout)
+
     def test_accounts_on_a_ledger_without_account_readings_says_so(self):
         self.write_ledger([("2026-10-27T16:00:00Z", None)])
         done = self.run_accounts()
