@@ -92,6 +92,24 @@ class HerdrAgentTest(unittest.TestCase):
         self.assertFalse((self.home / f"Library/LaunchAgents/{label}.plist").exists())
         self.assertEqual([call for call in self.calls() if not call.startswith("launchctl print")], [])
 
+    def test_a_profile_that_still_names_cswap_auto_never_installs_it(self):
+        """sd:7323: `cswap.sh sync` replaced the always-on `cswap auto`
+        agent, and sync boots out one it finds. A profile line left behind
+        must not install it again for sync to boot out each minute."""
+        label = "local.system-tools.cswap-auto"
+        (self.config / "machine-setup/profiles/personal.agent").write_text(label + "\n")
+        agents = self.config / "machine-setup/launchagents"
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / f"{label}.plist").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>'
+            f"<key>Label</key><string>{label}</string></dict></plist>\n")
+
+        out = self.run_stage("--apply")
+
+        self.assertIn(f"DIFFERS {label} — retired (sd:7323)", out)
+        self.assertFalse((self.home / f"Library/LaunchAgents/{label}.plist").exists())
+        self.assertEqual([call for call in self.calls() if not call.startswith("launchctl print")], [])
+
     def test_an_exit_0_that_names_no_service_is_not_brew_herdr(self):
         """Evidence: a print that names no service, as a stub's bare
         `exit 0`, reports no drift."""

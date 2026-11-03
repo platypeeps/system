@@ -371,7 +371,8 @@ case "$SUITE_LEG" in
     # adding a verb to it. It stubs bun and sysctl, so Linux runs it.
     run_suite statusline "$PYTHON" local-statusline/tests/test_statusline.py -v
     # cswap.sh has no test verb; the suite is named directly, like
-    # statusline above. It stubs launchctl, so Linux runs it.
+    # statusline above. It fakes cswap, sd, sd-db and launchctl, so
+    # Linux runs it.
     run_suite cswap "$PYTHON" local-cswap/tests/test_cswap.py -v
     # clickhouse.sh and falkordb.sh take no test verb; the suites are
     # named directly. They stub docker, so Linux runs them.
