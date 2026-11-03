@@ -522,9 +522,9 @@ with an MCP initialize and restarts the agent once when that goes unanswered.
   exports the variable since the hook shipped; until 2026-09-11 nothing here
   did. `JOB_COMMAND` jobs are untouched. `./cron-jobs.sh test` is the check:
   a fake `CLAUDE_BIN` records the environment it was started with.
-- Auth: uses the `claude` CLI's stored account. **cswap-auto rotates accounts**
-  (see `local-cswap`) — a job that fires right after a switch runs on whatever
-  account is active. Skills pinned to one account's connectors (Notion, Drive)
+- Auth: uses the `claude` CLI's stored account. **The cswap-sync job switches
+  accounts** (see `local-cswap`) — a job that fires right after a switch runs
+  on whatever account is active. Skills pinned to one account's connectors (Notion, Drive)
   may fail on the wrong account; that surfaces as a failure report.
 - claude.ai-hosted connectors that need interactive re-auth will fail
   headlessly — re-auth in an interactive session, the cron run picks it up.
