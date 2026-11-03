@@ -6443,9 +6443,15 @@ cmd_upgrade() {
       for mas_id in $mas_ids; do
         mas_name=$(printf '%s\n' "$mas_list" | awk -v id="$mas_id" '$1 == id { print; exit }' |
           sed -e 's/^ *[0-9]* *//' -e 's/ *([^()]*)$//')
-        if [ "$APPLY" -eq 1 ] && ! st_mas_quit "$APPLICATIONS_DIR" "$mas_id" "$mas_name"; then
+        quit_rc=0
+        [ "$APPLY" -ne 1 ] || st_mas_quit "$APPLICATIONS_DIR" "$mas_id" "$mas_name" || quit_rc=$?
+        if [ "$quit_rc" -eq 1 ]; then
           echo "  FAILED  $mas_name did not quit within ${ST_MAS_QUIT_WAIT:-15} s; mas upgrade $mas_id skipped"
           failed="$failed, mas upgrade $mas_id ($mas_name did not quit)"
+        elif [ "$quit_rc" -ne 0 ]; then
+          # It may hold documents, and a TERM skips its save flow.
+          echo "  FAILED  $mas_name is running; quit it and the next run upgrades it"
+          failed="$failed, mas upgrade $mas_id ($mas_name is running)"
         elif [ -n "$mas_path" ]; then
           sweep_step "mas upgrade $mas_id (askpass)" "$MAS_APP_BOUND" sudo -A "$mas_path" upgrade "$mas_id"
         else

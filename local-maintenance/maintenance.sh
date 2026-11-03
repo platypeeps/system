@@ -418,8 +418,14 @@ if command -v mas >/dev/null 2>&1; then
       name=$(echo "$app" | sed -e 's/^ *[0-9]* *//' -e 's/ *([^()]*)$//')
       # A running app makes the installer ask, and no one answers under
       # launchd (sd:7330): it quits first, and opens again after.
-      if ! st_mas_quit "$mas_apps" "$id" "$name"; then
+      quit_rc=0
+      st_mas_quit "$mas_apps" "$id" "$name" || quit_rc=$?
+      if [ "$quit_rc" -eq 1 ]; then
         finding "App Store upgrade skipped: $name: it did not quit within ${ST_MAS_QUIT_WAIT:-15} s" \
+          "App Store upgrade skipped: $name"
+      elif [ "$quit_rc" -ne 0 ]; then
+        # It may hold documents, and a TERM skips its save flow.
+        finding "App Store upgrade skipped: $name is running; quit it and the next run upgrades it" \
           "App Store upgrade skipped: $name"
       # mas upgrades as root and reads SUDO_UID for whose apps they are.
       elif ! st_step "$mas_bound" sudo -A mas upgrade "$id" < /dev/null > "$TMPD/mas.out" 2>&1; then
