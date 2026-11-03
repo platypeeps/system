@@ -10,7 +10,7 @@ paths:
   - Config inside a daemon's own state (a tailscale serve config, anything under `/Library/<vendor>`) vanishes when its provider changes.
   - When a migration swaps a service's provider, enumerate what the service was holding.
 - `local-machine-setup/profile-autocapture.sh` does not answer `help` inside eight seconds; bound any probe of it.
-- Name a cron job in `profiles/<profile>.cron` or put it in `cron-jobs/jobs/<host>/`: the cron stage uninstalls a `cron-jobs.sh install`ed job that neither lists.
+- Name a cron job in `profiles/<profile>.cron` or put it in `cron-jobs/jobs/<host>/`: the cron stage reports an installed job neither lists as `DIFFERS`, and uninstalls it once its job file is gone (sd:7335).
 - Profiles, dotfiles, envs and LaunchAgent templates live in `$SYSTEM_TOOLS_CONFIG/machine-setup/`; never commit them here, only `examples/`.
 - Tests read `tests/fixtures/config`, never the operator's config; set `SYSTEM_TOOLS_CONFIG` in every case that runs the script.
 - Call `fixture_config.seal` in a case with a stubs folder: real `defaults` and `sudo` read the Mac whatever `HOME` says.
