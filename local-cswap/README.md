@@ -23,7 +23,7 @@ It then prints `SD_REPORT_ATTENTION: data safe, one step failed: cswap sync <ste
 Each `cswap`, `sd` and `sd-db` call runs under `lib/bounded.sh`.
 
 `sys.cswap_account` is declared in the repository's `sd-plugin.json`, so `sd config get|set` reads and writes it as a database row, over the tailnet on a satellite.
-The `sys` plugin must be registered on every machine: `sd plugin list` names it.
+The `sys` plugin must be registered on every machine: machine-setup's `repos` stage registers it, and `sd plugin list` names it.
 
 ## Usage
 

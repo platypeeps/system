@@ -1649,6 +1649,73 @@ stage_repos() {
   fi
   local_blocks
   leak_guards
+  sys_plugin
+}
+
+# This checkout as an sd plugin (sd:7352): local-cswap's sync reads
+# sys.cswap_account through `sd config get`, which refuses a prefix no plugin
+# registered. Registration lives in each machine's own config, hub and
+# satellite alike, so this stage, which every profile runs, adds it. The main
+# checkout, as leak_guards names it: a worktree's path dies with the worktree.
+# sd stores the resolved path, so a row naming it resolved is ours too. A row
+# for the prefix from another root is reported, never replaced: sd has no
+# remove verb, and the operator picks the checkout. A failed list is SKIP,
+# never MISSING.
+sys_plugin() {
+  . "$ROOT/lib/config.sh"
+  if ! sp_main=$(st_main_checkout "$ROOT"); then
+    echo "  SKIP    sys sd plugin: git cannot name the main checkout of $ROOT"
+    return 0
+  fi
+  sp_prefix=$(sed -n 's/^ *"prefix": *"\([a-z0-9-]*\)".*/\1/p' "$sp_main/sd-plugin.json" 2>/dev/null | head -1)
+  if [ -z "$sp_prefix" ]; then
+    echo "  SKIP    sys sd plugin: $sp_main has no sd-plugin.json with a prefix"
+    return 0
+  fi
+  sp_sd="$SD_PACK_ROOT/bin/sd"
+  if [ ! -x "$sp_sd" ]; then
+    echo "  SKIP    $sp_prefix sd plugin: no $sp_sd; the next run adds it once the pack is here"
+    return 0
+  fi
+  sp_rc=0
+  sp_rows=$(bound_step 60 "$sp_sd" plugin list 2>/dev/null) || sp_rc=$?
+  if [ "$sp_rc" -ne 0 ]; then
+    echo "  SKIP    $sp_prefix sd plugin: sd plugin list failed (exit $sp_rc); the next run asks again"
+    return 0
+  fi
+  sp_real=$(cd "$sp_main" && pwd -P)
+  sp_found=
+  sp_other=
+  # `<prefix>  <root>[  <detail>]`; `?` is an unreadable root's prefix.
+  while IFS= read -r sp_row; do
+    case $sp_row in *"  "*) ;; *) continue ;; esac
+    sp_have=${sp_row%%  *}
+    sp_root=${sp_row#*  }
+    sp_root=${sp_root%%  *}
+    if [ "$sp_root" = "$sp_main" ] || [ "$sp_root" = "$sp_real" ]; then
+      sp_found=$sp_have
+    elif [ "$sp_have" = "$sp_prefix" ]; then
+      # Resolved for this prefix's rows alone: another root may sit on a
+      # share that does not answer.
+      if [ "$(cd "$sp_root" 2>/dev/null && pwd -P)" = "$sp_real" ]; then
+        sp_found=$sp_have
+      else
+        sp_other=$sp_root
+      fi
+    fi
+  done <<EOF
+$sp_rows
+EOF
+  if [ "$sp_found" = "$sp_prefix" ]; then
+    echo "  ok      $sp_prefix sd plugin from $sp_main"
+  elif [ -n "$sp_found" ]; then
+    echo "  DIFFERS $sp_prefix sd plugin: sd plugin list reads $sp_main as '$sp_found'; run \`sd plugin list\` to see why"
+  elif [ -n "$sp_other" ]; then
+    echo "  DIFFERS $sp_prefix sd plugin is registered from $sp_other, not $sp_main; remove that root from \`plugins\` in the pack's config.json, then rerun"
+  else
+    echo "  MISSING $sp_prefix sd plugin: $sp_main is not registered"
+    run bound_step 60 "$sp_sd" plugin add "$sp_main"
+  fi
 }
 
 # Whether GitHub serves a repository's refs to anyone: `public`, `private`,
