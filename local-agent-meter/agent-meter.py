@@ -163,10 +163,24 @@ def run_json(cmd, timeout, echo=True):
 
 
 def is_number(value):
-    """A real, finite number: not a bool, a string, NaN or an infinity.
-    `json.loads` accepts NaN and Infinity, so a JSON reply can hold them."""
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value))
+    """A real, finite number: not a bool, a string, NaN or an infinity,
+    and no int past a float's range (10**400), which `isfinite` and `%f`
+    cannot convert. `json.loads` accepts NaN, Infinity and such ints."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+#: A slot number is small and positive; 10**400 is not a slot.
+MAX_SLOT = 2**31
+
+
+def is_slot(value):
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and 0 < value < MAX_SLOT)
 
 
 def is_pct(value):
@@ -187,8 +201,8 @@ def account_entry(account):
     a finite number, a time that is not a string) raises TypeError,
     failing the whole read: one bad field makes the reply unknown."""
     number = account["number"]
-    if not isinstance(number, int) or isinstance(number, bool):
-        raise TypeError("account number is not an integer")
+    if not is_slot(number):
+        raise TypeError("account number is not a slot number")
     usage = account.get("usage") or {}
     week = usage.get("sevenDay") or {}
     entry = {"number": number, "active": bool(account.get("active")),
@@ -421,7 +435,7 @@ def report_accounts(a) -> None:
             try:
                 number, pct, reset = account["number"], account.get("pct"), account.get("resetsAt")
                 expected = account.get("expectedPct")
-                if not isinstance(number, int) or isinstance(number, bool):
+                if not is_slot(number):
                     continue
                 if not (is_number(pct) and is_pct(expected)) or not reset:
                     continue

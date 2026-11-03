@@ -502,13 +502,14 @@ class MeterRun(unittest.TestCase):
     #: Values no pct, expectedPct or number may hold. NaN and Infinity
     #: are here because `json.loads` accepts them.
     EXTREME = ("27", True, False, float("nan"), float("inf"), float("-inf"),
-               [], {}, [27])
+               [], {}, [27], 10**400, -10**400)
 
     def test_a_malformed_cswap_value_is_an_error_entry_not_a_reading(self):
         cases = [("accounts", v) for v in (5, "x", {}, None, [5], ["x"])]
         cases += [(field, v) for field in ("number", "pct", "expectedPct", "scoped")
                   for v in self.EXTREME]
-        cases += [("number", 1.0), ("number", None), ("resetsAt", 5)]
+        cases += [("number", 1.0), ("number", None), ("number", 0), ("number", -1),
+                  ("number", 2**31), ("resetsAt", 5)]
         for field, value in cases:
             with self.subTest(field=field, value=value):
                 reply = json.loads(json.dumps(CSWAP_LIST))
