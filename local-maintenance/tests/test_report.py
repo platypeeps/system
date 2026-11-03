@@ -389,11 +389,12 @@ print(str(v).lower() if isinstance(v, bool) else v)' "$2" "$6"
 class RunningAppTest(Harness):
     """sd:7330: the App Store installer puts up a dialog for an app that
     runs, and nothing under launchd answers it, so PeakHour, a menu-bar
-    app, failed its upgrade each night. `run` sends a running menu-bar or
-    background app TERM before its upgrade and opens it again after,
-    upgraded or not; one that does not exit is not upgraded, never
-    KILLed. An app that may hold documents is not quit: TERM skips its
-    save flow, so its upgrade waits for the operator."""
+    app, failed its upgrade each night. `run` sends a running app TERM
+    before its upgrade and opens it again after, upgraded or not, only
+    when the operator named its id in MAS_QUIT_APP_IDS in shared.env: a
+    TERM can lose unsaved state. Any other running app is not upgraded,
+    and the report asks the operator to quit it. One that does not exit
+    is not upgraded, never KILLed."""
 
     def setUp(self):
         super().setUp()
@@ -401,7 +402,8 @@ class RunningAppTest(Harness):
         exe = self.bundle / "Contents" / "MacOS" / "PeakHour"
         _stub(exe, "exit 0\n")
         self.exe = exe
-        self.info(LSUIElement=True)
+        self.info()
+        self.shared('MAS_QUIT_APP_IDS="1560576252"\n')
         # Spotlight's App Store id for a bundle is its Contents/adamid file.
         _stub(self.bin / "mdls", '[ "$1 $2 $3" = "-raw -name kMDItemAppStoreAdamID" ] || exit 2\n'
               'cat "$4/Contents/adamid" 2>/dev/null || printf "(null)"\n')
@@ -429,6 +431,10 @@ esac
 exit 0
 ''')
         _stub(self.bin / "sudo", f'echo "$*" >> "{self.sudo_calls}"\n[ "$1" = -A ] && shift\nexec "$@"\n')
+
+    def shared(self, text):
+        """<config>/shared.env, where MAS_QUIT_APP_IDS lives."""
+        (self.config / "shared.env").write_text(text)
 
     def info(self, **keys):
         """The bundle's Info.plist: its executable, and KEYS."""
@@ -515,13 +521,16 @@ exit 0
                 app.kill()
                 app.wait()
 
-    def test_a_running_app_that_may_hold_documents_is_left_alone(self):
-        """No LSUIElement or LSBackgroundOnly set true: the app has a Dock
-        icon and may hold documents, so it gets no TERM and no upgrade."""
-        for keys in ({}, {"LSUIElement": False}, {"LSUIElement": "0"}):
-            with self.subTest(keys=keys):
+    def test_a_running_app_not_in_the_list_is_left_alone(self):
+        """A TERM can lose unsaved state, even in a menu-bar app: an app
+        whose id the operator did not name gets no TERM and no upgrade."""
+        self.info(LSUIElement=True)
+        for text in ('MAS_QUIT_APP_IDS="434808346 15605762520"\n', 'MAS_QUIT_APP_IDS=""\n', None):
+            with self.subTest(text=text):
                 self.seen.unlink(missing_ok=True)
-                self.info(**keys)
+                (self.config / "shared.env").unlink(missing_ok=True)
+                if text is not None:
+                    self.shared(text)
                 app = self.start_app()
                 run = self.maintenance("# nothing to check\n")
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
@@ -533,13 +542,28 @@ exit 0
                 app.kill()
                 app.wait()
 
-    def test_a_background_only_app_quits_as_a_menu_bar_app_does(self):
-        self.info(LSBackgroundOnly=True)
+    def test_a_listed_app_quits_whatever_its_info_plist_says(self):
+        """The operator's list decides, not LSUIElement."""
         app = self.start_app()
         run = self.maintenance("# nothing to check\n")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertTrue(self.gone(app))
         self.assertEqual(self.seen_at_upgrade(), ["quit"])
+
+    def test_an_entry_that_is_no_id_is_reported_and_runs_nothing(self):
+        """An entry that is not a number is a finding, and reaches no
+        command; the ids beside it still count."""
+        self.shared("MAS_QUIT_APP_IDS='12ab * 1560576252 $(touch pwned)'\n")
+        app = self.start_app()
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue(self.gone(app))
+        found = [line for line in run.stdout.splitlines() if line.startswith("- MAS_QUIT_APP_IDS")]
+        self.assertEqual(found, ["- MAS_QUIT_APP_IDS in shared.env: not an App Store id: 12ab",
+                                 "- MAS_QUIT_APP_IDS in shared.env: not an App Store id: *",
+                                 "- MAS_QUIT_APP_IDS in shared.env: not an App Store id: $(touch",
+                                 "- MAS_QUIT_APP_IDS in shared.env: not an App Store id: pwned)"])
+        self.assertFalse((self.tmp / "pwned").exists())
 
     def test_a_look_alike_process_gets_no_signal(self):
         """Only a process whose executable is the bundle's own, by its full

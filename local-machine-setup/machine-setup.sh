@@ -6442,10 +6442,16 @@ cmd_upgrade() {
         export SUDO_ASKPASS
       fi
       # A running app makes the installer ask, and no one answers in an
-      # unattended run (sd:7330): lib/mas_app.sh quits it first and opens
-      # it again after. A dry run quits nothing.
+      # unattended run (sd:7330): lib/mas_app.sh quits one the operator
+      # listed in MAS_QUIT_APP_IDS first and opens it again after. A dry
+      # run quits nothing.
       command -v st_bounded >/dev/null 2>&1 || . "$ROOT/lib/bounded.sh"
       command -v st_mas_quit >/dev/null 2>&1 || . "$ROOT/lib/mas_app.sh"
+      mas_bad=$(st_mas_bad_ids)
+      if [ -n "$mas_bad" ]; then
+        printf '%s\n' "$mas_bad" | sed 's/^/  FAILED  MAS_QUIT_APP_IDS in shared.env: not an App Store id: /'
+        failed="$failed, MAS_QUIT_APP_IDS"
+      fi
       for mas_id in $mas_ids; do
         mas_name=$(printf '%s\n' "$mas_list" | awk -v id="$mas_id" '$1 == id { print; exit }' |
           sed -e 's/^ *[0-9]* *//' -e 's/ *([^()]*)$//')
@@ -6455,7 +6461,7 @@ cmd_upgrade() {
           echo "  FAILED  $mas_name did not quit within ${ST_MAS_QUIT_WAIT:-15} s; mas upgrade $mas_id skipped"
           failed="$failed, mas upgrade $mas_id ($mas_name did not quit)"
         elif [ "$quit_rc" -ne 0 ]; then
-          # It may hold documents, and a TERM skips its save flow.
+          # Not listed: a TERM can lose its unsaved state.
           echo "  FAILED  $mas_name is running; quit it and the next run upgrades it"
           failed="$failed, mas upgrade $mas_id ($mas_name is running)"
         elif [ -n "$mas_path" ]; then
