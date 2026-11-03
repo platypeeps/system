@@ -154,6 +154,31 @@ next_chunk() ( # list cursor out
     name > after { print name; if (++n >= max) exit }' "$1" > "$3"
 )
 
+# The names a chunk's rsync errors say went missing, when that is all they
+# say: openrsync's "rsync(<pid>): error: <name>: stat: No such file or
+# directory" or rsync's 'file has vanished: "<name>"'. A Google Drive file
+# can go between the listing and its chunk; openrsync copies the rest of the
+# chunk and exits 23 (sd:7321). Fails on any other line, on no name, on a
+# name not in the chunk, and on a name the source holds again: a read error
+# the source can still answer is a failure, not a vanished file.
+vanished_names() ( # err chunk
+  LC_ALL=C; export LC_ALL
+  awk '
+    /^rsync\([0-9]+\): error: .*: stat: No such file or directory$/ {
+      sub(/^rsync\([0-9]+\): error: /, ""); sub(/: stat: No such file or directory$/, ""); print; next }
+    /^file has vanished: ".*"$/ { print substr($0, 21, length($0) - 21); next }
+    /^rsync warning: some files vanished before they could be transferred / { next }
+    { bad = 1; exit }
+    END { exit bad }' "$1" > "$1.names" || exit 1
+  [ -s "$1.names" ] || exit 1
+  while IFS= read -r name; do
+    name=${name#"$SRC"/}
+    grep -qxF -e "$name" "$2" || exit 1
+    [ ! -e "$SRC/$name" ] || exit 1
+    printf '%s\n' "$name"
+  done < "$1.names"
+)
+
 hour=$(date +%H | sed 's/^0//'); hour="${NAS_COPY_HOUR:-$hour}"
 if [ "$hour" -lt "$START_HOUR" ] && [ "$hour" -ge "$END_HOUR" ]; then
   say "skipped: ${hour}h is outside the ${START_HOUR}:00-0${END_HOUR}:00 window"
@@ -196,8 +221,9 @@ find "$LOG_DIR" -type f -name '*.err' -mtime +"$KEEP_LOG_DAYS" -delete 2>/dev/nu
 # rsync per chunk after the cursor, until the list ends (rc 0), the window
 # closes, or a chunk fails. A failed attempt is retried until the retries
 # run out, too little window is left after the wait, or a volume is gone.
-# The cursor moves only after a chunk ends with 0: a stop between the two
-# copies that chunk again, which costs lookups and skips nothing.
+# The cursor moves only after a chunk ends with 0, or with only vanished
+# files: a stop between the two copies that chunk again, which costs lookups
+# and skips nothing.
 attempt=0
 files=0
 names="$LOG_DIR/names"; chunk="$LOG_DIR/chunk"
@@ -223,8 +249,23 @@ while :; do
     # No -p: the SMB share keeps no modes, so -p re-set every file's mode each
     # night (134k of 187k changes on 2026-10-10) and the window closed before new files.
     caffeinate -i "$TIMEOUT" --kill-after=120 "$secs" "$RSYNC" -lt -0 --files-from="$chunk.0" \
-      --itemize-changes --stats "$SRC/" "$DST/" >> "$log" 2>> "$err"
+      --itemize-changes --stats "$SRC/" "$DST/" >> "$log" 2> "$chunk.stderr"
     rc=$?
+    cat "$chunk.stderr" >> "$err"
+    # rc 24 is rsync's "some files vanished"; a 23 counts only when every
+    # error is a vanished file (sd:7321). The next pass lists them again.
+    case $rc in 23|24)
+      if gone=$(vanished_names "$chunk.stderr" "$chunk"); then
+        count=$(printf '%s\n' "$gone" | wc -l | tr -d ' ')
+        { echo "vanished before rsync read them, left for the next pass: $count names"
+          printf '%s\n' "$gone" | cat -v; } >> "$err"
+        say "rsync rc=$rc: $count names vanished before rsync read them; listed in $err"
+        rc=0
+      elif [ "$rc" -eq 24 ]; then
+        say "rsync rc=24: some files vanished before rsync read them; see $err"
+        rc=0
+      fi ;;
+    esac
     [ "$rc" -eq 0 ] || break
     tail -n 1 "$chunk" > "$STATE_DIR/cursor.new" && mv "$STATE_DIR/cursor.new" "$STATE_DIR/cursor" \
       || { rc=1; break; }
