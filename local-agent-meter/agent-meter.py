@@ -385,12 +385,17 @@ def collect(a) -> None:
     if rtk:
         data, err = run_json([rtk, "gain", "--format", "json"], a.timeout)
         if err is None:
-            record["rtk"] = data
             s = data.get("summary") if isinstance(data, dict) else None
             s = s if isinstance(s, dict) else {}
             # A value that is not a finite number is unset ("?"), not a crash
             # that loses the reading: rtk's JSON can hold a huge int or text.
             saved, pct = s.get("total_saved"), s.get("avg_savings_pct")
+            # The ledger keeps these two numbers and nothing else of rtk's
+            # answer, which can also hold project paths.
+            record["rtk"] = {"summary": {
+                key: value for key, value in
+                (("total_saved", saved), ("avg_savings_pct", pct))
+                if is_number(value)}}
             brief.append("rtk saved %s (%s%%)"
                          % ("%.1fM" % (saved / 1e6) if is_number(saved) else "?",
                             "%.1f" % pct if is_number(pct) else "?"))

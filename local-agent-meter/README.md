@@ -30,6 +30,9 @@ the pace numbers. codexbar also reports the account's email, id, login method an
 organization; none of them reaches the ledger. An error's message goes to `errors`
 with any email in it replaced by `<email>`.
 
+From `rtk gain` the ledger keeps `summary.total_saved` and `summary.avg_savings_pct`
+(sd:7344), each only when it is a finite number.
+
 ## Claude accounts
 
 Since sd:7322 every reading also carries `accounts`, one entry per Claude account

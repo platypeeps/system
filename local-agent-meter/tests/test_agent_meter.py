@@ -530,6 +530,33 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("rtk saved 2.5M (12.5%)", done.stdout)
 
+    # sd:7344: the ledger keeps the two rtk fields the brief reads.
+
+    def test_only_the_rtk_fields_the_brief_reads_reach_the_ledger(self):
+        done = self.run_with_rtk(json.dumps({
+            "project": "/Users/someone/example.test/project",
+            "user": "who@example.test",
+            "summary": {"total_saved": 2500000, "avg_savings_pct": 12.5,
+                        "total_commands": 40, "cwd": "/home/example.test",
+                        "email": "who@example.test"},
+            "daily": [{"date": "2026-11-03", "project": "/srv/example.test"}]}))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        text = self.out.read_text(encoding="utf-8")
+        self.assertNotIn("example.test", text)
+        self.assertNotIn("/Users/", text)
+        (record,) = self.lines()
+        self.assertEqual(record["rtk"], {"summary": {"total_saved": 2500000,
+                                                     "avg_savings_pct": 12.5}})
+        self.assertIn("rtk saved 2.5M (12.5%)", done.stdout)
+
+    def test_a_non_number_rtk_field_is_not_copied_into_the_ledger(self):
+        done = self.run_with_rtk('{"summary": {"total_saved": "/home/example.test",'
+                                 ' "avg_savings_pct": 12.5}}')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["rtk"], {"summary": {"avg_savings_pct": 12.5}})
+        self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
+
     # The `accounts` answer: used at reset per past window, pace now.
 
     def run_accounts(self, *args):
