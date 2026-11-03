@@ -55,6 +55,15 @@ fi
 """
 
 
+def until(check, what, seconds=20):
+    """Poll `check` until it is true; past `seconds`, fail naming `what`."""
+    deadline = time.monotonic() + seconds
+    while not check():
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"timed out waiting for {what}")
+        time.sleep(0.05)
+
+
 class DrainFixture(PinFixture):
     def __init__(self):
         super().__init__()
@@ -73,6 +82,15 @@ class DrainFixture(PinFixture):
                                 stdout=subprocess.PIPE, text=True)
         self.assert_line(proc.stdout.readline(), "locked")
         return proc
+
+    def start(self, *args, extra_env=None):
+        """Start repo-sync.sh `args` with `run`'s environment and return the
+        process, its stderr merged into its stdout; `run` waits for the end."""
+        self.started = True
+        try:
+            return self.run(*args, expect=None, extra_env=extra_env)
+        finally:
+            self.started = False
 
     @staticmethod
     def assert_line(line, want):
@@ -127,17 +145,38 @@ class DrainTest(unittest.TestCase):
 
     def test_a_held_lock_makes_refresh_wait_then_proceed(self):
         """NEW. A busy lane holds its runner lock; refresh says it waits on
-        that lane, and moves the checkout once the runner lets go."""
+        that lane, and moves the checkout once the runner lets go.
+        REGRESSION (sd:7339): the runner held the lock for a fixed 2 s, and
+        on a loaded machine the drain reached the lock after that, found it
+        free and printed no wait. The runner now lets go only once the
+        refresh has said it waits."""
         f = self.fixture()
-        repo, _, new = f.pinned_behind()
+        repo, before, new = f.pinned_behind()
         lock = f.lane("busy-repo")
-        self.holder(f, lock, 2)
+        runner = self.holder(f, lock, 600)
+        refresh = f.start("refresh")
+        self.addCleanup(lambda: (refresh.kill(), refresh.wait(), refresh.stdout.close()))
+        lines = []
 
-        started = time.monotonic()
-        result = f.run("refresh", expect=0)
+        def read():
+            for line in refresh.stdout:
+                lines.append(line)
 
-        self.assertGreaterEqual(time.monotonic() - started, 1.5)
-        self.assertIn("waiting for lane busy-repo", result.stdout)
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        want = "waiting for lane busy-repo"
+        until(lambda: refresh.poll() is not None or any(want in line for line in lines),
+              f"refresh to print {want!r}", seconds=120)
+        if refresh.poll() is not None:
+            reader.join(60)  # it ended without the line: show all it said
+
+        self.assertIn(want, "".join(lines))
+        self.assertEqual(before, f.head(repo))
+        runner.kill()
+        runner.wait()
+        code = refresh.wait(timeout=120)
+        reader.join(60)
+        self.assertEqual(0, code, "".join(lines))
         self.assertEqual(new, f.head(repo))
 
     def test_a_lock_held_past_the_bound_refuses_and_moves_nothing(self):
@@ -527,14 +566,6 @@ class TwoDrainsTest(unittest.TestCase):
         self.addCleanup(thread.join, 60)
         return pidfile, thread, results
 
-    @staticmethod
-    def until(check, what, seconds=20):
-        deadline = time.monotonic() + seconds
-        while not check():
-            if time.monotonic() >= deadline:
-                raise AssertionError(f"timed out waiting for {what}")
-            time.sleep(0.05)
-
     def test_a_manual_refresh_and_a_post_merge_refresh_both_finish(self):
         """NEW. The incident: a runner holds the system lane's lock, and the
         manual refresh A holds every other lane's lock and waits for it. The
@@ -550,14 +581,14 @@ class TwoDrainsTest(unittest.TestCase):
         self.addCleanup(lambda: (runner.kill(), runner.wait(), runner.stdout.close()))
 
         a_pid, a, a_result = self.start(f, "a", "15")
-        self.until(lambda: a_pid.exists() and f.state(other) == "held", "A to hold the other lane")
+        until(lambda: a_pid.exists() and f.state(other) == "held", "A to hold the other lane")
         pid = int(a_pid.read_text())
         os.kill(pid, signal.SIGSTOP)
         self.addCleanup(lambda: os.kill(pid, signal.SIGCONT) if a.is_alive() else None)
         runner.kill()
         runner.wait()
         b_pid, b, b_result = self.start(f, "b", "15")
-        self.until(b_pid.exists, "B to start its drain")
+        until(b_pid.exists, "B to start its drain")
         time.sleep(1)  # B's first pass follows its registry read at once
         os.kill(pid, signal.SIGCONT)
         a.join(60)
