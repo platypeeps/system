@@ -2127,9 +2127,15 @@ stage_agents() {
     # template may sit in the config folder. Never install or start it: it
     # would contend with a terminal's server for the socket. Unloading it
     # ends every session, so that is the operator's step.
+    # The cswap-auto agent rotated each machine's account on its own; the
+    # cswap-sync job replaced it, and its `cswap.sh sync` boots out one it
+    # finds. Installing it again would only fight that (sd:7323).
     case $label in
       *.herdr)
         echo "  DIFFERS $label — retired (sd:6466); drop it from the profile, delete $HOME/Library/LaunchAgents/$label.plist, and let logout unload it (unloading now ends every herdr session)"
+        continue ;;
+      *.cswap-auto)
+        echo "  DIFFERS $label — retired (sd:7323); drop it from the profile and delete $AGENT_DIR/$label.plist; the cswap-sync job replaces it and boots out a loaded one"
         continue ;;
     esac
     # A guard: no satellite profile lists a hub-only agent today, and one

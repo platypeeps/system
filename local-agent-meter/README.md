@@ -1,7 +1,8 @@
 # local-agent-meter
 
 Appends one agent-usage reading to a JSONL ledger every four hours: `codexbar usage`
-per provider (claude, codex) and `rtk gain` for token-proxy savings.
+per provider (claude, codex), each cswap account's seven-day use, and `rtk gain` for
+token-proxy savings.
 
 The ledger is, in order: `--out`, else `AGENT_METER_FILE` (exported, or set in
 `<config>/agent-meter/.env`; copy `.env.example`), else
@@ -20,6 +21,27 @@ transaction; the JSONL line then records `sd_db.rows`, or `errors.sd_db` when th
 library could not be imported or the database could not be opened, or
 `errors.sd_db.<provider>.<window>` when one sample was refused. Nothing about the
 rows changes the exit, which stays 0.
+
+## Claude accounts
+
+Since sd:7322 every reading also carries `accounts`, one entry per Claude account
+that `cswap list --json` manages: its slot `number`, `active`, the seven-day `pct`,
+`resetsAt` and `expectedPct`, the `scoped` per-model pcts by name, `status` and
+`fetchedAt`. The script copies those fields only; the email, organization name and
+UUID never reach the ledger. A missing or failing cswap is `accounts: null` and
+`errors.cswap`, without cswap's output, and the exit stays 0. `CSWAP_BIN` names the
+binary, as in `local-cswap/cswap-auto.conf`; else PATH, then `~/.local/bin`.
+
+    ./agent-meter.py accounts              # per account: pace now, use at each reset
+
+`accounts` prints, per account, the current window's pct against its expected pace,
+and per past window the pct of the last reading before its reset. A reading every
+four hours can miss up to four hours before a reset, so that number is a lower
+bound, printed with how long before the reset it was read. The key is the slot
+number: `cswap swap` and `cswap move` change it.
+
+There are no per-account `meter` rows: `sd_db.sample` refuses a provider its
+registry does not name, so a name such as `claude#1` needs a pack change first.
 
 ## Run
 

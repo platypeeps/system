@@ -1,4 +1,10 @@
 {
   "prefix": "sys",
-  "interface": 1
+  "interface": 1,
+  "config": {
+    "cswap_account": {
+      "description": "The organizationUuid of the Claude account every machine uses (local-cswap, sd:7323). The hub's `cswap.sh sync` writes it after its `cswap auto` tick; every other machine's switches to its own account with that id. Unset until the hub's first sync.",
+      "pattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    }
+  }
 }

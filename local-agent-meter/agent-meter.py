@@ -32,12 +32,30 @@ so no copy installed in the interpreter answers in its place. With no
 `lib/sd_db` there, the import fails into `errors.sd_db` and the JSONL half
 still lands, which is the point of the try.
 
+Since sd:7322 each reading also carries `accounts`: per Claude account that
+`cswap list --json` manages, keyed by its slot number, the seven-day `pct`,
+`resetsAt`, `expectedPct`, the `scoped` (per-model) pcts by name, `active`,
+`status` and `fetchedAt`. Only those fields are copied: no email, no
+organization name, no UUID. A cswap that is missing or fails is
+`accounts: null` and `errors.cswap`, with none of its output, since the
+human list it may print holds emails. `CSWAP_BIN` names the binary, else
+PATH and the BIN_DIRS below. No `meter` rows per account: `sd_db.sample`
+takes only providers its registry names (pack change, not this script).
+
+`agent-meter.py accounts` reads the ledger and prints, per account, the
+current window's pct against its expected pace and, per past window, the
+pct used at reset: the last reading before the reset. Readings come every
+4 h, so that is a lower bound, printed with how long before the reset it
+was read. Slot numbers follow `cswap swap` and `cswap move`.
+
   agent-meter.py [--out PATH] [--db PATH | --no-db] [--providers claude,codex] [--timeout S]
+  agent-meter.py accounts [--out PATH]
 """
 
 import argparse
 import datetime
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -121,20 +139,107 @@ def prior_ts(path):
     return None
 
 
-def run_json(cmd, timeout):
-    """Run cmd, parse stdout as JSON. Returns (data, error) — exactly one set."""
+def run_json(cmd, timeout, echo=True):
+    """Run cmd, parse stdout as JSON. Returns (data, error) — exactly one set.
+
+    `echo=False` keeps the command's output out of the error, for a command
+    whose output may hold personal values (cswap's human list has emails)."""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return None, "timeout after %ds" % timeout
     except OSError as e:
-        return None, str(e)
+        return None, str(e) if echo else type(e).__name__
     if r.returncode != 0:
+        if not echo:
+            return None, "exit %d" % r.returncode
         return None, "exit %d: %s" % (r.returncode, (r.stderr or r.stdout).strip()[:500])
     try:
         return json.loads(r.stdout), None
     except ValueError:
+        if not echo:
+            return None, "unparseable output"
         return None, "unparseable output: %s" % r.stdout.strip()[:500]
+
+
+def is_number(value):
+    """A real, finite number: not a bool, a string, NaN or an infinity,
+    and no int past a float's range (10**400), which `isfinite` and `%f`
+    cannot convert. `json.loads` accepts NaN, Infinity and such ints."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+#: A slot number is small and positive; 10**400 is not a slot.
+MAX_SLOT = 2**31
+
+
+def is_slot(value):
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and 0 < value < MAX_SLOT)
+
+
+def is_pct(value):
+    """None (no window yet) or a finite number."""
+    return value is None or is_number(value)
+
+
+def is_time(value):
+    return value is None or isinstance(value, str)
+
+
+def account_entry(account):
+    """The fields of one cswap account the ledger keeps, and no other.
+
+    A whitelist on purpose: cswap's entry also holds the email, the
+    organization name and its UUID, and none of them may reach the ledger.
+    A malformed value (a number that is not an integer, a pct that is not
+    a finite number, a time that is not a string) raises TypeError,
+    failing the whole read: one bad field makes the reply unknown."""
+    number = account["number"]
+    if not is_slot(number):
+        raise TypeError("account number is not a slot number")
+    usage = account.get("usage") or {}
+    week = usage.get("sevenDay") or {}
+    entry = {"number": number, "active": bool(account.get("active")),
+             "status": account.get("usageStatus"),
+             "pct": week.get("pct"), "resetsAt": week.get("resetsAt"),
+             "expectedPct": week.get("expectedPct"),
+             "scoped": {s["name"]: s.get("pct") for s in usage.get("scoped") or []
+                        if isinstance(s, dict) and isinstance(s.get("name"), str)},
+             "fetchedAt": account.get("usageFetchedAt")}
+    pcts = [entry["pct"], entry["expectedPct"], *entry["scoped"].values()]
+    if not all(is_pct(value) for value in pcts):
+        raise TypeError("a pct is not a finite number")
+    if not (is_time(entry["resetsAt"]) and is_time(entry["fetchedAt"])
+            and is_time(entry["status"])):
+        raise TypeError("a time or status is not a string")
+    return entry
+
+
+def read_accounts(timeout):
+    """`cswap list --json` as account entries. Returns (accounts, error).
+
+    A failure is (None, reason): unknown, not an empty list. The reason
+    never carries cswap's output (see `run_json`'s `echo`)."""
+    cswap = os.environ.get("CSWAP_BIN") or find_bin("cswap")
+    if not cswap or not os.access(cswap, os.X_OK):
+        return None, "cswap binary not found" + (" at %s" % cswap if cswap else "")
+    data, err = run_json([cswap, "list", "--json"], timeout, echo=False)
+    if err is not None:
+        return None, err
+    try:
+        accounts = data["accounts"]
+        if not isinstance(accounts, list):
+            raise TypeError("accounts is not a list")
+        return [account_entry(account) for account in accounts], None
+    except (TypeError, KeyError, AttributeError) as e:
+        # The exception's class only: a message can quote a value.
+        return None, "unexpected cswap shape: %s" % type(e).__name__
 
 
 def write_rows(record, a) -> None:
@@ -200,7 +305,7 @@ def write_rows(record, a) -> None:
 def collect(a) -> None:
     record = {"ts": datetime.datetime.now(datetime.timezone.utc)
                                      .strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "codexbar": {}, "rtk": None, "errors": {}}
+              "codexbar": {}, "accounts": None, "rtk": None, "errors": {}}
     brief = []
 
     codexbar = find_bin("codexbar")
@@ -225,6 +330,14 @@ def collect(a) -> None:
         else:
             record["errors"]["codexbar." + prov] = err or "empty response"
             brief.append("%s ERR" % prov)
+
+    accounts, err = read_accounts(a.timeout)
+    record["accounts"] = accounts
+    if err is None:
+        brief.append("cswap %d accounts" % len(accounts))
+    else:
+        record["errors"]["cswap"] = err
+        brief.append("cswap ERR")
 
     rtk = find_bin("rtk")
     if rtk:
@@ -278,9 +391,102 @@ def collect(a) -> None:
     # a partially failed reading is still a reading; exit 0 so cron stays quiet
 
 
+def parse_time(text):
+    """An ISO time, `Z` or offset, fractional seconds or none, as UTC."""
+    return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(
+        datetime.timezone.utc)
+
+
+def window_key(reset):
+    """resetsAt to the nearest minute: cswap's value jitters by fractions
+    of a second between readings of one window."""
+    return (reset + datetime.timedelta(seconds=30)).replace(second=0, microsecond=0)
+
+
+def local(moment):
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+
+def report_accounts(a) -> None:
+    """Per account: the current window's pace, then each past window's
+    pct at reset (the last reading before it), newest first."""
+    out = os.path.expanduser(a.out)
+    try:
+        with open(out, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError as e:
+        print("agent-meter: cannot read the ledger %s: %s" % (out, e.strerror or e),
+              file=sys.stderr)
+        sys.exit(1)
+    windows = {}   # number -> {reset: (read_at, pct, expectedPct)}
+    active = {}    # number -> (read_at, active) of its latest reading
+    # Skip, never raise: one malformed reading costs that reading only.
+    malformed = (ValueError, KeyError, TypeError, AttributeError, OverflowError)
+    for line in lines:
+        try:
+            record = json.loads(line)
+            stamp = record["ts"]
+            accounts = record.get("accounts") or []
+            if not isinstance(accounts, list):
+                continue
+        except malformed:
+            continue
+        for account in accounts:
+            try:
+                number, pct, reset = account["number"], account.get("pct"), account.get("resetsAt")
+                expected = account.get("expectedPct")
+                if not is_slot(number):
+                    continue
+                if not (is_number(pct) and is_pct(expected)) or not reset:
+                    continue
+                read_at = parse_time(account.get("fetchedAt") or stamp)
+                key = window_key(parse_time(reset))
+                # Both print in local time; a date at the edge of the
+                # calendar overflows there, so try it here.
+                local(key), local(read_at)
+                (key - read_at).total_seconds()
+            except malformed:
+                continue
+            seen = windows.setdefault(number, {}).get(key)
+            if seen is None or read_at >= seen[0]:
+                windows[number][key] = (read_at, pct, expected)
+            if number not in active or read_at >= active[number][0]:
+                active[number] = (read_at, bool(account.get("active")))
+    if not windows:
+        print("agent-meter: no account readings in %s" % out)
+        return
+    now = datetime.datetime.now(datetime.timezone.utc)
+    print("agent-meter accounts: %s" % out)
+    print("Readings come every 4 h: \"used\" is the last reading before the reset,")
+    print("a lower bound; use after that reading is not in the ledger.")
+    for number in sorted(windows):
+        print()
+        print("account %s%s" % (number, " (active)" if active[number][1] else ""))
+        for reset in sorted(windows[number], reverse=True):
+            read_at, pct, expected = windows[number][reset]
+            if reset > now:
+                print("  now  resets %s  %s%% used, %s%% expected (read %s)"
+                      % (local(reset), fmt_pct(pct), fmt_pct(expected), local(read_at)))
+            else:
+                # A reading fetched after its own reset is the API's stale
+                # answer; say so rather than print a negative gap.
+                gap = (reset - read_at).total_seconds() / 3600
+                print("  reset %s  used >= %s%% (last read %.1f h %s)"
+                      % (local(reset), fmt_pct(pct), abs(gap),
+                         "before" if gap >= 0 else "after"))
+
+
+def fmt_pct(value):
+    return "?" if value is None else "%.0f" % value
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="agent-meter.py", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("command", nargs="?", choices=["accounts"],
+                   help="accounts: per cswap account, the pct used at each "
+                        "past 7-day reset and the current pace; omit to "
+                        "append one reading")
     p.add_argument("--out", default=default_out(),
                    help="JSONL ledger to append to (default: %(default)s)")
     p.add_argument("--providers", default=",".join(PROVIDERS),
@@ -293,7 +499,11 @@ def main() -> None:
                             "(default: %s, sd_db's own default)" % DEFAULT_DB)
     where.add_argument("--no-db", action="store_true",
                        help="write the JSONL line only, no meter rows")
-    collect(p.parse_args())
+    a = p.parse_args()
+    if a.command == "accounts":
+        report_accounts(a)
+    else:
+        collect(a)
 
 
 if __name__ == "__main__":
