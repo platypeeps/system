@@ -61,7 +61,8 @@ def launcher_faults(path):
 class LauncherTest(unittest.TestCase):
     def test_every_shipped_template_starts_an_apple_shell_that_stays(self):
         found = templates()
-        self.assertGreaterEqual(len(found), 4, found)
+        # kev, uv-cache-prune, sd-serve: cswap-auto's went with sd:7323.
+        self.assertGreaterEqual(len(found), 3, found)
         faults = {path.relative_to(REPO).as_posix(): launcher_faults(path) for path in found}
         self.assertEqual({name: why for name, why in faults.items() if why}, {})
 
