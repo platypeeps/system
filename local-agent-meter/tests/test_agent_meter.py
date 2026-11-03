@@ -72,6 +72,49 @@ done
 cat "$CODEXBAR_FIXTURES/$provider.json"
 """
 
+#: One `cswap list --json` answer in the live shape: per account its
+#: number, email, organization and the seven-day window with its scoped
+#: (per-model) windows. The email, organization name and UUID are what
+#: the ledger must never hold.
+CSWAP_LIST = {
+    "schemaVersion": 1,
+    "activeAccountNumber": 2,
+    "accounts": [
+        {"number": 1, "email": "first@example.test",
+         "organizationName": "Example Org One",
+         "organizationUuid": "00000000-0000-4000-8000-000000000001",
+         "isOrganization": True, "active": False, "usageStatus": "ok",
+         "usage": {
+             "sevenDay": {"pct": 27.0, "resetsAt": "2026-11-03T18:00:00.222257+00:00",
+                          "countdown": "3h 49m", "expectedPct": 97.7,
+                          "aheadOfPace": False, "willLastToReset": True},
+             "scoped": [{"pct": 5.0, "resetsAt": "2026-11-03T18:00:00+00:00",
+                         "expectedPct": 97.7, "name": "Fable"}]},
+         "usageFetchedAt": "2026-11-03T14:07:07Z", "usageAgeSeconds": 212.7},
+        {"number": 2, "email": "second@example.test",
+         "organizationName": "Example Org Two",
+         "organizationUuid": "00000000-0000-4000-8000-000000000002",
+         "isOrganization": True, "active": True, "usageStatus": "ok",
+         "usage": {
+             "sevenDay": {"pct": 67.0, "resetsAt": "2026-11-04T03:00:00+00:00",
+                          "expectedPct": 92.3},
+             "scoped": []},
+         "usageFetchedAt": "2026-11-03T14:05:15Z"},
+    ],
+    "unclaimedCredentials": ["20260807T151943-000000000000-000000"],
+}
+
+#: Every value from the fixture that must stay out of the ledger.
+PRIVATE = ("example.test", "Example Org", "00000000-0000-4000-8000",
+           "20260807T151943")
+
+CSWAP = """\
+#!/bin/sh
+# A cswap that answers `list --json` from a file.
+[ "$1 $2" = "list --json" ] || { echo "unexpected: $*" >&2; exit 2; }
+cat "$CSWAP_FIXTURE"
+"""
+
 RTK = """\
 #!/bin/sh
 echo "rtk: stubbed out in the agent-meter suite" >&2
@@ -92,6 +135,11 @@ class MeterRun(unittest.TestCase):
             (self.fixtures / f"{name}.json").write_text(json.dumps(reading), encoding="utf-8")
         self.executable(self.bin / "codexbar", CODEXBAR)
         self.executable(self.bin / "rtk", RTK)
+        self.cswap = root / "cswap-bin" / "cswap"
+        self.cswap.parent.mkdir()
+        self.executable(self.cswap, CSWAP)
+        self.cswap_fixture = self.fixtures / "cswap.json"
+        self.cswap_fixture.write_text(json.dumps(CSWAP_LIST), encoding="utf-8")
         self.out = root / "ledger" / "meter.jsonl"
         self.out.parent.mkdir()
         # A store as `sd-db init` makes one, with the registry beside it as
@@ -121,6 +169,9 @@ class MeterRun(unittest.TestCase):
             env["SD_PACK_ROOT"] = str(pack)
         env["PATH"] = os.pathsep.join([str(self.bin), env.get("PATH", "/usr/bin:/bin")])
         env["CODEXBAR_FIXTURES"] = str(self.fixtures)
+        # Never the real cswap under ~/.local/bin: its answer holds emails.
+        env["CSWAP_BIN"] = str(self.cswap)
+        env["CSWAP_FIXTURE"] = str(self.cswap_fixture)
         if pythonpath is not None:
             env["PYTHONPATH"] = pythonpath
         return subprocess.run(
@@ -272,7 +323,8 @@ class MeterRun(unittest.TestCase):
         (config / "agent-meter" / ".env").write_text(f"AGENT_METER_FILE={self.out}\n", encoding="utf-8")
         env = dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config), AGENT_METER_FILE="",
                    PATH=os.pathsep.join([str(self.bin), os.environ.get("PATH", "/usr/bin:/bin")]),
-                   CODEXBAR_FIXTURES=str(self.fixtures))
+                   CODEXBAR_FIXTURES=str(self.fixtures), CSWAP_BIN=str(self.cswap),
+                   CSWAP_FIXTURE=str(self.cswap_fixture))
         done = subprocess.run([sys.executable, str(SCRIPT), "--no-db", "--timeout", "10"],
                               capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -321,6 +373,208 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(record["sd_db"], {"rows": 2})
         self.assertIn("codexbar.codex", record["errors"])
         self.assertEqual([row[0] for row in self.meter_rows()], ["claude", "claude"])
+
+    # sd:7322: each cswap account, keyed by number, on every reading.
+
+    def test_a_reading_records_each_cswap_account_by_number(self):
+        done = self.run_meter("--no-db")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertNotIn("cswap", record["errors"])
+        self.assertEqual(record["accounts"], [
+            {"number": 1, "active": False, "status": "ok", "pct": 27.0,
+             "resetsAt": "2026-11-03T18:00:00.222257+00:00", "expectedPct": 97.7,
+             "scoped": {"Fable": 5.0}, "fetchedAt": "2026-11-03T14:07:07Z"},
+            {"number": 2, "active": True, "status": "ok", "pct": 67.0,
+             "resetsAt": "2026-11-04T03:00:00+00:00", "expectedPct": 92.3,
+             "scoped": {}, "fetchedAt": "2026-11-03T14:05:15Z"},
+        ])
+        self.assertIn("cswap 2 accounts", done.stdout)
+
+    def test_no_email_organization_or_uuid_reaches_the_ledger(self):
+        done = self.run_meter("--db", str(self.db))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        text = self.out.read_text(encoding="utf-8")
+        self.assertIn('"accounts"', text)
+        for value in PRIVATE:
+            self.assertNotIn(value, text)
+            self.assertNotIn(value, done.stdout + done.stderr)
+
+    def test_a_failing_cswap_is_an_error_entry_without_its_output(self):
+        """A failed list is unknown, not zero accounts; and its output,
+        which may be the human list with emails, stays out of the ledger."""
+        self.executable(self.cswap, "#!/bin/sh\n"
+                        "echo '1 first@example.test Example Org One' >&2\nexit 1\n")
+        done = self.run_meter("--no-db")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertIsNone(record["accounts"])
+        self.assertEqual(record["errors"]["cswap"], "exit 1")
+        self.assertEqual(record["codexbar"]["claude"]["usage"]["primary"]["usedPercent"], 61)
+        self.assertIn("cswap ERR", done.stdout)
+        for value in PRIVATE:
+            self.assertNotIn(value, self.out.read_text(encoding="utf-8"))
+
+    def test_unparseable_cswap_output_is_an_error_entry_without_the_text(self):
+        self.cswap_fixture.write_text("1 first@example.test Example Org One\n",
+                                      encoding="utf-8")
+        done = self.run_meter("--no-db")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertIsNone(record["accounts"])
+        self.assertEqual(record["errors"]["cswap"], "unparseable output")
+        self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
+
+    def test_a_missing_cswap_is_an_error_entry_and_exit_0(self):
+        self.cswap.unlink()
+        done = self.run_meter("--no-db")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertIsNone(record["accounts"])
+        self.assertIn("cswap binary not found", record["errors"]["cswap"])
+
+    def test_an_account_without_a_number_fails_the_read_not_the_run(self):
+        broken = json.loads(json.dumps(CSWAP_LIST))
+        del broken["accounts"][1]["number"]
+        self.cswap_fixture.write_text(json.dumps(broken), encoding="utf-8")
+        done = self.run_meter("--no-db")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertIsNone(record["accounts"])
+        self.assertIn("unexpected cswap shape", record["errors"]["cswap"])
+        self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
+
+    # The `accounts` answer: used at reset per past window, pace now.
+
+    def run_accounts(self, *args):
+        env = dict(os.environ, TZ="UTC")
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "accounts", "--out", str(self.out), *args],
+            capture_output=True, text=True, env=env, timeout=60)
+
+    def write_ledger(self, readings):
+        """readings: (ts, [(number, active, pct, resetsAt, expectedPct)])"""
+        with self.out.open("w", encoding="utf-8") as f:
+            for ts, accounts in readings:
+                f.write(json.dumps({"ts": ts, "accounts": None if accounts is None else [
+                    {"number": n, "active": act, "status": "ok", "pct": pct,
+                     "resetsAt": reset, "expectedPct": exp, "scoped": {}, "fetchedAt": None}
+                    for n, act, pct, reset, exp in accounts]}) + "\n")
+            f.write("{not json\n")
+
+    def test_accounts_reports_used_at_reset_and_the_current_pace(self):
+        past = "2026-10-28T03:00:00.895156+00:00"
+        jitter = "2026-10-28T03:00:00.000001+00:00"
+        future = "2099-01-01T03:00:00+00:00"
+        self.write_ledger([
+            ("2026-10-27T16:00:00Z", [(1, True, 70.0, past, 90.0), (2, False, 10.0, jitter, 90.0)]),
+            ("2026-10-27T20:00:00Z", [(1, True, 81.0, jitter, 95.0), (2, False, 12.0, past, 95.0)]),
+            ("2026-10-28T00:00:00Z", None),
+            ("2026-10-28T04:00:00Z", [(1, False, 3.0, future, 1.0), (2, True, 0.0, future, 1.0)]),
+            ("2026-10-28T08:00:00Z", [(1, False, 4.0, future, 5.0), (2, True, 9.0, future, 5.0)]),
+        ])
+        done = self.run_accounts()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        out = done.stdout
+        self.assertIn("lower bound", out)
+        self.assertIn("account 1\n", out)
+        self.assertIn("account 2 (active)\n", out)
+        # The last reading before the reset, read 7 h before it.
+        self.assertIn("reset 2026-10-28 03:00 UTC  used >= 81% (last read 7.0 h before)", out)
+        self.assertIn("reset 2026-10-28 03:00 UTC  used >= 12% (last read 7.0 h before)", out)
+        self.assertIn("now  resets 2099-01-01 03:00 UTC  4% used, 5% expected "
+                      "(read 2026-10-28 08:00 UTC)", out)
+        self.assertIn("9% used, 5% expected", out)
+        # One past window per account, not one per jittered resetsAt.
+        self.assertEqual(out.count("reset 2026-10-28"), 2)
+        self.assertLess(out.index("account 1"), out.index("account 2"))
+
+    def test_a_reading_after_its_own_reset_says_after_not_a_negative_gap(self):
+        self.write_ledger([("2026-10-28T05:00:00Z",
+                            [(1, False, 40.0, "2026-10-28T03:00:00Z", 99.0)])])
+        done = self.run_accounts()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("used >= 40% (last read 2.0 h after)", done.stdout)
+        self.assertNotIn("-2.0", done.stdout)
+
+    # Malformed values, collector and report (review of 5295f10e).
+
+    #: Values no pct, expectedPct or number may hold. NaN and Infinity
+    #: are here because `json.loads` accepts them.
+    EXTREME = ("27", True, False, float("nan"), float("inf"), float("-inf"),
+               [], {}, [27], 10**400, -10**400)
+
+    def test_a_malformed_cswap_value_is_an_error_entry_not_a_reading(self):
+        cases = [("accounts", v) for v in (5, "x", {}, None, [5], ["x"])]
+        cases += [(field, v) for field in ("number", "pct", "expectedPct", "scoped")
+                  for v in self.EXTREME]
+        cases += [("number", 1.0), ("number", None), ("number", 0), ("number", -1),
+                  ("number", 2**31), ("resetsAt", 5)]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                reply = json.loads(json.dumps(CSWAP_LIST))
+                if field == "accounts":
+                    reply["accounts"] = value
+                elif field == "number":
+                    reply["accounts"][0]["number"] = value
+                elif field == "scoped":
+                    reply["accounts"][0]["usage"]["scoped"][0]["pct"] = value
+                else:
+                    reply["accounts"][0]["usage"]["sevenDay"][field] = value
+                self.cswap_fixture.write_text(json.dumps(reply), encoding="utf-8")
+                self.out.unlink(missing_ok=True)
+                done = self.run_meter("--no-db")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                (record,) = self.lines()
+                self.assertIsNone(record["accounts"])
+                self.assertIn("unexpected cswap shape", record["errors"]["cswap"])
+                self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
+
+    def test_one_malformed_ledger_entry_cannot_break_the_report(self):
+        good = {"number": 2, "active": True, "status": "ok", "pct": 9.0,
+                "resetsAt": "2099-01-01T03:00:00+00:00", "expectedPct": 5.0,
+                "scoped": {}, "fetchedAt": None}
+        bad_records = [5, "x", None, [], {"ts": 5, "accounts": [good | {"number": 1}]},
+                       {"ts": "2026-10-28T08:00:00Z", "accounts": 5},
+                       {"ts": "2026-10-28T08:00:00Z", "accounts": "xy"},
+                       {"ts": "2026-10-28T08:00:00Z", "accounts": [5, "x", None, []]}]
+        for field in ("number", "pct", "expectedPct", "resetsAt", "fetchedAt"):
+            for value in self.EXTREME + ("9999-12-31T23:59:59+00:00",
+                                         "0001-01-01T00:00:00+00:00", 1e308):
+                bad_records.append({"ts": "2026-10-28T08:00:00Z",
+                                    "accounts": [good | {"number": 1, field: value}]})
+        for bad in bad_records:
+            with self.subTest(bad=bad):
+                with self.out.open("w", encoding="utf-8") as f:
+                    f.write(json.dumps(bad) + "\n")
+                    f.write(json.dumps({"ts": "2026-10-28T08:00:00Z",
+                                        "accounts": [good]}) + "\n")
+                done = self.run_accounts()
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
+                self.assertIn("account 2 (active)", done.stdout)
+                self.assertIn("9% used, 5% expected", done.stdout)
+                self.assertNotIn("nan", done.stdout)
+                self.assertNotIn("inf%", done.stdout)
+
+    def test_accounts_on_a_ledger_without_account_readings_says_so(self):
+        self.write_ledger([("2026-10-27T16:00:00Z", None)])
+        done = self.run_accounts()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("no account readings", done.stdout)
+
+    def test_accounts_on_a_missing_ledger_exits_1(self):
+        done = self.run_accounts()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn(str(self.out), done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
+
+    def test_help_names_the_accounts_subcommand(self):
+        done = subprocess.run([sys.executable, str(SCRIPT), "--help"],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("accounts", done.stdout)
+        self.assertIn("used at reset", done.stdout)
 
 
 if __name__ == "__main__":
