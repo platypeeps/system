@@ -57,6 +57,7 @@ import datetime
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -242,6 +243,42 @@ def read_accounts(timeout):
         return None, "unexpected cswap shape: %s" % type(e).__name__
 
 
+#: The codexbar fields the ledger keeps, and no other. A whitelist on purpose:
+#: an entry also holds the account's email, id, login method and organization
+#: (`account`, `usage.accountEmail`, `usage.identity`, `usage.loginMethod`),
+#: and the ledger is snapshotted into another repository. `True` keeps a
+#: scalar leaf, a dict keeps those keys of a dict, a list holds a dict spec
+#: for each item. Free text is out (`pace.*.summary`); an error's message lives in `errors`, not the entry.
+_WINDOW = {"usedPercent": True, "windowMinutes": True, "resetsAt": True}
+CODEXBAR_KEEP = {
+    "provider": True, "source": True, "version": True,
+    "usage": {
+        "primary": _WINDOW, "secondary": _WINDOW, "tertiary": _WINDOW,
+        "updatedAt": True,
+        "extraRateWindows": [{"id": True, "title": True, "window": _WINDOW}],
+    },
+    "pace": {w: {"stage": True, "deltaPercent": True, "expectedUsedPercent": True,
+                 "willLastToReset": True}
+             for w in WINDOWS},
+    "rateWindowLabels": {w: True for w in WINDOWS},
+}
+
+
+EMAIL = re.compile(r"\S+@\S+")
+
+
+def keep_fields(value, spec):
+    """value cut down to spec; a field of another shape is dropped, not copied."""
+    if spec is True:
+        return value if value is None or isinstance(value, (str, int, float, bool)) else None
+    if isinstance(spec, list):
+        return ([keep_fields(item, spec[0]) for item in value]
+                if isinstance(value, list) else None)
+    if not isinstance(value, dict):
+        return None
+    return {key: keep_fields(value[key], sub) for key, sub in spec.items() if key in value}
+
+
 def write_rows(record, a) -> None:
     """One `meter` cost row per provider per window, or the reason there is none.
 
@@ -317,12 +354,17 @@ def collect(a) -> None:
         data, err = run_json(
             [codexbar, "usage", "--format", "json", "--provider", prov], a.timeout)
         if err is None and isinstance(data, list) and data:
-            entry = data[0]
+            raw = data[0] if isinstance(data[0], dict) else {}
+            entry = keep_fields(raw, CODEXBAR_KEEP) or {}
             record["codexbar"][prov] = entry
             usage = entry.get("usage") or {}
             pri = (usage.get("primary") or {}).get("usedPercent")
             sec = (usage.get("secondary") or {}).get("usedPercent")
-            err = (entry.get("error") or {}).get("message")
+            failure = raw.get("error")
+            err = failure.get("message") if isinstance(failure, dict) else None
+            if isinstance(err, str):
+                # A message can quote the account it failed for.
+                err = EMAIL.sub("<email>", err)
             brief.append("%s %s%%/%s%%" % (prov, pri, sec) if err is None
                          else "%s ERR" % prov)
             if err is not None:

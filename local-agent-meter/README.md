@@ -22,6 +22,14 @@ library could not be imported or the database could not be opened, or
 `errors.sd_db.<provider>.<window>` when one sample was refused. Nothing about the
 rows changes the exit, which stays 0.
 
+## What the ledger keeps from codexbar
+
+Since sd:7325 each provider entry is cut to a list of fields (`CODEXBAR_KEEP`):
+the provider, source, the three rate windows, `updatedAt`, the extra windows and
+the pace numbers. codexbar also reports the account's email, id, login method and
+organization; none of them reaches the ledger. An error's message goes to `errors`
+with any email in it replaced by `<email>`.
+
 ## Claude accounts
 
 Since sd:7322 every reading also carries `accounts`, one entry per Claude account

@@ -444,6 +444,49 @@ class MeterRun(unittest.TestCase):
         self.assertIn("unexpected cswap shape", record["errors"]["cswap"])
         self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
 
+    # sd:7325: codexbar's entry holds the account's identity in several places.
+
+    def test_no_codexbar_identity_field_reaches_the_ledger(self):
+        reading = json.loads(json.dumps(READINGS["claude"]))
+        entry = reading[0]
+        entry["account"] = "who@example.test"
+        entry["usage"]["accountEmail"] = "who@example.test"
+        entry["usage"]["loginMethod"] = "Max (Example Org)"
+        entry["usage"]["identity"] = {
+            "accountEmail": "who@example.test", "accountID": "acct-example-1",
+            "loginMethod": "Max", "providerID": "claude"}
+        entry["usage"]["organizationName"] = "Example Org Three"
+        entry["usage"]["primary"]["accountName"] = "Example Person"
+        entry["pace"] = {"secondary": {"stage": "behind", "deltaPercent": -3,
+                                        "expectedUsedPercent": 40,
+                                        "willLastToReset": True,
+                                        "summary": "who@example.test is behind"}}
+        (self.fixtures / "claude.json").write_text(json.dumps(reading), encoding="utf-8")
+        done = self.run_meter("--no-db")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        text = self.out.read_text(encoding="utf-8")
+        for value in ("example.test", "Example", "acct-example-1", "Max"):
+            self.assertNotIn(value, text)
+            self.assertNotIn(value, done.stdout + done.stderr)
+        (record,) = self.lines()
+        kept = record["codexbar"]["claude"]
+        self.assertEqual(kept["provider"], "claude")
+        self.assertEqual(kept["usage"]["primary"]["usedPercent"], 61)
+        self.assertEqual(kept["usage"]["secondary"]["windowMinutes"], 10080)
+        self.assertEqual(kept["pace"]["secondary"]["deltaPercent"], -3)
+
+    def test_a_codexbar_error_entry_keeps_its_message_and_no_identity(self):
+        failed = [{"provider": "claude", "source": "oauth",
+                   "account": "who@example.test",
+                   "error": {"message": "token expired for who@example.test", "code": 7,
+                             "email": "who@example.test"}}]
+        (self.fixtures / "claude.json").write_text(json.dumps(failed), encoding="utf-8")
+        done = self.run_meter("--no-db")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["errors"]["codexbar.claude"], "token expired for <email>")
+        self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
+
     # The `accounts` answer: used at reset per past window, pace now.
 
     def run_accounts(self, *args):
