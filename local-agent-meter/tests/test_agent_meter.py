@@ -487,6 +487,49 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(record["errors"]["codexbar.claude"], "token expired for <email>")
         self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
 
+    # sd:7332: rtk's total_saved is read as a number or not at all.
+
+    def run_with_rtk(self, answer):
+        reply = self.fixtures / "rtk.json"
+        reply.write_text(answer, encoding="utf-8")
+        self.executable(self.bin / "rtk", "#!/bin/sh\ncat '%s'\n" % reply)
+        return self.run_meter("--no-db")
+
+    def test_a_huge_int_or_a_string_in_total_saved_is_unset_not_a_crash(self):
+        for saved in ("1" + "0" * 400, '"lots"', "NaN", "Infinity", "true", "null", "[1]"):
+            with self.subTest(total_saved=saved):
+                self.out.unlink(missing_ok=True)
+                done = self.run_with_rtk(
+                    '{"summary": {"total_saved": %s, "avg_savings_pct": 12.5}}' % saved)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
+                (record,) = self.lines()
+                self.assertNotIn("rtk", record["errors"])
+                self.assertIn("rtk saved ? (12.5%)", done.stdout)
+
+    def test_a_bad_avg_savings_pct_is_unset_too(self):
+        for pct in ("1" + "0" * 400, '"most"', "NaN"):
+            with self.subTest(avg_savings_pct=pct):
+                self.out.unlink(missing_ok=True)
+                done = self.run_with_rtk(
+                    '{"summary": {"total_saved": 2500000, "avg_savings_pct": %s}}' % pct)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn("rtk saved 2.5M (?%)", done.stdout)
+
+    def test_an_rtk_answer_that_is_not_an_object_still_writes_the_line(self):
+        for answer in ("[1, 2]", '{"summary": "none"}', "{}"):
+            with self.subTest(answer=answer):
+                self.out.unlink(missing_ok=True)
+                done = self.run_with_rtk(answer)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
+                self.assertEqual(len(self.lines()), 1)
+
+    def test_a_good_total_saved_prints_as_before(self):
+        done = self.run_with_rtk('{"summary": {"total_saved": 2500000, "avg_savings_pct": 12.5}}')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("rtk saved 2.5M (12.5%)", done.stdout)
+
     # The `accounts` answer: used at reset per past window, pace now.
 
     def run_accounts(self, *args):
