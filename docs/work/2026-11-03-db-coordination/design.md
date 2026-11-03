@@ -85,11 +85,22 @@ S2 and S3 move state in steps.
 
 ## Slices
 
-1. **S1 rules (system).** Rewrite `shared.md` lines for H1, H3, H4 and H5; add the H2 line; change the pin in `test_agent_prompt.py` fail-first. Every machine gets it at its next prompts stage. The operator deletes the two machine-local `SendMessage` lines (H2, H3) from each global file outside the block, or they move into `shared.md` (Q4).
-2. **S2 lane followups (pack).** `note_ended` writes `followup` when the lane host is not the hub. Hub lanes keep `comment`.
-3. **S3 hub requests (pack).** `sd today` Attention on the fence holder lists open items whose ref source is `hub`. S1's H2 line lands with or after this slice.
+Land in this order, so no rule points at a path that does not exist
+yet (sd-review on 748b85cc):
 
-Each slice leaves every machine working: S1 alone keeps today's behaviour for H1 and H2 until S2 and S3 land, since the old notes still exist.
+1. **S2 lane followups (pack sd:7357).** `note_ended` writes
+   `followup` when the lane host is not the hub. Hub lanes keep
+   `comment`.
+2. **S3 hub requests (pack sd:7358).** `sd today` Attention on the
+   fence holder lists open items whose ref source is `hub`.
+3. **S1 rules (system).** Once S2 and S3 are in the pinned pack:
+   rewrite `shared.md` lines for H1, H3, H4 and H5, add the H2 line,
+   change the pin in `test_agent_prompt.py` fail-first, and move the
+   machine-local hop lines into `shared.md` (Q4). Every machine gets
+   it at its next prompts stage.
+
+S2 and S3 change no rule, so each leaves every machine working: the
+remote-session routing stays until S1 removes it.
 
 ## Acceptance criteria
 
@@ -106,9 +117,12 @@ Each slice leaves every machine working: S1 alone keeps today's behaviour for H1
 - The `hub` ref is a convention; a mistyped ref hides a request. S3's test pins the exact source.
 - H5 needs a stage per one-off need, which may feel heavy for a single read. Accepted over a remote-exec row.
 
-## Open questions
+## Decisions
 
-- Q1 H1: followup note on a satellite-hosted lane failure (Recommended), or a row in that host's Operations section.
-- Q2 H2: ref source `hub` read by the hub's Attention (Recommended), or a new item kind.
-- Q3 H5: a stage or job per one-off need (Recommended), or a generic run-on-host setting row.
-- Q4 Machine-local hop lines: move them into `shared.md` so the prompts stage distributes them (Recommended), or the operator edits each machine's file by hand.
+Ruled as recommended on 2026-11-03 (notes #41678 to #41681 on
+sd:7324):
+
+- Q1 H1: a followup note on a satellite-hosted lane failure.
+- Q2 H2: the ref source `hub`, read by the hub's Attention.
+- Q3 H5: a stage or job per one-off need.
+- Q4: move the machine-local hop lines into `shared.md`.
