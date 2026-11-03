@@ -161,6 +161,9 @@ class Fixture:
     that reads a single conf instead of layering on `repos.common.conf`.
     """
 
+    # True only inside a `start`: `run` then returns the running process.
+    started = False
+
     def __init__(self, script=SCRIPT, profile="terra"):
         self.profile = profile
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="repo-sync-test."))
@@ -293,9 +296,14 @@ class Fixture:
                 env.pop(key, None)
             else:
                 env[key] = value
+        command = ["sh", str(self.folder / "repo-sync.sh"), *args]
+        if self.started:
+            # `start` (test_refresh_drain.py): the case reads the output
+            # as it comes, so it waits on a line, not on a timing guess.
+            return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, env=env, cwd=str(self.tmp))
         result = subprocess.run(
-            ["sh", str(self.folder / "repo-sync.sh"), *args],
-            capture_output=True, text=True, env=env, cwd=str(self.tmp),
+            command, capture_output=True, text=True, env=env, cwd=str(self.tmp),
         )
         if expect is not None and result.returncode != expect:
             raise AssertionError(
