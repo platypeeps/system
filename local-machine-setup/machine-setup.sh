@@ -1993,6 +1993,12 @@ stage_cron() {
     host_jobs=
     sweep=0
   fi
+  # A job with a job file is kept by the sweep below (sd:7335), so a list
+  # that cannot be read leaves the sweep unable to tell which to keep.
+  if ! defined_jobs=$(defined_cron_jobs); then
+    echo "  MISSING job file list — could not read a cron-jobs folder; only retired jobs are uninstalled this run"
+    sweep=0
+  fi
   hub_ask
   jobs=$( { manifest cron; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; fi; } | awk 'NF && !seen[$0]++')
   # A retired job stays out of every machine's wanted list, even where a
@@ -2070,6 +2076,12 @@ stage_cron() {
   # words: this stage cannot fix another installer's agent.
   # uninstall derives label and plist from the name alone, so it works even
   # when the .job file itself is gone.
+  # A job whose job file is still here is kept and reported, not swept:
+  # three hub jobs lost their profile lines, and the nightly update
+  # uninstalled them silently; they stayed dead for 11 days (sd:7335).
+  # DIFFERS waits for a person to pick a side, so the nightly report shows it
+  # as an attention line. A hub-only job on a satellite is still swept, as
+  # the agents stage's guard wants none there.
   [ "$sweep" = 1 ] || return 0
   for xp in "$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron."*.plist; do
     [ -e "$xp" ] || continue
@@ -2080,8 +2092,13 @@ stage_cron() {
       owner=0
       cron_plist_ours "$xp" "$xj" || owner=$?
       case "$owner" in
-        0) echo "  EXTRA   $xj — installed but no longer in this profile"
-           cron_jobs uninstall "$xj" ;;
+        0) if printf '%s\n' "$defined_jobs" | grep -qxF "$xj" &&
+              ! { sd_hub_only "$LABEL_PREFIX.cron.$xj" && is_satellite && ! hub_holder; }; then
+             echo "  DIFFERS $xj — has a job file, but neither this profile nor this host's folder names it; left installed: add it to $PROFILE.cron, or run local-cron-jobs/cron-jobs.sh uninstall $xj"
+           else
+             echo "  EXTRA   $xj — installed but no longer in this profile"
+             cron_jobs uninstall "$xj"
+           fi ;;
         1) echo "  FOREIGN $xj — not installed by local-cron-jobs; left in place" ;;
         *) echo "  UNKNOWN $xj — cannot tell who installed it; left in place" ;;
       esac
