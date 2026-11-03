@@ -12,6 +12,7 @@ and `mas` are stubs on PATH.
 import json
 import os
 import pathlib
+import plistlib
 import re
 import shutil
 import signal
@@ -101,16 +102,63 @@ esac
 exit 0
 """
 
+# The process list the pgrep and ps stubs read, at $PROCS: one `<pid>
+# <executable path>` line per process, as `ps -o comm=` gives it on macOS
+# (sd:7330). `pgrep -x NAME` gives the listed pids whose executable is
+# named NAME, and only those; any other pgrep or ps call is the real one.
+# A process the case has not reaped yet is a zombie, and counts as ended.
+ALIVE = r"""alive() {
+  st=$(/bin/ps -o stat= -p "$1" 2>/dev/null) || return 1
+  case $st in Z*) return 1 ;; esac
+}
+"""
+PGREP_STUB = "#!/bin/sh\n" + ALIVE + r"""if [ "$1" = -x ] && [ $# -eq 2 ]; then
+  rc=1
+  while read -r pid path; do
+    [ "${path##*/}" = "$2" ] && alive "$pid" && { echo "$pid"; rc=0; }
+  done < "$PROCS"
+  exit $rc
+fi
+exec /usr/bin/pgrep "$@"
+"""
+PS_STUB = "#!/bin/sh\n" + ALIVE + r"""if [ $# -eq 4 ] && [ "$1 $2 $3" = "-o comm= -p" ]; then
+  while read -r pid path; do
+    [ "$pid" = "$4" ] && alive "$pid" && { echo "$path"; exit 0; }
+  done < "$PROCS"
+  exit 1
+fi
+exec /bin/ps "$@"
+"""
+# `plutil -extract KEY raw -o - FILE` as macOS answers it: a boolean as
+# true or false, and exit 1 for a key the file does not hold.
+PLUTIL_STUB = r"""#!/bin/sh
+[ $# -eq 6 ] && [ "$1 $3 $4 $5" = "-extract raw -o -" ] || exit 2
+exec python3 -c 'import plistlib, sys
+try:
+    v = plistlib.load(open(sys.argv[2], "rb"))[sys.argv[1]]
+except Exception:
+    sys.exit(1)
+print(str(v).lower() if isinstance(v, bool) else v)' "$2" "$6"
+"""
+
 # MAS_OUTDATED is what `mas outdated` prints, MAS_OUTDATED_AFTER what it
-# prints once an upgrade ran, `none` for nothing. MAS_BUILD_FAIL names one call that prints
+# prints once an upgrade ran, `none` for nothing. With MAS_APP_EXE, each
+# upgrade logs in $MAS_LOG.app whether that executable ran (sd:7330). MAS_BUILD_FAIL names one call that prints
 # MAS_BUILD_TEXT on stderr and exits 1 (sd:7071); MAS_HANG one that stalls.
-MAS_STUB = "#!/bin/sh\n" + STALL + r"""echo "$*" >> "$MAS_LOG"
+MAS_STUB = "#!/bin/sh\n" + STALL + ALIVE + r"""echo "$*" >> "$MAS_LOG"
 [ "$*" != "$MAS_FAIL" ] || exit 1
 [ "$*" != "$MAS_HANG" ] || stall
 [ "$*" != "$MAS_BUILD_FAIL" ] || { printf '%s\n' "$MAS_BUILD_TEXT" >&2; exit 1; }
 """ + SUDO_REFUSED.replace("STUB_SUDO\"", "MAS_SUDO\"") + r"""
 case "$*" in
-  upgrade*) : > "$MAS_LOG.upgraded" ;;
+  upgrade*) : > "$MAS_LOG.upgraded"
+            if [ -n "$MAS_APP_EXE" ]; then
+              state=quit
+              while read -r pid path; do
+                [ "$path" = "$MAS_APP_EXE" ] && alive "$pid" && state=running
+              done < "$PROCS"
+              echo $state >> "$MAS_LOG.app"
+            fi ;;
   outdated) if [ -n "$MAS_OUTDATED_AFTER" ] && [ -e "$MAS_LOG.upgraded" ]; then
               [ "$MAS_OUTDATED_AFTER" = none ] || echo "$MAS_OUTDATED_AFTER"
             elif [ -n "$MAS_OUTDATED" ]; then echo "$MAS_OUTDATED"; fi ;;
@@ -776,6 +824,134 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.mas_log.read_text().splitlines(), ["outdated", "upgrade 111", "upgrade 222"])
+
+    def running_app(self, ignores_term=False, quit_ids="111"):
+        """Alpha, App Store id 111, in a folder for /Applications, and a
+        process of its executable (sd:7330). QUIT_IDS is MAS_QUIT_APP_IDS,
+        the ids the operator lets the sweep quit. Spotlight's id for a
+        bundle is its Contents/adamid file; `open` logs each call. Returns
+        the run's extra variables."""
+        apps = self.tmp_path / "Applications"
+        self.bundle = apps / "Alpha.app"
+        self.exe = self.bundle / "Contents/MacOS/Alpha"
+        write_exec(self.exe, "#!/bin/sh\nexit 0\n")
+        (self.bundle / "Contents/adamid").write_text("111")
+        # A menu-bar app, as PeakHour is: the list decides all the same.
+        (self.bundle / "Contents/Info.plist").write_bytes(
+            plistlib.dumps({"CFBundleExecutable": "Alpha", "LSUIElement": True}))
+        write_exec(self.stubs / "mdls", '#!/bin/sh\n[ "$1 $2 $3" = "-raw -name kMDItemAppStoreAdamID" ] || exit 2\n'
+                   'cat "$4/Contents/adamid" 2>/dev/null || printf "(null)"\n')
+        self.procs = self.tmp_path / "procs"
+        self.procs.write_text("")
+        write_exec(self.stubs / "pgrep", PGREP_STUB)
+        write_exec(self.stubs / "ps", PS_STUB)
+        write_exec(self.stubs / "plutil", PLUTIL_STUB)
+        self.opened = self.tmp_path / "open.log"
+        write_exec(self.stubs / "open", f'#!/bin/sh\necho "$*" >> "{self.opened}"\n')
+        self.app = self.start_process(ignores_term)
+        return {"MACHINE_SETUP_APPLICATIONS_DIR": str(apps), "MAS_APP_EXE": str(self.exe),
+                "PROCS": str(self.procs), "MAS_OUTDATED": "111 Alpha (1.0 -> 1.1)",
+                "MAS_QUIT_APP_IDS": quit_ids}
+
+    def start_process(self, ignores_term=False, path=None, listed=True):
+        """A process whose arguments name PATH, the app's executable by
+        default; LISTED puts it in the process list with that path. It
+        says ready once its TERM handling is set."""
+        path = str(path or self.exe)
+        script = '$SIG{TERM} = "IGNORE" if $ARGV[1]; $| = 1; print "ready\\n"; sleep 120'
+        proc = subprocess.Popen(["perl", "-e", script, path, "1" if ignores_term else ""],
+                                stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: proc.poll() is None and (proc.kill(), proc.wait()))
+        self.assertEqual(proc.stdout.readline(), "ready\n")
+        with self.procs.open("a") as procs:
+            procs.write(f"{proc.pid} {path if listed else '/usr/bin/perl'}\n")
+        return proc
+
+    def app_at_upgrade(self):
+        log = pathlib.Path(f"{self.mas_log}.app")
+        return log.read_text().splitlines() if log.exists() else []
+
+    def opens(self):
+        return self.opened.read_text().splitlines() if self.opened.exists() else []
+
+    def test_a_running_app_quits_before_its_upgrade_and_opens_after(self):
+        result = self.run_verb("upgrade", "--apply", **self.running_app())
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.app.wait(timeout=5), -signal.SIGTERM)
+        self.assertEqual(self.app_at_upgrade(), ["quit"])
+        self.assertEqual(self.opens(), [f"-g {self.bundle}"])
+
+    def test_a_failed_upgrade_still_opens_the_app(self):
+        result = self.run_verb("upgrade", "--apply", MAS_FAIL="upgrade 111", **self.running_app())
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed steps: mas upgrade 111\n", result.stdout)
+        self.assertEqual(self.opens(), [f"-g {self.bundle}"])
+
+    def test_an_app_that_does_not_quit_is_skipped_and_named(self):
+        result = self.run_verb("upgrade", "--apply", ST_MAS_QUIT_WAIT="1",
+                               **self.running_app(ignores_term=True))
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("upgrade 111", self.mas_log.read_text().splitlines())
+        self.assertIsNone(self.app.poll(), "the app is never KILLed")
+        self.assertIn("  FAILED  Alpha did not quit within 1 s; mas upgrade 111 skipped\n", result.stdout)
+        self.assertIn("failed steps: mas upgrade 111 (Alpha did not quit)\n", result.stdout)
+
+    def test_a_running_app_not_in_the_list_is_left_alone(self):
+        """sd:7330: a TERM can lose unsaved state, so an app whose id the
+        operator did not list in MAS_QUIT_APP_IDS gets no signal and no
+        upgrade; an empty list quits nothing."""
+        for quit_ids in ("222 1110", ""):
+            with self.subTest(quit_ids=quit_ids):
+                self.mas_log.unlink(missing_ok=True)
+                result = self.run_verb("upgrade", "--apply", **self.running_app(quit_ids=quit_ids))
+
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIsNone(self.app.poll(), "the app got no signal")
+                self.assertNotIn("upgrade 111", self.mas_log.read_text().splitlines())
+                self.assertEqual(self.opens(), [])
+                self.assertIn("  FAILED  Alpha is running; quit it and the next run upgrades it\n",
+                              result.stdout)
+                self.assertIn("failed steps: mas upgrade 111 (Alpha is running)\n", result.stdout)
+                self.app.kill()
+                self.app.wait()
+
+    def test_an_entry_that_is_no_id_is_reported_and_runs_nothing(self):
+        """sd:7330: an entry that is not a number fails the sweep and
+        reaches no command; the ids beside it still count."""
+        result = self.run_verb("upgrade", "--apply", **self.running_app(quit_ids="x1 * 111"))
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.app.wait(timeout=5), -signal.SIGTERM)
+        self.assertIn("  FAILED  MAS_QUIT_APP_IDS in shared.env: not an App Store id: x1\n"
+                      "  FAILED  MAS_QUIT_APP_IDS in shared.env: not an App Store id: *\n", result.stdout)
+        self.assertIn("failed steps: MAS_QUIT_APP_IDS\n", result.stdout)
+
+    def test_a_look_alike_process_gets_no_signal(self):
+        """sd:7330: only the bundle's own executable, by its full path, is
+        the app: not a process whose arguments name that path, and not
+        one of the same name in a copy of the bundle elsewhere."""
+        extra = self.running_app()
+        self.app.kill()
+        self.app.wait()
+        mentions = self.start_process(listed=False)
+        backup = self.start_process(path=f"/Volumes/Backup{self.exe}")
+        result = self.run_verb("upgrade", "--apply", **extra)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIsNone(mentions.poll(), "a process that names the path got a signal")
+        self.assertIsNone(backup.poll(), "a copy elsewhere got a signal")
+        self.assertEqual(self.app_at_upgrade(), ["quit"])
+        self.assertEqual(self.opens(), [])
+
+    def test_a_dry_run_leaves_a_running_app_alone(self):
+        result = self.run_verb("upgrade", **self.running_app())
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIsNone(self.app.poll())
+        self.assertEqual(self.opens(), [])
 
     def test_a_stuck_app_store_download_costs_only_its_own_app(self):
         result = self.run_verb("upgrade", "--apply", MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND),

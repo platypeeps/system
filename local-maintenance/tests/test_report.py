@@ -7,7 +7,9 @@ finding comes from a conf line naming a certificate that does not exist.
 """
 
 import pathlib
+import plistlib
 import shutil
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -56,8 +58,13 @@ exec /bin/date "$@"
         self.config = self.tmp / "config"
         (self.config / "maintenance").mkdir(parents=True)
         (self.tmp / "home").mkdir()
+        # An empty folder for /Applications, so no case finds, quits or
+        # reopens an app of this Mac (sd:7330).
+        self.apps = self.tmp / "Applications"
+        self.apps.mkdir()
         self.env = {"HOME": str(self.tmp / "home"), "PATH": f"{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin",
-                    "SYSTEM_TOOLS_CONFIG": str(self.config), "MAINTENANCE_PROFILE": "none"}
+                    "SYSTEM_TOOLS_CONFIG": str(self.config), "MAINTENANCE_PROFILE": "none",
+                    "MAINTENANCE_APPLICATIONS_DIR": str(self.apps)}
 
     def maintenance(self, conf, verb="run", **extra):
         (self.config / "maintenance" / "maintenance.conf").write_text(conf)
@@ -337,6 +344,239 @@ exit 0
         self.assertEqual(self.upgraded(run), [])
         self.assertIn("- App Store update check failed (mas outdated exit 1)", run.stdout)
 
+
+#: The process list the pgrep and ps stubs read: one `<pid> <executable
+#: path>` line per process, as `ps -o comm=` gives it on macOS; a pid that
+#: ended is not listed. `pgrep -x NAME` gives the pids whose executable is
+#: named NAME, and only those; any other pgrep or ps call is the real one.
+#: A process the test has not reaped yet is a zombie, and counts as ended.
+ALIVE = '''alive() {
+  st=$(/bin/ps -o stat= -p "$1" 2>/dev/null) || return 1
+  case $st in Z*) return 1 ;; esac
+}
+'''
+PROC_STUBS = {
+    "pgrep": ALIVE + '''if [ "$1" = -x ] && [ $# -eq 2 ]; then
+  rc=1
+  while read -r pid path; do
+    [ "${path##*/}" = "$2" ] && alive "$pid" && { echo "$pid"; rc=0; }
+  done < "$PROCS"
+  exit $rc
+fi
+exec /usr/bin/pgrep "$@"
+''',
+    "ps": ALIVE + '''if [ $# -eq 4 ] && [ "$1 $2 $3" = "-o comm= -p" ]; then
+  while read -r pid path; do
+    [ "$pid" = "$4" ] && alive "$pid" && { echo "$path"; exit 0; }
+  done < "$PROCS"
+  exit 1
+fi
+exec /bin/ps "$@"
+''',
+    # `plutil -extract KEY raw -o - FILE` as macOS answers it: a boolean
+    # as true or false, and exit 1 for a key the file does not hold.
+    "plutil": '''[ $# -eq 6 ] && [ "$1 $3 $4 $5" = "-extract raw -o -" ] || exit 2
+exec python3 -c 'import plistlib, sys
+try:
+    v = plistlib.load(open(sys.argv[2], "rb"))[sys.argv[1]]
+except Exception:
+    sys.exit(1)
+print(str(v).lower() if isinstance(v, bool) else v)' "$2" "$6"
+''',
+}
+
+
+class RunningAppTest(Harness):
+    """sd:7330: the App Store installer puts up a dialog for an app that
+    runs, and nothing under launchd answers it, so PeakHour, a menu-bar
+    app, failed its upgrade each night. `run` sends a running app TERM
+    before its upgrade and opens it again after, upgraded or not, only
+    when the operator named its id in MAS_QUIT_APP_IDS in shared.env: a
+    TERM can lose unsaved state. Any other running app is not upgraded,
+    and the report asks the operator to quit it. One that does not exit
+    is not upgraded, never KILLed."""
+
+    def setUp(self):
+        super().setUp()
+        self.bundle = self.apps / "PeakHour.app"
+        exe = self.bundle / "Contents" / "MacOS" / "PeakHour"
+        _stub(exe, "exit 0\n")
+        self.exe = exe
+        self.info()
+        self.shared('MAS_QUIT_APP_IDS="1560576252"\n')
+        # Spotlight's App Store id for a bundle is its Contents/adamid file.
+        _stub(self.bin / "mdls", '[ "$1 $2 $3" = "-raw -name kMDItemAppStoreAdamID" ] || exit 2\n'
+              'cat "$4/Contents/adamid" 2>/dev/null || printf "(null)"\n')
+        (self.bundle / "Contents" / "adamid").write_text("1560576252")
+        self.procs = self.tmp / "procs"
+        self.procs.write_text("")
+        self.env["PROCS"] = str(self.procs)
+        for name, body in PROC_STUBS.items():
+            _stub(self.bin / name, body)
+        self.opened = self.tmp / "open-calls"
+        _stub(self.bin / "open", f'echo "$*" >> "{self.opened}"\n')
+        # mas records whether the app ran when its upgrade started;
+        # UPGRADE_FAILS fails the upgrade.
+        self.seen = self.tmp / "seen-at-upgrade"
+        _stub(self.bin / "mas", ALIVE + f'''case "$1" in
+  outdated) echo "1560576252  PeakHour  (6.2.1 -> 6.2.2)" ;;
+  upgrade)
+    state=quit
+    while read -r pid path; do
+      [ "$path" = "{exe}" ] && alive "$pid" && state=running
+    done < "{self.procs}"
+    echo $state >> "{self.seen}"
+    [ -z "$UPGRADE_FAILS" ] || {{ echo "mas: the installer failed" >&2; exit 1; }} ;;
+esac
+exit 0
+''')
+        _stub(self.bin / "sudo", f'echo "$*" >> "{self.sudo_calls}"\n[ "$1" = -A ] && shift\nexec "$@"\n')
+
+    def shared(self, text):
+        """<config>/shared.env, where MAS_QUIT_APP_IDS lives."""
+        (self.config / "shared.env").write_text(text)
+
+    def info(self, **keys):
+        """The bundle's Info.plist: its executable, and KEYS."""
+        (self.bundle / "Contents" / "Info.plist").write_bytes(
+            plistlib.dumps({"CFBundleExecutable": "PeakHour", **keys}))
+
+    def start_app(self, ignores_term=False, path=None, listed=True):
+        """A process whose arguments name PATH, the app's executable by
+        default; LISTED puts it in the process list with that path, as
+        `ps -o comm=` gives it. It says ready once its TERM handling is set."""
+        path = str(path or self.exe)
+        script = ('$SIG{TERM} = "IGNORE" if $ARGV[1]; $| = 1; print "ready\\n"; sleep 120')
+        proc = subprocess.Popen(["perl", "-e", script, path, "1" if ignores_term else ""],
+                                stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: proc.poll() is None and (proc.send_signal(signal.SIGKILL), proc.wait()))
+        self.assertEqual(proc.stdout.readline(), "ready\n")
+        with self.procs.open("a") as procs:
+            procs.write(f"{proc.pid} {path if listed else '/usr/bin/perl'}\n")
+        return proc
+
+    def gone(self, proc):
+        """The app ended within a few seconds."""
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
+    def opens(self):
+        return self.opened.read_text().splitlines() if self.opened.exists() else []
+
+    def seen_at_upgrade(self):
+        return self.seen.read_text().splitlines() if self.seen.exists() else []
+
+    def test_a_running_app_quits_before_its_upgrade_and_opens_after(self):
+        app = self.start_app()
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue(self.gone(app))
+        self.assertEqual(app.returncode, -signal.SIGTERM)
+        self.assertEqual(self.seen_at_upgrade(), ["quit"])
+        self.assertEqual(self.opens(), [f"-g {self.bundle}"])
+        self.assertNotIn("App Store upgrade", "\n".join(self.attention(run)).replace("updates pending", ""))
+
+    def test_an_app_that_does_not_run_is_not_opened(self):
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(self.seen_at_upgrade(), ["quit"])
+        self.assertEqual(self.opens(), [])
+
+    def test_a_failed_upgrade_still_opens_the_app(self):
+        app = self.start_app()
+        run = self.maintenance("# nothing to check\n", UPGRADE_FAILS="1")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue(self.gone(app))
+        self.assertIn("- App Store upgrade failed: PeakHour: mas: the installer failed", run.stdout)
+        self.assertEqual(self.opens(), [f"-g {self.bundle}"])
+
+    def test_an_app_that_does_not_quit_is_skipped_and_named(self):
+        app = self.start_app(ignores_term=True)
+        run = self.maintenance("# nothing to check\n", ST_MAS_QUIT_WAIT="1")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(self.seen_at_upgrade(), [], "no upgrade runs while the app does")
+        self.assertIsNone(app.poll(), "the app is never KILLed")
+        self.assertIn("- App Store upgrade skipped: PeakHour: it did not quit within 1 s", run.stdout)
+        self.assertIn("SD_REPORT_ATTENTION: maintenance on fixturehost: App Store upgrade skipped: PeakHour",
+                      self.attention(run))
+
+    def test_with_no_bundle_found_the_upgrade_runs_as_before(self):
+        """No bundle by that name, or one Spotlight gives another id: the
+        app is left alone and upgraded as before."""
+        for adamid in (None, "999"):
+            with self.subTest(adamid=adamid):
+                self.seen.unlink(missing_ok=True)
+                (self.bundle / "Contents" / "adamid").unlink(missing_ok=True)
+                if adamid:
+                    (self.bundle / "Contents" / "adamid").write_text(adamid)
+                app = self.start_app()
+                run = self.maintenance("# nothing to check\n")
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertEqual(self.seen_at_upgrade(), ["running"])
+                self.assertIsNone(app.poll())
+                self.assertEqual(self.opens(), [])
+                app.kill()
+                app.wait()
+
+    def test_a_running_app_not_in_the_list_is_left_alone(self):
+        """A TERM can lose unsaved state, even in a menu-bar app: an app
+        whose id the operator did not name gets no TERM and no upgrade."""
+        self.info(LSUIElement=True)
+        for text in ('MAS_QUIT_APP_IDS="434808346 15605762520"\n', 'MAS_QUIT_APP_IDS=""\n', None):
+            with self.subTest(text=text):
+                self.seen.unlink(missing_ok=True)
+                (self.config / "shared.env").unlink(missing_ok=True)
+                if text is not None:
+                    self.shared(text)
+                app = self.start_app()
+                run = self.maintenance("# nothing to check\n")
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertIsNone(app.poll(), "the app got no signal")
+                self.assertEqual(self.seen_at_upgrade(), [])
+                self.assertEqual(self.opens(), [])
+                self.assertIn("- App Store upgrade skipped: PeakHour is running;"
+                              " quit it and the next run upgrades it", run.stdout)
+                app.kill()
+                app.wait()
+
+    def test_a_listed_app_quits_whatever_its_info_plist_says(self):
+        """The operator's list decides, not LSUIElement."""
+        app = self.start_app()
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue(self.gone(app))
+        self.assertEqual(self.seen_at_upgrade(), ["quit"])
+
+    def test_an_entry_that_is_no_id_is_reported_and_runs_nothing(self):
+        """An entry that is not a number is a finding, and reaches no
+        command; the ids beside it still count."""
+        self.shared("MAS_QUIT_APP_IDS='12ab * 1560576252 $(touch pwned)'\n")
+        app = self.start_app()
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue(self.gone(app))
+        found = [line for line in run.stdout.splitlines() if line.startswith("- MAS_QUIT_APP_IDS")]
+        self.assertEqual(found, ["- MAS_QUIT_APP_IDS in shared.env: not an App Store id: 12ab",
+                                 "- MAS_QUIT_APP_IDS in shared.env: not an App Store id: *",
+                                 "- MAS_QUIT_APP_IDS in shared.env: not an App Store id: $(touch",
+                                 "- MAS_QUIT_APP_IDS in shared.env: not an App Store id: pwned)"])
+        self.assertFalse((self.tmp / "pwned").exists())
+
+    def test_a_look_alike_process_gets_no_signal(self):
+        """Only a process whose executable is the bundle's own, by its full
+        path, is the app: not one whose arguments name that path, and not
+        one of the same name in a copy of the bundle elsewhere."""
+        mentions = self.start_app(listed=False)
+        backup = self.start_app(path=f"/Volumes/Backup{self.exe}")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIsNone(mentions.poll(), "a process that names the path got a signal")
+        self.assertIsNone(backup.poll(), "a copy elsewhere got a signal")
+        self.assertEqual(self.seen_at_upgrade(), ["quit"])
+        self.assertEqual(self.opens(), [])
 
 if __name__ == "__main__":
     unittest.main()

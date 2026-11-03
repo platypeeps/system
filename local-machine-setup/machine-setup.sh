@@ -6508,11 +6508,37 @@ cmd_upgrade() {
         SUDO_ASKPASS="$DIR/sudo-askpass.sh"
         export SUDO_ASKPASS
       fi
+      # A running app makes the installer ask, and no one answers in an
+      # unattended run (sd:7330): lib/mas_app.sh quits one the operator
+      # listed in MAS_QUIT_APP_IDS first and opens it again after. A dry
+      # run quits nothing.
+      command -v st_bounded >/dev/null 2>&1 || . "$ROOT/lib/bounded.sh"
+      command -v st_mas_quit >/dev/null 2>&1 || . "$ROOT/lib/mas_app.sh"
+      mas_bad=$(st_mas_bad_ids)
+      if [ -n "$mas_bad" ]; then
+        printf '%s\n' "$mas_bad" | sed 's/^/  FAILED  MAS_QUIT_APP_IDS in shared.env: not an App Store id: /'
+        failed="$failed, MAS_QUIT_APP_IDS"
+      fi
       for mas_id in $mas_ids; do
-        if [ -n "$mas_path" ]; then
+        mas_name=$(printf '%s\n' "$mas_list" | awk -v id="$mas_id" '$1 == id { print; exit }' |
+          sed -e 's/^ *[0-9]* *//' -e 's/ *([^()]*)$//')
+        quit_rc=0
+        [ "$APPLY" -ne 1 ] || st_mas_quit "$APPLICATIONS_DIR" "$mas_id" "$mas_name" || quit_rc=$?
+        if [ "$quit_rc" -eq 1 ]; then
+          echo "  FAILED  $mas_name did not quit within ${ST_MAS_QUIT_WAIT:-15} s; mas upgrade $mas_id skipped"
+          failed="$failed, mas upgrade $mas_id ($mas_name did not quit)"
+        elif [ "$quit_rc" -ne 0 ]; then
+          # Not listed: a TERM can lose its unsaved state.
+          echo "  FAILED  $mas_name is running; quit it and the next run upgrades it"
+          failed="$failed, mas upgrade $mas_id ($mas_name is running)"
+        elif [ -n "$mas_path" ]; then
           sweep_step "mas upgrade $mas_id (askpass)" "$MAS_APP_BOUND" sudo -A "$mas_path" upgrade "$mas_id"
         else
           sweep_step "mas upgrade $mas_id" "$MAS_APP_BOUND" mas upgrade "$mas_id"
+        fi
+        if ! st_mas_reopen; then
+          echo "  FAILED  $mas_name not reopened after its upgrade"
+          failed="$failed, reopen $mas_name"
         fi
       done
       unset SUDO_ASKPASS
@@ -8806,7 +8832,8 @@ environment:
   MACHINE_SETUP_UV  tests only: the uv that installs sd-serve's python
   MACHINE_SETUP_TIMEOUT_SUDOERS  tests only: the sudo grace-period drop-in
   MACHINE_SETUP_NSMB_CONF  tests only: the file that stands in for /etc/nsmb.conf
-  MACHINE_SETUP_APPLICATIONS_DIR  tests only: the folder the apps scan reads
+  MACHINE_SETUP_APPLICATIONS_DIR  tests only: the folder the apps scan and
+                          the App Store sweep read (default /Applications)
 HELPEOF
       exit 0
       ;;
