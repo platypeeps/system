@@ -343,7 +343,12 @@ a pass after an incomplete one; the next run starts a new pass at the top.
 A failed rsync is retried up to 3 times, 5 minutes apart, while more than 300 s
 of window remain and both volumes are still mounted, each attempt with its own
 `.log` and `.err`; a passing SMB stall no longer ends the night (sd:2268).
-A retry goes on at the chunk that failed. Set the two volumes in
+A retry goes on at the chunk that failed. A file that vanishes between the
+listing and its chunk, as Google Drive files do, does not fail the chunk:
+rsync exit 24, or exit 23 when every error line names a file in the chunk
+that is gone from the source, moves the cursor and logs the names in the
+`.err` (sd:7321). Any other error fails the chunk as before. Set the two
+volumes in
 `<config>/mirror-sync/.env` (see `.env.example`). The last run's outcome, the
 cursor and the lock sit in
 `${XDG_STATE_HOME:-~/.local/state}/system/mirror-sync/nas-full-copy/`, not in

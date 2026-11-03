@@ -3001,6 +3001,10 @@ class NasFullCopy(unittest.TestCase):
         self.notified = self.work / "notified"
         # STUB_RCS: one exit code per call, in order (sd:2268); STUB_RC after them.
         # STUB_DROP_SHARE: the call takes the share out of the mount table.
+        # STUB_VANISH: the call removes that source path, as Google Drive does.
+        # STUB_ERR: a call that exits non-zero prints it to stderr.
+        # STUB_TERM_PARENT: the call sends TERM to the script, which stops it
+        # before the cursor moves.
         # Each call's --files-from list is kept as rsync-calls.list<n>.
         self.stub(stubs / "rsync", '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_CALLS"\n'
                                    'n=$(( $(wc -l < "$STUB_CALLS") ))\n'
@@ -3008,7 +3012,11 @@ class NasFullCopy(unittest.TestCase):
                                    'set -- ${STUB_RCS:-} ""\nshift $(( n - 1 < $# - 1 ? n - 1 : $# - 1 ))\n'
                                    '[ -z "${STUB_DROP_SHARE:-}" ] || { grep -v smbfs "$STUB_MOUNTS" > "$STUB_MOUNTS.new"; '
                                    'mv "$STUB_MOUNTS.new" "$STUB_MOUNTS"; }\n'
-                                   'exit "${1:-${STUB_RC:-0}}"\n')
+                                   'code="${1:-${STUB_RC:-0}}"\n'
+                                   '[ -z "${STUB_VANISH:-}" ] || rm -rf "$STUB_VANISH"\n'
+                                   '[ "$code" -eq 0 ] || [ -z "${STUB_ERR:-}" ] || printf "%s\\n" "$STUB_ERR" >&2\n'
+                                   '[ -z "${STUB_TERM_PARENT:-}" ] || kill -TERM "$PPID"\n'
+                                   'exit "$code"\n')
         self.stub(stubs / "timeout", '#!/bin/sh\nshift 2\nexec "$@"\n')
         self.stub(stubs / "caffeinate", '#!/bin/sh\nshift\nexec "$@"\n')
         # `sd reports brief add ... <file>`: one line per call, then the brief's text, so a test reads both.
@@ -3231,6 +3239,78 @@ class NasFullCopy(unittest.TestCase):
         text = err.read_text()
         self.assertIn("left out 1 links whose target is missing", text)
         self.assertIn("./dead", text)
+
+    def vanish(self, name: str, line: str, rc: int = 23, **extra: str | None) -> subprocess.CompletedProcess:
+        """A copy of a, b, c in chunks of 2 whose first rsync finds name gone."""
+        self.tree("a", "b", "c")
+        return self.run_copy(STUB_RCS=str(rc), NAS_COPY_CHUNK="2", STUB_VANISH=str(self.src / name),
+                             STUB_ERR=line, **extra)
+
+    def test_a_file_that_vanished_before_its_chunk_is_logged_and_the_pass_goes_on(self) -> None:
+        """sd:7321: a Google Drive file gone between the listing and its
+        chunk made openrsync exit 23; every retry failed the same chunk, and
+        the job exited 1 (alert #7150, 2026-11-01). openrsync copies the
+        rest of the chunk, so the cursor moves past it."""
+        result = self.vanish("b", "rsync(4228): error: b: stat: No such file or directory")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("complete:", result.stdout)
+        self.assertNotIn("retry", result.stdout)
+        self.assertEqual(self.lists(), [["a", "b"], ["c", "repo-storage"], ["repo-storage/system"]])
+        self.assertIn("1 names vanished", result.stdout)
+        [err] = self.log_dir.glob("*.err")
+        text = err.read_text()
+        self.assertIn("vanished before rsync read them, left for the next pass: 1 names", text)
+        self.assertIn("\nb\n", text)
+
+    def test_rsync_exit_24_is_a_copied_chunk_and_names_the_vanished_files(self) -> None:
+        """rsync's own code for "some files vanished before they could be
+        transferred"."""
+        result = self.vanish("b", f'file has vanished: "{self.src}/b"', rc=24)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("complete:", result.stdout)
+        self.assertNotIn("retry", result.stdout)
+        self.assertEqual(self.attempts(), 3)
+        [err] = self.log_dir.glob("*.err")
+        self.assertIn("left for the next pass: 1 names\nb\n", err.read_text())
+
+    def test_a_vanished_file_beside_another_error_still_fails(self) -> None:
+        """Never hide a read error: the file is still there to copy."""
+        line = "rsync(1): error: b: stat: No such file or directory\nrsync(1): error: a: read: Input/output error"
+        result = self.vanish("b", line, rc=23, STUB_RC="23")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED rc=23", result.stdout)
+        self.assertFalse((self.state_dir / "cursor").exists(), "the cursor never moved")
+
+    def test_a_stat_error_for_a_file_the_source_still_holds_fails(self) -> None:
+        """Evidence class: the error names b, but b is still on the source."""
+        result = self.vanish("nothing", "rsync(1): error: b: stat: No such file or directory", STUB_RC="23")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED rc=23", result.stdout)
+        self.assertFalse((self.state_dir / "cursor").exists())
+
+    def test_a_stat_error_for_a_name_outside_the_chunk_fails(self) -> None:
+        """Evidence class: zz is gone, but it is not one of this chunk's names."""
+        result = self.vanish("nothing", "rsync(1): error: zz: stat: No such file or directory", STUB_RC="23")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED rc=23", result.stdout)
+
+    def test_exit_23_with_no_error_line_still_fails(self) -> None:
+        """Failures class: an exit 23 that names nothing is unknown, not a pass."""
+        result = self.vanish("b", "", STUB_RC="23")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED rc=23", result.stdout)
+
+    def test_a_stop_after_a_vanished_chunk_copies_it_again_next_run(self) -> None:
+        """Steps class: a TERM between the rsync and the cursor move leaves the
+        cursor; the next run lists the source again without the gone file."""
+        stopped = self.vanish("b", "rsync(1): error: b: stat: No such file or directory", STUB_TERM_PARENT="1")
+        self.assertEqual(stopped.returncode, 143, stopped.stdout + stopped.stderr)
+        self.assertFalse((self.state_dir / "cursor").exists(), "the cursor never moved")
+        self.forget_calls()
+        resumed = self.run_copy(NAS_COPY_CHUNK="2")
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertEqual(self.lists()[0], ["a", "c"])
+        self.assertIn("complete:", resumed.stdout)
 
     def test_a_cursor_past_the_last_name_completes_the_pass(self) -> None:
         """Older state: the tree shrank below the saved cursor."""
