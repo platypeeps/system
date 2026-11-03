@@ -444,6 +444,119 @@ class MeterRun(unittest.TestCase):
         self.assertIn("unexpected cswap shape", record["errors"]["cswap"])
         self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
 
+    # sd:7325: codexbar's entry holds the account's identity in several places.
+
+    def test_no_codexbar_identity_field_reaches_the_ledger(self):
+        reading = json.loads(json.dumps(READINGS["claude"]))
+        entry = reading[0]
+        entry["account"] = "who@example.test"
+        entry["usage"]["accountEmail"] = "who@example.test"
+        entry["usage"]["loginMethod"] = "Max (Example Org)"
+        entry["usage"]["identity"] = {
+            "accountEmail": "who@example.test", "accountID": "acct-example-1",
+            "loginMethod": "Max", "providerID": "claude"}
+        entry["usage"]["organizationName"] = "Example Org Three"
+        entry["usage"]["primary"]["accountName"] = "Example Person"
+        entry["pace"] = {"secondary": {"stage": "behind", "deltaPercent": -3,
+                                        "expectedUsedPercent": 40,
+                                        "willLastToReset": True,
+                                        "summary": "who@example.test is behind"}}
+        (self.fixtures / "claude.json").write_text(json.dumps(reading), encoding="utf-8")
+        done = self.run_meter("--no-db")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        text = self.out.read_text(encoding="utf-8")
+        for value in ("example.test", "Example", "acct-example-1", "Max"):
+            self.assertNotIn(value, text)
+            self.assertNotIn(value, done.stdout + done.stderr)
+        (record,) = self.lines()
+        kept = record["codexbar"]["claude"]
+        self.assertEqual(kept["provider"], "claude")
+        self.assertEqual(kept["usage"]["primary"]["usedPercent"], 61)
+        self.assertEqual(kept["usage"]["secondary"]["windowMinutes"], 10080)
+        self.assertEqual(kept["pace"]["secondary"]["deltaPercent"], -3)
+
+    def test_a_codexbar_error_entry_keeps_its_message_and_no_identity(self):
+        failed = [{"provider": "claude", "source": "oauth",
+                   "account": "who@example.test",
+                   "error": {"message": "token expired for who@example.test", "code": 7,
+                             "email": "who@example.test"}}]
+        (self.fixtures / "claude.json").write_text(json.dumps(failed), encoding="utf-8")
+        done = self.run_meter("--no-db")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["errors"]["codexbar.claude"], "token expired for <email>")
+        self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
+
+    # sd:7332: rtk's total_saved is read as a number or not at all.
+
+    def run_with_rtk(self, answer):
+        reply = self.fixtures / "rtk.json"
+        reply.write_text(answer, encoding="utf-8")
+        self.executable(self.bin / "rtk", "#!/bin/sh\ncat '%s'\n" % reply)
+        return self.run_meter("--no-db")
+
+    def test_a_huge_int_or_a_string_in_total_saved_is_unset_not_a_crash(self):
+        for saved in ("1" + "0" * 400, '"lots"', "NaN", "Infinity", "true", "null", "[1]"):
+            with self.subTest(total_saved=saved):
+                self.out.unlink(missing_ok=True)
+                done = self.run_with_rtk(
+                    '{"summary": {"total_saved": %s, "avg_savings_pct": 12.5}}' % saved)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
+                (record,) = self.lines()
+                self.assertNotIn("rtk", record["errors"])
+                self.assertIn("rtk saved ? (12.5%)", done.stdout)
+
+    def test_a_bad_avg_savings_pct_is_unset_too(self):
+        for pct in ("1" + "0" * 400, '"most"', "NaN"):
+            with self.subTest(avg_savings_pct=pct):
+                self.out.unlink(missing_ok=True)
+                done = self.run_with_rtk(
+                    '{"summary": {"total_saved": 2500000, "avg_savings_pct": %s}}' % pct)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn("rtk saved 2.5M (?%)", done.stdout)
+
+    def test_an_rtk_answer_that_is_not_an_object_still_writes_the_line(self):
+        for answer in ("[1, 2]", '{"summary": "none"}', "{}"):
+            with self.subTest(answer=answer):
+                self.out.unlink(missing_ok=True)
+                done = self.run_with_rtk(answer)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
+                self.assertEqual(len(self.lines()), 1)
+
+    def test_a_good_total_saved_prints_as_before(self):
+        done = self.run_with_rtk('{"summary": {"total_saved": 2500000, "avg_savings_pct": 12.5}}')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("rtk saved 2.5M (12.5%)", done.stdout)
+
+    # sd:7344: the ledger keeps the two rtk fields the brief reads.
+
+    def test_only_the_rtk_fields_the_brief_reads_reach_the_ledger(self):
+        done = self.run_with_rtk(json.dumps({
+            "project": "/Users/someone/example.test/project",
+            "user": "who@example.test",
+            "summary": {"total_saved": 2500000, "avg_savings_pct": 12.5,
+                        "total_commands": 40, "cwd": "/home/example.test",
+                        "email": "who@example.test"},
+            "daily": [{"date": "2026-11-03", "project": "/srv/example.test"}]}))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        text = self.out.read_text(encoding="utf-8")
+        self.assertNotIn("example.test", text)
+        self.assertNotIn("/Users/", text)
+        (record,) = self.lines()
+        self.assertEqual(record["rtk"], {"summary": {"total_saved": 2500000,
+                                                     "avg_savings_pct": 12.5}})
+        self.assertIn("rtk saved 2.5M (12.5%)", done.stdout)
+
+    def test_a_non_number_rtk_field_is_not_copied_into_the_ledger(self):
+        done = self.run_with_rtk('{"summary": {"total_saved": "/home/example.test",'
+                                 ' "avg_savings_pct": 12.5}}')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["rtk"], {"summary": {"avg_savings_pct": 12.5}})
+        self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
+
     # The `accounts` answer: used at reset per past window, pace now.
 
     def run_accounts(self, *args):
