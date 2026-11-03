@@ -1,0 +1,16 @@
+# One Claude account on every machine (local-cswap, sd:7323). Remote Control
+# sees only the sessions of the active account, so the machines must agree.
+# Install it on every machine (common.cron). The hub, the machine whose
+# `sd-db fence` reads holder, runs one `cswap auto --once --strategy
+# consume-first` tick and publishes its account's organizationUuid in the
+# workflow database; every other machine switches to its own account with
+# that id. A promoted satellite reads holder, so it leads by itself.
+#
+# An unreadable hub, an unset row or an id no single account here has
+# switches nothing and exits 1, graded data safe, so Today lists it and
+# nothing pushes to the phone. Each call is bounded (60 s, 120 s for the
+# auto tick), well under JOB_TIMEOUT; a slot that finds the last run still
+# active logs `skipped` and exits 0.
+JOB_SCHEDULE="* * * * *"
+JOB_TIMEOUT="5m"
+JOB_COMMAND="bash \"$ROOT/../local-cswap/cswap.sh\" sync"
