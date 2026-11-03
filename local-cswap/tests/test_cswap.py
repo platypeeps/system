@@ -395,6 +395,14 @@ class Verbs(Machine):
         self.assertIn("local-health-check reads", result.stdout)
         self.assertIn("sync", result.stdout)
 
+    def test_sync_without_cswap_fails_and_asks_nothing(self):
+        # Guard: the deleted `run` refused a missing cswap with exit 78.
+        (self.home / ".local/bin/cswap").unlink()
+        self.publish(TWO)
+        result = self.sync("elsewhere", code=1)
+        self.assertIn("cswap not executable", result.stderr)
+        self.assertEqual(self.called("sd"), [])
+
     def test_the_agent_verbs_are_gone(self):
         for verb in ("run", "start", "stop"):
             result = self.run_verb(verb)
