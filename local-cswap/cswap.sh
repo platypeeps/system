@@ -34,6 +34,12 @@ RETIRED_PLIST="$HOME/Library/LaunchAgents/$RETIRED_LABEL.plist"
 PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 SETTING="sys.cswap_account"
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+# Consecutive sync runs whose read the hub refused for this machine's sd_db
+# build, and the run that fails (system sd:7407). The follow job runs every
+# 5 minutes and its follow takes up to 10; 30 minute runs cover two of its
+# slots, so only a follow that keeps failing fails here too.
+REFUSALS="$ROOT/state/build-refusals"
+REFUSAL_LIMIT=30
 
 # shellcheck source=/dev/null
 [[ -f "$ROOT/cswap-auto.conf" ]] && . "$ROOT/cswap-auto.conf"
@@ -91,9 +97,12 @@ else:
 
 # The published row's value on stdout. Exit 1 with sd's own words on stderr
 # when it cannot be read, is unset or is no UUID: each is no answer.
+# SD_FOLLOWED is the pack's marker (lib/sd_db/follow.py): with it, a hub
+# that refuses this sd_db build is refused at once, instead of sd running
+# `repo-sync.sh follow` for up to 600 s, which the 60 s bound cut part way.
 published() {
   local value
-  value=$(st_bounded 60 "$PACK/bin/sd" config get "$SETTING") || return 1
+  value=$(SD_FOLLOWED=1 st_bounded 60 "$PACK/bin/sd" config get "$SETTING") || return 1
   if [[ ! "$value" =~ $UUID_RE ]]; then
     echo "$SETTING holds '$value', which is no organizationUuid" >&2
     return 1
@@ -143,12 +152,42 @@ lead() {
   esac
 }
 
+# A read the hub refused for this machine's sd_db build: the follow job has
+# not caught up yet. Skip the run and count it; fail from the
+# REFUSAL_LIMIT-th in a row. A count that cannot be written fails at once:
+# skipping without a count would never fail.
+refused_build() {
+  local runs
+  runs=$(cat "$REFUSALS" 2>/dev/null) || runs=0
+  [[ "$runs" =~ ^[0-9]+$ ]] || runs=0
+  runs=$((runs + 1))
+  { mkdir -p "${REFUSALS%/*}" && printf '%s\n' "$runs" >"$REFUSALS"; } 2>/dev/null ||
+    fail read "the hub refuses this sd_db build, and $REFUSALS cannot be written; nothing switched"
+  if ((runs >= REFUSAL_LIMIT)); then
+    fail read "the hub refused this sd_db build for $runs runs; check repo-sync.sh follow; nothing switched"
+  fi
+  echo "skipped: the hub refuses this sd_db build until repo-sync.sh follow catches up (run $runs of $REFUSAL_LIMIT); nothing switched"
+}
+
 # A satellite: switch to the local account with the published UUID. An
 # unreadable hub, an unset row and a UUID no single account here has all
 # change nothing.
 follow() {
-  local want json active number rc=0
-  want=$(published) || fail read "cannot read the hub's account ($SETTING); nothing switched"
+  local want json active number rc=0 err
+  err=$(mktemp)
+  if ! want=$(published 2>"$err"); then
+    cat "$err" >&2
+    if grep -q "sd_db build mismatch" "$err"; then
+      rm -f "$err"
+      refused_build
+      return 0
+    fi
+    rm -f "$err"
+    fail read "cannot read the hub's account ($SETTING); nothing switched"
+  fi
+  rm -f "$err"
+  # A count left behind only makes the next refusal fail sooner.
+  rm -f "$REFUSALS" 2>/dev/null || :
   json=$(accounts) || fail list "cswap list --json failed; nothing switched"
   active=$(pick active <<<"$json") || fail list "cswap names no single active account; nothing switched"
   number=$(pick number "$want" <<<"$json") || rc=$?
@@ -229,8 +268,11 @@ usage: cswap.sh sync|status
            its active account's organizationUuid as sys.cswap_account;
            any other machine switches to its account with that id. An
            unreadable hub or an id no single account here has switches
-           nothing and exits 1. It also boots out the retired cswap-auto
-           LaunchAgent. local-cron-jobs runs it every minute.
+           nothing and exits 1. A hub that refuses this machine's
+           sd_db build skips the run (exit 0) until repo-sync.sh follow
+           catches up, and fails from the 30th such run in a row. It
+           also boots out the retired cswap-auto LaunchAgent.
+           local-cron-jobs runs it every minute.
   status   whether this machine uses the hub's account; exits 0 same
            account / 1 another account, hub unreadable or the retired
            agent still installed / 3 nothing to check (no cswap, nothing

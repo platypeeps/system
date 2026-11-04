@@ -76,11 +76,22 @@ case "$FAKE_FENCE" in holder|off) exit 0 ;; *) exit 1 ;; esac
 """
 
 # The row lives in FAKE_ROW. FAKE_SD_DOWN is a database that does not open.
+# FAKE_SD_MISMATCH is a hub on another sd_db build: as the pack's bin/sd
+# does, it starts a follow unless SD_FOLLOWED is set (logged as `follow`),
+# then prints the refusal the pack's tests pin (test_sd_follow.py).
 SD = r"""#!/bin/sh
 echo "sd $*" >> "$FAKE_CALLS"
 [ "$1 $3" = "config sys.cswap_account" ] || exit 64
 if [ -n "${FAKE_SD_DOWN:-}" ]; then
   echo "sd: the workflow database did not open: OSError: no route to hub" >&2
+  exit 1
+fi
+if [ -n "${FAKE_SD_MISMATCH:-}" ]; then
+  if [ -z "${SD_FOLLOWED:-}" ]; then
+    echo "follow" >> "$FAKE_CALLS"
+    echo "sd: sd_db build 0123456789abcdef here, fedcba9876543210 on the hub: following the hub's pins" >&2
+  fi
+  echo "sd: sd_db build mismatch: build digest 0123456789abcdef on this satellite, fedcba9876543210 on the hub; run \`repo-sync.sh follow\` on this satellite for sd_db fedcba9876543210. The hub ran no statement" >&2
   exit 1
 fi
 case "$2" in
@@ -301,6 +312,96 @@ class SatellitesFollow(Machine):
         self.publish(TWO)
         self.sync("elsewhere", code=1, FAKE_LIST_FAIL="1")
         self.assertEqual(self.called("cswap switch"), [])
+
+
+class APinFollow(Machine):
+    """The hub moved its sd_db build; this satellite has not followed yet.
+
+    `repo-sync.sh follow` catches up within its job's slot and its 600 s
+    bound, so a read refused for the build is no failure until it lasts
+    (system sd:7407).
+    """
+
+    def count(self):
+        path = self.tmp / "local-cswap/state/build-refusals"
+        return path.read_text().strip() if path.exists() else None
+
+    def seed(self, text):
+        (self.tmp / "local-cswap/state").mkdir(exist_ok=True)
+        (self.tmp / "local-cswap/state/build-refusals").write_text(text)
+
+    def test_a_read_the_hub_refuses_for_its_build_skips_and_switches_nothing(self):
+        self.publish(THREE)
+        result = self.sync("elsewhere", FAKE_SD_MISMATCH="1")
+        self.assertIn("skipped: the hub refuses this sd_db build until repo-sync.sh follow "
+                      "catches up (run 1 of 30); nothing switched", result.stdout)
+        self.assertNotIn("SD_REPORT_ATTENTION", result.stdout)
+        self.assertEqual(self.called("cswap switch"), [])
+        self.assertEqual(self.active(), 1)
+        self.assertEqual(self.count(), "1")
+
+    def test_the_read_starts_no_follow_its_bound_would_cut(self):
+        # sd's own follow takes up to 600 s; the 60 s bound killed it each
+        # minute, part way through its move.
+        self.publish(THREE)
+        self.sync("elsewhere", FAKE_SD_MISMATCH="1")
+        self.assertEqual(self.called("follow"), [])
+
+    def test_a_refusal_that_outlasts_the_follow_window_fails(self):
+        self.publish(THREE)
+        self.seed("28\n")
+        self.sync("elsewhere", FAKE_SD_MISMATCH="1")
+        self.assertEqual(self.count(), "29")
+        result = self.sync("elsewhere", code=1, FAKE_SD_MISMATCH="1")
+        self.assertIn("SD_REPORT_ATTENTION: data safe, one step failed: cswap sync read",
+                      result.stdout)
+        self.assertIn("refused this sd_db build for 30 runs", result.stderr)
+        self.assertEqual(self.called("cswap switch"), [])
+        # It keeps failing, one open report, until a read passes.
+        self.sync("elsewhere", code=1, FAKE_SD_MISMATCH="1")
+        self.assertEqual(self.count(), "31")
+
+    def test_a_good_read_clears_the_count(self):
+        self.publish(THREE)
+        self.seed("29\n")
+        self.sync("elsewhere")
+        self.assertIsNone(self.count())
+        self.assertEqual(self.active(), 3)
+        self.sync("elsewhere", FAKE_SD_MISMATCH="1")
+        self.assertEqual(self.count(), "1")
+
+    def test_a_count_that_is_no_number_starts_again(self):
+        # Older state: a file a killed write left half written.
+        self.publish(THREE)
+        self.seed("")
+        self.sync("elsewhere", FAKE_SD_MISMATCH="1")
+        self.assertEqual(self.count(), "1")
+
+    def test_a_count_that_cannot_be_written_fails(self):
+        # Failures: a run that cannot count would skip for ever.
+        self.publish(THREE)
+        (self.tmp / "local-cswap/state").write_text("a file where the folder goes\n")
+        result = self.sync("elsewhere", code=1, FAKE_SD_MISMATCH="1")
+        self.assertIn("SD_REPORT_ATTENTION: data safe, one step failed: cswap sync read",
+                      result.stdout)
+        self.assertEqual(self.called("cswap switch"), [])
+        # A good read still switches: a count it cannot clear only fails sooner.
+        self.sync("elsewhere")
+        self.assertEqual(self.active(), 3)
+
+    def test_another_read_failure_still_fails_at_once(self):
+        self.publish(THREE)
+        self.seed("3\n")
+        result = self.sync("elsewhere", code=1, FAKE_SD_DOWN="1")
+        self.assertIn("SD_REPORT_ATTENTION: data safe, one step failed: cswap sync read",
+                      result.stdout)
+        self.assertEqual(self.count(), "3")
+
+    def test_status_starts_no_follow_either(self):
+        self.publish(ONE)
+        result = self.run_verb("status", FAKE_FENCE="elsewhere", FAKE_SD_MISMATCH="1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.called("follow"), [])
 
 
 class TheRetiredAgent(Machine):

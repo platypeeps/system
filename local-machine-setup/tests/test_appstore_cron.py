@@ -18,6 +18,7 @@ launchd or the checkout. `mas` and `launchctl` are stubs on PATH.
 import os
 import pathlib
 import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -314,15 +315,15 @@ class CronExtraDirsTest(CronTest):
             (self.extra / f"{job}.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
         (self.profiles / "personal.cron").write_text("shared-job\npicked\n")
 
-    def test_an_extra_dir_job_needs_a_profile_entry(self):
+    def test_an_installed_unpicked_extra_dir_job_is_reported_not_removed(self):
+        # sd:7335: its job file is here, so a lost profile line is drift
+        # for a person, not an agent to uninstall.
         for job in ("shared-job", "host-job", "picked", "unpicked"):
             self.install_plist(job)
         result = self.run_stage("cron", "--apply", CRON_JOBS_EXTRA_DIRS=str(self.extra))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        log = self.cron_log.read_text()
-        self.assertIn("uninstall unpicked", log)
-        self.assertNotIn("uninstall picked", log)
-        self.assertNotIn("uninstall host-job", log)
+        self.assertIn("  DIFFERS unpicked — has a job file, but neither this profile", result.stdout)
+        self.assertNotIn("uninstall", self.cron_log.read_text())
 
     def test_an_unpicked_extra_dir_job_is_not_installed(self):
         self.install_plist("shared-job")
@@ -331,6 +332,94 @@ class CronExtraDirsTest(CronTest):
         log = self.cron_log.read_text()
         self.assertIn("install picked", log)
         self.assertNotIn("install unpicked", log)
+
+
+class CronUnlistedJobTest(StageTest):
+    """sd:7335: a job file here that no profile names is drift to report.
+
+    Three hub jobs lost their profile lines while their job files stayed in
+    cron-jobs/jobs/, and the nightly update read each agent as EXTRA and
+    uninstalled it; they stayed dead for 11 days. The stage now keeps such an
+    agent and reports it as DIFFERS, which the nightly report shows as an
+    attention line. An agent whose job file is gone is still uninstalled.
+    """
+
+    LINE = ("  DIFFERS lost-job — has a job file, but neither this profile nor "
+            "this host's folder names it; left installed: add it to "
+            "personal.cron, or run local-cron-jobs/cron-jobs.sh uninstall lost-job")
+
+    def setUp(self):
+        super().setUp()
+        (self.profiles / "personal.cron").write_text("shared-job\n")
+        (self.jobs / "shared-job.job").write_text('JOB_SCHEDULE="0 1 * * *"\n')
+        (self.jobs / HOST / "host-job.job").write_text('JOB_SCHEDULE="0 23 * * *"\n')
+        (self.jobs / "lost-job.job").write_text('JOB_SCHEDULE="0 5 * * *"\n')
+        for job in ("shared-job", "host-job", "lost-job"):
+            self.install_plist(job)
+
+    def test_a_job_with_a_job_file_and_no_profile_line_stays_installed(self):
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(self.LINE + "\n", result.stdout)
+        self.assertNotIn("EXTRA", result.stdout)
+        self.assertNotIn("uninstall lost-job", self.cron_log.read_text())
+        self.assertTrue(self.plist_path("lost-job").exists())
+
+    def test_a_job_whose_file_is_gone_is_still_uninstalled(self):
+        (self.jobs / "lost-job.job").unlink()
+        result = self.run_stage("cron", "--apply")
+        self.assertIn("EXTRA   lost-job — installed but no longer in this profile", result.stdout)
+        self.assertIn("uninstall lost-job", self.cron_log.read_text())
+
+    def test_status_asks_for_attention_and_exits_0(self):
+        script = self.folder / "machine-setup.sh"
+        script.write_text(re.sub(r'^STAGES="[^"]*"', 'STAGES="cron"', script.read_text(),
+                                 count=1, flags=re.M))
+        write_exec(self.stubs / "hostname", "#!/bin/sh\necho fixturehost\n")
+        write_exec(self.stubs / "pmset",
+                   "#!/bin/sh\nprintf 'Repeating power events:\\n  wakepoweron at 2:40AM every day\\n'\n")
+        env = {
+            "HOME": str(self.home),
+            "MACHINE_SETUP_STATE": str(self.state),
+            "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
+            "LANG": "en_US.UTF-8",
+            **fixture_config.env(self.config_root),
+            "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX,
+            "CRON_JOBS_HOST": HOST,
+            "CRON_LOG": str(self.cron_log),
+        }
+        run = subprocess.run([str(script), "status", "--fail-on-drift"], env=env,
+                             capture_output=True, text=True, cwd=self.tmp.name,
+                             stdin=subprocess.DEVNULL, timeout=120)
+        asks = [line for line in run.stdout.splitlines()
+                if line.startswith("SD_REPORT_ATTENTION: ")]
+        self.assertEqual(asks, ["SD_REPORT_ATTENTION: drift on fixturehost: " + self.LINE.strip()],
+                         run.stdout + run.stderr)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_a_hub_only_job_on_a_satellite_is_still_uninstalled(self):
+        # The agents stage's guard: a satellite runs no hub-only job, so a
+        # job file does not keep one there.
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+        (self.jobs / "sd-db-backup.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+        self.install_plist("sd-db-backup")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("EXTRA   sd-db-backup — installed but no longer in this profile", result.stdout)
+        self.assertIn("uninstall sd-db-backup", self.cron_log.read_text())
+
+    def test_an_unreadable_jobs_folder_uninstalls_nothing(self):
+        # Unknown is not "no job file": the sweep is skipped.
+        extra = pathlib.Path(self.tmp.name) / "extra"
+        extra.mkdir()
+        extra.chmod(0)
+        self.addCleanup(extra.chmod, 0o755)
+        (self.jobs / "lost-job.job").unlink()
+        result = self.run_stage("cron", "--apply", CRON_JOBS_EXTRA_DIRS=str(extra))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  MISSING job file list — could not read a cron-jobs folder; "
+                      "only retired jobs are uninstalled this run\n", result.stdout)
+        self.assertNotIn("uninstall", self.cron_log.read_text())
 
 
 class CronOwnershipTest(StageTest):
@@ -461,6 +550,8 @@ exit 0
             stdin=subprocess.DEVNULL, timeout=60)
         self.assertEqual(rendered.returncode, 0, rendered.stdout + rendered.stderr)
         self.assertTrue(self.plist_path("dropped-job").exists())
+        # With its job file here the sweep keeps it (sd:7335); gone, it is swept.
+        (self.jobs / "dropped-job.job").unlink()
         result = self.run_stage("cron", "--apply")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("EXTRA   dropped-job", result.stdout)
@@ -495,7 +586,9 @@ exit 0
         (self.folder.parent / "local-cron-jobs/retired-jobs.txt").write_text("busy-retired  # sd:1 2026-10-01\n")
         (self.profiles / "personal.cron").write_text(
             "busy-job\nbusy-stale\nbusy-unloaded\nshared-job\n")
-        for job in ("busy-job", "busy-stale", "busy-unloaded", "shared-job", "busy-extra", "dropped-job"):
+        # busy-extra and dropped-job have no job file, so the sweep removes
+        # them; one with a file would be kept as DIFFERS (sd:7335).
+        for job in ("busy-job", "busy-stale", "busy-unloaded", "shared-job"):
             (self.jobs / f"{job}.job").write_text('JOB_SCHEDULE="0 1 * * *"\n')
         for job in ("busy-stale", "busy-unloaded", "busy-extra", "busy-retired", "dropped-job"):
             self.install_plist(job)
