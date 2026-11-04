@@ -17,7 +17,7 @@ Write no handoff files (`resume-*.md`) and no claude-mem work-state lists.
 Keep a rule to one line with a short reason.
 Keep this block under 200 lines and each repo CLAUDE.md under 150; move area rules to `.claude/rules/` with `paths:`.
 Keep documents and notes few, short and plain: one document per work item at most, a note of a few lines with the fact or decision and its reason, evidence linked not pasted.
-Keep managed repos consistent: one workflow, the same document kinds (pack `design.md` template, README, CLAUDE.md, `.claude/rules/`) and layout; a repo that differs says why in its CLAUDE.md.
+Keep managed repos consistent: one workflow, the same document kinds (pack `design.md` template, README.md and CLAUDE.md in every repo, `.claude/rules/` once CLAUDE.md passes 100 lines) and layout; a repo that differs says why in its CLAUDE.md.
 Record history only when a later reader needs it to avoid a repeat mistake.
 
 # Diagrams
