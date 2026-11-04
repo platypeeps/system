@@ -118,10 +118,13 @@ class Deep(unittest.TestCase):
         self.assertIn("error: not logged in", result.stderr)
 
     def test_the_bound_kills_a_claude_that_never_answers_and_its_tree(self):
+        # sd:7508: the bound starts before sh sources lib/config.sh and env.sh,
+        # so under gate load 1 s ran out before the fake wrote its grandchild;
+        # 4 s is test_run.py's BOUND for the same race.
         started = time.monotonic()
-        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "1", mode="hang")
+        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "4", mode="hang")
         self.assertEqual(result.returncode, 124, result.stderr)
-        self.assertIn("deep: claude did not answer within 1 s", result.stderr)
+        self.assertIn("deep: claude did not answer within 4 s", result.stderr)
         self.assertLess(time.monotonic() - started, 10)
         pid = int(self.log["grandchild"].read_text())
         deadline = time.monotonic() + 3
