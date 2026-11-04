@@ -179,8 +179,8 @@ Keep Aura changes local: never push the Aura checkout or open an upstream PR una
 
 Never publish a Claude artifact unless the user asks for one by name.
 Make every slide deck a native Google Slides file, imported from the built pptx: the operator presents and shares from Drive (operator 2026-10-26).
-Write generated HTML (reports, plans, review summaries) to `<repo>/docs/dashboard/`: it is gitignored, and the sd dashboard finds it on disk.
-A repo without that folder gets one plus a `.gitignore` line.
+Narrate every recorded demo or walkthrough video with one HeyGen voice track (voice a3a4aa242aaf431ea8ec2c4b3bb332fa), timed per scene: a silent screen recording does not stand alone (operator 2026-11-04).
+Write generated HTML (reports, plans, review summaries) to `<repo>/docs/dashboard/`: it is gitignored, and the sd dashboard finds it on disk; a repo without that folder gets one plus a `.gitignore` line.
 Invoke the `hallmark` skill (`~/.agents/skills/hallmark`) before designing or changing a UI, a dashboard page or an HTML report.
 Make every personal web design look made for its content, not generated from a template.
 
