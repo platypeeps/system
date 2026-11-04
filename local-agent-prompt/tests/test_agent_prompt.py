@@ -305,9 +305,9 @@ class SharedPolicy(unittest.TestCase):
 
     def test_hub_sessions_triage_job_alerts_at_start(self):
         # sd:5993: a session on the hub reads the open job alerts at start and fixes or files
-        # each; a lane failure the work satellite owns goes to that satellite's session once.
+        # each.
         source = (FOLDER / "prompt/shared.md").read_text()
-        rules = [line for line in source.splitlines() if "sd reports" in line or "work-<repo>" in line]
+        rules = [line for line in source.splitlines() if "sd reports" in line]
         start = next((line for line in rules if "sd reports list" in line), "")
         self.assertIn("On the hub", start)
         self.assertIn("builders", start)
@@ -325,7 +325,25 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("`sd note list N`", fixed)
         self.assertIn("only when every open followup is one this session fixed", fixed)
         self.assertNotIn("Once fixed, run `sd reports acknowledge N --resolve-followups`", source)
-        self.assertTrue(any("work-<repo>" in line and "SendMessage" in line for line in rules), rules)
+
+    def test_other_machines_are_reached_through_the_database(self):
+        # sd:7324: a remote session gave no reply path and refused persistence edits; every
+        # cross-machine hop is a database row a job or session on the receiver reads.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        self.assertNotIn("SendMessage", source.partition("# Other machines")[2].partition("\n# ")[0])
+        self.assertNotIn("work-<repo>", source)
+        lines = source.splitlines()
+        lane = next((line for line in lines if "lane failure" in line.lower()), "")
+        self.assertIn("followup", lane)
+        self.assertNotIn("SendMessage", lane)
+        general = next((line for line in lines if line.startswith("Reach another machine")), "")
+        self.assertIn("database", general)
+        self.assertIn("never SSH", general)
+        hub = next((line for line in lines if "--ref hub:" in line), "")
+        for word in ("mail", "Slack", "Notion", "Drive", "in_progress", "sd task show"):
+            self.assertIn(word, hub)
+        self.assertTrue(any("--belongs-to" in line and "system or pack" in line for line in lines), lines)
+        self.assertTrue(any("refresh.request" in line for line in lines), lines)
 
 
 if __name__ == "__main__":

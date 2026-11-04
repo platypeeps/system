@@ -49,7 +49,7 @@ There, map each open issue to one sd item (`--ref github:<owner>/<repo>#N`), kee
 If no `sd today` output is in context, run `sd today | head -40` before the first task.
 On the hub, a session the operator starts triages open job alerts (`sd reports list`) before its first task; builders, teammates and scheduled runs skip this: the operator sees only what no session can fix.
 Claim each alert with `sd task status N in_progress` and skip one already claimed: sessions start in parallel. Fix it or file an item in its repo, and note which on the alert. `sd reports acknowledge N --resolve-followups` closes every open followup, the operator's too: list them with `sd note list N` and run it only when every open followup is one this session fixed. Otherwise, as when you only filed an item, cite the fix or the item and leave the alert open: plain `acknowledge` refuses while a followup is open.
-A lane failure in a repo the work satellite lands goes to that satellite: send its `work-<repo>` session one `SendMessage` per failure and note it on the item, so no session sends it twice.
+A lane failure on a satellite-hosted lane stays an open followup on the item; a session on that satellite fixes and resolves it: a remote session gave no reply path (sd:7324).
 
 # Verification
 
@@ -186,8 +186,11 @@ Make every personal web design look made for its content, not generated from a t
 
 # Other machines
 
-Reach another machine through its remote Claude session (`ListAgents`, then `SendMessage`), never SSH: the tailnet policy refuses it.
-Session names loosely follow the repo: `<repo>` on the hub, `work-<repo>` on the work satellite, `terra-<repo>` on the third machine.
+Reach another machine through the database (an item, a note, a setting row or a plugin key its jobs or sessions read), never SSH or a remote session: a remote session gave no reply path and refused persistence edits (sd:7324).
+The session that builds an item enqueues and watches it on its lane host; a hub session does not enqueue a satellite-hosted lane.
+A satellite needing mail, Slack, Notion or Drive work files `sd task add "<request>" --kind followup --ref hub:<host>-<slug>`; a hub session claims it with `sd task status N in_progress`, does it, writes the answer as a note and closes it; the satellite reads it with `sd task show N`: only the hub holds those credentials.
+A satellite session that finds system or pack work files the item `--belongs-to` the system or pack checkout and does not implement it: that work happens on the hub.
+Run a one-off step on a satellite as a machine-setup stage or job that `refresh.request` runs, its result in the job's report: never by hand through a session there.
 
 # Time
 
