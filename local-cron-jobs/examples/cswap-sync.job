@@ -8,9 +8,11 @@
 #
 # An unreadable hub, an unset row or an id no single account here has
 # switches nothing and exits 1, graded data safe, so Today lists it and
-# nothing pushes to the phone. Each call is bounded (60 s, 120 s for the
-# auto tick), well under JOB_TIMEOUT; a slot that finds the last run still
-# active logs `skipped` and exits 0.
+# nothing pushes to the phone. A hub that refuses this machine's sd_db
+# build skips the run until repo-sync follow catches up, and fails from
+# the 30th such run in a row (system sd:7407). Each call is bounded
+# (60 s, 120 s for the auto tick), well under JOB_TIMEOUT; a slot that
+# finds the last run still active logs `skipped` and exits 0.
 JOB_SCHEDULE="* * * * *"
 JOB_TIMEOUT="5m"
 JOB_COMMAND="bash \"$ROOT/../local-cswap/cswap.sh\" sync"

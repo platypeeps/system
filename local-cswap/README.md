@@ -20,6 +20,9 @@ A fence that fails or prints anything else follows: an unknown answer must not m
 
 Sync switches nothing and exits 1 when the hub cannot be read, the row is unset or is no UUID, or no single account here has that id.
 It then prints `SD_REPORT_ATTENTION: data safe, one step failed: cswap sync <step>`, so Today lists the failure and nothing pushes to the phone.
+A hub that refuses this machine's `sd_db` build is not yet such a failure: the hub moved its pins, and `repo-sync.sh follow` catches up within its 5-minute job and 600 s bound.
+Sync then prints a `skipped:` line, switches nothing and exits 0; it counts these runs in `state/build-refusals` and fails from the 30th in a row (system sd:7407).
+It reads the row with the pack's `SD_FOLLOWED` marker set, so `sd` starts no follow of its own that the 60 s bound would cut part way.
 Each `cswap`, `sd` and `sd-db` call runs under `lib/bounded.sh`.
 
 `sys.cswap_account` is declared in the repository's `sd-plugin.json`, so `sd config get|set` reads and writes it as a database row, over the tailnet on a satellite.
