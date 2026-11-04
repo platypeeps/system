@@ -41,6 +41,12 @@ class ShellEnvExampleTest(unittest.TestCase):
         self.assertEqual(names.get("TYPESAFE_API_KEY"), "change-me")
         self.assertIn("SYSTEM_TOOLS_LABEL_PREFIX", names)
 
+    def test_it_names_the_aws_read_setting(self):
+        # The pack's sd_db/credentials.py reads SD_AWS_READ from env.sh
+        # for Health > Machine; doctor warned it was set but unlisted
+        # (system sd:7485).
+        self.assertEqual(example_names().get("SD_AWS_READ"), "change-me")
+
     def test_each_jev_stage_switch_is_off_and_still_read_by_a_tool(self):
         stages = {n: v for n, v in example_names().items()
                   if n.startswith("JEV_")}
