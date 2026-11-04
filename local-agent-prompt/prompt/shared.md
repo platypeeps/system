@@ -187,6 +187,7 @@ Make every personal web design look made for its content, not generated from a t
 # Other machines
 
 Reach another machine through the database (an item, a note, a setting row or a plugin key its jobs or sessions read), never SSH or a remote session: a remote session gave no reply path and refused persistence edits (sd:7324).
+One exception: ask a live satellite session for a read-only diagnosis (logs, versions, a read command); it posts the answer as a note on the item, never the record itself, and changes nothing (sd:7430).
 The session that builds an item enqueues and watches it on its lane host; a hub session does not enqueue a satellite-hosted lane.
 A satellite needing mail, Slack, Notion or Drive work files `sd task add "<request>" --kind followup --ref hub:<host>-<slug>`; a hub session claims it with `sd task status N in_progress`, does it, writes the answer as a note and closes it; the satellite reads it with `sd task show N`: only the hub holds those credentials.
 A satellite session that finds system or pack work files the item `--belongs-to` the system or pack checkout and does not implement it: that work happens on the hub.

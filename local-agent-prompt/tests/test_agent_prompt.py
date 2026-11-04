@@ -345,6 +345,14 @@ class SharedPolicy(unittest.TestCase):
         self.assertTrue(any("--belongs-to" in line and "system or pack" in line for line in lines), lines)
         self.assertTrue(any("refresh.request" in line for line in lines), lines)
 
+    def test_a_live_satellite_session_may_answer_a_read_only_diagnosis_as_a_note(self):
+        # sd:7430: one remote-session use stays: a read-only diagnosis whose answer is a note.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        lines = source.partition("# Other machines")[2].partition("\n# ")[0].splitlines()
+        line = next((line for line in lines if "read-only diagnosis" in line), "")
+        for words in ("live", "note on the item", "never the record"):
+            self.assertIn(words, line)
+
 
 if __name__ == "__main__":
     unittest.main()
