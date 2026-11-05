@@ -3794,10 +3794,7 @@ tmpdisk_locked() {
       echo "  DIFFERS $td_mnt exists and is not a RAM disk; move it away, then rerun"
       return 0
     fi
-    if [ "$td_have" != "$td_sectors" ]; then
-      echo "  DIFFERS $td_mnt is $((td_have / 2048)) MiB, MACHINE_SETUP_TMPDISK_MB wants $TMPDISK_MB; detach it while no gate runs ('hdiutil detach $td_dev'), then rerun"
-      return 0
-    fi
+    # Before the size check: a ready HFS+ disk of any size loses its mark.
     if [ "$td_vol" = - ]; then
       echo "  DIFFERS $td_mnt is not APFS: its whole-second mtimes hide changes from tests; detach it while no gate runs ('hdiutil detach $td_dev'), then rerun"
       [ -f "$td_mnt/.tmpdisk-ready" ] || return 0
@@ -3807,6 +3804,10 @@ tmpdisk_locked() {
       fi
       rm -f "$td_mnt/.tmpdisk-ready" || { note_failure "remove $td_mnt/.tmpdisk-ready" 1; return 1; }
       echo "  removed $td_mnt/.tmpdisk-ready: consumers keep \$TMPDIR"
+      return 0
+    fi
+    if [ "$td_have" != "$td_sectors" ]; then
+      echo "  DIFFERS $td_mnt is $((td_have / 2048)) MiB, MACHINE_SETUP_TMPDISK_MB wants $TMPDISK_MB; detach it while no gate runs ('hdiutil detach $td_dev'), then rerun"
       return 0
     fi
     td_lack=""

@@ -481,6 +481,18 @@ exec /bin/mv "$@"
         self.assertEqual(self.mutations(), [], "the stage changed the disk itself")
         self.assertEqual([image["dev"] for image in self.images()], [dev])
 
+    def test_an_hfs_disk_of_another_size_loses_the_mark(self):
+        # The APFS check comes before the size check: a ready HFS+ disk
+        # of another size must not keep its mark.
+        dev = self.add_image(sectors=SECTORS * 2, mount=self.mount, fs="hfs")
+        for name in (".fseventsd/no_log", ".metadata_never_index", ".tmpdisk-ready"):
+            (self.mount / name).touch()
+        lines = self.run_stage("--apply")
+        self.assertEqual(lines, [self.not_apfs(dev),
+                                 f"  removed {self.mount}/.tmpdisk-ready: consumers keep $TMPDIR"])
+        self.assertFalse((self.mount / ".tmpdisk-ready").exists())
+        self.assertEqual(self.mutations(), [])
+
     def test_another_size_is_drift_and_never_detached(self):
         dev = self.add_image(sectors=SECTORS * 2, mount=self.mount)
         for name in (".fseventsd/no_log", ".metadata_never_index", ".tmpdisk-ready"):
