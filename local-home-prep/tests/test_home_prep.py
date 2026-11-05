@@ -221,6 +221,8 @@ class HomePrep(unittest.TestCase):
         self.assertIn("--restricted", args)
         self.assertIn("--strict-mcp-config", args)
         self.assertIn("mcp__workspace-mcp__draft_gmail_message", flag["--allowedTools"])
+        # The model reads search hits in one batch call; a denial failed the run (sd:7564).
+        self.assertIn("mcp__workspace-mcp__get_gmail_messages_content_batch", flag["--allowedTools"])
         for denied in ("send_gmail_message", "manage_drive_access", "set_drive_file_permissions",
                        "modify_gmail_message_labels", "Bash(sd task note", "Write", "Edit"):
             self.assertNotIn(denied, flag["--allowedTools"])
