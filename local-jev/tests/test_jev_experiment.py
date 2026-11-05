@@ -2823,6 +2823,31 @@ class TheInjectionTest(CompareCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(len(self.answers("jev")), len(self.items()))
 
+    def test_one_head_reviewed_under_both_slugs_is_one_base(self):
+        # A pack head reviewed before and after the rename has a row under
+        # each slug; it is one base and one set of findings (sd:7702).
+        old = "platypeeps/sd-ai-command-pack"
+        extra = []
+        for row in self.rows:
+            if row["repository"] == "platypeeps/sd-workflow":
+                twin = dict(row, repository=old)
+                extra.append(twin)
+                self.finding(old, row["head"], f"{old} says the same again")
+        (self.out / "population.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in self.rows + extra))
+        with unittest.mock.patch.object(experiment, "INJECTION_FINDINGS", 4):
+            code, out = self.build()
+        self.assertEqual(code, 0, out)
+        summary = json.loads((self.out / "injection" / "items.json").read_text())
+        self.assertEqual(summary["candidates"], 3)
+        items = self.items()
+        bases = [(experiment.current(i["repository"]), i["head"])
+                 for i in items if i["kind"] == "tier" and i["variant"] is None]
+        self.assertEqual(len(set(bases)), len(bases))
+        drawn = [(experiment.current(i["repository"]), i["head"])
+                 for i in items if i["kind"] == "finding" and i["form"] == "clean"]
+        self.assertEqual(len(set(drawn)), len(drawn))
+
     def test_each_variant_differs_from_its_twin_by_one_path(self):
         self.build()
         items = self.items()
