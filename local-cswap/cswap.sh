@@ -158,15 +158,15 @@ lead() {
 # for a minute or two (sd:7650). Skip the run and count it; fail from the
 # REFUSAL_LIMIT-th in a row. A count that cannot be written fails at once:
 # skipping without a count would never fail. $1 is build or unreachable.
+# The two causes share one count, so the failure names both and this run's
+# (sd:7722).
 refused_build() {
-  local runs now limit skip
+  local runs now skip
   if [[ "$1" == unreachable ]]; then
     now="the hub is unreachable"
-    limit="the hub was unreachable for %s runs; check Tailscale and the hub; nothing switched"
     skip="skipped: the hub is unreachable"
   else
     now="the hub refuses this sd_db build"
-    limit="the hub refused this sd_db build for %s runs; check repo-sync.sh follow; nothing switched"
     skip="skipped: the hub refuses this sd_db build until repo-sync.sh follow catches up"
   fi
   runs=$(cat "$REFUSALS" 2>/dev/null) || runs=0
@@ -175,8 +175,7 @@ refused_build() {
   { mkdir -p "${REFUSALS%/*}" && printf '%s\n' "$runs" >"$REFUSALS"; } 2>/dev/null ||
     fail read "$now, and $REFUSALS cannot be written; nothing switched"
   if ((runs >= REFUSAL_LIMIT)); then
-    # shellcheck disable=SC2059 # the format is one of the two above
-    fail read "$(printf "$limit" "$runs")"
+    fail read "$runs runs in a row could not read the hub's account, each one a refused sd_db build or an unreachable hub; this run: $now; check repo-sync.sh follow, Tailscale and the hub; nothing switched"
   fi
   echo "$skip (run $runs of $REFUSAL_LIMIT); nothing switched"
 }
