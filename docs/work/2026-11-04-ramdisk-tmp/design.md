@@ -2,6 +2,7 @@
 title: A RAM disk for the gate's and test runs' temp folders
 created: 2026-11-04
 item: sd:7092
+branch: fix/sd-7092-ramdisk-tmp
 ---
 
 # Design — ramdisk-tmp
