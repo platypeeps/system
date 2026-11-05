@@ -77,7 +77,7 @@ RELEASE_BASE="${MACHINE_SETUP_RELEASE_BASE:-https://github.com}"
 # database at startup, so an agent bootstrapped first restarts against a
 # file that does not exist yet. `satellite` sits beside it: a machine runs
 # one of the two, and neither loads an agent the other needs.
-STAGES="brew release shell appstore bin dotfiles envs prompts repos cron sd satellite agents services macos tooling system obsidian iterm2"
+STAGES="brew release shell appstore bin dotfiles envs prompts repos tmpdisk cron sd satellite agents services macos tooling system obsidian iterm2"
 # The verbs dispatch accepts, in help's order. Help and the no-arg usage print
 # this list; three hand copies of it disagreed (sd:3548).
 VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt promote"
@@ -3608,6 +3608,214 @@ if not stat.S_ISREG(mode(os.path.join(sys.argv[1], "com.googlecode.iterm2.plist"
     echo "  NOTE    quit iTerm2 before applying: it rewrites its plist on quit"
     echo "          and a running instance would overwrite these keys"
   fi
+}
+
+# The RAM disk the gate's and test runs' temp folders go to (sd:7092).
+# fs_usage on the hub put about 13,000 of 54,801 file writes in 30 s in
+# sd-tests-* and sd-local-gate-* folders under $TMPDIR, while fseventsd
+# grew to 17 GB. Off until machine-setup.env sets MACHINE_SETUP_TMPDISK_MB.
+# A consumer takes the disk only while .tmpdisk-ready exists and else keeps
+# $TMPDIR, so a missing disk costs speed, never a run. No root: hdiutil
+# and diskutil run as the user. The markers take effect at a mount, so the
+# stage writes them, mounts again, and only then writes .tmpdisk-ready.
+#
+# The login agent and the nightly update are two triggers that can meet,
+# so the stage takes its lock before it reads a disk, and reads and acts
+# only under it. It detaches only the device it attached in the same run,
+# after its erase failed: a device number proves no identity across runs,
+# and any other RAM disk may be the operator's. An unmounted RAM disk is
+# named with the command to detach it by hand and left alone; while one
+# of the configured size exists, the stage makes no second disk beside it.
+# The RAM disk at the mount point is the volume this stage names sd-tmp:
+# writing the markers and mounting it again changes no data on it.
+TMPDISK_NAME=sd-tmp
+TMPDISK_VOLUMES="${MACHINE_SETUP_TMPDISK_VOLUMES:-/Volumes}"
+TMPDISK_MB="${MACHINE_SETUP_TMPDISK_MB:-}"
+TMPDISK_MARKERS=".fseventsd/no_log .metadata_never_index"
+# A symlink whose target is the holder's pid: `ln -s` makes it with its
+# pid in one step, so no contender ever reads a lock with no pid.
+TMPDISK_LOCK="$STATE_DIR/tmpdisk.lock"
+
+# One line per disk image: device, sectors, mount point or `-`. An image
+# from a file prints `file` as its sectors, so it is never the RAM disk.
+tmpdisk_images() {
+  td_plist=$(bound_step 60 hdiutil info -plist) || return 1
+  printf '%s' "$td_plist" | python3 -c '
+import plistlib, sys
+for image in plistlib.loads(sys.stdin.buffer.read()).get("images", []):
+    path = image.get("image-path", "")
+    sectors = path[len("ram://"):] if path.startswith("ram://") else "file"
+    entities = image.get("system-entities", [])
+    devs = sorted((e.get("dev-entry", "") for e in entities), key=len)
+    mounts = [e["mount-point"] for e in entities if e.get("mount-point")]
+    if devs:
+        print(devs[0], sectors, mounts[0] if mounts else "-", sep="\t")
+'
+}
+
+# One bounded step, its output dropped; a failure prints FAILED.
+tmpdisk_step() { # seconds, command...
+  td_secs=$1
+  shift
+  bound_step "$td_secs" "$@" >/dev/null || { td_rc=$?; note_failure "$*" "$td_rc"; return "$td_rc"; }
+}
+
+# Takes the lock, or says why not. Only a lock that names a pid that is
+# gone is removed; one with no readable pid stays for the operator.
+tmpdisk_lock() {
+  mkdir -p "$STATE_DIR" || { note_failure "mkdir $STATE_DIR" 1; return 1; }
+  # `ln -s` into a folder at that path would make a link inside it.
+  if [ ! -d "$TMPDISK_LOCK" ] || [ -L "$TMPDISK_LOCK" ]; then
+    ln -s "$$" "$TMPDISK_LOCK" 2>/dev/null && return 0
+  fi
+  td_holder=$(readlink "$TMPDISK_LOCK" 2>/dev/null || :)
+  case $td_holder in
+    ''|*[!0-9]*)
+      echo "  SKIP    $TMPDISK_LOCK names no pid; remove it once no run holds it"
+      return 1 ;;
+  esac
+  if kill -0 "$td_holder" 2>/dev/null; then
+    echo "  SKIP    another run (pid $td_holder) holds $TMPDISK_LOCK"
+    return 1
+  fi
+  # Moved aside, not removed: a contender may have cleared the dead lock
+  # and taken its own since the read above. The moved link names whose
+  # lock it was; a live one goes back, or stays beside it for the operator.
+  mv "$TMPDISK_LOCK" "$TMPDISK_LOCK.$$" 2>/dev/null || { echo "  SKIP    another run took $TMPDISK_LOCK"; return 1; }
+  td_moved=$(readlink "$TMPDISK_LOCK.$$" 2>/dev/null || :)
+  if [ "$td_moved" != "$td_holder" ]; then
+    mv -n "$TMPDISK_LOCK.$$" "$TMPDISK_LOCK" 2>/dev/null || :
+    echo "  SKIP    another run (pid $td_moved) took $TMPDISK_LOCK"
+    return 1
+  fi
+  rm -f "$TMPDISK_LOCK.$$"
+  ln -s "$$" "$TMPDISK_LOCK" 2>/dev/null && return 0
+  echo "  SKIP    another run took $TMPDISK_LOCK"
+  return 1
+}
+
+# Writes the markers, mounts again so FSEvents and Spotlight read them,
+# then marks the volume ready. A busy volume fails
+# the unmount and stays as it was; the next run tries again.
+tmpdisk_remount() { # mount, device
+  { mkdir -p "$1/.fseventsd" && : > "$1/.fseventsd/no_log" && : > "$1/.metadata_never_index"; } ||
+    { note_failure "write the markers in $1" 1; return 1; }
+  tmpdisk_step 60 diskutil unmount "$1" || return 1
+  tmpdisk_step 60 diskutil mount "$2" || return 1
+  for td_marker in $TMPDISK_MARKERS; do
+    [ -f "$1/$td_marker" ] || { note_failure "diskutil mount $2 did not mount it at $1" 1; return 1; }
+  done
+  : > "$1/.tmpdisk-ready" || { note_failure "mark $1 ready" 1; return 1; }
+}
+
+tmpdisk_create() { # mount, sectors
+  td_out=$(bound_step 60 hdiutil attach -nomount "ram://$2") ||
+    { td_rc=$?; note_failure "hdiutil attach -nomount ram://$2" "$td_rc"; return 1; }
+  td_dev=$(printf '%s\n' "$td_out" | awk 'NR == 1 { print $1 }')
+  case $td_dev in
+    /dev/disk[0-9]*) ;;
+    *) note_failure "hdiutil attach -nomount ram://$2 named no device" 1; return 1 ;;
+  esac
+  # The one detach: the device this run attached, whose erase failed.
+  td_erased=1
+  tmpdisk_step 120 diskutil erasevolume HFS+ "$TMPDISK_NAME" "$td_dev" || td_erased=0
+  if [ "$td_erased" -eq 1 ] && [ ! -d "$1" ]; then
+    note_failure "diskutil erasevolume did not mount $td_dev at $1" 1
+    td_erased=0
+  fi
+  if [ "$td_erased" -eq 0 ]; then
+    tmpdisk_step 60 hdiutil detach "$td_dev" || :
+    return 1
+  fi
+  tmpdisk_remount "$1" "$td_dev" || return 1
+  echo "  created $1 — RAM disk $td_dev, $TMPDISK_MB MiB, FSEvents log and Spotlight off"
+}
+
+stage_tmpdisk() {
+  echo "== tmpdisk"
+  if [ -z "$TMPDISK_MB" ]; then
+    echo "  --      off: MACHINE_SETUP_TMPDISK_MB is unset"
+    return 0
+  fi
+  case $TMPDISK_MB in
+    *[!0-9]*|0*)
+      echo "  DIFFERS MACHINE_SETUP_TMPDISK_MB='$TMPDISK_MB' is not a size in MiB; set a whole number such as 4096"
+      return 0 ;;
+  esac
+  # Dry runs too: a read while another run sits between two steps sees
+  # its device as no one's.
+  tmpdisk_lock || return 0
+  tmpdisk_locked || :
+  rm -f "$TMPDISK_LOCK"
+}
+
+# Everything below runs under the lock.
+tmpdisk_locked() {
+  td_mnt="$TMPDISK_VOLUMES/$TMPDISK_NAME"
+  td_sectors=$((TMPDISK_MB * 2048))
+  # A failed read is unknown, not an absent disk: making one then could
+  # stack a second volume beside a live one.
+  if ! td_images=$(tmpdisk_images); then
+    note_failure "hdiutil info -plist: the RAM disk's state is unknown" 1
+    return 1
+  fi
+  td_at=$(printf '%s\n' "$td_images" | awk -F '\t' -v m="$td_mnt" '$3 == m')
+  td_action=none
+  td_unmounted=$(printf '%s\n' "$td_images" | awk -F '\t' '$2 != "file" && $3 == "-" { print $1 }')
+  for td_other in $td_unmounted; do
+    echo "  --      $td_other: an unmounted RAM disk; left alone; detach it by hand: hdiutil detach $td_other"
+  done
+  if [ -n "$td_at" ]; then
+    td_dev=$(printf '%s\n' "$td_at" | cut -f1)
+    td_have=$(printf '%s\n' "$td_at" | cut -f2)
+    if [ "$td_have" = file ]; then
+      echo "  DIFFERS $td_mnt exists and is not a RAM disk; move it away, then rerun"
+      return 0
+    fi
+    if [ "$td_have" != "$td_sectors" ]; then
+      echo "  DIFFERS $td_mnt is $((td_have / 2048)) MiB, MACHINE_SETUP_TMPDISK_MB wants $TMPDISK_MB; detach it while no gate runs ('hdiutil detach $td_dev'), then rerun"
+      return 0
+    fi
+    td_lack=""
+    for td_marker in $TMPDISK_MARKERS; do
+      [ -f "$td_mnt/$td_marker" ] || td_lack="$td_lack $td_marker"
+    done
+    td_action=remount
+    if [ -n "$td_lack" ]; then
+      echo "  DIFFERS $td_mnt lacks$td_lack; the stage writes them and mounts it again"
+    elif [ ! -f "$td_mnt/.tmpdisk-ready" ]; then
+      echo "  DIFFERS $td_mnt has not been mounted since its markers were written; the stage mounts it again"
+    else
+      echo "  ok      $td_mnt — RAM disk $td_dev, $TMPDISK_MB MiB, FSEvents log and Spotlight off"
+      td_action=none
+    fi
+  elif [ -e "$td_mnt" ]; then
+    echo "  DIFFERS $td_mnt exists and is not a RAM disk; move it away, then rerun"
+    return 0
+  else
+    # A stopped or failed run may have left it unmounted: a second disk
+    # beside it would strand it, and the stage cannot prove it its own.
+    td_same=$(printf '%s\n' "$td_images" | awk -F '\t' -v s="$td_sectors" '$2 == s && $3 == "-" { print $1; exit }')
+    if [ -n "$td_same" ]; then
+      echo "  DIFFERS $td_mnt is missing, and $td_same is an unmounted RAM disk of $TMPDISK_MB MiB; no second disk is made beside it: detach it by hand, then rerun"
+      return 0
+    fi
+    echo "  MISSING $td_mnt — no RAM disk of $TMPDISK_MB MiB"
+    td_action=create
+  fi
+  if [ "$APPLY" -ne 1 ]; then
+    case $td_action in
+      create)  say "hdiutil attach -nomount ram://$td_sectors; diskutil erasevolume HFS+ $TMPDISK_NAME <device>; markers; mount again" ;;
+      remount) say "write the markers in $td_mnt; diskutil unmount and mount it again" ;;
+    esac
+    return 0
+  fi
+  case $td_action in
+    create)  tmpdisk_create "$td_mnt" "$td_sectors" || return 1 ;;
+    remount)
+      tmpdisk_remount "$td_mnt" "$td_dev" || return 1
+      echo "  mounted $td_mnt again with its markers" ;;
+  esac
 }
 
 # ds_ names: every stage shares these globals, and a stage that set `want`
@@ -8829,6 +9037,9 @@ environment:
                           brew info shows need sudo (space-separated)
   MACHINE_SETUP_RELEASE_BIN  release: where the bins go (default ~/.local/bin)
   MACHINE_SETUP_RELEASE_BASE  tests only: the URL that stands in for https://github.com
+  MACHINE_SETUP_TMPDISK_MB  tmpdisk: the RAM disk's size in MiB; unset turns
+                          the stage off (sd:7092)
+  MACHINE_SETUP_TMPDISK_VOLUMES  tests only: the folder that stands in for /Volumes
   SD_PACK_ROOT            the command pack checkout
                           (default ~/repos/platypeeps/sd-ai-command-pack)
   SD_DB_PYTHON            satellite: the interpreter sd_db runs under

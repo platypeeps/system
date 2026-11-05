@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- A template. The agents stage replaces @LABEL@ with the label (this
+     file's name), @HOME@ with $HOME and @ROOT@ with the checkout root.
+     Makes the tmpdisk stage's RAM disk at login (sd:7092): a reboot
+     drops it, and the nightly update would make it only hours
+     later. It runs once and exits; the stage is off until
+     machine-setup.env sets MACHINE_SETUP_TMPDISK_MB. Copy this file to
+     the config folder's launchagents/ and name the label in the
+     profile's .agent file. SYSTEM_TOOLS_CONFIG is the default root:
+     edit it in the copy on a machine whose root is elsewhere. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>@LABEL@</string>
+	<!-- Apple's /bin/bash stays the process macOS charges file access
+	     to; `; exit $?` keeps bash from exec'ing its last command (sd:6427). -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>"$0" update tmpdisk --apply; exit $?</string>
+		<string>@ROOT@/local-machine-setup/machine-setup.sh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>HOME</key>
+		<string>@HOME@</string>
+		<key>SYSTEM_TOOLS_CONFIG</key>
+		<string>@HOME@/.config/system</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>@HOME@/Library/Logs/@LABEL@.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/Library/Logs/@LABEL@.log</string>
+</dict>
+</plist>
