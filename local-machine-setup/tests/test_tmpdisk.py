@@ -16,6 +16,9 @@ login agent and the nightly update are two triggers that can meet. The
 stage detaches only a device it attached in the same run, after its
 erase failed; any other RAM disk may be the operator's, so it is named
 with the command to detach it by hand and left alone.
+
+The disk is APFS: HFS+ keeps whole-second mtimes, and pack tests that
+see a change by mtime missed writes on it (sd:7594).
 """
 
 import json
@@ -39,10 +42,14 @@ MB = 64
 SECTORS = MB * 2048
 
 # hdiutil and diskutil over a JSON file of images: dev, sectors, path
-# (None for ram://), name and mount. A mounted volume is a folder under
-# MACHINE_SETUP_TMPDISK_VOLUMES; an unmount moves it to a stash, as a
-# RAM disk keeps its files while it is attached. FAKE_FAIL names the
-# verbs that exit 1, as a busy volume or a refused attach does.
+# (None for ram://), name, mount, fs, and for APFS its volume device.
+# A mounted volume is a folder under MACHINE_SETUP_TMPDISK_VOLUMES; an
+# unmount moves it to a stash, as a RAM disk keeps its files while it
+# is attached. FAKE_FAIL names the verbs that exit 1, as a busy volume
+# or a refused attach does. APFS is what macOS 27.2 showed on a probe
+# disk (sd:7594): the erase makes a synthesized container and volume
+# that `hdiutil info` lists under the ram:// image, and `diskutil
+# mount` of the physical store fails; only the volume mounts.
 FAKE = r'''
 import json, os, pathlib, plistlib, shutil, sys
 state_file = pathlib.Path(os.environ["FAKE_DISKS"])
@@ -64,6 +71,15 @@ with open(state_file.parent / "locks.log", "a") as log:
 if args and args[0] in os.environ.get("FAKE_FAIL", "").split(","):
     print(f"{tool}: {args[0]} failed", file=sys.stderr)
     sys.exit(1)
+# FAKE_FAIL_NTH=verb:n fails only the nth call of that verb.
+nth_verb, _, nth = os.environ.get("FAKE_FAIL_NTH", "").partition(":")
+if args and args[0] == nth_verb:
+    seen = state_file.parent / f"seen-{nth_verb}"
+    count = int(seen.read_text()) + 1 if seen.exists() else 1
+    seen.write_text(str(count))
+    if count == int(nth):
+        print(f"{tool}: {args[0]} failed", file=sys.stderr)
+        sys.exit(1)
 state = json.loads(state_file.read_text())
 images = state["images"]
 
@@ -74,13 +90,19 @@ def image(key, value):
     print(f"{tool}: no such disk {value}", file=sys.stderr)
     sys.exit(1)
 
+APFS_CONTAINER = "EF57347C-0000-11AA-AA11-00306543ECAC"
+APFS_VOLUME = "41504653-0000-11AA-AA11-00306543ECAC"
+
 if tool == "hdiutil" and args[:2] == ["info", "-plist"]:
     out = []
     for item in images:
-        entity = {"dev-entry": item["dev"]}
+        entities = [{"content-hint": "", "dev-entry": item["dev"]}]
+        if item.get("fs") == "apfs":
+            entities.append({"content-hint": APFS_CONTAINER, "dev-entry": item["vol"][:-2]})
+            entities.append({"content-hint": APFS_VOLUME, "dev-entry": item["vol"]})
         if item.get("mount"):
-            entity["mount-point"] = item["mount"]
-        out.append({"image-path": item.get("path") or f"ram://{item['sectors']}", "system-entities": [entity]})
+            entities[-1]["mount-point"] = item["mount"]
+        out.append({"image-path": item.get("path") or f"ram://{item['sectors']}", "system-entities": entities})
     sys.stdout.buffer.write(plistlib.dumps({"images": out}))
 elif tool == "hdiutil" and args[:2] == ["attach", "-nomount"]:
     dev = f"/dev/disk{state['next']}"
@@ -97,14 +119,21 @@ elif tool == "diskutil" and args[0] == "erasevolume":
     item = image("dev", args[3])
     mount = volumes / args[2]
     (mount / ".fseventsd").mkdir(parents=True)
-    item.update(name=args[2], mount=str(mount))
+    item.update(name=args[2], mount=str(mount), fs="apfs" if args[1].lower() == "apfs" else "hfs")
+    if item["fs"] == "apfs":
+        item["vol"] = f"/dev/disk{state['next']}s1"
+        state["next"] += 1
 elif tool == "diskutil" and args[0] == "unmount":
     item = image("mount", args[1])
     stash.mkdir(exist_ok=True)
     shutil.move(item["mount"], stash / item["dev"].rsplit("/", 1)[1])
     item["mount"] = None
 elif tool == "diskutil" and args[0] == "mount":
-    item = image("dev", args[1])
+    item = next((i for i in images if args[1] in (i["dev"], i.get("vol"))), None) or image("dev", args[1])
+    if item.get("fs") == "apfs" and args[1] != item["vol"]:
+        print(f"Volume on {args[1]} failed to mount because it appears to be\n"
+              "an APFS Physical Store (or is the APFS Container already mounted?)", file=sys.stderr)
+        sys.exit(1)
     mount = volumes / item["name"]
     shutil.move(stash / item["dev"].rsplit("/", 1)[1], mount)
     item["mount"] = str(mount)
@@ -145,7 +174,7 @@ class TmpdiskTest(unittest.TestCase):
         self.record = self.state / "tmpdisk.device"
         fixture_config.seal(self, self.stubs)
 
-    def run_stage(self, *flags, mb=str(MB), fail="", code=0):
+    def run_stage(self, *flags, mb=str(MB), fail="", fail_nth="", code=0):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -155,6 +184,7 @@ class TmpdiskTest(unittest.TestCase):
             "MACHINE_SETUP_TMPDISK_VOLUMES": str(self.volumes),
             "FAKE_DISKS": str(self.disks),
             "FAKE_FAIL": fail,
+            "FAKE_FAIL_NTH": fail_nth,
             "FAKE_LOCK": str(self.lock),
         }
         if mb is not None:
@@ -180,12 +210,16 @@ class TmpdiskTest(unittest.TestCase):
     def mutations(self):
         return [call for call in self.calls() if not call.startswith("hdiutil info")]
 
-    def add_image(self, sectors=SECTORS, mount=None, path=None, name="sd-tmp"):
+    def add_image(self, sectors=SECTORS, mount=None, path=None, name="sd-tmp", fs="apfs"):
         state = json.loads(self.disks.read_text())
         dev = f"/dev/disk{state['next']}"
         state["next"] += 1
-        state["images"].append({"dev": dev, "sectors": sectors, "mount": str(mount) if mount else None,
-                                "path": path, "name": name})
+        item = {"dev": dev, "sectors": sectors, "mount": str(mount) if mount else None,
+                "path": path, "name": name, "fs": fs}
+        if fs == "apfs":
+            item["vol"] = f"/dev/disk{state['next']}s1"
+            state["next"] += 1
+        state["images"].append(item)
         self.disks.write_text(json.dumps(state))
         if mount:
             (pathlib.Path(mount) / ".fseventsd").mkdir(parents=True)
@@ -232,10 +266,13 @@ class TmpdiskTest(unittest.TestCase):
         self.assertIn(f"  created {self.mount} — RAM disk /dev/disk10, 64 MiB, FSEvents log and Spotlight off", lines)
         self.assertEqual(self.mutations(), [
             f"hdiutil attach -nomount ram://{SECTORS}",
-            "diskutil erasevolume HFS+ sd-tmp /dev/disk10",
+            "diskutil erasevolume APFS sd-tmp /dev/disk10",
             f"diskutil unmount {self.mount}",
-            "diskutil mount /dev/disk10",
+            "diskutil mount /dev/disk11s1",
         ])
+        # HFS+ keeps whole-second mtimes; pack tests that see a change by
+        # mtime missed writes on it (sd:7594).
+        self.assertEqual([image["fs"] for image in self.images()], ["apfs"])
         self.assertFalse(os.path.lexists(self.lock))
         self.assert_ready()
 
@@ -247,11 +284,23 @@ class TmpdiskTest(unittest.TestCase):
 
     def test_a_failed_erase_detaches_the_device(self):
         lines = self.run_stage("--apply", fail="erasevolume", code=1)
-        self.assertTrue(any(line.startswith("  FAILED  diskutil erasevolume HFS+ sd-tmp /dev/disk10") for line in lines),
+        self.assertTrue(any(line.startswith("  FAILED  diskutil erasevolume APFS sd-tmp /dev/disk10") for line in lines),
                         lines)
         self.assertEqual(self.images(), [])
         self.assertIn("hdiutil detach /dev/disk10", self.calls())
         self.assertFalse(os.path.lexists(self.lock))
+
+    def test_a_failed_read_after_the_erase_leaves_it_for_the_next_run(self):
+        # The erase made the volume; the read that names it failed.
+        lines = self.run_stage("--apply", fail_nth="info:2", code=1)
+        self.assertIn("  FAILED  hdiutil info -plist: the volume on /dev/disk10 is unknown (exit 1)", lines)
+        self.assertFalse((self.mount / ".tmpdisk-ready").exists(), "ready before a mount read the markers")
+        self.assertNotIn("hdiutil detach /dev/disk10", self.calls())
+        lines = self.run_stage()
+        self.assertTrue(lines[0].startswith(f"  DIFFERS {self.mount} lacks"), lines)
+        self.run_stage("--apply")
+        self.assertEqual([image["dev"] for image in self.images()], ["/dev/disk10"])
+        self.assert_ready()
 
     def test_a_busy_remount_fails_and_the_next_run_finishes_it(self):
         lines = self.run_stage("--apply", fail="unmount", code=1)
@@ -318,7 +367,7 @@ exec /bin/mv "$@"
     def test_stopped_after_attach_the_device_is_left_and_no_second_is_made(self):
         # Attach done, erase not: an unmounted RAM disk of the size. The
         # stage cannot prove it its own, so it never detaches it.
-        orphan = self.add_image()
+        orphan = self.add_image(fs=None)
         lines = self.run_stage()
         self.assertEqual(lines, [self.left_alone(orphan), self.blocked(orphan)])
         self.run_stage("--apply")
@@ -340,7 +389,8 @@ exec /bin/mv "$@"
         dev = self.add_image(mount=self.mount)
         (self.mount / ".tmpdisk-ready").touch()
         lines = self.run_stage("--apply", fail="mount", code=1)
-        self.assertTrue(any(line.startswith(f"  FAILED  diskutil mount {dev}") for line in lines), lines)
+        volume = self.images()[0]["vol"]
+        self.assertTrue(any(line.startswith(f"  FAILED  diskutil mount {volume}") for line in lines), lines)
         lines = self.run_stage("--apply")
         self.assertEqual(lines, [self.left_alone(dev), self.blocked(dev)])
         self.assertNotIn("hdiutil attach", "\n".join(self.calls()))
@@ -376,7 +426,7 @@ exec /bin/mv "$@"
         lines = self.run_stage()
         self.assertTrue(lines[0].startswith(f"  DIFFERS {self.mount} has not been mounted since its markers"), lines)
         self.run_stage("--apply")
-        self.assertEqual(self.mutations(), [f"diskutil unmount {self.mount}", "diskutil mount /dev/disk10"])
+        self.assertEqual(self.mutations(), [f"diskutil unmount {self.mount}", "diskutil mount /dev/disk11s1"])
         self.assert_ready()
 
     # What the stage leaves alone.
@@ -402,6 +452,34 @@ exec /bin/mv "$@"
         self.run_stage("--apply")
         self.assertEqual(self.mutations(), [])
         self.assert_ready()
+
+    def not_apfs(self, dev):
+        return (f"  DIFFERS {self.mount} is not APFS: its whole-second mtimes hide changes from tests; "
+                f"detach it while no gate runs ('hdiutil detach {dev}'), then rerun")
+
+    def test_an_hfs_disk_is_drift_and_never_marked_ready(self):
+        # The disk sd:7092 made: HFS+, its markers written, not marked.
+        dev = self.add_image(mount=self.mount, fs="hfs")
+        (self.mount / ".fseventsd/no_log").touch()
+        (self.mount / ".metadata_never_index").touch()
+        self.assertEqual(self.run_stage(), [self.not_apfs(dev)])
+        self.assertEqual(self.run_stage("--apply"), [self.not_apfs(dev)])
+        self.assertEqual(self.mutations(), [])
+        self.assertFalse((self.mount / ".tmpdisk-ready").exists(), "an HFS+ disk was marked ready")
+
+    def test_an_hfs_disk_marked_ready_loses_the_mark(self):
+        dev = self.add_image(mount=self.mount, fs="hfs")
+        for name in (".fseventsd/no_log", ".metadata_never_index", ".tmpdisk-ready"):
+            (self.mount / name).touch()
+        lines = self.run_stage()
+        self.assertEqual(lines[0], self.not_apfs(dev))
+        self.assertTrue((self.mount / ".tmpdisk-ready").exists(), "a dry run removed the mark")
+        lines = self.run_stage("--apply")
+        self.assertEqual(lines, [self.not_apfs(dev),
+                                 f"  removed {self.mount}/.tmpdisk-ready: consumers keep $TMPDIR"])
+        self.assertFalse((self.mount / ".tmpdisk-ready").exists())
+        self.assertEqual(self.mutations(), [], "the stage changed the disk itself")
+        self.assertEqual([image["dev"] for image in self.images()], [dev])
 
     def test_another_size_is_drift_and_never_detached(self):
         dev = self.add_image(sectors=SECTORS * 2, mount=self.mount)
