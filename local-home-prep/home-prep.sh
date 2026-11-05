@@ -18,7 +18,8 @@ PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 SERVER=workspace-mcp
 # Read tools, a draft and a private doc only: no send, label, share or permission tool.
 TOOLS="Read Grep Glob Bash(sd task show:*)"
-for tool in search_gmail_messages get_gmail_message_content get_gmail_thread_content draft_gmail_message \
+for tool in search_gmail_messages get_gmail_message_content get_gmail_thread_content get_gmail_messages_content_batch \
+  draft_gmail_message \
   search_drive_files get_drive_file_content get_doc_as_markdown create_doc; do
   TOOLS="$TOOLS mcp__${SERVER}__$tool"
 done
