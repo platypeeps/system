@@ -636,6 +636,44 @@ class FollowTest(unittest.TestCase):
         self.assertEqual(pinned, (f.head(system), f.head(pack)))
         self.assertEqual("git@github.com:a/pack", f.git(pack, "remote", "get-url", "origin"))
 
+    def test_the_https_fallback_ends_with_its_fetch(self):
+        """REGRESSION (sd:7676 review). The fallback exported its insteadOf
+        and GIT_TERMINAL_PROMPT=0 into the run, so the update follow
+        starts sent every GitHub repo, private ones too, over https."""
+        f = self.fixture()
+        system, pack, _ = self.pair(f)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+        f.git(pack, "remote", "set-url", "origin", "git@github.com:a/pack")
+        seen = f.tmp / "update-env"
+        # Other GIT_CONFIG_* entries (the drain's own) may stand; no
+        # insteadOf may.
+        hook = (f'echo "$(env | grep -c "^GIT_CONFIG_KEY_[0-9]*=.*[.]insteadOf$") ${{GIT_TERMINAL_PROMPT:-none}} '
+                f'${{REPO_SYNC_HTTPS:-none}}" >> {seen}')
+
+        f.run("follow", expect=0, extra_env={
+            "REPO_SYNC_GITHUB_HTTPS": f"file://{f.tmp}/bare/", "UPDATE_HOOK": hook})
+
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        lines = seen.read_text().splitlines()
+        self.assertTrue(lines)
+        self.assertEqual({"0 none none"}, set(lines))
+
+    def test_a_failed_fallback_names_the_first_error(self):
+        """REGRESSION (sd:7676 review). The https retry wrote over git's
+        error, so the refusal quoted the retry, not the fetch that failed."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, f.advance_origin(system), pack=f.advance_origin(pack))
+        f.git(pack, "remote", "set-url", "origin", "git@github.com:a/pack")
+
+        result = f.run("follow", expect=1,
+                       extra_env={"REPO_SYNC_GITHUB_HTTPS": "nope://example.test/"})
+
+        self.assertIn(f"in {pack}: and the repository exists.", result.stdout)
+        self.assertNotIn("remote helper", result.stdout)
+        self.assertEqual(old, (f.head(system), f.head(pack)))
+
     def test_a_tag_without_a_pack_line_refuses_and_moves_nothing(self):
         """NEW (round 1). A tag that names system alone is half a pair."""
         f = self.fixture()

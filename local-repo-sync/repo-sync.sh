@@ -1585,12 +1585,14 @@ follow_prompt() {
 
 # Fetches refspec $2 from checkout $1's origin, git's errors in $TMPD/err.
 # A failed fetch tries once more over https (github_https): the cron job's
-# agent may hold no key, and both repos are public (sd:7676).
+# agent may hold no key, and both repos are public (sd:7676). The retry
+# runs in a subshell, so its rewrite ends with it: the update follow runs
+# next must not send private repos over https. $TMPD/err keeps the first
+# fetch's error, the one a refusal names; the retry's goes to err.https.
 follow_fetch() {
   bound_step 300 git -C "$1" fetch -q origin "$2" < /dev/null 2> "$TMPD/err" && return 0
   [ "${REPO_SYNC_HTTPS:-}" != 1 ] || return 1
-  github_https
-  bound_step 300 git -C "$1" fetch -q origin "$2" < /dev/null 2> "$TMPD/err"
+  (github_https && bound_step 300 git -C "$1" fetch -q origin "$2" < /dev/null 2> "$TMPD/err.https")
 }
 
 # On a satellite, moves system and pack to the shas of the hub-pin tag on the
