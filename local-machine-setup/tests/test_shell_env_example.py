@@ -47,6 +47,11 @@ class ShellEnvExampleTest(unittest.TestCase):
         # (system sd:7485).
         self.assertEqual(example_names().get("SD_AWS_READ"), "change-me")
 
+    def test_it_names_the_home_assistant_url(self):
+        # The pack's sd_db/credentials.py tests HA_TOKEN against HA_URL;
+        # doctor warned HA_URL was set but unlisted (system sd:7660).
+        self.assertEqual(example_names().get("HA_URL"), "change-me")
+
     def test_each_jev_stage_switch_is_off_and_still_read_by_a_tool(self):
         stages = {n: v for n, v in example_names().items()
                   if n.startswith("JEV_")}
