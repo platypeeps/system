@@ -2848,6 +2848,52 @@ class TheInjectionTest(CompareCase):
                  for i in items if i["kind"] == "finding" and i["form"] == "clean"]
         self.assertEqual(len(set(drawn)), len(drawn))
 
+    def test_a_twin_that_fails_a_check_leaves_the_qualified_one(self):
+        # The dedupe runs after the checks: a current-slug row routed cheap
+        # does not drop its old-slug twin, which qualifies (sd:7712).
+        old = "platypeeps/sd-ai-command-pack"
+        extra = []
+        for row in self.rows:
+            if row["repository"] == "platypeeps/sd-workflow":
+                extra.append(dict(row, repository=old))
+                self.finding(old, row["head"], f"{old} says the same again")
+                row["routed"] = "cheap"
+        (self.out / "population.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in self.rows + extra))
+        code, out = self.build()
+        self.assertEqual(code, 0, out)
+        bases = {(i["repository"], i["head"]) for i in self.items()
+                 if i["kind"] == "tier" and i["variant"] is None}
+        self.assertEqual(len(bases), 3)
+        self.assertEqual({h for s, h in bases if s == old},
+                         {r["head"] for r in extra})
+
+    def test_a_head_under_both_slugs_offers_its_findings_once(self):
+        # The findings draw dedupes too once the bases dedupe after their
+        # checks (sd:7712): four heads give four findings, not six. Each
+        # twin's review is a checkpoint of its own, as before the rename.
+        old = "platypeeps/sd-ai-command-pack"
+        extra = []
+        for row in self.rows:
+            if row["repository"] == "platypeeps/sd-workflow":
+                extra.append(dict(row, repository=old))
+                one = reviewed(row["head"], "blocking")
+                one["report"]["findings"][0]["summary"] = "a.py drops the error again"
+                with contextlib.closing(connect(self.db)) as connection:
+                    connection.execute(
+                        "INSERT INTO state (kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
+                        (f"ship-old:{row['head']}", "2026-09-22T00:00:00+00:00",
+                         json.dumps({"repository": old, "head": row["head"], "passes": [one]})))
+        (self.out / "population.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in self.rows + extra))
+        err = io.StringIO()
+        with unittest.mock.patch.object(experiment, "INJECTION_FINDINGS", 5), \
+                contextlib.redirect_stderr(err):
+            code, out = self.build()
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("4 public findings qualify", err.getvalue())
+        self.assertEqual(self.items(), [])
+
     def test_each_variant_differs_from_its_twin_by_one_path(self):
         self.build()
         items = self.items()
