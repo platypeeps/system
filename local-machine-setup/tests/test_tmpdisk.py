@@ -6,15 +6,16 @@ to 17 GB. The stage keeps a small RAM disk with FSEvents logging and
 Spotlight off, and writes `.tmpdisk-ready` only once a mount has read
 both markers, so a consumer never takes a disk that is half made.
 
-No case calls the real hdiutil, diskutil or sysctl: fakes on PATH keep
+No case calls the real hdiutil or diskutil: fakes on PATH keep
 the disks in a JSON file, and the volumes folder is a temporary one. A
 case that stops the process between two steps writes the state that stop
 leaves, and the next run must finish it or undo it.
 
-Every call the fakes see must come while the stage holds its lock, and a
-detach must name a disk the stage's record or ready file proves its own:
-the login agent and the nightly update are two triggers that can meet,
-and the operator may keep a RAM disk of their own.
+Every call the fakes see must come while the stage holds its lock: the
+login agent and the nightly update are two triggers that can meet. The
+stage detaches only a device it attached in the same run, after its
+erase failed; any other RAM disk may be the operator's, so it is named
+with the command to detach it by hand and left alone.
 """
 
 import json
@@ -114,13 +115,6 @@ state_file.write_text(json.dumps(state))
 '''
 
 
-# kern.boottime as sysctl prints it; FAKE_BOOT stands in for a reboot.
-SYSCTL = """#!/bin/sh
-[ "$*" = "-n kern.boottime" ] || exit 1
-echo "{ sec = ${FAKE_BOOT:-1700000000}, usec = 0 } Tue Nov 14 22:13:20 2023"
-"""
-
-
 def write_stub(directory, name, body):
     path = directory / name
     path.write_text(body)
@@ -147,12 +141,11 @@ class TmpdiskTest(unittest.TestCase):
         self.stubs.mkdir()
         for name in ("hdiutil", "diskutil"):
             write_stub(self.stubs, name, f"#!{sys.executable}\n{FAKE}")
-        write_stub(self.stubs, "sysctl", SYSCTL)
         self.lock = self.state / "tmpdisk.lock"
         self.record = self.state / "tmpdisk.device"
         fixture_config.seal(self, self.stubs)
 
-    def run_stage(self, *flags, mb=str(MB), fail="", code=0, boot="1700000000"):
+    def run_stage(self, *flags, mb=str(MB), fail="", code=0):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -163,7 +156,6 @@ class TmpdiskTest(unittest.TestCase):
             "FAKE_DISKS": str(self.disks),
             "FAKE_FAIL": fail,
             "FAKE_LOCK": str(self.lock),
-            "FAKE_BOOT": boot,
         }
         if mb is not None:
             env["MACHINE_SETUP_TMPDISK_MB"] = mb
@@ -199,11 +191,15 @@ class TmpdiskTest(unittest.TestCase):
             (pathlib.Path(mount) / ".fseventsd").mkdir(parents=True)
         return dev
 
-    def remember(self, dev, boot="1700000000"):
-        self.record.write_text(f"{dev} {boot}\n")
+    def left_alone(self, dev):
+        return f"  --      {dev}: an unmounted RAM disk; left alone; detach it by hand: hdiutil detach {dev}"
+
+    def blocked(self, dev):
+        return (f"  DIFFERS {self.mount} is missing, and {dev} is an unmounted RAM disk of 64 MiB; "
+                "no second disk is made beside it: detach it by hand, then rerun")
 
     def assert_ready(self):
-        self.assertFalse(self.record.exists(), "the record outlived a ready disk")
+        self.assertFalse(self.record.exists(), "the stage keeps no device record")
         self.assertFalse(os.path.lexists(self.lock), "the lock outlived the run")
         self.assertTrue((self.mount / ".fseventsd/no_log").is_file())
         self.assertTrue((self.mount / ".metadata_never_index").is_file())
@@ -255,12 +251,10 @@ class TmpdiskTest(unittest.TestCase):
                         lines)
         self.assertEqual(self.images(), [])
         self.assertIn("hdiutil detach /dev/disk10", self.calls())
-        self.assertFalse(self.record.exists())
         self.assertFalse(os.path.lexists(self.lock))
 
     def test_a_busy_remount_fails_and_the_next_run_finishes_it(self):
         lines = self.run_stage("--apply", fail="unmount", code=1)
-        self.assertEqual(self.record.read_text(), "/dev/disk10 1700000000\n")
         self.assertTrue(any(line.startswith(f"  FAILED  diskutil unmount {self.mount}") for line in lines), lines)
         self.assertFalse((self.mount / ".tmpdisk-ready").exists(), "ready before a mount read the markers")
         lines = self.run_stage()
@@ -321,46 +315,54 @@ exec /bin/mv "$@"
         self.assertIn('ln -s "$$" "$TMPDISK_LOCK"', text)
         self.assertNotIn("tmpdisk.lock/pid", text)
 
-    def test_stopped_after_attach_the_device_is_detached_and_made_again(self):
+    def test_stopped_after_attach_the_device_is_left_and_no_second_is_made(self):
+        # Attach done, erase not: an unmounted RAM disk of the size. The
+        # stage cannot prove it its own, so it never detaches it.
         orphan = self.add_image()
-        self.remember(orphan)
         lines = self.run_stage()
-        self.assertIn(f"  EXTRA   {orphan} — a RAM disk with no volume that a stopped run of this stage attached", lines)
+        self.assertEqual(lines, [self.left_alone(orphan), self.blocked(orphan)])
         self.run_stage("--apply")
-        self.assertIn(f"hdiutil detach {orphan}", self.calls())
-        self.assertEqual([image["dev"] for image in self.images()], ["/dev/disk11"])
+        self.assertEqual(self.mutations(), [], "the stage changed a disk it cannot prove its own")
+        self.assertEqual([image["dev"] for image in self.images()], [orphan])
+        # The operator detaches it by hand; the next run makes the disk.
+        self.disks.write_text(json.dumps({"next": 11, "images": []}))
+        self.run_stage("--apply")
         self.assert_ready()
 
-    def test_an_unmounted_ram_disk_the_stage_did_not_make_is_left_alone(self):
-        for sectors in (SECTORS, SECTORS * 2):
-            with self.subTest(sectors=sectors):
-                theirs = self.add_image(sectors=sectors)
-                lines = self.run_stage()
-                self.assertIn(f"  --      {theirs}: an unmounted RAM disk this stage did not make; left alone", lines)
-                self.run_stage("--apply")
-                self.assertNotIn(f"hdiutil detach {theirs}", self.calls())
-                self.assertIn(theirs, [image["dev"] for image in self.images()])
+    def test_stopped_after_unmount_the_device_is_left_and_no_second_is_made(self):
+        orphan = self.add_image(name="sd-tmp")
+        (self.fake / "stash" / orphan.rsplit("/", 1)[1]).mkdir(parents=True)
+        self.run_stage("--apply")
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual([image["dev"] for image in self.images()], [orphan])
 
-    def test_a_record_from_an_earlier_boot_proves_nothing(self):
-        theirs = self.add_image()
-        self.remember(theirs, boot="1600000000")
+    def test_a_failed_remount_of_a_ready_disk_makes_no_second_disk(self):
+        dev = self.add_image(mount=self.mount)
+        (self.mount / ".tmpdisk-ready").touch()
+        lines = self.run_stage("--apply", fail="mount", code=1)
+        self.assertTrue(any(line.startswith(f"  FAILED  diskutil mount {dev}") for line in lines), lines)
+        lines = self.run_stage("--apply")
+        self.assertEqual(lines, [self.left_alone(dev), self.blocked(dev)])
+        self.assertNotIn("hdiutil attach", "\n".join(self.calls()))
+        self.assertEqual([image["dev"] for image in self.images()], [dev])
+
+    def test_an_unmounted_ram_disk_of_another_size_is_left_alone(self):
+        theirs = self.add_image(sectors=SECTORS * 2)
         lines = self.run_stage()
-        self.assertIn(f"  --      {theirs}: an unmounted RAM disk this stage did not make; left alone", lines)
+        self.assertIn(self.left_alone(theirs), lines)
         self.run_stage("--apply")
         self.assertNotIn(f"hdiutil detach {theirs}", self.calls())
         self.assertIn(theirs, [image["dev"] for image in self.images()])
         self.assert_ready()
 
-    def test_a_ram_disk_at_the_mount_point_the_stage_did_not_make_is_left_alone(self):
-        theirs = self.add_image(mount=self.mount)
-        lines = self.run_stage("--apply")
-        self.assertEqual(lines, [f"  DIFFERS {self.mount} holds RAM disk {theirs}, which this stage did not make; "
-                                 "left alone"])
-        self.assertEqual(self.mutations(), [])
-        self.assertFalse((self.mount / ".metadata_never_index").exists())
+    def test_the_stage_detaches_only_after_its_own_failed_erase(self):
+        text = SCRIPT.read_text()
+        body = text[text.index("TMPDISK_NAME=sd-tmp"):text.index("do_stages() {")]
+        self.assertEqual(body.count("hdiutil detach \"$"), 1, "a second detach path")
+        self.assertNotIn("tmpdisk.device", text)
 
     def test_stopped_after_erase_the_markers_are_written_and_mounted(self):
-        self.remember(self.add_image(mount=self.mount))
+        self.add_image(mount=self.mount)
         lines = self.run_stage()
         self.assertTrue(lines[0].startswith(f"  DIFFERS {self.mount} lacks .fseventsd/no_log .metadata_never_index"), lines)
         self.run_stage("--apply")
@@ -368,20 +370,13 @@ exec /bin/mv "$@"
         self.assert_ready()
 
     def test_stopped_after_the_markers_the_disk_is_mounted_again(self):
-        self.remember(self.add_image(mount=self.mount))
+        self.add_image(mount=self.mount)
         (self.mount / ".fseventsd/no_log").touch()
         (self.mount / ".metadata_never_index").touch()
         lines = self.run_stage()
         self.assertTrue(lines[0].startswith(f"  DIFFERS {self.mount} has not been mounted since its markers"), lines)
         self.run_stage("--apply")
         self.assertEqual(self.mutations(), [f"diskutil unmount {self.mount}", "diskutil mount /dev/disk10"])
-        self.assert_ready()
-
-    def test_stopped_after_unmount_the_device_is_detached_and_made_again(self):
-        orphan = self.add_image()
-        self.remember(orphan)
-        self.run_stage("--apply")
-        self.assertIn(f"hdiutil detach {orphan}", self.calls())
         self.assert_ready()
 
     # What the stage leaves alone.
@@ -400,9 +395,8 @@ exec /bin/mv "$@"
         self.assertEqual(lines, [f"  DIFFERS {self.mount} exists and is not a RAM disk; move it away, then rerun"])
         self.assertEqual(self.mutations(), [])
 
-    def test_stopped_after_ready_the_record_is_dropped(self):
-        dev = self.add_image(mount=self.mount)
-        self.remember(dev)
+    def test_a_ready_disk_is_left_as_it_is(self):
+        self.add_image(mount=self.mount)
         for name in (".fseventsd/no_log", ".metadata_never_index", ".tmpdisk-ready"):
             (self.mount / name).touch()
         self.run_stage("--apply")

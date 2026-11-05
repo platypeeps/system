@@ -3621,12 +3621,13 @@ if not stat.S_ISREG(mode(os.path.join(sys.argv[1], "com.googlecode.iterm2.plist"
 #
 # The login agent and the nightly update are two triggers that can meet,
 # so the stage takes its lock before it reads a disk, and reads and acts
-# only under it. It acts only on a disk it proves its own: the device its
-# record names, written right after the attach in this boot, or the RAM
-# disk at the mount point that holds .tmpdisk-ready. Any other RAM disk
-# may be the operator's: it is named and left alone. A stop between two
-# steps leaves a lock whose pid is gone, a recorded device, or a recorded
-# volume not yet ready; the next run finishes or undoes each.
+# only under it. It detaches only the device it attached in the same run,
+# after its erase failed: a device number proves no identity across runs,
+# and any other RAM disk may be the operator's. An unmounted RAM disk is
+# named with the command to detach it by hand and left alone; while one
+# of the configured size exists, the stage makes no second disk beside it.
+# The RAM disk at the mount point is the volume this stage names sd-tmp:
+# writing the markers and mounting it again changes no data on it.
 TMPDISK_NAME=sd-tmp
 TMPDISK_VOLUMES="${MACHINE_SETUP_TMPDISK_VOLUMES:-/Volumes}"
 TMPDISK_MB="${MACHINE_SETUP_TMPDISK_MB:-}"
@@ -3634,9 +3635,6 @@ TMPDISK_MARKERS=".fseventsd/no_log .metadata_never_index"
 # A symlink whose target is the holder's pid: `ln -s` makes it with its
 # pid in one step, so no contender ever reads a lock with no pid.
 TMPDISK_LOCK="$STATE_DIR/tmpdisk.lock"
-# `<device> <boot>`: the device this stage attached, and the boot it
-# attached it in. A device number from an earlier boot proves nothing.
-TMPDISK_RECORD="$STATE_DIR/tmpdisk.device"
 
 # One line per disk image: device, sectors, mount point or `-`. An image
 # from a file prints `file` as its sectors, so it is never the RAM disk.
@@ -3653,11 +3651,6 @@ for image in plistlib.loads(sys.stdin.buffer.read()).get("images", []):
     if devs:
         print(devs[0], sectors, mounts[0] if mounts else "-", sep="\t")
 '
-}
-
-# This boot's start, in seconds; empty where sysctl has no kern.boottime.
-tmpdisk_boot() {
-  sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ sec = \([0-9]*\),.*/\1/p'
 }
 
 # One bounded step, its output dropped; a failure prints FAILED.
@@ -3702,7 +3695,7 @@ tmpdisk_lock() {
 }
 
 # Writes the markers, mounts again so FSEvents and Spotlight read them,
-# then marks the volume ready and drops the record. A busy volume fails
+# then marks the volume ready. A busy volume fails
 # the unmount and stays as it was; the next run tries again.
 tmpdisk_remount() { # mount, device
   { mkdir -p "$1/.fseventsd" && : > "$1/.fseventsd/no_log" && : > "$1/.metadata_never_index"; } ||
@@ -3713,15 +3706,9 @@ tmpdisk_remount() { # mount, device
     [ -f "$1/$td_marker" ] || { note_failure "diskutil mount $2 did not mount it at $1" 1; return 1; }
   done
   : > "$1/.tmpdisk-ready" || { note_failure "mark $1 ready" 1; return 1; }
-  rm -f "$TMPDISK_RECORD"
 }
 
-# Detaches a device this run attached, after a later step failed.
-tmpdisk_undo() { # device
-  tmpdisk_step 60 hdiutil detach "$1" && rm -f "$TMPDISK_RECORD"
-}
-
-tmpdisk_create() { # mount, sectors, boot
+tmpdisk_create() { # mount, sectors
   td_out=$(bound_step 60 hdiutil attach -nomount "ram://$2") ||
     { td_rc=$?; note_failure "hdiutil attach -nomount ram://$2" "$td_rc"; return 1; }
   td_dev=$(printf '%s\n' "$td_out" | awk 'NR == 1 { print $1 }')
@@ -3729,16 +3716,15 @@ tmpdisk_create() { # mount, sectors, boot
     /dev/disk[0-9]*) ;;
     *) note_failure "hdiutil attach -nomount ram://$2 named no device" 1; return 1 ;;
   esac
-  # The record proves the device ours to the next run, if this one stops.
-  printf '%s %s\n' "$td_dev" "$3" > "$TMPDISK_RECORD" ||
-    { note_failure "record $td_dev in $TMPDISK_RECORD" 1; tmpdisk_step 60 hdiutil detach "$td_dev" || :; return 1; }
-  if ! tmpdisk_step 120 diskutil erasevolume HFS+ "$TMPDISK_NAME" "$td_dev"; then
-    tmpdisk_undo "$td_dev" || :
-    return 1
-  fi
-  if [ ! -d "$1" ]; then
+  # The one detach: the device this run attached, whose erase failed.
+  td_erased=1
+  tmpdisk_step 120 diskutil erasevolume HFS+ "$TMPDISK_NAME" "$td_dev" || td_erased=0
+  if [ "$td_erased" -eq 1 ] && [ ! -d "$1" ]; then
     note_failure "diskutil erasevolume did not mount $td_dev at $1" 1
-    tmpdisk_undo "$td_dev" || :
+    td_erased=0
+  fi
+  if [ "$td_erased" -eq 0 ]; then
+    tmpdisk_step 60 hdiutil detach "$td_dev" || :
     return 1
   fi
   tmpdisk_remount "$1" "$td_dev" || return 1
@@ -3773,36 +3759,17 @@ tmpdisk_locked() {
     note_failure "hdiutil info -plist: the RAM disk's state is unknown" 1
     return 1
   fi
-  td_boot=$(tmpdisk_boot)
-  td_rec=""
-  if [ -f "$TMPDISK_RECORD" ]; then
-    read -r td_rec td_rec_boot < "$TMPDISK_RECORD" || :
-    [ "${td_rec_boot:-}" = "$td_boot" ] || td_rec=""
-  fi
-  # The record proves only a RAM disk that is still attached.
-  td_rec_line=""
-  [ -z "$td_rec" ] || td_rec_line=$(printf '%s\n' "$td_images" | awk -F '\t' -v d="$td_rec" '$1 == d && $2 != "file"')
-  [ -n "$td_rec_line" ] || td_rec=""
   td_at=$(printf '%s\n' "$td_images" | awk -F '\t' -v m="$td_mnt" '$3 == m')
-  td_detach=""
   td_action=none
-  if [ -n "$td_rec" ] && [ "$(printf '%s\n' "$td_rec_line" | cut -f3)" = "-" ]; then
-    echo "  EXTRA   $td_rec — a RAM disk with no volume that a stopped run of this stage attached"
-    td_detach=$td_rec
-  fi
-  # Unmounted RAM disks the stage cannot prove its own.
-  for td_other in $(printf '%s\n' "$td_images" | awk -F '\t' -v d="$td_rec" '$2 != "file" && $3 == "-" && $1 != d { print $1 }'); do
-    echo "  --      $td_other: an unmounted RAM disk this stage did not make; left alone"
+  td_unmounted=$(printf '%s\n' "$td_images" | awk -F '\t' '$2 != "file" && $3 == "-" { print $1 }')
+  for td_other in $td_unmounted; do
+    echo "  --      $td_other: an unmounted RAM disk; left alone; detach it by hand: hdiutil detach $td_other"
   done
   if [ -n "$td_at" ]; then
     td_dev=$(printf '%s\n' "$td_at" | cut -f1)
     td_have=$(printf '%s\n' "$td_at" | cut -f2)
     if [ "$td_have" = file ]; then
       echo "  DIFFERS $td_mnt exists and is not a RAM disk; move it away, then rerun"
-      return 0
-    fi
-    if [ "$td_dev" != "$td_rec" ] && [ ! -f "$td_mnt/.tmpdisk-ready" ]; then
-      echo "  DIFFERS $td_mnt holds RAM disk $td_dev, which this stage did not make; left alone"
       return 0
     fi
     if [ "$td_have" != "$td_sectors" ]; then
@@ -3826,26 +3793,25 @@ tmpdisk_locked() {
     echo "  DIFFERS $td_mnt exists and is not a RAM disk; move it away, then rerun"
     return 0
   else
+    # A stopped or failed run may have left it unmounted: a second disk
+    # beside it would strand it, and the stage cannot prove it its own.
+    td_same=$(printf '%s\n' "$td_images" | awk -F '\t' -v s="$td_sectors" '$2 == s && $3 == "-" { print $1; exit }')
+    if [ -n "$td_same" ]; then
+      echo "  DIFFERS $td_mnt is missing, and $td_same is an unmounted RAM disk of $TMPDISK_MB MiB; no second disk is made beside it: detach it by hand, then rerun"
+      return 0
+    fi
     echo "  MISSING $td_mnt — no RAM disk of $TMPDISK_MB MiB"
     td_action=create
   fi
   if [ "$APPLY" -ne 1 ]; then
-    [ -z "$td_detach" ] || say "hdiutil detach $td_detach"
     case $td_action in
       create)  say "hdiutil attach -nomount ram://$td_sectors; diskutil erasevolume HFS+ $TMPDISK_NAME <device>; markers; mount again" ;;
       remount) say "write the markers in $td_mnt; diskutil unmount and mount it again" ;;
     esac
     return 0
   fi
-  # A record that proves nothing, or names a ready disk, is spent.
-  if [ -f "$TMPDISK_RECORD" ] && { [ -z "$td_rec" ] || [ "$td_action" = none ]; }; then
-    rm -f "$TMPDISK_RECORD"
-  fi
-  if [ -n "$td_detach" ]; then
-    tmpdisk_undo "$td_detach" || return 1
-  fi
   case $td_action in
-    create)  tmpdisk_create "$td_mnt" "$td_sectors" "$td_boot" || return 1 ;;
+    create)  tmpdisk_create "$td_mnt" "$td_sectors" || return 1 ;;
     remount)
       tmpdisk_remount "$td_mnt" "$td_dev" || return 1
       echo "  mounted $td_mnt again with its markers" ;;

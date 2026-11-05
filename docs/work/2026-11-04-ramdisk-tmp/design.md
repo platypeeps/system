@@ -73,26 +73,29 @@ A RAM disk should take memory only as blocks are written; that is not measured h
 
 ## Failure table
 
-Review round 1 (0c3a84ce) found two defects in one class: a step that read disk state or acted on a device outside the lock, or on a disk the stage had not proved its own.
-Class pass: every such step now runs under the lock, and each one that acts on a device names its proof.
+Review rounds 1 (0c3a84ce) and 2 (d42c7775) found one class: automatic recovery that reads disk state outside the lock, or destroys or strands a RAM disk whose owner is unproven.
+A device number proves no identity: after a hand detach, macOS can give the number to the operator's next RAM disk.
+So the stage keeps no device record and detaches nothing across runs.
+It runs every read and action under the lock, and it detaches only the device it attached in the same run, after that run's erase failed.
+Any unmounted RAM disk is named with `hdiutil detach <device>` for the operator and left alone; while one of the configured size exists, no second disk is made.
+The RAM disk at `/Volumes/sd-tmp` is the volume the stage names `sd-tmp`: writing the markers and mounting it again changes no data on it.
 
-| Step | Under the lock | Proof the disk is ours | Test |
+Every step that reads disk state or acts on a device:
+
+| Step | Under the lock | Acts on | Test |
 | --- | --- | --- | --- |
-| Read `hdiutil info -plist` | yes, dry runs too | n/a: a read | every case: the fakes log each call and fail one made without the lock |
-| Read the boot time (`sysctl -n kern.boottime`) | yes | n/a | `test_a_record_from_an_earlier_boot_proves_nothing` |
-| Read the record `<state>/tmpdisk.device` | yes | n/a | `test_stopped_after_attach_the_device_is_detached_and_made_again` |
-| Read the markers and `.tmpdisk-ready` | yes | n/a | `test_stopped_after_erase_the_markers_are_written_and_mounted` |
-| Detach a device with no volume | yes | the record names it, written in this boot, and it is still an attached `ram://` | `test_stopped_after_attach_…`, `test_stopped_after_unmount_…`; left alone: `test_an_unmounted_ram_disk_the_stage_did_not_make_is_left_alone`, `test_a_record_from_an_earlier_boot_proves_nothing` |
-| Attach | yes | n/a: a new device | `test_absent_disk_is_missing_then_made_with_markers_before_the_last_mount` |
-| Write the record | yes, right after the attach | the device the attach named | `test_a_busy_remount_fails_and_the_next_run_finishes_it` |
+| Read `hdiutil info -plist` | yes, dry runs too | nothing | every case: the fakes fail a call made without the lock |
+| Read the markers and `.tmpdisk-ready` | yes | nothing | `test_stopped_after_erase_the_markers_are_written_and_mounted` |
+| Attach | yes | a new device | `test_absent_disk_is_missing_then_made_with_markers_before_the_last_mount` |
 | Erase | yes | the device this run attached | `test_a_failed_erase_detaches_the_device` |
-| Detach after a failed erase or mount | yes | the device this run attached | `test_a_failed_erase_detaches_the_device` |
-| Write the markers, unmount, mount, write ready | yes | the `ram://` disk at `/Volumes/sd-tmp` is the recorded one, or holds `.tmpdisk-ready` | `test_stopped_after_the_markers_the_disk_is_mounted_again`; left alone: `test_a_ram_disk_at_the_mount_point_the_stage_did_not_make_is_left_alone` |
-| Drop the record | yes | after ready, or when it proves nothing | `test_stopped_after_ready_the_record_is_dropped` |
+| Detach | yes | only the device this run attached, after its erase failed | `test_a_failed_erase_detaches_the_device`, `test_the_stage_detaches_only_after_its_own_failed_erase` |
+| Markers, unmount, mount, ready | yes | the RAM disk of the configured size at `/Volumes/sd-tmp`; no data changes | `test_stopped_after_the_markers_the_disk_is_mounted_again` |
+| An unmounted RAM disk | yes | nothing: named with its detach command | `test_stopped_after_attach_the_device_is_left_and_no_second_is_made`, `test_an_unmounted_ram_disk_of_another_size_is_left_alone` |
 | Take the lock | `ln -s <pid>` makes it with its pid in one step | n/a | `test_the_lock_is_one_atomic_link_to_the_pid` |
 | Clear a lock | only a link naming a pid that is gone; moved aside first, and a live one goes back | n/a | `test_stopped_after_the_lock_a_dead_holder_is_cleared`, `test_a_live_lock_taken_after_the_dead_one_was_read_stays`; never: `test_a_lock_that_names_no_pid_is_never_removed`, `test_a_folder_at_the_lock_path_is_never_taken`, `test_a_live_holder_is_left_alone` |
 
-Each stop or failure between steps, and the run after it:
+Each stop or failure between steps, and the run after it.
+No recovery detaches a disk automatically.
 
 | Step | State moved | Failure | Recovery | Test |
 | --- | --- | --- | --- | --- |
@@ -100,19 +103,19 @@ Each stop or failure between steps, and the run after it:
 | Take the lock | `<state>/tmpdisk.lock`, a link to the pid | another live run holds it | `SKIP` before any read; that run makes the disk | `test_a_live_holder_is_left_alone` |
 | Take the lock | as above | a stopped run left it | its pid is gone, so the run moves it aside, checks it, clears it and goes on | `test_stopped_after_the_lock_a_dead_holder_is_cleared` |
 | Attach | a `ram://` device, no volume | refused | `FAILED`; nothing attached | `test_a_refused_attach_fails_and_leaves_no_disk` |
-| Attach, record | device and record | stopped before erase | the next run reads the recorded device as `EXTRA`, detaches it and makes the disk again | `test_stopped_after_attach_the_device_is_detached_and_made_again` |
-| Attach | device, no record yet | stopped between attach and record | the device proves nothing: named and left alone for the operator | `test_an_unmounted_ram_disk_the_stage_did_not_make_is_left_alone` |
-| Erase | an HFS+ volume at `/Volumes/sd-tmp`, no markers | fails | `FAILED`; the device is detached and the record dropped | `test_a_failed_erase_detaches_the_device` |
-| Erase | as above | stopped before the markers | the record proves it; the next run writes them and mounts again | `test_stopped_after_erase_the_markers_are_written_and_mounted` |
-| Markers, unmount | markers on disk, not yet read | volume busy, unmount fails | `FAILED`; no ready file, so no consumer takes it; the record stays; the next run mounts again | `test_a_busy_remount_fails_and_the_next_run_finishes_it` |
+| Attach | as above | stopped before erase | the next run names the device and its detach command, and makes no second disk; the operator detaches it, and the run after makes the disk | `test_stopped_after_attach_the_device_is_left_and_no_second_is_made` |
+| Erase | an HFS+ volume at `/Volumes/sd-tmp`, no markers | fails | `FAILED`; this run detaches the device it attached | `test_a_failed_erase_detaches_the_device` |
+| Erase | as above | stopped before the markers | the next run writes them and mounts again | `test_stopped_after_erase_the_markers_are_written_and_mounted` |
+| Markers, unmount | markers on disk, not yet read | volume busy, unmount fails | `FAILED`; no ready file, so no consumer takes it; the next run mounts again | `test_a_busy_remount_fails_and_the_next_run_finishes_it` |
 | Markers, unmount | as above | stopped before the unmount | the next run mounts again | `test_stopped_after_the_markers_the_disk_is_mounted_again` |
-| Unmount, mount | recorded device, volume unmounted | stopped between them | detached and made again | `test_stopped_after_unmount_the_device_is_detached_and_made_again` |
-| Ready, drop record | `.tmpdisk-ready` | stopped before the record goes | the next run reads `ok` and drops it | `test_stopped_after_ready_the_record_is_dropped` |
-| Disk missing at login or after a reboot | none | the agent has not run yet | consumers keep `$TMPDIR`; the login agent or the nightly update makes it; a record from the earlier boot proves nothing | `test_a_record_from_an_earlier_boot_proves_nothing`; consumer fallback: pack sd:7557 |
+| Unmount, mount | device, volume unmounted | stopped between them | named with its detach command; no second disk | `test_stopped_after_unmount_the_device_is_left_and_no_second_is_made` |
+| Mount of a ready disk | device, volume unmounted | the mount fails | `FAILED`; the next run names the device and makes no second disk | `test_a_failed_remount_of_a_ready_disk_makes_no_second_disk` |
+| Ready | `.tmpdisk-ready` | none | `ok`, nothing changed | `test_a_ready_disk_is_left_as_it_is` |
+| Disk missing at login or after a reboot | none | the agent has not run yet | consumers keep `$TMPDIR`; the login agent or the nightly update makes it | consumer fallback: pack sd:7557 |
 | Disk ejected mid-run | the run's files are gone | that run fails once | later runs keep `$TMPDIR` until the next login or nightly update | the fallback: pack sd:7557 |
 | Disk full | none | a write fails with no space | that run fails; the gate's cleanup and `reap_temporary` free its folder; pack sd:7557 skips a disk with too little room | pack sd:7557 |
 | Two creators race | a second volume would stack as `sd-tmp 1` | the login agent meets the nightly update | the lock, taken before any read; the loser skips | `test_a_live_holder_is_left_alone` |
-| Something else at `/Volumes/sd-tmp` | none | a folder, a file image, or a RAM disk not proved ours | `DIFFERS`, left alone | `test_a_folder_that_is_not_a_ram_disk_is_drift_and_kept`, `test_a_disk_image_mounted_there_is_not_a_ram_disk`, `test_a_ram_disk_at_the_mount_point_the_stage_did_not_make_is_left_alone` |
+| Something else at `/Volumes/sd-tmp` | none | a folder or a file image | `DIFFERS`, left alone | `test_a_folder_that_is_not_a_ram_disk_is_drift_and_kept`, `test_a_disk_image_mounted_there_is_not_a_ram_disk` |
 | Size changed in `machine-setup.env` | none | the live disk has the old size | `DIFFERS`, never detached: a run may be using it | `test_another_size_is_drift_and_never_detached` |
 
 ## Acceptance criteria
