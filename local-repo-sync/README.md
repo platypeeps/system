@@ -580,10 +580,16 @@ list, and `terra` is the one that reads a single conf instead of layering on
 - Clones over SSH (`git@github.com:`), so the agent needs a key loaded —
   `mac-utils.sh addkey` if it is not.
 - After a reboot the agent is empty, and a key with a passphrase stays locked.
-  `nightly` checks GitHub SSH once before the sweep. If no key answers, it runs
-  `ssh-add --apple-load-keychain` and checks again. A key still locked is named
-  at the top of the failure report. Run `mac-utils.sh addkey` once so the
-  keychain holds the passphrase (sd:2160).
+  `nightly` and `sync` check GitHub SSH once before the sweep. If no key
+  answers, they run `ssh-add --apple-load-keychain` and check again. A key
+  still locked is named at the top of the report. Run `mac-utils.sh addkey`
+  once so the keychain holds the passphrase (sd:2160).
+- With no key, the run fetches GitHub over https instead (sd:7676). Git's
+  environment config rewrites `git@github.com:` onto `https://github.com/`
+  for that run alone; no remote URL changes. A public repo needs no key
+  there; a private one needs git's credential helper or `gh auth login`.
+  `follow` tries https after a failed fetch, so a satellite's cron job
+  follows the hub's pins with no key in the agent.
 - Pulls are `--ff-only`. A repo with local commits or a dirty tree is reported
   as a failure instead of being silently merged; the old script used a bare
   `git pull` and could leave merge commits behind.

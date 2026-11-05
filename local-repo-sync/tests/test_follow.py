@@ -617,6 +617,25 @@ class FollowTest(unittest.TestCase):
         self.assertEqual(old, (f.head(system), f.head(pack)))
         self.assertNotIn("lanes held", result.stdout)
 
+    def test_a_pack_origin_over_ssh_with_no_key_fetches_over_https(self):
+        """REGRESSION (sd:7676, fleet sd:7674). terra's follow failed every
+        5 minutes: its system origin is https and fetched, its new pack
+        clone's origin is ssh, and the cron job's agent holds no key, so
+        git ended "...and the repository exists". A failed fetch now tries
+        https once; a public repo needs no key there."""
+        f = self.fixture()
+        system, pack, _ = self.pair(f)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+        f.git(pack, "remote", "set-url", "origin", "git@github.com:a/pack")
+
+        result = f.run("follow", expect=0,
+                       extra_env={"REPO_SYNC_GITHUB_HTTPS": f"file://{f.tmp}/bare/"})
+
+        self.assertNotIn("cannot fetch", result.stdout)
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertEqual("git@github.com:a/pack", f.git(pack, "remote", "get-url", "origin"))
+
     def test_a_tag_without_a_pack_line_refuses_and_moves_nothing(self):
         """NEW (round 1). A tag that names system alone is half a pair."""
         f = self.fixture()
