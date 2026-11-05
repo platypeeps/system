@@ -741,6 +741,22 @@ class RepoSyncTest(unittest.TestCase):
         self.assertEqual("git@github.com:owner/one.git", origin)
 
 
+    def test_a_repo_that_fails_over_https_names_the_missing_key(self):
+        """REGRESSION (sd:7721). With no key the run fetches over https with
+        prompts off, so a private repo failed with "terminal prompts
+        disabled" and never named the locked key. Each failure line names
+        it now."""
+        f = self.fixture()
+        f.write_conf("a owner/one\n")
+        f.checkout("a/one", "owner/one")
+
+        result = f.run("sync", expect=1)
+
+        cause = "; no ssh key answered, so this run fetched over https"
+        self.assertRegex(result.stderr, r"(?m)^!!! failed: owner/one .*" + re.escape(cause) + "$")
+        self.assertRegex(result.stdout, r"(?m)^  owner/one" + re.escape(cause) + "$")
+
+
 class DatabaseListTest(unittest.TestCase):
     """sd:3983: the list is `sd-db repo list --clones PROFILE`, read once per
     run; else the last answer's snapshot; else the confs; else a refusal."""
