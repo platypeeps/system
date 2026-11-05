@@ -86,6 +86,10 @@ if [ -n "${FAKE_SD_DOWN:-}" ]; then
   echo "sd: the workflow database did not open: OSError: no route to hub" >&2
   exit 1
 fi
+if [ -n "${FAKE_SD_UNREACHABLE:-}" ]; then
+  echo "sd: the workflow database did not open: $FAKE_SD_UNREACHABLE" >&2
+  exit 1
+fi
 if [ -n "${FAKE_SD_MISMATCH:-}" ]; then
   if [ -z "${SD_FOLLOWED:-}" ]; then
     echo "follow" >> "$FAKE_CALLS"
@@ -314,6 +318,15 @@ class SatellitesFollow(Machine):
         self.assertEqual(self.called("cswap switch"), [])
 
 
+# What sd prints when the tailnet drops: the hub times out, or Tailscale
+# cannot name this node (two satellites, 2026-11-05).
+UNREACHABLE = ("HubUnreachable: the sd hub at hub.example.test:8769 is unreachable: "
+               "timed out (named in /home/.config/sd/hub.json)")
+TAILNET_DOWN = ("Fenced: refused: this machine is not the hub: Tailscale does not name "
+                "this node, so it cannot match hub.example.test: this node is not "
+                "connected to the Tailscale control plane, so its name may be stale")
+
+
 class APinFollow(Machine):
     """The hub moved its sd_db build; this satellite has not followed yet.
 
@@ -396,6 +409,26 @@ class APinFollow(Machine):
         self.assertIn("SD_REPORT_ATTENTION: data safe, one step failed: cswap sync read",
                       result.stdout)
         self.assertEqual(self.count(), "3")
+
+    def test_an_unreachable_hub_skips_until_it_lasts(self):
+        # A tailnet blip of a minute or two opened a report each time on
+        # both satellites (sd:7650): an unreachable hub counts like a
+        # build refusal and fails from the 30th run in a row.
+        for text in (UNREACHABLE, TAILNET_DOWN):
+            with self.subTest(text[:20]):
+                self.publish(THREE)
+                self.seed("0\n")
+                result = self.sync("elsewhere", FAKE_SD_UNREACHABLE=text)
+                self.assertIn("skipped: the hub is unreachable (run 1 of 30); "
+                              "nothing switched", result.stdout)
+                self.assertNotIn("SD_REPORT_ATTENTION", result.stdout)
+                self.assertEqual(self.called("cswap switch"), [])
+                self.assertEqual(self.count(), "1")
+                self.seed("29\n")
+                result = self.sync("elsewhere", code=1, FAKE_SD_UNREACHABLE=text)
+                self.assertIn("SD_REPORT_ATTENTION: data safe, one step failed: cswap sync read",
+                              result.stdout)
+                self.assertIn("the hub was unreachable for 30 runs", result.stderr)
 
     def test_status_starts_no_follow_either(self):
         self.publish(ONE)

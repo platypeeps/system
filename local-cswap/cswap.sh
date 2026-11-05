@@ -35,7 +35,8 @@ PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 SETTING="sys.cswap_account"
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 # Consecutive sync runs whose read the hub refused for this machine's sd_db
-# build, and the run that fails (system sd:7407). The follow job runs every
+# build, or found the hub unreachable (sd:7650), and the run that fails
+# (system sd:7407). The follow job runs every
 # 5 minutes and its follow takes up to 10; 30 minute runs cover two of its
 # slots, so only a follow that keeps failing fails here too.
 REFUSALS="$ROOT/state/build-refusals"
@@ -153,20 +154,31 @@ lead() {
 }
 
 # A read the hub refused for this machine's sd_db build: the follow job has
-# not caught up yet. Skip the run and count it; fail from the
+# not caught up yet. Or a hub this machine cannot reach: the tailnet dropped
+# for a minute or two (sd:7650). Skip the run and count it; fail from the
 # REFUSAL_LIMIT-th in a row. A count that cannot be written fails at once:
-# skipping without a count would never fail.
+# skipping without a count would never fail. $1 is build or unreachable.
 refused_build() {
-  local runs
+  local runs now limit skip
+  if [[ "$1" == unreachable ]]; then
+    now="the hub is unreachable"
+    limit="the hub was unreachable for %s runs; check Tailscale and the hub; nothing switched"
+    skip="skipped: the hub is unreachable"
+  else
+    now="the hub refuses this sd_db build"
+    limit="the hub refused this sd_db build for %s runs; check repo-sync.sh follow; nothing switched"
+    skip="skipped: the hub refuses this sd_db build until repo-sync.sh follow catches up"
+  fi
   runs=$(cat "$REFUSALS" 2>/dev/null) || runs=0
   [[ "$runs" =~ ^[0-9]+$ ]] || runs=0
   runs=$((runs + 1))
   { mkdir -p "${REFUSALS%/*}" && printf '%s\n' "$runs" >"$REFUSALS"; } 2>/dev/null ||
-    fail read "the hub refuses this sd_db build, and $REFUSALS cannot be written; nothing switched"
+    fail read "$now, and $REFUSALS cannot be written; nothing switched"
   if ((runs >= REFUSAL_LIMIT)); then
-    fail read "the hub refused this sd_db build for $runs runs; check repo-sync.sh follow; nothing switched"
+    # shellcheck disable=SC2059 # the format is one of the two above
+    fail read "$(printf "$limit" "$runs")"
   fi
-  echo "skipped: the hub refuses this sd_db build until repo-sync.sh follow catches up (run $runs of $REFUSAL_LIMIT); nothing switched"
+  echo "$skip (run $runs of $REFUSAL_LIMIT); nothing switched"
 }
 
 # A satellite: switch to the local account with the published UUID. An
@@ -179,7 +191,12 @@ follow() {
     cat "$err" >&2
     if grep -q "sd_db build mismatch" "$err"; then
       rm -f "$err"
-      refused_build
+      refused_build build
+      return 0
+    fi
+    if grep -Eq "HubUnreachable|Tailscale does not name this node" "$err"; then
+      rm -f "$err"
+      refused_build unreachable
       return 0
     fi
     rm -f "$err"
