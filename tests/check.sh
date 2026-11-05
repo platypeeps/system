@@ -13,8 +13,8 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 PIN_FILE="$ROOT/.sd-pack-rev"
-PACK_URL="${CI_PACK_URL:-https://github.com/platypeeps/sd-ai-command-pack.git}"
-PACK_CLONE="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+PACK_URL="${CI_PACK_URL:-https://github.com/platypeeps/sd-workflow.git}"
+PACK_CLONE="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 # Longest first, so that when the jobs run fewer at a time (below) the long
 # ones start at once. repo-sync is a leg of its own (sd:3750): dealt into a
 # tools shard it held that shard to 13 minutes. Its two suites run as two
@@ -40,9 +40,9 @@ Usage: check.sh run
 Environment:
   SD_PACK_ROOT       the machine's clone of the command pack; the pinned
                      commit is fetched from it when it holds that commit
-                     (default: ~/repos/platypeeps/sd-ai-command-pack)
+                     (default: ~/repos/platypeeps/sd-workflow)
   CI_PACK_URL        where to fetch the pinned command pack from otherwise
-                     (default: https://github.com/platypeeps/sd-ai-command-pack.git)
+                     (default: https://github.com/platypeeps/sd-workflow.git)
   SD_GATE_POOL_SIZE  the gate cap a slot holder exports; above 1, at most
                      CPUs / cap jobs run at once
 

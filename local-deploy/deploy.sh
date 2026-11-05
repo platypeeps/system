@@ -8,7 +8,7 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 # The command pack holds the dashboard since pack sd:5987.
-SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 # shellcheck source=../lib/config.sh
 . "$ROOT/lib/config.sh"
 PREFIX="$(st_label_prefix)"

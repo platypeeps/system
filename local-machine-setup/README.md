@@ -396,7 +396,7 @@ It admits only the untagged nodes of the node's owner, by `tailscale whois`, and
 2. List `local.system-tools.sd-serve` in `personal.agent`.
 3. Run `machine-setup.sh update agents --apply`. The agent loads in the operator's `gui/<uid>` domain.
 
-- The plist names `@HOME@/repos/platypeeps/sd-ai-command-pack/bin/sd-db`; move the pack checkout, and edit and reload the plist.
+- The plist names `@HOME@/repos/platypeeps/sd-workflow/bin/sd-db`; move the pack checkout, and edit and reload the plist.
 - The plist sets `PATH`, because launchd's own `PATH` does not find `tailscale`.
   It starts with `~/.local/share/sd-serve/python/bin`, sd-serve's own python, which no brew upgrade moves (sd:6492); the sd stage puts it there only once the firewall allows it.
   A new one needs a firewall allow for its binary: the brew stage reports one it does not allow as `DIFFERS firewall does not allow <path>`.

@@ -17,7 +17,7 @@ from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parents[1]
 SCRIPT = FOLDER / "home-prep.sh"
-PACK = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack")
+PACK = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow")
 
 # A `claude` that records its arguments, one per line in a file per call,
 # then prints the result file and exits with CLAUDE_RC.

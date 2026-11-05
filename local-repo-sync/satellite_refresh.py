@@ -237,7 +237,7 @@ def main(argv):
         print(USAGE, file=sys.stderr)
         return FAILED
     verb, args = argv[1], argv[2:]
-    pack = pathlib.Path(os.environ.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+    pack = pathlib.Path(os.environ.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-workflow")
     sys.path.insert(0, str(pack / "lib"))
     try:
         import sd_db

@@ -12,7 +12,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 
 - **Operator**: the person who runs these tools on their machines; their values never enter this repository.
 - **Config folder**: the per-machine folder outside the checkout that holds private values (convention 3).
-- **Command pack**: the public repository `platypeeps/sd-ai-command-pack`; it ships the `sd` workflow commands (`sd`, `sd-ship`, `sd-docs-lint`).
+- **Command pack**: the public repository `platypeeps/sd-workflow`; it ships the `sd` workflow commands (`sd`, `sd-ship`, `sd-docs-lint`).
 - **Workflow database**: the SQLite store behind `sd`, built by the command pack's `sd_db` library; a work item in it is written `sd:<n>`.
 - **Jev**: an optional hosted model from TypeSafe, wrapped by `local-jev`; see the Jev section.
 
@@ -39,7 +39,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 
 ## Structure
 
-- The library `sd_db` and its entrypoint `bin/sd-db` live in the command pack, not here; callers run `$SD_PACK_ROOT/bin/sd-db` (default `~/repos/platypeeps/sd-ai-command-pack`).
+- The library `sd_db` and its entrypoint `bin/sd-db` live in the command pack, not here; callers run `$SD_PACK_ROOT/bin/sd-db` (default `~/repos/platypeeps/sd-workflow`).
 - `local-sd-db/` is gone; `machine-setup.sh doctor` still fails config that names it, and `tests/test_retired_folder.py` fails the folder or a tracked line outside `docs/work` that names it.
 - One hub holds the workflow database; a satellite reaches it over the tailnet; setup and refusals: `local-machine-setup/README.md`.
   - A satellite runs no hub-only agent: `SD_HUB_ONLY_AGENTS` in `local-machine-setup/machine-setup.sh` is the one list.

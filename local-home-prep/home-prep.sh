@@ -14,7 +14,7 @@ ROOT="$(cd "$DIR/.." && pwd)"
 . "$ROOT/lib/config.sh"
 . "$ROOT/lib/bounded.sh"
 
-PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 SERVER=workspace-mcp
 # Read tools, a draft and a private doc only: no send, label, share or permission tool.
 TOOLS="Read Grep Glob Bash(sd task show:*)"
@@ -49,7 +49,7 @@ Config: <config>/home-prep/.env (copy local-home-prep/.env.example).
   HOME_PREP_ACCOUNT  the Google account the drafts go in (required for run)
   HOME_PREP_REPOS    space-separated repos whose items count as home, as the
                      database names them (~/repos/<name>); empty: none
-SD_PACK_ROOT names the pack (default ~/repos/platypeeps/sd-ai-command-pack);
+SD_PACK_ROOT names the pack (default ~/repos/platypeeps/sd-workflow);
 CLAUDE_BIN names the claude binary; WORKSPACE_MCP_URL the workspace MCP
 server (default http://127.0.0.1:8083/mcp).
 USAGE

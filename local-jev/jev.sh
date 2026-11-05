@@ -61,7 +61,7 @@ done
 # python3.
 if [ -z "${PYTHON:-}" ]; then
   for candidate in "${SD_DB_PYTHON:-}" \
-                   "$HOME/repos/platypeeps/sd-ai-command-pack/.venv/bin/python"; do
+                   "$HOME/repos/platypeeps/sd-workflow/.venv/bin/python"; do
     if [ -n "$candidate" ] && [ -x "$candidate" ]; then
       PYTHON="$candidate"
       break

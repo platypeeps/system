@@ -21,7 +21,7 @@ import unittest
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "weekly-digest.sh"
 PACK = pathlib.Path(os.environ.get("SD_PACK_ROOT")
-                    or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+                    or pathlib.Path.home() / "repos/platypeeps/sd-workflow")
 HEADING = "jev against the fallback, last 7 days (per stage):"
 UNKNOWN = "jev against the fallback: unknown (the judgment ledger read failed)"
 

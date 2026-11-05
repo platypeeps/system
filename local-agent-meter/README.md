@@ -65,12 +65,12 @@ creates one, and the sample reads `providers.yaml` beside it for each provider's
 bill, so make both first (`sd_db` is the pack's `lib/`):
 
     mkdir -p /tmp/probe && cp ~/.local/share/sd/providers.yaml /tmp/probe/
-    PYTHONPATH=~/repos/platypeeps/sd-ai-command-pack/lib python3 -c \
+    PYTHONPATH=~/repos/platypeeps/sd-workflow/lib python3 -c \
         "from sd_db.migrate import initialise; initialise('/tmp/probe/sd.db')"
     ./agent-meter.py --out /tmp/probe/meter.jsonl --db /tmp/probe/sd.db
 
 The rows need `sd_db`, which the script loads from the command pack checkout's `lib/`
-(`SD_PACK_ROOT`, default `~/repos/platypeeps/sd-ai-command-pack`) ahead of any copy
+(`SD_PACK_ROOT`, default `~/repos/platypeeps/sd-workflow`) ahead of any copy
 the interpreter has installed (sd:3279). With no `lib/sd_db` there, the script still
 appends the JSONL line, with the missing import in `errors.sd_db`.
 

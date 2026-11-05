@@ -531,7 +531,7 @@ class MacosRunnerPack(unittest.TestCase):
             (bin_dir / name).chmod(0o755)
         self.environment = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(self.home)}
         # The live pack, where the runner used to look, one commit past the pin.
-        self.live = self.pack(self.home / "repos/platypeeps/sd-ai-command-pack", commits=2)
+        self.live = self.pack(self.home / "repos/platypeeps/sd-workflow", commits=2)
         self.pin = git("rev-parse", "HEAD~1", cwd=self.live)
         (self.root / ".sd-pack-rev").write_text(self.pin + "\n")
 

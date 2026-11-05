@@ -34,7 +34,7 @@ lost digest, not findings. A failed read is never an empty queue.
 
 - The rows come from `sd_db.records.list_rows` over a read-only connection,
   imported from the command pack's `lib/` (`SD_PACK_ROOT`, default
-  `~/repos/platypeeps/sd-ai-command-pack`).
+  `~/repos/platypeeps/sd-workflow`).
 - The Markdown brief is built by an embedded python3 heredoc and filed
   with `sd reports brief add --replace`, so a rerun the same day replaces it.
 - Cron: `<config>/cron-jobs/jobs/obsidian-review-daily.job` (examples in `local-cron-jobs/examples/`), 07:30 daily —

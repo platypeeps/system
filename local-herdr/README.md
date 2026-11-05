@@ -112,7 +112,7 @@ keys, one entry per pane:
     },
     {
       "agent": "codex",
-      "cwd": "/Users/example/repos/platypeeps/sd-ai-command-pack",
+      "cwd": "/Users/example/repos/platypeeps/sd-workflow",
       "name": "sd-w4-p4",
       "pane": "w4:p4",
       "recorded_at": "2026-09-12T07:15:17Z",
@@ -162,7 +162,7 @@ machine with `herdr` and both agents installed:
    `herdr --version` — note it.
 2. `./local-herdr/herdr.sh start` — creates and attaches the `sd` session.
 3. In it, two panes: in one, `cd ~/repos/system && claude`; split, and in
-   the other, `cd ~/repos/platypeeps/sd-ai-command-pack && codex`. Give each
+   the other, `cd ~/repos/platypeeps/sd-workflow && codex`. Give each
    one prompt so the session has content to recognise it by.
 4. From a third pane (or any terminal with `HERDR_SESSION=sd` exported):
    `./local-herdr/herdr.sh snapshot`, then `herdr.sh list` — two rows, one

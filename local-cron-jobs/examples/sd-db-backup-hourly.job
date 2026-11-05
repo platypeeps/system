@@ -65,9 +65,9 @@ JOB_SCHEDULE="50 * * * *"
 JOB_TIMEOUT="55m"
 SD_DB_BACKUP_HOURLY_MOUNT=""
 [ -n "${SD_DB_BACKUP_HOURLY_DESTINATION:-}" ] || SD_DB_BACKUP_HOURLY_MOUNT=" --require-mount /Volumes/local"
-SD_DB_BACKUP_HOURLY_SNAPSHOT="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep 24 --no-row-prune"
+SD_DB_BACKUP_HOURLY_SNAPSHOT="\"$HOME/repos/platypeeps/sd-workflow/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep 24 --no-row-prune"
 SD_DB_BACKUP_HOURLY_NAS_FOLDER="${SD_DB_BACKUP_HOURLY_NAS_FOLDER-/Volumes/change-me-nas-share/Backup/sd-backups-hourly}"
-SD_DB_BACKUP_HOURLY_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$SD_DB_BACKUP_HOURLY_NAS_FOLDER\" && . \"$ROOT/../lib/bounded.sh\" && st_step 2700 env MIRROR_SYNC_CONF=mirrors-nas-hourly.conf MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync && st_step 300 \"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --prune-only --destination \"$SD_DB_BACKUP_HOURLY_NAS_FOLDER\" --keep-days 7 --prune-unmanifested"
+SD_DB_BACKUP_HOURLY_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$SD_DB_BACKUP_HOURLY_NAS_FOLDER\" && . \"$ROOT/../lib/bounded.sh\" && st_step 2700 env MIRROR_SYNC_CONF=mirrors-nas-hourly.conf MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync && st_step 300 \"$HOME/repos/platypeeps/sd-workflow/bin/sd-db\" backup --prune-only --destination \"$SD_DB_BACKUP_HOURLY_NAS_FOLDER\" --keep-days 7 --prune-unmanifested"
 # A failed NAS step after a verified snapshot grades the run: the data is safe
 # on the local disk, so the line keeps the phone push for a run at risk
 # (sd:5997, ruling on sd:6030). The run still fails, and Today shows it.

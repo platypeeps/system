@@ -32,7 +32,7 @@ FOLDER = Path(__file__).resolve().parent.parent
 #: The command pack checkout whose lib/ holds the sd_db the verifier imports
 #: (sd:3279), as the script names it.
 PACK = Path(os.environ.get("SD_PACK_ROOT")
-            or Path.home() / "repos/platypeeps/sd-ai-command-pack")
+            or Path.home() / "repos/platypeeps/sd-workflow")
 sys.path.insert(0, str(FOLDER.parent / "lib"))
 import system_tools_config  # noqa: E402
 

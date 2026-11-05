@@ -30,7 +30,7 @@
     {
       "id": "pack",
       "type": "backend",
-      "label": "sd-ai-command-pack",
+      "label": "sd-workflow",
       "sublabel": "sd, sd-review, sd-ship",
       "pos": [
         60,

@@ -14,7 +14,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 . "$ROOT/lib/bounded.sh"
 
-PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 QUEUE=nightly
 # Read-only tools only: the model holds no write tool and no `sd` writer.
 TOOLS='Read Grep Glob Bash(sd today:*) Bash(sd task show:*) Bash(sd gate status:*) Bash(df:*) Bash(du:*) Bash(ls:*)'
@@ -41,7 +41,7 @@ Usage: nightly-review.sh <command>
   help   This text.
 
 The bulk root is `sd config get sd.bulk_storage_root`. SD_PACK_ROOT names the
-pack (default ~/repos/platypeeps/sd-ai-command-pack); CLAUDE_BIN names the
+pack (default ~/repos/platypeeps/sd-workflow); CLAUDE_BIN names the
 claude binary (default: claude on PATH).
 USAGE
 }

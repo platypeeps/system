@@ -10,7 +10,7 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
 # The command pack's lib/ holds sd_db, as for `sd-db` (sd:3279).
-PACK_LIB="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}/lib"
+PACK_LIB="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}/lib"
 JEV="$DIR/../local-jev/jev.sh"
 # One id for every jev call this run makes, so the ledger groups them
 # (sd:2953). A run that started this one keeps its own: it is the same run.
@@ -64,7 +64,7 @@ added date leave this machine.
 
 environment:
   SD_PACK_ROOT         the command pack checkout whose lib/ holds sd_db
-                       (default: ~/repos/platypeeps/sd-ai-command-pack)
+                       (default: ~/repos/platypeeps/sd-workflow)
   JEV_OBSIDIAN_REVIEW  0, off, false, no or disabled switches the digest's Jev ordering off;
                        unset means on
   OBSIDIAN_REVIEW_TODAY  YYYY-MM-DD the digest counts row ages from

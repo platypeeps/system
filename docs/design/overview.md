@@ -10,7 +10,7 @@ stand: Two repositories, one database, and five workflows that share them. This 
 with its own entrypoint and `README.md`. Local services, scheduled jobs, the
 dashboard, the runner.
 
-**`platypeeps/sd-ai-command-pack`** is public and holds the commands that work
+**`platypeeps/sd-workflow`** is public and holds the commands that work
 gets done with: `sd`, `sd-review`, `sd-check`, `sd-ship`, `sd-status`,
 `sd-docs-lint`, `sd-research-kit`, and the skills and standards they enforce.
 

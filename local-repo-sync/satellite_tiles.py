@@ -200,7 +200,7 @@ def main(argv):
     if argv[1:] != ["answer"]:
         print(USAGE, file=sys.stderr)
         return FAILED
-    pack = pathlib.Path(os.environ.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+    pack = pathlib.Path(os.environ.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-workflow")
     sys.path.insert(0, str(pack / "lib"))
     sys.path.insert(0, str(pack / "dashboard"))
     try:

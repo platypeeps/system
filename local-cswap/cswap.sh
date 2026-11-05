@@ -31,7 +31,7 @@ RETIRED_LABEL="$(st_label_prefix).cswap-auto"
 RETIRED_SERVICE="gui/$(id -u)/$RETIRED_LABEL"
 RETIRED_PLIST="$HOME/Library/LaunchAgents/$RETIRED_LABEL.plist"
 
-PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 SETTING="sys.cswap_account"
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 # Consecutive sync runs whose read the hub refused for this machine's sd_db
@@ -279,7 +279,7 @@ usage: cswap.sh sync|status
            published) — local-health-check reads these codes
 
 environment: CSWAP_BIN, CSWAP_AUTO_ARGS (see cswap-auto.conf),
-             SD_PACK_ROOT (default ~/repos/platypeeps/sd-ai-command-pack)
+             SD_PACK_ROOT (default ~/repos/platypeeps/sd-workflow)
 HELPEOF
     exit 0
     ;;

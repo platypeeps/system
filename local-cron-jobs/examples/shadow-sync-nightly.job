@@ -7,4 +7,4 @@
 # SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
 # after ~/.config/shell/env.sh; this file is sourced before env.sh is.
 JOB_SCHEDULE="20 2,8,9,10,11,12,13,14,15,16,17,18,19 * * *"
-JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-ai-command-pack}/bin/sd\" shadow sync --strict"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd\" shadow sync --strict"

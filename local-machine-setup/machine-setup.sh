@@ -2701,7 +2701,7 @@ open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$hud_config"
 SD_DB="$HOME/.local/share/sd/sd.db"
 SD_DASHBOARD_PORT="${SD_DASHBOARD_PORT:-8767}"
 SD_DASHBOARD_HTTPS_PORT="${SD_DASHBOARD_HTTPS_PORT:-8443}"
-SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 
 sd_in_profile() { manifest agent | grep -qxF "$LABEL_PREFIX.sd-dashboard"; }
 # The satellite's selector (`sd_db.hub`); on the hub its presence is drift.
@@ -9079,7 +9079,7 @@ environment:
                           the stage off (sd:7092)
   MACHINE_SETUP_TMPDISK_VOLUMES  tests only: the folder that stands in for /Volumes
   SD_PACK_ROOT            the command pack checkout
-                          (default ~/repos/platypeeps/sd-ai-command-pack)
+                          (default ~/repos/platypeeps/sd-workflow)
   SD_DB_PYTHON            satellite: the interpreter sd_db runs under
                           (default the pack's .venv/bin/python)
   SD_DASHBOARD_PYTHON     doctor: another interpreter the dashboard may run

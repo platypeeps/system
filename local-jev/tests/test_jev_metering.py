@@ -1244,7 +1244,7 @@ class TheCallContext(MeteringCase):
 #: The command pack checkout whose lib/ holds the sd_db the meter imports
 #: (sd:3279), as `jev_meter.use_pack_library` names it.
 PACK = Path(os.environ.get("SD_PACK_ROOT")
-            or Path.home() / "repos/platypeeps/sd-ai-command-pack")
+            or Path.home() / "repos/platypeeps/sd-workflow")
 
 
 class TheMeterImportsThePacksLib(unittest.TestCase):
@@ -1292,7 +1292,7 @@ class TheMeterImportsThePacksLib(unittest.TestCase):
 
     def test_with_no_sd_pack_root_the_home_clone_is_the_pack(self):
         home = self.root / "home"
-        self.stub_pack(home / "repos/platypeeps/sd-ai-command-pack")
+        self.stub_pack(home / "repos/platypeeps/sd-workflow")
         library = str(Path(sd_db.__file__).resolve().parents[1])
         self.assertEqual(self.word(None, home=home, PYTHONPATH=library), jev_meter.NO_LIBRARY)
 

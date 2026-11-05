@@ -18,4 +18,4 @@
 # after ~/.config/shell/env.sh; this file is sourced before env.sh is.
 JOB_SCHEDULE="*/5 * * * *"
 JOB_TIMEOUT="120m"
-JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-ai-command-pack}/bin/sd-ship\" lane run --hosted"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd-ship\" lane run --hosted"

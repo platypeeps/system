@@ -10,7 +10,7 @@ The writing pack ran a Codex hostile read from `pack.py review adversarial`, aga
 `templates/adversarial-review.md`. `local-research-kit` ran one through the Codex
 plugin, with the framing spelled out in `CONVENTIONS.md` and again in `reviewcheck.py`.
 (That kit left this repo on 2026-09-03; it is `sd-research-repo` and `bin/sd-research-kit`
-in `platypeeps/sd-ai-command-pack` now, and reads its framing from here.)
+in `platypeeps/sd-workflow` now, and reads its framing from here.)
 Different invocation, different scope, same idea — and the part that matters most was
 duplicated: that the gate produces *hypotheses* rather than findings, that it sees the
 repo and not the cited sources, that an honestly empty axis beats a manufactured

@@ -18,7 +18,7 @@ from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parents[1]
 SCRIPT = FOLDER / "nightly-review.sh"
-PACK = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack")
+PACK = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow")
 # The pack's library first: an older installed copy has no `review` module.
 sys.path.insert(0, str(PACK / "lib"))
 from sd_db import connect, review, workflow  # noqa: E402

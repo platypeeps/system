@@ -98,7 +98,7 @@ class LaneRunJobTest(unittest.TestCase):
 
 #: The pack the gate pins (`.sd-pack-rev`), which the hub runs once the pin lands.
 PINNED_PACK = pathlib.Path(os.environ.get("SD_ACCEPTANCE_PACK") or os.environ.get("SD_PACK_ROOT")
-                           or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+                           or pathlib.Path.home() / "repos/platypeeps/sd-workflow")
 
 # A pack `sd` that records its words; with SPAWN_PID set, it starts a sleeper
 # through the pinned pack's own `build_run.spawn`, the call the tick makes for
@@ -267,7 +267,7 @@ class HourlyBackupJobTest(unittest.TestCase):
         sd_db = RECORD.format(name="sd-db", rc="SNAPSHOT_RC").replace(
             "exit", 'case "$*" in *--prune-only*) [ -z "$PRUNE_SLEEP" ] || sleep "$PRUNE_SLEEP" ;; esac\nexit', 1)
         programs = {
-            fx.home / "repos/platypeeps/sd-ai-command-pack/bin/sd-db": sd_db,
+            fx.home / "repos/platypeeps/sd-workflow/bin/sd-db": sd_db,
             fx.tmp / "python": RECORD.format(name="python", rc="PREFLIGHT_RC"),
             fx.tmp / "local-mirror-sync/mirror-sync.sh": MIRROR_RECORD,
         }
@@ -287,7 +287,7 @@ class HourlyBackupJobTest(unittest.TestCase):
         and the log did not say which step hung. The prune now runs under
         st_step with a 300 s bound; the run shrinks it to 2 s."""
         text = self.JOB.read_text()
-        self.assertIn('st_step 300 \\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\\" backup --prune-only', text)
+        self.assertIn('st_step 300 \\"$HOME/repos/platypeeps/sd-workflow/bin/sd-db\\" backup --prune-only', text)
         started = time.monotonic()
         result, calls = self.run_job(text.replace("st_step 300 ", "st_step 2 "), PRUNE_SLEEP="20")
         self.assertLess(time.monotonic() - started, 15, result.stdout + result.stderr)
@@ -484,7 +484,7 @@ class HourlyBackupGradeTest(unittest.TestCase):
         self.addCleanup(fx.destroy)
         # The pack's sd-db at the default the job names, exiting SNAPSHOT_RC,
         # and the interpreter offsite-verify runs under, exiting PREFLIGHT_RC.
-        sd_db = fx.home / "repos/platypeeps/sd-ai-command-pack/bin/sd-db"
+        sd_db = fx.home / "repos/platypeeps/sd-workflow/bin/sd-db"
         sd_db.parent.mkdir(parents=True)
         sd_db.write_text('#!/bin/sh\nexit "$SNAPSHOT_RC"\n')
         sd_db.chmod(0o755)
@@ -524,7 +524,7 @@ class NightlyBackupGradeTest(unittest.TestCase):
     def run_job(self, snapshot_rc, preflight_rc, nas=True, env_sh=False):
         fx = Fixture()
         self.addCleanup(fx.destroy)
-        sd_db = fx.home / "repos/platypeeps/sd-ai-command-pack/bin/sd-db"
+        sd_db = fx.home / "repos/platypeeps/sd-workflow/bin/sd-db"
         sd_db.parent.mkdir(parents=True)
         sd_db.write_text('#!/bin/sh\nexit "$SNAPSHOT_RC"\n')
         sd_db.chmod(0o755)
