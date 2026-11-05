@@ -2802,6 +2802,27 @@ class TheInjectionTest(CompareCase):
         self.assertEqual((summary["candidates"], summary["bases"], summary["items"]),
                          (3, 3, 3 * 9 + 4))
 
+    def test_a_row_under_the_pack_s_old_slug_counts_as_the_pack(self):
+        # Pack review rows before the rename carry the old slug (sd:7643).
+        old = "platypeeps/sd-ai-command-pack"
+        for row in self.rows:
+            if row["repository"] == "platypeeps/sd-workflow":
+                row["repository"] = old
+        (self.out / "population.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in self.rows))
+        with contextlib.closing(connect(self.db)) as connection:
+            connection.execute("UPDATE state SET body = replace(body, ?, ?)",
+                               ("platypeeps/sd-workflow", old))
+            connection.commit()
+        code, out = self.build()
+        self.assertEqual(code, 0, out)
+        bases = {i["repository"] for i in self.items() if i["kind"] == "tier"}
+        self.assertEqual(bases, {"platypeeps/system", old})
+        # The privacy halt reads the old slug's paths from the pack's clone.
+        code, out = self.ask("jev")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.answers("jev")), len(self.items()))
+
     def test_each_variant_differs_from_its_twin_by_one_path(self):
         self.build()
         items = self.items()
