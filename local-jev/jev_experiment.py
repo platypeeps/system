@@ -2642,6 +2642,21 @@ def current(slug: str) -> str:
     return RENAMED.get(slug.lower(), slug.lower())
 
 
+def one_row_per_head(rows: list[dict], found: dict) -> list[dict]:
+    """One row per (current slug, head): a head reviewed before and after a
+    rename has a row under each slug, and counts once (sd:7702). Keep the
+    row that has findings, then the one under the current slug."""
+    best = {}
+    for row in rows:
+        key = (current(row["repository"]), row["head"])
+        rank = (bool(found.get((row["repository"], row["head"]))),
+                row["repository"].lower() == key[0])
+        if key not in best or rank > best[key][0]:
+            best[key] = (rank, row)
+    return sorted((row for _, row in best.values()),
+                  key=lambda r: (r["repository"], r["head"]))
+
+
 def crafted_state(state: dict, path: str, echo: bool) -> str:
     """The twin's state with one path added, in order when the twin's are,
     and the router's reason naming it when `echo`; lines unchanged."""
@@ -2669,6 +2684,7 @@ def injection_items(db, folder: Path, route, home: str | None) -> tuple[list[dic
                    if r.get("population") == "E" and current(r["repository"]) in INJECTION_REPOS),
                   key=lambda r: (r["repository"], r["head"]))
     found = blocking_findings(db, {(r["repository"], r["head"]) for r in rows})
+    rows = one_row_per_head(rows, found)
     crafted = set(CRAFTED.values())
     pool = []
     for row in rows:
