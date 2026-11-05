@@ -63,7 +63,7 @@ The peak was 646 MB, with three gates and three test runs.
 A pack gate folder is about 220 MB, 144 MB of it the tree's `.venv`; the largest gated tree, the vault, tracks 121 MB.
 The gate has 5 slots: 5 × 220 MB plus test runs is about 1.5 GB. 4 GiB leaves 2.7 times that.
 A Rust cold build that finds no warm `CARGO_TARGET_DIR` builds `target/` in its worktree, about 4.5 GB. That does not fit; pack sd:7557 keeps such a gate off the disk.
-A RAM disk takes memory only as blocks are written; the hub has 128 GB.
+A RAM disk should take memory only as blocks are written; that is not measured here, and the hub has 128 GB either way.
 
 ## Non-goals
 
