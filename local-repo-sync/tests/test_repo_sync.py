@@ -290,6 +290,9 @@ class Fixture:
             # The nightly SSH preflight (sd:2160) must not load keys into the
             # real agent of the machine running the suite.
             REPO_SYNC_SSH_ADD="true",
+            # The https fallback (sd:7676) must not reach github.com either:
+            # it rewrites GitHub remotes onto this missing folder.
+            REPO_SYNC_GITHUB_HTTPS=f"file://{self.tmp}/no-github/",
         )
         for key, value in (extra_env or {}).items():
             if value is None:
@@ -588,8 +591,10 @@ class RepoSyncTest(unittest.TestCase):
             f.local_clone(f"a/{name}")
         first = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-12"}))
         again = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-13"}))
+        # With no ssh key the run fetches over https (sd:7676), so another
+        # cause is another https failure: a transport git has no helper for.
         cause = attention(f.run("nightly", expect=0, extra_env={
-            "FAKE_DAY": "2026-10-13", "GIT_SSH_COMMAND": "sh -c 'echo Permission denied >&2; exit 255' --"}))
+            "FAKE_DAY": "2026-10-13", "REPO_SYNC_GITHUB_HTTPS": "nope://example.test/"}))
         shutil.rmtree(f.root / "a" / "worker1")
         f.checkout("a/worker2", "owner/worker2")
         f.write_conf("a owner/worker2\na owner/good1\na owner/good2\n")
@@ -705,6 +710,36 @@ class RepoSyncTest(unittest.TestCase):
         self.assertIn("loaded key(s) from the keychain", result.stdout)
         self.assertNotIn("no key authenticates", result.stdout)
         self.assertEqual(attention(result), [])
+
+    def test_sync_fetches_over_https_when_no_ssh_key_answers(self):
+        """REGRESSION (sd:7676). The hub's 03:00 machine-setup update runs
+        `sync` with no key in the agent: 43 repos failed with "Permission
+        denied (publickey)" on 2026-11-04. With no key, the run rewrites
+        GitHub's ssh remotes onto https, which needs no key for a public
+        repo. Here https is a local folder; the ssh transport stays dead."""
+        f = self.fixture()
+        f.write_conf("a owner/one\n")
+        target = f.local_clone("a/one")
+        github = f.tmp / "github"
+        (github / "owner").mkdir(parents=True)
+        shutil.move(str(f.tmp / "bare" / "a" / "one"), str(github / "owner" / "one.git"))
+        seed = f.tmp / "seed" / "a" / "one"
+        f._git(["-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                "commit", "-q", "--allow-empty", "-m", "later"], seed)
+        f._git(["push", "-q", str(github / "owner" / "one.git"), "HEAD:refs/heads/main"], seed)
+        f._git(["remote", "set-url", "origin", "git@github.com:owner/one.git"], target)
+
+        result = f.run("sync", expect=0, extra_env={"REPO_SYNC_GITHUB_HTTPS": f"file://{github}/"})
+
+        self.assertIn("all repos synced", result.stdout)
+        self.assertIn("over https", result.stdout)
+        head = subprocess.run(["git", "-C", str(target), "log", "-1", "--format=%s"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual("later", head)
+        origin = subprocess.run(["git", "-C", str(target), "remote", "get-url", "origin"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual("git@github.com:owner/one.git", origin)
+
 
 class DatabaseListTest(unittest.TestCase):
     """sd:3983: the list is `sd-db repo list --clones PROFILE`, read once per

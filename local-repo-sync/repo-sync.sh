@@ -448,8 +448,30 @@ ssh_to_github() {
   sh -c "${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes -o ConnectTimeout=10 -T git@github.com" < /dev/null 2>&1
 }
 
+# Points this run's GitHub ssh remotes at https through git's environment
+# config, so a public repo fetches with no key and a private one uses git's
+# credential helper, or `gh` when it is on PATH (sd:7676). An unattended job
+# finds no key in the agent after a reboot; no remote URL changes. Exported,
+# so every later git call in this run uses it; set once per run.
+# REPO_SYNC_GITHUB_HTTPS stands in for https://github.com/ in tests.
+github_https() {
+  [ "${REPO_SYNC_HTTPS:-}" != 1 ] || return 0
+  h_base=${REPO_SYNC_GITHUB_HTTPS:-https://github.com/}
+  h_n=${GIT_CONFIG_COUNT:-0}
+  set -- "url.$h_base.insteadOf=git@github.com:" "url.$h_base.insteadOf=ssh://git@github.com/"
+  if command -v gh > /dev/null 2>&1; then
+    set -- "$@" "credential.https://github.com.helper=!gh auth git-credential"
+  fi
+  for h_kv in "$@"; do
+    export "GIT_CONFIG_KEY_$h_n=${h_kv%%=*}" "GIT_CONFIG_VALUE_$h_n=${h_kv#*=}"
+    h_n=$((h_n + 1))
+  done
+  export GIT_CONFIG_COUNT="$h_n" GIT_TERMINAL_PROMPT=0 REPO_SYNC_HTTPS=1
+}
+
 # Prints one "ssh     :" line when it acted or failed; silent when a key
-# already answers. Returns 1 when no key authenticates.
+# already answers. Returns 1 when no key authenticates, and then points the
+# run at https (github_https).
 ssh_preflight() {
   case $(ssh_to_github) in *"successfully authenticated"*) return 0 ;; esac
   # Not every ssh-add knows --apple-load-keychain; one that does not fails
@@ -461,10 +483,13 @@ ssh_preflight() {
       return 0
       ;;
   esac
-  echo "ssh     : no key authenticates to git@github.com, so every SSH clone and"
-  echo "          pull fails. After a reboot, a key with a passphrase stays locked"
-  echo "          until someone unlocks it. Run 'mac-utils.sh addkey' once: it keeps"
-  echo "          the passphrase in the keychain, which this job then loads."
+  github_https
+  echo "ssh     : no key authenticates to git@github.com, so this run fetches"
+  echo "          GitHub over https: a public repo needs no key, a private one"
+  echo "          git's credential helper or gh. After a reboot, a key with a"
+  echo "          passphrase stays locked until someone unlocks it. Run"
+  echo "          'mac-utils.sh addkey' once: it keeps the passphrase in the"
+  echo "          keychain, which this job then loads."
   return 1
 }
 
@@ -1558,6 +1583,18 @@ follow_prompt() {
   flag "!!! agent-prompt.sh refresh --apply $p_what; the move stands; by hand: sh '$p_ap' diff, then capture <target> --apply or refresh --force"
 }
 
+# Fetches refspec $2 from checkout $1's origin, git's errors in $TMPD/err.
+# A failed fetch tries once more over https (github_https): the cron job's
+# agent may hold no key, and both repos are public (sd:7676). The retry
+# runs in a subshell, so its rewrite ends with it: the update follow runs
+# next must not send private repos over https. $TMPD/err keeps the first
+# fetch's error, the one a refusal names; the retry's goes to err.https.
+follow_fetch() {
+  bound_step 300 git -C "$1" fetch -q origin "$2" < /dev/null 2> "$TMPD/err" && return 0
+  [ "${REPO_SYNC_HTTPS:-}" != 1 ] || return 1
+  (github_https && bound_step 300 git -C "$1" fetch -q origin "$2" < /dev/null 2> "$TMPD/err.https")
+}
+
 # On a satellite, moves system and pack to the shas of the hub-pin tag on the
 # system origin, never to origin's default branch (sd:3100). Every check runs
 # before any move, so a refusal moves nothing; a failed move puts back every
@@ -1574,7 +1611,7 @@ follow() {
   fi
   # The error named below is git's last line, not the step's own. The local
   # tag moves too, even backwards: promote's hub-ready reads it (sd:4683).
-  if ! bound_step 300 git -C "$f_sys" fetch -q origin +refs/tags/hub-pin:refs/tags/hub-pin < /dev/null 2> "$TMPD/err"; then
+  if ! follow_fetch "$f_sys" +refs/tags/hub-pin:refs/tags/hub-pin; then
     f_rc=0
     bound_step 120 git -C "$f_sys" ls-remote --exit-code origin refs/tags/hub-pin \
       < /dev/null > /dev/null 2>&1 || f_rc=$?
@@ -1602,7 +1639,7 @@ follow() {
   if [ -z "$f_pack" ]; then
     echo "follow: no pack checkout in the conf; skipped" >> "$TMPD/says"
   elif ! git -C "$f_pack" cat-file -e "$f_pack_sha^{commit}" 2>/dev/null \
-      && ! bound_step 300 git -C "$f_pack" fetch -q origin "$f_pack_sha" < /dev/null 2> "$TMPD/err"; then
+      && ! follow_fetch "$f_pack" "$f_pack_sha"; then
     flag "!!! refused: cannot fetch the hub's pack pin $f_pack_sha in $f_pack: $(grep -v '^\[step ' "$TMPD/err" | tail -1)"
     f_failed=$((f_failed + 1))
   else
@@ -2634,6 +2671,9 @@ case "$1" in
     KEPTLOG="$TMPD/keptlog"; : > "$KEPTLOG"
     LOCKLOG="$TMPD/locklog"; : > "$LOCKLOG"
     load_list
+    # An unattended caller (machine-setup's nightly update) may find no key
+    # in the agent: the preflight then points the run at https (sd:7676).
+    ssh_preflight || true
     sync
     ;;
   refresh)

@@ -2645,7 +2645,9 @@ def current(slug: str) -> str:
 def one_row_per_head(rows: list[dict], found: dict) -> list[dict]:
     """One row per (current slug, head): a head reviewed before and after a
     rename has a row under each slug, and counts once (sd:7702). Keep the
-    row that has findings, then the one under the current slug."""
+    row that has findings, then the one under the current slug. The caller
+    passes only rows that qualify, so a twin that fails a check never drops
+    one that passes (sd:7712)."""
     best = {}
     for row in rows:
         key = (current(row["repository"]), row["head"])
@@ -2684,7 +2686,6 @@ def injection_items(db, folder: Path, route, home: str | None) -> tuple[list[dic
                    if r.get("population") == "E" and current(r["repository"]) in INJECTION_REPOS),
                   key=lambda r: (r["repository"], r["head"]))
     found = blocking_findings(db, {(r["repository"], r["head"]) for r in rows})
-    rows = one_row_per_head(rows, found)
     crafted = set(CRAFTED.values())
     pool = []
     for row in rows:
@@ -2712,6 +2713,8 @@ def injection_items(db, folder: Path, route, home: str | None) -> tuple[list[dic
         except Exception:                    # a policy the pinned router cannot read
             continue
         pool.append((row, ruled))
+    kept = {id(row) for row in one_row_per_head([row for row, _ in pool], found)}
+    pool = [entry for entry in pool if id(entry[0]) in kept]
     if len(pool) < INJECTION_BASES:
         raise Refused(f"{len(pool)} base states qualify, and the design draws "
                       f"{INJECTION_BASES}; nothing was written")
@@ -2725,9 +2728,10 @@ def injection_items(db, folder: Path, route, home: str | None) -> tuple[list[dic
                           "repository": row["repository"], "head": row["head"], "state": text,
                           "rules": rules, "heuristic": heuristic(json.loads(text), rules)})
     question, bound = gate_question()
-    findings = []
+    offered = []
     for row in rows:
         tracked = repos.get(current(row["repository"])) or frozenset()
+        pairs = []
         for one in found.get((row["repository"], row["head"]), []):
             text = one.get("summary")
             if not isinstance(text, str) or not text.strip():
@@ -2736,7 +2740,12 @@ def injection_items(db, folder: Path, route, home: str | None) -> tuple[list[dic
             text = text.strip()[:bound - len(APPENDED) - 1]
             pair = (text, f"{text} {APPENDED}")
             if all(private_path(json.dumps({"f1": t}), home, tracked) is None for t in pair):
-                findings.append((row, pair))
+                pairs.append(pair)
+        if pairs:
+            offered.append((row, pairs))
+    # One row per head among those that offer a finding, as for the bases.
+    kept = {id(row) for row in one_row_per_head([row for row, _ in offered], found)}
+    findings = [(row, pair) for row, pairs in offered if id(row) in kept for pair in pairs]
     if len(findings) < INJECTION_FINDINGS:
         raise Refused(f"{len(findings)} public findings qualify, and the design draws "
                       f"{INJECTION_FINDINGS}; nothing was written")
