@@ -3618,12 +3618,25 @@ if not stat.S_ISREG(mode(os.path.join(sys.argv[1], "com.googlecode.iterm2.plist"
 # $TMPDIR, so a missing disk costs speed, never a run. No root: hdiutil
 # and diskutil run as the user. The markers take effect at a mount, so the
 # stage writes them, mounts again, and only then writes .tmpdisk-ready.
-# A stop between two steps leaves a state the next run finishes or undoes:
-# a lock with a dead pid, a device with no volume, or a volume not ready.
+#
+# The login agent and the nightly update are two triggers that can meet,
+# so the stage takes its lock before it reads a disk, and reads and acts
+# only under it. It acts only on a disk it proves its own: the device its
+# record names, written right after the attach in this boot, or the RAM
+# disk at the mount point that holds .tmpdisk-ready. Any other RAM disk
+# may be the operator's: it is named and left alone. A stop between two
+# steps leaves a lock whose pid is gone, a recorded device, or a recorded
+# volume not yet ready; the next run finishes or undoes each.
 TMPDISK_NAME=sd-tmp
 TMPDISK_VOLUMES="${MACHINE_SETUP_TMPDISK_VOLUMES:-/Volumes}"
 TMPDISK_MB="${MACHINE_SETUP_TMPDISK_MB:-}"
 TMPDISK_MARKERS=".fseventsd/no_log .metadata_never_index"
+# A symlink whose target is the holder's pid: `ln -s` makes it with its
+# pid in one step, so no contender ever reads a lock with no pid.
+TMPDISK_LOCK="$STATE_DIR/tmpdisk.lock"
+# `<device> <boot>`: the device this stage attached, and the boot it
+# attached it in. A device number from an earlier boot proves nothing.
+TMPDISK_RECORD="$STATE_DIR/tmpdisk.device"
 
 # One line per disk image: device, sectors, mount point or `-`. An image
 # from a file prints `file` as its sectors, so it is never the RAM disk.
@@ -3642,6 +3655,11 @@ for image in plistlib.loads(sys.stdin.buffer.read()).get("images", []):
 '
 }
 
+# This boot's start, in seconds; empty where sysctl has no kern.boottime.
+tmpdisk_boot() {
+  sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ sec = \([0-9]*\),.*/\1/p'
+}
+
 # One bounded step, its output dropped; a failure prints FAILED.
 tmpdisk_step() { # seconds, command...
   td_secs=$1
@@ -3649,9 +3667,43 @@ tmpdisk_step() { # seconds, command...
   bound_step "$td_secs" "$@" >/dev/null || { td_rc=$?; note_failure "$*" "$td_rc"; return "$td_rc"; }
 }
 
+# Takes the lock, or says why not. Only a lock that names a pid that is
+# gone is removed; one with no readable pid stays for the operator.
+tmpdisk_lock() {
+  mkdir -p "$STATE_DIR" || { note_failure "mkdir $STATE_DIR" 1; return 1; }
+  # `ln -s` into a folder at that path would make a link inside it.
+  if [ ! -d "$TMPDISK_LOCK" ] || [ -L "$TMPDISK_LOCK" ]; then
+    ln -s "$$" "$TMPDISK_LOCK" 2>/dev/null && return 0
+  fi
+  td_holder=$(readlink "$TMPDISK_LOCK" 2>/dev/null || :)
+  case $td_holder in
+    ''|*[!0-9]*)
+      echo "  SKIP    $TMPDISK_LOCK names no pid; remove it once no run holds it"
+      return 1 ;;
+  esac
+  if kill -0 "$td_holder" 2>/dev/null; then
+    echo "  SKIP    another run (pid $td_holder) holds $TMPDISK_LOCK"
+    return 1
+  fi
+  # Moved aside, not removed: a contender may have cleared the dead lock
+  # and taken its own since the read above. The moved link names whose
+  # lock it was; a live one goes back, or stays beside it for the operator.
+  mv "$TMPDISK_LOCK" "$TMPDISK_LOCK.$$" 2>/dev/null || { echo "  SKIP    another run took $TMPDISK_LOCK"; return 1; }
+  td_moved=$(readlink "$TMPDISK_LOCK.$$" 2>/dev/null || :)
+  if [ "$td_moved" != "$td_holder" ]; then
+    mv -n "$TMPDISK_LOCK.$$" "$TMPDISK_LOCK" 2>/dev/null || :
+    echo "  SKIP    another run (pid $td_moved) took $TMPDISK_LOCK"
+    return 1
+  fi
+  rm -f "$TMPDISK_LOCK.$$"
+  ln -s "$$" "$TMPDISK_LOCK" 2>/dev/null && return 0
+  echo "  SKIP    another run took $TMPDISK_LOCK"
+  return 1
+}
+
 # Writes the markers, mounts again so FSEvents and Spotlight read them,
-# then marks the volume ready. A busy volume fails the unmount and stays
-# as it was; the next run tries again.
+# then marks the volume ready and drops the record. A busy volume fails
+# the unmount and stays as it was; the next run tries again.
 tmpdisk_remount() { # mount, device
   { mkdir -p "$1/.fseventsd" && : > "$1/.fseventsd/no_log" && : > "$1/.metadata_never_index"; } ||
     { note_failure "write the markers in $1" 1; return 1; }
@@ -3661,9 +3713,15 @@ tmpdisk_remount() { # mount, device
     [ -f "$1/$td_marker" ] || { note_failure "diskutil mount $2 did not mount it at $1" 1; return 1; }
   done
   : > "$1/.tmpdisk-ready" || { note_failure "mark $1 ready" 1; return 1; }
+  rm -f "$TMPDISK_RECORD"
 }
 
-tmpdisk_create() { # mount, sectors
+# Detaches a device this run attached, after a later step failed.
+tmpdisk_undo() { # device
+  tmpdisk_step 60 hdiutil detach "$1" && rm -f "$TMPDISK_RECORD"
+}
+
+tmpdisk_create() { # mount, sectors, boot
   td_out=$(bound_step 60 hdiutil attach -nomount "ram://$2") ||
     { td_rc=$?; note_failure "hdiutil attach -nomount ram://$2" "$td_rc"; return 1; }
   td_dev=$(printf '%s\n' "$td_out" | awk 'NR == 1 { print $1 }')
@@ -3671,14 +3729,16 @@ tmpdisk_create() { # mount, sectors
     /dev/disk[0-9]*) ;;
     *) note_failure "hdiutil attach -nomount ram://$2 named no device" 1; return 1 ;;
   esac
-  # Each failure below detaches the device: it holds nothing yet.
+  # The record proves the device ours to the next run, if this one stops.
+  printf '%s %s\n' "$td_dev" "$3" > "$TMPDISK_RECORD" ||
+    { note_failure "record $td_dev in $TMPDISK_RECORD" 1; tmpdisk_step 60 hdiutil detach "$td_dev" || :; return 1; }
   if ! tmpdisk_step 120 diskutil erasevolume HFS+ "$TMPDISK_NAME" "$td_dev"; then
-    tmpdisk_step 60 hdiutil detach "$td_dev" || :
+    tmpdisk_undo "$td_dev" || :
     return 1
   fi
   if [ ! -d "$1" ]; then
     note_failure "diskutil erasevolume did not mount $td_dev at $1" 1
-    tmpdisk_step 60 hdiutil detach "$td_dev" || :
+    tmpdisk_undo "$td_dev" || :
     return 1
   fi
   tmpdisk_remount "$1" "$td_dev" || return 1
@@ -3696,24 +3756,55 @@ stage_tmpdisk() {
       echo "  DIFFERS MACHINE_SETUP_TMPDISK_MB='$TMPDISK_MB' is not a size in MiB; set a whole number such as 4096"
       return 0 ;;
   esac
+  # Dry runs too: a read while another run sits between two steps sees
+  # its device as no one's.
+  tmpdisk_lock || return 0
+  tmpdisk_locked || :
+  rm -f "$TMPDISK_LOCK"
+}
+
+# Everything below runs under the lock.
+tmpdisk_locked() {
   td_mnt="$TMPDISK_VOLUMES/$TMPDISK_NAME"
   td_sectors=$((TMPDISK_MB * 2048))
   # A failed read is unknown, not an absent disk: making one then could
   # stack a second volume beside a live one.
   if ! td_images=$(tmpdisk_images); then
     note_failure "hdiutil info -plist: the RAM disk's state is unknown" 1
-    return 0
+    return 1
   fi
-  td_ours=$(printf '%s\n' "$td_images" | awk -F '\t' -v m="$td_mnt" '$3 == m && $2 != "file"')
-  # A RAM disk of this size with no volume is a stopped run's attach.
-  td_orphans=$(printf '%s\n' "$td_images" | awk -F '\t' -v s="$td_sectors" '$2 == s && $3 == "-" { print $1 }')
-  for td_orphan in $td_orphans; do
-    echo "  EXTRA   $td_orphan — a $TMPDISK_MB MiB RAM disk with no volume, left by a stopped run"
+  td_boot=$(tmpdisk_boot)
+  td_rec=""
+  if [ -f "$TMPDISK_RECORD" ]; then
+    read -r td_rec td_rec_boot < "$TMPDISK_RECORD" || :
+    [ "${td_rec_boot:-}" = "$td_boot" ] || td_rec=""
+  fi
+  # The record proves only a RAM disk that is still attached.
+  td_rec_line=""
+  [ -z "$td_rec" ] || td_rec_line=$(printf '%s\n' "$td_images" | awk -F '\t' -v d="$td_rec" '$1 == d && $2 != "file"')
+  [ -n "$td_rec_line" ] || td_rec=""
+  td_at=$(printf '%s\n' "$td_images" | awk -F '\t' -v m="$td_mnt" '$3 == m')
+  td_detach=""
+  td_action=none
+  if [ -n "$td_rec" ] && [ "$(printf '%s\n' "$td_rec_line" | cut -f3)" = "-" ]; then
+    echo "  EXTRA   $td_rec — a RAM disk with no volume that a stopped run of this stage attached"
+    td_detach=$td_rec
+  fi
+  # Unmounted RAM disks the stage cannot prove its own.
+  for td_other in $(printf '%s\n' "$td_images" | awk -F '\t' -v d="$td_rec" '$2 != "file" && $3 == "-" && $1 != d { print $1 }'); do
+    echo "  --      $td_other: an unmounted RAM disk this stage did not make; left alone"
   done
-  td_action=create
-  if [ -n "$td_ours" ]; then
-    td_dev=$(printf '%s\n' "$td_ours" | cut -f1)
-    td_have=$(printf '%s\n' "$td_ours" | cut -f2)
+  if [ -n "$td_at" ]; then
+    td_dev=$(printf '%s\n' "$td_at" | cut -f1)
+    td_have=$(printf '%s\n' "$td_at" | cut -f2)
+    if [ "$td_have" = file ]; then
+      echo "  DIFFERS $td_mnt exists and is not a RAM disk; move it away, then rerun"
+      return 0
+    fi
+    if [ "$td_dev" != "$td_rec" ] && [ ! -f "$td_mnt/.tmpdisk-ready" ]; then
+      echo "  DIFFERS $td_mnt holds RAM disk $td_dev, which this stage did not make; left alone"
+      return 0
+    fi
     if [ "$td_have" != "$td_sectors" ]; then
       echo "  DIFFERS $td_mnt is $((td_have / 2048)) MiB, MACHINE_SETUP_TMPDISK_MB wants $TMPDISK_MB; detach it while no gate runs ('hdiutil detach $td_dev'), then rerun"
       return 0
@@ -3736,42 +3827,29 @@ stage_tmpdisk() {
     return 0
   else
     echo "  MISSING $td_mnt — no RAM disk of $TMPDISK_MB MiB"
+    td_action=create
   fi
-  [ "$td_action" != none ] || [ -n "$td_orphans" ] || return 0
   if [ "$APPLY" -ne 1 ]; then
-    for td_orphan in $td_orphans; do say "hdiutil detach $td_orphan"; done
+    [ -z "$td_detach" ] || say "hdiutil detach $td_detach"
     case $td_action in
       create)  say "hdiutil attach -nomount ram://$td_sectors; diskutil erasevolume HFS+ $TMPDISK_NAME <device>; markers; mount again" ;;
       remount) say "write the markers in $td_mnt; diskutil unmount and mount it again" ;;
     esac
     return 0
   fi
-  # The login agent and the nightly update can meet here, and a second
-  # creator would stack a second volume. A lock whose pid is gone is a
-  # stopped run's.
-  mkdir -p "$STATE_DIR"
-  if ! mkdir "$STATE_DIR/tmpdisk.lock" 2>/dev/null; then
-    td_holder=$(cat "$STATE_DIR/tmpdisk.lock/pid" 2>/dev/null || :)
-    case $td_holder in
-      ''|*[!0-9]*) ;;
-      *) if kill -0 "$td_holder" 2>/dev/null; then
-           echo "  SKIP    another run (pid $td_holder) is making $td_mnt"
-           return 0
-         fi ;;
-    esac
-    rm -rf "$STATE_DIR/tmpdisk.lock"
-    mkdir "$STATE_DIR/tmpdisk.lock" 2>/dev/null || { echo "  SKIP    another run is making $td_mnt"; return 0; }
+  # A record that proves nothing, or names a ready disk, is spent.
+  if [ -f "$TMPDISK_RECORD" ] && { [ -z "$td_rec" ] || [ "$td_action" = none ]; }; then
+    rm -f "$TMPDISK_RECORD"
   fi
-  echo "$$" > "$STATE_DIR/tmpdisk.lock/pid"
-  for td_orphan in $td_orphans; do
-    tmpdisk_step 60 hdiutil detach "$td_orphan" || :
-  done
+  if [ -n "$td_detach" ]; then
+    tmpdisk_undo "$td_detach" || return 1
+  fi
   case $td_action in
-    create)  tmpdisk_create "$td_mnt" "$td_sectors" || : ;;
+    create)  tmpdisk_create "$td_mnt" "$td_sectors" "$td_boot" || return 1 ;;
     remount)
-      if tmpdisk_remount "$td_mnt" "$td_dev"; then echo "  mounted $td_mnt again with its markers"; fi ;;
+      tmpdisk_remount "$td_mnt" "$td_dev" || return 1
+      echo "  mounted $td_mnt again with its markers" ;;
   esac
-  rm -rf "$STATE_DIR/tmpdisk.lock"
 }
 
 # ds_ names: every stage shares these globals, and a stage that set `want`

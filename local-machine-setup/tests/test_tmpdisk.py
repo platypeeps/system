@@ -6,10 +6,15 @@ to 17 GB. The stage keeps a small RAM disk with FSEvents logging and
 Spotlight off, and writes `.tmpdisk-ready` only once a mount has read
 both markers, so a consumer never takes a disk that is half made.
 
-No case calls the real hdiutil or diskutil: fakes on PATH keep the disks
-in a JSON file, and the volumes folder is a temporary one. A case that
-stops the process between two steps writes the state that stop leaves,
-and the next run must finish it or undo it.
+No case calls the real hdiutil, diskutil or sysctl: fakes on PATH keep
+the disks in a JSON file, and the volumes folder is a temporary one. A
+case that stops the process between two steps writes the state that stop
+leaves, and the next run must finish it or undo it.
+
+Every call the fakes see must come while the stage holds its lock, and a
+detach must name a disk the stage's record or ready file proves its own:
+the login agent and the nightly update are two triggers that can meet,
+and the operator may keep a RAM disk of their own.
 """
 
 import json
@@ -44,8 +49,17 @@ volumes = pathlib.Path(os.environ["MACHINE_SETUP_TMPDISK_VOLUMES"])
 stash = state_file.parent / "stash"
 tool = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
+lock = pathlib.Path(os.environ["FAKE_LOCK"])
+try:
+    holder = int(os.readlink(lock))
+    os.kill(holder, 0)
+    held = "locked"
+except (OSError, ValueError):
+    held = "unlocked"
 with open(state_file.parent / "calls.log", "a") as log:
     log.write(" ".join([tool, *args]) + "\n")
+with open(state_file.parent / "locks.log", "a") as log:
+    log.write(f"{held} {tool} {' '.join(args)}\n")
 if args and args[0] in os.environ.get("FAKE_FAIL", "").split(","):
     print(f"{tool}: {args[0]} failed", file=sys.stderr)
     sys.exit(1)
@@ -100,6 +114,13 @@ state_file.write_text(json.dumps(state))
 '''
 
 
+# kern.boottime as sysctl prints it; FAKE_BOOT stands in for a reboot.
+SYSCTL = """#!/bin/sh
+[ "$*" = "-n kern.boottime" ] || exit 1
+echo "{ sec = ${FAKE_BOOT:-1700000000}, usec = 0 } Tue Nov 14 22:13:20 2023"
+"""
+
+
 def write_stub(directory, name, body):
     path = directory / name
     path.write_text(body)
@@ -126,9 +147,12 @@ class TmpdiskTest(unittest.TestCase):
         self.stubs.mkdir()
         for name in ("hdiutil", "diskutil"):
             write_stub(self.stubs, name, f"#!{sys.executable}\n{FAKE}")
+        write_stub(self.stubs, "sysctl", SYSCTL)
+        self.lock = self.state / "tmpdisk.lock"
+        self.record = self.state / "tmpdisk.device"
         fixture_config.seal(self, self.stubs)
 
-    def run_stage(self, *flags, mb=str(MB), fail="", code=0):
+    def run_stage(self, *flags, mb=str(MB), fail="", code=0, boot="1700000000"):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -138,6 +162,8 @@ class TmpdiskTest(unittest.TestCase):
             "MACHINE_SETUP_TMPDISK_VOLUMES": str(self.volumes),
             "FAKE_DISKS": str(self.disks),
             "FAKE_FAIL": fail,
+            "FAKE_LOCK": str(self.lock),
+            "FAKE_BOOT": boot,
         }
         if mb is not None:
             env["MACHINE_SETUP_TMPDISK_MB"] = mb
@@ -145,6 +171,10 @@ class TmpdiskTest(unittest.TestCase):
                                 capture_output=True, text=True, cwd=self.tmp.name,
                                 stdin=subprocess.DEVNULL, timeout=120)
         self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+        locks = self.fake / "locks.log"
+        unlocked = [line for line in (locks.read_text().splitlines() if locks.exists() else [])
+                    if not line.startswith("locked ")]
+        self.assertEqual(unlocked, [], "the stage read or changed a disk without its lock")
         start = result.stdout.index("== tmpdisk\n") + len("== tmpdisk\n")
         return [line for line in result.stdout[start:].splitlines() if line.startswith("  ")]
 
@@ -169,11 +199,17 @@ class TmpdiskTest(unittest.TestCase):
             (pathlib.Path(mount) / ".fseventsd").mkdir(parents=True)
         return dev
 
+    def remember(self, dev, boot="1700000000"):
+        self.record.write_text(f"{dev} {boot}\n")
+
     def assert_ready(self):
+        self.assertFalse(self.record.exists(), "the record outlived a ready disk")
+        self.assertFalse(os.path.lexists(self.lock), "the lock outlived the run")
         self.assertTrue((self.mount / ".fseventsd/no_log").is_file())
         self.assertTrue((self.mount / ".metadata_never_index").is_file())
         self.assertTrue((self.mount / ".tmpdisk-ready").is_file())
-        lines = self.run_stage()
+        # Another RAM disk a case left may still be named; it is not drift.
+        lines = [line for line in self.run_stage() if not line.startswith("  --      ")]
         self.assertEqual(len(lines), 1, lines)
         self.assertRegex(lines[0], r"^  ok      .*/sd-tmp — RAM disk /dev/disk\d+, 64 MiB, FSEvents log and Spotlight off$")
 
@@ -204,14 +240,14 @@ class TmpdiskTest(unittest.TestCase):
             f"diskutil unmount {self.mount}",
             "diskutil mount /dev/disk10",
         ])
-        self.assertFalse((self.state / "tmpdisk.lock").exists())
+        self.assertFalse(os.path.lexists(self.lock))
         self.assert_ready()
 
     def test_a_refused_attach_fails_and_leaves_no_disk(self):
         lines = self.run_stage("--apply", fail="attach", code=1)
         self.assertTrue(any(line.startswith("  FAILED  hdiutil attach -nomount") for line in lines), lines)
         self.assertEqual(self.images(), [])
-        self.assertFalse((self.state / "tmpdisk.lock").exists())
+        self.assertFalse(os.path.lexists(self.lock))
 
     def test_a_failed_erase_detaches_the_device(self):
         lines = self.run_stage("--apply", fail="erasevolume", code=1)
@@ -219,10 +255,12 @@ class TmpdiskTest(unittest.TestCase):
                         lines)
         self.assertEqual(self.images(), [])
         self.assertIn("hdiutil detach /dev/disk10", self.calls())
-        self.assertFalse((self.state / "tmpdisk.lock").exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse(os.path.lexists(self.lock))
 
     def test_a_busy_remount_fails_and_the_next_run_finishes_it(self):
         lines = self.run_stage("--apply", fail="unmount", code=1)
+        self.assertEqual(self.record.read_text(), "/dev/disk10 1700000000\n")
         self.assertTrue(any(line.startswith(f"  FAILED  diskutil unmount {self.mount}") for line in lines), lines)
         self.assertFalse((self.mount / ".tmpdisk-ready").exists(), "ready before a mount read the markers")
         lines = self.run_stage()
@@ -234,32 +272,95 @@ class TmpdiskTest(unittest.TestCase):
 
     def test_stopped_after_the_lock_a_dead_holder_is_cleared(self):
         dead = subprocess.run(["/bin/sh", "-c", "echo $$"], capture_output=True, text=True).stdout.strip()
-        (self.state / "tmpdisk.lock").mkdir()
-        (self.state / "tmpdisk.lock/pid").write_text(dead + "\n")
+        os.symlink(dead, self.lock)
         self.run_stage("--apply")
         self.assert_ready()
 
-    def test_a_live_holder_is_left_alone(self):
-        (self.state / "tmpdisk.lock").mkdir()
-        (self.state / "tmpdisk.lock/pid").write_text(f"{os.getpid()}\n")
+    def test_a_live_lock_taken_after_the_dead_one_was_read_stays(self):
+        # A contender clears the dead lock and takes its own between this
+        # run's read and its move: the mv stub plays that contender.
+        dead = subprocess.run(["/bin/sh", "-c", "echo $$"], capture_output=True, text=True).stdout.strip()
+        os.symlink(dead, self.lock)
+        write_stub(self.stubs, "mv", f"""#!/bin/sh
+case "$1" in
+  "{self.lock}") rm -f "$1"; ln -s {os.getpid()} "$1" ;;
+esac
+exec /bin/mv "$@"
+""")
         lines = self.run_stage("--apply")
-        self.assertIn(f"  SKIP    another run (pid {os.getpid()}) is making {self.mount}", lines)
-        self.assertEqual(self.mutations(), [])
+        self.assertEqual(lines, [f"  SKIP    another run (pid {os.getpid()}) took {self.lock}"])
+        self.assertEqual(os.readlink(self.lock), str(os.getpid()))
+        self.assertEqual(self.calls(), [])
+
+    def test_a_live_holder_is_left_alone(self):
+        os.symlink(str(os.getpid()), self.lock)
+        for flags in ((), ("--apply",)):
+            with self.subTest(flags=flags):
+                lines = self.run_stage(*flags)
+                self.assertEqual(lines, [f"  SKIP    another run (pid {os.getpid()}) holds {self.lock}"])
+        # Not even a read: the other run's attach may sit between two steps.
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(os.readlink(self.lock), str(os.getpid()))
+
+    def test_a_lock_that_names_no_pid_is_never_removed(self):
+        os.symlink("not-a-pid", self.lock)
+        lines = self.run_stage("--apply")
+        self.assertEqual(lines, [f"  SKIP    {self.lock} names no pid; remove it once no run holds it"])
+        self.assertEqual(os.readlink(self.lock), "not-a-pid")
+        self.assertEqual(self.calls(), [])
+
+    def test_a_folder_at_the_lock_path_is_never_taken(self):
+        self.lock.mkdir()
+        lines = self.run_stage("--apply")
+        self.assertEqual(lines, [f"  SKIP    {self.lock} names no pid; remove it once no run holds it"])
+        self.assertEqual(list(self.lock.iterdir()), [])
+        self.assertEqual(self.calls(), [])
+
+    def test_the_lock_is_one_atomic_link_to_the_pid(self):
+        text = SCRIPT.read_text()
+        self.assertIn('ln -s "$$" "$TMPDISK_LOCK"', text)
+        self.assertNotIn("tmpdisk.lock/pid", text)
 
     def test_stopped_after_attach_the_device_is_detached_and_made_again(self):
         orphan = self.add_image()
-        other = self.add_image(sectors=SECTORS * 2)
+        self.remember(orphan)
         lines = self.run_stage()
-        self.assertIn(f"  EXTRA   {orphan} — a {MB} MiB RAM disk with no volume, left by a stopped run", lines)
-        self.assertNotIn(other, "\n".join(lines))
+        self.assertIn(f"  EXTRA   {orphan} — a RAM disk with no volume that a stopped run of this stage attached", lines)
         self.run_stage("--apply")
         self.assertIn(f"hdiutil detach {orphan}", self.calls())
-        self.assertNotIn(f"hdiutil detach {other}", self.calls())
-        self.assertEqual(sorted(image["dev"] for image in self.images()), [other, "/dev/disk12"])
+        self.assertEqual([image["dev"] for image in self.images()], ["/dev/disk11"])
         self.assert_ready()
 
+    def test_an_unmounted_ram_disk_the_stage_did_not_make_is_left_alone(self):
+        for sectors in (SECTORS, SECTORS * 2):
+            with self.subTest(sectors=sectors):
+                theirs = self.add_image(sectors=sectors)
+                lines = self.run_stage()
+                self.assertIn(f"  --      {theirs}: an unmounted RAM disk this stage did not make; left alone", lines)
+                self.run_stage("--apply")
+                self.assertNotIn(f"hdiutil detach {theirs}", self.calls())
+                self.assertIn(theirs, [image["dev"] for image in self.images()])
+
+    def test_a_record_from_an_earlier_boot_proves_nothing(self):
+        theirs = self.add_image()
+        self.remember(theirs, boot="1600000000")
+        lines = self.run_stage()
+        self.assertIn(f"  --      {theirs}: an unmounted RAM disk this stage did not make; left alone", lines)
+        self.run_stage("--apply")
+        self.assertNotIn(f"hdiutil detach {theirs}", self.calls())
+        self.assertIn(theirs, [image["dev"] for image in self.images()])
+        self.assert_ready()
+
+    def test_a_ram_disk_at_the_mount_point_the_stage_did_not_make_is_left_alone(self):
+        theirs = self.add_image(mount=self.mount)
+        lines = self.run_stage("--apply")
+        self.assertEqual(lines, [f"  DIFFERS {self.mount} holds RAM disk {theirs}, which this stage did not make; "
+                                 "left alone"])
+        self.assertEqual(self.mutations(), [])
+        self.assertFalse((self.mount / ".metadata_never_index").exists())
+
     def test_stopped_after_erase_the_markers_are_written_and_mounted(self):
-        self.add_image(mount=self.mount)
+        self.remember(self.add_image(mount=self.mount))
         lines = self.run_stage()
         self.assertTrue(lines[0].startswith(f"  DIFFERS {self.mount} lacks .fseventsd/no_log .metadata_never_index"), lines)
         self.run_stage("--apply")
@@ -267,7 +368,7 @@ class TmpdiskTest(unittest.TestCase):
         self.assert_ready()
 
     def test_stopped_after_the_markers_the_disk_is_mounted_again(self):
-        self.add_image(mount=self.mount)
+        self.remember(self.add_image(mount=self.mount))
         (self.mount / ".fseventsd/no_log").touch()
         (self.mount / ".metadata_never_index").touch()
         lines = self.run_stage()
@@ -278,6 +379,7 @@ class TmpdiskTest(unittest.TestCase):
 
     def test_stopped_after_unmount_the_device_is_detached_and_made_again(self):
         orphan = self.add_image()
+        self.remember(orphan)
         self.run_stage("--apply")
         self.assertIn(f"hdiutil detach {orphan}", self.calls())
         self.assert_ready()
@@ -297,6 +399,15 @@ class TmpdiskTest(unittest.TestCase):
         lines = self.run_stage("--apply")
         self.assertEqual(lines, [f"  DIFFERS {self.mount} exists and is not a RAM disk; move it away, then rerun"])
         self.assertEqual(self.mutations(), [])
+
+    def test_stopped_after_ready_the_record_is_dropped(self):
+        dev = self.add_image(mount=self.mount)
+        self.remember(dev)
+        for name in (".fseventsd/no_log", ".metadata_never_index", ".tmpdisk-ready"):
+            (self.mount / name).touch()
+        self.run_stage("--apply")
+        self.assertEqual(self.mutations(), [])
+        self.assert_ready()
 
     def test_another_size_is_drift_and_never_detached(self):
         dev = self.add_image(sectors=SECTORS * 2, mount=self.mount)
