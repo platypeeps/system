@@ -49,7 +49,11 @@ SECTORS = MB * 2048
 # or a refused attach does. APFS is what macOS 27.2 showed on a probe
 # disk (sd:7594): the erase makes a synthesized container and volume
 # that `hdiutil info` lists under the ram:// image, and `diskutil
-# mount` of the physical store fails; only the volume mounts.
+# mount` of the physical store fails; only the volume mounts. The fake
+# lists the container first, with a shorter number than the device, as
+# a reused low number can make it: the stage must find the device by
+# its content hint, not by name (sd:7636). FAKE_HIDE_VOLUME leaves the
+# APFS volume out of `hdiutil info`.
 FAKE = r'''
 import json, os, pathlib, plistlib, shutil, sys
 state_file = pathlib.Path(os.environ["FAKE_DISKS"])
@@ -98,8 +102,9 @@ if tool == "hdiutil" and args[:2] == ["info", "-plist"]:
     for item in images:
         entities = [{"content-hint": "", "dev-entry": item["dev"]}]
         if item.get("fs") == "apfs":
-            entities.append({"content-hint": APFS_CONTAINER, "dev-entry": item["vol"][:-2]})
-            entities.append({"content-hint": APFS_VOLUME, "dev-entry": item["vol"]})
+            entities.insert(0, {"content-hint": APFS_CONTAINER, "dev-entry": item["vol"][:-2]})
+            if not os.environ.get("FAKE_HIDE_VOLUME"):
+                entities.append({"content-hint": APFS_VOLUME, "dev-entry": item["vol"]})
         if item.get("mount"):
             entities[-1]["mount-point"] = item["mount"]
         out.append({"image-path": item.get("path") or f"ram://{item['sectors']}", "system-entities": entities})
@@ -121,8 +126,8 @@ elif tool == "diskutil" and args[0] == "erasevolume":
     (mount / ".fseventsd").mkdir(parents=True)
     item.update(name=args[2], mount=str(mount), fs="apfs" if args[1].lower() == "apfs" else "hfs")
     if item["fs"] == "apfs":
-        item["vol"] = f"/dev/disk{state['next']}s1"
-        state["next"] += 1
+        item["vol"] = f"/dev/disk{state.get('cnext', 1)}s1"
+        state["cnext"] = state.get("cnext", 1) + 1
 elif tool == "diskutil" and args[0] == "unmount":
     item = image("mount", args[1])
     stash.mkdir(exist_ok=True)
@@ -174,7 +179,7 @@ class TmpdiskTest(unittest.TestCase):
         self.record = self.state / "tmpdisk.device"
         fixture_config.seal(self, self.stubs)
 
-    def run_stage(self, *flags, mb=str(MB), fail="", fail_nth="", code=0):
+    def run_stage(self, *flags, mb=str(MB), fail="", fail_nth="", hide_volume="", code=0):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -185,6 +190,7 @@ class TmpdiskTest(unittest.TestCase):
             "FAKE_DISKS": str(self.disks),
             "FAKE_FAIL": fail,
             "FAKE_FAIL_NTH": fail_nth,
+            "FAKE_HIDE_VOLUME": hide_volume,
             "FAKE_LOCK": str(self.lock),
         }
         if mb is not None:
@@ -217,8 +223,8 @@ class TmpdiskTest(unittest.TestCase):
         item = {"dev": dev, "sectors": sectors, "mount": str(mount) if mount else None,
                 "path": path, "name": name, "fs": fs}
         if fs == "apfs":
-            item["vol"] = f"/dev/disk{state['next']}s1"
-            state["next"] += 1
+            item["vol"] = f"/dev/disk{state.get('cnext', 1)}s1"
+            state["cnext"] = state.get("cnext", 1) + 1
         state["images"].append(item)
         self.disks.write_text(json.dumps(state))
         if mount:
@@ -268,7 +274,7 @@ class TmpdiskTest(unittest.TestCase):
             f"hdiutil attach -nomount ram://{SECTORS}",
             "diskutil erasevolume APFS sd-tmp /dev/disk10",
             f"diskutil unmount {self.mount}",
-            "diskutil mount /dev/disk11s1",
+            "diskutil mount /dev/disk1s1",
         ])
         # HFS+ keeps whole-second mtimes; pack tests that see a change by
         # mtime missed writes on it (sd:7594).
@@ -301,6 +307,14 @@ class TmpdiskTest(unittest.TestCase):
         self.run_stage("--apply")
         self.assertEqual([image["dev"] for image in self.images()], ["/dev/disk10"])
         self.assert_ready()
+
+    def test_a_volume_missing_after_the_erase_is_named_as_the_lookup(self):
+        lines = self.run_stage("--apply", hide_volume="1", code=1)
+        self.assertIn("  FAILED  hdiutil info -plist lists no APFS volume on /dev/disk10 after its erase (exit 1)",
+                      lines)
+        self.assertNotIn("is not APFS", "\n".join(lines))
+        self.assertFalse((self.mount / ".tmpdisk-ready").exists())
+        self.assertNotIn("hdiutil detach /dev/disk10", self.calls())
 
     def test_a_busy_remount_fails_and_the_next_run_finishes_it(self):
         lines = self.run_stage("--apply", fail="unmount", code=1)
@@ -426,7 +440,7 @@ exec /bin/mv "$@"
         lines = self.run_stage()
         self.assertTrue(lines[0].startswith(f"  DIFFERS {self.mount} has not been mounted since its markers"), lines)
         self.run_stage("--apply")
-        self.assertEqual(self.mutations(), [f"diskutil unmount {self.mount}", "diskutil mount /dev/disk11s1"])
+        self.assertEqual(self.mutations(), [f"diskutil unmount {self.mount}", "diskutil mount /dev/disk1s1"])
         self.assert_ready()
 
     # What the stage leaves alone.

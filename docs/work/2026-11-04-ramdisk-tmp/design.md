@@ -43,6 +43,7 @@ The system half is one machine-setup stage, `tmpdisk`, and one example LaunchAge
 APFS, not HFS+ (sd:7594): HFS+ keeps whole-second mtimes, and pack gate tests that see a change by mtime failed on it.
 A probe on macOS 27.2 showed `hdiutil info` lists the synthesized container and volume under the `ram://` image, so the stage ties the mount to its image.
 `diskutil mount` refuses the physical store, so the stage mounts the APFS volume device.
+The stage finds the device by content hint, not by the shortest name: a reused low number can make the container's name shorter (sd:7636).
 A disk at the mount point that is not APFS is `DIFFERS`; the stage removes its `.tmpdisk-ready` and never detaches it (ruling on sd:7092).
 
 Rejected: a new tool folder. The stage and the agents stage reuse machine-setup's drift report, nightly repair and plist install.
@@ -111,6 +112,7 @@ No recovery detaches a disk automatically.
 | Erase | an APFS volume at `/Volumes/sd-tmp`, no markers | fails | `FAILED`; this run detaches the device it attached | `test_a_failed_erase_detaches_the_device` |
 | Erase | as above | stopped before the markers | the next run writes them and mounts again | `test_stopped_after_erase_the_markers_are_written_and_mounted` |
 | Read the volume | as above | `hdiutil info` fails | `FAILED`, no ready file; the next run writes the markers and mounts again | `test_a_failed_read_after_the_erase_leaves_it_for_the_next_run` |
+| Read the volume | as above | `hdiutil info` lists no APFS volume | `FAILED` names the lookup; no ready file, no detach | `test_a_volume_missing_after_the_erase_is_named_as_the_lookup` |
 | Markers, unmount | markers on disk, not yet read | volume busy, unmount fails | `FAILED`; no ready file, so no consumer takes it; the next run mounts again | `test_a_busy_remount_fails_and_the_next_run_finishes_it` |
 | Markers, unmount | as above | stopped before the unmount | the next run mounts again | `test_stopped_after_the_markers_the_disk_is_mounted_again` |
 | Unmount, mount | device, volume unmounted | stopped between them | named with its detach command; no second disk | `test_stopped_after_unmount_the_device_is_left_and_no_second_is_made` |
@@ -121,7 +123,7 @@ No recovery detaches a disk automatically.
 | Disk full | none | a write fails with no space | that run fails; the gate's cleanup and `reap_temporary` free its folder; pack sd:7557 skips a disk with too little room | pack sd:7557 |
 | Two creators race | a second volume would stack as `sd-tmp 1` | the login agent meets the nightly update | the lock, taken before any read; the loser skips | `test_a_live_holder_is_left_alone` |
 | Something else at `/Volumes/sd-tmp` | none | a folder or a file image | `DIFFERS`, left alone | `test_a_folder_that_is_not_a_ram_disk_is_drift_and_kept`, `test_a_disk_image_mounted_there_is_not_a_ram_disk` |
-| An HFS+ disk from before sd:7594 | none, or `.tmpdisk-ready` | whole-second mtimes | `DIFFERS`; `--apply` removes `.tmpdisk-ready`, so consumers keep `$TMPDIR`; never detached | `test_an_hfs_disk_is_drift_and_never_marked_ready`, `test_an_hfs_disk_marked_ready_loses_the_mark` |
+| An HFS+ disk from before sd:7594 | none, or `.tmpdisk-ready` | whole-second mtimes | `DIFFERS`; `--apply` removes `.tmpdisk-ready`, so consumers keep `$TMPDIR`; never detached | `test_an_hfs_disk_is_drift_and_never_marked_ready`, `test_an_hfs_disk_marked_ready_loses_the_mark`, `test_an_hfs_disk_of_another_size_loses_the_mark` |
 | Size changed in `machine-setup.env` | none | the live disk has the old size | `DIFFERS`, never detached: a run may be using it | `test_another_size_is_drift_and_never_detached` |
 
 ## Acceptance criteria

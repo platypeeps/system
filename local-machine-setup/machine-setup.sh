@@ -3644,17 +3644,21 @@ TMPDISK_LOCK="$STATE_DIR/tmpdisk.lock"
 # APFS volume or `-`. An image from a file prints `file` as its sectors,
 # so it is never the RAM disk. An APFS erase makes a synthesized
 # container and volume that hdiutil lists under the ram:// image; the
-# volume, not the device, is what `diskutil mount` takes.
+# volume, not the device, is what `diskutil mount` takes. The device is
+# the entity whose content hint is neither: a reused low number can make
+# the container's name the shorter one (sd:7636).
 tmpdisk_images() {
   td_plist=$(bound_step 60 hdiutil info -plist) || return 1
   printf '%s' "$td_plist" | python3 -c '
 import plistlib, sys
+APFS_CONTAINER = "EF57347C-0000-11AA-AA11-00306543ECAC"
 APFS_VOLUME = "41504653-0000-11AA-AA11-00306543ECAC"
 for image in plistlib.loads(sys.stdin.buffer.read()).get("images", []):
     path = image.get("image-path", "")
     sectors = path[len("ram://"):] if path.startswith("ram://") else "file"
     entities = image.get("system-entities", [])
-    devs = sorted((e.get("dev-entry", "") for e in entities), key=len)
+    devs = sorted((e.get("dev-entry", "") for e in entities
+                   if e.get("content-hint") not in (APFS_CONTAINER, APFS_VOLUME)), key=len)
     mounts = [e["mount-point"] for e in entities if e.get("mount-point")]
     volumes = sorted((e for e in entities if e.get("content-hint") == APFS_VOLUME),
                      key=lambda e: not e.get("mount-point"))
@@ -3746,7 +3750,7 @@ tmpdisk_create() { # mount, sectors
   td_vol=$(printf '%s\n' "$td_images" | awk -F '\t' -v d="$td_dev" '$1 == d { print $4 }')
   case $td_vol in
     /dev/disk*) ;;
-    *) note_failure "diskutil erasevolume APFS made no APFS volume on $td_dev" 1; return 1 ;;
+    *) note_failure "hdiutil info -plist lists no APFS volume on $td_dev after its erase" 1; return 1 ;;
   esac
   tmpdisk_remount "$1" "$td_vol" || return 1
   echo "  created $1 — RAM disk $td_dev, $TMPDISK_MB MiB, FSEvents log and Spotlight off"
