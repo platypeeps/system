@@ -591,8 +591,10 @@ class RepoSyncTest(unittest.TestCase):
             f.local_clone(f"a/{name}")
         first = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-12"}))
         again = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-13"}))
+        # With no ssh key the run fetches over https (sd:7676), so another
+        # cause is another https failure: a transport git has no helper for.
         cause = attention(f.run("nightly", expect=0, extra_env={
-            "FAKE_DAY": "2026-10-13", "GIT_SSH_COMMAND": "sh -c 'echo Permission denied >&2; exit 255' --"}))
+            "FAKE_DAY": "2026-10-13", "REPO_SYNC_GITHUB_HTTPS": "nope://example.test/"}))
         shutil.rmtree(f.root / "a" / "worker1")
         f.checkout("a/worker2", "owner/worker2")
         f.write_conf("a owner/worker2\na owner/good1\na owner/good2\n")
