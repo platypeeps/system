@@ -11,6 +11,10 @@
 # stage copies this file into ~/.local/bin, away from the checkout, so it
 # cannot source lib/config.sh and names the config root itself.
 #
+# Before the login it prints the values sdm asks for, to copy and paste. With
+# no terminal on stdin (a `! sdm-login` in Claude Code), it answers the App
+# Domain prompt itself; SDM_APP_DOMAIN overrides app.strongdm.com.
+#
 # No argument runs it, like a login command; `help` prints usage.
 set -e
 
@@ -19,6 +23,7 @@ case "${1:-}" in
   -h|--help|help)
     echo "usage: sdm-login    sign sdm in when \`sdm status\` exits 9, then print \`sdm status\`"
     echo "  SDM_EMAIL  the sign-in email; else SDM_EMAIL in <config>/machine-setup/machine-setup.env"
+    echo "  SDM_APP_DOMAIN  the App Domain answer (default app.strongdm.com)"
     exit 0 ;;
   *) echo "sdm-login: takes no argument (see: sdm-login help)" >&2; exit 1 ;;
 esac
@@ -54,5 +59,14 @@ case "${SDM_EMAIL:-}" in
     exit 1 ;;
 esac
 
-sdm login --email "$SDM_EMAIL"
+domain="${SDM_APP_DOMAIN:-app.strongdm.com}"
+echo "sdm-login: sdm will ask for these; copy and paste them:"
+echo "  App Domain: $domain"
+echo "  Email:      $SDM_EMAIL"
+echo "  Then finish the sign-in in the browser window it opens."
+if [ -t 0 ]; then
+  sdm login --email "$SDM_EMAIL"
+else
+  printf '%s\n' "$domain" | sdm login --email "$SDM_EMAIL"
+fi
 exec sdm status

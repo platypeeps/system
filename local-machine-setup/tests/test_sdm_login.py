@@ -32,7 +32,8 @@ case "$1" in
   status)
     if [ -f "$SDM_STUB_LOG.in" ]; then echo "signed in"; exit 0; fi
     echo "status says $SDM_STUB_STATUS"; exit "$SDM_STUB_STATUS" ;;
-  login) touch "$SDM_STUB_LOG.in"; exit "${SDM_STUB_LOGIN:-0}" ;;
+  login) read -r line || line="<eof>"; echo "stdin $line" >> "$SDM_STUB_LOG"
+    touch "$SDM_STUB_LOG.in"; exit "${SDM_STUB_LOGIN:-0}" ;;
 esac
 exit 64
 """
@@ -150,8 +151,17 @@ class SdmLoginTest(unittest.TestCase):
         self.write_email('SDM_EMAIL="ops@example.test"')
         result, calls = self.helper(9)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["sdm status", "sdm login --email ops@example.test", "sdm status"])
+        self.assertEqual(calls, ["sdm status", "sdm login --email ops@example.test",
+                                 "stdin app.strongdm.com", "sdm status"])
         self.assertIn("signed in", result.stdout)
+
+    def test_signed_out_prints_the_values_to_paste_before_the_login(self):
+        self.write_email('SDM_EMAIL="ops@example.test"')
+        result, _ = self.helper(9, SDM_APP_DOMAIN="example.strongdm.com")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = result.stdout.split("signed in")[0]
+        self.assertIn("App Domain: example.strongdm.com", values)
+        self.assertIn("Email:      ops@example.test", values)
 
     def test_an_exported_email_wins_over_the_file(self):
         self.write_email("SDM_EMAIL=file@example.test")
@@ -185,7 +195,8 @@ class SdmLoginTest(unittest.TestCase):
         self.write_email("SDM_EMAIL=ops@example.test")
         result, calls = self.helper(9, SDM_STUB_LOGIN="3")
         self.assertEqual(result.returncode, 3)
-        self.assertEqual(calls, ["sdm status", "sdm login --email ops@example.test"])
+        self.assertEqual(calls, ["sdm status", "sdm login --email ops@example.test",
+                                 "stdin app.strongdm.com"])
 
 
 if __name__ == "__main__":

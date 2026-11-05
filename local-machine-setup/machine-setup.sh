@@ -3628,6 +3628,10 @@ if not stat.S_ISREG(mode(os.path.join(sys.argv[1], "com.googlecode.iterm2.plist"
 # of the configured size exists, the stage makes no second disk beside it.
 # The RAM disk at the mount point is the volume this stage names sd-tmp:
 # writing the markers and mounting it again changes no data on it.
+# APFS, not HFS+: HFS+ keeps whole-second mtimes, and pack tests that see
+# a change by mtime missed writes on it (sd:7594). A disk there that is
+# not APFS is drift: the stage takes its ready mark away and leaves the
+# disk for the operator to detach.
 TMPDISK_NAME=sd-tmp
 TMPDISK_VOLUMES="${MACHINE_SETUP_TMPDISK_VOLUMES:-/Volumes}"
 TMPDISK_MB="${MACHINE_SETUP_TMPDISK_MB:-}"
@@ -3636,20 +3640,31 @@ TMPDISK_MARKERS=".fseventsd/no_log .metadata_never_index"
 # pid in one step, so no contender ever reads a lock with no pid.
 TMPDISK_LOCK="$STATE_DIR/tmpdisk.lock"
 
-# One line per disk image: device, sectors, mount point or `-`. An image
-# from a file prints `file` as its sectors, so it is never the RAM disk.
+# One line per disk image: device, sectors, mount point or `-`, and its
+# APFS volume or `-`. An image from a file prints `file` as its sectors,
+# so it is never the RAM disk. An APFS erase makes a synthesized
+# container and volume that hdiutil lists under the ram:// image; the
+# volume, not the device, is what `diskutil mount` takes. The device is
+# the entity whose content hint is neither: a reused low number can make
+# the container's name the shorter one (sd:7636).
 tmpdisk_images() {
   td_plist=$(bound_step 60 hdiutil info -plist) || return 1
   printf '%s' "$td_plist" | python3 -c '
 import plistlib, sys
+APFS_CONTAINER = "EF57347C-0000-11AA-AA11-00306543ECAC"
+APFS_VOLUME = "41504653-0000-11AA-AA11-00306543ECAC"
 for image in plistlib.loads(sys.stdin.buffer.read()).get("images", []):
     path = image.get("image-path", "")
     sectors = path[len("ram://"):] if path.startswith("ram://") else "file"
     entities = image.get("system-entities", [])
-    devs = sorted((e.get("dev-entry", "") for e in entities), key=len)
+    devs = sorted((e.get("dev-entry", "") for e in entities
+                   if e.get("content-hint") not in (APFS_CONTAINER, APFS_VOLUME)), key=len)
     mounts = [e["mount-point"] for e in entities if e.get("mount-point")]
+    volumes = sorted((e for e in entities if e.get("content-hint") == APFS_VOLUME),
+                     key=lambda e: not e.get("mount-point"))
     if devs:
-        print(devs[0], sectors, mounts[0] if mounts else "-", sep="\t")
+        print(devs[0], sectors, mounts[0] if mounts else "-",
+              volumes[0].get("dev-entry") or "-" if volumes else "-", sep="\t")
 '
 }
 
@@ -3697,7 +3712,7 @@ tmpdisk_lock() {
 # Writes the markers, mounts again so FSEvents and Spotlight read them,
 # then marks the volume ready. A busy volume fails
 # the unmount and stays as it was; the next run tries again.
-tmpdisk_remount() { # mount, device
+tmpdisk_remount() { # mount, APFS volume device
   { mkdir -p "$1/.fseventsd" && : > "$1/.fseventsd/no_log" && : > "$1/.metadata_never_index"; } ||
     { note_failure "write the markers in $1" 1; return 1; }
   tmpdisk_step 60 diskutil unmount "$1" || return 1
@@ -3718,7 +3733,7 @@ tmpdisk_create() { # mount, sectors
   esac
   # The one detach: the device this run attached, whose erase failed.
   td_erased=1
-  tmpdisk_step 120 diskutil erasevolume HFS+ "$TMPDISK_NAME" "$td_dev" || td_erased=0
+  tmpdisk_step 120 diskutil erasevolume APFS "$TMPDISK_NAME" "$td_dev" || td_erased=0
   if [ "$td_erased" -eq 1 ] && [ ! -d "$1" ]; then
     note_failure "diskutil erasevolume did not mount $td_dev at $1" 1
     td_erased=0
@@ -3727,7 +3742,17 @@ tmpdisk_create() { # mount, sectors
     tmpdisk_step 60 hdiutil detach "$td_dev" || :
     return 1
   fi
-  tmpdisk_remount "$1" "$td_dev" || return 1
+  # A failed read leaves the disk unmarked; the next run finishes it.
+  if ! td_images=$(tmpdisk_images); then
+    note_failure "hdiutil info -plist: the volume on $td_dev is unknown" 1
+    return 1
+  fi
+  td_vol=$(printf '%s\n' "$td_images" | awk -F '\t' -v d="$td_dev" '$1 == d { print $4 }')
+  case $td_vol in
+    /dev/disk*) ;;
+    *) note_failure "hdiutil info -plist lists no APFS volume on $td_dev after its erase" 1; return 1 ;;
+  esac
+  tmpdisk_remount "$1" "$td_vol" || return 1
   echo "  created $1 — RAM disk $td_dev, $TMPDISK_MB MiB, FSEvents log and Spotlight off"
 }
 
@@ -3768,8 +3793,21 @@ tmpdisk_locked() {
   if [ -n "$td_at" ]; then
     td_dev=$(printf '%s\n' "$td_at" | cut -f1)
     td_have=$(printf '%s\n' "$td_at" | cut -f2)
+    td_vol=$(printf '%s\n' "$td_at" | cut -f4)
     if [ "$td_have" = file ]; then
       echo "  DIFFERS $td_mnt exists and is not a RAM disk; move it away, then rerun"
+      return 0
+    fi
+    # Before the size check: a ready HFS+ disk of any size loses its mark.
+    if [ "$td_vol" = - ]; then
+      echo "  DIFFERS $td_mnt is not APFS: its whole-second mtimes hide changes from tests; detach it while no gate runs ('hdiutil detach $td_dev'), then rerun"
+      [ -f "$td_mnt/.tmpdisk-ready" ] || return 0
+      if [ "$APPLY" -ne 1 ]; then
+        say "remove $td_mnt/.tmpdisk-ready so consumers keep \$TMPDIR"
+        return 0
+      fi
+      rm -f "$td_mnt/.tmpdisk-ready" || { note_failure "remove $td_mnt/.tmpdisk-ready" 1; return 1; }
+      echo "  removed $td_mnt/.tmpdisk-ready: consumers keep \$TMPDIR"
       return 0
     fi
     if [ "$td_have" != "$td_sectors" ]; then
@@ -3805,7 +3843,7 @@ tmpdisk_locked() {
   fi
   if [ "$APPLY" -ne 1 ]; then
     case $td_action in
-      create)  say "hdiutil attach -nomount ram://$td_sectors; diskutil erasevolume HFS+ $TMPDISK_NAME <device>; markers; mount again" ;;
+      create)  say "hdiutil attach -nomount ram://$td_sectors; diskutil erasevolume APFS $TMPDISK_NAME <device>; markers; mount its volume again" ;;
       remount) say "write the markers in $td_mnt; diskutil unmount and mount it again" ;;
     esac
     return 0
@@ -3813,7 +3851,7 @@ tmpdisk_locked() {
   case $td_action in
     create)  tmpdisk_create "$td_mnt" "$td_sectors" || return 1 ;;
     remount)
-      tmpdisk_remount "$td_mnt" "$td_dev" || return 1
+      tmpdisk_remount "$td_mnt" "$td_vol" || return 1
       echo "  mounted $td_mnt again with its markers" ;;
   esac
 }
