@@ -51,6 +51,7 @@ POSTGRES_USER=change-me
 POSTGRES_PASSWORD=change-me
 FALKORDB_USER=change-me
 FALKORDB_PASSWORD=change-me
+HA_URL=change-me
 HA_TOKEN=change-me
 NTFY_TOPIC=change-me
 IMESSAGE_TO=change-me
