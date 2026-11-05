@@ -3629,9 +3629,10 @@ if not stat.S_ISREG(mode(os.path.join(sys.argv[1], "com.googlecode.iterm2.plist"
 # The RAM disk at the mount point is the volume this stage names sd-tmp:
 # writing the markers and mounting it again changes no data on it.
 # APFS, not HFS+: HFS+ keeps whole-second mtimes, and pack tests that see
-# a change by mtime missed writes on it (sd:7594). A disk there that is
-# not APFS is drift: the stage takes its ready mark away and leaves the
-# disk for the operator to detach.
+# a change by mtime missed writes on it (sd:7594). A disk there whose APFS
+# volume hdiutil does not list is drift of unknown file system, HFS+ or an
+# APFS volume the lookup missed (sd:7645): the stage takes its ready mark
+# away and leaves the disk for the operator to detach.
 TMPDISK_NAME=sd-tmp
 TMPDISK_VOLUMES="${MACHINE_SETUP_TMPDISK_VOLUMES:-/Volumes}"
 TMPDISK_MB="${MACHINE_SETUP_TMPDISK_MB:-}"
@@ -3798,9 +3799,10 @@ tmpdisk_locked() {
       echo "  DIFFERS $td_mnt exists and is not a RAM disk; move it away, then rerun"
       return 0
     fi
-    # Before the size check: a ready HFS+ disk of any size loses its mark.
+    # Before the size check: a ready disk of any size with no APFS volume
+    # loses its mark. No volume entity is not proof of HFS+ (sd:7645).
     if [ "$td_vol" = - ]; then
-      echo "  DIFFERS $td_mnt is not APFS: its whole-second mtimes hide changes from tests; detach it while no gate runs ('hdiutil detach $td_dev'), then rerun"
+      echo "  DIFFERS $td_mnt: hdiutil info lists no APFS volume on $td_dev, so its file system is unknown, and HFS+ mtimes hide changes from tests; detach it while no gate runs ('hdiutil detach $td_dev'), then rerun"
       [ -f "$td_mnt/.tmpdisk-ready" ] || return 0
       if [ "$APPLY" -ne 1 ]; then
         say "remove $td_mnt/.tmpdisk-ready so consumers keep \$TMPDIR"

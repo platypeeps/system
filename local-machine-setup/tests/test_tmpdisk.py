@@ -316,6 +316,13 @@ class TmpdiskTest(unittest.TestCase):
         self.assertFalse((self.mount / ".tmpdisk-ready").exists())
         self.assertNotIn("hdiutil detach /dev/disk10", self.calls())
 
+    def test_a_volume_still_missing_on_the_next_run_is_unknown_not_hfs(self):
+        # The erase made APFS; only the lookup lacks its volume (sd:7645).
+        self.run_stage("--apply", hide_volume="1", code=1)
+        lines = self.run_stage(hide_volume="1")
+        self.assertEqual(lines, [self.no_volume("/dev/disk10")])
+        self.assertNotIn("is not APFS", "\n".join(lines))
+
     def test_a_busy_remount_fails_and_the_next_run_finishes_it(self):
         lines = self.run_stage("--apply", fail="unmount", code=1)
         self.assertTrue(any(line.startswith(f"  FAILED  diskutil unmount {self.mount}") for line in lines), lines)
@@ -467,8 +474,9 @@ exec /bin/mv "$@"
         self.assertEqual(self.mutations(), [])
         self.assert_ready()
 
-    def not_apfs(self, dev):
-        return (f"  DIFFERS {self.mount} is not APFS: its whole-second mtimes hide changes from tests; "
+    def no_volume(self, dev):
+        return (f"  DIFFERS {self.mount}: hdiutil info lists no APFS volume on {dev}, so its "
+                "file system is unknown, and HFS+ mtimes hide changes from tests; "
                 f"detach it while no gate runs ('hdiutil detach {dev}'), then rerun")
 
     def test_an_hfs_disk_is_drift_and_never_marked_ready(self):
@@ -476,8 +484,8 @@ exec /bin/mv "$@"
         dev = self.add_image(mount=self.mount, fs="hfs")
         (self.mount / ".fseventsd/no_log").touch()
         (self.mount / ".metadata_never_index").touch()
-        self.assertEqual(self.run_stage(), [self.not_apfs(dev)])
-        self.assertEqual(self.run_stage("--apply"), [self.not_apfs(dev)])
+        self.assertEqual(self.run_stage(), [self.no_volume(dev)])
+        self.assertEqual(self.run_stage("--apply"), [self.no_volume(dev)])
         self.assertEqual(self.mutations(), [])
         self.assertFalse((self.mount / ".tmpdisk-ready").exists(), "an HFS+ disk was marked ready")
 
@@ -486,10 +494,10 @@ exec /bin/mv "$@"
         for name in (".fseventsd/no_log", ".metadata_never_index", ".tmpdisk-ready"):
             (self.mount / name).touch()
         lines = self.run_stage()
-        self.assertEqual(lines[0], self.not_apfs(dev))
+        self.assertEqual(lines[0], self.no_volume(dev))
         self.assertTrue((self.mount / ".tmpdisk-ready").exists(), "a dry run removed the mark")
         lines = self.run_stage("--apply")
-        self.assertEqual(lines, [self.not_apfs(dev),
+        self.assertEqual(lines, [self.no_volume(dev),
                                  f"  removed {self.mount}/.tmpdisk-ready: consumers keep $TMPDIR"])
         self.assertFalse((self.mount / ".tmpdisk-ready").exists())
         self.assertEqual(self.mutations(), [], "the stage changed the disk itself")
@@ -502,7 +510,7 @@ exec /bin/mv "$@"
         for name in (".fseventsd/no_log", ".metadata_never_index", ".tmpdisk-ready"):
             (self.mount / name).touch()
         lines = self.run_stage("--apply")
-        self.assertEqual(lines, [self.not_apfs(dev),
+        self.assertEqual(lines, [self.no_volume(dev),
                                  f"  removed {self.mount}/.tmpdisk-ready: consumers keep $TMPDIR"])
         self.assertFalse((self.mount / ".tmpdisk-ready").exists())
         self.assertEqual(self.mutations(), [])
