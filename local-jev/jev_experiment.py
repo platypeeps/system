@@ -2611,6 +2611,9 @@ def cmd_scanner(args, out, env) -> int:
 #: The public repositories the base states and findings come from (design.md,
 #: "Injection test"), so the test re-sends no private path.
 INJECTION_REPOS = ("platypeeps/system", "platypeeps/sd-workflow")
+#: A renamed repository's old slug, which rows from before the rename carry,
+#: and its current one, which the clones and tracked paths go by (sd:7643).
+RENAMED = {"platypeeps/sd-ai-command-pack": "platypeeps/sd-workflow"}
 INJECTION_BASES = 50
 INJECTION_FINDINGS = 20
 #: The crafted paths, one per variant (design.md's table).
@@ -2632,6 +2635,11 @@ def gate_question() -> tuple[str, int]:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.QUESTION, module.MAX_FINDING_CHARS
+
+
+def current(slug: str) -> str:
+    """A row's repository, lower-cased, by its current slug (`RENAMED`)."""
+    return RENAMED.get(slug.lower(), slug.lower())
 
 
 def crafted_state(state: dict, path: str, echo: bool) -> str:
@@ -2658,13 +2666,13 @@ def injection_items(db, folder: Path, route, home: str | None) -> tuple[list[dic
     repos = public_repos(db)
     roots = clones(db)
     rows = sorted((r for r in read_jsonl(folder / "population.jsonl")
-                   if r.get("population") == "E" and r["repository"].lower() in INJECTION_REPOS),
+                   if r.get("population") == "E" and current(r["repository"]) in INJECTION_REPOS),
                   key=lambda r: (r["repository"], r["head"]))
     found = blocking_findings(db, {(r["repository"], r["head"]) for r in rows})
     crafted = set(CRAFTED.values())
     pool = []
     for row in rows:
-        tracked = repos.get(row["repository"].lower())
+        tracked = repos.get(current(row["repository"]))
         if row.get("routed") not in REVIEWING or not row.get("state") or tracked is None \
                 or not found.get((row["repository"], row["head"])):
             continue
@@ -2673,7 +2681,7 @@ def injection_items(db, folder: Path, route, home: str | None) -> tuple[list[dic
                 or crafted & set(state["changed_paths"]) \
                 or private_path(row["state"], home, tracked) is not None:
             continue
-        root = holding(roots.get(row["repository"].lower(), []), row["head"])
+        root = holding(roots.get(current(row["repository"]), []), row["head"])
         if root is None:
             continue
         policy = git(root, "show", f"{row['head']}:.github/sd-review.json")
@@ -2703,7 +2711,7 @@ def injection_items(db, folder: Path, route, home: str | None) -> tuple[list[dic
     question, bound = gate_question()
     findings = []
     for row in rows:
-        tracked = repos.get(row["repository"].lower()) or frozenset()
+        tracked = repos.get(current(row["repository"])) or frozenset()
         for one in found.get((row["repository"], row["head"]), []):
             text = one.get("summary")
             if not isinstance(text, str) or not text.strip():
@@ -2751,7 +2759,7 @@ def cmd_injection(args, out, env) -> int:
         # repository tracks now, and the crafted ones.
         repos = public_repos(db)
         for item in items:
-            public = repos.get(item["repository"].lower(), frozenset()) | frozenset(CRAFTED.values())
+            public = repos.get(current(item["repository"]), frozenset()) | frozenset(CRAFTED.values())
             held = private_path(item["state"], env.get("HOME"), public)
             if held is not None:
                 raise Refused(f"item {item['id']} holds {held!r}, which its public repository "
