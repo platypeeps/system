@@ -120,7 +120,7 @@ fi
 # The pack writes `repo list --clones` lines relative to SD_REPO_ROOT (default
 # ~/repos), so every call gets the root this script resolved: else a root
 # moved by REPO_SYNC_ROOT or a work root has every row refused.
-SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 sd_db() {
   st_bounded 120 env SD_REPO_ROOT="$ROOT" "$SD_PACK_ROOT/bin/sd-db" "$@" < /dev/null
 }
@@ -3048,7 +3048,7 @@ environment:
                       SYSTEM_TOOLS_WORK_ROOT, which local-ai-apps reads too)
   REPO_SYNC_CONF_DIR  where the confs live (default: <config>/repo-sync)
   SD_PACK_ROOT        the command pack whose bin/sd-db reads the list
-                      (default: ~/repos/platypeeps/sd-ai-command-pack)
+                      (default: ~/repos/platypeeps/sd-workflow)
   XDG_STATE_HOME      where the snapshot lives (default: ~/.local/state)
   SYSTEM_TOOLS_CONFIG shared config root (default: ~/.config/system)
   MACHINE_SETUP_STATE where to look for the recorded profile

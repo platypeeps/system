@@ -30,7 +30,7 @@
 JOB_SCHEDULE="10 2 * * *"
 SD_DB_BACKUP_MOUNT=""
 [ -n "${SD_DB_BACKUP_DESTINATION:-}" ] || SD_DB_BACKUP_MOUNT=" --require-mount /Volumes/local"
-SD_DB_BACKUP_SNAPSHOT="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}\"$SD_DB_BACKUP_MOUNT --keep 14"
+SD_DB_BACKUP_SNAPSHOT="\"$HOME/repos/platypeeps/sd-workflow/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}\"$SD_DB_BACKUP_MOUNT --keep 14"
 SD_DB_BACKUP_NAS_FOLDER="${SD_DB_BACKUP_NAS_FOLDER-}"
 SD_DB_BACKUP_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$SD_DB_BACKUP_NAS_FOLDER\" && env MIRROR_SYNC_CONF=mirrors-nas.conf MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync"
 JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT && { $SD_DB_BACKUP_NAS || { rc=\$?; echo 'SD_REPORT_ATTENTION: data safe, one step failed: NAS copy'; exit \$rc; }; }"

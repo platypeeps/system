@@ -6,4 +6,4 @@
 ai  modelcontextprotocol/python-sdk
 ai  ggerganov/llama.cpp
 
-platypeeps  platypeeps/sd-ai-command-pack
+platypeeps  platypeeps/sd-workflow

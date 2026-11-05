@@ -65,7 +65,7 @@ class TheServeAgent(unittest.TestCase):
                 # python (sd:6427).
                 self.assertEqual(plist["ProgramArguments"],
                                  ["/bin/bash", "-c", '"$0" serve; exit $?',
-                                  "/home/someone/repos/platypeeps/sd-ai-command-pack/bin/sd-db"])
+                                  "/home/someone/repos/platypeeps/sd-workflow/bin/sd-db"])
                 # launchd's own PATH holds no `tailscale`, which the listener runs.
                 self.assertIn("/opt/homebrew/bin", plist["EnvironmentVariables"]["PATH"].split(":"))
                 self.assertTrue(plist["KeepAlive"])

@@ -27,7 +27,7 @@ FIXTURES = HERE / "fixtures"
 #: The command pack checkout whose lib/ holds sd_db: the gate's pin when it
 #: sets SD_PACK_ROOT, else the home clone. Read before any run moves HOME.
 PACK_ROOT = pathlib.Path(os.environ.get("SD_PACK_ROOT")
-                         or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+                         or pathlib.Path.home() / "repos/platypeeps/sd-workflow")
 sys.path.insert(0, str(PACK_ROOT / "lib"))
 
 #: The one date a run uses. `build_root` writes the notes' added dates from

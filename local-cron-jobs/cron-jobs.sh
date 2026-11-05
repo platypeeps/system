@@ -1368,7 +1368,7 @@ if attrs:
     # between two runs is readable from the log (sd:972, sd:4738).
     echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') agent: $claude_bin -> $(readlink -f "$claude_bin" 2>/dev/null || echo "$claude_bin")"
     # SD_HANDOFF_RESTORE=0 for this one call: the pack's SessionStart hook
-    # (sd-ai-command-pack bin/sd-handoff-restore, which reads it at ~:535)
+    # (sd-workflow bin/sd-handoff-restore, which reads it at ~:535)
     # restores a pending handoff packet into whatever session starts in that
     # repository, and an unattended `-p` job is not the session the packet
     # was written for -- a 3 a.m. run would consume it. The pack's SKILL.md

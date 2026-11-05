@@ -124,7 +124,7 @@ MAX_PATHS = 40
 #: (design.md, "From git"): the one the suite's `PACK_STATE_SHA256` was taken
 #: at. The pack's checkout, under HOME, as `jev.sh` finds its interpreter.
 PACK_SHA = "b6b58bb14aa5105eae7d62f2e70f0a38e1f4c61b"
-PACK_HOME = "repos/platypeeps/sd-ai-command-pack"
+PACK_HOME = "repos/platypeeps/sd-workflow"
 
 #: What `sd-review` appends to the routing reason once Jev answered; the
 #: state Jev saw holds the reason before it (design.md, "Rebuilding each state").
@@ -169,7 +169,7 @@ def sd_db_module(name: str):
         return importlib.import_module(f"sd_db.{name}")
     except ImportError:
         sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT")
-                                     or Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"))
+                                     or Path.home() / "repos/platypeeps/sd-workflow") / "lib"))
         return importlib.import_module(f"sd_db.{name}")
 
 
@@ -2610,7 +2610,7 @@ def cmd_scanner(args, out, env) -> int:
 
 #: The public repositories the base states and findings come from (design.md,
 #: "Injection test"), so the test re-sends no private path.
-INJECTION_REPOS = ("platypeeps/system", "platypeeps/sd-ai-command-pack")
+INJECTION_REPOS = ("platypeeps/system", "platypeeps/sd-workflow")
 INJECTION_BASES = 50
 INJECTION_FINDINGS = 20
 #: The crafted paths, one per variant (design.md's table).

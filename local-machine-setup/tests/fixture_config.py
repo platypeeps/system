@@ -117,4 +117,4 @@ def render(template, label, home, root, pack=None):
     return (text.replace("@HOME@", str(home))
                 .replace("@LABEL@", label)
                 .replace("@ROOT@", str(root))
-                .replace("@PACK@", str(pack or f"{home}/repos/platypeeps/sd-ai-command-pack")))
+                .replace("@PACK@", str(pack or f"{home}/repos/platypeeps/sd-workflow")))

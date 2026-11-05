@@ -600,7 +600,7 @@ class ReleaseUpgrade(Case):
         self.curl_log.unlink()
         # The upgrade-report's neighbours: an inventory and a grants probe.
         # The dashboard is the pack's (pack sd:5987), at SD_PACK_ROOT's default.
-        write_exec(self.home / "repos/platypeeps/sd-ai-command-pack/dashboard/dashboard.sh", "#!/bin/sh\necho ok\n")
+        write_exec(self.home / "repos/platypeeps/sd-workflow/dashboard/dashboard.sh", "#!/bin/sh\necho ok\n")
         write_exec(self.repo / "local-ai-apps/ai-apps.sh", "#!/bin/sh\necho none\n")
 
     def test_the_sweep_moves_an_unpinned_entry_to_a_new_tag_and_leaves_the_pin(self):

@@ -52,13 +52,13 @@ def allowed_repos() -> tuple[tuple[str, ...], str]:
 
     The slugs of the `repo` rows with `dependabot` set, read once per run
     through the command pack's `sd_db` (`$SD_PACK_ROOT`, default
-    `~/repos/platypeeps/sd-ai-command-pack`), set with `sd-db repo dependabot
+    `~/repos/platypeeps/sd-workflow`), set with `sd-db repo dependabot
     PATH yes` or the Management page. Any failure -- no pack, no database, no
     hub, a store without the column -- answers `((), reason)`: the gate fails
     closed and names the reason, never "none allowed". Two checkouts of one
     repository are two rows, and a no on either one withdraws the consent.
     """
-    lib = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"
+    lib = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow") / "lib"
     if not (lib / "sd_db").is_dir():
         return (), f"no sd_db under {lib}; set SD_PACK_ROOT to the command pack"
     if str(lib) not in sys.path:

@@ -27,4 +27,4 @@
 # hands to its builder's environment alone.
 JOB_SCHEDULE="*/2 * * * *"
 JOB_TIMEOUT="90s"
-JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-ai-command-pack}/bin/sd\" assignments dispatch"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd\" assignments dispatch"

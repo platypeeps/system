@@ -242,7 +242,7 @@ with no such entry the row carries tokens and no cost
 to price every Jev model; the row records the model the response names.
 A locked ledger is waited on for 250 ms and then the row is dropped; `JEV_METER_BUSY_MS` sets another bound.
 The row needs `sd_db`, which `jev_meter` loads from the command pack's `lib/`
-(`SD_PACK_ROOT`, default `~/repos/platypeeps/sd-ai-command-pack`) ahead of any
+(`SD_PACK_ROOT`, default `~/repos/platypeeps/sd-workflow`) ahead of any
 installed copy (sd:3279). `jev.sh` still picks `PYTHON`, `SD_DB_PYTHON`, then
 the command pack's venv, then `python3`; the interpreter no longer decides
 which `sd_db` runs.

@@ -60,7 +60,7 @@ pick_python() {
     else
         for candidate in \
             "${SD_HOLDS_PYTHON:-}" \
-            "$HOME/repos/platypeeps/sd-ai-command-pack/.venv/bin/python" \
+            "$HOME/repos/platypeeps/sd-workflow/.venv/bin/python" \
             /opt/homebrew/bin/python3 \
             python3
         do

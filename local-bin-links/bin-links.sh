@@ -16,10 +16,10 @@ ROOT="$(cd "$DIR/.." && pwd)"
 
 BIN_DIR="${BIN_LINKS_DIR:-$HOME/bin/common}"
 
-# Where the sd-ai-command-pack checkout lives. Its installer owns the pack's
+# Where the sd-workflow checkout lives. Its installer owns the pack's
 # commands (links in ~/.local/bin), so this script links none of them and only
 # sweeps the links it made earlier: they shadow the installed commands.
-SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 
 # "<link name> <target>", one per line. A bare target is relative to this repo's
 # root; one starting with `/` or `$` is used as-is, for a tool that lives in
@@ -281,7 +281,7 @@ usage: bin-links.sh install|status|remove|test
   test      run the unittest suite in tests/
 
 Linked tools: repo-sync, gito, prism, mac-utils, notify, agent-prompt,
-adversarial-gate, ha-mcp, llama-cpp, jev. The sd-ai-command-pack's commands
+adversarial-gate, ha-mcp, llama-cpp, jev. The sd-workflow's commands
 (sd, sd-status, ...) are not linked: its installer links them into
 ~/.local/bin. An older link into the pack checkout is swept once that
 installed copy runs without it and ~/.local/bin is on PATH; until then it is
@@ -289,8 +289,8 @@ kept.
 
 environment:
   BIN_LINKS_DIR   directory to link into (default ~/bin/common)
-  SD_PACK_ROOT    sd-ai-command-pack checkout whose old links are swept
-                  (default ~/repos/platypeeps/sd-ai-command-pack)
+  SD_PACK_ROOT    sd-workflow checkout whose old links are swept
+                  (default ~/repos/platypeeps/sd-workflow)
 HELPEOF
     exit 0
     ;;

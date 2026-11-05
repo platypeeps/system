@@ -1,4 +1,4 @@
-"""bin-links.sh no longer links the sd-ai-command-pack's commands, and sweeps the old links.
+"""bin-links.sh no longer links the sd-workflow's commands, and sweeps the old links.
 
 The pack's own installer links its commands into ~/.local/bin. A link in the
 bin dir that this script made earlier shadows that install, and a link whose
@@ -82,7 +82,7 @@ class BinLinksTest(unittest.TestCase):
         out = self.run_script("install")
         self.assertEqual(self.pack_links(), [])
         self.assertNotIn("sd-status", out)
-        self.assertNotIn("sd-ai-command-pack not found", out)
+        self.assertNotIn("sd-workflow not found", out)
 
     def test_install_removes_an_old_pack_link_and_prints_it(self):
         self.old_links("sd", "sd-status")

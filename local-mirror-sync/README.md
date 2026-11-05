@@ -169,7 +169,7 @@ around it.
 
 ```sh
 # sd_db comes from the pack's lib/ (SD_PACK_ROOT, default
-# ~/repos/platypeeps/sd-ai-command-pack), whatever python3 runs this (sd:3279)
+# ~/repos/platypeeps/sd-workflow), whatever python3 runs this (sd:3279)
 python3 ./offsite-verify.py
 python3 ./offsite-verify.py --root DIR   # against another share or a fixture
 ```

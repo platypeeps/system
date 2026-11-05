@@ -49,7 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import system_tools_config  # noqa: E402
 
 #: The command pack checkout: its lib/ holds sd_db, its bin/sd-db the fence.
-PACK_ROOT = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack").expanduser()
+PACK_ROOT = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow").expanduser()
 sys.path.insert(0, str(PACK_ROOT / "lib"))
 
 #: This tool's settings file, `<config>/mirror-sync/.env`, outside the checkout.

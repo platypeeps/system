@@ -36,7 +36,7 @@ import holds  # noqa: E402
 ME = "example-owner"
 TODAY = "2026-09-24"
 ADMITTED = "platypeeps/admitted"
-PACK_ROOT = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack")
+PACK_ROOT = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow")
 
 
 def block(*probes, since="2026-09-10", reason="vitest 5 Assertion<R, T>; jest-dom 7.0.1 augments Assertion<T>",

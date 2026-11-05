@@ -45,7 +45,7 @@ class ScheduledRecovery(unittest.TestCase):
             shutil.copy2(SYSTEM / f"local-cron-jobs/examples/{job}.job", self.jobs / f"{job}.job")
         # The jobs run the pack's bin/sd-db. An installed job names no
         # SD_PACK_ROOT, so the pack stands where the default looks.
-        default_pack = self.fixture.path / "repos/platypeeps/sd-ai-command-pack"
+        default_pack = self.fixture.path / "repos/platypeeps/sd-workflow"
         default_pack.parent.mkdir(parents=True)
         default_pack.symlink_to(PACK, target_is_directory=True)
         self.env = self.fixture.environment({"PATH": os.environ["PATH"], "PYTHON": sys.executable})

@@ -61,7 +61,7 @@ try:  # pragma: no cover - one branch per machine
     import sd_db
 except ImportError:  # pragma: no cover - one branch per machine
     sys.path.insert(0, str(pathlib.Path(os.environ.get("SD_PACK_ROOT")
-                                        or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"))
+                                        or pathlib.Path.home() / "repos/platypeeps/sd-workflow") / "lib"))
     import sd_db
 from sd_db.database import connect  # noqa: E402
 from sd_db.migrate import initialise  # noqa: E402

@@ -38,7 +38,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
 ROOT = FOLDER.parent
 # The command pack checkout whose lib/ holds sd_db, as machine-setup.sh names it.
-PACK = pathlib.Path(os.environ.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+PACK = pathlib.Path(os.environ.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-workflow")
 SCRIPT = FOLDER / "machine-setup.sh"
 PROFILES = fixture_config.PROFILES
 AGENTS = fixture_config.AGENTS
@@ -243,10 +243,10 @@ class ProfileTest(unittest.TestCase):
                 plist = plistlib.loads(fixture_config.render(template, label, "/home/someone", ROOT).encode())
                 self.assertEqual(plist["Label"], label)
                 arguments = plist["ProgramArguments"]
-                self.assertEqual(arguments[0], "/home/someone/repos/platypeeps/sd-ai-command-pack/dashboard/dashboard.sh")
+                self.assertEqual(arguments[0], "/home/someone/repos/platypeeps/sd-workflow/dashboard/dashboard.sh")
                 self.assertEqual(arguments[1], "serve")
                 self.assertEqual(arguments[arguments.index("--port") + 1], "8767")
-                self.assertNotIn("sd-ai-command-pack/bin/sd-dashboard", arguments[0])
+                self.assertNotIn("sd-workflow/bin/sd-dashboard", arguments[0])
                 # KeepAlive without a throttle is a crash loop; every KeepAlive agent
                 # here sets both.
                 self.assertTrue(plist["KeepAlive"])
@@ -622,7 +622,7 @@ class DoctorTest(unittest.TestCase):
         config = self.config_copy()
         template = config / "machine-setup/launchagents/local.system-tools.sd-serve.plist"
         template.write_text(template.read_text().replace(
-            "@HOME@/repos/platypeeps/sd-ai-command-pack/bin/sd-db", "@ROOT@/local-sd-db/sd-db"))
+            "@HOME@/repos/platypeeps/sd-workflow/bin/sd-db", "@ROOT@/local-sd-db/sd-db"))
         code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
         self.assertEqual(code, 1, out)
         self.assertIn(f"FAIL    {template} names the deleted local-sd-db", out)

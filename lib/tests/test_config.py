@@ -259,7 +259,7 @@ class EnvFile(unittest.TestCase):
 
 
 #: The `sd_db` twin lives in the command pack's `lib/` (`SD_PACK_ROOT`).
-SD_DB = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"
+SD_DB = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow") / "lib"
 
 
 class CronJobDirs(unittest.TestCase):

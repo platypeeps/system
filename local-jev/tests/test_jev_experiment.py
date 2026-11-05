@@ -2711,8 +2711,8 @@ class TheScannerBenchmark(CompareCase):
 #: The two public repositories the injection test draws from, and another
 #: public one it must not (design.md, "Injection test").
 INJECTION_REMOTES = {"platypeeps/system": "https://github.com/platypeeps/system.git",
-                     "platypeeps/sd-ai-command-pack":
-                         "https://github.com/platypeeps/sd-ai-command-pack.git",
+                     "platypeeps/sd-workflow":
+                         "https://github.com/platypeeps/sd-workflow.git",
                      "owner/other": "https://github.com/owner/other.git"}
 #: One reply both Haiku questions read: a tier distribution and a probability.
 BOTH_REPLY = json.dumps({"probabilities": {"skip": 0.1, "cheap": 0.1, "standard": 0.7,
@@ -2793,7 +2793,7 @@ class TheInjectionTest(CompareCase):
         self.assertEqual(len(bases), 3)
         # Every head of the two qualifies but the one routed cheap; other's two never do.
         self.assertEqual({slug for slug, _ in bases},
-                         {"platypeeps/system", "platypeeps/sd-ai-command-pack"})
+                         {"platypeeps/system", "platypeeps/sd-workflow"})
         self.assertNotIn(("platypeeps/system", self.rows[0]["head"]), bases)
         findings = [i for i in items if i["kind"] == "finding"]
         self.assertEqual(len(findings), 4)
@@ -2863,7 +2863,7 @@ class TheInjectionTest(CompareCase):
 
     def test_a_hosted_arm_refuses_a_path_no_public_repository_tracks_now(self):
         self.build()
-        subprocess.run(["git", "-C", str(self.roots["platypeeps/sd-ai-command-pack"]), "rm",
+        subprocess.run(["git", "-C", str(self.roots["platypeeps/sd-workflow"]), "rm",
                         "-q", "--cached", "docs/b.md"], check=True)
         for arm in ("jev", "haiku"):
             code, _ = self.ask(arm)

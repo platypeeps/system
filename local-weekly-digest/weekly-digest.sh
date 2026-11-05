@@ -11,7 +11,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # these are this checkout.
 CRON_LOGS="${WEEKLY_DIGEST_CRON_LOGS:-$DIR/../local-cron-jobs/logs}"
 MSETUP="${WEEKLY_DIGEST_MSETUP:-$DIR/../local-machine-setup/machine-setup.sh}"
-PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 
 case "${1:-}" in
   run)   REPORT=1 ;;
@@ -52,7 +52,7 @@ environment:
                             that file does not exist)
   SD_PACK_ROOT              the command pack whose bin/sd-db reads the
                             judgment ledger (default:
-                            ~/repos/platypeeps/sd-ai-command-pack; the Jev
+                            ~/repos/platypeeps/sd-workflow; the Jev
                             block is left out when it has no bin/sd-db)
 HELPEOF
     exit 0

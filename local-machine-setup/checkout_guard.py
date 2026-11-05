@@ -7,7 +7,7 @@ refresh (2026-10-23). The lane and repo-sync run as programs, not agent tool
 calls, so this hook never sees them.
 
 The protected roots are the checkout this file sits in and the pack checkout
-(SD_PACK_ROOT, else ~/repos/platypeeps/sd-ai-command-pack), each only while
+(SD_PACK_ROOT, else ~/repos/platypeeps/sd-workflow), each only while
 its `.git` is a folder: a linked worktree, whose `.git` is a file, is where
 agents write, so a copy of this file run from one protects nothing there.
 
@@ -62,7 +62,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-PACK = "~/repos/platypeeps/sd-ai-command-pack"
+PACK = "~/repos/platypeeps/sd-workflow"
 
 FILE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path",
               "NotebookEdit": "notebook_path"}

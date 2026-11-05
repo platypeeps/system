@@ -17,7 +17,7 @@ own README. There is no repository-wide build.
 The larger piece is `local-cron-jobs` (launchd-scheduled jobs). It pairs
 with the public command pack, which also holds the dashboard over the
 workflow database:
-[`platypeeps/sd-ai-command-pack`](https://github.com/platypeeps/sd-ai-command-pack).
+[`platypeeps/sd-workflow`](https://github.com/platypeeps/sd-workflow).
 
 ## Conventions
 

@@ -64,7 +64,7 @@ def use_pack_library(env) -> None:
     `lib/sd_db` leaves the import to fail into `NO_LIBRARY`. Call it inside
     the `try` that imports: it may raise, like the import.
     """
-    root = (env.get("SD_PACK_ROOT") or "").strip() or Path.home() / "repos/platypeeps/sd-ai-command-pack"
+    root = (env.get("SD_PACK_ROOT") or "").strip() or Path.home() / "repos/platypeeps/sd-workflow"
     sys.path.insert(0, str(Path(root).expanduser() / "lib"))
 
 

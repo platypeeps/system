@@ -30,7 +30,7 @@ SCRIPT = SYSTEM / "local-agent-meter/agent-meter.py"
 #: The command pack checkout whose lib/ holds the sd_db the collector imports
 #: (sd:3279), as the script names it.
 PACK = Path(os.environ.get("SD_PACK_ROOT")
-            or Path.home() / "repos/platypeeps/sd-ai-command-pack")
+            or Path.home() / "repos/platypeeps/sd-workflow")
 
 #: The shipped file's two `start` entries on their two bills, which is what
 #: the sampler names when it says `--provider claude` and `--provider codex`.
@@ -285,7 +285,7 @@ class MeterRun(unittest.TestCase):
 
     def test_with_no_sd_pack_root_the_home_clone_is_the_pack(self):
         home = Path(self.tmp.name) / "home"
-        self.stub_pack(home / "repos/platypeeps/sd-ai-command-pack")
+        self.stub_pack(home / "repos/platypeeps/sd-workflow")
         library = str(Path(sd_db.__file__).resolve().parents[1])
         done = self.run_meter("--db", str(self.db), pythonpath=library,
                               home=home, pack=None)

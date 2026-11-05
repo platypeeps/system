@@ -25,7 +25,7 @@ Linked tools:
 | `ha-mcp` | `local-ha-mcp/ha-mcp.sh` |
 | `llama-cpp` | `local-llama-cpp/llama-cpp.sh` |
 
-**The `platypeeps/sd-ai-command-pack` commands are not linked here.** The pack's
+**The `platypeeps/sd-workflow` commands are not linked here.** The pack's
 installer (`python3 bin/sd_install.py --user`) links `sd`, `sd-status` and the
 rest into `~/.local/bin`. A link this script made earlier into the pack checkout
 shadows that install (`sd_install.py --verify` reports `command_shadowed`), or
@@ -39,7 +39,7 @@ then the only working copy, and says `kept pack link <name>: ...`; run `make set
 reports a removable link `STALE` and a kept one `MISSING` (both words
 machine-setup's drift count reads). `remove` deletes every such link on request.
 Only a symlink whose target is inside the checkout (`SD_PACK_ROOT`, default
-`~/repos/platypeeps/sd-ai-command-pack`) and names a regular file is touched;
+`~/repos/platypeeps/sd-workflow`) and names a regular file is touched;
 a regular file in the bin dir never is.
 The installer's directory is read as `~/.local/bin`; a machine that installs the
 pack with `--bin-dir` keeps its old links until `remove`.

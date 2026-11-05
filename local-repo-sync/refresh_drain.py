@@ -95,7 +95,7 @@ def state_home(env):
 
 
 def pack_root(env):
-    return pathlib.Path(env.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack").expanduser()
+    return pathlib.Path(env.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-workflow").expanduser()
 
 
 def lane_root_file(env):
