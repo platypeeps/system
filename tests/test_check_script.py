@@ -285,24 +285,19 @@ class FailFast(CheckFixture):
         self.assertRegex(done.stdout, r"(?m)^== repo-sync-1 \(\d+s, stopped\)$")
         self.assert_all_ended(self.pids())
 
-    def test_a_denied_process_group_still_stops_the_jobs_and_names_it(self):
+    def test_a_denied_process_group_refuses_the_run_and_runs_nothing(self):
         """system sd:7913: a sandbox that denies setpgid crashed every
-        job's leader, and a group kill then reached nothing. Each job now
-        runs on in this script's group and is signalled by parent links."""
+        job's leader. Without groups of their own, what a job leaves
+        running outlives it, so the run refuses, by name, before any job."""
         real = self.bin / "python3.15"
         real.unlink()
         real.write_text(DENIED_PYTHON.replace("REAL", sys.executable))
         real.chmod(0o755)
-        self.all_slow_but_a_failing_shared()
-        started = time.monotonic()
         done = self.check(expect=1)
-        self.assertLess(time.monotonic() - started, 20, "the slow jobs ran out their time")
-        self.assertIn("check.sh: leg-shared exited 3", done.stderr)
-        others = [job for job in self.jobs if job != "leg-shared"]
-        self.assertIn("check.sh: stopped: " + " ".join(others) + "\n", done.stderr)
-        self.assertEqual(1, done.stderr.count("check.sh: process group denied (Operation not permitted)"),
-                         done.stderr)
-        self.assert_all_ended(self.pids())
+        self.assertIn("check.sh: process group denied (Operation not permitted); the gate needs its own "
+                      "process groups, nothing was run\n", done.stderr)
+        self.assertEqual([], self.ran())
+        self.assertFalse((self.root / "preflight-ran").exists(), "the preflight ran")
 
     def test_what_a_passing_job_leaves_running_ends_with_it(self):
         """Codex review: a job's group no longer hears sd-check's end of make's
