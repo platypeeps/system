@@ -96,9 +96,9 @@ In a repo whose Jenkinsfile runs `commitlint()`, use its types (`doc`, not `docs
 Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `sd-db repo list`.
 Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
-Bundle by default: a lane brief puts a repo's ready items in one PR, one commit per item, same-file tasks always together, one golden bless per bundle: each PR costs a review, a rebase and a serial gate; a change that moves state in steps still gets its own PR.
-Fold a newly filed or queued item into an open, not-yet-enqueued PR of its repo when it fits (same area, no state move, the PR is not in the lane): a commit on an enqueued PR restarts its review and gate, so then open the next bundle instead (operator 2026-10-25).
-Parallel builders in one repo do not mean one PR each: give the repo one bundle branch per area, or queue a new item onto the open bundle; a second PR needs a reason (state move, different area, the bundle is in the lane): four builders gave four PRs (operator 2026-11-04).
+One open bundle branch per repo: every ready item, filed item and builder for that repo goes onto it, one commit per item; each PR costs a review, a rebase and a serial gate.
+A second PR needs one of two reasons: a change that moves state in steps, or the bundle is already in the lane; area, wave and size are not reasons (operator 2026-10-25, 2026-11-04, 2026-11-05).
+`sd assignments beat --start` refuses a second open branch for a repo unless `--reason` names one of those two (pack sd:7737).
 Fix only blocking findings before merge; file the rest as sd items for the repo's next PR or a follow-up PR, not another review round: each round costs a full re-review.
 Rebuttals need no approval: reject a review finding with a reason a reader can check, in the document's Status or the PR thread.
 
