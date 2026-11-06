@@ -10,9 +10,9 @@ Nothing here touches the network. `reconcile`, `list` and `check` read origins
 out of local git config and never fetch. The `nightly` cases either leave
 `repo_list` empty by the time sync runs, or hand sync checkouts whose pull
 goes through a transport the fixture has stubbed dead (or a local bare
-repository). `sync`'s clone path is therefore not covered -- it clones over
-SSH, which cannot run in CI -- but every defect this script has had so far
-lived in reconcile, list, check, or nightly's exit code.
+repository). `sync`'s clone path is covered only where it fails: over a
+stubbed https helper (`https_login_refused`) or onto a target that exists;
+a real clone goes over SSH, which cannot run in CI.
 
 Each case says which kind it is. REGRESSION means it fails against the code
 from before its fix, which is checkable with REPO_SYNC_TEST_SCRIPT and is the
@@ -53,6 +53,11 @@ NOTIFY_STUB = """#!/bin/sh
 printf '%s\\n' "$@" >> "$NOTIFY_LOG"
 exit 0
 """
+
+
+# The hint a failed repo's line ends with when https refused it a login
+# in a run with no ssh key (sd:7721).
+SSH_CAUSE = "; no ssh key answered, so this run fetched over https"
 
 
 def attention(result):
@@ -343,6 +348,16 @@ class Fixture:
     def write_snapshot(self, text, root=None):
         self.snapshot().parent.mkdir(parents=True, exist_ok=True)
         self.snapshot().write_text(self.snapshot_text(text, root))
+
+    def https_login_refused(self):
+        """Env for a run whose https fetches fail as GitHub fails a private
+        repo with prompts off: GitHub's remotes go to `authfail://`, whose
+        remote helper says what git-remote-https says (sd:7746)."""
+        helper = self.bin / "git-remote-authfail"
+        helper.write_text("#!/bin/sh\necho \"fatal: could not read Username for "
+                          "'https://github.com': terminal prompts disabled\" >&2\nexit 128\n")
+        helper.chmod(0o755)
+        return {"REPO_SYNC_GITHUB_HTTPS": "authfail://x/"}
 
     def quiet_fleet(self):
         """One listed checkout that pulls from a local bare repository, so
@@ -750,11 +765,72 @@ class RepoSyncTest(unittest.TestCase):
         f.write_conf("a owner/one\n")
         f.checkout("a/one", "owner/one")
 
-        result = f.run("sync", expect=1)
+        result = f.run("sync", expect=1, extra_env=f.https_login_refused())
 
-        cause = "; no ssh key answered, so this run fetched over https"
-        self.assertRegex(result.stderr, r"(?m)^!!! failed: owner/one .*" + re.escape(cause) + "$")
-        self.assertRegex(result.stdout, r"(?m)^  owner/one" + re.escape(cause) + "$")
+        self.assertIn("terminal prompts disabled", result.stderr)
+        self.assertRegex(result.stderr, r"(?m)^!!! failed: owner/one .*" + re.escape(SSH_CAUSE) + "$")
+        self.assertRegex(result.stdout, r"(?m)^  owner/one" + re.escape(SSH_CAUSE) + "$")
+
+    def test_only_a_login_failure_names_the_missing_key(self):
+        """REGRESSION (sd:7746). The ssh hint went on every failed repo of
+        a run with no key, also on one that failed for a local reason: a
+        pull that cannot fast-forward, or a clone target that exists. Only
+        a fetch, pull or clone that https refused a login names it now."""
+        f = self.fixture()
+        f.write_conf("a owner/fetchauth\na owner/pullauth\na owner/nonff\n"
+                     "a owner/exists\na owner/new\n")
+        f.checkout("a/fetchauth", "owner/fetchauth")
+        pullauth = f.local_clone("a/pullauth")
+        f._git(["remote", "set-url", "origin", "git@github.com:owner/pullauth.git"], pullauth)
+        nonff = f.local_clone("a/nonff")
+        ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        f._git([*ident, "commit", "-q", "--allow-empty", "-m", "local"], nonff)
+        seed = f.tmp / "seed" / "a" / "nonff"
+        f._git([*ident, "commit", "-q", "--allow-empty", "-m", "upstream"], seed)
+        f._git(["push", "-q", str(f.tmp / "bare" / "a" / "nonff"), "HEAD:refs/heads/main"], seed)
+        exists = f.root / "a" / "exists"
+        exists.mkdir(parents=True)
+        (exists / "notes.txt").write_text("not a checkout\n")
+
+        result = f.run("sync", expect=1, extra_env=f.https_login_refused())
+
+        failed = re.findall(r"(?m)^!!! failed: (owner/[a-z]+)(.*)$", result.stderr)
+        named = {repo: tail.endswith(SSH_CAUSE) for repo, tail in failed}
+        self.assertEqual({"owner/fetchauth": True, "owner/pullauth": True, "owner/nonff": False,
+                          "owner/exists": False, "owner/new": True}, named, result.stderr)
+        self.assertRegex(result.stdout, r"(?m)^  owner/nonff$")
+        self.assertRegex(result.stdout, r"(?m)^  owner/exists$")
+        self.assertRegex(result.stdout, r"(?m)^  owner/new" + re.escape(SSH_CAUSE) + "$")
+
+    def test_the_ssh_hint_leaves_a_failure_checksum_alone(self):
+        """REGRESSION (sd:7746). The nightly report keys each failed repo on
+        a checksum of its sync section, and the ssh hint sat in it: the same
+        failure re-opened its report when the key's lock state flipped. Here
+        both nights fail the same login over the same transport; one night
+        has no key, the other one."""
+        f = self.fixture()
+        f.write_conf("a owner/one\n")
+        f.checkout("a/one", "owner/one")
+        ssh = f.bin / "ssh-ok"
+        ssh.write_text('#!/bin/sh\necho "Hi owner! You\'ve successfully authenticated, '
+                       'but GitHub does not provide shell access."\nexit 1\n')
+        ssh.chmod(0o755)
+        keyed = dict(f.https_login_refused(), GIT_SSH_COMMAND=str(ssh), REPO_SYNC_GITHUB_HTTPS=None,
+                     GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="url.authfail://x/.insteadOf",
+                     GIT_CONFIG_VALUE_0="git@github.com:")
+
+        def failed_lines(extra_env):
+            result = f.run("nightly", expect=1, extra_env=extra_env)
+            self.assertIn("terminal prompts disabled", result.stdout)
+            return [line for line in attention(result) if ": failed: " in line], result
+
+        no_key, first = failed_lines(f.https_login_refused())
+        with_key, second = failed_lines(keyed)
+
+        self.assertIn(SSH_CAUSE, first.stdout)
+        self.assertNotIn(SSH_CAUSE, second.stdout)
+        self.assertEqual(1, len(no_key), first.stdout)
+        self.assertEqual(no_key, with_key)
 
 
 class DatabaseListTest(unittest.TestCase):
