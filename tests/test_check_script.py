@@ -84,6 +84,19 @@ fi
 [ -z "${SUITE_ONLY:-}" ] || [ ! -f "$CI_SYSTEM_ROOT/parts-${2:-}-$SUITE_ONLY" ] || {
   echo ran > "$CI_WORK_ROOT/$SUITE_ONLY-1.log"; echo ran > "$CI_WORK_ROOT/$SUITE_ONLY-2.log"; }
 """
+# A python3.15 whose `-I -c` programs find setpgid denied, as a sandbox
+# denies it (system sd:7913).
+DENIED_PYTHON = """#!/bin/sh
+if [ "$1" = -I ] && [ "$2" = -c ]; then
+  code="$3"; shift 3
+  exec REAL -I -c "import os
+def deny(*args):
+    raise PermissionError(1, 'Operation not permitted')
+os.setpgid = deny
+$code" "$@"
+fi
+exec REAL "$@"
+"""
 MACOS = """#!/bin/sh
 if [ "$1" = list ]; then echo 'one sh one.sh'; echo 'two sh two.sh'; exit 0; fi
 exec /bin/sh "$(dirname "$0")/ci-native.sh" macos "$1"
@@ -270,6 +283,25 @@ class FailFast(CheckFixture):
         done = self.check(expect=1)
         self.assertLess(time.monotonic() - started, 20, "the run waited out the job that ignores SIGTERM")
         self.assertRegex(done.stdout, r"(?m)^== repo-sync-1 \(\d+s, stopped\)$")
+        self.assert_all_ended(self.pids())
+
+    def test_a_denied_process_group_still_stops_the_jobs_and_names_it(self):
+        """system sd:7913: a sandbox that denies setpgid crashed every
+        job's leader, and a group kill then reached nothing. Each job now
+        runs on in this script's group and is signalled by parent links."""
+        real = self.bin / "python3.15"
+        real.unlink()
+        real.write_text(DENIED_PYTHON.replace("REAL", sys.executable))
+        real.chmod(0o755)
+        self.all_slow_but_a_failing_shared()
+        started = time.monotonic()
+        done = self.check(expect=1)
+        self.assertLess(time.monotonic() - started, 20, "the slow jobs ran out their time")
+        self.assertIn("check.sh: leg-shared exited 3", done.stderr)
+        others = [job for job in self.jobs if job != "leg-shared"]
+        self.assertIn("check.sh: stopped: " + " ".join(others) + "\n", done.stderr)
+        self.assertEqual(1, done.stderr.count("check.sh: process group denied (Operation not permitted)"),
+                         done.stderr)
         self.assert_all_ended(self.pids())
 
     def test_what_a_passing_job_leaves_running_ends_with_it(self):

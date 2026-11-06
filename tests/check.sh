@@ -135,8 +135,21 @@ work="$(mktemp -d /tmp/system-check.XXXXXX)"
 # reads the files, so either it sees the leader's id or the leader sees stop.
 # When a job ends, its lane kills the group, so nothing the job left running
 # outlives it, then removes the pid file.
+# A sandbox may deny setpgid (system sd:7913). The leader then runs the job
+# in this script's group, writes <job>.nogroup, and the first such leader
+# writes $work/denied, which the run names once. signal_group then signals
+# the job's tree by parent links, read before the first signal. What a job
+# leaves running after it ends has no parent link left, so it outlives it.
 LEADER='import os, sys
-os.setpgid(0, 0)
+try:
+    os.setpgid(0, 0)
+except OSError as exc:
+    open(sys.argv[1] + ".nogroup", "w").close()
+    try:
+        with open(os.path.join(os.path.dirname(sys.argv[1]), "denied"), "x") as denied:
+            denied.write(exc.strerror or str(exc))
+    except FileExistsError:
+        pass
 with open(sys.argv[1] + ".pid", "w") as pid_file:
     pid_file.write(str(os.getpid()))
 if os.path.isdir(sys.argv[2]):
@@ -147,7 +160,16 @@ own_group() { "$python" -I -c "$LEADER" "$work/$job" "$work/stop" "$@"; }
 signal_group() {
   group="$(cat "$2" 2>/dev/null)" || return 0
   case "$group" in ''|*[!0-9]*) return 0 ;; esac
-  kill -"$1" "-$group" 2>/dev/null || :
+  if [ -f "${2%.pid}.nogroup" ]; then
+    # shellcheck disable=SC2046 # one word per pid
+    kill -"$1" $(job_tree "$group") 2>/dev/null || :
+  else
+    kill -"$1" "-$group" 2>/dev/null || :
+  fi
+}
+job_tree() {
+  echo "$1"
+  for kid in $(pgrep -P "$1" 2>/dev/null); do job_tree "$kid"; done
 }
 signal_jobs() {
   for pid_file in "$work"/*.pid; do
@@ -296,7 +318,7 @@ while [ "$lane" -lt "$lanes" ]; do
       macos-*) isolated sh "$DIR/run-macos-only.sh" "${job#macos-}" ;;
     esac > "$work/$job.log" 2>&1 || status=$?
     signal_group KILL "$work/$job.pid"
-    rm -f "$work/$job.pid"
+    rm -f "$work/$job.pid" "$work/$job.nogroup"
     # The first failure stops the rest. A job the stop marked and that ended
     # nonzero was stopped; one that ended 0 as the stop reached it passed.
     if [ "$status" -ne 0 ]; then
@@ -311,6 +333,7 @@ while [ "$lane" -lt "$lanes" ]; do
   lane=$((lane + 1))
 done
 wait
+[ ! -f "$work/denied" ] || echo "check.sh: process group denied ($(cat "$work/denied")); jobs were signalled by parent links" >&2
 failed="" stopped=""
 for job in $jobs; do
   # A job with no status file never finished: count it failed, or stopped
