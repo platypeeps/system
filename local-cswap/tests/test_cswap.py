@@ -368,7 +368,8 @@ class APinFollow(Machine):
         result = self.sync("elsewhere", code=1, FAKE_SD_MISMATCH="1")
         self.assertIn("SD_REPORT_ATTENTION: data safe, one step failed: cswap sync read",
                       result.stdout)
-        self.assertIn("refused this sd_db build for 30 runs", result.stderr)
+        self.assertIn("30 runs in a row could not read the hub's account", result.stderr)
+        self.assertIn("this run: the hub refuses this sd_db build", result.stderr)
         self.assertEqual(self.called("cswap switch"), [])
         # It keeps failing, one open report, until a read passes.
         self.sync("elsewhere", code=1, FAKE_SD_MISMATCH="1")
@@ -428,7 +429,22 @@ class APinFollow(Machine):
                 result = self.sync("elsewhere", code=1, FAKE_SD_UNREACHABLE=text)
                 self.assertIn("SD_REPORT_ATTENTION: data safe, one step failed: cswap sync read",
                               result.stdout)
-                self.assertIn("the hub was unreachable for 30 runs", result.stderr)
+                self.assertIn("30 runs in a row could not read the hub's account",
+                              result.stderr)
+                self.assertIn("this run: the hub is unreachable", result.stderr)
+
+    def test_a_mixed_run_of_causes_fails_naming_both(self):
+        # Build refusals and unreachable runs share one count (sd:7722):
+        # 29 refusals and one unreachable run are no 30 unreachable runs.
+        self.publish(THREE)
+        self.seed("0\n")
+        self.sync("elsewhere", FAKE_SD_MISMATCH="1")
+        self.seed("29\n")
+        result = self.sync("elsewhere", code=1, FAKE_SD_UNREACHABLE=UNREACHABLE)
+        self.assertNotIn("unreachable for 30 runs", result.stderr)
+        self.assertIn("30 runs in a row could not read the hub's account, each one "
+                      "a refused sd_db build or an unreachable hub; this run: the hub "
+                      "is unreachable", result.stderr)
 
     def test_status_starts_no_follow_either(self):
         self.publish(ONE)

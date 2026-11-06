@@ -469,6 +469,9 @@ github_https() {
   export GIT_CONFIG_COUNT="$h_n" GIT_TERMINAL_PROMPT=0 REPO_SYNC_HTTPS=1
 }
 
+# The cause each failed repo's line names; ssh_preflight sets it (sd:7721).
+SSH_CAUSE=""
+
 # Prints one "ssh     :" line when it acted or failed; silent when a key
 # already answers. Returns 1 when no key authenticates, and then points the
 # run at https (github_https).
@@ -484,6 +487,9 @@ ssh_preflight() {
       ;;
   esac
   github_https
+  # Each repo that then fails names this cause: over https with prompts
+  # off, a private repo says only "terminal prompts disabled" (sd:7721).
+  SSH_CAUSE="; no ssh key answered, so this run fetched over https"
   echo "ssh     : no key authenticates to git@github.com, so this run fetches"
   echo "          GitHub over https: a public repo needs no key, a private one"
   echo "          git's credential helper or gh. After a reboot, a key with a"
@@ -700,8 +706,8 @@ sync() {
         echo "$state; not pulled (repo-sync.sh $mover moves it)"
         echo "$full_repo $state" >> "$PINLOG"
       else
-        echo "!!! failed: $full_repo (fetch; $(pin_state "$target"))" >&2
-        echo "$full_repo" >> "$FAILLOG"
+        echo "!!! failed: $full_repo (fetch; $(pin_state "$target"))$SSH_CAUSE" >&2
+        echo "$full_repo$SSH_CAUSE" >> "$FAILLOG"
       fi
     elif [ -d "$target/.git" ]; then
       echo "=== refreshing $full_repo"
@@ -712,8 +718,8 @@ sync() {
           echo "$state, no upstream; fetched, not pulled"
           echo "$full_repo $state" >> "$KEPTLOG"
         else
-          echo "!!! failed: $full_repo (fetch; $state)" >&2
-          echo "$full_repo" >> "$FAILLOG"
+          echo "!!! failed: $full_repo (fetch; $state)$SSH_CAUSE" >&2
+          echo "$full_repo$SSH_CAUSE" >> "$FAILLOG"
         fi
       elif state=$(side_branch_diverged "$target"); then
         echo "$state; left alone"
@@ -732,16 +738,16 @@ sync() {
           echo "!!! failed: $full_repo: $lock" >&2
           echo "$full_repo: $lock" >> "$FAILLOG"
         else
-          echo "!!! failed: $full_repo" >&2
-          echo "$full_repo" >> "$FAILLOG"
+          echo "!!! failed: $full_repo$SSH_CAUSE" >&2
+          echo "$full_repo$SSH_CAUSE" >> "$FAILLOG"
         fi
       fi
     else
       echo "=== cloning $full_repo"
       mkdir -p "$ROOT/$subdir"
       if ! bound_step 1800 git clone "git@github.com:$full_repo.git" "$target" < /dev/null; then
-        echo "!!! failed: $full_repo" >&2
-        echo "$full_repo" >> "$FAILLOG"
+        echo "!!! failed: $full_repo$SSH_CAUSE" >&2
+        echo "$full_repo$SSH_CAUSE" >> "$FAILLOG"
       fi
     fi
     echo
