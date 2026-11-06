@@ -93,8 +93,10 @@ the call and holds none of the caller's pipes. It waits up to 10 s for
 session's agents itself, with no client attached. Exit 3 when herdr is not
 installed, and 1 when that server did not start (the message says
 `did not start` and gives the server's own output, or the 10 s wait, after
-which the server is stopped) or a step failed; a refused `agent start`
-leaves the new workspace at its prompt.
+which the server gets SIGTERM, then SIGKILL, 5 s each) or a step failed; a
+refused `agent start` leaves the new workspace at its prompt. A failed
+`session list` during the wait counts as not running yet. The server writes
+to `<session>.server.log` beside the state file, emptied on each start.
 
 `start` when the session is **not** running just attaches (`herdr --session
 sd`, which starts the server too), because herdr's own restore resumes the

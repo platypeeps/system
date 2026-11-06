@@ -249,6 +249,10 @@ def session_running(session: str) -> bool:
 # How long a headless server gets to read `running` in `session list`. One
 # came up at once on the 0.9.5 binary; a large restored session takes longer.
 SERVER_START_SECONDS = 10.0
+# How long each of SIGTERM and SIGKILL gets to end a server that never came up.
+SERVER_STOP_SECONDS = 5.0
+# How much of the server log's end a refusal quotes.
+SERVER_LOG_TAIL = 4096
 
 
 def start_headless(session: str) -> None:
@@ -260,52 +264,97 @@ def start_headless(session: str) -> None:
     outlives this process, and the caller's pipes never wait on it. Raises
     Fail with the cause when it exits first or never reads `running`; the
     second kind is stopped, so no half-started server is left behind.
+
+    The server writes to ``<state dir>/<session>.server.log``, truncated on
+    each start: the server's own fds cannot be moved to /dev/null once it
+    runs, so a named file the next start empties is the simple bound.
     """
-    out = tempfile.TemporaryFile()
+    log = server_log_path(session)
+    try:
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        # O_APPEND: a server still writing after another start truncated
+        # the file goes on at its new end, not at an offset past it.
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_APPEND, 0o644)
+    except OSError as exc:
+        raise Fail(f"session {session} is not running and did not start: {log}: {exc}")
     try:
         proc = subprocess.Popen(
             ["herdr", "--session", session, "server"],
             env=herdr_env(session),
             stdin=subprocess.DEVNULL,
-            stdout=out,
+            stdout=fd,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
     except OSError as exc:
-        out.close()
         raise Fail(f"session {session} is not running and did not start: {exc}")
+    finally:
+        os.close(fd)
 
     def said() -> str:
-        out.seek(0)
-        text = out.read().decode(errors="replace").strip()
+        try:
+            with open(log, "rb") as fh:
+                fh.seek(max(0, os.fstat(fh.fileno()).st_size - SERVER_LOG_TAIL))
+                text = fh.read().decode(errors="replace").strip()
+        except OSError as exc:
+            return f"; {log} unreadable: {exc}"
         return f": {text}" if text else ""
 
+    stopped = None
     try:
         deadline = time.monotonic() + SERVER_START_SECONDS
+        probe = ""
         while True:
             # The exit is read before `running`: a server another launch
             # started at the same moment makes this one exit, and the
             # session still runs, so an exit counts only when the session
             # still does not run after it.
             exited = proc.poll() is not None
-            if session_running(session):
-                return
+            try:
+                if session_running(session):
+                    return
+                probe = ""
+            except Fail as exc:
+                # Not running yet: herdr may not answer until the server
+                # is up. The cause goes in the refusal if it never does.
+                probe = f"; the last session list failed: {exc}"
             if exited:
                 raise Fail(
                     f"session {session} is not running and did not start: "
-                    f"herdr --session {session} server exited {proc.returncode}{said()}"
+                    f"herdr --session {session} server exited {proc.returncode}{probe}{said()}"
                 )
             if time.monotonic() > deadline:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGTERM)
-                proc.wait()
+                stopped = stop_server(proc)
                 raise Fail(
                     f"session {session} is not running and did not start: not running "
-                    f"after {SERVER_START_SECONDS:g} s; the server was stopped{said()}"
+                    f"after {SERVER_START_SECONDS:g} s; {stopped}{probe}{said()}"
                 )
             time.sleep(0.1)
-    finally:
-        out.close()
+    except BaseException:
+        # Anything else that ends the wait leaves no half-started server.
+        if stopped is None:
+            stop_server(proc)
+        raise
+
+
+def server_log_path(session: str) -> str:
+    return os.path.join(state_dir(), f"{session}.server.log")
+
+
+def stop_server(proc: subprocess.Popen) -> str:
+    """Stop a server start_headless started: SIGTERM to its process group,
+    then SIGKILL, each wait bounded, so launch never hangs on it."""
+    if proc.poll() is not None:
+        return "the server had exited"
+    for sig, done in ((signal.SIGTERM, "stopped"), (signal.SIGKILL, "killed")):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, sig)
+        try:
+            proc.wait(timeout=SERVER_STOP_SECONDS)
+        except subprocess.TimeoutExpired:
+            continue
+        return f"the server was {done}"
+    return f"the server (pid {proc.pid}) did not exit after SIGKILL"
 
 
 def pane_get(session: str, pane: str) -> dict | None:

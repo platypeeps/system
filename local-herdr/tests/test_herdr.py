@@ -124,6 +124,23 @@ class HerdrCase(unittest.TestCase):
     def state_file(self) -> dict:
         return json.loads((self.state / "sd.json").read_text())
 
+    def stop_server(self) -> None:
+        """Kill the double's server if a test left it running: it sleeps,
+        and one test's server ignores SIGTERM."""
+        pid_file = self.fixture / "server.pid"
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), 9)
+            except (ProcessLookupError, ValueError):
+                pass
+
+    def server_alive(self) -> bool:
+        try:
+            os.kill(int((self.fixture / "server.pid").read_text()), 0)
+        except ProcessLookupError:
+            return False
+        return True
+
 
 class TestHelpAndUsage(HerdrCase):
     def test_no_args_prints_usage_to_stderr_and_exits_1(self) -> None:
@@ -580,22 +597,6 @@ class TestLaunch(HerdrCase):
         self.assertIn("herdr is not installed", proc.stderr)
         self.assertIn("herdr.sh start", proc.stderr)
 
-    def stop_server(self) -> None:
-        """Stop the double's server if a test left it running: it sleeps."""
-        pid_file = self.fixture / "server.pid"
-        if pid_file.exists():
-            try:
-                os.kill(int(pid_file.read_text()), 15)
-            except (ProcessLookupError, ValueError):
-                pass
-
-    def server_alive(self) -> bool:
-        try:
-            os.kill(int((self.fixture / "server.pid").read_text()), 0)
-        except ProcessLookupError:
-            return False
-        return True
-
     def test_launch_starts_a_down_session_headless_then_launches(self) -> None:
         self.addCleanup(self.stop_server)
         began = time.monotonic()
@@ -618,6 +619,19 @@ class TestLaunch(HerdrCase):
         # pipes, or run_sh would have waited the double's 60 s sleep out.
         self.assertLess(elapsed, 30)
         self.assertTrue(self.server_alive())
+        # Its output goes to a named log beside the state file.
+        self.assertIn("double: server up", (self.state / "sd.server.log").read_text())
+
+    def test_each_start_truncates_the_server_log_and_reads_the_cause_from_it(self) -> None:
+        self.state.mkdir()
+        log = self.state / "sd.server.log"
+        log.write_text("OLD-RUN\n" * 10000)
+        (self.fixture / "server-fail").write_text("Error: double: socket in use\n")
+        proc = self.run_sh("launch", str(self.work), "sd-1", "Build sd:1")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("Error: double: socket in use", proc.stderr)
+        self.assertNotIn("OLD-RUN", proc.stderr)
+        self.assertEqual(log.read_text(), "Error: double: socket in use\n")
 
     def test_launch_keeps_the_refusal_with_its_cause_when_the_server_fails(self) -> None:
         (self.fixture / "server-fail").write_text("Error: double: socket in use\n")
@@ -667,6 +681,67 @@ class TestLaunch(HerdrCase):
                 proc = self.run_sh("launch", *args, cwd=str(self.tmp))
                 self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertEqual(self.herdr_calls(), [])
+
+
+# Calls start_headless itself with short bounds, so the deadline and the
+# stop paths run in about a second, not herdr_wrap's 10 s.
+DRIVER = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import herdr_wrap as w
+w.SERVER_START_SECONDS = float(sys.argv[2])
+w.SERVER_STOP_SECONDS = float(sys.argv[3])
+try:
+    w.start_headless("sd")
+except w.Fail as exc:
+    print(exc, file=sys.stderr)
+    sys.exit(exc.code)
+print("started")
+"""
+
+
+class TestStartHeadless(HerdrCase):
+    """start_headless: a failed probe, a deadline and a stubborn server."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(self.stop_server)
+
+    def start(self) -> tuple[subprocess.CompletedProcess, float]:
+        began = time.monotonic()
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", DRIVER, str(TOOL), "1", "1"],
+                cwd=str(self.tmp), env=self.env(),
+                capture_output=True, text=True, check=False, timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("start_headless did not return within 20 s")
+        return proc, time.monotonic() - began
+
+    def test_a_failed_probe_counts_as_not_running_yet(self) -> None:
+        (self.fixture / "session-list-fail-once").write_text("")
+        proc, _ = self.start()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "started")
+        self.assertTrue(self.server_alive())
+
+    def test_a_probe_that_keeps_failing_stops_the_server_and_names_the_cause(self) -> None:
+        (self.fixture / "session-list-fail").write_text("")
+        proc, _ = self.start()
+        self.assertFalse(self.server_alive(), "the spawned server was left running")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("not running after 1 s", proc.stderr)
+        self.assertIn("double: session list refused", proc.stderr)
+
+    def test_a_server_that_ignores_sigterm_is_killed_within_the_bound(self) -> None:
+        (self.fixture / "server-stays-down").write_text("")
+        (self.fixture / "server-ignores-term").write_text("")
+        proc, elapsed = self.start()
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("the server was killed", proc.stderr)
+        self.assertLess(elapsed, 10)
+        self.assertFalse(self.server_alive())
 
 
 if __name__ == "__main__":
