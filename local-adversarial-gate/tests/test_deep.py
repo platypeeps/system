@@ -126,7 +126,7 @@ class Deep(unittest.TestCase):
         # sd:7901: a sandboxed gate denied setpgid (2026-11-04), so the fake
         # stayed in the caller's group and a signal to its own reached nothing.
         result = self.bound_kills_the_tree(env=DENIED_GROUP)
-        self.assertIn("its tree was killed (exit 124): process group denied (Operation not permitted)",
+        self.assertIn("its tree was signalled (exit 124): process group denied (Operation not permitted)",
                       result.stderr)
 
     def bound_kills_the_tree(self, env=None):

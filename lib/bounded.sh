@@ -33,13 +33,15 @@ ST_BOUNDED_DEFAULT_GRACE=5
 # members remain (getpgrp fails on a zombie or reaped PID). When none does
 # and the group was denied or PID still runs, it lists PID and its live
 # descendants by parent links, and st_kill and st_alive work on that list
-# instead of the group; a zombie PID lists nothing and is not named. st_kill
-# reads the tree again from its live members before each signal, so a child
-# forked during the grace is signalled too.
+# instead of the group; a zombie PID lists nothing and is not named.
+# st_kill and st_alive read the tree again on every call, from every PID
+# seen that still answers kill 0, and keep the union: a child forked during
+# the grace is signalled too. A child whose parent exits before a read is
+# reparented to init and has no link left, so the line says it may survive.
 # It returns a line naming the denial, or "". WHY is the parent's own
 # setpgrp error, if any.
 # shellcheck disable=SC2016 # perl source, expanded by perl
-ST_GROUP_PERL='my @st_tree;
+ST_GROUP_PERL='my (@st_tree, $st_denied);
 sub st_walk {
   my %kids;
   my %live;
@@ -59,23 +61,34 @@ sub st_walk {
   for (my $i = 0; $i < @tree; $i++) { push @tree, grep { !$seen{$_}++ } @{$kids{$tree[$i]} || []} }
   return @tree;
 }
+# Read the tree again: keep each PID seen that answers kill 0, add what the
+# walk finds below them, and return how many of them the walk found live.
+sub st_scan {
+  my @kept = grep { kill 0, $_ } @st_tree;
+  my @now = @kept ? st_walk(@kept) : ();
+  my %have = map { $_ => 1 } @kept;
+  @st_tree = (@kept, grep { !$have{$_} } @now);
+  return scalar @now;
+}
 sub st_prepare {
   my ($pid, $why) = @_;
+  # A second call, as from a signal during the grace, keeps the union.
+  if ($st_denied) { st_scan(); return "" }
   @st_tree = ();
   return "" if getpgrp($pid) == $pid || kill(0, -$pid) || !($why || kill(0, $pid));
   @st_tree = st_walk($pid);
   return "" unless @st_tree;
+  $st_denied = 1;
   return "process group denied (" . ($why || "pid $pid leads no group") . "); signalling its "
-    . scalar(@st_tree) . " process(es) by parent links\n";
+    . scalar(@st_tree) . " process(es) by parent links; descendants that left the tree may survive\n";
 }
 sub st_kill {
   my ($sig, $pid) = @_;
-  return kill($sig, -$pid) unless @st_tree;
-  my @live = grep { kill 0, $_ } @st_tree;
-  @st_tree = st_walk(@live) if @live;
+  return kill($sig, -$pid) unless $st_denied;
+  st_scan();
   kill($sig, @st_tree);
 }
-sub st_alive { my ($pid) = @_; @st_tree ? scalar(grep { kill 0, $_ } @st_tree) : kill(0, -$pid) }
+sub st_alive { my ($pid) = @_; $st_denied ? st_scan() : kill(0, -$pid) }
 '
 # The source starts with its use line, ST_GROUP_PERL after it: a stall
 # fixture finds this perl by that argv prefix (fixture_config.STALL).

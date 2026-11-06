@@ -291,13 +291,16 @@ exec "$@"' "$ROOT/../lib/config.sh" "$claude" "$@"
       my $denied = st_prepare($pid, $why);
       st_kill("TERM", $pid);
       my $gone = 0;
+      # Each tick reads the tree again (st_alive), and the grace ends only
+      # once the command is reaped and nothing of its tree is left.
       for (1 .. 20) {
-        if (waitpid($pid, WNOHANG) != 0) { $gone = 1; last; }
+        $gone ||= waitpid($pid, WNOHANG) != 0;
+        last if $gone && !st_alive($pid);
         select(undef, undef, undef, 0.1);
       }
       st_kill("KILL", $pid);
       waitpid($pid, 0) unless $gone;
-      my $what = $denied ? "its tree was killed (exit 124): $denied" : "its process group was killed (exit 124)\n";
+      my $what = $denied ? "its tree was signalled (exit 124): $denied" : "its process group was killed (exit 124)\n";
       print STDERR "adversarial-gate: $ENV{GATE_VERB}: $ENV{GATE_ENGINE} did not answer within $secs s; $what";
       exit 124;
     };

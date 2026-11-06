@@ -180,6 +180,26 @@ st_kill("TERM", $pid);
         self.assertEqual(result.returncode, 124, result.stderr)
         self.assertIn("process group denied (Operation not permitted)", result.stderr)
 
+    def test_a_child_whose_parent_exits_on_term_is_killed_or_named(self):
+        """Review round 4 of sd:7901: a command that forks a child on TERM
+        and exits at once leaves the child to init before any scan, and
+        the denied path reported a clean stop. The child is killed, or
+        the line says descendants that left the tree may survive."""
+        late = self.dir / "late.pid"
+        script = self.dir / "forks-and-exits.sh"
+        script.write_text('trap \'sleep 60 > /dev/null 2>&1 & echo $! > "$1"; exit 0\' TERM\n'
+                          'while :; do sleep 0.1; done\n')
+        result = shell(f'st_bounded 1 sh "{script}" "{late}"',
+                       env={**os.environ, **DENIED_GROUP, "ST_BOUNDED_GRACE": "2"})
+        self.assertEqual(result.returncode, 124, result.stderr)
+        deadline = time.monotonic() + 5
+        while not (late.exists() and late.read_text().strip()) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        kid = int(late.read_text())
+        self.addCleanup(kill_pid, kid)
+        self.assertTrue(gone(kid, 1) or "descendants that left the tree may survive" in result.stderr,
+                        f"late child alive after the fallback KILL, and unnamed: {result.stderr}")
+
     def test_the_bound_s_argv_still_starts_with_its_use_line(self):
         """fixture_config.STALL finds st_bounded's perl by the argv prefix
         `perl -e use strict; use POSIX ();`. sd:7901 put ST_GROUP_PERL first,
