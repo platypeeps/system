@@ -34,7 +34,7 @@ my ($limit, $grace, @cmd) = @ARGV;
 my $pid = fork;
 defined $pid or do { print STDERR "cannot start $cmd[0]: $!\n"; exit 1 };
 if (!$pid) {
-  setpgrp(0, 0) or do {
+  setpgrp(0, 0) or getpgrp(0) == $$ or do {
     print STDERR "st_bounded: process group denied ($!); a bound needs its own process group, nothing was run: @cmd\n";
     POSIX::_exit(125);
   };

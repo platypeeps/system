@@ -767,7 +767,7 @@ defined $pid or do { say_log("cannot start the job: $!"); exit 1 };
 if (!$pid) {
   # A denied setpgid (sd:7901) leaves the job in the runner group, where no
   # signal reaches what it forks: refuse before the exec, exit 125.
-  setpgrp(0, 0) or do {
+  setpgrp(0, 0) or getpgrp(0) == $$ or do {
     say_log("process group denied ($!); the job limit needs its own process group, nothing was run");
     POSIX::_exit(125);
   };
