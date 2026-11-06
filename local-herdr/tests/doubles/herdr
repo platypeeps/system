@@ -21,7 +21,10 @@
 #                             running session-list.json (unless
 #                             server-stays-down is present) and sleeps;
 #                             with server-lost-race it exits 1 after that
+#   server-ignores-term       when present, that server ignores SIGTERM
 #   server.pid                written by `--session <n> server`: its pid
+#   session-list-fail         when present, `session list` exits 1
+#   session-list-fail-once    the same, once: the first call removes it
 # Never the real binary: the suite prepends this directory to PATH.
 set -e
 
@@ -62,6 +65,11 @@ case "${1:-}" in
         echo "Error: herdr server is already running" >&2
         exit 1
       fi
+      if [ -f "$FIX/server-ignores-term" ]; then
+        # An ignored signal stays ignored across exec, so sleep keeps it.
+        trap '' TERM
+      fi
+      echo "double: server up" >&2
       exec sleep 60
     fi
     # The real binary starts the session's server and attaches the TUI here;
@@ -71,6 +79,15 @@ case "${1:-}" in
   session)
     case "${2:-}" in
       list)
+        if [ -f "$FIX/session-list-fail-once" ]; then
+          rm -f "$FIX/session-list-fail-once"
+          echo "double: session list refused once" >&2
+          exit 1
+        fi
+        if [ -f "$FIX/session-list-fail" ]; then
+          echo "double: session list refused" >&2
+          exit 1
+        fi
         if [ -f "$FIX/session-list.json" ]; then
           cat "$FIX/session-list.json"
         else
