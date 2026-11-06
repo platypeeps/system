@@ -21,6 +21,11 @@ def cron_jobs_grace():
     return int(found[0])
 
 
+#: The env that makes every setpgrp in the bound's perl fail with EPERM, as a
+#: sandboxed gate denied setpgid on 2026-11-04 (sd:7901).
+DENIED_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MDeniedGroup"}
+
+
 def shell(script, **kwargs):
     return subprocess.run(["/bin/sh", "-c", f'. "{LIB}/bounded.sh"; {script}'],
                           capture_output=True, text=True, check=False, timeout=60, **kwargs)
@@ -82,6 +87,29 @@ class Bounded(unittest.TestCase):
         self.assertTrue(gone(int(pidfile.read_text())), "the child outlived the bound")
         # Ended by the TERM, not by the KILL ten seconds later.
         self.assertLess(time.monotonic() - started, 8)
+
+    def test_a_denied_process_group_still_ends_the_command_and_its_tree(self):
+        """sd:7901: with setpgid denied the command stays in the caller's
+        group, so a signal to its own group reached nothing and the bound
+        waited on the command for as long as it ran. The bound now signals
+        each process of its tree, and says the group was denied."""
+        grandchild = self.dir / "grandchild.pid"
+        process = subprocess.Popen(
+            ["/bin/sh", "-c", f'. "{LIB}/bounded.sh"; '
+                              f"st_bounded 3 sh -c 'sleep 60 & echo $! > \"{grandchild}\"; sleep 60'"],
+            start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, **DENIED_GROUP, "ST_BOUNDED_GRACE": "1"})
+        self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
+        try:
+            _, err = process.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+            self.fail("the bound never ended a command whose process group was denied")
+        self.assertEqual(process.returncode, 124, err)
+        self.assertIn("timed out after 3s", err)
+        self.assertIn("process group denied (Operation not permitted)", err)
+        self.assertTrue(gone(int(grandchild.read_text())), "the command's child outlived the bound")
 
     def test_a_term_to_the_caller_reaches_the_command(self):
         """The job's own limit TERMs the job's group; the bounded command is in

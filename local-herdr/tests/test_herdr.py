@@ -691,6 +691,11 @@ sys.path.insert(0, sys.argv[1])
 import herdr_wrap as w
 w.SERVER_START_SECONDS = float(sys.argv[2])
 w.SERVER_STOP_SECONDS = float(sys.argv[3])
+if sys.argv[4:] == ["denied"]:
+    # A sandbox that denies the process group (sd:7901).
+    def killpg(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+    w.os.killpg = killpg
 try:
     w.start_headless("sd")
 except w.Fail as exc:
@@ -707,11 +712,11 @@ class TestStartHeadless(HerdrCase):
         super().setUp()
         self.addCleanup(self.stop_server)
 
-    def start(self) -> tuple[subprocess.CompletedProcess, float]:
+    def start(self, *extra: str) -> tuple[subprocess.CompletedProcess, float]:
         began = time.monotonic()
         try:
             proc = subprocess.run(
-                [sys.executable, "-c", DRIVER, str(TOOL), "1", "1"],
+                [sys.executable, "-c", DRIVER, str(TOOL), "1", "1", *extra],
                 cwd=str(self.tmp), env=self.env(),
                 capture_output=True, text=True, check=False, timeout=20,
             )
@@ -740,6 +745,16 @@ class TestStartHeadless(HerdrCase):
         proc, elapsed = self.start()
         self.assertEqual(proc.returncode, 1)
         self.assertIn("the server was killed", proc.stderr)
+        self.assertLess(elapsed, 10)
+        self.assertFalse(self.server_alive())
+
+    def test_a_denied_process_group_still_stops_the_server_and_names_it(self) -> None:
+        # sd:7901: killpg raised PermissionError, which ended the stop and
+        # left the server running.
+        (self.fixture / "server-stays-down").write_text("")
+        proc, elapsed = self.start("denied")
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("process group denied (Operation not permitted); the server was stopped", proc.stderr)
         self.assertLess(elapsed, 10)
         self.assertFalse(self.server_alive())
 

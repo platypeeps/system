@@ -343,18 +343,27 @@ def server_log_path(session: str) -> str:
 
 def stop_server(proc: subprocess.Popen) -> str:
     """Stop a server start_headless started: SIGTERM to its process group,
-    then SIGKILL, each wait bounded, so launch never hangs on it."""
+    then SIGKILL, each wait bounded, so launch never hangs on it. A sandbox
+    can deny the group (sd:7901): the server itself is signalled then, and
+    the answer names the denial."""
     if proc.poll() is not None:
         return "the server had exited"
+    denied = ""
     for sig, done in ((signal.SIGTERM, "stopped"), (signal.SIGKILL, "killed")):
-        with contextlib.suppress(ProcessLookupError):
+        try:
             os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            denied = f"process group denied ({exc.strerror}); "
+            with contextlib.suppress(ProcessLookupError):
+                proc.send_signal(sig)
         try:
             proc.wait(timeout=SERVER_STOP_SECONDS)
         except subprocess.TimeoutExpired:
             continue
-        return f"the server was {done}"
-    return f"the server (pid {proc.pid}) did not exit after SIGKILL"
+        return f"{denied}the server was {done}"
+    return f"{denied}the server (pid {proc.pid}) did not exit after SIGKILL"
 
 
 def pane_get(session: str, pane: str) -> dict | None:

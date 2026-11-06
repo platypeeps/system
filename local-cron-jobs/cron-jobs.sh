@@ -759,7 +759,9 @@ lock_is_live() { # lock file
 # it is stopped, and a hand-run would hang where a scheduled one, whose stdin
 # is /dev/null already, does not.
 # shellcheck disable=SC2016 # perl source, expanded by perl
-RUN_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
+# A denied setpgid falls back to the tree by parent links: lib/bounded.sh's
+# ST_GROUP_PERL (sd:7901).
+RUN_BOUNDED="$ST_GROUP_PERL"'use strict; use POSIX (); use Time::HiRes ();
 my ($job, $limit, $grace, @cmd) = @ARGV;
 sub say_log { printf STDERR "[%s] %s %s\n", $job, POSIX::strftime("%Y-%m-%dT%H:%M:%S%z", localtime), $_[0] }
 my $pid = fork;
@@ -771,9 +773,9 @@ if (!$pid) {
   say_log("cannot run $cmd[0]: $!");
   POSIX::_exit(127);
 }
-setpgrp($pid, $pid);
+my $why = setpgrp($pid, $pid) || !$!{EPERM} ? "" : "$!";
 POSIX::close(8);
-for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { kill $sig, -$pid } }
+for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { print STDERR st_prepare($pid, $why); st_kill($sig, $pid) } }
 my $status;
 eval {
   local $SIG{ALRM} = sub { die "limit\n" };
@@ -783,24 +785,27 @@ eval {
 };
 if (defined $status) { exit($status & 127 ? 128 + ($status & 127) : $status >> 8) }
 say_log("timed out after ${limit}s (JOB_TIMEOUT); sending TERM to process group $pid");
+my $denied = st_prepare($pid, $why);
+$denied and say_log($denied =~ s/\n\z//r);
+my %member = map { $_ => 1 } @st_tree;
 # What hung: each process of the group, before TERM changes it (sd:5064).
 my @tree;
 if (open(my $ps, "-|", "ps", "-A", "-o", "pid=,ppid=,pgid=,etime=,command=")) {
   chomp(my @all = <$ps>);
   close $ps;
-  @tree = grep { (split " ", $_)[2] == $pid } @all;
+  @tree = grep { my ($p, undef, $g) = split " ", $_; $denied ? $member{$p} : $g == $pid } @all;
 }
 @tree ? print STDERR map { "  " . substr(join(" ", split(" ", $_, 5)), 0, 300) . "\n" }
                      "PID PPID PGID ELAPSED COMMAND", @tree
       : say_log("process tree of group $pid unknown: ps listed none of it");
-kill "TERM", -$pid;
+st_kill("TERM", $pid);
 my $end = Time::HiRes::time() + $grace;
 while (1) {
   waitpid($pid, POSIX::WNOHANG());
-  last unless kill 0, -$pid;
+  last unless st_alive($pid);
   if (Time::HiRes::time() >= $end) {
     say_log("process group $pid still running ${grace}s after TERM; sending KILL");
-    kill "KILL", -$pid;
+    st_kill("KILL", $pid);
     last;
   }
   Time::HiRes::sleep(0.1);

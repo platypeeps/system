@@ -61,6 +61,9 @@ ROOT="$(cd "$(dirname "$SELF")" && pwd)"
 CORE="$ROOT/core.md"
 LENS_DIR="$ROOT/lenses"
 RANKER="$ROOT/rank.py"
+# ST_GROUP_PERL, the bound's fallback when setpgid is denied (sd:7901).
+# shellcheck source=../lib/bounded.sh
+. "$ROOT/../lib/bounded.sh"
 # The sibling entrypoint by path from our own resolved directory, never by
 # `jev` being on PATH: this script is reached through the ~/bin/common symlink,
 # and through the symlink sibling files are missing. ADVERSARIAL_GATE_JEV is the
@@ -272,23 +275,30 @@ exec "$@"' "$ROOT/../lib/config.sh" "$claude" "$@"
   # lib/sd_db/runner_exec.py. A run cut off at the bound exits 124,
   # timeout(1)'s own status, so a caller can tell it from the reviewer's
   # own failure; a child that dies of a signal otherwise exits 128+signal.
+  # A denied setpgid (sd:7901) leaves the reviewer in this shell's group:
+  # lib/bounded.sh's ST_GROUP_PERL then signals its tree by parent links,
+  # and the line names the denial. The tree is read before the TERM, as a
+  # killed child's children lose their parent link.
   status=0
-  printf '%s' "$prompt" | GATE_VERB="$verb" GATE_ENGINE="$engine" perl -e '
+  printf '%s' "$prompt" | GATE_VERB="$verb" GATE_ENGINE="$engine" perl -e "$ST_GROUP_PERL"'
     use POSIX ":sys_wait_h";
     my $secs = shift;
     my $pid = fork;
     defined $pid or die "adversarial-gate: fork: $!\n";
     if ($pid == 0) { setpgrp(0, 0); exec @ARGV or die "adversarial-gate: exec: $!\n"; }
+    my $why = setpgrp($pid, $pid) || !$!{EPERM} ? "" : "$!";
     $SIG{ALRM} = sub {
-      kill TERM => -$pid;
+      my $denied = st_prepare($pid, $why);
+      st_kill("TERM", $pid);
       my $gone = 0;
       for (1 .. 20) {
         if (waitpid($pid, WNOHANG) != 0) { $gone = 1; last; }
         select(undef, undef, undef, 0.1);
       }
-      kill KILL => -$pid;
+      st_kill("KILL", $pid);
       waitpid($pid, 0) unless $gone;
-      print STDERR "adversarial-gate: $ENV{GATE_VERB}: $ENV{GATE_ENGINE} did not answer within $secs s; its process group was killed (exit 124)\n";
+      my $what = $denied ? "its tree was killed (exit 124): $denied" : "its process group was killed (exit 124)\n";
+      print STDERR "adversarial-gate: $ENV{GATE_VERB}: $ENV{GATE_ENGINE} did not answer within $secs s; $what";
       exit 124;
     };
     alarm $secs;

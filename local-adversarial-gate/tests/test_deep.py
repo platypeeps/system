@@ -20,6 +20,8 @@ import unittest
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "adversarial-gate.sh"
 RUN_TIMEOUT = 20
+#: Every setpgrp in the bound's perl fails with EPERM, as under a sandbox that denies setpgid (sd:7901).
+DENIED_GROUP = {"PERL5LIB": str(HERE.parents[1] / "lib/tests/denied_group"), "PERL5OPT": "-MDeniedGroup"}
 #: The tools that only read: the file readers, and Agent, whose sub-agents get the same set.
 READ_ONLY = {"Read", "Grep", "Glob", "Agent"}
 #: Tools that change files, run commands or reach the network. None may be offered.
@@ -52,9 +54,9 @@ class Deep(unittest.TestCase):
         self.out.parent.mkdir()
         self.log = {name: self.tmp / f"claude.{name}" for name in ("argv", "cwd", "stdin", "grandchild", "token")}
 
-    def gate(self, *args, mode="ok", claude=None):
+    def gate(self, *args, mode="ok", claude=None, env=None):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(self.tmp / "home"), "CLAUDE_BIN": str(claude or self.fake),
-               "CLAUDE_MODE": mode, "ADVERSARIAL_GATE_JEV": str(self.tmp / "no-jev"),
+               "CLAUDE_MODE": mode, "ADVERSARIAL_GATE_JEV": str(self.tmp / "no-jev"), **(env or {}),
                **{f"CLAUDE_{name.upper()}": str(path) for name, path in self.log.items()}}
         proc = subprocess.Popen(["sh", str(SCRIPT), "deep", "--lens", "deep", "--set", "REPO_NAME=fixture", "--set", "AGENTS=8", *args],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -118,11 +120,22 @@ class Deep(unittest.TestCase):
         self.assertIn("error: not logged in", result.stderr)
 
     def test_the_bound_kills_a_claude_that_never_answers_and_its_tree(self):
+        self.bound_kills_the_tree()
+
+    def test_a_denied_process_group_still_kills_the_tree_and_names_the_denial(self):
+        # sd:7901: a sandboxed gate denied setpgid (2026-11-04), so the fake
+        # stayed in the caller's group and a signal to its own reached nothing.
+        result = self.bound_kills_the_tree(env=DENIED_GROUP)
+        self.assertIn("its tree was killed (exit 124): process group denied (Operation not permitted)",
+                      result.stderr)
+
+    def bound_kills_the_tree(self, env=None):
         # sd:7508: the bound starts before sh sources lib/config.sh and env.sh,
         # so under gate load 1 s ran out before the fake wrote its grandchild;
         # 4 s is test_run.py's BOUND for the same race.
         started = time.monotonic()
-        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "4", mode="hang")
+        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "4", mode="hang",
+                           env=env)
         self.assertEqual(result.returncode, 124, result.stderr)
         self.assertIn("deep: claude did not answer within 4 s", result.stderr)
         self.assertLess(time.monotonic() - started, 10)
@@ -137,6 +150,7 @@ class Deep(unittest.TestCase):
         else:
             os.kill(pid, signal.SIGKILL)
             self.fail(f"the fake's grandchild {pid} survived the bound")
+        return result
 
     def test_no_claude_is_refused_before_anything_runs(self):
         result = self.gate("--repo", str(self.repo), "--out", str(self.out), claude=self.tmp / "absent")

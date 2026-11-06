@@ -3720,6 +3720,24 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertNotIn("sending KILL", log)
         self.assert_gone("sleep 41.4142")
 
+    def test_a_denied_process_group_still_stops_the_hung_job_and_its_tree(self):
+        """sd:7901: a sandbox that denies setpgid leaves the job in the
+        runner's group, and a signal to the job's own group reached
+        nothing. The limit now signals the job's tree by parent links and
+        logs the denial."""
+        self.reap("sleep 41.7320")
+        self.job("'sleep 41.7320 & sleep 41.7320; wait'", timeout="1")
+        denied = {"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
+                  "PERL5OPT": "-MDeniedGroup"}
+        began = time.monotonic()
+        result = self.run_job(env=denied)
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertLess(time.monotonic() - began, 15)
+        log = self.log.read_text()
+        self.assertIn("process group denied (Operation not permitted)", log)
+        self.assertRegex(log, r"  \d+ \d+ \d+ \S+ sleep 41\.7320")
+        self.assert_gone("sleep 41.7320")
+
     def test_a_timeout_logs_the_process_tree_before_the_kill(self):
         """sd:5064: the log named the group only, so what hung was a guess.
         Each process in the group goes to the log, with its parent and age,
