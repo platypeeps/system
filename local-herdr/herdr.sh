@@ -28,8 +28,11 @@ usage: herdr.sh start|resume|launch <dir> <label> <prompt>|snapshot|record <pane
              is gone. Exits 1 when any pane could not be resumed.
   launch     launch <dir> <label> <prompt>: a new workspace at <dir> named
              <label>, a fresh `claude` started in it, and <prompt> sent to it
-             as typed text (the dashboard's Fix). Exits 3 when herdr is not
-             installed, 1 when the session is not running or a step failed.
+             as typed text (the dashboard's Fix). A session that is not
+             running is started first as a headless server (`herdr
+             --session <name> server`), with no terminal attached. Exits 3
+             when herdr is not installed, 1 when that server did not start
+             (the cause follows) or a step failed.
   snapshot   write every live agent that reports a session id into the
              state file (`herdr agent list`); the thin path, since herdr's
              integrations already know the ids.

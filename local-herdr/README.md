@@ -48,7 +48,8 @@ have carried.
                         runs `resume` first when the session is already running
     herdr.sh resume     bring every recorded pane back that is not already live
     herdr.sh launch <dir> <label> <prompt>
-                        a new workspace at <dir>, a fresh claude in it, and one prompt
+                        a new workspace at <dir>, a fresh claude in it, and one prompt;
+                        starts the session headless first when it is not running
     herdr.sh snapshot   record every live agent that reports a session id
     herdr.sh record <pane> <claude|codex> <session-id> [cwd]
     herdr.sh list       print the state file
@@ -83,15 +84,23 @@ Exit 1 when any pane failed; `start` attaches anyway and says so.
 pane, then `agent prompt` with the text. `resume` cannot do this, since it
 only starts a recorded session. The prompt is typed to the agent and never
 reaches the pane's shell. It records nothing: the new session's id reaches
-the state file through `snapshot`. Exit 3 when herdr is not installed, and 1
-when the session is not running (the message names `herdr.sh start`) or a
-step failed; a refused `agent start` leaves the new workspace at its prompt.
+the state file through `snapshot`. When the session is not running,
+`launch` first starts it as a headless server, `herdr --session <name>
+server` (herdr's own headless server, what its client starts before it
+attaches), in a process session of its own with no terminal, so it outlives
+the call and holds none of the caller's pipes. It waits up to 10 s for
+`session list` to read the session running; herdr then restores the
+session's agents itself, with no client attached. Exit 3 when herdr is not
+installed, and 1 when that server did not start (the message says
+`did not start` and gives the server's own output, or the 10 s wait, after
+which the server is stopped) or a step failed; a refused `agent start`
+leaves the new workspace at its prompt.
 
 `start` when the session is **not** running just attaches (`herdr --session
-sd`), because herdr's own restore runs as the client attaches and resuming
-the same panes twice would start each agent twice; run `herdr.sh resume`
-from a pane afterwards for anything it missed, and `herdr.sh status` to see
-whether it missed anything.
+sd`, which starts the server too), because herdr's own restore resumes the
+agents and resuming the same panes twice would start each agent twice; run
+`herdr.sh resume` from a pane afterwards for anything it missed, and
+`herdr.sh status` to see whether it missed anything.
 
 ## The state file
 
@@ -187,10 +196,10 @@ machine with `herdr` and both agents installed:
 ## Tests
 
 `./local-herdr/herdr.sh test -v`. `tests/doubles/herdr` is a POSIX-sh
-stand-in for the 0.9.0 CLI: it journals every argv line and answers `session
-list --json`, `pane get`, `agent list`, `agent start`, `agent prompt`, `pane run` and
-`workspace create` and `pane process-info` from files the tests write under a
-fixture directory. The
+stand-in for the 0.9.0 CLI: it journals every argv line and answers
+`session list --json`, `pane get`, `agent list`, `agent start`, `agent
+prompt`, `pane run`, `workspace create`, `pane process-info` and `--session
+<name> server` from files the tests write under a fixture directory. The
 suite prepends that directory to PATH and asserts the double is the `herdr`
 it resolves, so the installed binary is never called — `make check` needs
 no herdr. Wired into `tests/ci-native.sh` as `run_suite herdr`.
@@ -203,6 +212,8 @@ binary's help, changelog and embedded schema, never from a live session:
 `foreground_process_group_id` and `foreground_processes` in `pane
 process-info`; that `HERDR_SOCKET_PATH` selects the session; and, for `launch`, read from
 the 0.9.3 help, that `workspace create` takes `--label` and that `agent
-prompt` takes the name `agent start` gave as its target. Only the
+prompt` takes the name `agent start` gave as its target; and, read from the
+0.9.5 help and one run against a throwaway session, that `herdr --session
+<name> server` serves that session in the foreground until stopped. Only the
 hand run above checks them against a live session, and until it is recorded
 the restart and delete flow is unverified.

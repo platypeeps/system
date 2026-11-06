@@ -580,11 +580,68 @@ class TestLaunch(HerdrCase):
         self.assertIn("herdr is not installed", proc.stderr)
         self.assertIn("herdr.sh start", proc.stderr)
 
-    def test_launch_without_a_running_session_names_herdr_sh_start_and_creates_nothing(self) -> None:
+    def stop_server(self) -> None:
+        """Stop the double's server if a test left it running: it sleeps."""
+        pid_file = self.fixture / "server.pid"
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), 15)
+            except (ProcessLookupError, ValueError):
+                pass
+
+    def server_alive(self) -> bool:
+        try:
+            os.kill(int((self.fixture / "server.pid").read_text()), 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def test_launch_starts_a_down_session_headless_then_launches(self) -> None:
+        self.addCleanup(self.stop_server)
+        began = time.monotonic()
+        proc = self.run_sh("launch", str(self.work), "sd-1", "Build sd:1")
+        elapsed = time.monotonic() - began
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("session sd was not running; started it headless", proc.stderr)
+        self.assertEqual(proc.stdout.strip(), f"launched w9:p1: claude in {self.work}")
+        calls = self.herdr_calls()
+        # The headless server, never the attaching `herdr --session sd`.
+        self.assertIn(["--session", "sd", "server"], calls)
+        self.assertNotIn(["--session", "sd"], calls)
+        self.assertEqual(calls[-3:], [
+            ["workspace", "create", "--cwd", str(self.work), "--label", "sd-1", "--no-focus"],
+            ["agent", "start", "sd-w9-p1", "--kind", "claude", "--pane", "w9:p1"],
+            ["agent", "prompt", "sd-w9-p1", "Build sd:1"],
+        ])
+        self.assertEqual(self.journal_lines()[-1][:2], ["sd", "/tmp/sd/herdr.sock"])
+        # Detached: the server outlives the launch and holds none of its
+        # pipes, or run_sh would have waited the double's 60 s sleep out.
+        self.assertLess(elapsed, 30)
+        self.assertTrue(self.server_alive())
+
+    def test_launch_keeps_the_refusal_with_its_cause_when_the_server_fails(self) -> None:
+        (self.fixture / "server-fail").write_text("Error: double: socket in use\n")
         proc = self.run_sh("launch", str(self.work), "sd-1", "Build sd:1")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("session sd is not running; run herdr.sh start first", proc.stderr)
-        self.assertEqual([c[:2] for c in self.herdr_calls()], [["session", "list"]])
+        self.assertIn("session sd is not running and did not start", proc.stderr)
+        self.assertIn("Error: double: socket in use", proc.stderr)
+        self.assertNotIn("workspace", [c[0] for c in self.herdr_calls()])
+
+    def test_launch_goes_on_when_another_start_won_the_race(self) -> None:
+        (self.fixture / "server-lost-race").write_text("")
+        proc = self.run_sh("launch", str(self.work), "sd-1", "Build sd:1")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), f"launched w9:p1: claude in {self.work}")
+
+    def test_launch_stops_a_server_that_never_comes_up_and_refuses(self) -> None:
+        self.addCleanup(self.stop_server)
+        (self.fixture / "server-stays-down").write_text("")
+        proc = self.run_sh("launch", str(self.work), "sd-1", "Build sd:1")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("session sd is not running and did not start", proc.stderr)
+        self.assertIn("not running after", proc.stderr)
+        self.assertNotIn("workspace", [c[0] for c in self.herdr_calls()])
+        self.assertFalse(self.server_alive())
 
     def test_a_refused_start_says_the_workspace_is_left_and_sends_no_prompt(self) -> None:
         self.session_running()
