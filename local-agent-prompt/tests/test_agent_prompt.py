@@ -125,6 +125,27 @@ class PromptDistribution(unittest.TestCase):
         self.assertIn("DIFFERS", result.stdout)
         self.assertEqual(before, self.snapshot())
 
+    def test_an_edit_holds_back_its_own_target_only(self):
+        # sd:7845: a block edited in place held back every target, so after
+        # shared.md moved the others read STALE, which the nightly's status
+        # counts as drift the update failed to fix: exit 1, not attention.
+        self.run_script("refresh", "--apply")
+        claude = self.targets["claude"]
+        claude.write_bytes(claude.read_bytes().replace(BEGIN, BEGIN + b"\nPersonal edit", 1))
+        edited, record = claude.read_bytes(), (self.state / "claude.sha").read_bytes()
+        self.move_source()
+        result = self.run_script("refresh", "--apply", expected=2)
+        self.assertIn("DIFFERS claude", result.stdout)
+        self.assertEqual(edited, claude.read_bytes())
+        self.assertEqual(record, (self.state / "claude.sha").read_bytes())
+        for label, target in self.targets.items():
+            if label != "claude":
+                with self.subTest(target=label):
+                    self.assertIn(self.source.read_bytes(), target.read_bytes())
+        status = self.run_script("status").stdout
+        self.assertNotIn("STALE", status)
+        self.assertIn("DIFFERS claude", status)
+
     def test_an_edit_beside_a_broken_target_is_a_failure(self):
         # A state error prints to stderr only; it must not pass as an edit.
         self.run_script("refresh", "--apply")
@@ -146,19 +167,25 @@ class PromptDistribution(unittest.TestCase):
         self.assertIn("UNKNOWN", result.stdout)
         self.assertEqual(before, self.snapshot())
 
-    def test_later_conflicts_report_all_without_writing_any_target(self):
+    def test_later_conflicts_report_all_and_keep_every_edited_target(self):
         self.run_script("refresh", "--apply")
         self.move_source()
         for label in ("codex", "copilot"):
             target = self.targets[label]
             target.write_bytes(target.read_bytes().replace(BEGIN, BEGIN + b"\nPersonal edit", 1))
         before = self.snapshot()
+        kept = {k: v for k, v in before.items() if "codex" in k or "copilot" in k}
         for args in (("refresh",), ("refresh", "--apply")):
             with self.subTest(args=args):
                 result = self.run_script(*args, expected=2)
                 self.assertIn("DIFFERS codex", result.stdout)
                 self.assertIn("DIFFERS copilot", result.stdout)
-                self.assertEqual(before, self.snapshot())
+                after = self.snapshot()
+                self.assertEqual(kept, {k: after[k] for k in kept})
+                if args == ("refresh",):
+                    self.assertEqual(before, after)
+                else:
+                    self.assertIn(self.source.read_bytes(), self.targets["claude"].read_bytes())
 
     def test_later_unknown_block_refuses_before_any_write(self):
         self.run_script("refresh", "--apply")
@@ -203,9 +230,10 @@ class PromptDistribution(unittest.TestCase):
         target.write_bytes(target.read_bytes().replace(b"\n", b"\r\n"))
         self.assertIn("DIFFERS codex", self.run_script("status").stdout)
         self.move_source()
-        before = self.snapshot()
+        edited, record = target.read_bytes(), (self.state / "codex.sha").read_bytes()
         self.assertIn("DIFFERS codex", self.run_script("refresh", "--apply", expected=2).stdout)
-        self.assertEqual(before, self.snapshot())
+        self.assertEqual(edited, target.read_bytes())
+        self.assertEqual(record, (self.state / "codex.sha").read_bytes())
 
     def test_force_replaces_managed_edit_and_preserves_non_utf8_outside(self):
         self.run_script("refresh", "--apply")
@@ -240,6 +268,22 @@ class PromptDistribution(unittest.TestCase):
         self.assertIn(str(target), result.stderr)
         self.assertEqual(before, self.snapshot())
         self.assertTrue(target.is_dir())
+
+    def test_a_write_that_fails_beside_an_edit_fails_and_records_nothing(self):
+        # sd:7845 writes beside an edit, where set -e is off: a failed write
+        # must still exit 1 and leave the target's record as it was.
+        self.run_script("refresh", "--apply")
+        claude = self.targets["claude"]
+        claude.write_bytes(claude.read_bytes().replace(BEGIN, BEGIN + b"\nPersonal edit", 1))
+        self.move_source()
+        target = self.targets["codex"]
+        old, record = target.read_bytes(), (self.state / "codex.sha").read_bytes()
+        target.chmod(0o444)
+        self.addCleanup(target.chmod, 0o644)
+        result = self.run_script("refresh", "--apply", expected=1)
+        self.assertNotIn("wrote   codex", result.stdout)
+        self.assertEqual(old, target.read_bytes())
+        self.assertEqual(record, (self.state / "codex.sha").read_bytes())
 
     def test_capture_preserves_non_utf8_outside_and_records_managed_bytes(self):
         self.run_script("refresh", "--apply")

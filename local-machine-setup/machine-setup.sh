@@ -1613,10 +1613,11 @@ stage_prompts() {
   if [ -x "$ROOT/local-agent-prompt/agent-prompt.sh" ]; then
     if [ "$APPLY" -eq 1 ]; then
       # The pipe hides the tool's exit status; the braces keep it (sd:3543).
-      # Exit 2 is a refusal for blocks edited in place alone: it waits for a
-      # person, as an in-place dotfile does, and status asks for attention
-      # for its DIFFERS line (sd:6730). Any other exit is a failure; output
-      # cannot tell, as a target's read error goes to stderr only.
+      # Exit 2: blocks edited in place were left alone and every other
+      # target written (sd:7845). Each waits for a person, as an in-place
+      # dotfile does, and status asks for attention for its DIFFERS line
+      # (sd:6730). Any other exit is a failure; output cannot tell, as a
+      # target's read error goes to stderr only.
       ap_rc=0
       ap_out=$("$ROOT/local-agent-prompt/agent-prompt.sh" refresh --apply) || ap_rc=$?
       [ "$ap_rc" -eq 0 ] || [ "$ap_rc" -eq 2 ] ||

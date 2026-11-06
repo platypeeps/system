@@ -111,15 +111,18 @@ If you edit a prompt in place instead — Claude Code's `/memory` writes
 rather than guessing which part of the file is the shared part.
 
 **`refresh` never overwrites a block that was edited in place.** It reports
-`DIFFERS` and exits 2 before writing (1 when a target is `UNKNOWN` or
-cannot be read), the same way the `dotfiles` stage in
-`local-machine-setup` refuses to overwrite a file the machine and repo disagree
-on. Discarding the edit takes `refresh --force`. This matters because the
+`DIFFERS`, leaves that target and its hash record alone, writes every other
+target, and exits 2, the same way the `dotfiles` stage in
+`local-machine-setup` leaves a file the machine and repo disagree on.
+Discarding the edit takes `refresh --force`. This matters because the
 `prompts` stage calls `refresh --apply` on every `machine-setup update --apply`,
 and without the guard a routine provisioning run would silently delete a
 `/memory` edit made ten minutes earlier.
+An edit holds back its own target only: when it held back every target, a
+moved `shared.md` left the rest `STALE`, and the nightly failed (sd:7845).
 Refresh checks every target first and reports all known conflicts.
-Any conflict or read failure prevents that pass from writing targets or hash records.
+An `UNKNOWN` target or a read failure exits 1 before any target or hash
+record is written.
 Each target is checked again before its write.
 This is not a transaction across targets.
 A concurrent change or later write failure can still leave earlier targets updated.
@@ -142,7 +145,7 @@ Read failures or invalid marker pairs stop processing; they do not record empty-
 | state | means | refresh |
 |-------|-------|---------|
 | `STALE` | target matches what was written; `shared.md` moved | writes it, no `--force` |
-| `DIFFERS` | target no longer matches what was written — edited in place | refused; exit 1 |
+| `DIFFERS` | target no longer matches what was written — edited in place | left alone, others written; exit 2 |
 | `UNKNOWN` | differs, and nothing was recorded | refused; exit 1 |
 
 `UNKNOWN` is what a machine provisioned before the hash existed reports once.

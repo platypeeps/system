@@ -10,6 +10,9 @@ This page covers system sd:6012 (the dispatcher) and system sd:6004 (Build contr
 The rulings in their decision notes are settled: Q25, Q30-31, Q35, Q41, Q60, probe #28947, Paperclip read #28948.
 Research: `docs/dashboard/orchestration-research-2026-10-24.md`, `paperclip-read-2026-10-24.md`, `ux-read-2026-10-24.md`.
 
+Delivered: the dispatcher shipped in the pack, as `sd assignments dispatch|supervise` (pack sd:6093, sd:6094).
+Ruling #29945 closed sd:6012 on that; system step 3 is sd:6098.
+
 ## Problem
 
 Today a lead session starts every builder by hand, watches it, reviews it and enqueues it.
