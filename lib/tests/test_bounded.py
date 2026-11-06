@@ -51,6 +51,14 @@ def kill_group(pgid):
         pass
 
 
+def kill_pid(pid):
+    """Cleanup: KILL a process a failed case may have left; gone is fine."""
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 class Bounded(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -110,6 +118,48 @@ class Bounded(unittest.TestCase):
         self.assertIn("timed out after 3s", err)
         self.assertIn("process group denied (Operation not permitted)", err)
         self.assertTrue(gone(int(grandchild.read_text())), "the command's child outlived the bound")
+
+    def test_a_group_whose_leader_exited_is_still_signalled_as_a_group(self):
+        """Review of sd:7901: getpgrp fails once the leader exits, though
+        its group lives on, and st_prepare then signalled the dead leader
+        alone. A group with members left is still signalled as a group."""
+        child = self.dir / "child.pid"
+        process = subprocess.Popen(
+            ["perl", "-e", "use POSIX (); " + shell('printf %s "$ST_GROUP_PERL"').stdout + """
+my $pid = fork;
+if (!$pid) {
+  setpgrp(0, 0);
+  my $kid = fork;
+  if (!$kid) { open(STDOUT, ">", "/dev/null"); open(STDERR, ">", "/dev/null"); exec "sleep", "60" }
+  open(my $out, ">", $ARGV[0]) or die; print $out $kid; close $out;
+  POSIX::_exit(0);
+}
+setpgrp($pid, $pid);
+select(undef, undef, undef, 0.1) until -s $ARGV[0];
+select(undef, undef, undef, 0.3);
+print STDERR st_prepare($pid, "");
+st_kill("TERM", $pid);
+""", str(child)], start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        _, err = process.communicate(timeout=20)
+        kid = int(child.read_text())
+        self.addCleanup(kill_pid, kid)
+        self.assertTrue(gone(kid), "the leader's child outlived the group signal")
+        self.assertEqual("", err)
+
+    def test_a_child_forked_during_the_grace_is_killed_too(self):
+        """Review of sd:7901: the denied path read the tree once, before
+        the TERM, so a child the command forked during the grace outlived
+        the KILL. st_kill reads the tree again before each signal."""
+        late = self.dir / "late.pid"
+        script = self.dir / "forks-on-term.sh"
+        script.write_text('trap \'sleep 60 > /dev/null 2>&1 & echo $! > "$1"\' TERM\nwhile :; do sleep 0.1; done\n')
+        result = shell(f'st_bounded 1 sh "{script}" "{late}"',
+                       env={**os.environ, **DENIED_GROUP, "ST_BOUNDED_GRACE": "2"})
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("process group denied (Operation not permitted)", result.stderr)
+        kid = int(late.read_text())
+        self.addCleanup(kill_pid, kid)
+        self.assertTrue(gone(kid), "a child forked after the TERM outlived the KILL")
 
     def test_the_bound_s_argv_still_starts_with_its_use_line(self):
         """fixture_config.STALL finds st_bounded's perl by the argv prefix

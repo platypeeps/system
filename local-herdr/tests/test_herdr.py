@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -758,6 +759,32 @@ class TestStartHeadless(HerdrCase):
         self.assertLess(elapsed, 10)
         self.assertFalse(self.server_alive())
 
+
+class TestStopServer(unittest.TestCase):
+    """stop_server itself, with os.killpg replaced."""
+
+    def test_a_zombie_leader_is_not_named_a_denied_group(self) -> None:
+        # Review of sd:7901: macOS refuses killpg with EPERM once the
+        # group's leader is a zombie (sd:2261). That is no sandbox denial.
+        sys.path.insert(0, str(TOOL))
+        self.addCleanup(sys.path.remove, str(TOOL))
+        import herdr_wrap as w
+        proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+
+        def killpg(pid: int, sig: int) -> None:
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(0.3)  # a zombie now: nothing has reaped it
+            raise PermissionError(1, "Operation not permitted")
+
+        real = w.os.killpg
+        w.os.killpg = killpg
+        try:
+            answer = w.stop_server(proc)
+        finally:
+            w.os.killpg = real
+        self.assertNotIn("denied", answer)
+        self.assertEqual("the server had exited", answer)
 
 if __name__ == "__main__":
     unittest.main()

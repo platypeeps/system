@@ -29,27 +29,42 @@ ST_BOUNDED_DEFAULT_GRACE=5
 # can deny setpgid (sd:7901): the command then stays in its caller's group,
 # a signal to "its" group reaches nothing, and the bound waited on it for as
 # long as it ran. st_prepare(PID, WHY) reads, once the bound is reached,
-# whether PID leads a group of its own; when it does not, it lists PID and
-# its descendants by parent links, and st_kill and st_alive work on that
-# list instead of the group. It returns a line naming the denial, or "".
-# WHY is the parent's own setpgrp error, if any.
+# whether a group PID still exists: PID leads one, or its leader exited and
+# members remain (getpgrp fails on a zombie or reaped PID). When none does
+# and the group was denied or PID still runs, it lists PID and its
+# descendants by parent links, and st_kill and st_alive work on that list
+# instead of the group. st_kill reads the tree again from its live members
+# before each signal, so a child forked during the grace is signalled too.
+# It returns a line naming the denial, or "". WHY is the parent's own
+# setpgrp error, if any.
 # shellcheck disable=SC2016 # perl source, expanded by perl
 ST_GROUP_PERL='my @st_tree;
-sub st_prepare {
-  my ($pid, $why) = @_;
-  @st_tree = ();
-  return "" if getpgrp($pid) == $pid;
+sub st_walk {
   my %kids;
   if (open(my $ps, "-|", "ps", "-A", "-o", "pid=,ppid=")) {
     while (<$ps>) { my ($p, $pp) = split; push @{$kids{$pp}}, $p if defined $pp }
     close $ps;
   }
-  @st_tree = ($pid);
-  for (my $i = 0; $i < @st_tree; $i++) { push @st_tree, @{$kids{$st_tree[$i]} || []} }
+  my %seen;
+  my @tree = grep { !$seen{$_}++ } @_;
+  for (my $i = 0; $i < @tree; $i++) { push @tree, grep { !$seen{$_}++ } @{$kids{$tree[$i]} || []} }
+  return @tree;
+}
+sub st_prepare {
+  my ($pid, $why) = @_;
+  @st_tree = ();
+  return "" if getpgrp($pid) == $pid || kill(0, -$pid) || !($why || kill(0, $pid));
+  @st_tree = st_walk($pid);
   return "process group denied (" . ($why || "pid $pid leads no group") . "); signalling its "
     . scalar(@st_tree) . " process(es) by parent links\n";
 }
-sub st_kill { my ($sig, $pid) = @_; @st_tree ? kill($sig, @st_tree) : kill($sig, -$pid) }
+sub st_kill {
+  my ($sig, $pid) = @_;
+  return kill($sig, -$pid) unless @st_tree;
+  my @live = grep { kill 0, $_ } @st_tree;
+  @st_tree = st_walk(@live) if @live;
+  kill($sig, @st_tree);
+}
 sub st_alive { my ($pid) = @_; @st_tree ? scalar(grep { kill 0, $_ } @st_tree) : kill(0, -$pid) }
 '
 # The source starts with its use line, ST_GROUP_PERL after it: a stall

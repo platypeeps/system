@@ -355,6 +355,10 @@ def stop_server(proc: subprocess.Popen) -> str:
         except ProcessLookupError:
             pass
         except PermissionError as exc:
+            # macOS gives EPERM once the leader is a zombie (sd:2261): it
+            # exited, so no sandbox denied anything.
+            if proc.poll() is not None:
+                return f"{denied}the server had exited"
             denied = f"process group denied ({exc.strerror}); "
             with contextlib.suppress(ProcessLookupError):
                 proc.send_signal(sig)
