@@ -161,6 +161,25 @@ st_kill("TERM", $pid);
         self.addCleanup(kill_pid, kid)
         self.assertTrue(gone(kid), "a child forked after the TERM outlived the KILL")
 
+    def test_a_denied_group_with_an_empty_ps_still_ends_the_command(self):
+        """Review of sd:7901: with ps listing nothing, the walk dropped the
+        command itself, and the bound blocked in waitpid as it ran, the
+        sd:7901 hang again. A command that answers kill 0 seeds the tree."""
+        stubs = self.dir / "bin"
+        stubs.mkdir()
+        (stubs / "ps").write_text("#!/bin/sh\nexit 0\n")
+        (stubs / "ps").chmod(0o755)
+        started = time.monotonic()
+        try:
+            result = shell("st_bounded 1 sleep 30",
+                           env={**os.environ, **DENIED_GROUP, "ST_BOUNDED_GRACE": "1",
+                                "PATH": f"{stubs}:{os.environ['PATH']}"})
+        except subprocess.TimeoutExpired:
+            self.fail("the bound blocked on a command ps did not list")
+        self.assertLess(time.monotonic() - started, 20, "the bound waited out the command")
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("process group denied (Operation not permitted)", result.stderr)
+
     def test_the_bound_s_argv_still_starts_with_its_use_line(self):
         """fixture_config.STALL finds st_bounded's perl by the argv prefix
         `perl -e use strict; use POSIX ();`. sd:7901 put ST_GROUP_PERL first,

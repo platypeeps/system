@@ -52,8 +52,10 @@ sub st_walk {
     }
     close $ps;
   }
+  # No ps listing is an unknown, not an empty tree: a root that answers
+  # kill 0 is kept, or the bound would wait on it in waitpid.
   my %seen;
-  my @tree = grep { $live{$_} && !$seen{$_}++ } @_;
+  my @tree = grep { (%live ? $live{$_} : kill(0, $_)) && !$seen{$_}++ } @_;
   for (my $i = 0; $i < @tree; $i++) { push @tree, grep { !$seen{$_}++ } @{$kids{$tree[$i]} || []} }
   return @tree;
 }
