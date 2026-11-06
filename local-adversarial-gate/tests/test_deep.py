@@ -120,22 +120,11 @@ class Deep(unittest.TestCase):
         self.assertIn("error: not logged in", result.stderr)
 
     def test_the_bound_kills_a_claude_that_never_answers_and_its_tree(self):
-        self.bound_kills_the_tree()
-
-    def test_a_denied_process_group_still_kills_the_tree_and_names_the_denial(self):
-        # sd:7901: a sandboxed gate denied setpgid (2026-11-04), so the fake
-        # stayed in the caller's group and a signal to its own reached nothing.
-        result = self.bound_kills_the_tree(env=DENIED_GROUP)
-        self.assertIn("its tree was signalled (exit 124): process group denied (Operation not permitted)",
-                      result.stderr)
-
-    def bound_kills_the_tree(self, env=None):
         # sd:7508: the bound starts before sh sources lib/config.sh and env.sh,
         # so under gate load 1 s ran out before the fake wrote its grandchild;
         # 4 s is test_run.py's BOUND for the same race.
         started = time.monotonic()
-        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "4", mode="hang",
-                           env=env)
+        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "4", mode="hang")
         self.assertEqual(result.returncode, 124, result.stderr)
         self.assertIn("deep: claude did not answer within 4 s", result.stderr)
         self.assertLess(time.monotonic() - started, 10)
@@ -150,7 +139,19 @@ class Deep(unittest.TestCase):
         else:
             os.kill(pid, signal.SIGKILL)
             self.fail(f"the fake's grandchild {pid} survived the bound")
-        return result
+
+    def test_a_denied_process_group_runs_no_reviewer_and_names_it(self):
+        # sd:7901, operator ruling 2026-11-06: a sandboxed gate denied
+        # setpgid (2026-11-04); no signal reaches what the reviewer forks,
+        # so the bound refuses before it starts the reviewer.
+        started = time.monotonic()
+        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "30", mode="hang",
+                           env=DENIED_GROUP)
+        self.assertLess(time.monotonic() - started, 10, "the reviewer ran")
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn("adversarial-gate: process group denied (Operation not permitted); the reviewer "
+                      "bound needs its own process group, nothing was run", result.stderr)
+        self.assertFalse(self.log["argv"].exists(), "the fake claude ran")
 
     def test_no_claude_is_refused_before_anything_runs(self):
         result = self.gate("--repo", str(self.repo), "--out", str(self.out), claude=self.tmp / "absent")

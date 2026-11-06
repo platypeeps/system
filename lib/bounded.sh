@@ -23,87 +23,26 @@
 # ignored the TERM outlived the job. The default grace stays well under that
 # 10 s; lib/tests/test_bounded.py reads cron-jobs' default to hold it there.
 ST_BOUNDED_DEFAULT_GRACE=5
-
-# Perl subs for every bound that ends a command's process group: this one,
-# cron-jobs' job limit and the adversarial gate's reviewer bound. A sandbox
-# can deny setpgid (sd:7901): the command then stays in its caller's group,
-# a signal to "its" group reaches nothing, and the bound waited on it for as
-# long as it ran. st_prepare(PID, WHY) reads, once the bound is reached,
-# whether a group PID still exists: PID leads one, or its leader exited and
-# members remain (getpgrp fails on a zombie or reaped PID). When none does
-# and the group was denied or PID still runs, it lists PID and its live
-# descendants by parent links, and st_kill and st_alive work on that list
-# instead of the group; a zombie PID lists nothing and is not named.
-# st_kill and st_alive read the tree again on every call, from every PID
-# seen that still answers kill 0, and keep the union: a child forked during
-# the grace is signalled too. A child whose parent exits before a read is
-# reparented to init and has no link left, so the line says it may survive.
-# It returns a line naming the denial, or "". WHY is the parent's own
-# setpgrp error, if any.
-# shellcheck disable=SC2016 # perl source, expanded by perl
-ST_GROUP_PERL='my (@st_tree, $st_denied);
-sub st_walk {
-  my %kids;
-  my %live;
-  if (open(my $ps, "-|", "ps", "-A", "-o", "pid=,ppid=,stat=")) {
-    while (<$ps>) {
-      my ($p, $pp, $stat) = split;
-      next unless defined $stat && $stat !~ /^Z/;
-      $live{$p} = 1;
-      push @{$kids{$pp}}, $p;
-    }
-    close $ps;
-  }
-  # No ps listing is an unknown, not an empty tree: a root that answers
-  # kill 0 is kept, or the bound would wait on it in waitpid.
-  my %seen;
-  my @tree = grep { (%live ? $live{$_} : kill(0, $_)) && !$seen{$_}++ } @_;
-  for (my $i = 0; $i < @tree; $i++) { push @tree, grep { !$seen{$_}++ } @{$kids{$tree[$i]} || []} }
-  return @tree;
-}
-# Read the tree again: keep each PID seen that answers kill 0, add what the
-# walk finds below them, and return how many of them the walk found live.
-sub st_scan {
-  my @kept = grep { kill 0, $_ } @st_tree;
-  my @now = @kept ? st_walk(@kept) : ();
-  my %have = map { $_ => 1 } @kept;
-  @st_tree = (@kept, grep { !$have{$_} } @now);
-  return scalar @now;
-}
-sub st_prepare {
-  my ($pid, $why) = @_;
-  # A second call, as from a signal during the grace, keeps the union.
-  if ($st_denied) { st_scan(); return "" }
-  @st_tree = ();
-  return "" if getpgrp($pid) == $pid || kill(0, -$pid) || !($why || kill(0, $pid));
-  @st_tree = st_walk($pid);
-  return "" unless @st_tree;
-  $st_denied = 1;
-  return "process group denied (" . ($why || "pid $pid leads no group") . "); signalling its "
-    . scalar(@st_tree) . " process(es) by parent links; descendants that left the tree may survive\n";
-}
-sub st_kill {
-  my ($sig, $pid) = @_;
-  return kill($sig, -$pid) unless $st_denied;
-  st_scan();
-  kill($sig, @st_tree);
-}
-sub st_alive { my ($pid) = @_; $st_denied ? st_scan() : kill(0, -$pid) }
-'
-# The source starts with its use line, ST_GROUP_PERL after it: a stall
-# fixture finds this perl by that argv prefix (fixture_config.STALL).
+# A sandbox can deny setpgid (sd:7901). The command would then stay in the
+# caller's group, and no signal would reach what it forks: the child refuses
+# before the exec, by name, and the bound exits 125 (operator, 2026-11-06).
+# The source starts with its use line: a stall fixture finds this perl by
+# that argv prefix (fixture_config.STALL).
 # shellcheck disable=SC2016 # perl source, expanded by perl
 ST_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
-'"$ST_GROUP_PERL"'my ($limit, $grace, @cmd) = @ARGV;
+my ($limit, $grace, @cmd) = @ARGV;
 my $pid = fork;
 defined $pid or do { print STDERR "cannot start $cmd[0]: $!\n"; exit 1 };
 if (!$pid) {
-  setpgrp(0, 0);
+  setpgrp(0, 0) or do {
+    print STDERR "st_bounded: process group denied ($!); a bound needs its own process group, nothing was run: @cmd\n";
+    POSIX::_exit(125);
+  };
   exec { $cmd[0] } @cmd;
   print STDERR "cannot run $cmd[0]: $!\n";
   POSIX::_exit(127);
 }
-my $why = setpgrp($pid, $pid) || !$!{EPERM} ? "" : "$!";
+setpgrp($pid, $pid);
 my %number = (INT => POSIX::SIGINT(), TERM => POSIX::SIGTERM(), HUP => POSIX::SIGHUP());
 my ($status, $caught);
 # perl retries a waitpid a signal interrupts, so each handler dies to end it.
@@ -111,7 +50,7 @@ eval {
   local $SIG{ALRM} = sub { die "limit\n" };
   local @SIG{keys %number} = map {
     my $sig = $_;
-    sub { $caught = $sig; print STDERR st_prepare($pid, $why); st_kill($sig, $pid); die "signal\n" }
+    sub { $caught = $sig; kill $sig, -$pid; die "signal\n" }
   } keys %number;
   alarm $limit;
   $status = $? if waitpid($pid, 0) == $pid;
@@ -122,20 +61,21 @@ if (defined $status) { exit($status & 127 ? 128 + ($status & 127) : $status >> 8
 # Ending the group is not interrupted: a second TERM must not leave it half done.
 $SIG{$_} = "IGNORE" for keys %number;
 if (!defined $caught) {
-  print STDERR "timed out after ${limit}s: @cmd\n", st_prepare($pid, $why);
-  st_kill("TERM", $pid);
+  print STDERR "timed out after ${limit}s: @cmd\n";
+  kill "TERM", -$pid;
 }
 my $end = Time::HiRes::time() + $grace;
-while (st_alive($pid)) {
+while (kill 0, -$pid) {
   waitpid($pid, POSIX::WNOHANG());
-  if (Time::HiRes::time() >= $end) { st_kill("KILL", $pid); last }
+  if (Time::HiRes::time() >= $end) { kill "KILL", -$pid; last }
   Time::HiRes::sleep(0.1);
 }
 waitpid($pid, 0);
 exit(defined $caught ? 128 + $number{$caught} : 124);'
 
 # st_bounded SECONDS COMMAND...: run COMMAND; stop it after SECONDS.
-# Exits with COMMAND's code, or 124 when the bound expired.
+# Exits with COMMAND's code, 124 when the bound expired, or 125 when a
+# denied process group kept COMMAND from running.
 st_bounded() {
     _st_seconds=$1
     shift

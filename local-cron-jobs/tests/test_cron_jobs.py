@@ -3720,23 +3720,26 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertNotIn("sending KILL", log)
         self.assert_gone("sleep 41.4142")
 
-    def test_a_denied_process_group_still_stops_the_hung_job_and_its_tree(self):
-        """sd:7901: a sandbox that denies setpgid leaves the job in the
-        runner's group, and a signal to the job's own group reached
-        nothing. The limit now signals the job's tree by parent links and
-        logs the denial."""
-        self.reap("sleep 41.7320")
-        self.job("'sleep 41.7320 & sleep 41.7320; wait'", timeout="1")
+    def test_a_denied_process_group_runs_nothing_and_holds_no_lock(self):
+        """sd:7901, operator ruling 2026-11-06: with setpgid denied no
+        signal reaches what a job forks, and the lock went with the
+        runner while a worker ran on. The limit now refuses before the
+        job runs, by name, and the next run takes the lock."""
+        ran = self.fx.folder / "ran-7901"
+        self.job(f"'touch \"{ran}\"; sleep 30'", timeout="20")
         denied = {"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
                   "PERL5OPT": "-MDeniedGroup"}
         began = time.monotonic()
         result = self.run_job(env=denied)
-        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
-        self.assertLess(time.monotonic() - began, 15)
-        log = self.log.read_text()
-        self.assertIn("process group denied (Operation not permitted)", log)
-        self.assertRegex(log, r"  \d+ \d+ \d+ \S+ sleep 41\.7320")
-        self.assert_gone("sleep 41.7320")
+        self.assertLess(time.monotonic() - began, 10, "the job ran")
+        self.assertEqual(result.returncode, 125, result.stdout + result.stderr)
+        self.assertIn("process group denied (Operation not permitted); the job limit needs its own "
+                      "process group, nothing was run", self.log.read_text())
+        self.assertFalse(ran.exists(), "the job ran")
+        self.job("'true'")
+        after = self.run_job()
+        self.assertNotIn("skipped", after.stderr)
+        self.assertEqual(after.returncode, 0, after.stderr)
 
     def test_a_timeout_logs_the_process_tree_before_the_kill(self):
         """sd:5064: the log named the group only, so what hung was a guess.

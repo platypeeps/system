@@ -51,14 +51,6 @@ def kill_group(pgid):
         pass
 
 
-def kill_pid(pid):
-    """Cleanup: KILL a process a failed case may have left; gone is fine."""
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-
-
 class Bounded(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -96,113 +88,23 @@ class Bounded(unittest.TestCase):
         # Ended by the TERM, not by the KILL ten seconds later.
         self.assertLess(time.monotonic() - started, 8)
 
-    def test_a_denied_process_group_still_ends_the_command_and_its_tree(self):
-        """sd:7901: with setpgid denied the command stays in the caller's
-        group, so a signal to its own group reached nothing and the bound
-        waited on the command for as long as it ran. The bound now signals
-        each process of its tree, and says the group was denied."""
-        grandchild = self.dir / "grandchild.pid"
-        process = subprocess.Popen(
-            ["/bin/sh", "-c", f'. "{LIB}/bounded.sh"; '
-                              f"st_bounded 3 sh -c 'sleep 60 & echo $! > \"{grandchild}\"; sleep 60'"],
-            start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env={**os.environ, **DENIED_GROUP, "ST_BOUNDED_GRACE": "1"})
-        self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
-        try:
-            _, err = process.communicate(timeout=20)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
-            self.fail("the bound never ended a command whose process group was denied")
-        self.assertEqual(process.returncode, 124, err)
-        self.assertIn("timed out after 3s", err)
-        self.assertIn("process group denied (Operation not permitted)", err)
-        self.assertTrue(gone(int(grandchild.read_text())), "the command's child outlived the bound")
-
-    def test_a_group_whose_leader_exited_is_still_signalled_as_a_group(self):
-        """Review of sd:7901: getpgrp fails once the leader exits, though
-        its group lives on, and st_prepare then signalled the dead leader
-        alone. A group with members left is still signalled as a group."""
-        child = self.dir / "child.pid"
-        process = subprocess.Popen(
-            ["perl", "-e", "use POSIX (); " + shell('printf %s "$ST_GROUP_PERL"').stdout + """
-my $pid = fork;
-if (!$pid) {
-  setpgrp(0, 0);
-  my $kid = fork;
-  if (!$kid) { open(STDOUT, ">", "/dev/null"); open(STDERR, ">", "/dev/null"); exec "sleep", "60" }
-  open(my $out, ">", $ARGV[0]) or die; print $out $kid; close $out;
-  POSIX::_exit(0);
-}
-setpgrp($pid, $pid);
-select(undef, undef, undef, 0.1) until -s $ARGV[0];
-select(undef, undef, undef, 0.3);
-print STDERR st_prepare($pid, "");
-st_kill("TERM", $pid);
-""", str(child)], start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        _, err = process.communicate(timeout=20)
-        kid = int(child.read_text())
-        self.addCleanup(kill_pid, kid)
-        self.assertTrue(gone(kid), "the leader's child outlived the group signal")
-        self.assertEqual("", err)
-
-    def test_a_child_forked_during_the_grace_is_killed_too(self):
-        """Review of sd:7901: the denied path read the tree once, before
-        the TERM, so a child the command forked during the grace outlived
-        the KILL. st_kill reads the tree again before each signal."""
-        late = self.dir / "late.pid"
-        script = self.dir / "forks-on-term.sh"
-        script.write_text('trap \'sleep 60 > /dev/null 2>&1 & echo $! > "$1"\' TERM\nwhile :; do sleep 0.1; done\n')
-        result = shell(f'st_bounded 1 sh "{script}" "{late}"',
-                       env={**os.environ, **DENIED_GROUP, "ST_BOUNDED_GRACE": "2"})
-        self.assertEqual(result.returncode, 124, result.stderr)
-        self.assertIn("process group denied (Operation not permitted)", result.stderr)
-        kid = int(late.read_text())
-        self.addCleanup(kill_pid, kid)
-        self.assertTrue(gone(kid), "a child forked after the TERM outlived the KILL")
-
-    def test_a_denied_group_with_an_empty_ps_still_ends_the_command(self):
-        """Review of sd:7901: with ps listing nothing, the walk dropped the
-        command itself, and the bound blocked in waitpid as it ran, the
-        sd:7901 hang again. A command that answers kill 0 seeds the tree."""
-        stubs = self.dir / "bin"
-        stubs.mkdir()
-        (stubs / "ps").write_text("#!/bin/sh\nexit 0\n")
-        (stubs / "ps").chmod(0o755)
+    def test_a_denied_process_group_runs_nothing_and_names_it(self):
+        """sd:7901, operator ruling 2026-11-06: with setpgid denied no
+        signal reaches what the command forks, so the bound refuses
+        before it runs the command, by name, and exits 125."""
+        ran = self.dir / "ran"
         started = time.monotonic()
-        try:
-            result = shell("st_bounded 1 sleep 30",
-                           env={**os.environ, **DENIED_GROUP, "ST_BOUNDED_GRACE": "1",
-                                "PATH": f"{stubs}:{os.environ['PATH']}"})
-        except subprocess.TimeoutExpired:
-            self.fail("the bound blocked on a command ps did not list")
-        self.assertLess(time.monotonic() - started, 20, "the bound waited out the command")
-        self.assertEqual(result.returncode, 124, result.stderr)
-        self.assertIn("process group denied (Operation not permitted)", result.stderr)
-
-    def test_a_child_whose_parent_exits_on_term_is_killed_or_named(self):
-        """Review round 4 of sd:7901: a command that forks a child on TERM
-        and exits at once leaves the child to init before any scan, and
-        the denied path reported a clean stop. The child is killed, or
-        the line says descendants that left the tree may survive."""
-        late = self.dir / "late.pid"
-        script = self.dir / "forks-and-exits.sh"
-        script.write_text('trap \'sleep 60 > /dev/null 2>&1 & echo $! > "$1"; exit 0\' TERM\n'
-                          'while :; do sleep 0.1; done\n')
-        result = shell(f'st_bounded 1 sh "{script}" "{late}"',
-                       env={**os.environ, **DENIED_GROUP, "ST_BOUNDED_GRACE": "2"})
-        self.assertEqual(result.returncode, 124, result.stderr)
-        deadline = time.monotonic() + 5
-        while not (late.exists() and late.read_text().strip()) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        kid = int(late.read_text())
-        self.addCleanup(kill_pid, kid)
-        self.assertTrue(gone(kid, 1) or "descendants that left the tree may survive" in result.stderr,
-                        f"late child alive after the fallback KILL, and unnamed: {result.stderr}")
+        result = shell(f'st_bounded 30 sh -c \'touch "{ran}"; sleep 30\'',
+                       env={**os.environ, **DENIED_GROUP})
+        self.assertLess(time.monotonic() - started, 10, "the bound ran the command")
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn("st_bounded: process group denied (Operation not permitted); a bound needs "
+                      "its own process group, nothing was run: sh -c", result.stderr)
+        self.assertFalse(ran.exists(), "the command ran")
 
     def test_the_bound_s_argv_still_starts_with_its_use_line(self):
         """fixture_config.STALL finds st_bounded's perl by the argv prefix
-        `perl -e use strict; use POSIX ();`. sd:7901 put ST_GROUP_PERL first,
+        `perl -e use strict; use POSIX ();`. 89202dda put other perl first,
         and every stalled probe in test_promote ran its full 30 s bound."""
         result = shell('printf %s "$ST_BOUNDED"')
         self.assertTrue(result.stdout.startswith("use strict; use POSIX ();"), result.stdout[:80])
