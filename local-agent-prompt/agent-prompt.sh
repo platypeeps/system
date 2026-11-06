@@ -166,18 +166,21 @@ hash_file() { echo "$STATE_DIR/$1.sha"; }
 
 installed_hash() { managed hash "$1"; }
 
+# Every step returns its failure: refresh calls this where set -e is off.
 record_hash() { # label, path
   fingerprint=$(installed_hash "$2") || return 1
-  mkdir -p "$STATE_DIR"
+  mkdir -p "$STATE_DIR" || return 1
   printf '%s\n' "$fingerprint" > "$(hash_file "$1")"
 }
 
 # Replaces the block in place, or appends it when the file has no markers.
-# Content outside the markers is preserved byte for byte.
+# Content outside the markers is preserved byte for byte. Every step returns
+# its failure: refresh calls this where set -e is off, and a block that could
+# not be built must not replace the target's with nothing.
 write_block() {
   f="$1"
-  tmp=$(mktemp)
-  block > "$tmp"
+  tmp=$(mktemp) || return 1
+  block > "$tmp" || { rm -f "$tmp"; return 1; }
   python3 - "$f" "$BEGIN" "$END" "$tmp" <<'PYEOF'
 import sys, pathlib
 p, b, e, blockfile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -195,7 +198,9 @@ else:
     out = old + separator + new + b"\n"
 f.write_bytes(out)
 PYEOF
+  wb_rc=$?
   rm -f "$tmp"
+  return "$wb_rc"
 }
 
 # A heading that appears both inside the block and outside it means the target
@@ -296,11 +301,10 @@ refresh_conflict() { # state, label, path
 cmd_refresh() {
   [ -f "$SRC" ] || die "no prompt/shared.md to distribute"
   [ "$APPLY" -eq 1 ] || echo "mode    : DRY RUN — nothing will be written; re-run with --apply"
-  # Inspect every target before recording even unchanged hashes. This prevents
-  # known conflicts from leaving an order-dependent, partly refreshed fleet.
-  # Exit 2 when the only refusals are blocks edited in place: they wait for a
-  # person, and machine-setup's prompts stage tells them from a failure
-  # (sd:6730). An UNKNOWN target or a target that cannot be read is 1.
+  # Inspect every target before writing any. A target that cannot be read,
+  # or an UNKNOWN one, stops the run here with 1, and nothing is written.
+  # Blocks edited in place alone give 2: each waits for a person, and
+  # machine-setup's prompts stage tells that from a failure (sd:6730).
   pf_rc=0
   targets | (
     failed=0 edited=0
@@ -315,33 +319,48 @@ cmd_refresh() {
     [ "$failed" -eq 0 ] || exit 1
     [ "$edited" -eq 0 ] || exit 2
   ) || pf_rc=$?
-  [ "$pf_rc" -eq 0 ] || return "$pf_rc"
-  targets | while IFS='|' read -r label path; do
-    if ! installed "$label" "$path"; then
-      echo "  SKIP    $label — not installed on this machine"
-      continue
-    fi
-    # Recheck after preflight; another process can change a target meanwhile.
-    st=$(state "$label" "$path") || return 1
-    refresh_conflict "$st" "$label" "$path" || return 1
-    if [ "$st" = current ]; then
-      # Record even though nothing was written. A machine that was already in
-      # sync never takes the write path, so without this it would hold no hash
-      # at all and the first ordinary edit to shared.md would come back as
-      # `unknown` on every target — the very guess this is meant to replace.
-      [ "$APPLY" -eq 1 ] && record_hash "$label" "$path"
-      echo "  ok      $label unchanged"
-      continue
-    fi
-    if [ "$APPLY" -eq 1 ]; then
-      write_block "$path"
-      record_hash "$label" "$path"
-      echo "  wrote   $label $path ($st)"
-    else
-      echo "  [dry-run] would write $label $path ($st)"
-    fi
-  done
-  return 0
+  [ "$pf_rc" -eq 0 ] || [ "$pf_rc" -eq 2 ] || return "$pf_rc"
+  # An edited block holds back its own target only. It held back every
+  # target, so once shared.md moved the rest read STALE, and the nightly's
+  # status failed for drift the edit alone caused (sd:7845). The edits were
+  # read above, so which targets are written does not depend on order.
+  # Each step checks its own exit: set -e is off left of ||.
+  wr_rc=0
+  targets | (
+    edited=0
+    while IFS='|' read -r label path; do
+      if ! installed "$label" "$path"; then
+        echo "  SKIP    $label — not installed on this machine"
+        continue
+      fi
+      # Recheck; another process can change a target meanwhile.
+      st=$(state "$label" "$path") || exit 1
+      if [ "$st" = edited ] && [ "$FORCE" -eq 0 ]; then
+        echo "  kept    $label $path — edited in place, left as it is"
+        edited=1
+        continue
+      fi
+      refresh_conflict "$st" "$label" "$path" || exit 1
+      if [ "$st" = current ]; then
+        # Record even though nothing was written. A machine that was already
+        # in sync never takes the write path, so without this it would hold
+        # no hash at all and the first ordinary edit to shared.md would come
+        # back as `unknown` on every target — the very guess this replaces.
+        if [ "$APPLY" -eq 1 ]; then record_hash "$label" "$path" || exit 1; fi
+        echo "  ok      $label unchanged"
+        continue
+      fi
+      if [ "$APPLY" -eq 1 ]; then
+        write_block "$path" || exit 1
+        record_hash "$label" "$path" || exit 1
+        echo "  wrote   $label $path ($st)"
+      else
+        echo "  [dry-run] would write $label $path ($st)"
+      fi
+    done
+    [ "$edited" -eq 0 ] || exit 2
+  ) || wr_rc=$?
+  return "$wr_rc"
 }
 
 cmd_diff() {
@@ -427,10 +446,10 @@ instructions file. The source of truth is prompt/shared.md in this folder.
 
   --apply    actually write. WITHOUT IT REFRESH AND CAPTURE ARE DRY RUNS.
   --force    (refresh) overwrite a block that was edited in place. Without it
-             refresh reports all known conflicts and exits before writing,
-             so an edit made
-             through Claude Code's /memory is never silently discarded:
-             2 when every refusal is DIFFERS, 1 for UNKNOWN or an error.
+             refresh leaves such a block alone, so an edit made through
+             Claude Code's /memory is never silently discarded, writes every
+             other target, and exits 2. An UNKNOWN target or an error exits 1
+             before any target is written.
 
 A target that differs from shared.md is one of three things, and which one is
 decided by the sha256 of the block as it was last written, kept in
@@ -439,7 +458,8 @@ $AGENT_PROMPT_STATE (default ~/.config/agent-prompt):
   STALE    the target still matches what was written; shared.md moved.
            `refresh --apply` writes it, no --force needed.
   DIFFERS  the target no longer matches what was written: someone edited the
-           block in place. Refused; keep it with `capture`, or `--force`.
+           block in place. Left alone, the other targets written; keep it
+           with `capture`, or overwrite it with `--force`.
   UNKNOWN  it differs and nothing is recorded — a machine provisioned before
            the hash existed. Refused; the first `refresh --apply` records one
            for every target, including the ones already current.
