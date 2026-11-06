@@ -480,7 +480,7 @@ SSH_CAUSE=""
 auth_cause() {
   [ -n "$SSH_CAUSE" ] || return 0
   a_rc=0
-  grep -qE 'terminal prompts disabled|could not read (Username|Password)|Authentication failed|Repository not found' \
+  grep -qE 'terminal prompts disabled|could not read (Username|Password)|Authentication failed|Repository not found|returned error: 40[13]' \
     "$1" 2>/dev/null || a_rc=$?
   [ "$a_rc" -eq 1 ] || printf '%s' "$SSH_CAUSE"
 }
