@@ -52,9 +52,11 @@ sub st_prepare {
 sub st_kill { my ($sig, $pid) = @_; @st_tree ? kill($sig, @st_tree) : kill($sig, -$pid) }
 sub st_alive { my ($pid) = @_; @st_tree ? scalar(grep { kill 0, $_ } @st_tree) : kill(0, -$pid) }
 '
+# The source starts with its use line, ST_GROUP_PERL after it: a stall
+# fixture finds this perl by that argv prefix (fixture_config.STALL).
 # shellcheck disable=SC2016 # perl source, expanded by perl
-ST_BOUNDED="$ST_GROUP_PERL"'use strict; use POSIX (); use Time::HiRes ();
-my ($limit, $grace, @cmd) = @ARGV;
+ST_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
+'"$ST_GROUP_PERL"'my ($limit, $grace, @cmd) = @ARGV;
 my $pid = fork;
 defined $pid or do { print STDERR "cannot start $cmd[0]: $!\n"; exit 1 };
 if (!$pid) {

@@ -761,8 +761,8 @@ lock_is_live() { # lock file
 # shellcheck disable=SC2016 # perl source, expanded by perl
 # A denied setpgid falls back to the tree by parent links: lib/bounded.sh's
 # ST_GROUP_PERL (sd:7901).
-RUN_BOUNDED="$ST_GROUP_PERL"'use strict; use POSIX (); use Time::HiRes ();
-my ($job, $limit, $grace, @cmd) = @ARGV;
+RUN_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
+'"$ST_GROUP_PERL"'my ($job, $limit, $grace, @cmd) = @ARGV;
 sub say_log { printf STDERR "[%s] %s %s\n", $job, POSIX::strftime("%Y-%m-%dT%H:%M:%S%z", localtime), $_[0] }
 my $pid = fork;
 defined $pid or do { say_log("cannot start the job: $!"); exit 1 };

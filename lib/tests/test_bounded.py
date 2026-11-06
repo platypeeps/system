@@ -111,6 +111,13 @@ class Bounded(unittest.TestCase):
         self.assertIn("process group denied (Operation not permitted)", err)
         self.assertTrue(gone(int(grandchild.read_text())), "the command's child outlived the bound")
 
+    def test_the_bound_s_argv_still_starts_with_its_use_line(self):
+        """fixture_config.STALL finds st_bounded's perl by the argv prefix
+        `perl -e use strict; use POSIX ();`. sd:7901 put ST_GROUP_PERL first,
+        and every stalled probe in test_promote ran its full 30 s bound."""
+        result = shell('printf %s "$ST_BOUNDED"')
+        self.assertTrue(result.stdout.startswith("use strict; use POSIX ();"), result.stdout[:80])
+
     def test_a_term_to_the_caller_reaches_the_command(self):
         """The job's own limit TERMs the job's group; the bounded command is in
         a group of its own, so the TERM has to be passed on."""
