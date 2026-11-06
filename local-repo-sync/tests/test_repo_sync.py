@@ -349,13 +349,13 @@ class Fixture:
         self.snapshot().parent.mkdir(parents=True, exist_ok=True)
         self.snapshot().write_text(self.snapshot_text(text, root))
 
-    def https_login_refused(self):
+    def https_login_refused(self, said="fatal: could not read Username for "
+                            "'https://github.com': terminal prompts disabled"):
         """Env for a run whose https fetches fail as GitHub fails a private
         repo with prompts off: GitHub's remotes go to `authfail://`, whose
         remote helper says what git-remote-https says (sd:7746)."""
         helper = self.bin / "git-remote-authfail"
-        helper.write_text("#!/bin/sh\necho \"fatal: could not read Username for "
-                          "'https://github.com': terminal prompts disabled\" >&2\nexit 128\n")
+        helper.write_text(f'#!/bin/sh\necho "{said}" >&2\nexit 128\n')
         helper.chmod(0o755)
         return {"REPO_SYNC_GITHUB_HTTPS": "authfail://x/"}
 
@@ -770,6 +770,24 @@ class RepoSyncTest(unittest.TestCase):
         self.assertIn("terminal prompts disabled", result.stderr)
         self.assertRegex(result.stderr, r"(?m)^!!! failed: owner/one .*" + re.escape(SSH_CAUSE) + "$")
         self.assertRegex(result.stdout, r"(?m)^  owner/one" + re.escape(SSH_CAUSE) + "$")
+
+    def test_an_https_403_or_401_names_the_missing_key(self):
+        """REGRESSION (sd:7755). auth_cause matched four login phrases and
+        missed an https refusal such as SAML SSO's 403, so the ssh hint
+        went missing where an unlocked key fixes the fetch."""
+        for code in (403, 401):
+            with self.subTest(code=code):
+                f = self.fixture()
+                f.write_conf("a owner/one\n")
+                f.checkout("a/one", "owner/one")
+                said = ("fatal: unable to access 'https://github.com/owner/one/': "
+                        f"The requested URL returned error: {code}")
+
+                result = f.run("sync", expect=1, extra_env=f.https_login_refused(said))
+
+                self.assertIn(f"returned error: {code}", result.stderr)
+                self.assertRegex(result.stderr, r"(?m)^!!! failed: owner/one .*"
+                                 + re.escape(SSH_CAUSE) + "$")
 
     def test_only_a_login_failure_names_the_missing_key(self):
         """REGRESSION (sd:7746). The ssh hint went on every failed repo of
