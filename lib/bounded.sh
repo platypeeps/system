@@ -31,22 +31,29 @@ ST_BOUNDED_DEFAULT_GRACE=5
 # long as it ran. st_prepare(PID, WHY) reads, once the bound is reached,
 # whether a group PID still exists: PID leads one, or its leader exited and
 # members remain (getpgrp fails on a zombie or reaped PID). When none does
-# and the group was denied or PID still runs, it lists PID and its
+# and the group was denied or PID still runs, it lists PID and its live
 # descendants by parent links, and st_kill and st_alive work on that list
-# instead of the group. st_kill reads the tree again from its live members
-# before each signal, so a child forked during the grace is signalled too.
+# instead of the group; a zombie PID lists nothing and is not named. st_kill
+# reads the tree again from its live members before each signal, so a child
+# forked during the grace is signalled too.
 # It returns a line naming the denial, or "". WHY is the parent's own
 # setpgrp error, if any.
 # shellcheck disable=SC2016 # perl source, expanded by perl
 ST_GROUP_PERL='my @st_tree;
 sub st_walk {
   my %kids;
-  if (open(my $ps, "-|", "ps", "-A", "-o", "pid=,ppid=")) {
-    while (<$ps>) { my ($p, $pp) = split; push @{$kids{$pp}}, $p if defined $pp }
+  my %live;
+  if (open(my $ps, "-|", "ps", "-A", "-o", "pid=,ppid=,stat=")) {
+    while (<$ps>) {
+      my ($p, $pp, $stat) = split;
+      next unless defined $stat && $stat !~ /^Z/;
+      $live{$p} = 1;
+      push @{$kids{$pp}}, $p;
+    }
     close $ps;
   }
   my %seen;
-  my @tree = grep { !$seen{$_}++ } @_;
+  my @tree = grep { $live{$_} && !$seen{$_}++ } @_;
   for (my $i = 0; $i < @tree; $i++) { push @tree, grep { !$seen{$_}++ } @{$kids{$tree[$i]} || []} }
   return @tree;
 }
@@ -55,6 +62,7 @@ sub st_prepare {
   @st_tree = ();
   return "" if getpgrp($pid) == $pid || kill(0, -$pid) || !($why || kill(0, $pid));
   @st_tree = st_walk($pid);
+  return "" unless @st_tree;
   return "process group denied (" . ($why || "pid $pid leads no group") . "); signalling its "
     . scalar(@st_tree) . " process(es) by parent links\n";
 }
