@@ -16,6 +16,12 @@
 #   agent-prompt-fail         when present, `agent prompt` answers an error
 #   on-agent-start            when present, `agent start` runs it first, as
 #                             the started agent's own startup hook would
+#   server-fail               when present, `--session <n> server` prints it
+#                             on stderr and exits 1; otherwise it writes a
+#                             running session-list.json (unless
+#                             server-stays-down is present) and sleeps;
+#                             with server-lost-race it exits 1 after that
+#   server.pid                written by `--session <n> server`: its pid
 # Never the real binary: the suite prepends this directory to PATH.
 set -e
 
@@ -38,6 +44,26 @@ case "${1:-}" in
     echo "herdr — terminal workspace manager for AI coding agents (double)"
     ;;
   --session)
+    if [ "${3:-}" = server ]; then
+      # `--session <name> server`: the headless server, in the foreground
+      # as the real one runs. It writes its pid, then comes up (the
+      # session reads running) and stays, unless a fixture says otherwise.
+      echo $$ > "$FIX/server.pid"
+      if [ -f "$FIX/server-fail" ]; then
+        cat "$FIX/server-fail" >&2
+        exit 1
+      fi
+      if [ ! -f "$FIX/server-stays-down" ]; then
+        printf '{"sessions":[{"default":false,"name":"%s","running":true,"session_dir":"/tmp/%s","socket_path":"/tmp/%s/herdr.sock"}]}\n' \
+          "$2" "$2" "$2" > "$FIX/session-list.json"
+      fi
+      if [ -f "$FIX/server-lost-race" ]; then
+        # Another start won: the session runs, and this server exits.
+        echo "Error: herdr server is already running" >&2
+        exit 1
+      fi
+      exec sleep 60
+    fi
     # The real binary starts the session's server and attaches the TUI here;
     # the double returns so a test can read the journal.
     exit 0

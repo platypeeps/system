@@ -20,9 +20,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 DEFAULT_SESSION = "sd"
 
@@ -242,6 +244,68 @@ def session_info(session: str) -> dict | None:
 def session_running(session: str) -> bool:
     info = session_info(session)
     return bool(info and info.get("running"))
+
+
+# How long a headless server gets to read `running` in `session list`. One
+# came up at once on the 0.9.5 binary; a large restored session takes longer.
+SERVER_START_SECONDS = 10.0
+
+
+def start_headless(session: str) -> None:
+    """Start the session's server with no client attached, and wait for it.
+
+    `herdr --session <name> server` is herdr's headless server for a named
+    session -- what its own client starts before it attaches. It runs in
+    the foreground, so it gets a session of its own and no terminal: it
+    outlives this process, and the caller's pipes never wait on it. Raises
+    Fail with the cause when it exits first or never reads `running`; the
+    second kind is stopped, so no half-started server is left behind.
+    """
+    out = tempfile.TemporaryFile()
+    try:
+        proc = subprocess.Popen(
+            ["herdr", "--session", session, "server"],
+            env=herdr_env(session),
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        out.close()
+        raise Fail(f"session {session} is not running and did not start: {exc}")
+
+    def said() -> str:
+        out.seek(0)
+        text = out.read().decode(errors="replace").strip()
+        return f": {text}" if text else ""
+
+    try:
+        deadline = time.monotonic() + SERVER_START_SECONDS
+        while True:
+            # The exit is read before `running`: a server another launch
+            # started at the same moment makes this one exit, and the
+            # session still runs, so an exit counts only when the session
+            # still does not run after it.
+            exited = proc.poll() is not None
+            if session_running(session):
+                return
+            if exited:
+                raise Fail(
+                    f"session {session} is not running and did not start: "
+                    f"herdr --session {session} server exited {proc.returncode}{said()}"
+                )
+            if time.monotonic() > deadline:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGTERM)
+                proc.wait()
+                raise Fail(
+                    f"session {session} is not running and did not start: not running "
+                    f"after {SERVER_START_SECONDS:g} s; the server was stopped{said()}"
+                )
+            time.sleep(0.1)
+    finally:
+        out.close()
 
 
 def pane_get(session: str, pane: str) -> dict | None:
@@ -475,7 +539,8 @@ def verb_launch(session: str, argv: list[str]) -> int:
     """A new workspace at a directory, claude started in its root pane, then one prompt (sd:3456).
 
     `resume` starts only a recorded session (`--resume <id>`); this starts a
-    fresh one. The prompt goes through `agent prompt`, as text typed to the
+    fresh one. A session that is not running is started headless first.
+    The prompt goes through `agent prompt`, as text typed to the
     agent, never through the pane's shell. Nothing is recorded: herdr's
     integration reports the new session id, and `snapshot` keeps it.
     """
@@ -487,7 +552,11 @@ def verb_launch(session: str, argv: list[str]) -> int:
     if not herdr_installed():
         raise Fail("herdr is not installed; install it, then run herdr.sh start", 3)
     if not session_running(session):
-        raise Fail(f"session {session} is not running; run herdr.sh start first")
+        # The dashboard's Fix runs this with no terminal to attach, so a
+        # down session is started headless; herdr restores its agents
+        # itself, with no client attached.
+        start_headless(session)
+        print(f"session {session} was not running; started it headless", file=sys.stderr)
     created = herdr_json(session, "workspace", "create", "--cwd", directory, "--label", label, "--no-focus")
     pane = None if created.get("error") else created.get("result", {}).get("root_pane", {}).get("pane_id")
     if not pane:
