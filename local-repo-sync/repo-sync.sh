@@ -469,8 +469,21 @@ github_https() {
   export GIT_CONFIG_COUNT="$h_n" GIT_TERMINAL_PROMPT=0 REPO_SYNC_HTTPS=1
 }
 
-# The cause each failed repo's line names; ssh_preflight sets it (sd:7721).
+# The cause a failed repo's line names when https asked it for a login it
+# did not have; ssh_preflight sets it (sd:7721).
 SSH_CAUSE=""
+
+# SSH_CAUSE when git's stderr in file $1 says https wanted credentials it
+# did not get; nothing for a local failure, such as a pull that cannot
+# fast-forward or a clone target that exists (sd:7746). A file grep cannot
+# read is an unknown cause, so it keeps the hint.
+auth_cause() {
+  [ -n "$SSH_CAUSE" ] || return 0
+  a_rc=0
+  grep -qE 'terminal prompts disabled|could not read (Username|Password)|Authentication failed|Repository not found' \
+    "$1" 2>/dev/null || a_rc=$?
+  [ "$a_rc" -eq 1 ] || printf '%s' "$SSH_CAUSE"
+}
 
 # Prints one "ssh     :" line when it acted or failed; silent when a key
 # already answers. Returns 1 when no key authenticates, and then points the
@@ -487,8 +500,9 @@ ssh_preflight() {
       ;;
   esac
   github_https
-  # Each repo that then fails names this cause: over https with prompts
-  # off, a private repo says only "terminal prompts disabled" (sd:7721).
+  # A repo that then fails for want of a login names this cause: over
+  # https with prompts off, a private repo says only "terminal prompts
+  # disabled" (sd:7721). A local failure does not (sd:7746).
   SSH_CAUSE="; no ssh key answered, so this run fetched over https"
   echo "ssh     : no key authenticates to git@github.com, so this run fetches"
   echo "          GitHub over https: a public repo needs no key, a private one"
@@ -585,8 +599,17 @@ pin_state() {
   echo "$p_line"
 }
 
+# Runs bound_step "$@". Its stderr passes through and stays in
+# $TMPD/git.err, where auth_cause reads it.
+git_step() {
+  g_rc=0
+  bound_step "$@" 2> "$TMPD/git.err" || g_rc=$?
+  cat "$TMPD/git.err" >&2
+  return "$g_rc"
+}
+
 # Pulls checkout $1 and updates its submodules. Their stderr passes through
-# and stays in $TMPD/pull.err, where held_lock reads it.
+# and stays in $TMPD/pull.err, where held_lock and auth_cause read it.
 pull_one() {
   p_rc=0
   { bound_step 600 git -C "$1" pull --ff-only < /dev/null \
@@ -701,25 +724,27 @@ sync() {
       # pulled; `git pull` would refuse a detached HEAD anyway. On a
       # satellite, system and pack are never pulled, pinned or not.
       echo "=== pinned $full_repo"
-      if bound_step 300 git -C "$target" fetch -q origin < /dev/null; then
+      if git_step 300 git -C "$target" fetch -q origin < /dev/null; then
         state=$(pin_state "$target")
         echo "$state; not pulled (repo-sync.sh $mover moves it)"
         echo "$full_repo $state" >> "$PINLOG"
       else
-        echo "!!! failed: $full_repo (fetch; $(pin_state "$target"))$SSH_CAUSE" >&2
-        echo "$full_repo$SSH_CAUSE" >> "$FAILLOG"
+        cause=$(auth_cause "$TMPD/git.err")
+        echo "!!! failed: $full_repo (fetch; $(pin_state "$target"))$cause" >&2
+        echo "$full_repo$cause" >> "$FAILLOG"
       fi
     elif [ -d "$target/.git" ]; then
       echo "=== refreshing $full_repo"
       if state=$(local_branch_no_upstream "$target"); then
         # Fetched so its refs stay fresh, never pulled. A failed fetch is an
         # unknown result, so it fails like any other repo.
-        if bound_step 300 git -C "$target" fetch -q < /dev/null; then
+        if git_step 300 git -C "$target" fetch -q < /dev/null; then
           echo "$state, no upstream; fetched, not pulled"
           echo "$full_repo $state" >> "$KEPTLOG"
         else
-          echo "!!! failed: $full_repo (fetch; $state)$SSH_CAUSE" >&2
-          echo "$full_repo$SSH_CAUSE" >> "$FAILLOG"
+          cause=$(auth_cause "$TMPD/git.err")
+          echo "!!! failed: $full_repo (fetch; $state)$cause" >&2
+          echo "$full_repo$cause" >> "$FAILLOG"
         fi
       elif state=$(side_branch_diverged "$target"); then
         echo "$state; left alone"
@@ -738,16 +763,18 @@ sync() {
           echo "!!! failed: $full_repo: $lock" >&2
           echo "$full_repo: $lock" >> "$FAILLOG"
         else
-          echo "!!! failed: $full_repo$SSH_CAUSE" >&2
-          echo "$full_repo$SSH_CAUSE" >> "$FAILLOG"
+          cause=$(auth_cause "$TMPD/pull.err")
+          echo "!!! failed: $full_repo$cause" >&2
+          echo "$full_repo$cause" >> "$FAILLOG"
         fi
       fi
     else
       echo "=== cloning $full_repo"
       mkdir -p "$ROOT/$subdir"
-      if ! bound_step 1800 git clone "git@github.com:$full_repo.git" "$target" < /dev/null; then
-        echo "!!! failed: $full_repo$SSH_CAUSE" >&2
-        echo "$full_repo$SSH_CAUSE" >> "$FAILLOG"
+      if ! git_step 1800 git clone "git@github.com:$full_repo.git" "$target" < /dev/null; then
+        cause=$(auth_cause "$TMPD/git.err")
+        echo "!!! failed: $full_repo$cause" >&2
+        echo "$full_repo$cause" >> "$FAILLOG"
       fi
     fi
     echo
@@ -2840,9 +2867,13 @@ case "$1" in
       # Each failed repo's section to its own file, as the checksum's input;
       # sync's only --- line is the closing rule. Its step lines and git's
       # fetch lines (`From <url>`, `old..new main -> origin/main`) are left
-      # out: they move with the clock and the upstream, not the cause.
-      awk -v d="$TMPD" 'function flush() { if (f) { printf "%s", b > (d "/failed." n); close(d "/failed." n) } f = 0 }
-           /^=== |^---/ { flush(); n++; b = "" } /^\[step |^From |^ .* -> / { next } /^!!! failed: / { f = 1 }
+      # out: they move with the clock and the upstream, not the cause. So is
+      # the ssh hint on the failed line: it moves with the key's lock state,
+      # and an unchanged failure kept its report open (sd:7746).
+      awk -v d="$TMPD" -v cause="$SSH_CAUSE" 'function flush() { if (f) { printf "%s", b > (d "/failed." n); close(d "/failed." n) } f = 0 }
+           /^=== |^---/ { flush(); n++; b = "" } /^\[step |^From |^ .* -> / { next }
+           /^!!! failed: / { f = 1; k = length($0) - length(cause)
+                             if (cause != "" && k > 0 && substr($0, k + 1) == cause) $0 = substr($0, 1, k) }
            { b = b $0 "\n" } END { flush() }' "$OUT"
       {
         cat "$KINDS"

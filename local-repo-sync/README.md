@@ -590,6 +590,9 @@ list, and `terra` is the one that reads a single conf instead of layering on
   there; a private one needs git's credential helper or `gh auth login`.
   `follow` tries https after a failed fetch, so a satellite's cron job
   follows the hub's pins with no key in the agent.
+  A repo whose fetch or clone then fails for want of a login ends its
+  failed line with "no ssh key answered" (sd:7721); a local failure does
+  not, and the nightly report's checksum leaves that hint out (sd:7746).
 - Pulls are `--ff-only`. A repo with local commits or a dirty tree is reported
   as a failure instead of being silently merged; the old script used a bare
   `git pull` and could leave merge commits behind.
