@@ -762,11 +762,9 @@ lock_is_live() { # lock file
 RUN_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
 my ($job, $limit, $grace, @cmd) = @ARGV;
 sub say_log { printf STDERR "[%s] %s %s\n", $job, POSIX::strftime("%Y-%m-%dT%H:%M:%S%z", localtime), $_[0] }
-pipe(my $ready, my $exec) or do { say_log("cannot start the job: $!"); exit 1 };
 my $pid = fork;
 defined $pid or do { say_log("cannot start the job: $!"); exit 1 };
 if (!$pid) {
-  close $ready;
   # A denied setpgid (sd:7901) leaves the job in the runner group, where no
   # signal reaches what it forks: refuse before the exec, exit 125. Only the
   # job sets its group: a runner setpgrp raced it into EPERM.
@@ -779,12 +777,12 @@ if (!$pid) {
   say_log("cannot run $cmd[0]: $!");
   POSIX::_exit(127);
 }
-# EOF on the close-on-exec pipe: the job exec-ed or exited, its group set.
-close $exec;
-sysread $ready, my $byte, 1;
-close $ready;
 POSIX::close(8);
-for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { kill $sig, -$pid } }
+# The limit is armed at once, as an exec can stall. Until its setpgrp the
+# job has no group and has forked nothing: a signal finding no group goes
+# to the job itself.
+sub hit { kill($_[0], -$pid) or kill($_[0], $pid) }
+for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { hit($sig) } }
 my $status;
 eval {
   local $SIG{ALRM} = sub { die "limit\n" };
@@ -804,14 +802,13 @@ if (open(my $ps, "-|", "ps", "-A", "-o", "pid=,ppid=,pgid=,etime=,command=")) {
 @tree ? print STDERR map { "  " . substr(join(" ", split(" ", $_, 5)), 0, 300) . "\n" }
                      "PID PPID PGID ELAPSED COMMAND", @tree
       : say_log("process tree of group $pid unknown: ps listed none of it");
-kill "TERM", -$pid;
+hit("TERM");
 my $end = Time::HiRes::time() + $grace;
 while (1) {
-  waitpid($pid, POSIX::WNOHANG());
-  last unless kill 0, -$pid;
+  last unless kill(0, -$pid) or waitpid($pid, POSIX::WNOHANG()) == 0;
   if (Time::HiRes::time() >= $end) {
     say_log("process group $pid still running ${grace}s after TERM; sending KILL");
-    kill "KILL", -$pid;
+    hit("KILL");
     last;
   }
   Time::HiRes::sleep(0.1);

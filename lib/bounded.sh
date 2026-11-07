@@ -27,18 +27,17 @@ ST_BOUNDED_DEFAULT_GRACE=5
 # caller's group, and no signal would reach what it forks: the child refuses
 # before the exec, by name, and the bound exits 125 (operator, 2026-11-06).
 # Only the child sets its group: a parent setpgrp($pid, $pid) raced it into
-# EPERM. The parent reads the close-on-exec pipe to EOF, so the group exists
-# before any signal goes to it.
+# EPERM. The bound is armed at once, as an exec can stall. Until its setpgrp
+# the child has no group and has forked nothing, so a signal that finds no
+# group goes to the child itself.
 # The source starts with its use line: a stall fixture finds this perl by
 # that argv prefix (fixture_config.STALL).
 # shellcheck disable=SC2016 # perl source, expanded by perl
 ST_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
 my ($limit, $grace, @cmd) = @ARGV;
-pipe(my $ready, my $exec) or do { print STDERR "cannot start $cmd[0]: $!\n"; exit 1 };
 my $pid = fork;
 defined $pid or do { print STDERR "cannot start $cmd[0]: $!\n"; exit 1 };
 if (!$pid) {
-  close $ready;
   setpgrp(0, 0) or do {
     print STDERR "st_bounded: process group denied ($!); a bound needs its own process group, nothing was run: @cmd\n";
     POSIX::_exit(125);
@@ -47,9 +46,8 @@ if (!$pid) {
   print STDERR "cannot run $cmd[0]: $!\n";
   POSIX::_exit(127);
 }
-close $exec;
-sysread $ready, my $byte, 1;
-close $ready;
+sub hit { kill($_[0], -$pid) or kill($_[0], $pid) }
+sub alive { kill(0, -$pid) or waitpid($pid, POSIX::WNOHANG()) == 0 }
 my %number = (INT => POSIX::SIGINT(), TERM => POSIX::SIGTERM(), HUP => POSIX::SIGHUP());
 my ($status, $caught);
 # perl retries a waitpid a signal interrupts, so each handler dies to end it.
@@ -57,7 +55,7 @@ eval {
   local $SIG{ALRM} = sub { die "limit\n" };
   local @SIG{keys %number} = map {
     my $sig = $_;
-    sub { $caught = $sig; kill $sig, -$pid; die "signal\n" }
+    sub { $caught = $sig; hit($sig); die "signal\n" }
   } keys %number;
   alarm $limit;
   $status = $? if waitpid($pid, 0) == $pid;
@@ -69,12 +67,11 @@ if (defined $status) { exit($status & 127 ? 128 + ($status & 127) : $status >> 8
 $SIG{$_} = "IGNORE" for keys %number;
 if (!defined $caught) {
   print STDERR "timed out after ${limit}s: @cmd\n";
-  kill "TERM", -$pid;
+  hit("TERM");
 }
 my $end = Time::HiRes::time() + $grace;
-while (kill 0, -$pid) {
-  waitpid($pid, POSIX::WNOHANG());
-  if (Time::HiRes::time() >= $end) { kill "KILL", -$pid; last }
+while (alive()) {
+  if (Time::HiRes::time() >= $end) { hit("KILL"); last }
   Time::HiRes::sleep(0.1);
 }
 waitpid($pid, 0);

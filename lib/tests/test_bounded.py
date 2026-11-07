@@ -26,6 +26,8 @@ def cron_jobs_grace():
 DENIED_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MDeniedGroup"}
 #: The env that prints a line for every setpgrp naming another process.
 PARENT_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MParentGroup"}
+#: The env that stalls a child 4 s before its exec; PRE_EXEC_STALL says when.
+PRE_EXEC_STALL = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MPreExecStall"}
 
 
 def shell(script, **kwargs):
@@ -111,6 +113,20 @@ class Bounded(unittest.TestCase):
         result = shell("st_bounded 30 true", env={**os.environ, **PARENT_GROUP})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("ParentGroup:", result.stderr)
+
+    def test_a_stall_before_the_exec_is_bounded(self):
+        """sd:7901 review: 8feefe9b waited for the exec before it armed the
+        bound, so an exec stalled past the bound ran on and exited 0.
+        Before its setpgrp the child has no group, so the bound signals
+        the child itself."""
+        for when in ("before", "after"):
+            with self.subTest(when=when):
+                started = time.monotonic()
+                result = shell("st_bounded 1 true",
+                               env={**os.environ, **PRE_EXEC_STALL,
+                                    "PRE_EXEC_STALL": f"{when}:{self.dir / when}"})
+                self.assertEqual(result.returncode, 124, result.stderr)
+                self.assertLess(time.monotonic() - started, 3.5, "the bound waited out the stall")
 
     def test_the_bound_s_argv_still_starts_with_its_use_line(self):
         """fixture_config.STALL finds st_bounded's perl by the argv prefix

@@ -3751,6 +3751,19 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("ParentGroup:", result.stdout + result.stderr + self.log.read_text())
 
+    def test_a_stall_before_the_exec_is_bounded(self):
+        """sd:7901 review: 8feefe9b waited for the exec before it armed the
+        limit, so a job whose exec stalled ran past it holding the lock."""
+        self.job("'true'", timeout="1")
+        for when in ("before", "after"):
+            with self.subTest(when=when):
+                began = time.monotonic()
+                result = self.run_job(env={"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
+                                           "PERL5OPT": "-MPreExecStall",
+                                           "PRE_EXEC_STALL": f"{when}:{self.fx.folder / when}"})
+                self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+                self.assertLess(time.monotonic() - began, 3.5, "the limit waited out the stall")
+
     def test_a_timeout_logs_the_process_tree_before_the_kill(self):
         """sd:5064: the log named the group only, so what hung was a guess.
         Each process in the group goes to the log, with its parent and age,
