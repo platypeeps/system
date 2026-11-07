@@ -278,21 +278,35 @@ exec "$@"' "$ROOT/../lib/config.sh" "$claude" "$@"
     my $secs = shift;
     my $pid = fork;
     defined $pid or die "adversarial-gate: fork: $!\n";
-    if ($pid == 0) { setpgrp(0, 0); exec @ARGV or die "adversarial-gate: exec: $!\n"; }
+    # A denied setpgid (sd:7901) leaves the reviewer in this shell group,
+    # where no signal reaches what it forks: refuse before the exec, 125.
+    if ($pid == 0) {
+      setpgrp(0, 0) or do {
+        print STDERR "adversarial-gate: process group denied ($!); the reviewer bound needs its own process group, nothing was run\n";
+        POSIX::_exit(125);
+      };
+      exec @ARGV or die "adversarial-gate: exec: $!\n";
+    }
+    # Until its setpgrp the child has no group and has forked nothing: a
+    # signal that finds no group goes to the child itself.
+    # Once reaped, the PID may be another process: only the group is signalled.
+    my $reaped = 0;
+    sub reap { my $got = waitpid($pid, $_[0]); $reaped = 1 if $got == $pid; $got }
+    sub hit { kill($_[0], -$pid) or $reaped or kill($_[0], $pid) }
     $SIG{ALRM} = sub {
-      kill TERM => -$pid;
+      hit("TERM");
       my $gone = 0;
       for (1 .. 20) {
-        if (waitpid($pid, WNOHANG) != 0) { $gone = 1; last; }
+        if (reap(WNOHANG) != 0) { $gone = 1; last; }
         select(undef, undef, undef, 0.1);
       }
-      kill KILL => -$pid;
-      waitpid($pid, 0) unless $gone;
+      hit("KILL");
+      reap(0) unless $gone;
       print STDERR "adversarial-gate: $ENV{GATE_VERB}: $ENV{GATE_ENGINE} did not answer within $secs s; its process group was killed (exit 124)\n";
       exit 124;
     };
     alarm $secs;
-    waitpid($pid, 0);
+    reap(0);
     my $status = $?;
     exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
   ' "$timeout" "$@" || status=$?

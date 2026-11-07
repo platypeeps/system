@@ -21,6 +21,25 @@ def cron_jobs_grace():
     return int(found[0])
 
 
+#: The env that makes every setpgrp in the bound's perl fail with EPERM, as a
+#: sandboxed gate denied setpgid on 2026-11-04 (sd:7901).
+DENIED_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MDeniedGroup"}
+#: The env that prints a line for every setpgrp naming another process.
+PARENT_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MParentGroup"}
+#: The env that stalls a child 4 s before its exec; PRE_EXEC_STALL says when.
+PRE_EXEC_STALL = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MPreExecStall"}
+#: The env where a group probe sees an unreaped zombie leader, as on Linux.
+ZOMBIE_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MZombieGroup"}
+#: The env that logs every kill with a signal to KILL_LOG.
+KILL_LOG = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MKillLog"}
+
+
+def bare_pid_signals(log):
+    """The lines of a KillLog file that signal one process, not a group."""
+    lines = log.read_text().splitlines() if log.exists() else []
+    return [line for line in lines if int(line.split()[1]) > 0]
+
+
 def shell(script, **kwargs):
     return subprocess.run(["/bin/sh", "-c", f'. "{LIB}/bounded.sh"; {script}'],
                           capture_output=True, text=True, check=False, timeout=60, **kwargs)
@@ -82,6 +101,72 @@ class Bounded(unittest.TestCase):
         self.assertTrue(gone(int(pidfile.read_text())), "the child outlived the bound")
         # Ended by the TERM, not by the KILL ten seconds later.
         self.assertLess(time.monotonic() - started, 8)
+
+    def test_a_denied_process_group_runs_nothing_and_names_it(self):
+        """sd:7901, operator ruling 2026-11-06: with setpgid denied no
+        signal reaches what the command forks, so the bound refuses
+        before it runs the command, by name, and exits 125."""
+        ran = self.dir / "ran"
+        started = time.monotonic()
+        result = shell(f'st_bounded 30 sh -c \'touch "{ran}"; sleep 30\'',
+                       env={**os.environ, **DENIED_GROUP})
+        self.assertLess(time.monotonic() - started, 10, "the bound ran the command")
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn("st_bounded: process group denied (Operation not permitted); a bound needs "
+                      "its own process group, nothing was run: sh -c", result.stderr)
+        self.assertFalse(ran.exists(), "the command ran")
+
+    def test_only_the_child_sets_its_process_group(self):
+        """sd:7901: the parent's setpgrp($pid, $pid) raced the child's own
+        call, which then got EPERM; under the gate the child refused a
+        run once, its group not yet moved. The child alone sets it now."""
+        result = shell("st_bounded 30 true", env={**os.environ, **PARENT_GROUP})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("ParentGroup:", result.stderr)
+
+    def test_a_stall_before_the_exec_is_bounded(self):
+        """sd:7901 review: 8feefe9b waited for the exec before it armed the
+        bound, so an exec stalled past the bound ran on and exited 0.
+        Before its setpgrp the child has no group, so the bound signals
+        the child itself."""
+        for when in ("before", "after"):
+            with self.subTest(when=when):
+                started = time.monotonic()
+                result = shell("st_bounded 1 true",
+                               env={**os.environ, **PRE_EXEC_STALL,
+                                    "PRE_EXEC_STALL": f"{when}:{self.dir / when}"})
+                self.assertEqual(result.returncode, 124, result.stderr)
+                self.assertLess(time.monotonic() - started, 3.5, "the bound waited out the stall")
+
+    def test_a_command_gone_at_the_term_ends_inside_the_grace(self):
+        """sd:7901 review: 5cc43789 probed the group before it reaped the
+        child. On Linux an unreaped zombie leader answers that probe, so
+        a command that died at the TERM waited out the whole grace."""
+        started = time.monotonic()
+        result = shell("st_bounded 1 sleep 30",
+                       env={**os.environ, **ZOMBIE_GROUP, "ST_BOUNDED_GRACE": "5"})
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertLess(time.monotonic() - started, 3, "the bound waited out the grace")
+
+    def test_a_reaped_command_s_pid_is_never_signalled(self):
+        """sd:7901 review: once the command was reaped, a KILL that found
+        its group empty fell back to the bare PID, which another process
+        may hold by then. The group probe here answers yes past the reap,
+        so the grace runs out and the KILL is sent."""
+        log = self.dir / "kills"
+        result = shell("st_bounded 1 sleep 30",
+                       env={**os.environ, **KILL_LOG, "KILL_LOG": str(log),
+                            "KILL_LOG_GROUP_ALIVE": "1", "ST_BOUNDED_GRACE": "1"})
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("KILL", log.read_text(), "the grace never ran out")
+        self.assertEqual(bare_pid_signals(log), [])
+
+    def test_the_bound_s_argv_still_starts_with_its_use_line(self):
+        """fixture_config.STALL finds st_bounded's perl by the argv prefix
+        `perl -e use strict; use POSIX ();`. 89202dda put other perl first,
+        and every stalled probe in test_promote ran its full 30 s bound."""
+        result = shell('printf %s "$ST_BOUNDED"')
+        self.assertTrue(result.stdout.startswith("use strict; use POSIX ();"), result.stdout[:80])
 
     def test_a_term_to_the_caller_reaches_the_command(self):
         """The job's own limit TERMs the job's group; the bounded command is in

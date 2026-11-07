@@ -80,6 +80,21 @@ for tool in shellcheck ruff; do
   command -v "$tool" > /dev/null || { echo "check.sh: $tool is not on PATH; the lint needs it: brew install $tool" >&2; exit 1; }
 done
 
+# A lane job leads a process group of its own, so what it leaves running
+# ends with it. A sandbox may deny setpgid (system sd:7913): the run then
+# refuses before any job, by name, as a job's leftovers would outlive it.
+if [ "$1" = run ]; then
+  denied="$("$python" -I -c 'import os
+try:
+    os.setpgid(0, 0)
+except OSError as exc:
+    print(exc.strerror or exc)')" || denied="the probe failed"
+  [ -z "$denied" ] || {
+    echo "check.sh: process group denied ($denied); the gate needs its own process groups, nothing was run" >&2
+    exit 1
+  }
+fi
+
 env_dir="$ROOT/.ci"
 mkdir -p "$env_dir/bin"
 ln -sf "$python" "$env_dir/bin/python3"

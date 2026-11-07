@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -691,6 +692,14 @@ sys.path.insert(0, sys.argv[1])
 import herdr_wrap as w
 w.SERVER_START_SECONDS = float(sys.argv[2])
 w.SERVER_STOP_SECONDS = float(sys.argv[3])
+if sys.argv[4:5] in (["denied"], ["denied-all"]):
+    # A sandbox that denies the process group (sd:7901), and with
+    # denied-all every signal to the server too (sd:7925).
+    def deny(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+    w.os.killpg = deny
+    if sys.argv[4] == "denied-all":
+        w.os.kill = deny
 try:
     w.start_headless("sd")
 except w.Fail as exc:
@@ -707,11 +716,11 @@ class TestStartHeadless(HerdrCase):
         super().setUp()
         self.addCleanup(self.stop_server)
 
-    def start(self) -> tuple[subprocess.CompletedProcess, float]:
+    def start(self, *extra: str) -> tuple[subprocess.CompletedProcess, float]:
         began = time.monotonic()
         try:
             proc = subprocess.run(
-                [sys.executable, "-c", DRIVER, str(TOOL), "1", "1"],
+                [sys.executable, "-c", DRIVER, str(TOOL), "1", "1", *extra],
                 cwd=str(self.tmp), env=self.env(),
                 capture_output=True, text=True, check=False, timeout=20,
             )
@@ -743,6 +752,51 @@ class TestStartHeadless(HerdrCase):
         self.assertLess(elapsed, 10)
         self.assertFalse(self.server_alive())
 
+    def test_a_denied_process_group_fails_by_name_not_stopped(self) -> None:
+        # system sd:7925: with killpg denied, the server alone was
+        # signalled and the answer said "stopped", while what it started
+        # ran on. The stop now fails by name.
+        (self.fixture / "server-stays-down").write_text("")
+        proc, elapsed = self.start("denied")
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("killpg denied (Operation not permitted); the server's group could not be "
+                      "stopped", proc.stderr)
+        self.assertNotIn("the server was stopped", proc.stderr)
+        self.assertLess(elapsed, 10)
+
+    def test_a_denied_signal_to_the_server_is_no_traceback(self) -> None:
+        # system sd:7925: send_signal raised PermissionError past the stop.
+        (self.fixture / "server-stays-down").write_text("")
+        proc, _ = self.start("denied-all")
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("the server's group could not be stopped", proc.stderr)
+
+class TestStopServer(unittest.TestCase):
+    """stop_server itself, with os.killpg replaced."""
+
+    def test_a_zombie_leader_is_not_named_a_denied_group(self) -> None:
+        # Review of sd:7901: macOS refuses killpg with EPERM once the
+        # group's leader is a zombie (sd:2261). That is no sandbox denial.
+        sys.path.insert(0, str(TOOL))
+        self.addCleanup(sys.path.remove, str(TOOL))
+        import herdr_wrap as w
+        proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+
+        def killpg(pid: int, sig: int) -> None:
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(0.3)  # a zombie now: nothing has reaped it
+            raise PermissionError(1, "Operation not permitted")
+
+        real = w.os.killpg
+        w.os.killpg = killpg
+        try:
+            answer = w.stop_server(proc)
+        finally:
+            w.os.killpg = real
+        self.assertNotIn("denied", answer)
+        self.assertEqual("the server had exited", answer)
 
 if __name__ == "__main__":
     unittest.main()

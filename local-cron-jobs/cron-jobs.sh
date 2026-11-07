@@ -765,20 +765,32 @@ sub say_log { printf STDERR "[%s] %s %s\n", $job, POSIX::strftime("%Y-%m-%dT%H:%
 my $pid = fork;
 defined $pid or do { say_log("cannot start the job: $!"); exit 1 };
 if (!$pid) {
-  setpgrp(0, 0);
+  # A denied setpgid (sd:7901) leaves the job in the runner group, where no
+  # signal reaches what it forks: refuse before the exec, exit 125. Only the
+  # job sets its group: a runner setpgrp raced it into EPERM.
+  setpgrp(0, 0) or do {
+    say_log("process group denied ($!); the job limit needs its own process group, nothing was run");
+    POSIX::_exit(125);
+  };
   open(STDIN, "<", "/dev/null") if -t STDIN;
   exec { $cmd[0] } @cmd;
   say_log("cannot run $cmd[0]: $!");
   POSIX::_exit(127);
 }
-setpgrp($pid, $pid);
 POSIX::close(8);
-for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { kill $sig, -$pid } }
+# The limit is armed at once, as an exec can stall. Until its setpgrp the
+# job has no group and has forked nothing: a signal finding no group goes
+# to the job itself.
+# Once reaped, the PID may be another process: only the group is signalled.
+my $reaped = 0;
+sub reap { my $got = waitpid($pid, $_[0]); $reaped = 1 if $got == $pid; $got }
+sub hit { kill($_[0], -$pid) or $reaped or kill($_[0], $pid) }
+for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { hit($sig) } }
 my $status;
 eval {
   local $SIG{ALRM} = sub { die "limit\n" };
   alarm $limit;
-  $status = $? if waitpid($pid, 0) == $pid;
+  $status = $? if reap(0) == $pid;
   alarm 0;
 };
 if (defined $status) { exit($status & 127 ? 128 + ($status & 127) : $status >> 8) }
@@ -793,19 +805,20 @@ if (open(my $ps, "-|", "ps", "-A", "-o", "pid=,ppid=,pgid=,etime=,command=")) {
 @tree ? print STDERR map { "  " . substr(join(" ", split(" ", $_, 5)), 0, 300) . "\n" }
                      "PID PPID PGID ELAPSED COMMAND", @tree
       : say_log("process tree of group $pid unknown: ps listed none of it");
-kill "TERM", -$pid;
+hit("TERM");
 my $end = Time::HiRes::time() + $grace;
 while (1) {
-  waitpid($pid, POSIX::WNOHANG());
-  last unless kill 0, -$pid;
+  # Reap first: an unreaped zombie leader answers the group probe on Linux.
+  my $running = reap(POSIX::WNOHANG()) == 0;
+  last unless kill(0, -$pid) or $running;
   if (Time::HiRes::time() >= $end) {
     say_log("process group $pid still running ${grace}s after TERM; sending KILL");
-    kill "KILL", -$pid;
+    hit("KILL");
     last;
   }
   Time::HiRes::sleep(0.1);
 }
-waitpid($pid, 0);
+reap(0);
 exit 124;'
 
 # Runs a command under the job's limit. 0 sets no limit; it still runs

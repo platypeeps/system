@@ -3720,6 +3720,78 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertNotIn("sending KILL", log)
         self.assert_gone("sleep 41.4142")
 
+    def test_a_denied_process_group_runs_nothing_and_holds_no_lock(self):
+        """sd:7901, operator ruling 2026-11-06: with setpgid denied no
+        signal reaches what a job forks, and the lock went with the
+        runner while a worker ran on. The limit now refuses before the
+        job runs, by name, and the next run takes the lock."""
+        ran = self.fx.folder / "ran-7901"
+        self.job(f"'touch \"{ran}\"; sleep 30'", timeout="20")
+        denied = {"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
+                  "PERL5OPT": "-MDeniedGroup"}
+        began = time.monotonic()
+        result = self.run_job(env=denied)
+        self.assertLess(time.monotonic() - began, 10, "the job ran")
+        self.assertEqual(result.returncode, 125, result.stdout + result.stderr)
+        self.assertIn("process group denied (Operation not permitted); the job limit needs its own "
+                      "process group, nothing was run", self.log.read_text())
+        self.assertFalse(ran.exists(), "the job ran")
+        self.job("'true'")
+        after = self.run_job()
+        self.assertNotIn("skipped", after.stderr)
+        self.assertEqual(after.returncode, 0, after.stderr)
+
+    def test_only_the_job_sets_its_process_group(self):
+        """sd:7901: the runner's setpgrp($pid, $pid) raced the job's own
+        call into EPERM, and the job could refuse a run. The job alone
+        sets its group now."""
+        self.job("'true'")
+        result = self.run_job(env={"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
+                                   "PERL5OPT": "-MParentGroup"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("ParentGroup:", result.stdout + result.stderr + self.log.read_text())
+
+    def test_a_stall_before_the_exec_is_bounded(self):
+        """sd:7901 review: 8feefe9b waited for the exec before it armed the
+        limit, so a job whose exec stalled ran past it holding the lock."""
+        self.job("'true'", timeout="1")
+        for when in ("before", "after"):
+            with self.subTest(when=when):
+                began = time.monotonic()
+                result = self.run_job(env={"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
+                                           "PERL5OPT": "-MPreExecStall",
+                                           "PRE_EXEC_STALL": f"{when}:{self.fx.folder / when}"})
+                self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+                self.assertLess(time.monotonic() - began, 3.5, "the limit waited out the stall")
+
+    def test_a_job_gone_at_the_term_ends_inside_the_grace(self):
+        """sd:7901 review: 5cc43789 probed the group before it reaped the
+        job. On Linux an unreaped zombie leader answers that probe, so a
+        job that died at the TERM waited the grace and logged a KILL."""
+        self.reap("sleep 47.1828")
+        self.job("'sleep 47.1828'", timeout="1")
+        began = time.monotonic()
+        result = self.run_job(env={"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
+                                   "PERL5OPT": "-MZombieGroup", "CRON_JOBS_TIMEOUT_GRACE": "5"})
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertLess(time.monotonic() - began, 3.5, "the limit waited out the grace")
+        self.assertNotIn("still running", self.log.read_text())
+
+    def test_a_reaped_job_s_pid_is_never_signalled(self):
+        """sd:7901 review: once the job was reaped, a KILL that found its
+        group empty fell back to the bare PID, which another process may
+        hold by then. The group probe here answers yes past the reap."""
+        self.reap("sleep 53.5897")
+        self.job("'sleep 53.5897'", timeout="1")
+        kills = self.fx.folder / "kills"
+        result = self.run_job(env={"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
+                                   "PERL5OPT": "-MKillLog", "KILL_LOG": str(kills),
+                                   "KILL_LOG_GROUP_ALIVE": "1"})
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        lines = kills.read_text().splitlines()
+        self.assertIn("still running", self.log.read_text())
+        self.assertEqual([line for line in lines if int(line.split()[1]) > 0], [])
+
     def test_a_timeout_logs_the_process_tree_before_the_kill(self):
         """sd:5064: the log named the group only, so what hung was a guess.
         Each process in the group goes to the log, with its parent and age,

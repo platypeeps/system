@@ -20,6 +20,12 @@ import unittest
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "adversarial-gate.sh"
 RUN_TIMEOUT = 20
+#: Every setpgrp in the bound's perl fails with EPERM, as under a sandbox that denies setpgid (sd:7901).
+DENIED_GROUP = {"PERL5LIB": str(HERE.parents[1] / "lib/tests/denied_group"), "PERL5OPT": "-MDeniedGroup"}
+#: The env that stalls the reviewer's child 4 s before its setpgrp.
+PRE_EXEC_STALL = {"PERL5LIB": str(HERE.parents[1] / "lib/tests/denied_group"), "PERL5OPT": "-MPreExecStall"}
+#: The env that logs every kill with a signal to KILL_LOG.
+KILL_LOG = {"PERL5LIB": str(HERE.parents[1] / "lib/tests/denied_group"), "PERL5OPT": "-MKillLog"}
 #: The tools that only read: the file readers, and Agent, whose sub-agents get the same set.
 READ_ONLY = {"Read", "Grep", "Glob", "Agent"}
 #: Tools that change files, run commands or reach the network. None may be offered.
@@ -52,9 +58,9 @@ class Deep(unittest.TestCase):
         self.out.parent.mkdir()
         self.log = {name: self.tmp / f"claude.{name}" for name in ("argv", "cwd", "stdin", "grandchild", "token")}
 
-    def gate(self, *args, mode="ok", claude=None):
+    def gate(self, *args, mode="ok", claude=None, env=None):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(self.tmp / "home"), "CLAUDE_BIN": str(claude or self.fake),
-               "CLAUDE_MODE": mode, "ADVERSARIAL_GATE_JEV": str(self.tmp / "no-jev"),
+               "CLAUDE_MODE": mode, "ADVERSARIAL_GATE_JEV": str(self.tmp / "no-jev"), **(env or {}),
                **{f"CLAUDE_{name.upper()}": str(path) for name, path in self.log.items()}}
         proc = subprocess.Popen(["sh", str(SCRIPT), "deep", "--lens", "deep", "--set", "REPO_NAME=fixture", "--set", "AGENTS=8", *args],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -137,6 +143,42 @@ class Deep(unittest.TestCase):
         else:
             os.kill(pid, signal.SIGKILL)
             self.fail(f"the fake's grandchild {pid} survived the bound")
+
+    def test_a_denied_process_group_runs_no_reviewer_and_names_it(self):
+        # sd:7901, operator ruling 2026-11-06: a sandboxed gate denied
+        # setpgid (2026-11-04); no signal reaches what the reviewer forks,
+        # so the bound refuses before it starts the reviewer.
+        started = time.monotonic()
+        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "30", mode="hang",
+                           env=DENIED_GROUP)
+        self.assertLess(time.monotonic() - started, 10, "the reviewer ran")
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn("adversarial-gate: process group denied (Operation not permitted); the reviewer "
+                      "bound needs its own process group, nothing was run", result.stderr)
+        self.assertFalse(self.log["argv"].exists(), "the fake claude ran")
+
+    def test_a_stall_before_the_reviewer_s_setpgrp_ends_at_the_bound(self):
+        # sd:7901 review: the bound signalled the group alone. A child
+        # stalled before its setpgrp has none, so the bound waited on it
+        # unbounded; the signal now falls back to the child.
+        started = time.monotonic()
+        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "1",
+                           env={**PRE_EXEC_STALL, "PRE_EXEC_STALL": f"before:{self.tmp / 'stall'}"})
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertLess(time.monotonic() - started, 3.5, "the bound waited out the stall")
+        self.assertFalse(self.log["argv"].exists(), "the fake claude ran")
+
+    def test_a_reaped_reviewer_s_pid_is_never_signalled(self):
+        # sd:7901 review: a reviewer reaped at the TERM still got the
+        # KILL; its group was empty, so the KILL fell back to the bare
+        # PID, which another process may hold by then.
+        kills = self.tmp / "kills"
+        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "1", mode="hang",
+                           env={**KILL_LOG, "KILL_LOG": str(kills)})
+        self.assertEqual(result.returncode, 124, result.stderr)
+        lines = kills.read_text().splitlines()
+        self.assertTrue(lines, "nothing was signalled")
+        self.assertEqual([line for line in lines if int(line.split()[1]) > 0], [])
 
     def test_no_claude_is_refused_before_anything_runs(self):
         result = self.gate("--repo", str(self.repo), "--out", str(self.out), claude=self.tmp / "absent")

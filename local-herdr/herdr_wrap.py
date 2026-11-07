@@ -343,12 +343,25 @@ def server_log_path(session: str) -> str:
 
 def stop_server(proc: subprocess.Popen) -> str:
     """Stop a server start_headless started: SIGTERM to its process group,
-    then SIGKILL, each wait bounded, so launch never hangs on it."""
+    then SIGKILL, each wait bounded, so launch never hangs on it. A denied
+    killpg (sd:7901, sd:7925) stops nothing the server started, so the
+    answer says the group could not be stopped, not that it was."""
     if proc.poll() is not None:
         return "the server had exited"
     for sig, done in ((signal.SIGTERM, "stopped"), (signal.SIGKILL, "killed")):
-        with contextlib.suppress(ProcessLookupError):
+        try:
             os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            # macOS gives EPERM once the leader is a zombie (sd:2261): it
+            # exited, so no sandbox denied anything.
+            if proc.poll() is not None:
+                return "the server had exited"
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                proc.send_signal(signal.SIGKILL)
+            return (f"killpg denied ({exc.strerror}); the server's group could not be "
+                    f"stopped (pid {proc.pid})")
         try:
             proc.wait(timeout=SERVER_STOP_SECONDS)
         except subprocess.TimeoutExpired:
