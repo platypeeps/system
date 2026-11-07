@@ -77,14 +77,21 @@ def rejected(sd, sd_db):
 
 
 def _reply(text):
-    """The JSON object in the model's reply: the text from its first `{` to its last `}`."""
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end < start:
+    """The first JSON object in the model's reply, decoded from its first `{`.
+
+    Text after that object is dropped and named on stderr: a second object or
+    a `}` in trailing prose refused a whole night as "Extra data" (sd:7994).
+    """
+    start = text.find("{")
+    if start < 0:
         raise Refused("the reply holds no JSON object")
     try:
-        found = json.loads(text[start:end + 1])
+        found, end = json.JSONDecoder().raw_decode(text, start)
     except ValueError as failure:
         raise Refused(f"the reply is not JSON: {failure}") from None
+    if text[end:].strip():
+        print(f"nightly-review: text after the JSON object dropped ({len(text[end:].strip())} characters)",
+              file=sys.stderr)
     if not isinstance(found, dict) or set(found) != REPLY_KEYS or not isinstance(found["questions"], list):
         raise Refused('the reply must be {"questions": [...]} and nothing else')
     # One malformed suggestion drops itself, named on stderr, and the rest file (sd:5732: one bad key lost a night).
