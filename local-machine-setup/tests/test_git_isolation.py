@@ -68,6 +68,34 @@ class HostileGitConfig(unittest.TestCase):
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertNotIn("GIT_AUTHOR_NAME", env)
 
+    def test_the_operators_xdg_git_ignore_and_attributes_do_not_apply(self):
+        """system sd:7991: git reads $XDG_CONFIG_HOME/git/ignore and
+        attributes, or ~/.config/git/ones, with no config at all."""
+        home = self.tmp / "operator-home"
+        xdg = home / ".config"
+        (xdg / "git").mkdir(parents=True)
+        (xdg / "git" / "ignore").write_text("hidden.txt\n")
+        (xdg / "git" / "attributes").write_text("* operator-attr\n")
+        for name, operator in (("XDG_CONFIG_HOME", {"XDG_CONFIG_HOME": str(xdg)}),
+                               ("HOME", {"HOME": str(home)})):
+            with self.subTest(name):
+                repo = self.tmp / f"repo-{name}"
+                repo.mkdir()
+                (repo / "hidden.txt").write_text("fixture\n")
+                with mock.patch.dict(os.environ, operator):
+                    if name == "HOME":
+                        os.environ.pop("XDG_CONFIG_HOME", None)
+                    env = fixture_config.git_env()
+
+                def git(*args):
+                    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
+                                          text=True, env=env, stdin=subprocess.DEVNULL).stdout
+                git("init", "-q")
+                git("add", "-A")
+                self.assertEqual(git("ls-files").split(), ["hidden.txt"],
+                                 "the operator's git ignore hid a fixture file")
+                self.assertNotIn("operator-attr", git("check-attr", "-a", "hidden.txt"))
+
     def test_dispatch_pack_builds_its_repository_under_a_hostile_config(self):
         pack = fixture_config.dispatch_pack(self.tmp / "pack", new=False)
         self.assertEqual(len(pack["SD_DISPATCH_PACK_MIN"]), 40)

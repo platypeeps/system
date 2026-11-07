@@ -365,9 +365,14 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("leave the alert open", fixed)
         self.assertNotIn("then run `sd reports acknowledge N --resolve-followups`", source)
         # Second lane review: it also closes followups the operator wrote, so the session lists
-        # them first and resolves only when every open one is its own fix.
+        # them first and resolves only when it fixed each open one, or explained it in a note
+        # with evidence (operator 2026-11-07).
         self.assertIn("`sd note list N`", fixed)
-        self.assertIn("only when every open followup is one this session fixed", fixed)
+        self.assertIn("only when this session fixed each open followup or explained it in a note "
+                      "with evidence", fixed)
+        self.assertNotIn("only when every open followup is one this session fixed", fixed)
+        # Review of d432a8f8: "an expected change" must not close a followup the operator wrote.
+        self.assertIn("a followup the operator wrote needs a fix or a passing check", fixed)
         self.assertNotIn("Once fixed, run `sd reports acknowledge N --resolve-followups`", source)
 
     def test_other_machines_are_reached_through_the_database(self):

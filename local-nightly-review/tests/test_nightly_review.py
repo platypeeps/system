@@ -274,7 +274,7 @@ class NightlyReview(unittest.TestCase):
 
     def test_text_after_the_object_is_dropped_and_named_and_the_batch_files(self):
         # sd:7994: a second object, or a `}` in trailing prose, refused the night as "Extra data".
-        second = json.dumps(SUGGESTIONS) + "\n\n" + json.dumps({"questions": [{"subject": "x:y", "text": "t"}]})
+        second = json.dumps(SUGGESTIONS) + "\n\n" + json.dumps({"note": "nothing else tonight"})
         prose = json.dumps(SUGGESTIONS) + "\nI skipped {the stale ones} on purpose.\n"
         for name, reply in (("two objects", second), ("prose with a brace", prose)):
             with self.subTest(name):
@@ -283,6 +283,30 @@ class NightlyReview(unittest.TestCase):
                 result = self.run_job(reply=reply)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("text after the JSON object dropped", result.stderr)
+                filed = json.loads(self.batch.read_text(encoding="utf-8"))["questions"]
+                self.assertEqual([q["subject"] for q in filed], [q["subject"] for q in SUGGESTIONS["questions"]])
+
+    def test_the_reply_object_is_found_past_a_prose_brace_and_must_be_one(self):
+        # sd:8000: a `{` in prose before the object failed the night, and a
+        # second schema-valid object was dropped with no refusal.
+        other = {"questions": [{"subject": "x:y", "text": "t"}]}
+        cases = (
+            ("prose brace first", "I skipped {stale} ones.\n" + json.dumps(SUGGESTIONS), 0),
+            ("two equal objects", json.dumps(SUGGESTIONS) + "\n" + json.dumps(SUGGESTIONS), 0),
+            ("two differing objects", json.dumps(SUGGESTIONS) + "\n" + json.dumps(other), 1),
+        )
+        for name, reply, rc in cases:
+            with self.subTest(name):
+                for path in (self.batch, self.batch.with_name(self.batch.stem + ".reply")):
+                    path.unlink(missing_ok=True)
+                before = len(self.batches())
+                result = self.run_job(reply=reply)
+                self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
+                if rc:
+                    self.assertIn("2 different", result.stderr)
+                    self.assertFalse(self.batch.exists())
+                    self.assertEqual(len(self.batches()), before)
+                    continue
                 filed = json.loads(self.batch.read_text(encoding="utf-8"))["questions"]
                 self.assertEqual([q["subject"] for q in filed], [q["subject"] for q in SUGGESTIONS["questions"]])
 

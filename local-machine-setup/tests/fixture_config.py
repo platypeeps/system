@@ -121,15 +121,27 @@ def render(template, label, home, root, pack=None):
                 .replace("@PACK@", str(pack or f"{home}/repos/platypeeps/sd-workflow")))
 
 
+#: No global or system git config, and no XDG git ignore or attributes:
+#: git reads `$XDG_CONFIG_HOME/git/ignore` and `attributes` (else
+#: `~/.config/git/`) with no config file at all (system sd:7991). The
+#: command-scope `core.*File=/dev/null` pair overrides those defaults
+#: and leaves HOME and XDG_CONFIG_HOME alone for the code under test.
+GIT_ISOLATION = {
+    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_COUNT": "2",
+    "GIT_CONFIG_KEY_0": "core.excludesFile", "GIT_CONFIG_VALUE_0": os.devnull,
+    "GIT_CONFIG_KEY_1": "core.attributesFile", "GIT_CONFIG_VALUE_1": os.devnull,
+}
+
+
 def git_env():
     """The environment for a fixture's own git call (system sd:7972).
 
-    The caller's environment less every GIT_* variable, with no global or
-    system git config: the operator's core.hooksPath, signing or identity
-    cannot fail, hang or run a hook in a fixture repository.
+    The caller's environment less every GIT_* variable, plus GIT_ISOLATION:
+    the operator's core.hooksPath, signing, identity, ignore or attributes
+    cannot fail, hang, run a hook or hide a file in a fixture repository.
     """
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    return {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    return {**env, **GIT_ISOLATION}
 
 
 def dispatch_pack(folder, *, new):

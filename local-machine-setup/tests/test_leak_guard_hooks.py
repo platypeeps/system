@@ -84,7 +84,7 @@ class LeakGuardHooks(base.SyntheticHome):
         operator's real hooks folder.
         """
         return {"HOME": str(self.home), "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
-                "LANG": "en_US.UTF-8", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+                "LANG": "en_US.UTF-8", **fixture_config.GIT_ISOLATION}
 
     def install(self, repo):
         subprocess.run(["sh", str(self.script), "install", str(repo)], check=True, env=self.git_env(),
