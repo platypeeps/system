@@ -30,6 +30,14 @@ PARENT_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-M
 PRE_EXEC_STALL = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MPreExecStall"}
 #: The env where a group probe sees an unreaped zombie leader, as on Linux.
 ZOMBIE_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MZombieGroup"}
+#: The env that logs every kill with a signal to KILL_LOG.
+KILL_LOG = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MKillLog"}
+
+
+def bare_pid_signals(log):
+    """The lines of a KillLog file that signal one process, not a group."""
+    lines = log.read_text().splitlines() if log.exists() else []
+    return [line for line in lines if int(line.split()[1]) > 0]
 
 
 def shell(script, **kwargs):
@@ -139,6 +147,19 @@ class Bounded(unittest.TestCase):
                        env={**os.environ, **ZOMBIE_GROUP, "ST_BOUNDED_GRACE": "5"})
         self.assertEqual(result.returncode, 124, result.stderr)
         self.assertLess(time.monotonic() - started, 3, "the bound waited out the grace")
+
+    def test_a_reaped_command_s_pid_is_never_signalled(self):
+        """sd:7901 review: once the command was reaped, a KILL that found
+        its group empty fell back to the bare PID, which another process
+        may hold by then. The group probe here answers yes past the reap,
+        so the grace runs out and the KILL is sent."""
+        log = self.dir / "kills"
+        result = shell("st_bounded 1 sleep 30",
+                       env={**os.environ, **KILL_LOG, "KILL_LOG": str(log),
+                            "KILL_LOG_GROUP_ALIVE": "1", "ST_BOUNDED_GRACE": "1"})
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("KILL", log.read_text(), "the grace never ran out")
+        self.assertEqual(bare_pid_signals(log), [])
 
     def test_the_bound_s_argv_still_starts_with_its_use_line(self):
         """fixture_config.STALL finds st_bounded's perl by the argv prefix

@@ -289,21 +289,24 @@ exec "$@"' "$ROOT/../lib/config.sh" "$claude" "$@"
     }
     # Until its setpgrp the child has no group and has forked nothing: a
     # signal that finds no group goes to the child itself.
-    sub hit { kill($_[0], -$pid) or kill($_[0], $pid) }
+    # Once reaped, the PID may be another process: only the group is signalled.
+    my $reaped = 0;
+    sub reap { my $got = waitpid($pid, $_[0]); $reaped = 1 if $got == $pid; $got }
+    sub hit { kill($_[0], -$pid) or $reaped or kill($_[0], $pid) }
     $SIG{ALRM} = sub {
       hit("TERM");
       my $gone = 0;
       for (1 .. 20) {
-        if (waitpid($pid, WNOHANG) != 0) { $gone = 1; last; }
+        if (reap(WNOHANG) != 0) { $gone = 1; last; }
         select(undef, undef, undef, 0.1);
       }
       hit("KILL");
-      waitpid($pid, 0) unless $gone;
+      reap(0) unless $gone;
       print STDERR "adversarial-gate: $ENV{GATE_VERB}: $ENV{GATE_ENGINE} did not answer within $secs s; its process group was killed (exit 124)\n";
       exit 124;
     };
     alarm $secs;
-    waitpid($pid, 0);
+    reap(0);
     my $status = $?;
     exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
   ' "$timeout" "$@" || status=$?

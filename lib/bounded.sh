@@ -46,9 +46,12 @@ if (!$pid) {
   print STDERR "cannot run $cmd[0]: $!\n";
   POSIX::_exit(127);
 }
-sub hit { kill($_[0], -$pid) or kill($_[0], $pid) }
+# Once reaped, the PID may be another process: only the group is signalled.
+my $reaped = 0;
+sub reap { my $got = waitpid($pid, $_[0]); $reaped = 1 if $got == $pid; $got }
+sub hit { kill($_[0], -$pid) or $reaped or kill($_[0], $pid) }
 # Reap first: an unreaped zombie leader answers the group probe on Linux.
-sub alive { my $running = waitpid($pid, POSIX::WNOHANG()) == 0; kill(0, -$pid) or $running }
+sub alive { my $running = reap(POSIX::WNOHANG()) == 0; kill(0, -$pid) or $running }
 my %number = (INT => POSIX::SIGINT(), TERM => POSIX::SIGTERM(), HUP => POSIX::SIGHUP());
 my ($status, $caught);
 # perl retries a waitpid a signal interrupts, so each handler dies to end it.
@@ -59,7 +62,7 @@ eval {
     sub { $caught = $sig; hit($sig); die "signal\n" }
   } keys %number;
   alarm $limit;
-  $status = $? if waitpid($pid, 0) == $pid;
+  $status = $? if reap(0) == $pid;
   alarm 0;
 };
 alarm 0;
@@ -75,7 +78,7 @@ while (alive()) {
   if (Time::HiRes::time() >= $end) { hit("KILL"); last }
   Time::HiRes::sleep(0.1);
 }
-waitpid($pid, 0);
+reap(0);
 exit(defined $caught ? 128 + $number{$caught} : 124);'
 
 # st_bounded SECONDS COMMAND...: run COMMAND; stop it after SECONDS.

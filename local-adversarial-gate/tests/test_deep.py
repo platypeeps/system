@@ -24,6 +24,8 @@ RUN_TIMEOUT = 20
 DENIED_GROUP = {"PERL5LIB": str(HERE.parents[1] / "lib/tests/denied_group"), "PERL5OPT": "-MDeniedGroup"}
 #: The env that stalls the reviewer's child 4 s before its setpgrp.
 PRE_EXEC_STALL = {"PERL5LIB": str(HERE.parents[1] / "lib/tests/denied_group"), "PERL5OPT": "-MPreExecStall"}
+#: The env that logs every kill with a signal to KILL_LOG.
+KILL_LOG = {"PERL5LIB": str(HERE.parents[1] / "lib/tests/denied_group"), "PERL5OPT": "-MKillLog"}
 #: The tools that only read: the file readers, and Agent, whose sub-agents get the same set.
 READ_ONLY = {"Read", "Grep", "Glob", "Agent"}
 #: Tools that change files, run commands or reach the network. None may be offered.
@@ -165,6 +167,18 @@ class Deep(unittest.TestCase):
         self.assertEqual(result.returncode, 124, result.stderr)
         self.assertLess(time.monotonic() - started, 3.5, "the bound waited out the stall")
         self.assertFalse(self.log["argv"].exists(), "the fake claude ran")
+
+    def test_a_reaped_reviewer_s_pid_is_never_signalled(self):
+        # sd:7901 review: a reviewer reaped at the TERM still got the
+        # KILL; its group was empty, so the KILL fell back to the bare
+        # PID, which another process may hold by then.
+        kills = self.tmp / "kills"
+        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "1", mode="hang",
+                           env={**KILL_LOG, "KILL_LOG": str(kills)})
+        self.assertEqual(result.returncode, 124, result.stderr)
+        lines = kills.read_text().splitlines()
+        self.assertTrue(lines, "nothing was signalled")
+        self.assertEqual([line for line in lines if int(line.split()[1]) > 0], [])
 
     def test_no_claude_is_refused_before_anything_runs(self):
         result = self.gate("--repo", str(self.repo), "--out", str(self.out), claude=self.tmp / "absent")

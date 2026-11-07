@@ -3777,6 +3777,21 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertLess(time.monotonic() - began, 3.5, "the limit waited out the grace")
         self.assertNotIn("still running", self.log.read_text())
 
+    def test_a_reaped_job_s_pid_is_never_signalled(self):
+        """sd:7901 review: once the job was reaped, a KILL that found its
+        group empty fell back to the bare PID, which another process may
+        hold by then. The group probe here answers yes past the reap."""
+        self.reap("sleep 53.5897")
+        self.job("'sleep 53.5897'", timeout="1")
+        kills = self.fx.folder / "kills"
+        result = self.run_job(env={"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
+                                   "PERL5OPT": "-MKillLog", "KILL_LOG": str(kills),
+                                   "KILL_LOG_GROUP_ALIVE": "1"})
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        lines = kills.read_text().splitlines()
+        self.assertIn("still running", self.log.read_text())
+        self.assertEqual([line for line in lines if int(line.split()[1]) > 0], [])
+
     def test_a_timeout_logs_the_process_tree_before_the_kill(self):
         """sd:5064: the log named the group only, so what hung was a guess.
         Each process in the group goes to the log, with its parent and age,

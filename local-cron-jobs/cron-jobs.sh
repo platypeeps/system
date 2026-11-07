@@ -781,13 +781,16 @@ POSIX::close(8);
 # The limit is armed at once, as an exec can stall. Until its setpgrp the
 # job has no group and has forked nothing: a signal finding no group goes
 # to the job itself.
-sub hit { kill($_[0], -$pid) or kill($_[0], $pid) }
+# Once reaped, the PID may be another process: only the group is signalled.
+my $reaped = 0;
+sub reap { my $got = waitpid($pid, $_[0]); $reaped = 1 if $got == $pid; $got }
+sub hit { kill($_[0], -$pid) or $reaped or kill($_[0], $pid) }
 for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { hit($sig) } }
 my $status;
 eval {
   local $SIG{ALRM} = sub { die "limit\n" };
   alarm $limit;
-  $status = $? if waitpid($pid, 0) == $pid;
+  $status = $? if reap(0) == $pid;
   alarm 0;
 };
 if (defined $status) { exit($status & 127 ? 128 + ($status & 127) : $status >> 8) }
@@ -806,7 +809,7 @@ hit("TERM");
 my $end = Time::HiRes::time() + $grace;
 while (1) {
   # Reap first: an unreaped zombie leader answers the group probe on Linux.
-  my $running = waitpid($pid, POSIX::WNOHANG()) == 0;
+  my $running = reap(POSIX::WNOHANG()) == 0;
   last unless kill(0, -$pid) or $running;
   if (Time::HiRes::time() >= $end) {
     say_log("process group $pid still running ${grace}s after TERM; sending KILL");
@@ -815,7 +818,7 @@ while (1) {
   }
   Time::HiRes::sleep(0.1);
 }
-waitpid($pid, 0);
+reap(0);
 exit 124;'
 
 # Runs a command under the job's limit. 0 sets no limit; it still runs
