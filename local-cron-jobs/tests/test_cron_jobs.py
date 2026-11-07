@@ -3741,6 +3741,16 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertNotIn("skipped", after.stderr)
         self.assertEqual(after.returncode, 0, after.stderr)
 
+    def test_only_the_job_sets_its_process_group(self):
+        """sd:7901: the runner's setpgrp($pid, $pid) raced the job's own
+        call into EPERM, and the job could refuse a run. The job alone
+        sets its group now."""
+        self.job("'true'")
+        result = self.run_job(env={"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
+                                   "PERL5OPT": "-MParentGroup"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("ParentGroup:", result.stdout + result.stderr + self.log.read_text())
+
     def test_a_timeout_logs_the_process_tree_before_the_kill(self):
         """sd:5064: the log named the group only, so what hung was a guess.
         Each process in the group goes to the log, with its parent and age,

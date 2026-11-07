@@ -24,6 +24,8 @@ def cron_jobs_grace():
 #: The env that makes every setpgrp in the bound's perl fail with EPERM, as a
 #: sandboxed gate denied setpgid on 2026-11-04 (sd:7901).
 DENIED_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MDeniedGroup"}
+#: The env that prints a line for every setpgrp naming another process.
+PARENT_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MParentGroup"}
 
 
 def shell(script, **kwargs):
@@ -101,6 +103,14 @@ class Bounded(unittest.TestCase):
         self.assertIn("st_bounded: process group denied (Operation not permitted); a bound needs "
                       "its own process group, nothing was run: sh -c", result.stderr)
         self.assertFalse(ran.exists(), "the command ran")
+
+    def test_only_the_child_sets_its_process_group(self):
+        """sd:7901: the parent's setpgrp($pid, $pid) raced the child's own
+        call, which then got EPERM; under the gate the child refused a
+        run once, its group not yet moved. The child alone sets it now."""
+        result = shell("st_bounded 30 true", env={**os.environ, **PARENT_GROUP})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("ParentGroup:", result.stderr)
 
     def test_the_bound_s_argv_still_starts_with_its_use_line(self):
         """fixture_config.STALL finds st_bounded's perl by the argv prefix

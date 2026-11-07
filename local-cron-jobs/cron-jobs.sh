@@ -762,12 +762,15 @@ lock_is_live() { # lock file
 RUN_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
 my ($job, $limit, $grace, @cmd) = @ARGV;
 sub say_log { printf STDERR "[%s] %s %s\n", $job, POSIX::strftime("%Y-%m-%dT%H:%M:%S%z", localtime), $_[0] }
+pipe(my $ready, my $exec) or do { say_log("cannot start the job: $!"); exit 1 };
 my $pid = fork;
 defined $pid or do { say_log("cannot start the job: $!"); exit 1 };
 if (!$pid) {
+  close $ready;
   # A denied setpgid (sd:7901) leaves the job in the runner group, where no
-  # signal reaches what it forks: refuse before the exec, exit 125.
-  setpgrp(0, 0) or getpgrp(0) == $$ or do {
+  # signal reaches what it forks: refuse before the exec, exit 125. Only the
+  # job sets its group: a runner setpgrp raced it into EPERM.
+  setpgrp(0, 0) or do {
     say_log("process group denied ($!); the job limit needs its own process group, nothing was run");
     POSIX::_exit(125);
   };
@@ -776,7 +779,10 @@ if (!$pid) {
   say_log("cannot run $cmd[0]: $!");
   POSIX::_exit(127);
 }
-setpgrp($pid, $pid);
+# EOF on the close-on-exec pipe: the job exec-ed or exited, its group set.
+close $exec;
+sysread $ready, my $byte, 1;
+close $ready;
 POSIX::close(8);
 for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { kill $sig, -$pid } }
 my $status;

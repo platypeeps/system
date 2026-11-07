@@ -281,7 +281,7 @@ exec "$@"' "$ROOT/../lib/config.sh" "$claude" "$@"
     # A denied setpgid (sd:7901) leaves the reviewer in this shell group,
     # where no signal reaches what it forks: refuse before the exec, 125.
     if ($pid == 0) {
-      setpgrp(0, 0) or getpgrp(0) == $$ or do {
+      setpgrp(0, 0) or do {
         print STDERR "adversarial-gate: process group denied ($!); the reviewer bound needs its own process group, nothing was run\n";
         POSIX::_exit(125);
       };

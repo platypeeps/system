@@ -26,15 +26,20 @@ ST_BOUNDED_DEFAULT_GRACE=5
 # A sandbox can deny setpgid (sd:7901). The command would then stay in the
 # caller's group, and no signal would reach what it forks: the child refuses
 # before the exec, by name, and the bound exits 125 (operator, 2026-11-06).
+# Only the child sets its group: a parent setpgrp($pid, $pid) raced it into
+# EPERM. The parent reads the close-on-exec pipe to EOF, so the group exists
+# before any signal goes to it.
 # The source starts with its use line: a stall fixture finds this perl by
 # that argv prefix (fixture_config.STALL).
 # shellcheck disable=SC2016 # perl source, expanded by perl
 ST_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
 my ($limit, $grace, @cmd) = @ARGV;
+pipe(my $ready, my $exec) or do { print STDERR "cannot start $cmd[0]: $!\n"; exit 1 };
 my $pid = fork;
 defined $pid or do { print STDERR "cannot start $cmd[0]: $!\n"; exit 1 };
 if (!$pid) {
-  setpgrp(0, 0) or getpgrp(0) == $$ or do {
+  close $ready;
+  setpgrp(0, 0) or do {
     print STDERR "st_bounded: process group denied ($!); a bound needs its own process group, nothing was run: @cmd\n";
     POSIX::_exit(125);
   };
@@ -42,7 +47,9 @@ if (!$pid) {
   print STDERR "cannot run $cmd[0]: $!\n";
   POSIX::_exit(127);
 }
-setpgrp($pid, $pid);
+close $exec;
+sysread $ready, my $byte, 1;
+close $ready;
 my %number = (INT => POSIX::SIGINT(), TERM => POSIX::SIGTERM(), HUP => POSIX::SIGHUP());
 my ($status, $caught);
 # perl retries a waitpid a signal interrupts, so each handler dies to end it.
