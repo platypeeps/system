@@ -89,7 +89,7 @@ Inside one `BEGIN IMMEDIATE` the tick:
   `build.lane_hosts` and `build.lane_of` filter `build.claim`, `room`, `reap` and `pickup`,
   and `build_run.watch`, `sweep` and `dispatch`, by the run owner: `build-dispatch` on the hub,
   `build-dispatch@<host>` on a satellite. Only the hub pushes failures.
-  Details: the pack's `docs/work/2026-11-06-build-per-host/design.md`.
+  Details: the pack's 2026-11-06 `build-per-host` design, in its docs/work.
   The satellite's own pack must contain f6ace045c before its job file goes in; this repo's gate pin is older.
 - Spawn starts `sd assignments supervise <run>` with `start_new_session=True`.
   It leaves the job's process group, so neither the job timeout nor launchd's exit cleanup reaches it.
