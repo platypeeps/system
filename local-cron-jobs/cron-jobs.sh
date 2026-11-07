@@ -1301,6 +1301,21 @@ cmd_exec() { # invoked by launchd (and by `run`)
     echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') skipped: breaker open after $BREAKER_COUNT timeouts in a row; next probe after ${BREAKER_PROBE_SECONDS}s" >&2
     exit 0
   fi
+  # build-dispatch off the hub (a hub.json, as the pack reads it) ticks only
+  # on a pack with host scoping, or it dispatches the hub's lanes a second
+  # time (sd:7932). Here, not in the job file, so a config folder's older
+  # copy keeps the guard. A skip is no failure: like the lock's, it logs one
+  # line and exits 0 before the trap, so it writes no outcome, report or
+  # push. machine-setup's cron stage removes the job on such a pack.
+  if [ "$job" = build-dispatch ] && [ -e "$HOME/.config/sd/hub.json" ]; then
+    local pack
+    pack="$(st_shell_env; printf '%s' "${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}")"
+    command -v st_dispatch_pack_held >/dev/null 2>&1 || . "$ROOT/../lib/dispatch_pack.sh"
+    if ! st_dispatch_pack_held "$pack"; then
+      echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') skipped: the pack at $pack does not hold $SD_DISPATCH_PACK_MIN, or git could not read it (pack sd:7933); this tick dispatches nothing" >&2
+      exit 0
+    fi
+  fi
   trap exec_exit EXIT
 
   # Mirror a hand-run into the job log; no-op when launchd already points

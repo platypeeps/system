@@ -194,6 +194,60 @@ class Undo(PromoteCase):
         self.assertIn("hand-back report", result.stdout)
         self.assertEqual(1, len(self.calls("backup --destination")))
 
+    def test_a_hand_back_starts_this_hosts_own_build_dispatch_again(self):
+        """sd:7932: step 1 stops build-dispatch with the role; a lane
+        satellite whose host folder holds it gets it back at step 5."""
+        host = self.config / "cron-jobs/jobs/lane-satellite"
+        host.mkdir(parents=True)
+        (self.config / "cron-jobs/jobs/build-dispatch.job").rename(host / "build-dispatch.job")
+        pack = fixture_config.dispatch_pack(self.fixture.pack, new=True)
+        self.run_undo("--apply", expect=1, CRON_JOBS_HOST="lane-satellite", **pack)
+        self.assertEqual([], self.installed(), "the hub role still runs after the hand-back snapshot")
+        self.new_hub_restores()
+        result = self.run_undo("--apply", CRON_JOBS_HOST="lane-satellite", **pack)
+        self.assertIsNone(self.marker_step())
+        self.assertEqual([f"{PREFIX}.cron.build-dispatch"], self.installed())
+        self.assertIn("  build-dispatch: this host's own job, installed again", result.stdout)
+
+    def test_a_hand_back_starts_a_profiles_build_dispatch_again(self):
+        (self.config / "machine-setup/profiles/work.cron").write_text("build-dispatch\n")
+        self.handed_back()
+        result = self.run_undo("--apply", **fixture_config.dispatch_pack(self.fixture.pack, new=True))
+        self.assertEqual([f"{PREFIX}.cron.build-dispatch"], self.installed())
+        self.assertIn("  build-dispatch: this host's own job, installed again", result.stdout)
+
+    def test_a_hand_back_on_an_old_pack_leaves_build_dispatch_off(self):
+        """Round 2 of sd:7932: a pack before host scoping (pack sd:7933)
+        would dispatch the hub's lanes a second time."""
+        (self.config / "machine-setup/profiles/work.cron").write_text("build-dispatch\n")
+        self.handed_back()
+        pack = fixture_config.dispatch_pack(self.fixture.pack, new=False)
+        result = self.run_undo("--apply", **pack)
+        self.assertIsNone(self.marker_step())
+        self.assertEqual([], self.installed())
+        self.assertIn(f"  SKIP    build-dispatch — the pack at {pack['SD_PACK_ROOT']} does not hold", result.stdout)
+        self.assertIn("  build-dispatch: this host's own job, not installed: the pack lacks", result.stdout)
+
+    def test_an_unreadable_host_folder_stops_the_hand_back_at_step_5(self):
+        """A host list that cannot be read is no answer, not "names none"."""
+        self.handed_back()
+        host = self.config / "cron-jobs/jobs/lane-satellite"
+        host.mkdir(parents=True)
+        host.chmod(0)
+        self.addCleanup(host.chmod, 0o755)
+        result = self.run_undo("--apply", expect=1, CRON_JOBS_HOST="lane-satellite")
+        self.assertIn("cannot list this host's cron jobs", result.stderr)
+        self.assertEqual("5", self.marker_step())
+        host.chmod(0o755)
+        self.run_undo("--apply", CRON_JOBS_HOST="lane-satellite")
+        self.assertIsNone(self.marker_step())
+
+    def test_a_hand_back_leaves_build_dispatch_off_where_this_host_names_none(self):
+        self.handed_back()
+        result = self.run_undo("--apply")
+        self.assertEqual([], self.installed())
+        self.assertNotIn("build-dispatch:", result.stdout)
+
     def test_undo_lists_each_account_to_sign_out(self):
         """sd:5986, #31094: the logins promote listed are signed out of by
         hand; the report names each one, and the hand-back still ends."""

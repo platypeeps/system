@@ -130,7 +130,7 @@ def alive(pid):
 
 
 class BuildDispatchJobTest(unittest.TestCase):
-    """The hub's build-dispatch tick: `sd assignments dispatch` every two minutes (sd:6098).
+    """The build-dispatch tick of each lane host: `sd assignments dispatch` every two minutes (sd:6098).
 
     The tick spawns each supervisor in a session of its own, so the job's
     90 s limit and its lock must not reach one (design, Dispatcher).
@@ -143,24 +143,128 @@ class BuildDispatchJobTest(unittest.TestCase):
         self.assertEqual(re.search(r'^JOB_SCHEDULE="([^"]+)"', text, re.M).group(1), "*/2 * * * *")
         self.assertEqual(re.search(r'^JOB_TIMEOUT="([^"]+)"', text, re.M).group(1), "90s")
 
-    def run_job(self, job_text=None, **extra):
+    # The job file before round 4 of sd:7932: the tick as the pack runs it,
+    # with no guard of its own. A copy in a config folder can keep it.
+    OLD_JOB = ('JOB_SCHEDULE="*/2 * * * *"\nJOB_TIMEOUT="90s"\n'
+               'JOB_COMMAND="\\"\\${SD_PACK_ROOT:-\\$HOME/repos/platypeeps/sd-workflow}/bin/sd\\" '
+               'assignments dispatch"\n')
+
+    def run_job(self, job_text=None, satellite=None, **extra):
+        """`satellite`: None is the hub (no hub.json); "new" or "old" a
+        satellite whose pack holds the host-scoping commit or stops before
+        it; "unreadable" one whose pack is no git checkout."""
         fx = self.fx = Fixture()
         self.addCleanup(fx.destroy)
+        # The runner reads the guard from lib/ beside its folder.
+        shutil.copytree(FOLDER.parent / "lib", fx.tmp / "lib", dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("tests", "__pycache__"))
         pack, self.marker = fx.tmp / "custom-pack", fx.tmp / "pack-ran"
+        self.pack = pack
         sd = pack / "bin" / "sd"
         sd.parent.mkdir(parents=True)
         sd.write_text(FAKE_DISPATCH.format(python=sys.executable, lib=str(PINNED_PACK / "lib")))
         sd.chmod(0o755)
+        # A report and a push each leave a line here.
+        self.calls = fx.tmp / "report-and-push"
+        recorder = f'#!/bin/sh\nprintf "%s\\n" "$0 $*" >> "{self.calls}"\n'
+        report = fx.tmp / "sd-report"
+        notify = fx.tmp / "local-notify" / "notify.sh"
+        notify.parent.mkdir()
+        for program in (report, notify):
+            program.write_text(recorder)
+            program.chmod(0o755)
+        extra.setdefault("SD_REPORT_BIN", str(report))
+        lines = [f'export SD_PACK_ROOT="{pack}"', f'export PACK_MARKER="{self.marker}"']
+        if satellite is not None:
+            hub_json = fx.home / ".config" / "sd" / "hub.json"
+            hub_json.parent.mkdir(parents=True)
+            hub_json.write_text('{"hub": "hub.example.test", "port": 8769}\n')
+        if satellite in ("new", "old"):
+            self.git("init", "-q")
+            self.git("commit", "-q", "--allow-empty", "-m", "before host scoping")
+            self.git("commit", "-q", "--allow-empty", "-m", "host scoping")
+            self.scoped = self.git("rev-parse", "HEAD")
+            # The runner's own environment, as SD_DISPATCH_PACK_MIN is a
+            # test value no env.sh sets.
+            extra["SD_DISPATCH_PACK_MIN"] = self.scoped
+            if satellite == "old":
+                self.git("checkout", "-q", "--detach", "HEAD~1")
         env_sh = fx.home / ".config" / "shell" / "env.sh"
         env_sh.parent.mkdir(parents=True)
-        env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{self.marker}"\n')
+        env_sh.write_text("".join(f"{line}\n" for line in lines))
         fx.write_job(self.JOB.stem, job_text or self.JOB.read_text())
+        self.extra = extra
         return fx.exec_job(self.JOB.stem, extra_env=extra)
 
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.pack), "-c", "user.name=fixture",
+                               "-c", "user.email=fixture@example.test", *args],
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def ran(self):
+        return self.marker.read_text().splitlines() if self.marker.exists() else []
+
+    def assert_skipped(self, result, why):
+        """One skipped line, exit 0, and no failure: no failures.log line,
+        no report, no push (round 5 of sd:7932)."""
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.ran(), [])
+        skipped = [line for line in result.stderr.splitlines() if "skipped:" in line]
+        self.assertEqual(len(skipped), 1, result.stderr)
+        self.assertIn(f"skipped: the pack at {self.pack} {why}", skipped[0])
+        self.assertIn("(pack sd:7933); this tick dispatches nothing", skipped[0])
+        self.assertNotIn("FAILED", result.stdout + result.stderr)
+        self.assertFalse((self.fx.folder / "logs" / "failures.log").exists())
+        self.assertFalse(self.calls.exists(), self.calls.exists() and self.calls.read_text())
+
     def test_the_job_runs_the_pack_sd_with_exactly_those_words(self):
+        """The hub: no hub.json, so the guard passes with no pack read."""
         result = self.run_job()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.marker.read_text().splitlines(), ["assignments dispatch"])
+
+    def test_the_job_is_the_tick_alone(self):
+        """The guard is the runner's, so no job file needs one."""
+        command = re.search(r'^JOB_COMMAND="(.*)"$', self.JOB.read_text(), re.M).group(1)
+        self.assertEqual(command, r'\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd\" '
+                                  'assignments dispatch')
+
+    def test_a_satellite_on_a_scoped_pack_dispatches(self):
+        result = self.run_job(satellite="new")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.ran(), ["assignments dispatch"])
+
+    def test_the_hub_on_a_pack_git_cannot_read_dispatches(self):
+        """The hub's lanes are its own: no hub.json, no pack check."""
+        result = self.run_job(self.OLD_JOB)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.ran(), ["assignments dispatch"])
+        self.assertNotIn("skipped:", result.stderr)
+
+    def test_a_tick_on_an_old_pack_skips_and_fails_nothing(self):
+        """The new job file: a pack with no host scoping (pack sd:7933)."""
+        result = self.run_job(satellite="old")
+        self.assert_skipped(result, f"does not hold {self.scoped}")
+
+    def test_an_old_job_file_on_an_old_pack_skips_too(self):
+        """A config folder's copy from before the runner's guard."""
+        result = self.run_job(self.OLD_JOB, satellite="old")
+        self.assert_skipped(result, f"does not hold {self.scoped}")
+
+    def test_a_pack_moved_back_after_a_tick_skips_the_next(self):
+        """Follow or a rollback moves the pack after the install."""
+        first = self.run_job(self.OLD_JOB, satellite="new")
+        self.assertEqual(self.ran(), ["assignments dispatch"], first.stdout + first.stderr)
+        self.git("checkout", "-q", "--detach", "HEAD~1")
+        self.marker.unlink()
+        self.calls.unlink()  # the first tick's report
+        self.assert_skipped(self.fx.exec_job(self.JOB.stem, extra_env=self.extra),
+                            f"does not hold {self.scoped}")
+
+    def test_a_tick_on_an_unreadable_pack_skips_and_fails_nothing(self):
+        result = self.run_job(self.OLD_JOB, satellite="unreadable")
+        self.assert_skipped(result, "does not hold")
+        self.assertIn("or git could not read it", result.stderr)
 
     def test_the_pinned_pack_has_the_dispatch_verb_and_its_supervise_flag(self):
         """The job names a verb of the pinned pack, not only of a later one.

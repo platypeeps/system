@@ -2046,6 +2046,7 @@ stage_cron() {
       echo "  SKIP    $j — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
       continue
     fi
+    if [ "$j" = build-dispatch ] && ! dispatch_pack_ok; then continue; fi
     jp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$j.plist"
     owner=0
     [ ! -f "$jp" ] || cron_plist_ours "$jp" "$j" 2>/dev/null || owner=$?
@@ -2714,10 +2715,11 @@ SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # The satellite stage reports each one present as EXTRA; the agents and cron
 # stages skip each one on a satellite.
 # The full role (sd:5986) adds the account agent that holds the mail and
-# Drive logins, its watch job, and the builder jobs, which write the
+# Drive logins, its watch job, and the nightly builder, which writes the
 # database. The hub's other host jobs stay off the list: they pause until
-# the hub returns (#31095).
-SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build cron.build-dispatch"
+# the hub returns (#31095). build-dispatch is off it too: each lane host
+# runs its own tick for its own lanes (sd:7932); the role still moves it.
+SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
@@ -2754,12 +2756,41 @@ hub_role() { ! sd_in_profile && hub_holder; }
 plain_hub() { sd_in_profile && ! is_satellite; }
 # Ask the fence once, in the main shell, before any pipeline.
 hub_ask() { plain_hub || hub_holder || :; }
+# Whether the pack holds SD_DISPATCH_PACK_MIN, the commit that scopes
+# build dispatch to its lane host (pack sd:7933): lib/dispatch_pack.sh,
+# which cron-jobs.sh reads before each tick too. With an argument, a
+# failure prints the SKIP line ending in it.
+dispatch_pack_held() { # [consequence]
+  command -v st_dispatch_pack_held >/dev/null 2>&1 || . "$ROOT/lib/dispatch_pack.sh"
+  st_dispatch_pack_held "$SD_PACK_ROOT" && return 0
+  [ -z "${1:-}" ] || echo "  SKIP    build-dispatch — $(dispatch_pack_why); $1"
+  return 1
+}
+dispatch_pack_why() {
+  echo "the pack at $SD_PACK_ROOT does not hold $SD_DISPATCH_PACK_MIN (pack sd:7933), or git could not read it"
+}
+# Whether this machine may run build-dispatch: the hub always, any other
+# machine only on a pack that holds SD_DISPATCH_PACK_MIN. The one guard for
+# the cron stage and the hand-back. A copy installed on such a pack is
+# removed, since a later move of the pack would not reinstall it.
+dispatch_pack_ok() {
+  if plain_hub || hub_holder; then return 0; fi
+  dispatch_pack_held "not installed; move the pack, then rerun" && return 0
+  dp_plist="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.build-dispatch.plist"
+  if [ -f "$dp_plist" ] && cron_plist_ours "$dp_plist" build-dispatch 2>/dev/null; then
+    echo "  EXTRA   build-dispatch — installed on that pack, where its tick dispatches nothing; uninstalled"
+    cron_jobs uninstall build-dispatch
+  fi
+  return 1
+}
 # The hub-role labels: the hub-only list but the iCloud mirror, which copies
-# the hub's own folders, which a satellite lacks. `agent` prints labels,
-# `cron` job names.
+# the hub's own folders, which a satellite lacks, plus build-dispatch: a
+# standby whose profile lacks it still builds the hub's lanes, and the
+# hand-back stops it before the snapshot, as its claims write the
+# database (sd:7932). `agent` prints labels, `cron` job names.
 SD_HUB_ROLE_EXCEPT="cron.mirror-sync-nightly"
 hub_role_labels() { # agent|cron
-  for hr in $SD_HUB_ONLY_AGENTS; do
+  for hr in $SD_HUB_ONLY_AGENTS cron.build-dispatch; do
     [ "$hr" != "$SD_HUB_ROLE_EXCEPT" ] || continue
     case "$1:$hr" in
       cron:cron.*) echo "${hr#cron.}" ;;
@@ -6378,6 +6409,10 @@ cmd_doctor() {
       # not loaded is the wanted state, not a warning (sd:4797).
       if sd_hub_only "$label" && is_satellite && ! hub_holder; then
         echo "  SKIP    $label — hub only, and this machine is a satellite"
+      # The cron stage leaves it off, and the runner skips its tick.
+      elif [ "$label" = "$LABEL_PREFIX.cron.build-dispatch" ] && ! plain_hub && ! hub_holder &&
+          ! dispatch_pack_held; then
+        echo "  SKIP    $label — $(dispatch_pack_why)"
       elif launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
         echo "  ok      loaded: $label"
       else
@@ -8622,8 +8657,10 @@ promote_undo() { # marker step
       "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall "$uj" </dev/null ||
         undo_restart "the $uj job did not stop; rerun once its run ends"
     done
-    # Every role label is hub-only, so a satellite runs none of them, even
-    # one its profile lists: each stops before the snapshot.
+    # A satellite's own build-dispatch stops here too, and its next cron
+    # stage starts it again (sd:7932). Every role agent is hub-only, so a
+    # satellite runs none of them, even one its profile lists: each stops
+    # before the snapshot.
     for ua in $(hub_role_labels agent); do
       [ -f "$HOME/Library/LaunchAgents/$ua.plist" ] || launchctl print "gui/$(id -u)/$ua" >/dev/null 2>&1 || continue
       if agent_bootout "$ua"; then rm -f "$HOME/Library/LaunchAgents/$ua.plist"; else undo_restart "$ua did not stop"; fi
@@ -8736,11 +8773,27 @@ if held is None:
        ! printf '%s\n' "$sat" | grep -q "matches the hub's"; then
       promote_refuse "the satellite stage did not prove this machine a satellite of $hub; rerun"
     fi
+    # Step 1 stopped this host's own build-dispatch with the role; only a
+    # cron stage would start it again (sd:7932). A rerun installs it again.
+    # hub.json is back, so ask the role again: the answer cached above is
+    # the promoted one.
+    HUB_HOLDER=""
+    if undo_own_dispatch && dispatch_pack_ok; then
+      "$ROOT/local-cron-jobs/cron-jobs.sh" install build-dispatch </dev/null ||
+        promote_refuse "the build-dispatch job did not install; rerun"
+    fi
     marker_set step 6
   fi
   # Step 6: the proof the design names.
   left=$(undo_roots undo_left)
   [ -z "$left" ] || promote_refuse "still here after the delete: $left; rerun"
+  # Asked before the marker goes, so a refusal leaves the run resumable.
+  own_dispatch=no
+  if undo_own_dispatch; then
+    own_dispatch=yes
+    HUB_HOLDER=""
+    dispatch_pack_ok >/dev/null || own_dispatch=old
+  fi
   rm -f "$PROMOTE_MARKER"
   echo
   echo "hand-back report"
@@ -8750,7 +8803,21 @@ if held is None:
   # A root still here holds what undo cannot name as its own: say so.
   undo_roots undo_kept
   echo "  this machine: a satellite of $hub again"
+  case "$own_dispatch" in
+    yes) echo "  build-dispatch: this host's own job, installed again at step 5 (sd:7932)" ;;
+    old) echo "  build-dispatch: this host's own job, not installed: the pack lacks $SD_DISPATCH_PACK_MIN (pack sd:7933); move it, then run update cron --apply" ;;
+  esac
   role_accounts signout
+}
+
+# Whether this machine runs build-dispatch as its own job, not the role's:
+# its profile or its host folder names it (sd:7932). A host folder that
+# cannot be read is no answer, so the hand-back stops there. Call it in the
+# main shell, not in $(...), so the refusal ends the run.
+undo_own_dispatch() {
+  uo_host=$(host_cron_jobs) ||
+    promote_refuse "cannot list this host's cron jobs (cron-jobs/jobs/<host>/); rerun"
+  { manifest cron; printf '%s\n' "$uo_host"; } | grep -qxF build-dispatch
 }
 
 # The drill (design, "Drill"): promote's steps 1, 5, 6 and 9 against a
@@ -9088,6 +9155,8 @@ environment:
   SD_DASHBOARD_PYTHON     doctor: another interpreter the dashboard may run
   SD_NOTIFY               hub-ready: the notify command sd-db reports with
                           (default notify on PATH)
+  SD_DISPATCH_PACK_MIN    tests only: the pack commit build-dispatch needs
+                          off the hub (default f6ace045c, pack sd:7933)
   SD_DASHBOARD_PORT, SD_DASHBOARD_HTTPS_PORT  sd: the dashboard's loopback
                           port and its tailscale serve port (8767, 8443)
   GENAI_TRACES_TAILNET_PORT  sd: the hub's tailscale serve port to

@@ -82,9 +82,22 @@ Inside one `BEGIN IMMEDIATE` the tick:
 
 ### Dispatcher
 
-- Job: `local-cron-jobs` `build-dispatch.job`, hub only, `JOB_SCHEDULE="*/2 * * * *"`, `JOB_TIMEOUT="90s"`.
+- Job: `local-cron-jobs` `build-dispatch.job`, on the hub and, since sd:7932, on each satellite that hosts a lane, `JOB_SCHEDULE="*/2 * * * *"`, `JOB_TIMEOUT="90s"`.
   Command: `sd assignments dispatch`. A slot that finds the previous tick active logs `skipped`, as every job does.
 - Each tick, in order: write the `build-dispatch` heartbeat; reap; watch the lane for enqueued runs; claim; spawn.
+- Host scoping (sd:7932, pack sd:7933 at f6ace045c): each tick acts on its own host's lanes only.
+  `build.lane_hosts` and `build.lane_of` filter `build.claim`, `room`, `reap` and `pickup`,
+  and `build_run.watch`, `sweep` and `dispatch`, by the run owner: `build-dispatch` on the hub,
+  `build-dispatch@<host>` on a satellite. Only the hub pushes failures.
+  Details: the pack's 2026-11-06 `build-per-host` design, in its docs/work.
+  The guard is in code, at install and at each tick; `lib/dispatch_pack.sh` holds the commit
+  (`SD_DISPATCH_PACK_MIN`, f6ace045c) and the check. On a machine other than the hub, machine-setup
+  installs build-dispatch only on a pack that holds it (`dispatch_pack_ok`); on an older or
+  unreadable pack it prints SKIP and uninstalls a copy, and doctor prints SKIP, not WARN.
+  `cron-jobs.sh exec` checks it before each build-dispatch tick, so an older job file keeps it:
+  on a satellite (a `hub.json`, as the pack reads it) whose pack moved back, the tick logs one
+  `skipped` line and exits 0 with no failure, report or push.
+  This repo's gate pin is older.
 - Spawn starts `sd assignments supervise <run>` with `start_new_session=True`.
   It leaves the job's process group, so neither the job timeout nor launchd's exit cleanup reaches it.
 - The supervisor records its pid and process start, then walks the run's steps from its `step` column.
@@ -186,7 +199,8 @@ Every unreleased run row is owned by one process at a time. Reap acts only on a 
 - State: `build.auto_pickup_until`, a UTC timestamp, or null for off.
   On writes the next 07:00 America/Denver (the operator may pick another end); Off writes null.
 - Each tick while now is before the end, after the press queue: it selects ready items to fill the room.
-  Selection is `build.eligible`: `ready`, managed repo, hub-hosted lane, runnable kind, not parked or scheduled,
+  Selection is `build.eligible`: `ready`, managed repo, hub-hosted lane (auto-pickup and drafts stay on the hub,
+  ruling #46608 on sd:7932), runnable kind, not parked or scheduled,
   no active assignment, highest priority first. Never planning, blocked or repo-less items.
 - It queues and claims them in the claim's transaction, `who` `auto-pickup`; the run row records the trigger.
 - Questions a run hits are question notes for the morning, as Q25 rules.
@@ -199,7 +213,8 @@ Every unreleased run row is owned by one process at a time. Reap acts only on a 
 
 ## Non-goals
 
-- No satellite dispatch: items whose lane is hosted elsewhere are refused with that reason.
+- No satellite auto-pickup or drafts (ruling #46608 on sd:7932): a satellite's tick claims only Build presses
+  for its own lanes, and the hub's skips them.
 - No spend cap, no budget tables, no approval stages.
 - No auto-revert after a failed health check.
 - No retirement of the interactive lead; Start next stays, and queues a Build after step 5.

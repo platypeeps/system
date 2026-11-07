@@ -227,6 +227,78 @@ class CronSatelliteTest(CronTest):
         self.assertNotIn("install sd-db-backup", self.cron_log.read_text())
         self.assertIn("install shared-job", self.cron_log.read_text())
 
+    def name_build_dispatch(self):
+        (self.profiles / "personal.cron").write_text("shared-job\nsd-db-backup\nbuild-dispatch\n")
+        (self.jobs / "build-dispatch.job").write_text('JOB_SCHEDULE="*/2 * * * *"\n')
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+
+    def test_a_satellite_installs_build_dispatch(self):
+        """sd:7932: each lane host runs its own build-dispatch tick, so a
+        satellite profile that names it installs it; sd-db-backup stays
+        the hub's."""
+        self.name_build_dispatch()
+        fixture_config.real_git(self.stubs)
+        pack = fixture_config.dispatch_pack(pathlib.Path(self.tmp.name) / "pack", new=True)
+        result = self.run_stage("cron", "--apply", **pack)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("SKIP    build-dispatch", result.stdout)
+        self.assertIn("MISSING build-dispatch", result.stdout)
+        self.assertIn("install build-dispatch", self.cron_log.read_text())
+        self.assertIn("  SKIP    sd-db-backup — hub only, and this machine is a satellite", result.stdout)
+        self.assertNotIn("install sd-db-backup", self.cron_log.read_text())
+
+    def test_a_satellite_on_an_old_pack_skips_build_dispatch(self):
+        """Round 2 of sd:7932: a pack before host scoping (pack sd:7933)
+        would dispatch the hub's lanes a second time."""
+        self.name_build_dispatch()
+        fixture_config.real_git(self.stubs)
+        pack = fixture_config.dispatch_pack(pathlib.Path(self.tmp.name) / "pack", new=False)
+        result = self.run_stage("cron", "--apply", **pack)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"  SKIP    build-dispatch — the pack at {pack['SD_PACK_ROOT']} does not hold "
+                      f"{pack['SD_DISPATCH_PACK_MIN']} (pack sd:7933)", result.stdout)
+        self.assertNotIn("build-dispatch", self.cron_log.read_text())
+
+    def test_a_satellite_on_an_old_pack_uninstalls_its_build_dispatch(self):
+        """Round 4 of sd:7932: a copy installed before the pack moved back
+        would tick with no host scoping; the stage removes it."""
+        self.name_build_dispatch()
+        self.install_plist("build-dispatch")
+        fixture_config.real_git(self.stubs)
+        pack = fixture_config.dispatch_pack(pathlib.Path(self.tmp.name) / "pack", new=False)
+        result = self.run_stage("cron", "--apply", **pack)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  EXTRA   build-dispatch — installed on that pack, where its tick dispatches "
+                      "nothing; uninstalled", result.stdout)
+        self.assertIn("uninstall build-dispatch", self.cron_log.read_text())
+        self.assertNotIn("install build-dispatch", self.cron_log.read_text().splitlines())
+
+    def test_the_hub_keeps_its_installed_build_dispatch_on_any_pack(self):
+        (self.profiles / "personal.cron").write_text("shared-job\nbuild-dispatch\n")
+        (self.jobs / "build-dispatch.job").write_text('JOB_SCHEDULE="*/2 * * * *"\n')
+        self.install_plist("build-dispatch")
+        result = self.run_stage("cron", "--apply", SD_PACK_ROOT=str(pathlib.Path(self.tmp.name) / "no-pack"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("build-dispatch —", result.stdout)
+        self.assertNotIn("uninstall build-dispatch", self.cron_log.read_text())
+
+    def test_a_satellite_whose_pack_git_cannot_read_skips_build_dispatch(self):
+        """No answer is not a pass: the fixture's git exits 1."""
+        self.name_build_dispatch()
+        result = self.run_stage("cron", "--apply", SD_PACK_ROOT=str(pathlib.Path(self.tmp.name) / "no-pack"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  SKIP    build-dispatch — the pack at", result.stdout)
+        self.assertIn("or git could not read it", result.stdout)
+        self.assertNotIn("install build-dispatch", self.cron_log.read_text())
+
+    def test_the_hub_installs_build_dispatch_without_the_pack_check(self):
+        (self.profiles / "personal.cron").write_text("shared-job\nbuild-dispatch\n")
+        (self.jobs / "build-dispatch.job").write_text('JOB_SCHEDULE="*/2 * * * *"\n')
+        result = self.run_stage("cron", "--apply", SD_PACK_ROOT=str(pathlib.Path(self.tmp.name) / "no-pack"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("SKIP    build-dispatch", result.stdout)
+        self.assertIn("install build-dispatch", self.cron_log.read_text())
+
     def test_a_hub_only_job_already_on_a_satellite_is_left_to_the_satellite_stage(self):
         (self.profiles / "personal.satellite").write_text("hub.example.test\n")
         self.install_plist("sd-db-backup")
@@ -234,14 +306,15 @@ class CronSatelliteTest(CronTest):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("sd-db-backup", self.cron_log.read_text())
 
-    def run_doctor(self):
+    def run_doctor(self, **extra):
         # Nothing is loaded; iTerm2 has no prefs folder set.
         write_exec(self.stubs / "launchctl", "#!/bin/sh\nexit 1\n")
         write_exec(self.stubs / "defaults", "#!/bin/sh\nexit 1\n")
         env = {"HOME": str(self.home), "MACHINE_SETUP_STATE": str(self.state),
                "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
                **fixture_config.env(self.config_root),
-               "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX, "CRON_JOBS_HOST": HOST}
+               "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX, "CRON_JOBS_HOST": HOST,
+               **extra}
         return subprocess.run([str(self.folder / "machine-setup.sh"), "doctor"], env=env,
                               capture_output=True, text=True, cwd=self.tmp.name,
                               stdin=subprocess.DEVNULL, timeout=120).stdout
@@ -254,6 +327,29 @@ class CronSatelliteTest(CronTest):
         self.assertIn(f"  SKIP    {label} — hub only, and this machine is a satellite", out)
         self.assertNotIn(f"not loaded: {label}", out)
         self.assertIn(f"  WARN    not loaded: {fixture_config.LABEL_PREFIX}.cron.shared-job", out)
+
+    def test_doctor_checks_build_dispatch_on_a_satellite(self):
+        """sd:7932: a satellite runs build-dispatch, so doctor wants it loaded."""
+        self.name_build_dispatch()
+        fixture_config.real_git(self.stubs)
+        pack = fixture_config.dispatch_pack(pathlib.Path(self.tmp.name) / "pack", new=True)
+        out = self.run_doctor(**pack)
+        label = f"{fixture_config.LABEL_PREFIX}.cron.build-dispatch"
+        self.assertNotIn(f"SKIP    {label}", out)
+        self.assertIn(f"  WARN    not loaded: {label}", out)
+        self.assertIn(f"  SKIP    {fixture_config.LABEL_PREFIX}.cron.sd-db-backup — hub only", out)
+
+    def test_doctor_on_a_satellite_whose_pack_fails_the_guard_skips_build_dispatch(self):
+        """Round 5 of sd:7932: the cron stage leaves it off and the tick
+        skips, so not loaded is the wanted state, not a WARN."""
+        self.name_build_dispatch()
+        fixture_config.real_git(self.stubs)
+        pack = fixture_config.dispatch_pack(pathlib.Path(self.tmp.name) / "pack", new=False)
+        out = self.run_doctor(**pack)
+        label = f"{fixture_config.LABEL_PREFIX}.cron.build-dispatch"
+        self.assertIn(f"  SKIP    {label} — the pack at {pack['SD_PACK_ROOT']} does not hold "
+                      f"{pack['SD_DISPATCH_PACK_MIN']} (pack sd:7933)", out)
+        self.assertNotIn(f"not loaded: {label}", out)
 
     def test_doctor_on_the_hub_still_warns_for_it(self):
         out = self.run_doctor()
