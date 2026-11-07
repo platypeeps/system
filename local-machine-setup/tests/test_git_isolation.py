@@ -35,16 +35,32 @@ class HostileGitConfig(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
 
+    def hostile_env(self):
+        """git_env with only the hostile config put back: the control's env."""
+        return {**fixture_config.git_env(), "GIT_CONFIG_GLOBAL": os.environ["GIT_CONFIG_GLOBAL"]}
+
     def test_the_hostile_config_breaks_an_unisolated_commit(self):
-        """The control: the same call with the inherited environment fails."""
+        """The control: the same call, config only, fails. No inherited GIT_DIR reaches it."""
         repo = self.tmp / "control"
         repo.mkdir()
-        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, capture_output=True)
+        env = self.hostile_env()
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, capture_output=True, env=env,
+                       stdin=subprocess.DEVNULL)
         result = subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.test",
                                  "commit", "-q", "--allow-empty", "-m", "x"],
-                                capture_output=True, stdin=subprocess.DEVNULL)
+                                capture_output=True, stdin=subprocess.DEVNULL, env=env)
         self.assertNotEqual(result.returncode, 0)
         self.hook_ran.unlink(missing_ok=True)
+
+    def test_an_inherited_git_dir_is_left_untouched(self):
+        """GIT_DIR overrides -C: the control and the fixtures must not reach it."""
+        target = self.tmp / "operator-repo.git"
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(target), "GIT_WORK_TREE": str(self.tmp),
+                                          "GIT_INDEX_FILE": str(self.tmp / "operator-index")}):
+            self.test_the_hostile_config_breaks_an_unisolated_commit()
+            fixture_config.dispatch_pack(self.tmp / "pack-gitdir", new=True)
+        self.assertFalse(target.exists(), "a fixture git call reached the inherited GIT_DIR")
+        self.assertFalse((self.tmp / "operator-index").exists())
 
     def test_git_env_drops_the_operator_config_and_git_variables(self):
         env = fixture_config.git_env()

@@ -248,8 +248,10 @@ class BuildDispatchJobTest(unittest.TestCase):
         config = tmp / "hostile.gitconfig"
         config.write_text(f"[core]\n\thooksPath = {tmp / 'hooks'}\n[commit]\n\tgpgsign = true\n"
                           "[gpg]\n\tprogram = /usr/bin/false\n")
-        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config)}):
+        operator_repo = tmp / "operator-repo.git"
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config), "GIT_DIR": str(operator_repo)}):
             result = self.run_job(satellite="new")
+        self.assertFalse(operator_repo.exists(), "a fixture git call reached the inherited GIT_DIR")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.ran(), ["assignments dispatch"])
         self.assertFalse(hook_ran.exists(), "the operator's hook ran")
