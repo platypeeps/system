@@ -345,29 +345,56 @@ def stop_server(proc: subprocess.Popen) -> str:
     """Stop a server start_headless started: SIGTERM to its process group,
     then SIGKILL, each wait bounded, so launch never hangs on it. A denied
     killpg (sd:7901, sd:7925) stops nothing the server started, so the
-    answer says the group could not be stopped, not that it was."""
-    if proc.poll() is not None:
-        return "the server had exited"
+    answer says the group could not be stopped, not that it was.
+
+    The stop waits on the group, not the server: a child that ignores
+    SIGTERM outlives a server that obeys it, or one that had exited
+    (sd:7954)."""
+    exited = proc.poll() is not None
     for sig, done in ((signal.SIGTERM, "stopped"), (signal.SIGKILL, "killed")):
         try:
-            os.killpg(proc.pid, sig)
+            signal_group(proc, sig)
         except ProcessLookupError:
-            pass
+            # Nothing is left in the group.
+            return "the server had exited" if sig == signal.SIGTERM else "the server was stopped"
         except PermissionError as exc:
-            # macOS gives EPERM once the leader is a zombie (sd:2261): it
-            # exited, so no sandbox denied anything.
-            if proc.poll() is not None:
-                return "the server had exited"
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 proc.send_signal(signal.SIGKILL)
             return (f"killpg denied ({exc.strerror}); the server's group could not be "
                     f"stopped (pid {proc.pid})")
+        if group_ended(proc, SERVER_STOP_SECONDS):
+            return f"the server had exited; its group was {done}" if exited else f"the server was {done}"
+    return f"the server's group (pid {proc.pid}) did not end after SIGKILL"
+
+
+def signal_group(proc: subprocess.Popen, sig: int) -> None:
+    """killpg the server's group. macOS gives EPERM once the leader is a
+    zombie (sd:2261): no sandbox denied anything. The reap ends the zombie,
+    so the retry reaches the rest of the group (sd:7954)."""
+    try:
+        os.killpg(proc.pid, sig)
+    except PermissionError:
+        if proc.poll() is None:
+            raise
+        os.killpg(proc.pid, sig)
+
+
+def group_ended(proc: subprocess.Popen, bound: float) -> bool:
+    """Whether the server's group has no process left within `bound` s. The
+    leader is reaped first, as a zombie leader makes killpg EPERM; a probe
+    refused another way is no answer, so the wait goes on."""
+    deadline = time.monotonic() + bound
+    while True:
+        proc.poll()
         try:
-            proc.wait(timeout=SERVER_STOP_SECONDS)
-        except subprocess.TimeoutExpired:
-            continue
-        return f"the server was {done}"
-    return f"the server (pid {proc.pid}) did not exit after SIGKILL"
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
 
 
 def pane_get(session: str, pane: str) -> dict | None:
