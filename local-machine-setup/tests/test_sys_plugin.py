@@ -148,8 +148,8 @@ class SysPlugin(base.SyntheticHome):
 
     def test_a_linked_worktree_registers_the_main_checkout(self):
         # A worktree's path dies with the worktree (sd:3390).
-        git = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": os.devnull,
-               "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.test",
+        git = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", **fixture_config.GIT_ISOLATION,
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.test",
                "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.test"}
         tree = self.repo.parent / "tree"
         for cmd in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "fixture"],

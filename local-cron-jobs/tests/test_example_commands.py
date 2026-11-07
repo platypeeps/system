@@ -198,10 +198,14 @@ class BuildDispatchJobTest(unittest.TestCase):
         return fx.exec_job(self.JOB.stem, extra_env=extra)
 
     def git(self, *args):
-        # No GIT_* variable and no global or system config: the operator's
-        # hooksPath or signing cannot reach the fixture (system sd:7972).
+        # No GIT_* variable, no global or system config and no XDG ignore or
+        # attributes: the operator's hooksPath or signing cannot reach the
+        # fixture (system sd:7972, sd:7991). The keys match GIT_ISOLATION in
+        # local-machine-setup/tests/fixture_config.py.
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_COUNT="2",
+                   GIT_CONFIG_KEY_0="core.excludesFile", GIT_CONFIG_VALUE_0=os.devnull,
+                   GIT_CONFIG_KEY_1="core.attributesFile", GIT_CONFIG_VALUE_1=os.devnull)
         return subprocess.run(["git", "-C", str(self.pack), "-c", "user.name=fixture",
                                "-c", "user.email=fixture@example.test", *args],
                               check=True, capture_output=True, text=True, env=env,
