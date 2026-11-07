@@ -343,12 +343,11 @@ def server_log_path(session: str) -> str:
 
 def stop_server(proc: subprocess.Popen) -> str:
     """Stop a server start_headless started: SIGTERM to its process group,
-    then SIGKILL, each wait bounded, so launch never hangs on it. A sandbox
-    can deny the group (sd:7901): the server itself is signalled then, and
-    the answer names the denial."""
+    then SIGKILL, each wait bounded, so launch never hangs on it. A denied
+    killpg (sd:7901, sd:7925) stops nothing the server started, so the
+    answer says the group could not be stopped, not that it was."""
     if proc.poll() is not None:
         return "the server had exited"
-    denied = ""
     for sig, done in ((signal.SIGTERM, "stopped"), (signal.SIGKILL, "killed")):
         try:
             os.killpg(proc.pid, sig)
@@ -358,16 +357,17 @@ def stop_server(proc: subprocess.Popen) -> str:
             # macOS gives EPERM once the leader is a zombie (sd:2261): it
             # exited, so no sandbox denied anything.
             if proc.poll() is not None:
-                return f"{denied}the server had exited"
-            denied = f"process group denied ({exc.strerror}); "
-            with contextlib.suppress(ProcessLookupError):
-                proc.send_signal(sig)
+                return "the server had exited"
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                proc.send_signal(signal.SIGKILL)
+            return (f"killpg denied ({exc.strerror}); the server's group could not be "
+                    f"stopped (pid {proc.pid})")
         try:
             proc.wait(timeout=SERVER_STOP_SECONDS)
         except subprocess.TimeoutExpired:
             continue
-        return f"{denied}the server was {done}"
-    return f"{denied}the server (pid {proc.pid}) did not exit after SIGKILL"
+        return f"the server was {done}"
+    return f"the server (pid {proc.pid}) did not exit after SIGKILL"
 
 
 def pane_get(session: str, pane: str) -> dict | None:
