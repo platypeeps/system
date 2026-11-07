@@ -773,6 +773,27 @@ class TestStartHeadless(HerdrCase):
         self.assertNotIn("Traceback", proc.stderr)
         self.assertIn("the server's group could not be stopped", proc.stderr)
 
+    def test_an_exited_server_s_surviving_group_is_named_in_the_refusal(self) -> None:
+        # Review of sd:7954: the exited path dropped stop_server's answer,
+        # so a group that had to be killed never reached the operator.
+        (self.fixture / "server-fail").write_text("Error: double: socket in use\n")
+        (self.fixture / "server-leaves-child").write_text("")
+        child = self.fixture / "server-child.pid"
+        self.addCleanup(lambda: child.exists() and TestStopServer.end(int(child.read_text())))
+        proc, _ = self.start()
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("server exited 1; the server had exited; its group was killed", proc.stderr)
+        self.assertIn("Error: double: socket in use", proc.stderr)
+        TestStopServer().assert_ended(int(child.read_text()))
+
+    def test_an_exited_server_s_denied_group_is_named_in_the_refusal(self) -> None:
+        # Review of sd:7954: "killpg denied" was dropped on the exited path.
+        (self.fixture / "server-fail").write_text("Error: double: socket in use\n")
+        proc, _ = self.start("denied")
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("server exited 1; killpg denied (Operation not permitted); the server's "
+                      "group could not be stopped", proc.stderr)
+
 class TestStopServer(unittest.TestCase):
     """stop_server itself, with os.killpg replaced."""
 

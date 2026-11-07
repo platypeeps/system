@@ -319,9 +319,13 @@ def start_headless(session: str) -> None:
                 # is up. The cause goes in the refusal if it never does.
                 probe = f"; the last session list failed: {exc}"
             if exited:
+                # Its group may outlive it: the stop's answer goes in the
+                # refusal unless nothing was left (sd:7954).
+                stopped = stop_server(proc)
+                left = "" if stopped == "the server had exited" else f"; {stopped}"
                 raise Fail(
                     f"session {session} is not running and did not start: "
-                    f"herdr --session {session} server exited {proc.returncode}{probe}{said()}"
+                    f"herdr --session {session} server exited {proc.returncode}{left}{probe}{said()}"
                 )
             if time.monotonic() > deadline:
                 stopped = stop_server(proc)

@@ -21,6 +21,9 @@
 #                             running session-list.json (unless
 #                             server-stays-down is present) and sleeps;
 #                             with server-lost-race it exits 1 after that
+#   server-leaves-child       with server-fail, the server first starts a
+#                             child that ignores SIGTERM, its pid in
+#                             server-child.pid
 #   server-ignores-term       when present, that server ignores SIGTERM
 #   server.pid                written by `--session <n> server`: its pid
 #   session-list-fail         when present, `session list` exits 1
@@ -53,6 +56,10 @@ case "${1:-}" in
       # session reads running) and stays, unless a fixture says otherwise.
       echo $$ > "$FIX/server.pid"
       if [ -f "$FIX/server-fail" ]; then
+        if [ -f "$FIX/server-leaves-child" ]; then
+          (trap '' TERM; exec sleep 60) > /dev/null 2>&1 &
+          echo $! > "$FIX/server-child.pid"
+        fi
         cat "$FIX/server-fail" >&2
         exit 1
       fi
