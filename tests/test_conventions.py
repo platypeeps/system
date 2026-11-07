@@ -14,7 +14,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FOLDER_CELL = re.compile(r"^\|\s*`((?:local|mezmo)-[a-z0-9-]+)`\s*\|", re.M)
+#: A hyphenated folder name in backticks, alone in the first cell. Generic on
+#: purpose: tests/test_product_name.py fails a vendor prefix named here.
+FOLDER_CELL = re.compile(r"^\|\s*`([a-z0-9]+(?:-[a-z0-9]+)+)`\s*\|", re.M)
 
 
 def instances(text):
