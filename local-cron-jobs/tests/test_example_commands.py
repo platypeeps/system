@@ -49,6 +49,11 @@ class PackRootFromEnvShTest(unittest.TestCase):
                 # The working folders the examples name beside the checkout.
                 for sibling in ("local-agent-meter",):
                     (fx.tmp / sibling).mkdir(exist_ok=True)
+                # build-dispatch's pack guard, which passes here; its own
+                # test runs the real one.
+                guard = fx.tmp / "local-machine-setup" / "machine-setup.sh"
+                guard.parent.mkdir(exist_ok=True)
+                guard.write_text("exit 0\n")
                 env_sh = fx.home / ".config" / "shell" / "env.sh"
                 env_sh.parent.mkdir(parents=True)
                 env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{marker}"\n')
@@ -143,24 +148,74 @@ class BuildDispatchJobTest(unittest.TestCase):
         self.assertEqual(re.search(r'^JOB_SCHEDULE="([^"]+)"', text, re.M).group(1), "*/2 * * * *")
         self.assertEqual(re.search(r'^JOB_TIMEOUT="([^"]+)"', text, re.M).group(1), "90s")
 
-    def run_job(self, job_text=None, **extra):
+    def run_job(self, job_text=None, satellite=None, **extra):
+        """`satellite`: None is the hub (no hub.json); "new" or "old" a
+        satellite whose pack holds the host-scoping commit or stops before
+        it; "unreadable" one whose pack is no git checkout."""
         fx = self.fx = Fixture()
         self.addCleanup(fx.destroy)
+        # The guard the job runs first: machine-setup.sh beside this folder.
+        repo = FOLDER.parent
+        (fx.tmp / "local-machine-setup").mkdir()
+        shutil.copy(repo / "local-machine-setup" / "machine-setup.sh", fx.tmp / "local-machine-setup")
+        shutil.copytree(repo / "lib", fx.tmp / "lib", dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("tests", "__pycache__"))
         pack, self.marker = fx.tmp / "custom-pack", fx.tmp / "pack-ran"
         sd = pack / "bin" / "sd"
         sd.parent.mkdir(parents=True)
         sd.write_text(FAKE_DISPATCH.format(python=sys.executable, lib=str(PINNED_PACK / "lib")))
         sd.chmod(0o755)
+        lines = [f'export SD_PACK_ROOT="{pack}"', f'export PACK_MARKER="{self.marker}"']
+        if satellite is not None:
+            hub_json = fx.home / ".config" / "sd" / "hub.json"
+            hub_json.parent.mkdir(parents=True)
+            hub_json.write_text('{"hub": "hub.example.test", "port": 8769}\n')
+        if satellite in ("new", "old"):
+            def git(*args):
+                return subprocess.run(["git", "-C", str(pack), "-c", "user.name=fixture",
+                                       "-c", "user.email=fixture@example.test", *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "-q")
+            git("commit", "-q", "--allow-empty", "-m", "before host scoping")
+            git("commit", "-q", "--allow-empty", "-m", "host scoping")
+            lines.append(f'export SD_DISPATCH_PACK_MIN="{git("rev-parse", "HEAD")}"')
+            if satellite == "old":
+                git("checkout", "-q", "--detach", "HEAD~1")
         env_sh = fx.home / ".config" / "shell" / "env.sh"
         env_sh.parent.mkdir(parents=True)
-        env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{self.marker}"\n')
+        env_sh.write_text("".join(f"{line}\n" for line in lines))
         fx.write_job(self.JOB.stem, job_text or self.JOB.read_text())
         return fx.exec_job(self.JOB.stem, extra_env=extra)
 
+    def ran(self):
+        return self.marker.read_text().splitlines() if self.marker.exists() else []
+
+    def log(self):
+        return (self.fx.folder / "logs" / f"{self.JOB.stem}.log").read_text()
+
     def test_the_job_runs_the_pack_sd_with_exactly_those_words(self):
+        """The hub: no hub.json, so the guard passes with no pack read."""
         result = self.run_job()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.marker.read_text().splitlines(), ["assignments dispatch"])
+
+    def test_a_satellite_on_a_scoped_pack_dispatches(self):
+        result = self.run_job(satellite="new")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.ran(), ["assignments dispatch"])
+
+    def test_a_tick_on_an_old_pack_dispatches_nothing(self):
+        """Round 4 of sd:7932: a pack moved back after the install, by
+        follow or a rollback, has no host scoping (pack sd:7933)."""
+        self.run_job(satellite="old")
+        self.assertEqual(self.ran(), [])
+        self.assertIn("SKIP    build-dispatch — the pack at", self.log())
+        self.assertIn("this tick dispatches nothing", self.log())
+
+    def test_a_tick_on_an_unreadable_pack_dispatches_nothing(self):
+        self.run_job(satellite="unreadable")
+        self.assertEqual(self.ran(), [])
+        self.assertIn("or git could not read it", self.log())
 
     def test_the_pinned_pack_has_the_dispatch_verb_and_its_supervise_flag(self):
         """The job names a verb of the pinned pack, not only of a later one.

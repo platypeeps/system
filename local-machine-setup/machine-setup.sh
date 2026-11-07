@@ -2760,16 +2760,25 @@ hub_ask() { plain_hub || hub_holder || :; }
 # sd:7933). A machine other than the hub on an older pack would dispatch
 # the hub's lanes a second time. Tests point it at a fixture commit.
 SD_DISPATCH_PACK_MIN="${SD_DISPATCH_PACK_MIN:-f6ace045c3eeb4525c45cabfe1ff7b61a3874961}"
-# Whether this machine may install build-dispatch: the hub always, any
-# other machine only on a pack that holds SD_DISPATCH_PACK_MIN. A pack git
-# cannot read is no answer, so it skips too. The one guard for the cron
-# stage and the hand-back; it prints the SKIP line itself.
+# Whether the pack holds SD_DISPATCH_PACK_MIN, else the SKIP line, ending
+# in $1. A pack git cannot read is no answer, so it fails too.
+dispatch_pack_held() { # consequence
+  git -C "$SD_PACK_ROOT" merge-base --is-ancestor "$SD_DISPATCH_PACK_MIN" HEAD >/dev/null 2>&1 && return 0
+  echo "  SKIP    build-dispatch — the pack at $SD_PACK_ROOT does not hold $SD_DISPATCH_PACK_MIN (pack sd:7933), or git could not read it; $1"
+  return 1
+}
+# Whether this machine may run build-dispatch: the hub always, any other
+# machine only on a pack that holds SD_DISPATCH_PACK_MIN. The one guard for
+# the cron stage and the hand-back. A copy installed on such a pack is
+# removed, since a later move of the pack would not reinstall it.
 dispatch_pack_ok() {
   if plain_hub || hub_holder; then return 0; fi
-  if git -C "$SD_PACK_ROOT" merge-base --is-ancestor "$SD_DISPATCH_PACK_MIN" HEAD >/dev/null 2>&1; then
-    return 0
+  dispatch_pack_held "not installed; move the pack, then rerun" && return 0
+  dp_plist="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.build-dispatch.plist"
+  if [ -f "$dp_plist" ] && cron_plist_ours "$dp_plist" build-dispatch 2>/dev/null; then
+    echo "  EXTRA   build-dispatch — installed on that pack, where its tick dispatches nothing; uninstalled"
+    cron_jobs uninstall build-dispatch
   fi
-  echo "  SKIP    build-dispatch — the pack at $SD_PACK_ROOT does not hold $SD_DISPATCH_PACK_MIN (pack sd:7933), or git could not read it; move the pack, then rerun; an installed copy stays"
   return 1
 }
 # The hub-role labels: the hub-only list but the iCloud mirror, which copies
@@ -5844,6 +5853,16 @@ DOCTOR_GATE_RECORD="${XDG_STATE_HOME:-$HOME/.local/state}/machine-setup/doctor-g
 # The weekly job's stamp (cron-jobs.sh record_stamp); a test points it elsewhere.
 DOCTOR_GATE_STAMP="${DOCTOR_GATE_STAMP:-$ROOT/local-cron-jobs/logs/.doctor-gate-weekly.stamp}"
 DOCTOR_GATE_WAIT=3600
+
+# The build-dispatch tick's guard (sd:7932): the job runs it before each
+# dispatch. A machine with no hub.json is the hub, as the pack reads it, and
+# passes with no profile read; a satellite passes only on a pack that holds
+# SD_DISPATCH_PACK_MIN, so a pack moved back after the install dispatches
+# nothing.
+cmd_doctor_dispatch() {
+  [ -e "$SD_HUB_CONFIG" ] || exit 0
+  dispatch_pack_held "this tick dispatches nothing; move the pack" || exit 1
+}
 
 cmd_doctor_gate() {
   echo "== doctor gate"
@@ -8995,6 +9014,8 @@ for a in "$@"; do
                    another database, or an env.sh that fails when sourced,
                    is a FAIL
   doctor sd        those sd checks alone, exit 1 on any FAIL
+  doctor dispatch  the build-dispatch tick's guard: exit 1, with one SKIP
+                   line, on a satellite whose pack lacks host scoping
   doctor gate      the weekly gate run: make check in a snapshot of this
                    checkout's head, then of the pack's, each inside
                    `sd gate run --max-wait 3600`; a pass or a real failure
@@ -9195,7 +9216,8 @@ case "$VERB" in
       "") cmd_doctor ;;
       sd) cmd_doctor_sd ;;
       gate) cmd_doctor_gate ;;
-      *)  die "doctor takes no argument, 'sd' for the database and dashboard checks alone, or 'gate' for the weekly gate run" ;;
+      dispatch) cmd_doctor_dispatch ;;
+      *)  die "doctor takes no argument, 'sd' for the database and dashboard checks alone, 'gate' for the weekly gate run, or 'dispatch' for the build-dispatch tick's pack check" ;;
     esac
     ;;
   # Python, not sh, for the same reason local-repo-sync tests
