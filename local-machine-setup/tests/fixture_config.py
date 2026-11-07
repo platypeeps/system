@@ -118,3 +118,36 @@ def render(template, label, home, root, pack=None):
                 .replace("@LABEL@", label)
                 .replace("@ROOT@", str(root))
                 .replace("@PACK@", str(pack or f"{home}/repos/platypeeps/sd-workflow")))
+
+
+def dispatch_pack(folder, *, new):
+    """A pack checkout for the build-dispatch guard (pack sd:7933).
+
+    A git repository at `folder` with two commits; the second stands in
+    for the host-scoping commit. HEAD is that commit when `new`, else the
+    one before it. Returns the env the guard reads: SD_PACK_ROOT and
+    SD_DISPATCH_PACK_MIN.
+    """
+    import subprocess  # noqa: PLC0415
+    folder = pathlib.Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    real = shutil.which("git")
+
+    def git(*args):
+        return subprocess.run([real, "-C", str(folder), "-c", "user.name=fixture",
+                               "-c", "user.email=fixture@example.test", *args],
+                              check=True, capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    git("commit", "-q", "--allow-empty", "-m", "before host scoping")
+    git("commit", "-q", "--allow-empty", "-m", "host scoping")
+    scoped = git("rev-parse", "HEAD")
+    if not new:
+        git("checkout", "-q", "--detach", "HEAD~1")
+    return {"SD_PACK_ROOT": str(folder), "SD_DISPATCH_PACK_MIN": scoped}
+
+
+def real_git(stubs):
+    """A `git` in `stubs` that runs the machine's git, over a failing stub."""
+    path = pathlib.Path(stubs) / "git"
+    path.write_text(f'#!/bin/sh\nexec "{shutil.which("git")}" "$@"\n')
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

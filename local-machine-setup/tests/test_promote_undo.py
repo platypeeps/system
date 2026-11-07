@@ -200,10 +200,11 @@ class Undo(PromoteCase):
         host = self.config / "cron-jobs/jobs/lane-satellite"
         host.mkdir(parents=True)
         (self.config / "cron-jobs/jobs/build-dispatch.job").rename(host / "build-dispatch.job")
-        self.run_undo("--apply", expect=1, CRON_JOBS_HOST="lane-satellite")
+        pack = fixture_config.dispatch_pack(self.fixture.pack, new=True)
+        self.run_undo("--apply", expect=1, CRON_JOBS_HOST="lane-satellite", **pack)
         self.assertEqual([], self.installed(), "the hub role still runs after the hand-back snapshot")
         self.new_hub_restores()
-        result = self.run_undo("--apply", CRON_JOBS_HOST="lane-satellite")
+        result = self.run_undo("--apply", CRON_JOBS_HOST="lane-satellite", **pack)
         self.assertIsNone(self.marker_step())
         self.assertEqual([f"{PREFIX}.cron.build-dispatch"], self.installed())
         self.assertIn("  build-dispatch: this host's own job, installed again", result.stdout)
@@ -211,9 +212,21 @@ class Undo(PromoteCase):
     def test_a_hand_back_starts_a_profiles_build_dispatch_again(self):
         (self.config / "machine-setup/profiles/work.cron").write_text("build-dispatch\n")
         self.handed_back()
-        result = self.run_undo("--apply")
+        result = self.run_undo("--apply", **fixture_config.dispatch_pack(self.fixture.pack, new=True))
         self.assertEqual([f"{PREFIX}.cron.build-dispatch"], self.installed())
         self.assertIn("  build-dispatch: this host's own job, installed again", result.stdout)
+
+    def test_a_hand_back_on_an_old_pack_leaves_build_dispatch_off(self):
+        """Round 2 of sd:7932: a pack before host scoping (pack sd:7933)
+        would dispatch the hub's lanes a second time."""
+        (self.config / "machine-setup/profiles/work.cron").write_text("build-dispatch\n")
+        self.handed_back()
+        pack = fixture_config.dispatch_pack(self.fixture.pack, new=False)
+        result = self.run_undo("--apply", **pack)
+        self.assertIsNone(self.marker_step())
+        self.assertEqual([], self.installed())
+        self.assertIn(f"  SKIP    build-dispatch — the pack at {pack['SD_PACK_ROOT']} does not hold", result.stdout)
+        self.assertIn("  build-dispatch: this host's own job, not installed: the pack lacks", result.stdout)
 
     def test_an_unreadable_host_folder_stops_the_hand_back_at_step_5(self):
         """A host list that cannot be read is no answer, not "names none"."""

@@ -2046,6 +2046,7 @@ stage_cron() {
       echo "  SKIP    $j — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
       continue
     fi
+    if [ "$j" = build-dispatch ] && ! dispatch_pack_ok; then continue; fi
     jp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$j.plist"
     owner=0
     [ ! -f "$jp" ] || cron_plist_ours "$jp" "$j" 2>/dev/null || owner=$?
@@ -2755,6 +2756,22 @@ hub_role() { ! sd_in_profile && hub_holder; }
 plain_hub() { sd_in_profile && ! is_satellite; }
 # Ask the fence once, in the main shell, before any pipeline.
 hub_ask() { plain_hub || hub_holder || :; }
+# The pack commit that scopes build dispatch to its lane host (pack
+# sd:7933). A machine other than the hub on an older pack would dispatch
+# the hub's lanes a second time. Tests point it at a fixture commit.
+SD_DISPATCH_PACK_MIN="${SD_DISPATCH_PACK_MIN:-f6ace045c3eeb4525c45cabfe1ff7b61a3874961}"
+# Whether this machine may install build-dispatch: the hub always, any
+# other machine only on a pack that holds SD_DISPATCH_PACK_MIN. A pack git
+# cannot read is no answer, so it skips too. The one guard for the cron
+# stage and the hand-back; it prints the SKIP line itself.
+dispatch_pack_ok() {
+  if plain_hub || hub_holder; then return 0; fi
+  if git -C "$SD_PACK_ROOT" merge-base --is-ancestor "$SD_DISPATCH_PACK_MIN" HEAD >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "  SKIP    build-dispatch — the pack at $SD_PACK_ROOT does not hold $SD_DISPATCH_PACK_MIN (pack sd:7933), or git could not read it; move the pack, then rerun; an installed copy stays"
+  return 1
+}
 # The hub-role labels: the hub-only list but the iCloud mirror, which copies
 # the hub's own folders, which a satellite lacks, plus build-dispatch: a
 # standby whose profile lacks it still builds the hub's lanes, and the
@@ -8743,7 +8760,10 @@ if held is None:
     fi
     # Step 1 stopped this host's own build-dispatch with the role; only a
     # cron stage would start it again (sd:7932). A rerun installs it again.
-    if undo_own_dispatch; then
+    # hub.json is back, so ask the role again: the answer cached above is
+    # the promoted one.
+    HUB_HOLDER=""
+    if undo_own_dispatch && dispatch_pack_ok; then
       "$ROOT/local-cron-jobs/cron-jobs.sh" install build-dispatch </dev/null ||
         promote_refuse "the build-dispatch job did not install; rerun"
     fi
@@ -8754,7 +8774,11 @@ if held is None:
   [ -z "$left" ] || promote_refuse "still here after the delete: $left; rerun"
   # Asked before the marker goes, so a refusal leaves the run resumable.
   own_dispatch=no
-  ! undo_own_dispatch || own_dispatch=yes
+  if undo_own_dispatch; then
+    own_dispatch=yes
+    HUB_HOLDER=""
+    dispatch_pack_ok >/dev/null || own_dispatch=old
+  fi
   rm -f "$PROMOTE_MARKER"
   echo
   echo "hand-back report"
@@ -8764,8 +8788,10 @@ if held is None:
   # A root still here holds what undo cannot name as its own: say so.
   undo_roots undo_kept
   echo "  this machine: a satellite of $hub again"
-  [ "$own_dispatch" = no ] ||
-    echo "  build-dispatch: this host's own job, installed again at step 5 (sd:7932)"
+  case "$own_dispatch" in
+    yes) echo "  build-dispatch: this host's own job, installed again at step 5 (sd:7932)" ;;
+    old) echo "  build-dispatch: this host's own job, not installed: the pack lacks $SD_DISPATCH_PACK_MIN (pack sd:7933); move it, then run update cron --apply" ;;
+  esac
   role_accounts signout
 }
 

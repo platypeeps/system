@@ -237,13 +237,47 @@ class CronSatelliteTest(CronTest):
         satellite profile that names it installs it; sd-db-backup stays
         the hub's."""
         self.name_build_dispatch()
-        result = self.run_stage("cron", "--apply")
+        fixture_config.real_git(self.stubs)
+        pack = fixture_config.dispatch_pack(pathlib.Path(self.tmp.name) / "pack", new=True)
+        result = self.run_stage("cron", "--apply", **pack)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("SKIP    build-dispatch", result.stdout)
         self.assertIn("MISSING build-dispatch", result.stdout)
         self.assertIn("install build-dispatch", self.cron_log.read_text())
         self.assertIn("  SKIP    sd-db-backup — hub only, and this machine is a satellite", result.stdout)
         self.assertNotIn("install sd-db-backup", self.cron_log.read_text())
+
+    def test_a_satellite_on_an_old_pack_skips_build_dispatch(self):
+        """Round 2 of sd:7932: a pack before host scoping (pack sd:7933)
+        would dispatch the hub's lanes a second time; an installed copy
+        stays."""
+        self.name_build_dispatch()
+        self.install_plist("build-dispatch")
+        fixture_config.real_git(self.stubs)
+        pack = fixture_config.dispatch_pack(pathlib.Path(self.tmp.name) / "pack", new=False)
+        result = self.run_stage("cron", "--apply", **pack)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"  SKIP    build-dispatch — the pack at {pack['SD_PACK_ROOT']} does not hold "
+                      f"{pack['SD_DISPATCH_PACK_MIN']} (pack sd:7933)", result.stdout)
+        self.assertNotIn("build-dispatch", self.cron_log.read_text())
+        self.assertTrue(self.plist_path("build-dispatch").exists())
+
+    def test_a_satellite_whose_pack_git_cannot_read_skips_build_dispatch(self):
+        """No answer is not a pass: the fixture's git exits 1."""
+        self.name_build_dispatch()
+        result = self.run_stage("cron", "--apply", SD_PACK_ROOT=str(pathlib.Path(self.tmp.name) / "no-pack"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  SKIP    build-dispatch — the pack at", result.stdout)
+        self.assertIn("or git could not read it", result.stdout)
+        self.assertNotIn("install build-dispatch", self.cron_log.read_text())
+
+    def test_the_hub_installs_build_dispatch_without_the_pack_check(self):
+        (self.profiles / "personal.cron").write_text("shared-job\nbuild-dispatch\n")
+        (self.jobs / "build-dispatch.job").write_text('JOB_SCHEDULE="*/2 * * * *"\n')
+        result = self.run_stage("cron", "--apply", SD_PACK_ROOT=str(pathlib.Path(self.tmp.name) / "no-pack"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("SKIP    build-dispatch", result.stdout)
+        self.assertIn("install build-dispatch", self.cron_log.read_text())
 
     def test_a_hub_only_job_already_on_a_satellite_is_left_to_the_satellite_stage(self):
         (self.profiles / "personal.satellite").write_text("hub.example.test\n")
