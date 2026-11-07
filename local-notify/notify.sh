@@ -139,6 +139,15 @@ case "$FORMAT" in
   *) echo "notify.sh: bad format '$FORMAT' (plain|html)" >&2; exit 1 ;;
 esac
 
+# Gmail strips a <style> block, so a mailed report renders unstyled. Warn,
+# do not refuse: the mail still carries its text (the HTML report convention,
+# the pack's dashboard/docs/html-reports.md).
+if [ "$FORMAT" = html ] &&
+   printf '%s' "$MESSAGE" | grep -qi '<style'; then
+  echo "notify.sh: html body has a <style> block; Gmail strips it," \
+    "use style=\"\" attributes" >&2
+fi
+
 # SUBJECT is the email-only view of TITLE. Kept separate rather than rewriting
 # TITLE so the ntfy push and the macOS banner keep reading the way they always
 # have — the prefix exists to sort a mailbox, and a phone notification is not

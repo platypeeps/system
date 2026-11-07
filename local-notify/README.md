@@ -100,6 +100,9 @@ Priorities (ntfy): `min|low|default|high|urgent`. Also linked as `notify` in
   (launchd, port 8083); needs `NOTIFY_EMAIL_TO` and `EMAIL_FROM` (the Google
   account authorized in that server). Title becomes the subject; `-f html`
   sends the body as HTML (the other channels always get the body as-is).
+  Style mailed HTML with `style=""` attributes: Gmail strips a `<style>`
+  block, and `-f html` warns on one. A report built to the HTML report
+  convention (the pack's `dashboard/docs/html-reports.md`) mails this way.
   Used by the nightly report jobs (brew-doctor, repo-sync).
   This is the email channel's outbound half, and its only sender;
   `local-mail-intake` is the inbound half (sd:4191).
