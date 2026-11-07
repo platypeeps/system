@@ -9140,6 +9140,8 @@ environment:
   SD_DASHBOARD_PYTHON     doctor: another interpreter the dashboard may run
   SD_NOTIFY               hub-ready: the notify command sd-db reports with
                           (default notify on PATH)
+  SD_DISPATCH_PACK_MIN    tests only: the pack commit build-dispatch needs
+                          off the hub (default f6ace045c, pack sd:7933)
   SD_DASHBOARD_PORT, SD_DASHBOARD_HTTPS_PORT  sd: the dashboard's loopback
                           port and its tailscale serve port (8767, 8443)
   GENAI_TRACES_TAILNET_PORT  sd: the hub's tailscale serve port to
