@@ -8741,11 +8741,20 @@ if held is None:
        ! printf '%s\n' "$sat" | grep -q "matches the hub's"; then
       promote_refuse "the satellite stage did not prove this machine a satellite of $hub; rerun"
     fi
+    # Step 1 stopped this host's own build-dispatch with the role; only a
+    # cron stage would start it again (sd:7932). A rerun installs it again.
+    if undo_own_dispatch; then
+      "$ROOT/local-cron-jobs/cron-jobs.sh" install build-dispatch </dev/null ||
+        promote_refuse "the build-dispatch job did not install; rerun"
+    fi
     marker_set step 6
   fi
   # Step 6: the proof the design names.
   left=$(undo_roots undo_left)
   [ -z "$left" ] || promote_refuse "still here after the delete: $left; rerun"
+  # Asked before the marker goes, so a refusal leaves the run resumable.
+  own_dispatch=no
+  ! undo_own_dispatch || own_dispatch=yes
   rm -f "$PROMOTE_MARKER"
   echo
   echo "hand-back report"
@@ -8755,7 +8764,19 @@ if held is None:
   # A root still here holds what undo cannot name as its own: say so.
   undo_roots undo_kept
   echo "  this machine: a satellite of $hub again"
+  [ "$own_dispatch" = no ] ||
+    echo "  build-dispatch: this host's own job, installed again at step 5 (sd:7932)"
   role_accounts signout
+}
+
+# Whether this machine runs build-dispatch as its own job, not the role's:
+# its profile or its host folder names it (sd:7932). A host folder that
+# cannot be read is no answer, so the hand-back stops there. Call it in the
+# main shell, not in $(...), so the refusal ends the run.
+undo_own_dispatch() {
+  uo_host=$(host_cron_jobs) ||
+    promote_refuse "cannot list this host's cron jobs (cron-jobs/jobs/<host>/); rerun"
+  { manifest cron; printf '%s\n' "$uo_host"; } | grep -qxF build-dispatch
 }
 
 # The drill (design, "Drill"): promote's steps 1, 5, 6 and 9 against a
