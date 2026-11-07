@@ -21,12 +21,15 @@ import time
 import unittest
 from unittest import mock
 
+from tests import fixture_config
+
 HERE = pathlib.Path(__file__).resolve().parent
 GUARD = HERE.parent / "checkout_guard.py"
 
 
 def git(*args):
-    subprocess.run(["git", *args], check=True, capture_output=True)
+    subprocess.run(["git", *args], check=True, capture_output=True, env=fixture_config.git_env(),
+                   stdin=subprocess.DEVNULL)
 
 
 def load(path, name):

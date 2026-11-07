@@ -122,11 +122,12 @@ class CaptureBackup(unittest.TestCase):
     def commit_config(self):
         (self.stubs / "git").unlink()
         git = ["git", "-C", str(self.config_root)]
-        subprocess.run([*git, "init", "-q"], check=True)
+        run = dict(check=True, env=fixture_config.git_env(), stdin=subprocess.DEVNULL)
+        subprocess.run([*git, "init", "-q"], **run)
         subprocess.run([*git, "-c", "user.name=fixture", "-c", "user.email=fixture@example.test",
-                        "add", "-A"], check=True)
+                        "add", "-A"], **run)
         subprocess.run([*git, "-c", "user.name=fixture", "-c", "user.email=fixture@example.test",
-                        "commit", "-qm", "seed"], check=True)
+                        "commit", "-qm", "seed"], **run)
 
     def test_a_file_git_tracks_unedited_keeps_no_copy(self):
         self.commit_config()

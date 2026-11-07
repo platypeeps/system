@@ -36,7 +36,8 @@ class LocalBlock(base.SyntheticHome):
 
     def checkout(self, path, ignored=True):
         path.mkdir(parents=True)
-        subprocess.run(["git", "init", "-q", str(path)], check=True, stdin=subprocess.DEVNULL)
+        subprocess.run(["git", "init", "-q", str(path)], check=True, stdin=subprocess.DEVNULL,
+                       env=fixture_config.git_env())
         if ignored:
             (path / ".gitignore").write_text("CLAUDE.local.md\n")
         return path
