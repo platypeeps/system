@@ -23,6 +23,8 @@ import subprocess
 import tempfile
 import unittest
 
+from tests import fixture_config
+
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = os.environ.get(
     "PROFILE_AUTOCAPTURE_TEST_SCRIPT", str(FOLDER / "profile-autocapture.sh")
@@ -52,7 +54,8 @@ HELD_CASK = """    HELD    personal.cask — 1 entry(s) would be removed:
 
 def git(cwd, *args):
     return subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True,
+        env=fixture_config.git_env(), stdin=subprocess.DEVNULL,
     ).stdout
 
 
@@ -193,8 +196,9 @@ class NoGitHistory(Fixture):
         move, nothing is staged and the remote gets nothing.
         """
         bare = os.path.join(self.tmp, "origin.git")
-        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", bare], check=True)
-        subprocess.run(["git", "init", "-q", "-b", "main", str(self.config)], check=True)
+        env = fixture_config.git_env()
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", bare], check=True, env=env)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.config)], check=True, env=env)
         git(self.config, "config", "user.name", "fixture")
         git(self.config, "config", "user.email", "fixture@localhost")
         git(self.config, "add", "-A")
