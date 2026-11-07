@@ -120,6 +120,10 @@ python3 tests/test_one_double.py
 # names it (sd:3281, sd:3371). Git and stdlib only, so it runs here before the venv.
 python3 tests/test_retired_folder.py
 
+# Each folder a docs/conventions Instances table lists has a README that
+# names the convention (sd:8023). Stdlib only, so it runs here.
+python3 tests/test_conventions.py
+
 # Every docker `update` lists images by `-aq --filter reference=` and not by
 # a column of the image listing (sd:3549). Git and stdlib only, so it runs here
 # before the venv, and the guard below demands this line.

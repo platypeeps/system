@@ -701,6 +701,34 @@ class RedactionTest(NotifyTestCase):
         self.assertIn("could not build the redaction", r.stderr)
 
 
+class HtmlStyleBlockTest(NotifyTestCase):
+    """Gmail strips a <style> block, so mailed HTML must be inline-styled.
+
+    The HTML report convention (the pack's dashboard/docs/html-reports.md)
+    says so; this is the one sender, so it is where a caller learns it.
+    The mail still goes: the warning names the rule, it refuses nothing.
+    """
+
+    def test_a_style_block_in_an_html_body_warns_and_still_delivers(self):
+        r = self.fx.run(["-c", "local", "-f", "html",
+                         "<html><head><STYLE>p{color:red}</STYLE></head>"
+                         "<body><p>x</p></body></html>"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("<style> block", r.stderr)
+        self.assertTrue(self.banner_sent(), "the notification was not delivered")
+
+    def test_an_inline_styled_html_body_does_not_warn(self):
+        r = self.fx.run(["-c", "local", "-f", "html",
+                         '<p style="color:red">x</p>'])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("<style> block", r.stderr)
+
+    def test_a_plain_body_naming_style_does_not_warn(self):
+        r = self.fx.run(["-c", "local", "use <style> in the page"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("<style> block", r.stderr)
+
+
 class HelpTest(NotifyTestCase):
     """The switch is documented where a caller looks for it."""
 

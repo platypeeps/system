@@ -224,6 +224,12 @@ into the digest the day after you clear it.
 
 ## Where it fits
 
+It is an instance of the file-intake convention,
+`docs/conventions/file-intake.md` at this repository's root: walk the source
+against a state file, route by ordered rules, one digest line per arrival,
+act only on approval. It differs in its source, a Gmail query keyed on
+thread, and it reads headers only.
+
 The dashboard's Today is the one mail surface (sd:4651). A daily job runs
 `fetch` so Today has fresh state: copy
 `local-cron-jobs/examples/mail-intake-daily.job` to
