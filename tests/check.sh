@@ -83,12 +83,18 @@ done
 # A lane job leads a process group of its own, so what it leaves running
 # ends with it. A sandbox may deny setpgid (system sd:7913): the run then
 # refuses before any job, by name, as a job's leftovers would outlive it.
+# A probe that fails is no answer: it is named with its status (sd:7954).
 if [ "$1" = run ]; then
+  probe=0
   denied="$("$python" -I -c 'import os
 try:
     os.setpgid(0, 0)
 except OSError as exc:
-    print(exc.strerror or exc)')" || denied="the probe failed"
+    print(exc.strerror or exc)')" || probe=$?
+  [ "$probe" -eq 0 ] || {
+    echo "check.sh: the process group probe ($python -I -c) exited $probe; nothing was run" >&2
+    exit 1
+  }
   [ -z "$denied" ] || {
     echo "check.sh: process group denied ($denied); the gate needs its own process groups, nothing was run" >&2
     exit 1
