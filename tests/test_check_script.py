@@ -97,6 +97,14 @@ $code" "$@"
 fi
 exec REAL "$@"
 """
+# A python3.15 whose setpgid probe crashes, the one `-I -c` program that
+# catches OSError (system sd:7954).
+CRASHING_PYTHON = """#!/bin/sh
+if [ "$1" = -I ] && [ "$2" = -c ]; then
+  case "$3" in *"except OSError"*) echo 'probe crashed' >&2; exit 7 ;; esac
+fi
+exec REAL "$@"
+"""
 MACOS = """#!/bin/sh
 if [ "$1" = list ]; then echo 'one sh one.sh'; echo 'two sh two.sh'; exit 0; fi
 exec /bin/sh "$(dirname "$0")/ci-native.sh" macos "$1"
@@ -296,6 +304,22 @@ class FailFast(CheckFixture):
         done = self.check(expect=1)
         self.assertIn("check.sh: process group denied (Operation not permitted); the gate needs its own "
                       "process groups, nothing was run\n", done.stderr)
+        self.assertEqual([], self.ran())
+        self.assertFalse((self.root / "preflight-ran").exists(), "the preflight ran")
+
+    def test_a_crashed_process_group_probe_is_named_with_its_status(self):
+        """system sd:7954: a probe that crashed read "process group
+        denied (the probe failed)", as if setpgid were denied. A failed
+        probe is no answer: it gets a line of its own, named, with its
+        exit status, and the run still refuses before any job."""
+        real = self.bin / "python3.15"
+        real.unlink()
+        real.write_text(CRASHING_PYTHON.replace("REAL", sys.executable))
+        real.chmod(0o755)
+        done = self.check(expect=1)
+        self.assertRegex(done.stderr, r"(?m)^check\.sh: the process group probe \(.*python3\.15 -I -c\) "
+                         r"exited 7; nothing was run$")
+        self.assertNotIn("process group denied", done.stderr)
         self.assertEqual([], self.ran())
         self.assertFalse((self.root / "preflight-ran").exists(), "the preflight ran")
 

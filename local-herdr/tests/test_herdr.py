@@ -8,6 +8,7 @@ the suite asserts that in test_double_is_the_herdr_on_path.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
@@ -772,6 +773,27 @@ class TestStartHeadless(HerdrCase):
         self.assertNotIn("Traceback", proc.stderr)
         self.assertIn("the server's group could not be stopped", proc.stderr)
 
+    def test_an_exited_server_s_surviving_group_is_named_in_the_refusal(self) -> None:
+        # Review of sd:7954: the exited path dropped stop_server's answer,
+        # so a group that had to be killed never reached the operator.
+        (self.fixture / "server-fail").write_text("Error: double: socket in use\n")
+        (self.fixture / "server-leaves-child").write_text("")
+        child = self.fixture / "server-child.pid"
+        self.addCleanup(lambda: child.exists() and TestStopServer.end(int(child.read_text())))
+        proc, _ = self.start()
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("server exited 1; the server had exited; its group was killed", proc.stderr)
+        self.assertIn("Error: double: socket in use", proc.stderr)
+        TestStopServer().assert_ended(int(child.read_text()))
+
+    def test_an_exited_server_s_denied_group_is_named_in_the_refusal(self) -> None:
+        # Review of sd:7954: "killpg denied" was dropped on the exited path.
+        (self.fixture / "server-fail").write_text("Error: double: socket in use\n")
+        proc, _ = self.start("denied")
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("server exited 1; killpg denied (Operation not permitted); the server's "
+                      "group could not be stopped", proc.stderr)
+
 class TestStopServer(unittest.TestCase):
     """stop_server itself, with os.killpg replaced."""
 
@@ -797,6 +819,84 @@ class TestStopServer(unittest.TestCase):
             w.os.killpg = real
         self.assertNotIn("denied", answer)
         self.assertEqual("the server had exited", answer)
+
+    # A server whose child ignores SIGTERM: the leader is a shell that
+    # waits, so SIGTERM ends it, while the child lives on in its group.
+    GROUP = "(trap '' TERM; exec sleep 60) & echo $!; wait"
+
+    def server_with_stubborn_child(self) -> tuple[subprocess.Popen, int]:
+        proc = subprocess.Popen(["/bin/sh", "-c", self.GROUP], start_new_session=True,
+                                stdout=subprocess.PIPE, text=True)
+        self.addCleanup(proc.stdout.close)
+        child = int(proc.stdout.readline())
+        self.addCleanup(self.end, child)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        return proc, child
+
+    @staticmethod
+    def end(pid: int) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+    def assert_ended(self, pid: int) -> None:
+        # Not this process's child: launchd or init reaps it once it dies.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        self.fail(f"the server's child {pid}, which ignores SIGTERM, survived the stop")
+
+    def stop(self, proc: subprocess.Popen, killpg=None) -> str:
+        sys.path.insert(0, str(TOOL))
+        self.addCleanup(sys.path.remove, str(TOOL))
+        import herdr_wrap as w
+        real_killpg, real_bound = w.os.killpg, w.SERVER_STOP_SECONDS
+        w.os.killpg, w.SERVER_STOP_SECONDS = killpg or real_killpg, 1.0
+        try:
+            return w.stop_server(proc)
+        finally:
+            w.os.killpg, w.SERVER_STOP_SECONDS = real_killpg, real_bound
+
+    def test_a_zombie_leader_s_stubborn_child_is_killed(self) -> None:
+        # system sd:7954: on the zombie-leader EPERM the stop returned
+        # once poll() reaped the leader, and signalled the group no more.
+        proc, child = self.server_with_stubborn_child()
+        real = os.killpg
+        calls = []
+
+        def killpg(pid: int, sig: int) -> None:
+            calls.append(sig)
+            if len(calls) == 1:
+                os.kill(pid, signal.SIGKILL)
+                time.sleep(0.3)  # a zombie now: nothing has reaped it
+                raise PermissionError(1, "Operation not permitted")
+            real(pid, sig)
+
+        answer = self.stop(proc, killpg)
+        self.assertNotIn("denied", answer)
+        self.assert_ended(child)
+        self.assertIn(signal.SIGKILL, calls)
+
+    def test_an_exited_leader_s_stubborn_child_is_killed(self) -> None:
+        # system sd:7954: a leader that had exited before the stop left
+        # its group running, as the stop returned without a signal.
+        proc, child = self.server_with_stubborn_child()
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+        answer = self.stop(proc)
+        self.assertIn("the server had exited", answer)
+        self.assert_ended(child)
+
+    def test_a_live_leader_s_stubborn_child_is_killed(self) -> None:
+        # system sd:7954: the leader's exit on SIGTERM read as "stopped",
+        # while its child, which ignores SIGTERM, ran on in the group.
+        proc, child = self.server_with_stubborn_child()
+        answer = self.stop(proc)
+        self.assertEqual("the server was killed", answer)
+        self.assert_ended(child)
 
 if __name__ == "__main__":
     unittest.main()
