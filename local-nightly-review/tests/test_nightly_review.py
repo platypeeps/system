@@ -252,6 +252,17 @@ class NightlyReview(unittest.TestCase):
                 self.assertFalse(self.batch.with_name(self.batch.name + ".part").exists())
                 self.assertEqual(self.batches(), [])
 
+    def test_a_malformed_outer_object_reports_its_decode_error(self):
+        # sd:8026: an inner suggestion decoded, so a broken outer object
+        # refused as 'must be {"questions": [...]}' and hid the real error.
+        whole = json.dumps(SUGGESTIONS)
+        for name, reply in (("truncated", whole[:-2]), ("trailing comma", whole[:-1] + ", }")):
+            with self.subTest(name):
+                result = self.run_job(reply=reply)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("the reply is not JSON", result.stderr)
+                self.assertFalse(self.batch.exists())
+
     def test_one_malformed_suggestion_drops_itself_and_the_rest_file(self):
         # sd:5732: an extra key on suggestion 2 refused the whole night's batch.
         good = SUGGESTIONS["questions"][0]

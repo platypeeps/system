@@ -84,11 +84,12 @@ def _reply(text):
     Text after the object is dropped and named on stderr: a `}` in trailing
     prose refused a whole night as "Extra data" (sd:7994). Two such objects
     that differ refuse: filing the first would drop the other unseen.
+    With no such object, the first decode error is the refusal (sd:8026).
     """
     decoder, start = json.JSONDecoder(), text.find("{")
     if start < 0:
         raise Refused("the reply holds no JSON object")
-    found, end, decoded, failure = [], None, False, None
+    found, end, failure = [], None, None
     while start >= 0:
         try:
             value, after = decoder.raw_decode(text, start)
@@ -96,13 +97,14 @@ def _reply(text):
             failure = failure or error
             start = text.find("{", start + 1)
             continue
-        decoded = True
         if isinstance(value, dict) and "questions" in value:
             found.append(value)
             end = after if end is None else end
         start = text.find("{", after)
     if not found:
-        if not decoded:
+        # The first failure is the outermost object's: an inner suggestion
+        # that decodes must not hide it (sd:8026).
+        if failure:
             raise Refused(f"the reply is not JSON: {failure}")
         raise Refused('the reply must be {"questions": [...]} and nothing else')
     if any(value != found[0] for value in found[1:]):
