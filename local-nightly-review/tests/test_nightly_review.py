@@ -272,6 +272,20 @@ class NightlyReview(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(self.batches()[0]["questions"]), 2)
 
+    def test_text_after_the_object_is_dropped_and_named_and_the_batch_files(self):
+        # sd:7994: a second object, or a `}` in trailing prose, refused the night as "Extra data".
+        second = json.dumps(SUGGESTIONS) + "\n\n" + json.dumps({"questions": [{"subject": "x:y", "text": "t"}]})
+        prose = json.dumps(SUGGESTIONS) + "\nI skipped {the stale ones} on purpose.\n"
+        for name, reply in (("two objects", second), ("prose with a brace", prose)):
+            with self.subTest(name):
+                for path in (self.batch, self.batch.with_name(self.batch.stem + ".reply")):
+                    path.unlink(missing_ok=True)
+                result = self.run_job(reply=reply)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("text after the JSON object dropped", result.stderr)
+                filed = json.loads(self.batch.read_text(encoding="utf-8"))["questions"]
+                self.assertEqual([q["subject"] for q in filed], [q["subject"] for q in SUGGESTIONS["questions"]])
+
     def test_no_bulk_storage_root_fails_before_the_model(self):
         self.pack(PACK, "sd", "config", "unset", "sd.bulk_storage_root")
         result = self.run_job()
