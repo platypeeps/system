@@ -287,14 +287,17 @@ exec "$@"' "$ROOT/../lib/config.sh" "$claude" "$@"
       };
       exec @ARGV or die "adversarial-gate: exec: $!\n";
     }
+    # Until its setpgrp the child has no group and has forked nothing: a
+    # signal that finds no group goes to the child itself.
+    sub hit { kill($_[0], -$pid) or kill($_[0], $pid) }
     $SIG{ALRM} = sub {
-      kill TERM => -$pid;
+      hit("TERM");
       my $gone = 0;
       for (1 .. 20) {
         if (waitpid($pid, WNOHANG) != 0) { $gone = 1; last; }
         select(undef, undef, undef, 0.1);
       }
-      kill KILL => -$pid;
+      hit("KILL");
       waitpid($pid, 0) unless $gone;
       print STDERR "adversarial-gate: $ENV{GATE_VERB}: $ENV{GATE_ENGINE} did not answer within $secs s; its process group was killed (exit 124)\n";
       exit 124;

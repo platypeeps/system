@@ -22,6 +22,8 @@ SCRIPT = HERE.parent / "adversarial-gate.sh"
 RUN_TIMEOUT = 20
 #: Every setpgrp in the bound's perl fails with EPERM, as under a sandbox that denies setpgid (sd:7901).
 DENIED_GROUP = {"PERL5LIB": str(HERE.parents[1] / "lib/tests/denied_group"), "PERL5OPT": "-MDeniedGroup"}
+#: The env that stalls the reviewer's child 4 s before its setpgrp.
+PRE_EXEC_STALL = {"PERL5LIB": str(HERE.parents[1] / "lib/tests/denied_group"), "PERL5OPT": "-MPreExecStall"}
 #: The tools that only read: the file readers, and Agent, whose sub-agents get the same set.
 READ_ONLY = {"Read", "Grep", "Glob", "Agent"}
 #: Tools that change files, run commands or reach the network. None may be offered.
@@ -151,6 +153,17 @@ class Deep(unittest.TestCase):
         self.assertEqual(result.returncode, 125, result.stderr)
         self.assertIn("adversarial-gate: process group denied (Operation not permitted); the reviewer "
                       "bound needs its own process group, nothing was run", result.stderr)
+        self.assertFalse(self.log["argv"].exists(), "the fake claude ran")
+
+    def test_a_stall_before_the_reviewer_s_setpgrp_ends_at_the_bound(self):
+        # sd:7901 review: the bound signalled the group alone. A child
+        # stalled before its setpgrp has none, so the bound waited on it
+        # unbounded; the signal now falls back to the child.
+        started = time.monotonic()
+        result = self.gate("--repo", str(self.repo), "--out", str(self.out), "--timeout", "1",
+                           env={**PRE_EXEC_STALL, "PRE_EXEC_STALL": f"before:{self.tmp / 'stall'}"})
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertLess(time.monotonic() - started, 3.5, "the bound waited out the stall")
         self.assertFalse(self.log["argv"].exists(), "the fake claude ran")
 
     def test_no_claude_is_refused_before_anything_runs(self):

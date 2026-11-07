@@ -28,6 +28,8 @@ DENIED_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-M
 PARENT_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MParentGroup"}
 #: The env that stalls a child 4 s before its exec; PRE_EXEC_STALL says when.
 PRE_EXEC_STALL = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MPreExecStall"}
+#: The env where a group probe sees an unreaped zombie leader, as on Linux.
+ZOMBIE_GROUP = {"PERL5LIB": str(LIB / "tests" / "denied_group"), "PERL5OPT": "-MZombieGroup"}
 
 
 def shell(script, **kwargs):
@@ -127,6 +129,16 @@ class Bounded(unittest.TestCase):
                                     "PRE_EXEC_STALL": f"{when}:{self.dir / when}"})
                 self.assertEqual(result.returncode, 124, result.stderr)
                 self.assertLess(time.monotonic() - started, 3.5, "the bound waited out the stall")
+
+    def test_a_command_gone_at_the_term_ends_inside_the_grace(self):
+        """sd:7901 review: 5cc43789 probed the group before it reaped the
+        child. On Linux an unreaped zombie leader answers that probe, so
+        a command that died at the TERM waited out the whole grace."""
+        started = time.monotonic()
+        result = shell("st_bounded 1 sleep 30",
+                       env={**os.environ, **ZOMBIE_GROUP, "ST_BOUNDED_GRACE": "5"})
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertLess(time.monotonic() - started, 3, "the bound waited out the grace")
 
     def test_the_bound_s_argv_still_starts_with_its_use_line(self):
         """fixture_config.STALL finds st_bounded's perl by the argv prefix

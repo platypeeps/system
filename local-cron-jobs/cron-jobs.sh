@@ -805,7 +805,9 @@ if (open(my $ps, "-|", "ps", "-A", "-o", "pid=,ppid=,pgid=,etime=,command=")) {
 hit("TERM");
 my $end = Time::HiRes::time() + $grace;
 while (1) {
-  last unless kill(0, -$pid) or waitpid($pid, POSIX::WNOHANG()) == 0;
+  # Reap first: an unreaped zombie leader answers the group probe on Linux.
+  my $running = waitpid($pid, POSIX::WNOHANG()) == 0;
+  last unless kill(0, -$pid) or $running;
   if (Time::HiRes::time() >= $end) {
     say_log("process group $pid still running ${grace}s after TERM; sending KILL");
     hit("KILL");

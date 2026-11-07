@@ -47,7 +47,8 @@ if (!$pid) {
   POSIX::_exit(127);
 }
 sub hit { kill($_[0], -$pid) or kill($_[0], $pid) }
-sub alive { kill(0, -$pid) or waitpid($pid, POSIX::WNOHANG()) == 0 }
+# Reap first: an unreaped zombie leader answers the group probe on Linux.
+sub alive { my $running = waitpid($pid, POSIX::WNOHANG()) == 0; kill(0, -$pid) or $running }
 my %number = (INT => POSIX::SIGINT(), TERM => POSIX::SIGTERM(), HUP => POSIX::SIGHUP());
 my ($status, $caught);
 # perl retries a waitpid a signal interrupts, so each handler dies to end it.

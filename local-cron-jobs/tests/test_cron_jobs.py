@@ -3764,6 +3764,19 @@ class JobTimeoutTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
                 self.assertLess(time.monotonic() - began, 3.5, "the limit waited out the stall")
 
+    def test_a_job_gone_at_the_term_ends_inside_the_grace(self):
+        """sd:7901 review: 5cc43789 probed the group before it reaped the
+        job. On Linux an unreaped zombie leader answers that probe, so a
+        job that died at the TERM waited the grace and logged a KILL."""
+        self.reap("sleep 47.1828")
+        self.job("'sleep 47.1828'", timeout="1")
+        began = time.monotonic()
+        result = self.run_job(env={"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
+                                   "PERL5OPT": "-MZombieGroup", "CRON_JOBS_TIMEOUT_GRACE": "5"})
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertLess(time.monotonic() - began, 3.5, "the limit waited out the grace")
+        self.assertNotIn("still running", self.log.read_text())
+
     def test_a_timeout_logs_the_process_tree_before_the_kill(self):
         """sd:5064: the log named the group only, so what hung was a guess.
         Each process in the group goes to the log, with its parent and age,
