@@ -82,7 +82,7 @@ Inside one `BEGIN IMMEDIATE` the tick:
 
 ### Dispatcher
 
-- Job: `local-cron-jobs` `build-dispatch.job`, hub only, `JOB_SCHEDULE="*/2 * * * *"`, `JOB_TIMEOUT="90s"`.
+- Job: `local-cron-jobs` `build-dispatch.job`, on the hub and, since sd:7932, on each satellite that hosts a lane, `JOB_SCHEDULE="*/2 * * * *"`, `JOB_TIMEOUT="90s"`.
   Command: `sd assignments dispatch`. A slot that finds the previous tick active logs `skipped`, as every job does.
 - Each tick, in order: write the `build-dispatch` heartbeat; reap; watch the lane for enqueued runs; claim; spawn.
 - Spawn starts `sd assignments supervise <run>` with `start_new_session=True`.

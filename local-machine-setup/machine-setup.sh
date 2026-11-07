@@ -2714,10 +2714,11 @@ SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # The satellite stage reports each one present as EXTRA; the agents and cron
 # stages skip each one on a satellite.
 # The full role (sd:5986) adds the account agent that holds the mail and
-# Drive logins, its watch job, and the builder jobs, which write the
+# Drive logins, its watch job, and the nightly builder, which writes the
 # database. The hub's other host jobs stay off the list: they pause until
-# the hub returns (#31095).
-SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build cron.build-dispatch"
+# the hub returns (#31095). build-dispatch is off it too: each lane host
+# runs its own tick for its own lanes (sd:7932); the role still moves it.
+SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
@@ -2755,11 +2756,13 @@ plain_hub() { sd_in_profile && ! is_satellite; }
 # Ask the fence once, in the main shell, before any pipeline.
 hub_ask() { plain_hub || hub_holder || :; }
 # The hub-role labels: the hub-only list but the iCloud mirror, which copies
-# the hub's own folders, which a satellite lacks. `agent` prints labels,
-# `cron` job names.
+# the hub's own folders, which a satellite lacks, plus build-dispatch: a
+# standby whose profile lacks it still builds the hub's lanes, and the
+# hand-back stops it before the snapshot, as its claims write the
+# database (sd:7932). `agent` prints labels, `cron` job names.
 SD_HUB_ROLE_EXCEPT="cron.mirror-sync-nightly"
 hub_role_labels() { # agent|cron
-  for hr in $SD_HUB_ONLY_AGENTS; do
+  for hr in $SD_HUB_ONLY_AGENTS cron.build-dispatch; do
     [ "$hr" != "$SD_HUB_ROLE_EXCEPT" ] || continue
     case "$1:$hr" in
       cron:cron.*) echo "${hr#cron.}" ;;
@@ -8622,8 +8625,10 @@ promote_undo() { # marker step
       "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall "$uj" </dev/null ||
         undo_restart "the $uj job did not stop; rerun once its run ends"
     done
-    # Every role label is hub-only, so a satellite runs none of them, even
-    # one its profile lists: each stops before the snapshot.
+    # A satellite's own build-dispatch stops here too, and its next cron
+    # stage starts it again (sd:7932). Every role agent is hub-only, so a
+    # satellite runs none of them, even one its profile lists: each stops
+    # before the snapshot.
     for ua in $(hub_role_labels agent); do
       [ -f "$HOME/Library/LaunchAgents/$ua.plist" ] || launchctl print "gui/$(id -u)/$ua" >/dev/null 2>&1 || continue
       if agent_bootout "$ua"; then rm -f "$HOME/Library/LaunchAgents/$ua.plist"; else undo_restart "$ua did not stop"; fi

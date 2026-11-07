@@ -272,6 +272,18 @@ class TheSatellite(Case):
         self.assertEqual(sorted(p.name for p in self.agents.iterdir()), sorted(f"{l}.plist" for l in HUB_ONLY))
         self.assertLessEqual(self.launchctl_verbs(), {"print"})
 
+    def test_build_dispatch_on_a_satellite_is_not_extra(self):
+        """sd:7932: each lane host runs its own build-dispatch tick; the
+        backups stay the hub's."""
+        self.name_hub_by_hand()
+        self.agents.mkdir(parents=True)
+        prefix = fixture_config.LABEL_PREFIX
+        for job in ("build-dispatch", "sd-db-backup"):
+            (self.agents / f"{prefix}.cron.{job}.plist").write_text("<plist/>\n")
+        drift = markers(self.satellite("--apply"))
+        self.assertEqual(drift, [f"  EXTRA   {self.agents}/{prefix}.cron.sd-db-backup.plist — hub only, "
+                                 "and this machine is a satellite; remove it by hand"])
+
     def test_a_loaded_hub_agent_with_no_plist_is_extra(self):
         (self.profiles / "work.satellite").write_text("hub.example.test\n")
         agent = f"{fixture_config.LABEL_PREFIX}.sd-serve"

@@ -227,6 +227,24 @@ class CronSatelliteTest(CronTest):
         self.assertNotIn("install sd-db-backup", self.cron_log.read_text())
         self.assertIn("install shared-job", self.cron_log.read_text())
 
+    def name_build_dispatch(self):
+        (self.profiles / "personal.cron").write_text("shared-job\nsd-db-backup\nbuild-dispatch\n")
+        (self.jobs / "build-dispatch.job").write_text('JOB_SCHEDULE="*/2 * * * *"\n')
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+
+    def test_a_satellite_installs_build_dispatch(self):
+        """sd:7932: each lane host runs its own build-dispatch tick, so a
+        satellite profile that names it installs it; sd-db-backup stays
+        the hub's."""
+        self.name_build_dispatch()
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("SKIP    build-dispatch", result.stdout)
+        self.assertIn("MISSING build-dispatch", result.stdout)
+        self.assertIn("install build-dispatch", self.cron_log.read_text())
+        self.assertIn("  SKIP    sd-db-backup — hub only, and this machine is a satellite", result.stdout)
+        self.assertNotIn("install sd-db-backup", self.cron_log.read_text())
+
     def test_a_hub_only_job_already_on_a_satellite_is_left_to_the_satellite_stage(self):
         (self.profiles / "personal.satellite").write_text("hub.example.test\n")
         self.install_plist("sd-db-backup")
@@ -254,6 +272,15 @@ class CronSatelliteTest(CronTest):
         self.assertIn(f"  SKIP    {label} — hub only, and this machine is a satellite", out)
         self.assertNotIn(f"not loaded: {label}", out)
         self.assertIn(f"  WARN    not loaded: {fixture_config.LABEL_PREFIX}.cron.shared-job", out)
+
+    def test_doctor_checks_build_dispatch_on_a_satellite(self):
+        """sd:7932: a satellite runs build-dispatch, so doctor wants it loaded."""
+        self.name_build_dispatch()
+        out = self.run_doctor()
+        label = f"{fixture_config.LABEL_PREFIX}.cron.build-dispatch"
+        self.assertNotIn(f"SKIP    {label}", out)
+        self.assertIn(f"  WARN    not loaded: {label}", out)
+        self.assertIn(f"  SKIP    {fixture_config.LABEL_PREFIX}.cron.sd-db-backup — hub only", out)
 
     def test_doctor_on_the_hub_still_warns_for_it(self):
         out = self.run_doctor()

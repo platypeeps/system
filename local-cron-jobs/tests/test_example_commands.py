@@ -130,7 +130,7 @@ def alive(pid):
 
 
 class BuildDispatchJobTest(unittest.TestCase):
-    """The hub's build-dispatch tick: `sd assignments dispatch` every two minutes (sd:6098).
+    """The build-dispatch tick of each lane host: `sd assignments dispatch` every two minutes (sd:6098).
 
     The tick spawns each supervisor in a session of its own, so the job's
     90 s limit and its lock must not reach one (design, Dispatcher).
