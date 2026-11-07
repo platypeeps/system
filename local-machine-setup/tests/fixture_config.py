@@ -11,6 +11,7 @@ at a stub with no item, and seal() fails a case that reaches a real `defaults`,
 `sudo`, `launchctl` or `security`.
 """
 
+import os
 import pathlib
 import shutil
 import stat
@@ -120,6 +121,17 @@ def render(template, label, home, root, pack=None):
                 .replace("@PACK@", str(pack or f"{home}/repos/platypeeps/sd-workflow")))
 
 
+def git_env():
+    """The environment for a fixture's own git call (system sd:7972).
+
+    The caller's environment less every GIT_* variable, with no global or
+    system git config: the operator's core.hooksPath, signing or identity
+    cannot fail, hang or run a hook in a fixture repository.
+    """
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    return {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
 def dispatch_pack(folder, *, new):
     """A pack checkout for the build-dispatch guard (pack sd:7933).
 
@@ -136,7 +148,8 @@ def dispatch_pack(folder, *, new):
     def git(*args):
         return subprocess.run([real, "-C", str(folder), "-c", "user.name=fixture",
                                "-c", "user.email=fixture@example.test", *args],
-                              check=True, capture_output=True, text=True).stdout.strip()
+                              check=True, capture_output=True, text=True, env=git_env(),
+                              stdin=subprocess.DEVNULL).stdout.strip()
     git("init", "-q")
     git("commit", "-q", "--allow-empty", "-m", "before host scoping")
     git("commit", "-q", "--allow-empty", "-m", "host scoping")

@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from tests.test_cron_jobs import FOLDER, Fixture
 
@@ -197,9 +198,14 @@ class BuildDispatchJobTest(unittest.TestCase):
         return fx.exec_job(self.JOB.stem, extra_env=extra)
 
     def git(self, *args):
+        # No GIT_* variable and no global or system config: the operator's
+        # hooksPath or signing cannot reach the fixture (system sd:7972).
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         return subprocess.run(["git", "-C", str(self.pack), "-c", "user.name=fixture",
                                "-c", "user.email=fixture@example.test", *args],
-                              check=True, capture_output=True, text=True).stdout.strip()
+                              check=True, capture_output=True, text=True, env=env,
+                              stdin=subprocess.DEVNULL).stdout.strip()
 
     def ran(self):
         return self.marker.read_text().splitlines() if self.marker.exists() else []
@@ -228,6 +234,25 @@ class BuildDispatchJobTest(unittest.TestCase):
         command = re.search(r'^JOB_COMMAND="(.*)"$', self.JOB.read_text(), re.M).group(1)
         self.assertEqual(command, r'\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd\" '
                                   'assignments dispatch')
+
+    def test_the_pack_fixture_ignores_a_hostile_global_git_config(self):
+        """A global hook that exits 1 and a failing signer must not reach it (system sd:7972)."""
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        hook_ran = tmp / "hook-ran"
+        (tmp / "hooks").mkdir()
+        for name in ("pre-commit", "commit-msg"):
+            hook = tmp / "hooks" / name
+            hook.write_text(f"#!/bin/sh\necho {name} >> '{hook_ran}'\nexit 1\n")
+            hook.chmod(0o755)
+        config = tmp / "hostile.gitconfig"
+        config.write_text(f"[core]\n\thooksPath = {tmp / 'hooks'}\n[commit]\n\tgpgsign = true\n"
+                          "[gpg]\n\tprogram = /usr/bin/false\n")
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config)}):
+            result = self.run_job(satellite="new")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.ran(), ["assignments dispatch"])
+        self.assertFalse(hook_ran.exists(), "the operator's hook ran")
 
     def test_a_satellite_on_a_scoped_pack_dispatches(self):
         result = self.run_job(satellite="new")
