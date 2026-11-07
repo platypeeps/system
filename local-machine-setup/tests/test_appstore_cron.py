@@ -306,14 +306,15 @@ class CronSatelliteTest(CronTest):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("sd-db-backup", self.cron_log.read_text())
 
-    def run_doctor(self):
+    def run_doctor(self, **extra):
         # Nothing is loaded; iTerm2 has no prefs folder set.
         write_exec(self.stubs / "launchctl", "#!/bin/sh\nexit 1\n")
         write_exec(self.stubs / "defaults", "#!/bin/sh\nexit 1\n")
         env = {"HOME": str(self.home), "MACHINE_SETUP_STATE": str(self.state),
                "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
                **fixture_config.env(self.config_root),
-               "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX, "CRON_JOBS_HOST": HOST}
+               "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX, "CRON_JOBS_HOST": HOST,
+               **extra}
         return subprocess.run([str(self.folder / "machine-setup.sh"), "doctor"], env=env,
                               capture_output=True, text=True, cwd=self.tmp.name,
                               stdin=subprocess.DEVNULL, timeout=120).stdout
@@ -330,11 +331,25 @@ class CronSatelliteTest(CronTest):
     def test_doctor_checks_build_dispatch_on_a_satellite(self):
         """sd:7932: a satellite runs build-dispatch, so doctor wants it loaded."""
         self.name_build_dispatch()
-        out = self.run_doctor()
+        fixture_config.real_git(self.stubs)
+        pack = fixture_config.dispatch_pack(pathlib.Path(self.tmp.name) / "pack", new=True)
+        out = self.run_doctor(**pack)
         label = f"{fixture_config.LABEL_PREFIX}.cron.build-dispatch"
         self.assertNotIn(f"SKIP    {label}", out)
         self.assertIn(f"  WARN    not loaded: {label}", out)
         self.assertIn(f"  SKIP    {fixture_config.LABEL_PREFIX}.cron.sd-db-backup — hub only", out)
+
+    def test_doctor_on_a_satellite_whose_pack_fails_the_guard_skips_build_dispatch(self):
+        """Round 5 of sd:7932: the cron stage leaves it off and the tick
+        skips, so not loaded is the wanted state, not a WARN."""
+        self.name_build_dispatch()
+        fixture_config.real_git(self.stubs)
+        pack = fixture_config.dispatch_pack(pathlib.Path(self.tmp.name) / "pack", new=False)
+        out = self.run_doctor(**pack)
+        label = f"{fixture_config.LABEL_PREFIX}.cron.build-dispatch"
+        self.assertIn(f"  SKIP    {label} — the pack at {pack['SD_PACK_ROOT']} does not hold "
+                      f"{pack['SD_DISPATCH_PACK_MIN']} (pack sd:7933)", out)
+        self.assertNotIn(f"not loaded: {label}", out)
 
     def test_doctor_on_the_hub_still_warns_for_it(self):
         out = self.run_doctor()

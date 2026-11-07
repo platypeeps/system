@@ -2756,16 +2756,18 @@ hub_role() { ! sd_in_profile && hub_holder; }
 plain_hub() { sd_in_profile && ! is_satellite; }
 # Ask the fence once, in the main shell, before any pipeline.
 hub_ask() { plain_hub || hub_holder || :; }
-# The pack commit that scopes build dispatch to its lane host (pack
-# sd:7933). A machine other than the hub on an older pack would dispatch
-# the hub's lanes a second time. Tests point it at a fixture commit.
-SD_DISPATCH_PACK_MIN="${SD_DISPATCH_PACK_MIN:-f6ace045c3eeb4525c45cabfe1ff7b61a3874961}"
-# Whether the pack holds SD_DISPATCH_PACK_MIN, else the SKIP line, ending
-# in $1. A pack git cannot read is no answer, so it fails too.
-dispatch_pack_held() { # consequence
-  git -C "$SD_PACK_ROOT" merge-base --is-ancestor "$SD_DISPATCH_PACK_MIN" HEAD >/dev/null 2>&1 && return 0
-  echo "  SKIP    build-dispatch — the pack at $SD_PACK_ROOT does not hold $SD_DISPATCH_PACK_MIN (pack sd:7933), or git could not read it; $1"
+# Whether the pack holds SD_DISPATCH_PACK_MIN, the commit that scopes
+# build dispatch to its lane host (pack sd:7933): lib/dispatch_pack.sh,
+# which cron-jobs.sh reads before each tick too. With an argument, a
+# failure prints the SKIP line ending in it.
+dispatch_pack_held() { # [consequence]
+  command -v st_dispatch_pack_held >/dev/null 2>&1 || . "$ROOT/lib/dispatch_pack.sh"
+  st_dispatch_pack_held "$SD_PACK_ROOT" && return 0
+  [ -z "${1:-}" ] || echo "  SKIP    build-dispatch — $(dispatch_pack_why); $1"
   return 1
+}
+dispatch_pack_why() {
+  echo "the pack at $SD_PACK_ROOT does not hold $SD_DISPATCH_PACK_MIN (pack sd:7933), or git could not read it"
 }
 # Whether this machine may run build-dispatch: the hub always, any other
 # machine only on a pack that holds SD_DISPATCH_PACK_MIN. The one guard for
@@ -5854,16 +5856,6 @@ DOCTOR_GATE_RECORD="${XDG_STATE_HOME:-$HOME/.local/state}/machine-setup/doctor-g
 DOCTOR_GATE_STAMP="${DOCTOR_GATE_STAMP:-$ROOT/local-cron-jobs/logs/.doctor-gate-weekly.stamp}"
 DOCTOR_GATE_WAIT=3600
 
-# The build-dispatch tick's guard (sd:7932): the job runs it before each
-# dispatch. A machine with no hub.json is the hub, as the pack reads it, and
-# passes with no profile read; a satellite passes only on a pack that holds
-# SD_DISPATCH_PACK_MIN, so a pack moved back after the install dispatches
-# nothing.
-cmd_doctor_dispatch() {
-  [ -e "$SD_HUB_CONFIG" ] || exit 0
-  dispatch_pack_held "this tick dispatches nothing; move the pack" || exit 1
-}
-
 cmd_doctor_gate() {
   echo "== doctor gate"
   tmp=$(mktemp -d)
@@ -6417,6 +6409,10 @@ cmd_doctor() {
       # not loaded is the wanted state, not a warning (sd:4797).
       if sd_hub_only "$label" && is_satellite && ! hub_holder; then
         echo "  SKIP    $label — hub only, and this machine is a satellite"
+      # The cron stage leaves it off, and the runner skips its tick.
+      elif [ "$label" = "$LABEL_PREFIX.cron.build-dispatch" ] && ! plain_hub && ! hub_holder &&
+          ! dispatch_pack_held; then
+        echo "  SKIP    $label — $(dispatch_pack_why)"
       elif launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
         echo "  ok      loaded: $label"
       else
@@ -9014,8 +9010,6 @@ for a in "$@"; do
                    another database, or an env.sh that fails when sourced,
                    is a FAIL
   doctor sd        those sd checks alone, exit 1 on any FAIL
-  doctor dispatch  the build-dispatch tick's guard: exit 1, with one SKIP
-                   line, on a satellite whose pack lacks host scoping
   doctor gate      the weekly gate run: make check in a snapshot of this
                    checkout's head, then of the pack's, each inside
                    `sd gate run --max-wait 3600`; a pass or a real failure
@@ -9216,8 +9210,7 @@ case "$VERB" in
       "") cmd_doctor ;;
       sd) cmd_doctor_sd ;;
       gate) cmd_doctor_gate ;;
-      dispatch) cmd_doctor_dispatch ;;
-      *)  die "doctor takes no argument, 'sd' for the database and dashboard checks alone, 'gate' for the weekly gate run, or 'dispatch' for the build-dispatch tick's pack check" ;;
+      *)  die "doctor takes no argument, 'sd' for the database and dashboard checks alone, or 'gate' for the weekly gate run" ;;
     esac
     ;;
   # Python, not sh, for the same reason local-repo-sync tests
