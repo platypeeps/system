@@ -77,18 +77,38 @@ def rejected(sd, sd_db):
 
 
 def _reply(text):
-    """The first JSON object in the model's reply, decoded from its first `{`.
+    """The one reply object in the model's text: a JSON object with a `questions` key.
 
-    Text after that object is dropped and named on stderr: a second object or
-    a `}` in trailing prose refused a whole night as "Extra data" (sd:7994).
+    Decoding tries each `{` in turn, past what a decoded object spans, so a
+    `{` in prose before the object no longer fails the night (sd:8000).
+    Text after the object is dropped and named on stderr: a `}` in trailing
+    prose refused a whole night as "Extra data" (sd:7994). Two such objects
+    that differ refuse: filing the first would drop the other unseen.
     """
-    start = text.find("{")
+    decoder, start = json.JSONDecoder(), text.find("{")
     if start < 0:
         raise Refused("the reply holds no JSON object")
-    try:
-        found, end = json.JSONDecoder().raw_decode(text, start)
-    except ValueError as failure:
-        raise Refused(f"the reply is not JSON: {failure}") from None
+    found, end, decoded, failure = [], None, False, None
+    while start >= 0:
+        try:
+            value, after = decoder.raw_decode(text, start)
+        except ValueError as error:
+            failure = failure or error
+            start = text.find("{", start + 1)
+            continue
+        decoded = True
+        if isinstance(value, dict) and "questions" in value:
+            found.append(value)
+            end = after if end is None else end
+        start = text.find("{", after)
+    if not found:
+        if not decoded:
+            raise Refused(f"the reply is not JSON: {failure}")
+        raise Refused('the reply must be {"questions": [...]} and nothing else')
+    if any(value != found[0] for value in found[1:]):
+        raise Refused(f'the reply holds {len(found)} different {{"questions": [...]}} objects; '
+                      "it must hold one")
+    found = found[0]
     if text[end:].strip():
         print(f"nightly-review: text after the JSON object dropped ({len(text[end:].strip())} characters)",
               file=sys.stderr)
