@@ -1,0 +1,12 @@
+# Night triage (sd:8143): one unattended Sonnet run asks "any system,
+# workflow or operational issues on this machine?", repairs what it may,
+# files code bugs, and settles this machine's alerts: a proven fix is
+# acknowledged, the rest stay on Today with one note each.
+# `local-night-triage/README.md` has the steps and the failure table.
+#
+# 08:40 local, after the day's last daily job: cold-outreach-triage at
+# 08:04 with a 30m limit ends by 08:34. Every machine, hub and satellite.
+# The steps sum to 43 minutes (the model 28); JOB_TIMEOUT bounds the run.
+JOB_SCHEDULE="40 8 * * *"
+JOB_TIMEOUT="45m"
+JOB_COMMAND="sh \"$ROOT/../local-night-triage/night-triage.sh\" run"
