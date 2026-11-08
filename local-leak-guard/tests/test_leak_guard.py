@@ -86,6 +86,7 @@ class LeakGuardTest(unittest.TestCase):
         return subprocess.run(
             ["sh", str(script or self.script), *args], cwd=cwd or self.repo, env=self.env,
             input=stdin, capture_output=True, text=True, timeout=60,
+            errors="replace",
         )
 
     def push(self) -> subprocess.CompletedProcess[str]:
@@ -185,6 +186,20 @@ class LeakGuardTest(unittest.TestCase):
         sha = self.commit("a.txt", f"{SECRET}\n", "add")
         self.commit("a.txt", "clean\n", "scrub")
         self.assertRefused(self.run_guard("check"), sha)
+
+    def test_line_cut_mid_utf8_char_is_still_checked(self) -> None:
+        # git cuts a hunk header mid character; awk in a UTF-8 locale
+        # exited 2 on it ("towc: multibyte conversion failure", sd:8069).
+        self.write_patterns()
+        (self.repo / "a.txt").write_bytes(
+            b"Done \xe2\x86\nhost is " + SECRET.encode() + b"\n")
+        self.git(self.repo, "add", "-A")
+        self.git(self.repo, "commit", "-q", "-m", "add")
+        sha = self.git(self.repo, "rev-parse", "HEAD").strip()
+        self.env["LC_ALL"] = "en_US.UTF-8"
+        result = self.run_guard("check")
+        self.assertNotIn("multibyte", result.stderr)
+        self.assertRefused(result, sha)
 
     def test_pushed_commits_are_not_checked_again(self) -> None:
         self.commit("a.txt", f"{SECRET}\n", "add")
