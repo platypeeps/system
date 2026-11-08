@@ -34,6 +34,18 @@ echo done
 """
 
 
+SQLITE_BUILD_STUB = """#!/bin/sh
+# Test stub for sqlite3: assignments 397 and 529 lead items 7380 (blocked)
+# and 5783 (done); items 397 and 529 are done, as the wrong read would see.
+case "$*" in
+  *"from assignment where id = 397"*) echo 7380 ;;
+  *"from assignment where id = 529"*) echo 5783 ;;
+  *"from item where id = 7380"*) echo blocked ;;
+  *) echo done ;;
+esac
+"""
+
+
 class HygieneFixture(Fixture):
     """A Fixture whose repositories have history, branches and worktrees."""
 
@@ -324,6 +336,28 @@ class HygieneTest(unittest.TestCase):
         self.assertIn("sd:1234", result.stdout)
         f.run("hygiene", "--apply", extra_env={"REPO_SYNC_SD_DB": str(db)})
         self.assertEqual(sha, f.branch_sha(repo, "feat/thing-1234"))
+
+    def test_a_build_branch_is_judged_by_its_lead_assignments_item(self):
+        """build/sd-<n> carries the lead assignment's id, not an item's: item
+        529 was an unrelated done report while assignment 529's item was not
+        the one named (sd:8095)."""
+        f = self.fixture()
+        repo = f.repo()
+        for lead in ("397", "529"):
+            f.git(repo, "switch", "-q", "-c", f"build/sd-{lead}", "main")
+            f.commit(repo, f"{lead}.txt", "work\n", lead)
+            f.git(repo, "push", "-q", "-u", "origin", f"build/sd-{lead}")
+        f.git(repo, "switch", "-q", "main")
+        (f.bin / "sqlite3").write_text(SQLITE_BUILD_STUB)
+        (f.bin / "sqlite3").chmod(0o755)
+        db = f.tmp / "sd.db"
+        db.write_text("")
+
+        result = f.run("hygiene", extra_env={"REPO_SYNC_SD_DB": str(db)}, expect=1)
+
+        self.assertNotIn("build/sd-397", result.stdout)
+        self.assertIn("(sd:5783 is done", result.stdout)
+        self.assertNotIn("sd:529", result.stdout)
 
     def test_a_landed_branch_for_a_done_item_is_deleted(self):
         """NEW. Requirement 5: the report-only classes cover branches whose

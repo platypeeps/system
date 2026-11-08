@@ -2260,14 +2260,25 @@ hyg_lane() {
 # read-only when it exists on this machine and sqlite3 is installed; a
 # machine without it simply lists no done-item branches.
 hyg_item_state() {
+  hyg_sd_query "select status from item where id = $1"
+}
+
+# Runs one read-only query on the sd database; prints nothing without one.
+hyg_sd_query() {
   h_db="${REPO_SYNC_SD_DB:-$HOME/.local/share/sd/sd.db}"
   [ -f "$h_db" ] || return 0
   command -v sqlite3 >/dev/null 2>&1 || return 0
-  sqlite3 -readonly "$h_db" "select status from item where id = $1" 2>/dev/null || true
+  sqlite3 -readonly "$h_db" "$1" 2>/dev/null || true
 }
 
 # The item number a branch name carries: sd-<n>, sd_<n> or a trailing -<n>.
+# build/sd-<n> is the exception: n is the bundle's lead assignment, so its
+# item comes from that row, and none is named without the database (sd:8095).
 hyg_item_number() {
+  case "$1" in
+    build/sd-*[!0-9]*) ;;
+    build/sd-?*) hyg_sd_query "select item from assignment where id = ${1#build/sd-}"; return ;;
+  esac
   printf '%s\n' "$1" | sed -n \
     -e 's/.*sd[-_:]\([0-9][0-9]*\).*/\1/p' \
     -e 't' \
