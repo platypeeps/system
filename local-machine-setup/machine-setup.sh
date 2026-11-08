@@ -6530,7 +6530,7 @@ codex_quarantine() {
 # A failure that prints an `Error:` line sudo did not cause, such as a formula
 # whose build fails, is also recorded in BUILD_FAILED as `kind line`: the
 # report names that line, not sudo, for what the step left (sd:7056). A step
-# can hold both, as `brew upgrade` also upgrades casks.
+# can hold both.
 # The bound of a sweep step that may build from source: 6 h, twice the one
 # run measured, `brew install node` on an Intel Mac with no bottles: 3h00m,
 # llvm 1h31m of it (sd:7103). The brew stage builds nothing from source.
@@ -6651,10 +6651,11 @@ askpass_upgrade() {
 
 # sudo_casks: the installed casks whose upgrade calls sudo, space-separated
 # (sd:6927): a pkg installer, an uninstall that runs pkgutil or unloads a
-# kext, or an artifact target or uninstall delete or rmdir outside the brew
-# prefix, $HOME and /Applications, such as docker-desktop's /usr/local/bin
-# on Apple silicon and dropbox's /Library/DropboxHelperTools (sd:7248). A
-# zap runs only on `brew uninstall --zap`, not on upgrade. Plus the optional
+# kext, any uninstall delete, which brew always runs under sudo (sdm's
+# socket in its own app, sd:8101), or an artifact target or uninstall rmdir
+# outside the brew prefix, $HOME and /Applications, such as docker-desktop's
+# /usr/local/bin on Apple silicon and dropbox's /Library/DropboxHelperTools
+# (sd:7248). A zap runs only on `brew uninstall --zap`. Plus the optional
 # MACHINE_SETUP_SUDO_CASKS, for a cask the rule misses. Exit 1 when brew
 # info does not answer.
 sudo_casks() {
@@ -6675,12 +6676,11 @@ def needs_sudo(artifacts):
         for u in a.get("uninstall", []):
             if not isinstance(u, dict):
                 continue
-            if "pkgutil" in u or "kext" in u:
+            if "pkgutil" in u or "kext" in u or u.get("delete"):
                 return True
-            for key in ("delete", "rmdir"):
-                paths = u.get(key, [])
-                if any(outside(p) for p in ([paths] if isinstance(paths, str) else paths)):
-                    return True
+            paths = u.get("rmdir", [])
+            if any(outside(p) for p in ([paths] if isinstance(paths, str) else paths)):
+                return True
         if outside(a.get("target")):
             return True
     return False
@@ -6766,7 +6766,9 @@ cmd_upgrade() {
     else
       failed="$failed, brew pin list"
     fi
-    sweep_step "brew upgrade" "$SOURCE_BUILD_BOUND" brew upgrade
+    # Formulae only: bare `brew upgrade` takes casks too, with no askpass and
+    # past BREW_SKIPPED_CASKS, and failed the step on them (sd:8101).
+    sweep_step "brew upgrade" "$SOURCE_BUILD_BOUND" brew upgrade --formula
     # The profile's missing formulae: the brew stage leaves one that needs a
     # source build to this sweep (sd:7103).
     fw=$(formula_wants) || failed="$failed, brew formula list"
@@ -6887,7 +6889,7 @@ outdated_lists() {
 # for sudo (sweep_step); its leftovers are then commands to run in a terminal.
 sudo_kind() {
   case $1 in
-    formula) printf '%s' "$DEFERRED" | grep -Eq '^    brew upgrade($| [^-])' ;;
+    formula) printf '%s' "$DEFERRED" | grep -q '^    brew upgrade --formula$' ;;
     cask) printf '%s' "$DEFERRED" | grep -q '^    brew upgrade --cask' ;;
     mas) printf '%s' "$DEFERRED" | grep -q '^    mas upgrade' ;;
     *) return 1 ;;
