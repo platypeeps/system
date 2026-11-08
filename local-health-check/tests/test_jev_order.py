@@ -334,7 +334,8 @@ esac
             script=cls.forgetful)
 
     @classmethod
-    def run_check(cls, name, extra, root=None, script=SCRIPT, verb="check"):
+    def run_check(cls, name, extra, root=None, script=SCRIPT, verb="check",
+                  launchd_baseline=""):
         """One `check` (or `verb`), with its own state dir, stub log and payload dir."""
         d = cls.tmp / ("run-" + name)
         d.mkdir()
@@ -343,7 +344,7 @@ esac
         # Seeded baselines, so the fault and persistence stages compare and
         # raise their findings instead of seeding on this first run.
         (d / "state" / "fault-count").write_text("1\n")
-        (d / "state" / "launchd-baseline").write_text("")
+        (d / "state" / "launchd-baseline").write_text(launchd_baseline)
         env = dict(os.environ)
         env.update({
             "HOME": str(cls.home),
@@ -901,6 +902,27 @@ esac
         for case in ("ordered", "failed", "short"):
             for head in self.headlines(self.runs[case]):
                 self.assertIn(head, self.runs["baseline"]["out"], case)
+
+    def test_the_launchd_baseline_holds_across_locales(self):
+        # launchd runs the nightly under the C locale and the operator runs
+        # it by hand under UTF-8; the two sort "Zeta" and "alpha" apart, so
+        # an unchanged folder read as new agents (sd:8115).
+        home = self.tmp / "home-locale"
+        agents = home / "Library" / "LaunchAgents"
+        agents.mkdir(parents=True)
+        for label in ("Zeta", "alpha", "_b", "a-c"):
+            (agents / (label + ".plist")).write_text("<plist/>\n")
+        listing = []
+        for d in ("/Library/LaunchDaemons", "/Library/LaunchAgents", str(agents)):
+            if os.path.isdir(d):
+                listing += [os.path.join(d, n) for n in os.listdir(d)]
+        baseline = "".join(p + "\n" for p in sorted(listing, key=os.fsencode))
+        run = self.run_check(
+            "locale", {"JEV_HEALTH_CHECK": "0", "HOME": str(home),
+                       "LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"},
+            launchd_baseline=baseline)
+        new = [h for h in self.headlines(run) if h.startswith("new launch")]
+        self.assertEqual([], new)
 
 
 if __name__ == "__main__":
