@@ -112,14 +112,16 @@ check_revs() {
   # holds, on the same line number, what a hit reports instead of the text:
   # <sha> US <path> US <kind>, split on the unit separator (\037) because a
   # tab is IFS whitespace and two in a row would collapse an empty path.
+  # awk runs under LC_ALL=C: git cuts hunk headers mid UTF-8 character,
+  # and awk in a UTF-8 locale exits 2 on the cut bytes (sd:8069).
   : >"$work/text"
   : >"$work/where"
   while read -r sha; do
     git log -1 --format=%B "$sha" |
-      awk -v s="$sha" -v t="$work/text" -v w="$work/where" '
+      LC_ALL=C awk -v s="$sha" -v t="$work/text" -v w="$work/where" '
         { print >> t; print s "\037\037message" >> w }'
     git show --no-color --no-ext-diff --no-renames --format= -p "$sha" |
-      awk -v s="$sha" -v t="$work/text" -v w="$work/where" '
+      LC_ALL=C awk -v s="$sha" -v t="$work/text" -v w="$work/where" '
         /^diff --git / { hdr = 1; path = ""; next }
         hdr && /^\+\+\+ / {
           path = substr($0, 5); sub(/^b\//, "", path)
@@ -136,7 +138,7 @@ check_revs() {
   cut -d: -f1 "$work/matches" >"$work/hits"
   count="$(wc -l <"$work/hits" | tr -d ' ')"
   printf '%s: %s line(s) match a pattern in %s:\n' "$ME" "$count" "$PATTERNS" >&2
-  awk 'NR == FNR { hit[$1] = 1; next } FNR in hit' "$work/hits" "$work/where" |
+  LC_ALL=C awk 'NR == FNR { hit[$1] = 1; next } FNR in hit' "$work/hits" "$work/where" |
     sort -u >"$work/report"
   us="$(printf '\037')"
   while IFS="$us" read -r sha path kind; do
