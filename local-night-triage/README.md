@@ -21,7 +21,9 @@ into `<config>/cron-jobs/jobs/`, list `night-triage` in the machine's
 ## Steps
 
 1. **Release.** A claim an earlier run left in `state/claims` goes back to
-   its old status, but only while the alert's revision is still the claim's.
+   its old status while its last status change is still this job's claim;
+   one another session claimed since is left to it. An `sd` failure keeps
+   the claim in the file and stops the run with exit 1.
 2. **Claim.** `sd reports list`; each `planning` alert whose report names
    this machine (lower-cased `hostname -s`) is claimed with
    `sd task status N in_progress --if-revision`. An alert already claimed is

@@ -23,6 +23,9 @@ state = json.load(open(path))
 args = sys.argv[1:]
 state["log"].append(args)
 items = state["items"]
+# FAKE_SD_DOWN names a verb ("task status") that fails as an outage does.
+if " ".join(args).startswith(os.environ.get("FAKE_SD_DOWN") or "\0"):
+    json.dump(state, open(path, "w")); print("database unavailable", file=sys.stderr); sys.exit(1)
 
 def save():
     json.dump(state, open(path, "w"))
@@ -47,6 +50,9 @@ elif args[:2] == ["task", "status"]:
     item = items[args[2]]
     if flag("--if-revision") not in (None, str(item["revision"])):
         save(); print("refused: the item changed", file=sys.stderr); sys.exit(1)
+    reason = flag("--reason") or ""
+    item["notes"].append({"id": 800 + len(item["notes"]), "kind": "status_change", "resolved_at": None,
+                          "body": f"{item['status']} -> {args[3]} by test: {reason}"})
     item["status"] = args[3]; item["revision"] += 1
     save()
     if "--json" in args:
@@ -71,6 +77,8 @@ save()
 FAKE_CLAUDE = """#!/bin/sh
 printf '%s\\n' "$@" > "$CLAUDE_ARGS"
 cat > "$CLAUDE_STDIN"
+# CLAUDE_TOUCH: a rerun the model starts folds into the report it works on.
+[ -z "$CLAUDE_TOUCH" ] || python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["items"][sys.argv[2]]["revision"] += 1; json.dump(s, open(p, "w"))' "$FAKE_SD_STATE" "$CLAUDE_TOUCH"
 [ -f "$CLAUDE_REPLY" ] && cat "$CLAUDE_REPLY"
 exit "${CLAUDE_RC:-0}"
 """
@@ -114,9 +122,9 @@ class NightTriage(unittest.TestCase):
         if reply is not None:
             (self.tmp / "reply").write_text("Done.\n" + json.dumps({"alerts": reply}))
 
-    def run_job(self, rc=0):
+    def run_job(self, rc=0, **env):
         return subprocess.run(["sh", str(self.folder / "night-triage.sh"), "run"], capture_output=True, text=True,
-                              env=dict(self.env, CLAUDE_RC=str(rc)), timeout=60)
+                              env=dict(self.env, CLAUDE_RC=str(rc), **env), timeout=60)
 
     def items(self):
         return json.loads(self.state.read_text())["items"]
@@ -213,6 +221,57 @@ class NightTriage(unittest.TestCase):
         (self.folder / "state/claims").write_text("1 planning 5\n")
         self.assertEqual(self.run_job().returncode, 0)
         self.assertEqual(self.items()["1"]["status"], "in_progress")
+
+    def left_claim(self, revision=5):
+        alert = report("node1", status="in_progress")
+        alert["revision"] = revision
+        alert["notes"] = [{"id": 800, "kind": "status_change", "resolved_at": None,
+                           "body": "planning -> in_progress by test: night-triage claims it"}]
+        (self.folder / "state").mkdir()
+        (self.folder / "state/claims").write_text("1 planning 5\n")
+        return alert
+
+    def test_an_sd_outage_at_release_keeps_the_claim_and_fails(self):
+        self.given({"1": self.left_claim()}, [])
+        result = self.run_job(FAKE_SD_DOWN="task status")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.folder / "state/claims").read_text(), "1 planning 5\n")
+        self.assertEqual(self.items()["1"]["status"], "in_progress")
+        # The next run, with sd back, gives it back.
+        self.run_job()
+        self.assertEqual(self.items()["1"]["status"], "planning")
+
+    def test_an_sd_outage_while_settling_keeps_the_claim_and_fails(self):
+        self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        env = dict(self.env, CLAUDE_RC="0")
+        script = str(self.folder / "night-triage.sh")
+        # The outage starts after the claim: the model run turns sd off.
+        (self.bin / "claude").write_text(FAKE_CLAUDE.replace(
+            'exit "${CLAUDE_RC:-0}"', 'touch "$FAKE_SD_STATE.down"; exit "${CLAUDE_RC:-0}"'))
+        sd = (self.pack / "sd").read_text().replace(
+            'if " ".join(args)', 'if os.path.exists(path + ".down") and args[:2] == ["task", "status"] or " ".join(args)')
+        (self.pack / "sd").write_text(sd)
+        result = subprocess.run(["sh", script, "run"], capture_output=True, text=True, env=env, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.items()["1"]["status"], "in_progress")
+        self.assertTrue((self.folder / "state/claims").read_text().startswith("1 planning "))
+
+    def test_a_rerun_that_touches_the_alert_still_settles_it(self):
+        self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        result = self.run_job(CLAUDE_TOUCH="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items()["1"]["status"], "planning")
+        self.assertIn("filed as sd:7", self.comments("1")[0])
+        self.assertFalse((self.folder / "state/claims").exists())
+
+    def test_an_alert_another_session_claimed_since_is_left_to_it(self):
+        alert = self.left_claim(revision=7)
+        alert["notes"].append({"id": 801, "kind": "status_change", "resolved_at": None,
+                               "body": "planning -> in_progress by operator: debugging it"})
+        self.given({"1": alert}, [])
+        self.assertEqual(self.run_job().returncode, 0)
+        self.assertEqual(self.items()["1"]["status"], "in_progress")
+        self.assertFalse((self.folder / "state/claims").exists())
 
     def test_forbidden_tools_are_absent_from_the_allow_list(self):
         self.given({}, [])

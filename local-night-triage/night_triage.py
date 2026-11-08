@@ -7,9 +7,10 @@ acknowledged; a filed bug or an operator action gets one note and goes back
 to Today. Every write goes through the pack's `sd`; this opens no database.
 
 The claims file holds one line per alert held: `<id> <status before> <revision
-after the claim>`. A release moves an alert back only while its revision is
-still the claim's, so a run that died never takes back an alert someone
-touched since.
+after the claim>`. A release moves an alert back while its last status
+change is still this job's claim, so a run that died never takes back an
+alert another session claimed since. A row leaves the file only after its
+release or a confirmed conflict: an `sd` outage keeps it and exits 1.
 
 Usage:
   night_triage.py claim <sd> <host> <claims> <context.json>
@@ -24,6 +25,7 @@ import sys
 from pathlib import Path
 
 WHO = "night-triage"
+CLAIM = f"{WHO} claims it"
 ITEM = re.compile(r"^sd:\d+$")
 
 
@@ -79,7 +81,7 @@ def claim(binary, host, claims, context):
             continue
         try:
             moved = json.loads(sd(binary, "task", "status", str(report["id"]), "in_progress", "--json",
-                                  "--if-revision", current["revision"], "--reason", f"{WHO} claims it"))
+                                  "--if-revision", current["revision"], "--reason", CLAIM))
         except RuntimeError as error:  # another session claimed it first
             print(f"night-triage: sd:{report['id']} not claimed: {error}", file=sys.stderr)
             continue
@@ -95,20 +97,52 @@ def claim(binary, host, claims, context):
 
 
 def _release_one(binary, row, reason):
+    """Give one claim back. True: released; False: another hand holds it now.
+
+    A refused release counts as a conflict only once a re-read shows a new
+    revision. Then the alert is still this job's while its last status change
+    is this job's claim: a rerun the model started folds into the report and
+    moves its revision (sd:8143 review), so it is released at the new one.
+    Any other failure, an outage included, raises: the caller keeps the row.
+    """
     item, before, revision = row
     try:
         sd(binary, "task", "status", item, before, "--if-revision", revision, "--reason", reason)
         return True
-    except RuntimeError as error:  # touched since the claim: leave it
-        print(f"night-triage: sd:{item} kept as it is: {error}", file=sys.stderr)
+    except RuntimeError as error:
+        refused = error
+    current = show(binary, item)
+    if current["revision"] == revision:
+        raise refused
+    changes = [n for n in current["notes"] if n["kind"] == "status_change"]
+    if current["item"]["status"] != "in_progress" or not changes or CLAIM not in changes[-1]["body"]:
+        print(f"night-triage: sd:{item} is another session's now; left to it", file=sys.stderr)
         return False
+    sd(binary, "task", "status", item, before, "--if-revision", current["revision"], "--reason", reason)
+    return True
+
+
+def _settle_claims(binary, claims, each):
+    """Run `each(row)` over the claims; drop a row only when it returns."""
+    rows, failed = _claims(claims), 0
+    for row in list(rows):
+        try:
+            each(row)
+        except (RuntimeError, subprocess.TimeoutExpired) as error:
+            failed += 1
+            print(f"night-triage: sd:{row[0]}: claim kept: {error}", file=sys.stderr)
+            continue
+        rows.remove(row)
+        _write_claims(claims, rows)
+    if not rows:
+        Path(claims).unlink(missing_ok=True)
+    return 1 if failed else 0
 
 
 def release(binary, claims):
     """Give back every claim still held, as an earlier or this run left it."""
-    for row in _claims(claims):
-        _release_one(binary, row, f"{WHO}: release the claim of a run that did not finish")
-    Path(claims).unlink(missing_ok=True)
+    return _settle_claims(binary, claims,
+                          lambda row: _release_one(binary, row, f"{WHO}: release the claim of a run that did not finish"))
 
 
 def _reply(text):
@@ -157,25 +191,24 @@ def apply(binary, host, claims, context, reply):
     """Settle each claimed alert: release it, note it, acknowledge a proven fix."""
     alerts = {str(a["id"]): a for a in json.loads(Path(context).read_text())}
     answers = _reply(Path(reply).read_text())
-    rows, failed = _claims(claims), 0
-    for row in list(rows):
-        alert = alerts.get(row[0])
+
+    def settle(row):
         released = _release_one(binary, row, f"{WHO} settled its run")
-        rows.remove(row)
-        _write_claims(claims, rows)
-        if not released or alert is None:
-            continue
+        alert = alerts.get(row[0])
+        if alert is None:
+            return
         entry = answers.get(alert["id"]) or answers.get(str(alert["id"]))
         note, acknowledge = verdict(alert, entry, host)
         try:
             sd(binary, "task", "note", row[0], note)
-            if acknowledge:
+            if acknowledge and released:
                 sd(binary, "reports", "acknowledge", row[0], "--resolve-followups")
-        except RuntimeError as error:
-            failed += 1
+        except RuntimeError as error:  # released already: the row has nothing left to give back
             print(f"night-triage: sd:{row[0]}: {error}", file=sys.stderr)
-    Path(claims).unlink(missing_ok=True)
-    return 1 if failed else 0
+            failures.append(row[0])
+
+    failures = []
+    return _settle_claims(binary, claims, settle) or (1 if failures else 0)
 
 
 def main(argv):
@@ -184,7 +217,7 @@ def main(argv):
         if verb == "claim" and len(args) == 4:
             claim(*args)
         elif verb == "release" and len(args) == 2:
-            release(*args)
+            return release(*args)
         elif verb == "apply" and len(args) == 5:
             return apply(*args)
         else:

@@ -41,12 +41,15 @@ a bad reply could acknowledge an alert with no evidence.
 
 | Step | State moved | Failure | Recovery | Test |
 | --- | --- | --- | --- | --- |
-| Release | Old claims back to their status | Alert touched since the claim | Kept; revision check refuses | `test_a_left_claim_someone_touched_since_is_kept` |
+| Release | Old claims back to their status | Another session claimed it since | Left to it; row dropped | `test_an_alert_another_session_claimed_since_is_left_to_it` |
+| Release | As above | `sd` fails (outage, locked database) | Row kept; exit 1; next run releases | `test_an_sd_outage_at_release_keeps_the_claim_and_fails` |
 | Claim | Alert `in_progress`; line in `state/claims` | Another session claims first | Revision check refuses; skipped | `test_a_claimed_alert_is_skipped` |
 | Claim | As above | Run dies after the claim | Next run's release gives it back | `test_a_claim_a_crashed_run_left_is_released_by_the_next_run` |
 | Triage | Repairs; filed items | `claude -p` fails or times out | Claims released, no note; exit non-zero | `test_a_failed_model_run_leaves_the_alerts_as_they_were` |
 | Triage | `state/<date>.reply` | Reply holds no `alerts` object | Claims released, no note; exit non-zero | `test_an_unreadable_reply_leaves_the_alerts_as_they_were` |
 | Settle | Alert back to `planning` | Run dies before the note | Alert open, no note; next run triages it | release before note, by order in `apply` |
+| Settle | As above | A rerun moved the revision | Re-read; still our claim, so released at the new one | `test_a_rerun_that_touches_the_alert_still_settles_it` |
+| Settle | As above | `sd` fails (outage) | Row kept; exit 1; next run releases | `test_an_sd_outage_while_settling_keeps_the_claim_and_fails` |
 | Settle | One note | A fix lacks evidence for a followup | Note says why; not acknowledged | `test_a_fix_without_evidence_for_each_followup_stays_open` |
 | Settle | Acknowledged, followups resolved | None beyond `sd` refusing | Note stays; exit non-zero; operator sees it | `test_a_fixed_alert_with_evidence_is_acknowledged` |
 
