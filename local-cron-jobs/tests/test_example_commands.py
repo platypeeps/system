@@ -42,7 +42,7 @@ class PackRootFromEnvShTest(unittest.TestCase):
                 self.addCleanup(fx.destroy)
                 pack = fx.tmp / "custom-pack"
                 marker = fx.tmp / "pack-ran"
-                for relative in (".venv/bin/python", "bin/sd", "bin/sd-ship"):
+                for relative in (".venv/bin/python", "bin/sd", "bin/sd-ship", "dashboard/dashboard.sh"):
                     program = pack / relative
                     program.parent.mkdir(parents=True, exist_ok=True)
                     program.write_text(RECORDER)
@@ -538,6 +538,23 @@ class NightlyReviewJobTest(unittest.TestCase):
                 result, calls = self.run_job(rc)
                 self.assertEqual(calls, ["run"], result.stdout + result.stderr)
                 self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
+
+
+class KoiWaterDailyTest(unittest.TestCase):
+    """The daily Koi sync (sd:8080) runs the pack's `dashboard.sh koi-sync`.
+
+    It keeps Home Assistant's water changes past the recorder's retention
+    even on a day nobody opens the Koi view (pack sd:8077).
+    """
+
+    JOB = EXAMPLES / "koi-water-daily.job"
+
+    def test_the_job_runs_koi_sync_once_a_day_from_the_pack(self):
+        text = self.JOB.read_text()
+        self.assertRegex(text, r'(?m)^JOB_SCHEDULE="\d+ \d+ \* \* \*"$')
+        command = text.split("JOB_COMMAND=", 1)[1].strip()
+        self.assertTrue(command.endswith('/dashboard/dashboard.sh\\" koi-sync"'), command)
+        self.assertIn("\\${SD_PACK_ROOT", command)
 
 
 class MailIntakeDailyTest(unittest.TestCase):

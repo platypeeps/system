@@ -1,0 +1,14 @@
+# Daily Koi water-change sync (sd:8080): the pack's `dashboard.sh koi-sync`
+# (pack sd:8077) stores Home Assistant's water changes in the workflow
+# database, so a change survives the recorder's retention even on a day
+# nobody opens the Koi view. It exits 1 when Home Assistant is down or no
+# pond is set up; cron's failure channel reports that.
+#
+# Hub only: it writes the workflow database. Install it in the hub's own
+# folder, cron-jobs/jobs/<host>/, then `cron-jobs.sh install koi-water-daily`.
+# SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
+# after ~/.config/shell/env.sh; this file is sourced before env.sh is.
+JOB_SCHEDULE="15 7 * * *"
+# One Home Assistant read and one database write: seconds.
+JOB_TIMEOUT="5m"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/dashboard/dashboard.sh\" koi-sync"
