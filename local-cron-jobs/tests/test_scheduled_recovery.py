@@ -67,7 +67,7 @@ class ScheduledRecovery(unittest.TestCase):
     def test_both_profile_jobs_install_with_their_real_calendar_and_verify(self):
         # The machine profile that lists these jobs is private configuration and
         # is not in this repository; the jobs themselves are.
-        for job, minute in (("sd-db-backup", 10), ("shadow-sync-nightly", 20)):
+        for job, minute in (("sd-db-backup", 10),):
             result = self.run_job("install", job)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             path = self.fixture.path / f"Library/LaunchAgents/{PREFIX}{job}.plist"
@@ -86,14 +86,16 @@ class ScheduledRecovery(unittest.TestCase):
         self.assertEqual(calendar, [{"Minute": 50}])
         self.assertEqual(self.run_job("verify", "sd-db-backup-hourly").returncode, 0)
 
-    def test_shadow_sync_runs_at_two_twenty_and_hourly_in_the_day(self):
-        # sd:6750: a nightly pass left GitHub rows a day stale in working hours.
+    def test_shadow_sync_runs_every_hour_at_twenty(self):
+        # sd:6750: a nightly pass left GitHub rows a day stale in working
+        # hours; sd:8111: merged PRs then left alerts open overnight, so the
+        # pr-attention read runs every hour, the night included.
         result = self.run_job("install", "shadow-sync-nightly")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         path = self.fixture.path / f"Library/LaunchAgents/{PREFIX}shadow-sync-nightly.plist"
         calendar = plistlib.loads(path.read_bytes())["StartCalendarInterval"]
-        hours = [2, *range(8, 20)]
-        self.assertEqual(calendar, [{"Hour": hour, "Minute": 20} for hour in hours])
+        self.assertEqual(calendar, [{"Minute": 20}])
+        self.assertEqual(self.run_job("verify", "shadow-sync-nightly").returncode, 0)
 
     def hourly_command(self, **environment):
         return self.job_command("sd-db-backup-hourly", **environment)

@@ -1,10 +1,11 @@
-# Read-only GitHub collection into local shadow rows, at 02:20 and hourly
-# at :20 from 08:20 to 19:20 local time, so the rows stay fresh in working
-# hours (sd:6750). The name keeps "nightly": the hub-only agent list, the
-# promote role jobs and installed machines know the job by it. cron-jobs.sh
-# takes no ranges, so the hours are a list. Collection errors retain the
-# old watermark; cron's failure channel reports a nonzero exit.
+# Read-only GitHub collection into local shadow rows, every hour at :20
+# local time. Working hours keep the rows fresh (sd:6750); the night runs
+# too, so the pr-attention read clears a merged PR's alert within the hour
+# (sd:8111). The name keeps "nightly": the hub-only agent list, the
+# promote role jobs and installed machines know the job by it. Collection
+# errors retain the old watermark; cron's failure channel reports a
+# nonzero exit.
 # SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
 # after ~/.config/shell/env.sh; this file is sourced before env.sh is.
-JOB_SCHEDULE="20 2,8,9,10,11,12,13,14,15,16,17,18,19 * * *"
+JOB_SCHEDULE="20 * * * *"
 JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd\" shadow sync --strict"
