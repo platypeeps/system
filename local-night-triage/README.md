@@ -36,7 +36,8 @@ into `<config>/cron-jobs/jobs/`, list `night-triage` in the machine's
    It holds no merge, push, sudo, scheduled-job, permission, mail, Slack or
    credential tool, and no alert writer. It replies with one answer per alert.
 4. **Settle.** Each alert goes back to `planning` and gets one note:
-   - `fixed` with evidence for every open followup: acknowledged with
+   - `fixed` with evidence for every followup open at settle time (read
+     again, so one a rerun added counts): acknowledged with
      `sd reports acknowledge N --resolve-followups`;
    - `filed`: stays open and cites the item;
    - `operator`: stays open on Today, with the exact action and why no tool

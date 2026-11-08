@@ -51,6 +51,7 @@ a bad reply could acknowledge an alert with no evidence.
 | Settle | As above | A rerun moved the revision | Re-read; still our claim, so released at the new one | `test_a_rerun_that_touches_the_alert_still_settles_it` |
 | Settle | As above | `sd` fails (outage) | Row kept; exit 1; next run releases | `test_an_sd_outage_while_settling_keeps_the_claim_and_fails` |
 | Settle | One note | A fix lacks evidence for a followup | Note says why; not acknowledged | `test_a_fix_without_evidence_for_each_followup_stays_open` |
+| Settle | One note | A rerun added a followup | Re-read; unmatched followup stays open; not acknowledged | `test_a_followup_added_during_the_run_blocks_the_acknowledge` |
 | Settle | Acknowledged, followups resolved | None beyond `sd` refusing | Note stays; exit non-zero; operator sees it | `test_a_fixed_alert_with_evidence_is_acknowledged` |
 
 ## Acceptance criteria

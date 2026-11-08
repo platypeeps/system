@@ -79,6 +79,8 @@ printf '%s\\n' "$@" > "$CLAUDE_ARGS"
 cat > "$CLAUDE_STDIN"
 # CLAUDE_TOUCH: a rerun the model starts folds into the report it works on.
 [ -z "$CLAUDE_TOUCH" ] || python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["items"][sys.argv[2]]["revision"] += 1; json.dump(s, open(p, "w"))' "$FAKE_SD_STATE" "$CLAUDE_TOUCH"
+# CLAUDE_FAIL_AGAIN: the rerun fails, and its report adds followup 77 to alert 1.
+[ -z "$CLAUDE_FAIL_AGAIN" ] || python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); i=s["items"]["1"]; i["revision"] += 1; i["notes"].append({"id": 77, "kind": "followup", "body": "failed again", "resolved_at": None}); json.dump(s, open(p, "w"))' "$FAKE_SD_STATE"
 [ -f "$CLAUDE_REPLY" ] && cat "$CLAUDE_REPLY"
 exit "${CLAUDE_RC:-0}"
 """
@@ -263,6 +265,17 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(self.items()["1"]["status"], "planning")
         self.assertIn("filed as sd:7", self.comments("1")[0])
         self.assertFalse((self.folder / "state/claims").exists())
+
+    def test_a_followup_added_during_the_run_blocks_the_acknowledge(self):
+        self.given({"1": report("node1", followups=[41])}, [
+            {"id": 1, "outcome": "fixed", "summary": "reran", "evidence": ["exit 0"],
+             "followups": {"41": "the rerun passed"}}])
+        result = self.run_job(CLAUDE_FAIL_AGAIN="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        item = self.items()["1"]
+        self.assertEqual(item["status"], "planning")
+        self.assertIsNone(next(n for n in item["notes"] if n["id"] == 77)["resolved_at"])
+        self.assertIn("open followups without evidence: #77", self.comments("1")[0])
 
     def test_an_alert_another_session_claimed_since_is_left_to_it(self):
         alert = self.left_claim(revision=7)

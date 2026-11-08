@@ -90,10 +90,14 @@ def claim(binary, host, claims, context):
         fields = report_fields(report)
         found.append({"id": report["id"], "title": report.get("title"), "job": fields.get("job"),
                       "basis": fields.get("attention_basis"), "log": fields.get("source_path"),
-                      "followups": [{"id": n["id"], "body": n["body"][:2000]} for n in moved["notes"]
-                                    if n["kind"] == "followup" and not n.get("resolved_at")]})
+                      "followups": _open_followups(moved["notes"])})
     Path(context).write_text(json.dumps(found, indent=1))
     print(len(found))
+
+
+def _open_followups(notes):
+    return [{"id": n["id"], "body": n["body"][:2000]} for n in notes
+            if n["kind"] == "followup" and not n.get("resolved_at")]
 
 
 def _release_one(binary, row, reason):
@@ -198,6 +202,10 @@ def apply(binary, host, claims, context, reply):
         if alert is None:
             return
         entry = answers.get(alert["id"]) or answers.get(str(alert["id"]))
+        # Judge the fix against the followups open now, not at the claim: a
+        # rerun that failed again adds one, and --resolve-followups would
+        # close it unseen (sd:8143 review).
+        alert = dict(alert, followups=_open_followups(show(binary, row[0])["notes"]))
         note, acknowledge = verdict(alert, entry, host)
         try:
             sd(binary, "task", "note", row[0], note)
