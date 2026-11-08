@@ -402,6 +402,13 @@ class SharedPolicy(unittest.TestCase):
         for words in ("live", "note on the item", "never the record"):
             self.assertIn(words, line)
 
+    def test_builder_cap_is_one_bundle_per_repo(self):
+        # sd:8159: the dispatcher starts one build bundle per repo (pack sd:8158).
+        source = (FOLDER / "prompt/shared.md").read_text()
+        line = next((l for l in source.splitlines() if "code-writing builders" in l), "")
+        self.assertIn("1 build bundle per repo", line)
+        self.assertNotIn("3 per repo", line)
+
 
 if __name__ == "__main__":
     unittest.main()
