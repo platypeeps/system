@@ -20,8 +20,8 @@ CRON="$ROOT/local-cron-jobs/cron-jobs.sh"
 # Repair and file (operator ruling, sd:8143): read, rerun a job, restart a
 # service, clear a stale cron log or lock, file an item. No merge, push,
 # sudo, scheduled-job or permission edit, mail, Slack or credential tool, and
-# no alert writer: `sd task status` and `sd reports acknowledge` are this
-# script's. tests/test_night_triage.py pins the list.
+# no alert writer: the claim note, the settle note and `sd reports
+# acknowledge` are this script's. tests/test_night_triage.py pins the list.
 # ponytail: `rm -f` is held to the cron logs folder by prefix only; a wrapper
 # that proves a file stale goes in if a run ever removes the wrong one.
 TOOLS="Read Grep Glob Bash(sd today:*) Bash(sd task show:*) Bash(sd note list:*) \
@@ -39,17 +39,20 @@ night-triage.sh — the night triage job: this machine's issues, repaired or fil
 
 Usage: night-triage.sh <command>
 
-  run    1. release: give back any claim an earlier run left (state/claims).
+  run    1. release: a note releases any claim an earlier run left
+            (state/claims).
          2. claim: `sd reports list`; each planning alert whose report names
-            this machine (lower-cased `hostname -s`) is claimed with
-            `sd task status N in_progress`; an alert already claimed is skipped.
+            this machine (lower-cased `hostname -s`) is claimed with a note
+            (a report takes no `sd task status`); one another session
+            claimed is skipped.
          3. triage: `claude -p` on Sonnet reads the alerts, `sd today`'s
             Operations, this machine, and local status; it may rerun a failed
             job, restart a service, clear a stale cron file and file bugs with
             `sd task add`; it replies with one answer per alert. 1680 s bound.
-         4. settle: each alert goes back to planning with one note; a fix with
-            evidence for every open followup is then acknowledged with
-            `sd reports acknowledge N --resolve-followups`.
+         4. settle: each alert gets one note, which releases the claim; a
+            fix with evidence for every open followup is then acknowledged
+            with `sd reports acknowledge N --resolve-followups`. Both writes
+            carry --if-revision, so another writer's change is judged again.
          Exits 0 when every alert is settled, non-zero when any step fails;
          a failure before step 4 leaves every alert as it was.
   test   Run this folder's tests (extra args go to unittest).
@@ -68,11 +71,11 @@ run() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/night-triage.XXXXXX")
   trap 'rm -rf "$tmp"' EXIT
 
-  st_step 120 python3 "$DIR/night_triage.py" release "$SD" "$claims"
+  st_step 120 python3 "$DIR/night_triage.py" release "$SD" "$host" "$claims"
   # Any failure from here gives back what this run claimed.
   rc=0
   count=$(st_step 300 python3 "$DIR/night_triage.py" claim "$SD" "$host" "$claims" "$tmp/alerts.json") || rc=$?
-  [ "$rc" -eq 0 ] || { python3 "$DIR/night_triage.py" release "$SD" "$claims" || :; return "$rc"; }
+  [ "$rc" -eq 0 ] || { python3 "$DIR/night_triage.py" release "$SD" "$host" "$claims" || :; return "$rc"; }
 
   role=satellite
   fence=$(st_step 60 "$PACK/bin/sd-db" fence 2>/dev/null) || fence=""
@@ -80,7 +83,7 @@ run() {
   # A failed `sd today` fails the run: an empty Operations section would
   # hide the job's main input behind exit 0 (sd:8143 review).
   st_step 120 "$SD" today > "$tmp/today" || rc=$?
-  [ "$rc" -eq 0 ] || { python3 "$DIR/night_triage.py" release "$SD" "$claims" || :; return "$rc"; }
+  [ "$rc" -eq 0 ] || { python3 "$DIR/night_triage.py" release "$SD" "$host" "$claims" || :; return "$rc"; }
   {
     cat "$DIR/prompt.md"
     printf '\nMachine: %s (%s)\nSystem checkout: %s\nPack checkout: %s\n' "$host" "$role" "$ROOT" "$PACK"
@@ -96,11 +99,11 @@ run() {
   (cd "$ROOT" && st_step 1680 "${CLAUDE_BIN:-claude}" -p --model sonnet \
     --restricted --strict-mcp-config --tools 'Read,Grep,Glob,Bash' \
     --allowedTools "$TOOLS" --disallowedTools "$DENY" < "$tmp/prompt" > "$tmp/reply") || rc=$?
-  [ "$rc" -eq 0 ] || { python3 "$DIR/night_triage.py" release "$SD" "$claims" || :; return "$rc"; }
+  [ "$rc" -eq 0 ] || { python3 "$DIR/night_triage.py" release "$SD" "$host" "$claims" || :; return "$rc"; }
   cp "$tmp/reply" "$state/$(date +%F).reply"
 
   st_step 300 python3 "$DIR/night_triage.py" apply "$SD" "$host" "$claims" "$tmp/alerts.json" "$tmp/reply" || rc=$?
-  [ "$rc" -eq 0 ] || { python3 "$DIR/night_triage.py" release "$SD" "$claims" || :; return "$rc"; }
+  [ "$rc" -eq 0 ] || { python3 "$DIR/night_triage.py" release "$SD" "$host" "$claims" || :; return "$rc"; }
 }
 
 case "${1:-}" in

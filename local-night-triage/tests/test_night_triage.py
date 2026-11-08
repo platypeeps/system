@@ -23,7 +23,7 @@ state = json.load(open(path))
 args = sys.argv[1:]
 state["log"].append(args)
 items = state["items"]
-# FAKE_SD_DOWN names a verb ("task status") that fails as an outage does.
+# FAKE_SD_DOWN names a verb ("task note") that fails as an outage does.
 if " ".join(args).startswith(os.environ.get("FAKE_SD_DOWN") or "\0"):
     json.dump(state, open(path, "w")); print("database unavailable", file=sys.stderr); sys.exit(1)
 
@@ -41,7 +41,7 @@ def flag(name):
 # Each verb takes only the flags the pinned pack's parser does: an unknown
 # one exits 2, as argparse does (sd:8143 review: `sd today --all`).
 FLAGS = {"reports list": {"--json"}, "today": {"--json", "--only"}, "task show": {"--json"},
-         "task status": {"--json", "--if-revision", "--reason"}, "task note": set(),
+         "task status": {"--json", "--if-revision", "--reason"}, "task note": {"--json", "--if-revision"},
          "reports acknowledge": {"--json", "--if-revision", "--resolve-followups"}}
 verb = "today" if args[:1] == ["today"] else " ".join(args[:2])
 if verb not in FLAGS or any(a.startswith("--") and a not in FLAGS[verb] for a in args):
@@ -56,28 +56,42 @@ elif args[:1] == ["today"]:
 elif args[:2] == ["task", "show"]:
     print(json.dumps(show(args[2])))
 elif args[:2] == ["task", "status"]:
+    # As the pack: a report takes no status through task controls.
+    save(); print(f"sd: report item {args[2]} cannot move to {args[3]} through task controls", file=sys.stderr)
+    sys.exit(1)
+elif args[:2] == ["task", "note"]:
     item = items[args[2]]
+    claiming = "claims it" in args[3]
+    # FAKE_SD_RACE: another writer adds followup 78 just before this write.
+    race = os.environ.get("FAKE_SD_RACE")
+    if race == "note" and not claiming and not state.get("raced"):
+        state["raced"] = True
+        item["notes"].append({"id": 78, "kind": "followup", "session": "cron", "body": "failed again",
+                              "resolved_at": None})
+        item["revision"] += 1
     if flag("--if-revision") not in (None, str(item["revision"])):
         save(); print("refused: the item changed", file=sys.stderr); sys.exit(1)
-    reason = flag("--reason") or ""
-    item["notes"].append({"id": 800 + len(item["notes"]), "kind": "status_change", "resolved_at": None,
-                          "body": f"{item['status']} -> {args[3]} by test: {reason}"})
-    item["status"] = args[3]; item["revision"] += 1
+    item["notes"].append({"id": 900 + len(item["notes"]), "kind": "comment", "session": "login",
+                          "body": args[3], "resolved_at": None})
+    item["revision"] += 1
     save()
-    # FAKE_SD_LOSE: the claim commits, then its answer is lost.
-    if os.environ.get("FAKE_SD_LOSE") and args[3] == "in_progress":
+    # FAKE_SD_LOSE: the claim note commits, then its answer is lost.
+    if os.environ.get("FAKE_SD_LOSE") and claiming:
         print("connection reset", file=sys.stderr); sys.exit(1)
-    # FAKE_SD_CRASH: the claim commits, then the process that asked for it dies.
-    if os.environ.get("FAKE_SD_CRASH") and args[3] == "in_progress":
+    # FAKE_SD_CRASH: the claim note commits, then the process that wrote it dies.
+    if os.environ.get("FAKE_SD_CRASH") and claiming:
         import signal; os.kill(os.getppid(), signal.SIGKILL); sys.exit(1)
     if "--json" in args:
         print(json.dumps(show(args[2])))
-elif args[:2] == ["task", "note"]:
-    item = items[args[2]]
-    item["notes"].append({"id": 900 + len(item["notes"]), "kind": "comment", "body": args[3], "resolved_at": None})
-    item["revision"] += 1
 elif args[:2] == ["reports", "acknowledge"]:
     item = items[args[2]]
+    if os.environ.get("FAKE_SD_RACE") == "ack" and not state.get("raced"):
+        state["raced"] = True
+        item["notes"].append({"id": 78, "kind": "followup", "session": "cron", "body": "failed again",
+                              "resolved_at": None})
+        item["revision"] += 1
+    if flag("--if-revision") not in (None, str(item["revision"])):
+        save(); print("refused: the item changed", file=sys.stderr); sys.exit(1)
     open_followups = [n for n in item["notes"] if n["kind"] == "followup" and not n["resolved_at"]]
     if open_followups and "--resolve-followups" not in args:
         save(); sys.exit(1)
@@ -156,7 +170,23 @@ class NightTriage(unittest.TestCase):
         return json.loads(self.state.read_text())["items"]
 
     def comments(self, key):
-        return [n["body"] for n in self.items()[key]["notes"] if n["kind"] == "comment"]
+        """The job's verdict notes: claim and release notes left out."""
+        return [n["body"] for n in self.items()[key]["notes"] if n["kind"] == "comment"
+                and not n["body"].startswith("night-triage on node1 claims it")
+                and "claim released" not in n["body"]]
+
+    def notes(self, key, text):
+        return [n["body"] for n in self.items()[key]["notes"] if text in n["body"]]
+
+    def left_claim(self, row="1 800"):
+        """An alert a crashed run claimed: its claim note is this job's latest note."""
+        alert = report("node1")
+        alert["revision"] = 5
+        alert["notes"] = [{"id": 800, "kind": "comment", "session": "login", "resolved_at": None,
+                           "body": "night-triage on node1 claims it: an unattended triage run"}]
+        (self.folder / "state").mkdir()
+        (self.folder / "state/claims").write_text(row + "\n")
+        return alert
 
     def test_a_fixed_alert_with_evidence_is_acknowledged(self):
         self.given({"1": report("node1", followups=[41])}, [
@@ -228,60 +258,6 @@ class NightTriage(unittest.TestCase):
         self.assertNotEqual(self.run_job().returncode, 0)
         self.assertEqual((self.items()["1"]["status"], self.comments("1")), ("planning", []))
 
-    def test_a_claim_a_crashed_run_left_is_released_by_the_next_run(self):
-        alert = report("node1", status="in_progress")
-        alert["revision"] = 5
-        self.given({"1": alert}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:77"}])
-        (self.folder / "state").mkdir()
-        (self.folder / "state/claims").write_text("1 planning 5\n")
-        self.assertEqual(self.run_job().returncode, 0)
-        # Released, then claimed and settled by this run.
-        self.assertEqual(self.items()["1"]["status"], "planning")
-        self.assertIn("filed as sd:77", self.comments("1")[0])
-
-    def test_a_left_claim_someone_touched_since_is_kept(self):
-        alert = report("node1", status="in_progress")
-        alert["revision"] = 6
-        self.given({"1": alert}, [])
-        (self.folder / "state").mkdir()
-        (self.folder / "state/claims").write_text("1 planning 5\n")
-        self.assertEqual(self.run_job().returncode, 0)
-        self.assertEqual(self.items()["1"]["status"], "in_progress")
-
-    def left_claim(self, revision=5):
-        alert = report("node1", status="in_progress")
-        alert["revision"] = revision
-        alert["notes"] = [{"id": 800, "kind": "status_change", "resolved_at": None,
-                           "body": "planning -> in_progress by test: night-triage claims it"}]
-        (self.folder / "state").mkdir()
-        (self.folder / "state/claims").write_text("1 planning 5\n")
-        return alert
-
-    def test_an_sd_outage_at_release_keeps_the_claim_and_fails(self):
-        self.given({"1": self.left_claim()}, [])
-        result = self.run_job(FAKE_SD_DOWN="task status")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((self.folder / "state/claims").read_text(), "1 planning 5\n")
-        self.assertEqual(self.items()["1"]["status"], "in_progress")
-        # The next run, with sd back, gives it back.
-        self.run_job()
-        self.assertEqual(self.items()["1"]["status"], "planning")
-
-    def test_an_sd_outage_while_settling_keeps_the_claim_and_fails(self):
-        self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
-        env = dict(self.env, CLAUDE_RC="0")
-        script = str(self.folder / "night-triage.sh")
-        # The outage starts after the claim: the model run turns sd off.
-        (self.bin / "claude").write_text(FAKE_CLAUDE.replace(
-            'exit "${CLAUDE_RC:-0}"', 'touch "$FAKE_SD_STATE.down"; exit "${CLAUDE_RC:-0}"'))
-        sd = (self.pack / "sd").read_text().replace(
-            'if " ".join(args)', 'if os.path.exists(path + ".down") and args[:2] == ["task", "status"] or " ".join(args)')
-        (self.pack / "sd").write_text(sd)
-        result = subprocess.run(["sh", script, "run"], capture_output=True, text=True, env=env, timeout=60)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.items()["1"]["status"], "in_progress")
-        self.assertTrue((self.folder / "state/claims").read_text().startswith("1 planning "))
-
     def test_a_rerun_that_touches_the_alert_still_settles_it(self):
         self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
         result = self.run_job(CLAUDE_TOUCH="1")
@@ -301,14 +277,120 @@ class NightTriage(unittest.TestCase):
         self.assertIsNone(next(n for n in item["notes"] if n["id"] == 77)["resolved_at"])
         self.assertIn("open followups without evidence: #77", self.comments("1")[0])
 
-    def test_an_alert_another_session_claimed_since_is_left_to_it(self):
-        alert = self.left_claim(revision=7)
-        alert["notes"].append({"id": 801, "kind": "status_change", "resolved_at": None,
-                               "body": "planning -> in_progress by operator: debugging it"})
+    def test_a_report_is_claimed_by_a_note_not_a_status(self):
+        self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = json.loads(self.state.read_text())["log"]
+        self.assertFalse([c for c in calls if c[:2] == ["task", "status"]], calls)
+        self.assertEqual(len(self.notes("1", "night-triage on node1 claims it")), 1)
+        self.assertIn('"id": 1', (self.tmp / "prompt").read_text())
+        self.assertIn("filed as sd:7", self.comments("1")[0])
+
+    def test_another_sessions_claim_note_is_skipped(self):
+        alert = report("node1")
+        alert["notes"].append({"id": 50, "kind": "comment", "session": "operator", "resolved_at": None,
+                               "body": "a session claims it: debugging the job"})
+        self.given({"1": alert}, [])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items()["1"], alert)
+        self.assertIn("sd:1 is claimed; skipped", result.stderr)
+
+    def test_a_claim_a_crashed_run_left_is_released_by_the_next_run(self):
+        self.given({"1": self.left_claim()}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:77"}])
+        self.assertEqual(self.run_job().returncode, 0)
+        self.assertEqual(len(self.notes("1", "did not finish; claim released")), 1)
+        # Released, then claimed and settled by this run.
+        self.assertIn("filed as sd:77", self.comments("1")[0])
+        self.assertFalse((self.folder / "state/claims").exists())
+
+    def test_a_pending_claim_row_a_crash_left_is_reconciled(self):
+        self.given({"1": self.left_claim(row="1 -")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:77"}])
+        self.assertEqual(self.run_job().returncode, 0)
+        self.assertEqual(len(self.notes("1", "did not finish; claim released")), 1)
+        self.assertIn("filed as sd:77", self.comments("1")[0])
+
+    def test_a_left_claim_another_session_took_over_is_left_to_it(self):
+        alert = self.left_claim()
+        alert["notes"].append({"id": 801, "kind": "comment", "session": "operator", "resolved_at": None,
+                               "body": "the operator claims it: debugging it"})
         self.given({"1": alert}, [])
         self.assertEqual(self.run_job().returncode, 0)
-        self.assertEqual(self.items()["1"]["status"], "in_progress")
+        self.assertEqual(self.comments("1"), ["the operator claims it: debugging it"])
+        self.assertNotIn('"id": 1', (self.tmp / "prompt").read_text())
         self.assertFalse((self.folder / "state/claims").exists())
+
+    def test_an_sd_outage_at_release_keeps_the_claim_and_fails(self):
+        self.given({"1": self.left_claim()}, [])
+        result = self.run_job(FAKE_SD_DOWN="task note")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.folder / "state/claims").read_text(), "1 800\n")
+        # The next run, with sd back, releases it.
+        self.run_job()
+        self.assertEqual(len(self.notes("1", "did not finish; claim released")), 1)
+
+    def test_an_sd_outage_while_settling_keeps_the_claim_and_fails(self):
+        self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        # The outage starts after the claim: the model run turns sd's writes off.
+        (self.bin / "claude").write_text(FAKE_CLAUDE.replace(
+            'exit "${CLAUDE_RC:-0}"', 'touch "$FAKE_SD_STATE.down"; exit "${CLAUDE_RC:-0}"'))
+        sd = (self.pack / "sd").read_text().replace(
+            'if " ".join(args)', 'if os.path.exists(path + ".down") and args[:2] == ["task", "note"] or " ".join(args)')
+        (self.pack / "sd").write_text(sd)
+        result = self.run_job()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.comments("1"), [])
+        self.assertTrue((self.folder / "state/claims").read_text().startswith("1 9"))
+
+    def test_a_claim_whose_answer_is_lost_is_given_back_in_the_same_run(self):
+        self.given({"1": report("node1")}, [])
+        result = self.run_job(FAKE_SD_LOSE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.notes("1", "did not reach the run; claim released")), 1)
+        self.assertFalse((self.folder / "state/claims").exists())
+
+    def test_a_crash_after_the_claim_still_leaves_the_alert_released(self):
+        self.given({"1": report("node1")}, [])
+        result = self.run_job(FAKE_SD_CRASH="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(self.notes("1", "claim released")), 1)
+        self.assertFalse((self.folder / "state/claims").exists())
+
+    def test_a_followup_added_before_the_note_is_judged_again(self):
+        self.given({"1": report("node1", followups=[41])}, [
+            {"id": 1, "outcome": "fixed", "summary": "reran", "evidence": ["exit 0"],
+             "followups": {"41": "the rerun passed"}}])
+        result = self.run_job(FAKE_SD_RACE="note")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        item = self.items()["1"]
+        self.assertEqual(item["status"], "planning")
+        self.assertIsNone(next(n for n in item["notes"] if n["id"] == 78)["resolved_at"])
+        self.assertEqual(len(self.comments("1")), 1)
+        self.assertIn("open followups without evidence: #78", self.comments("1")[0])
+
+    def test_a_followup_added_before_the_acknowledge_is_not_resolved(self):
+        self.given({"1": report("node1", followups=[41])}, [
+            {"id": 1, "outcome": "fixed", "summary": "reran", "evidence": ["exit 0"],
+             "followups": {"41": "the rerun passed"}}])
+        result = self.run_job(FAKE_SD_RACE="ack")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        item = self.items()["1"]
+        self.assertEqual(item["status"], "planning")
+        self.assertIsNone(next(n for n in item["notes"] if n["id"] == 78)["resolved_at"])
+        self.assertIn("not acknowledged: the report changed after the note", self.comments("1")[-1])
+
+    def test_another_writer_during_the_run_leaves_the_alert_to_them(self):
+        self.given({"1": report("node1")}, [
+            {"id": 1, "outcome": "fixed", "summary": "reran", "evidence": ["exit 0"], "followups": {}}])
+        writes = ("import json,sys; p=sys.argv[1]; s=json.load(open(p)); i=s['items']['1']; i['revision'] += 1; "
+                  "i['notes'].append({'id': 990, 'kind': 'comment', 'session': 'operator', "
+                  "'body': 'looking at it too', 'resolved_at': None}); json.dump(s, open(p, 'w'))")
+        (self.bin / "claude").write_text(FAKE_CLAUDE.replace(
+            'exit "${CLAUDE_RC:-0}"', f'python3 -c "{writes}" "$FAKE_SD_STATE"; exit "${{CLAUDE_RC:-0}}"'))
+        self.assertEqual(self.run_job().returncode, 0)
+        self.assertEqual(self.items()["1"]["status"], "planning")
+        self.assertEqual(len(self.notes("1", "not settled: operator wrote on it during the run")), 1)
 
     def test_forbidden_tools_are_absent_from_the_allow_list(self):
         self.given({}, [])
@@ -332,28 +414,6 @@ class NightTriage(unittest.TestCase):
         self.assertIn("Machine: node1 (hub)", prompt)
         self.assertIn("a finding on node1", prompt)
         self.assertNotIn("Decisions", prompt)
-
-    def test_a_claim_whose_answer_is_lost_is_given_back_in_the_same_run(self):
-        self.given({"1": report("node1")}, [])
-        result = self.run_job(FAKE_SD_LOSE="1")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.items()["1"]["status"], "planning")
-        self.assertFalse((self.folder / "state/claims").exists())
-
-    def test_a_crash_after_the_claim_still_leaves_the_alert_released(self):
-        self.given({"1": report("node1")}, [])
-        result = self.run_job(FAKE_SD_CRASH="1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.items()["1"]["status"], "planning")
-        self.assertFalse((self.folder / "state/claims").exists())
-
-    def test_a_pending_claim_row_a_crash_left_is_reconciled(self):
-        alert = self.left_claim(revision=9)
-        (self.folder / "state/claims").write_text("1 planning -\n")
-        self.given({"1": alert}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:77"}])
-        self.assertEqual(self.run_job().returncode, 0)
-        self.assertEqual(self.items()["1"]["status"], "planning")
-        self.assertIn("filed as sd:77", self.comments("1")[0])
 
     def test_a_failed_sd_today_fails_the_run_and_gives_the_claims_back(self):
         self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
@@ -388,7 +448,7 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(self.run_job(CLAUDE_TOUCH="2").returncode, 0)
         calls = json.loads(self.state.read_text())["log"]
         verbs = {" ".join(c[:2]) if c[0] != "today" else "today" for c in calls}
-        self.assertEqual(verbs, {"reports list", "today", "task show", "task status", "task note",
+        self.assertEqual(verbs, {"reports list", "today", "task show", "task note",
                                  "reports acknowledge"})
         pack = pinned_pack()
         check = ("import importlib.machinery as m, importlib.util as u, json, sys\n"
@@ -404,6 +464,75 @@ class NightTriage(unittest.TestCase):
         script = str(self.folder / "night-triage.sh")
         self.assertEqual(subprocess.run(["sh", script, "help"], capture_output=True).returncode, 0)
         self.assertEqual(subprocess.run(["sh", script], capture_output=True).returncode, 1)
+
+
+class RealPack(unittest.TestCase):
+    """The job against the pinned pack's real `sd` and library (sd:8143 review).
+
+    The fake `sd` cannot prove a call the pack accepts: a report refused
+    `sd task status` there while the fake moved it. Here the report comes
+    from the pack's own ingest, in a database under a temporary HOME, and
+    only `claude` and `hostname` are fakes.
+    """
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name).resolve()
+        self.pack = pinned_pack().resolve()
+        sys.path.insert(0, str(self.pack / "lib"))
+        self.addCleanup(sys.path.remove, str(self.pack / "lib"))
+        from sd_db.database import local_path
+        from sd_db.migrate import initialise
+        self.database = local_path(self.tmp)
+        self.database.parent.mkdir(parents=True, exist_ok=True)
+        initialise(self.database)
+        shutil.copytree(FOLDER, self.tmp / "system/local-night-triage",
+                        ignore=shutil.ignore_patterns("state", "tests", "__pycache__"))
+        shutil.copytree(FOLDER.parent / "lib", self.tmp / "system/lib")
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        for name, text in (("claude", FAKE_CLAUDE), ("hostname", "#!/bin/sh\necho Node1\n")):
+            (self.bin / name).write_text(text)
+            (self.bin / name).chmod(0o755)
+
+    def ingest(self):
+        from contextlib import closing
+        from unittest import mock
+        from sd_db import connect, reporting
+        log = self.tmp / "job.log"
+        log.write_text("boom\n")
+        with closing(connect(self.database)) as connection, \
+                mock.patch("sd_db.ship.socket.gethostname", return_value="node1"):
+            state = reporting.ingest_log(connection, job="job-a", run_id="r1", started="2026-11-08T08:00:00Z",
+                                         ended="2026-11-08T08:01:00Z", exit_code=1, log_path=str(log), offset=0)
+        return state["item"]["id"]
+
+    def state(self, item):
+        from contextlib import closing
+        from sd_db import connect, workflow
+        with closing(connect(self.database)) as connection:
+            return workflow.item_state(connection, item)
+
+    def test_a_fixed_report_is_claimed_noted_and_acknowledged(self):
+        item = self.ingest()
+        followup = next(n["id"] for n in self.state(item)["notes"] if n["kind"] == "followup")
+        (self.tmp / "reply").write_text(json.dumps({"alerts": [
+            {"id": item, "outcome": "fixed", "summary": "a stale lock; cleared and reran",
+             "evidence": ["cron-jobs.sh run job-a: exit 0"], "followups": {str(followup): "the rerun passed"}}]}))
+        env = dict(os.environ, HOME=str(self.tmp), PATH=f"{self.bin}:{os.environ['PATH']}",
+                   SD_PACK_ROOT=str(self.pack), TMPDIR=str(self.tmp), CLAUDE_ARGS=str(self.tmp / "args"),
+                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"))
+        result = subprocess.run(["sh", str(self.tmp / "system/local-night-triage/night-triage.sh"), "run"],
+                                capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'"id": {item}', (self.tmp / "prompt").read_text())
+        state = self.state(item)
+        self.assertEqual(state["item"]["status"], "done", result.stderr)
+        bodies = [n["body"] for n in state["notes"]]
+        self.assertTrue(any(b.startswith("night-triage on node1 claims it") for b in bodies), bodies)
+        self.assertTrue(any("Evidence: cron-jobs.sh run job-a: exit 0" in b for b in bodies), bodies)
+        self.assertIsNotNone(next(n for n in state["notes"] if n["id"] == followup)["resolved_at"])
 
 
 if __name__ == "__main__":
