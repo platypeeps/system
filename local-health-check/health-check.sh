@@ -457,12 +457,13 @@ echo "$faults" > "$STATE/fault-count"
 
 # New launch daemons/agents are how software (wanted or not) survives
 # reboots. Anything appearing since the baseline gets flagged once, then
-# joins the baseline.
+# joins the baseline. Sort and compare under C: launchd runs this under C
+# and a hand run under UTF-8, and the two orders differ (sd:8115).
 for d in /Library/LaunchDaemons /Library/LaunchAgents "$HOME/Library/LaunchAgents"; do
   [ -d "$d" ] && find "$d" -maxdepth 1 -mindepth 1 2>/dev/null
-done | sort > "$TMPD/launchd.now"
+done | LC_ALL=C sort > "$TMPD/launchd.now"
 if [ -f "$STATE/launchd-baseline" ]; then
-  comm -13 "$STATE/launchd-baseline" "$TMPD/launchd.now" > "$TMPD/launchd.new" || :
+  LC_ALL=C comm -13 "$STATE/launchd-baseline" "$TMPD/launchd.now" > "$TMPD/launchd.new" || :
   if [ -s "$TMPD/launchd.new" ]; then
     finding "new launch daemon(s)/agent(s) since last run: $(tr '\n' ' ' < "$TMPD/launchd.new")" \
       "if you did not install this, inspect the plist and the binary it points at before removing it" \
