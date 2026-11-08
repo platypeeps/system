@@ -98,7 +98,7 @@ case "$*" in
         *) printf '==> %s: stable 1.0 (bottled)\nNot installed\n==> Dependencies\n' "$n" ;;
       esac
     done ;;
-  "install --cask "*|upgrade) echo "$*" >> "$PINS" ;;
+  "install --cask "*|"upgrade --formula") echo "$*" >> "$PINS" ;;
   "install "*) echo "$*" >> "$PINS"
                [ -z "$INSTALL_SLEEP" ] || { sleep "$INSTALL_SLEEP"; echo "done $*" >> "$CALLS"; }
                [ -z "$INSTALL_RC" ] || exit "$INSTALL_RC" ;;
@@ -253,7 +253,7 @@ class BrewStageTest(unittest.TestCase):
         """sd:7059: the sweep pinned the serving python before `brew upgrade`."""
         self.run_verb("upgrade", "--apply")
 
-        self.assertEqual(self.pins.read_text().splitlines(), ["upgrade"])
+        self.assertEqual(self.pins.read_text().splitlines(), ["upgrade --formula"])
 
     def test_a_blocked_brew_python_app_is_allowed_again_under_apply(self):
         """sd:7059: an upgrade makes a new Python.app, which the firewall
@@ -745,7 +745,7 @@ class BrewStageTest(unittest.TestCase):
         result = self.run_verb("upgrade", "--apply", UNBOTTLED="example-formula")
 
         self.assertEqual(self.installs(), ["install example-formula"], result.stdout + result.stderr)
-        for command in ("brew upgrade", "brew install example-formula"):
+        for command in ("brew upgrade --formula", "brew install example-formula"):
             self.assertRegex(result.stderr, r"\[step \d\d:\d\d:\d\d\] " + command + r" \(bound 21600s\)")
 
     def test_a_week_with_only_a_missing_formula_is_no_quiet_week(self):

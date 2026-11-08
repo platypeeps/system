@@ -93,7 +93,7 @@ case "$*" in
   --prefix) echo "${BREW_PREFIX:-/opt/homebrew}" ;;
   "info --json=v2 --installed --cask") if [ -n "$BREW_INFO" ]; then echo "$BREW_INFO"; else echo '{"casks": []}'; fi ;;
   "cleanup --prune=all") [ -z "$BREW_CLEANUP_FAIL" ] || exit 1 ;;
-  upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
+  "upgrade --formula") [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
            [ -z "$BREW_UPGRADES_ALL" ] || : > "$BREW_LOG.upgraded"
            [ -z "$BREW_NEW_PYTHON" ] || mkdir -p "$BREW_NEW_PYTHON"
            [ -z "$BREW_WAIT" ] || exec sleep 60
@@ -330,10 +330,10 @@ class UpgradeStepTest(unittest.TestCase):
                                MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND), BREW_HANG="1")
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertRegex(result.stderr, STEP.format("brew upgrade", STALL_BOUND))
+        self.assertRegex(result.stderr, STEP.format("brew upgrade --formula", STALL_BOUND))
         self.assertIn(f"timed out after {STALL_BOUND}s: brew upgrade", result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "list --pinned", "upgrade", "outdated --cask --greedy --quiet",
+                         ["update", "list --pinned", "upgrade --formula", "outdated --cask --greedy --quiet",
                           "cleanup --prune=all"])
         self.assertEqual(self.mas_log.read_text(), "outdated\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
@@ -356,7 +356,7 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "list --pinned", "upgrade", "outdated --cask --greedy --quiet",
+                         ["update", "list --pinned", "upgrade --formula", "outdated --cask --greedy --quiet",
                           "cleanup --prune=all"])
         self.assertNotIn("claude update", result.stderr)
 
@@ -376,7 +376,7 @@ class UpgradeStepTest(unittest.TestCase):
                                MAS_OUTDATED="497799835 Example App (1.0 -> 1.1)")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        for command, bound in (("brew update", 600), ("brew upgrade", 21600),
+        for command, bound in (("brew update", 600), ("brew upgrade --formula", 21600),
                                ("brew upgrade --cask --greedy example-cask", 1800),
                                ("brew cleanup --prune=all", 600), ("mas outdated", 300),
                                ("mas upgrade 497799835", 600)):
@@ -398,7 +398,7 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         # stderr is the job log; the sweep's own output goes into the report.
-        self.assertRegex(result.stderr, STEP.format("brew upgrade", STALL_BOUND))
+        self.assertRegex(result.stderr, STEP.format("brew upgrade --formula", STALL_BOUND))
         self.assertIn(f"timed out after {STALL_BOUND}s: brew upgrade", result.stdout)
         found = self.findings(result)
         self.assertTrue(any(f.startswith("still outdated (") for f in found), found)
@@ -570,7 +570,7 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("unpin example-pinned", self.brew_calls())
-        self.assertIn("upgrade", self.brew_calls())
+        self.assertIn("upgrade --formula", self.brew_calls())
         self.assertNotIn("held (pinned)", result.stdout)
         self.assertIn("still outdated (formula) — held back or failed:\n  example-formula\n  example-pinned",
                       result.stdout)
@@ -588,7 +588,7 @@ class UpgradeStepTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 calls = self.brew_calls()
                 self.assertIn("unpin python@3.14", calls)
-                self.assertLess(calls.index("unpin python@3.14"), calls.index("upgrade"))
+                self.assertLess(calls.index("unpin python@3.14"), calls.index("upgrade --formula"))
                 self.assertIn("  DIFFERS python@3.14 pinned\n", result.stdout)
 
     def test_a_dry_run_names_the_unpin_and_makes_none(self):
@@ -608,7 +608,7 @@ class UpgradeStepTest(unittest.TestCase):
                 result = self.run_verb("upgrade", "--apply", STUB_PINNED="python@3.14", BREW_FAIL=fail)
 
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertIn("upgrade", self.brew_calls())
+                self.assertIn("upgrade --formula", self.brew_calls())
                 self.assertRegex(result.stdout, rf"  failed steps: (.*, )?{step}(,|\n)")
 
     def test_an_outdated_list_that_did_not_answer_is_not_a_quiet_week(self):
@@ -743,8 +743,9 @@ class UpgradeStepTest(unittest.TestCase):
     def test_an_uninstall_that_deletes_outside_home_or_unloads_a_kext_needs_sudo(self):
         """sd:7248: dropbox's uninstall deletes /Library/DropboxHelperTools
         and unloads a kext, so its upgrade calls sudo; the rule read only
-        pkg, pkgutil and artifact targets. An uninstall that deletes under
-        $HOME, the brew prefix or /Applications, or a zap, needs none."""
+        pkg, pkgutil and artifact targets. sd:8101: brew runs every uninstall
+        delete under sudo, wherever the path is, as sdm's socket inside its
+        own app in /Applications. An rmdir under $HOME or a zap needs none."""
         info = json.dumps({"casks": [
             {"token": "example-delete", "artifacts": [
                 {"uninstall": [{"quit": "com.example", "delete": ["/Library/ExampleHelperTools"]}]},
@@ -752,16 +753,18 @@ class UpgradeStepTest(unittest.TestCase):
             {"token": "example-rmdir", "artifacts": [{"uninstall": [{"rmdir": "/Library/Example"}]}]},
             {"token": "example-kext", "artifacts": [{"uninstall": [{"kext": "com.example.kext"}]}]},
             {"token": "example-home", "artifacts": [
-                {"uninstall": [{"delete": ["~/Library/Example", "/Applications/Home.app",
-                                           "/opt/homebrew/etc/example"], "rmdir": "~/Example"}]},
+                {"uninstall": [{"rmdir": "~/Example"}]},
                 {"zap": [{"trash": "/Library/Example", "rmdir": "/Library/Example"}]}]},
+            {"token": "example-socket", "artifacts": [
+                {"uninstall": [{"delete": "/Applications/Socket.app/Contents/Resources/socket"}]},
+                {"app": ["Socket.app"], "target": "/Applications/Socket.app"}]},
         ]})
-        outdated = "example-home\nexample-kext\nexample-rmdir\nexample-delete"
+        outdated = "example-home\nexample-kext\nexample-rmdir\nexample-delete\nexample-socket"
         result = self.askpass_run("", BREW_INFO=info, BREW_GREEDY_CASK=outdated)
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         [call] = self.askpass_calls()
-        self.assertEqual(call, "upgrade --cask --greedy example-kext example-rmdir example-delete")
+        self.assertEqual(call, "upgrade --cask --greedy example-kext example-rmdir example-delete example-socket")
 
     def test_an_app_store_upgrade_that_needs_sudo_names_each_app(self):
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_SUDO="upgrade 497799835",
@@ -1023,7 +1026,7 @@ class UpgradeStepTest(unittest.TestCase):
     def test_a_step_that_hangs_after_a_refused_sudo_is_a_failure(self):
         """A step stopped at its bound is unknown, not a deferral."""
         result = self.run_verb("upgrade", "--apply", MACHINE_SETUP_STEP_TIMEOUT=str(STALL_BOUND),
-                               BREW_SUDO="upgrade", STUB_SUDO_HANG="1")
+                               BREW_SUDO="upgrade --formula", STUB_SUDO_HANG="1")
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("failed steps: brew upgrade", result.stdout)
@@ -1032,7 +1035,7 @@ class UpgradeStepTest(unittest.TestCase):
     def test_a_build_failure_is_not_a_sudo_deferral(self):
         """sd:7056: a formula whose build fails is a failure with its error
         line, not a command for the operator's terminal."""
-        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade",
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade --formula",
                                BREW_BUILD_TEXT=OMLX_TEXT)
 
         self.assertNotIn("needs sudo", result.stdout)
@@ -1046,7 +1049,7 @@ class UpgradeStepTest(unittest.TestCase):
         """sd:7056: `brew upgrade` also upgrades casks, so one run can hold a
         sudo refusal and a failed build. The formula left over is not a
         sudo command."""
-        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade",
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade --formula",
                                BREW_BUILD_TEXT=SUDO_TEXT + OMLX_TEXT)
 
         self.assertNotIn("needs sudo, run in a terminal: brew upgrade example-formula", result.stdout)
@@ -1071,7 +1074,7 @@ class UpgradeStepTest(unittest.TestCase):
                 self.assertIn(f"build failure ({kind}) — {mas_line}:\n", result.stdout)
 
     def test_a_refused_sudo_in_a_formula_upgrade_still_needs_sudo(self):
-        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade",
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_BUILD_FAIL="upgrade --formula",
                                BREW_BUILD_TEXT=SUDO_TEXT)
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -85,6 +85,8 @@ command to run in a terminal, such as `brew upgrade --cask example-cask` (sd:504
 After the cask upgrade the sweep runs the brew stage's quarantine check on `claude`
 and each file in the `codex` cask's `bin/`: a quarantined binary under launchd
 waits on a Gatekeeper prompt no one can answer with the screen locked (sd:4787, sd:7095).
+The sweep's `brew upgrade --formula` leaves casks to the cask steps, which
+hold the askpass and the skip list (sd:8101).
 Before `brew upgrade` the sweep removes each pin the brew stage would
 (`DIFFERS <formula> pinned`, then `brew unpin`): it can run before the
 nightly `update --apply`, and a stale python pin fails `brew upgrade` (sd:6448).
@@ -587,10 +589,11 @@ never touches `/etc` or the Keychain.
    It asks for the password twice. The weekly `upgrade-report` then
    upgrades the casks that need sudo, and only when no terminal is
    attached. `brew info --json=v2 --installed --cask` names them: a pkg
-   installer or a pkgutil uninstall, such as `zoom`, a kext or a file put
-   or deleted outside the brew prefix, `$HOME` and `/Applications`, such
-   as `docker-desktop`'s `/usr/local/bin` links (sd:6927) and `dropbox`'s
-   `/Library/DropboxHelperTools` (sd:7248). A cask the rule
+   installer or a pkgutil uninstall, such as `zoom`, a kext, any uninstall
+   `delete`, which brew always runs under sudo, such as `sdm`'s socket
+   (sd:8101), or a file put or an `rmdir` outside the brew prefix, `$HOME`
+   and `/Applications`, such as `docker-desktop`'s `/usr/local/bin` links
+   (sd:6927) and `dropbox`'s helper folder (sd:7248). A cask the rule
    misses, such as an app bundle another updater left owned by root,
    goes in the optional `MACHINE_SETUP_SUDO_CASKS` in
    `machine-setup.env`, which adds to that set. It sets
