@@ -17,7 +17,7 @@ Reply with one JSON object and nothing else:
 
 {"alerts": [{"id": <alert id>, "outcome": "fixed" | "filed" | "operator", "summary": "<one line: cause and what you did>", "evidence": ["<the command and the output line that proves the fix>"], "followups": {"<followup note id>": "<how it is fixed or why it needs nothing, with evidence>"}, "item": "sd:<n>", "action": "<the exact operator action>", "why": "<why no tool can do it>"}]}
 
-- `fixed`: a clean run proves it; give `evidence` and one `followups` entry for every open followup of the alert. Missing evidence leaves the alert open.
+- `fixed`: a clean run proves it; give `evidence` and one `followups` entry for every open followup of the alert. Missing evidence leaves the alert open. A followup a person wrote (its session is not `cron`) stays theirs to close: say what you did for it, and the alert stays open for them.
 - `filed`: a code bug; `item` names what you filed. The alert stays open and cites it.
 - `operator`: it truly needs the operator; `action` names the exact action and `why` says why no tool can. The alert stays open on Today.
 - Answer every alert listed. With no alerts, reply `{"alerts": []}`.

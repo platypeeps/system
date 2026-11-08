@@ -77,7 +77,10 @@ run() {
   role=satellite
   fence=$(st_step 60 "$PACK/bin/sd-db" fence 2>/dev/null) || fence=""
   case "$fence" in *"fence: holder:"*) role=hub ;; esac
-  st_step 120 "$SD" today --all > "$tmp/today" 2>/dev/null || echo "(sd today failed)" > "$tmp/today"
+  # A failed `sd today` fails the run: an empty Operations section would
+  # hide the job's main input behind exit 0 (sd:8143 review).
+  st_step 120 "$SD" today > "$tmp/today" || rc=$?
+  [ "$rc" -eq 0 ] || { python3 "$DIR/night_triage.py" release "$SD" "$claims" || :; return "$rc"; }
   {
     cat "$DIR/prompt.md"
     printf '\nMachine: %s (%s)\nSystem checkout: %s\nPack checkout: %s\n' "$host" "$role" "$ROOT" "$PACK"

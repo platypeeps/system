@@ -38,11 +38,20 @@ def show(key):
 def flag(name):
     return args[args.index(name) + 1] if name in args else None
 
+# Each verb takes only the flags the pinned pack's parser does: an unknown
+# one exits 2, as argparse does (sd:8143 review: `sd today --all`).
+FLAGS = {"reports list": {"--json"}, "today": {"--json", "--only"}, "task show": {"--json"},
+         "task status": {"--json", "--if-revision", "--reason"}, "task note": set(),
+         "reports acknowledge": {"--json", "--if-revision", "--resolve-followups"}}
+verb = "today" if args[:1] == ["today"] else " ".join(args[:2])
+if verb not in FLAGS or any(a.startswith("--") and a not in FLAGS[verb] for a in args):
+    save(); print("fake sd: unrecognized arguments: " + " ".join(args), file=sys.stderr); sys.exit(2)
+
 if args[:2] == ["reports", "list"]:
     print(json.dumps([{"id": int(k), "kind": "report", "status": v["status"], "title": v["title"],
                        "fields": json.dumps({"report": {"host": v["host"], "job": "job-" + k}})}
                       for k, v in items.items()]))
-elif args[:2] == ["today", "--all"]:
+elif args[:1] == ["today"]:
     print("Attention (1)\n\nOperations, this machine (1)\n#1  job-1  a finding on node1\n\nDecisions (0)")
 elif args[:2] == ["task", "show"]:
     print(json.dumps(show(args[2])))
@@ -55,6 +64,12 @@ elif args[:2] == ["task", "status"]:
                           "body": f"{item['status']} -> {args[3]} by test: {reason}"})
     item["status"] = args[3]; item["revision"] += 1
     save()
+    # FAKE_SD_LOSE: the claim commits, then its answer is lost.
+    if os.environ.get("FAKE_SD_LOSE") and args[3] == "in_progress":
+        print("connection reset", file=sys.stderr); sys.exit(1)
+    # FAKE_SD_CRASH: the claim commits, then the process that asked for it dies.
+    if os.environ.get("FAKE_SD_CRASH") and args[3] == "in_progress":
+        import signal; os.kill(os.getppid(), signal.SIGKILL); sys.exit(1)
     if "--json" in args:
         print(json.dumps(show(args[2])))
 elif args[:2] == ["task", "note"]:
@@ -80,16 +95,25 @@ cat > "$CLAUDE_STDIN"
 # CLAUDE_TOUCH: a rerun the model starts folds into the report it works on.
 [ -z "$CLAUDE_TOUCH" ] || python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["items"][sys.argv[2]]["revision"] += 1; json.dump(s, open(p, "w"))' "$FAKE_SD_STATE" "$CLAUDE_TOUCH"
 # CLAUDE_FAIL_AGAIN: the rerun fails, and its report adds followup 77 to alert 1.
-[ -z "$CLAUDE_FAIL_AGAIN" ] || python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); i=s["items"]["1"]; i["revision"] += 1; i["notes"].append({"id": 77, "kind": "followup", "body": "failed again", "resolved_at": None}); json.dump(s, open(p, "w"))' "$FAKE_SD_STATE"
+[ -z "$CLAUDE_FAIL_AGAIN" ] || python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); i=s["items"]["1"]; i["revision"] += 1; i["notes"].append({"id": 77, "kind": "followup", "session": "cron", "body": "failed again", "resolved_at": None}); json.dump(s, open(p, "w"))' "$FAKE_SD_STATE"
 [ -f "$CLAUDE_REPLY" ] && cat "$CLAUDE_REPLY"
 exit "${CLAUDE_RC:-0}"
 """
 
 
-def report(host, status="planning", followups=()):
+def report(host, status="planning", followups=(), session="cron"):
+    """A report; its followups are the ingest's (session `cron`) unless `session` says otherwise."""
     return {"host": host, "status": status, "title": f"a job on {host}: needs attention", "revision": 1,
-            "notes": [{"id": n, "kind": "followup", "body": f"followup {n}", "resolved_at": None}
-                      for n in followups]}
+            "notes": [{"id": n, "kind": "followup", "session": session, "body": f"followup {n}",
+                       "resolved_at": None} for n in followups]}
+
+
+def pinned_pack():
+    pack = Path(os.environ.get("SD_ACCEPTANCE_PACK") or FOLDER.parent / ".ci" / "pack")
+    if not (pack / "bin/sd").exists():
+        raise AssertionError(f"no pinned pack at {pack}: run make test SUITE=night-triage, which fetches "
+                             "it into .ci/pack, or set SD_ACCEPTANCE_PACK")
+    return pack
 
 
 class NightTriage(unittest.TestCase):
@@ -308,6 +332,73 @@ class NightTriage(unittest.TestCase):
         self.assertIn("Machine: node1 (hub)", prompt)
         self.assertIn("a finding on node1", prompt)
         self.assertNotIn("Decisions", prompt)
+
+    def test_a_claim_whose_answer_is_lost_is_given_back_in_the_same_run(self):
+        self.given({"1": report("node1")}, [])
+        result = self.run_job(FAKE_SD_LOSE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items()["1"]["status"], "planning")
+        self.assertFalse((self.folder / "state/claims").exists())
+
+    def test_a_crash_after_the_claim_still_leaves_the_alert_released(self):
+        self.given({"1": report("node1")}, [])
+        result = self.run_job(FAKE_SD_CRASH="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.items()["1"]["status"], "planning")
+        self.assertFalse((self.folder / "state/claims").exists())
+
+    def test_a_pending_claim_row_a_crash_left_is_reconciled(self):
+        alert = self.left_claim(revision=9)
+        (self.folder / "state/claims").write_text("1 planning -\n")
+        self.given({"1": alert}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:77"}])
+        self.assertEqual(self.run_job().returncode, 0)
+        self.assertEqual(self.items()["1"]["status"], "planning")
+        self.assertIn("filed as sd:77", self.comments("1")[0])
+
+    def test_a_failed_sd_today_fails_the_run_and_gives_the_claims_back(self):
+        self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        result = self.run_job(FAKE_SD_DOWN="today")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.items()["1"]["status"], self.comments("1")), ("planning", []))
+        self.assertFalse((self.tmp / "args").exists(), "the model ran without its Operations input")
+        self.assertFalse((self.folder / "state/claims").exists())
+
+    def test_a_followup_a_person_wrote_blocks_the_acknowledge(self):
+        self.given({"1": report("node1", followups=[41], session="operator")}, [
+            {"id": 1, "outcome": "fixed", "summary": "reran", "evidence": ["exit 0"],
+             "followups": {"41": "it needs nothing"}}])
+        self.assertEqual(self.run_job().returncode, 0)
+        item = self.items()["1"]
+        self.assertEqual(item["status"], "planning")
+        self.assertIsNone(item["notes"][0]["resolved_at"])
+        self.assertIn("followups a person wrote need a fix", self.comments("1")[0])
+        self.assertIn("#41 (operator)", self.comments("1")[0])
+
+    def test_the_ingest_session_matches_the_pinned_pack(self):
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        source = (pinned_pack() / "lib/sd_db/reporting.py").read_text()
+        self.assertIn(f'INGEST_SESSION = "{night_triage.INGEST_SESSION}"', source)
+
+    def test_every_sd_call_parses_with_the_pinned_pack(self):
+        self.given({"1": report("node1", followups=[41]), "2": report("node1")}, [
+            {"id": 1, "outcome": "fixed", "summary": "s", "evidence": ["e"], "followups": {"41": "ok"}},
+            {"id": 2, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        self.assertEqual(self.run_job(CLAUDE_TOUCH="2").returncode, 0)
+        calls = json.loads(self.state.read_text())["log"]
+        verbs = {" ".join(c[:2]) if c[0] != "today" else "today" for c in calls}
+        self.assertEqual(verbs, {"reports list", "today", "task show", "task status", "task note",
+                                 "reports acknowledge"})
+        pack = pinned_pack()
+        check = ("import importlib.machinery as m, importlib.util as u, json, sys\n"
+                 "sys.path[:0] = [sys.argv[1] + '/bin', sys.argv[1] + '/lib']\n"
+                 "loader = m.SourceFileLoader('sd_cli', sys.argv[1] + '/bin/sd')\n"
+                 "cli = u.module_from_spec(u.spec_from_loader('sd_cli', loader)); loader.exec_module(cli)\n"
+                 "for call in json.loads(sys.stdin.read()): cli.build_parser().parse_args(call)\n")
+        done = subprocess.run([sys.executable, "-c", check, str(pack)], input=json.dumps(calls),
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_help_exits_zero_and_no_argument_exits_one(self):
         script = str(self.folder / "night-triage.sh")

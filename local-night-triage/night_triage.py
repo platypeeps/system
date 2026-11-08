@@ -7,10 +7,17 @@ acknowledged; a filed bug or an operator action gets one note and goes back
 to Today. Every write goes through the pack's `sd`; this opens no database.
 
 The claims file holds one line per alert held: `<id> <status before> <revision
-after the claim>`. A release moves an alert back while its last status
+after the claim>`. The row goes in before the claim, with `-` for the
+revision, so a run that dies after the status change but before the row
+holds its revision still leaves a row: the next release reconciles it
+(sd:8143 review). A release moves an alert back while its last status
 change is still this job's claim, so a run that died never takes back an
 alert another session claimed since. A row leaves the file only after its
 release or a confirmed conflict: an `sd` outage keeps it and exits 1.
+
+An unattended run closes only the ingest's own followups on its word: a
+followup a person wrote needs a fix or a passing check that person accepts,
+so it leaves the alert open (operator rule, pinned in local-agent-prompt).
 
 Usage:
   night_triage.py claim <sd> <host> <claims> <context.json>
@@ -27,6 +34,10 @@ from pathlib import Path
 WHO = "night-triage"
 CLAIM = f"{WHO} claims it"
 ITEM = re.compile(r"^sd:\d+$")
+PENDING = "-"  # a claim row written before its status change landed
+# The session `sd reports ingest` writes its followups under: the pack's
+# sd_db.reporting.INGEST_SESSION, pinned by tests/test_night_triage.py.
+INGEST_SESSION = "cron"
 
 
 class Refused(Exception):
@@ -79,13 +90,18 @@ def claim(binary, host, claims, context):
         current = show(binary, report["id"])
         if current["item"]["status"] != "planning":
             continue
+        # Record the intent first: a crash after the status change still
+        # leaves a row for the next release to reconcile.
+        row = [str(report["id"]), "planning", PENDING]
+        held.append(row)
+        _write_claims(claims, held)
         try:
             moved = json.loads(sd(binary, "task", "status", str(report["id"]), "in_progress", "--json",
                                   "--if-revision", current["revision"], "--reason", CLAIM))
-        except RuntimeError as error:  # another session claimed it first
+        except RuntimeError as error:  # lost, or another session claimed it first
             print(f"night-triage: sd:{report['id']} not claimed: {error}", file=sys.stderr)
-            continue
-        held.append([str(report["id"]), "planning", moved["revision"]])
+            continue  # the pending row is reconciled when this run settles
+        row[2] = moved["revision"]
         _write_claims(claims, held)
         fields = report_fields(report)
         found.append({"id": report["id"], "title": report.get("title"), "job": fields.get("job"),
@@ -96,7 +112,7 @@ def claim(binary, host, claims, context):
 
 
 def _open_followups(notes):
-    return [{"id": n["id"], "body": n["body"][:2000]} for n in notes
+    return [{"id": n["id"], "body": n["body"][:2000], "session": n.get("session")} for n in notes
             if n["kind"] == "followup" and not n.get("resolved_at")]
 
 
@@ -110,17 +126,18 @@ def _release_one(binary, row, reason):
     Any other failure, an outage included, raises: the caller keeps the row.
     """
     item, before, revision = row
-    try:
-        sd(binary, "task", "status", item, before, "--if-revision", revision, "--reason", reason)
-        return True
-    except RuntimeError as error:
-        refused = error
+    if revision != PENDING:
+        try:
+            sd(binary, "task", "status", item, before, "--if-revision", revision, "--reason", reason)
+            return True
+        except RuntimeError as error:
+            refused = error
     current = show(binary, item)
-    if current["revision"] == revision:
+    if revision != PENDING and current["revision"] == revision:
         raise refused
     changes = [n for n in current["notes"] if n["kind"] == "status_change"]
     if current["item"]["status"] != "in_progress" or not changes or CLAIM not in changes[-1]["body"]:
-        print(f"night-triage: sd:{item} is another session's now; left to it", file=sys.stderr)
+        print(f"night-triage: sd:{item} is not this job's claim; left as it is", file=sys.stderr)
         return False
     sd(binary, "task", "status", item, before, "--if-revision", current["revision"], "--reason", reason)
     return True
@@ -175,6 +192,11 @@ def verdict(alert, entry, host):
     if outcome == "fixed":
         evidence = [_text(line) for line in entry.get("evidence") or [] if _text(line)]
         followups = entry.get("followups") or {}
+        people = [f"#{f['id']} ({f.get('session') or 'unknown'})" for f in alert["followups"]
+                  if f.get("session") != INGEST_SESSION]
+        if people:
+            return (f"{WHO} on {host}: not acknowledged: followups a person wrote need a fix or "
+                    f"check they accept: {', '.join(people)}. Reported: {summary or '(none)'}"), False
         missing = [str(f["id"]) for f in alert["followups"] if not _text(followups.get(str(f["id"])))]
         if summary and evidence and not missing:
             lines = [f"{WHO} on {host} fixed it: {summary}", *(f"Evidence: {line}" for line in evidence)]
