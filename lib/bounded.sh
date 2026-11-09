@@ -98,10 +98,18 @@ st_bounded() {
 st_step() {
     _st_seconds=$1
     shift
-    _st_say "$* (bound ${_st_seconds}s)"
+    _st_shown=
+    for _st_arg in "$@"; do
+        # An inline script (python3 -c) shows its first line only (sd:8278).
+        case $_st_arg in *"
+"*) _st_arg="${_st_arg%%"
+"*} ..." ;; esac
+        _st_shown="${_st_shown:+$_st_shown }$_st_arg"
+    done
+    _st_say "$_st_shown (bound ${_st_seconds}s)"
     _st_rc=0
     st_bounded "$_st_seconds" "$@" || _st_rc=$?
-    [ "$_st_rc" -eq 0 ] || _st_say "$* exited $_st_rc" both
+    [ "$_st_rc" -eq 0 ] || _st_say "$_st_shown exited $_st_rc" both
     return "$_st_rc"
 }
 
