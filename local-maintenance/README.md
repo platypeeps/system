@@ -72,6 +72,9 @@ or 3, that nothing wrote or ran for 3 days; `check` names them. An exec
 sets a file's access time on APFS, so a file accessed within 3 days keeps
 the folder: a trial ran a binary there each evening that nothing rebuilt
 (sd:6128). A folder's access time does not count, as the walk sets it.
+A folder that `lsof` shows a process using (a running binary, an open
+file, a working directory) stays too, however old: a paid run lost the
+binary it ran (sd:8240); an `lsof` that fails keeps every folder.
 Only a folder holding cargo's `CACHEDIR.TAG` counts, and no link is
 followed; the checkout and its commits stay. While a `cargo` or `rustc`
 process runs, the run prunes nothing more, with no finding: a cargo

@@ -127,7 +127,7 @@ Ask a rollout's owner before editing files the rollout touches.
 Never auto-retry a ship on a locked repo, and never use `sd-ship --wait` outside the lane: both jump the lane's order.
 After a merge, once its builder has stopped, remove the clean worktree, its branches, its build output and unused agents without asking; keep unpushed unmerged work.
 A lead session ends after its day's merges; the next starts from `sd today` and its DB trail: idle teammates pile up (98 in one session) and no tool removes them.
-Put large uncommitted data (run outputs, logs, captures) under the bulk storage root, `<root>/<repo>/`; keep build output (`target/`, `node_modules/`) on the system disk.
+Put large uncommitted data (run outputs, logs, captures) under the bulk storage root, `<root>/<repo>/`; keep build output (`target/`, `node_modules/`) and what tests and runs write on the system disk, never a NAS share, even one the bulk storage root names (operator 2026-11-09, sd:8243).
 
 # Merge lane
 
