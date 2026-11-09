@@ -409,6 +409,13 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("1 build bundle per repo", line)
         self.assertNotIn("3 per repo", line)
 
+    def test_tests_and_runs_write_to_the_system_disk(self):
+        # sd:8243: operator ruling 2026-11-09; a NAS share is no place for test or run output.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        line = next((l for l in source.splitlines() if "what tests and runs write" in l), "")
+        self.assertIn("on the system disk", line)
+        self.assertIn("never a NAS share", line)
+
 
 if __name__ == "__main__":
     unittest.main()
