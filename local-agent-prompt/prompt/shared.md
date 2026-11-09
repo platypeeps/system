@@ -41,8 +41,7 @@ Use the GitHub MCP tools (`mcp__github__*`) for PRs, reviews, commits, repo cont
 Where those tools are deferred, load their schemas first, in one call (Claude Code: `ToolSearch("select:mcp__github__pull_request_read,...")`).
 Read merge state with `pull_request_read` `get`: `list_pull_requests` reports `merged:false` for merged PRs.
 Use `gh` only when no MCP tool covers the action or the MCP server is down (`claude mcp list`, `codex mcp list`, `opencode mcp list`); use Git for local state.
-The server needs a classic PAT with `repo` scope: a fine-grained one 404s on other organizations' private repos.
-A token change needs an agent restart: the server reads the token at launch. `search_repositories("is:private")` returning `total_count: 0` means a stale or under-scoped token.
+The server needs a classic PAT with `repo` scope: a fine-grained one 404s on other organizations' private repos. A token change needs an agent restart: the server reads the token at launch. `search_repositories("is:private")` returning `total_count: 0` means a stale or under-scoped token.
 Do not use GitHub issues: track work with `sd task add|note|status`; never open, search or cite an issue as the record, unless `sd-db repo list` shows github_issues on for the repo.
 An issue in a repository the operator does not manage is the operator's call, one at a time: propose it, then file it with `mcp__github__issue_write`, which asks first (pack sd:5721).
 There, map each open issue to one sd item (`--ref github:<owner>/<repo>#N`), keep process on the item, write reporter-facing comments only, and close the issue with `mcp__github__issue_write` `update` when the item is done.
@@ -166,6 +165,7 @@ Claude Code strips `CLAUDE_CODE_OAUTH_TOKEN` from Bash, and env.sh exports it as
 Never copy that token into `settings.json`, a script or a log.
 Rotate no key or token exposed only in local files; rotate one exposed where others can read it (public GitHub, a shared cloud drive): local exposure stays on the operator's machines.
 Set up every recurring job through the `system` framework: a `.job` file for `local-cron-jobs` plus a line in the machine-setup profile (`machine-setup.sh status` shows no cron drift); never a claude.ai cloud routine (`RemoteTrigger`) or `CronCreate`: one framework keeps every machine's setup consistent.
+Before moving a Jira ticket, read its assignee and, when empty, assign your own account; never replace an assignee: Jira refuses Done on an unassigned ticket (LOG-25097).
 
 # Gen-AI experiments
 
