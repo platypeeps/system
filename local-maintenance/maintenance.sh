@@ -547,7 +547,9 @@ if [ -d "$WORKTREES" ]; then
       action "kept idle build output $t: a process uses it"
       continue
     elif [ "$use_rc" -ne 3 ]; then
-      finding "build output prune: could not tell whether a process uses $t; kept"
+      # Name in_use.py's own error, so the report says why (sd:8271).
+      use_why=$(sed -n '$p' "$TMPD/use.err")
+      finding "build output prune: could not tell whether a process uses $t; kept${use_why:+: $use_why}"
       continue
     fi
     if [ "$APPLY" -eq 0 ]; then
