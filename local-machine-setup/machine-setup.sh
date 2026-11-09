@@ -77,7 +77,7 @@ RELEASE_BASE="${MACHINE_SETUP_RELEASE_BASE:-https://github.com}"
 # database at startup, so an agent bootstrapped first restarts against a
 # file that does not exist yet. `satellite` sits beside it: a machine runs
 # one of the two, and neither loads an agent the other needs.
-STAGES="brew release shell appstore bin dotfiles envs prompts repos tmpdisk cron sd satellite agents services macos tooling system obsidian iterm2"
+STAGES="brew release shell appstore bin dotfiles envs prompts repos tmpdisk cron sd satellite bulkmove agents services macos tooling system obsidian iterm2"
 # The verbs dispatch accepts, in help's order. Help and the no-arg usage print
 # this list; three hand copies of it disagreed (sd:3548).
 VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt promote"
@@ -3910,6 +3910,105 @@ tmpdisk_locked() {
       tmpdisk_remount "$td_mnt" "$td_vol" || return 1
       echo "  mounted $td_mnt again with its markers" ;;
   esac
+}
+
+# The one-shot move of a satellite's bulk storage from a local folder to
+# the NAS (sd:8242). Off until machine-setup.env sets
+# MACHINE_SETUP_BULK_NAS, the NAS share's mount point; the data goes to
+# its repo-storage folder. Runs only on a satellite whose local folder
+# still exists, so once the folder is gone the stage says ok. Every step
+# refuses with a FAILED line and leaves the local folder as it was:
+#   0. pack sd:8275 is done: archive copies left the dispatch tick, so a
+#      hung NAS no longer holds the tick (sd:6705);
+#   1. lsof lists no open file under the local folder;
+#   2. the share is mounted, rsync copies, and a checksum dry run lists
+#      no file left to copy;
+#   3. sd.bulk_storage_root names the NAS folder and reads back so;
+#   4. lsof again, and a quick dry run, catch a write since step 2;
+#   5. only then the local folder goes.
+# rsync resumes, so a copy the bound stops is finished by the next run.
+BULK_LOCAL="${MACHINE_SETUP_BULK_LOCAL:-$HOME/repo-storage}"
+BULK_NAS="${MACHINE_SETUP_BULK_NAS:-}"
+BULK_COPY_SECS="${MACHINE_SETUP_BULK_COPY_SECS:-21600}"
+BULK_AFTER=8275
+
+# Whether a process holds a file under $1: 0 none, 1 one does or lsof
+# could not tell.
+bulk_free() {
+  bf_real=$(cd "$1" && pwd -P) || return 1
+  bf_open=$(bound_step 120 lsof -nP -F n 2>/dev/null) || {
+    note_failure "lsof could not list open files; $1 kept" 1; return 1; }
+  if printf '%s\n' "$bf_open" | awk -v a="n$1" -v b="n$bf_real" '
+      $0 == a || $0 == b || index($0, a "/") == 1 || index($0, b "/") == 1 { f = 1 }
+      END { exit !f }'; then
+    note_failure "a process holds a file under $1; kept, the next run tries again" 1
+    return 1
+  fi
+}
+
+# The files rsync would still copy from $1 to $2; "$3" adds -c.
+bulk_left() {
+  bl_out=$(bound_step "$BULK_COPY_SECS" rsync -an $3 --out-format='%n' "$1/" "$2/") || return 1
+  printf '%s\n' "$bl_out" | grep -v '/$' | grep -c . || :
+}
+
+stage_bulkmove() {
+  echo "== bulkmove"
+  if [ -z "$BULK_NAS" ]; then
+    echo "  --      off: MACHINE_SETUP_BULK_NAS is unset"
+    return 0
+  fi
+  bm_dst="$BULK_NAS/repo-storage"
+  if ! is_satellite; then
+    echo "  --      not a satellite: the hub keeps its bulk storage"
+    return 0
+  fi
+  if [ ! -d "$BULK_LOCAL" ]; then
+    echo "  ok      $BULK_LOCAL is gone; bulk storage is $bm_dst"
+    return 0
+  fi
+  echo "  DIFFERS $BULK_LOCAL still holds bulk storage; it moves to $bm_dst"
+  if [ "$APPLY" -ne 1 ]; then
+    say "copy $BULK_LOCAL to $bm_dst, set sd.bulk_storage_root, remove $BULK_LOCAL"
+    return 0
+  fi
+  bm_state=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" task show "$BULK_AFTER" --json 2>/dev/null |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["item"]["status"])' 2>/dev/null) || bm_state=unknown
+  if [ "$bm_state" != "done" ]; then
+    note_failure "pack sd:$BULK_AFTER is $bm_state, not done: archive copies still run on the tick; $BULK_LOCAL kept" 1
+    return 0
+  fi
+  bulk_free "$BULK_LOCAL" || return 0
+  if ! mount | grep -qF " on $BULK_NAS ("; then
+    note_failure "$BULK_NAS is not mounted; $BULK_LOCAL kept" 1
+    return 0
+  fi
+  run_ok mkdir -p "$bm_dst" || return 0
+  # A bound that stops the copy leaves a part the next run finishes.
+  run_ok bound_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$bm_dst/" || return 0
+  bm_left=$(bulk_left "$BULK_LOCAL" "$bm_dst" -c) || {
+    note_failure "rsync -c dry run of $BULK_LOCAL to $bm_dst; $BULK_LOCAL kept" 1; return 0; }
+  if [ "$bm_left" != 0 ]; then
+    note_failure "after the copy $bm_left file(s) of $BULK_LOCAL differ on $bm_dst; kept" 1
+    return 0
+  fi
+  echo "  copied  $BULK_LOCAL to $bm_dst; a checksum dry run lists nothing left"
+  run_ok bound_step 120 "$SD_PACK_ROOT/bin/sd" config set sd.bulk_storage_root "$bm_dst" || return 0
+  bm_got=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null) || bm_got=""
+  if [ "$bm_got" != "$bm_dst" ]; then
+    note_failure "sd.bulk_storage_root reads '$bm_got', not $bm_dst; $BULK_LOCAL kept" 1
+    return 0
+  fi
+  echo "  set     sd.bulk_storage_root to $bm_dst"
+  bulk_free "$BULK_LOCAL" || return 0
+  bm_left=$(bulk_left "$BULK_LOCAL" "$bm_dst") || {
+    note_failure "rsync dry run of $BULK_LOCAL to $bm_dst; $BULK_LOCAL kept" 1; return 0; }
+  if [ "$bm_left" != 0 ]; then
+    note_failure "$bm_left file(s) changed in $BULK_LOCAL during the copy; kept, the next run copies them" 1
+    return 0
+  fi
+  run_ok rm -rf "$BULK_LOCAL" || return 0
+  echo "  removed $BULK_LOCAL; bulk storage is $bm_dst"
 }
 
 # ds_ names: every stage shares these globals, and a stage that set `want`
@@ -9195,6 +9294,11 @@ environment:
   MACHINE_SETUP_TMPDISK_MB  tmpdisk: the RAM disk's size in MiB; unset turns
                           the stage off (sd:7092)
   MACHINE_SETUP_TMPDISK_VOLUMES  tests only: the folder that stands in for /Volumes
+  MACHINE_SETUP_BULK_NAS  bulkmove: the NAS share's mount point; a satellite
+                          moves its local bulk storage to repo-storage there
+                          (sd:8242); unset turns the stage off
+  MACHINE_SETUP_BULK_LOCAL  bulkmove: the local folder (default ~/repo-storage)
+  MACHINE_SETUP_BULK_COPY_SECS  bulkmove: the copy's bound (default 21600)
   SD_PACK_ROOT            the command pack checkout
                           (default ~/repos/platypeeps/sd-workflow)
   SD_DB_PYTHON            satellite: the interpreter sd_db runs under
