@@ -827,10 +827,32 @@ formula_plan() {
 formula_wants() {
   (load_profile) >/dev/null 2>&1 || return 0
   load_profile
-  fw_list=$(bound_step 300 brew list --formula 2>/dev/null) || return 1
-  fw_plan=$(formula_plan "$fw_list" any)
+  fw_plan=$(formula_plan_now) || return 1
   printf '%s\n' "$fw_plan" | awk '$1 == "missing" { print $2 }'
   ! printf '%s\n' "$fw_plan" | grep -q '^unknown '
+}
+
+# formula_plan, with `any`, of what brew lists now. Fails when brew does
+# not list.
+formula_plan_now() {
+  fp_list=$(bound_step 300 brew list --formula 2>/dev/null) || return 1
+  formula_plan "$fp_list" any
+}
+
+# `brew cleanup` also autoremoves each formula whose tab says it came in as
+# a dependency, a profile formula among them (sd:8247). Mark each installed
+# profile formula installed on request first; none with no usable profile.
+# Fails when one is unknown or the mark fails: the caller then skips the
+# cleanup.
+mark_profile_formulae() {
+  (load_profile) >/dev/null 2>&1 || return 0
+  load_profile
+  mp_plan=$(formula_plan_now) || return 1
+  ! printf '%s\n' "$mp_plan" | grep -q '^unknown ' || return 1
+  mp_names=$(printf '%s\n' "$mp_plan" | awk '$1 == "ok" { print $3 }')
+  [ -n "$mp_names" ] || return 0
+  # shellcheck disable=SC2086 # one word per formula name
+  run_step 300 brew tab --installed-on-request $mp_names
 }
 
 stage_brew() {
@@ -6754,6 +6776,14 @@ cmd_upgrade() {
   failed=""
   ASKPASS_READY=""
   if command -v brew >/dev/null 2>&1; then
+    # `sudo brew services start tailscale` leaves root-owned files in its
+    # keg, and brew, which refuses to run as root, cannot remove them: the
+    # cleanup failed every week (sd:8241). Upgrades clean up too. Keep the
+    # operator's own list.
+    # ponytail: old tailscale kegs stay; remove them by hand with sudo.
+    HOMEBREW_NO_CLEANUP_FORMULAE="${HOMEBREW_NO_CLEANUP_FORMULAE:+$HOMEBREW_NO_CLEANUP_FORMULAE,}tailscale"
+    export HOMEBREW_NO_CLEANUP_FORMULAE
+    echo "  SKIP    brew cleanup of tailscale: sudo brew services leaves root-owned files"
     run_step 600 brew update || failed="$failed, brew update"
     # The brew stage's unpin (sd:6433) first: the weekly sweep can run
     # before the nightly update --apply, and a stale python pin fails
@@ -6791,7 +6821,12 @@ cmd_upgrade() {
     fi
     claude_quarantine || failed="$failed, claude quarantine"
     codex_quarantine || failed="$failed, codex quarantine"
-    run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
+    if mark_profile_formulae; then
+      run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
+    else
+      failed="$failed, brew tab"
+      echo "  SKIP    brew cleanup: a profile formula is not marked installed on request"
+    fi
   else
     echo "  brew MISSING — https://brew.sh"
   fi
@@ -6952,12 +6987,22 @@ grants_report() {
     printf '  Claude Code: %s -> %s\n' "$(cat "$tmp/claude.before")" "$(cat "$tmp/claude.after")" >> "$tmp/changed"
   fi
   comm -13 "$tmp/python.before" "$tmp/python.after" | sed 's/^/  new python Cellar path: /' >> "$tmp/changed"
-  g_rc=0
-  run_step 300 sh "$SD_PACK_ROOT/dashboard/dashboard.sh" grants > "$tmp/grants.out" 2>&1 || g_rc=$?
-  sed -n 's/.*Grant Full Disk Access to \(.*\) in System Settings.*/  Full Disk Access: \1/p' \
-    "$tmp/grants.out" > "$tmp/regrant"
+  # A satellite runs no dashboard (SD_HUB_ONLY_AGENTS) and has no vault, so
+  # the probe could never pass there (sd:8248).
+  if (load_profile) >/dev/null 2>&1; then load_profile; fi
+  if is_satellite && ! hub_holder; then
+    : > "$tmp/regrant"
+    g_head='TCC grants: skipped: satellite runs no dashboard'
+    : > "$tmp/grants.out"
+  else
+    g_rc=0
+    run_step 300 sh "$SD_PACK_ROOT/dashboard/dashboard.sh" grants > "$tmp/grants.out" 2>&1 || g_rc=$?
+    sed -n 's/.*Grant Full Disk Access to \(.*\) in System Settings.*/  Full Disk Access: \1/p' \
+      "$tmp/grants.out" > "$tmp/regrant"
+    g_head="TCC grants (dashboard.sh grants, exit $g_rc):"
+  fi
   {
-    printf '\nTCC grants (dashboard.sh grants, exit %s):\n' "$g_rc"
+    printf '\n%s\n' "$g_head"
     sed 's/^/  /' "$tmp/grants.out"
     if [ -s "$tmp/changed" ]; then
       printf '\ngrant droppers that changed — check their grants:\n'

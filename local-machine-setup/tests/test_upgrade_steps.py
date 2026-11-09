@@ -52,6 +52,7 @@ LIB = FOLDER.parent / "lib"
 # BREW_INFO is what `brew info --json=v2 --installed --cask` prints.
 # BREW_BUILD_FAIL names one call that prints BREW_BUILD_TEXT on stderr and
 # exits 1, as a formula whose build fails does (sd:7056).
+# BREW_FORMULAE is what `brew list --formula` prints, space-separated.
 SUDO_REFUSED = r"""
 if [ "$*" = "$STUB_SUDO" ]; then
   echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
@@ -91,9 +92,12 @@ case "$*" in
                               [ -z "$BREW_CASKS_DONE" ] || : > "$BREW_LOG.casks" ;;
   --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
   --prefix) echo "${BREW_PREFIX:-/opt/homebrew}" ;;
+  "list --formula") [ -z "$BREW_FORMULAE" ] || printf '%s\n' $BREW_FORMULAE ;;
   "info --json=v2 --installed --cask") if [ -n "$BREW_INFO" ]; then echo "$BREW_INFO"; else echo '{"casks": []}'; fi ;;
-  "cleanup --prune=all") [ -z "$BREW_CLEANUP_FAIL" ] || exit 1 ;;
-  "upgrade --formula") [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
+  "cleanup --prune=all") echo "cleanup $HOMEBREW_NO_CLEANUP_FORMULAE" >> "$BREW_LOG.keep"
+                         [ -z "$BREW_CLEANUP_FAIL" ] || exit 1 ;;
+  "upgrade --formula") echo "upgrade $HOMEBREW_NO_CLEANUP_FORMULAE" >> "$BREW_LOG.keep"
+           [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
            [ -z "$BREW_UPGRADES_ALL" ] || : > "$BREW_LOG.upgraded"
            [ -z "$BREW_NEW_PYTHON" ] || mkdir -p "$BREW_NEW_PYTHON"
            [ -z "$BREW_WAIT" ] || exec sleep 60
@@ -435,6 +439,19 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(self.findings(result), ["still outdated (formula): example-formula",
                                                  "TCC re-grant needed: Full Disk Access: /opt/homebrew/bin/python3"])
 
+    def test_a_satellite_skips_the_grants_probe(self):
+        """sd:8248: a satellite runs no dashboard and has no vault, so the
+        probe could never pass there."""
+        hub = self.home / ".config/sd/hub.json"
+        hub.parent.mkdir(parents=True)
+        hub.write_text('{"host": "hub.example.test"}\n')
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("grants", self.brew_calls())
+        self.assertIn("TCC grants: skipped: satellite runs no dashboard", result.stdout)
+        self.assertEqual(self.attention(result), [])
+
     def test_a_quiet_week_with_a_missing_grant_needs_attention_and_exits_0(self):
         """The grants probe runs in a quiet week too."""
         result = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
@@ -482,6 +499,38 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("upgrade sweep exited nonzero", result.stdout)
         [finding] = self.findings(result)
         self.assertRegex(finding, r"^upgrade sweep failed \[\d+\]$")
+
+    def test_profile_formulae_are_marked_on_request_before_cleanup(self):
+        """sd:8247: brew cleanup also autoremoves, and took a profile
+        formula whose tab said it came in as a dependency. The sweep marks
+        each installed profile formula first, and no other formula."""
+        result = self.run_verb("upgrade", "--apply", MACHINE_SETUP_PROFILE="work",
+                               BREW_FORMULAE="jq example-dep")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.brew_calls()
+        self.assertEqual([c for c in calls if c.startswith("tab ")], ["tab --installed-on-request jq"])
+        self.assertLess(calls.index("tab --installed-on-request jq"), calls.index("cleanup --prune=all"))
+
+    def test_a_failed_mark_skips_the_cleanup(self):
+        """sd:8247: autoremove must not take a formula the sweep did not mark."""
+        result = self.run_verb("upgrade", "--apply", MACHINE_SETUP_PROFILE="work",
+                               BREW_FORMULAE="jq", BREW_FAIL="tab --installed-on-request jq")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("cleanup --prune=all", self.brew_calls())
+        self.assertIn("failed steps: brew tab", result.stdout)
+
+    def test_brew_cleans_up_no_tailscale(self):
+        """sd:8241: `sudo brew services start tailscale` leaves root-owned
+        files in its keg, and cleanup failed on them every week. The
+        upgrade cleans up too. The operator's own list is kept."""
+        result = self.run_verb("upgrade", "--apply", HOMEBREW_NO_CLEANUP_FORMULAE="example-formula")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        keep = self.brew_log.with_name(self.brew_log.name + ".keep").read_text().splitlines()
+        self.assertEqual(keep, ["upgrade example-formula,tailscale", "cleanup example-formula,tailscale"])
+        self.assertIn("SKIP    brew cleanup of tailscale", result.stdout)
 
     def test_a_clean_sweep_needs_no_attention(self):
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1")
