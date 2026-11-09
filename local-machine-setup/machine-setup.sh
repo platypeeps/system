@@ -3918,8 +3918,11 @@ tmpdisk_locked() {
 # its repo-storage folder. Runs only on a satellite whose local folder
 # still exists, so once the folder is gone the stage says ok. Every step
 # refuses with a FAILED line and leaves the local folder as it was:
-#   0. pack sd:8275 is done: archive copies left the dispatch tick, so a
-#      hung NAS no longer holds the tick (sd:6705);
+#   0. the pack this machine runs, SD_PACK_ROOT, holds the commit
+#      MACHINE_SETUP_BULK_PACK_MIN names, pack sd:8275's: archive copies
+#      left the dispatch tick, so a hung NAS no longer holds the tick
+#      (sd:6705). Unset refuses: the item's status says nothing of the
+#      dispatcher installed here;
 #   1. lsof lists no open file under the local folder;
 #   2. the share is mounted, rsync copies, and a checksum dry run lists
 #      no file left to copy;
@@ -3930,7 +3933,8 @@ tmpdisk_locked() {
 BULK_LOCAL="${MACHINE_SETUP_BULK_LOCAL:-$HOME/repo-storage}"
 BULK_NAS="${MACHINE_SETUP_BULK_NAS:-}"
 BULK_COPY_SECS="${MACHINE_SETUP_BULK_COPY_SECS:-21600}"
-BULK_AFTER=8275
+# Set it once pack sd:8275 lands; it is no default until then.
+BULK_PACK_MIN="${MACHINE_SETUP_BULK_PACK_MIN:-}"
 
 # Whether a process holds a file under $1: 0 none, 1 one does or lsof
 # could not tell.
@@ -3972,10 +3976,12 @@ stage_bulkmove() {
     say "copy $BULK_LOCAL to $bm_dst, set sd.bulk_storage_root, remove $BULK_LOCAL"
     return 0
   fi
-  bm_state=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" task show "$BULK_AFTER" --json 2>/dev/null |
-    python3 -c 'import json, sys; print(json.load(sys.stdin)["item"]["status"])' 2>/dev/null) || bm_state=unknown
-  if [ "$bm_state" != "done" ]; then
-    note_failure "pack sd:$BULK_AFTER is $bm_state, not done: archive copies still run on the tick; $BULK_LOCAL kept" 1
+  if [ -z "$BULK_PACK_MIN" ]; then
+    note_failure "MACHINE_SETUP_BULK_PACK_MIN is unset: name the pack commit of pack sd:8275; $BULK_LOCAL kept" 1
+    return 0
+  fi
+  if ! git -C "$SD_PACK_ROOT" merge-base --is-ancestor "$BULK_PACK_MIN" HEAD >/dev/null 2>&1; then
+    note_failure "the pack at $SD_PACK_ROOT does not hold $BULK_PACK_MIN (pack sd:8275), or git could not read it; $BULK_LOCAL kept" 1
     return 0
   fi
   bulk_free "$BULK_LOCAL" || return 0
@@ -9299,6 +9305,8 @@ environment:
                           (sd:8242); unset turns the stage off
   MACHINE_SETUP_BULK_LOCAL  bulkmove: the local folder (default ~/repo-storage)
   MACHINE_SETUP_BULK_COPY_SECS  bulkmove: the copy's bound (default 21600)
+  MACHINE_SETUP_BULK_PACK_MIN  bulkmove: the pack commit of pack sd:8275;
+                          unset, or a pack without it, refuses the move
   SD_PACK_ROOT            the command pack checkout
                           (default ~/repos/platypeeps/sd-workflow)
   SD_DB_PYTHON            satellite: the interpreter sd_db runs under

@@ -1,7 +1,8 @@
 """The bulkmove stage moves a satellite's bulk storage to the NAS (sd:8242).
 
 A satellite kept its bulk storage in a local folder while a hung NAS could
-stall the dispatch tick (sd:6705). Once pack sd:8275 is done, the stage
+stall the dispatch tick (sd:6705). Once this machine's pack holds pack
+sd:8275, the stage
 copies the folder to the NAS, checks the copy, points
 sd.bulk_storage_root there and removes the folder. Every refusal leaves
 the local folder intact.
@@ -23,11 +24,9 @@ from tests import fixture_config
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "machine-setup.sh"
 
-# sd: `task show N --json` prints SD_ITEM_STATE; `config set|get` keep
-# the value in SD_CONFIG; anything else fails.
+# sd: `config set|get` keep the value in SD_CONFIG; anything else fails.
 SD = """#!/bin/sh
 case "$1 $2" in
-  "task show") printf '{"item": {"status": "%s"}}\\n' "$SD_ITEM_STATE" ;;
   "config set") [ -z "${SD_SET_FAIL:-}" ] || exit 1; printf '%s' "$4" > "$SD_CONFIG" ;;
   "config get") cat "$SD_CONFIG" 2>/dev/null || exit 1 ;;
   *) echo "sd stub: unexpected $*" >&2; exit 2 ;;
@@ -87,6 +86,8 @@ class BulkmoveTest(unittest.TestCase):
         stub(self.stubs, "mount", MOUNT)
         stub(self.stubs, "rsync", RSYNC)
         self.config = self.base / "sd-config"
+        # The pack holds the commit that stands in for pack sd:8275's.
+        self.pin = fixture_config.dispatch_pack(self.pack, new=True)["SD_DISPATCH_PACK_MIN"]
         fixture_config.seal(self, self.stubs)
 
     def run_stage(self, apply=True, **extra):
@@ -99,9 +100,9 @@ class BulkmoveTest(unittest.TestCase):
             "SD_PACK_ROOT": str(self.pack),
             "SD_CONFIG": str(self.config),
             "REAL_RSYNC": shutil.which("rsync"),
-            "SD_ITEM_STATE": "done",
             "NAS_MOUNTED": str(self.nas),
             "MACHINE_SETUP_BULK_NAS": str(self.nas),
+            "MACHINE_SETUP_BULK_PACK_MIN": self.pin,
             **extra,
         }
         args = [str(SCRIPT), "update", "bulkmove"] + (["--apply"] if apply else [])
@@ -150,10 +151,20 @@ class BulkmoveTest(unittest.TestCase):
         self.assertIn("is not mounted", out)
         self.assert_kept(out)
 
-    def test_it_waits_for_pack_sd_8275(self):
-        code, out = self.run_stage(SD_ITEM_STATE="in_progress")
+    def test_a_pack_without_sd_8275_keeps_the_folder(self):
+        # The dispatcher this machine runs is its pack's: an item marked
+        # done elsewhere proves nothing about it (review of sd:8242).
+        subprocess.run(["git", "-C", str(self.pack), "checkout", "-q", "--detach", "HEAD~1"],
+                       check=True, env=fixture_config.git_env())
+        code, out = self.run_stage()
         self.assertEqual(code, 1, out)
-        self.assertIn("pack sd:8275 is in_progress, not done", out)
+        self.assertIn(f"does not hold {self.pin} (pack sd:8275)", out)
+        self.assert_kept(out)
+
+    def test_no_pinned_pack_commit_keeps_the_folder(self):
+        code, out = self.run_stage(MACHINE_SETUP_BULK_PACK_MIN="")
+        self.assertEqual(code, 1, out)
+        self.assertIn("MACHINE_SETUP_BULK_PACK_MIN is unset", out)
         self.assert_kept(out)
 
     def test_a_root_that_does_not_read_back_keeps_the_folder(self):
