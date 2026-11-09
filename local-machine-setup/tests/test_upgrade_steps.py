@@ -437,6 +437,19 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(self.findings(result), ["still outdated (formula): example-formula",
                                                  "TCC re-grant needed: Full Disk Access: /opt/homebrew/bin/python3"])
 
+    def test_a_satellite_skips_the_grants_probe(self):
+        """sd:8248: a satellite runs no dashboard and has no vault, so the
+        probe could never pass there."""
+        hub = self.home / ".config/sd/hub.json"
+        hub.parent.mkdir(parents=True)
+        hub.write_text('{"host": "hub.example.test"}\n')
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("grants", self.brew_calls())
+        self.assertIn("TCC grants: skipped: satellite runs no dashboard", result.stdout)
+        self.assertEqual(self.attention(result), [])
+
     def test_a_quiet_week_with_a_missing_grant_needs_attention_and_exits_0(self):
         """The grants probe runs in a quiet week too."""
         result = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")

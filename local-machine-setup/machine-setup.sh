@@ -6979,12 +6979,22 @@ grants_report() {
     printf '  Claude Code: %s -> %s\n' "$(cat "$tmp/claude.before")" "$(cat "$tmp/claude.after")" >> "$tmp/changed"
   fi
   comm -13 "$tmp/python.before" "$tmp/python.after" | sed 's/^/  new python Cellar path: /' >> "$tmp/changed"
-  g_rc=0
-  run_step 300 sh "$SD_PACK_ROOT/dashboard/dashboard.sh" grants > "$tmp/grants.out" 2>&1 || g_rc=$?
-  sed -n 's/.*Grant Full Disk Access to \(.*\) in System Settings.*/  Full Disk Access: \1/p' \
-    "$tmp/grants.out" > "$tmp/regrant"
+  # A satellite runs no dashboard (SD_HUB_ONLY_AGENTS) and has no vault, so
+  # the probe could never pass there (sd:8248).
+  if (load_profile) >/dev/null 2>&1; then load_profile; fi
+  if is_satellite && ! hub_holder; then
+    : > "$tmp/regrant"
+    g_head='TCC grants: skipped: satellite runs no dashboard'
+    : > "$tmp/grants.out"
+  else
+    g_rc=0
+    run_step 300 sh "$SD_PACK_ROOT/dashboard/dashboard.sh" grants > "$tmp/grants.out" 2>&1 || g_rc=$?
+    sed -n 's/.*Grant Full Disk Access to \(.*\) in System Settings.*/  Full Disk Access: \1/p' \
+      "$tmp/grants.out" > "$tmp/regrant"
+    g_head="TCC grants (dashboard.sh grants, exit $g_rc):"
+  fi
   {
-    printf '\nTCC grants (dashboard.sh grants, exit %s):\n' "$g_rc"
+    printf '\n%s\n' "$g_head"
     sed 's/^/  /' "$tmp/grants.out"
     if [ -s "$tmp/changed" ]; then
       printf '\ngrant droppers that changed — check their grants:\n'
