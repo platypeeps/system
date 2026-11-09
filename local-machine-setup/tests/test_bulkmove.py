@@ -191,6 +191,15 @@ class BulkmoveTest(unittest.TestCase):
             self.assertTrue((self.local / "system/lane/run.log").is_file(), out)
             self.assertIn(ps.split()[0], out)
 
+    def test_a_marker_from_a_failed_switch_is_not_trusted(self):
+        # A run wrote the marker, then the switch failed; a process that
+        # started since read the old root and must hold the folder.
+        (self.state / "bulkmove.switched").write_text(f"{int(time.time()) - 3600}\n")
+        ps = f"4249 10:00 python3 {self.pack}/bin/sd assignments supervise"
+        code, out = self.run_stage(PS_LINES=ps)
+        self.assertTrue((self.local / "system/lane/run.log").is_file(), out)
+        self.assertIn("4249", out)
+
     def test_a_pack_path_with_spaces_still_finds_the_process(self):
         spaced = self.base / "My Tools/pack"
         spaced.parent.mkdir()
@@ -213,6 +222,7 @@ class BulkmoveTest(unittest.TestCase):
     def test_a_pack_process_started_after_the_switch_does_not_hold_the_folder(self):
         # An earlier run switched the root an hour ago; this tick is 10 s old.
         (self.state / "bulkmove.switched").write_text(f"{int(time.time()) - 3600}\n")
+        self.config.write_text(str(self.nas / "repo-storage"))
         code, out = self.run_stage(PS_LINES=f"4243 00:10 python3 {self.pack}/bin/sd assignments dispatch")
         self.assertEqual(code, 0, out)
         self.assertFalse(self.local.exists(), out)

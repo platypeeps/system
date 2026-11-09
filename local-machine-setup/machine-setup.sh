@@ -4080,7 +4080,10 @@ stage_bulkmove() {
   fi
   echo "  copied  $BULK_LOCAL to $bm_dst; a checksum dry run lists nothing left"
   # Before the switch: a process that read the old root predates it.
-  if [ ! -s "$BULK_SWITCHED" ]; then
+  # Keep an older marker only once the root reads as the NAS; a marker
+  # from a switch that failed would hide processes started since.
+  bm_cur=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null) || bm_cur=""
+  if [ "$bm_cur" != "$bm_dst" ] || [ ! -s "$BULK_SWITCHED" ]; then
     date +%s > "$BULK_SWITCHED" || { note_failure "write $BULK_SWITCHED; $BULK_LOCAL kept" 1; return 0; }
   fi
   run_ok bound_step 120 "$SD_PACK_ROOT/bin/sd" config set sd.bulk_storage_root "$bm_dst" || return 0
