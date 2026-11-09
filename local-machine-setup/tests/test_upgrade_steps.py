@@ -94,8 +94,10 @@ case "$*" in
   --prefix) echo "${BREW_PREFIX:-/opt/homebrew}" ;;
   "list --formula") [ -z "$BREW_FORMULAE" ] || printf '%s\n' $BREW_FORMULAE ;;
   "info --json=v2 --installed --cask") if [ -n "$BREW_INFO" ]; then echo "$BREW_INFO"; else echo '{"casks": []}'; fi ;;
-  "cleanup --prune=all") [ -z "$BREW_CLEANUP_FAIL" ] || exit 1 ;;
-  "upgrade --formula") [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
+  "cleanup --prune=all") echo "cleanup $HOMEBREW_NO_CLEANUP_FORMULAE" >> "$BREW_LOG.keep"
+                         [ -z "$BREW_CLEANUP_FAIL" ] || exit 1 ;;
+  "upgrade --formula") echo "upgrade $HOMEBREW_NO_CLEANUP_FORMULAE" >> "$BREW_LOG.keep"
+           [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
            [ -z "$BREW_UPGRADES_ALL" ] || : > "$BREW_LOG.upgraded"
            [ -z "$BREW_NEW_PYTHON" ] || mkdir -p "$BREW_NEW_PYTHON"
            [ -z "$BREW_WAIT" ] || exec sleep 60
@@ -518,6 +520,17 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertNotIn("cleanup --prune=all", self.brew_calls())
         self.assertIn("failed steps: brew tab", result.stdout)
+
+    def test_brew_cleans_up_no_tailscale(self):
+        """sd:8241: `sudo brew services start tailscale` leaves root-owned
+        files in its keg, and cleanup failed on them every week. The
+        upgrade cleans up too. The operator's own list is kept."""
+        result = self.run_verb("upgrade", "--apply", HOMEBREW_NO_CLEANUP_FORMULAE="example-formula")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        keep = self.brew_log.with_name(self.brew_log.name + ".keep").read_text().splitlines()
+        self.assertEqual(keep, ["upgrade example-formula,tailscale", "cleanup example-formula,tailscale"])
+        self.assertIn("SKIP    brew cleanup of tailscale", result.stdout)
 
     def test_a_clean_sweep_needs_no_attention(self):
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1")

@@ -6776,6 +6776,14 @@ cmd_upgrade() {
   failed=""
   ASKPASS_READY=""
   if command -v brew >/dev/null 2>&1; then
+    # `sudo brew services start tailscale` leaves root-owned files in its
+    # keg, and brew, which refuses to run as root, cannot remove them: the
+    # cleanup failed every week (sd:8241). Upgrades clean up too. Keep the
+    # operator's own list.
+    # ponytail: old tailscale kegs stay; remove them by hand with sudo.
+    HOMEBREW_NO_CLEANUP_FORMULAE="${HOMEBREW_NO_CLEANUP_FORMULAE:+$HOMEBREW_NO_CLEANUP_FORMULAE,}tailscale"
+    export HOMEBREW_NO_CLEANUP_FORMULAE
+    echo "  SKIP    brew cleanup of tailscale: sudo brew services leaves root-owned files"
     run_step 600 brew update || failed="$failed, brew update"
     # The brew stage's unpin (sd:6433) first: the weekly sweep can run
     # before the nightly update --apply, and a stale python pin fails
