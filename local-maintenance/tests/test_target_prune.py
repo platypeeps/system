@@ -55,6 +55,8 @@ class TargetPruneTest(Harness):
         self.trash = self.tmp / "home" / ".local" / "state" / "maintenance" / "prune-trash"
         # No cargo runs, whatever runs on this machine.
         _stub(self.bin / "pgrep", "exit 1\n")
+        # No process holds a file anywhere.
+        _stub(self.bin / "lsof", "exit 0\n")
 
     def cargo_target(self, worktree, *, idle=FOUR_DAYS, tag=True, under="target"):
         """A worktree with tracked files and a build tree last written `idle` ago."""
@@ -109,6 +111,44 @@ class TargetPruneTest(Harness):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertTrue(binary.is_file(), run.stdout + run.stderr)
         self.assertEqual(self.actions(run), [])
+
+    def lsof_lists(self, path, kind="txt"):
+        """lsof -F n output: one process that holds `path`."""
+        _stub(self.bin / "lsof", f"printf 'p4242\\nf{kind}\\nn%s\\n' '{path}'\n")
+
+    def test_a_target_whose_binary_runs_stays_however_old(self):
+        # sd:8240: a paid run used a binary built over 3 days before; its
+        # exec set no fresh atime the prune saw, and the run lost target/.
+        _checkout, target = self.cargo_target("example-running")
+        self.lsof_lists(target / "release" / "example")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file(), run.stdout + run.stderr)
+        self.assertIn(f"- kept idle build output {target}: a process uses it", run.stdout)
+        self.assertEqual(self.attention(run), [])
+
+    def test_a_process_with_a_file_or_cwd_in_the_target_keeps_it(self):
+        _checkout, target = self.cargo_target("example-open")
+        self.lsof_lists(target, kind="cwd")
+        run = self.maintenance("# nothing to check\n", "check")
+        self.assertTrue((target / "CACHEDIR.TAG").is_file())
+        self.assertIn(f"- kept idle build output {target}: a process uses it", run.stdout)
+        self.assertNotIn("would remove idle build output", run.stdout)
+
+    def test_a_sibling_path_is_not_the_target(self):
+        _checkout, target = self.cargo_target("example-sibling")
+        self.lsof_lists(f"{target}-other/example")
+        run = self.maintenance("# nothing to check\n")
+        self.assertFalse(target.exists(), run.stdout + run.stderr)
+
+    def test_an_open_file_probe_that_fails_keeps_the_target_and_says_so(self):
+        _checkout, target = self.cargo_target("example-no-lsof")
+        _stub(self.bin / "lsof", "exit 2\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file())
+        self.assertIn(f"- build output prune: could not tell whether a process uses {target}; kept",
+                      run.stdout)
 
     def test_a_folder_the_walk_read_is_not_in_use(self):
         # The walk reads each folder, which sets its access time: only a
@@ -249,6 +289,7 @@ exec /bin/rm "$@"
         _checkout, target = self.cargo_target("example-bounded")
         run = self.maintenance("# nothing to check\n")
         self.assertRegex(run.stderr, r"\[step [\d:]+\] pgrep -x cargo\|rustc \(bound \d+s\)")
+        self.assertRegex(run.stderr, r"\[step [\d:]+\] lsof -nP -F n \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {self.worktrees} .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {target} \( -mmin -4320 .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {self.trash}/\S+ \(bound \d+s\)")

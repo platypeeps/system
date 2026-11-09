@@ -163,7 +163,8 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
 
   run    run all checks, apply the safe fixes (rotate oversized logs; docker
          system prune on Sundays; delete cargo target/ folders under
-         ~/worktrees untouched for 3 days), and print the findings that need a human
+         ~/worktrees untouched for 3 days and used by no process), and
+         print the findings that need a human
          (what the maintenance-nightly cron job runs). With findings it prints
          an SD_REPORT_ATTENTION line, so the run's report reaches Reports and
          Today; nothing is mailed.
@@ -532,6 +533,17 @@ if [ -d "$WORKTREES" ]; then
       continue
     fi
     [ -z "$recent" ] || continue
+    # An old atime is no proof nothing runs there: a paid run used a binary
+    # built over 3 days before and lost target/ (sd:8240). lsof lists every
+    # open file, cwd and running binary (txt); one under $t keeps it.
+    if ! st_step 60 lsof -nP -F n > "$TMPD/open" 2>/dev/null; then
+      finding "build output prune: could not tell whether a process uses $t; kept"
+      continue
+    fi
+    if awk -v p="n$t/" -v d="n$t" '$0 == d || index($0, p) == 1 { f = 1; exit } END { exit !f }' "$TMPD/open"; then
+      action "kept idle build output $t: a process uses it"
+      continue
+    fi
     if [ "$APPLY" -eq 0 ]; then
       action "[dry-run] would remove idle build output $t (untouched 3 days)"
       continue
