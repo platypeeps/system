@@ -432,7 +432,26 @@ class HeldLockSyncTest(unittest.TestCase):
         pulls = [v for v in f.git_verbs() if "pull --ff-only" in v]
         self.assertTrue(pulls, f.git_verbs())
         for verb in pulls:
-            self.assertIn("-c maintenance.autoDetach=false pull", verb)
+            self.assertIn("-c maintenance.autoDetach=false", verb)
+
+    def test_every_fetch_runs_maintenance_in_the_foreground(self):
+        """NEW. sd:8320: the pinned, no-upstream and side-branch fetches
+        started detached maintenance too, and an older git detaches on
+        gc.autoDetach. Every fetch and pull sets both keys false."""
+        f = self.fixture()
+        f.pin(f.repo("a/pinned"))
+        f.git(f.repo("a/keep"), "switch", "-q", "-c", "keep", "--no-track", "origin/main")
+        side = f.repo("a/side")
+        f.git(side, "switch", "-q", "-c", "pr", "--track", "origin/main")
+        f.repo("a/plain")
+
+        f.run("sync", expect=0)
+
+        verbs = [v for v in f.git_verbs() if " fetch" in v or " pull" in v]
+        self.assertGreaterEqual(len(verbs), 4, f.git_verbs())
+        for verb in verbs:
+            self.assertIn("-c gc.autoDetach=false", verb)
+            self.assertIn("-c maintenance.autoDetach=false", verb)
 
     def test_an_old_lock_a_git_process_works_in_is_kept(self):
         """NEW. sd:6480: a git whose cwd is the checkout may hold the lock,

@@ -594,7 +594,7 @@ class FollowTest(unittest.TestCase):
         f = self.fixture()
         system, pack, old = self.pair(f)
         f.set_hub_pin(system, f.advance_origin(system), pack=f.advance_origin(pack))
-        f.wrap_git("before", "*'/a/system fetch'*hub-pin*", 'echo "fatal: unreachable" >&2; exit 128')
+        f.wrap_git("before", "*'/a/system '*' fetch'*hub-pin*", 'echo "fatal: unreachable" >&2; exit 128')
 
         result = f.run("follow", expect=1)
 
@@ -817,7 +817,7 @@ class FollowTest(unittest.TestCase):
         system, pack, old = self.pair(f)
         f.set_hub_pin(system, old[0], pack=old[1])
         f.leave_intent(*old)
-        f.wrap_git("before", "*'/a/system fetch'*hub-pin*", 'echo "fatal: unreachable" >&2; exit 128')
+        f.wrap_git("before", "*'/a/system '*' fetch'*hub-pin*", 'echo "fatal: unreachable" >&2; exit 128')
 
         f.run("follow", expect=1)
 
