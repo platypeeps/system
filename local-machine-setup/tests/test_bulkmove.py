@@ -42,7 +42,11 @@ esac
 """
 
 # lsof prints LSOF_OPEN as the one open file, if set.
+# `lsof ... -d cwd` prints LSOF_CWD as the process's folder, or fails.
 LSOF = """#!/bin/sh
+case " $* " in
+  *" -d cwd "*) [ -n "${LSOF_CWD:-}" ] || exit 1; printf 'p1\\nn%s\\n' "$LSOF_CWD"; exit 0 ;;
+esac
 echo p1
 [ -z "${LSOF_OPEN:-}" ] || printf 'n%s\\n' "$LSOF_OPEN"
 """
@@ -65,7 +69,9 @@ exec "$REAL_RSYNC" "$@"
 # ps lists PS_LINES ("pid etime args", one per line), as `ps -x -o
 # pid=,etime=,args=` does; none when unset.
 # PS_START (epoch) turns ETIME in PS_LINES into the seconds since then.
+# Without -ww macOS cuts each line to the terminal width: refuse it.
 PS = """#!/bin/sh
+[ "$1" = "-ww" ] || { echo "ps stub: wants -ww" >&2; exit 1; }
 [ -z "${PS_LINES:-}" ] || {
   e=""
   [ -z "${PS_START:-}" ] || e=$(( $(date +%s) - PS_START ))
@@ -199,6 +205,21 @@ class BulkmoveTest(unittest.TestCase):
         code, out = self.run_stage(PS_LINES=ps)
         self.assertTrue((self.local / "system/lane/run.log").is_file(), out)
         self.assertIn("4249", out)
+
+    def test_a_relative_pack_invocation_holds_the_folder(self):
+        # `python3 bin/sd` from the pack resolves against the process's
+        # own folder; one whose folder lsof cannot read counts too.
+        ps = "4250 01:02:03 python3 bin/sd assignments supervise"
+        for cwd in (str(self.pack), ""):
+            code, out = self.run_stage(PS_LINES=ps, LSOF_CWD=cwd)
+            self.assertTrue((self.local / "system/lane/run.log").is_file(), out)
+            self.assertIn("4250", out)
+
+    def test_a_relative_argument_outside_the_pack_does_not_hold(self):
+        ps = "4251 01:02:03 python3 bin/other"
+        code, out = self.run_stage(PS_LINES=ps, LSOF_CWD=str(self.base))
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.local.exists(), out)
 
     def test_a_pack_path_with_spaces_still_finds_the_process(self):
         spaced = self.base / "My Tools/pack"

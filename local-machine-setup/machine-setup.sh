@@ -3948,7 +3948,7 @@ BULK_SWITCHED="$STATE_DIR/bulkmove.switched"
 # could not tell. lsof escapes the names it prints; in_use.py compares
 # both escaped forms of the folder and of its real path.
 bulk_free() {
-  bf_real=$(cd "$1" && pwd -P) || return 1
+  bf_real=$(cd "$1" && pwd -P) || { note_failure "could not enter $1 to resolve it; kept" 1; return 1; }
   bf_list=$(mktemp) || { note_failure "mktemp for the lsof listing; $1 kept" 1; return 1; }
   if ! bound_step 120 lsof -nP -F n > "$bf_list" 2>/dev/null; then
     rm -f "$bf_list"
@@ -3975,10 +3975,25 @@ bulk_free() {
 # when an argument resolves into the pack, however it was spelled (an
 # installed `sd` link, a trailing slash, spaces), or it runs -m sd_db.
 bulk_producers() {
-  bp_ps=$(ps -x -o pid=,etime=,args=) || return 1
+  # -ww: without it ps cuts each line to the terminal width, 79 columns
+  # under launchd, and a long pack path never matched.
+  bp_ps=$(ps -ww -x -o pid=,etime=,args=) || return 1
   printf '%s\n' "$bp_ps" | python3 -c '
-import os, sys, time
+import os, subprocess, sys, time
 at, pack = int(sys.argv[1]), os.path.realpath(sys.argv[2])
+
+
+def cwd(pid):
+    """The folder pid runs in, or None when lsof cannot tell."""
+    try:
+        out = subprocess.run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+                             capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    names = [ln[1:] for ln in out.stdout.splitlines() if ln.startswith("n")]
+    return names[0] if out.returncode == 0 and names else None
+
+
 for line in sys.stdin:
     f = line.split()
     if len(f) < 3:
@@ -3996,8 +4011,17 @@ for line in sys.stdin:
     mod = any(a == "-m" and b.split(".")[0] == "sd_db" for a, b in zip(args, args[1:]))
     # ps loses argument boundaries: try each run of words, so a path
     # with spaces still resolves.
-    runs = (" ".join(args[i:j]) for i in range(len(args)) for j in range(i + 1, len(args) + 1))
-    if mod or any("/" in r and os.path.realpath(os.path.expanduser(r)).startswith(pack + "/") for r in runs):
+    runs = [" ".join(args[i:j]) for i in range(len(args)) for j in range(i + 1, len(args) + 1)]
+    runs = [os.path.expanduser(r) for r in runs if "/" in r]
+    # A relative path resolves in the folder the process runs in; one whose
+    # folder lsof cannot read counts, so the folder stays.
+    if any(not r.startswith("/") for r in runs):
+        here = cwd(f[0])
+        if here is None:
+            print(f[0])
+            continue
+        runs = [os.path.join(here, r) for r in runs]
+    if mod or any(os.path.realpath(r).startswith(pack + "/") for r in runs):
         print(f[0])
 ' "$1" "$SD_PACK_ROOT"
 }
