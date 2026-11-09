@@ -3971,9 +3971,9 @@ bulk_free() {
 }
 
 # The pids of this user's pack processes that started at or before epoch
-# $1; fails when ps cannot list them. A process counts when an argument
-# resolves into the pack, however it was spelled (an installed `sd` link,
-# a trailing slash), or it runs a pack module with -m sd_db.
+# $1, give or take 2 s; fails when ps cannot list them. A process counts
+# when an argument resolves into the pack, however it was spelled (an
+# installed `sd` link, a trailing slash, spaces), or it runs -m sd_db.
 bulk_producers() {
   bp_ps=$(ps -x -o pid=,etime=,args=) || return 1
   printf '%s\n' "$bp_ps" | python3 -c '
@@ -3989,11 +3989,15 @@ for line in sys.stdin:
     s = 0
     for u in t.split(":"):
         s = s * 60 + int(u)
-    if time.time() - (int(d) * 86400 + s) > at:
+    # Whole-second marker and etime: within 2 s of the switch is old.
+    if time.time() - (int(d) * 86400 + s) > at + 2:
         continue
-    args = f[2:]
+    args = f[2:22]
     mod = any(a == "-m" and b.split(".")[0] == "sd_db" for a, b in zip(args, args[1:]))
-    if mod or any("/" in a and os.path.realpath(os.path.expanduser(a)).startswith(pack + "/") for a in args):
+    # ps loses argument boundaries: try each run of words, so a path
+    # with spaces still resolves.
+    runs = (" ".join(args[i:j]) for i in range(len(args)) for j in range(i + 1, len(args) + 1))
+    if mod or any("/" in r and os.path.realpath(os.path.expanduser(r)).startswith(pack + "/") for r in runs):
         print(f[0])
 ' "$1" "$SD_PACK_ROOT"
 }
@@ -4075,6 +4079,10 @@ stage_bulkmove() {
     return 0
   fi
   echo "  copied  $BULK_LOCAL to $bm_dst; a checksum dry run lists nothing left"
+  # Before the switch: a process that read the old root predates it.
+  if [ ! -s "$BULK_SWITCHED" ]; then
+    date +%s > "$BULK_SWITCHED" || { note_failure "write $BULK_SWITCHED; $BULK_LOCAL kept" 1; return 0; }
+  fi
   run_ok bound_step 120 "$SD_PACK_ROOT/bin/sd" config set sd.bulk_storage_root "$bm_dst" || return 0
   bm_got=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null) || bm_got=""
   if [ "$bm_got" != "$bm_dst" ]; then
@@ -4082,9 +4090,6 @@ stage_bulkmove() {
     return 0
   fi
   echo "  set     sd.bulk_storage_root to $bm_dst"
-  if [ ! -s "$BULK_SWITCHED" ]; then
-    date +%s > "$BULK_SWITCHED" || { note_failure "write $BULK_SWITCHED; $BULK_LOCAL kept" 1; return 0; }
-  fi
   bm_pids=$(bulk_producers "$(cat "$BULK_SWITCHED")") || {
     note_failure "ps could not list pack processes; $BULK_LOCAL kept" 1; return 0; }
   if [ -n "$bm_pids" ]; then

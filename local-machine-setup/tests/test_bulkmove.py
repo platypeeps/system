@@ -64,8 +64,13 @@ exec "$REAL_RSYNC" "$@"
 
 # ps lists PS_LINES ("pid etime args", one per line), as `ps -x -o
 # pid=,etime=,args=` does; none when unset.
+# PS_START (epoch) turns ETIME in PS_LINES into the seconds since then.
 PS = """#!/bin/sh
-[ -z "${PS_LINES:-}" ] || printf '%b\\n' "$PS_LINES"
+[ -z "${PS_LINES:-}" ] || {
+  e=""
+  [ -z "${PS_START:-}" ] || e=$(( $(date +%s) - PS_START ))
+  printf '%b\\n' "$PS_LINES" | sed "s/ETIME/00:$e/"
+}
 """
 
 
@@ -185,6 +190,25 @@ class BulkmoveTest(unittest.TestCase):
             code, out = self.run_stage(PS_LINES=ps, SD_PACK_ROOT=root)
             self.assertTrue((self.local / "system/lane/run.log").is_file(), out)
             self.assertIn(ps.split()[0], out)
+
+    def test_a_pack_path_with_spaces_still_finds_the_process(self):
+        spaced = self.base / "My Tools/pack"
+        spaced.parent.mkdir()
+        spaced.symlink_to(self.pack)
+        ps = f"4247 01:02:03 python3 {spaced}/bin/sd assignments supervise"
+        code, out = self.run_stage(PS_LINES=ps)
+        self.assertTrue((self.local / "system/lane/run.log").is_file(), out)
+        self.assertIn("4247", out)
+
+    def test_a_process_started_in_the_switch_second_holds_the_folder(self):
+        # The marker is whole seconds and ps etime rounds; a process one
+        # second either side of the switch counts as old (review of sd:8242).
+        switch = int(time.time()) - 30
+        (self.state / "bulkmove.switched").write_text(f"{switch}\n")
+        ps = f"4248 ETIME python3 {self.pack}/bin/sd assignments dispatch"
+        code, out = self.run_stage(PS_LINES=ps, PS_START=str(switch + 1))
+        self.assertTrue((self.local / "system/lane/run.log").is_file(), out)
+        self.assertIn("4248", out)
 
     def test_a_pack_process_started_after_the_switch_does_not_hold_the_folder(self):
         # An earlier run switched the root an hour ago; this tick is 10 s old.
