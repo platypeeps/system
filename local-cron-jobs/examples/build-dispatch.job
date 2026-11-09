@@ -8,11 +8,9 @@
 #
 # Run it on the hub and on each satellite that hosts a lane: each tick
 # acts on its own host's lanes only (sd:7932). Install it in that
-# machine's `<config>/cron-jobs/jobs/<host>/`. Run logs are written
-# locally and moved at run end under its pack config's
-# `sd.bulk_storage_root` (pack sd:8246), which may name the NAS; the
-# machine-setup bulkmove stage points a satellite there (sd:8242).
-# cron-jobs.sh guards
+# machine's `<config>/cron-jobs/jobs/<host>/`. Run logs go under its
+# pack config's `sd.bulk_storage_root`; on a satellite name a local
+# system-disk folder there, not the NAS (sd:6705). cron-jobs.sh guards
 # each tick: on a satellite whose pack lacks host scoping (pack sd:7933), it
 # logs one `skipped` line, exits 0 and dispatches nothing.
 #
