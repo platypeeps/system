@@ -245,6 +245,18 @@ class Step(unittest.TestCase):
         self.assertRegex(lines[0], r"^\[step \d\d:\d\d:\d\d\] echo running \(bound 10s\)$")
         self.assertEqual(lines[1:], ["running"])
 
+    def test_a_multi_line_argument_logs_its_first_line_only(self):
+        # A python3 -c source echoed whole filled the nightly log (sd:8278).
+        result = shell("st_step 10 sh -c 'exit 0\nexit 1\nexit 2' arg 2>&1; "
+                       "st_step 10 sh -c 'exit 3\nexit 4' 2>&1")
+
+        lines = result.stdout.splitlines()
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(len(lines), 3, lines)
+        self.assertRegex(lines[0], r"\] sh -c exit 0 \.\.\. arg \(bound 10s\)$")
+        self.assertRegex(lines[1], r"\] sh -c exit 3 \.\.\. \(bound 10s\)$")
+        self.assertRegex(lines[2], r"\] sh -c exit 3 \.\.\. exited 3$")
+
     def test_fd3_takes_the_start_line_and_a_failure_goes_to_both(self):
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "log"
