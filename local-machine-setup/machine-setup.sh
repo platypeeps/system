@@ -3971,17 +3971,31 @@ bulk_free() {
 }
 
 # The pids of this user's pack processes that started at or before epoch
-# $1; fails when ps cannot list them.
+# $1; fails when ps cannot list them. A process counts when an argument
+# resolves into the pack, however it was spelled (an installed `sd` link,
+# a trailing slash), or it runs a pack module with -m sd_db.
 bulk_producers() {
   bp_ps=$(ps -x -o pid=,etime=,args=) || return 1
-  printf '%s\n' "$bp_ps" | awk -v now="$(date +%s)" -v at="$1" -v pack="$SD_PACK_ROOT/" '
-    NF >= 3 && index($0, pack) {
-      t = $2; d = 0
-      if (index(t, "-")) { split(t, p, "-"); d = p[1]; t = p[2] }
-      n = split(t, u, ":"); s = 0
-      for (i = 1; i <= n; i++) s = s * 60 + u[i]
-      if (now - (d * 86400 + s) <= at) print $1
-    }'
+  printf '%s\n' "$bp_ps" | python3 -c '
+import os, sys, time
+at, pack = int(sys.argv[1]), os.path.realpath(sys.argv[2])
+for line in sys.stdin:
+    f = line.split()
+    if len(f) < 3:
+        continue
+    t, d = f[1], 0
+    if "-" in t:
+        d, t = t.split("-", 1)
+    s = 0
+    for u in t.split(":"):
+        s = s * 60 + int(u)
+    if time.time() - (int(d) * 86400 + s) > at:
+        continue
+    args = f[2:]
+    mod = any(a == "-m" and b.split(".")[0] == "sd_db" for a, b in zip(args, args[1:]))
+    if mod or any("/" in a and os.path.realpath(os.path.expanduser(a)).startswith(pack + "/") for a in args):
+        print(f[0])
+' "$1" "$SD_PACK_ROOT"
 }
 
 # The sd-ship lane root, read as the pack reads it: SD_LANE_ROOT, else
@@ -3989,10 +4003,11 @@ bulk_producers() {
 bulk_lane_root() {
   if [ -n "${SD_LANE_ROOT:-}" ]; then
     bl_lane="$SD_LANE_ROOT"
-  elif bl_lane=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.lane_root 2>&1); then
-    bl_lane=$(printf '%s\n' "$bl_lane" | tail -n 1)
+  elif bl_lane=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.lane_root 2>/dev/null); then
+    :
   else
-    case "$bl_lane" in
+    bl_err=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.lane_root 2>&1 >/dev/null) || :
+    case "$bl_err" in
       *"sd.lane_root is not set"*) bl_lane="${XDG_STATE_HOME:-$HOME/.local/state}/sd/lanes" ;;
       *) return 1 ;;
     esac

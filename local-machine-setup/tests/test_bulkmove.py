@@ -173,6 +173,19 @@ class BulkmoveTest(unittest.TestCase):
         self.assertFalse(self.local.exists(), out)
         self.assertFalse((self.state / "bulkmove.switched").exists(), out)
 
+    def test_a_pack_process_started_through_a_link_keeps_the_folder(self):
+        # An installed `sd` link or a trailing slash on the pack path
+        # hid the process from a literal match (review of sd:8242).
+        link = self.home / ".local/bin/sd"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(self.pack / "bin/sd")
+        for root, ps in ((str(self.pack), f"4244 01:02:03 python3 {link} assignments supervise"),
+                         (f"{self.pack}/", f"4245 01:02:03 python3 {self.pack}/bin/sd x"),
+                         (str(self.pack), "4246 01:02:03 python3 -m sd_db.dispatch")):
+            code, out = self.run_stage(PS_LINES=ps, SD_PACK_ROOT=root)
+            self.assertTrue((self.local / "system/lane/run.log").is_file(), out)
+            self.assertIn(ps.split()[0], out)
+
     def test_a_pack_process_started_after_the_switch_does_not_hold_the_folder(self):
         # An earlier run switched the root an hour ago; this tick is 10 s old.
         (self.state / "bulkmove.switched").write_text(f"{int(time.time()) - 3600}\n")
