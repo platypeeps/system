@@ -26,7 +26,14 @@ HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "machine-setup.sh"
 
 # sd: `config set|get` keep the value in SD_CONFIG; anything else fails.
+# sd.lane_root reads LANE_ROOT, unset as the real sd says it; LANE_FAIL
+# makes that read fail another way.
 SD = """#!/bin/sh
+if [ "$1 $2 $3" = "config get sd.lane_root" ]; then
+  [ -z "${LANE_FAIL:-}" ] || { echo "sd: database is locked" >&2; exit 1; }
+  [ -n "${LANE_ROOT:-}" ] && { printf '%s\\n' "$LANE_ROOT"; exit 0; }
+  echo "sd: sd.lane_root is not set (example). Run:" >&2; exit 1
+fi
 case "$1 $2" in
   "config set") [ -z "${SD_SET_FAIL:-}" ] || exit 1; printf '%s' "$4" > "$SD_CONFIG" ;;
   "config get") cat "$SD_CONFIG" 2>/dev/null || exit 1 ;;
@@ -170,6 +177,37 @@ class BulkmoveTest(unittest.TestCase):
         # An earlier run switched the root an hour ago; this tick is 10 s old.
         (self.state / "bulkmove.switched").write_text(f"{int(time.time()) - 3600}\n")
         code, out = self.run_stage(PS_LINES=f"4243 00:10 python3 {self.pack}/bin/sd assignments dispatch")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.local.exists(), out)
+
+    def test_a_lane_root_inside_the_folder_keeps_it(self):
+        # The lane queue may live under the local folder; removing it
+        # would drop the queued runs while sd.lane_root still names it
+        # (review of sd:8242).
+        for lane in (str(self.local), str(self.local / "lanes")):
+            for how in ({"LANE_ROOT": lane}, {"SD_LANE_ROOT": lane}):
+                code, out = self.run_stage(**how)
+                self.assertEqual(code, 1, out)
+                self.assertIn("sd.lane_root", out)
+                self.assert_kept(out)
+                self.assertFalse((self.nas / "repo-storage").exists(), out)
+
+    def test_a_lane_root_linked_into_the_folder_keeps_it(self):
+        link = self.home / "lanes"
+        link.symlink_to(self.local / "system")
+        code, out = self.run_stage(LANE_ROOT=str(link))
+        self.assertEqual(code, 1, out)
+        self.assertIn("sd.lane_root", out)
+        self.assert_kept(out)
+
+    def test_a_lane_root_that_does_not_read_keeps_the_folder(self):
+        code, out = self.run_stage(LANE_FAIL="1")
+        self.assertEqual(code, 1, out)
+        self.assertIn("could not read sd.lane_root", out)
+        self.assert_kept(out)
+
+    def test_a_lane_root_outside_the_folder_moves_it(self):
+        code, out = self.run_stage(LANE_ROOT=str(self.home / "repo-storage-lanes"))
         self.assertEqual(code, 0, out)
         self.assertFalse(self.local.exists(), out)
 

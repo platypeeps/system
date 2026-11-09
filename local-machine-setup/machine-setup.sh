@@ -3923,7 +3923,8 @@ tmpdisk_locked() {
 #      left the dispatch tick, so a hung NAS no longer holds the tick
 #      (sd:6705). Unset refuses: the item's status says nothing of the
 #      dispatcher installed here;
-#   1. lsof lists no open file under the local folder;
+#   1. the sd-ship lane root is not inside the local folder, and lsof
+#      lists no open file under it;
 #   2. the share is mounted, rsync copies, and a checksum dry run lists
 #      no file left to copy;
 #   3. sd.bulk_storage_root names the NAS folder and reads back so;
@@ -3983,6 +3984,23 @@ bulk_producers() {
     }'
 }
 
+# The sd-ship lane root, read as the pack reads it: SD_LANE_ROOT, else
+# sd.lane_root, else its default. Fails when the setting does not read.
+bulk_lane_root() {
+  if [ -n "${SD_LANE_ROOT:-}" ]; then
+    bl_lane="$SD_LANE_ROOT"
+  elif bl_lane=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.lane_root 2>&1); then
+    bl_lane=$(printf '%s\n' "$bl_lane" | tail -n 1)
+  else
+    case "$bl_lane" in
+      *"sd.lane_root is not set"*) bl_lane="${XDG_STATE_HOME:-$HOME/.local/state}/sd/lanes" ;;
+      *) return 1 ;;
+    esac
+  fi
+  case "$bl_lane" in "~"*) bl_lane="$HOME${bl_lane#"~"}" ;; esac
+  printf '%s\n' "$bl_lane"
+}
+
 # The files rsync would still copy from $1 to $2; "$3" adds -c.
 bulk_left() {
   bl_out=$(bound_step "$BULK_COPY_SECS" rsync -an $3 --out-format='%n' "$1/" "$2/") || return 1
@@ -4017,6 +4035,16 @@ stage_bulkmove() {
     note_failure "the pack at $SD_PACK_ROOT does not hold $BULK_PACK_MIN (pack sd:8275), or git could not read it; $BULK_LOCAL kept" 1
     return 0
   fi
+  # The lane queue under the folder would go with it (review of sd:8242).
+  bm_lane=$(bulk_lane_root) || {
+    note_failure "could not read sd.lane_root; $BULK_LOCAL kept" 1; return 0; }
+  bm_real=$(cd "$BULK_LOCAL" && pwd -P) || bm_real="$BULK_LOCAL"
+  bm_lane_real=$(cd "$bm_lane" 2>/dev/null && pwd -P) || bm_lane_real="$bm_lane"
+  case "$bm_lane/ $bm_lane_real/" in
+    "$BULK_LOCAL"/*|"$bm_real"/*|*" $BULK_LOCAL"/*|*" $bm_real"/*)
+      note_failure "sd.lane_root resolves to $bm_lane, inside $BULK_LOCAL: move the lane root first; $BULK_LOCAL kept" 1
+      return 0 ;;
+  esac
   bulk_free "$BULK_LOCAL" || return 0
   if ! mount | grep -qF " on $BULK_NAS ("; then
     note_failure "$BULK_NAS is not mounted; $BULK_LOCAL kept" 1
