@@ -164,6 +164,16 @@ class TargetPruneTest(Harness):
         self.assertIn(f"- build output prune: could not tell whether a process uses {target}; kept",
                       run.stdout)
 
+    def test_an_in_use_check_error_is_named_in_the_finding(self):
+        # sd:8271: the finding dropped in_use.py's stderr, so a morning
+        # report said "could not tell" and not why.
+        _checkout, target = self.cargo_target("example-crash-why")
+        (self.tmp / "local-maintenance" / "in_use.py").write_text(
+            "import sys\nsys.exit('in_use: example failure')\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertIn(f"- build output prune: could not tell whether a process uses {target}; kept"
+                      ": in_use: example failure", run.stdout)
+
     def test_a_sibling_path_is_not_the_target(self):
         _checkout, target = self.cargo_target("example-sibling")
         self.lsof_lists(f"{target}-other/example")

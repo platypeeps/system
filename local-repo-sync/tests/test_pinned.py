@@ -406,7 +406,9 @@ class HeldLockSyncTest(unittest.TestCase):
         it, says so, pulls, and exits 0."""
         f = self.fixture()
         repo, lock = self.held(f, 1)
-        f.git(repo, "fetch", "-q")
+        # The fetch's detached auto-maintenance is a git working in repo
+        # until it exits; under load the sync's probe saw it (sd:8271).
+        f.git(repo, "-c", "maintenance.autoDetach=false", "fetch", "-q")
         want = f.git(repo, "rev-parse", "origin/main")
 
         result = f.run("sync", expect=0)
@@ -416,6 +418,21 @@ class HeldLockSyncTest(unittest.TestCase):
         self.assertFalse(lock.exists(), "sync kept the stale lock")
         self.assertEqual(want, f.head(repo))
         self.assertIn("all repos synced", result.stdout)
+
+    def test_the_pull_leaves_no_detached_maintenance_in_the_checkout(self):
+        """NEW. sd:8271: a pull's fetch starts `git maintenance run --auto
+        --detach`, a git that works in the checkout until it exits. Under
+        load git_busy then saw it and kept a stale lock. The pull runs
+        maintenance in the foreground instead, so it is done by then."""
+        f = self.fixture()
+        repo, _lock = self.held(f, 1)
+
+        f.run("sync", expect=0)
+
+        pulls = [v for v in f.git_verbs() if "pull --ff-only" in v]
+        self.assertTrue(pulls, f.git_verbs())
+        for verb in pulls:
+            self.assertIn("-c maintenance.autoDetach=false pull", verb)
 
     def test_an_old_lock_a_git_process_works_in_is_kept(self):
         """NEW. sd:6480: a git whose cwd is the checkout may hold the lock,

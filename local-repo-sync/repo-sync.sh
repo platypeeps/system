@@ -610,9 +610,11 @@ git_step() {
 
 # Pulls checkout $1 and updates its submodules. Their stderr passes through
 # and stays in $TMPD/pull.err, where held_lock and auth_cause read it.
+# The fetch's auto-maintenance runs in the foreground: detached, it is a git
+# working in $1 that git_busy sees, so a stale lock stayed (sd:8271).
 pull_one() {
   p_rc=0
-  { bound_step 600 git -C "$1" pull --ff-only < /dev/null \
+  { bound_step 600 git -C "$1" -c maintenance.autoDetach=false pull --ff-only < /dev/null \
       && bound_step 1800 git -C "$1" submodule update --init --recursive < /dev/null; } \
       2> "$TMPD/pull.err" || p_rc=$?
   cat "$TMPD/pull.err" >&2
