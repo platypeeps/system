@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 from tests import fixture_config
@@ -36,7 +37,7 @@ esac
 # lsof prints LSOF_OPEN as the one open file, if set.
 LSOF = """#!/bin/sh
 echo p1
-[ -z "${LSOF_OPEN:-}" ] || echo "n$LSOF_OPEN"
+[ -z "${LSOF_OPEN:-}" ] || printf 'n%s\\n' "$LSOF_OPEN"
 """
 
 # mount lists the NAS when NAS_MOUNTED is set.
@@ -51,6 +52,13 @@ case "$1" in
   -an*) if [ -n "${RSYNC_LEFT:-}" ]; then echo "$RSYNC_LEFT"; exit 0; fi ;;
 esac
 exec "$REAL_RSYNC" "$@"
+"""
+
+
+# ps lists PS_LINES ("pid etime args", one per line), as `ps -x -o
+# pid=,etime=,args=` does; none when unset.
+PS = """#!/bin/sh
+[ -z "${PS_LINES:-}" ] || printf '%b\\n' "$PS_LINES"
 """
 
 
@@ -85,6 +93,7 @@ class BulkmoveTest(unittest.TestCase):
         stub(self.stubs, "lsof", LSOF)
         stub(self.stubs, "mount", MOUNT)
         stub(self.stubs, "rsync", RSYNC)
+        stub(self.stubs, "ps", PS)
         self.config = self.base / "sd-config"
         # The pack holds the commit that stands in for pack sd:8275's.
         self.pin = fixture_config.dispatch_pack(self.pack, new=True)["SD_DISPATCH_PACK_MIN"]
@@ -124,6 +133,45 @@ class BulkmoveTest(unittest.TestCase):
         code, out = self.run_stage()
         self.assertEqual(code, 0, out)
         self.assertIn(f"ok      {self.local} is gone", out)
+
+    def test_a_file_open_under_a_non_ascii_folder_keeps_it(self):
+        # Under a C locale lsof escapes each byte past ASCII, so a raw
+        # path compare saw no open file under caf\u00e9 (review of sd:8242).
+        local = self.home / "caf\u00e9-storage"
+        (local / "system").mkdir(parents=True)
+        (local / "system/run.log").write_text("example run\n")
+        escaped = str(local).replace("\u00e9", "\\xc3\\xa9") + "/system/run.log"
+        code, out = self.run_stage(MACHINE_SETUP_BULK_LOCAL=str(local), LSOF_OPEN=escaped)
+        self.assertEqual(code, 1, out)
+        self.assertIn("a process holds a file under", out)
+        self.assertTrue((local / "system/run.log").is_file(), out)
+
+    def test_a_pack_process_from_before_the_switch_keeps_the_folder_until_it_ends(self):
+        # A supervisor read the old root at its start and may archive
+        # there with no file open (review of sd:8242): the folder stays
+        # until every pack process older than the switch has ended.
+        supervisor = f"4242 01:02:03 python3 {self.pack}/bin/sd assignments supervise"
+        code, out = self.run_stage(PS_LINES=supervisor)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.config.read_text(), str(self.nas / "repo-storage"))
+        self.assertTrue((self.local / "system/lane/run.log").is_file(), out)
+        self.assertIn("4242", out)
+        # It archived to the old root after the first run's copy.
+        (self.local / "system/lane/late.log").write_text("late output\n")
+        code, out = self.run_stage(PS_LINES=supervisor)
+        self.assertTrue(self.local.exists(), out)
+        code, out = self.run_stage()
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.nas / "repo-storage/system/lane/late.log").read_text(), "late output\n")
+        self.assertFalse(self.local.exists(), out)
+        self.assertFalse((self.state / "bulkmove.switched").exists(), out)
+
+    def test_a_pack_process_started_after_the_switch_does_not_hold_the_folder(self):
+        # An earlier run switched the root an hour ago; this tick is 10 s old.
+        (self.state / "bulkmove.switched").write_text(f"{int(time.time()) - 3600}\n")
+        code, out = self.run_stage(PS_LINES=f"4243 00:10 python3 {self.pack}/bin/sd assignments dispatch")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.local.exists(), out)
 
     def test_a_dry_run_reports_drift_and_changes_nothing(self):
         code, out = self.run_stage(apply=False)

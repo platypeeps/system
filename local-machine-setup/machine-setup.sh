@@ -3927,27 +3927,60 @@ tmpdisk_locked() {
 #   2. the share is mounted, rsync copies, and a checksum dry run lists
 #      no file left to copy;
 #   3. sd.bulk_storage_root names the NAS folder and reads back so;
-#   4. lsof again, and a quick dry run, catch a write since step 2;
-#   5. only then the local folder goes.
+#   4. no pack process from before the first switch still runs: one read
+#      the old root at its start and may archive there with no file
+#      open, so the folder waits for it, and a later run copies what it
+#      wrote (review of sd:8242);
+#   5. lsof again, and a quick dry run, catch a write since step 2;
+#   6. only then the local folder goes.
 # rsync resumes, so a copy the bound stops is finished by the next run.
+# Every run repeats steps 0-3, so late output reaches the NAS first.
 BULK_LOCAL="${MACHINE_SETUP_BULK_LOCAL:-$HOME/repo-storage}"
 BULK_NAS="${MACHINE_SETUP_BULK_NAS:-}"
 BULK_COPY_SECS="${MACHINE_SETUP_BULK_COPY_SECS:-21600}"
 # Set it once pack sd:8275 lands; it is no default until then.
 BULK_PACK_MIN="${MACHINE_SETUP_BULK_PACK_MIN:-}"
+# The epoch of the first switch of sd.bulk_storage_root to the NAS.
+BULK_SWITCHED="$STATE_DIR/bulkmove.switched"
 
 # Whether a process holds a file under $1: 0 none, 1 one does or lsof
-# could not tell.
+# could not tell. lsof escapes the names it prints; in_use.py compares
+# both escaped forms of the folder and of its real path.
 bulk_free() {
   bf_real=$(cd "$1" && pwd -P) || return 1
-  bf_open=$(bound_step 120 lsof -nP -F n 2>/dev/null) || {
-    note_failure "lsof could not list open files; $1 kept" 1; return 1; }
-  if printf '%s\n' "$bf_open" | awk -v a="n$1" -v b="n$bf_real" '
-      $0 == a || $0 == b || index($0, a "/") == 1 || index($0, b "/") == 1 { f = 1 }
-      END { exit !f }'; then
-    note_failure "a process holds a file under $1; kept, the next run tries again" 1
+  bf_list=$(mktemp) || { note_failure "mktemp for the lsof listing; $1 kept" 1; return 1; }
+  if ! bound_step 120 lsof -nP -F n > "$bf_list" 2>/dev/null; then
+    rm -f "$bf_list"
+    note_failure "lsof could not list open files; $1 kept" 1
     return 1
   fi
+  for bf_path in "$1" "$bf_real"; do
+    bf_rc=0
+    python3 "$ROOT/local-maintenance/in_use.py" "$bf_path" "$bf_list" || bf_rc=$?
+    [ "$bf_rc" -eq 3 ] && continue
+    rm -f "$bf_list"
+    if [ "$bf_rc" -eq 0 ]; then
+      note_failure "a process holds a file under $1; kept, the next run tries again" 1
+    else
+      note_failure "in_use.py could not tell whether a process uses $1; kept" 1
+    fi
+    return 1
+  done
+  rm -f "$bf_list"
+}
+
+# The pids of this user's pack processes that started at or before epoch
+# $1; fails when ps cannot list them.
+bulk_producers() {
+  bp_ps=$(ps -x -o pid=,etime=,args=) || return 1
+  printf '%s\n' "$bp_ps" | awk -v now="$(date +%s)" -v at="$1" -v pack="$SD_PACK_ROOT/" '
+    NF >= 3 && index($0, pack) {
+      t = $2; d = 0
+      if (index(t, "-")) { split(t, p, "-"); d = p[1]; t = p[2] }
+      n = split(t, u, ":"); s = 0
+      for (i = 1; i <= n; i++) s = s * 60 + u[i]
+      if (now - (d * 86400 + s) <= at) print $1
+    }'
 }
 
 # The files rsync would still copy from $1 to $2; "$3" adds -c.
@@ -4006,6 +4039,15 @@ stage_bulkmove() {
     return 0
   fi
   echo "  set     sd.bulk_storage_root to $bm_dst"
+  if [ ! -s "$BULK_SWITCHED" ]; then
+    date +%s > "$BULK_SWITCHED" || { note_failure "write $BULK_SWITCHED; $BULK_LOCAL kept" 1; return 0; }
+  fi
+  bm_pids=$(bulk_producers "$(cat "$BULK_SWITCHED")") || {
+    note_failure "ps could not list pack processes; $BULK_LOCAL kept" 1; return 0; }
+  if [ -n "$bm_pids" ]; then
+    echo "  --      $BULK_LOCAL kept: pack process(es) $(echo $bm_pids) began before the switch and may write there; the next run after they end copies and removes it"
+    return 0
+  fi
   bulk_free "$BULK_LOCAL" || return 0
   bm_left=$(bulk_left "$BULK_LOCAL" "$bm_dst") || {
     note_failure "rsync dry run of $BULK_LOCAL to $bm_dst; $BULK_LOCAL kept" 1; return 0; }
@@ -4014,6 +4056,7 @@ stage_bulkmove() {
     return 0
   fi
   run_ok rm -rf "$BULK_LOCAL" || return 0
+  rm -f "$BULK_SWITCHED"
   echo "  removed $BULK_LOCAL; bulk storage is $bm_dst"
 }
 
