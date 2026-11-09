@@ -23,6 +23,9 @@ FOUR_DAYS = 4 * 86400
 _SPEC = importlib.util.spec_from_file_location("prune_move", FOLDER / "prune_move.py")
 prune_move = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(prune_move)
+_SPEC = importlib.util.spec_from_file_location("in_use", FOLDER / "in_use.py")
+in_use = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(in_use)
 
 
 def _age(root, seconds):
@@ -55,6 +58,8 @@ class TargetPruneTest(Harness):
         self.trash = self.tmp / "home" / ".local" / "state" / "maintenance" / "prune-trash"
         # No cargo runs, whatever runs on this machine.
         _stub(self.bin / "pgrep", "exit 1\n")
+        # No process holds a file anywhere.
+        _stub(self.bin / "lsof", "exit 0\n")
 
     def cargo_target(self, worktree, *, idle=FOUR_DAYS, tag=True, under="target"):
         """A worktree with tracked files and a build tree last written `idle` ago."""
@@ -109,6 +114,70 @@ class TargetPruneTest(Harness):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertTrue(binary.is_file(), run.stdout + run.stderr)
         self.assertEqual(self.actions(run), [])
+
+    def lsof_lists(self, path, kind="txt"):
+        """lsof -F n output: one process that holds `path`."""
+        _stub(self.bin / "lsof", f"printf 'p4242\\nf{kind}\\nn%s\\n' '{path}'\n")
+
+    def test_a_target_whose_binary_runs_stays_however_old(self):
+        # sd:8240: a paid run used a binary built over 3 days before; its
+        # exec set no fresh atime the prune saw, and the run lost target/.
+        _checkout, target = self.cargo_target("example-running")
+        self.lsof_lists(target / "release" / "example")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file(), run.stdout + run.stderr)
+        self.assertIn(f"- kept idle build output {target}: a process uses it", run.stdout)
+        self.assertEqual(self.attention(run), [])
+
+    def test_a_process_with_a_file_or_cwd_in_the_target_keeps_it(self):
+        _checkout, target = self.cargo_target("example-open")
+        self.lsof_lists(target, kind="cwd")
+        run = self.maintenance("# nothing to check\n", "check")
+        self.assertTrue((target / "CACHEDIR.TAG").is_file())
+        self.assertIn(f"- kept idle build output {target}: a process uses it", run.stdout)
+        self.assertNotIn("would remove idle build output", run.stdout)
+
+    def test_a_target_lsof_prints_escaped_stays(self):
+        # sd:8240 review: under the C locale lsof prints é as \xc3\xa9, a
+        # backslash as \\ and a tab as \t; a raw compare missed the binary.
+        _checkout, target = self.cargo_target("caf\u00e9 a\\b\tc")
+        escaped = str(target).replace("\\", "\\\\").replace("\t", "\\t").replace("\u00e9", "\\xc3\\xa9")
+        _stub(self.bin / "lsof", "cat <<'EOF'\np4242\nftxt\nn" + escaped + "/release/example\nEOF\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertTrue((target / "CACHEDIR.TAG").is_file(), run.stdout + run.stderr)
+        self.assertIn("a process uses it", run.stdout)
+
+    def test_a_target_lsof_prints_in_utf8_stays(self):
+        # Under a UTF-8 locale lsof prints é as is, and still escapes a tab.
+        _checkout, target = self.cargo_target("caf\u00e9\tutf8")
+        escaped = str(target).replace("\t", "\\t")
+        _stub(self.bin / "lsof", "cat <<'EOF'\np4242\nfcwd\nn" + escaped + "\nEOF\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertTrue((target / "CACHEDIR.TAG").is_file(), run.stdout + run.stderr)
+
+    def test_an_in_use_check_that_crashes_keeps_the_target_and_says_so(self):
+        _checkout, target = self.cargo_target("example-crash")
+        (self.tmp / "local-maintenance" / "in_use.py").write_text("raise SystemExit(1)\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertTrue((target / "CACHEDIR.TAG").is_file(), run.stdout + run.stderr)
+        self.assertIn(f"- build output prune: could not tell whether a process uses {target}; kept",
+                      run.stdout)
+
+    def test_a_sibling_path_is_not_the_target(self):
+        _checkout, target = self.cargo_target("example-sibling")
+        self.lsof_lists(f"{target}-other/example")
+        run = self.maintenance("# nothing to check\n")
+        self.assertFalse(target.exists(), run.stdout + run.stderr)
+
+    def test_an_open_file_probe_that_fails_keeps_the_target_and_says_so(self):
+        _checkout, target = self.cargo_target("example-no-lsof")
+        _stub(self.bin / "lsof", "exit 2\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((target / "CACHEDIR.TAG").is_file())
+        self.assertIn(f"- build output prune: could not tell whether a process uses {target}; kept",
+                      run.stdout)
 
     def test_a_folder_the_walk_read_is_not_in_use(self):
         # The walk reads each folder, which sets its access time: only a
@@ -249,6 +318,7 @@ exec /bin/rm "$@"
         _checkout, target = self.cargo_target("example-bounded")
         run = self.maintenance("# nothing to check\n")
         self.assertRegex(run.stderr, r"\[step [\d:]+\] pgrep -x cargo\|rustc \(bound \d+s\)")
+        self.assertRegex(run.stderr, r"\[step [\d:]+\] lsof -nP -F n \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {self.worktrees} .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] find {target} \( -mmin -4320 .* \(bound \d+s\)")
         self.assertRegex(run.stderr, rf"\[step [\d:]+\] rm -rf {self.trash}/\S+ \(bound \d+s\)")
@@ -332,6 +402,25 @@ exec /bin/rm "$@"
     def test_no_worktrees_folder_is_a_clean_run(self):
         run = self.maintenance("# nothing to check\n")
         self.assertIn("all checks clean", run.stdout)
+
+
+class InUseEscapeTest(unittest.TestCase):
+    """sd:8240 review: names as macOS lsof -F n printed them, per locale."""
+
+    def check(self, target, printed):
+        self.assertTrue(in_use.in_use(target, [b"p1\n", b"ftxt\n", b"n" + printed + b"\n"]))
+
+    def test_c_locale_escapes_each_high_byte(self):
+        self.check("/w/café tab\tx", b"/w/caf\\xc3\\xa9 tab\\tx")
+
+    def test_utf8_locale_prints_the_character(self):
+        self.check("/w/café tab\tx", "/w/café tab\\tx".encode())
+
+    def test_backslash_control_and_delete(self):
+        self.check("/w/a\\b\x01c\x7fd", b"/w/a\\\\b^Ac\\x7fd")
+
+    def test_a_longer_name_is_not_a_prefix_match(self):
+        self.assertFalse(in_use.in_use("/w/t", [b"n/w/target/x\n", b"n/w/t-other\n"]))
 
 
 class LockWindowTest(unittest.TestCase):
