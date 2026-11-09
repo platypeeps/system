@@ -1658,8 +1658,16 @@ stage_repos() {
   echo "== repos"
   if [ -x "$ROOT/local-repo-sync/repo-sync.sh" ]; then
     if [ "$APPLY" -eq 1 ]; then
-      # The pipe hides the tool's exit status; the braces keep it (sd:3543).
-      { "$ROOT/local-repo-sync/repo-sync.sh" sync || note_failure "repo-sync.sh sync" "$?"; } | sed 's/^/  /'
+      # repo-sync-nightly pulls the fleet; a second pull here paged twice
+      # and logged every diffstat (sd:8278). Sync only what check reports:
+      # a missing checkout or a changed origin.
+      rs_out=$("$ROOT/local-repo-sync/repo-sync.sh" check) || {
+        printf '%s\n' "$rs_out" | sed 's/^/  /'
+        # The pipe hides the tool's exit status; the braces keep it (sd:3543).
+        { "$ROOT/local-repo-sync/repo-sync.sh" sync || note_failure "repo-sync.sh sync" "$?"; } | sed 's/^/  /'
+        rs_out=
+      }
+      [ -z "$rs_out" ] || printf '%s\n' "$rs_out" | sed 's/^/  /'
     else
       # `check`, not `list`: list prints the configured fleet without looking
       # at disk, so it could not tell a missing checkout from a present one
