@@ -536,12 +536,18 @@ if [ -d "$WORKTREES" ]; then
     # An old atime is no proof nothing runs there: a paid run used a binary
     # built over 3 days before and lost target/ (sd:8240). lsof lists every
     # open file, cwd and running binary (txt); one under $t keeps it.
+    # lsof escapes names it cannot print; in_use.py compares the escaped form.
     if ! st_step 60 lsof -nP -F n > "$TMPD/open" 2>/dev/null; then
       finding "build output prune: could not tell whether a process uses $t; kept"
       continue
     fi
-    if awk -v p="n$t/" -v d="n$t" '$0 == d || index($0, p) == 1 { f = 1; exit } END { exit !f }' "$TMPD/open"; then
+    use_rc=0
+    python3 "$DIR/in_use.py" "$t" "$TMPD/open" 2> "$TMPD/use.err" || use_rc=$?
+    if [ "$use_rc" -eq 0 ]; then
       action "kept idle build output $t: a process uses it"
+      continue
+    elif [ "$use_rc" -ne 3 ]; then
+      finding "build output prune: could not tell whether a process uses $t; kept"
       continue
     fi
     if [ "$APPLY" -eq 0 ]; then
