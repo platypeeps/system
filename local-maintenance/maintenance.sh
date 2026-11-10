@@ -549,7 +549,10 @@ if [ -d "$WORKTREES" ]; then
     elif [ "$use_rc" -ne 3 ]; then
       # Name in_use.py's own error, so the report says why (sd:8271).
       use_why=$(sed -n '$p' "$TMPD/use.err")
-      finding "build output prune: could not tell whether a process uses $t; kept${use_why:+: $use_why}"
+      # The key leaves the error out: it can name a per-run temp path, and
+      # a key that moves opens a new report each night (sd:8333, sd:4182).
+      finding "build output prune: could not tell whether a process uses $t; kept${use_why:+: $use_why}" \
+        "build output prune: could not tell whether a process uses $t; kept"
       continue
     fi
     if [ "$APPLY" -eq 0 ]; then
