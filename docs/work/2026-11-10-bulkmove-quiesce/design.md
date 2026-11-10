@@ -19,23 +19,29 @@ links, spaces, rounding, a stale marker and relative paths.
 Stop the writers instead of finding them.
 On a satellite, every pack run that writes under the bulk root starts
 from one of three cron jobs: `build-dispatch`, `lane-run` and
-`night-build`. The database lists every open build, draft and lane run
-by host. So the stage:
+`night-build`. Each run holds its job's `flock` for as long as it runs
+(`local-cron-jobs`, sd:1251), and a slot that finds the lock held skips.
+The database lists every open build, draft and lane run by host. So the
+stage:
 
 1. Refuses while the share is unmounted or the lane root is inside the
    folder.
 2. Refuses while the database shows an open run of this host.
 3. Names each NAS file the copy replaces (sd:8319), then copies while
    the jobs still run.
-4. Boots out the loaded jobs and checks for open runs again.
+4. Takes and holds each loaded job's lock; a lock a run holds refuses,
+   and the run goes on. Then it checks for open runs again.
 5. Copies what changed, then a checksum dry run must list nothing.
 6. Sets `sd.bulk_storage_root` to the NAS folder and reads it back.
 7. Removes the folder.
-8. Loads the stopped jobs again, on every exit path, signals included.
+
+The locks live on fds of the stage's shell, so the kernel drops them on
+any exit, a signal included. No job is booted out: `bootout` sends TERM
+to a running job, which would kill a lane run mid-merge (sd:3317).
 
 A satellite that holds the hub role is skipped (sd:8322).
 sd:8321, a long-lived pack service holding the old root, is moot: no
-process scan remains, and no run is open while the jobs are stopped.
+process scan remains, and no run is open while the job locks are held.
 
 Rejected: the process scan from the first build; see Problem.
 
@@ -59,30 +65,32 @@ pack at the hub's build.
 | 1 mount, lane root | nothing | share unmounted; lane root inside | FAILED, folder kept, no job touched | `test_an_unmounted_nas_keeps_the_folder`, `test_a_lane_root_inside_the_folder_keeps_it` |
 | 2 open runs | nothing | a run is open; database unreadable | FAILED, folder kept, no job touched | `test_an_open_run_keeps_the_folder_and_the_jobs`, `test_an_unreadable_database_keeps_the_folder` |
 | 3 first copy | files on the NAS | copy fails or hits its bound | FAILED, folder kept; rsync resumes next run | `test_a_failed_first_copy_keeps_the_folder_and_the_jobs` |
-| 4 stop jobs | jobs booted out | a job will not go out | FAILED, folder kept, stopped jobs loaded again | `test_a_job_that_will_not_stop_keeps_the_folder_and_restarts_the_rest` |
-| 5 second check | jobs stopped | a run opened before the stop | FAILED, folder kept, jobs loaded again | `test_a_run_that_opened_during_the_stop_keeps_the_folder_and_restarts` |
-| 6 second copy | files on the NAS | copy fails | FAILED, folder kept, jobs loaded again | `test_a_failed_second_copy_keeps_the_folder_and_restarts` |
-| 7 checksum | nothing | dry run lists a file | FAILED, folder kept, jobs loaded again | `test_a_file_left_after_the_copy_keeps_the_folder_and_restarts` |
-| 8 root | `sd.bulk_storage_root` | set fails or reads back wrong | FAILED, folder kept, jobs loaded again | `test_a_root_that_does_not_switch_keeps_the_folder_and_restarts` |
-| 9 remove | local folder | removal fails part way | FAILED, jobs loaded again; data is on the NAS and the root names it, so a rerun copies nothing and removes the rest | `test_a_failed_removal_restarts_and_a_rerun_finishes` |
-| 10 restart | jobs loaded | bootstrap fails | FAILED; the `cron` stage reports `UNLOADED` and loads it next run | `test_a_job_that_does_not_restart_is_failed` |
-| 11 any | jobs stopped | TERM, INT or HUP | the EXIT trap loads the jobs again | `test_a_signal_while_stopped_restarts_the_jobs` |
-| all | all of the above | none | folder gone, root set, jobs loaded; rerun says `ok` | `test_the_move_copies_switches_removes_and_restarts` |
+| 4 job locks | locks held | a run holds a lock; launchd names no log | FAILED, folder kept, the run goes on, locks released | `test_a_job_mid_run_is_left_running_and_keeps_the_folder`, `test_a_loaded_job_with_no_log_keeps_the_folder` |
+| 4 job locks | locks held | a slot fires during the copy | it finds its lock held and skips | `test_a_slot_during_the_final_copy_finds_its_lock_held` |
+| 5 second check | locks held | a run opened before the locks | FAILED, folder kept, locks released | `test_a_run_that_opened_before_the_locks_keeps_the_folder` |
+| 6 second copy | files on the NAS | copy fails | FAILED, folder kept, locks released | `test_a_failed_second_copy_keeps_the_folder` |
+| 7 checksum | nothing | dry run lists a file | FAILED, folder kept, locks released | `test_a_file_left_after_the_copy_keeps_the_folder` |
+| 8 root | `sd.bulk_storage_root` | set fails or reads back wrong | FAILED, folder kept, locks released | `test_a_root_that_does_not_switch_keeps_the_folder` |
+| 9 remove | local folder | removal fails part way | FAILED, locks released; data is on the NAS and the root names it, so a rerun copies nothing and removes the rest | `test_a_failed_removal_releases_the_locks_and_a_rerun_finishes` |
+| 10 any | locks held | TERM, INT or HUP | the kernel drops the locks with the shell; no job was touched | `test_a_signal_under_the_locks_leaves_the_jobs_as_they_were` |
+| all | all of the above | none | folder gone, root set, locks released; rerun says `ok` | `test_the_move_copies_switches_and_removes` |
 
 ## Acceptance criteria
 
 - [ ] `python3 -m unittest tests.test_bulkmove` in `local-machine-setup`
-  passes, 18 tests.
+  passes, 19 tests.
 - [ ] `shellcheck -S warning machine-setup.sh` is clean.
 
 ## Risks
 
-- A run started by hand, outside the three jobs, during the stop window
+- A run started by hand, outside the three jobs, during the lock window
   is not seen until the second database check; one started after it
   writes to the old folder and is lost with it. Accepted: on a
   satellite every pack run comes from those jobs.
-- While the jobs are stopped, the satellite claims no builds; the
-  window is the second copy, small after the first.
+- While the locks are held, the satellite claims no builds; the window
+  is the second copy, small after the first.
+- A run that starts during the long first copy makes the lock step
+  refuse; the move waits for a quiet moment on a later run.
 - The open-run read imports pack internals (`build.open_runs`,
   `draft.open_runs`, the lane's `state` rows); a pack rename fails the
   read, and the stage refuses.

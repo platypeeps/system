@@ -1,10 +1,11 @@
 """The bulkmove stage moves a satellite's bulk storage to the NAS (sd:8242).
 
 The stage quiesces this host's run-starting jobs instead of naming
-writers: it checks the database for open runs, stops the jobs, checks
-again, copies, checks the copy, points sd.bulk_storage_root at the NAS
-and removes the local folder. Every refusal keeps the folder, and every
-exit restarts the jobs it stopped. One case per row of the failure table
+writers: it checks the database for open runs, holds each job's cron
+lock so no slot starts a run, checks again, copies, checks the copy,
+points sd.bulk_storage_root at the NAS and removes the local folder.
+Every refusal keeps the folder; no job is booted out, and the locks go
+with the stage's shell. One case per row of the failure table
 in docs/work/2026-11-10-bulkmove-quiesce/design.md.
 
 No case reads the Mac: launchctl, mount, sd and the database read are
@@ -55,21 +56,14 @@ eval "out=\\${RUNS_$n:-}"
 [ -z "$out" ] || printf '%s\\n' "$out"
 """
 
-# launchctl: a label is loaded while LOADED/<label> exists; every call is
-# logged. BOOTOUT_STUCK names a label whose bootout fails; BOOTSTRAP_FAIL
-# fails every bootstrap.
+# launchctl: a label is loaded while LOADED/<label> exists, and names its
+# log under LOGS (none when NO_STDOUT is set). Every call is logged; any
+# verb but print fails.
 LAUNCHCTL = """#!/bin/sh
 echo "$*" >> "$LOADED/calls.log"
-case "$1" in
-  print) [ -e "$LOADED/${2##*/}" ] ;;
-  bootout)
-    [ "${2##*/}" != "${BOOTOUT_STUCK:-}" ] || exit 5
-    rm -f "$LOADED/${2##*/}" ;;
-  bootstrap)
-    [ -z "${BOOTSTRAP_FAIL:-}" ] || exit 5
-    l=${3##*/}; touch "$LOADED/${l%.plist}" ;;
-  *) exit 1 ;;
-esac
+[ "$1" = print ] || exit 1
+[ -e "$LOADED/${2##*/}" ] || exit 113
+[ -n "${NO_STDOUT:-}" ] || echo "	stdout path = $LOGS/${2##*.cron.}.log"
 """
 
 MOUNT = """#!/bin/sh
@@ -86,6 +80,10 @@ case "$1" in
   -a)
     n=$(( $(cat "$COPIES" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$COPIES"
     [ "${RSYNC_FAIL_COPY:-}" != "$n" ] || exit 23
+    if [ "${RSYNC_PROBE_COPY:-}" = "$n" ]; then
+      perl -e 'use Fcntl ":flock"; open(my $fh, ">>", $ARGV[0]) or exit 2; exit(flock($fh, LOCK_EX|LOCK_NB) ? 0 : 1)' \
+        "$LOGS/.lane-run.flock" && echo free > "$PROBE" || echo held > "$PROBE"
+    fi
     if [ "${RSYNC_TERM_COPY:-}" = "$n" ]; then
       # The outermost of the unbroken run of machine-setup.sh parents: a
       # bound step runs in a subshell. The walk stops above that run.
@@ -110,6 +108,15 @@ if [ -n "${RM_FAIL:-}" ]; then
 fi
 exec /bin/rm "$@"
 """
+
+
+# Takes the flock on $1 and holds it until stdin closes, as a cron run
+# holds its job's lock on fd 8.
+HOLD = 'use Fcntl ":flock"; open(my $fh, ">>", $ARGV[0]) or die; flock($fh, LOCK_EX) or die; print "held\\n"; $| = 1; <STDIN>;'
+
+
+# Exits 0 when the flock on $1 is free, 1 when another holds it.
+PROBE = 'use Fcntl ":flock"; open(my $fh, ">>", $ARGV[0]) or exit 2; exit(flock($fh, LOCK_EX|LOCK_NB) ? 0 : 1);'
 
 
 def stub(folder, name, body):
@@ -149,6 +156,8 @@ class BulkmoveTest(unittest.TestCase):
         stub(self.stubs, "rm", RM)
         self.loaded = self.base / "loaded"
         self.loaded.mkdir()
+        self.logs = self.base / "cron-logs"
+        self.logs.mkdir()
         # build-dispatch and lane-run run here; night-build is not loaded.
         agents = self.home / "Library/LaunchAgents"
         agents.mkdir(parents=True)
@@ -170,6 +179,8 @@ class BulkmoveTest(unittest.TestCase):
             "DB_CALLS": str(self.base / "db-calls"),
             "COPIES": str(self.base / "copies"),
             "LOADED": str(self.loaded),
+            "LOGS": str(self.logs),
+            "PROBE": str(self.base / "probe"),
             "SD_CONFIG": str(self.config),
             "REAL_RSYNC": shutil.which("rsync"),
             "NAS_MOUNTED": str(self.nas),
@@ -188,12 +199,22 @@ class BulkmoveTest(unittest.TestCase):
         log = self.loaded / "calls.log"
         return log.read_text() if log.exists() else ""
 
+    def lock_free(self, job):
+        return subprocess.run(["perl", "-e", PROBE, str(self.logs / f".{job}.flock")]).returncode == 0
+
+    def assert_untouched(self, out):
+        """The jobs stay loaded, no launchctl call but print, and no lock is left held."""
+        self.assertEqual(self.loaded_jobs(), ["build-dispatch", "lane-run"], out)
+        self.assertEqual([c for c in self.calls().splitlines() if not c.startswith("print ")], [], out)
+        self.assertTrue(self.lock_free("build-dispatch"), out)
+        self.assertTrue(self.lock_free("lane-run"), out)
+
     def assert_kept(self, rc, out, why):
         self.assertEqual(rc, 1, out)
         self.assertIn(why, out)
         self.assertTrue((self.local / "system/lane/run.log").exists(), out)
         self.assertFalse(self.config.exists(), out)
-        self.assertEqual(self.loaded_jobs(), ["build-dispatch", "lane-run"], out)
+        self.assert_untouched(out)
 
     # Row 0: nothing to do.
     def test_off_without_a_nas(self):
@@ -227,101 +248,103 @@ class BulkmoveTest(unittest.TestCase):
     def test_an_unmounted_nas_keeps_the_folder(self):
         rc, out = self.run_stage(NAS_MOUNTED="")
         self.assert_kept(rc, out, "is not mounted")
-        self.assertNotIn("bootout", self.calls())
 
     # Row 2: the lane root sits inside the folder.
     def test_a_lane_root_inside_the_folder_keeps_it(self):
         rc, out = self.run_stage(LANE_ROOT=str(self.local / "lanes"))
         self.assert_kept(rc, out, "is inside")
-        self.assertNotIn("bootout", self.calls())
 
-    # Row 3: an open run before the stop.
+    # Row 3: an open run before the copy.
     def test_an_open_run_keeps_the_folder_and_the_jobs(self):
         rc, out = self.run_stage(RUNS_1="run example-run-1")
-        self.assert_kept(rc, out, "open run(s) before the stop: run example-run-1")
-        self.assertNotIn("bootout", self.calls())
+        self.assert_kept(rc, out, "open run(s) before the copy: run example-run-1")
         self.assertFalse(self.dst.exists(), out)
 
     def test_an_unreadable_database_keeps_the_folder(self):
         rc, out = self.run_stage(DB_FAIL="1")
         self.assert_kept(rc, out, "could not read this host's open runs")
-        self.assertNotIn("bootout", self.calls())
 
     # Row 4: the warm copy fails.
     def test_a_failed_first_copy_keeps_the_folder_and_the_jobs(self):
         rc, out = self.run_stage(RSYNC_FAIL_COPY="1")
         self.assert_kept(rc, out, "FAILED")
+
+    # Row 5: a run holds its job's lock. Review of build 772: it is never
+    # stopped; the stage refuses and the run goes on.
+    def test_a_job_mid_run_is_left_running_and_keeps_the_folder(self):
+        holder = subprocess.Popen(["perl", "-e", HOLD, str(self.logs / ".lane-run.flock")],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.stdin.close)
+        self.assertEqual(holder.stdout.readline(), "held\n")
+        rc, out = self.run_stage()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a run of lane-run is in progress", out)
+        self.assertTrue((self.local / "system/lane/run.log").exists(), out)
+        self.assertIsNone(holder.poll(), out)
         self.assertNotIn("bootout", self.calls())
+        self.assertTrue(self.lock_free("build-dispatch"), out)
 
-    # Row 5: a job will not stop.
-    def test_a_job_that_will_not_stop_keeps_the_folder_and_restarts_the_rest(self):
-        rc, out = self.run_stage(BOOTOUT_STUCK=f"{PREFIX}.cron.lane-run")
-        self.assert_kept(rc, out, "launchctl bootout gui/")
-        self.assertIn("bootstrap gui/", self.calls())
+    def test_a_loaded_job_with_no_log_keeps_the_folder(self):
+        rc, out = self.run_stage(NO_STDOUT="1")
+        self.assert_kept(rc, out, "launchd names no log for")
 
-    # Row 6: a run opened between the first check and the stop.
-    def test_a_run_that_opened_during_the_stop_keeps_the_folder_and_restarts(self):
+    # Row 6: a run opened between the first check and the locks.
+    def test_a_run_that_opened_before_the_locks_keeps_the_folder(self):
         rc, out = self.run_stage(RUNS_2="lane 8242 example-entry")
-        self.assert_kept(rc, out, "open run(s) after the stop: lane 8242 example-entry")
-        self.assertIn("bootout", self.calls())
-        self.assertIn("started build-dispatch", out)
+        self.assert_kept(rc, out, "open run(s) under the job locks: lane 8242 example-entry")
 
     # Row 7: the final copy fails.
-    def test_a_failed_second_copy_keeps_the_folder_and_restarts(self):
+    def test_a_failed_second_copy_keeps_the_folder(self):
         rc, out = self.run_stage(RSYNC_FAIL_COPY="2")
         self.assert_kept(rc, out, "FAILED")
-        self.assertIn("started lane-run", out)
 
     # Row 8: the checksum dry run still lists a file.
-    def test_a_file_left_after_the_copy_keeps_the_folder_and_restarts(self):
+    def test_a_file_left_after_the_copy_keeps_the_folder(self):
         rc, out = self.run_stage(RSYNC_LEFT="system/lane/run.log")
         self.assert_kept(rc, out, "1 file(s) of")
-        self.assertIn("started lane-run", out)
 
     # Row 9: the root does not switch.
-    def test_a_root_that_does_not_switch_keeps_the_folder_and_restarts(self):
+    def test_a_root_that_does_not_switch_keeps_the_folder(self):
         rc, out = self.run_stage(SD_SET_FAIL="1")
         self.assert_kept(rc, out, "config set sd.bulk_storage_root")
-        self.assertIn("started lane-run", out)
 
     # Row 10: the removal fails part way; a rerun finishes it.
-    def test_a_failed_removal_restarts_and_a_rerun_finishes(self):
+    def test_a_failed_removal_releases_the_locks_and_a_rerun_finishes(self):
         rc, out = self.run_stage(RM_FAIL=str(self.local))
         self.assertEqual(rc, 1, out)
         self.assertTrue(self.local.exists(), out)
-        self.assertEqual(self.loaded_jobs(), ["build-dispatch", "lane-run"], out)
+        self.assert_untouched(out)
         rc, out = self.run_stage()
         self.assertEqual(rc, 0, out)
         self.assertFalse(self.local.exists(), out)
 
-    # Row 11: a job does not restart.
-    def test_a_job_that_does_not_restart_is_failed(self):
-        rc, out = self.run_stage(BOOTSTRAP_FAIL="1")
-        self.assertEqual(rc, 1, out)
-        self.assertIn("FAILED  restart build-dispatch", out)
-        self.assertIn("FAILED  restart lane-run", out)
-        self.assertFalse(self.local.exists(), out)
-
-    # Row 12: a signal while the jobs are stopped still restarts them.
-    def test_a_signal_while_stopped_restarts_the_jobs(self):
+    # Row 11: a signal while the locks are held leaves the jobs as they were.
+    def test_a_signal_under_the_locks_leaves_the_jobs_as_they_were(self):
         rc, out = self.run_stage(RSYNC_TERM_COPY="2")
         self.assertNotEqual(rc, 0, out)
         self.assertTrue((self.local / "system/lane/run.log").exists(), out)
-        self.assertEqual(self.loaded_jobs(), ["build-dispatch", "lane-run"], out)
+        self.assert_untouched(out)
 
-    # Row 13: the move, then a rerun.
-    def test_the_move_copies_switches_removes_and_restarts(self):
+    # A slot that fires while the stage works finds its job's lock held
+    # and skips, so no run starts during the final copy.
+    def test_a_slot_during_the_final_copy_finds_its_lock_held(self):
+        rc, out = self.run_stage(RSYNC_PROBE_COPY="2")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.base / "probe").read_text(), "held\n")
+        self.assert_untouched(out)
+
+    # Row 12: the move, then a rerun.
+    def test_the_move_copies_switches_and_removes(self):
         rc, out = self.run_stage()
         self.assertEqual(rc, 0, out)
         self.assertEqual((self.dst / "system/lane/run.log").read_text(), "example run\n")
         self.assertEqual(self.config.read_text(), str(self.dst))
         self.assertFalse(self.local.exists(), out)
-        # Stopped before the final copy, started after; night-build was
-        # never loaded, so it is neither stopped nor started.
-        self.assertEqual(self.loaded_jobs(), ["build-dispatch", "lane-run"], out)
-        self.assertNotRegex(self.calls(), r"(bootout|bootstrap) .*night-build")
-        self.assertLess(out.index("stopped build-dispatch"), out.index("removed"))
-        self.assertLess(out.index("removed"), out.index("started build-dispatch"))
+        # night-build is not loaded: it cannot start a run, so no lock.
+        self.assertNotIn("night-build's lock", out)
+        self.assertLess(out.index("held    build-dispatch's lock"), out.index("removed"))
+        self.assert_untouched(out)
         rc, out = self.run_stage()
         self.assertEqual(rc, 0, out)
         self.assertIn(f"ok      {self.local} is gone", out)

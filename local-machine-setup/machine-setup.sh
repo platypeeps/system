@@ -3925,15 +3925,15 @@ tmpdisk_locked() {
 # until machine-setup.env sets MACHINE_SETUP_BULK_NAS, the share's mount
 # point; the data goes to its repo-storage folder. Once the folder is
 # gone the stage says ok. Writers are quiesced, not identified: the
-# stage stops this host's jobs that start pack runs and checks the
-# database for an open run, before and after the stop. Any refusal keeps
-# the folder and restarts the jobs; rsync resumes, so a rerun is safe.
+# stage holds the locks of this host's jobs that start pack runs, so no
+# slot starts one, and checks the database for an open run before and
+# after. Any refusal keeps the folder; rsync resumes, so a rerun is safe.
 BULK_LOCAL="${MACHINE_SETUP_BULK_LOCAL:-$HOME/repo-storage}"
 BULK_NAS="${MACHINE_SETUP_BULK_NAS:-}"
 BULK_COPY_SECS="${MACHINE_SETUP_BULK_COPY_SECS:-21600}"
 # The cron jobs that start build, draft and lane runs on a satellite.
+# Three at most: their locks take fds 5-7.
 BULK_JOBS="build-dispatch lane-run night-build"
-BULK_STOPPED=""
 
 # This host's open build and draft runs, and the lane entries it runs,
 # one per line; fails when the database cannot be read.
@@ -3966,32 +3966,38 @@ bulk_idle() { # when
   return 1
 }
 
-# Boots out each loaded job in BULK_JOBS; BULK_STOPPED names what to
-# restart. A job that will not go out fails the stop.
-bulk_stop_jobs() {
-  for bs_job in $BULK_JOBS; do
-    bs_label="$LABEL_PREFIX.cron.$bs_job"
-    launchctl print "gui/$(id -u)/$bs_label" >/dev/null 2>&1 || continue
-    BULK_STOPPED="$BULK_STOPPED $bs_job"
-    agent_bootout "$bs_label" || return 1
-    echo "  stopped $bs_job"
-  done
-}
-
-# Loads each stopped job's plist again; runs from the trap too, so it
-# clears its list first. A failed restart is FAILED; the cron stage's
-# UNLOADED check loads it on the next run.
-bulk_restart_jobs() {
-  br_jobs="$BULK_STOPPED"
-  BULK_STOPPED=""
-  for br_job in $br_jobs; do
-    br_plist="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$br_job.plist"
-    if launchctl bootstrap "gui/$(id -u)" "$br_plist" </dev/null >/dev/null 2>&1 ||
-       launchctl print "gui/$(id -u)/$LABEL_PREFIX.cron.$br_job" >/dev/null 2>&1; then
-      echo "  started $br_job"
-    else
-      note_failure "restart $br_job: launchctl bootstrap $br_plist; the cron stage loads it next run" 1
+# Takes each loaded job's own lock, the flock a cron run holds on fd 8
+# (local-cron-jobs, sd:1251), on fds 5-7 of this shell, and keeps them.
+# A slot that fires meanwhile finds its lock held and skips; a job is
+# never booted out, which would TERM a run mid-merge (sd:3317). A lock a
+# run holds refuses; the run goes on. The lock sits beside the log
+# launchd names for the label, as cron-jobs.sh's hold_job_lock finds it.
+# An unloaded job, or one whose log folder is gone, cannot start a run.
+# The kernel drops the locks when this shell exits, however it exits.
+bulk_hold_locks() {
+  bh_fd=5
+  for bh_job in $BULK_JOBS; do
+    bh_label="$LABEL_PREFIX.cron.$bh_job"
+    bh_out=$(launchctl print "gui/$(id -u)/$bh_label" 2>/dev/null) || continue
+    bh_log=$(printf '%s\n' "$bh_out" | sed -n 's/^[[:space:]]*stdout path = //p' | head -1)
+    if [ -z "$bh_log" ]; then
+      note_failure "launchd names no log for $bh_label, so its lock is unknown; $BULK_LOCAL kept" 1
+      return 1
     fi
+    [ -d "${bh_log%/*}" ] || continue
+    bh_lock="${bh_log%/*}/.$bh_job.flock"
+    bh_rc=0
+    eval "exec $bh_fd>>\"\$bh_lock\"" 2>/dev/null &&
+      perl -e 'use Fcntl ":flock"; open(my $fh, ">&=", $ARGV[0]) or exit 2; flock($fh, LOCK_EX|LOCK_NB) or exit 1; exit 0' "$bh_fd" ||
+      bh_rc=$?
+    case $bh_rc in
+      0) echo "  held    $bh_job's lock; its slots skip until the move ends" ;;
+      1) note_failure "a run of $bh_job is in progress; left running, $BULK_LOCAL kept, the next run tries again" 1
+         return 1 ;;
+      *) note_failure "could not test $bh_job's lock $bh_lock; $BULK_LOCAL kept" 1
+         return 1 ;;
+    esac
+    bh_fd=$((bh_fd + 1))
   done
 }
 
@@ -4060,7 +4066,7 @@ stage_bulkmove() {
   fi
   echo "  DIFFERS $BULK_LOCAL still holds bulk storage; it moves to $bm_dst"
   if [ "$APPLY" -ne 1 ]; then
-    say "stop $BULK_JOBS, copy $BULK_LOCAL to $bm_dst, set sd.bulk_storage_root, remove $BULK_LOCAL"
+    say "hold the locks of $BULK_JOBS, copy $BULK_LOCAL to $bm_dst, set sd.bulk_storage_root, remove $BULK_LOCAL"
     return 0
   fi
   if ! mount | grep -qF " on $BULK_NAS ("; then
@@ -4074,25 +4080,20 @@ stage_bulkmove() {
     note_failure "the lane root $bm_lane is inside $BULK_LOCAL: move it first; $BULK_LOCAL kept" 1
     return 0
   fi
-  bulk_idle "before the stop" || return 0
+  bulk_idle "before the copy" || return 0
   run_ok mkdir -p "$bm_dst" || return 0
   bulk_overwrites "$BULK_LOCAL" "$bm_dst"
-  # The long copy runs while the jobs still run; the one after the stop
+  # The long copy runs while the jobs still run; the one under their locks
   # takes only what changed since.
   run_ok bound_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$bm_dst/" || return 0
-  trap 'bulk_restart_jobs' EXIT
-  trap 'exit 129' HUP
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
   bulkmove_quiet "$bm_dst" || :
-  bulk_restart_jobs
-  trap - EXIT HUP INT TERM
+  exec 5>&- 6>&- 7>&-
 }
 
-# The steps that run with the jobs stopped; any return keeps the folder.
+# The steps that run under the jobs' locks; any return keeps the folder.
 bulkmove_quiet() { # dst
-  bulk_stop_jobs || return 1
-  bulk_idle "after the stop" || return 1
+  bulk_hold_locks || return 1
+  bulk_idle "under the job locks" || return 1
   run_ok bound_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$1/" || return 1
   bq_left=$(bulk_left "$BULK_LOCAL" "$1") || {
     note_failure "rsync -c dry run of $BULK_LOCAL to $1; $BULK_LOCAL kept" 1; return 1; }
