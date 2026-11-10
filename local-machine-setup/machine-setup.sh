@@ -4069,6 +4069,24 @@ stage_bulkmove() {
     say "hold the locks of $BULK_JOBS, copy $BULK_LOCAL to $bm_dst, set sd.bulk_storage_root, remove $BULK_LOCAL"
     return 0
   fi
+  # Once the root names the NAS, jobs write there and the NAS holds the
+  # newer files: a folder left by a failed or stopped removal is only
+  # removed, never copied over them again (review of build 772). A root
+  # that does not read refuses; only "not set" reads as not switched.
+  if bm_root=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null); then
+    if [ "$bm_root" = "$bm_dst" ]; then
+      echo "  --      sd.bulk_storage_root already names $bm_dst; removing what is left of $BULK_LOCAL, no copy"
+      run_ok rm -rf "$BULK_LOCAL" || return 0
+      echo "  removed $BULK_LOCAL; bulk storage is $bm_dst"
+      return 0
+    fi
+  else
+    bm_err=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>&1 >/dev/null) || :
+    case "$bm_err" in
+      *"sd.bulk_storage_root is not set"*) ;;
+      *) note_failure "could not read sd.bulk_storage_root; $BULK_LOCAL kept" 1; return 0 ;;
+    esac
+  fi
   if ! mount | grep -qF " on $BULK_NAS ("; then
     note_failure "$BULK_NAS is not mounted; $BULK_LOCAL kept" 1
     return 0

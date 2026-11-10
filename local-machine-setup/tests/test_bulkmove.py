@@ -35,7 +35,9 @@ if [ "$1 $2 $3" = "config get sd.lane_root" ]; then
 fi
 case "$1 $2" in
   "config set") [ -z "${SD_SET_FAIL:-}" ] || exit 1; printf '%s' "$4" > "$SD_CONFIG" ;;
-  "config get") cat "$SD_CONFIG" 2>/dev/null || exit 1 ;;
+  "config get")
+    [ -z "${SD_GET_FAIL:-}" ] || { echo "sd: database is locked" >&2; exit 1; }
+    cat "$SD_CONFIG" 2>/dev/null || { echo "sd: $3 is not set (example). Run:" >&2; exit 1; } ;;
   *) echo "sd stub: unexpected $*" >&2; exit 2 ;;
 esac
 """
@@ -318,6 +320,24 @@ class BulkmoveTest(unittest.TestCase):
         rc, out = self.run_stage()
         self.assertEqual(rc, 0, out)
         self.assertFalse(self.local.exists(), out)
+
+    # Review of build 772: once the root names the NAS, jobs write there,
+    # so a rerun must not copy the stale local folder over newer files.
+    def test_a_rerun_after_the_switch_keeps_newer_nas_files(self):
+        rc, out = self.run_stage(RM_FAIL=str(self.local))
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(self.config.read_text(), str(self.dst))
+        (self.dst / "system/lane/run.log").write_text("newer example run on the NAS\n")
+        rc, out = self.run_stage()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.dst / "system/lane/run.log").read_text(), "newer example run on the NAS\n")
+        self.assertFalse(self.local.exists(), out)
+        self.assertIn("already names", out)
+
+    def test_an_unreadable_root_keeps_the_folder(self):
+        rc, out = self.run_stage(SD_GET_FAIL="1")
+        self.assert_kept(rc, out, "could not read sd.bulk_storage_root")
+        self.assertFalse(self.dst.exists(), out)
 
     # Row 11: a signal while the locks are held leaves the jobs as they were.
     def test_a_signal_under_the_locks_leaves_the_jobs_as_they_were(self):

@@ -24,6 +24,10 @@ from one of three cron jobs: `build-dispatch`, `lane-run` and
 The database lists every open build, draft and lane run by host. So the
 stage:
 
+0. Reads `sd.bulk_storage_root` first. When it already names the NAS
+   folder, jobs write there, so the NAS holds the newer files: the stage
+   only removes what is left of the local folder, with no copy. A root
+   that does not read refuses; only "not set" reads as not switched.
 1. Refuses while the share is unmounted or the lane root is inside the
    folder.
 2. Refuses while the database shows an open run of this host.
@@ -71,14 +75,15 @@ pack at the hub's build.
 | 6 second copy | files on the NAS | copy fails | FAILED, folder kept, locks released | `test_a_failed_second_copy_keeps_the_folder` |
 | 7 checksum | nothing | dry run lists a file | FAILED, folder kept, locks released | `test_a_file_left_after_the_copy_keeps_the_folder` |
 | 8 root | `sd.bulk_storage_root` | set fails or reads back wrong | FAILED, folder kept, locks released | `test_a_root_that_does_not_switch_keeps_the_folder` |
-| 9 remove | local folder | removal fails part way | FAILED, locks released; data is on the NAS and the root names it, so a rerun copies nothing and removes the rest | `test_a_failed_removal_releases_the_locks_and_a_rerun_finishes` |
+| 0 root read | nothing | root does not read | FAILED, folder kept, nothing copied | `test_an_unreadable_root_keeps_the_folder` |
+| 9 remove | local folder | removal fails part way, or the stage stops after the switch | FAILED, locks released; the next run sees the switched root and only removes the rest, never copying over newer NAS files | `test_a_failed_removal_releases_the_locks_and_a_rerun_finishes`, `test_a_rerun_after_the_switch_keeps_newer_nas_files` |
 | 10 any | locks held | TERM, INT or HUP | the kernel drops the locks with the shell; no job was touched | `test_a_signal_under_the_locks_leaves_the_jobs_as_they_were` |
 | all | all of the above | none | folder gone, root set, locks released; rerun says `ok` | `test_the_move_copies_switches_and_removes` |
 
 ## Acceptance criteria
 
 - [ ] `python3 -m unittest tests.test_bulkmove` in `local-machine-setup`
-  passes, 19 tests.
+  passes, 21 tests.
 - [ ] `shellcheck -S warning machine-setup.sh` is clean.
 
 ## Risks
