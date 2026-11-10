@@ -416,6 +416,14 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("on the system disk", line)
         self.assertIn("never a NAS share", line)
 
+    def test_claim_an_item_when_picked(self):
+        # sd:8357: the Suggested list hides only claimed items; claim at pick time.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        section = source.partition("# Parallel work")[2].partition("\n# ")[0]
+        line = next((l for l in section.splitlines() if l.startswith("Set an item in_progress")), "")
+        self.assertIn("when you pick it", line)
+        self.assertIn("not when the build starts", line)
+
 
 if __name__ == "__main__":
     unittest.main()
