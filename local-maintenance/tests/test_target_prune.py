@@ -174,6 +174,17 @@ class TargetPruneTest(Harness):
         self.assertIn(f"- build output prune: could not tell whether a process uses {target}; kept"
                       ": in_use: example failure", run.stdout)
 
+    def test_an_in_use_check_error_stays_out_of_the_finding_key(self):
+        # sd:8333: the error text can name a per-run temp path; in the key
+        # it gives the same finding a new reason each night (sd:4182).
+        _checkout, target = self.cargo_target("example-crash-key")
+        (self.tmp / "local-maintenance" / "in_use.py").write_text(
+            "import sys\nsys.exit('in_use: example failure')\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(self.attention(run), [
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: build output"
+            f" prune: could not tell whether a process uses {target}; kept"])
+
     def test_a_sibling_path_is_not_the_target(self):
         _checkout, target = self.cargo_target("example-sibling")
         self.lsof_lists(f"{target}-other/example")
