@@ -4082,6 +4082,8 @@ stage_bulkmove() {
   # not read refuses; only "not set" reads as not switched.
   bm_switched=0
   if bm_root=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null); then
+    # The pack expands a leading ~, so a ~/ root can name the NAS too.
+    case "$bm_root" in "~"*) bm_root="$HOME${bm_root#"~"}" ;; esac
     # Compared by real path: a trailing slash or a link names it too.
     [ "$bm_root" != "$bm_dst" ] && [ "$(bulk_real "$bm_root" || :)" != "$(bulk_real "$bm_dst" || echo -)" ] ||
       bm_switched=1

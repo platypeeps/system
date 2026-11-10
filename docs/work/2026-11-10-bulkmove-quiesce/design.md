@@ -102,6 +102,7 @@ pack at the hub's build.
 | 10 any | locks held | a child outlives the shell | no child holds fds 5-7, so the locks still drop | `test_a_copy_under_the_locks_holds_no_lock_fd` |
 | 10 any | locks held | the refresh drain's bound ends a long copy | the copy ends with it, locks free; the next run resumes | `test_an_outer_bound_ends_a_stuck_copy_and_frees_the_locks` |
 | 0 root read | nothing | root names the NAS folder with a trailing slash or a link | read as switched: no copy over newer NAS files | `test_a_switched_root_with_a_trailing_slash_keeps_newer_nas_files`, `test_a_switched_root_through_a_link_keeps_newer_nas_files` |
+| 0 root read | nothing | root names the NAS folder as `~/...` | `~` expanded as the pack does: read as switched | `test_a_switched_root_under_home_tilde_keeps_newer_nas_files` |
 | all | all of the above | none | folder gone, root set, locks released; rerun says `ok` | `test_the_move_copies_switches_and_removes` |
 
 ## Acceptance criteria

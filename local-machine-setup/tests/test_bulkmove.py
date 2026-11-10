@@ -402,6 +402,11 @@ class BulkmoveTest(unittest.TestCase):
         link.symlink_to(self.dst)
         self.switched_as(str(link))
 
+    # Review of build 787: the pack expands a leading ~ in the root.
+    def test_a_switched_root_under_home_tilde_keeps_newer_nas_files(self):
+        (self.home / "nas").symlink_to(self.nas)
+        self.switched_as("~/nas/repo-storage")
+
     def test_a_switched_root_with_the_lane_root_inside_keeps_the_folder(self):
         self.switched()
         rc, out = self.run_stage(LANE_ROOT=str(self.local / "lanes"))
