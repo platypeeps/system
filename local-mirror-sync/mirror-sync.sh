@@ -56,6 +56,9 @@ Directory contents mirror into the destination. The destination becomes an
 exact copy, so anything absent from the source is deleted. A file source is
 copied into its existing destination directory using the source basename.
 
+MIRROR_SYNC_IO_TIMEOUT (seconds, default 600) is rsync's --timeout: a pair
+whose transfer moves no data that long fails like any rsync error.
+
 MIRROR_SYNC_ADDITIVE, if set, drops --delete and --delete-excluded: the
 destination is added to and never trimmed, so a source deletion is not
 propagated. MIRROR_SYNC_BACKUP_ROOT, if set, moves whatever rsync is about to
@@ -448,7 +451,15 @@ trap 'rm -f "$FAILLOG" "$EXCLUDES" "$ERRS" "$PENDING"' EXIT INT TERM
 # backup disk and failed the whole pair. -W copies whole files. It does NOT
 # keep openrsync off an evicted iCloud basis file: that still fails with
 # "Resource deadlock avoided" (sd:1947), which materialize_pending handles.
-RSYNC_BASE="-rlptgo -W"
+# --timeout bounds idle time, not run time: rsync exits when no data moves
+# for that many seconds. An smbfs share that stalls mid-write hung the
+# nightly NAS copy two hours with no I/O (sd:8436); bounded, the pair fails
+# like any rsync error and the other pairs still run.
+IO_TIMEOUT="${MIRROR_SYNC_IO_TIMEOUT:-600}"
+case "$IO_TIMEOUT" in
+  ''|*[!0-9]*) echo "!!! refusing: MIRROR_SYNC_IO_TIMEOUT must be a whole number of seconds, got '$IO_TIMEOUT'" >&2; exit 1 ;;
+esac
+RSYNC_BASE="-rlptgo -W --timeout=$IO_TIMEOUT"
 RSYNC_FLAGS="$RSYNC_BASE --delete --delete-excluded"
 # MIRROR_SYNC_ADDITIVE drops both deletes, and with them the property that
 # makes an exact mirror dangerous as a backup: it copies a destructive edit as
