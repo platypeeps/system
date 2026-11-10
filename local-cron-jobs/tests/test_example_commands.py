@@ -716,3 +716,63 @@ class NightlyBackupGradeTest(unittest.TestCase):
         result, log = self.run_job(0, 4, nas=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn(self.SAFE, log)
+
+
+# A pack `sd` that fails with LOCKED_RC and the given message for its first
+# SD_FAILS runs, then passes; each run appends its words to PACK_MARKER.
+FLAKY_SD = """#!/bin/sh
+printf '%s\\n' "$*" >> "$PACK_MARKER"
+n=$(wc -l < "$PACK_MARKER")
+if [ "$n" -le "$SD_FAILS" ]; then
+  echo "error: $SD_MESSAGE" >&2
+  exit 1
+fi
+echo synced
+"""
+
+
+class ShadowSyncLockRetryTest(unittest.TestCase):
+    """A run that loses the lock to another writer retries once (sd:8437).
+
+    `sd shadow sync` already waits about a minute for the lock; a run still
+    locked out after that is retried once after SHADOW_SYNC_RETRY_WAIT
+    seconds (default 120). Any other failure fails at once, as before.
+    """
+
+    JOB = EXAMPLES / "shadow-sync-nightly.job"
+
+    def run_job(self, fails, message):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        pack, marker = fx.tmp / "custom-pack", fx.tmp / "pack-ran"
+        sd = pack / "bin" / "sd"
+        sd.parent.mkdir(parents=True)
+        sd.write_text(FLAKY_SD)
+        sd.chmod(0o755)
+        env_sh = fx.home / ".config" / "shell" / "env.sh"
+        env_sh.parent.mkdir(parents=True)
+        env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{marker}"\n')
+        fx.write_job(self.JOB.stem, self.JOB.read_text())
+        result = fx.exec_job(self.JOB.stem, {
+            "SD_FAILS": str(fails), "SD_MESSAGE": message,
+            "SHADOW_SYNC_RETRY_WAIT": "0"})
+        runs = marker.read_text().splitlines() if marker.exists() else []
+        return result, runs
+
+    def test_the_default_wait_is_two_minutes(self):
+        self.assertIn("${SHADOW_SYNC_RETRY_WAIT:-120}", self.JOB.read_text())
+
+    def test_a_locked_run_is_retried_once_and_passes(self):
+        result, runs = self.run_job(1, "database is locked")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(runs, ["shadow sync --strict"] * 2)
+
+    def test_a_run_locked_twice_fails(self):
+        result, runs = self.run_job(2, "database is locked")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(runs), 2)
+
+    def test_any_other_failure_is_not_retried(self):
+        result, runs = self.run_job(1, "collection failed")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(runs, ["shadow sync --strict"])

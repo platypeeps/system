@@ -5,7 +5,22 @@
 # promote role jobs and installed machines know the job by it. Collection
 # errors retain the old watermark; cron's failure channel reports a
 # nonzero exit.
-# SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
-# after ~/.config/shell/env.sh; this file is sourced before env.sh is.
+# `sd shadow sync` waits about a minute for the database lock. A run still
+# locked out after that retries once, SHADOW_SYNC_RETRY_WAIT seconds later
+# (default 120), so another writer's long hold is no alert (sd:8437). Any
+# other failure fails at once.
+# The command is single-quoted so the `bash -c` that runs it reads
+# SD_PACK_ROOT after ~/.config/shell/env.sh; this file is sourced first.
 JOB_SCHEDULE="20 * * * *"
-JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd\" shadow sync --strict"
+JOB_COMMAND='sd="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}/bin/sd"
+out=$("$sd" shadow sync --strict 2>&1); rc=$?
+printf "%s\n" "$out"
+case "$rc:$out" in
+  0:*) exit 0 ;;
+  *"database is locked"*)
+    pause=${SHADOW_SYNC_RETRY_WAIT:-120}
+    echo "shadow sync: database is locked; one retry in ${pause}s"
+    sleep "$pause"
+    exec "$sd" shadow sync --strict ;;
+esac
+exit "$rc"'
