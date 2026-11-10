@@ -5,6 +5,9 @@ mode. Directory destinations become **exact copies** of their sources, so
 extra destination files are deleted (`rsync -rlptgo -W --delete`: archive mode without sockets, fifos or devices, whole files), unless the job sets
 `MIRROR_SYNC_ADDITIVE` (see the repos list below). File sources are copied by
 basename into existing destination directories.
+Every rsync runs with `--timeout=600`: a pair that moves no data for ten
+minutes, as on a stalled share, fails like any rsync error; set
+`MIRROR_SYNC_IO_TIMEOUT` to change the seconds.
 
 ## Usage
 

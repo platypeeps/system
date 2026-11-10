@@ -729,6 +729,43 @@ class InterruptedOpen(FakeTools):
         self.assertEqual(len(self.rsync_runs()), 1)
 
 
+class IdleBound(FakeTools):
+    """A pair whose share stops moving data must not hang the pass: the
+    11-10 NAS copy sat two hours on a stalled smbfs write (sd:8436).
+    Every rsync carries --timeout, which exits when no data moves."""
+
+    def test_every_rsync_carries_a_600_second_idle_bound(self) -> None:
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        runs = self.rsync_runs()
+        self.assertTrue(runs)
+        for run in runs:
+            self.assertIn("--timeout=600", run.split())
+
+    def test_the_environment_overrides_the_bound(self) -> None:
+        result = self.sync(MIRROR_SYNC_IO_TIMEOUT="30")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("--timeout=30", self.rsync_runs()[0].split())
+
+    def test_a_bound_that_is_not_seconds_stops_the_pass(self) -> None:
+        result = self.sync(MIRROR_SYNC_IO_TIMEOUT="ten")
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("MIRROR_SYNC_IO_TIMEOUT", result.stderr)
+        self.assertEqual(self.rsync_runs(), [])
+
+    def test_a_timed_out_pair_fails_like_any_rsync_error(self) -> None:
+        self.state_file("rc", ["30"])
+        self.state_file("stderr", ["rsync: timeout waiting for data"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"{self.source} (rsync error)", result.stdout)
+
+
 class NestedByIdentity(Fixture):
     """Source and destination must not nest, however either is spelled.
 
