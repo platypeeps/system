@@ -339,6 +339,63 @@ class BulkmoveTest(unittest.TestCase):
         self.assert_kept(rc, out, "could not read sd.bulk_storage_root")
         self.assertFalse(self.dst.exists(), out)
 
+    # Review of build 772, ruling #52268: a root that already names the
+    # NAS, set by hand or by a stage stopped after the switch, takes the
+    # same guards as the move before the folder goes.
+    def switched(self):
+        self.dst.mkdir()
+        self.config.write_text(str(self.dst))
+        (self.local / "system/lane/only-local.log").write_text("local only\n")
+
+    def assert_switched_kept(self, rc, out, why):
+        self.assertEqual(rc, 1, out)
+        self.assertIn(why, out)
+        self.assertTrue((self.local / "system/lane/only-local.log").exists(), out)
+        self.assert_untouched(out)
+
+    def test_a_switched_root_copies_a_local_only_file_before_removal(self):
+        self.switched()
+        (self.dst / "system/lane").mkdir(parents=True)
+        (self.dst / "system/lane/run.log").write_text("newer example run on the NAS\n")
+        rc, out = self.run_stage()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.dst / "system/lane/only-local.log").read_text(), "local only\n")
+        self.assertEqual((self.dst / "system/lane/run.log").read_text(), "newer example run on the NAS\n")
+        self.assertFalse(self.local.exists(), out)
+        self.assert_untouched(out)
+
+    def test_a_switched_root_with_the_lane_root_inside_keeps_the_folder(self):
+        self.switched()
+        rc, out = self.run_stage(LANE_ROOT=str(self.local / "lanes"))
+        self.assert_switched_kept(rc, out, "is inside")
+
+    def test_a_switched_root_with_an_open_run_keeps_the_folder(self):
+        self.switched()
+        rc, out = self.run_stage(RUNS_1="run example-run-1")
+        self.assert_switched_kept(rc, out, "open run(s)")
+
+    def test_a_switched_root_with_an_unmounted_nas_keeps_the_folder(self):
+        self.switched()
+        rc, out = self.run_stage(NAS_MOUNTED="")
+        self.assert_switched_kept(rc, out, "is not mounted")
+
+    def test_a_switched_root_with_a_run_holding_a_lock_keeps_the_folder(self):
+        self.switched()
+        holder = subprocess.Popen(["perl", "-e", HOLD, str(self.logs / ".lane-run.flock")],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.stdin.close)
+        self.assertEqual(holder.stdout.readline(), "held\n")
+        rc, out = self.run_stage()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a run of lane-run is in progress", out)
+        self.assertTrue((self.local / "system/lane/only-local.log").exists(), out)
+
+    def test_a_switched_root_with_a_file_left_keeps_the_folder(self):
+        self.switched()
+        rc, out = self.run_stage(RSYNC_LEFT="system/lane/only-local.log")
+        self.assert_switched_kept(rc, out, "1 file(s) of")
+
     # Row 11: a signal while the locks are held leaves the jobs as they were.
     def test_a_signal_under_the_locks_leaves_the_jobs_as_they_were(self):
         rc, out = self.run_stage(RSYNC_TERM_COPY="2")

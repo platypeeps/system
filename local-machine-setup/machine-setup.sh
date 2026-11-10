@@ -4013,8 +4013,8 @@ bulk_overwrites() { # src, dst
 }
 
 # The files rsync would still copy from $1 to $2, by checksum.
-bulk_left() {
-  bl_out=$(bound_step "$BULK_COPY_SECS" rsync -anc --out-format='%n' "$1/" "$2/") || return 1
+bulk_left() { # src, dst, [rsync flag]
+  bl_out=$(bound_step "$BULK_COPY_SECS" rsync -anc ${3:+"$3"} --out-format='%n' "$1/" "$2/") || return 1
   printf '%s\n' "$bl_out" | grep -v '/$' | grep -c . || :
 }
 
@@ -4070,16 +4070,13 @@ stage_bulkmove() {
     return 0
   fi
   # Once the root names the NAS, jobs write there and the NAS holds the
-  # newer files: a folder left by a failed or stopped removal is only
-  # removed, never copied over them again (review of build 772). A root
-  # that does not read refuses; only "not set" reads as not switched.
+  # newer files, so the copy and the switch are skipped. The folder goes
+  # only through bulk_remove's guards either way: the root may have been
+  # set by hand (review of build 772, ruling #52268). A root that does
+  # not read refuses; only "not set" reads as not switched.
+  bm_switched=0
   if bm_root=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null); then
-    if [ "$bm_root" = "$bm_dst" ]; then
-      echo "  --      sd.bulk_storage_root already names $bm_dst; removing what is left of $BULK_LOCAL, no copy"
-      run_ok rm -rf "$BULK_LOCAL" || return 0
-      echo "  removed $BULK_LOCAL; bulk storage is $bm_dst"
-      return 0
-    fi
+    [ "$bm_root" != "$bm_dst" ] || bm_switched=1
   else
     bm_err=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>&1 >/dev/null) || :
     case "$bm_err" in
@@ -4087,46 +4084,74 @@ stage_bulkmove() {
       *) note_failure "could not read sd.bulk_storage_root; $BULK_LOCAL kept" 1; return 0 ;;
     esac
   fi
-  if ! mount | grep -qF " on $BULK_NAS ("; then
-    note_failure "$BULK_NAS is not mounted; $BULK_LOCAL kept" 1
-    return 0
+  [ "$bm_switched" -eq 0 ] ||
+    echo "  --      sd.bulk_storage_root already names $bm_dst; no copy over it"
+  bulk_ready "$bm_dst" "before the copy" || return 0
+  if [ "$bm_switched" -eq 0 ]; then
+    run_ok mkdir -p "$bm_dst" || return 0
+    bulk_overwrites "$BULK_LOCAL" "$bm_dst"
+    # The long copy runs while the jobs still run; the one under their
+    # locks takes only what changed since.
+    run_ok bound_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$bm_dst/" || return 0
   fi
-  # A lane root inside the folder would go with it (review of sd:8242).
-  bm_lane=$(bulk_lane_root) || {
-    note_failure "could not read sd.lane_root; $BULK_LOCAL kept" 1; return 0; }
-  if bulk_inside "$bm_lane"; then
-    note_failure "the lane root $bm_lane is inside $BULK_LOCAL: move it first; $BULK_LOCAL kept" 1
-    return 0
-  fi
-  bulk_idle "before the copy" || return 0
-  run_ok mkdir -p "$bm_dst" || return 0
-  bulk_overwrites "$BULK_LOCAL" "$bm_dst"
-  # The long copy runs while the jobs still run; the one under their locks
-  # takes only what changed since.
-  run_ok bound_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$bm_dst/" || return 0
-  bulkmove_quiet "$bm_dst" || :
+  bulkmove_quiet "$bm_dst" "$bm_switched" || :
   exec 5>&- 6>&- 7>&-
 }
 
+# The checks every step that writes the NAS or removes the folder needs:
+# the share mounted, the lane root outside the folder, no open run.
+bulk_ready() { # dst, when
+  if ! mount | grep -qF " on $BULK_NAS ("; then
+    note_failure "$BULK_NAS is not mounted; $BULK_LOCAL kept" 1
+    return 1
+  fi
+  # A lane root inside the folder would go with it (review of sd:8242).
+  br_lane=$(bulk_lane_root) || {
+    note_failure "could not read sd.lane_root; $BULK_LOCAL kept" 1; return 1; }
+  if bulk_inside "$br_lane"; then
+    note_failure "the lane root $br_lane is inside $BULK_LOCAL: move it first; $BULK_LOCAL kept" 1
+    return 1
+  fi
+  bulk_idle "$2"
+}
+
 # The steps that run under the jobs' locks; any return keeps the folder.
-bulkmove_quiet() { # dst
+bulkmove_quiet() { # dst, switched
   bulk_hold_locks || return 1
   bulk_idle "under the job locks" || return 1
-  run_ok bound_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$1/" || return 1
-  bq_left=$(bulk_left "$BULK_LOCAL" "$1") || {
+  if [ "$2" -eq 0 ]; then
+    run_ok bound_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$1/" || return 1
+    bq_left=$(bulk_left "$BULK_LOCAL" "$1") || {
+      note_failure "rsync -c dry run of $BULK_LOCAL to $1; $BULK_LOCAL kept" 1; return 1; }
+    if [ "$bq_left" != 0 ]; then
+      note_failure "after the copy $bq_left file(s) of $BULK_LOCAL differ on $1; kept" 1
+      return 1
+    fi
+    echo "  copied  $BULK_LOCAL to $1; a checksum dry run lists nothing left"
+    run_ok bound_step 120 "$SD_PACK_ROOT/bin/sd" config set sd.bulk_storage_root "$1" || return 1
+    bq_got=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null) || bq_got=""
+    if [ "$bq_got" != "$1" ]; then
+      note_failure "sd.bulk_storage_root reads '$bq_got', not $1; $BULK_LOCAL kept" 1
+      return 1
+    fi
+    echo "  set     sd.bulk_storage_root to $1"
+  fi
+  bulk_remove "$1"
+}
+
+# The one path that removes the folder; the caller holds the job locks.
+# It checks again, copies what the NAS lacks without replacing a newer
+# NAS file, and removes the folder only when a checksum dry run lists
+# no file the NAS still lacks.
+bulk_remove() { # dst
+  bulk_ready "$1" "before the removal" || return 1
+  run_ok bound_step "$BULK_COPY_SECS" rsync -a --ignore-existing "$BULK_LOCAL/" "$1/" || return 1
+  br_left=$(bulk_left "$BULK_LOCAL" "$1" --ignore-existing) || {
     note_failure "rsync -c dry run of $BULK_LOCAL to $1; $BULK_LOCAL kept" 1; return 1; }
-  if [ "$bq_left" != 0 ]; then
-    note_failure "after the copy $bq_left file(s) of $BULK_LOCAL differ on $1; kept" 1
+  if [ "$br_left" != 0 ]; then
+    note_failure "before the removal $br_left file(s) of $BULK_LOCAL are not on $1; kept" 1
     return 1
   fi
-  echo "  copied  $BULK_LOCAL to $1; a checksum dry run lists nothing left"
-  run_ok bound_step 120 "$SD_PACK_ROOT/bin/sd" config set sd.bulk_storage_root "$1" || return 1
-  bq_got=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null) || bq_got=""
-  if [ "$bq_got" != "$1" ]; then
-    note_failure "sd.bulk_storage_root reads '$bq_got', not $1; $BULK_LOCAL kept" 1
-    return 1
-  fi
-  echo "  set     sd.bulk_storage_root to $1"
   run_ok rm -rf "$BULK_LOCAL" || return 1
   echo "  removed $BULK_LOCAL; bulk storage is $1"
 }

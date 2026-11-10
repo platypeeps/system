@@ -26,8 +26,10 @@ stage:
 
 0. Reads `sd.bulk_storage_root` first. When it already names the NAS
    folder, jobs write there, so the NAS holds the newer files: the stage
-   only removes what is left of the local folder, with no copy. A root
-   that does not read refuses; only "not set" reads as not switched.
+   skips steps 3, 5 and 6, never copying over them, but takes every
+   guard. The root may have been set by hand, so a switched root proves
+   nothing (ruling #52268). A root that does not read refuses; only
+   "not set" reads as not switched.
 1. Refuses while the share is unmounted or the lane root is inside the
    folder.
 2. Refuses while the database shows an open run of this host.
@@ -37,7 +39,16 @@ stage:
    and the run goes on. Then it checks for open runs again.
 5. Copies what changed, then a checksum dry run must list nothing.
 6. Sets `sd.bulk_storage_root` to the NAS folder and reads it back.
-7. Removes the folder.
+7. Removes the folder through `bulk_remove`, the one removal path: it
+   checks steps 1 and 2 again, copies with `rsync -a --ignore-existing`,
+   which never replaces a newer NAS file, and removes the folder only
+   when a checksum dry run with `--ignore-existing` lists no file the
+   NAS lacks.
+
+Removal paths, from the code: one `rm -rf "$BULK_LOCAL"`, in
+`bulk_remove`. `stage_bulkmove` reaches it only through
+`bulkmove_quiet`, after the job locks, for a fresh and a switched root
+alike.
 
 The locks live on fds of the stage's shell, so the kernel drops them on
 any exit, a signal included. No job is booted out: `bootout` sends TERM
@@ -75,15 +86,17 @@ pack at the hub's build.
 | 6 second copy | files on the NAS | copy fails | FAILED, folder kept, locks released | `test_a_failed_second_copy_keeps_the_folder` |
 | 7 checksum | nothing | dry run lists a file | FAILED, folder kept, locks released | `test_a_file_left_after_the_copy_keeps_the_folder` |
 | 8 root | `sd.bulk_storage_root` | set fails or reads back wrong | FAILED, folder kept, locks released | `test_a_root_that_does_not_switch_keeps_the_folder` |
+| 0 switched root | nothing | lane root inside; share unmounted; open run; a run holds a lock; a local-only file | FAILED, folder kept; a local-only file is copied first, a newer NAS file kept | `test_a_switched_root_with_the_lane_root_inside_keeps_the_folder`, `test_a_switched_root_with_an_unmounted_nas_keeps_the_folder`, `test_a_switched_root_with_an_open_run_keeps_the_folder`, `test_a_switched_root_with_a_run_holding_a_lock_keeps_the_folder`, `test_a_switched_root_copies_a_local_only_file_before_removal` |
+| 9 remove guard | files on the NAS | a file the NAS lacks after the `--ignore-existing` copy | FAILED, folder kept, locks released | `test_a_switched_root_with_a_file_left_keeps_the_folder` |
 | 0 root read | nothing | root does not read | FAILED, folder kept, nothing copied | `test_an_unreadable_root_keeps_the_folder` |
-| 9 remove | local folder | removal fails part way, or the stage stops after the switch | FAILED, locks released; the next run sees the switched root and only removes the rest, never copying over newer NAS files | `test_a_failed_removal_releases_the_locks_and_a_rerun_finishes`, `test_a_rerun_after_the_switch_keeps_newer_nas_files` |
+| 9 remove | local folder | removal fails part way, or the stage stops after the switch | FAILED, locks released; the next run sees the switched root, takes every guard and copies only files the NAS lacks | `test_a_failed_removal_releases_the_locks_and_a_rerun_finishes`, `test_a_rerun_after_the_switch_keeps_newer_nas_files` |
 | 10 any | locks held | TERM, INT or HUP | the kernel drops the locks with the shell; no job was touched | `test_a_signal_under_the_locks_leaves_the_jobs_as_they_were` |
 | all | all of the above | none | folder gone, root set, locks released; rerun says `ok` | `test_the_move_copies_switches_and_removes` |
 
 ## Acceptance criteria
 
 - [ ] `python3 -m unittest tests.test_bulkmove` in `local-machine-setup`
-  passes, 21 tests.
+  passes, 27 tests.
 - [ ] `shellcheck -S warning machine-setup.sh` is clean.
 
 ## Risks
