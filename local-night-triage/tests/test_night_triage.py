@@ -415,6 +415,19 @@ class NightTriage(unittest.TestCase):
         self.assertIn("a finding on node1", prompt)
         self.assertNotIn("Decisions", prompt)
 
+    def test_the_prompt_carries_the_alerts_earlier_triage_notes(self):
+        # sd:8374: a run re-asked the operator about findings a note had
+        # settled hours earlier; the model never saw that note.
+        alert = report("node1", followups=[41])
+        alert["notes"].insert(0, {"id": 30, "kind": "comment", "session": "login", "resolved_at": None,
+                                  "body": "settled: the crash is a known upstream bug; no action"})
+        self.given({"1": alert}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        self.run_job()
+        prompt = (self.tmp / "prompt").read_text()
+        self.assertIn("settled: the crash is a known upstream bug; no action", prompt)
+        self.assertNotIn("claims it: an unattended triage run", prompt)
+        self.assertIn("a later note settles", (FOLDER / "prompt.md").read_text())
+
     def test_a_failed_sd_today_fails_the_run_and_gives_the_claims_back(self):
         self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
         result = self.run_job(FAKE_SD_DOWN="today")

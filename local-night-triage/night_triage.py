@@ -142,7 +142,8 @@ def claim(binary, host, claims, context):
         fields = report_fields(report)
         found.append({"id": report["id"], "title": report.get("title"), "job": fields.get("job"),
                       "basis": fields.get("attention_basis"), "log": fields.get("source_path"),
-                      "followups": _open_followups(moved["notes"])})
+                      "followups": _open_followups(moved["notes"]),
+                      "notes": _history(moved["notes"], host)})
     Path(context).write_text(json.dumps(found, indent=1))
     print(len(found))
 
@@ -150,6 +151,17 @@ def claim(binary, host, claims, context):
 def _open_followups(notes):
     return [{"id": n["id"], "body": n["body"][:2000], "session": n.get("session")} for n in notes
             if n["kind"] == "followup" and not n.get("resolved_at")]
+
+
+def _history(notes, host):
+    """Every earlier note but this job's claims and releases, oldest first.
+
+    The model reads them so it does not re-ask a finding a note settled
+    (sd:8374).
+    """
+    return [{"id": n["id"], "kind": n["kind"], "session": n.get("session"), "body": n["body"][:2000],
+             "resolved": bool(n.get("resolved_at"))} for n in notes
+            if not is_claim(n, host) and "claim released" not in n["body"]]
 
 
 def _release_one(binary, host, row, reason):
