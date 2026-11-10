@@ -4076,7 +4076,9 @@ stage_bulkmove() {
   # not read refuses; only "not set" reads as not switched.
   bm_switched=0
   if bm_root=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null); then
-    [ "$bm_root" != "$bm_dst" ] || bm_switched=1
+    # Compared by real path: a trailing slash or a link names it too.
+    [ "$bm_root" != "$bm_dst" ] && [ "$(bulk_real "$bm_root" || :)" != "$(bulk_real "$bm_dst" || echo -)" ] ||
+      bm_switched=1
   else
     bm_err=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>&1 >/dev/null) || :
     case "$bm_err" in
@@ -4098,14 +4100,22 @@ stage_bulkmove() {
   exec 5>&- 6>&- 7>&-
 }
 
+# A folder's real path, links and trailing slashes resolved; one that
+# does not exist yet resolves through its parent. Fails when neither does.
+bulk_real() { # path
+  br_p=$1
+  while :; do case "$br_p" in ?*/) br_p=${br_p%/} ;; *) break ;; esac; done
+  if [ -d "$br_p" ]; then (cd "$br_p" && pwd -P); return; fi
+  br_up=$(cd "${br_p%/*}/" && pwd -P) || return 1
+  printf '%s/%s\n' "${br_up%/}" "${br_p##*/}"
+}
+
 # Refuses when the local folder and the NAS folder are one folder, or
 # one holds the other, compared by real path: the copies and the dry
 # run then all pass, and the removal takes the only copy (review of
 # build 782).
 bulk_apart() { # dst
-  ba_local=$(cd "$BULK_LOCAL" && pwd -P) &&
-    ba_dst=$(if [ -d "$1" ]; then cd "$1" && pwd -P; else
-      ba_up=$(cd "${1%/*}" && pwd -P) && printf '%s/%s\n' "$ba_up" "${1##*/}"; fi) || {
+  ba_local=$(bulk_real "$BULK_LOCAL") && ba_dst=$(bulk_real "$1") || {
     note_failure "could not resolve $BULK_LOCAL or $1; $BULK_LOCAL kept" 1; return 1; }
   case "$ba_dst/" in "$ba_local"/*) ba_hit=1 ;; *) ba_hit=0 ;; esac
   case "$ba_local/" in "$ba_dst"/*) ba_hit=1 ;; esac

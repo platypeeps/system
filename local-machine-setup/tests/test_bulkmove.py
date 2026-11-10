@@ -364,6 +364,27 @@ class BulkmoveTest(unittest.TestCase):
         self.assertFalse(self.local.exists(), out)
         self.assert_untouched(out)
 
+    # Review of build 782: a root spelled another way still names the NAS
+    # folder, so jobs write there; the stage must not copy over it.
+    def switched_as(self, spelling):
+        self.switched()
+        self.config.write_text(spelling)
+        (self.dst / "system/lane").mkdir(parents=True)
+        (self.dst / "system/lane/run.log").write_text("newer example run on the NAS\n")
+        rc, out = self.run_stage()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.dst / "system/lane/run.log").read_text(), "newer example run on the NAS\n")
+        self.assertEqual((self.dst / "system/lane/only-local.log").read_text(), "local only\n")
+        self.assertFalse(self.local.exists(), out)
+
+    def test_a_switched_root_with_a_trailing_slash_keeps_newer_nas_files(self):
+        self.switched_as(str(self.dst) + "/")
+
+    def test_a_switched_root_through_a_link_keeps_newer_nas_files(self):
+        link = self.base / "nas-link"
+        link.symlink_to(self.dst)
+        self.switched_as(str(link))
+
     def test_a_switched_root_with_the_lane_root_inside_keeps_the_folder(self):
         self.switched()
         rc, out = self.run_stage(LANE_ROOT=str(self.local / "lanes"))
