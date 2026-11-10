@@ -9479,6 +9479,8 @@ environment:
                           (sd:8242); unset turns the stage off
   MACHINE_SETUP_BULK_LOCAL  bulkmove: the local folder (default ~/repo-storage)
   MACHINE_SETUP_BULK_COPY_SECS  bulkmove: each copy's bound (default 21600)
+  SD_LANE_ROOT            bulkmove: the lane root it keeps outside the
+                          local folder (default sd.lane_root)
   SD_PACK_ROOT            the command pack checkout
                           (default ~/repos/platypeeps/sd-workflow)
   SD_DB_PYTHON            satellite: the interpreter sd_db runs under
