@@ -396,6 +396,49 @@ class BulkmoveTest(unittest.TestCase):
         rc, out = self.run_stage(RSYNC_LEFT="system/lane/only-local.log")
         self.assert_switched_kept(rc, out, "1 file(s) of")
 
+    # Review of build 782: a local folder that is the NAS folder, spelled
+    # any way, or nests with it, is never removed: the copies and the
+    # checksum dry run all pass on one folder.
+    def nas_is_local(self, switched, **extra):
+        shutil.move(str(self.local), str(self.dst))
+        if switched:
+            self.config.write_text(str(self.dst))
+        rc, out = self.run_stage(MACHINE_SETUP_BULK_LOCAL=str(self.dst), **extra)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("overlaps", out)
+        self.assertTrue((self.dst / "system/lane/run.log").exists(), out)
+        self.assert_untouched(out)
+
+    def test_a_local_folder_that_is_the_nas_folder_is_kept(self):
+        self.nas_is_local(switched=False)
+
+    def test_a_switched_root_that_is_the_local_folder_is_kept(self):
+        self.nas_is_local(switched=True)
+
+    def test_a_nas_reached_through_a_link_to_the_local_folder_is_kept(self):
+        link = self.base / "Volumes/link"
+        link.symlink_to(self.home)
+        rc, out = self.run_stage(MACHINE_SETUP_BULK_NAS=str(link), NAS_MOUNTED=str(link))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("overlaps", out)
+        self.assertTrue((self.local / "system/lane/run.log").exists(), out)
+        self.assert_untouched(out)
+
+    def test_a_local_folder_inside_the_nas_folder_is_kept(self):
+        inner = self.dst / "inner"
+        inner.mkdir(parents=True)
+        (inner / "run.log").write_text("example run\n")
+        rc, out = self.run_stage(MACHINE_SETUP_BULK_LOCAL=str(inner))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("overlaps", out)
+        self.assertTrue((inner / "run.log").exists(), out)
+
+    def test_a_nas_folder_inside_the_local_folder_is_kept(self):
+        rc, out = self.run_stage(MACHINE_SETUP_BULK_NAS=str(self.local), NAS_MOUNTED=str(self.local))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("overlaps", out)
+        self.assertTrue((self.local / "system/lane/run.log").exists(), out)
+
     # Row 11: a signal while the locks are held leaves the jobs as they were.
     def test_a_signal_under_the_locks_leaves_the_jobs_as_they_were(self):
         rc, out = self.run_stage(RSYNC_TERM_COPY="2")

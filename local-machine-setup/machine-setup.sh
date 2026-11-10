@@ -4098,6 +4098,22 @@ stage_bulkmove() {
   exec 5>&- 6>&- 7>&-
 }
 
+# Refuses when the local folder and the NAS folder are one folder, or
+# one holds the other, compared by real path: the copies and the dry
+# run then all pass, and the removal takes the only copy (review of
+# build 782).
+bulk_apart() { # dst
+  ba_local=$(cd "$BULK_LOCAL" && pwd -P) &&
+    ba_dst=$(if [ -d "$1" ]; then cd "$1" && pwd -P; else
+      ba_up=$(cd "${1%/*}" && pwd -P) && printf '%s/%s\n' "$ba_up" "${1##*/}"; fi) || {
+    note_failure "could not resolve $BULK_LOCAL or $1; $BULK_LOCAL kept" 1; return 1; }
+  case "$ba_dst/" in "$ba_local"/*) ba_hit=1 ;; *) ba_hit=0 ;; esac
+  case "$ba_local/" in "$ba_dst"/*) ba_hit=1 ;; esac
+  [ "$ba_hit" -eq 0 ] && return 0
+  note_failure "$BULK_LOCAL ($ba_local) overlaps $1 ($ba_dst); $BULK_LOCAL kept" 1
+  return 1
+}
+
 # The checks every step that writes the NAS or removes the folder needs:
 # the share mounted, the lane root outside the folder, no open run.
 bulk_ready() { # dst, when
@@ -4105,6 +4121,7 @@ bulk_ready() { # dst, when
     note_failure "$BULK_NAS is not mounted; $BULK_LOCAL kept" 1
     return 1
   fi
+  bulk_apart "$1" || return 1
   # A lane root inside the folder would go with it (review of sd:8242).
   br_lane=$(bulk_lane_root) || {
     note_failure "could not read sd.lane_root; $BULK_LOCAL kept" 1; return 1; }

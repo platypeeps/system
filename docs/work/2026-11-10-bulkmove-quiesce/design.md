@@ -30,7 +30,8 @@ stage:
    guard. The root may have been set by hand, so a switched root proves
    nothing (ruling #52268). A root that does not read refuses; only
    "not set" reads as not switched.
-1. Refuses while the share is unmounted or the lane root is inside the
+1. Refuses while the share is unmounted, the local and NAS folders are
+   one folder or nest, by real path, or the lane root is inside the
    folder.
 2. Refuses while the database shows an open run of this host.
 3. Names each NAS file the copy replaces (sd:8319), then copies while
@@ -77,6 +78,7 @@ pack at the hub's build.
 | Step | State moved | Failure | Recovery | Test |
 | --- | --- | --- | --- | --- |
 | 0 off, hub role | nothing | stage runs where it should not | `--` or `SKIP`, folder kept | `test_off_without_a_nas`, `test_a_satellite_holding_the_hub_role_is_skipped` |
+| 1 overlap | nothing | local folder is the NAS folder (any spelling, a link) or nests with it | FAILED, folder kept, no job touched | `test_a_local_folder_that_is_the_nas_folder_is_kept`, `test_a_switched_root_that_is_the_local_folder_is_kept`, `test_a_nas_reached_through_a_link_to_the_local_folder_is_kept`, `test_a_local_folder_inside_the_nas_folder_is_kept`, `test_a_nas_folder_inside_the_local_folder_is_kept` |
 | 1 mount, lane root | nothing | share unmounted; lane root inside | FAILED, folder kept, no job touched | `test_an_unmounted_nas_keeps_the_folder`, `test_a_lane_root_inside_the_folder_keeps_it` |
 | 2 open runs | nothing | a run is open; database unreadable | FAILED, folder kept, no job touched | `test_an_open_run_keeps_the_folder_and_the_jobs`, `test_an_unreadable_database_keeps_the_folder` |
 | 3 first copy | files on the NAS | copy fails or hits its bound | FAILED, folder kept; rsync resumes next run | `test_a_failed_first_copy_keeps_the_folder_and_the_jobs` |
@@ -96,7 +98,7 @@ pack at the hub's build.
 ## Acceptance criteria
 
 - [ ] `python3 -m unittest tests.test_bulkmove` in `local-machine-setup`
-  passes, 27 tests.
+  passes, 32 tests.
 - [ ] `shellcheck -S warning machine-setup.sh` is clean.
 
 ## Risks
