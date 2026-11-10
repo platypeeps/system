@@ -25,6 +25,13 @@ DIR="$(cd "$(dirname "$SELF")" && pwd)"
 # nightly captures sync's: a step that hangs then names itself in the log
 # (sd:3536). A failed step names itself on the captured stderr too.
 exec 4>&2
+# Every fetch, pull and clone runs its auto-maintenance in the foreground:
+# detached, it is a git working in the checkout that git_busy sees, so a
+# stale lock stayed (sd:8271). An older git detaches on gc.autoDetach
+# (sd:8320). Split on purpose where it is used; refresh_drain.py's
+# FOREGROUND_GIT sets the same keys.
+FG_GIT="-c maintenance.autoDetach=false -c gc.autoDetach=false"
+
 bound_step() { # seconds, command...
   # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
   (ST_STEP_FD3=1; st_step "$@" 3>&4)
@@ -551,7 +558,7 @@ side_branch_diverged() {
   d_default=$(pin_default "$1") || return 1
   [ "$d_branch" != "$d_default" ] || return 1
   d_up=$(git -C "$1" rev-parse -q --abbrev-ref '@{u}' 2>/dev/null) || return 1
-  bound_step 300 git -C "$1" fetch -q < /dev/null 2>/dev/null || return 1
+  bound_step 300 git -C "$1" $FG_GIT fetch -q < /dev/null 2>/dev/null || return 1
   d_counts=$(git -C "$1" rev-list --left-right --count 'HEAD...@{u}') || return 1
   set -- $d_counts
   [ "$1" -gt 0 ] && [ "$2" -gt 0 ] || return 1
@@ -610,11 +617,9 @@ git_step() {
 
 # Pulls checkout $1 and updates its submodules. Their stderr passes through
 # and stays in $TMPD/pull.err, where held_lock and auth_cause read it.
-# The fetch's auto-maintenance runs in the foreground: detached, it is a git
-# working in $1 that git_busy sees, so a stale lock stayed (sd:8271).
 pull_one() {
   p_rc=0
-  { bound_step 600 git -C "$1" -c maintenance.autoDetach=false pull --ff-only < /dev/null \
+  { bound_step 600 git -C "$1" $FG_GIT pull --ff-only < /dev/null \
       && bound_step 1800 git -C "$1" submodule update --init --recursive < /dev/null; } \
       2> "$TMPD/pull.err" || p_rc=$?
   cat "$TMPD/pull.err" >&2
@@ -726,7 +731,7 @@ sync() {
       # pulled; `git pull` would refuse a detached HEAD anyway. On a
       # satellite, system and pack are never pulled, pinned or not.
       echo "=== pinned $full_repo"
-      if git_step 300 git -C "$target" fetch -q origin < /dev/null; then
+      if git_step 300 git -C "$target" $FG_GIT fetch -q origin < /dev/null; then
         state=$(pin_state "$target")
         echo "$state; not pulled (repo-sync.sh $mover moves it)"
         echo "$full_repo $state" >> "$PINLOG"
@@ -740,7 +745,7 @@ sync() {
       if state=$(local_branch_no_upstream "$target"); then
         # Fetched so its refs stay fresh, never pulled. A failed fetch is an
         # unknown result, so it fails like any other repo.
-        if git_step 300 git -C "$target" fetch -q < /dev/null; then
+        if git_step 300 git -C "$target" $FG_GIT fetch -q < /dev/null; then
           echo "$state, no upstream; fetched, not pulled"
           echo "$full_repo $state" >> "$KEPTLOG"
         else
@@ -773,7 +778,7 @@ sync() {
     else
       echo "=== cloning $full_repo"
       mkdir -p "$ROOT/$subdir"
-      if ! git_step 1800 git clone "git@github.com:$full_repo.git" "$target" < /dev/null; then
+      if ! git_step 1800 git $FG_GIT clone "git@github.com:$full_repo.git" "$target" < /dev/null; then
         cause=$(auth_cause "$TMPD/git.err")
         echo "!!! failed: $full_repo$cause" >&2
         echo "$full_repo$cause" >> "$FAILLOG"
@@ -844,7 +849,7 @@ refresh_one() {
     flag "!!! refused: $r_dir has uncommitted changes; commit or stash them, then refresh again"
     return 1
   fi
-  if ! bound_step 300 git -C "$r_dir" fetch -q origin < /dev/null; then
+  if ! bound_step 300 git -C "$r_dir" $FG_GIT fetch -q origin < /dev/null; then
     flag "!!! failed: fetch in $r_dir; still at $r_short"
     return 1
   fi
@@ -1625,9 +1630,9 @@ follow_prompt() {
 # next must not send private repos over https. $TMPD/err keeps the first
 # fetch's error, the one a refusal names; the retry's goes to err.https.
 follow_fetch() {
-  bound_step 300 git -C "$1" fetch -q origin "$2" < /dev/null 2> "$TMPD/err" && return 0
+  bound_step 300 git -C "$1" $FG_GIT fetch -q origin "$2" < /dev/null 2> "$TMPD/err" && return 0
   [ "${REPO_SYNC_HTTPS:-}" != 1 ] || return 1
-  (github_https && bound_step 300 git -C "$1" fetch -q origin "$2" < /dev/null 2> "$TMPD/err.https")
+  (github_https && bound_step 300 git -C "$1" $FG_GIT fetch -q origin "$2" < /dev/null 2> "$TMPD/err.https")
 }
 
 # On a satellite, moves system and pack to the shas of the hub-pin tag on the

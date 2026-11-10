@@ -1319,7 +1319,7 @@ class NightlyHygieneTest(unittest.TestCase):
 
         result = f.run("nightly", expect=0)
 
-        self.assertRegex(result.stderr, r"\[step [\d:]+\] git -C \S+/a/proj -c maintenance\.autoDetach=false pull --ff-only \(bound 600s\)")
+        self.assertRegex(result.stderr, r"\[step [\d:]+\] git -C \S+/a/proj -c maintenance\.autoDetach=false -c gc\.autoDetach=false pull --ff-only \(bound 600s\)")
         self.assertRegex(result.stderr, r"\[step [\d:]+\] git -C \S+ submodule update --init --recursive \(bound 1800s\)")
 
     def test_the_reason_leaves_out_hygiene_notes(self):
