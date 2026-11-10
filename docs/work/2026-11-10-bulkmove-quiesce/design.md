@@ -51,8 +51,14 @@ Removal paths, from the code: one `rm -rf "$BULK_LOCAL"`, in
 `bulkmove_quiet`, after the job locks, for a fresh and a switched root
 alike.
 
-The locks live on fds of the stage's shell, so the kernel drops them on
-any exit, a signal included. No job is booted out: `bootout` sends TERM
+The locks live on fds 5-7 of the stage's shell. Every child the stage
+starts runs with those fds closed (`bulk_step`), so the kernel drops
+the locks when the shell exits, a signal or a KILL included, even while
+a child lives on. A bounded child never outlives an outer bound such as
+the refresh drain's 1200 s: the drain's TERM reaches the inner bound,
+which ends its group within the default grace, before the drain's
+longer grace KILLs (repo-sync.sh `refresh_answer`). A copy that bound
+stops resumes on the next run. No job is booted out: `bootout` sends TERM
 to a running job, which would kill a lane run mid-merge (sd:3317).
 
 A satellite that holds the hub role is skipped (sd:8322).
@@ -93,12 +99,15 @@ pack at the hub's build.
 | 0 root read | nothing | root does not read | FAILED, folder kept, nothing copied | `test_an_unreadable_root_keeps_the_folder` |
 | 9 remove | local folder | removal fails part way, or the stage stops after the switch | FAILED, locks released; the next run sees the switched root, takes every guard and copies only files the NAS lacks | `test_a_failed_removal_releases_the_locks_and_a_rerun_finishes`, `test_a_rerun_after_the_switch_keeps_newer_nas_files` |
 | 10 any | locks held | TERM, INT or HUP | the kernel drops the locks with the shell; no job was touched | `test_a_signal_under_the_locks_leaves_the_jobs_as_they_were` |
+| 10 any | locks held | a child outlives the shell | no child holds fds 5-7, so the locks still drop | `test_a_copy_under_the_locks_holds_no_lock_fd` |
+| 10 any | locks held | the refresh drain's bound ends a long copy | the copy ends with it, locks free; the next run resumes | `test_an_outer_bound_ends_a_stuck_copy_and_frees_the_locks` |
+| 0 root read | nothing | root names the NAS folder with a trailing slash or a link | read as switched: no copy over newer NAS files | `test_a_switched_root_with_a_trailing_slash_keeps_newer_nas_files`, `test_a_switched_root_through_a_link_keeps_newer_nas_files` |
 | all | all of the above | none | folder gone, root set, locks released; rerun says `ok` | `test_the_move_copies_switches_and_removes` |
 
 ## Acceptance criteria
 
 - [ ] `python3 -m unittest tests.test_bulkmove` in `local-machine-setup`
-  passes, 32 tests.
+  passes, 36 tests.
 - [ ] `shellcheck -S warning machine-setup.sh` is clean.
 
 ## Risks

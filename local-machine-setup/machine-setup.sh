@@ -3935,10 +3935,15 @@ BULK_COPY_SECS="${MACHINE_SETUP_BULK_COPY_SECS:-21600}"
 # Three at most: their locks take fds 5-7.
 BULK_JOBS="build-dispatch lane-run night-build"
 
+# bound_step with the job locks' fds 5-7 closed: no child holds a lock,
+# so none can keep a job's slots off past the stage (review of build
+# 782). The stage's shell keeps them; a flock ends with its last fd.
+bulk_step() { bound_step "$@" 5>&- 6>&- 7>&-; }
+
 # This host's open build and draft runs, and the lane entries it runs,
 # one per line; fails when the database cannot be read.
 bulk_open_runs() {
-  bound_step 120 "$SD_DB_PYTHON" -I -c '
+  bulk_step 120 "$SD_DB_PYTHON" -I -c '
 import json, sys
 sys.path.insert(0, sys.argv[1] + "/lib")
 import sd_db
@@ -3973,7 +3978,8 @@ bulk_idle() { # when
 # run holds refuses; the run goes on. The lock sits beside the log
 # launchd names for the label, as cron-jobs.sh's hold_job_lock finds it.
 # An unloaded job, or one whose log folder is gone, cannot start a run.
-# The kernel drops the locks when this shell exits, however it exits.
+# The kernel drops the locks when this shell exits, however it exits:
+# bulk_step closes fds 5-7 in every child, so none holds them on.
 bulk_hold_locks() {
   bh_fd=5
   for bh_job in $BULK_JOBS; do
@@ -4004,7 +4010,7 @@ bulk_hold_locks() {
 # The NAS files the copy would replace (sd:8319), reported, not refused:
 # the local folder is the newer copy of every file this machine wrote.
 bulk_overwrites() { # src, dst
-  bo_out=$(bound_step 600 rsync -ain "$1/" "$2/") || {
+  bo_out=$(bulk_step 600 rsync -ain "$1/" "$2/") || {
     echo "  --      could not list NAS files the copy would replace"; return 0; }
   # A new file reads >f+++; openrsync prints fewer flag columns than rsync.
   bo_hit=$(printf '%s\n' "$bo_out" | awk '$1 ~ /^>f/ && $1 !~ /^>f\+/ { sub(/^[^ ]+ /, ""); print }')
@@ -4014,7 +4020,7 @@ bulk_overwrites() { # src, dst
 
 # The files rsync would still copy from $1 to $2, by checksum.
 bulk_left() { # src, dst, [rsync flag]
-  bl_out=$(bound_step "$BULK_COPY_SECS" rsync -anc ${3:+"$3"} --out-format='%n' "$1/" "$2/") || return 1
+  bl_out=$(bulk_step "$BULK_COPY_SECS" rsync -anc ${3:+"$3"} --out-format='%n' "$1/" "$2/") || return 1
   printf '%s\n' "$bl_out" | grep -v '/$' | grep -c . || :
 }
 
@@ -4032,10 +4038,10 @@ bulk_inside() {
 bulk_lane_root() {
   if [ -n "${SD_LANE_ROOT:-}" ]; then
     bl_lane="$SD_LANE_ROOT"
-  elif bl_lane=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.lane_root 2>/dev/null); then
+  elif bl_lane=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.lane_root 2>/dev/null); then
     :
   else
-    bl_err=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.lane_root 2>&1 >/dev/null) || :
+    bl_err=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.lane_root 2>&1 >/dev/null) || :
     case "$bl_err" in
       *"sd.lane_root is not set"*) bl_lane="${XDG_STATE_HOME:-$HOME/.local/state}/sd/lanes" ;;
       *) return 1 ;;
@@ -4075,12 +4081,12 @@ stage_bulkmove() {
   # set by hand (review of build 772, ruling #52268). A root that does
   # not read refuses; only "not set" reads as not switched.
   bm_switched=0
-  if bm_root=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null); then
+  if bm_root=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null); then
     # Compared by real path: a trailing slash or a link names it too.
     [ "$bm_root" != "$bm_dst" ] && [ "$(bulk_real "$bm_root" || :)" != "$(bulk_real "$bm_dst" || echo -)" ] ||
       bm_switched=1
   else
-    bm_err=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>&1 >/dev/null) || :
+    bm_err=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>&1 >/dev/null) || :
     case "$bm_err" in
       *"sd.bulk_storage_root is not set"*) ;;
       *) note_failure "could not read sd.bulk_storage_root; $BULK_LOCAL kept" 1; return 0 ;;
@@ -4094,7 +4100,7 @@ stage_bulkmove() {
     bulk_overwrites "$BULK_LOCAL" "$bm_dst"
     # The long copy runs while the jobs still run; the one under their
     # locks takes only what changed since.
-    run_ok bound_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$bm_dst/" || return 0
+    run_ok bulk_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$bm_dst/" || return 0
   fi
   bulkmove_quiet "$bm_dst" "$bm_switched" || :
   exec 5>&- 6>&- 7>&-
@@ -4147,7 +4153,7 @@ bulkmove_quiet() { # dst, switched
   bulk_hold_locks || return 1
   bulk_idle "under the job locks" || return 1
   if [ "$2" -eq 0 ]; then
-    run_ok bound_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$1/" || return 1
+    run_ok bulk_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$1/" || return 1
     bq_left=$(bulk_left "$BULK_LOCAL" "$1") || {
       note_failure "rsync -c dry run of $BULK_LOCAL to $1; $BULK_LOCAL kept" 1; return 1; }
     if [ "$bq_left" != 0 ]; then
@@ -4155,8 +4161,8 @@ bulkmove_quiet() { # dst, switched
       return 1
     fi
     echo "  copied  $BULK_LOCAL to $1; a checksum dry run lists nothing left"
-    run_ok bound_step 120 "$SD_PACK_ROOT/bin/sd" config set sd.bulk_storage_root "$1" || return 1
-    bq_got=$(bound_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null) || bq_got=""
+    run_ok bulk_step 120 "$SD_PACK_ROOT/bin/sd" config set sd.bulk_storage_root "$1" || return 1
+    bq_got=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null) || bq_got=""
     if [ "$bq_got" != "$1" ]; then
       note_failure "sd.bulk_storage_root reads '$bq_got', not $1; $BULK_LOCAL kept" 1
       return 1
@@ -4172,7 +4178,7 @@ bulkmove_quiet() { # dst, switched
 # no file the NAS still lacks.
 bulk_remove() { # dst
   bulk_ready "$1" "before the removal" || return 1
-  run_ok bound_step "$BULK_COPY_SECS" rsync -a --ignore-existing "$BULK_LOCAL/" "$1/" || return 1
+  run_ok bulk_step "$BULK_COPY_SECS" rsync -a --ignore-existing "$BULK_LOCAL/" "$1/" || return 1
   br_left=$(bulk_left "$BULK_LOCAL" "$1" --ignore-existing) || {
     note_failure "rsync -c dry run of $BULK_LOCAL to $1; $BULK_LOCAL kept" 1; return 1; }
   if [ "$br_left" != 0 ]; then

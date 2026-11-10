@@ -82,6 +82,17 @@ case "$1" in
   -a)
     n=$(( $(cat "$COPIES" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$COPIES"
     [ "${RSYNC_FAIL_COPY:-}" != "$n" ] || exit 23
+    if [ "${RSYNC_FD_COPY:-}" = "$n" ]; then
+      for fd in 5 6; do
+        if (eval ": >&$fd") 2>/dev/null; then echo "$fd open"; else echo "$fd closed"; fi
+      done > "$PROBE"
+    fi
+    if [ "${RSYNC_HANG_COPY:-}" = "$n" ]; then
+      # Ignores TERM and keeps every inherited lock fd, as a stuck copy
+      # would; only the output pipes close, so the suite does not wait.
+      echo $$ > "$PROBE"
+      exec perl -MPOSIX -e '$SIG{TERM} = "IGNORE"; POSIX::close($_) for 0..4, 8..255; sleep 60'
+    fi
     if [ "${RSYNC_PROBE_COPY:-}" = "$n" ]; then
       perl -e 'use Fcntl ":flock"; open(my $fh, ">>", $ARGV[0]) or exit 2; exit(flock($fh, LOCK_EX|LOCK_NB) ? 0 : 1)' \
         "$LOGS/.lane-run.flock" && echo free > "$PROBE" || echo held > "$PROBE"
@@ -169,7 +180,7 @@ class BulkmoveTest(unittest.TestCase):
         self.config = self.base / "sd-config"
         fixture_config.seal(self, self.stubs)
 
-    def run_stage(self, apply=True, **extra):
+    def run_stage(self, apply=True, outer=None, **extra):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -190,6 +201,12 @@ class BulkmoveTest(unittest.TestCase):
             **extra,
         }
         args = [str(SCRIPT), "update", "bulkmove"] + (["--apply"] if apply else [])
+        if outer:
+            # The refresh drain's bound (repo-sync.sh refresh_answer): a
+            # grace 3 s above the default, around the whole update, which
+            # runs with the default grace.
+            args = ["sh", "-c", '. "$0"; ST_BOUNDED_GRACE=$((ST_BOUNDED_DEFAULT_GRACE + 3)) st_bounded ' + outer + ' env -u ST_BOUNDED_GRACE "$@"',
+                    str(HERE.parents[1] / "lib/bounded.sh")] + args
         result = subprocess.run(args, env=env, capture_output=True, text=True,
                                 cwd=self.base, stdin=subprocess.DEVNULL, timeout=120)
         return result.returncode, result.stdout + result.stderr
@@ -474,6 +491,28 @@ class BulkmoveTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual((self.base / "probe").read_text(), "held\n")
         self.assert_untouched(out)
+
+    # Review of build 782: no child of the stage keeps a job lock open.
+    # A copy that outlived the stage would hold the job's slots off.
+    def test_a_copy_under_the_locks_holds_no_lock_fd(self):
+        rc, out = self.run_stage(RSYNC_FD_COPY="2")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.base / "probe").read_text(), "5 closed\n6 closed\n", out)
+
+    # Review of build 782: the refresh drain bounds the whole update at
+    # 1200 s; a copy still running when that bound ends is stopped with
+    # it and leaves no lock held.
+    def test_an_outer_bound_ends_a_stuck_copy_and_frees_the_locks(self):
+        rc, out = self.run_stage(outer="3", RSYNC_HANG_COPY="2")
+        self.assertEqual(rc, 124, out)
+        pid = int((self.base / "probe").read_text())
+        seen = subprocess.run(["ps", "-o", "pid=,ppid=,pgid=,stat=,etime=,args=", "-p", str(pid)],
+                              capture_output=True, text=True).stdout
+        if seen:
+            subprocess.run(["kill", "-9", str(pid)])
+        self.assertEqual(seen, "", "the copy outlived the outer bound")
+        self.assertTrue((self.local / "system/lane/run.log").exists(), out)
+        self.assertTrue(self.lock_free("lane-run"), out)
 
     # Row 12: the move, then a rerun.
     def test_the_move_copies_switches_and_removes(self):
