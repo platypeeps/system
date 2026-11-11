@@ -734,14 +734,16 @@ class IdleBound(FakeTools):
     11-10 NAS copy sat two hours on a stalled smbfs write (sd:8436).
     Every rsync carries --timeout, which exits when no data moves."""
 
-    def test_every_rsync_carries_a_600_second_idle_bound(self) -> None:
+    def test_every_rsync_carries_a_1800_second_idle_bound(self) -> None:
+        # 600 s failed every NAS copy while nas-full-copy loads the share
+        # (sd:8499); 1800 s still stops a two-hour hang (sd:8436).
         result = self.sync()
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         runs = self.rsync_runs()
         self.assertTrue(runs)
         for run in runs:
-            self.assertIn("--timeout=600", run.split())
+            self.assertIn("--timeout=1800", run.split())
 
     def test_the_environment_overrides_the_bound(self) -> None:
         result = self.sync(MIRROR_SYNC_IO_TIMEOUT="30")
