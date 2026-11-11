@@ -77,7 +77,7 @@ RELEASE_BASE="${MACHINE_SETUP_RELEASE_BASE:-https://github.com}"
 # database at startup, so an agent bootstrapped first restarts against a
 # file that does not exist yet. `satellite` sits beside it: a machine runs
 # one of the two, and neither loads an agent the other needs.
-STAGES="brew release shell appstore bin dotfiles envs prompts repos tmpdisk cron sd satellite agents services macos tooling system obsidian iterm2"
+STAGES="brew release shell appstore bin dotfiles envs prompts repos tmpdisk cron sd satellite bulkmove agents services macos tooling system obsidian iterm2"
 # The verbs dispatch accepts, in help's order. Help and the no-arg usage print
 # this list; three hand copies of it disagreed (sd:3548).
 VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt promote"
@@ -3918,6 +3918,277 @@ tmpdisk_locked() {
       tmpdisk_remount "$td_mnt" "$td_vol" || return 1
       echo "  mounted $td_mnt again with its markers" ;;
   esac
+}
+
+# The one-shot move of a satellite's bulk storage from a local folder to
+# the NAS (sd:8242; design: docs/work/2026-11-10-bulkmove-quiesce/). Off
+# until machine-setup.env sets MACHINE_SETUP_BULK_NAS, the share's mount
+# point; the data goes to its repo-storage folder. Once the folder is
+# gone the stage says ok. Writers are quiesced, not identified: the
+# stage holds the locks of this host's jobs that start pack runs, so no
+# slot starts one, and checks the database for an open run before and
+# after. Any refusal keeps the folder; rsync resumes, so a rerun is safe.
+BULK_LOCAL="${MACHINE_SETUP_BULK_LOCAL:-$HOME/repo-storage}"
+BULK_NAS="${MACHINE_SETUP_BULK_NAS:-}"
+BULK_COPY_SECS="${MACHINE_SETUP_BULK_COPY_SECS:-21600}"
+# The cron jobs that start build, draft and lane runs on a satellite.
+# Three at most: their locks take fds 5-7.
+BULK_JOBS="build-dispatch lane-run night-build"
+
+# bound_step with the job locks' fds 5-7 closed: no child holds a lock,
+# so none can keep a job's slots off past the stage (review of build
+# 782). The stage's shell keeps them; a flock ends with its last fd.
+bulk_step() { bound_step "$@" 5>&- 6>&- 7>&-; }
+
+# This host's open build and draft runs, and the lane entries it runs,
+# one per line; fails when the database cannot be read.
+bulk_open_runs() {
+  bulk_step 120 "$SD_DB_PYTHON" -I -c '
+import json, sys
+sys.path.insert(0, sys.argv[1] + "/lib")
+import sd_db
+from sd_db import build, draft
+from sd_db.ship import this_host
+c = sd_db.connect(write=False)
+hosts = build.lane_hosts(c)
+for r in build.open_runs(c, hosts) + draft.open_runs(c, hosts):
+    print("run", r["id"])
+here = this_host()
+for row in c.execute("SELECT body FROM state WHERE id IN (SELECT MAX(id) FROM state"
+                     " WHERE kind = ? AND key LIKE ? GROUP BY key)", ("checkpoint", "lane:v1:%")):
+    e = json.loads(row["body"])
+    if e.get("status") == "running" and (e.get("holder") or {}).get("host") == here:
+        print("lane", e.get("item"), e.get("id"))
+' "$SD_PACK_ROOT"
+}
+
+# Refuses, with a FAILED line, while this host has an open run.
+bulk_idle() { # when
+  bi_runs=$(bulk_open_runs) || {
+    note_failure "could not read this host's open runs $1; $BULK_LOCAL kept" 1; return 1; }
+  [ -z "$bi_runs" ] && return 0
+  note_failure "open run(s) $1: $(echo $bi_runs); $BULK_LOCAL kept, the next run tries again" 1
+  return 1
+}
+
+# Takes each loaded job's own lock, the flock a cron run holds on fd 8
+# (local-cron-jobs, sd:1251), on fds 5-7 of this shell, and keeps them.
+# A slot that fires meanwhile finds its lock held and skips; a job is
+# never booted out, which would TERM a run mid-merge (sd:3317). A lock a
+# run holds refuses; the run goes on. The lock sits beside the log
+# launchd names for the label, as cron-jobs.sh's hold_job_lock finds it.
+# An unloaded job, or one whose log folder is gone, cannot start a run.
+# The kernel drops the locks when this shell exits, however it exits:
+# bulk_step closes fds 5-7 in every child, so none holds them on.
+bulk_hold_locks() {
+  bh_fd=5
+  for bh_job in $BULK_JOBS; do
+    bh_label="$LABEL_PREFIX.cron.$bh_job"
+    bh_out=$(launchctl print "gui/$(id -u)/$bh_label" 2>/dev/null) || continue
+    bh_log=$(printf '%s\n' "$bh_out" | sed -n 's/^[[:space:]]*stdout path = //p' | head -1)
+    if [ -z "$bh_log" ]; then
+      note_failure "launchd names no log for $bh_label, so its lock is unknown; $BULK_LOCAL kept" 1
+      return 1
+    fi
+    [ -d "${bh_log%/*}" ] || continue
+    bh_lock="${bh_log%/*}/.$bh_job.flock"
+    bh_rc=0
+    eval "exec $bh_fd>>\"\$bh_lock\"" 2>/dev/null &&
+      perl -e 'use Fcntl ":flock"; open(my $fh, ">&=", $ARGV[0]) or exit 2; flock($fh, LOCK_EX|LOCK_NB) or exit 1; exit 0' "$bh_fd" ||
+      bh_rc=$?
+    case $bh_rc in
+      0) echo "  held    $bh_job's lock; its slots skip until the move ends" ;;
+      1) note_failure "a run of $bh_job is in progress; left running, $BULK_LOCAL kept, the next run tries again" 1
+         return 1 ;;
+      *) note_failure "could not test $bh_job's lock $bh_lock; $BULK_LOCAL kept" 1
+         return 1 ;;
+    esac
+    bh_fd=$((bh_fd + 1))
+  done
+}
+
+# The NAS files the copy would replace (sd:8319), reported, not refused:
+# the local folder is the newer copy of every file this machine wrote.
+bulk_overwrites() { # src, dst
+  bo_out=$(bulk_step 600 rsync -ain "$1/" "$2/") || {
+    echo "  --      could not list NAS files the copy would replace"; return 0; }
+  # A new file reads >f+++; openrsync prints fewer flag columns than rsync.
+  bo_hit=$(printf '%s\n' "$bo_out" | awk '$1 ~ /^>f/ && $1 !~ /^>f\+/ { sub(/^[^ ]+ /, ""); print }')
+  [ -n "$bo_hit" ] || return 0
+  echo "  note    the copy replaces $(printf '%s\n' "$bo_hit" | grep -c .) NAS file(s): $(printf '%s\n' "$bo_hit" | head -5 | tr '\n' ' ')"
+}
+
+# The files rsync would still copy from $1 to $2, by checksum.
+bulk_left() { # src, dst, [rsync flag]
+  bl_out=$(bulk_step "$BULK_COPY_SECS" rsync -anc ${3:+"$3"} --out-format='%n' "$1/" "$2/") || return 1
+  printf '%s\n' "$bl_out" | grep -v '/$' | grep -c . || :
+}
+
+# Whether $1 is $BULK_LOCAL or inside it, spelled either way.
+bulk_inside() {
+  bi_real=$(cd "$BULK_LOCAL" && pwd -P) || bi_real="$BULK_LOCAL"
+  bi_path=$(cd "$1" 2>/dev/null && pwd -P) || bi_path="$1"
+  case "$1/ $bi_path/" in
+    "$BULK_LOCAL"/*|"$bi_real"/*|*" $BULK_LOCAL"/*|*" $bi_real"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# The lane root: SD_LANE_ROOT, else sd.lane_root, else the pack's default.
+bulk_lane_root() {
+  if [ -n "${SD_LANE_ROOT:-}" ]; then
+    bl_lane="$SD_LANE_ROOT"
+  elif bl_lane=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.lane_root 2>/dev/null); then
+    :
+  else
+    bl_err=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.lane_root 2>&1 >/dev/null) || :
+    case "$bl_err" in
+      *"sd.lane_root is not set"*) bl_lane="${XDG_STATE_HOME:-$HOME/.local/state}/sd/lanes" ;;
+      *) return 1 ;;
+    esac
+  fi
+  case "$bl_lane" in "~"*) bl_lane="$HOME${bl_lane#"~"}" ;; esac
+  printf '%s\n' "$bl_lane"
+}
+
+stage_bulkmove() {
+  echo "== bulkmove"
+  if [ -z "$BULK_NAS" ]; then
+    echo "  --      off: MACHINE_SETUP_BULK_NAS is unset"
+    return 0
+  fi
+  bm_dst="$BULK_NAS/repo-storage"
+  if ! is_satellite; then
+    echo "  --      not a satellite: the hub keeps its bulk storage"
+    return 0
+  fi
+  if hub_holder; then
+    echo "  SKIP    this machine holds the hub role (promoted): its bulk storage stays"
+    return 0
+  fi
+  if [ ! -d "$BULK_LOCAL" ]; then
+    echo "  ok      $BULK_LOCAL is gone; bulk storage is $bm_dst"
+    return 0
+  fi
+  echo "  DIFFERS $BULK_LOCAL still holds bulk storage; it moves to $bm_dst"
+  if [ "$APPLY" -ne 1 ]; then
+    say "hold the locks of $BULK_JOBS, copy $BULK_LOCAL to $bm_dst, set sd.bulk_storage_root, remove $BULK_LOCAL"
+    return 0
+  fi
+  # Once the root names the NAS, jobs write there and the NAS holds the
+  # newer files, so the copy and the switch are skipped. The folder goes
+  # only through bulk_remove's guards either way: the root may have been
+  # set by hand (review of build 772, ruling #52268). A root that does
+  # not read refuses; only "not set" reads as not switched.
+  bm_switched=0
+  if bm_root=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null); then
+    # The pack expands a leading ~, so a ~/ root can name the NAS too.
+    case "$bm_root" in "~"*) bm_root="$HOME${bm_root#"~"}" ;; esac
+    # Compared by real path: a trailing slash or a link names it too.
+    [ "$bm_root" != "$bm_dst" ] && [ "$(bulk_real "$bm_root" || :)" != "$(bulk_real "$bm_dst" || echo -)" ] ||
+      bm_switched=1
+  else
+    bm_err=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>&1 >/dev/null) || :
+    case "$bm_err" in
+      *"sd.bulk_storage_root is not set"*) ;;
+      *) note_failure "could not read sd.bulk_storage_root; $BULK_LOCAL kept" 1; return 0 ;;
+    esac
+  fi
+  [ "$bm_switched" -eq 0 ] ||
+    echo "  --      sd.bulk_storage_root already names $bm_dst; no copy over it"
+  bulk_ready "$bm_dst" "before the copy" || return 0
+  if [ "$bm_switched" -eq 0 ]; then
+    run_ok mkdir -p "$bm_dst" || return 0
+    bulk_overwrites "$BULK_LOCAL" "$bm_dst"
+    # The long copy runs while the jobs still run; the one under their
+    # locks takes only what changed since.
+    run_ok bulk_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$bm_dst/" || return 0
+  fi
+  bulkmove_quiet "$bm_dst" "$bm_switched" || :
+  exec 5>&- 6>&- 7>&-
+}
+
+# A folder's real path, links and trailing slashes resolved; one that
+# does not exist yet resolves through its parent. Fails when neither does.
+bulk_real() { # path
+  br_p=$1
+  while :; do case "$br_p" in ?*/) br_p=${br_p%/} ;; *) break ;; esac; done
+  if [ -d "$br_p" ]; then (cd "$br_p" && pwd -P); return; fi
+  br_up=$(cd "${br_p%/*}/" && pwd -P) || return 1
+  printf '%s/%s\n' "${br_up%/}" "${br_p##*/}"
+}
+
+# Refuses when the local folder and the NAS folder are one folder, or
+# one holds the other, compared by real path: the copies and the dry
+# run then all pass, and the removal takes the only copy (review of
+# build 782).
+bulk_apart() { # dst
+  ba_local=$(bulk_real "$BULK_LOCAL") && ba_dst=$(bulk_real "$1") || {
+    note_failure "could not resolve $BULK_LOCAL or $1; $BULK_LOCAL kept" 1; return 1; }
+  case "$ba_dst/" in "$ba_local"/*) ba_hit=1 ;; *) ba_hit=0 ;; esac
+  case "$ba_local/" in "$ba_dst"/*) ba_hit=1 ;; esac
+  [ "$ba_hit" -eq 0 ] && return 0
+  note_failure "$BULK_LOCAL ($ba_local) overlaps $1 ($ba_dst); $BULK_LOCAL kept" 1
+  return 1
+}
+
+# The checks every step that writes the NAS or removes the folder needs:
+# the share mounted, the lane root outside the folder, no open run.
+bulk_ready() { # dst, when
+  if ! mount | grep -qF " on $BULK_NAS ("; then
+    note_failure "$BULK_NAS is not mounted; $BULK_LOCAL kept" 1
+    return 1
+  fi
+  bulk_apart "$1" || return 1
+  # A lane root inside the folder would go with it (review of sd:8242).
+  br_lane=$(bulk_lane_root) || {
+    note_failure "could not read sd.lane_root; $BULK_LOCAL kept" 1; return 1; }
+  if bulk_inside "$br_lane"; then
+    note_failure "the lane root $br_lane is inside $BULK_LOCAL: move it first; $BULK_LOCAL kept" 1
+    return 1
+  fi
+  bulk_idle "$2"
+}
+
+# The steps that run under the jobs' locks; any return keeps the folder.
+bulkmove_quiet() { # dst, switched
+  bulk_hold_locks || return 1
+  bulk_idle "under the job locks" || return 1
+  if [ "$2" -eq 0 ]; then
+    run_ok bulk_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$1/" || return 1
+    bq_left=$(bulk_left "$BULK_LOCAL" "$1") || {
+      note_failure "rsync -c dry run of $BULK_LOCAL to $1; $BULK_LOCAL kept" 1; return 1; }
+    if [ "$bq_left" != 0 ]; then
+      note_failure "after the copy $bq_left file(s) of $BULK_LOCAL differ on $1; kept" 1
+      return 1
+    fi
+    echo "  copied  $BULK_LOCAL to $1; a checksum dry run lists nothing left"
+    run_ok bulk_step 120 "$SD_PACK_ROOT/bin/sd" config set sd.bulk_storage_root "$1" || return 1
+    bq_got=$(bulk_step 120 "$SD_PACK_ROOT/bin/sd" config get sd.bulk_storage_root 2>/dev/null) || bq_got=""
+    if [ "$bq_got" != "$1" ]; then
+      note_failure "sd.bulk_storage_root reads '$bq_got', not $1; $BULK_LOCAL kept" 1
+      return 1
+    fi
+    echo "  set     sd.bulk_storage_root to $1"
+  fi
+  bulk_remove "$1"
+}
+
+# The one path that removes the folder; the caller holds the job locks.
+# It checks again, copies what the NAS lacks without replacing a newer
+# NAS file, and removes the folder only when a checksum dry run lists
+# no file the NAS still lacks.
+bulk_remove() { # dst
+  bulk_ready "$1" "before the removal" || return 1
+  run_ok bulk_step "$BULK_COPY_SECS" rsync -a --ignore-existing "$BULK_LOCAL/" "$1/" || return 1
+  br_left=$(bulk_left "$BULK_LOCAL" "$1" --ignore-existing) || {
+    note_failure "rsync -c dry run of $BULK_LOCAL to $1; $BULK_LOCAL kept" 1; return 1; }
+  if [ "$br_left" != 0 ]; then
+    note_failure "before the removal $br_left file(s) of $BULK_LOCAL are not on $1; kept" 1
+    return 1
+  fi
+  run_ok rm -rf "$BULK_LOCAL" || return 1
+  echo "  removed $BULK_LOCAL; bulk storage is $1"
 }
 
 # ds_ names: every stage shares these globals, and a stage that set `want`
@@ -9203,6 +9474,13 @@ environment:
   MACHINE_SETUP_TMPDISK_MB  tmpdisk: the RAM disk's size in MiB; unset turns
                           the stage off (sd:7092)
   MACHINE_SETUP_TMPDISK_VOLUMES  tests only: the folder that stands in for /Volumes
+  MACHINE_SETUP_BULK_NAS  bulkmove: the NAS share's mount point; a satellite
+                          moves its local bulk storage to repo-storage there
+                          (sd:8242); unset turns the stage off
+  MACHINE_SETUP_BULK_LOCAL  bulkmove: the local folder (default ~/repo-storage)
+  MACHINE_SETUP_BULK_COPY_SECS  bulkmove: each copy's bound (default 21600)
+  SD_LANE_ROOT            bulkmove: the lane root it keeps outside the
+                          local folder (default sd.lane_root)
   SD_PACK_ROOT            the command pack checkout
                           (default ~/repos/platypeeps/sd-workflow)
   SD_DB_PYTHON            satellite: the interpreter sd_db runs under
