@@ -639,6 +639,15 @@ only_interrupted() {
   ! grep 'error:' "$ERRS" | grep -v -q ': open (2) in .*: Interrupted system call$'
 }
 
+# openrsync exits 1 and says "poll: timeout" when no data moved for
+# --timeout: the share is not answering (sd:8549). A pair counts as that
+# only when the timeout is its one error; a full or denied share beside it
+# keeps the pair a failure, since the backup jobs read exit 75 as a skip.
+only_timed_out() {
+  grep -q 'error:' "$ERRS" || return 1
+  ! grep 'error:' "$ERRS" | grep -v -q 'error: poll: timeout'
+}
+
 probe_flavours
 check_backup_root
 check_keep_days
@@ -783,8 +792,8 @@ pairs | while IFS='|' read -r src dst excl; do
     rc=0
   fi
   # rsync exits 30 when no data moved for --timeout; openrsync exits 1
-  # and says "poll: timeout". Either is the share not answering.
-  if [ "$rc" -ne 0 ] && { [ "$rc" -eq 30 ] || grep -q 'error: poll: timeout' "$ERRS"; }; then
+  # with only "poll: timeout". Either is the share not answering.
+  if [ "$rc" -ne 0 ] && { [ "$rc" -eq 30 ] || only_timed_out; }; then
     echo "!!! rsync moved no data for ${IO_TIMEOUT}s: $src" >&2
     echo "$src (share unresponsive)" >> "$FAILLOG"
   elif [ "$rc" -ne 0 ]; then

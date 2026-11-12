@@ -867,6 +867,23 @@ class IdleBound(FakeTools):
         self.assertEqual(result.returncode, 75, result.stdout)
         self.assertIn(f"{self.source} (share unresponsive)", result.stdout)
 
+    def test_poll_timeout_beside_another_error_still_exits_1(self) -> None:
+        # REGRESSION sd:8549: a timeout hides no other error; the backup
+        # jobs read exit 75 as a skip, so a full or denied share stays 1.
+        for other in (
+            "rsync(12794): error: write: No space left on device",
+            "rsync(12794): error: dst/a: open: Permission denied",
+        ):
+            with self.subTest(other=other):
+                self.state_file("rc", ["1"])
+                self.state_file("stderr", [other, "rsync(12794): error: poll: timeout"])
+
+                result = self.sync()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f"{self.source} (rsync error)", result.stdout)
+                self.assertNotIn("share unresponsive", result.stdout)
+
     def test_any_other_rsync_error_still_exits_1(self) -> None:
         self.state_file("rc", ["1"])
         self.state_file("stderr", ["rsync(1): error: write: No space left on device"])
