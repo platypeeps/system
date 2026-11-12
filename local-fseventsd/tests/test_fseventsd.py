@@ -446,6 +446,19 @@ printf '%8s\\n' "$size"
     # again, every hour, against the event history every backup and indexing
     # tool reads: the thrash FSEVENTSD_MIN_HOURS exists to stop (round 2).
 
+    def test_a_state_folder_that_gives_no_path_refuses_the_term(self):
+        """st_state_dir hands back whatever XDG_STATE_HOME holds, so a
+        relative value makes the floor relative too: the hourly job runs from
+        whatever directory launchd gives it, so the floor would land
+        somewhere else on every run and hold nothing back."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        done = self.run_fs("repair", extra={"XDG_STATE_HOME": "state"})
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertEqual([], self.calls(), "TERMed with no floor recorded")
+        self.assertIn("no TERM: the state folder gave no path", done.stdout)
+
     def test_a_floor_whose_folder_cannot_be_made_refuses_the_term(self):
         self.configure()
         self.fake_ps(rss_kb=28770 * 1024)
