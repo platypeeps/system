@@ -140,6 +140,18 @@ fs_swap_used_mb() {
 # Sets fs_state (unconfigured|bad-config|not-darwin|no-daemon|measured), the
 # limits, and on `measured` fs_pid, fs_rss_mb, fs_pressure and fs_swap_mb. An
 # empty fs_pressure or fs_swap_mb means the read did not answer.
+#
+# Every run_* is dispatched as `run_x || exit $?`, so errexit is suppressed
+# for this whole file's function bodies, not only for fs_send_term (round 2).
+# Every step here that can fail is therefore checked where its failure
+# changes the answer: `whole` into fs_bad, `uname` and the marker read with a
+# default, and the pgrep, ps and sysctl readers give nothing when they do not
+# answer, which reads as unknown and never as a healthy zero. The one
+# unchecked step is this st_source_env, which returns 0 either way by
+# contract; its failure needs no check here because `.` is a special builtin
+# and a POSIX shell aborts when it cannot open its file, so an unreadable
+# .env exits 1 with the path on stderr rather than reading as unconfigured
+# (test_an_env_file_that_cannot_be_read_never_reads_as_unconfigured).
 fs_collect() {
   st_source_env "$TOOL"
   fs_limit=${FSEVENTSD_RSS_MB:-}

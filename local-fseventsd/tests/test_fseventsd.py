@@ -8,9 +8,10 @@ SYSTEM_TOOLS_CONFIG at a temp directory, so nothing reads the real config or
 the real state folder, and PATH holds a launchctl stub that fails the test if
 called.
 
-Stubs cannot show what the real commands do with a window width, so
-TheLiveDaemonReader at the end of this file reads the live daemon through the
-real pgrep and ps, on a pipe and on a narrow pseudo-terminal.
+Everything here is portable. Stubs cannot show what the real commands do with
+a window width, so tests/macos/test_live_daemon.py reads the live daemon
+through the real pgrep and ps, on a pipe and on a narrow pseudo-terminal; it
+needs macOS, and tests/macos-only-suites.txt names it.
 """
 
 import re
@@ -320,6 +321,26 @@ printf '%8s\\n' "$size"
     def test_an_exported_value_counts_without_a_config_file(self):
         done = self.run_fs("status", extra={"FSEVENTSD_RSS_MB": "4096"})
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+
+    def test_an_env_file_that_cannot_be_read_never_reads_as_unconfigured(self):
+        """The one setup step outside fs_send_term that this tool does not
+        check itself, and the guard that says it needs no check. st_source_env
+        returns 0 either way by contract, so an unchecked call could have let
+        an unreadable .env leave every value unset and read as "nothing to
+        check" -- exit 3, the one code the sweep prints nothing for. It
+        cannot: `.` is a special builtin, and a POSIX shell aborts when one
+        cannot open its file, whatever errexit is doing. Measured here: exit
+        1, with the path on stderr. This pins that, since the silent reading
+        would be a machine that stops being checked."""
+        self.configure()
+        env = self.config / "fseventsd/.env"
+        self.addCleanup(env.chmod, env.stat().st_mode)
+        env.chmod(0o000)
+        done = self.run_fs("status")
+        self.assertNotEqual(3, done.returncode, done.stdout + done.stderr)
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn(str(env), done.stderr)
+        self.assertNotIn("nothing to check", done.stdout)
 
     # --- repair -----------------------------------------------------------
 
