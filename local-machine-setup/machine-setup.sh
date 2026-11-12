@@ -2056,6 +2056,26 @@ retired_cron_jobs() {
   [ ! -f "$rcj_list" ] || sed 's/#.*//' "$rcj_list" | awk 'NF {print $1}'
 }
 
+# The jobs the repository itself says every machine runs: the entries of
+# examples/profiles/common.cron. Every other file under examples/ is a sample
+# to copy, and this one still reads as one; it is also read live, because
+# "every machine runs this job" is a statement about the fleet and belongs in
+# the repository rather than in a line added by hand to each machine's own
+# common.cron, which no session can reach (sd:8607). Each reader of the
+# wanted list reads it beside the machine's roster, and capture subtracts it
+# so the names stay out of <profile>.cron.
+# A `!name` line in this machine's <profile>.cron drops one, exactly as it
+# drops an entry of the config folder's common.cron (sd:4853), so a machine
+# can still refuse a job the repository names.
+repo_cron_jobs() {
+  rcj_repo="$DIR/examples/profiles/common.cron"
+  [ -f "$rcj_repo" ] || return 0
+  rcj_names=$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$rcj_repo" \
+    | grep -v -e '^$' -e '^!' || :)
+  [ -n "$rcj_names" ] || return 0
+  printf '%s\n' "$rcj_names" | drop_negated "$(profile_drops "$PROFILE" cron)"
+}
+
 stage_cron() {
   echo "== cron"
   # Without its host jobs, the sweep below read each one as an orphan and
@@ -2081,7 +2101,7 @@ stage_cron() {
     seed_dir=""
   fi
   hub_ask
-  jobs=$( { manifest cron; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; fi; } | awk 'NF && !seen[$0]++')
+  jobs=$( { manifest cron; repo_cron_jobs; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; fi; } | awk 'NF && !seen[$0]++')
   # A retired job stays out of every machine's wanted list, even where a
   # profile or a host folder written before the retirement still names it:
   # the sweep below left those running, and verify read them ok (sd:3155).
@@ -2089,7 +2109,7 @@ stage_cron() {
   retired=$(retired_cron_jobs)
   for r in $retired; do
     if printf '%s\n' "$jobs" | grep -qxF "$r"; then
-      echo "  note    $r is retired, yet this profile or this host's jobs folder names it; remove it there"
+      echo "  note    $r is retired, yet this profile, this host's jobs folder or the repo's examples/profiles/common.cron names it; remove it there"
     fi
     rp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$r.plist"
     [ -f "$rp" ] || continue
@@ -4811,7 +4831,11 @@ cmd_capture() {
   done
   comm -12 "$tmp/have.cron" "$tmp/defined.cron" > "$tmp/have.cron.defined"
   mv "$tmp/have.cron.defined" "$tmp/have.cron"
-  { common_manifest cron; cat "$tmp/host.cron"; } | sort -u > "$tmp/common.cron"
+  # The repository's own common.cron too (sd:8607): the cron stage installs
+  # what it names on every machine, so writing those names into this
+  # machine's <profile>.cron would duplicate a fleet line in a per-machine
+  # file, and capture rewrites that file wholesale.
+  { common_manifest cron; repo_cron_jobs; cat "$tmp/host.cron"; } | sort -u > "$tmp/common.cron"
   comm -23 "$tmp/have.cron" "$tmp/common.cron" > "$tmp/out.cron"
 
   if command -v mas >/dev/null 2>&1; then
@@ -5654,7 +5678,7 @@ candidates_cron() {
     echo
     return 0
   fi
-  cand_listed=$(manifest cron)
+  cand_listed=$( { manifest cron; repo_cron_jobs; } | sort -u)
   cand_all=$(discover_cron_jobs)
   cand_have=0
   cand_in=0
@@ -6769,7 +6793,7 @@ cmd_doctor() {
       echo "  WARN    cannot list this host's cron jobs (cron-jobs/jobs/<host>/); only the profile's are checked"
       dr_host=
     fi
-    jobs=$( { manifest cron; printf '%s\n' "$dr_host"; } | awk 'NF && !seen[$0]++' \
+    jobs=$( { manifest cron; repo_cron_jobs; printf '%s\n' "$dr_host"; } | awk 'NF && !seen[$0]++' \
       | { grep -vxF "$(retired_cron_jobs)" || :; } | awk -v p="$LABEL_PREFIX.cron." '{ print p $0 }')
     for label in $labels $jobs; do
       # The cron and agents stages' guard: a satellite never loads these, so
@@ -7067,7 +7091,12 @@ doctor_unattended_sudo() {
     echo "  WARN    Keychain item $SUDO_KEYCHAIN unknown: security exited $sk_rc"
   fi
   if [ ! -e "$REPAIRS_SUDOERS" ]; then
-    echo "  WARN    no repair sudoers drop-in at $REPAIRS_SUDOERS — install local-machine-setup/machine-setup-repairs.sudoers.example with visudo -cf (README: Unattended sudo)"
+    # The whole command, as the Keychain line above prints its own (sd:8607):
+    # the two substitutions stay unexpanded, so the operator's own shell fills
+    # in this machine's account and brew prefix. visudo -cf checks the file
+    # before install puts it where sudo reads it.
+    ds_tmp=/tmp/machine-setup-repairs
+    echo "  WARN    no repair sudoers drop-in at $REPAIRS_SUDOERS — run in a terminal: sed -e \"s/change-me/\$(id -un)/\" -e \"s|HOMEBREW_PREFIX|\$(brew --prefix)|\" $DIR/machine-setup-repairs.sudoers.example > $ds_tmp && sudo visudo -cf $ds_tmp && sudo install -m 440 -o root -g wheel $ds_tmp $REPAIRS_SUDOERS"
     return 0
   fi
   # Its brew line must name this machine's brew: one copied from an Apple
@@ -9208,7 +9237,7 @@ if held is None:
 undo_own_dispatch() {
   uo_host=$(host_cron_jobs) ||
     promote_refuse "cannot list this host's cron jobs (cron-jobs/jobs/<host>/); rerun"
-  { manifest cron; printf '%s\n' "$uo_host"; } | grep -qxF build-dispatch
+  { manifest cron; repo_cron_jobs; printf '%s\n' "$uo_host"; } | grep -qxF build-dispatch
 }
 
 # The drill (design, "Drill"): promote's steps 1, 5, 6 and 9 against a

@@ -1,6 +1,18 @@
 # Cron jobs (local-cron-jobs) every machine installs.
+#
+# This file is read live, not only as a sample (sd:8607): the cron stage
+# reads it beside the machine's own roster, so a job named here installs on
+# every machine through the refresh, with no line added by hand to each
+# machine's <config>/machine-setup/profiles/common.cron. A machine refuses
+# one with a `!<job>` line in its own <profile>.cron. Every other file in
+# this folder is a sample to copy.
+#
+# A job named here needs its job file in <config>/cron-jobs/jobs/ or an
+# example in local-cron-jobs/examples/, which the stage installs for it.
+#
 # fseventsd-hourly repairs a runaway fseventsd (local-fseventsd, sd:8579);
 # every machine runs the same daemon, so every machine runs the job. It needs
 # <config>/fseventsd/.env for anything to happen; without it the run exits 3,
-# nothing to check, which the job passes as 0.
+# nothing to check, which the job passes as 0. The envs stage installs that
+# .env from local-fseventsd/.env.example.
 fseventsd-hourly

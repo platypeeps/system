@@ -314,5 +314,56 @@ class CronJobFromRepoExample(Case):
         self.assertNotIn(f"install {OTHER_JOB}", self.cron_calls())
 
 
+class RepoCommonCron(Case):
+    """The repository's examples/profiles/common.cron is a roster, not only
+    a sample: the cron stage reads it beside this machine's own."""
+
+    def test_a_repo_job_no_profile_names_is_installed(self):
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertIn(f"  MISSING {self.jobs}/{FLEET_JOB}.job", out, out + result.stderr)
+        self.assertIn(f"  MISSING {FLEET_JOB} — no plist installed", out)
+        self.assertIn(f"install {FLEET_JOB}", self.cron_calls())
+
+    def test_a_bang_line_in_this_machines_profile_drops_a_repo_job(self):
+        (self.profiles / "personal.cron").write_text(f"!{FLEET_JOB}\n")
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertNotIn(FLEET_JOB, out)
+        self.assertEqual(self.cron_calls(), [])
+
+    def test_a_repo_job_already_installed_is_not_swept(self):
+        self.jobs.mkdir(parents=True)
+        (self.jobs / f"{FLEET_JOB}.job").write_text('JOB_SCHEDULE="25 * * * *"\n')
+        self.install_plist(FLEET_JOB)
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertNotIn("EXTRA", out)
+        self.assertNotIn(f"uninstall {FLEET_JOB}", self.cron_calls())
+
+    def test_doctor_checks_a_repo_job_is_loaded(self):
+        out = self.run_script("doctor").stdout
+        self.assertIn(f"  WARN    not loaded: {fixture_config.LABEL_PREFIX}.cron.{FLEET_JOB}", out)
+
+    def test_capture_leaves_a_repo_job_out_of_this_machines_profile(self):
+        """A profile that named it would hold a line every machine's own
+        file already holds, and capture rewrites that file wholesale."""
+        self.jobs.mkdir(parents=True)
+        (self.jobs / f"{FLEET_JOB}.job").write_text('JOB_SCHEDULE="25 * * * *"\n')
+        (self.jobs / "own-job.job").write_text('JOB_SCHEDULE="0 4 * * *"\n')
+        (self.profiles / "personal.agent").write_text("# no agents in a capture case\n")
+        for job in (FLEET_JOB, "own-job"):
+            self.install_plist(job)
+        result = self.run_script("capture", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        cron = (self.profiles / "personal.cron").read_text()
+        self.assertIn("own-job", cron)
+        self.assertNotIn(FLEET_JOB, cron)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -110,9 +110,27 @@ class Doctor(Case):
                       'security add-generic-password -a "$(id -un)" -s machine-setup-sudo '
                       "-T /usr/bin/security -w", out)
         self.assertRegex(out, r"  WARN    no repair sudoers drop-in at \S+machine-setup-repairs — "
-                              r"install local-machine-setup/machine-setup-repairs\.sudoers\.example "
-                              r"with visudo -cf")
+                              r"run in a terminal: sed ")
         self.assertNotIn("FAIL    no Keychain", out)
+
+    def test_the_missing_drop_in_names_the_command_to_paste(self):
+        """sd:8607: the line is the step, so it carries the whole command,
+        not a pointer to the README. It names this machine's drop-in path
+        and the tracked example, and leaves $(id -un) and $(brew --prefix)
+        for the shell the operator pastes it into."""
+        drop_in = self.base / "sudoers.d/machine-setup-repairs"
+        example = self.folder / "machine-setup-repairs.sudoers.example"
+        out = self.doctor()
+        self.assertIn(
+            f"  WARN    no repair sudoers drop-in at {drop_in} — run in a terminal: "
+            'sed -e "s/change-me/$(id -un)/" -e "s|HOMEBREW_PREFIX|$(brew --prefix)|" '
+            f"{example} > /tmp/machine-setup-repairs"
+            " && sudo visudo -cf /tmp/machine-setup-repairs"
+            f" && sudo install -m 440 -o root -g wheel /tmp/machine-setup-repairs {drop_in}",
+            out)
+        self.assertTrue(example.is_file(), f"the line names {example}, which is not a file")
+        self.assertTrue(SUDOERS.is_file(), f"{SUDOERS} is the tracked example it copies")
+        self.assertNotIn("(README: Unattended sudo)", out)
 
     def test_doctor_asks_for_no_cask_list(self):
         """sd:6927: the casks that need sudo come from brew info, so the

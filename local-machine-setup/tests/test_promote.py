@@ -31,6 +31,25 @@ ROLE_JOBS = ["sd-db-backup", "sd-db-backup-hourly", "offsite-verify", "shadow-sy
 # The logins the role needs and no machine copies (sd:5986, #31094): promote
 # lists each login, the hand-back each sign-out.
 ACCOUNTS = ("work Google account", "personal Google account", "Slack", "Notion")
+# The jobs the repository's own common.cron names: the cron stage installs them
+# on every machine, whoever holds the hub role (sd:8607). Read them from that
+# file, so a job added there needs no edit here.
+FLEET_LABELS = {
+    f"{PREFIX}.cron." + line.split("#", 1)[0].strip()
+    for line in (SCRIPT.parent / "examples/profiles/common.cron").read_text().splitlines()
+    if line.split("#", 1)[0].strip()
+}
+
+
+def role_plists(folder):
+    """The labels installed under folder, less the fleet-wide cron jobs.
+
+    These cases weigh what the hub role installs, so a fleet job the cron
+    stage puts in beside it is no answer about the role.
+    """
+    if not folder.exists():
+        return []
+    return sorted(p.stem for p in folder.glob("*.plist") if p.stem not in FLEET_LABELS)
 
 # The pack's bin/sd-db: `fence` prints the state in $STUB_FENCE (a file, so
 # `tailscale set` can move it), `restore --newest` installs a database named
@@ -276,8 +295,7 @@ class PromoteCase(unittest.TestCase):
         return [line for line in self.log.read_text().splitlines() if word in line] if self.log.exists() else []
 
     def installed(self):
-        folder = self.fixture.home / "Library/LaunchAgents"
-        return sorted(p.stem for p in folder.glob("*.plist")) if folder.exists() else []
+        return role_plists(self.fixture.home / "Library/LaunchAgents")
 
     def moved(self):
         return sorted(self.hub_json.parent.glob("hub.json.promoted-*"))
@@ -1343,8 +1361,7 @@ class HubRole(unittest.TestCase):
         return result.stdout
 
     def installed(self):
-        folder = self.fixture.home / "Library/LaunchAgents"
-        return sorted(p.stem for p in folder.glob("*.plist")) if folder.exists() else []
+        return role_plists(self.fixture.home / "Library/LaunchAgents")
 
     def test_no_hub_role_label_goes_in_before_the_fence_reads_holder(self):
         """The 7 to 8 order: elsewhere, unknown and off all install nothing."""
