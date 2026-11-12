@@ -78,7 +78,7 @@ st_mas_reopen() {
 
 # _st_mas_pids BUNDLE EXECUTABLE: the pids of BUNDLE's own executable, one
 # per line; nothing when none runs. A candidate from `pgrep -x`, which
-# matches the process name, counts only when `ps -o comm=` gives the full
+# matches the process name, counts only when _st_mas_exe gives the full
 # path BUNDLE/Contents/MacOS/EXECUTABLE exactly: a process of that name
 # in a copy elsewhere, such as a backup volume, is not the app, nor is one
 # whose arguments name the path. A candidate ps cannot read is not counted.
@@ -91,10 +91,17 @@ _st_mas_pids() {
     _mp_found=$(pgrep -x "$_mp_re" < /dev/null) || _mp_rc=$?
     [ "$_mp_rc" -le 1 ] || return 1
     for _mp_pid in $_mp_found; do
-        if [ "$(ps -o comm= -p "$_mp_pid" 2>/dev/null)" = "$_mp_path" ]; then
+        if [ "$(_st_mas_exe "$_mp_pid")" = "$_mp_path" ]; then
             echo "$_mp_pid"
         fi
     done
+}
+
+# _st_mas_exe PID: the full path of PID's executable, nothing when ps
+# cannot read it. `-ww`, as on a terminal plain ps cuts each line to the
+# window width, and a path cut short never matches (sd:8580).
+_st_mas_exe() {
+    ps -ww -o comm= -p "$1" 2>/dev/null
 }
 
 # _st_mas_ids: the MAS_QUIT_APP_IDS entries, one per line, as written.

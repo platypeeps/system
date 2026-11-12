@@ -8,3 +8,6 @@
 
 # swiftc, `xcrun clang` and an open(2) shim loaded with DYLD_INSERT_LIBRARIES.
 msgsnap sh local-msgsnap/msgsnap.sh test -v
+
+# Real ps on a narrow pseudo-terminal: Linux ps gives no path (sd:8580).
+lib-mas-app python3 lib/tests/macos/test_mas_app.py -v
