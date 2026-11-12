@@ -28,8 +28,9 @@
 # the local disk, so the line keeps the phone push for a run at risk
 # (sd:5997, ruling on sd:6030). The run still fails, and Today shows it.
 # A share that does not answer is the one exception (sd:8549): mirror-sync
-# exits 75, and the run passes with one warning line; offsite-verify
-# reports the missing copy.
+# exits 75, and the run passes with one warning line. offsite-verify
+# allows a copy 36 hours old, so one skipped night raises nothing; a
+# second in a row does.
 JOB_SCHEDULE="10 2 * * *"
 SD_DB_BACKUP_MOUNT=""
 [ -n "${SD_DB_BACKUP_DESTINATION:-}" ] || SD_DB_BACKUP_MOUNT=" --require-mount /Volumes/local"
