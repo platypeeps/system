@@ -9,6 +9,9 @@
 # swiftc, `xcrun clang` and an open(2) shim loaded with DYLD_INSERT_LIBRARIES.
 msgsnap sh local-msgsnap/msgsnap.sh test -v
 
+# Real ps on a narrow pseudo-terminal: Linux ps gives no path (sd:8580).
+lib-mas-app python3 lib/tests/macos/test_mas_app.py -v
+
 # The live fseventsd through the real pgrep and ps, on a pipe and on a narrow
 # pseudo-terminal: a stub table cannot show what they do with a window width.
 # The rest of local-fseventsd's suite is portable and runs in the tools leg.

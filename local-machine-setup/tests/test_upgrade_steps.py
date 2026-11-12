@@ -107,7 +107,7 @@ exit 0
 """
 
 # The process list the pgrep and ps stubs read, at $PROCS: one `<pid>
-# <executable path>` line per process, as `ps -o comm=` gives it on macOS
+# <executable path>` line per process, as `ps -ww -o comm=` gives it on macOS
 # (sd:7330). `pgrep -x NAME` gives the listed pids whose executable is
 # named NAME, and only those; any other pgrep or ps call is the real one.
 # A process the case has not reaped yet is a zombie, and counts as ended.
@@ -125,9 +125,9 @@ PGREP_STUB = "#!/bin/sh\n" + ALIVE + r"""if [ "$1" = -x ] && [ $# -eq 2 ]; then
 fi
 exec /usr/bin/pgrep "$@"
 """
-PS_STUB = "#!/bin/sh\n" + ALIVE + r"""if [ $# -eq 4 ] && [ "$1 $2 $3" = "-o comm= -p" ]; then
+PS_STUB = "#!/bin/sh\n" + ALIVE + r"""if [ $# -eq 5 ] && [ "$1 $2 $3 $4" = "-ww -o comm= -p" ]; then
   while read -r pid path; do
-    [ "$pid" = "$4" ] && alive "$pid" && { echo "$path"; exit 0; }
+    [ "$pid" = "$5" ] && alive "$pid" && { echo "$path"; exit 0; }
   done < "$PROCS"
   exit 1
 fi

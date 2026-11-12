@@ -84,7 +84,7 @@ A weekly read-only KISS audit files one sd item listing new mechanisms and net l
 Optimize every suggestion, design and review disposition for one developer's throughput: keep tests, code review and no leaked secrets; skip team ceremony (releases, approval chains, multi-tenant hardening, per-step sign-off).
 The dashboard is the operator's primary surface: give each operator action and state a dashboard view or control.
 Keep operator commands few: fold a new action into an existing verb or a dashboard control before adding a command.
-Never force-push, push to a default branch, or make unrelated changes.
+Never force-push, push to a default branch, or make unrelated changes; research repos (`~/repos/research/*`) commit and push to `main`, no branches, until the operator says otherwise (operator 2026-11-12).
 
 # Commits and merges
 

@@ -28,6 +28,11 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+#: Settings a case passes when it wants them: one the caller exported
+#: must not change what a case tests (sd:8592).
+SET_BY_CASE = ("MIRROR_SYNC_ADDITIVE", "MIRROR_SYNC_BACKUP_ROOT",
+               "MIRROR_SYNC_PROBE_TIMEOUT", "MIRROR_SYNC_IO_TIMEOUT")
+
 FOLDER = Path(__file__).resolve().parent.parent
 #: The command pack checkout whose lib/ holds the sd_db the verifier imports
 #: (sd:3279), as the script names it.
@@ -74,9 +79,8 @@ class Fixture(unittest.TestCase):
         backup_root: Path | None = None,
         additive: bool = False,
     ) -> subprocess.CompletedProcess:
-        environment = dict(os.environ, MIRROR_SYNC_CONF=str(conf))
-        environment.pop("MIRROR_SYNC_BACKUP_ROOT", None)
-        environment.pop("MIRROR_SYNC_ADDITIVE", None)
+        environment = {name: value for name, value in os.environ.items() if name not in SET_BY_CASE}
+        environment["MIRROR_SYNC_CONF"] = str(conf)
         if backup_root is not None:
             environment["MIRROR_SYNC_BACKUP_ROOT"] = str(backup_root)
         if additive:
@@ -312,9 +316,8 @@ class UnmountedShare(Fixture):
         stubs = self.work / "stubs"
         stubs.mkdir(exist_ok=True)
         self.write(stubs / "mount", f"#!/bin/sh\nprintf '%s' '{mounted}'\n").chmod(0o755)
-        environment = dict(os.environ, MIRROR_SYNC_CONF=str(conf), PATH=f"{stubs}:{os.environ['PATH']}", **extra)
-        environment.pop("MIRROR_SYNC_ADDITIVE", None)
-        environment.pop("MIRROR_SYNC_BACKUP_ROOT", None)
+        environment = {name: value for name, value in os.environ.items() if name not in SET_BY_CASE}
+        environment.update(MIRROR_SYNC_CONF=str(conf), PATH=f"{stubs}:{os.environ['PATH']}", **extra)
         if backup_root is not None:
             environment["MIRROR_SYNC_BACKUP_ROOT"] = str(backup_root)
         return subprocess.run(["/bin/sh", str(script), "sync"], capture_output=True, text=True, env=environment)
@@ -446,6 +449,55 @@ class UnmountedShare(Fixture):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("MIRROR_SYNC_PROBE_TIMEOUT", result.stderr)
         self.assertFalse((self.work / "mirror").exists())
+
+    def test_a_probe_bound_of_zero_stops_the_pass(self) -> None:
+        # sd:8592: alarm 0 turns the bound off, so a stale share hangs again.
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        conf = self.write(self.work / "pairs.conf", f"{source}|{self.work}/mirror\n")
+
+        result = self.run_on_volumes(conf, MIRROR_SYNC_PROBE_TIMEOUT="0")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("MIRROR_SYNC_PROBE_TIMEOUT must be at least 1", result.stderr)
+        self.assertFalse((self.work / "mirror").exists())
+
+    def test_a_probe_denied_its_process_group_says_so(self) -> None:
+        # sd:8592: st_bounded exits 125 when it ran nothing; that is no
+        # "cannot write", and no share to skip either.
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        volume = self.work / "Volumes" / "Share"
+        volume.mkdir(parents=True)
+        stubs = self.work / "stubs"
+        stubs.mkdir(exist_ok=True)
+        self.write(stubs / "perl", "#!/bin/sh\n"
+                   "echo 'st_bounded: process group denied' >&2\nexit 125\n").chmod(0o755)
+        conf = self.write(self.work / "pairs.conf", f"{source}|{volume}/mirror\n")
+
+        result = self.run_on_volumes(conf, mounted=f"//operator@nas.example.test/Share on {volume} (smbfs)\n")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"probe not run: no process group for its bound: {volume}/mirror", result.stderr)
+        self.assertIn(f"{volume}/mirror (probe not run)", result.stdout)
+        self.assertNotIn("cannot write", result.stdout + result.stderr)
+        self.assertFalse((volume / "mirror").exists())
+
+    def test_bounds_the_caller_exported_do_not_reach_a_case(self) -> None:
+        # sd:8592: run_on_volumes passed the caller's bounds through, so an
+        # exported MIRROR_SYNC_PROBE_TIMEOUT changed what a case tested.
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        volume = self.work / "Volumes" / "Offsite Disk"
+        volume.mkdir(parents=True)
+        conf = self.write(self.work / "pairs.conf", f"{source}|{volume}/mirror\n")
+
+        with unittest.mock.patch.dict(os.environ, MIRROR_SYNC_PROBE_TIMEOUT="soon",
+                                      MIRROR_SYNC_IO_TIMEOUT="ten"):
+            result = self.run_on_volumes(conf, mounted=f"/dev/disk9s1 on {volume} (apfs, local)\n")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((volume / "mirror" / "keep.txt").read_text(), "keep\n")
 
     def test_a_backup_root_on_an_unmounted_volume_stops_the_pass(self) -> None:
         source = self.work / "source"
@@ -610,16 +662,14 @@ class FakeTools(Fixture):
         (self.state / name).write_text("".join(line + "\n" for line in lines))
 
     def sync(self, **extra: str) -> subprocess.CompletedProcess:
-        environment = dict(
-            os.environ,
+        environment = {name: value for name, value in os.environ.items() if name not in SET_BY_CASE}
+        environment.update(
             MIRROR_SYNC_CONF=str(self.conf),
             MS_FAKE=str(self.state),
             MIRROR_SYNC_MATERIALIZE_WAIT="2",
             PATH=f"{self.work / 'fake-bin'}:{os.environ['PATH']}",
             **extra,
         )
-        for name in ("MIRROR_SYNC_BACKUP_ROOT", "MIRROR_SYNC_ADDITIVE"):
-            environment.pop(name, None)
         return subprocess.run(
             ["/bin/sh", str(MIRROR_SYNC), "sync"], capture_output=True, text=True, env=environment
         )
@@ -845,6 +895,22 @@ class IdleBound(FakeTools):
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("MIRROR_SYNC_IO_TIMEOUT", result.stderr)
         self.assertEqual(self.rsync_runs(), [])
+
+    def test_a_bound_of_zero_stops_the_pass(self) -> None:
+        # sd:8592: rsync reads --timeout=0 as no bound at all.
+        result = self.sync(MIRROR_SYNC_IO_TIMEOUT="0")
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("MIRROR_SYNC_IO_TIMEOUT must be at least 1", result.stderr)
+        self.assertEqual(self.rsync_runs(), [])
+
+    def test_a_bound_the_caller_exported_does_not_reach_a_case(self) -> None:
+        with unittest.mock.patch.dict(os.environ, MIRROR_SYNC_IO_TIMEOUT="ten",
+                                      MIRROR_SYNC_PROBE_TIMEOUT="soon"):
+            result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("--timeout=1800", self.rsync_runs()[0].split())
 
     # GNU rsync's two lines for an idle bound, as it prints them (exit 30).
     GNU_TIMEOUT = [
