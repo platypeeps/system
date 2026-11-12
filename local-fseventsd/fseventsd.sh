@@ -1,5 +1,5 @@
 #!/bin/sh
-# fseventsd's resident size, and a TERM when the daemon is both oversized and
+# fseventsd's resident size, and a TERM when an oversized daemon is also
 # hurting the machine (sd:8579).
 # Usage: fseventsd.sh status|repair|check|test|help
 #
@@ -9,14 +9,21 @@
 # vendor fix. launchd respawns the daemon, and System Integrity Protection
 # refuses `launchctl kickstart` on it, so TERM is the whole repair.
 #
-# Two conditions, never one: a large fseventsd on a machine with memory to
-# spare is doing its job, and the TERM drops the FSEvents history that every
-# backup and indexing tool reads. So nothing is signalled until the machine is
-# actually hurting, and FSEVENTSD_MIN_HOURS keeps an hourly job from thrashing
-# a daemon that grows back fast.
+# Two questions, never folded into one answer (sd:8579 round 1):
+#
+#   is the daemon oversized?  resident size against FSEVENTSD_RSS_MB
+#   is the machine hurting?   pressure level, or swap against FSEVENTSD_SWAP_MB
+#
+# Every line answers both, and each caller reads the one it needs. status
+# exits on the size alone: an oversized daemon is worth a nightly line before
+# the machine starts swapping, and the sweep prints nothing for exit 0. Only
+# repair reads the second answer, because the TERM drops the FSEvents history
+# that every backup and indexing tool reads: it signals when both say yes, and
+# FSEVENTSD_MIN_HOURS keeps an hourly job from thrashing a daemon that grows
+# back fast.
 #
 # A sysctl that does not answer leaves "is the machine hurting?" unknown. That
-# is neither a yes nor a no: status reports it and repair sends no TERM.
+# is neither a yes nor a no: the line says so and repair sends no TERM.
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
@@ -40,17 +47,21 @@ fseventsd.sh — fseventsd's resident size, and a TERM when it hurts.
 Usage: fseventsd.sh <command>
 
   status   One line, starting with the daemon's resident size, so the trend
-           is visible on a healthy machine too. Exits 3 when there is
-           nothing to check: FSEVENTSD_RSS_MB unset, not macOS, or no
-           fseventsd running. Exits 1 when the daemon is over
-           FSEVENTSD_RSS_MB and the machine is hurting with it, or when
-           the pressure readings did not answer. Exits 0 otherwise --
+           is visible on a healthy machine too. It answers two questions:
+           is the daemon oversized, and is the machine hurting. Exits 3
+           when there is nothing to check: FSEVENTSD_RSS_MB unset, not
+           macOS, or no fseventsd running. Exits 1 when the daemon is over
+           FSEVENTSD_RSS_MB, whatever the machine is doing, or when a
+           setting is broken. Exits 0 otherwise --
            local-health-check reads these codes.
-  repair   The same verdict, and only on a 1 that the machine is hurting, a
-           TERM to the daemon through sudo -A; launchd respawns it. At most
-           one TERM every FSEVENTSD_MIN_HOURS. Exits 1 when the TERM failed
-           or the verdict was unknown, 3 when there is nothing to check,
-           0 otherwise -- a refused TERM is a cron-jobs failure.
+  repair   The same two answers, and a TERM to the daemon through sudo -A
+           only when both say yes; launchd respawns it. At most one TERM
+           every FSEVENTSD_MIN_HOURS. Exits 1 when the TERM failed, when
+           a setting is broken, or when the daemon is oversized and the
+           pressure readings did not answer. Exits 3 when there is nothing
+           to check, 0 otherwise, an oversized daemon on a machine with
+           memory to spare included: that one is status's line to report,
+           and a refused TERM is a cron-jobs failure.
   check    One line per reading, then the status line, with status's codes.
   test     Run this folder's tests (extra args go to unittest).
   help     This text.
@@ -79,18 +90,24 @@ whole() {
   return 0
 }
 
-# fs_daemon: "<pid> <resident-kb>" of the running fseventsd, or nothing. The
-# pid and size are read together, so the size reported belongs to the pid
-# reported. comm is the last field and can hold spaces, so it is what is left
-# after the two numbers, and its basename is matched.
+# fs_daemon: "<pid> <resident-kb>" of the running fseventsd, or nothing.
+# pgrep names the process and ps reads one pid, the reading
+# docs/work/2026-11-04-ramdisk-tmp/design.md:134 already used on this daemon.
+# No comm column: ps cuts its output to the window width when it writes to a
+# terminal, 80 characters at 79 columns, and the daemon's comm path is 134, so
+# a basename match on that field finds nothing in a narrow window. pgrep -x
+# matches the process name whole, so fseventsd-watcher is not the daemon. A
+# pid ps cannot read is skipped, not reported as a daemon of no size.
 fs_daemon() {
-  ps -axo pid=,rss=,comm= 2>/dev/null | awk '
-    {
-      daemon_pid = $1; daemon_rss = $2; command = $0
-      sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/, "", command)
-      parts = split(command, part, "/")
-      if (part[parts] == "fseventsd") { print daemon_pid, daemon_rss; exit }
-    }'
+  fs_pids=$(pgrep -x fseventsd 2>/dev/null) || return 0
+  for fs_candidate in $fs_pids; do
+    fs_kb=$(ps -o rss= -p "$fs_candidate" 2>/dev/null |
+      awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1 }')
+    if [ -n "$fs_kb" ]; then
+      printf '%s %s\n' "$fs_candidate" "$fs_kb"
+      return 0
+    fi
+  done
 }
 
 # fs_pressure_level: kern.memorystatus_vm_pressure_level, or nothing when the
@@ -159,10 +176,14 @@ fs_collect() {
   fs_swap_mb=$(fs_swap_used_mb)
 }
 
-# fs_judge: from the readings, set fs_line (one line), fs_code (0, 1 or 3) and
-# fs_hurting (yes|no|unknown). A reading that did not answer makes the verdict
-# unknown; one that answered "hurting" wins over one that did not answer.
+# fs_judge: from the readings, two separate answers and the line that carries
+# both. fs_over (yes|no) is the size question, fs_hurting (yes|no|unknown) the
+# machine question, and neither is folded into the other: fs_code is status's
+# exit code and reads fs_over alone, while repair reads both. A reading that
+# did not answer makes the machine question unknown; one that answered
+# "hurting" wins over one that did not answer.
 fs_judge() {
+  fs_over=unknown
   fs_hurting=unknown
   case "$fs_state" in
     unconfigured)
@@ -199,23 +220,21 @@ fs_judge() {
     [ "$fs_swap_mb" -le "$fs_swap_limit" ] || fs_hurting=yes
   fi
   [ "$fs_hurting" = yes ] || [ "$fs_unknown" -eq 0 ] || fs_hurting=unknown
-  fs_size="$fs_rss_mb MB resident (pid $fs_pid)"
-  if [ "$fs_rss_mb" -le "$fs_limit" ]; then
-    fs_line="$TOOL: $fs_size, within the $fs_limit MB budget"
-    fs_code=0
-    return 0
-  fi
   case "$fs_hurting" in
-    yes)
-      fs_line="$TOOL: $fs_size, over the $fs_limit MB budget and the machine is hurting: $fs_pressure_say, $fs_swap_say"
-      fs_code=1 ;;
-    unknown)
-      fs_line="$TOOL: $fs_size, over the $fs_limit MB budget, and whether the machine is hurting is unknown: $fs_pressure_say, $fs_swap_say"
-      fs_code=1 ;;
-    *)
-      fs_line="$TOOL: $fs_size, over the $fs_limit MB budget, machine not hurting: $fs_pressure_say, $fs_swap_say"
-      fs_code=0 ;;
+    yes) fs_machine_say="the machine is hurting" ;;
+    no) fs_machine_say="the machine is not hurting" ;;
+    *) fs_machine_say="whether the machine is hurting is unknown" ;;
   esac
+  if [ "$fs_rss_mb" -le "$fs_limit" ]; then
+    fs_over=no
+    fs_size_say="within the $fs_limit MB budget"
+    fs_code=0
+  else
+    fs_over=yes
+    fs_size_say="over the $fs_limit MB budget"
+    fs_code=1
+  fi
+  fs_line="$TOOL: $fs_rss_mb MB resident (pid $fs_pid), $fs_size_say; $fs_machine_say: $fs_pressure_say, $fs_swap_say"
 }
 
 # fs_marker: the file holding the last TERM's epoch seconds. It is state a run
@@ -292,10 +311,25 @@ run_repair() {
   fs_collect
   fs_judge
   echo "$fs_line"
-  [ "$fs_code" -ne 3 ] || return 3
-  # Only a machine that answered "hurting" is repaired. An unknown verdict and
-  # a broken setting are reported and signalled nothing.
-  [ "$fs_hurting" = yes ] || return "$fs_code"
+  # Each question is asked on its own, and the state says which were answered
+  # at all. Reading status's one code here is what TERMed a daemon within its
+  # budget whenever another process drove the machine into swap (round 1).
+  case "$fs_state" in
+    unconfigured|not-darwin|no-daemon) return 3 ;;
+    bad-config) return 1 ;;
+  esac
+  if [ "$fs_over" = no ]; then
+    echo "$TOOL: no TERM: the daemon is within its budget, whatever the machine is doing"
+    return 0
+  fi
+  if [ "$fs_hurting" = unknown ]; then
+    echo "$TOOL: FAIL: no TERM: the daemon is oversized and the pressure readings did not answer"
+    return 1
+  fi
+  if [ "$fs_hurting" = no ]; then
+    echo "$TOOL: no TERM: the machine has memory to spare; status reports the size"
+    return 0
+  fi
   rc=0
   fs_send_term || rc=$?
   echo "$fs_term_line"

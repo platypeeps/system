@@ -1,13 +1,19 @@
-"""fseventsd.sh against a faked ps, sysctl, uname and sudo.
+"""fseventsd.sh against a faked pgrep, ps, sysctl, uname and sudo.
 
 Nothing here signals a real process. `sudo` is a stub that records its words
 and exits with a code the test picks, so the TERM is observed and never sent;
-`ps` prints a fixture process table, and `sysctl` answers the two pressure
-reads or refuses them. Every test points HOME and SYSTEM_TOOLS_CONFIG at a
-temp directory, so nothing reads the real config or the real state folder,
-and PATH holds a launchctl stub that fails the test if called.
+`pgrep` and `ps` answer from one fixture process table, and `sysctl` answers
+the two pressure reads or refuses them. Every test points HOME and
+SYSTEM_TOOLS_CONFIG at a temp directory, so nothing reads the real config or
+the real state folder, and PATH holds a launchctl stub that fails the test if
+called.
+
+Stubs cannot show what the real commands do with a window width, so
+TheLiveDaemonReader at the end of this file reads the live daemon through the
+real pgrep and ps, on a pipe and on a narrow pseudo-terminal.
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -21,9 +27,6 @@ ENTRYPOINT = FOLDER / "fseventsd.sh"
 SUDOERS = FOLDER.parent / "local-machine-setup/machine-setup-repairs.sudoers.example"
 JOB = FOLDER.parent / "local-cron-jobs/examples/fseventsd-hourly.job"
 
-#: The daemon's real path, so the stub table is what `ps -axo comm=` prints.
-DAEMON = ("/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks"
-          "/FSEvents.framework/Versions/A/Support/fseventsd")
 #: What macOS prints for vm.swapusage.
 SWAPUSAGE = "total = 20480.00M  used = {used}  free = 779.75M  (encrypted)"
 
@@ -61,16 +64,41 @@ class Fseventsd(unittest.TestCase):
     def fake_uname(self, system):
         self.stub("uname", f"echo {system}\n")
 
-    def fake_ps(self, rss_kb=None):
-        """A process table with launchd, a comm holding spaces, a name that
-        only contains `fseventsd`, and the daemon itself when rss_kb is set."""
-        rows = ["      1   12345 /sbin/launchd",
-                "    501    9876 /usr/libexec/a helper with spaces",
-                "    777    4242 /usr/local/bin/fseventsd-watcher"]
+    def fake_ps(self, rss_kb=None, ghost_pid=None):
+        """pgrep and ps over one fixture process table, answering the way the
+        real pair does: `pgrep -x NAME` lists the pids whose process name is
+        exactly NAME, and `ps -o rss= -p PID` prints that pid's resident
+        kilobytes, padded as ps pads them, and refuses a pid it cannot read.
+        Either stub refuses any other arguments, so a reader that asks for a
+        comm column, or for every process, fails the test instead of reading
+        this machine. The table holds launchd, a name that only contains
+        `fseventsd`, and the daemon itself when rss_kb is set. ghost_pid is a
+        pid pgrep reports and ps cannot read."""
+        rows = [("1", "12345", "launchd"),
+                ("501", "9876", "a helper with spaces"),
+                ("777", "4242", "fseventsd-watcher")]
+        if ghost_pid is not None:
+            # Before the daemon, so pgrep names it first and a reader that
+            # takes the first pid without reading its size is caught.
+            rows.append((ghost_pid, "unreadable", "fseventsd"))
         if rss_kb is not None:
-            rows.append(f"    400 {rss_kb:>7} {DAEMON}")
-        table = "\n".join(rows)
-        self.stub("ps", f"cat <<'TABLE'\n{table}\nTABLE\n")
+            rows.append(("400", str(rss_kb), "fseventsd"))
+        table = "".join(f"{pid} {rss} {name}\n" for pid, rss, name in rows)
+        table = f"table() {{ cat <<'TABLE'\n{table}TABLE\n}}\n"
+        self.stub("pgrep", table + """
+[ "$#" -eq 2 ] && [ "$1" = -x ] || { echo "pgrep: unexpected: $*" >&2; exit 2; }
+found=$(table | awk -v want="$2" '{ name = $0; sub(/^[0-9]+ [^ ]+ /, "", name)
+  if (name == want) print $1 }')
+[ -n "$found" ] || exit 1
+printf '%s\\n' "$found"
+""")
+        self.stub("ps", table + """
+[ "$#" -eq 4 ] && [ "$1 $2 $3" = "-o rss= -p" ] ||
+  { echo "ps: unexpected: $*" >&2; exit 2; }
+size=$(table | awk -v want="$4" '$1 == want && $2 ~ /^[0-9]+$/ { print $2 }')
+[ -n "$size" ] || exit 1
+printf '%8s\\n' "$size"
+""")
 
     def fake_sysctl(self, pressure="1", swap="120.00M"):
         """`pressure` or `swap` None means the read refuses, which is unknown."""
@@ -117,7 +145,7 @@ class Fseventsd(unittest.TestCase):
             text = f"{int(time.time()) - int(hours_ago * 3600)}\n"
         self.marker.write_text(text)
 
-    # --- status: the two conditions --------------------------------------
+    # --- status: the size verdict alone decides its exit code -------------
 
     def test_a_high_size_with_pressure_above_one_exits_1(self):
         self.configure()
@@ -126,7 +154,7 @@ class Fseventsd(unittest.TestCase):
         done = self.run_fs("status")
         self.assertEqual(1, done.returncode, done.stdout + done.stderr)
         self.assertIn("28770 MB resident (pid 400)", done.stdout)
-        self.assertIn("over the 4096 MB budget and the machine is hurting", done.stdout)
+        self.assertIn("over the 4096 MB budget; the machine is hurting", done.stdout)
         self.assertIn("pressure level 2", done.stdout)
 
     def test_a_high_size_with_swap_over_the_limit_exits_1(self):
@@ -145,22 +173,46 @@ class Fseventsd(unittest.TestCase):
         self.assertEqual(1, done.returncode, done.stdout + done.stderr)
         self.assertIn("swap used 19701 MB of 8192 MB", done.stdout)
 
-    def test_a_high_size_with_nothing_hurting_exits_0(self):
-        """One condition is not enough: a big daemon on a machine with memory
-        to spare is doing its job, and the TERM drops the FSEvents history."""
+    def test_a_high_size_alone_exits_1_on_a_quiet_machine(self):
+        """Replaces test_a_high_size_with_nothing_hurting_exits_0, which
+        asserted the folded verdict. The sweep prints nothing for exit 0
+        (health-check.sh, `case "$rc" in 0|3) ;;`), so an oversized daemon
+        exiting 0 could not be named until the machine was already swapping.
+        A daemon over the budget is one nightly line on its own."""
         self.configure()
         self.fake_ps(rss_kb=28770 * 1024)
         self.fake_sysctl(pressure="1", swap="120.00M")
         done = self.run_fs("status")
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        self.assertIn("over the 4096 MB budget, machine not hurting", done.stdout)
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("over the 4096 MB budget; the machine is not hurting",
+                      done.stdout)
 
     def test_a_hurting_machine_with_a_small_daemon_exits_0(self):
+        """The other half of the separation: the machine's own trouble is
+        reported on the line and never decides this tool's exit code."""
         self.configure()
         self.fake_sysctl(pressure="4", swap="19700.25M")
         done = self.run_fs("status")
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
         self.assertIn("30 MB resident (pid 400), within the 4096 MB budget", done.stdout)
+        self.assertIn("the machine is hurting: pressure level 4", done.stdout)
+
+    def test_the_status_line_answers_both_questions_separately(self):
+        """Each line carries the size verdict and the machine verdict, so a
+        reader of one line can tell which of the two is true."""
+        self.configure()
+        for rss_mb, pressure, size_say, machine_say in (
+                (30, "1", "within the 4096 MB budget", "the machine is not hurting"),
+                (30, "4", "within the 4096 MB budget", "the machine is hurting"),
+                (28770, "1", "over the 4096 MB budget", "the machine is not hurting"),
+                (28770, "4", "over the 4096 MB budget", "the machine is hurting")):
+            with self.subTest(rss_mb=rss_mb, pressure=pressure):
+                self.fake_ps(rss_kb=rss_mb * 1024)
+                self.fake_sysctl(pressure=pressure, swap="120.00M")
+                done = self.run_fs("status")
+                self.assertEqual(1 if rss_mb == 28770 else 0, done.returncode,
+                                 done.stdout + done.stderr)
+                self.assertIn(f"{size_say}; {machine_say}", done.stdout)
 
     def test_the_first_line_always_starts_with_the_resident_size(self):
         """The trend is visible on a healthy machine too, and the sweep shows
@@ -179,6 +231,24 @@ class Fseventsd(unittest.TestCase):
     def test_no_daemon_exits_3(self):
         self.configure()
         self.fake_ps(rss_kb=None)
+        done = self.run_fs("status")
+        self.assertEqual(3, done.returncode, done.stdout + done.stderr)
+        self.assertIn("nothing to check: no fseventsd process is running", done.stdout)
+
+    def test_a_pid_ps_cannot_read_is_skipped_not_sized_at_zero(self):
+        """A failed read is an unknown size, never a small one: a pid that
+        went away between pgrep and ps must not become a 0 MB daemon that
+        reads as within budget."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024, ghost_pid="398")
+        done = self.run_fs("status")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertIn("28770 MB resident (pid 400)", done.stdout)
+        self.assertNotIn("pid 398", done.stdout)
+
+    def test_a_daemon_only_ps_cannot_read_is_nothing_to_check(self):
+        self.configure()
+        self.fake_ps(rss_kb=None, ghost_pid="398")
         done = self.run_fs("status")
         self.assertEqual(3, done.returncode, done.stdout + done.stderr)
         self.assertIn("nothing to check: no fseventsd process is running", done.stdout)
@@ -244,6 +314,23 @@ class Fseventsd(unittest.TestCase):
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
 
     # --- repair -----------------------------------------------------------
+
+    def test_a_daemon_within_budget_is_never_termed_however_bad_the_machine_is(self):
+        """The TERM drops the FSEvents history that every backup and indexing
+        tool reads, so a 30 MB daemon must survive another process driving the
+        machine into swap. Round 1: the folded verdict returned code 0 while
+        leaving fs_hurting=yes, and repair's guard read only that, so it
+        signalled a healthy daemon once every FSEVENTSD_MIN_HOURS."""
+        self.configure()
+        for pressure, swap in (("4", "120.00M"), ("1", "19700.25M"),
+                               ("4", "19700.25M")):
+            with self.subTest(pressure=pressure, swap=swap):
+                self.fake_sysctl(pressure=pressure, swap=swap)
+                done = self.run_fs("repair")
+                self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+                self.assertEqual([], self.calls(), "TERMed a daemon within budget")
+                self.assertFalse(self.marker.exists())
+                self.assertIn("within the 4096 MB budget", done.stdout)
 
     def test_repair_sends_no_term_when_nothing_hurts(self):
         self.configure()
@@ -406,6 +493,18 @@ class Fseventsd(unittest.TestCase):
                 self.assertIn("local-health-check reads these codes",
                               " ".join(done.stdout.split()))
 
+    def test_help_and_readme_declare_the_contract_the_code_runs(self):
+        """These codes are the interface the sweep and the hourly job are
+        built on, so the declared contract has to be the one in fs_judge:
+        status on the size alone, a TERM on both."""
+        text = " ".join(self.run_fs("help").stdout.split())
+        self.assertIn("Exits 1 when the daemon is over FSEVENTSD_RSS_MB, "
+                      "whatever the machine is doing", text)
+        self.assertNotIn("and the machine is hurting with it", text)
+        readme = " ".join((FOLDER / "README.md").read_text().split())
+        self.assertIn("exits 1 on the resident size alone", readme)
+        self.assertNotIn("nothing is signalled until both hold", readme.lower())
+
     def test_no_argument_prints_usage_to_stderr_and_exits_1(self):
         done = self.run_fs()
         self.assertEqual(1, done.returncode)
@@ -447,12 +546,112 @@ class Fseventsd(unittest.TestCase):
         written = [path for path in self.config.rglob("*") if path.is_file()]
         self.assertEqual([self.config / "fseventsd" / ".env"], written)
 
+    def test_the_readme_install_lines_make_the_folders_first(self):
+        """These lines are run by hand on three machines, where the config
+        folders do not exist yet, so a bare cp fails. Every sibling README
+        that copies an example into a per-tool folder does the mkdir first."""
+        text = (FOLDER / "README.md").read_text()
+        block = text.split("## Hourly from launchd", 1)[1]
+        block = block.split("```sh", 1)[1].split("```", 1)[0]
+        lines = [line for line in block.splitlines() if line.strip()]
+        made = [word for line in lines if line.startswith("mkdir -p ")
+                for word in line.split()[2:]]
+        copies = [line for line in lines if line.startswith("cp ")]
+        self.assertTrue(copies, block)
+        self.assertTrue(lines[0].startswith("mkdir -p "), lines[0])
+        for line in copies:
+            target = line.split()[-1]
+            folder = target[:-1] if target.endswith("/") else target.rsplit("/", 1)[0]
+            self.assertIn(folder, made, f"{folder} is copied into but never made")
+
     def test_the_env_example_names_every_variable_the_script_reads(self):
         read = set(re.findall(r"\$\{(FSEVENTSD_[A-Z_]+):", ENTRYPOINT.read_text()))
         read.add("FSEVENTSD_RSS_MB")
         example = (FOLDER / ".env.example").read_text()
         named = set(re.findall(r"(?m)^#?(FSEVENTSD_[A-Z_]+)=", example))
         self.assertEqual(read, named)
+
+
+class TheLiveDaemonReader(unittest.TestCase):
+    """The reader against the real `pgrep` and `ps`, not the stubs.
+
+    The stub table is a heredoc, so it can never show what the real commands
+    do with a window width. Measured on Darwin 27.2.0: `ps -axo
+    pid=,rss=,comm=` writing straight to a terminal truncates each line to the
+    window, 41 characters at 40 columns and 80 at 79, and the daemon's comm
+    path is 134, so a basename match on that field finds nothing. Writing to a
+    pipe or a file it truncates nothing. So these tests hold the reader to a
+    form that asks for no comm field at all, the form
+    docs/work/2026-11-04-ramdisk-tmp/design.md:134 already used on this
+    daemon, and they cover both the terminal and the pipe.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if subprocess.run(["uname", "-s"], capture_output=True,
+                          text=True).stdout.strip() != "Darwin":
+            raise unittest.SkipTest("not macOS")
+        if subprocess.run(["pgrep", "-x", "fseventsd"],
+                          capture_output=True).returncode != 0:
+            raise unittest.SkipTest("no fseventsd is running")
+
+    def live_env(self):
+        """The real PATH, a scratch HOME and config, and a budget no daemon
+        reaches, so the run reports the size and exits 0."""
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, True)
+        return {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
+                "TMPDIR": str(home), "SYSTEM_TOOLS_CONFIG": str(home / "config"),
+                "FSEVENTSD_RSS_MB": "1048576"}
+
+    def test_the_reader_asks_for_no_comm_column(self):
+        text = ENTRYPOINT.read_text()
+        self.assertNotIn("comm=", text,
+                         "a comm column is cut to the window width on a terminal")
+        self.assertIn("pgrep -x fseventsd", text)
+
+    def test_the_live_daemon_is_found_through_a_pipe(self):
+        done = subprocess.run(["sh", str(ENTRYPOINT), "check"], env=self.live_env(),
+                              stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, timeout=120)
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertRegex(done.stdout, r"(?m)^daemon: pid \d+, \d+ MB resident$")
+
+    def test_the_live_daemon_is_found_on_a_narrow_terminal(self):
+        """40 columns, well under the 134 the comm path needs."""
+        for columns in (40, 80):
+            with self.subTest(columns=columns):
+                code, text = self.on_a_terminal(columns, self.live_env())
+                self.assertEqual(0, code, text)
+                self.assertRegex(text, r"daemon: pid \d+, \d+ MB resident")
+                self.assertNotIn("no fseventsd process is running", text)
+
+    def on_a_terminal(self, columns, env):
+        """`check` with stdout on a pseudo-terminal of that window width."""
+        import fcntl
+        import pty
+        import struct
+        import termios
+        pid, handle = pty.fork()
+        if pid == 0:                                    # pragma: no cover
+            try:
+                os.execve("/bin/sh", ["sh", str(ENTRYPOINT), "check"], env)
+            finally:
+                os._exit(127)
+        fcntl.ioctl(handle, termios.TIOCSWINSZ,
+                    struct.pack("HHHH", 24, columns, 0, 0))
+        out = b""
+        while True:
+            try:
+                chunk = os.read(handle, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk
+        os.close(handle)
+        _, status = os.waitpid(pid, 0)
+        return os.waitstatus_to_exitcode(status), out.decode("utf-8", "replace")
 
 
 if __name__ == "__main__":
