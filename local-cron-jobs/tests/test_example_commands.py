@@ -732,11 +732,12 @@ echo synced
 
 
 class ShadowSyncLockRetryTest(unittest.TestCase):
-    """A run that loses the lock to another writer retries once (sd:8437).
+    """A run that loses the lock to another writer retries (sd:8437, sd:8550).
 
     `sd shadow sync` already waits about a minute for the lock; a run still
-    locked out after that is retried once after SHADOW_SYNC_RETRY_WAIT
-    seconds (default 120). Any other failure fails at once, as before.
+    locked out after that is retried up to SHADOW_SYNC_RETRIES times (default
+    4), SHADOW_SYNC_RETRY_WAIT seconds apart (default 120). Any other
+    failure fails at once, as before.
     """
 
     JOB = EXAMPLES / "shadow-sync-nightly.job"
@@ -767,10 +768,19 @@ class ShadowSyncLockRetryTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(runs, ["shadow sync --strict"] * 2)
 
-    def test_a_run_locked_twice_fails(self):
-        result, runs = self.run_job(2, "database is locked")
+    def test_the_default_is_four_retries(self):
+        self.assertIn("${SHADOW_SYNC_RETRIES:-4}", self.JOB.read_text())
+
+    def test_a_run_locked_four_times_passes(self):
+        # A 30-minute ship holds the lock past one retry (sd:8550).
+        result, runs = self.run_job(4, "database is locked")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(runs), 5)
+
+    def test_a_run_locked_five_times_fails(self):
+        result, runs = self.run_job(5, "database is locked")
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(len(runs), 2)
+        self.assertEqual(len(runs), 5)
 
     def test_any_other_failure_is_not_retried(self):
         result, runs = self.run_job(1, "collection failed")

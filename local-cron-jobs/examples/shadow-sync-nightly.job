@@ -6,21 +6,24 @@
 # errors retain the old watermark; cron's failure channel reports a
 # nonzero exit.
 # `sd shadow sync` waits about a minute for the database lock. A run still
-# locked out after that retries once, SHADOW_SYNC_RETRY_WAIT seconds later
-# (default 120), so another writer's long hold is no alert (sd:8437). Any
-# other failure fails at once.
+# locked out after that retries up to SHADOW_SYNC_RETRIES times (default
+# 4), SHADOW_SYNC_RETRY_WAIT seconds apart (default 120): about 10 minutes
+# in all, as one 120 s retry still lost to long writers (sd:8437,
+# sd:8550). Any other failure fails at once.
 # The command is single-quoted so the `bash -c` that runs it reads
 # SD_PACK_ROOT after ~/.config/shell/env.sh; this file is sourced first.
 JOB_SCHEDULE="20 * * * *"
 JOB_COMMAND='sd="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}/bin/sd"
-out=$("$sd" shadow sync --strict 2>&1); rc=$?
-printf "%s\n" "$out"
-case "$rc:$out" in
-  0:*) exit 0 ;;
-  *"database is locked"*)
-    pause=${SHADOW_SYNC_RETRY_WAIT:-120}
-    echo "shadow sync: database is locked; one retry in ${pause}s"
-    sleep "$pause"
-    exec "$sd" shadow sync --strict ;;
-esac
-exit "$rc"'
+pause=${SHADOW_SYNC_RETRY_WAIT:-120} left=${SHADOW_SYNC_RETRIES:-4}
+while :; do
+  out=$("$sd" shadow sync --strict 2>&1); rc=$?
+  printf "%s\n" "$out"
+  case "$rc:$out" in
+    0:*) exit 0 ;;
+    *"database is locked"*) [ "$left" -gt 0 ] || exit "$rc" ;;
+    *) exit "$rc" ;;
+  esac
+  echo "shadow sync: database is locked; retry in ${pause}s, ${left} left"
+  left=$((left - 1))
+  sleep "$pause"
+done'
