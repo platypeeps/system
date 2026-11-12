@@ -163,7 +163,10 @@ DOTFILES_DENY=".bash_profile"
 # installs it. Only non-secret defaults go in — a template holding a
 # credential would be committed, which is the leak the .env rule exists to
 # stop. Secrets stay in ~/.config/shell/env.sh or a gitignored conf.
-ENVS="local-notify local-statusline"
+# A folder here whose committed .env.example holds no placeholder needs no
+# per-machine template at all: env_src falls back to that example, so the
+# refresh every machine already answers installs it (sd:8607).
+ENVS="local-notify local-statusline local-fseventsd"
 
 # Folders whose .env is expected to hold placeholder values — see the
 # placeholder check in doctor for the rule about what belongs here. Set in
@@ -248,11 +251,41 @@ copy_dotfile() { # dotfile, src, dst
   [ -z "$cd_mode" ] || run_ok chmod "$cd_mode" "$3"
 }
 
+# Values a committed example, or a live .env, leaves for a person to fill in.
+# One pattern, read by env_src's repo fallback below and by doctor's own
+# placeholder check: "what counts as unfilled" has one answer. Prints the
+# count, 0 included, and always exits 0 — a caller reads it in `$( )`, where
+# `grep -c` returning 1 on no match would end the run.
+PLACEHOLDER_RE='=[[:space:]]*"?(change-me|changeme|CHANGE_ME|your-|xxx+|placeholder|0{8}-0{4}-0{4}-0{4}-0{12}|0{8,})'
+env_placeholders() { # file
+  ep_n=$(grep -cE "$PLACEHOLDER_RE" "$1" 2>/dev/null || :)
+  printf '%s\n' "${ep_n:-0}"
+}
+
+# A tool .env template: this machine's profile first, then the templates every
+# machine shares, then the repo's own committed <folder>/.env.example.
+#
+# That last fallback is what lets a new component reach the whole fleet
+# (sd:8607): local-fseventsd needed four files in one machine's config folder,
+# and none of them could be written for another machine from there. A folder
+# in ENVS whose example is already the right content now needs no template at
+# all, and the refresh every machine answers installs it.
+#
+# An example holding a placeholder is NOT installed. A placeholder in a live
+# .env is a value the tool acts on, not a safe default: local-notify's
+# NTFY_TOPIC=change-me would post this machine's notifications to the public
+# ntfy.sh topic `change-me`, and local-statusline's labels name example.test
+# accounts. Both keep the "no template for <profile>" line this stage printed
+# before, which asks for the per-machine template they need; only an example
+# whose values are real defaults, as local-fseventsd's are, installs.
 env_src() {
   if [ -f "$ENV_DIR/$PROFILE/$1.env" ]; then
     echo "$ENV_DIR/$PROFILE/$1.env"
   elif [ -f "$ENV_DIR/common/$1.env" ]; then
     echo "$ENV_DIR/common/$1.env"
+  elif [ -f "$ROOT/$1/.env.example" ] &&
+      [ "$(env_placeholders "$ROOT/$1/.env.example")" -eq 0 ]; then
+    echo "$ROOT/$1/.env.example"
   fi
 }
 
@@ -6759,8 +6792,7 @@ cmd_doctor() {
     denv=$(live_env "$(basename "$d")")
     [ -f "$denv" ] || continue
     case " $PLACEHOLDER_EXPECTED " in *" $(basename "$d") "*) continue ;; esac
-    n=$(grep -cE '=[[:space:]]*"?(change-me|changeme|CHANGE_ME|your-|xxx+|placeholder|0{8}-0{4}-0{4}-0{4}-0{12}|0{8,})' "$denv" 2>/dev/null || true)
-    n=${n:-0}
+    n=$(env_placeholders "$denv")
     if [ "$n" -gt 0 ]; then
       tot=$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$denv" 2>/dev/null || true)
       echo "    WARN    $(basename "$d")/.env — $n of ${tot:-?} value(s) still placeholder"
