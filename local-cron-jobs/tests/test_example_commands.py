@@ -619,6 +619,16 @@ if __name__ == "__main__":
     unittest.main()
 
 
+def add_mirror(fx, rc):
+    """A mirror-sync.sh beside the job's folder that exits rc, when rc is set."""
+    if rc is None:
+        return
+    mirror = fx.tmp / "local-mirror-sync/mirror-sync.sh"
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    mirror.write_text(f"#!/bin/sh\nexit {rc}\n")
+    mirror.chmod(0o755)
+
+
 class HourlyBackupGradeTest(unittest.TestCase):
     """The hourly backup grades a failed NAS step data safe (sd:5997).
 
@@ -631,9 +641,10 @@ class HourlyBackupGradeTest(unittest.TestCase):
     JOB = EXAMPLES / "sd-db-backup-hourly.job"
     SAFE = "SD_REPORT_ATTENTION: data safe, one step failed: NAS copy"
 
-    def run_job(self, snapshot_rc, preflight_rc):
+    def run_job(self, snapshot_rc, preflight_rc, mirror_rc=None):
         fx = Fixture()
         self.addCleanup(fx.destroy)
+        add_mirror(fx, mirror_rc)
         # The pack's sd-db at the default the job names, exiting SNAPSHOT_RC,
         # and the interpreter offsite-verify runs under, exiting PREFLIGHT_RC.
         sd_db = fx.home / "repos/platypeeps/sd-workflow/bin/sd-db"
@@ -661,6 +672,19 @@ class HourlyBackupGradeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
         self.assertNotIn(self.SAFE, log)
 
+    def test_a_share_that_does_not_answer_skips_the_copy_with_a_warning(self):
+        """REGRESSION (sd:8549). mirror-sync exits 75 when the share does not
+        answer; the run passes with one warning line, and offsite-verify
+        reports a NAS copy over 3 h old."""
+        result, log = self.run_job(0, 0, mirror_rc=75)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(SKIPPED, log)
+        self.assertNotIn(self.SAFE, log)
+
+
+#: The warning line a backup job prints when the share does not answer.
+SKIPPED = "warning: NAS copy skipped: the share did not answer"
+
 
 class NightlyBackupGradeTest(unittest.TestCase):
     """The nightly backup grades a failed NAS copy data safe (sd:6030).
@@ -673,9 +697,10 @@ class NightlyBackupGradeTest(unittest.TestCase):
     JOB = EXAMPLES / "sd-db-backup.job"
     SAFE = "SD_REPORT_ATTENTION: data safe, one step failed: NAS copy"
 
-    def run_job(self, snapshot_rc, preflight_rc, nas=True, env_sh=False):
+    def run_job(self, snapshot_rc, preflight_rc, nas=True, env_sh=False, mirror_rc=None):
         fx = Fixture()
         self.addCleanup(fx.destroy)
+        add_mirror(fx, mirror_rc)
         sd_db = fx.home / "repos/platypeeps/sd-workflow/bin/sd-db"
         sd_db.parent.mkdir(parents=True)
         sd_db.write_text('#!/bin/sh\nexit "$SNAPSHOT_RC"\n')
@@ -704,6 +729,18 @@ class NightlyBackupGradeTest(unittest.TestCase):
         result, log = self.run_job(5, 0)
         self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
         self.assertNotIn(self.SAFE, log)
+
+    def test_a_share_that_does_not_answer_skips_the_copy_with_a_warning(self):
+        """REGRESSION (sd:8549): mirror-sync's 75 is a skip, not a failure."""
+        result, log = self.run_job(0, 0, mirror_rc=75)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(SKIPPED, log)
+        self.assertNotIn(self.SAFE, log)
+
+    def test_a_failed_copy_still_fails_the_run(self):
+        result, log = self.run_job(0, 0, mirror_rc=1)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(self.SAFE, log)
 
     def test_a_nas_folder_set_in_env_sh_reaches_the_job(self):
         # A launchd run's settings come from env.sh; the job file reads them
