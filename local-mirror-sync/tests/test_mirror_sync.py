@@ -299,18 +299,20 @@ class UnmountedShare(Fixture):
         self.assertFalse(absent.exists())
         self.assertFalse(absent.parent.exists())
 
-    def run_on_volumes(self, conf: Path, mounted: str = "", backup_root: Path | None = None) -> subprocess.CompletedProcess:
+    def run_on_volumes(self, conf: Path, mounted: str = "", backup_root: Path | None = None,
+                       **extra: str) -> subprocess.CompletedProcess:
         """mirror-sync.sh from a copy whose /Volumes is a folder here, with a stub `mount` printing `mounted`."""
         repo = self.work / "repo"
         (repo / "local-mirror-sync").mkdir(parents=True, exist_ok=True)
         (repo / "lib").mkdir(exist_ok=True)
         shutil.copy(FOLDER.parent / "lib" / "config.sh", repo / "lib" / "config.sh")
+        shutil.copy(FOLDER.parent / "lib" / "bounded.sh", repo / "lib" / "bounded.sh")
         script = repo / "local-mirror-sync" / "mirror-sync.sh"
         script.write_text(MIRROR_SYNC.read_text().replace("\nVOLUMES=/Volumes\n", f"\nVOLUMES={self.work / 'Volumes'}\n"))
         stubs = self.work / "stubs"
         stubs.mkdir(exist_ok=True)
         self.write(stubs / "mount", f"#!/bin/sh\nprintf '%s' '{mounted}'\n").chmod(0o755)
-        environment = dict(os.environ, MIRROR_SYNC_CONF=str(conf), PATH=f"{stubs}:{os.environ['PATH']}")
+        environment = dict(os.environ, MIRROR_SYNC_CONF=str(conf), PATH=f"{stubs}:{os.environ['PATH']}", **extra)
         environment.pop("MIRROR_SYNC_ADDITIVE", None)
         environment.pop("MIRROR_SYNC_BACKUP_ROOT", None)
         if backup_root is not None:
@@ -358,6 +360,60 @@ class UnmountedShare(Fixture):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((volume / "mirror" / "keep.txt").read_text(), "keep\n")
+
+    def test_a_share_that_does_not_answer_is_skipped_with_exit_75(self) -> None:
+        # REGRESSION sd:8549: a stale smbfs mount passed every check, then
+        # rsync hung on it until the job's bound, every hour. A write probe
+        # under a short bound now finds it first; nothing is copied.
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        volume = self.work / "Volumes" / "Share"
+        volume.mkdir(parents=True)
+        stubs = self.work / "stubs"
+        real = shutil.which("mktemp")
+        self.write(stubs / "mktemp", "#!/bin/sh\n"
+                   f'case "$*" in *mirror-sync-probe*) sleep 30 ;; esac\nexec {real} "$@"\n').chmod(0o755)
+        conf = self.write(self.work / "pairs.conf", f"{source}|{volume}/mirror\n")
+
+        started = time.monotonic()
+        result = self.run_on_volumes(conf, mounted=f"//operator@nas.example.test/Share on {volume} (smbfs)\n",
+                                     MIRROR_SYNC_PROBE_TIMEOUT="1")
+
+        self.assertLess(time.monotonic() - started, 20, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+        self.assertIn(f"destination does not answer within 1s: {volume}/mirror", result.stderr)
+        self.assertIn(f"{volume}/mirror (share unresponsive)", result.stdout)
+        self.assertFalse((volume / "mirror").exists())
+
+    def test_an_unanswering_share_beside_another_failure_exits_1(self) -> None:
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        volume = self.work / "Volumes" / "Share"
+        volume.mkdir(parents=True)
+        stubs = self.work / "stubs"
+        real = shutil.which("mktemp")
+        self.write(stubs / "mktemp", "#!/bin/sh\n"
+                   f'case "$*" in *mirror-sync-probe*) sleep 30 ;; esac\nexec {real} "$@"\n').chmod(0o755)
+        conf = self.write(self.work / "pairs.conf",
+                          f"{source}|{volume}/mirror\n{self.work}/gone|{self.work}/other\n")
+
+        result = self.run_on_volumes(conf, mounted=f"//operator@nas.example.test/Share on {volume} (smbfs)\n",
+                                     MIRROR_SYNC_PROBE_TIMEOUT="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("(share unresponsive)", result.stdout)
+        self.assertIn("(missing source)", result.stdout)
+
+    def test_a_probe_bound_that_is_not_seconds_stops_the_pass(self) -> None:
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        conf = self.write(self.work / "pairs.conf", f"{source}|{self.work}/mirror\n")
+
+        result = self.run_on_volumes(conf, MIRROR_SYNC_PROBE_TIMEOUT="soon")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("MIRROR_SYNC_PROBE_TIMEOUT", result.stderr)
+        self.assertFalse((self.work / "mirror").exists())
 
     def test_a_backup_root_on_an_unmounted_volume_stops_the_pass(self) -> None:
         source = self.work / "source"
@@ -758,9 +814,30 @@ class IdleBound(FakeTools):
         self.assertIn("MIRROR_SYNC_IO_TIMEOUT", result.stderr)
         self.assertEqual(self.rsync_runs(), [])
 
-    def test_a_timed_out_pair_fails_like_any_rsync_error(self) -> None:
+    def test_a_timed_out_pair_is_an_unresponsive_share(self) -> None:
+        # sd:8549: a pair that moved no data for the bound is the share not
+        # answering; the pass exits 75, which the backup jobs read as a skip.
         self.state_file("rc", ["30"])
         self.state_file("stderr", ["rsync: timeout waiting for data"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 75, result.stdout)
+        self.assertIn(f"{self.source} (share unresponsive)", result.stdout)
+
+    def test_openrsync_poll_timeout_is_an_unresponsive_share(self) -> None:
+        # REGRESSION sd:8549: openrsync exits 1 with "error: poll: timeout".
+        self.state_file("rc", ["1"])
+        self.state_file("stderr", ["rsync(12794): error: poll: timeout"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 75, result.stdout)
+        self.assertIn(f"{self.source} (share unresponsive)", result.stdout)
+
+    def test_any_other_rsync_error_still_exits_1(self) -> None:
+        self.state_file("rc", ["1"])
+        self.state_file("stderr", ["rsync(1): error: write: No space left on device"])
 
         result = self.sync()
 
