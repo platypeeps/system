@@ -13,7 +13,6 @@ TheLiveDaemonReader at the end of this file reads the live daemon through the
 real pgrep and ps, on a pipe and on a narrow pseudo-terminal.
 """
 
-import os
 import re
 import shutil
 import subprocess
@@ -110,13 +109,22 @@ printf '%8s\\n' "$size"
                             '  *) exit 1 ;;\n'
                             "esac\n")
 
-    def fake_sudo(self, code=0):
+    def fake_sudo(self, code=0, then=""):
         """Records its words, and the rate-floor marker as it stood when it
-        ran, then exits `code`. It never execs anything."""
+        ran, runs `then`, then exits `code`. It never execs anything. `then`
+        is the seam for what changes between the TERM and the undo."""
         self.stub("sudo", f"printf '%s\\n' \"$*\" >> '{self.sudo_calls}'\n"
                           f"cat '{self.marker}' >> '{self.sudo_saw}' 2>/dev/null || true\n"
+                          f"{then}\n"
                           f"[ {code} -eq 0 ] || echo 'sudo: a password is required' >&2\n"
                           f"exit {code}\n")
+
+    def seal(self, folder):
+        """Make `folder` read-only, and writable again at cleanup so the
+        temp tree can be removed."""
+        folder.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(folder.chmod, folder.stat().st_mode)
+        folder.chmod(0o500)
 
     def env_file(self, text):
         folder = self.config / "fseventsd"
@@ -408,6 +416,78 @@ printf '%8s\\n' "$size"
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
         self.assertEqual(["-A /usr/bin/pkill -TERM -x fseventsd"], self.calls())
 
+    # --- repair: a floor that cannot be recorded refuses to signal --------
+    #
+    # fs_send_term is called as `fs_send_term || rc=$?`, and an `||` context
+    # suppresses errexit for the whole function body, so a setup step whose
+    # failure goes unchecked reaches the TERM anyway and reports a floor it
+    # never wrote. The next hourly run then finds no floor and signals
+    # again, every hour, against the event history every backup and indexing
+    # tool reads: the thrash FSEVENTSD_MIN_HOURS exists to stop (round 2).
+
+    def test_a_floor_whose_folder_cannot_be_made_refuses_the_term(self):
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        self.marker.parent.parent.mkdir(parents=True, exist_ok=True)
+        self.marker.parent.write_text("a file where the folder must be\n")
+        done = self.run_fs("repair")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertEqual([], self.calls(), "TERMed with no floor recorded")
+        self.assertIn("no TERM: could not record the floor", done.stdout)
+
+    def test_a_floor_that_cannot_be_written_refuses_the_term(self):
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        self.seal(self.marker.parent)
+        done = self.run_fs("repair")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertEqual([], self.calls(), "TERMed with no floor recorded")
+        self.assertFalse(self.marker.exists())
+        self.assertIn("no TERM: could not record the floor", done.stdout)
+
+    def test_a_clock_that_gives_no_timestamp_refuses_the_term(self):
+        """An unread clock would write an empty floor, and every later run
+        would read it as garbage and refuse until someone removed it."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        self.stub("date", "exit 1\n")
+        done = self.run_fs("repair")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertEqual([], self.calls())
+        self.assertFalse(self.marker.exists())
+        self.assertIn("no TERM: the clock gave no timestamp", done.stdout)
+
+    def test_no_temporary_file_for_sudos_errors_refuses_the_term(self):
+        """sudo's stderr is the only account of a refused TERM, and the
+        redirection target is made before the floor is written."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        done = self.run_fs("repair", extra={"TMPDIR": str(self.tmp / "gone")})
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertEqual([], self.calls())
+        self.assertFalse(self.marker.exists())
+        self.assertIn("no TERM: no file for sudo's errors", done.stdout)
+
+    def test_an_undo_that_cannot_be_written_names_the_file_to_remove(self):
+        """The TERM failed and the floor could not be undone, so the next
+        run is held back by a repair that never happened. Say which file,
+        since only a hand can clear it."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        self.marker.parent.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(self.marker.parent.chmod, self.marker.parent.stat().st_mode)
+        self.fake_sudo(code=1, then=f"chmod 500 '{self.marker.parent}'")
+        done = self.run_fs("repair")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertEqual(["-A /usr/bin/pkill -TERM -x fseventsd"], self.calls())
+        self.assertIn("could not be undone", done.stdout)
+        self.assertIn(str(self.marker), done.stdout)
+
     # --- repair: the steps come apart -------------------------------------
 
     def test_a_failed_term_restores_the_floor_it_had(self):
@@ -570,88 +650,6 @@ printf '%8s\\n' "$size"
         example = (FOLDER / ".env.example").read_text()
         named = set(re.findall(r"(?m)^#?(FSEVENTSD_[A-Z_]+)=", example))
         self.assertEqual(read, named)
-
-
-class TheLiveDaemonReader(unittest.TestCase):
-    """The reader against the real `pgrep` and `ps`, not the stubs.
-
-    The stub table is a heredoc, so it can never show what the real commands
-    do with a window width. Measured on Darwin 27.2.0: `ps -axo
-    pid=,rss=,comm=` writing straight to a terminal truncates each line to the
-    window, 41 characters at 40 columns and 80 at 79, and the daemon's comm
-    path is 134, so a basename match on that field finds nothing. Writing to a
-    pipe or a file it truncates nothing. So these tests hold the reader to a
-    form that asks for no comm field at all, the form
-    docs/work/2026-11-04-ramdisk-tmp/design.md:134 already used on this
-    daemon, and they cover both the terminal and the pipe.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        if subprocess.run(["uname", "-s"], capture_output=True,
-                          text=True).stdout.strip() != "Darwin":
-            raise unittest.SkipTest("not macOS")
-        if subprocess.run(["pgrep", "-x", "fseventsd"],
-                          capture_output=True).returncode != 0:
-            raise unittest.SkipTest("no fseventsd is running")
-
-    def live_env(self):
-        """The real PATH, a scratch HOME and config, and a budget no daemon
-        reaches, so the run reports the size and exits 0."""
-        home = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, home, True)
-        return {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
-                "TMPDIR": str(home), "SYSTEM_TOOLS_CONFIG": str(home / "config"),
-                "FSEVENTSD_RSS_MB": "1048576"}
-
-    def test_the_reader_asks_for_no_comm_column(self):
-        text = ENTRYPOINT.read_text()
-        self.assertNotIn("comm=", text,
-                         "a comm column is cut to the window width on a terminal")
-        self.assertIn("pgrep -x fseventsd", text)
-
-    def test_the_live_daemon_is_found_through_a_pipe(self):
-        done = subprocess.run(["sh", str(ENTRYPOINT), "check"], env=self.live_env(),
-                              stdin=subprocess.DEVNULL, capture_output=True,
-                              text=True, timeout=120)
-        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        self.assertRegex(done.stdout, r"(?m)^daemon: pid \d+, \d+ MB resident$")
-
-    def test_the_live_daemon_is_found_on_a_narrow_terminal(self):
-        """40 columns, well under the 134 the comm path needs."""
-        for columns in (40, 80):
-            with self.subTest(columns=columns):
-                code, text = self.on_a_terminal(columns, self.live_env())
-                self.assertEqual(0, code, text)
-                self.assertRegex(text, r"daemon: pid \d+, \d+ MB resident")
-                self.assertNotIn("no fseventsd process is running", text)
-
-    def on_a_terminal(self, columns, env):
-        """`check` with stdout on a pseudo-terminal of that window width."""
-        import fcntl
-        import pty
-        import struct
-        import termios
-        pid, handle = pty.fork()
-        if pid == 0:                                    # pragma: no cover
-            try:
-                os.execve("/bin/sh", ["sh", str(ENTRYPOINT), "check"], env)
-            finally:
-                os._exit(127)
-        fcntl.ioctl(handle, termios.TIOCSWINSZ,
-                    struct.pack("HHHH", 24, columns, 0, 0))
-        out = b""
-        while True:
-            try:
-                chunk = os.read(handle, 65536)
-            except OSError:
-                break
-            if not chunk:
-                break
-            out += chunk
-        os.close(handle)
-        _, status = os.waitpid(pid, 0)
-        return os.waitstatus_to_exitcode(status), out.decode("utf-8", "replace")
 
 
 if __name__ == "__main__":

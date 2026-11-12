@@ -15,8 +15,13 @@ fix. launchd respawns the daemon, and System Integrity Protection refuses
 ./fseventsd.sh status   # one line, starting with the resident size; exit 0, 3 or 1
 ./fseventsd.sh check    # one line per reading, then the status line
 ./fseventsd.sh repair   # the same two answers, and a TERM only when both say yes
-./fseventsd.sh test -v  # this folder's suite
+./fseventsd.sh test -v  # this folder's portable suite
 ```
+
+`tests/macos/` holds the three tests that read the live daemon through the real
+`pgrep` and `ps`. They need macOS, so they stay out of the portable suite and
+`tests/macos-only-suites.txt` names them; run them with
+`sh tests/run-macos-only.sh fseventsd-macos`.
 
 `status` exits 3 when there is nothing to check: `FSEVENTSD_RSS_MB` is not set,
 this is not macOS, or no fseventsd is running. It exits 1 on the resident size

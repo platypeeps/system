@@ -244,15 +244,46 @@ fs_marker() {
   printf '%s/last-term\n' "$(st_state_dir "$TOOL")"
 }
 
+# fs_record <epoch> <file>: put that value in the floor, or fail. Each step is
+# checked and the value read back, because the caller runs under `||`, which
+# suppresses errexit for its whole body: an unchecked mkdir or redirection let
+# the run reach the TERM and report a floor it never wrote, and the next
+# hourly run then signalled again, every hour (round 2).
+fs_record() {
+  mkdir -p "$(dirname "$2")" || return 1
+  printf '%s\n' "$1" > "$2" || return 1
+  # The read-back is the evidence: a write to a full disk can leave nothing
+  # behind, and this floor is all that stands between an hourly job and a
+  # TERM every hour, against the event history every backup tool reads.
+  [ "$(cat "$2" 2>/dev/null)" = "$1" ] || return 1
+}
+
 # fs_send_term: record the attempt, then signal. In that order: a TERM
 # recorded only after it landed would be lost by a crash between the two, and
 # the next hourly run would signal again -- the thrashing FSEVENTSD_MIN_HOURS
 # exists to stop. A TERM that does not go through undoes the record, so the
 # floor does not hold back the next run for a repair that never happened.
+#
+# Every step that must hold before the daemon is signalled is checked here,
+# and a floor that cannot be recorded refuses to signal. Two are deliberately
+# unchecked, both read-only and both after the TERM: the reason read out of
+# sudo's stderr, which has `${fs_reason:-...}` behind it, and removing that
+# temporary file, where a leftover in TMPDIR costs nothing.
 # Sets fs_term_line; returns 0 when the daemon was signalled, 1 otherwise.
 fs_send_term() {
   fs_file=$(fs_marker)
-  fs_now=$(date +%s)
+  case "$fs_file" in
+    /*) ;;
+    *) fs_term_line="$TOOL: FAIL: no TERM: the state folder gave no path for the floor"
+       return 1 ;;
+  esac
+  fs_now=$(date +%s 2>/dev/null || true)
+  # An unread clock would be written as an empty floor, and every later run
+  # would read that as garbage and refuse until a hand removed it.
+  if ! whole "$fs_now" 1 99999999999; then
+    fs_term_line="$TOOL: FAIL: no TERM: the clock gave no timestamp, so no floor can be recorded"
+    return 1
+  fi
   if [ -f "$fs_file" ]; then
     fs_last=$(cat "$fs_file" 2>/dev/null || true)
     case "$fs_last" in
@@ -272,19 +303,40 @@ fs_send_term() {
   else
     fs_had=""
   fi
-  mkdir -p "$(dirname "$fs_file")"
-  printf '%s\n' "$fs_now" > "$fs_file"
-  fs_err=$(mktemp "${TMPDIR:-/tmp}/fseventsd.XXXXXX")
+  # sudo's stderr is the only account of a refused TERM, and this is the last
+  # step before the floor is written, so its failure leaves nothing to undo.
+  fs_err=$(mktemp "${TMPDIR:-/tmp}/fseventsd.XXXXXX" 2>/dev/null || true)
+  if [ -z "$fs_err" ] || [ ! -f "$fs_err" ]; then
+    fs_term_line="$TOOL: FAIL: no TERM: no file for sudo's errors in ${TMPDIR:-/tmp}"
+    return 1
+  fi
+  if ! fs_record "$fs_now" "$fs_file"; then
+    rm -f "$fs_err"
+    fs_term_line="$TOOL: FAIL: no TERM: could not record the floor in $fs_file; the TERM waits until it can be written"
+    return 1
+  fi
   fs_rc=0
   # Bounded: a sudo whose askpass waits would otherwise hold an unattended
   # run until the job's own limit, with nothing in the log to say which step.
   # shellcheck disable=SC2086 # TERM_COMMAND is the sudoers line's words
   st_bounded 30 sudo -A $TERM_COMMAND 2> "$fs_err" || fs_rc=$?
   if [ "$fs_rc" -ne 0 ]; then
-    if [ -n "$fs_had" ]; then printf '%s\n' "$fs_had" > "$fs_file"; else rm -f "$fs_file"; fi
+    # The TERM has already happened or not; either way the record must go
+    # back to what it was, and an undo that fails is the operator's to clear,
+    # since it holds the next run back for a repair that never ran.
+    fs_undone=yes
+    if [ -n "$fs_had" ]; then
+      fs_record "$fs_had" "$fs_file" || fs_undone=no
+    else
+      rm -f "$fs_file" || true
+      [ ! -e "$fs_file" ] || fs_undone=no
+    fi
     fs_reason=$(grep -v '^[[:space:]]*$' "$fs_err" 2>/dev/null | tail -1 || true)
     rm -f "$fs_err"
     fs_term_line="$TOOL: FAIL: the TERM did not go through (exit $fs_rc): ${fs_reason:-no fseventsd matched}"
+    if [ "$fs_undone" = no ]; then
+      fs_term_line="$fs_term_line; and the floor could not be undone, so remove $fs_file by hand"
+    fi
     return 1
   fi
   rm -f "$fs_err"
