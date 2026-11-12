@@ -262,6 +262,9 @@ SECRETS_GLOBS=".env .env.local .env.development .env.staging .env.production .en
 # Rule for adding: not your remote AND no local files of yours inside.
 # Test files and fixture folders in any repo are skipped too (sd:5493): their keys are fakes, and one new fixture
 # failed the Monday run until its path was listed. A real key pasted into a test goes unflagged; -a does not change it.
+# The plural `*_tests.*` is its own entry (sd:8551): Rust and Go name a test module after the thing it tests, as
+# `<thing>_tests.rs`, which `*_test.*` does not match, and every durable finding of the 2026-11-09 weekly run was a
+# placeholder in such a file. A placeholder inside a source file still pages; that one goes on the per-user list below.
 # Claude and Codex transcripts are skipped too (sd:6473): they quote keys from tool output, the operator keeps
 # them, and they held the weekly alert open. `mask` still masks them. `?` stands for the space in
 # "Application Support": the list splits on whitespace.
@@ -281,6 +284,7 @@ repos/**/tests
 repos/**/fixtures
 repos/**/test_*.py
 repos/**/*_test.*
+repos/**/*_tests.*
 "
 # Per-user additions live in <config>/scan-for-secrets/scan-for-secrets.conf
 # (<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system; copy

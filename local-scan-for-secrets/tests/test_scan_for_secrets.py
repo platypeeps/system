@@ -573,6 +573,72 @@ class CriticalExcludeKeepsAGlobsOwnReach(unittest.TestCase):
                     self.assertNotIn(name, out)
 
 
+class CriticalSkipsPluralTestFiles(unittest.TestCase):
+    """sd:8551: Rust and Go name a test module after the thing it tests, as
+    `<thing>_tests.rs`, which the `*_test.*` entry does not match.
+
+    Every durable finding of the 2026-11-09 weekly run was a placeholder in
+    such a file, so the job exited 2 every Monday on fakes -- an alert that is
+    always a false alarm trains the operator to ignore the one that matters.
+    The same placeholder in a source file still pages: that one belongs on the
+    per-user S4S_EXTRA_CRITICAL_EXCLUDE_PATHS, not in this list.
+    """
+
+    FAKE = CriticalExcludeNamesADotfile.FAKE
+    SEARCHERS = UrlCredentials.SEARCHERS
+
+    def scan(self, path: str, *files: str) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            for name in files:
+                (home / name).parent.mkdir(parents=True, exist_ok=True)
+                (home / name).write_text(f'const KEY: &str = "{self.FAKE}";\n', encoding="utf-8")
+            env = dict(os.environ, HOME=str(home), SYSTEM_TOOLS_CONFIG=str(home / "config"), PATH=path,
+                       S4S_SCRATCH_ROOTS=str(home / "scratch"), JEV_SECRET_SCAN="0")
+            env.pop("S4S_CONF", None)
+            isolate_jev(env)
+            return subprocess.run(["sh", str(SCRIPT), "critical"], cwd=home, env=env,
+                                  capture_output=True, text=True, timeout=300)
+
+    def test_a_fixture_key_in_a_plural_test_file_leaves_a_clean_exit(self) -> None:
+        for searcher, path in self.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(path, "repos/owner/project/src/ingest_tests.rs")
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, out)
+                self.assertNotIn("ingest_tests.rs", out)
+
+    def test_the_same_key_outside_a_test_file_still_pages(self) -> None:
+        for searcher, path in self.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(path, "repos/owner/project/src/ingest.rs")
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 2, out)
+                self.assertIn("repos/owner/project/src/ingest.rs", out)
+
+    def test_a_name_that_holds_tests_without_the_dot_is_still_scanned(self) -> None:
+        """The entry ends at `_tests.`, so it names a test module and not every
+        file whose name holds the word."""
+        for searcher, path in self.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                kept = "repos/owner/project/src/integration_tests_helper.rs"
+                result = self.scan(path, kept)
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 2, out)
+                self.assertIn(kept, out)
+
+    def test_a_scratchpad_hit_is_still_reported_and_still_exits_0(self) -> None:
+        """Ruling #53498's scope note: the transient classing is untouched, so
+        a scratchpad finding is reported and does not page."""
+        for searcher, path in self.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                scratch = "scratch/claude-501/project/session/scratchpad/notes.md"
+                result = self.scan(path, scratch)
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, out)
+                self.assertIn("notes.md", out)
+
+
 class CriticalTargetsAfterAMissingDir(unittest.TestCase):
     """sd:6490: a missing last config dir left the target list's loop at status 1, and set -e then ended the
     list there, so the grep fallback never scanned the AI session logs."""

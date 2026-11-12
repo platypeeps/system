@@ -1,0 +1,28 @@
+# Hourly check of fseventsd's resident size, with a TERM when the daemon is
+# both oversized and hurting the machine (local-fseventsd, sd:8579). On
+# 2026-11-11 fseventsd held 28.77 GB resident with swap at 19.70 of 20.48 GB
+# and memorystatus pressure level 2, against Apple's own footprint budget of
+# about 30 MB, and no vendor fix exists (fleet sd:8557). The nightly health
+# check runs the same reading through its status sweep; this job only shortens
+# the wait, and it is the one that can repair. FSEVENTSD_MIN_HOURS keeps it to
+# one TERM every six hours, so the hourly slot cannot thrash a daemon that
+# grows back fast.
+#
+# Exit 3, nothing to check (FSEVENTSD_RSS_MB unset, not macOS, or no daemon),
+# passes as 0: a machine that has not been set up here must not page every
+# hour. A refused TERM, a reading that did not answer, a broken setting and a
+# floor the tool cannot read exit 1 and fail the run; a run the rate floor
+# held back exits 0.
+#
+# A failing run opens a Reports row that Today shows, and nothing more. It
+# sends no push to the phone: every failing path prints `SD_REPORT_ATTENTION:
+# data safe, one step failed: fseventsd <step>`, which is what push_at_risk
+# reads before it sends its high-priority "data at risk" push. The grading is
+# honest and not a mute: the TERM either went out, which is exit 0, or it did
+# not, and no failure here risks data. A change that stops printing that line
+# wakes the operator at 3am for a false alarm.
+JOB_SCHEDULE="25 * * * *"
+# A run reads ps and two sysctls and may wait on sudo's askpass, which the
+# script itself bounds at 30 s.
+JOB_TIMEOUT="2m"
+JOB_COMMAND="sh \"$ROOT/../local-fseventsd/fseventsd.sh\" repair || { rc=\$?; [ \"\$rc\" -eq 3 ] || exit \"\$rc\"; }"
