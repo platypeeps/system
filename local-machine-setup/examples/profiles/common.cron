@@ -1,0 +1,6 @@
+# Cron jobs (local-cron-jobs) every machine installs.
+# fseventsd-hourly repairs a runaway fseventsd (local-fseventsd, sd:8579);
+# every machine runs the same daemon, so every machine runs the job. It needs
+# <config>/fseventsd/.env for anything to happen; without it the run exits 3,
+# nothing to check, which the job passes as 0.
+fseventsd-hourly
