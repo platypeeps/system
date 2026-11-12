@@ -1379,7 +1379,10 @@ stage_shell() {
     echo "  ok      $BREW_BASH in /etc/shells"
   else
     echo "  MISSING $BREW_BASH in /etc/shells"
-    sudo_run "add $BREW_BASH to /etc/shells" sh -c "echo $BREW_BASH >> /etc/shells"
+    # The command, not "add it to /etc/shells": a deferred line is printed
+    # for the operator to paste, and the MISSING line above is the why
+    # (sd:8609).
+    sudo_run "sudo sh -c 'echo $BREW_BASH >> /etc/shells'" sh -c "echo $BREW_BASH >> /etc/shells"
   fi
 
   # dscl, not $SHELL: $SHELL is what this process inherited, which after a
@@ -1394,7 +1397,9 @@ stage_shell() {
     # for the account password interactively, which no unattended run can
     # answer; sudo (cached or NOPASSWD) makes it non-interactive, and on a
     # no-sudo machine it defers visibly instead of hanging on a prompt.
-    sudo_run "chsh -s $BREW_BASH $me  (login shell: ${current:-unknown} -> brew bash)" chsh -s "$BREW_BASH" "$me"
+    # The DIFFERS line above carries the from and to, so the deferred line
+    # stays a command the operator can paste (sd:8609).
+    sudo_run "sudo chsh -s $BREW_BASH $me" chsh -s "$BREW_BASH" "$me"
   fi
 
   if grep -q 'config/shell/env.sh' "$HOME/.bash_profile" 2>/dev/null; then
@@ -3439,18 +3444,29 @@ system_nsmb() {
   # Built as this user, then copied in by root beside the target and moved
   # over it, after a dated copy of the old file: a stop at any point leaves
   # the old file or the new one, and the next run finishes the job.
-  nc_tmp=""
+  # A fixed name under TMPDIR, not mktemp (sd:8609): the deferred line is a
+  # command the operator pastes later, so the merged file it reads has to
+  # still be there, and a dry run has to be able to name it. TMPDIR is this
+  # account's own folder on macOS, and the content is nsmb.conf, not a
+  # credential.
+  nc_tmp="${TMPDIR:-/tmp}/machine-setup-nsmb.conf"
   if [ "$APPLY" -eq 1 ]; then
-    if ! { nc_tmp=$(mktemp) && nsmb_merge "$NSMB_CONF" "$nc_add" > "$nc_tmp"; }; then
+    if ! nsmb_merge "$NSMB_CONF" "$nc_add" > "$nc_tmp"; then
       note_failure "build the new $NSMB_CONF" 1
-      [ -z "$nc_tmp" ] || rm -f "$nc_tmp"
+      rm -f "$nc_tmp"
       return 0
     fi
   fi
   nc_new="$(dirname "$NSMB_CONF")/.$(basename "$NSMB_CONF").tmp"
   nc_cmd="{ [ ! -e $NSMB_CONF ] || cp -p $NSMB_CONF $NSMB_CONF.bak-$(date +%Y%m%d%H%M%S); } && cp $nc_tmp $nc_new && chmod 644 $nc_new && mv $nc_new $NSMB_CONF || { rm -f $nc_new; exit 1; }"
-  sudo_run "add $nc_add under [default] in $NSMB_CONF" sh -c "$nc_cmd"
-  [ -z "$nc_tmp" ] || rm -f "$nc_tmp"
+  nc_before="$DEFERRED"
+  sudo_run "sudo sh -c '$nc_cmd'" sh -c "$nc_cmd"
+  # The merged file goes only when this run built it and nothing deferred
+  # the command that reads it; a dry run never removes what an earlier
+  # deferred run left for the operator.
+  if [ "$APPLY" -eq 1 ] && [ "$DEFERRED" = "$nc_before" ]; then
+    rm -f "$nc_tmp"
+  fi
 }
 
 # The paths <profile>.spotlight wants kept out of the index, one per line.

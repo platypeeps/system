@@ -628,6 +628,17 @@ the shell it is pasted into. So is a drop-in whose brew line names
 another prefix: `sudo -n -l` lists no password-free
 `$(brew --prefix)/bin/brew services restart tailscale`.
 
+A step that needs sudo and gets none is deferred, not failed: the run
+prints `DEFER   needs sudo: <command>` and repeats every one at the end
+under `Run these, then re-run:`. Each line there is a command to paste,
+never a description of the step (sd:8609); the `MISSING` or `DIFFERS`
+line above it carries the why. One exception: a Spotlight read that
+could not run defers its remedy, which can be a Full Disk Access grant
+with no command at all. The `/etc/nsmb.conf` step builds its merged file
+at `$TMPDIR/machine-setup-nsmb.conf` and leaves it there while its
+command is deferred, since that command copies it; a run that installs
+it leaves none behind.
+
 ## Comparing and filing
 
 - `report [profile]` prints a readable overview: a counts matrix (kind x

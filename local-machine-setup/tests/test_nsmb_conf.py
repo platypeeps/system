@@ -63,6 +63,12 @@ class NsmbConfTest(unittest.TestCase):
         self.etc = base / "etc"
         self.etc.mkdir()
         self.conf = self.etc / "nsmb.conf"
+        # Where the stage builds the merged file (sd:8609): the deferred
+        # command reads it from TMPDIR under a fixed name, so these cases
+        # keep TMPDIR inside the fixture and read it there.
+        self.tmpdir = base / "tmp"
+        self.tmpdir.mkdir()
+        self.merged = self.tmpdir / "machine-setup-nsmb.conf"
         self.timeout_sudoers = base / "timestamp-timeout"
         self.timeout_sudoers.touch()
         self.sudo_log = base / "sudo.log"
@@ -79,6 +85,7 @@ class NsmbConfTest(unittest.TestCase):
             "MACHINE_SETUP_STATE": str(self.state),
             "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
             "LANG": "en_US.UTF-8",
+            "TMPDIR": str(self.tmpdir),
             **fixture_config.env(),
             "MACHINE_SETUP_NSMB_CONF": str(self.conf),
             "MACHINE_SETUP_TIMEOUT_SUDOERS": str(self.timeout_sudoers),
@@ -172,9 +179,27 @@ class NsmbConfTest(unittest.TestCase):
     def test_refused_sudo_defers_and_leaves_the_file(self):
         self.conf.write_text("[default]\n")
         lines = self.system("--apply", sudo="refuse")
-        self.assertTrue(any(line.startswith("  DEFER   needs sudo: add soft=yes") for line in lines), lines)
+        self.assertTrue(any(line.startswith(f"  DEFER   needs sudo: sudo sh -c '{{ [ ! -e {self.conf} ]")
+                            for line in lines), lines)
         self.assertEqual(self.conf.read_text(), "[default]\n")
         self.assertEqual(sorted(p.name for p in self.etc.iterdir()), ["nsmb.conf"])
+
+    def test_a_deferred_command_keeps_the_file_it_copies(self):
+        """sd:8609: the operator pastes that line later, so the merged file
+        it names has to still be there, and no dry run may remove it."""
+        self.conf.write_text("[default]\n")
+        lines = self.system("--apply", sudo="refuse")
+        deferred = [line for line in lines if line.startswith("  DEFER")][0]
+        self.assertIn(f"cp {self.merged} ", deferred)
+        self.assertEqual(self.merged.read_text(), "[default]\nsoft=yes\nkloglevel=1\n")
+        self.system()
+        self.assertTrue(self.merged.is_file(), "a dry run removed the file the deferred line reads")
+
+    def test_a_run_that_installs_it_leaves_no_merged_file_behind(self):
+        self.conf.write_text("[default]\n")
+        self.system("--apply")
+        self.assertEqual(self.conf.read_text(), "[default]\nsoft=yes\nkloglevel=1\n")
+        self.assertEqual([], sorted(p.name for p in self.tmpdir.iterdir()))
 
     def test_a_stop_after_the_copy_is_finished_by_the_next_run(self):
         # A run stopped between root's copy and its move leaves the dotted
