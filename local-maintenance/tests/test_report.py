@@ -347,7 +347,7 @@ exit 0
 
 
 #: The process list the pgrep and ps stubs read: one `<pid> <executable
-#: path>` line per process, as `ps -o comm=` gives it on macOS; a pid that
+#: path>` line per process, as `ps -ww -o comm=` gives it on macOS; a pid that
 #: ended is not listed. `pgrep -x NAME` gives the pids whose executable is
 #: named NAME, and only those; any other pgrep or ps call is the real one.
 #: A process the test has not reaped yet is a zombie, and counts as ended.
@@ -366,9 +366,9 @@ PROC_STUBS = {
 fi
 exec /usr/bin/pgrep "$@"
 ''',
-    "ps": ALIVE + '''if [ $# -eq 4 ] && [ "$1 $2 $3" = "-o comm= -p" ]; then
+    "ps": ALIVE + '''if [ $# -eq 5 ] && [ "$1 $2 $3 $4" = "-ww -o comm= -p" ]; then
   while read -r pid path; do
-    [ "$pid" = "$4" ] && alive "$pid" && { echo "$path"; exit 0; }
+    [ "$pid" = "$5" ] && alive "$pid" && { echo "$path"; exit 0; }
   done < "$PROCS"
   exit 1
 fi
@@ -445,7 +445,7 @@ exit 0
     def start_app(self, ignores_term=False, path=None, listed=True):
         """A process whose arguments name PATH, the app's executable by
         default; LISTED puts it in the process list with that path, as
-        `ps -o comm=` gives it. It says ready once its TERM handling is set."""
+        `ps -ww -o comm=` gives it. It says ready once its TERM handling is set."""
         path = str(path or self.exe)
         script = ('$SIG{TERM} = "IGNORE" if $ARGV[1]; $| = 1; print "ready\\n"; sleep 120')
         proc = subprocess.Popen(["perl", "-e", script, path, "1" if ignores_term else ""],
