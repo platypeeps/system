@@ -10,8 +10,17 @@
 #
 # Exit 3, nothing to check (FSEVENTSD_RSS_MB unset, not macOS, or no daemon),
 # passes as 0: a machine that has not been set up here must not page every
-# hour. A refused TERM and an unreadable pressure reading exit 1 and fail the
-# run; a run the rate floor held back exits 0.
+# hour. A refused TERM, a reading that did not answer, a broken setting and a
+# floor the tool cannot read exit 1 and fail the run; a run the rate floor
+# held back exits 0.
+#
+# A failing run opens a Reports row that Today shows, and nothing more. It
+# sends no push to the phone: every failing path prints `SD_REPORT_ATTENTION:
+# data safe, one step failed: fseventsd <step>`, which is what push_at_risk
+# reads before it sends its high-priority "data at risk" push. The grading is
+# honest and not a mute: the TERM either went out, which is exit 0, or it did
+# not, and no failure here risks data. A change that stops printing that line
+# wakes the operator at 3am for a false alarm.
 JOB_SCHEDULE="25 * * * *"
 # A run reads ps and two sysctls and may wait on sudo's askpass, which the
 # script itself bounds at 30 s.
