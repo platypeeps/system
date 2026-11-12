@@ -10,7 +10,8 @@ minutes, as on a stalled share, counts as a share that does not answer; set
 `MIRROR_SYNC_IO_TIMEOUT` to change the seconds. Before a pair under
 `/Volumes/<name>` syncs, a probe creates one file in its destination within
 `MIRROR_SYNC_PROBE_TIMEOUT` seconds (default 60); a stale smbfs mount fails
-it and the pair is skipped. A pass whose only failures are such shares exits
+it by the bound and the pair is skipped; a probe that fails at once fails
+the pair. A pass whose only failures are such shares exits
 75, which the sd-db backup jobs log as a warning, not a failure (sd:8549).
 
 ## Usage

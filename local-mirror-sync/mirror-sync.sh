@@ -64,7 +64,8 @@ answer, below.
 Before a pair under /Volumes/<name> syncs, a probe creates and removes one
 file in its destination, bounded by MIRROR_SYNC_PROBE_TIMEOUT (seconds,
 default 60). A destination that does not answer is skipped, as a stale smbfs
-mount hung rsync for the job's whole bound (sd:8549). The pass exits 75
+mount hung rsync for the job's whole bound (sd:8549). A probe that fails
+at once (read-only, full, denied) fails the pair as before. The pass exits 75
 when every failed pair is such a share, and 1 when any pair failed for
 another reason; the backup jobs read 75 as a skip, not a failure.
 
@@ -704,17 +705,6 @@ pairs | while IFS='|' read -r src dst excl; do
     echo "!!! destination volume not mounted: $vol" >&2
     echo "$dst (volume not mounted)" >> "$FAILLOG"; continue
   fi
-  # A stale smbfs mount is in the mount table and answers stat, then hangs
-  # the first write (sd:8549). Create one file where rsync writes, bounded.
-  case "$MODE:$dst/" in
-    sync:"$VOLUMES"/?*/*)
-      probe_dir="$dst"; [ -d "$probe_dir" ] || probe_dir=$(dirname "$dst")
-      # shellcheck disable=SC2016 # expanded by the inner sh
-      if ! st_bounded "$PROBE_TIMEOUT" sh -c 'p=$(mktemp "$1/.mirror-sync-probe.XXXXXX") && rm -f "$p"' sh "$probe_dir" 2>/dev/null; then
-        echo "!!! destination does not answer within ${PROBE_TIMEOUT}s: $dst" >&2
-        echo "$dst (share unresponsive)" >> "$FAILLOG"; continue
-      fi ;;
-  esac
   if [ -d "$src" ]; then
     if [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
       echo "!!! source empty: $src — refusing, a sync would wipe $dst" >&2
@@ -745,6 +735,24 @@ pairs | while IFS='|' read -r src dst excl; do
     echo "!!! unsupported source type: $src" >&2
     echo "$src (unsupported source type)" >> "$FAILLOG"; continue
   fi
+  # A stale smbfs mount is in the mount table and answers stat, then hangs
+  # the first write (sd:8549). Create one file where rsync writes, bounded.
+  # Only the bound expiring (124) is a share that does not answer; a probe
+  # that fails at once (read-only, full, denied) is a failure, shown as is.
+  case "$MODE:$dst/" in
+    sync:"$VOLUMES"/?*/*)
+      probe_dir="$dst"; [ -d "$probe_dir" ] || probe_dir=$(dirname "$dst")
+      prc=0
+      # shellcheck disable=SC2016 # expanded by the inner sh
+      st_bounded "$PROBE_TIMEOUT" sh -c 'p=$(mktemp "$1/.mirror-sync-probe.XXXXXX") && rm -f "$p"' sh "$probe_dir" || prc=$?
+      if [ "$prc" -eq 124 ]; then
+        echo "!!! destination does not answer within ${PROBE_TIMEOUT}s: $dst" >&2
+        echo "$dst (share unresponsive)" >> "$FAILLOG"; continue
+      elif [ "$prc" -ne 0 ]; then
+        echo "!!! cannot write a probe file in $probe_dir (exit $prc)" >&2
+        echo "$dst (cannot write)" >> "$FAILLOG"; continue
+      fi ;;
+  esac
   if [ -n "$KEEP" ]; then
     set -- --backup --backup-dir "$KEEP"
   else

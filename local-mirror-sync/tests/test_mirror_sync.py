@@ -404,6 +404,38 @@ class UnmountedShare(Fixture):
         self.assertIn("(share unresponsive)", result.stdout)
         self.assertIn("(missing source)", result.stdout)
 
+    def test_an_unwritable_destination_is_a_failure_not_a_skip(self) -> None:
+        # sd:8549 review: a probe that fails at once is no stale share; the
+        # pass exits 1 and shows mktemp's own reason.
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        volume = self.work / "Volumes" / "Share"
+        (volume / "mirror").mkdir(parents=True)
+        (volume / "mirror").chmod(0o555)
+        self.addCleanup((volume / "mirror").chmod, 0o755)
+        conf = self.write(self.work / "pairs.conf", f"{source}|{volume}/mirror\n")
+
+        result = self.run_on_volumes(conf, mounted=f"//operator@nas.example.test/Share on {volume} (smbfs)\n")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"{volume}/mirror (cannot write)", result.stdout)
+        self.assertNotIn("share unresponsive", result.stdout)
+        self.assertIn("mktemp", result.stderr)
+
+    def test_a_missing_destination_parent_on_a_share_is_still_no_parent(self) -> None:
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        volume = self.work / "Volumes" / "Share"
+        volume.mkdir(parents=True)
+        dest = volume / "gone" / "mirror"
+        conf = self.write(self.work / "pairs.conf", f"{source}|{dest}\n")
+
+        result = self.run_on_volumes(conf, mounted=f"//operator@nas.example.test/Share on {volume} (smbfs)\n")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"{dest} (no parent)", result.stdout)
+        self.assertNotIn("share unresponsive", result.stdout)
+
     def test_a_probe_bound_that_is_not_seconds_stops_the_pass(self) -> None:
         source = self.work / "source"
         self.write(source / "keep.txt", "keep\n")
