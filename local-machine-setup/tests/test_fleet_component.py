@@ -214,6 +214,40 @@ class EnvFromRepoExample(Case):
                       out + result.stderr)
         self.assertFalse(self.live("fseventsd").exists(), out)
 
+    def test_a_commented_line_in_the_example_is_no_placeholder(self):
+        """sd:8609 review: a documented optional line is not a value the
+        tool acts on, and env_template_diff skips a commented key too. Read
+        as one, it turned the fleet install off and said "no template"."""
+        example = self.root / "local-fseventsd/.env.example"
+        example.write_text("FSEVENTSD_RSS_MB=4096\n"
+                           "# Optional, off by default:\n"
+                           "#FSEVENTSD_STATE=change-me\n")
+        result = self.run_script("update", "envs", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertEqual(self.live("fseventsd").read_text(), example.read_text(), out)
+
+    def test_a_rejected_example_names_the_value_it_rejected(self):
+        """"no template for <profile>" names the wrong cause when a template
+        is there and was refused, so the line says which value refused it."""
+        (self.root / "local-fseventsd/.env.example").write_text(
+            "FSEVENTSD_RSS_MB=4096\nFSEVENTSD_STATE=change-me\n")
+        out = self.run_script("update", "envs", "--apply").stdout
+        self.assertIn("  --      local-fseventsd/.env no template for personal, and "
+                      "local-fseventsd/.env.example is not one: placeholder value(s) for "
+                      "FSEVENTSD_STATE", out)
+        self.assertFalse(self.live("fseventsd").exists(), out)
+
+    def test_doctor_lists_a_folder_whose_example_was_rejected(self):
+        """The `--` line is no drift word, so the one thing that still says a
+        machine has no .env is doctor's own envs listing."""
+        (self.root / "local-fseventsd/.env.example").write_text(
+            "FSEVENTSD_RSS_MB=4096\nFSEVENTSD_STATE=change-me\n")
+        self.run_script("update", "envs", "--apply")
+        out = self.run_script("doctor").stdout
+        self.assertRegex(out, r"folders without a filled \.env[^\n]*\n(    [^\n]*\n)*?"
+                              r"    --      local-fseventsd/\.env  \(copy ")
+
     def test_a_tool_with_no_example_and_no_template_installs_nothing(self):
         (self.root / "local-fseventsd/.env.example").unlink()
         result = self.run_script("update", "envs", "--apply")

@@ -253,12 +253,24 @@ copy_dotfile() { # dotfile, src, dst
 
 # Values a committed example, or a live .env, leaves for a person to fill in.
 # One pattern, read by env_src's repo fallback below and by doctor's own
-# placeholder check: "what counts as unfilled" has one answer. Prints the
-# count, 0 included, and always exits 0 — a caller reads it in `$( )`, where
-# `grep -c` returning 1 on no match would end the run.
+# placeholder check: "what counts as unfilled" has one answer.
+#
+# An assignment only, never a comment (sd:8609 review): env_template_diff
+# reads a commented key as absent too, and a documented optional line such as
+# `#FSEVENTSD_STATE=change-me` is no value the tool acts on. Counted as one,
+# it turned the fleet install off and reported it as "no template".
 PLACEHOLDER_RE='=[[:space:]]*"?(change-me|changeme|CHANGE_ME|your-|xxx+|placeholder|0{8}-0{4}-0{4}-0{4}-0{12}|0{8,})'
+ENV_KEY_RE='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*'
+# The keys whose value is still a placeholder, one per line, none when there
+# are none. Always exits 0: a caller reads it in `$( )`, where `grep`
+# returning 1 on no match would end the run.
+env_placeholder_keys() { # file
+  grep -oE "$ENV_KEY_RE$PLACEHOLDER_RE" "$1" 2>/dev/null |
+    sed -e 's/[[:space:]]*=.*//' -e 's/^[[:space:]]*//' || :
+}
+# How many of them there are, 0 included.
 env_placeholders() { # file
-  ep_n=$(grep -cE "$PLACEHOLDER_RE" "$1" 2>/dev/null || :)
+  ep_n=$(env_placeholder_keys "$1" | grep -c '^' || :)
   printf '%s\n' "${ep_n:-0}"
 }
 
@@ -504,7 +516,11 @@ sudo_run() {
   fi
   DEFERRED="$DEFERRED    $shown
 "
-  echo "  DEFER   needs sudo: $shown"
+  # printf, not echo: /bin/sh here is bash with xpg_echo, whose echo reads
+  # the backslashes in a command — a shown `printf '%s\n'` came out as two
+  # lines, and the operator cannot paste that (sd:8609 review). The summary
+  # at the end already prints DEFERRED through printf.
+  printf '  DEFER   needs sudo: %s\n' "$shown"
 }
 
 # A config folder in a checkout may track its live configs as symlinks — git
@@ -1608,7 +1624,17 @@ stage_envs() {
     src=$(env_src "$f")
     dst=$(live_env "$f")
     if [ -z "$src" ]; then
-      echo "  --      $f/.env no template for $PROFILE"
+      # Which values refused the example, not just "no template" (sd:8609
+      # review): a template is right there, and the operator cannot see why
+      # it was passed over. doctor's envs listing names the folder too.
+      se_keys=""
+      [ ! -f "$ROOT/$f/.env.example" ] ||
+        se_keys=$(env_placeholder_keys "$ROOT/$f/.env.example" | tr '\n' ' ')
+      if [ -n "$se_keys" ]; then
+        echo "  --      $f/.env no template for $PROFILE, and $f/.env.example is not one: placeholder value(s) for ${se_keys% }"
+      else
+        echo "  --      $f/.env no template for $PROFILE"
+      fi
     elif [ ! -d "$ROOT/$f" ]; then
       echo "  --      $f/ not in this repo"
     elif [ ! -e "$dst" ]; then
@@ -3441,32 +3467,32 @@ system_nsmb() {
   else
     echo "  MISSING nsmb.conf soft mounts: no $NSMB_CONF (applies at the next mount: eject and reconnect, or reboot)"
   fi
-  # Built as this user, then copied in by root beside the target and moved
-  # over it, after a dated copy of the old file: a stop at any point leaves
-  # the old file or the new one, and the next run finishes the job.
-  # A fixed name under TMPDIR, not mktemp (sd:8609): the deferred line is a
-  # command the operator pastes later, so the merged file it reads has to
-  # still be there, and a dry run has to be able to name it. TMPDIR is this
-  # account's own folder on macOS, and the content is nsmb.conf, not a
-  # credential.
-  nc_tmp="${TMPDIR:-/tmp}/machine-setup-nsmb.conf"
-  if [ "$APPLY" -eq 1 ]; then
-    if ! nsmb_merge "$NSMB_CONF" "$nc_add" > "$nc_tmp"; then
-      note_failure "build the new $NSMB_CONF" 1
-      rm -f "$nc_tmp"
-      return 0
-    fi
+  # Merged here as this user, then written by root beside the target and
+  # moved over it, after a dated copy of the old file: a stop at any point
+  # leaves the old file or the new one, and the next run finishes the job.
+  #
+  # The command carries the merged content itself, the way the two sudoers
+  # drop-ins above carry their rule (sd:8609 review). It reads no file this
+  # run left behind: the operator pastes a deferred line days later, by
+  # which time the periodic cleaner has pruned anything under TMPDIR, and a
+  # dry run prints the same string, which would then make the dated backup
+  # and fail at a file no run ever built. The merge runs in both modes for
+  # that reason, and a merge that cannot answer is a failure, not an empty
+  # file.
+  if ! nc_body=$(nsmb_merge "$NSMB_CONF" "$nc_add"); then
+    note_failure "build the new $NSMB_CONF" 1
+    return 0
   fi
   nc_new="$(dirname "$NSMB_CONF")/.$(basename "$NSMB_CONF").tmp"
-  nc_cmd="{ [ ! -e $NSMB_CONF ] || cp -p $NSMB_CONF $NSMB_CONF.bak-$(date +%Y%m%d%H%M%S); } && cp $nc_tmp $nc_new && chmod 644 $nc_new && mv $nc_new $NSMB_CONF || { rm -f $nc_new; exit 1; }"
-  nc_before="$DEFERRED"
-  sudo_run "sudo sh -c '$nc_cmd'" sh -c "$nc_cmd"
-  # The merged file goes only when this run built it and nothing deferred
-  # the command that reads it; a dry run never removes what an earlier
-  # deferred run left for the operator.
-  if [ "$APPLY" -eq 1 ] && [ "$DEFERRED" = "$nc_before" ]; then
-    rm -f "$nc_tmp"
-  fi
+  # One single-quoted printf argument per line, each embedded `'` closed,
+  # escaped and reopened, so no value already in the file can end the
+  # quoting, expand, or run a command when the line is pasted.
+  nc_args=$(printf '%s\n' "$nc_body" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/" | tr '\n' ' ')
+  nc_cmd="{ [ ! -e $NSMB_CONF ] || cp -p $NSMB_CONF $NSMB_CONF.bak-$(date +%Y%m%d%H%M%S); } && printf '%s\n' ${nc_args}> $nc_new && chmod 644 $nc_new && mv $nc_new $NSMB_CONF || { rm -f $nc_new; exit 1; }"
+  # Single quotes around the whole command, not double: the content can
+  # hold a $ or a backtick, and a double-quoted paste would expand it.
+  nc_shown=$(printf '%s' "$nc_cmd" | sed "s/'/'\\\\''/g")
+  sudo_run "sudo sh -c '$nc_shown'" sh -c "$nc_cmd"
 }
 
 # The paths <profile>.spotlight wants kept out of the index, one per line.
@@ -6991,7 +7017,9 @@ sweep_step() { # name, seconds, command...
   if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ] && cat "$ss_out.1" "$ss_out.2" | grep -Eq "$SUDO_REFUSED"; then
     DEFERRED="$DEFERRED    $*
 "
-    echo "  DEFER   needs sudo: $*"
+    # printf, as in sudo_run: echo here would read a backslash in the
+    # command as an escape (sd:8609 review).
+    printf '  DEFER   needs sudo: %s\n' "$*"
   elif [ "$ss_rc" -ne 0 ] && [ -z "$ss_err" ]; then
     failed="$failed, $ss_name"
   fi

@@ -63,12 +63,11 @@ class NsmbConfTest(unittest.TestCase):
         self.etc = base / "etc"
         self.etc.mkdir()
         self.conf = self.etc / "nsmb.conf"
-        # Where the stage builds the merged file (sd:8609): the deferred
-        # command reads it from TMPDIR under a fixed name, so these cases
-        # keep TMPDIR inside the fixture and read it there.
+        # TMPDIR inside the fixture: the deferred command may leave nothing
+        # here for the operator to depend on (sd:8609 review), and the cases
+        # below read this folder to say so.
         self.tmpdir = base / "tmp"
         self.tmpdir.mkdir()
-        self.merged = self.tmpdir / "machine-setup-nsmb.conf"
         self.timeout_sudoers = base / "timestamp-timeout"
         self.timeout_sudoers.touch()
         self.sudo_log = base / "sudo.log"
@@ -100,6 +99,27 @@ class NsmbConfTest(unittest.TestCase):
 
     def backups(self):
         return sorted(p.name for p in self.etc.iterdir() if p.name.startswith("nsmb.conf.bak-"))
+
+    def paste(self, command):
+        """Run a line the stage printed the way the operator would.
+
+        The sudo stub on PATH runs `sh -c` as this user, so the line goes
+        through the same parsing a terminal would give it.
+        """
+        env = {
+            "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
+            "LANG": "en_US.UTF-8",
+            "SUDO_LOG": str(self.sudo_log),
+        }
+        return subprocess.run(["sh", "-c", command], env=env, capture_output=True,
+                              text=True, cwd=self.tmp.name, timeout=60)
+
+    def shown(self, line):
+        """The command out of a `[dry-run]` or `DEFER   needs sudo:` line."""
+        for marker in ("  [dry-run] ", "  DEFER   needs sudo: "):
+            if line.startswith(marker):
+                return line[len(marker):]
+        self.fail(f"no command in {line!r}")
 
     def test_absent_file_is_missing_then_written(self):
         lines = self.system()
@@ -184,22 +204,47 @@ class NsmbConfTest(unittest.TestCase):
         self.assertEqual(self.conf.read_text(), "[default]\n")
         self.assertEqual(sorted(p.name for p in self.etc.iterdir()), ["nsmb.conf"])
 
-    def test_a_deferred_command_keeps_the_file_it_copies(self):
-        """sd:8609: the operator pastes that line later, so the merged file
-        it names has to still be there, and no dry run may remove it."""
+    def test_the_deferred_line_applies_the_change_when_pasted(self):
+        """sd:8609: the operator pastes that line, so it has to carry
+        everything it needs. It may read no file a run left behind: the
+        periodic cleaner prunes TMPDIR, and the operator pastes days
+        later."""
         self.conf.write_text("[default]\n")
         lines = self.system("--apply", sudo="refuse")
-        deferred = [line for line in lines if line.startswith("  DEFER")][0]
-        self.assertIn(f"cp {self.merged} ", deferred)
-        self.assertEqual(self.merged.read_text(), "[default]\nsoft=yes\nkloglevel=1\n")
-        self.system()
-        self.assertTrue(self.merged.is_file(), "a dry run removed the file the deferred line reads")
+        deferred = [line for line in lines if line.startswith("  DEFER")]
+        self.assertEqual(1, len(deferred), lines)
+        self.assertEqual([], sorted(p.name for p in self.tmpdir.iterdir()),
+                         "the command reads a file this run left behind")
+        result = self.paste(self.shown(deferred[0]))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.conf.read_text(), WANTED)
+        self.assertEqual(len(self.backups()), 1, "one dated copy of the old file")
 
-    def test_a_run_that_installs_it_leaves_no_merged_file_behind(self):
+    def test_the_line_a_dry_run_prints_applies_the_change_when_pasted(self):
+        """The same string is built in both modes, so a dry run cannot
+        advertise a root command that makes the dated backup and then
+        fails."""
         self.conf.write_text("[default]\n")
-        self.system("--apply")
-        self.assertEqual(self.conf.read_text(), "[default]\nsoft=yes\nkloglevel=1\n")
-        self.assertEqual([], sorted(p.name for p in self.tmpdir.iterdir()))
+        lines = self.system()
+        dry = [line for line in lines if line.startswith("  [dry-run]")]
+        self.assertEqual(1, len(dry), lines)
+        self.assertEqual(self.conf.read_text(), "[default]\n", "a dry run changed the file")
+        result = self.paste(self.shown(dry[0]))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.conf.read_text(), WANTED)
+        self.assertEqual(len(self.backups()), 1)
+        self.assertEqual(sorted(p.name for p in self.etc.iterdir()),
+                         sorted(["nsmb.conf", *self.backups()]), "junk left in the folder")
+
+    def test_a_pasted_line_keeps_a_quote_or_a_dollar_in_the_file(self):
+        """The merged content rides inside the command, so a value the
+        file already holds must not end its quoting or be expanded."""
+        self.conf.write_text("# don't touch $HOME or `date`\n[default]\n")
+        lines = self.system("--apply", sudo="refuse")
+        result = self.paste(self.shown([l for l in lines if l.startswith("  DEFER")][0]))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.conf.read_text(),
+                         "# don't touch $HOME or `date`\n[default]\nsoft=yes\nkloglevel=1\n")
 
     def test_a_stop_after_the_copy_is_finished_by_the_next_run(self):
         # A run stopped between root's copy and its move leaves the dotted
