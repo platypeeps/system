@@ -121,6 +121,23 @@ the default paths, as every sibling README writes them.
 directory holds that file.
 
 The nightly health check runs the same reading through its sweep; this job only
-shortens the wait, and it is the one that can repair. A failed `repair` sends
-the cron-jobs failure notification; a run that found nothing to do, or that the
+shortens the wait, and it is the one that can repair. A failed `repair` opens a
+cron-jobs report row and sends no phone push, because every failing path here
+grades itself data safe (above); a run that found nothing to do, or that the
 rate floor held back, exits 0.
+
+## The repair moves state in steps
+
+`repair` records the rate floor, then signals. Each step's failure, and what
+the next run finds:
+
+| Step | State moved | Failure | Recovery | Test |
+| --- | --- | --- | --- | --- |
+| 0 | nothing yet | the state path, the clock or the temporary file does not answer | no TERM, exit 1, and the line says which step refused | `test_a_state_folder_that_gives_no_path_refuses_the_term`, `test_a_clock_that_gives_no_timestamp_refuses_the_term`, `test_no_temporary_file_for_sudos_errors_refuses_the_term` |
+| 1 | the floor marker gets this run's epoch seconds | the write fails | no TERM, since step 2 never runs, and the floor still holds what it had | `test_the_attempt_is_recorded_before_the_term`, `test_a_floor_whose_folder_cannot_be_made_refuses_the_term`, `test_a_floor_that_cannot_be_written_refuses_the_term`, `test_a_floor_that_cannot_be_written_keeps_what_it_had` |
+| 2 | the daemon gets TERM through `sudo -A` | sudo refuses, or nothing matched | step 1 is undone to the value it held, or removed, and the run exits 1 | `test_a_failed_term_restores_the_floor_it_had`, `test_a_failed_first_term_leaves_no_floor_behind` |
+| 2 | — | the undo of step 1 fails too | the run exits 1 and the line names the file a hand must remove | `test_an_undo_that_cannot_be_written_names_the_file_to_remove` |
+| 2 | — | the process dies between the two steps | the floor is already recorded, so the next hourly run does not signal again | `test_the_attempt_is_recorded_before_the_term` |
+| — | the marker holds a value from an older run | it is not a number, or it is in the future | no TERM, exit 1, and the line names the file to remove | `test_a_marker_that_holds_no_timestamp_refuses_and_pages`, `test_a_marker_in_the_future_refuses_and_pages` |
+| — | nothing | a sysctl read does not answer | the machine's answer is unknown, no TERM, exit 1 | `test_repair_sends_no_term_on_an_unknown_verdict` |
+| — | nothing | `ps` cannot read a pid `pgrep` named | that pid is skipped, never sized at 0 and read as within budget | `test_a_pid_ps_cannot_read_is_skipped_not_sized_at_zero`, `test_a_daemon_only_ps_cannot_read_is_nothing_to_check` |
