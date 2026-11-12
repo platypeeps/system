@@ -177,8 +177,10 @@ class Sudoers(unittest.TestCase):
         """Exact arguments only: an absolute path, its arguments, no
         wildcard; sudoers then allows those arguments and no others."""
         rules = self.rendered("/opt/homebrew")
-        self.assertEqual(len(rules), 8, rules)
-        for rule in rules[:3]:
+        self.assertEqual(len(rules), 9, rules)
+        # Every rule that names no version takes the exact-arguments check:
+        # the three originals, and the TERM local-fseventsd sends (sd:8579).
+        for rule in rules[:3] + rules[8:]:
             self.assertRegex(rule, r"^example ALL=\(root\) NOPASSWD: /\S+( [^*?\[\]\\,:=]+)+$")
         self.assertTrue(rules[0].endswith("NOPASSWD: /opt/homebrew/bin/brew services restart tailscale"))
         self.assertTrue(rules[1].endswith("NOPASSWD: /sbin/pfctl -sr"), rules[1])
@@ -193,8 +195,12 @@ class Sudoers(unittest.TestCase):
         app = "/opt/homebrew/opt/python@*/Frameworks/Python.framework/Versions/*/Resources/Python.app"
         self.assertEqual(rules[3:6], [f"example ALL=(root) NOPASSWD: {fw} --{verb} {exe}"
                                       for verb in ("remove", "add", "unblockapp")])
-        self.assertEqual(rules[6:], [f"example ALL=(root) NOPASSWD: {fw} --{verb} {app}"
-                                     for verb in ("add", "unblockapp")])
+        self.assertEqual(rules[6:8], [f"example ALL=(root) NOPASSWD: {fw} --{verb} {app}"
+                                      for verb in ("add", "unblockapp")])
+        # local-fseventsd TERMs a runaway fseventsd; pkill by name, because a
+        # pid argument would need a wildcard here and allow any pid (sd:8579).
+        self.assertEqual(rules[8:],
+                         ["example ALL=(root) NOPASSWD: /usr/bin/pkill -TERM -x fseventsd"])
 
     def test_the_brew_rule_follows_the_machines_brew_prefix(self):
         """sd:6475: the example named /opt/homebrew/bin/brew, dead on an

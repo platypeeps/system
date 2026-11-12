@@ -16,3 +16,5 @@ change-me ALL=(root) NOPASSWD: /usr/libexec/ApplicationFirewall/socketfilterfw -
 # blocks again: python is no longer pinned (sd:7059).
 change-me ALL=(root) NOPASSWD: /usr/libexec/ApplicationFirewall/socketfilterfw --add HOMEBREW_PREFIX/opt/python@*/Frameworks/Python.framework/Versions/*/Resources/Python.app
 change-me ALL=(root) NOPASSWD: /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp HOMEBREW_PREFIX/opt/python@*/Frameworks/Python.framework/Versions/*/Resources/Python.app
+# local-fseventsd TERMs a runaway fseventsd; launchd respawns it (sd:8579).
+change-me ALL=(root) NOPASSWD: /usr/bin/pkill -TERM -x fseventsd

@@ -406,6 +406,7 @@ case "$SUITE_LEG" in
     run_suite ai-songs-backup sh local-ai-songs-backup/ai-songs-backup.sh test -v
     run_suite config-check sh local-config-check/config-check.sh test -v
     run_suite volume-probe sh local-volume-probe/volume-probe.sh test -v
+    run_suite fseventsd sh local-fseventsd/fseventsd.sh test -v
     run_suite nightly-review sh local-nightly-review/nightly-review.sh test -v
     run_suite night-triage sh local-night-triage/night-triage.sh test -v
     run_suite home-prep sh local-home-prep/home-prep.sh test -v
