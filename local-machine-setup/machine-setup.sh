@@ -1994,6 +1994,16 @@ for name in sorted(names):
     print(name)'
 }
 
+# Where a job file this stage seeds belongs: <config>/cron-jobs/jobs, the
+# last folder cron-jobs.sh reads, so the host and config rules stay in
+# lib/system_tools_config.py alone. The shared folder and not this host's:
+# a job that comes from the repository is no machine's own. Exits non-zero
+# when python3 or the lib cannot answer, so no caller guesses a path.
+cron_jobs_dir() {
+  PYTHONPATH="$ROOT/lib" python3 -c 'import system_tools_config as stc
+print(stc.cron_job_dirs()[-1])'
+}
+
 # Did local-cron-jobs write this plist? The <prefix>.cron.<name> label does not
 # say: another repository's installer used the same label shape, and the sweep
 # below uninstalled its agent as an orphan (sd:2321). write_plist in
@@ -2058,10 +2068,17 @@ stage_cron() {
     sweep=0
   fi
   # A job with a job file is kept by the sweep below (sd:7335), so a list
-  # that cannot be read leaves the sweep unable to tell which to keep.
+  # that cannot be read leaves the sweep unable to tell which to keep. It
+  # also leaves the seeding below unable to tell a job this machine has no
+  # file for from one it does: a failed listing is no answer, and seeding
+  # over a machine's own job file would take its schedule with it.
+  seed_dir=""
   if ! defined_jobs=$(defined_cron_jobs); then
     echo "  MISSING job file list — could not read a cron-jobs folder; only retired jobs are uninstalled this run"
     sweep=0
+  elif ! seed_dir=$(cron_jobs_dir); then
+    echo "  MISSING cron-jobs folder — could not read where a job file belongs; no job file is seeded this run"
+    seed_dir=""
   fi
   hub_ask
   jobs=$( { manifest cron; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; fi; } | awk 'NF && !seen[$0]++')
@@ -2110,6 +2127,22 @@ stage_cron() {
       continue
     fi
     if [ "$j" = build-dispatch ] && ! dispatch_pack_ok; then continue; fi
+    # A wanted job with no job file anywhere cron-jobs.sh reads: install the
+    # repository's own example (sd:8607). Without this, a job every machine
+    # runs took a file copied by hand on each of them, and the stage reported
+    # `cron-jobs.sh: ERROR: no such job` until someone did. A copy in a
+    # cron-jobs folder wins, since a machine may hold a changed schedule, and
+    # a name the examples do not hold is reported as before. Seeded once and
+    # never refreshed: the machine owns its copy from here on.
+    if [ -n "$seed_dir" ] && [ -f "$ROOT/local-cron-jobs/examples/$j.job" ] &&
+        ! printf '%s\n' "$defined_jobs" | grep -qxF "$j"; then
+      echo "  MISSING $seed_dir/$j.job — no cron-jobs folder holds it; from local-cron-jobs/examples/$j.job"
+      # Recorded nowhere and skipped on a failure: the file has to be in
+      # place before cron-jobs.sh can render a plist from it.
+      run_ok mkdir -p "$seed_dir" &&
+        run_ok install -m 644 "$ROOT/local-cron-jobs/examples/$j.job" "$seed_dir/$j.job" ||
+        continue
+    fi
     jp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$j.plist"
     owner=0
     [ ! -f "$jp" ] || cron_plist_ours "$jp" "$j" 2>/dev/null || owner=$?

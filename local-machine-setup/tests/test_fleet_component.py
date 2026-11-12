@@ -232,5 +232,87 @@ class EnvFromRepoExample(Case):
         self.assertIn("    WARN    local-fseventsd/.env — 1 of 1 value(s) still placeholder", out)
 
 
+class CronJobFromRepoExample(Case):
+    """The cron stage seeds a job file from local-cron-jobs/examples."""
+
+    def setUp(self):
+        super().setUp()
+        # OTHER_JOB is in no repository roster, so these cases exercise the
+        # seeding alone; the profile names it.
+        (self.profiles / "personal.cron").write_text(f"{OTHER_JOB}\n")
+
+    def seeded(self, job=OTHER_JOB):
+        return self.jobs / f"{job}.job"
+
+    def test_a_roster_job_with_no_file_is_seeded_from_the_repo_example(self):
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertIn(f"  MISSING {self.seeded()}", out, out + result.stderr)
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertEqual(self.seeded().read_text(),
+                         (self.examples / f"{OTHER_JOB}.job").read_text())
+        self.assertIn(f"install {OTHER_JOB}", self.cron_calls())
+
+    def test_a_copy_in_the_config_folder_keeps_winning(self):
+        self.jobs.mkdir(parents=True)
+        own = 'JOB_SCHEDULE="7 4 * * *"\n# this machine\n'
+        self.seeded().write_text(own)
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertEqual(self.seeded().read_text(), own)
+        self.assertNotIn(f"  MISSING {self.seeded()}", out)
+
+    def test_a_copy_in_this_hosts_folder_keeps_winning(self):
+        (self.jobs / HOST).mkdir(parents=True)
+        own = 'JOB_SCHEDULE="9 4 * * *"\n'
+        (self.jobs / HOST / f"{OTHER_JOB}.job").write_text(own)
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertEqual((self.jobs / HOST / f"{OTHER_JOB}.job").read_text(), own)
+        self.assertFalse(self.seeded().exists(), out)
+
+    def test_a_roster_job_the_examples_do_not_hold_is_reported_as_before(self):
+        (self.profiles / "personal.cron").write_text("no-such-job\n")
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertIn("  MISSING no-such-job — no plist installed", out, out + result.stderr)
+        self.assertFalse((self.jobs / "no-such-job.job").exists(), out)
+        self.assertIn("install no-such-job", self.cron_calls())
+
+    def test_a_job_file_list_that_cannot_be_read_seeds_nothing(self):
+        """A failed listing is no answer: it must not read as "no copy here"
+        and overwrite a job file this machine holds."""
+        self.jobs.mkdir(parents=True)
+        own = 'JOB_SCHEDULE="7 4 * * *"\n'
+        self.seeded().write_text(own)
+        self.break_job_listing()
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertIn("  MISSING job file list", out, out + result.stderr)
+        self.assertEqual(self.seeded().read_text(), own)
+
+    def test_a_dry_run_seeds_no_job_file(self):
+        result = self.run_script("update", "cron")
+        out = result.stdout
+        self.assertIn(f"  MISSING {self.seeded()}", out, out + result.stderr)
+        self.assertIn("[dry-run]", out)
+        self.assertFalse(self.seeded().exists(), out)
+        self.assertEqual(self.cron_calls(), [])
+
+    def test_a_seed_that_cannot_be_written_is_reported_and_installs_nothing(self):
+        self.jobs.parent.mkdir(parents=True)
+        self.jobs.mkdir()
+        self.jobs.chmod(0o500)
+        self.addCleanup(self.jobs.chmod, 0o700)
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertIn("  FAILED  ", out, out + result.stderr)
+        self.assertEqual(result.returncode, 1, out + result.stderr)
+        self.assertFalse(self.seeded().exists(), out)
+        self.assertNotIn(f"install {OTHER_JOB}", self.cron_calls())
+
+
 if __name__ == "__main__":
     unittest.main()
