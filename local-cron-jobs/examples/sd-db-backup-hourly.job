@@ -71,6 +71,9 @@ SD_DB_BACKUP_HOURLY_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-s
 # A failed NAS step after a verified snapshot grades the run: the data is safe
 # on the local disk, so the line keeps the phone push for a run at risk
 # (sd:5997, ruling on sd:6030). The run still fails, and Today shows it.
-JOB_COMMAND="$SD_DB_BACKUP_HOURLY_SNAPSHOT && { $SD_DB_BACKUP_HOURLY_NAS || { rc=\$?; echo 'SD_REPORT_ATTENTION: data safe, one step failed: NAS copy'; exit \$rc; }; }"
+# A share that does not answer is the one exception (sd:8549): mirror-sync
+# exits 75, and the run passes with one warning line. offsite-verify still
+# fails once the newest NAS copy is more than 3 hours old.
+JOB_COMMAND="$SD_DB_BACKUP_HOURLY_SNAPSHOT && { $SD_DB_BACKUP_HOURLY_NAS || { rc=\$?; [ \$rc -ne 75 ] || { echo 'warning: NAS copy skipped: the share did not answer'; exit 0; }; echo 'SD_REPORT_ATTENTION: data safe, one step failed: NAS copy'; exit \$rc; }; }"
 [ -n "$SD_DB_BACKUP_HOURLY_NAS_FOLDER" ] || JOB_COMMAND="$SD_DB_BACKUP_HOURLY_SNAPSHOT"
 unset SD_DB_BACKUP_HOURLY_MOUNT SD_DB_BACKUP_HOURLY_SNAPSHOT SD_DB_BACKUP_HOURLY_NAS SD_DB_BACKUP_HOURLY_NAS_FOLDER

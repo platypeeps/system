@@ -8,6 +8,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
+. "$DIR/../lib/bounded.sh"
 # One script, several schedules: MIRROR_SYNC_CONF names the pair list to
 # run. The nightly job takes the default; the repos mirror passes its own,
 # so a 118G tree does not ride the nightly pass. The lists are private,
@@ -57,7 +58,17 @@ exact copy, so anything absent from the source is deleted. A file source is
 copied into its existing destination directory using the source basename.
 
 MIRROR_SYNC_IO_TIMEOUT (seconds, default 1800) is rsync's --timeout: a pair
-whose transfer moves no data that long fails like any rsync error.
+whose transfer moves no data that long counts as a share that does not
+answer, below, when rsync prints only its timeout lines; any other error
+line fails the pair.
+
+Before a pair under /Volumes/<name> syncs, a probe creates and removes one
+file in its destination, bounded by MIRROR_SYNC_PROBE_TIMEOUT (seconds,
+default 60). A destination that does not answer is skipped, as a stale smbfs
+mount hung rsync for the job's whole bound (sd:8549). A probe that fails
+at once (read-only, full, denied) fails the pair as before. The pass exits 75
+when every failed pair is such a share, and 1 when any pair failed for
+another reason; the backup jobs read 75 as a skip, not a failure.
 
 MIRROR_SYNC_ADDITIVE, if set, drops --delete and --delete-excluded: the
 destination is added to and never trimmed, so a source deletion is not
@@ -460,6 +471,10 @@ IO_TIMEOUT="${MIRROR_SYNC_IO_TIMEOUT:-1800}"
 case "$IO_TIMEOUT" in
   ''|*[!0-9]*) echo "!!! refusing: MIRROR_SYNC_IO_TIMEOUT must be a whole number of seconds, got '$IO_TIMEOUT'" >&2; exit 1 ;;
 esac
+PROBE_TIMEOUT="${MIRROR_SYNC_PROBE_TIMEOUT:-60}"
+case "$PROBE_TIMEOUT" in
+  ''|*[!0-9]*) echo "!!! refusing: MIRROR_SYNC_PROBE_TIMEOUT must be a whole number of seconds, got '$PROBE_TIMEOUT'" >&2; exit 1 ;;
+esac
 RSYNC_BASE="-rlptgo -W --timeout=$IO_TIMEOUT"
 RSYNC_FLAGS="$RSYNC_BASE --delete --delete-excluded"
 # MIRROR_SYNC_ADDITIVE drops both deletes, and with them the property that
@@ -625,6 +640,20 @@ only_interrupted() {
   ! grep 'error:' "$ERRS" | grep -v -q ': open (2) in .*: Interrupted system call$'
 }
 
+# A pair whose rsync moved no data for --timeout hit a share that does not
+# answer (sd:8549). GNU rsync then exits 30 with an "io timeout" line and a
+# "timeout in data send/receive" summary; openrsync exits 1 with "poll:
+# timeout". The pair counts as that only when every stderr line is one of
+# these, whole: any other line (a full or denied share, a file named after
+# the text) keeps it a failure, since the backup jobs read exit 75 as a skip.
+only_timed_out() {
+  grep -q . "$ERRS" || return 1
+  ! grep . "$ERRS" | grep -v -q -x -E \
+    -e '[a-z]*rsync\([0-9]+\): error: poll: timeout' \
+    -e '(rsync: )?\[(sender|receiver|generator)\] io timeout after [0-9]+ seconds -- exiting' \
+    -e 'rsync error: timeout in data send/receive \(code 30\) at [^ ]+ \[[A-Za-z]+=[^]]+\]'
+}
+
 probe_flavours
 check_backup_root
 check_keep_days
@@ -721,6 +750,24 @@ pairs | while IFS='|' read -r src dst excl; do
     echo "!!! unsupported source type: $src" >&2
     echo "$src (unsupported source type)" >> "$FAILLOG"; continue
   fi
+  # A stale smbfs mount is in the mount table and answers stat, then hangs
+  # the first write (sd:8549). Create one file where rsync writes, bounded.
+  # Only the bound expiring (124) is a share that does not answer; a probe
+  # that fails at once (read-only, full, denied) is a failure, shown as is.
+  case "$MODE:$dst/" in
+    sync:"$VOLUMES"/?*/*)
+      probe_dir="$dst"; [ -d "$probe_dir" ] || probe_dir=$(dirname "$dst")
+      prc=0
+      # shellcheck disable=SC2016 # expanded by the inner sh
+      st_bounded "$PROBE_TIMEOUT" sh -c 'p=$(mktemp "$1/.mirror-sync-probe.XXXXXX") && rm -f "$p"' sh "$probe_dir" || prc=$?
+      if [ "$prc" -eq 124 ]; then
+        echo "!!! destination does not answer within ${PROBE_TIMEOUT}s: $dst" >&2
+        echo "$dst (share unresponsive)" >> "$FAILLOG"; continue
+      elif [ "$prc" -ne 0 ]; then
+        echo "!!! cannot write a probe file in $probe_dir (exit $prc)" >&2
+        echo "$dst (cannot write)" >> "$FAILLOG"; continue
+      fi ;;
+  esac
   if [ -n "$KEEP" ]; then
     set -- --backup --backup-dir "$KEEP"
   else
@@ -750,7 +797,11 @@ pairs | while IFS='|' read -r src dst excl; do
     echo "--- source files vanished during the pass; not a failure: $src" >&2
     rc=0
   fi
-  if [ "$rc" -ne 0 ]; then
+  # The exit code alone decides nothing: only the stderr lines make a skip.
+  if [ "$rc" -ne 0 ] && only_timed_out; then
+    echo "!!! rsync moved no data for ${IO_TIMEOUT}s: $src" >&2
+    echo "$src (share unresponsive)" >> "$FAILLOG"
+  elif [ "$rc" -ne 0 ]; then
     echo "!!! rsync failed: $src" >&2
     echo "$src (rsync error)" >> "$FAILLOG"
   fi
@@ -762,7 +813,8 @@ echo "----------------------------------------"
 if [ -s "$FAILLOG" ]; then
   echo "failed: $(wc -l < "$FAILLOG" | tr -d ' ') pair(s)"
   sed 's/^/  /' "$FAILLOG"
-  exit 1
+  grep -qv ' (share unresponsive)$' "$FAILLOG" && exit 1
+  exit 75
 fi
 n=$(pairs | grep -c . || :)
 if [ "$n" -eq 0 ]; then
