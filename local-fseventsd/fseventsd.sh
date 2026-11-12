@@ -51,8 +51,9 @@ Usage: fseventsd.sh <command>
            is the daemon oversized, and is the machine hurting. Exits 3
            when there is nothing to check: FSEVENTSD_RSS_MB unset, not
            macOS, or no fseventsd running. Exits 1 when the daemon is over
-           FSEVENTSD_RSS_MB, whatever the machine is doing, or when a
-           setting is broken. Exits 0 otherwise --
+           FSEVENTSD_RSS_MB, whatever the machine is doing, when a setting
+           is broken, or when a reading did not answer at all, which is
+           never taken for nothing to check. Exits 0 otherwise --
            local-health-check reads these codes.
   repair   The same two answers, and a TERM to the daemon through sudo -A
            only when both say yes; launchd respawns it. At most one TERM
@@ -75,6 +76,12 @@ Configuration: $SYSTEM_TOOLS_CONFIG/fseventsd/.env or exported (copy
                        default 8192 -- the number local-health-check
                        already uses, not a second one.
   FSEVENTSD_MIN_HOURS  hours between two TERMs, default 6; 0 for no floor.
+Write each value in plain decimal: a leading zero is refused, because shell
+arithmetic reads 010 as eight.
+
+A failing repair prints one SD_REPORT_ATTENTION line grading its data safe,
+so local-cron-jobs opens a report without pushing "data at risk" to the
+phone: no failure here risks data, since the TERM either went out or did not.
 
 The TERM needs the machine-setup-repairs sudoers line, or the
 machine-setup-sudo Keychain item (local-machine-setup/README.md,
@@ -83,8 +90,14 @@ USAGE
 }
 
 # whole <value> <low> <high>: 0 when value is a whole number in that range.
+# A leading zero
+# is refused, because shell arithmetic reads it as octal: `08` aborts the run
+# outright ("value too great for base") and `010` quietly means eight where
+# the operator wrote ten. Two values here reach arithmetic, FSEVENTSD_MIN_HOURS
+# and the floor's timestamp, and a value that means two things is refused
+# rather than guessed at (round 3).
 whole() {
-  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  case "$1" in ''|*[!0-9]*|0?*) return 1 ;; esac
   [ "$1" -ge "$2" ] || return 1
   [ "$1" -le "$3" ] || return 1
   return 0
@@ -99,7 +112,23 @@ whole() {
 # matches the process name whole, so fseventsd-watcher is not the daemon. A
 # pid ps cannot read is skipped, not reported as a daemon of no size.
 fs_daemon() {
-  fs_pids=$(pgrep -x fseventsd 2>/dev/null) || return 0
+  # `|| fs_read_rc=$?` and not a bare assignment: this function is read
+  # through `$(fs_daemon)`, and errexit is live inside a command substitution
+  # even when the caller suppressed it, so a bare assignment from a pgrep that
+  # exits non-zero kills the subshell and the status never reaches the case.
+  fs_read_rc=0
+  fs_pids=$(pgrep -x fseventsd 2>/dev/null) || fs_read_rc=$?
+  # Only exit 1 is "no fseventsd is running". pgrep exits 2 on a usage error
+  # and 3 on a fatal one, and the shell gives 127 when it is not on PATH;
+  # taking any of those for no-daemon exits 3, the one code the nightly sweep
+  # prints nothing for, so a machine whose pgrep cannot answer would stop
+  # being checked in silence (round 3). The ps read below is the other way
+  # round on purpose: a pid pgrep named and ps cannot read is the documented
+  # race between the two commands, so that one is skipped.
+  case "$fs_read_rc" in
+    0|1) ;;
+    *) return "$fs_read_rc" ;;
+  esac
   for fs_candidate in $fs_pids; do
     fs_kb=$(ps -o rss= -p "$fs_candidate" 2>/dev/null |
       awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1 }')
@@ -162,11 +191,13 @@ fs_collect() {
     fs_state=unconfigured
     return 0
   fi
-  whole "$fs_limit" 1 1048576 || fs_bad="FSEVENTSD_RSS_MB must be whole megabytes from 1 to 1048576"
+  fs_zero="with no leading zero, which shell arithmetic reads as octal"
+  whole "$fs_limit" 1 1048576 ||
+    fs_bad="FSEVENTSD_RSS_MB must be whole megabytes from 1 to 1048576, $fs_zero"
   whole "$fs_swap_limit" 0 1048576 ||
-    fs_bad="${fs_bad:-FSEVENTSD_SWAP_MB must be whole megabytes from 0 to 1048576}"
+    fs_bad="${fs_bad:-FSEVENTSD_SWAP_MB must be whole megabytes from 0 to 1048576, $fs_zero}"
   whole "$fs_min_hours" 0 8760 ||
-    fs_bad="${fs_bad:-FSEVENTSD_MIN_HOURS must be whole hours from 0 to 8760}"
+    fs_bad="${fs_bad:-FSEVENTSD_MIN_HOURS must be whole hours from 0 to 8760, $fs_zero}"
   if [ -n "$fs_bad" ]; then
     fs_state=bad-config
     return 0
@@ -177,6 +208,12 @@ fs_collect() {
     return 0
   fi
   fs_found=$(fs_daemon)
+  fs_read_rc=$?
+  if [ "$fs_read_rc" -ne 0 ]; then
+    fs_state=no-reading
+    fs_read_say="pgrep -x fseventsd exited $fs_read_rc"
+    return 0
+  fi
   if [ -z "$fs_found" ]; then
     fs_state=no-daemon
     return 0
@@ -213,6 +250,10 @@ fs_judge() {
     no-daemon)
       fs_line="$TOOL: nothing to check: no fseventsd process is running"
       fs_code=3
+      return 0 ;;
+    no-reading)
+      fs_line="$TOOL: FAIL: the daemon could not be read: $fs_read_say"
+      fs_code=1
       return 0 ;;
   esac
   fs_unknown=0
@@ -256,18 +297,32 @@ fs_marker() {
   printf '%s/last-term\n' "$(st_state_dir "$TOOL")"
 }
 
-# fs_record <epoch> <file>: put that value in the floor, or fail. Each step is
-# checked and the value read back, because the caller runs under `||`, which
-# suppresses errexit for its whole body: an unchecked mkdir or redirection let
-# the run reach the TERM and report a floor it never wrote, and the next
-# hourly run then signalled again, every hour (round 2).
+# fs_record <epoch> <file>: put that value in the floor, or fail and leave the
+# floor holding exactly what it held. Each step is checked and the value read
+# back, because the caller runs under `||`, which suppresses errexit for its
+# whole body: an unchecked mkdir or redirection let the run reach the TERM and
+# report a floor it never wrote, and the next hourly run then signalled again,
+# every hour (round 2).
+#
+# The write never goes to the floor itself. `>` truncates before it writes, so
+# a write that does not land left the floor empty or partial, every later run
+# read that as garbage and refused with exit 1, and only a hand deleting the
+# file let the repair run again -- while the hourly job failed every hour. The
+# trigger is a full disk, which is this tool's own scenario: the machine it
+# exists for has swap eating its boot volume. So the value goes to a file
+# beside it, is read back there, and only then replaces the floor, which is a
+# rename within one directory and cannot half-finish (round 3). A state folder
+# that takes no new file refuses the TERM, as round 2 ruled for every floor
+# that cannot be recorded.
 fs_record() {
   mkdir -p "$(dirname "$2")" || return 1
-  printf '%s\n' "$1" > "$2" || return 1
-  # The read-back is the evidence: a write to a full disk can leave nothing
-  # behind, and this floor is all that stands between an hourly job and a
-  # TERM every hour, against the event history every backup tool reads.
-  [ "$(cat "$2" 2>/dev/null)" = "$1" ] || return 1
+  fs_new="$2.new"
+  if ! printf '%s\n' "$1" > "$fs_new" ||
+      [ "$(cat "$fs_new" 2>/dev/null)" != "$1" ]; then
+    rm -f "$fs_new"
+    return 1
+  fi
+  mv -f "$fs_new" "$2" || { rm -f "$fs_new"; return 1; }
 }
 
 # fs_send_term: record the attempt, then signal. In that order: a TERM
@@ -298,11 +353,13 @@ fs_send_term() {
   fi
   if [ -f "$fs_file" ]; then
     fs_last=$(cat "$fs_file" 2>/dev/null || true)
-    case "$fs_last" in
-      ''|*[!0-9]*)
-        fs_term_line="$TOOL: FAIL: no TERM: $fs_file holds no timestamp; remove it to allow one"
-        return 1 ;;
-    esac
+    # `whole`, not a looser pattern: a hand can edit this file, and a leading
+    # zero reaches the arithmetic below, where 08 aborts the whole run with no
+    # line printed at all and 010 reads as eight (round 3).
+    if ! whole "$fs_last" 0 99999999999; then
+      fs_term_line="$TOOL: FAIL: no TERM: $fs_file holds no timestamp; remove it to allow one"
+      return 1
+    fi
     if [ "$fs_last" -gt "$fs_now" ]; then
       fs_term_line="$TOOL: FAIL: no TERM: $fs_file is in the future; remove it to allow one"
       return 1
@@ -324,7 +381,7 @@ fs_send_term() {
   fi
   if ! fs_record "$fs_now" "$fs_file"; then
     rm -f "$fs_err"
-    fs_term_line="$TOOL: FAIL: no TERM: could not record the floor in $fs_file; the TERM waits until it can be written"
+    fs_term_line="$TOOL: FAIL: no TERM: could not record the floor in $fs_file, which still holds what it had; the TERM waits until it can be written"
     return 1
   fi
   fs_rc=0
@@ -356,6 +413,24 @@ fs_send_term() {
   return 0
 }
 
+# fs_data_safe <step>: grade this run's failure for local-cron-jobs. Its
+# push_at_risk (cron-jobs.sh:524) sends an ntfy push titled "<job> failed on
+# <host>: data at risk", at high priority, for any non-zero exit, unless the
+# run's own output carries this line (ruling on sd:6030). No failing path here
+# risks data: the TERM either went out, which is exit 0, or it did not, and the
+# FSEvents history is what a TERM costs. Without this, a refused sudo and an
+# unreadable sysctl woke the operator at 3am claiming data was at risk, which
+# is a false alarm every time (round 3). The failure still reaches Reports and
+# Today either way; only the phone push reads this line. The step names stay
+# fixed, so a repeating failure folds into one open report.
+#
+# repair alone prints it: status is read by local-health-check's sweep, which
+# shows its output as the finding's remedy text, and only repair runs under
+# local-cron-jobs.
+fs_data_safe() {
+  echo "SD_REPORT_ATTENTION: data safe, one step failed: $TOOL $1"
+}
+
 run_status() {
   fs_collect
   fs_judge
@@ -380,7 +455,8 @@ run_repair() {
   # budget whenever another process drove the machine into swap (round 1).
   case "$fs_state" in
     unconfigured|not-darwin|no-daemon) return 3 ;;
-    bad-config) return 1 ;;
+    bad-config) fs_data_safe "a setting it cannot read"; return 1 ;;
+    no-reading) fs_data_safe "a daemon it cannot read"; return 1 ;;
   esac
   if [ "$fs_over" = no ]; then
     echo "$TOOL: no TERM: the daemon is within its budget, whatever the machine is doing"
@@ -388,6 +464,7 @@ run_repair() {
   fi
   if [ "$fs_hurting" = unknown ]; then
     echo "$TOOL: FAIL: no TERM: the daemon is oversized and the pressure readings did not answer"
+    fs_data_safe "a machine reading that did not answer"
     return 1
   fi
   if [ "$fs_hurting" = no ]; then
@@ -397,6 +474,7 @@ run_repair() {
   rc=0
   fs_send_term || rc=$?
   echo "$fs_term_line"
+  [ "$rc" -eq 0 ] || fs_data_safe "the TERM did not go out"
   return "$rc"
 }
 

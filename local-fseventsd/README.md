@@ -29,9 +29,20 @@ alone, whatever the machine is doing, and 0 otherwise. local-health-check reads
 these codes, so its nightly sweep runs `status` from its own launchd job and
 reports only the 1.
 
+A reading that did not answer at all exits 1, never 3. `pgrep` exits 1 for no
+match, and that alone means no fseventsd is running; its 2, its 3 and a missing
+`pgrep` are failures to read, and reporting those as nothing to check would
+exit 3, which the sweep prints nothing for, so the machine would stop being
+checked in silence.
+
 The first line always starts with the resident size, so the trend is visible on
 a healthy machine too, and the sweep shows that line as the finding's remedy
 text.
+
+A failing `repair` prints one `SD_REPORT_ATTENTION: data safe, one step failed:
+...` line. local-cron-jobs reads it and opens a report without pushing "data at
+risk" to the phone: no failure here risks data, since the TERM either went out,
+which is exit 0, or it did not.
 
 ## Two questions, one line each
 
@@ -68,6 +79,10 @@ matched in that field goes missing in a narrow window.
 | `FSEVENTSD_RSS_MB` | Resident megabytes the daemon may hold; 4096 in the example. Unset, there is nothing to check. |
 | `FSEVENTSD_SWAP_MB` | Swap megabytes in use that counts as hurting, default 8192 — the number local-health-check already uses, not a second one. |
 | `FSEVENTSD_MIN_HOURS` | Hours between two TERMs, default 6; 0 for no floor. |
+
+Write each value in plain decimal. A leading zero is refused, because shell
+arithmetic reads it as octal: `08` is not a number at all there and `010` means
+eight.
 
 The last TERM's timestamp is state a run writes and nobody edits, so it goes in
 `$XDG_STATE_HOME/system/fseventsd/last-term`, not in the config folder, which

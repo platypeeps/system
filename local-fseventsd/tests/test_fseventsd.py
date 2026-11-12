@@ -43,6 +43,7 @@ class Fseventsd(unittest.TestCase):
         self.marker = self.home / ".local/state/system/fseventsd/last-term"
         self.sudo_calls = self.tmp / "sudo-calls"
         self.sudo_saw = self.tmp / "sudo-saw-marker"
+        self.termed_dir = self.tmp / "sudo-ran"
         self.touched = self.tmp / "launchctl-called"
         self.stub("launchctl", f"touch '{self.touched}'\nexit 1\n")
         # The default machine: a healthy daemon on macOS with memory to spare.
@@ -73,7 +74,10 @@ class Fseventsd(unittest.TestCase):
         comm column, or for every process, fails the test instead of reading
         this machine. The table holds launchd, a name that only contains
         `fseventsd`, and the daemon itself when rss_kb is set. ghost_pid is a
-        pid pgrep reports and ps cannot read."""
+        pid pgrep reports and ps cannot read. The table is a file this test
+        writes, not a heredoc: a heredoc makes the shell write a temporary
+        file, which a run under a file-size limit cannot do, and the stub
+        would then fail for a reason the test never asked for."""
         rows = [("1", "12345", "launchd"),
                 ("501", "9876", "a helper with spaces"),
                 ("777", "4242", "fseventsd-watcher")]
@@ -83,8 +87,10 @@ class Fseventsd(unittest.TestCase):
             rows.append((ghost_pid, "unreadable", "fseventsd"))
         if rss_kb is not None:
             rows.append(("400", str(rss_kb), "fseventsd"))
-        table = "".join(f"{pid} {rss} {name}\n" for pid, rss, name in rows)
-        table = f"table() {{ cat <<'TABLE'\n{table}TABLE\n}}\n"
+        rows_file = self.tmp / "process-table"
+        rows_file.write_text("".join(f"{pid} {rss} {name}\n"
+                                     for pid, rss, name in rows))
+        table = f"table() {{ cat '{rows_file}'; }}\n"
         self.stub("pgrep", table + """
 [ "$#" -eq 2 ] && [ "$1" = -x ] || { echo "pgrep: unexpected: $*" >&2; exit 2; }
 found=$(table | awk -v want="$2" '{ name = $0; sub(/^[0-9]+ [^ ]+ /, "", name)
@@ -113,12 +119,21 @@ printf '%8s\\n' "$size"
     def fake_sudo(self, code=0, then=""):
         """Records its words, and the rate-floor marker as it stood when it
         ran, runs `then`, then exits `code`. It never execs anything. `then`
-        is the seam for what changes between the TERM and the undo."""
-        self.stub("sudo", f"printf '%s\\n' \"$*\" >> '{self.sudo_calls}'\n"
+        is the seam for what changes between the TERM and the undo. It also
+        makes a directory, which `termed` reads: under a file-size limit a
+        stub that only appends to a file records nothing, and `calls` would
+        read empty whether or not the TERM went out."""
+        self.stub("sudo", f"mkdir -p '{self.termed_dir}'\n"
+                          f"printf '%s\\n' \"$*\" >> '{self.sudo_calls}'\n"
                           f"cat '{self.marker}' >> '{self.sudo_saw}' 2>/dev/null || true\n"
                           f"{then}\n"
                           f"[ {code} -eq 0 ] || echo 'sudo: a password is required' >&2\n"
                           f"exit {code}\n")
+
+    def termed(self):
+        """Whether sudo ran at all, recorded as a directory so a file-size
+        limit cannot hide it."""
+        return self.termed_dir.is_dir()
 
     def seal(self, folder):
         """Make `folder` read-only, and writable again at cleanup so the
@@ -136,11 +151,19 @@ printf '%8s\\n' "$size"
         values.setdefault("FSEVENTSD_RSS_MB", "4096")
         self.env_file("".join(f"{name}={value}\n" for name, value in values.items()))
 
-    def run_fs(self, *args, extra=None):
+    def run_fs(self, *args, extra=None, no_file_writes=False):
+        """no_file_writes runs the tool under `ulimit -f 0`, which stands in
+        for the full disk this tool's own scenario produces: a file opens and
+        the write does not land. It is the closest a unit test gets, since a
+        real ENOSPC needs a filesystem to fill."""
         env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home),
                "TMPDIR": str(self.tmp), "SYSTEM_TOOLS_CONFIG": str(self.config)}
         env.update(extra or {})
-        return subprocess.run(["sh", str(ENTRYPOINT), *args], env=env,
+        command = ["sh", str(ENTRYPOINT), *args]
+        if no_file_writes:
+            quoted = " ".join(f"'{word}'" for word in command)
+            command = ["sh", "-c", f"ulimit -f 0; exec {quoted}"]
+        return subprocess.run(command, env=env,
                               capture_output=True, text=True, timeout=120)
 
     def calls(self):
@@ -309,6 +332,21 @@ printf '%8s\\n' "$size"
         self.assertEqual(1, done.returncode, done.stdout + done.stderr)
         self.assertIn("the machine is hurting", done.stdout)
 
+    def test_a_pgrep_that_could_not_answer_is_not_no_daemon(self):
+        """Only exit 1 means no fseventsd is running. pgrep exits 2 on a usage
+        error and 3 on a fatal one, and the shell gives 127 when it is not on
+        PATH; reporting any of those as no-daemon exits 3, the one code the
+        nightly sweep prints nothing for, so the machine would stop being
+        checked in silence. The same failure the .env guard rules out."""
+        for code in (2, 3, 127):
+            with self.subTest(code=code):
+                self.configure()
+                self.stub("pgrep", f"echo 'pgrep: bad arguments' >&2\nexit {code}\n")
+                done = self.run_fs("status")
+                self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+                self.assertNotIn("no fseventsd process is running", done.stdout)
+                self.assertIn("could not be read", done.stdout)
+
     def test_a_bad_setting_is_broken_not_unconfigured(self):
         for name, value in (("FSEVENTSD_RSS_MB", "4g"), ("FSEVENTSD_SWAP_MB", "-1"),
                             ("FSEVENTSD_MIN_HOURS", "six")):
@@ -321,6 +359,37 @@ printf '%8s\\n' "$size"
     def test_an_exported_value_counts_without_a_config_file(self):
         done = self.run_fs("status", extra={"FSEVENTSD_RSS_MB": "4096"})
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+
+    def test_a_leading_zero_in_a_setting_is_refused_not_read_as_octal(self):
+        """Shell arithmetic reads a leading zero as octal, so 08 aborts the
+        repair outright ("value too great for base") and 010 quietly enforces
+        eight hours where the operator wrote ten. Measured on this machine's
+        /bin/sh. A value that means two different things is refused, not
+        guessed at."""
+        for value in ("08", "010", "0600"):
+            with self.subTest(value=value):
+                self.configure(FSEVENTSD_MIN_HOURS=value)
+                self.fake_ps(rss_kb=28770 * 1024)
+                self.fake_sysctl(pressure="2", swap="120.00M")
+                self.write_marker(hours_ago=7)
+                done = self.run_fs("repair")
+                self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+                self.assertFalse(self.termed(), "TERMed on a setting it could not read")
+                self.assertIn("leading zero", done.stdout)
+
+    def test_a_floor_with_a_leading_zero_is_garbage_not_octal(self):
+        """The marker is the other value that reaches arithmetic, and a hand
+        can edit it. 08 there aborted the whole repair with no line printed at
+        all, which is worse than refusing: the hourly job then failed with an
+        empty report."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        self.write_marker(text="08\n")
+        done = self.run_fs("repair")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertFalse(self.termed(), "TERMed on a floor it could not read")
+        self.assertIn("holds no timestamp", done.stdout)
 
     def test_an_env_file_that_cannot_be_read_never_reads_as_unconfigured(self):
         """The one setup step outside fs_send_term that this tool does not
@@ -446,6 +515,68 @@ printf '%8s\\n' "$size"
     # again, every hour, against the event history every backup and indexing
     # tool reads: the thrash FSEVENTSD_MIN_HOURS exists to stop (round 2).
 
+    # --- repair: a failure that risks no data says so ---------------------
+    #
+    # cron-jobs' push_at_risk (cron-jobs.sh:524) sends an ntfy push titled
+    # "<job> failed on <host>: data at risk", at high priority, for any
+    # non-zero exit, unless the run's own output grades itself with
+    # `SD_REPORT_ATTENTION: data safe, one step failed: <step>` (ruling on
+    # sd:6030). Nothing this tool does on a failing path risks data: the TERM
+    # either went out, which is exit 0, or it did not. Without the line, a
+    # refused sudo and an unreadable sysctl wake the operator at 3am (round 3).
+
+    def test_every_failing_repair_grades_its_data_safe(self):
+        """One case per failing path, named so a repeating failure folds into
+        one open report. The report still reaches Reports and Today either
+        way; only the phone push turns on the grading."""
+        safe = "SD_REPORT_ATTENTION: data safe, one step failed: fseventsd "
+        cases = {
+            "a broken setting": lambda: self.configure(FSEVENTSD_MIN_HOURS="six"),
+            "a refused TERM": lambda: self.fake_sudo(code=1),
+            "an unknown machine reading": lambda: self.fake_sysctl(pressure=None,
+                                                                   swap=None),
+            "a floor it cannot read": lambda: self.write_marker(text="not a time\n"),
+            "a daemon it cannot read": lambda: self.stub("pgrep", "exit 2\n"),
+        }
+        for name, arrange in cases.items():
+            with self.subTest(case=name):
+                self.configure()
+                self.fake_ps(rss_kb=28770 * 1024)
+                self.fake_sysctl(pressure="2", swap="120.00M")
+                arrange()
+                done = self.run_fs("repair")
+                self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+                self.assertIn(safe, done.stdout)
+
+    def test_a_repair_that_signals_grades_nothing(self):
+        """Exit 0 needs no grading, and a line claiming a failed step on a
+        run that succeeded would read as a failure in the report."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        done = self.run_fs("repair")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertNotIn("SD_REPORT_ATTENTION", done.stdout)
+
+    def test_status_grades_nothing_so_the_sweep_reads_one_line(self):
+        """local-health-check greps status's output for its finding and shows
+        the line as the remedy text, so a second line there would land in the
+        nightly report. Only repair runs under cron-jobs."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        done = self.run_fs("status")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertNotIn("SD_REPORT_ATTENTION", done.stdout)
+
+    def test_the_hourly_job_says_what_the_operator_will_receive(self):
+        """The job comment is what someone reads before installing it, and
+        "the cron-jobs failure notification" understates a high-priority
+        phone push titled "data at risk"."""
+        text = JOB.read_text()
+        self.assertIn("data safe", text)
+        self.assertNotIn("the cron-jobs failure notification", text)
+
     def test_a_state_folder_that_gives_no_path_refuses_the_term(self):
         """st_state_dir hands back whatever XDG_STATE_HOME holds, so a
         relative value makes the floor relative too: the hourly job runs from
@@ -458,6 +589,58 @@ printf '%8s\\n' "$size"
         self.assertEqual(1, done.returncode, done.stdout + done.stderr)
         self.assertEqual([], self.calls(), "TERMed with no floor recorded")
         self.assertIn("no TERM: the state folder gave no path", done.stdout)
+
+    # --- repair: a record that does not land never destroys the old floor --
+    #
+    # `>` truncates before it writes, so a write that fails left the floor
+    # empty or partial. Every later run reads that as garbage and refuses with
+    # exit 1, so the repair stays off until a hand deletes the file and the
+    # hourly job fails every hour. The trigger is a full disk, which is this
+    # tool's own scenario: swap eating the boot volume (round 3).
+
+    def test_a_floor_that_cannot_be_written_keeps_what_it_had(self):
+        """Under `ulimit -f 0` the marker opens and the write does not land,
+        the shape a full disk gives. Whatever else happens, the value the
+        floor already held must still be there: it is the only thing holding
+        an hourly job off a daemon it already signalled."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        self.write_marker(hours_ago=7)
+        had = self.marker.read_text()
+        done = self.run_fs("repair", no_file_writes=True)
+        self.assertNotEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertFalse(self.termed(), "TERMed with no floor recorded")
+        self.assertEqual(had, self.marker.read_text(),
+                         "the floor lost what it had to a write that did not land")
+
+    def test_a_first_floor_that_cannot_be_written_leaves_no_file(self):
+        """The same with nothing recorded yet: a half-written first floor
+        would be garbage to every later run just as surely."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        done = self.run_fs("repair", no_file_writes=True)
+        self.assertNotEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertFalse(self.termed(), "TERMed with no floor recorded")
+        if self.marker.exists():
+            self.assertRegex(self.marker.read_text().strip(), r"^\d+$",
+                             "the floor holds something no later run can read")
+
+    def test_an_undo_never_destroys_the_floor_it_restores(self):
+        """The undo path calls the same writer, so a failed TERM could
+        destroy a good prior floor too. The TERM is refused here, and the
+        floor must read either this run's value or the one it had, never
+        nothing."""
+        self.configure()
+        self.fake_ps(rss_kb=28770 * 1024)
+        self.fake_sysctl(pressure="2", swap="120.00M")
+        self.write_marker(hours_ago=7)
+        had = self.marker.read_text().strip()
+        self.fake_sudo(code=1)
+        done = self.run_fs("repair")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)
+        self.assertEqual(had, self.marker.read_text().strip())
 
     def test_a_floor_whose_folder_cannot_be_made_refuses_the_term(self):
         self.configure()
