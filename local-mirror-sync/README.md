@@ -6,7 +6,8 @@ extra destination files are deleted (`rsync -rlptgo -W --delete`: archive mode w
 `MIRROR_SYNC_ADDITIVE` (see the repos list below). File sources are copied by
 basename into existing destination directories.
 Every rsync runs with `--timeout=1800`: a pair that moves no data for 30
-minutes, as on a stalled share, counts as a share that does not answer; set
+minutes, as on a stalled share, counts as a share that does not answer
+when rsync prints only its timeout lines; any other error fails it; set
 `MIRROR_SYNC_IO_TIMEOUT` to change the seconds. Before a pair under
 `/Volumes/<name>` syncs, a probe creates one file in its destination within
 `MIRROR_SYNC_PROBE_TIMEOUT` seconds (default 60); a stale smbfs mount fails

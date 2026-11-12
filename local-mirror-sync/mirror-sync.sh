@@ -59,7 +59,8 @@ copied into its existing destination directory using the source basename.
 
 MIRROR_SYNC_IO_TIMEOUT (seconds, default 1800) is rsync's --timeout: a pair
 whose transfer moves no data that long counts as a share that does not
-answer, below.
+answer, below, when rsync prints only its timeout lines; any other error
+line fails the pair.
 
 Before a pair under /Volumes/<name> syncs, a probe creates and removes one
 file in its destination, bounded by MIRROR_SYNC_PROBE_TIMEOUT (seconds,
@@ -639,13 +640,18 @@ only_interrupted() {
   ! grep 'error:' "$ERRS" | grep -v -q ': open (2) in .*: Interrupted system call$'
 }
 
-# openrsync exits 1 and says "poll: timeout" when no data moved for
-# --timeout: the share is not answering (sd:8549). A pair counts as that
-# only when the timeout is its one error; a full or denied share beside it
-# keeps the pair a failure, since the backup jobs read exit 75 as a skip.
+# A pair whose rsync moved no data for --timeout hit a share that does not
+# answer (sd:8549). GNU rsync then exits 30 with an "io timeout" line and a
+# "timeout in data send/receive" summary; openrsync exits 1 with "poll:
+# timeout". The pair counts as that only when every stderr line is one of
+# these, whole: any other line (a full or denied share, a file named after
+# the text) keeps it a failure, since the backup jobs read exit 75 as a skip.
 only_timed_out() {
-  grep -q 'error:' "$ERRS" || return 1
-  ! grep 'error:' "$ERRS" | grep -v -q 'error: poll: timeout'
+  grep -q . "$ERRS" || return 1
+  ! grep . "$ERRS" | grep -v -q -x -E \
+    -e '[a-z]*rsync\([0-9]+\): error: poll: timeout' \
+    -e '(rsync: )?\[(sender|receiver|generator)\] io timeout after [0-9]+ seconds -- exiting' \
+    -e 'rsync error: timeout in data send/receive \(code 30\) at [^ ]+ \[[A-Za-z]+=[^]]+\]'
 }
 
 probe_flavours
@@ -791,9 +797,8 @@ pairs | while IFS='|' read -r src dst excl; do
     echo "--- source files vanished during the pass; not a failure: $src" >&2
     rc=0
   fi
-  # rsync exits 30 when no data moved for --timeout; openrsync exits 1
-  # with only "poll: timeout". Either is the share not answering.
-  if [ "$rc" -ne 0 ] && { [ "$rc" -eq 30 ] || only_timed_out; }; then
+  # The exit code alone decides nothing: only the stderr lines make a skip.
+  if [ "$rc" -ne 0 ] && only_timed_out; then
     echo "!!! rsync moved no data for ${IO_TIMEOUT}s: $src" >&2
     echo "$src (share unresponsive)" >> "$FAILLOG"
   elif [ "$rc" -ne 0 ]; then

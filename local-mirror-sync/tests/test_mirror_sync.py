@@ -846,11 +846,17 @@ class IdleBound(FakeTools):
         self.assertIn("MIRROR_SYNC_IO_TIMEOUT", result.stderr)
         self.assertEqual(self.rsync_runs(), [])
 
+    # GNU rsync's two lines for an idle bound, as it prints them (exit 30).
+    GNU_TIMEOUT = [
+        "[receiver] io timeout after 1800 seconds -- exiting",
+        "rsync error: timeout in data send/receive (code 30) at io.c(201) [receiver=3.4.1]",
+    ]
+
     def test_a_timed_out_pair_is_an_unresponsive_share(self) -> None:
         # sd:8549: a pair that moved no data for the bound is the share not
         # answering; the pass exits 75, which the backup jobs read as a skip.
         self.state_file("rc", ["30"])
-        self.state_file("stderr", ["rsync: timeout waiting for data"])
+        self.state_file("stderr", self.GNU_TIMEOUT)
 
         result = self.sync()
 
@@ -883,6 +889,50 @@ class IdleBound(FakeTools):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn(f"{self.source} (rsync error)", result.stdout)
                 self.assertNotIn("share unresponsive", result.stdout)
+
+    def test_exit_30_beside_another_error_still_exits_1(self) -> None:
+        # REGRESSION sd:8549: GNU rsync records a per-file error, then a
+        # stall ends the pass with exit 30; the error must still fail it.
+        for other in (
+            'rsync: [sender] send_files failed to open "/s/a": Permission denied (13)',
+            'rsync: [receiver] write failed on "/m/a": No space left on device (28)',
+        ):
+            with self.subTest(other=other):
+                self.state_file("rc", ["30"])
+                self.state_file("stderr", [other, *self.GNU_TIMEOUT])
+
+                result = self.sync()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f"{self.source} (rsync error)", result.stdout)
+                self.assertNotIn("share unresponsive", result.stdout)
+
+    def test_exit_30_with_no_timeout_line_still_exits_1(self) -> None:
+        # Exit 30 alone proves nothing: only the timeout lines make a skip.
+        self.state_file("rc", ["30"])
+        self.state_file("stderr", ["rsync: some other failure"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"{self.source} (rsync error)", result.stdout)
+
+    def test_a_file_named_after_the_timeout_is_no_timeout(self) -> None:
+        # REGRESSION sd:8549: the timeout is a whole line, not a substring;
+        # a file whose name holds the text is an ordinary error.
+        for line in (
+            "rsync(12794): error: m/error: poll: timeout: open: Permission denied",
+            "rsync(12794): error: m/error: poll: timeout",
+            'rsync: [receiver] write failed on "/m/[receiver] io timeout after 1 seconds -- exiting": No space left on device (28)',
+        ):
+            with self.subTest(line=line):
+                self.state_file("rc", ["1"])
+                self.state_file("stderr", [line])
+
+                result = self.sync()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f"{self.source} (rsync error)", result.stdout)
 
     def test_any_other_rsync_error_still_exits_1(self) -> None:
         self.state_file("rc", ["1"])
