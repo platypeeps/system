@@ -18,6 +18,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import shutil
 import signal
@@ -31,7 +32,9 @@ from pathlib import Path
 #: Settings a case passes when it wants them: one the caller exported
 #: must not change what a case tests (sd:8592).
 SET_BY_CASE = ("MIRROR_SYNC_ADDITIVE", "MIRROR_SYNC_BACKUP_ROOT",
-               "MIRROR_SYNC_PROBE_TIMEOUT", "MIRROR_SYNC_IO_TIMEOUT")
+               "MIRROR_SYNC_BACKUP_KEEP_DAYS", "MIRROR_SYNC_IO_TIMEOUT",
+               "MIRROR_SYNC_MATERIALIZE_WAIT", "MIRROR_SYNC_PAIR_BOUND",
+               "MIRROR_SYNC_PROBE_TIMEOUT")
 
 FOLDER = Path(__file__).resolve().parent.parent
 #: The command pack checkout whose lib/ holds the sd_db the verifier imports
@@ -170,6 +173,16 @@ while args:
         fail("illegal option -- " + arg.lstrip("-"))
 print(fmt_date(fmt, when))
 """
+
+
+class CaseSettings(unittest.TestCase):
+    """An exported MIRROR_SYNC_PAIR_BOUND reached every case and failed
+    the unbounded one (sd:8638): each setting the script reads is scrubbed
+    but MIRROR_SYNC_CONF, which every helper sets."""
+
+    def test_every_setting_the_script_reads_is_scrubbed(self) -> None:
+        read = set(re.findall(r"MIRROR_SYNC_[A-Z_]+", MIRROR_SYNC.read_text()))
+        self.assertEqual(sorted(read - {"MIRROR_SYNC_CONF"} - set(SET_BY_CASE)), [])
 
 
 class PerPairExcludes(Fixture):
@@ -595,7 +608,14 @@ if lines("block"):
     with open(os.path.join(state, "rsync.pid"), "w") as f:
         f.write(str(os.getpid()))
     sys.stderr.flush()
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    # GNU rsync's sender and generator answer the group TERM with a
+    # "received SIGINT, SIGTERM, or SIGHUP (code 20)" line while the
+    # stuck receiver stays (sd:8638).
+    def answer(signum, frame):
+        for line in lines("term"):
+            print(line, file=sys.stderr)
+        sys.stderr.flush()
+    signal.signal(signal.SIGTERM, answer)
     while True:
         time.sleep(60)
 rc = int((lines("rc") or ["0"])[0])
@@ -1020,6 +1040,10 @@ class IdleBound(FakeTools):
         self.assertIn(f"{self.source} (rsync error)", result.stdout)
 
 
+#: What GNU rsync prints on a TERM, before its optional "at" suffix.
+CODE_20 = "rsync error: received SIGINT, SIGTERM, or SIGHUP (code 20)"
+
+
 class PairBound(FakeTools):
     """rsync's --timeout never fired while the receiver sat in write(2) on a
     hung smbfs share: three hourly NAS copies ran to the job's 2700 s step
@@ -1104,6 +1128,59 @@ class PairBound(FakeTools):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertNotIn("share unresponsive", result.stdout)
         self.assertIn("No space left on device", result.stderr)
+
+    def test_gnu_rsync_answering_the_bound_s_term_still_skips(self) -> None:
+        # REGRESSION sd:8638: the code 20 line read as an rsync error.
+        for line in (CODE_20 + " at rsync.c(713) [sender=3.2.7]", CODE_20):
+            with self.subTest(line=line):
+                self.block_forever()
+                self.state_file("term", [line, CODE_20 + " at io.c(504) [generator=3.2.7]"])
+
+                result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+
+                self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+                self.assertIn(line, result.stderr)
+                self.assertIn(f"{self.source} (share unresponsive)", result.stdout)
+                self.kill_blocked()
+
+    def test_a_code_20_line_beside_another_error_fails_the_pair(self) -> None:
+        self.block_forever()
+        self.state_file("term", [CODE_20, "rsync: [receiver] write failed on \"x\": Input/output error (5)"])
+
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("share unresponsive", result.stdout)
+
+    def test_a_code_20_line_before_the_bound_expired_fails_the_pair(self) -> None:
+        # Another signal ended the copy before the bound sent its TERM.
+        self.block_forever()
+        self.state_file("stderr", [CODE_20 + " at rsync.c(713) [sender=3.2.7]"])
+
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("share unresponsive", result.stdout)
+
+    def test_an_unread_stderr_is_no_hang(self) -> None:
+        # A classifier that cannot read the lines knows nothing: the pair
+        # fails loud rather than skip.
+        self.block_forever()
+        self.write(self.work / "fake-bin" / "awk", "#!/bin/sh\nexit 2\n").chmod(0o755)
+
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"{self.source} (rsync error)", result.stdout)
+
+    def test_a_code_20_exit_without_the_bound_is_an_rsync_error(self) -> None:
+        self.state_file("stderr", [CODE_20 + " at rsync.c(713) [sender=3.2.7]"])
+        self.state_file("rc", ["20"])
+
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"{self.source} (rsync error)", result.stdout)
 
     def test_rsync_timeout_lines_before_the_hang_still_skip(self) -> None:
         self.block_forever()
