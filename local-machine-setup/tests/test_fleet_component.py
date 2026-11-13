@@ -378,6 +378,22 @@ class RepoCommonCron(Case):
         self.assertNotIn("EXTRA", out)
         self.assertNotIn(f"uninstall {FLEET_JOB}", self.cron_calls())
 
+    def test_a_roster_that_cannot_be_read_sweeps_nothing(self):
+        """A failed read is no answer. Read as "the repository names no
+        fleet job", it drops that job from the wanted list and the sweep
+        uninstalls its plist as an orphan (sd:8616)."""
+        self.jobs.mkdir(parents=True)
+        (self.jobs / f"{FLEET_JOB}.job").write_text('JOB_SCHEDULE="25 * * * *"\n')
+        self.install_plist(FLEET_JOB)
+        roster = self.root / "local-machine-setup/examples/profiles/common.cron"
+        roster.chmod(0o000)
+        self.addCleanup(roster.chmod, 0o644)
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertIn("  MISSING repo fleet job list", out, out + result.stderr)
+        self.assertNotIn("EXTRA", out)
+        self.assertNotIn(f"uninstall {FLEET_JOB}", self.cron_calls())
+
     def test_doctor_checks_a_repo_job_is_loaded(self):
         out = self.run_script("doctor").stdout
         self.assertIn(f"  WARN    not loaded: {fixture_config.LABEL_PREFIX}.cron.{FLEET_JOB}", out)
