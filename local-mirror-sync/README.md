@@ -8,11 +8,12 @@ basename into existing destination directories.
 Every rsync runs with `--timeout=1800`: a pair that moves no data for 30
 minutes, as on a stalled share, counts as a share that does not answer
 when rsync prints only its timeout lines; any other error fails it; set
-`MIRROR_SYNC_IO_TIMEOUT` to change the seconds. Each rsync also ends at
-a wall bound of that plus 60 seconds (twice it below 60): an rsync stuck
-in a write to a hung share, which `--timeout` never ended, counts as a
-share that does not answer too (sd:8629); raise the value for a list
-whose transfer runs longer. Before a pair under
+`MIRROR_SYNC_IO_TIMEOUT` to change the seconds. A job that sets
+`MIRROR_SYNC_PAIR_BOUND` (seconds; unset by default) also ends each
+rsync at that wall bound: one stuck in a write to a hung share, which
+`--timeout` never ended, counts as a share that does not answer when it
+printed only timeout lines (sd:8629). The bound ends a pair still moving
+data too, so only a list that always copies quickly sets it. Before a pair under
 `/Volumes/<name>` syncs, a probe creates one file in its destination within
 `MIRROR_SYNC_PROBE_TIMEOUT` seconds (default 60); a stale smbfs mount fails
 it by the bound and the pair is skipped; a probe that fails at once fails
