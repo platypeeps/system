@@ -62,6 +62,13 @@ MIRROR_SYNC_IO_TIMEOUT (seconds, default 1800, at least 1) is rsync's
 share that does not answer, below, when rsync prints only its timeout
 lines; any other error line fails the pair.
 
+MIRROR_SYNC_PAIR_BOUND (seconds, unset by default) runs each rsync under
+a wall bound of that many seconds, for a job whose own limit must not be
+reached: rsync stuck in a write that --timeout cannot end counts as a
+share that does not answer when it printed only timeout lines (sd:8629).
+It ends a pair still moving data too, so set it only for a list that
+always copies quickly; unset, no wall bound applies.
+
 Before a pair under /Volumes/<name> syncs, a probe creates and removes one
 file in its destination, bounded by MIRROR_SYNC_PROBE_TIMEOUT (seconds,
 default 60; 0 is refused, as it turns the bound off). A destination that does not answer is skipped, as a stale smbfs
@@ -473,6 +480,23 @@ case "$IO_TIMEOUT" in
   *[1-9]*) ;;
   *) echo "!!! refusing: MIRROR_SYNC_IO_TIMEOUT must be at least 1 second: 0 turns the bound off" >&2; exit 1 ;;
 esac
+# Shell arithmetic reads a leading zero as octal; rsync reads decimal.
+IO_TIMEOUT=$(printf '%s\n' "$IO_TIMEOUT" | sed 's/^0*//')
+# --timeout never fired while the receiver sat in write(2) on a hung smbfs
+# share: three hourly NAS copies ran to the job's 2700 s step bound
+# (sd:8629). A job that sets MIRROR_SYNC_PAIR_BOUND runs each rsync under
+# st_bounded at that wall bound. It is opt-in: a wall bound also ends a
+# long first copy, which the nightly mirrors must finish (operator,
+# 2026-11-13).
+PAIR_BOUND="${MIRROR_SYNC_PAIR_BOUND:-}"
+case "$PAIR_BOUND" in
+  '') ;;
+  *[!0-9]*) echo "!!! refusing: MIRROR_SYNC_PAIR_BOUND must be a whole number of seconds, got '$PAIR_BOUND'" >&2; exit 1 ;;
+  *[1-9]*) PAIR_BOUND=$(printf '%s\n' "$PAIR_BOUND" | sed 's/^0*//') ;;
+  *) echo "!!! refusing: MIRROR_SYNC_PAIR_BOUND must be at least 1 second; unset it for no bound" >&2; exit 1 ;;
+esac
+BOUND_RUN=
+[ -z "$PAIR_BOUND" ] || BOUND_RUN="st_bounded $PAIR_BOUND"
 PROBE_TIMEOUT="${MIRROR_SYNC_PROBE_TIMEOUT:-60}"
 case "$PROBE_TIMEOUT" in
   ''|*[!0-9]*) echo "!!! refusing: MIRROR_SYNC_PROBE_TIMEOUT must be a whole number of seconds, got '$PROBE_TIMEOUT'" >&2; exit 1 ;;
@@ -526,12 +550,13 @@ esac
 # deleted when not.
 ICON_CR="$(printf 'Icon\015')"
 
-# Run this pair's rsync with the extra flags in "$@". Its stderr is echoed
-# and kept in $ERRS for the classifiers below.
+# Run this pair's rsync with the extra flags in "$@", under PAIR_BOUND when
+# set. Its stderr is echoed and kept in $ERRS for the classifiers below.
+# 124 is the bound expiring; 125 is st_bounded refusing to run it.
 pair_rsync() {
   prc=0
   # shellcheck disable=SC2086
-  rsync $RSYNC_FLAGS "$@" --exclude .DS_Store --exclude '._*' \
+  $BOUND_RUN rsync $RSYNC_FLAGS "$@" --exclude .DS_Store --exclude '._*' \
     --exclude "$ICON_CR" --exclude .tmp.drivedownload \
     --exclude-from "$EXCLUDES" "$src_arg" "$dst/" 2>"$ERRS" || prc=$?
   cat "$ERRS" >&2
@@ -652,10 +677,24 @@ only_interrupted() {
 # the text) keeps it a failure, since the backup jobs read exit 75 as a skip.
 only_timed_out() {
   grep -q . "$ERRS" || return 1
-  ! grep . "$ERRS" | grep -v -q -x -E \
+  only_timeout_lines < "$ERRS"
+}
+
+# True when no line on stdin is other than rsync's timeout lines above.
+only_timeout_lines() {
+  ! grep -v -x -E \
     -e '[a-z]*rsync\([0-9]+\): error: poll: timeout' \
     -e '(rsync: )?\[(sender|receiver|generator)\] io timeout after [0-9]+ seconds -- exiting' \
-    -e 'rsync error: timeout in data send/receive \(code 30\) at [^ ]+ \[[A-Za-z]+=[^]]+\]'
+    -e 'rsync error: timeout in data send/receive \(code 30\) at [^ ]+ \[[A-Za-z]+=[^]]+\]' \
+    | grep -q .
+}
+
+# A pair the wall bound ended hung on the share only when rsync printed
+# nothing but st_bounded's expiry line and timeout lines: an error before
+# the hang (a full or denied share) keeps it a failure, as the backup jobs
+# read exit 75 as a skip.
+only_hung() {
+  grep -v -x -E 'timed out after [0-9]+s: .*' "$ERRS" | only_timeout_lines
 }
 
 probe_flavours
@@ -783,8 +822,10 @@ pairs | while IFS='|' read -r src dst excl; do
   fi
   rc=0
   pair_rsync "$@" || rc=$?
-  if [ "$rc" -ne 0 ] && [ "$MODE" = sync ] \
-     && grep -q 'Resource deadlock avoided' "$ERRS"; then
+  # A bound that expired or ran nothing gets no retry: it would spend
+  # another whole bound on the same share.
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 125 ] \
+     && [ "$MODE" = sync ] && grep -q 'Resource deadlock avoided' "$ERRS"; then
     if materialize_pending "$@"; then
       # A fresh backup directory: openrsync's --backup-dir fails with
       # "mk_backup_dir: File exists" on the one the first try made.
@@ -794,7 +835,8 @@ pairs | while IFS='|' read -r src dst excl; do
       pair_rsync "$@" || rc=$?
     fi
   fi
-  if [ "$rc" -ne 0 ] && [ "$MODE" = sync ] && only_interrupted; then
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 125 ] \
+     && [ "$MODE" = sync ] && only_interrupted; then
     # Its own backup directory, as above: openrsync refuses one that exists.
     [ -z "$KEEP" ] || set -- --backup --backup-dir "$KEEP.interrupted"
     echo "--- retrying after an interrupted open: $src"
@@ -805,8 +847,16 @@ pairs | while IFS='|' read -r src dst excl; do
     echo "--- source files vanished during the pass; not a failure: $src" >&2
     rc=0
   fi
-  # The exit code alone decides nothing: only the stderr lines make a skip.
-  if [ "$rc" -ne 0 ] && only_timed_out; then
+  # Past the pair bound the share did not answer: rsync never returned.
+  # Otherwise the exit code alone decides nothing: only the stderr lines
+  # make a skip.
+  if [ "$rc" -eq 124 ] && [ -n "$PAIR_BOUND" ] && only_hung; then
+    echo "!!! rsync did not finish within ${PAIR_BOUND}s: $src" >&2
+    echo "$src (share unresponsive)" >> "$FAILLOG"
+  elif [ "$rc" -eq 125 ] && [ -n "$PAIR_BOUND" ]; then
+    echo "!!! rsync not run: no process group for its bound: $src" >&2
+    echo "$src (rsync not run)" >> "$FAILLOG"
+  elif [ "$rc" -ne 0 ] && only_timed_out; then
     echo "!!! rsync moved no data for ${IO_TIMEOUT}s: $src" >&2
     echo "$src (share unresponsive)" >> "$FAILLOG"
   elif [ "$rc" -ne 0 ]; then

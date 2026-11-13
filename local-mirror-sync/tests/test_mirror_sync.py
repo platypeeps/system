@@ -588,6 +588,16 @@ for name in changed:
         sys.exit(11)
 for line in lines("stderr"):
     print(line, file=sys.stderr)
+if lines("block"):
+    # Stuck in write(2) on a hung share: rsync's own --timeout never runs,
+    # and TERM does nothing; only KILL ends it (sd:8629).
+    import signal, time
+    with open(os.path.join(state, "rsync.pid"), "w") as f:
+        f.write(str(os.getpid()))
+    sys.stderr.flush()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(60)
 rc = int((lines("rc") or ["0"])[0])
 if lines("once"):
     # The fault was this run's alone: the next run is clean.
@@ -1008,6 +1018,147 @@ class IdleBound(FakeTools):
 
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn(f"{self.source} (rsync error)", result.stdout)
+
+
+class PairBound(FakeTools):
+    """rsync's --timeout never fired while the receiver sat in write(2) on a
+    hung smbfs share: three hourly NAS copies ran to the job's 2700 s step
+    bound (sd:8629). A job that sets MIRROR_SYNC_PAIR_BOUND runs each rsync
+    under st_bounded at that wall bound; unset, none applies (operator,
+    2026-11-13)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(self.kill_blocked)
+
+    def kill_blocked(self) -> None:
+        """End a fake rsync the pass left behind, as main left one hung."""
+        pid_file = self.state / "rsync.pid"
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def bounded_sync(self, **extra: str) -> subprocess.CompletedProcess:
+        """sync() with a 1 s KILL grace, failing the case at 30 s, not hanging."""
+        environment = {name: value for name, value in os.environ.items() if name not in SET_BY_CASE}
+        environment.update(
+            MIRROR_SYNC_CONF=str(self.conf),
+            MS_FAKE=str(self.state),
+            ST_BOUNDED_GRACE="1",
+            PATH=f"{self.work / 'fake-bin'}:{os.environ['PATH']}",
+            **extra,
+        )
+        return subprocess.run(["/bin/sh", str(MIRROR_SYNC), "sync"], capture_output=True,
+                              text=True, env=environment, timeout=30)
+
+    def block_forever(self) -> None:
+        """The fake rsync ignores TERM and never returns, as one in write(2) on a hung share."""
+        self.state_file("block", ["1"])
+
+    def test_an_rsync_that_never_returns_is_an_unresponsive_share(self) -> None:
+        # REGRESSION sd:8629: the pair hung until the job's step bound.
+        self.block_forever()
+
+        started = time.monotonic()
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+        self.assertLess(elapsed, 15, result.stdout + result.stderr)
+        self.assertIn(f"!!! rsync did not finish within 2s: {self.source}", result.stderr)
+        self.assertIn(f"{self.source} (share unresponsive)", result.stdout)
+        self.assertNotIn("rsync error", result.stdout)
+        self.assertEqual(len(self.rsync_runs()), 1)
+
+    def test_a_hung_pair_beside_another_failure_exits_1(self) -> None:
+        self.block_forever()
+        self.conf.write_text(f"{self.source}|{self.mirror}\n{self.work}/gone|{self.work}/other\n")
+
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"{self.source} (share unresponsive)", result.stdout)
+        self.assertIn("(missing source)", result.stdout)
+
+    def test_a_hung_pair_after_an_interrupted_open_is_not_retried(self) -> None:
+        # The retry for an interrupted open must not spend a second bound,
+        # and the error line before the hang keeps it a failure.
+        self.block_forever()
+        self.state_file("stderr", ["rsync(1): error: a: open (2) in /s: Interrupted system call"])
+
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(len(self.rsync_runs()), 1)
+
+    def test_an_error_before_the_hang_fails_the_pair(self) -> None:
+        # A full or denied share that then hangs is a failure, not a skip:
+        # the backup jobs read exit 75 as one.
+        self.block_forever()
+        self.state_file("stderr", ["rsync(1): error: b: write: No space left on device"])
+
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("share unresponsive", result.stdout)
+        self.assertIn("No space left on device", result.stderr)
+
+    def test_rsync_timeout_lines_before_the_hang_still_skip(self) -> None:
+        self.block_forever()
+        self.state_file("stderr", ["rsync(1): error: poll: timeout"])
+
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+
+        self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+
+    def test_without_the_key_no_wall_bound_applies(self) -> None:
+        # The nightly mirrors set no key: a long first copy must finish.
+        # A perl that runs nothing would fail any bounded rsync.
+        self.write(self.work / "fake-bin" / "perl", "#!/bin/sh\n"
+                   "echo 'st_bounded: process group denied' >&2\nexit 125\n").chmod(0o755)
+
+        result = self.bounded_sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.rsync_runs()), 1)
+
+    def test_the_key_must_be_a_whole_number_of_at_least_one_second(self) -> None:
+        for value in ("0", "000", "-1", "1.5", "30s"):
+            with self.subTest(value=value):
+                result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND=value)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("refusing: MIRROR_SYNC_PAIR_BOUND", result.stderr)
+                self.assertEqual(self.rsync_runs(), [])
+
+    def test_a_leading_zero_is_no_octal_number(self) -> None:
+        self.block_forever()
+
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="08")
+
+        self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+        self.assertIn("timed out after 8s: rsync", result.stderr)
+
+    def test_an_rsync_that_finishes_inside_the_bound_succeeds(self) -> None:
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2", MIRROR_SYNC_IO_TIMEOUT="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("share unresponsive", result.stdout)
+        self.assertIn("--timeout=1", self.rsync_runs()[0].split())
+
+    def test_a_bound_denied_its_process_group_runs_no_rsync(self) -> None:
+        # st_bounded exits 125 when it ran nothing: a failure, not a skip.
+        self.write(self.work / "fake-bin" / "perl", "#!/bin/sh\n"
+                   "echo 'st_bounded: process group denied' >&2\nexit 125\n").chmod(0o755)
+
+        result = self.bounded_sync(MIRROR_SYNC_PAIR_BOUND="2")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"!!! rsync not run: no process group for its bound: {self.source}", result.stderr)
+        self.assertIn(f"{self.source} (rsync not run)", result.stdout)
+        self.assertNotIn("share unresponsive", result.stdout)
+        self.assertEqual(self.rsync_runs(), [])
 
 
 class NestedByIdentity(Fixture):
