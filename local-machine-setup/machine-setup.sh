@@ -3479,16 +3479,32 @@ system_nsmb() {
   # and fail at a file no run ever built. The merge runs in both modes for
   # that reason, and a merge that cannot answer is a failure, not an empty
   # file.
+  #
+  # That content is a snapshot, so the command refuses rather than write it
+  # over a file that moved since it was printed (lane review of b4eda792).
+  # The operator may add a server section between reading `status` and
+  # pasting the line, and an unconditional write would drop it. cksum, not
+  # a digest: this catches an edit of the operator's own, and no hostile
+  # local user is in scope. The backup stamp is left for the pasting shell,
+  # so a second paste cannot overwrite the first paste's backup.
   if ! nc_body=$(nsmb_merge "$NSMB_CONF" "$nc_add"); then
     note_failure "build the new $NSMB_CONF" 1
     return 0
+  fi
+  if [ -e "$NSMB_CONF" ]; then
+    nc_sum=$(cksum < "$NSMB_CONF")
+  else
+    nc_sum=absent
   fi
   nc_new="$(dirname "$NSMB_CONF")/.$(basename "$NSMB_CONF").tmp"
   # One single-quoted printf argument per line, each embedded `'` closed,
   # escaped and reopened, so no value already in the file can end the
   # quoting, expand, or run a command when the line is pasted.
   nc_args=$(printf '%s\n' "$nc_body" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/" | tr '\n' ' ')
-  nc_cmd="{ [ ! -e $NSMB_CONF ] || cp -p $NSMB_CONF $NSMB_CONF.bak-$(date +%Y%m%d%H%M%S); } && printf '%s\n' ${nc_args}> $nc_new && chmod 644 $nc_new && mv $nc_new $NSMB_CONF || { rm -f $nc_new; exit 1; }"
+  # 2>/dev/null before the input redirect, not after: redirections are
+  # applied left to right, so a missing file reports through the one already
+  # in place and the `absent` fallback answers for it.
+  nc_cmd="nc_now=\$(cksum 2>/dev/null < $NSMB_CONF || echo absent); [ \"\$nc_now\" = \"$nc_sum\" ] || { echo \"$NSMB_CONF changed since this line was printed; re-run machine-setup.sh update system for a current one\" >&2; exit 1; }; { [ ! -e $NSMB_CONF ] || cp -p $NSMB_CONF $NSMB_CONF.bak-\$(date +%Y%m%d%H%M%S); } && printf '%s\n' ${nc_args}> $nc_new && chmod 644 $nc_new && mv $nc_new $NSMB_CONF || { rm -f $nc_new; exit 1; }"
   # Single quotes around the whole command, not double: the content can
   # hold a $ or a backtick, and a double-quoted paste would expand it.
   nc_shown=$(printf '%s' "$nc_cmd" | sed "s/'/'\\\\''/g")

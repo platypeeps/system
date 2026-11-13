@@ -199,8 +199,8 @@ class NsmbConfTest(unittest.TestCase):
     def test_refused_sudo_defers_and_leaves_the_file(self):
         self.conf.write_text("[default]\n")
         lines = self.system("--apply", sudo="refuse")
-        self.assertTrue(any(line.startswith(f"  DEFER   needs sudo: sudo sh -c '{{ [ ! -e {self.conf} ]")
-                            for line in lines), lines)
+        self.assertTrue(any(line.startswith("  DEFER   needs sudo: sudo sh -c 'nc_now=$(cksum ")
+                            and f"< {self.conf} " in line for line in lines), lines)
         self.assertEqual(self.conf.read_text(), "[default]\n")
         self.assertEqual(sorted(p.name for p in self.etc.iterdir()), ["nsmb.conf"])
 
@@ -245,6 +245,32 @@ class NsmbConfTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.conf.read_text(),
                          "# don't touch $HOME or `date`\n[default]\nsoft=yes\nkloglevel=1\n")
+
+    def test_a_pasted_line_refuses_a_file_edited_since_it_was_printed(self):
+        """The content rides inside the command, so it is a snapshot. The
+        operator may add a server section between reading `status` and
+        pasting the line; writing the snapshot over it would drop that
+        edit (lane review of b4eda792)."""
+        self.conf.write_text("[default]\n")
+        lines = self.system()
+        dry = [line for line in lines if line.startswith("  [dry-run]")]
+        self.assertEqual(1, len(dry), lines)
+        edited = "[default]\n\n[server:nas]\naddr=10.0.0.5\n"
+        self.conf.write_text(edited)
+        result = self.paste(self.shown(dry[0]))
+        self.assertNotEqual(result.returncode, 0, "the stale line applied anyway")
+        self.assertIn("changed since this line was printed", result.stderr)
+        self.assertEqual(self.conf.read_text(), edited, "the operator's edit was lost")
+        self.assertEqual(self.backups(), [], "a refusal left a backup behind")
+
+    def test_the_backup_stamp_is_left_for_the_pasting_shell(self):
+        """A stamp expanded when the line was printed names the same backup
+        on every paste, so a second paste overwrites the recovery copy of
+        the first."""
+        self.conf.write_text("[default]\n")
+        lines = self.system()
+        shown = self.shown([line for line in lines if line.startswith("  [dry-run]")][0])
+        self.assertIn("$(date +%Y%m%d%H%M%S)", shown)
 
     def test_a_stop_after_the_copy_is_finished_by_the_next_run(self):
         # A run stopped between root's copy and its move leaves the dotted
