@@ -2098,11 +2098,18 @@ retired_cron_jobs() {
 # A `!name` line in this machine's <profile>.cron drops one, exactly as it
 # drops an entry of the config folder's common.cron (sd:4853), so a machine
 # can still refuse a job the repository names.
+# Exits non-zero when the file is there and cannot be read, as
+# host_cron_jobs and defined_cron_jobs do: a caller that sweeps must not read
+# a failed read as "the repository names no fleet job" (sd:8616). sed runs on
+# its own for that reason — in a pipeline the status is grep's, so an
+# unreadable file came back as no names and exit 0, and the sweep then read
+# the fleet job's plist as an orphan and uninstalled it.
 repo_cron_jobs() {
   rcj_repo="$DIR/examples/profiles/common.cron"
   [ -f "$rcj_repo" ] || return 0
-  rcj_names=$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$rcj_repo" \
-    | grep -v -e '^$' -e '^!' || :)
+  rcj_read=$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$rcj_repo") ||
+    return 1
+  rcj_names=$(printf '%s\n' "$rcj_read" | grep -v -e '^$' -e '^!' || :)
   [ -n "$rcj_names" ] || return 0
   printf '%s\n' "$rcj_names" | drop_negated "$(profile_drops "$PROFILE" cron)"
 }
@@ -2127,12 +2134,24 @@ stage_cron() {
   if ! defined_jobs=$(defined_cron_jobs); then
     echo "  MISSING job file list — could not read a cron-jobs folder; only retired jobs are uninstalled this run"
     sweep=0
-  elif ! seed_dir=$(cron_jobs_dir); then
-    echo "  MISSING cron-jobs folder — could not read where a job file belongs; no job file is seeded this run"
-    seed_dir=""
+  else
+    # No arm for a failing cron_jobs_dir: it cannot fail where
+    # defined_cron_jobs succeeded (sd:8616). Both run python3 with the same
+    # PYTHONPATH and both call stc.cron_job_dirs(), so a missing python3, a
+    # broken lib or a config folder that will not resolve stops this one
+    # first; the only failure of its own is a PermissionError from
+    # os.listdir, which leaves cron_jobs_dir working.
+    seed_dir=$(cron_jobs_dir)
+  fi
+  # Read apart from the list below: a failed read must not reach the sweep as
+  # "no fleet job" (sd:8616), and a command substitution drops the status.
+  if ! repo_jobs=$(repo_cron_jobs); then
+    echo "  MISSING repo fleet job list — could not read examples/profiles/common.cron; only retired jobs are uninstalled this run"
+    repo_jobs=
+    sweep=0
   fi
   hub_ask
-  jobs=$( { manifest cron; repo_cron_jobs; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; fi; } | awk 'NF && !seen[$0]++')
+  jobs=$( { manifest cron; printf '%s\n' "$repo_jobs"; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; fi; } | awk 'NF && !seen[$0]++')
   # A retired job stays out of every machine's wanted list, even where a
   # profile or a host folder written before the retirement still names it:
   # the sweep below left those running, and verify read them ok (sd:3155).
