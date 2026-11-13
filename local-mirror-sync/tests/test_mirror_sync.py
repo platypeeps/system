@@ -588,6 +588,16 @@ for name in changed:
         sys.exit(11)
 for line in lines("stderr"):
     print(line, file=sys.stderr)
+if lines("block"):
+    # Stuck in write(2) on a hung share: rsync's own --timeout never runs,
+    # and TERM does nothing; only KILL ends it (sd:8629).
+    import signal, time
+    with open(os.path.join(state, "rsync.pid"), "w") as f:
+        f.write(str(os.getpid()))
+    sys.stderr.flush()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(60)
 rc = int((lines("rc") or ["0"])[0])
 if lines("once"):
     # The fault was this run's alone: the next run is clean.
@@ -1008,6 +1018,119 @@ class IdleBound(FakeTools):
 
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn(f"{self.source} (rsync error)", result.stdout)
+
+
+class PairBound(FakeTools):
+    """rsync's --timeout never fired while the receiver sat in write(2) on a
+    hung smbfs share: three hourly NAS copies ran to the job's 2700 s step
+    bound (sd:8629). Each rsync now runs under st_bounded too, at the idle
+    bound plus a margin: the idle bound itself, at most 60 s."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(self.kill_blocked)
+
+    def kill_blocked(self) -> None:
+        """End a fake rsync the pass left behind, as main left one hung."""
+        pid_file = self.state / "rsync.pid"
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def bounded_sync(self, **extra: str) -> subprocess.CompletedProcess:
+        """sync() with a 1 s KILL grace, failing the case at 30 s, not hanging."""
+        environment = {name: value for name, value in os.environ.items() if name not in SET_BY_CASE}
+        environment.update(
+            MIRROR_SYNC_CONF=str(self.conf),
+            MS_FAKE=str(self.state),
+            ST_BOUNDED_GRACE="1",
+            PATH=f"{self.work / 'fake-bin'}:{os.environ['PATH']}",
+            **extra,
+        )
+        return subprocess.run(["/bin/sh", str(MIRROR_SYNC), "sync"], capture_output=True,
+                              text=True, env=environment, timeout=30)
+
+    def block_forever(self) -> None:
+        """The fake rsync ignores TERM and never returns, as one in write(2) on a hung share."""
+        self.state_file("block", ["1"])
+
+    def test_an_rsync_that_never_returns_is_an_unresponsive_share(self) -> None:
+        # REGRESSION sd:8629: the pair hung until the job's step bound.
+        self.block_forever()
+
+        started = time.monotonic()
+        result = self.bounded_sync(MIRROR_SYNC_IO_TIMEOUT="1")
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+        self.assertLess(elapsed, 15, result.stdout + result.stderr)
+        self.assertIn(f"!!! rsync did not finish within 2s: {self.source}", result.stderr)
+        self.assertIn(f"{self.source} (share unresponsive)", result.stdout)
+        self.assertNotIn("rsync error", result.stdout)
+        self.assertEqual(len(self.rsync_runs()), 1)
+
+    def test_a_hung_pair_beside_another_failure_exits_1(self) -> None:
+        self.block_forever()
+        self.conf.write_text(f"{self.source}|{self.mirror}\n{self.work}/gone|{self.work}/other\n")
+
+        result = self.bounded_sync(MIRROR_SYNC_IO_TIMEOUT="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"{self.source} (share unresponsive)", result.stdout)
+        self.assertIn("(missing source)", result.stdout)
+
+    def test_a_hung_pair_after_an_interrupted_open_is_not_retried(self) -> None:
+        # The retry for an interrupted open must not spend a second bound.
+        self.block_forever()
+        self.state_file("stderr", ["rsync(1): error: a: open (2) in /s: Interrupted system call"])
+
+        result = self.bounded_sync(MIRROR_SYNC_IO_TIMEOUT="1")
+
+        self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+        self.assertEqual(len(self.rsync_runs()), 1)
+
+    def test_the_margin_is_the_idle_bound_below_60_seconds(self) -> None:
+        self.block_forever()
+
+        result = self.bounded_sync(MIRROR_SYNC_IO_TIMEOUT="2")
+
+        self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+        self.assertIn("timed out after 4s: rsync", result.stderr)
+
+    def test_the_margin_is_60_seconds_at_most(self) -> None:
+        # Read, not timed: 1800 s plus 60 s stays under the hourly job's
+        # 2700 s step bound. A leading zero is no octal number.
+        script = MIRROR_SYNC.read_text()
+        probe = script[script.index("\nIO_TIMEOUT="):script.index("\nPROBE_TIMEOUT=")]
+        self.assertIn("PAIR_BOUND=", probe)
+        for value, bound in (("1800", "1860"), ("60", "120"), ("59", "118"), ("0030", "60")):
+            with self.subTest(value=value):
+                got = subprocess.run(["/bin/sh", "-c", probe + '\necho "$PAIR_BOUND"'],
+                                     capture_output=True, text=True,
+                                     env={**os.environ, "MIRROR_SYNC_IO_TIMEOUT": value})
+                self.assertEqual(got.stdout.strip(), bound, got.stderr)
+
+    def test_an_rsync_that_finishes_inside_the_bound_succeeds(self) -> None:
+        result = self.bounded_sync(MIRROR_SYNC_IO_TIMEOUT="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("share unresponsive", result.stdout)
+        self.assertIn("--timeout=1", self.rsync_runs()[0].split())
+
+    def test_a_bound_denied_its_process_group_runs_no_rsync(self) -> None:
+        # st_bounded exits 125 when it ran nothing: a failure, not a skip.
+        self.write(self.work / "fake-bin" / "perl", "#!/bin/sh\n"
+                   "echo 'st_bounded: process group denied' >&2\nexit 125\n").chmod(0o755)
+
+        result = self.bounded_sync()
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"!!! rsync not run: no process group for its bound: {self.source}", result.stderr)
+        self.assertIn(f"{self.source} (rsync not run)", result.stdout)
+        self.assertNotIn("share unresponsive", result.stdout)
+        self.assertEqual(self.rsync_runs(), [])
 
 
 class NestedByIdentity(Fixture):

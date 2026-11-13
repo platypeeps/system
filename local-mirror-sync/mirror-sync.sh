@@ -60,7 +60,10 @@ copied into its existing destination directory using the source basename.
 MIRROR_SYNC_IO_TIMEOUT (seconds, default 1800, at least 1) is rsync's
 --timeout: a pair whose transfer moves no data that long counts as a
 share that does not answer, below, when rsync prints only its timeout
-lines; any other error line fails the pair.
+lines; any other error line fails the pair. Each rsync also runs under a
+wall bound of that plus a margin (the same again, at most 60 s): one
+stuck in a write that --timeout cannot end counts as such a share too
+(sd:8629). Raise it for a list whose transfer runs longer.
 
 Before a pair under /Volumes/<name> syncs, a probe creates and removes one
 file in its destination, bounded by MIRROR_SYNC_PROBE_TIMEOUT (seconds,
@@ -473,6 +476,20 @@ case "$IO_TIMEOUT" in
   *[1-9]*) ;;
   *) echo "!!! refusing: MIRROR_SYNC_IO_TIMEOUT must be at least 1 second: 0 turns the bound off" >&2; exit 1 ;;
 esac
+# Shell arithmetic reads a leading zero as octal; rsync reads decimal.
+IO_TIMEOUT=$(printf '%s\n' "$IO_TIMEOUT" | sed 's/^0*//')
+# --timeout never fired while the receiver sat in write(2) on a hung smbfs
+# share: three hourly NAS copies ran to the job's 2700 s step bound
+# (sd:8629). So each rsync also runs under st_bounded, a wall bound: the
+# idle bound plus a margin of the idle bound itself, at most 60 s, which
+# lets rsync's own timeout speak first. A pair that moves data for longer
+# than that is ended too: raise MIRROR_SYNC_IO_TIMEOUT for a list whose
+# transfer runs that long.
+if [ "$IO_TIMEOUT" -lt 60 ]; then
+  PAIR_BOUND=$((IO_TIMEOUT * 2))
+else
+  PAIR_BOUND=$((IO_TIMEOUT + 60))
+fi
 PROBE_TIMEOUT="${MIRROR_SYNC_PROBE_TIMEOUT:-60}"
 case "$PROBE_TIMEOUT" in
   ''|*[!0-9]*) echo "!!! refusing: MIRROR_SYNC_PROBE_TIMEOUT must be a whole number of seconds, got '$PROBE_TIMEOUT'" >&2; exit 1 ;;
@@ -526,12 +543,13 @@ esac
 # deleted when not.
 ICON_CR="$(printf 'Icon\015')"
 
-# Run this pair's rsync with the extra flags in "$@". Its stderr is echoed
-# and kept in $ERRS for the classifiers below.
+# Run this pair's rsync with the extra flags in "$@", under PAIR_BOUND. Its
+# stderr is echoed and kept in $ERRS for the classifiers below. 124 is the
+# bound expiring; 125 is st_bounded refusing to run it: no process group.
 pair_rsync() {
   prc=0
   # shellcheck disable=SC2086
-  rsync $RSYNC_FLAGS "$@" --exclude .DS_Store --exclude '._*' \
+  st_bounded "$PAIR_BOUND" rsync $RSYNC_FLAGS "$@" --exclude .DS_Store --exclude '._*' \
     --exclude "$ICON_CR" --exclude .tmp.drivedownload \
     --exclude-from "$EXCLUDES" "$src_arg" "$dst/" 2>"$ERRS" || prc=$?
   cat "$ERRS" >&2
@@ -783,8 +801,10 @@ pairs | while IFS='|' read -r src dst excl; do
   fi
   rc=0
   pair_rsync "$@" || rc=$?
-  if [ "$rc" -ne 0 ] && [ "$MODE" = sync ] \
-     && grep -q 'Resource deadlock avoided' "$ERRS"; then
+  # A bound that expired or ran nothing gets no retry: it would spend
+  # another whole bound on the same share.
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 125 ] \
+     && [ "$MODE" = sync ] && grep -q 'Resource deadlock avoided' "$ERRS"; then
     if materialize_pending "$@"; then
       # A fresh backup directory: openrsync's --backup-dir fails with
       # "mk_backup_dir: File exists" on the one the first try made.
@@ -794,7 +814,8 @@ pairs | while IFS='|' read -r src dst excl; do
       pair_rsync "$@" || rc=$?
     fi
   fi
-  if [ "$rc" -ne 0 ] && [ "$MODE" = sync ] && only_interrupted; then
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 125 ] \
+     && [ "$MODE" = sync ] && only_interrupted; then
     # Its own backup directory, as above: openrsync refuses one that exists.
     [ -z "$KEEP" ] || set -- --backup --backup-dir "$KEEP.interrupted"
     echo "--- retrying after an interrupted open: $src"
@@ -805,8 +826,16 @@ pairs | while IFS='|' read -r src dst excl; do
     echo "--- source files vanished during the pass; not a failure: $src" >&2
     rc=0
   fi
-  # The exit code alone decides nothing: only the stderr lines make a skip.
-  if [ "$rc" -ne 0 ] && only_timed_out; then
+  # Past the pair bound the share did not answer: rsync never returned.
+  # Otherwise the exit code alone decides nothing: only the stderr lines
+  # make a skip.
+  if [ "$rc" -eq 124 ]; then
+    echo "!!! rsync did not finish within ${PAIR_BOUND}s: $src" >&2
+    echo "$src (share unresponsive)" >> "$FAILLOG"
+  elif [ "$rc" -eq 125 ]; then
+    echo "!!! rsync not run: no process group for its bound: $src" >&2
+    echo "$src (rsync not run)" >> "$FAILLOG"
+  elif [ "$rc" -ne 0 ] && only_timed_out; then
     echo "!!! rsync moved no data for ${IO_TIMEOUT}s: $src" >&2
     echo "$src (share unresponsive)" >> "$FAILLOG"
   elif [ "$rc" -ne 0 ]; then
