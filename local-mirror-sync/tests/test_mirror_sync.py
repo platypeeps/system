@@ -18,6 +18,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import shutil
 import signal
@@ -31,7 +32,9 @@ from pathlib import Path
 #: Settings a case passes when it wants them: one the caller exported
 #: must not change what a case tests (sd:8592).
 SET_BY_CASE = ("MIRROR_SYNC_ADDITIVE", "MIRROR_SYNC_BACKUP_ROOT",
-               "MIRROR_SYNC_PROBE_TIMEOUT", "MIRROR_SYNC_IO_TIMEOUT")
+               "MIRROR_SYNC_BACKUP_KEEP_DAYS", "MIRROR_SYNC_IO_TIMEOUT",
+               "MIRROR_SYNC_MATERIALIZE_WAIT", "MIRROR_SYNC_PAIR_BOUND",
+               "MIRROR_SYNC_PROBE_TIMEOUT")
 
 FOLDER = Path(__file__).resolve().parent.parent
 #: The command pack checkout whose lib/ holds the sd_db the verifier imports
@@ -170,6 +173,16 @@ while args:
         fail("illegal option -- " + arg.lstrip("-"))
 print(fmt_date(fmt, when))
 """
+
+
+class CaseSettings(unittest.TestCase):
+    """An exported MIRROR_SYNC_PAIR_BOUND reached every case and failed
+    the unbounded one (sd:8638): each setting the script reads is scrubbed
+    but MIRROR_SYNC_CONF, which every helper sets."""
+
+    def test_every_setting_the_script_reads_is_scrubbed(self) -> None:
+        read = set(re.findall(r"MIRROR_SYNC_[A-Z_]+", MIRROR_SYNC.read_text()))
+        self.assertEqual(sorted(read - {"MIRROR_SYNC_CONF"} - set(SET_BY_CASE)), [])
 
 
 class PerPairExcludes(Fixture):
