@@ -7139,6 +7139,13 @@ print(" ".join(casks + [c for c in extra if c not in casks]))' \
     "${MACHINE_SETUP_SUDO_CASKS:-}" "$sc_prefix" "$HOME" /Applications
 }
 
+# Whether $ds_list, sudo's listing of this user's rules, allows command $1
+# with no password: a rule line that ends in "NOPASSWD: $1".
+ds_allows() {
+  printf '%s\n' "$ds_list" | awk -v want="NOPASSWD: $1" '{ sub(/[ \t]+$/, "") }
+    substr($0, length($0) - length(want) + 1) == want { found = 1 } END { exit !found }'
+}
+
 # Doctor's lines for unattended sudo (sd:6312), on each machine: the operator
 # makes the Keychain item and installs the repair drop-in there. A missing one
 # is a finding naming that step, not a failure.
@@ -7159,21 +7166,33 @@ doctor_unattended_sudo() {
     echo "  WARN    no repair sudoers drop-in at $REPAIRS_SUDOERS — run in a terminal: sed -e \"s/change-me/\$(id -un)/\" -e \"s|HOMEBREW_PREFIX|\$(brew --prefix)|\" $DIR/machine-setup-repairs.sudoers.example > $ds_tmp && sudo visudo -cf $ds_tmp && sudo install -m 440 -o root -g wheel $ds_tmp $REPAIRS_SUDOERS"
     return 0
   fi
+  # sudo lists the user's rules; `sudo -n -l <command>` passes any command
+  # that (ALL) ALL allows, password or not, so the listing is read instead.
+  # -n: doctor never prompts.
+  ds_rc=0
+  ds_list=$(bound_step 30 sudo -n -l 2>/dev/null) || ds_rc=$?
+  if [ "$ds_rc" -ne 0 ]; then
+    echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS unknown: sudo -n -l exited $ds_rc"
+    return 0
+  fi
+  # local-fseventsd's TERM (sd:8579): a drop-in installed before it has no
+  # such line, and the hourly repair then asks for a password (sd:8598).
+  # The line names no brew path, so it needs no brew --prefix.
+  ds_term="/usr/bin/pkill -TERM -x fseventsd"
+  if ds_allows "$ds_term"; then
+    echo "  ok      repair sudoers drop-in $REPAIRS_SUDOERS allows $ds_term"
+  else
+    echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS does not allow $ds_term without a password — add its line from $DIR/machine-setup-repairs.sudoers.example: sudo visudo -f $REPAIRS_SUDOERS"
+  fi
   # Its brew line must name this machine's brew: one copied from an Apple
-  # silicon Mac names /opt/homebrew, absent on an Intel Mac (sd:6475). sudo
-  # lists the user's rules; `sudo -n -l <command>` passes any command that
-  # (ALL) ALL allows, password or not.
+  # silicon Mac names /opt/homebrew, absent on an Intel Mac (sd:6475).
   ds_brew=$(bound_step 60 brew --prefix 2>/dev/null) || ds_brew=
   if [ -z "$ds_brew" ]; then
     echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS unknown: brew --prefix gave no answer"
     return 0
   fi
   ds_cmd="$ds_brew/bin/brew services restart tailscale"
-  ds_rc=0
-  ds_list=$(bound_step 30 sudo -n -l 2>/dev/null) || ds_rc=$?
-  if [ "$ds_rc" -ne 0 ]; then
-    echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS unknown: sudo -n -l exited $ds_rc"
-  elif tailscale_runs_app; then
+  if tailscale_runs_app; then
     # The app's daemon is no brew service: the line repairs nothing here
     # (sd:6475), so its absence is ok and its presence a dead line.
     if printf '%s\n' "$ds_list" | grep -qF "services restart tailscale"; then
@@ -7181,8 +7200,7 @@ doctor_unattended_sudo() {
     else
       echo "  ok      repair sudoers drop-in $REPAIRS_SUDOERS (tailscale-app: no brew restart line)"
     fi
-  elif printf '%s\n' "$ds_list" | awk -v want="NOPASSWD: $ds_cmd" '{ sub(/[ \t]+$/, "") }
-      substr($0, length($0) - length(want) + 1) == want { found = 1 } END { exit !found }'; then
+  elif ds_allows "$ds_cmd"; then
     echo "  ok      repair sudoers drop-in $REPAIRS_SUDOERS"
   else
     echo "  WARN    repair sudoers drop-in $REPAIRS_SUDOERS does not allow $ds_cmd without a password — fix its brew path: sudo visudo -f $REPAIRS_SUDOERS"

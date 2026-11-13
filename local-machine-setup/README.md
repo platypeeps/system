@@ -626,7 +626,10 @@ never touches `/etc` or the Keychain.
 steps above on one line, with `$(id -un)` and `$(brew --prefix)` left for
 the shell it is pasted into. So is a drop-in whose brew line names
 another prefix: `sudo -n -l` lists no password-free
-`$(brew --prefix)/bin/brew services restart tailscale`.
+`$(brew --prefix)/bin/brew services restart tailscale`. So is a drop-in
+with no password-free `/usr/bin/pkill -TERM -x fseventsd`, the TERM that
+`local-fseventsd` sends (sd:8598): one installed before that line. Doctor
+reads the listing with `sudo -n`; it never prompts.
 
 A step that needs sudo and gets none is deferred, not failed: the run
 prints `DEFER   needs sudo: <command>` and repeats every one at the end

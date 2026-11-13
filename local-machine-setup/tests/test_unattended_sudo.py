@@ -47,11 +47,14 @@ echo "brew $*" >> "$CALL_LOG"
 [ "$*" = --prefix ] && [ -n "$BREW_PREFIX" ] && echo "$BREW_PREFIX"
 """
 RESTART = "services restart tailscale"
+#: The TERM local-fseventsd sends through sudo (sd:8579).
+TERM = "/usr/bin/pkill -TERM -x fseventsd"
 
 
 class Doctor(Case):
     def run_doctor(self, keychain="", sudoers=False, prefix="/usr/local",
-               rule=f"    (root) NOPASSWD: /usr/local/bin/brew {RESTART}", **extra):
+               rule=f"    (root) NOPASSWD: /usr/local/bin/brew {RESTART}\n"
+                    f"    (root) NOPASSWD: {TERM}", **extra):
         write_exec(self.stubs / "security-stub", SECURITY_STUB)
         write_exec(self.stubs / "sudo", SUDO_STUB)
         write_exec(self.stubs / "brew", BREW_STUB)
@@ -92,8 +95,57 @@ class Doctor(Case):
         out = self.doctor(keychain="example-password", sudoers=True)
         self.assertRegex(out, r"  WARN    repair sudoers drop-in \S+ allows brew services restart "
                               r"tailscale, dead with the tailscale-app cask — drop that line")
-        out = self.doctor(keychain="example-password", sudoers=True, rule="    (root) NOPASSWD: /sbin/pfctl -sr")
+        out = self.doctor(keychain="example-password", sudoers=True,
+                          rule=f"    (root) NOPASSWD: /sbin/pfctl -sr\n    (root) NOPASSWD: {TERM}")
         self.assertIn("  ok      repair sudoers drop-in ", out)
+        self.assertNotIn("does not allow", out)
+
+    def test_a_drop_in_without_the_fseventsd_term_is_a_finding(self):
+        """sd:8598: a drop-in installed before sd:8579 has no TERM line, so
+        local-fseventsd's repair asks for a password; doctor said ok."""
+        out = self.doctor(keychain="example-password", sudoers=True,
+                          rule=f"    (root) NOPASSWD: /usr/local/bin/brew {RESTART}")
+        self.assertRegex(out, r"  WARN    repair sudoers drop-in \S+machine-setup-repairs does not "
+                              rf"allow {TERM} without a password — add its line from "
+                              r"\S+machine-setup-repairs\.sudoers\.example: "
+                              r"sudo visudo -f \S+machine-setup-repairs\n")
+        self.assertIn("  ok      repair sudoers drop-in ", out)
+
+    def test_the_fseventsd_term_present_is_ok(self):
+        out = self.doctor(keychain="example-password", sudoers=True)
+        self.assertRegex(out, rf"  ok      repair sudoers drop-in \S+ allows {TERM}\n")
+        self.assertNotIn("does not allow", out)
+
+    def test_a_term_rule_that_wants_a_password_is_a_finding(self):
+        # The listing names the command either way; only NOPASSWD lets an
+        # unattended repair run it.
+        for rule in (f"    (root) {TERM}", f"    (root) NOPASSWD: {TERM} -v",
+                     "    (root) NOPASSWD: /usr/bin/pkill -TERM -x fseventsdx"):
+            with self.subTest(rule=rule):
+                out = self.doctor(keychain="example-password", sudoers=True,
+                                  rule=f"    (root) NOPASSWD: /usr/local/bin/brew {RESTART}\n{rule}")
+                self.assertIn(f"does not allow {TERM} without a password", out)
+
+    def test_the_term_check_needs_no_brew_and_never_prompts(self):
+        # The TERM line names no brew path; every sudo call is -n.
+        out = self.doctor(keychain="example-password", sudoers=True, prefix="")
+        self.assertRegex(out, rf"  ok      repair sudoers drop-in \S+ allows {TERM}\n")
+        sudo_calls = [line for line in self.call_log.read_text().splitlines() if line.startswith("sudo ")]
+        self.assertTrue(sudo_calls)
+        for call in sudo_calls:
+            self.assertTrue(call.startswith("sudo -n "), call)
+
+    def test_doctor_checks_the_command_local_fseventsd_sends(self):
+        """The check and the sender name one command: a drifted copy would
+        pass doctor while the repair asks for a password."""
+        sender = (FOLDER.parent / "local-fseventsd" / "fseventsd.sh").read_text()
+        self.assertIn(f'\nTERM_COMMAND="{TERM}"\n', sender)
+        self.assertIn(f'\n  ds_term="{TERM}"\n', (FOLDER / "machine-setup.sh").read_text())
+
+    def test_an_unread_listing_says_unknown_for_the_term_too(self):
+        out = self.doctor(keychain="example-password", sudoers=True, SUDO_RC="1")
+        self.assertRegex(out, r"  WARN    repair sudoers drop-in \S+ unknown: sudo -n -l exited 1\n")
+        self.assertNotIn(f"allows {TERM}", out)
         self.assertNotIn("does not allow", out)
 
     def test_an_unread_sudo_listing_is_unknown_not_ok(self):
