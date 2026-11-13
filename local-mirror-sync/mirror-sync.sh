@@ -692,9 +692,17 @@ only_timeout_lines() {
 # A pair the wall bound ended hung on the share only when rsync printed
 # nothing but st_bounded's expiry line and timeout lines: an error before
 # the hang (a full or denied share) keeps it a failure, as the backup jobs
-# read exit 75 as a skip.
+# read exit 75 as a skip. GNU rsync's sender and generator answer the
+# bound's TERM with a "code 20" line, so that line counts only after the
+# expiry line: one before it means another signal ended the copy (sd:8638).
+# Lines it could not read are no hang.
 only_hung() {
-  grep -v -x -E 'timed out after [0-9]+s: .*' "$ERRS" | only_timeout_lines
+  hung_left=$(awk '
+    /^timed out after [0-9]+s: / { expired = 1; next }
+    expired && /^rsync error: received SIGINT, SIGTERM, or SIGHUP \(code 20\)( at [^ ]+ \[[A-Za-z]+=[^ ]+\])?$/ { next }
+    { print }
+  ' "$ERRS") || return 1
+  printf '%s\n' "$hung_left" | only_timeout_lines
 }
 
 probe_flavours
