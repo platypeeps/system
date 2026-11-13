@@ -64,6 +64,13 @@ class StageTest(unittest.TestCase):
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copytree(LIB, repo / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         write_exec(repo / "local-cron-jobs/cron-jobs.sh", CRON_JOBS_STUB)
+        # The cron stage reads the repository's own examples/profiles/common.cron
+        # as a roster (sd:8607). These cases are about this machine's roster
+        # and the sweep, so the copy here names no job; tests/test_fleet_component.py
+        # runs the live file. Without this, every job the fleet gains would
+        # add a MISSING line to each case below.
+        (self.folder / "examples/profiles/common.cron").write_text(
+            "# no fleet jobs in these cases\n")
         self.config_root = fixture_config.copy_config(base)
         self.profiles = self.config_root / "machine-setup/profiles"
         self.jobs = self.config_root / "cron-jobs/jobs"
@@ -728,8 +735,8 @@ class CronRetiredTest(StageTest):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("EXTRA   retired-job — retired in local-cron-jobs/retired-jobs.txt, still installed",
                       result.stdout)
-        self.assertIn("retired-job is retired, yet this profile or this host's jobs folder names it",
-                      result.stdout)
+        self.assertIn("retired-job is retired, yet this profile, this host's jobs folder or the "
+                      "repo's examples/profiles/common.cron names it", result.stdout)
         log = self.cron_log.read_text().splitlines()
         self.assertEqual(log.count("uninstall retired-job"), 1, log)
         self.assertNotIn("install retired-job", log)

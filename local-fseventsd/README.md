@@ -102,8 +102,15 @@ sudo's own reason.
 
 ## Hourly from launchd
 
-`local-cron-jobs/examples/fseventsd-hourly.job` runs `repair` every hour. To
-install it on a machine:
+`local-cron-jobs/examples/fseventsd-hourly.job` runs `repair` every hour.
+`local-machine-setup/examples/profiles/common.cron` names it, so every machine
+installs it through the refresh it already answers (sd:8607): the cron stage
+installs the job file from that example, and the envs stage installs
+`<config>/fseventsd/.env` from `.env.example` here. One step per machine still
+needs a terminal, the sudoers line above.
+
+On a machine that does not run machine-setup, the same two files and the
+install by hand:
 
 ```sh
 mkdir -p ~/.config/system/fseventsd ~/.config/system/cron-jobs/jobs
@@ -115,10 +122,6 @@ sh local-cron-jobs/cron-jobs.sh install fseventsd-hourly
 Both copies go to `$SYSTEM_TOOLS_CONFIG` when that is set, or to
 `$XDG_CONFIG_HOME/system` when that is (`lib/config.sh`); the lines above are
 the default paths, as every sibling README writes them.
-
-`local-machine-setup/examples/profiles/common.cron` lists the job, so
-`machine-setup.sh update cron` installs it on every machine whose profile
-directory holds that file.
 
 The nightly health check runs the same reading through its sweep; this job only
 shortens the wait, and it is the one that can repair. A failed `repair` opens a

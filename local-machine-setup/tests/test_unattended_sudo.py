@@ -110,9 +110,27 @@ class Doctor(Case):
                       'security add-generic-password -a "$(id -un)" -s machine-setup-sudo '
                       "-T /usr/bin/security -w", out)
         self.assertRegex(out, r"  WARN    no repair sudoers drop-in at \S+machine-setup-repairs — "
-                              r"install local-machine-setup/machine-setup-repairs\.sudoers\.example "
-                              r"with visudo -cf")
+                              r"run in a terminal: sed ")
         self.assertNotIn("FAIL    no Keychain", out)
+
+    def test_the_missing_drop_in_names_the_command_to_paste(self):
+        """sd:8607: the line is the step, so it carries the whole command,
+        not a pointer to the README. It names this machine's drop-in path
+        and the tracked example, and leaves $(id -un) and $(brew --prefix)
+        for the shell the operator pastes it into."""
+        drop_in = self.base / "sudoers.d/machine-setup-repairs"
+        example = self.folder / "machine-setup-repairs.sudoers.example"
+        out = self.doctor()
+        self.assertIn(
+            f"  WARN    no repair sudoers drop-in at {drop_in} — run in a terminal: "
+            'sed -e "s/change-me/$(id -un)/" -e "s|HOMEBREW_PREFIX|$(brew --prefix)|" '
+            f"{example} > /tmp/machine-setup-repairs"
+            " && sudo visudo -cf /tmp/machine-setup-repairs"
+            f" && sudo install -m 440 -o root -g wheel /tmp/machine-setup-repairs {drop_in}",
+            out)
+        self.assertTrue(example.is_file(), f"the line names {example}, which is not a file")
+        self.assertTrue(SUDOERS.is_file(), f"{SUDOERS} is the tracked example it copies")
+        self.assertNotIn("(README: Unattended sudo)", out)
 
     def test_doctor_asks_for_no_cask_list(self):
         """sd:6927: the casks that need sudo come from brew info, so the
@@ -127,6 +145,58 @@ class Doctor(Case):
         out = self.doctor(SECURITY_RC="51")
         self.assertIn("  WARN    Keychain item machine-setup-sudo unknown: security exited 51", out)
         self.assertNotIn("no Keychain item", out)
+
+
+class DeferredCommands(unittest.TestCase):
+    """Every deferred line is a command the operator can paste (sd:8609).
+
+    `report_deferred` prints the DEFERRED lines verbatim under "Run these,
+    then re-run:", so a line of prose there is a step nobody can take. The
+    case enumerates the `sudo_run` call sites from the script, not from a
+    list kept here, so a prose line added later fails too.
+    """
+
+    # `sudo_run "<shown>" <command...>`, with the shown string on the same
+    # line as the call. A call whose shown string is not a literal would
+    # read as no call site at all, so the count is checked below.
+    CALL = re.compile(r'^\s*sudo_run "((?:[^"\\]|\\.)*)"', re.M)
+
+    def setUp(self):
+        self.source = (FOLDER / "machine-setup.sh").read_text()
+
+    def test_every_sudo_run_shows_a_command_not_prose(self):
+        sites = [(self.source[:m.start()].count("\n") + 1, m.group(1))
+                 for m in self.CALL.finditer(self.source)]
+        self.assertGreaterEqual(len(sites), 13, f"found only {len(sites)} sudo_run call sites")
+        prose = [f"machine-setup.sh:{line}: {shown}" for line, shown in sites
+                 if not shown.startswith("sudo ")]
+        self.assertEqual([], prose, "each of these DEFER lines needs a command to paste")
+
+    def test_no_shown_command_trails_an_explanation(self):
+        """A trailing "(why)" rides along into the pasted line, so the
+        explanation goes on its own line above the call."""
+        trailing = [shown for shown in self.CALL.findall(self.source) if shown.rstrip().endswith(")")
+                    and "sh -c" not in shown]
+        self.assertEqual([], trailing)
+
+    def test_the_sudo_run_count_matches_the_calls_in_the_script(self):
+        """Evidence for the enumeration above: a call whose shown string is
+        built in a variable would slip past the pattern, and this fails
+        when one appears."""
+        calls = len(re.findall(r"^\s*sudo_run ", self.source, re.M))
+        self.assertEqual(calls, len(self.CALL.findall(self.source)),
+                         "a sudo_run call site shows no literal string")
+
+    def test_every_writer_of_the_deferred_list_is_accounted_for(self):
+        """sudo_run is not the only writer, so the class is read from the
+        code: sweep_step defers the command it ran, and the Spotlight read
+        defers its fix, which can be a Full Disk Access grant with no
+        command to paste at all. A fourth writer fails here and gets the
+        same reading."""
+        writers = re.findall(r'^\s*DEFERRED="\$DEFERRED(.*)$', self.source, re.M)
+        self.assertEqual(["    $shown",
+                          "    $SPOTLIGHT_FIX  (Spotlight exclusions)",
+                          "    $*"], writers)
 
 
 class Askpass(unittest.TestCase):

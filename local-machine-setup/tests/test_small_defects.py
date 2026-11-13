@@ -271,10 +271,15 @@ class DoctorCron(Case):
     def test_doctor_checks_the_cron_stages_list(self):
         (self.profiles / "personal.cron").write_text("shared-job\nold-job\n")
         (self.jobs / HOST / "host-job.job").write_text('JOB_SCHEDULE="0 23 * * *"\n')
+        # The cron stage's list since sd:8607: this profile, the repository's
+        # own examples/profiles/common.cron and this host's folder, less the
+        # retired old-job. The repository roster is written here rather than
+        # read live, so a job the fleet gains does not change this case.
+        (self.folder / "examples/profiles/common.cron").write_text("fleet-job\n")
         self.run_script("doctor")
         checked = [c.rsplit(".", 1)[-1] for c in self.calls()
                    if c.startswith("launchctl print gui/") and ".cron." in c]
-        self.assertEqual(sorted(checked), ["host-job", "shared-job"])
+        self.assertEqual(sorted(checked), ["fleet-job", "host-job", "shared-job"])
 
 
 class NoMachinePath(unittest.TestCase):

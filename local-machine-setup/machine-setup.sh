@@ -163,7 +163,10 @@ DOTFILES_DENY=".bash_profile"
 # installs it. Only non-secret defaults go in — a template holding a
 # credential would be committed, which is the leak the .env rule exists to
 # stop. Secrets stay in ~/.config/shell/env.sh or a gitignored conf.
-ENVS="local-notify local-statusline"
+# A folder here whose committed .env.example holds no placeholder needs no
+# per-machine template at all: env_src falls back to that example, so the
+# refresh every machine already answers installs it (sd:8607).
+ENVS="local-notify local-statusline local-fseventsd"
 
 # Folders whose .env is expected to hold placeholder values — see the
 # placeholder check in doctor for the rule about what belongs here. Set in
@@ -248,11 +251,53 @@ copy_dotfile() { # dotfile, src, dst
   [ -z "$cd_mode" ] || run_ok chmod "$cd_mode" "$3"
 }
 
+# Values a committed example, or a live .env, leaves for a person to fill in.
+# One pattern, read by env_src's repo fallback below and by doctor's own
+# placeholder check: "what counts as unfilled" has one answer.
+#
+# An assignment only, never a comment (sd:8609 review): env_template_diff
+# reads a commented key as absent too, and a documented optional line such as
+# `#FSEVENTSD_STATE=change-me` is no value the tool acts on. Counted as one,
+# it turned the fleet install off and reported it as "no template".
+PLACEHOLDER_RE='=[[:space:]]*"?(change-me|changeme|CHANGE_ME|your-|xxx+|placeholder|0{8}-0{4}-0{4}-0{4}-0{12}|0{8,})'
+ENV_KEY_RE='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*'
+# The keys whose value is still a placeholder, one per line, none when there
+# are none. Always exits 0: a caller reads it in `$( )`, where `grep`
+# returning 1 on no match would end the run.
+env_placeholder_keys() { # file
+  grep -oE "$ENV_KEY_RE$PLACEHOLDER_RE" "$1" 2>/dev/null |
+    sed -e 's/[[:space:]]*=.*//' -e 's/^[[:space:]]*//' || :
+}
+# How many of them there are, 0 included.
+env_placeholders() { # file
+  ep_n=$(env_placeholder_keys "$1" | grep -c '^' || :)
+  printf '%s\n' "${ep_n:-0}"
+}
+
+# A tool .env template: this machine's profile first, then the templates every
+# machine shares, then the repo's own committed <folder>/.env.example.
+#
+# That last fallback is what lets a new component reach the whole fleet
+# (sd:8607): local-fseventsd needed four files in one machine's config folder,
+# and none of them could be written for another machine from there. A folder
+# in ENVS whose example is already the right content now needs no template at
+# all, and the refresh every machine answers installs it.
+#
+# An example holding a placeholder is NOT installed. A placeholder in a live
+# .env is a value the tool acts on, not a safe default: local-notify's
+# NTFY_TOPIC=change-me would post this machine's notifications to the public
+# ntfy.sh topic `change-me`, and local-statusline's labels name example.test
+# accounts. Both keep the "no template for <profile>" line this stage printed
+# before, which asks for the per-machine template they need; only an example
+# whose values are real defaults, as local-fseventsd's are, installs.
 env_src() {
   if [ -f "$ENV_DIR/$PROFILE/$1.env" ]; then
     echo "$ENV_DIR/$PROFILE/$1.env"
   elif [ -f "$ENV_DIR/common/$1.env" ]; then
     echo "$ENV_DIR/common/$1.env"
+  elif [ -f "$ROOT/$1/.env.example" ] &&
+      [ "$(env_placeholders "$ROOT/$1/.env.example")" -eq 0 ]; then
+    echo "$ROOT/$1/.env.example"
   fi
 }
 
@@ -471,7 +516,11 @@ sudo_run() {
   fi
   DEFERRED="$DEFERRED    $shown
 "
-  echo "  DEFER   needs sudo: $shown"
+  # printf, not echo: /bin/sh here is bash with xpg_echo, whose echo reads
+  # the backslashes in a command — a shown `printf '%s\n'` came out as two
+  # lines, and the operator cannot paste that (sd:8609 review). The summary
+  # at the end already prints DEFERRED through printf.
+  printf '  DEFER   needs sudo: %s\n' "$shown"
 }
 
 # A config folder in a checkout may track its live configs as symlinks — git
@@ -1346,7 +1395,10 @@ stage_shell() {
     echo "  ok      $BREW_BASH in /etc/shells"
   else
     echo "  MISSING $BREW_BASH in /etc/shells"
-    sudo_run "add $BREW_BASH to /etc/shells" sh -c "echo $BREW_BASH >> /etc/shells"
+    # The command, not "add it to /etc/shells": a deferred line is printed
+    # for the operator to paste, and the MISSING line above is the why
+    # (sd:8609).
+    sudo_run "sudo sh -c 'echo $BREW_BASH >> /etc/shells'" sh -c "echo $BREW_BASH >> /etc/shells"
   fi
 
   # dscl, not $SHELL: $SHELL is what this process inherited, which after a
@@ -1361,7 +1413,9 @@ stage_shell() {
     # for the account password interactively, which no unattended run can
     # answer; sudo (cached or NOPASSWD) makes it non-interactive, and on a
     # no-sudo machine it defers visibly instead of hanging on a prompt.
-    sudo_run "chsh -s $BREW_BASH $me  (login shell: ${current:-unknown} -> brew bash)" chsh -s "$BREW_BASH" "$me"
+    # The DIFFERS line above carries the from and to, so the deferred line
+    # stays a command the operator can paste (sd:8609).
+    sudo_run "sudo chsh -s $BREW_BASH $me" chsh -s "$BREW_BASH" "$me"
   fi
 
   if grep -q 'config/shell/env.sh' "$HOME/.bash_profile" 2>/dev/null; then
@@ -1570,7 +1624,17 @@ stage_envs() {
     src=$(env_src "$f")
     dst=$(live_env "$f")
     if [ -z "$src" ]; then
-      echo "  --      $f/.env no template for $PROFILE"
+      # Which values refused the example, not just "no template" (sd:8609
+      # review): a template is right there, and the operator cannot see why
+      # it was passed over. doctor's envs listing names the folder too.
+      se_keys=""
+      [ ! -f "$ROOT/$f/.env.example" ] ||
+        se_keys=$(env_placeholder_keys "$ROOT/$f/.env.example" | tr '\n' ' ')
+      if [ -n "$se_keys" ]; then
+        echo "  --      $f/.env no template for $PROFILE, and $f/.env.example is not one: placeholder value(s) for ${se_keys% }"
+      else
+        echo "  --      $f/.env no template for $PROFILE"
+      fi
     elif [ ! -d "$ROOT/$f" ]; then
       echo "  --      $f/ not in this repo"
     elif [ ! -e "$dst" ]; then
@@ -1961,6 +2025,16 @@ for name in sorted(names):
     print(name)'
 }
 
+# Where a job file this stage seeds belongs: <config>/cron-jobs/jobs, the
+# last folder cron-jobs.sh reads, so the host and config rules stay in
+# lib/system_tools_config.py alone. The shared folder and not this host's:
+# a job that comes from the repository is no machine's own. Exits non-zero
+# when python3 or the lib cannot answer, so no caller guesses a path.
+cron_jobs_dir() {
+  PYTHONPATH="$ROOT/lib" python3 -c 'import system_tools_config as stc
+print(stc.cron_job_dirs()[-1])'
+}
+
 # Did local-cron-jobs write this plist? The <prefix>.cron.<name> label does not
 # say: another repository's installer used the same label shape, and the sweep
 # below uninstalled its agent as an orphan (sd:2321). write_plist in
@@ -2013,6 +2087,26 @@ retired_cron_jobs() {
   [ ! -f "$rcj_list" ] || sed 's/#.*//' "$rcj_list" | awk 'NF {print $1}'
 }
 
+# The jobs the repository itself says every machine runs: the entries of
+# examples/profiles/common.cron. Every other file under examples/ is a sample
+# to copy, and this one still reads as one; it is also read live, because
+# "every machine runs this job" is a statement about the fleet and belongs in
+# the repository rather than in a line added by hand to each machine's own
+# common.cron, which no session can reach (sd:8607). Each reader of the
+# wanted list reads it beside the machine's roster, and capture subtracts it
+# so the names stay out of <profile>.cron.
+# A `!name` line in this machine's <profile>.cron drops one, exactly as it
+# drops an entry of the config folder's common.cron (sd:4853), so a machine
+# can still refuse a job the repository names.
+repo_cron_jobs() {
+  rcj_repo="$DIR/examples/profiles/common.cron"
+  [ -f "$rcj_repo" ] || return 0
+  rcj_names=$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$rcj_repo" \
+    | grep -v -e '^$' -e '^!' || :)
+  [ -n "$rcj_names" ] || return 0
+  printf '%s\n' "$rcj_names" | drop_negated "$(profile_drops "$PROFILE" cron)"
+}
+
 stage_cron() {
   echo "== cron"
   # Without its host jobs, the sweep below read each one as an orphan and
@@ -2025,13 +2119,20 @@ stage_cron() {
     sweep=0
   fi
   # A job with a job file is kept by the sweep below (sd:7335), so a list
-  # that cannot be read leaves the sweep unable to tell which to keep.
+  # that cannot be read leaves the sweep unable to tell which to keep. It
+  # also leaves the seeding below unable to tell a job this machine has no
+  # file for from one it does: a failed listing is no answer, and seeding
+  # over a machine's own job file would take its schedule with it.
+  seed_dir=""
   if ! defined_jobs=$(defined_cron_jobs); then
     echo "  MISSING job file list — could not read a cron-jobs folder; only retired jobs are uninstalled this run"
     sweep=0
+  elif ! seed_dir=$(cron_jobs_dir); then
+    echo "  MISSING cron-jobs folder — could not read where a job file belongs; no job file is seeded this run"
+    seed_dir=""
   fi
   hub_ask
-  jobs=$( { manifest cron; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; fi; } | awk 'NF && !seen[$0]++')
+  jobs=$( { manifest cron; repo_cron_jobs; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; fi; } | awk 'NF && !seen[$0]++')
   # A retired job stays out of every machine's wanted list, even where a
   # profile or a host folder written before the retirement still names it:
   # the sweep below left those running, and verify read them ok (sd:3155).
@@ -2039,7 +2140,7 @@ stage_cron() {
   retired=$(retired_cron_jobs)
   for r in $retired; do
     if printf '%s\n' "$jobs" | grep -qxF "$r"; then
-      echo "  note    $r is retired, yet this profile or this host's jobs folder names it; remove it there"
+      echo "  note    $r is retired, yet this profile, this host's jobs folder or the repo's examples/profiles/common.cron names it; remove it there"
     fi
     rp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$r.plist"
     [ -f "$rp" ] || continue
@@ -2077,6 +2178,22 @@ stage_cron() {
       continue
     fi
     if [ "$j" = build-dispatch ] && ! dispatch_pack_ok; then continue; fi
+    # A wanted job with no job file anywhere cron-jobs.sh reads: install the
+    # repository's own example (sd:8607). Without this, a job every machine
+    # runs took a file copied by hand on each of them, and the stage reported
+    # `cron-jobs.sh: ERROR: no such job` until someone did. A copy in a
+    # cron-jobs folder wins, since a machine may hold a changed schedule, and
+    # a name the examples do not hold is reported as before. Seeded once and
+    # never refreshed: the machine owns its copy from here on.
+    if [ -n "$seed_dir" ] && [ -f "$ROOT/local-cron-jobs/examples/$j.job" ] &&
+        ! printf '%s\n' "$defined_jobs" | grep -qxF "$j"; then
+      echo "  MISSING $seed_dir/$j.job — no cron-jobs folder holds it; from local-cron-jobs/examples/$j.job"
+      # Recorded nowhere and skipped on a failure: the file has to be in
+      # place before cron-jobs.sh can render a plist from it.
+      run_ok mkdir -p "$seed_dir" &&
+        run_ok install -m 644 "$ROOT/local-cron-jobs/examples/$j.job" "$seed_dir/$j.job" ||
+        continue
+    fi
     jp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$j.plist"
     owner=0
     [ ! -f "$jp" ] || cron_plist_ours "$jp" "$j" 2>/dev/null || owner=$?
@@ -3350,21 +3467,48 @@ system_nsmb() {
   else
     echo "  MISSING nsmb.conf soft mounts: no $NSMB_CONF (applies at the next mount: eject and reconnect, or reboot)"
   fi
-  # Built as this user, then copied in by root beside the target and moved
-  # over it, after a dated copy of the old file: a stop at any point leaves
-  # the old file or the new one, and the next run finishes the job.
-  nc_tmp=""
-  if [ "$APPLY" -eq 1 ]; then
-    if ! { nc_tmp=$(mktemp) && nsmb_merge "$NSMB_CONF" "$nc_add" > "$nc_tmp"; }; then
-      note_failure "build the new $NSMB_CONF" 1
-      [ -z "$nc_tmp" ] || rm -f "$nc_tmp"
-      return 0
-    fi
+  # Merged here as this user, then written by root beside the target and
+  # moved over it, after a dated copy of the old file: a stop at any point
+  # leaves the old file or the new one, and the next run finishes the job.
+  #
+  # The command carries the merged content itself, the way the two sudoers
+  # drop-ins above carry their rule (sd:8609 review). It reads no file this
+  # run left behind: the operator pastes a deferred line days later, by
+  # which time the periodic cleaner has pruned anything under TMPDIR, and a
+  # dry run prints the same string, which would then make the dated backup
+  # and fail at a file no run ever built. The merge runs in both modes for
+  # that reason, and a merge that cannot answer is a failure, not an empty
+  # file.
+  #
+  # That content is a snapshot, so the command refuses rather than write it
+  # over a file that moved since it was printed (lane review of b4eda792).
+  # The operator may add a server section between reading `status` and
+  # pasting the line, and an unconditional write would drop it. cksum, not
+  # a digest: this catches an edit of the operator's own, and no hostile
+  # local user is in scope. The backup stamp is left for the pasting shell,
+  # so a second paste cannot overwrite the first paste's backup.
+  if ! nc_body=$(nsmb_merge "$NSMB_CONF" "$nc_add"); then
+    note_failure "build the new $NSMB_CONF" 1
+    return 0
+  fi
+  if [ -e "$NSMB_CONF" ]; then
+    nc_sum=$(cksum < "$NSMB_CONF")
+  else
+    nc_sum=absent
   fi
   nc_new="$(dirname "$NSMB_CONF")/.$(basename "$NSMB_CONF").tmp"
-  nc_cmd="{ [ ! -e $NSMB_CONF ] || cp -p $NSMB_CONF $NSMB_CONF.bak-$(date +%Y%m%d%H%M%S); } && cp $nc_tmp $nc_new && chmod 644 $nc_new && mv $nc_new $NSMB_CONF || { rm -f $nc_new; exit 1; }"
-  sudo_run "add $nc_add under [default] in $NSMB_CONF" sh -c "$nc_cmd"
-  [ -z "$nc_tmp" ] || rm -f "$nc_tmp"
+  # One single-quoted printf argument per line, each embedded `'` closed,
+  # escaped and reopened, so no value already in the file can end the
+  # quoting, expand, or run a command when the line is pasted.
+  nc_args=$(printf '%s\n' "$nc_body" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/" | tr '\n' ' ')
+  # 2>/dev/null before the input redirect, not after: redirections are
+  # applied left to right, so a missing file reports through the one already
+  # in place and the `absent` fallback answers for it.
+  nc_cmd="nc_now=\$(cksum 2>/dev/null < $NSMB_CONF || echo absent); [ \"\$nc_now\" = \"$nc_sum\" ] || { echo \"$NSMB_CONF changed since this line was printed; re-run machine-setup.sh update system for a current one\" >&2; exit 1; }; { [ ! -e $NSMB_CONF ] || cp -p $NSMB_CONF $NSMB_CONF.bak-\$(date +%Y%m%d%H%M%S); } && printf '%s\n' ${nc_args}> $nc_new && chmod 644 $nc_new && mv $nc_new $NSMB_CONF || { rm -f $nc_new; exit 1; }"
+  # Single quotes around the whole command, not double: the content can
+  # hold a $ or a backtick, and a double-quoted paste would expand it.
+  nc_shown=$(printf '%s' "$nc_cmd" | sed "s/'/'\\\\''/g")
+  sudo_run "sudo sh -c '$nc_shown'" sh -c "$nc_cmd"
 }
 
 # The paths <profile>.spotlight wants kept out of the index, one per line.
@@ -4745,7 +4889,11 @@ cmd_capture() {
   done
   comm -12 "$tmp/have.cron" "$tmp/defined.cron" > "$tmp/have.cron.defined"
   mv "$tmp/have.cron.defined" "$tmp/have.cron"
-  { common_manifest cron; cat "$tmp/host.cron"; } | sort -u > "$tmp/common.cron"
+  # The repository's own common.cron too (sd:8607): the cron stage installs
+  # what it names on every machine, so writing those names into this
+  # machine's <profile>.cron would duplicate a fleet line in a per-machine
+  # file, and capture rewrites that file wholesale.
+  { common_manifest cron; repo_cron_jobs; cat "$tmp/host.cron"; } | sort -u > "$tmp/common.cron"
   comm -23 "$tmp/have.cron" "$tmp/common.cron" > "$tmp/out.cron"
 
   if command -v mas >/dev/null 2>&1; then
@@ -5588,7 +5736,7 @@ candidates_cron() {
     echo
     return 0
   fi
-  cand_listed=$(manifest cron)
+  cand_listed=$( { manifest cron; repo_cron_jobs; } | sort -u)
   cand_all=$(discover_cron_jobs)
   cand_have=0
   cand_in=0
@@ -6703,7 +6851,7 @@ cmd_doctor() {
       echo "  WARN    cannot list this host's cron jobs (cron-jobs/jobs/<host>/); only the profile's are checked"
       dr_host=
     fi
-    jobs=$( { manifest cron; printf '%s\n' "$dr_host"; } | awk 'NF && !seen[$0]++' \
+    jobs=$( { manifest cron; repo_cron_jobs; printf '%s\n' "$dr_host"; } | awk 'NF && !seen[$0]++' \
       | { grep -vxF "$(retired_cron_jobs)" || :; } | awk -v p="$LABEL_PREFIX.cron." '{ print p $0 }')
     for label in $labels $jobs; do
       # The cron and agents stages' guard: a satellite never loads these, so
@@ -6759,8 +6907,7 @@ cmd_doctor() {
     denv=$(live_env "$(basename "$d")")
     [ -f "$denv" ] || continue
     case " $PLACEHOLDER_EXPECTED " in *" $(basename "$d") "*) continue ;; esac
-    n=$(grep -cE '=[[:space:]]*"?(change-me|changeme|CHANGE_ME|your-|xxx+|placeholder|0{8}-0{4}-0{4}-0{4}-0{12}|0{8,})' "$denv" 2>/dev/null || true)
-    n=${n:-0}
+    n=$(env_placeholders "$denv")
     if [ "$n" -gt 0 ]; then
       tot=$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$denv" 2>/dev/null || true)
       echo "    WARN    $(basename "$d")/.env — $n of ${tot:-?} value(s) still placeholder"
@@ -6886,7 +7033,9 @@ sweep_step() { # name, seconds, command...
   if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ] && cat "$ss_out.1" "$ss_out.2" | grep -Eq "$SUDO_REFUSED"; then
     DEFERRED="$DEFERRED    $*
 "
-    echo "  DEFER   needs sudo: $*"
+    # printf, as in sudo_run: echo here would read a backslash in the
+    # command as an escape (sd:8609 review).
+    printf '  DEFER   needs sudo: %s\n' "$*"
   elif [ "$ss_rc" -ne 0 ] && [ -z "$ss_err" ]; then
     failed="$failed, $ss_name"
   fi
@@ -7002,7 +7151,12 @@ doctor_unattended_sudo() {
     echo "  WARN    Keychain item $SUDO_KEYCHAIN unknown: security exited $sk_rc"
   fi
   if [ ! -e "$REPAIRS_SUDOERS" ]; then
-    echo "  WARN    no repair sudoers drop-in at $REPAIRS_SUDOERS — install local-machine-setup/machine-setup-repairs.sudoers.example with visudo -cf (README: Unattended sudo)"
+    # The whole command, as the Keychain line above prints its own (sd:8607):
+    # the two substitutions stay unexpanded, so the operator's own shell fills
+    # in this machine's account and brew prefix. visudo -cf checks the file
+    # before install puts it where sudo reads it.
+    ds_tmp=/tmp/machine-setup-repairs
+    echo "  WARN    no repair sudoers drop-in at $REPAIRS_SUDOERS — run in a terminal: sed -e \"s/change-me/\$(id -un)/\" -e \"s|HOMEBREW_PREFIX|\$(brew --prefix)|\" $DIR/machine-setup-repairs.sudoers.example > $ds_tmp && sudo visudo -cf $ds_tmp && sudo install -m 440 -o root -g wheel $ds_tmp $REPAIRS_SUDOERS"
     return 0
   fi
   # Its brew line must name this machine's brew: one copied from an Apple
@@ -9143,7 +9297,7 @@ if held is None:
 undo_own_dispatch() {
   uo_host=$(host_cron_jobs) ||
     promote_refuse "cannot list this host's cron jobs (cron-jobs/jobs/<host>/); rerun"
-  { manifest cron; printf '%s\n' "$uo_host"; } | grep -qxF build-dispatch
+  { manifest cron; repo_cron_jobs; printf '%s\n' "$uo_host"; } | grep -qxF build-dispatch
 }
 
 # The drill (design, "Drill"): promote's steps 1, 5, 6 and 9 against a
