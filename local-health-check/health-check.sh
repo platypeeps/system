@@ -464,6 +464,17 @@ for d in /Library/LaunchDaemons /Library/LaunchAgents "$HOME/Library/LaunchAgent
 done | LC_ALL=C sort > "$TMPD/launchd.now"
 if [ -f "$STATE/launchd-baseline" ]; then
   LC_ALL=C comm -13 "$STATE/launchd-baseline" "$TMPD/launchd.now" > "$TMPD/launchd.new" || :
+  # A cron plist local-cron-jobs rendered from a job file is ours: `verify`
+  # exits 0 only when the installed plist matches its job file (sd:8765).
+  while IFS= read -r p; do
+    case "$p" in
+      "$HOME/Library/LaunchAgents/$LABEL_PREFIX".cron.*.plist)
+        j=${p##*/"$LABEL_PREFIX".cron.}; j=${j%.plist}
+        ! bounded 15 sh "$TOOLS_ROOT/local-cron-jobs/cron-jobs.sh" verify "$j" >/dev/null 2>&1 || continue ;;
+    esac
+    echo "$p"
+  done < "$TMPD/launchd.new" > "$TMPD/launchd.theirs"
+  mv "$TMPD/launchd.theirs" "$TMPD/launchd.new"
   if [ -s "$TMPD/launchd.new" ]; then
     finding "new launch daemon(s)/agent(s) since last run: $(tr '\n' ' ' < "$TMPD/launchd.new")" \
       "if you did not install this, inspect the plist and the binary it points at before removing it" \
