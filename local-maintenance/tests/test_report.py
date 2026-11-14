@@ -45,6 +45,11 @@ class Harness(unittest.TestCase):
         self.sudo_calls = self.tmp / "sudo-calls"
         _stub(self.bin / "sudo", f'echo "$SUDO_ASKPASS $*" >> "{self.sudo_calls}"\n')
         _stub(self.bin / "docker", "exit 1\n")
+        # Not installed, in effect: brew and npm do nothing, uv names no
+        # cache, so no case cleans this machine's caches (sd:8746).
+        _stub(self.bin / "brew", "exit 0\n")
+        _stub(self.bin / "npm", "exit 0\n")
+        _stub(self.bin / "uv", "exit 1\n")
         _stub(self.bin / "hostname", 'echo "fixturehost"\n')
         # FAKE_DAY stands for the run's date, which the reason must not carry.
         # The weekday is FAKE_WEEKDAY, Monday unless a test sets it: the real
