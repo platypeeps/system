@@ -53,24 +53,53 @@ class CacheCleanupTest(Harness):
         self.assertNotIn("brew cleanup -s", self.maintenance("# x\n", "check").stdout.replace(
             "[dry-run] would run brew cleanup -s", ""))
 
-    def test_run_cleans_the_npm_cache_unless_npm_runs(self):
+    def npm(self):
         cache = self.tmp / "npm-cache"
-        (cache / "_cacache").mkdir(parents=True)
-        (cache / "_cacache" / "blob").write_bytes(b"\0" * 2 * 1024 * 1024)
         _stub(self.bin / "npm", 'echo "npm $*" >> "$CALLS"\n'
               f'case "$1 $2" in "config get") echo "{cache}" ;;\n'
               f'  "cache clean") rm -rf "{cache}/_cacache" ;; esac\n')
-        _stub(self.bin / "pgrep", "exit 1\n")
-        run = self.maintenance("# nothing to check\n")
+        return cache
+
+    def run_with_processes(self, *commands):
+        """A run while `ps` lists `commands`, as npm's process.title shows them."""
+        cache = self.npm()
+        (cache / "_cacache").mkdir(parents=True, exist_ok=True)
+        (cache / "_cacache" / "blob").write_bytes(b"\0" * 2 * 1024 * 1024)
+        listing = "".join(f"echo '{c}'\n" for c in commands)
+        _stub(self.bin / "ps", listing)
+        self.calls.write_text("")
+        return self.maintenance("# nothing to check\n")
+
+    def test_run_cleans_the_npm_cache_when_no_npm_runs(self):
+        run = self.run_with_processes(
+            "/sbin/launchd",
+            "node /srv/npm-example/server.js",
+            "vim /home/operator/.npmrc",
+            "grep npm install.log",
+            "node /opt/example/lib/node_modules/npm-check/bin/cli.js")
         self.assertIn("npm cache clean --force", self.logged())
         self.assertIn("- npm cache: 2 MB -> 0 MB", run.stdout)
-        (cache / "_cacache").mkdir()
-        (cache / "_cacache" / "blob").write_bytes(b"\0" * 1024)
-        self.calls.write_text("")
-        _stub(self.bin / "pgrep", "exit 0\n")
+
+    def test_a_running_npm_keeps_the_cache(self):
+        # npm sets process.title, so a running install shows as "npm
+        # install", not as node running npm-cli.js (sd:8746 review).
+        for title in ("npm install", "npm exec --yes example-tool", "npm ci",
+                      "/opt/example/bin/npm run build", "npx example-tool",
+                      "node /opt/example/lib/node_modules/npm/bin/npm-cli.js i",
+                      "node /opt/example/lib/node_modules/npm/bin/npx-cli.js x"):
+            with self.subTest(title=title):
+                run = self.run_with_processes("/sbin/launchd", title)
+                self.assertNotIn("npm cache clean --force", self.logged())
+                self.assertIn("npm cache clean skipped: npm runs", run.stdout)
+
+    def test_an_unreadable_process_list_keeps_the_cache(self):
+        self.npm()
+        cache = self.tmp / "npm-cache"
+        (cache / "_cacache").mkdir(parents=True)
+        _stub(self.bin / "ps", "exit 1\n")
         run = self.maintenance("# nothing to check\n")
         self.assertNotIn("npm cache clean --force", self.logged())
-        self.assertIn("npm cache clean skipped: npm runs", run.stdout)
+        self.assertIn("npm cache clean skipped: could not list processes", run.stdout)
 
     def uv(self, foreign):
         cache = self.tmp / "uv-cache"

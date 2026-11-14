@@ -526,7 +526,14 @@ if [ -n "$npm_cache" ] && [ -d "$npm_cache/_cacache" ]; then
   before=$(du -sk "$npm_cache/_cacache" | cut -f1)
   if [ "$APPLY" -eq 0 ]; then
     action "[dry-run] would clean npm's cache ($((before / 1024)) MB)"
-  elif pgrep -f 'npm-cli|npx-cli' >/dev/null 2>&1; then
+  elif ! st_step 30 ps -A -o command= > "$TMPD/ps" 2>/dev/null; then
+    action "npm cache clean skipped: could not list processes"
+  # npm sets process.title, so an install shows as "npm install", not as
+  # node running npm-cli.js. A process is npm when its first word is npm
+  # or npx, by basename, or a word is npm's or npx's cli script.
+  elif awk '{ n = split($1, w, "/"); if (w[n] == "npm" || w[n] == "npx") f = 1
+              for (i = 2; i <= NF; i++) if ($i ~ /\/np[mx]-cli\.js$/) f = 1 }
+            END { exit !f }' "$TMPD/ps"; then
     action "npm cache clean skipped: npm runs"
   elif st_step 300 npm cache clean --force > "$TMPD/npm" 2>&1; then
     after=0
