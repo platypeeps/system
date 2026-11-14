@@ -1,10 +1,11 @@
 # local-maintenance
 
 Nightly machine upkeep in one sweep: install pending macOS / App Store updates,
-docker prune (Sundays), idle cargo build output in worktrees, backup
-freshness, certificate expiry, log rotation, disk space. Findings that need
-a human go to the run's report, which Reports and Today show; safe fixes
-(log rotation, docker prune, the build output) happen automatically.
+docker prune (Sundays), exited containers and the brew, npm and uv caches
+(nightly), idle cargo build output in worktrees, backup freshness,
+certificate expiry, log rotation, disk space. Findings that need a human go
+to the run's report, which Reports and Today show; safe fixes (log
+rotation, the prunes, the build output) happen automatically.
 
 ## Usage
 
@@ -56,6 +57,12 @@ list because Claude Code deletes its own), on Sundays `docker system prune -f` (
 and dangling images only — volumes are never pruned, several local services
 keep state in them), and idle build output in worktrees (sd:5994).
 
+Every night `run` also clears caches no other job cleans (sd:8746):
+exited docker containers (`docker rm`; created ones stay), `brew cleanup
+-s`, `npm cache clean --force` (skipped while npm runs), and `uv-prune`
+below. A uv prune skipped three nights in a row is a finding: on an
+always-on machine another uv server may never let go of the cache.
+
 `run` installs the pending updates it finds (sd:6927):
 `sudo -A softwareupdate -i <label>` for each macOS update that needs no
 restart, and `sudo -A mas upgrade <id>` for each App Store app, one at a
@@ -99,7 +106,8 @@ The walks and the delete run under `lib/bounded.sh`'s `st_step`.
 
 ## uv cache prune at login
 
-The uv-cache-prune LaunchAgent runs `uv-prune` once at login. Its label is
+`run` takes `uv-prune` each night too; at login the
+uv-cache-prune LaunchAgent runs it once. Its label is
 `$SYSTEM_TOOLS_LABEL_PREFIX.uv-cache-prune` (prefix default
 `local.system-tools`). `uv-prune-plist` prints it, filled from
 `uv-cache-prune.plist.template` for this checkout and `$HOME`:

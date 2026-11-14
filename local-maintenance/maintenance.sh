@@ -1,6 +1,6 @@
 #!/bin/sh
 # Nightly machine maintenance: installs pending OS/App Store updates, docker prune
-# (Sundays), idle cargo target/ folders in ~/worktrees, backup freshness,
+# (Sundays), exited containers and brew/npm/uv caches (nightly), idle cargo target/ folders in ~/worktrees, backup freshness,
 # certificate expiry, log rotation, disk space.
 # Checks come from maintenance.conf plus maintenance.<profile>.conf in
 # <config>/maintenance/ (outside the checkout);
@@ -162,7 +162,9 @@ case "${1:-}" in
 usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
 
   run    run all checks, apply the safe fixes (rotate oversized logs; docker
-         system prune on Sundays; delete cargo target/ folders under
+         system prune on Sundays; remove exited docker containers, run
+         brew cleanup -s, npm cache clean and uv-prune nightly; delete
+         cargo target/ folders under
          ~/worktrees untouched for 3 days and used by no process), and
          print the findings that need a human
          (what the maintenance-nightly cron job runs). With findings it prints
@@ -171,7 +173,8 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
   check  read-only: run all checks and print findings and would-be fixes
          without changing anything.
   uv-prune
-         prune uv's cache (what the uv-cache-prune login agent runs).
+         prune uv's cache (what the uv-cache-prune login agent runs;
+         `run` runs it nightly too).
          Pauses the LaunchAgents in UV_PRUNE_PAUSE (default
          $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp, prefix default
          local.system-tools), skips when any other uv process is
@@ -477,6 +480,101 @@ if [ "$(date +%u)" = "7" ]; then
     fi
   else
     action "docker prune skipped — daemon not running"
+  fi
+fi
+
+# Caches no other job cleans (sd:8746): a hub at 97% full held 25.7 GB of
+# exited gate test containers, 8.6 GB of Homebrew cache, 5.5 GB of npm
+# cache and 82 GB of uv cache. Exited containers go every night; only
+# exited ones, as a created container may be a run about to start.
+if st_step 30 docker info >/dev/null 2>&1; then
+  if ! exited=$(st_step 60 docker ps -a --filter status=exited --format '{{.Names}}'); then
+    finding "docker: could not list exited containers"
+  elif [ -n "$exited" ]; then
+    n=$(echo "$exited" | wc -l | tr -d ' ')
+    names=$(echo "$exited" | tr '\n' ' ' | sed 's/ $//')
+    if [ "$APPLY" -eq 0 ]; then
+      action "[dry-run] would remove $n exited docker container(s): $names"
+    elif echo "$exited" | st_step 300 xargs docker rm >/dev/null; then
+      action "removed $n exited docker container(s): $names"
+    else
+      finding "docker: could not remove exited containers"
+    fi
+  fi
+fi
+
+if command -v brew >/dev/null 2>&1; then
+  if [ "$APPLY" -eq 0 ]; then
+    action "[dry-run] would run brew cleanup -s"
+  elif st_step 600 brew cleanup -s > "$TMPD/brew" 2>&1; then
+    freed=$(grep -o 'freed approximately [^ ]*' "$TMPD/brew" | tail -1)
+    if [ -n "$freed" ]; then
+      action "brew cleanup -s: $freed"
+    fi
+  else
+    finding "brew cleanup -s failed: $(grep -v '^\[step ' "$TMPD/brew" | tail -1)" "brew cleanup -s failed"
+  fi
+fi
+
+# npm's cache clean takes the whole cache, so it waits for a night no npm
+# runs: an install reading the cache would fail.
+npm_cache=""
+if command -v npm >/dev/null 2>&1; then
+  npm_cache=$(st_step 60 npm config get cache 2>/dev/null) || npm_cache=""
+fi
+if [ -n "$npm_cache" ] && [ -d "$npm_cache/_cacache" ]; then
+  before=$(du -sk "$npm_cache/_cacache" | cut -f1)
+  if [ "$APPLY" -eq 0 ]; then
+    action "[dry-run] would clean npm's cache ($((before / 1024)) MB)"
+  elif ! st_step 30 ps -A -o command= > "$TMPD/ps" 2>/dev/null; then
+    action "npm cache clean skipped: could not list processes"
+  # npm sets process.title, so an install shows as "npm install", not as
+  # node running npm-cli.js. A process is npm when its first word is npm
+  # or npx, by basename, or a word is npm's or npx's cli script.
+  elif awk '{ n = split($1, w, "/"); if (w[n] == "npm" || w[n] == "npx") f = 1
+              for (i = 2; i <= NF; i++) if ($i ~ /\/np[mx]-cli\.js$/) f = 1 }
+            END { exit !f }' "$TMPD/ps"; then
+    action "npm cache clean skipped: npm runs"
+  elif st_step 300 npm cache clean --force > "$TMPD/npm" 2>&1; then
+    after=0
+    [ ! -d "$npm_cache/_cacache" ] || after=$(du -sk "$npm_cache/_cacache" | cut -f1)
+    action "npm cache: $((before / 1024)) MB -> $((after / 1024)) MB"
+  else
+    finding "npm cache clean failed: $(grep -v '^\[step ' "$TMPD/npm" | tail -1)" "npm cache clean failed"
+  fi
+fi
+
+# The login agent's uv-prune never runs again on an always-on hub, so run
+# takes it too. In a subshell: its traps would replace this run's. It skips
+# while another uv holds the cache; three such nights in a row are a
+# finding, as the cache then only grows.
+UV_SKIPS="$HOME/.local/state/maintenance/uv-prune-skips"
+if [ "$APPLY" -eq 0 ]; then
+  if command -v uv >/dev/null 2>&1 && uv_cache=$(uv cache dir 2>/dev/null) && [ -d "$uv_cache" ]; then
+    action "[dry-run] would prune uv's cache $uv_cache (uv-prune)"
+  fi
+else
+  uv_rc=0
+  ( uv_prune ) > "$TMPD/uv" 2>&1 || uv_rc=$?
+  if grep -q '; skipped$' "$TMPD/uv"; then
+    skips=$(cat "$UV_SKIPS" 2>/dev/null) || skips=0
+    case $skips in ''|*[!0-9]*) skips=0 ;; esac
+    skips=$((skips + 1))
+    { mkdir -p "$(dirname "$UV_SKIPS")" && echo "$skips" > "$UV_SKIPS"; } 2>/dev/null || true
+    why=$(grep '; skipped$' "$TMPD/uv" | tail -1 | sed -e 's/^uv-prune: //' -e 's/; skipped$//')
+    if [ "$skips" -ge 3 ]; then
+      finding "uv cache prune skipped $skips nights running: $why" \
+        "uv cache prune skipped 3 or more nights running: $why"
+    else
+      action "uv-prune: $why; skipped"
+    fi
+  elif grep -q ' MB -> ' "$TMPD/uv"; then
+    rm -f "$UV_SKIPS"
+    action "$(grep ' MB -> ' "$TMPD/uv" | tail -1)"
+  fi
+  if [ "$uv_rc" -ne 0 ]; then
+    finding "uv-prune: a paused agent did not start again: $(tail -1 "$TMPD/uv")" \
+      "uv-prune: a paused agent did not start again"
   fi
 fi
 
