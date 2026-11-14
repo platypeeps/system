@@ -89,6 +89,22 @@ class TargetPruneTest(Harness):
         self.assertIn(f"- removed idle build output {target} (untouched 3 days)", run.stdout)
         self.assertEqual(self.attention(run), [])
 
+    def test_an_idle_target_in_a_main_checkout_goes(self):
+        # sd:8779: main checkouts under ~/repos kept stale build output;
+        # only ~/worktrees was walked. Both layouts: ~/repos/<repo> and
+        # ~/repos/<org>/<repo>.
+        self.worktrees = self.tmp / "home" / "repos"
+        flat, flat_target = self.cargo_target("example-repo")
+        nested, nested_target = self.cargo_target("example-org/example-repo")
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        for checkout, target in ((flat, flat_target), (nested, nested_target)):
+            self.assertFalse(target.exists(), run.stdout + run.stderr)
+            self.assertTrue((checkout / "Cargo.toml").is_file())
+            self.assertIn(f"- removed idle build output {target} (untouched 3 days)",
+                          run.stdout)
+        self.assertEqual(self.attention(run), [])
+
     def test_a_target_written_inside_3_days_stays(self):
         _checkout, target = self.cargo_target("example-busy")
         fresh = target / "debug" / "deps" / "example-4567"
