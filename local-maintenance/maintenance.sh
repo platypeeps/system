@@ -5,7 +5,7 @@
 # Checks come from maintenance.conf plus maintenance.<profile>.conf in
 # <config>/maintenance/ (outside the checkout);
 # findings go to the run's report, which Reports and Today show.
-# Usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
+# Usage: maintenance.sh run|check|uv-prune|uv-prune-plist|move|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
@@ -30,7 +30,7 @@ if [ -n "$PROFILE" ] && [ -f "$CONF_DIR/maintenance.$PROFILE.conf" ]; then
   PROFILE_CONF="$CONF_DIR/maintenance.$PROFILE.conf"
 fi
 
-usage() { echo "usage: $(basename "$0") run|check|uv-prune|uv-prune-plist|test" >&2; exit 1; }
+usage() { echo "usage: $(basename "$0") run|check|uv-prune|uv-prune-plist|move|test" >&2; exit 1; }
 
 LABEL_PREFIX="$(st_label_prefix)"
 UV_PRUNE_LABEL="$LABEL_PREFIX.uv-cache-prune"
@@ -153,13 +153,25 @@ case "${1:-}" in
         "$DIR/uv-cache-prune.plist.template"
     exit 0
     ;;
+  move)
+    # Move a path to the bulk storage root, check the copy, then link it
+    # (sd:8797). The root is the workflow database's one setting.
+    shift
+    [ -n "${1:-}" ] || usage
+    root=$("${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}/bin/sd" config get sd.bulk_storage_root 2>/dev/null) || root=""
+    if [ -z "$root" ]; then
+      echo "maintenance.sh move: sd.bulk_storage_root is not set or not read; set it with: sd config set sd.bulk_storage_root <dir>" >&2
+      exit 1
+    fi
+    exec python3 "$DIR/bulk_move.py" "$root" "$@"
+    ;;
   test)
     shift
     exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
     ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
+usage: maintenance.sh run|check|uv-prune|uv-prune-plist|move|test
 
   run    run all checks, apply the safe fixes (rotate oversized logs; docker
          system prune on Sundays; remove exited docker containers, run
@@ -185,6 +197,14 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
          print the login agent's plist (label
          $SYSTEM_TOOLS_LABEL_PREFIX.uv-cache-prune), filled from
          uv-cache-prune.plist.template for this checkout and $HOME.
+  move <path> [folder]
+         copy a file or folder to <bulk root>/<folder>/<path in its
+         checkout>, check size and content per file, then replace the
+         source with a symlink to the copy; a mismatch removes the copy.
+         <folder> defaults to the checkout's name; outside a checkout it
+         is required. The root is sd.bulk_storage_root. Refuses a path
+         git tracks, build output (target/, node_modules/), a path a
+         process holds (lsof), and a missing or full bulk root.
   test   run this tool's unit tests.
 
 Checks are configured in <config>/maintenance/maintenance.conf (<config> is

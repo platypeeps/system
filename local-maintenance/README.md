@@ -14,8 +14,22 @@ rotation, the prunes, the build output) happen automatically.
 ./maintenance.sh run     # apply safe fixes, report findings (cron entrypoint)
 ./maintenance.sh uv-prune  # prune uv's cache (the login agent's entrypoint)
 ./maintenance.sh uv-prune-plist  # print that login agent's plist
+./maintenance.sh move <path> [folder]  # put a path on the bulk SSD, then link it
 ./maintenance.sh test    # run the unit tests
 ```
+
+## Move a path to the bulk storage root
+
+`move <path> [folder]` copies a file or folder to
+`<bulk root>/<folder>/<path inside its checkout>`, checks every file by
+size and content, then replaces the source with a symlink to the copy
+(sd:8797). `<folder>` defaults to the checkout's name; outside a checkout
+name it, and the copy goes to `<bulk root>/<folder>/<basename>`. The root
+is the workflow database's `sd.bulk_storage_root`. A mismatch removes the
+copy and keeps the source. It refuses, changing nothing: a path git
+tracks or a folder holding one, a checkout, build output (`target/`,
+`node_modules/`), a path a process holds open (`lsof`; a failed `lsof`
+refuses too), a missing or full bulk root, and an existing destination.
 
 With findings, `run` prints one line per finding, `SD_REPORT_ATTENTION:
 maintenance on <host>: <finding>`, and one per pending update under its finding,

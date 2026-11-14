@@ -1,0 +1,181 @@
+"""Move a file or folder to the bulk storage root, then link it (sd:8797).
+
+maintenance.sh runs `python3 bulk_move.py ROOT PATH [FOLDER]`. The copy
+goes to ROOT/FOLDER/<path inside its checkout>; FOLDER defaults to the
+checkout's name, and outside a checkout it is required (the copy then goes
+to ROOT/FOLDER/<basename>). Each file of the copy is checked by size and
+content; a mismatch removes the copy and keeps the source. Only then the
+source is replaced by a symlink to the copy.
+
+Refused, with the reason on stderr and nothing changed: a missing path, a
+symlink, a path git tracks or a checkout, build output (target/,
+node_modules/), a path a process holds open (lsof; an lsof that fails
+refuses too), a missing or full bulk root, an existing destination.
+
+Exit 0: moved. 1: refused or failed; the source is unchanged.
+"""
+
+import filecmp
+import os
+import shutil
+import subprocess
+import sys
+
+BUILD_OUTPUT = ("target", "node_modules")
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+class Refused(Exception):
+    pass
+
+
+def free_bytes(path):
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize
+
+
+def held_open(path):
+    """True when lsof lists a name at or under `path`; Refused if lsof fails."""
+    sys.path.insert(0, HERE)
+    from in_use import in_use
+    try:
+        out = subprocess.run(["lsof", "-nP", "-F", "n"], capture_output=True, timeout=120).stdout
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise Refused(f"lsof gave no answer ({error}); kept {path}") from None
+    if not out:
+        raise Refused(f"lsof gave no answer; kept {path}")
+    return in_use(path, out.splitlines(keepends=True))
+
+
+def walk(src):
+    """Every entry under `src` as a path relative to it, links not followed."""
+    if not os.path.isdir(src) or os.path.islink(src):
+        return []
+    found = []
+    for top, dirs, files in os.walk(src):
+        for name in dirs + files:
+            found.append(os.path.relpath(os.path.join(top, name), src))
+    return found
+
+
+def checkout(path):
+    """The top of the git checkout holding `path`, or None."""
+    where = path if os.path.isdir(path) else os.path.dirname(path)
+    run = subprocess.run(["git", "-C", where, "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True)
+    return os.path.realpath(run.stdout.strip()) if run.returncode == 0 else None
+
+
+def copy(src, dst):
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.isdir(src):
+        shutil.copytree(src, dst, symlinks=True)
+    else:
+        shutil.copy2(src, dst)
+
+
+def mismatches(src, dst):
+    """Entries whose copy differs: kind, link target, size or content."""
+    bad = []
+    pairs = [(src, dst, os.path.basename(src))]
+    pairs += [(os.path.join(src, r), os.path.join(dst, r), r) for r in walk(src)]
+    for a, b, rel in pairs:
+        if os.path.islink(a):
+            if not os.path.islink(b) or os.readlink(a) != os.readlink(b):
+                bad.append(rel)
+        elif os.path.isdir(a):
+            if os.path.islink(b) or not os.path.isdir(b):
+                bad.append(rel)
+        elif (os.path.islink(b) or not os.path.isfile(b)
+              or os.path.getsize(a) != os.path.getsize(b)
+              or not filecmp.cmp(a, b, shallow=False)):
+            bad.append(rel)
+    if os.path.isdir(src) and len(walk(dst)) != len(walk(src)):
+        bad.append("(entry count)")
+    return bad
+
+
+def remove(path):
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    else:
+        os.unlink(path)
+
+
+def plan(root, path, folder):
+    """Check every refusal; return (src, dst)."""
+    src = os.path.abspath(path)
+    if os.path.islink(src):
+        raise Refused(f"{src} is a symlink already; nothing to move")
+    if not os.path.exists(src):
+        raise Refused(f"{src} does not exist")
+    src = os.path.join(os.path.realpath(os.path.dirname(src)), os.path.basename(src))
+    root = os.path.realpath(os.path.expanduser(root))
+    if not os.path.isdir(root):
+        raise Refused(f"bulk root {root} is missing (unmounted?); kept {src}")
+    if src == root or src.startswith(root + os.sep):
+        raise Refused(f"{src} is on the bulk root already")
+    entries = walk(src)
+    parts = src.split(os.sep) + [p for e in entries for p in e.split(os.sep)]
+    if any(p in BUILD_OUTPUT for p in parts):
+        raise Refused(f"{src} is or holds build output (target/, node_modules/); it stays on the system disk")
+    if ".git" in parts:
+        raise Refused(f"{src} is or holds a git checkout")
+    top = checkout(src)
+    if top:
+        rel = os.path.relpath(src, top)
+        tracked = subprocess.run(["git", "-C", top, "ls-files", "-z", "--", rel],
+                                 capture_output=True, check=True).stdout
+        if tracked:
+            raise Refused(f"{src} is tracked by git, or holds a tracked file")
+        folder = folder or os.path.basename(top)
+    else:
+        if not folder:
+            raise Refused(f"{src} is in no checkout; name the folder under the bulk root")
+        rel = os.path.basename(src)
+    dst = os.path.join(root, folder, rel)
+    if os.path.lexists(dst):
+        raise Refused(f"{dst} exists already; kept {src}")
+    size = sum(os.lstat(os.path.join(src, e)).st_size for e in entries) or os.lstat(src).st_size
+    if free_bytes(root) <= size:
+        raise Refused(f"bulk root {root} is full: {size} bytes do not fit; kept {src}")
+    if held_open(src):
+        raise Refused(f"a process holds {src} open (lsof); kept it")
+    return src, dst
+
+
+def main(argv):
+    if len(argv) not in (2, 3):
+        print("usage: bulk_move.py ROOT PATH [FOLDER]", file=sys.stderr)
+        return 1
+    try:
+        src, dst = plan(argv[0], argv[1], argv[2] if len(argv) == 3 else None)
+    except Refused as why:
+        print(f"move: {why}", file=sys.stderr)
+        return 1
+    try:
+        copy(src, dst)
+        bad = mismatches(src, dst)
+    except OSError as error:
+        bad = [f"copy failed: {error}"]
+    if bad:
+        if os.path.lexists(dst):
+            remove(dst)
+        print(f"move: the copy of {src} differs ({', '.join(bad[:5])}); removed it, kept the source",
+              file=sys.stderr)
+        return 1
+    aside = f"{src}.bulk-move-{os.getpid()}"
+    os.rename(src, aside)
+    try:
+        os.symlink(dst, src)
+    except OSError as error:
+        os.rename(aside, src)
+        print(f"move: could not link {src} ({error}); kept it, the copy stays at {dst}", file=sys.stderr)
+        return 1
+    remove(aside)
+    print(f"moved {src} -> {dst}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
