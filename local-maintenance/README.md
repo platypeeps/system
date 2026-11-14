@@ -2,7 +2,7 @@
 
 Nightly machine upkeep in one sweep: install pending macOS / App Store updates,
 docker prune (Sundays), exited containers and the brew, npm and uv caches
-(nightly), idle cargo build output in worktrees, backup freshness,
+(nightly), idle cargo build output in checkouts, backup freshness,
 certificate expiry, log rotation, disk space. Findings that need a human go
 to the run's report, which Reports and Today show; safe fixes (log
 rotation, the prunes, the build output) happen automatically.
@@ -55,7 +55,7 @@ retention and the directory list — 30 days for the transcripts, 7 for the
 codex shell-snapshot cache, and `~/.claude/projects` deliberately not in the
 list because Claude Code deletes its own), on Sundays `docker system prune -f` (containers
 and dangling images only — volumes are never pruned, several local services
-keep state in them), and idle build output in worktrees (sd:5994).
+keep state in them), and idle build output in checkouts (sd:5994).
 
 Every night `run` also clears caches no other job cleans (sd:8746):
 exited docker containers (`docker rm`; created ones stay), `brew cleanup
@@ -74,9 +74,9 @@ refuses, and the update stays a finding with sudo's reason. A macOS
 update that needs a restart stays a finding: the restart is yours.
 `check` installs nothing.
 
-`run` deletes each cargo `target/` folder under `~/worktrees`, at depth 2
-or 3, that nothing wrote or ran for 3 days; `check` names them. An exec
-sets a file's access time on APFS, so a file accessed within 3 days keeps
+`run` deletes each cargo `target/` folder under `~/worktrees` or
+`~/repos` (main checkouts, sd:8779), at depth 2 or 3, that nothing
+wrote or ran for 3 days; `check` names them. An exec sets a file's access time on APFS, so a file accessed within 3 days keeps
 the folder: a trial ran a binary there each evening that nothing rebuilt
 (sd:6128). A folder's access time does not count, as the walk sets it.
 A folder that `lsof` shows a process using (a running binary, an open
@@ -99,7 +99,7 @@ build can lock there later. The delete runs in the trash: a cargo that
 starts during the hold or the delete makes a fresh `target/`. A rename that
 fails (another volume) keeps the folder; nothing is copied. A run
 stopped during a delete leaves its entry in the trash, and the next run
-deletes entries there, never a path under `~/worktrees`, and none whose
+deletes entries there, never a path in a checkout, and none whose
 lock a build still holds. A probe that fails is a finding, and the folder
 stays.
 The walks and the delete run under `lib/bounded.sh`'s `st_step`.

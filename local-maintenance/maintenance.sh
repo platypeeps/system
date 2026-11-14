@@ -1,6 +1,6 @@
 #!/bin/sh
 # Nightly machine maintenance: installs pending OS/App Store updates, docker prune
-# (Sundays), exited containers and brew/npm/uv caches (nightly), idle cargo target/ folders in ~/worktrees, backup freshness,
+# (Sundays), exited containers and brew/npm/uv caches (nightly), idle cargo target/ folders in ~/worktrees and ~/repos, backup freshness,
 # certificate expiry, log rotation, disk space.
 # Checks come from maintenance.conf plus maintenance.<profile>.conf in
 # <config>/maintenance/ (outside the checkout);
@@ -165,7 +165,7 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
          system prune on Sundays; remove exited docker containers, run
          brew cleanup -s, npm cache clean and uv-prune nightly; delete
          cargo target/ folders under
-         ~/worktrees untouched for 3 days and used by no process), and
+         ~/worktrees and ~/repos untouched for 3 days and used by no process), and
          print the findings that need a human
          (what the maintenance-nightly cron job runs). With findings it prints
          an SD_REPORT_ATTENTION line, so the run's report reaches Reports and
@@ -210,7 +210,7 @@ restart, which stays a finding. Also AI session logs past their retention (delet
 scan-for-secrets.sh prune, which owns the retention and the directory list;
 ~/.claude/projects is not on it -- Claude Code deletes its own transcripts),
 on Sundays `docker system prune -f` (images and containers only — volumes
-are never pruned), and cargo target/ folders under ~/worktrees that nothing
+are never pruned), and cargo target/ folders under ~/worktrees and ~/repos that nothing
 wrote or ran for 3 days (only a folder holding CACHEDIR.TAG; the checkout
 stays).
 HELPEOF
@@ -578,21 +578,22 @@ else
   fi
 fi
 
-# Idle cargo build output in worktrees (sd:5994). A builder leaves a target/
-# of several GB in each worktree, and the worktree stays until its branch
-# lands. A target/ nothing wrote or ran for 3 days goes; the checkout and its
-# commits stay, and the next build makes it again. An exec sets a file's
+# Idle cargo build output in worktrees and main checkouts (sd:5994,
+# sd:8779). A builder leaves a target/ of several GB in each worktree, and
+# the worktree stays until its branch lands; a main checkout under ~/repos
+# keeps one from its last build. A target/ nothing wrote or ran for 3 days
+# goes; the checkout and its commits stay, and the next build makes it
+# again. An exec sets a file's
 # access time on APFS, so a file's atime counts as a run: a trial ran a
 # binary there each evening that nothing rebuilt (sd:6128). A folder's does
 # not: this walk reads each folder, which sets it. Only a folder holding cargo's
 # CACHEDIR.TAG counts, at depth 2 or 3 (depth 1 is a checkout), and find
 # follows no link. A probe that fails or hits its bound is no answer: the
 # folder stays. The delete runs only inside PRUNE_TRASH, which this step owns.
-WORKTREES="$HOME/worktrees"
 PRUNE_TRASH="$HOME/.local/state/maintenance/prune-trash"
 # A run stopped during a delete leaves its entry in the trash; the next run
 # deletes it, unless a build that started during a move still holds a lock
-# there. Only entries in the trash go, never a path under ~/worktrees.
+# there. Only entries in the trash go, never a path under a checkout.
 if [ -d "$PRUNE_TRASH" ]; then
   if ! st_step 60 find "$PRUNE_TRASH" -mindepth 1 -maxdepth 1 -print > "$TMPD/trash"; then
     finding "build output prune: could not list all of $PRUNE_TRASH"
@@ -615,92 +616,94 @@ if [ -d "$PRUNE_TRASH" ]; then
     fi
   done < "$TMPD/trash"
 fi
-if [ -d "$WORKTREES" ]; then
-  TARGETS="$TMPD/targets"
+TARGETS="$TMPD/targets"
+: > "$TARGETS"
+for root in "$HOME/worktrees" "$HOME/repos"; do
+  [ -d "$root" ] || continue
   # A walk that fails partway still listed real folders; each is checked
   # again below, and the failure is a finding of its own.
-  if ! st_step 120 find "$WORKTREES" -mindepth 2 -maxdepth 3 -type d \
-      -name target -prune -print > "$TARGETS"; then
-    finding "build output prune: could not list all of $WORKTREES"
+  if ! st_step 120 find "$root" -mindepth 2 -maxdepth 3 -type d \
+      -name target -prune -print >> "$TARGETS"; then
+    finding "build output prune: could not list all of $root"
   fi
-  while IFS= read -r t; do
-    [ -d "$t" ] && [ ! -L "$t" ] || continue
-    [ -f "$t/CACHEDIR.TAG" ] || continue
-    if ! recent=$(st_step 300 find "$t" '(' -mmin -4320 -o -type f -amin -4320 ')' -print -quit); then
-      finding "build output prune: could not read $t; kept"
-      continue
+done
+while IFS= read -r t; do
+  [ -d "$t" ] && [ ! -L "$t" ] || continue
+  [ -f "$t/CACHEDIR.TAG" ] || continue
+  if ! recent=$(st_step 300 find "$t" '(' -mmin -4320 -o -type f -amin -4320 ')' -print -quit); then
+    finding "build output prune: could not read $t; kept"
+    continue
+  fi
+  [ -z "$recent" ] || continue
+  # An old atime is no proof nothing runs there: a paid run used a binary
+  # built over 3 days before and lost target/ (sd:8240). lsof lists every
+  # open file, cwd and running binary (txt); one under $t keeps it.
+  # lsof escapes names it cannot print; in_use.py compares the escaped form.
+  if ! st_step 60 lsof -nP -F n > "$TMPD/open" 2>/dev/null; then
+    finding "build output prune: could not tell whether a process uses $t; kept"
+    continue
+  fi
+  use_rc=0
+  python3 "$DIR/in_use.py" "$t" "$TMPD/open" 2> "$TMPD/use.err" || use_rc=$?
+  if [ "$use_rc" -eq 0 ]; then
+    action "kept idle build output $t: a process uses it"
+    continue
+  elif [ "$use_rc" -ne 3 ]; then
+    # Name in_use.py's own error, so the report says why (sd:8271).
+    use_why=$(sed -n '$p' "$TMPD/use.err")
+    # The key leaves the error out: it can name a per-run temp path, and
+    # a key that moves opens a new report each night (sd:8333, sd:4182).
+    finding "build output prune: could not tell whether a process uses $t; kept${use_why:+: $use_why}" \
+      "build output prune: could not tell whether a process uses $t; kept"
+    continue
+  fi
+  if [ "$APPLY" -eq 0 ]; then
+    action "[dry-run] would remove idle build output $t (untouched 3 days)"
+    continue
+  fi
+  # An old mtime is no proof cargo is idle, so the move uses cargo's own
+  # lock: flock(2) on each target/<profile>/.cargo-lock. prune_move.py takes
+  # them all without waiting and, while it holds them, renames target/ into
+  # the trash. A busy lock is a running build: skip it, no finding. A cargo
+  # that starts during the hold waits on the lock, then builds a fresh
+  # target/, and never sees the files being deleted. A build that locked a
+  # new profile before the rename gets target/ back (76); if target/ exists
+  # again, the copy stays in the trash (77). rename(2), not mv: mv copies
+  # across volumes. A rename that fails keeps the folder.
+  # A cargo that opened a .cargo-lock before the move and waits on it gets
+  # the moved copy once the lock frees. So while cargo or rustc runs, this
+  # run prunes nothing more, with no finding. ponytail: a build that starts
+  # between this check and the rename fails once and reruns; target/ is a
+  # cache. The operator accepted that window (sd:5994 round 7).
+  cargo_rc=0
+  st_step 30 pgrep -x 'cargo|rustc' > /dev/null || cargo_rc=$?
+  if [ "$cargo_rc" -eq 0 ]; then
+    break
+  elif [ "$cargo_rc" -ne 1 ]; then
+    finding "build output prune: could not tell whether cargo runs; skipped"
+    break
+  fi
+  if ! { mkdir -p "$PRUNE_TRASH" && bin=$(mktemp -d "$PRUNE_TRASH/XXXXXXXX"); } 2> "$TMPD/move.err"; then
+    finding "build output prune: could not make a folder in $PRUNE_TRASH; kept $t"
+    continue
+  fi
+  move_rc=0
+  python3 "$DIR/prune_move.py" "$t" "$bin/target" 2> "$TMPD/move.err" || move_rc=$?
+  if [ "$move_rc" -eq 0 ]; then
+    if st_step 600 rm -rf "$bin"; then
+      action "removed idle build output $t (untouched 3 days)"
+    else
+      finding "build output prune: could not finish deleting $t; the next run deletes $bin"
     fi
-    [ -z "$recent" ] || continue
-    # An old atime is no proof nothing runs there: a paid run used a binary
-    # built over 3 days before and lost target/ (sd:8240). lsof lists every
-    # open file, cwd and running binary (txt); one under $t keeps it.
-    # lsof escapes names it cannot print; in_use.py compares the escaped form.
-    if ! st_step 60 lsof -nP -F n > "$TMPD/open" 2>/dev/null; then
-      finding "build output prune: could not tell whether a process uses $t; kept"
-      continue
-    fi
-    use_rc=0
-    python3 "$DIR/in_use.py" "$t" "$TMPD/open" 2> "$TMPD/use.err" || use_rc=$?
-    if [ "$use_rc" -eq 0 ]; then
-      action "kept idle build output $t: a process uses it"
-      continue
-    elif [ "$use_rc" -ne 3 ]; then
-      # Name in_use.py's own error, so the report says why (sd:8271).
-      use_why=$(sed -n '$p' "$TMPD/use.err")
-      # The key leaves the error out: it can name a per-run temp path, and
-      # a key that moves opens a new report each night (sd:8333, sd:4182).
-      finding "build output prune: could not tell whether a process uses $t; kept${use_why:+: $use_why}" \
-        "build output prune: could not tell whether a process uses $t; kept"
-      continue
-    fi
-    if [ "$APPLY" -eq 0 ]; then
-      action "[dry-run] would remove idle build output $t (untouched 3 days)"
-      continue
-    fi
-    # An old mtime is no proof cargo is idle, so the move uses cargo's own
-    # lock: flock(2) on each target/<profile>/.cargo-lock. prune_move.py takes
-    # them all without waiting and, while it holds them, renames target/ into
-    # the trash. A busy lock is a running build: skip it, no finding. A cargo
-    # that starts during the hold waits on the lock, then builds a fresh
-    # target/, and never sees the files being deleted. A build that locked a
-    # new profile before the rename gets target/ back (76); if target/ exists
-    # again, the copy stays in the trash (77). rename(2), not mv: mv copies
-    # across volumes. A rename that fails keeps the folder.
-    # A cargo that opened a .cargo-lock before the move and waits on it gets
-    # the moved copy once the lock frees. So while cargo or rustc runs, this
-    # run prunes nothing more, with no finding. ponytail: a build that starts
-    # between this check and the rename fails once and reruns; target/ is a
-    # cache. The operator accepted that window (sd:5994 round 7).
-    cargo_rc=0
-    st_step 30 pgrep -x 'cargo|rustc' > /dev/null || cargo_rc=$?
-    if [ "$cargo_rc" -eq 0 ]; then
-      break
-    elif [ "$cargo_rc" -ne 1 ]; then
-      finding "build output prune: could not tell whether cargo runs; skipped"
-      break
-    fi
-    if ! { mkdir -p "$PRUNE_TRASH" && bin=$(mktemp -d "$PRUNE_TRASH/XXXXXXXX"); } 2> "$TMPD/move.err"; then
-      finding "build output prune: could not make a folder in $PRUNE_TRASH; kept $t"
-      continue
-    fi
-    move_rc=0
-    python3 "$DIR/prune_move.py" "$t" "$bin/target" 2> "$TMPD/move.err" || move_rc=$?
-    if [ "$move_rc" -eq 0 ]; then
-      if st_step 600 rm -rf "$bin"; then
-        action "removed idle build output $t (untouched 3 days)"
-      else
-        finding "build output prune: could not finish deleting $t; the next run deletes $bin"
-      fi
-    elif ! rmdir "$bin" 2>/dev/null; then
-      # Not empty: target/ moved and could not come back.
-      finding "build output prune: $t did not come back from $bin ($(tail -1 "$TMPD/move.err")); kept until no build holds a lock there"
-    elif [ "$move_rc" -eq 76 ]; then
-      action "kept idle build output $t: a build started during the move"
-    elif [ "$move_rc" -ne 75 ]; then
-      finding "build output prune: could not move $t into $PRUNE_TRASH ($(tail -1 "$TMPD/move.err")); kept"
-    fi
-  done < "$TARGETS"
-fi
+  elif ! rmdir "$bin" 2>/dev/null; then
+    # Not empty: target/ moved and could not come back.
+    finding "build output prune: $t did not come back from $bin ($(tail -1 "$TMPD/move.err")); kept until no build holds a lock there"
+  elif [ "$move_rc" -eq 76 ]; then
+    action "kept idle build output $t: a build started during the move"
+  elif [ "$move_rc" -ne 75 ]; then
+    finding "build output prune: could not move $t into $PRUNE_TRASH ($(tail -1 "$TMPD/move.err")); kept"
+  fi
+done < "$TARGETS"
 
 # AI session logs. They accumulate every day and hold whatever scrolled past —
 # a weekly secret scan found ~20 live API keys sitting in codex shell snapshots
