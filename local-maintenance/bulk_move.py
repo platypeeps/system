@@ -8,7 +8,8 @@ content; a mismatch removes the copy and keeps the source. Only then the
 source is replaced by a symlink to the copy.
 
 Refused, with the reason on stderr and nothing changed: a missing path, a
-symlink, a path git tracks or a checkout, build output (target/,
+symlink, a path git tracks or a checkout, a folder holding
+a relative link that leads out of it, build output (target/,
 node_modules/), a path a process holds open (lsof; an lsof that fails
 refuses too), a missing or full bulk root, an existing destination.
 
@@ -39,12 +40,13 @@ def held_open(path):
     sys.path.insert(0, HERE)
     from in_use import in_use
     try:
-        out = subprocess.run(["lsof", "-nP", "-F", "n"], capture_output=True, timeout=120).stdout
+        run = subprocess.run(["lsof", "-nP", "-F", "n"], capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise Refused(f"lsof gave no answer ({error}); kept {path}") from None
-    if not out:
-        raise Refused(f"lsof gave no answer; kept {path}")
-    return in_use(path, out.splitlines(keepends=True))
+    # A nonzero exit may come with a partial listing, which proves nothing.
+    if run.returncode != 0 or not run.stdout:
+        raise Refused(f"lsof gave no full answer (exit {run.returncode}); kept {path}")
+    return in_use(path, run.stdout.splitlines(keepends=True))
 
 
 def walk(src):
@@ -121,6 +123,14 @@ def plan(root, path, folder):
         raise Refused(f"{src} is or holds build output (target/, node_modules/); it stays on the system disk")
     if ".git" in parts:
         raise Refused(f"{src} is or holds a git checkout")
+    # A relative link that leaves the folder would name another target
+    # once the folder sits on the bulk root.
+    for e in entries:
+        link = os.path.join(src, e)
+        if os.path.islink(link) and not os.path.isabs(os.readlink(link)):
+            target = os.path.normpath(os.path.join(os.path.dirname(link), os.readlink(link)))
+            if not target.startswith(src + os.sep):
+                raise Refused(f"{link} is a relative link out of {src}; it would break on the bulk root")
     top = checkout(src)
     if top:
         rel = os.path.relpath(src, top)

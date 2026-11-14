@@ -44,8 +44,10 @@ class BulkMoveTest(unittest.TestCase):
               '[ -n "$FAKE_BULK" ] || { echo "sd.bulk_storage_root is not set" >&2; exit 1; }\n'
               'echo "$FAKE_BULK"\n')
         # lsof lists FAKE_HELD as open, or fails when FAKE_LSOF_FAIL is set.
+        # FAKE_LSOF_PARTIAL: an unrelated listing, then exit 1.
         _stub(self.bin / "lsof", '[ -z "$FAKE_LSOF_FAIL" ] || exit 1\n'
-              'printf "p1\\nn/dev/null\\n"\n[ -z "$FAKE_HELD" ] || printf "n%s\\n" "$FAKE_HELD"\n')
+              'printf "p1\\nn/dev/null\\n"\n[ -z "$FAKE_HELD" ] || printf "n%s\\n" "$FAKE_HELD"\n'
+              '[ -z "$FAKE_LSOF_PARTIAL" ] || exit 1\n')
         self.repo = self.tmp / "home" / "repos" / "widget"
         self.repo.mkdir(parents=True)
         self.git("init", "-q")
@@ -116,6 +118,25 @@ class BulkMoveTest(unittest.TestCase):
 
     def test_a_failed_lsof_is_refused(self):
         self.assert_refused(self.move(str(self.data), FAKE_LSOF_FAIL="1"), self.data, "lsof")
+
+    def test_a_partial_lsof_listing_is_refused(self):
+        self.assert_refused(self.move(str(self.data), FAKE_LSOF_PARTIAL="1"), self.data, "lsof")
+
+    def test_a_relative_link_out_of_the_folder_is_refused(self):
+        (self.repo / "runs" / "shared").write_text("shared\n")
+        os.symlink("../shared", self.data / "out")
+        run = self.move(str(self.data))
+        self.assert_refused(run, self.data, "link")
+        self.assertEqual("shared\n", (self.data / "out").read_text())
+        self.assertFalse((self.bulk / "widget").exists())
+
+    def test_links_inside_the_folder_and_absolute_links_move(self):
+        os.symlink("../sub/b.txt", self.data / "sub" / "back")
+        os.symlink(str(self.repo / "tracked.txt"), self.data / "abs")
+        run = self.move(str(self.data))
+        self.assertEqual(0, run.returncode, run.stderr)
+        self.assertEqual("b\n", (self.data / "sub" / "back").read_text())
+        self.assertEqual("tracked\n", (self.data / "abs").read_text())
 
     def test_a_missing_bulk_root_is_refused(self):
         run = self.move(str(self.data), FAKE_BULK=str(self.tmp / "unmounted"))

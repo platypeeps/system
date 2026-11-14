@@ -28,8 +28,9 @@ name it, and the copy goes to `<bulk root>/<folder>/<basename>`. The root
 is the workflow database's `sd.bulk_storage_root`. A mismatch removes the
 copy and keeps the source. It refuses, changing nothing: a path git
 tracks or a folder holding one, a checkout, build output (`target/`,
-`node_modules/`), a path a process holds open (`lsof`; a failed `lsof`
-refuses too), a missing or full bulk root, and an existing destination.
+`node_modules/`), a path a process holds open (`lsof`; an `lsof` that
+fails or exits nonzero refuses too), a relative symlink that leads out
+of the folder, a missing or full bulk root, and an existing destination.
 
 With findings, `run` prints one line per finding, `SD_REPORT_ATTENTION:
 maintenance on <host>: <finding>`, and one per pending update under its finding,
