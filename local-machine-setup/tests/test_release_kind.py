@@ -45,7 +45,8 @@ MOVED_REPO = "example-owner/moved"
 # $ASSETS/<owner>/<repo>/LATEST for the latest-release redirect, and answers
 # 404 for a checksum file the folder lacks. Logs each URL to $CURL_LOG.
 # $ASSETS/<owner>/<repo>/REDIRECT, when there, is the redirect GitHub answers
-# instead: empty for a 200 with none (sd:4916).
+# instead: empty for a 200 with none (sd:4916). $ASSETS/<owner>/<repo>/FAILS,
+# when there, holds how many more latest reads time out (curl 28; sd:8764).
 CURL_STUB = r"""#!/bin/sh
 out=""; fmt=""; url=""
 while [ $# -gt 0 ]; do
@@ -61,6 +62,10 @@ echo "$url" >> "$CURL_LOG"
 rel=${url#"$RELEASE_BASE"/}
 case "$url" in
   */releases/latest)
+    n="$ASSETS/${rel%/releases/latest}/FAILS"
+    if [ -s "$n" ] && [ "$(cat "$n")" -gt 0 ]; then
+      echo $(($(cat "$n") - 1)) > "$n"; exit 28
+    fi
     r="$ASSETS/${rel%/releases/latest}/REDIRECT"
     if [ -f "$r" ]; then
       [ "$fmt" = '%{redirect_url}' ] && cat "$r"
@@ -184,6 +189,7 @@ class Case(unittest.TestCase):
         write_exec(self.stubs / "curl", CURL_STUB)
         write_exec(self.stubs / "unzip", UNZIP_STUB)
         write_exec(self.stubs / "brew", "#!/bin/sh\nexit 0\n")
+        write_exec(self.stubs / "sleep", '#!/bin/sh\necho "sleep $*" >> "$CURL_LOG"\n')
         fixture_config.seal(self, self.stubs)
         self.fnm_have = ""
 
@@ -696,6 +702,18 @@ class ReleaseUpgrade(Case):
 
         self.assertEqual(result.returncode, 0, self.out(result))
         self.assertIn("nothing outdated", result.stdout)
+
+    def test_a_latest_read_that_times_out_once_is_retried(self):
+        """One timeout after wake is no alert (sd:8764)."""
+        self.release("v1.3.0", "example-1.3.0.tar.gz", self.tools("1.3.0", "example"))
+        (self.assets / REPO / "FAILS").write_text("2")
+
+        result = self.run_verb("upgrade-report")
+
+        self.assertNotIn("unknown", result.stdout, self.out(result))
+        self.assertIn("\nupgraded (release):\n  example\n", result.stdout)
+        self.assertEqual(self.record(), "v1.3.0")
+        self.assertEqual(self.urls().count("sleep 15"), 2, self.urls())
 
     def test_a_latest_tag_the_report_cannot_read_is_unknown_not_current(self):
         (self.assets / REPO / "LATEST").unlink()
