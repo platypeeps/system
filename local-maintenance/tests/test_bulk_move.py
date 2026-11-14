@@ -138,6 +138,22 @@ class BulkMoveTest(unittest.TestCase):
         self.assertEqual("b\n", (self.data / "sub" / "back").read_text())
         self.assertEqual("tracked\n", (self.data / "abs").read_text())
 
+    def test_a_bulk_root_inside_the_source_is_refused(self):
+        inner = self.data / "bulk"
+        inner.mkdir()
+        run = self.move(str(self.data), FAKE_BULK=str(inner))
+        self.assert_refused(run, self.data, "inside")
+        self.assertEqual([], list(inner.iterdir()))
+
+    def test_a_folder_that_leaves_the_bulk_root_is_refused(self):
+        loose = self.tmp / "home" / "Downloads" / "big.iso"
+        loose.parent.mkdir()
+        loose.write_bytes(b"iso")
+        elsewhere = self.tmp / "elsewhere"
+        for folder in ("../elsewhere", str(elsewhere)):
+            self.assert_refused(self.move(str(loose), folder), loose, "bulk root")
+        self.assertFalse(elsewhere.exists())
+
     def test_a_missing_bulk_root_is_refused(self):
         run = self.move(str(self.data), FAKE_BULK=str(self.tmp / "unmounted"))
         self.assert_refused(run, self.data, "bulk root")

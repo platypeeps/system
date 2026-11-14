@@ -30,7 +30,9 @@ copy and keeps the source. It refuses, changing nothing: a path git
 tracks or a folder holding one, a checkout, build output (`target/`,
 `node_modules/`), a path a process holds open (`lsof`; an `lsof` that
 fails or exits nonzero refuses too), a relative symlink that leads out
-of the folder, a missing or full bulk root, and an existing destination.
+of the folder, a missing or full bulk root, an existing destination, and
+a destination outside the bulk root or inside the source (a `..` or
+absolute folder, a bulk root inside the moved folder).
 
 With findings, `run` prints one line per finding, `SD_REPORT_ATTENTION:
 maintenance on <host>: <finding>`, and one per pending update under its finding,

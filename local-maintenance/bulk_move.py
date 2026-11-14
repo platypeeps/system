@@ -11,7 +11,8 @@ Refused, with the reason on stderr and nothing changed: a missing path, a
 symlink, a path git tracks or a checkout, a folder holding
 a relative link that leads out of it, build output (target/,
 node_modules/), a path a process holds open (lsof; an lsof that fails
-refuses too), a missing or full bulk root, an existing destination.
+refuses too), a missing or full bulk root, an existing destination,
+a destination outside the bulk root or inside the source.
 
 Exit 0: moved. 1: refused or failed; the source is unchanged.
 """
@@ -143,7 +144,13 @@ def plan(root, path, folder):
         if not folder:
             raise Refused(f"{src} is in no checkout; name the folder under the bulk root")
         rel = os.path.basename(src)
-    dst = os.path.join(root, folder, rel)
+    # realpath folds `..`, an absolute folder and links on the way, so the
+    # copy lands beneath the root and never inside what it copies.
+    dst = os.path.realpath(os.path.join(root, folder, rel))
+    if not dst.startswith(root + os.sep):
+        raise Refused(f"{dst} is not beneath the bulk root {root}; kept {src}")
+    if dst == src or dst.startswith(src + os.sep):
+        raise Refused(f"{dst} is inside {src}; kept it")
     if os.path.lexists(dst):
         raise Refused(f"{dst} exists already; kept {src}")
     size = sum(os.lstat(os.path.join(src, e)).st_size for e in entries) or os.lstat(src).st_size
