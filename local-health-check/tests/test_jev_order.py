@@ -609,6 +609,28 @@ esac
         self.assertIn("Sbx-Other(1) ", out)
         self.assertIn("node(1) ", out)
 
+    def test_a_test_binary_aborting_under_cargo_is_no_app_crash(self):
+        """sd:8767: a test binary that aborts under cargo-nextest or cargo is
+        a failed test, which the test run reports; it is a note, no finding.
+        Another parent still counts."""
+        reports = self.tmp / "reports-cargo"
+        reports.mkdir()
+        head = '{"app_name":"example_tests","bug_type":"309"}\n'
+        for name, parent in (("example_tests-1a2b", "cargo-nextest"),
+                             ("example_tests-1a2b", "cargo-nextest"),
+                             ("example_bin", "cargo"),
+                             ("Cargo-Other", "zsh")):
+            (reports / (name + stamped(hours=1 + len(list(reports.iterdir()))) + ".ips")).write_text(
+                head + '{\n  "parentProc" : "' + parent + '",\n  "procName" : "x"\n}\n')
+        out = self.run_check("cargo", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                             verb="run")["out"]
+        crashes = [l for l in out.splitlines() if l.startswith("- app crash report(s)")]
+        self.assertEqual(len(crashes), 1, out)
+        self.assertIn("Cargo-Other(1) ", crashes[0])
+        self.assertNotIn("example_", crashes[0])
+        note = "- test binary abort(s) under cargo in the last day: 3"
+        self.assertIn(note, out.split("notes:")[-1], out)
+
     def test_crashes_of_one_process_with_different_pids_count_as_one_app(self):
         """sd:5253: a process named with its pid (`.claude-mem-<pid>.tmp`) is one app, not one per pid."""
         reports = self.tmp / "reports-pids"

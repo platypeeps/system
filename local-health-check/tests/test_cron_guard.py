@@ -90,6 +90,17 @@ class CronGuardAgainstFixtures(unittest.TestCase):
         # SYSTEM_TOOLS_LABEL_PREFIX, so not this machine's to check (sd:3541).
         (agents / "com.platypeeps.example.plist").write_text("<plist/>\n")
 
+        # A baseline that holds every entry but `green`'s plist and an
+        # unknown one, so both are new this run (sd:8765).
+        (agents / "net.example.unknown.plist").write_text("<plist/>\n")
+        new = {f"{agents}/org.example.cron.green.plist",
+               f"{agents}/net.example.unknown.plist"}
+        known = [str(p) for d in ("/Library/LaunchDaemons", "/Library/LaunchAgents", agents)
+                 if os.path.isdir(d) for p in pathlib.Path(d).iterdir()]
+        (cls.tmp / "state").mkdir()
+        (cls.tmp / "state" / "launchd-baseline").write_text(
+            "".join(f"{p}\n" for p in sorted(set(known) - new, key=os.fsencode)))
+
         cls.root = cls.tmp / "tools"
         folder = cls.root / "local-cron-jobs"
         (folder / "jobs").mkdir(parents=True)
@@ -250,6 +261,15 @@ class CronGuardAgainstFixtures(unittest.TestCase):
         """sd:1201's own case, unchanged: `status` exits 0, launchd's counter
         says 1, and the counter is dropped."""
         self.assertEqual(self.about("green"), [], self.out)
+
+    def test_a_new_cron_plist_from_a_job_file_is_not_new_persistence(self):
+        """`green`'s plist is new since the baseline, and `verify` (the
+        wrapper's exit 0) says its job file rendered it: no finding. The
+        unknown plist, new too, is still one (sd:8765)."""
+        new = [h for h, _ in self.findings() if h.startswith("new launch daemon")]
+        self.assertEqual(len(new), 1, self.out)
+        self.assertIn("net.example.unknown.plist", new[0])
+        self.assertNotIn("org.example.cron.green", new[0])
 
     def test_the_real_jev_writes_nothing_to_the_operator_s_stores(self):
         """sd:2799: the sweep suite's run wrote a `switched-off` row into the

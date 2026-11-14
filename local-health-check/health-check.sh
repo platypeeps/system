@@ -265,10 +265,13 @@ for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   # A pid before the extension (.claude-mem-<pid>.tmp) is no part of the name (sd:5253).
   # A codex child that dyld aborted because the codex sandbox blocked its
   # library is that defect, not an app crash (sd:6729): it gets its own line.
+  # A test binary that aborts under cargo-nextest or cargo is a failed test
+  # the test run reports (sd:8767): a note with its count, no finding.
   find "$d" -maxdepth 1 -name '*.ips' ! -name 'JetsamEvent*' 2>/dev/null | while read -r p; do
     recent_report "$p" "$CUT_DAY" 1 && crash_report "$p" || continue
     _to=crashes
     ! grep -Eq '"parentProc"[[:space:]]*:[[:space:]]*"codex"' "$p" || ! grep -q '(blocked by sandbox)' "$p" || _to=codex-sandbox
+    ! grep -Eq '"parentProc"[[:space:]]*:[[:space:]]*"cargo(-nextest)?"' "$p" || _to=cargo-tests
     basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//; s/-[0-9][0-9]*\(\.[A-Za-z0-9_]*\)$/\1/' >> "$TMPD/$_to"
   done
 done
@@ -293,6 +296,9 @@ if [ -s "$TMPD/codex-sandbox" ]; then
     "codex sandbox blocked a child's library load in the last day: $(wc -l < "$TMPD/codex-sandbox" | tr -d ' ') report(s)" \
     "$(sort -u "$TMPD/codex-sandbox" | sed "s/^/codex sandbox blocked a child's library load in the last day: /")"
 fi
+
+[ ! -s "$TMPD/cargo-tests" ] ||
+  info "test binary abort(s) under cargo in the last day: $(wc -l < "$TMPD/cargo-tests" | tr -d ' ')"
 
 # --- launchd job health --------------------------------------------------
 
@@ -464,6 +470,17 @@ for d in /Library/LaunchDaemons /Library/LaunchAgents "$HOME/Library/LaunchAgent
 done | LC_ALL=C sort > "$TMPD/launchd.now"
 if [ -f "$STATE/launchd-baseline" ]; then
   LC_ALL=C comm -13 "$STATE/launchd-baseline" "$TMPD/launchd.now" > "$TMPD/launchd.new" || :
+  # A cron plist local-cron-jobs rendered from a job file is ours: `verify`
+  # exits 0 only when the installed plist matches its job file (sd:8765).
+  while IFS= read -r p; do
+    case "$p" in
+      "$HOME/Library/LaunchAgents/$LABEL_PREFIX".cron.*.plist)
+        j=${p##*/"$LABEL_PREFIX".cron.}; j=${j%.plist}
+        ! bounded 15 sh "$TOOLS_ROOT/local-cron-jobs/cron-jobs.sh" verify "$j" >/dev/null 2>&1 || continue ;;
+    esac
+    echo "$p"
+  done < "$TMPD/launchd.new" > "$TMPD/launchd.theirs"
+  mv "$TMPD/launchd.theirs" "$TMPD/launchd.new"
   if [ -s "$TMPD/launchd.new" ]; then
     finding "new launch daemon(s)/agent(s) since last run: $(tr '\n' ' ' < "$TMPD/launchd.new")" \
       "if you did not install this, inspect the plist and the binary it points at before removing it" \
