@@ -1142,9 +1142,15 @@ release_missing_bins() { # bins
 }
 
 # The tag GitHub's latest-release redirect names. An answer that names no
-# release tag is unknown, not a tag, and fails.
+# release tag is unknown, not a tag, and fails. A failed read is tried
+# three times, 15 s apart: the network times out for a while after wake
+# (sd:8764).
 release_latest() { # owner/repo
-  rlt_url=$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' "$RELEASE_BASE/$1/releases/latest" </dev/null) || return 1
+  for rlt_try in 1 2 3; do
+    rlt_url=$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' "$RELEASE_BASE/$1/releases/latest" </dev/null) && break
+    [ "$rlt_try" -lt 3 ] || return 1
+    sleep 15
+  done
   case "$rlt_url" in */releases/tag/?*) ;; *) return 1 ;; esac
   rlt_tag=${rlt_url##*/releases/tag/}
   release_tag_ok "$rlt_tag" || return 1
