@@ -520,7 +520,7 @@ and it beats an on-value in `<config>/jev/.env`. A fallback answer, `enabled`, a
 Jev never gets start no arm.
 
 **The arms run only for a stage `JEV_COMPARE_STAGES` lists**, stage names
-separated by commas: `JEV_COMPARE_STAGES=JEV_SD_REVIEW`. Unset or empty lists
+separated by commas: `JEV_COMPARE_STAGES=JEV_SD_REVIEW_TRIAGE`. Unset or empty lists
 none: unlike a Jev stage, where unset means on, an arm sends every live
 request to a second endpoint, so it is opt-in. A listed stage runs the Kev
 arm, and the Haiku arm when `JEV_COMPARE_HAIKU_VIA` names a transport
