@@ -5115,6 +5115,10 @@ try:
         args = plistlib.load(f).get("ProgramArguments")
 except Exception:
     sys.exit(1)
+# Since sd:6466 the job starts under job-launch, as cron_plist_ours reads it.
+if (isinstance(args, list) and len(args) == 5 and isinstance(args[0], str)
+        and args[0].endswith("/job-launch")):
+    args = args[1:]
 sys.exit(0 if isinstance(args, list) and len(args) == 4 and args[0] == "/bin/bash"
          and isinstance(args[1], str) and args[1].endswith("/local-cron-jobs/cron-jobs.sh")
          and args[2] == "exec" else 1)
@@ -7803,11 +7807,12 @@ status_stage() {
   out=$("stage_$1")
   APPLY=$_apply
   printf '%s\n' "$out"
-  # Five ways a stage reports divergence: a defaults write it would have
+  # Six ways a stage reports divergence: a defaults write it would have
   # made, a file that disagrees, a manifest entry the machine lacks,
-  # something installed that no manifest claims, and a launchd item whose
-  # plist is fine but which launchd is not running.
-  n=$(printf '%s\n' "$out" | grep -cE 'DIFFERS|MISSING|STALE|ABSENT|UNLOADED|EXTRA|defaults (-currentHost )?write|^  extra ' || :)
+  # something installed that no manifest claims, a launchd item whose
+  # plist is fine but which launchd is not running, and a probe that
+  # failed, so the stage checked nothing (sd:8810).
+  n=$(printf '%s\n' "$out" | grep -cE 'DIFFERS|MISSING|STALE|ABSENT|UNLOADED|EXTRA|FAILED|defaults (-currentHost )?write|^  extra ' || :)
   drift=$((drift + ${n:-0}))
   # In-place drift, each line once: cmd_status asks for attention for it
   # rather than failing the run (sd:5064).

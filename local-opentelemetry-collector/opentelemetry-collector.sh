@@ -1,6 +1,6 @@
 #!/bin/sh
 # OpenTelemetry Collector (contrib) with ./config.yaml.
-# OTLP on 127.0.0.1:4317 (grpc) / :4318 (http), zpages on :55679.
+# OTLP on 127.0.0.1:4317 (grpc) / :4318 (http), health_check on :13133.
 # Usage: opentelemetry-collector.sh start|stop|status|update|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,7 +9,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # service's whole purpose.
 GRPC_PORT="${OTELCOL_GRPC_PORT:-4317}"
 HTTP_PORT="${OTELCOL_HTTP_PORT:-4318}"
-ZPAGES_PORT="${OTELCOL_ZPAGES_PORT:-55679}"
+HEALTH_PORT="${OTELCOL_HEALTH_PORT:-13133}"
 
 # `start` leaves this marker and `stop` removes it. The container runs with
 # --rm, so one that crashed leaves nothing for `docker ps -a` to find; without
@@ -60,7 +60,7 @@ case "$1" in
       -e "OTLP_EXPORT_AUTH=$OTLP_EXPORT_AUTH" \
       -p 127.0.0.1:"$GRPC_PORT":4317 \
       -p 127.0.0.1:"$HTTP_PORT":4318 \
-      -p 127.0.0.1:"$ZPAGES_PORT":55679 \
+      -p 127.0.0.1:"$HEALTH_PORT":13133 \
       otel/opentelemetry-collector-contrib:latest
     mkdir -p "$DIR/state"
     date '+%Y-%m-%dT%H:%M:%S%z' > "$STARTED"
@@ -94,29 +94,31 @@ case "$1" in
       echo "local-opentelemetry-collector: SKIP — container is not running"
       exit 3
     fi
-    # zpages answering means the collector is alive and its pipelines built;
-    # a config it rejected leaves the container dead rather than half-up.
+    # health_check, the one extension config.yaml enables, answers 2xx once
+    # the collector is up and its pipelines built (sd:8811: the probe asked
+    # zpages, which the config never enabled). A config it rejected leaves
+    # the container dead rather than half-up.
     # Healthy needs both a complete transfer (curl exits 0) and a 2xx. curl's
     # exit alone asserted the TCP connect: it is 0 on a 404 or a 500 without
     # -f, and 0 on a 3xx even with it. The code alone misses a 200 whose body
     # then stalls or is cut short (sd:1387). A failed connect prints 000.
     rc=0
     code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
-      "http://127.0.0.1:$ZPAGES_PORT/debug/servicez" 2>/dev/null) || rc=$?
+      "http://127.0.0.1:$HEALTH_PORT/" 2>/dev/null) || rc=$?
     case "$rc:$code" in
       0:2??)
-        echo "local-opentelemetry-collector: OK — up, zpages answering on $ZPAGES_PORT"
+        echo "local-opentelemetry-collector: OK — up, health_check answering on $HEALTH_PORT"
         ;;
       *:|*:000)
-        echo "local-opentelemetry-collector: FAIL — container up but zpages on $ZPAGES_PORT is not answering"
+        echo "local-opentelemetry-collector: FAIL — container up but health_check on $HEALTH_PORT is not answering"
         exit 1
         ;;
       0:*)
-        echo "local-opentelemetry-collector: FAIL — container up but zpages on $ZPAGES_PORT answered HTTP $code"
+        echo "local-opentelemetry-collector: FAIL — container up but health_check on $HEALTH_PORT answered HTTP $code"
         exit 1
         ;;
       *)
-        echo "local-opentelemetry-collector: FAIL — zpages on $ZPAGES_PORT answered HTTP $code but the response did not complete (curl exit $rc)"
+        echo "local-opentelemetry-collector: FAIL — health_check on $HEALTH_PORT answered HTTP $code but the response did not complete (curl exit $rc)"
         exit 1
         ;;
     esac
@@ -137,8 +139,8 @@ usage: opentelemetry-collector.sh start|stop|status|update|test
   start        run the container (docker, --rm, named) and record that it
                was started (state/started)
   stop         stop and remove the container, and clear that record
-  status       report whether the collector is up and its zpages answering
-               with HTTP 2xx. Exits 0 healthy, 3 when there is nothing to
+  status       report whether the collector is up and its health_check
+               answering with HTTP 2xx. Exits 0 healthy, 3 when there is nothing to
                check (not configured, or stopped), 1 when up but
                failing or started and since gone —
                local-health-check reads those codes.
@@ -147,7 +149,7 @@ usage: opentelemetry-collector.sh start|stop|status|update|test
   test         run this folder's tests
 
 environment: OTELCOL_GRPC_PORT (4317), OTELCOL_HTTP_PORT (4318),
-             OTELCOL_ZPAGES_PORT (55679)
+             OTELCOL_HEALTH_PORT (13133)
              OTLP_EXPORT_URL, OTLP_EXPORT_AUTH (required by start: the
              OTLP/HTTP endpoint to forward to and its Authorization header
              value; from <config>/opentelemetry-collector/.env, <config> being
