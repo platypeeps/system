@@ -88,7 +88,6 @@ the second column; the third column is free text.
 | --- | --- | --- |
 | local-clickhouse | `8123`, `9000`, `8002` | ClickHouse HTTP, native, MCP server |
 | local-codebase-memory-mcp | `9749` | daemon UI |
-| local-deploy | `8769` | sd-serve, which the upgrade checks (the pack runs it) |
 | local-falkordb | `6380`, `3003` | FalkorDB, browser UI |
 | local-genai-traces | `4337`, `4338`, `6016`, `13137` | OTLP gRPC, OTLP HTTP, Phoenix UI, health |
 | local-graphiti-mcp | `6381`, `3004`, `8085` | bundled FalkorDB, its UI, MCP HTTP |

@@ -45,6 +45,8 @@ environment (exported, or in <config>/mirror-sync/.env; see .env.example):
   NAS_COPY_LOG_DIR            per-file rsync logs (default
                               $NAS_COPY_SRC/repo-storage/system/nas-full-copy);
                               a folder inside the source is excluded from the copy
+  NAS_COPY_EXCLUDE            comma-separated folders, relative to the
+                              source, left out of the copy (default none)
   NAS_COPY_TIMEOUT, NAS_COPY_RSYNC, NAS_COPY_HOUR, NAS_COPY_SECONDS,
   NAS_COPY_SKIP_MOUNT_CHECK, NAS_COPY_RETRY_WAIT, NAS_COPY_CHUNK   test hooks
 
@@ -71,6 +73,9 @@ case "$LOG_DIR" in
   "$SRC"/*) LOG_EXCLUDE="${LOG_DIR#"$SRC"/}"; LOG_EXCLUDE="${LOG_EXCLUDE%/}" ;;
   *) LOG_EXCLUDE="" ;;
 esac
+# Folders the copy leaves out, one per line: the log folder and
+# NAS_COPY_EXCLUDE, such as regenerable output rsync timed out on (sd:8932).
+SKIP=$(printf '%s,%s' "$LOG_EXCLUDE" "${NAS_COPY_EXCLUDE:-}" | tr ',' '\n')
 # ponytail: 26 to 45 names a second went by on the share (2026-10-30 and
 # 2026-11-01 logs), so a chunk takes 20 to 30 minutes: the 05:00 stop
 # repeats at most that much the next night.
@@ -143,15 +148,18 @@ list_source() ( # file
   exit "$listed"
 )
 
-# The next CHUNK names after the cursor, without the log folder. The cursor
-# and the log folder go in through the environment: -v reads "\" as an
+# The next CHUNK names after the cursor, without the skipped folders. The
+# cursor and the skip list go in through the environment: -v reads "\" as an
 # escape. Concatenating "" makes awk compare names as strings, not numbers.
 next_chunk() ( # list cursor out
   LC_ALL=C; export LC_ALL
-  NAS_COPY_AFTER="$2" NAS_COPY_SKIP="$LOG_EXCLUDE" awk -v max="$CHUNK" '
-    BEGIN { after = ENVIRON["NAS_COPY_AFTER"] ""; skip = ENVIRON["NAS_COPY_SKIP"] "" }
+  NAS_COPY_AFTER="$2" NAS_COPY_SKIP="$SKIP" awk -v max="$CHUNK" '
+    BEGIN { after = ENVIRON["NAS_COPY_AFTER"] ""
+            ns = split(ENVIRON["NAS_COPY_SKIP"], skip, "\n")
+            for (i = 1; i <= ns; i++) sub(/\/+$/, "", skip[i]) }
     { name = substr($0, 3) "" }
-    skip != "" && (name == skip || index(name, skip "/") == 1) { next }
+    { for (i = 1; i <= ns; i++)
+        if (skip[i] != "" && (name == skip[i] || index(name, skip[i] "/") == 1)) next }
     name > after { print name; if (++n >= max) exit }' "$1" > "$3"
 )
 
