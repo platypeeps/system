@@ -78,6 +78,12 @@ digest would have mailed. Now nothing but a `stamp` consumes anything, and
 It also makes "what arrived in August" answerable, which a replaced report
 never could. `report --all` reads the whole history.
 
+A `fetch` appends its arrivals before it moves `intake-state.csv`, so a failed
+append leaves the files new for the next run. `fetch` and `stamp` hold one lock,
+`intake.lock` in the state folder, around their writes: `stamp` rewrites the log
+whole, and an append in between would be lost. `local-mail-intake` does the
+same.
+
 **`stamp` takes a cutoff, not "everything undelivered".** A `fetch` can append
 between the moment the digest reads the log and the moment it stamps. Stamping
 the lot would mark rows that were never mailed, and those rows are then

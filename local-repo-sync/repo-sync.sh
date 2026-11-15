@@ -2193,7 +2193,7 @@ hyg_busy() {
 hyg_not_build() {
   awk '!/^!! .*\/$/ { print; next }
     { p = substr($0, 4); sub(/\/$/, "", p); n = split(p, s, "/")
-      if (s[n] ~ /^(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|node_modules|target|dist)$/) next
+      if (s[n] ~ /^(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|node_modules|target)$/) next
       print }'
 }
 

@@ -504,6 +504,23 @@ class HygieneTest(unittest.TestCase):
         self.assertNotEqual("", f.branch_sha(repo, "env-and-build"))
         self.assertIn("KEEP     branch env-and-build", result.stdout)
 
+    def test_a_handwritten_dist_folder_keeps_the_worktree(self):
+        """NEW (sd:8805). dist/ is not build output everywhere:
+        mirror-sync keeps handwritten files there. An ignored
+        dist/notes.md keeps the worktree, its branch and its bytes."""
+        f = self.fixture()
+        repo = f.repo()
+        self.ignore_build_output(f, repo, "dist/\n")
+        wt = f.merged_worktree(repo, "dist-merged")
+        (wt / "dist").mkdir()
+        (wt / "dist" / "notes.md").write_text("handwritten\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertEqual("handwritten\n", (wt / "dist" / "notes.md").read_text(), result.stdout)
+        self.assertNotEqual("", f.branch_sha(repo, "dist-merged"))
+        self.assertIn("KEEP     branch dist-merged", result.stdout)
+
     def test_a_regular_file_named_like_build_output_keeps_the_worktree(self):
         """NEW (sd:1677 review round 1). Only a directory with a build
         output name is build output; an ignored regular file named target,

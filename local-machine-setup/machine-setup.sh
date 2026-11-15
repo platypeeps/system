@@ -4110,25 +4110,10 @@ BULK_JOBS="build-dispatch lane-run night-build"
 bulk_step() { bound_step "$@" 5>&- 6>&- 7>&-; }
 
 # This host's open build and draft runs, and the lane entries it runs,
-# one per line; fails when the database cannot be read.
+# one per line; fails when the database cannot be read. maintenance.sh
+# move reads the same query and the same BULK_JOBS (sd:8797).
 bulk_open_runs() {
-  bulk_step 120 "$SD_DB_PYTHON" -I -c '
-import json, sys
-sys.path.insert(0, sys.argv[1] + "/lib")
-import sd_db
-from sd_db import build, draft
-from sd_db.ship import this_host
-c = sd_db.connect(write=False)
-hosts = build.lane_hosts(c)
-for r in build.open_runs(c, hosts) + draft.open_runs(c, hosts):
-    print("run", r["id"])
-here = this_host()
-for row in c.execute("SELECT body FROM state WHERE id IN (SELECT MAX(id) FROM state"
-                     " WHERE kind = ? AND key LIKE ? GROUP BY key)", ("checkpoint", "lane:v1:%")):
-    e = json.loads(row["body"])
-    if e.get("status") == "running" and (e.get("holder") or {}).get("host") == here:
-        print("lane", e.get("item"), e.get("id"))
-' "$SD_PACK_ROOT"
+  bulk_step 120 "$SD_DB_PYTHON" -I "$ROOT/lib/open_runs.py" "$SD_PACK_ROOT"
 }
 
 # Refuses, with a FAILED line, while this host has an open run.
