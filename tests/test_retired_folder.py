@@ -3,6 +3,7 @@
 The pack owns `sd_db` and `bin/sd-db`, and since pack sd:5987 the workflow
 dashboard too, at `$SD_PACK_ROOT/dashboard/`. The folders that held them here
 are deleted; `machine-setup.sh doctor` fails any config that still names one.
+`local-deploy` went too (sd:8841): nothing restarts from this checkout.
 A caller that names a deleted folder fails only when it runs, often unattended
 at night. This fails each folder and greps the tracked and untracked files
 outside `docs/work` (history), so a stale path fails here, and lists each place
@@ -26,16 +27,15 @@ RETIRED = {
         "local-machine-setup/machine-setup.sh": "the doctor check that finds config still naming the folder",
         "local-machine-setup/README.md": "documents that doctor check",
         "local-machine-setup/tests/test_backbone.py": "plants the retired name to prove the doctor finds it",
-        "local-deploy/tests/test_deploy.py": "proves deploy plans and restarts nothing across a range that deleted the folder",
     }),
     "local-" + "project-dashboard": ("$SD_PACK_ROOT/dashboard/dashboard.sh", {
         "CLAUDE.md": "the rule that names where the dashboard went",
         "local-machine-setup/machine-setup.sh": "the doctor check that finds config still naming the folder",
         "local-machine-setup/tests/test_backbone.py": "plants the retired name to prove the doctor finds it",
-        "local-deploy/deploy.sh": "plans a dashboard restart across a range that changes the folder, as its deletion does",
-        "local-deploy/README.md": "documents that plan line",
-        "local-deploy/tests/test_deploy.py": "changes files in the folder to prove that plan line",
     }),
+    # sd:8841: no service restarts from this checkout since the pack took
+    # sd_db, sd-serve and the dashboard; nothing calls deploy.sh.
+    "local-" + "deploy": ("nothing: the lane and repo-sync move the pack", {}),
 }
 
 
