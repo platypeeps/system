@@ -34,6 +34,9 @@ exporters:
 
 extensions:
   health_check:
+    # Every interface, as the receivers above: status probes the port the
+    # run script publishes on 127.0.0.1.
+    endpoint: 0.0.0.0:13133
 
 service:
   extensions: [health_check]

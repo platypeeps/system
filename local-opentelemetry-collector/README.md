@@ -1,7 +1,7 @@
 # local-opentelemetry-collector
 
 OpenTelemetry Collector (contrib image) with `./config.yaml`. OTLP grpc on
-`127.0.0.1:4317`, OTLP http on `:4318`, zpages on `:55679`.
+`127.0.0.1:4317`, OTLP http on `:4318`, health_check on `:13133`.
 
 Forwards everything it receives to an OTLP/HTTP backend of your choice.
 
@@ -13,8 +13,8 @@ cp .env.example ~/.config/system/opentelemetry-collector/.env   # first run: fil
 ./opentelemetry-collector.sh start|stop|status|update
 ```
 
-`status` exits 0 when the container is up and zpages answers
-`/debug/servicez` with HTTP 2xx, 3 when there is nothing to check (not
+`status` exits 0 when the container is up and the health_check
+extension answers `/` with HTTP 2xx, 3 when there is nothing to check (not
 configured, or stopped), and 1 when it is up and failing or was started and
 is gone; `local-health-check` reads those codes. `start` writes
 `state/started` (gitignored) and `stop` removes it: the container runs with
