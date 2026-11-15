@@ -79,6 +79,15 @@ class Stub(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if Stub.raw_body is not None:
+            # A body of the test's own, sent as is (sd:8815).
+            body = Stub.raw_body.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         answers = {}
         for qid, question in payload["questions"].items():
             kind = question["type"]
@@ -140,6 +149,7 @@ class StubServer(unittest.TestCase):
         Stub.drop_answers = False
         Stub.null_answers = False
         Stub.drop_usage = False
+        Stub.raw_body = None
         Stub.seen = []
 
     def env(self, **extra):
@@ -756,6 +766,43 @@ class TestFallback(StubServer):
         code, out, err = self.run_verbose(["ask", "--questions", path, "--fallback", "{}"])
         self.assertEqual((code, out), (0, "{}\n"))
         self.assertIn("switched off", err)
+
+    def test_a_malformed_answer_gets_the_fallback(self):
+        """sd:8815: a list, a missing field, NaN and an out-of-range noul
+        each reach the caller's fallback, never a traceback or a yes."""
+        noul = '{"model": "m", "answers": {"answer": {"type": "noul", "noul": %s}}}'
+        bodies = {
+            "a list": "[]",
+            "a null answer": '{"answers": {"answer": null}}',
+            "no noul": '{"answers": {"answer": {"type": "noul"}}}',
+            "NaN": noul % "NaN",
+            "2.0": noul % "2.0",
+            "-0.5": noul % "-0.5",
+            "a word": noul % '"high"',
+            "true": noul % "true",
+        }
+        for name, body in bodies.items():
+            for gate in ([], ["--gate", "0.5"]):
+                with self.subTest(body=name, gate=gate):
+                    Stub.raw_body = body
+                    code, out, err = self.run_verbose(["noul", "q", *gate, "--fallback", "no"],
+                                                      JEV_RETRIES="0")
+                    self.assertEqual((code, out), (0, "no\n"), err)
+        for argv, fallback in ((["choice", "q", "--criteria", "a,b"], "b"),
+                               (["score", "q", "--levels", "a,b"], "0")):
+            for body in ("[]", '{"answers": {"answer": {"type": "x"}}}',
+                         '{"answers": {"answer": {"type": "x", "choice": 3, "score": NaN}}}'):
+                with self.subTest(argv=argv[0], body=body):
+                    Stub.raw_body = body
+                    code, out, err = self.run_verbose([*argv, "--fallback", fallback], JEV_RETRIES="0")
+                    self.assertEqual((code, out), (0, fallback + "\n"), err)
+
+    def test_a_malformed_confidence_does_not_end_the_call(self):
+        # A confidence that is not a number reads as none (confidence_of).
+        Stub.raw_body = '{"answers": {"answer": {"type": "choice", "choice": "a", "confidence": "x"}}}'
+        code, out, err = self.run_verbose(["choice", "q", "--criteria", "a,b", "--unsure-below", "0.5",
+                                           "--fallback", "b"], JEV_RETRIES="0")
+        self.assertEqual((code, out), (0, "unsure\n"), err)
 
     def test_every_verb_that_calls_out_takes_a_fallback(self):
         """Read off the parser, because the list above missed one for a week.
