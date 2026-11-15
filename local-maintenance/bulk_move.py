@@ -4,7 +4,8 @@ maintenance.sh runs `python3 bulk_move.py ROOT PATH [FOLDER]`. The copy
 goes to ROOT/FOLDER/<path inside its checkout>; FOLDER defaults to the
 checkout's name, and outside a checkout it is required (the copy then goes
 to ROOT/FOLDER/<basename>). Each file of the copy is checked by size and
-content; a mismatch removes the copy and keeps the source. Only then the
+content, and for every extended attribute (on macOS a resource fork and
+Finder tags are ones); a mismatch removes the copy and keeps the source. Only then the
 source is replaced by a symlink to the copy.
 
 Refused, with the reason on stderr and nothing changed: a missing path, a
@@ -18,6 +19,7 @@ under ROOT/*/lane/, which repo-sync's lane sweep empties.
 Exit 0: moved. 1: refused or failed; the source is unchanged.
 """
 
+import ctypes
 import filecmp
 import os
 import shutil
@@ -70,16 +72,54 @@ def checkout(path):
     return os.path.realpath(run.stdout.strip()) if run.returncode == 0 else None
 
 
+def xattrs(path):
+    """Extended attributes of `path`, links not followed: name -> bytes.
+
+    On macOS a resource fork and Finder tags are such attributes, and
+    Python's os has no xattr calls there, so libc is called directly.
+    """
+    if hasattr(os, "listxattr"):
+        return {n: os.getxattr(path, n, follow_symlinks=False)
+                for n in os.listxattr(path, follow_symlinks=False)}
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.listxattr.restype = libc.getxattr.restype = ctypes.c_ssize_t
+    libc.listxattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int]
+    libc.getxattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t,
+                              ctypes.c_uint32, ctypes.c_int]
+    nofollow = 1  # XATTR_NOFOLLOW
+    raw = os.fsencode(path)
+
+    def call(fn, *args):
+        size = fn(*args, None, 0, *([0] if fn is libc.getxattr else []), nofollow)
+        if size < 0:
+            raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()), path)
+        buf = ctypes.create_string_buffer(size)
+        size = fn(*args, buf, size, *([0] if fn is libc.getxattr else []), nofollow)
+        if size < 0:
+            raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()), path)
+        return buf.raw[:size]
+
+    names = [n for n in call(libc.listxattr, raw).split(b"\0") if n]
+    return {n.decode(): call(libc.getxattr, raw, n) for n in names}
+
+
 def copy(src, dst):
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    if os.path.isdir(src):
+    if sys.platform == "darwin":
+        # shutil's copy2 drops resource forks and extended attributes on
+        # macOS; Apple's ditto keeps them, with modes and links.
+        run = subprocess.run(["/usr/bin/ditto", src, dst], check=False, capture_output=True, text=True)
+        if run.returncode != 0:
+            raise OSError(f"ditto exited {run.returncode}: {run.stderr.strip()}")
+    elif os.path.isdir(src):
         shutil.copytree(src, dst, symlinks=True)
     else:
         shutil.copy2(src, dst)
 
 
 def mismatches(src, dst):
-    """Entries whose copy differs: kind, link target, size or content."""
+    """Entries whose copy differs: kind, link target, size, content, or
+    an extended attribute of the source the copy lacks or holds changed."""
     bad = []
     pairs = [(src, dst, os.path.basename(src))]
     pairs += [(os.path.join(src, r), os.path.join(dst, r), r) for r in walk(src)]
@@ -87,13 +127,18 @@ def mismatches(src, dst):
         if os.path.islink(a):
             if not os.path.islink(b) or os.readlink(a) != os.readlink(b):
                 bad.append(rel)
-        elif os.path.isdir(a):
+            continue
+        if os.path.isdir(a):
             if os.path.islink(b) or not os.path.isdir(b):
                 bad.append(rel)
+                continue
         elif (os.path.islink(b) or not os.path.isfile(b)
               or os.path.getsize(a) != os.path.getsize(b)
               or not filecmp.cmp(a, b, shallow=False)):
             bad.append(rel)
+            continue
+        if any(xattrs(b).get(n) != v for n, v in xattrs(a).items()):
+            bad.append(f"{rel} (extended attributes)")
     if os.path.isdir(src) and len(walk(dst)) != len(walk(src)):
         bad.append("(entry count)")
     return bad

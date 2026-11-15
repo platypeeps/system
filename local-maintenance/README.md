@@ -22,10 +22,11 @@ rotation, the prunes, the build output) happen automatically.
 
 `move <path> [folder]` copies a file or folder to
 `<bulk root>/<folder>/<path inside its checkout>`, checks every file by
-size and content, then replaces the source with a symlink to the copy
+size, content and extended attributes, then replaces the source with a symlink to the copy
 (sd:8797). `<folder>` defaults to the checkout's name; outside a checkout
 name it, and the copy goes to `<bulk root>/<folder>/<basename>`. The root
-is the workflow database's `sd.bulk_storage_root`. A mismatch removes the
+is the workflow database's `sd.bulk_storage_root`. On macOS the copy is
+Apple's `ditto`, which keeps resource forks and Finder tags. A mismatch removes the
 copy and keeps the source. It refuses, changing nothing: a path git
 tracks or a folder holding one, a checkout, build output (`target/`,
 `node_modules/`), a path a process holds open (`lsof`; an `lsof` that

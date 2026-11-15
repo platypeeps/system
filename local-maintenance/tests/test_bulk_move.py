@@ -11,6 +11,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -24,6 +25,26 @@ def _module():
     module = importlib.util.module_from_spec(_SPEC)
     _SPEC.loader.exec_module(module)
     return module
+
+
+def _set_xattr(path, name, value):
+    if sys.platform == "darwin":
+        subprocess.run(["/usr/bin/xattr", "-s", "-wx", name, value.hex(), str(path)], check=True)
+    else:
+        os.setxattr(path, name, value, follow_symlinks=False)
+
+
+def _get_xattr(path, name):
+    if sys.platform != "darwin":
+        return os.getxattr(path, name, follow_symlinks=False)
+    run = subprocess.run(["/usr/bin/xattr", "-s", "-px", name, str(path)],
+                         check=False, capture_output=True, text=True)
+    return bytes.fromhex(run.stdout.replace(" ", "").replace("\n", "")) if run.returncode == 0 else None
+
+
+# A resource fork and a Finder tag on macOS; a user attribute elsewhere.
+XATTRS = ({"com.apple.ResourceFork": b"fork " * 100, "com.apple.metadata:_kMDItemUserTags": b"tag"}
+          if sys.platform == "darwin" else {"user.example.tag": b"tag"})
 
 
 class BulkMoveTest(unittest.TestCase):
@@ -91,6 +112,32 @@ class BulkMoveTest(unittest.TestCase):
         self.assertEqual("b\n", (dst / "sub" / "b.txt").read_text())
         self.assertEqual("a.bin", os.readlink(dst / "link"))
         self.assertEqual([self.data.name], [p.name for p in self.data.parent.iterdir()])
+
+    def test_extended_attributes_and_resource_forks_move(self):
+        for path in (self.data / "a.bin", self.data / "sub", self.data):
+            for name, value in XATTRS.items():
+                if path.is_file() or name != "com.apple.ResourceFork":
+                    _set_xattr(path, name, value)
+        run = self.move(str(self.data))
+        self.assertEqual(0, run.returncode, run.stderr)
+        dst = self.bulk / "widget" / "runs" / "data"
+        for path in (dst / "a.bin", dst / "sub", dst):
+            for name, value in XATTRS.items():
+                if path.is_file() or name != "com.apple.ResourceFork":
+                    self.assertEqual(value, _get_xattr(path, name), f"{name} on {path}")
+
+    def test_a_copy_missing_an_attribute_keeps_the_source(self):
+        bulk_move = _module()
+        name, value = next(iter(XATTRS.items()))
+        _set_xattr(self.data / "a.bin", name, value)
+        with mock.patch.object(bulk_move, "copy", lambda src, dst: shutil.copytree(src, dst, symlinks=True,
+                                                                                copy_function=shutil.copyfile)), \
+                mock.patch.object(bulk_move, "held_open", lambda path: False):
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(1, rc)
+        self.assertFalse(self.data.is_symlink())
+        self.assertEqual(value, _get_xattr(self.data / "a.bin", name))
+        self.assertFalse((self.bulk / "widget" / "runs" / "data").exists())
 
     def test_a_destination_the_lane_sweep_reads_is_refused(self):
         # repo-sync's hyg_lane deletes old files under <root>/*/lane/.
