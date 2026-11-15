@@ -35,7 +35,9 @@ worse than committing one, so nothing else is sent. See `state_for_jev`.
 
 from __future__ import annotations
 
+import contextlib
 import csv
+import fcntl
 import hashlib
 import json
 import os
@@ -727,6 +729,19 @@ def read_arrivals(path: Path, unreported_only: bool = True) -> list[dict]:
     return rows
 
 
+@contextlib.contextmanager
+def state_lock(state_dir: Path):
+    """Hold the state folder's one lock, as local-drive-intake does (sd:8806).
+
+    `stamp` rewrites the log whole, so a `fetch` appending meanwhile would
+    lose its rows; both take this lock around their writes.
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with (state_dir / "intake.lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
 def append_arrivals(path: Path, rows: list[dict]) -> None:
     """Append-only, for the same reason local-drive-intake's log is.
 
@@ -920,41 +935,43 @@ def cmd_fetch(config_path: Path, state_dir: Path, url: str, out, dry_run: bool =
 
     threads_path = state_dir / "threads.csv"
     log_path = state_dir / "mail-arrivals.csv"
-    first_run = not threads_path.exists()
-    latest = latest_per_thread(messages)
-    carry = read_thread_rows(threads_path)
-    known = read_threads(threads_path)
-    stamp = now_iso()
-    rows = diff(latest, known, config, stamp)
+    # A dry run writes nothing, not even the lock file.
+    with contextlib.nullcontext() if dry_run else state_lock(state_dir):
+        first_run = not threads_path.exists()
+        latest = latest_per_thread(messages)
+        carry = read_thread_rows(threads_path)
+        known = read_threads(threads_path)
+        stamp = now_iso()
+        rows = diff(latest, known, config, stamp)
 
-    if dry_run:
+        if dry_run:
+            if first_run:
+                print(f"no state yet: a fetch would record {len(latest)} threads as a baseline", file=out)
+                return EXIT_NONE
+            if not rows:
+                print(f"no change: {len(latest)} threads in the last {config.window_days} days", file=out)
+                return EXIT_NONE
+            print(f"a fetch would record {len(rows)}: {summarise(rows)}", file=out)
+            for row in rows:
+                print(f"  [{row['alias']}] {row['subject']}  — {row['who']} ({row['waiting_on']})", file=out)
+            return EXIT_FOUND
+
         if first_run:
-            print(f"no state yet: a fetch would record {len(latest)} threads as a baseline", file=out)
+            # Baseline. Every open thread is technically new and none of it is news.
+            write_threads(threads_path, latest, stamp, carry)
+            print(f"baseline established: {len(latest)} threads across {len(config.aliases)} aliases", file=out)
             return EXIT_NONE
+
+        # The arrivals first (sd:4191): a run stopped between the two writes then reports a thread twice, not never.
+        append_arrivals(log_path, rows)
+        write_threads(threads_path, latest, stamp, carry)
         if not rows:
             print(f"no change: {len(latest)} threads in the last {config.window_days} days", file=out)
             return EXIT_NONE
-        print(f"a fetch would record {len(rows)}: {summarise(rows)}", file=out)
-        for row in rows:
-            print(f"  [{row['alias']}] {row['subject']}  — {row['who']} ({row['waiting_on']})", file=out)
+        pending = len(read_arrivals(log_path))
+        print(f"{len(rows)} changed: {summarise(rows)}", file=out)
+        print(f"log: {log_path}  ({pending} undelivered)", file=out)
         return EXIT_FOUND
-
-    if first_run:
-        # Baseline. Every open thread is technically new and none of it is news.
-        write_threads(threads_path, latest, stamp, carry)
-        print(f"baseline established: {len(latest)} threads across {len(config.aliases)} aliases", file=out)
-        return EXIT_NONE
-
-    # The arrivals first (sd:4191): a run stopped between the two writes then reports a thread twice, not never.
-    append_arrivals(log_path, rows)
-    write_threads(threads_path, latest, stamp, carry)
-    if not rows:
-        print(f"no change: {len(latest)} threads in the last {config.window_days} days", file=out)
-        return EXIT_NONE
-    pending = len(read_arrivals(log_path))
-    print(f"{len(rows)} changed: {summarise(rows)}", file=out)
-    print(f"log: {log_path}  ({pending} undelivered)", file=out)
-    return EXIT_FOUND
 
 
 def cmd_report(state_dir: Path, out, show_all: bool = False,
@@ -1003,7 +1020,8 @@ def cmd_stamp(state_dir: Path, through: str | None, out) -> int:
         print(f"no arrivals log at {log_path}; run fetch first", file=out)
         return EXIT_ERROR
     cutoff = through or now_iso()
-    count = stamp_arrivals(log_path, cutoff, now_iso())
+    with state_lock(state_dir):
+        count = stamp_arrivals(log_path, cutoff, now_iso())
     if not count:
         print("nothing to stamp", file=out)
         return EXIT_NONE

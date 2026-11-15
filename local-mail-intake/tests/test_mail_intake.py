@@ -6,6 +6,7 @@ when the server changes, and they are tested against captured samples of the
 real format.
 """
 
+import fcntl
 import hashlib
 import io
 import json
@@ -13,6 +14,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 from datetime import datetime, timezone
@@ -380,6 +383,49 @@ class TestStateSurvivesAPartialRun(unittest.TestCase):
             with self.assertRaises(OSError):
                 mi.cmd_fetch(conf, state, "http://127.0.0.1:9/mcp", io.StringIO())
         self.assertEqual(mi.read_threads(state / "threads.csv"), {"t1": "m1"})
+
+
+class TestStateLock(unittest.TestCase):
+    """NEW (sd:8806). stamp rewrites the log whole, so a fetch appending
+    meanwhile loses its rows. Both take one lock on the state folder."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = Path(self.tmp.name) / "state"
+        self.conf = Path(self.tmp.name) / "mail-intake.conf"
+        self.conf.write_text(CONF, encoding="utf-8")
+        self.state.mkdir()
+
+    def message(self, mid, day):
+        return mi.Message(mid, "t1", "subj", "Who", "x@y.com",
+                          datetime(2026, 9, day, tzinfo=timezone.utc), "board")
+
+    def held(self, run):
+        with open(self.state / "intake.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            worker = threading.Thread(target=run)
+            worker.start()
+            time.sleep(0.5)
+            self.assertTrue(worker.is_alive(), "ran while the lock was held")
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        worker.join(10)
+        self.assertFalse(worker.is_alive())
+
+    def test_stamp_waits_for_the_lock(self):
+        mi.write_threads(self.state / "threads.csv", {"t1": self.message("m1", 1)}, "then")
+        mi.append_arrivals(self.state / "mail-arrivals.csv", [{
+            "detected_at": "2026-09-01T00:00:00+00:00", "thread_id": "t1", "message_id": "m1",
+            "alias": "board", "subject": "s", "who": "w", "direction": "received",
+            "waiting_on": "you", "sent_at": "2026-09-01T00:00:00+00:00", "reported_at": ""}])
+        self.held(lambda: mi.cmd_stamp(self.state, None, io.StringIO()))
+        self.assertEqual([], mi.read_arrivals(self.state / "mail-arrivals.csv"))
+
+    def test_fetch_waits_for_the_lock(self):
+        mi.write_threads(self.state / "threads.csv", {"t1": self.message("m1", 1)}, "then")
+        with mock.patch.object(mi, "gather", return_value=([self.message("m5", 5)], [])):
+            self.held(lambda: mi.cmd_fetch(self.conf, self.state, "http://127.0.0.1:9/mcp", io.StringIO()))
+        self.assertEqual(mi.read_threads(self.state / "threads.csv"), {"t1": "m5"})
 
 
 if __name__ == "__main__":
