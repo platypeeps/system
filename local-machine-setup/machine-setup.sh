@@ -5515,16 +5515,6 @@ service_ports() {
   } | grep -E '^[0-9]+$' | sort -un | tr '\n' ' '
 }
 
-# Who is listening on a host port right now, as "<command> (pid N)" — empty
-# when the port is free. CLASH is theory (two candidates want the same port);
-# this is fact (something already has it, service or not, and the container
-# will fail to bind). The blocker is often nothing in this repo at all:
-# OpenWhispr ships its own qdrant, and other projects' compose files run
-# postgres.
-port_holder() {
-  port_observation "$1" | sed -n 's/^LISTEN //p'
-}
-
 # Every TCP listener this user can see, from one lsof, reduced to lines a
 # caller can look any number of ports up in:
 #   LISTEN <port> <command> (pid N)   the first holder lsof lists for the port

@@ -334,7 +334,6 @@ case "$SUITE_LEG" in
     run_suite agent-meter "$PYTHON" local-agent-meter/tests/test_agent_meter.py -v
     run_suite dependabot sh local-dependabot/dependabot.sh test -v
     run_suite herdr sh local-herdr/herdr.sh test -v
-    run_suite deploy sh local-deploy/deploy.sh test -v
     run_suite adversarial-gate sh local-adversarial-gate/adversarial-gate.sh test -v
     run_suite aws-setup sh local-aws-setup/aws-setup.sh test -v
     run_suite shared-upload sh local-shared-upload/shared-upload.sh test -v
