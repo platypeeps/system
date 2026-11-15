@@ -101,11 +101,12 @@ class CacheCleanupTest(Harness):
         self.assertNotIn("npm cache clean --force", self.logged())
         self.assertIn("npm cache clean skipped: could not list processes", run.stdout)
 
-    def uv(self, foreign):
+    def uv(self, foreign, prune_rc=0):
         cache = self.tmp / "uv-cache"
         cache.mkdir(exist_ok=True)
         _stub(self.bin / "uv", 'echo "uv $*" >> "$CALLS"\n'
-              f'case "$1 $2" in "cache dir") echo "{cache}" ;; esac\n')
+              f'case "$1 $2" in "cache dir") echo "{cache}" ;;\n'
+              f'  "cache prune") exit {prune_rc} ;; esac\n')
         # Not loaded: no agent is paused, so the real launchd is never asked.
         _stub(self.bin / "launchctl", 'echo "launchctl $*" >> "$CALLS"\nexit 1\n')
         _stub(self.bin / "pgrep", "exit 0\n" if foreign else "exit 1\n")
@@ -115,6 +116,22 @@ class CacheCleanupTest(Harness):
         run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
         self.assertIn("uv cache prune", self.logged())
         self.assertRegex(run.stdout, r"- uv-prune: .*uv-cache 0 MB -> 0 MB \(prune exit 0\)")
+
+    def test_a_failed_prune_is_a_finding_and_keeps_the_skips(self):
+        # sd:8809: the size line printed beside a failed prune read as
+        # success and ended the skip streak.
+        self.uv(foreign=True)
+        self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+        skips = self.tmp / "home/.local/state/maintenance/uv-prune-skips"
+        self.assertEqual("1", skips.read_text().strip())
+        self.uv(foreign=False, prune_rc=2)
+        run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+        self.assertIn("uv cache prune", self.logged())
+        self.assertEqual(self.attention(run), [
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: "
+            "uv cache prune failed"])
+        self.assertIn("- uv cache prune failed (exit 2)", run.stdout)
+        self.assertEqual("1", skips.read_text().strip())
 
     def test_a_prune_skipped_three_nights_running_is_a_finding(self):
         self.uv(foreign=True)

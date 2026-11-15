@@ -585,9 +585,14 @@ else
     else
       action "uv-prune: $why; skipped"
     fi
-  elif grep -q ' MB -> ' "$TMPD/uv"; then
+  elif grep -q ' MB -> .*(prune exit 0)$' "$TMPD/uv"; then
     rm -f "$UV_SKIPS"
     action "$(grep ' MB -> ' "$TMPD/uv" | tail -1)"
+  elif grep -q ' MB -> ' "$TMPD/uv"; then
+    # uv_prune returns 0 on a failed prune (launchd would loop), so read
+    # its exit here; a failure keeps the skip streak (sd:8809).
+    prune_rc=$(grep ' MB -> ' "$TMPD/uv" | tail -1 | sed 's/.*(prune exit \([0-9]*\))$/\1/')
+    finding "uv cache prune failed (exit $prune_rc)" "uv cache prune failed"
   fi
   if [ "$uv_rc" -ne 0 ]; then
     finding "uv-prune: a paused agent did not start again: $(tail -1 "$TMPD/uv")" \
