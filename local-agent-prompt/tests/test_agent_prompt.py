@@ -285,6 +285,39 @@ class PromptDistribution(unittest.TestCase):
         self.assertEqual(old, target.read_bytes())
         self.assertEqual(record, (self.state / "codex.sha").read_bytes())
 
+    def test_a_partial_write_keeps_the_target_and_its_record(self):
+        # sd:8807: a write cut short (ENOSPC, here a file-size limit) must
+        # not truncate the target; Python ignores SIGXFSZ, so it sees EFBIG.
+        self.run_script("refresh", "--apply")
+        target = self.targets["codex"]
+        target.write_bytes(b"Personal\n" * 200_000 + target.read_bytes())
+        self.run_script("refresh", "--apply")
+        self.move_source()
+        old, record = target.read_bytes(), (self.state / "codex.sha").read_bytes()
+        result = subprocess.run(
+            ["/bin/sh", "-c", 'ulimit -f 1024 && exec /bin/sh "$0" refresh --apply',
+             str(self.script)],
+            env=self.env, capture_output=True, text=True, timeout=180,
+        )
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(old, target.read_bytes())
+        self.assertEqual(record, (self.state / "codex.sha").read_bytes())
+        self.assertEqual([target.name], [p.name for p in target.parent.iterdir()])
+
+    def test_refresh_keeps_target_mode_and_symlink(self):
+        self.run_script("refresh", "--apply")
+        target = self.targets["codex"]
+        real = self.root / "real.md"
+        real.write_bytes(target.read_bytes())
+        real.chmod(0o640)
+        target.unlink()
+        target.symlink_to(real)
+        self.move_source()
+        self.run_script("refresh", "--apply")
+        self.assertTrue(target.is_symlink())
+        self.assertIn(self.source.read_bytes(), real.read_bytes())
+        self.assertEqual(0o640, real.stat().st_mode & 0o777)
+
     def test_capture_preserves_non_utf8_outside_and_records_managed_bytes(self):
         self.run_script("refresh", "--apply")
         target = self.targets["claude"]

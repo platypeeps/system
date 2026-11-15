@@ -182,11 +182,12 @@ write_block() {
   tmp=$(mktemp) || return 1
   block > "$tmp" || { rm -f "$tmp"; return 1; }
   python3 - "$f" "$BEGIN" "$END" "$tmp" <<'PYEOF'
-import sys, pathlib
+import os, sys, pathlib, tempfile
 p, b, e, blockfile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 b, e = b.encode(), e.encode()
 new = pathlib.Path(blockfile).read_bytes().rstrip(b"\n")
-f = pathlib.Path(p)
+# Resolve a symlinked target: the replace below swaps the real file.
+f = pathlib.Path(p).resolve()
 f.parent.mkdir(parents=True, exist_ok=True)
 old = f.read_bytes() if f.exists() else b""
 i, j = old.find(b), old.find(e)
@@ -196,7 +197,28 @@ else:
     # Add separation without removing existing whitespace or converting CRLF.
     separator = b"" if not old or old.endswith(b"\n\n") else b"\n\n"
     out = old + separator + new + b"\n"
-f.write_bytes(out)
+# A short write (ENOSPC) must not truncate the target: write a sibling,
+# flush it, then rename it over the target (sd:8807). A read-only target
+# still refuses, as the in-place write did.
+if f.exists():
+    if not os.access(f, os.W_OK):
+        raise PermissionError(f"{f}: not writable")
+    mode = f.stat().st_mode & 0o7777
+else:
+    umask = os.umask(0)
+    os.umask(umask)
+    mode = 0o666 & ~umask
+fd, tmp = tempfile.mkstemp(dir=f.parent, prefix=f".{f.name}.")
+try:
+    with os.fdopen(fd, "wb") as out_file:
+        out_file.write(out)
+        out_file.flush()
+        os.fsync(out_file.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, f)
+except BaseException:
+    os.unlink(tmp)
+    raise
 PYEOF
   wb_rc=$?
   rm -f "$tmp"
