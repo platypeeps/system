@@ -238,6 +238,17 @@ def main(argv):
         return 1
     aside = f"{src}.bulk-move-{os.getpid()}"
     os.rename(src, aside)
+    # A writer may have opened the source during the copy: check again under
+    # the new name, which no new open by the old path reaches.
+    try:
+        late = "a process holds it open (lsof)" if held_open(aside) else ", ".join(mismatches(aside, dst)[:5])
+    except (Refused, OSError) as why:
+        late = str(why)
+    if late:
+        os.rename(aside, src)
+        remove(dst)
+        print(f"move: {src} changed during the copy ({late}); removed the copy, kept the source", file=sys.stderr)
+        return 1
     try:
         os.symlink(dst, src)
     except OSError as error:

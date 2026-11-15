@@ -186,6 +186,38 @@ class BulkMoveTest(unittest.TestCase):
         run = self.move(str(self.data), FAKE_HELD=str(self.data / "a.bin"))
         self.assert_refused(run, self.data, "open")
 
+    def test_a_writer_that_opens_the_source_during_the_copy_keeps_it(self):
+        # Lane review: one lsof read before the copy proves nothing about the copy's end.
+        bulk_move = _module()
+        answers = iter([False, True])
+        with mock.patch.object(bulk_move, "held_open", lambda path: next(answers)):
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(1, rc)
+        self.assertFalse(self.data.is_symlink())
+        self.assertEqual("b\n", (self.data / "sub" / "b.txt").read_text())
+        self.assertFalse((self.bulk / "widget" / "runs" / "data").exists())
+        self.assertEqual([self.data.name], [p.name for p in self.data.parent.iterdir()])
+
+    def test_a_write_after_the_verify_keeps_the_source(self):
+        bulk_move = _module()
+        verify = bulk_move.mismatches
+        calls = []
+
+        def spy(src, dst):
+            calls.append(src)
+            result = verify(src, dst)
+            if len(calls) == 1:
+                (self.data / "sub" / "b.txt").write_text("late\n")  # lands after the first verify
+            return result
+        with mock.patch.object(bulk_move, "held_open", lambda path: False), \
+                mock.patch.object(bulk_move, "mismatches", spy):
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(1, rc)
+        self.assertEqual(2, len(calls))
+        self.assertFalse(self.data.is_symlink())
+        self.assertEqual("late\n", (self.data / "sub" / "b.txt").read_text())
+        self.assertFalse((self.bulk / "widget" / "runs" / "data").exists())
+
     def test_a_failed_lsof_is_refused(self):
         self.assert_refused(self.move(str(self.data), FAKE_LSOF_FAIL="1"), self.data, "lsof")
 
