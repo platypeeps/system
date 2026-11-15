@@ -109,14 +109,32 @@ class ReportTest(Harness):
         """sd:4182: low disk at 5% free one night and 4% the next is the
         same finding, so the same reason; another disk is another finding.
         The report itself still prints each night's measure."""
-        five = self.maintenance("disk|/|10\n", DF_USED="95")
-        four = self.maintenance("disk|/|10\n", DF_USED="96")
+        # A small folder, not /: the finding now runs du on its path.
+        disk = self.tmp / "disk"
+        disk.mkdir()
+        five = self.maintenance(f"disk|{disk}|10\n", DF_USED="95")
+        four = self.maintenance(f"disk|{disk}|10\n", DF_USED="96")
         other = self.maintenance("disk|/Volumes/Other|10\n", DF_USED="96")
-        self.assertIn("- disk: only 5% free on / (threshold 10%)", five.stdout)
-        self.assertIn("- disk: only 4% free on / (threshold 10%)", four.stdout)
+        self.assertIn(f"- disk: only 5% free on {disk} (threshold 10%)", five.stdout)
+        self.assertIn(f"- disk: only 4% free on {disk} (threshold 10%)", four.stdout)
         self.assertEqual(self.attention(four), self.attention(five))
         self.assertEqual(len(self.attention(five)), 1, five.stdout)
         self.assertNotEqual(self.attention(other), self.attention(five))
+
+    def test_low_disk_names_the_five_largest_folders(self):
+        """sd:8799: the finding names what to clean, largest first, and
+        the reason still ignores it, since sizes move every night."""
+        root = self.tmp / "full"
+        for i, name in enumerate(["f1", "f2", "f3", "f4", "f5", "f6"], 1):
+            (root / name).mkdir(parents=True)
+            (root / name / "blob").write_bytes(b"x" * (i * 64 * 1024))
+        run = self.maintenance(f"disk|{root}|10\n", DF_USED="95")
+        self.assertIn(f"- disk: only 5% free on {root} (threshold 10%);"
+                      " largest: f6 384K, f5 320K, f4 256K, f3 192K, f2 128K", run.stdout)
+        self.assertNotIn("f1", run.stdout)
+        (root / "f6" / "blob").unlink()
+        self.assertEqual(self.attention(self.maintenance(f"disk|{root}|10\n", DF_USED="95")),
+                         self.attention(run))
 
     def test_each_pending_update_is_its_own_line_under_its_finding(self):
         """sd:4664: one line per pending update, so one update installed leaves a subset (pack sd:4658)."""
