@@ -99,18 +99,15 @@ example_vars() {
     ' "$1"
 }
 
-# evaluate <envfile> <required> <optional> <sd>: source the .env the way
-# st_source_env does, in a subshell, and print one finding per line:
-# missing|placeholder|path|sdkey|sdskip NAME, then "done". A missing "done"
-# means the file did not source.
+# evaluate <tool> <required> <optional> <sd>: source the tool's .env with
+# st_source_env, as the tool does, so an exported value wins, in a subshell,
+# and print one finding per line: missing|placeholder|path|sdkey|sdskip
+# NAME, then "done". A missing "done" means the file did not source.
 evaluate() {
     (
-        cc_env=$1; cc_req=$2; cc_opt=$3; cc_sd=$4
+        cc_tool=$1; cc_req=$2; cc_opt=$3; cc_sd=$4
         unset cc_self cc_link cc_root DIR
-        set -a
-        # shellcheck disable=SC1090 # the config file, named at run time
-        . "$cc_env" >/dev/null 2>&1 </dev/null
-        set +a
+        st_source_env "$cc_tool" >/dev/null 2>&1 </dev/null
         for cc_v in $cc_req $cc_opt; do
             eval "cc_val=\${$cc_v-}"
             if [ -z "$cc_val" ]; then
@@ -177,7 +174,7 @@ check_tool() {
         if [ -f "$cc_cfg/.env" ]; then
             cc_present=1
             cc_envnote=".env present; $cc_nreq required, $cc_nopt optional"
-            cc_out=$(evaluate "$cc_cfg/.env" "$cc_req" "$cc_opt" "$cc_sd")
+            cc_out=$(evaluate "$cc_tool" "$cc_req" "$cc_opt" "$cc_sd")
             case "$cc_out" in
                 *done) ;;
                 *) cc_details="  error: .env did not source
