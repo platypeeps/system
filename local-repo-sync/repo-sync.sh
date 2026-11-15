@@ -2298,20 +2298,21 @@ hyg_repo() {
 
   # 3.3: remote-tracking refs for deleted remote branches. The lines are
   # matched by text, so both calls run in the C locale: a translated git
-  # would prune and print nothing the sed below knows.
+  # would prune and print nothing the sed below knows. Both reach the remote,
+  # so each is bounded; an expired bound is the last line (sd:8814).
   # $HYG_TMP/stale holds the refs the dry run names (`origin/<branch>`): report
   # mode leaves them in place, so the branch pass reads GONE from this list.
   : > "$HYG_TMP/stale"
   for h_remote in $(git -C "$d" remote); do
     if [ "$APPLY" = 1 ]; then
-      if h_out=$(LC_ALL=C git -C "$d" remote prune "$h_remote" 2>&1); then
+      if h_out=$(st_bounded 300 env LC_ALL=C git -C "$d" remote prune "$h_remote" < /dev/null 2>&1); then
         printf '%s\n' "$h_out" | sed -n 's/^ \* \[pruned\] /pruned remote-tracking ref /p' \
           | while read -r h_l; do hyg_act "$h_l"; done
       else
         hyg_fail "remote prune $h_remote: $(printf '%s' "$h_out" | tail -1)"
       fi
     else
-      if h_out=$(LC_ALL=C git -C "$d" remote prune --dry-run "$h_remote" 2>&1); then
+      if h_out=$(st_bounded 300 env LC_ALL=C git -C "$d" remote prune --dry-run "$h_remote" < /dev/null 2>&1); then
         printf '%s\n' "$h_out" | sed -n 's/^ \* \[would prune\] //p' >> "$HYG_TMP/stale"
         printf '%s\n' "$h_out" | sed -n 's/^ \* \[would prune\] /prune remote-tracking ref /p' \
           | while read -r h_l; do hyg_found "$h_l"; done

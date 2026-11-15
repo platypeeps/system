@@ -462,7 +462,7 @@ EXCLUDES=$(mktemp)
 # destination files it is waiting on.
 ERRS=$(mktemp)
 PENDING=$(mktemp)
-trap 'rm -f "$FAILLOG" "$EXCLUDES" "$ERRS" "$PENDING"' EXIT INT TERM
+trap 'rm -f "$FAILLOG" "$EXCLUDES" "$ERRS" "$PENDING" "$PENDING.listed"' EXIT INT TERM
 
 # -rlptgo is -a without -D: sockets, fifos and devices are skipped, not
 # copied. openrsync recreates a socket with mkstempsock, which fails on the
@@ -595,21 +595,31 @@ unescape_listed() {
 }
 materialize_pending() {
   : > "$PENDING"
-  # A dry run lists, one per line, the paths this pair would copy.
+  # A dry run lists, one per line, the paths this pair would copy. It is
+  # bounded like the pair, or by its --timeout when the pair has no wall
+  # bound: a stuck share hung it for the job's whole limit (sd:8814).
+  drc=0
   # shellcheck disable=SC2086
-  rsync $RSYNC_FLAGS "$@" --dry-run -v --exclude .DS_Store --exclude '._*' \
-    --exclude "$ICON_CR" --exclude .tmp.drivedownload \
-    --exclude-from "$EXCLUDES" "$src_arg" "$dst/" 2>/dev/null \
-    | while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        real=$name
-        case "$name" in *'\#'[0-7][0-7][0-7]*) real=$(unescape_listed "$name") ;; esac
-        if is_dataless "$dst/$real"; then
-          printf '%s\n' "$dst/$real" >> "$PENDING"
-        elif [ "$real" != "$name" ] && is_dataless "$dst/$name"; then
-          printf '%s\n' "$dst/$name" >> "$PENDING"
-        fi
-      done
+  st_bounded "${PAIR_BOUND:-$IO_TIMEOUT}" rsync $RSYNC_FLAGS "$@" --dry-run -v \
+    --exclude .DS_Store --exclude '._*' --exclude "$ICON_CR" \
+    --exclude .tmp.drivedownload --exclude-from "$EXCLUDES" "$src_arg" "$dst/" \
+    > "$PENDING.listed" 2>/dev/null || drc=$?
+  case $drc in 124|125)
+    echo "!!! evicted-file dry run ended $drc: $dst" >&2
+    rm -f "$PENDING.listed"
+    return 1 ;;
+  esac
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    real=$name
+    case "$name" in *'\#'[0-7][0-7][0-7]*) real=$(unescape_listed "$name") ;; esac
+    if is_dataless "$dst/$real"; then
+      printf '%s\n' "$dst/$real" >> "$PENDING"
+    elif [ "$real" != "$name" ] && is_dataless "$dst/$name"; then
+      printf '%s\n' "$dst/$name" >> "$PENDING"
+    fi
+  done < "$PENDING.listed"
+  rm -f "$PENDING.listed"
   if [ ! -s "$PENDING" ]; then
     echo "!!! rsync hit an evicted file, but no evicted destination file is due for update: $dst" >&2
     return 1
@@ -621,7 +631,7 @@ materialize_pending() {
   fi
   while IFS= read -r f; do
     echo "--- downloading evicted destination file: $f"
-    brctl download "$f" || echo "!!! brctl download failed: $f" >&2
+    st_bounded "$MATERIALIZE_WAIT" brctl download "$f" < /dev/null || echo "!!! brctl download failed: $f" >&2
   done < "$PENDING"
   # Wall time, not a count of passes: each pass stats every pending file, so
   # a long list waited many times MATERIALIZE_WAIT (sd:5064).

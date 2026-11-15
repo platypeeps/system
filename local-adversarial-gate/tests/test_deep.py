@@ -144,6 +144,34 @@ class Deep(unittest.TestCase):
             os.kill(pid, signal.SIGKILL)
             self.fail(f"the fake's grandchild {pid} survived the bound")
 
+    def test_a_term_to_the_gate_s_group_ends_the_reviewer_within_the_grace(self):
+        # sd:8814: the gate's own bound caught ALRM only, so a TERM from a
+        # job's limit ended the gate and left the reviewer's group running.
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(self.tmp / "home"), "CLAUDE_BIN": str(self.fake),
+               "CLAUDE_MODE": "hang", "ADVERSARIAL_GATE_JEV": str(self.tmp / "no-jev"), "ST_BOUNDED_GRACE": "1",
+               **{f"CLAUDE_{name.upper()}": str(path) for name, path in self.log.items()}}
+        proc = subprocess.Popen(["sh", str(SCRIPT), "deep", "--lens", "deep", "--set", "REPO_NAME=fixture",
+                                 "--set", "AGENTS=8", "--repo", str(self.repo), "--out", str(self.out),
+                                 "--timeout", "60"],
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+        self.addCleanup(proc.wait)
+        deadline = time.monotonic() + 10
+        while not (self.log["grandchild"].exists() and self.log["grandchild"].read_text().strip()):
+            self.assertLess(time.monotonic(), deadline, "the fake never started")
+            time.sleep(0.1)
+        pid = int(self.log["grandchild"].read_text())
+        os.killpg(proc.pid, signal.SIGTERM)
+        deadline = time.monotonic() + 1 + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        os.kill(pid, signal.SIGKILL)
+        self.fail(f"the reviewer's grandchild {pid} outlived a TERM to the gate")
+
     def test_a_denied_process_group_runs_no_reviewer_and_names_it(self):
         # sd:7901, operator ruling 2026-11-06: a sandboxed gate denied
         # setpgid (2026-11-04); no signal reaches what the reviewer forks,
@@ -153,8 +181,9 @@ class Deep(unittest.TestCase):
                            env=DENIED_GROUP)
         self.assertLess(time.monotonic() - started, 10, "the reviewer ran")
         self.assertEqual(result.returncode, 125, result.stderr)
-        self.assertIn("adversarial-gate: process group denied (Operation not permitted); the reviewer "
-                      "bound needs its own process group, nothing was run", result.stderr)
+        self.assertIn("st_bounded: process group denied (Operation not permitted); a bound needs its "
+                      "own process group, nothing was run", result.stderr)
+        self.assertIn("adversarial-gate: deep: claude not run: the bound needs its own process group", result.stderr)
         self.assertFalse(self.log["argv"].exists(), "the fake claude ran")
 
     def test_a_stall_before_the_reviewer_s_setpgrp_ends_at_the_bound(self):

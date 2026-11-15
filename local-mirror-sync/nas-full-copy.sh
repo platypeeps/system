@@ -50,7 +50,8 @@ environment (exported, or in <config>/mirror-sync/.env; see .env.example):
   NAS_COPY_TIMEOUT, NAS_COPY_RSYNC, NAS_COPY_HOUR, NAS_COPY_SECONDS,
   NAS_COPY_SKIP_MOUNT_CHECK, NAS_COPY_RETRY_WAIT, NAS_COPY_CHUNK   test hooks
 
-state (the last run's outcome, the pass's cursor and the lock) is in
+state (the last run's outcome, the pass's cursor, its source and
+destination, and the lock) is in
 ${XDG_STATE_HOME:-~/.local/state}/system/mirror-sync/nas-full-copy/.
 HELPEOF
     exit 0 ;;
@@ -210,6 +211,18 @@ fi
 echo $$ > "$lock/pid"
 trap 'rm -rf "$lock"' EXIT
 trap 'exit 143' INT TERM
+
+# The cursor and the state belong to one resolved source and destination: a
+# retargeted copy resumed from the old cursor and called the new share
+# complete (sd:8813). A change starts a new pass. State from before this
+# check has no target file and keeps its cursor.
+resolved() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"; }
+target=$(printf '%s\n%s' "$(resolved "$SRC")" "$(resolved "$DST")")
+if [ -f "$STATE_DIR/target" ] && [ "$(cat "$STATE_DIR/target")" != "$target" ]; then
+  say "source or destination changed since the last run; starting a new pass"
+  rm -f "$STATE_DIR/cursor" "$STATE_DIR/state"
+fi
+printf '%s\n' "$target" > "$STATE_DIR/target"
 
 # The window ends at the next END_HOUR:00 (epoch seconds).
 if [ -z "${NAS_COPY_SECONDS:-}" ]; then
