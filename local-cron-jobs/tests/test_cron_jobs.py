@@ -2203,7 +2203,8 @@ class RunReportTest(unittest.TestCase):
         self.fx.write_job("demo", 'JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="exit 7"\n')
         result = self.exec_job(FAKE_SD_EXIT="1")
         self.assertEqual(result.returncode, 7, result.stderr)
-        self.assertEqual(len(self.reports()), 2)
+        # The first run's replay, then this run's own (sd:8808).
+        self.assertEqual(len(self.reports()), 3)
         self.assertEqual((logs / "failures.log").read_text().count("FAILED rc=7"), 1)
         self.assertFalse((logs / ".demo.lock").exists())
 
@@ -2274,6 +2275,41 @@ class RunReportTest(unittest.TestCase):
         self.assertIn("ntfy.sh/example-topic", posts)
         self.assertEqual(offsets[1], offsets[0], offsets)
         self.assertGreater(offsets[2], offsets[1], offsets)
+
+    def ingests(self):
+        """(run id, exit code, offset) of each ingest call, in order."""
+        return [re.search(r"--run-id (\S+) .*--exit-code (\d+) --offset (\d+) ", line).groups()
+                for line in self.reports()]
+
+    def test_a_lost_failure_is_replayed_before_a_clean_run_reports(self):
+        # REGRESSION (sd:8808). The pending record kept only the offset, so
+        # the next run filed the lost run's slice under its own exit 0 and
+        # the failure read as healthy.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
+        self.assertEqual(self.exec_job(FAKE_SD_EXIT="3").returncode, 7)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        (lost_run, lost_rc, lost_offset), *rest = self.ingests()
+        self.assertEqual(lost_rc, "7")
+        self.assertEqual([(lost_run, "7", lost_offset)], rest[:1], rest)
+        self.assertEqual(len(rest), 2, rest)
+        self.assertNotEqual(rest[1][0], lost_run)
+        self.assertEqual(rest[1][1], "0")
+        self.assertGreater(int(rest[1][2]), int(lost_offset))
+        self.assertFalse((self.fx.folder / "logs" / ".demo.unreported").exists())
+
+    def test_a_replay_that_fails_keeps_every_pending_run(self):
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
+        self.exec_job(FAKE_SD_EXIT="3")
+        self.exec_job(FAKE_SD_EXIT="3")
+        pending = (self.fx.folder / "logs" / ".demo.unreported").read_text().splitlines()
+        self.assertEqual(len(pending), 2, pending)
+        first, second = (self.ingests()[i][0] for i in (0, 2))
+        self.sd_log.unlink()
+        self.exec_job()
+        self.assertEqual([run for run, _, _ in self.ingests()][:2], [first, second])
+        self.assertEqual(len(self.ingests()), 3)
+        self.assertFalse((self.fx.folder / "logs" / ".demo.unreported").exists())
 
     def test_a_recorded_report_pushes_nothing_and_carries_nothing(self):
         # PIN. Only a lost report pushes.

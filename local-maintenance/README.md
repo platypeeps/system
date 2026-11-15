@@ -149,6 +149,10 @@ The agent logs to `/tmp/<label>.{out,err}`.
 
 - Log rotation truncates in place after copying the tail to `<name>.1`, so
   a service holding the file open keeps writing without a restart.
+- A cron job's log rotates only under the job's `.<job>.flock`, and not
+  while `.<job>.unreported` exists: either defers it to a later night.
+  The `maintenance-nightly` log itself holds its lock during the run, so
+  it always defers.
 - Milvus's `volumes/.../rdb_data*/*.log` are RocksDB **data** files, not
   logs. Never add those paths to the conf.
 - The `maintenance-nightly` cron job (local-cron-jobs) runs `run` at 03:45.
