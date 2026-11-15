@@ -38,6 +38,9 @@ into `<config>/cron-jobs/jobs/`, list `night-triage` in the machine's
    and file": it may rerun a failed job, restart a service, clear a cron log
    file it proves stale, and file a code bug with `sd task add` in the owning
    repository (`--belongs-to` the system or pack checkout on a satellite).
+   A delete, restart or rerun a hub session can do but this run cannot
+   goes to a `--kind followup --ref hub:<host>-<slug>` item, answered
+   `filed`; `operator` is left for what needs the person (sd:8969).
    It holds no merge, push, sudo, scheduled-job, permission, mail, Slack or
    credential tool, and no alert writer. It replies with one answer per alert.
 4. **Settle.** Each alert gets one note, which releases the claim. The
