@@ -2085,10 +2085,11 @@ class EveryRunLeavesAnOutcomeTest(unittest.TestCase):
 
 
 # The fake `sd`: one line per call, its arguments, then it exits with
-# FAKE_SD_EXIT (0 when unset). FAKE_SD_SLEEP, when set, makes it hang first.
+# FAKE_SD_EXIT (0 when unset); FAKE_SD_FAIL_RUN fails that run id alone. FAKE_SD_SLEEP, when set, makes it hang first.
 FAKE_SD = """#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_SD_LOG"
 [ -z "$FAKE_SD_SLEEP" ] || sleep "$FAKE_SD_SLEEP"
+case " $* " in *" --run-id $FAKE_SD_FAIL_RUN "*) [ -z "$FAKE_SD_FAIL_RUN" ] || exit 3 ;; esac
 exit "${FAKE_SD_EXIT:-0}"
 """
 
@@ -2203,7 +2204,8 @@ class RunReportTest(unittest.TestCase):
         self.fx.write_job("demo", 'JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="exit 7"\n')
         result = self.exec_job(FAKE_SD_EXIT="1")
         self.assertEqual(result.returncode, 7, result.stderr)
-        self.assertEqual(len(self.reports()), 2)
+        # The first run's replay, then this run's own (sd:8808).
+        self.assertEqual(len(self.reports()), 3)
         self.assertEqual((logs / "failures.log").read_text().count("FAILED rc=7"), 1)
         self.assertFalse((logs / ".demo.lock").exists())
 
@@ -2274,6 +2276,102 @@ class RunReportTest(unittest.TestCase):
         self.assertIn("ntfy.sh/example-topic", posts)
         self.assertEqual(offsets[1], offsets[0], offsets)
         self.assertGreater(offsets[2], offsets[1], offsets)
+
+    def ingests(self):
+        """(run id, exit code, offset) of each ingest call, in order."""
+        return [re.search(r"--run-id (\S+) .*--exit-code (\d+) --offset (\d+) ", line).groups()
+                for line in self.reports()]
+
+    def test_a_lost_failure_is_replayed_before_a_clean_run_reports(self):
+        # REGRESSION (sd:8808). The pending record kept only the offset, so
+        # the next run filed the lost run's slice under its own exit 0 and
+        # the failure read as healthy.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
+        self.assertEqual(self.exec_job(FAKE_SD_EXIT="3").returncode, 7)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        (lost_run, lost_rc, lost_offset), *rest = self.ingests()
+        self.assertEqual(lost_rc, "7")
+        self.assertEqual([(lost_run, "7", lost_offset)], rest[:1], rest)
+        self.assertEqual(len(rest), 2, rest)
+        self.assertNotEqual(rest[1][0], lost_run)
+        self.assertEqual(rest[1][1], "0")
+        self.assertGreater(int(rest[1][2]), int(lost_offset))
+        self.assertFalse((self.fx.folder / "logs" / ".demo.unreported").exists())
+
+    def test_a_replay_that_fails_keeps_every_pending_run(self):
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
+        self.exec_job(FAKE_SD_EXIT="3")
+        self.exec_job(FAKE_SD_EXIT="3")
+        pending = (self.fx.folder / "logs" / ".demo.unreported").read_text().splitlines()
+        self.assertEqual(len(pending), 2, pending)
+        first, second = (self.ingests()[i][0] for i in (0, 2))
+        self.sd_log.unlink()
+        self.exec_job()
+        self.assertEqual([run for run, _, _ in self.ingests()][:2], [first, second])
+        self.assertEqual(len(self.ingests()), 3)
+        self.assertFalse((self.fx.folder / "logs" / ".demo.unreported").exists())
+
+    def test_a_replay_that_files_nothing_leaves_the_record_untouched(self):
+        # REGRESSION (sd:8807 lane review). The replay truncated and rewrote
+        # the only record even when no report was filed, so a failed write
+        # (ENOSPC, a short write, a kill) could erase every pending run.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
+        self.exec_job(FAKE_SD_EXIT="3")
+        pending = self.fx.folder / "logs" / ".demo.unreported"
+        lost = self.ingests()[0][0]
+        before = pending.read_bytes()
+        os.utime(pending, (1_000_000, 1_000_000))
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.exec_job(FAKE_SD_FAIL_RUN=lost)
+        self.assertEqual(pending.read_bytes(), before)
+        self.assertEqual(pending.stat().st_mtime, 1_000_000)
+
+    def test_a_rewrite_that_cannot_write_keeps_the_old_record(self):
+        # PIN (sd:8807 lane review). The rewrite goes through a temp file;
+        # one that cannot be written leaves the record whole.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
+        self.exec_job(FAKE_SD_EXIT="3")
+        self.exec_job(FAKE_SD_EXIT="3")
+        pending = self.fx.folder / "logs" / ".demo.unreported"
+        before = pending.read_bytes()
+        second = self.ingests()[2][0]
+        (self.fx.folder / "logs" / ".demo.unreported.tmp").mkdir()
+        self.exec_job(FAKE_SD_FAIL_RUN=second)
+        self.assertTrue(pending.read_bytes().startswith(before), pending.read_text())
+
+    def test_a_legacy_offset_stays_on_disk_until_the_run_reports(self):
+        # REGRESSION (sd:8807 lane review, round 3). The bare offset went
+        # before the workload ran, so a kill mid-run lost the carried report.
+        pending = self.fx.folder / "logs" / ".demo.unreported"
+        self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="test -s {pending}"\n')
+        pending.write_text("0\n")
+        self.assertEqual(self.exec_job().returncode, 0)
+        self.assertFalse(pending.exists())
+
+    def test_a_legacy_offset_a_refused_report_saves_moves_to_its_line(self):
+        # PIN (round 3). The run's saved line holds the carried offset, so
+        # the bare one goes; nothing is lost and nothing doubles.
+        pending = self.fx.folder / "logs" / ".demo.unreported"
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        pending.write_text("0\n")
+        self.exec_job(FAKE_SD_EXIT="3")
+        lines = pending.read_text().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertEqual(lines[0].split()[0], "0", lines)
+        self.assertEqual(len(lines[0].split()), 5, lines)
+
+    def test_a_legacy_or_malformed_record_goes_once_a_run_reports(self):
+        # REGRESSION (sd:8807 lane review, round 2). A record holding only a
+        # bare offset or a malformed line was never removed, so each later
+        # run refiled the log from that offset and rotation deferred for good.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        pending = self.fx.folder / "logs" / ".demo.unreported"
+        for body in ("0\n", "x1 run s e 0\n", ""):
+            with self.subTest(body=body):
+                pending.write_text(body)
+                self.assertEqual(self.exec_job().returncode, 0)
+                self.assertFalse(pending.exists())
 
     def test_a_recorded_report_pushes_nothing_and_carries_nothing(self):
         # PIN. Only a lost report pushes.

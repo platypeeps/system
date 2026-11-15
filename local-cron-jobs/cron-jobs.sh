@@ -672,16 +672,18 @@ record_run_report() { # job, run identity, start, end, exit, log offset
     echo "[$1] report was not recorded in the workflow database; source remains in $LOG_DIR/$1.log (offset $6, run $2)" >&2
     return 1
   fi
-  rm -f "$LOG_DIR/.$1.unreported"
 }
 
 # A report that did not reach the database carries findings nothing else
 # holds: a producer has already moved its baseline or acted (sd:3537). The
-# next run's report starts at this run's offset, so it carries them, and a
-# push says so meanwhile. The offset is written before the push, so a push
-# that hangs or fails cannot lose it.
-report_unrecorded() { # job, log offset
-  printf '%s\n' "$2" > "$LOG_DIR/.$1.unreported" || true
+# run is kept whole, one line per run (offset, run id, start, end, exit),
+# and the next run replays it under its own exit before it starts: an
+# offset alone made a later clean run file the failure as healthy
+# (sd:8808). A push says so meanwhile. The record is written before the
+# push, so a push that hangs or fails cannot lose it.
+report_unrecorded() { # job, log offset, run identity, start, end, exit
+  local saved=0
+  printf '%s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" >> "$LOG_DIR/.$1.unreported" || saved=1
   osascript -e "display notification \"Job '$1': report not recorded. See local-cron-jobs/logs/$1.log.\" with title \"cron-jobs report\"" 2>/dev/null || true
   # Optional phone push via ntfy.sh: set NTFY_TOPIC in <config>/cron-jobs/notify.conf.
   local NTFY_TOPIC=""
@@ -690,6 +692,46 @@ report_unrecorded() { # job, log offset
   [ -z "$NTFY_TOPIC" ] || curl -s -m 10 -H "Title: cron-jobs: $1 report not recorded" -H "Priority: high" \
     -d "On $(hostname -s). Log: local-cron-jobs/logs/$1.log from byte $2." \
     "https://ntfy.sh/$NTFY_TOPIC" >/dev/null || true
+  return "$saved"
+}
+
+# Files each pending run's report, oldest first, under the lock. The first
+# that fails stops the replay and keeps itself and every later line. A
+# slice runs to the log's end, so an older one also holds the newer runs'
+# lines; ponytail: no end offset, add one if ingest ever takes it. A bare
+# offset, from a runner before sd:8808, leaves the file in REPLAY_CARRY.
+replay_unrecorded() { # job
+  local pending="$LOG_DIR/.$1.unreported" offset run started ended code left="" bare="" used=""
+  REPLAY_CARRY=""
+  [ -s "$pending" ] || { rm -f "$pending"; return 0; }
+  while read -r offset run started ended code; do
+    case "$offset" in ''|*[!0-9]*) used=1; continue ;; esac
+    [ -n "$run" ] || { REPLAY_CARRY="$offset"; bare="$bare$offset
+"; continue; }
+    if [ -z "$left" ] && record_run_report "$1" "$run" "$started" "$ended" "$code" "$offset"; then
+      used=1; continue
+    fi
+    left="$left$offset $run $started $ended $code
+"
+  done < "$pending"
+  # Rewrite only when a line was filed or skipped as malformed, through a
+  # temp file renamed over the record: a failed write keeps the old record
+  # whole, and its filed runs replay again, which ingest folds by run id.
+  # A bare offset stays until this run's report takes it (drop_carry).
+  [ -n "$used" ] || return 0
+  if [ -z "$bare$left" ]; then rm -f "$pending"; return 0; fi
+  { printf '%s' "$bare$left" > "$pending.tmp" && mv -f "$pending.tmp" "$pending"; } || rm -f "$pending.tmp"
+}
+
+# After this run's report is filed, or recorded as a full line that holds
+# the carried offset, the bare offset it carried is no longer needed.
+drop_carry() { # job
+  local pending="$LOG_DIR/.$1.unreported" keep
+  [ -n "$REPLAY_CARRY" ] && [ -f "$pending" ] || return 0
+  REPLAY_CARRY=""
+  keep="$(grep ' ' "$pending" || true)"
+  if [ -z "$keep" ]; then rm -f "$pending"; return 0; fi
+  { printf '%s\n' "$keep" > "$pending.tmp" && mv -f "$pending.tmp" "$pending"; } || rm -f "$pending.tmp"
 }
 
 # The outcome line every run that started owes its log. cmd_exec writes "done"
@@ -886,9 +928,14 @@ exec_exit() {
   fi
   stop_tee
   # The report, once: the normal end clears EXEC_JOB before it files its own.
-  [ -z "$owed" ] || record_run_report "$owed" "$EXEC_RUN" "$EXEC_STARTED" \
-    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$code" "$EXEC_OFFSET" \
-    || report_unrecorded "$owed" "$EXEC_OFFSET"
+  local ended
+  ended="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  if [ -z "$owed" ]; then :
+  elif record_run_report "$owed" "$EXEC_RUN" "$EXEC_STARTED" "$ended" "$code" "$EXEC_OFFSET"; then
+    drop_carry "$owed"
+  elif report_unrecorded "$owed" "$EXEC_OFFSET" "$EXEC_RUN" "$EXEC_STARTED" "$ended" "$code"; then
+    drop_carry "$owed"
+  fi
   [ -z "$owed" ] || push_at_risk "$owed" "$code" "$EXEC_OWN_OFFSET" \
     "${EXEC_IN_JOB:+$INTERRUPTED; }" || true
 }
@@ -1323,10 +1370,11 @@ cmd_exec() { # invoked by launchd (and by `run`)
   local report_offset=0 report_started report_run
   [ ! -f "$LOG_DIR/$job.log" ] || report_offset="$(wc -c < "$LOG_DIR/$job.log" | tr -d ' ')"
   local own_offset="$report_offset"
-  # A report the last run could not record starts this one (report_unrecorded).
-  local lost
-  lost="$(cat "$LOG_DIR/.$job.unreported" 2>/dev/null || true)"
-  case "$lost" in ''|*[!0-9]*) ;; *) [ "$lost" -gt "$report_offset" ] || report_offset="$lost" ;; esac
+  # Reports earlier runs could not record go first, before this run writes
+  # a line, so each slice ends where its run ended (report_unrecorded).
+  # A bare offset, from a runner before sd:8808, starts this run's report.
+  replay_unrecorded "$job"
+  [ -z "$REPLAY_CARRY" ] || [ "$REPLAY_CARRY" -gt "$report_offset" ] || report_offset="$REPLAY_CARRY"
   report_started="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   report_run="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
   start_tee "$LOG_DIR/$job.log"
@@ -1469,8 +1517,15 @@ if attrs:
   record_outcome "$job" "$rc"
   EXEC_JOB=""
   stop_tee
-  record_run_report "$job" "$report_run" "$report_started" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$rc" "$report_offset" \
-    || report_unrecorded "$job" "$report_offset"
+  local report_ended
+  report_ended="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  # A bare offset this run carried goes only once its report is filed or
+  # saved as a full line, which holds that offset (drop_carry).
+  if record_run_report "$job" "$report_run" "$report_started" "$report_ended" "$rc" "$report_offset"; then
+    drop_carry "$job"
+  elif report_unrecorded "$job" "$report_offset" "$report_run" "$report_started" "$report_ended" "$rc"; then
+    drop_carry "$job"
+  fi
   push_at_risk "$job" "$rc" "$own_offset" || true
   [ "$rc" -eq 0 ] || exit "$rc"
 }

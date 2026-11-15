@@ -350,7 +350,21 @@ check_logs() { # dir-or-file max-mb
     [ "$size" -gt "$max_bytes" ] || continue
     mb=$(( size / 1024 / 1024 ))
     if [ "$APPLY" -eq 1 ]; then
-      if tail -n 2000 "$f" > "$f.1" 2>/dev/null && : > "$f"; then
+      # A cron job's log rotates under the job's lock, and not while a lost
+      # run report still points into it: truncation took the report's slice
+      # (sd:8808). The lock is cron-jobs' `.<job>.flock`, taken as it takes it.
+      job_lock="$(dirname "$f")/.$(basename "$f" .log).flock"
+      pending="$(dirname "$f")/.$(basename "$f" .log).unreported"
+      rot_rc=0
+      ( if [ -f "$job_lock" ]; then
+          exec 8>>"$job_lock" || exit 9
+          perl -e 'use Fcntl ":flock"; open(my $fh, ">&=", 8) or exit 2; flock($fh, LOCK_EX|LOCK_NB) or exit 1; exit 0' || exit 9
+        fi
+        [ ! -e "$pending" ] || exit 9
+        tail -n 2000 "$f" > "$f.1" && : > "$f" ) 2>/dev/null || rot_rc=$?
+      if [ "$rot_rc" -eq 9 ]; then
+        action "rotation of $f deferred: its job runs or holds an unrecorded report (${mb}MB)"
+      elif [ "$rot_rc" -eq 0 ]; then
         action "rotated $f (${mb}MB > ${2}MB cap; tail kept in $(basename "$f").1)"
       else
         finding "logs: failed to rotate $f (${mb}MB)" "logs: failed to rotate $f"
@@ -606,9 +620,14 @@ else
     else
       action "uv-prune: $why; skipped"
     fi
-  elif grep -q ' MB -> ' "$TMPD/uv"; then
+  elif grep -q ' MB -> .*(prune exit 0)$' "$TMPD/uv"; then
     rm -f "$UV_SKIPS"
     action "$(grep ' MB -> ' "$TMPD/uv" | tail -1)"
+  elif grep -q ' MB -> ' "$TMPD/uv"; then
+    # uv_prune returns 0 on a failed prune (launchd would loop), so read
+    # its exit here; a failure keeps the skip streak (sd:8809).
+    prune_rc=$(grep ' MB -> ' "$TMPD/uv" | tail -1 | sed 's/.*(prune exit \([0-9]*\))$/\1/')
+    finding "uv cache prune failed (exit $prune_rc)" "uv cache prune failed"
   fi
   if [ "$uv_rc" -ne 0 ]; then
     finding "uv-prune: a paused agent did not start again: $(tail -1 "$TMPD/uv")" \
