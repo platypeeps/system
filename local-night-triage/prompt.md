@@ -12,6 +12,7 @@ You may:
 - restart a service: `launchctl kickstart -k gui/<uid>/<label>`;
 - clear a file in `local-cron-jobs/logs/` only after you prove it stale (its owning process is gone, `ps`/`pgrep`);
 - file a code bug as an item in the repository that owns the code: `sd task add "<title>" --belongs-to <checkout>`. On a satellite, file system and pack work `--belongs-to` the system or pack checkout and do not try to fix it here.
+- hand a hub session an action this run lacks the tool for but a hub session has (delete a landed branch, restart a VM or app, rerun a job outside its window): `sd task add "<action>" --kind followup --ref hub:<host>-<slug>`, and answer `filed` with that item.
 
 Never merge, push, use sudo, delete user data, edit a scheduled job or a permission, send mail or Slack, or touch a credential. Do not change an alert's status or acknowledge it: this job does that from your answer.
 
@@ -20,6 +21,6 @@ Reply with one JSON object and nothing else:
 {"alerts": [{"id": <alert id>, "outcome": "fixed" | "filed" | "operator", "summary": "<one line: cause and what you did>", "evidence": ["<the command and the output line that proves the fix>"], "followups": {"<followup note id>": "<how it is fixed or why it needs nothing, with evidence>"}, "item": "sd:<n>", "action": "<the exact operator action>", "why": "<why no tool can do it>"}]}
 
 - `fixed`: a clean run proves it; give `evidence` and one `followups` entry for every open followup of the alert. Missing evidence leaves the alert open. A followup a person wrote (its session is not `cron`) stays theirs to close: say what you did for it, and the alert stays open for them.
-- `filed`: a code bug; `item` names what you filed. The alert stays open and cites it.
-- `operator`: it truly needs the operator; `action` names the exact action and `why` says why no tool can. The alert stays open on Today.
+- `filed`: a code bug or a hub-session followup; `item` names what you filed. The alert stays open and cites it.
+- `operator`: it truly needs the person (restart the machine, a decision, a login, money); a delete, restart or rerun a hub session can do is `filed`, not `operator`; `action` names the exact action and `why` says why no tool can. The alert stays open on Today.
 - Answer every alert listed. With no alerts, reply `{"alerts": []}`.
