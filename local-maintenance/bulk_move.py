@@ -13,8 +13,8 @@ symlink, a path git tracks or a checkout, a folder holding
 a relative link that leads out of it, build output (target/,
 node_modules/), a path a process holds open (lsof; an lsof that fails
 refuses too), a missing or full bulk root, an existing destination,
-a destination outside the bulk root or inside the source, and one
-under ROOT/*/lane/, which repo-sync's lane sweep empties.
+a destination outside the bulk root or inside the source, and a copy
+with any path under ROOT/*/lane/, which repo-sync's lane sweep empties.
 
 Exit 0: moved. 1: refused or failed; the source is unchanged.
 """
@@ -197,11 +197,13 @@ def plan(root, path, folder):
         raise Refused(f"{dst} is not beneath the bulk root {root}; kept {src}")
     # repo-sync's hyg_lane deletes files 14 days old under <root>/*/lane/,
     # and the copy keeps the source's mtimes. The literal name matches
-    # any case on a case-insensitive volume.
-    under = os.path.relpath(dst, root).split(os.sep)
-    if len(under) > 1 and under[1].lower() == "lane":
-        raise Refused(f"{dst} is under {os.path.join(root, under[0], under[1])}, "
-                      f"which the lane sweep empties; kept {src}")
+    # any case on a case-insensitive volume. Every path of the copy is
+    # checked: with folder `.`, a lane/ child of the source lands there.
+    for path in [dst] + [os.path.join(dst, e) for e in entries]:
+        under = os.path.relpath(path, root).split(os.sep)
+        if len(under) > 1 and under[1].lower() == "lane":
+            raise Refused(f"{path} would be under {os.path.join(root, under[0], under[1])}, "
+                          f"which the lane sweep empties; kept {src}")
     if dst == src or dst.startswith(src + os.sep):
         raise Refused(f"{dst} is inside {src}; kept it")
     if os.path.lexists(dst):

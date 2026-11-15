@@ -153,6 +153,15 @@ class BulkMoveTest(unittest.TestCase):
         self.assertEqual(0, self.move(str(self.data), "notes").returncode)
         self.assertFalse((self.bulk / "widget").exists())
 
+    def test_a_lane_folder_inside_the_moved_folder_is_refused(self):
+        # With folder `.` the copy is <root>/archive, so its lane/ child
+        # is <root>/archive/lane, which the lane sweep empties.
+        archive = self.tmp / "home" / "archive"
+        (archive / "Lane").mkdir(parents=True)
+        (archive / "Lane" / "old.log").write_text("old\n")
+        self.assert_refused(self.move(str(archive), "."), archive, "lane")
+        self.assertFalse((self.bulk / "archive").exists())
+
     def test_a_tracked_file_is_refused(self):
         run = self.move(str(self.repo / "tracked.txt"))
         self.assert_refused(run, self.repo / "tracked.txt", "tracked")
