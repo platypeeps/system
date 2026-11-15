@@ -18,6 +18,7 @@ The promises checked:
 import errno
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -168,7 +169,7 @@ class CompareCase(MeteringCase):
     def env(self, **extra):
         settings = {
             # Every stage these cases call under; an unlisted one runs no arm.
-            "JEV_COMPARE_STAGES": "unknown, JEV_NOTIFY,JEV_SD_REVIEW",
+            "JEV_COMPARE_STAGES": "unknown, JEV_NOTIFY,JEV_SD_REVIEW_TRIAGE",
             "JEV_COMPARE_KEV_URL": self.base + "/v1/systemone",
             "JEV_COMPARE_HAIKU_VIA": "off",
             "JEV_COMPARE_ANTHROPIC_URL": self.base + "/v1/messages",
@@ -328,7 +329,7 @@ class TheKevArm(CompareCase):
         hung.listen(8)          # connections queue here and are never accepted
         code, out = self.run_main(
             ["choice", "which tier?", "--criteria", "light,standard,deep",
-             "--fallback", "standard", "--stage", "JEV_SD_REVIEW"],
+             "--fallback", "standard", "--stage", "JEV_SD_REVIEW_TRIAGE"],
             JEV_SHADOW="1", JEV_COMPARE_TIMEOUT="1",
             JEV_COMPARE_KEV_URL="http://127.0.0.1:%d/v1/systemone" % hung.getsockname()[1])
         self.assertEqual((code, out), (0, "standard\n"))
@@ -826,9 +827,9 @@ class TheStageList(TheArmsAreOptIn):
                 self.assertEqual(self.call_with(JEV_COMPARE_STAGES=stages), [])
 
     def test_only_a_listed_stage_starts_an_arm(self):
-        listed = self.call_with(JEV_STAGE="JEV_SD_REVIEW", JEV_COMPARE_STAGES="JEV_NOTIFY, JEV_SD_REVIEW")
+        listed = self.call_with(JEV_STAGE="JEV_SD_REVIEW_TRIAGE", JEV_COMPARE_STAGES="JEV_NOTIFY, JEV_SD_REVIEW_TRIAGE")
         self.assertEqual(len(listed), 1)
-        self.assertEqual(self.call_with(JEV_STAGE="JEV_NOTIFY", JEV_COMPARE_STAGES="JEV_SD_REVIEW"), [])
+        self.assertEqual(self.call_with(JEV_STAGE="JEV_NOTIFY", JEV_COMPARE_STAGES="JEV_SD_REVIEW_TRIAGE"), [])
 
     def child(self, stage, **settings):
         """The child run as `jev.py` runs it; its arms finish before it returns."""
@@ -844,11 +845,11 @@ class TheStageList(TheArmsAreOptIn):
         return sorted(s["path"] for s in Arm.seen)
 
     def test_the_child_sends_nothing_for_an_unlisted_stage(self):
-        self.assertEqual(self.child("JEV_NOTIFY", JEV_COMPARE_STAGES="JEV_SD_REVIEW"), [])
+        self.assertEqual(self.child("JEV_NOTIFY", JEV_COMPARE_STAGES="JEV_SD_REVIEW_TRIAGE"), [])
         self.assertEqual(self.rows(), [])
 
     def test_the_child_asks_every_arm_for_a_listed_stage(self):
-        self.assertEqual(self.child("JEV_SD_REVIEW", JEV_COMPARE_STAGES="JEV_SD_REVIEW"),
+        self.assertEqual(self.child("JEV_SD_REVIEW_TRIAGE", JEV_COMPARE_STAGES="JEV_SD_REVIEW_TRIAGE"),
                          ["/v1/messages", "/v1/systemone"])
         self.assertEqual(sorted(row["arm"] for row in self.rows()), ["haiku", "kev"])
 
@@ -856,11 +857,11 @@ class TheStageList(TheArmsAreOptIn):
         for word in ("", "off", "0", "disabled"):
             with self.subTest(word=word):
                 Arm.seen = []
-                self.assertEqual(self.child("JEV_SD_REVIEW", JEV_COMPARE_STAGES="JEV_SD_REVIEW",
+                self.assertEqual(self.child("JEV_SD_REVIEW_TRIAGE", JEV_COMPARE_STAGES="JEV_SD_REVIEW_TRIAGE",
                                             JEV_COMPARE_HAIKU_VIA=word), ["/v1/systemone"])
 
     #: `JEV_COMPARE_STAGES` as the hub sets it on 2026-10-08 (sd:3011).
-    HUB_STAGES = ("JEV_SD_REVIEW", "JEV_SD_REVIEW_BLIND", "JEV_SD_REVIEW_TRIAGE", "JEV_SD_TASK_DEDUPE",
+    HUB_STAGES = ("JEV_SD_REVIEW_TRIAGE", "JEV_SD_TASK_DEDUPE",
                   "JEV_SD_DOCS_LINT", "JEV_SD_FACT_CHECK", "JEV_SD_PROSE_SCORE", "JEV_SD_PUBLISH", "JEV_SD_PLAN",
                   "JEV_ADVERSARIAL_GATE", "JEV_MAIL_INTAKE", "JEV_DRIVE_INTAKE", "JEV_NOTIFY", "JEV_HEALTH_CHECK",
                   "JEV_OBSIDIAN_REVIEW", "JEV_JOB_TRIAGE", "JEV_REPO_SYNC_HYGIENE",
@@ -879,6 +880,23 @@ class TheStageList(TheArmsAreOptIn):
         arms = {(row["stage"], row["arm"]) for row in self.rows()}
         for stage in self.HUB_STAGES:
             self.assertLessEqual({(stage, "jev"), (stage, "kev"), (stage, "haiku")}, arms, stage)
+
+
+class NoRetiredStage(unittest.TestCase):
+    """pack sd:8972 deletes `JEV_SD_REVIEW` and `JEV_SD_REVIEW_BLIND`, so no
+    example or stage list here may name them (sd:8973)."""
+
+    RETIRED = re.compile(r"\bJEV_SD_REVIEW(_BLIND)?\b")
+
+    def test_no_example_names_a_retired_stage(self):
+        here = Path(__file__).resolve().parent.parent
+        for name in ("README.md", ".env.example"):
+            with self.subTest(name=name):
+                self.assertIsNone(self.RETIRED.search((here / name).read_text()))
+
+    def test_the_hub_list_names_no_retired_stage(self):
+        for stage in TheStageList.HUB_STAGES:
+            self.assertIsNone(self.RETIRED.fullmatch(stage), stage)
 
 
 class TheOutputCap(CompareCase):
