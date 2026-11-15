@@ -2340,6 +2340,27 @@ class RunReportTest(unittest.TestCase):
         self.exec_job(FAKE_SD_FAIL_RUN=second)
         self.assertTrue(pending.read_bytes().startswith(before), pending.read_text())
 
+    def test_a_legacy_offset_stays_on_disk_until_the_run_reports(self):
+        # REGRESSION (sd:8807 lane review, round 3). The bare offset went
+        # before the workload ran, so a kill mid-run lost the carried report.
+        pending = self.fx.folder / "logs" / ".demo.unreported"
+        self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="test -s {pending}"\n')
+        pending.write_text("0\n")
+        self.assertEqual(self.exec_job().returncode, 0)
+        self.assertFalse(pending.exists())
+
+    def test_a_legacy_offset_a_refused_report_saves_moves_to_its_line(self):
+        # PIN (round 3). The run's saved line holds the carried offset, so
+        # the bare one goes; nothing is lost and nothing doubles.
+        pending = self.fx.folder / "logs" / ".demo.unreported"
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        pending.write_text("0\n")
+        self.exec_job(FAKE_SD_EXIT="3")
+        lines = pending.read_text().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertEqual(lines[0].split()[0], "0", lines)
+        self.assertEqual(len(lines[0].split()), 5, lines)
+
     def test_a_legacy_or_malformed_record_goes_once_a_run_reports(self):
         # REGRESSION (sd:8807 lane review, round 2). A record holding only a
         # bare offset or a malformed line was never removed, so each later
