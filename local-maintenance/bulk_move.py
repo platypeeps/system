@@ -220,9 +220,10 @@ def snapshot(src):
     """Inode, size, mtime and ctime of `src` and every entry under it.
 
     A write, a create, a delete or an attribute change moves one of them,
-    and reading (the copy, the verify) moves none.
+    and reading (the copy, the verify) moves none. The rename aside moves
+    the top entry's ctime, so the top keeps only inode, size and mtime.
     """
-    return {rel: (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    return {rel: (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns if rel else 0)
             for rel in [""] + walk(src) for st in [os.lstat(os.path.join(src, rel) if rel else src)]}
 
 
@@ -245,17 +246,11 @@ def main(argv):
     except Refused as why:
         print(f"move: {why}", file=sys.stderr)
         return 1
-    # Every check runs with the source in place, so a reader or a writer
-    # never finds the path missing while a long scan or lsof runs.
     try:
         before = snapshot(src)
         copy(src, dst)
         bad = mismatches(src, dst)
-        if not bad and held_open(src):
-            bad = ["a process opened it during the copy (lsof)"]
-        if not bad and snapshot(src) != before:
-            bad = ["it changed during the copy"]
-    except (Refused, OSError) as error:
+    except OSError as error:
         bad = [f"copy failed: {error}"]
     if bad:
         if os.path.lexists(dst):
@@ -263,15 +258,20 @@ def main(argv):
         print(f"move: the copy of {src} differs ({', '.join(bad[:5])}); removed it, kept the source",
               file=sys.stderr)
         return 1
-    # ponytail: a process that opens the source between the last lsof and
-    # the rename (microseconds) is not seen; a post-swap lsof on the aside
-    # name closes it if that ever bites.
+    # Link first, then check the original under its new name: no new open
+    # by path reaches it, so lsof plus a stat compare against the snapshot
+    # from before the copy prove no writer touched it since. The path is
+    # missing only between the rename and the symlink.
     aside = f"{src}.bulk-move-{os.getpid()}"
     os.rename(src, aside)
     try:
         os.symlink(dst, src)
-    except (OSError, KeyboardInterrupt) as error:  # Ctrl-C too: the source must not stay aside
-        print(f"move: could not link {src} ({error!r}); {restore(aside, src)}; the copy stays at {dst}",
+        if held_open(aside):
+            raise Refused("a process holds it open (lsof)")
+        if snapshot(aside) != before:
+            raise Refused("it changed during the copy")
+    except (Refused, OSError, KeyboardInterrupt) as why:  # Ctrl-C too: never leave it aside
+        print(f"move: {src} kept ({why!r}): {restore(aside, src)}; the copy stays at {dst}",
               file=sys.stderr)
         return 1
     try:

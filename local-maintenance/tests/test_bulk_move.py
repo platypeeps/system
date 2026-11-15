@@ -195,7 +195,7 @@ class BulkMoveTest(unittest.TestCase):
         self.assertEqual(1, rc)
         self.assertFalse(self.data.is_symlink())
         self.assertEqual("b\n", (self.data / "sub" / "b.txt").read_text())
-        self.assertFalse((self.bulk / "widget" / "runs" / "data").exists())
+        self.assertTrue((self.bulk / "widget" / "runs" / "data").exists())  # writes via the link may be there
         self.assertEqual([self.data.name], [p.name for p in self.data.parent.iterdir()])
 
     def test_a_write_after_the_verify_keeps_the_source(self):
@@ -215,16 +215,32 @@ class BulkMoveTest(unittest.TestCase):
         self.assertEqual(1, rc)
         self.assertFalse(self.data.is_symlink())
         self.assertEqual("late\n", (self.data / "sub" / "b.txt").read_text())
-        self.assertFalse((self.bulk / "widget" / "runs" / "data").exists())
 
-    def test_the_source_stays_in_place_during_every_check(self):
+    def test_a_write_just_after_the_swap_is_caught(self):
+        # Lane review round 3: a writer with an open handle writes into the
+        # original after the last check; deleting it then lost the write.
+        bulk_move = _module()
+        rename = os.rename
+
+        def writer(a, b):
+            rename(a, b)
+            if a == str(self.data):
+                pathlib.Path(b, "sub", "b.txt").write_text("late\n")
+        with mock.patch.object(bulk_move, "held_open", lambda path: False), \
+                mock.patch.object(bulk_move.os, "rename", writer):
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(1, rc)
+        self.assertFalse(self.data.is_symlink())
+        self.assertEqual("late\n", (self.data / "sub" / "b.txt").read_text())
+
+    def test_the_source_path_stays_present_during_every_check(self):
         # Lane review round 2: a check run while the source sat aside left
         # the path missing for a full lsof and a second content read.
         bulk_move = _module()
         verify, seen = bulk_move.mismatches, []
 
         def present():
-            seen.append(self.data.is_dir() and not self.data.is_symlink())
+            seen.append(os.path.lexists(self.data))
 
         def spy(src, dst):
             present()
