@@ -2,8 +2,8 @@
 
 sd:1387 found two ways it passed a collector that was not working:
 
-- the zpages probe accepted any HTTP answer, so a 404 or a 500 read as
-  "zpages answering" and exited 0;
+- the probe accepted any HTTP answer, so a 404 or a 500 read as
+  "answering" and exited 0;
 - a crashed container reads as "not running", exit 3, because `docker run
   --rm` removes it, and nothing recorded that it had ever been started.
 
@@ -11,10 +11,15 @@ The script runs from a copy in a temporary folder, so the `state/started`
 marker it writes lands there and never in this checkout. `docker` is a stub
 whose one piece of state is a file standing for the running container;
 deleting that file is a crash. `curl` is the real one, pointed at a local
-HTTP server that answers with whatever code the test asks for.
+HTTP server that answers with whatever code the test asks for, on the
+health_check path only.
+
+sd:8811: the probe asked zpages, which config.yaml does not enable, so the
+shipped collector read as broken. It asks the health_check extension now.
 """
 
 import http.server
+import re
 import os
 import shutil
 import subprocess
@@ -38,17 +43,18 @@ exit 0
 """
 
 
-class Zpages(http.server.BaseHTTPRequestHandler):
+class HealthCheck(http.server.BaseHTTPRequestHandler):
     code = 200
 
     def do_GET(self):
-        self.send_response(self.server.code)
+        # health_check answers on its root path; any other path is a 404.
+        self.send_response(self.server.code if self.path == "/" else 404)
         if getattr(self.server, "truncate", False):
             # Promise more body than is sent, then close: curl reports the
             # 200 and exits 18 (partial transfer).
             self.send_header("Content-Length", "1000")
         self.end_headers()
-        self.wfile.write(b"servicez\n")
+        self.wfile.write(b'{"status":"Server available"}\n')
 
     def log_message(self, *args):
         pass
@@ -83,21 +89,21 @@ class StatusCase(unittest.TestCase):
             SYSTEM_TOOLS_CONFIG=str(self.root / "config"),
         )
 
-    def zpages(self, code, truncate=False):
-        server = http.server.HTTPServer(("127.0.0.1", 0), Zpages)
+    def health(self, code, truncate=False):
+        server = http.server.HTTPServer(("127.0.0.1", 0), HealthCheck)
         server.code = code
         server.truncate = truncate
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        self.env["OTELCOL_ZPAGES_PORT"] = str(server.server_address[1])
+        self.env["OTELCOL_HEALTH_PORT"] = str(server.server_address[1])
 
     def closed_port(self):
-        server = http.server.HTTPServer(("127.0.0.1", 0), Zpages)
+        server = http.server.HTTPServer(("127.0.0.1", 0), HealthCheck)
         port = server.server_address[1]
         server.server_close()
-        self.env["OTELCOL_ZPAGES_PORT"] = str(port)
+        self.env["OTELCOL_HEALTH_PORT"] = str(port)
 
     def run_verb(self, *args, expect):
         done = subprocess.run(
@@ -111,44 +117,59 @@ class StatusCase(unittest.TestCase):
         return self.folder / "state" / "started"
 
 
-class TheZpagesProbe(StatusCase):
+class TheHealthProbe(StatusCase):
     def setUp(self):
         super().setUp()
         self.run_verb("start", expect=0)
 
     def test_a_2xx_is_healthy(self):
-        self.zpages(200)
+        self.health(200)
         done = self.run_verb("status", expect=0)
         self.assertIn("OK", done.stdout)
 
     def test_a_404_is_broken_not_answering(self):
-        # sd:1387 item 1. zpages off, or its debug path moved: curl without
-        # -f exits 0 on a 404 and status said "OK — zpages answering".
-        self.zpages(404)
+        # sd:1387 item 1. curl without -f exits 0 on a 404, and status
+        # said "OK".
+        self.health(404)
         done = self.run_verb("status", expect=1)
         self.assertTrue(done.stdout.startswith("local-opentelemetry-collector: FAIL"), done.stdout)
 
     def test_a_500_is_broken(self):
-        self.zpages(500)
+        self.health(500)
         self.run_verb("status", expect=1)
 
     def test_a_redirect_is_broken(self):
-        # PR #564 review. `curl -f` still exits 0 on a 3xx, so a moved debug
+        # PR #564 review. `curl -f` still exits 0 on a 3xx, so a moved
         # path that redirects read as healthy. Only a 2xx is.
-        self.zpages(302)
+        self.health(302)
         done = self.run_verb("status", expect=1)
         self.assertIn("HTTP 302", done.stdout)
 
     def test_a_200_whose_body_is_cut_short_is_broken(self):
         # PR #564 local review. Reading only the HTTP code passed a 200 whose
         # transfer failed; curl's own exit has to be clean as well.
-        self.zpages(200, truncate=True)
+        self.health(200, truncate=True)
         done = self.run_verb("status", expect=1)
         self.assertIn("did not complete", done.stdout)
 
     def test_nothing_listening_is_broken(self):
         self.closed_port()
         self.run_verb("status", expect=1)
+
+
+class TheShippedConfig(StatusCase):
+    def test_start_publishes_the_health_check_the_config_enables(self):
+        # sd:8811. config.yaml enables health_check alone; status must probe
+        # a port start publishes onto that extension, bound beyond the
+        # container's loopback.
+        config = (FOLDER / "config.yaml").read_text(encoding="utf-8")
+        found = re.search(r"^  health_check:\n(?:    #.*\n)*    endpoint: 0\.0\.0\.0:(\d+)$", config, re.M)
+        self.assertIsNotNone(found, "health_check needs an endpoint on 0.0.0.0")
+        self.assertIn("extensions: [health_check]", config)
+        self.env["OTELCOL_HEALTH_PORT"] = "40123"
+        self.run_verb("start", expect=0)
+        log = (self.root / "docker.log").read_text(encoding="utf-8")
+        self.assertIn(f"127.0.0.1:40123:{found.group(1)}", log)
 
 
 class TheExportSettings(StatusCase):

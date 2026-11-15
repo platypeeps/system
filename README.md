@@ -97,7 +97,7 @@ the second column; the third column is free text.
 | local-machine-setup | `8443`, `4339` | Tailscale HTTPS fronts for the dashboard and for satellites' agent telemetry |
 | local-milvus | `19530`, `9091`, `2379`, `8000` | gRPC, metrics, etcd, Attu UI |
 | local-mock-mcp | `9992` | mock MCP server |
-| local-opentelemetry-collector | `4317`, `4318`, `55679` | OTLP gRPC, OTLP HTTP, zPages |
+| local-opentelemetry-collector | `4317`, `4318`, `13133` | OTLP gRPC, OTLP HTTP, health_check |
 | local-opentelemetry-demo | `8080`, `18080`, `18081` | demo frontend, Kubernetes and Prometheus MCP forwards |
 | local-postgres | `5434` | PostgreSQL (`POSTGRES_HOST_PORT`) |
 | local-redis | `6379`, `8001` | Redis Stack, RedisInsight |

@@ -979,6 +979,19 @@ exit 0
         self.assertIn("org.example.helper", agents)
         self.assertNotIn("org.example.cron.nightly", agents)
 
+    def test_capture_leaves_a_job_launch_cron_plist_out_of_the_agent_roster(self):
+        # sd:8810. Since sd:6466 a cron plist starts under job-launch; the
+        # 4-arg check read it as a personal agent and captured it.
+        (self.agents / "org.example.cron.nightly.plist").write_bytes(plistlib.dumps({
+            "Label": "org.example.cron.nightly",
+            "ProgramArguments": ["/opt/example/libexec/job-launch", "/bin/bash",
+                                 "/opt/example/local-cron-jobs/cron-jobs.sh", "exec", "nightly"],
+        }))
+        result = self.capture(MACHINE_SETUP_AGENT_GLOBS="org.example.*")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        agents = (self.profiles / "personal.agent").read_text()
+        self.assertNotIn("org.example.cron.nightly", agents)
+
     def test_capture_lists_apps_from_the_applications_override(self):
         # REGRESSION (sd:2331). The scan read /Applications, so a test capture
         # wrote this Mac's apps into the fixture profile.
