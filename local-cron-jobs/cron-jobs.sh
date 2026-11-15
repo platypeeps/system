@@ -699,19 +699,24 @@ report_unrecorded() { # job, log offset, run identity, start, end, exit
 # lines; ponytail: no end offset, add one if ingest ever takes it. A bare
 # offset, from a runner before sd:8808, leaves the file in REPLAY_CARRY.
 replay_unrecorded() { # job
-  local pending="$LOG_DIR/.$1.unreported" offset run started ended code left=""
+  local pending="$LOG_DIR/.$1.unreported" offset run started ended code left="" filed=""
   REPLAY_CARRY=""
   [ -s "$pending" ] || return 0
   while read -r offset run started ended code; do
     case "$offset" in ''|*[!0-9]*) continue ;; esac
     [ -n "$run" ] || { REPLAY_CARRY="$offset"; continue; }
     if [ -z "$left" ] && record_run_report "$1" "$run" "$started" "$ended" "$code" "$offset"; then
-      continue
+      filed=1; continue
     fi
     left="$left$offset $run $started $ended $code
 "
   done < "$pending"
-  if [ -n "$left" ]; then printf '%s' "$left" > "$pending" || true; else rm -f "$pending"; fi
+  # Rewrite only after a report was filed, through a temp file renamed over
+  # the record: a failed write keeps the old record whole, and its filed
+  # runs replay again, which ingest folds by run id.
+  [ -n "$filed" ] || return 0
+  if [ -z "$left" ]; then rm -f "$pending"; return 0; fi
+  { printf '%s' "$left" > "$pending.tmp" && mv -f "$pending.tmp" "$pending"; } || rm -f "$pending.tmp"
 }
 
 # The outcome line every run that started owes its log. cmd_exec writes "done"

@@ -2085,10 +2085,11 @@ class EveryRunLeavesAnOutcomeTest(unittest.TestCase):
 
 
 # The fake `sd`: one line per call, its arguments, then it exits with
-# FAKE_SD_EXIT (0 when unset). FAKE_SD_SLEEP, when set, makes it hang first.
+# FAKE_SD_EXIT (0 when unset); FAKE_SD_FAIL_RUN fails that run id alone. FAKE_SD_SLEEP, when set, makes it hang first.
 FAKE_SD = """#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_SD_LOG"
 [ -z "$FAKE_SD_SLEEP" ] || sleep "$FAKE_SD_SLEEP"
+case " $* " in *" --run-id $FAKE_SD_FAIL_RUN "*) [ -z "$FAKE_SD_FAIL_RUN" ] || exit 3 ;; esac
 exit "${FAKE_SD_EXIT:-0}"
 """
 
@@ -2310,6 +2311,21 @@ class RunReportTest(unittest.TestCase):
         self.assertEqual([run for run, _, _ in self.ingests()][:2], [first, second])
         self.assertEqual(len(self.ingests()), 3)
         self.assertFalse((self.fx.folder / "logs" / ".demo.unreported").exists())
+
+    def test_a_replay_that_files_nothing_leaves_the_record_untouched(self):
+        # REGRESSION (sd:8807 lane review). The replay truncated and rewrote
+        # the only record even when no report was filed, so a failed write
+        # (ENOSPC, a short write, a kill) could erase every pending run.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
+        self.exec_job(FAKE_SD_EXIT="3")
+        pending = self.fx.folder / "logs" / ".demo.unreported"
+        lost = self.ingests()[0][0]
+        before = pending.read_bytes()
+        os.utime(pending, (1_000_000, 1_000_000))
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.exec_job(FAKE_SD_FAIL_RUN=lost)
+        self.assertEqual(pending.read_bytes(), before)
+        self.assertEqual(pending.stat().st_mtime, 1_000_000)
 
     def test_a_recorded_report_pushes_nothing_and_carries_nothing(self):
         # PIN. Only a lost report pushes.
