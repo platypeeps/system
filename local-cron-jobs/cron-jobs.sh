@@ -699,22 +699,23 @@ report_unrecorded() { # job, log offset, run identity, start, end, exit
 # lines; ponytail: no end offset, add one if ingest ever takes it. A bare
 # offset, from a runner before sd:8808, leaves the file in REPLAY_CARRY.
 replay_unrecorded() { # job
-  local pending="$LOG_DIR/.$1.unreported" offset run started ended code left="" filed=""
+  local pending="$LOG_DIR/.$1.unreported" offset run started ended code left="" used=""
   REPLAY_CARRY=""
-  [ -s "$pending" ] || return 0
+  [ -s "$pending" ] || { rm -f "$pending"; return 0; }
   while read -r offset run started ended code; do
-    case "$offset" in ''|*[!0-9]*) continue ;; esac
-    [ -n "$run" ] || { REPLAY_CARRY="$offset"; continue; }
+    case "$offset" in ''|*[!0-9]*) used=1; continue ;; esac
+    [ -n "$run" ] || { REPLAY_CARRY="$offset"; used=1; continue; }
     if [ -z "$left" ] && record_run_report "$1" "$run" "$started" "$ended" "$code" "$offset"; then
-      filed=1; continue
+      used=1; continue
     fi
     left="$left$offset $run $started $ended $code
 "
   done < "$pending"
-  # Rewrite only after a report was filed, through a temp file renamed over
-  # the record: a failed write keeps the old record whole, and its filed
-  # runs replay again, which ingest folds by run id.
-  [ -n "$filed" ] || return 0
+  # Rewrite only when a line was filed, carried or skipped as malformed,
+  # through a temp file renamed over the record: a failed write keeps the
+  # old record whole, and its filed runs replay again, which ingest folds
+  # by run id. A carried bare offset starts this run's report.
+  [ -n "$used" ] || return 0
   if [ -z "$left" ]; then rm -f "$pending"; return 0; fi
   { printf '%s' "$left" > "$pending.tmp" && mv -f "$pending.tmp" "$pending"; } || rm -f "$pending.tmp"
 }

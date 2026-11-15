@@ -2327,6 +2327,31 @@ class RunReportTest(unittest.TestCase):
         self.assertEqual(pending.read_bytes(), before)
         self.assertEqual(pending.stat().st_mtime, 1_000_000)
 
+    def test_a_rewrite_that_cannot_write_keeps_the_old_record(self):
+        # PIN (sd:8807 lane review). The rewrite goes through a temp file;
+        # one that cannot be written leaves the record whole.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
+        self.exec_job(FAKE_SD_EXIT="3")
+        self.exec_job(FAKE_SD_EXIT="3")
+        pending = self.fx.folder / "logs" / ".demo.unreported"
+        before = pending.read_bytes()
+        second = self.ingests()[2][0]
+        (self.fx.folder / "logs" / ".demo.unreported.tmp").mkdir()
+        self.exec_job(FAKE_SD_FAIL_RUN=second)
+        self.assertTrue(pending.read_bytes().startswith(before), pending.read_text())
+
+    def test_a_legacy_or_malformed_record_goes_once_a_run_reports(self):
+        # REGRESSION (sd:8807 lane review, round 2). A record holding only a
+        # bare offset or a malformed line was never removed, so each later
+        # run refiled the log from that offset and rotation deferred for good.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        pending = self.fx.folder / "logs" / ".demo.unreported"
+        for body in ("0\n", "x1 run s e 0\n", ""):
+            with self.subTest(body=body):
+                pending.write_text(body)
+                self.assertEqual(self.exec_job().returncode, 0)
+                self.assertFalse(pending.exists())
+
     def test_a_recorded_report_pushes_nothing_and_carries_nothing(self):
         # PIN. Only a lost report pushes.
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="echo hi"\n')
