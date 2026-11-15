@@ -3,8 +3,9 @@
 The model never writes an alert. This script claims this machine's open
 alerts before the model runs, and after it reads the model's reply and
 settles each one: a fix with evidence for every open followup is
-acknowledged; a filed bug or an operator action gets one note and stays on
-Today. Every write goes through the pack's `sd`; this opens no database.
+acknowledged; a filed bug or hub followup, or an operator action, gets
+one note and stays on Today. Every write goes through the pack's `sd`;
+this opens no database.
 
 A report takes no status through `sd task status`: the pack gives the
 `report` kind no status choices and refuses `in_progress` (sd:8143
@@ -241,7 +242,7 @@ def verdict(alert, entry, host):
                else "a fix needs a summary and evidence")
         return f"{WHO} on {host}: not acknowledged: {why}. Reported: {summary or '(none)'}", False
     if outcome == "filed" and ITEM.match(_text(entry.get("item"))) and summary:
-        return f"{WHO} on {host}: a code bug, filed as {_text(entry['item'])}: {summary}", False
+        return f"{WHO} on {host}: filed as {_text(entry['item'])}: {summary}", False
     if outcome == "operator" and _text(entry.get("action")) and _text(entry.get("why")):
         return (f"{WHO} on {host}: needs the operator: {_text(entry['action'])}\n"
                 f"No tool can: {_text(entry['why'])}"), False

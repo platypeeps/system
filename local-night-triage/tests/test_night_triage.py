@@ -228,6 +228,20 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(self.items()["1"]["status"], "planning")
         self.assertIn("filed as sd:77", self.comments("1")[0])
 
+    def test_a_hub_session_handoff_is_filed_as_a_followup_not_an_operator_note(self):
+        # sd:8969: 23 of 41 operator handoffs asked for a delete, restart or
+        # rerun a hub session later did; the prompt routes those to a
+        # followup item and the existing `filed` path settles it.
+        prompt = (FOLDER / "prompt.md").read_text()
+        self.assertIn("--kind followup --ref hub:<host>-<slug>", prompt)
+        self.assertIn("restart the machine, a decision, a login, money", prompt)
+        self.given({"1": report("node1")}, [
+            {"id": 1, "outcome": "filed", "summary": "delete the landed branch b1", "item": "sd:9"}])
+        self.assertEqual(self.run_job().returncode, 0)
+        self.assertEqual(self.items()["1"]["status"], "planning")
+        self.assertEqual(self.comments("1"),
+                         ["night-triage on node1: filed as sd:9: delete the landed branch b1"])
+
     def test_another_machines_alert_is_untouched(self):
         self.given({"1": report("node1"), "2": report("node2")}, [
             {"id": 1, "outcome": "filed", "summary": "s", "item": "sd:77"},
