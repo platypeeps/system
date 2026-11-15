@@ -194,6 +194,16 @@ class StatusDrift(unittest.TestCase):
         self.assertIn("backups : hosta 2\nbackups : hostb 1\n", out)
         self.assertEqual(self.drift(out), before)
 
+    def test_a_failed_probe_is_drift(self):
+        # sd:8810. `mas list` that does not answer printed FAILED and counted
+        # nothing, so --fail-on-drift passed a machine it never checked.
+        before = self.drift(self.status().stdout)
+        (self.profiles / "personal.mas").write_text("123456789 Example App\n")
+        run = self.status("--fail-on-drift")
+        self.assertIn("  FAILED  mas list did not answer", run.stdout)
+        self.assertEqual(self.drift(run.stdout) - before, 1)
+        self.assertEqual(run.returncode, 1, run.stdout)
+
     def in_place_only(self):
         """A machine whose one drift is a file edited in place: the system
         stage alone, with its other findings settled, and a repeating wake."""
