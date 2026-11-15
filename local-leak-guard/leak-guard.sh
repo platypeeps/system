@@ -17,7 +17,7 @@
 # Exit codes:
 #   0  clean, or no pattern file
 #   1  a pushed commit matches a pattern
-#   2  usage error or git failure
+#   2  usage error, git failure, or a pattern grep cannot compile
 set -eu
 
 # local-bin-links may link this script into ~/bin; walk $0 to the real file so
@@ -72,7 +72,8 @@ Patterns:
   ${XDG_CONFIG_HOME:-$HOME/.config}/system. LEAK_GUARD_PATTERNS names another
   file. A missing file prints a warning and passes.
 
-Exit codes: 0 clean, 1 a match, 2 usage or git error; scan adds 3.
+Exit codes: 0 clean, 1 a match, 2 usage, git or pattern error; scan
+adds 3.
 USAGE
 }
 
@@ -133,7 +134,12 @@ check_revs() {
         !hdr && /^\+/ { print substr($0, 2) >> t; print s "\037" path "\037added line" >> w }'
   done <"$work/commits"
 
-  grep -n -E -f "$work/patterns" "$work/text" >"$work/matches" || true
+  # Exit 2 is a pattern grep cannot compile: fail closed, not clean
+  # (sd:8803). grep's own message can quote the pattern, so drop it.
+  code=0
+  grep -n -E -f "$work/patterns" "$work/text" >"$work/matches" 2>/dev/null || code=$?
+  [ "$code" -le 1 ] ||
+    die "grep could not apply $PATTERNS (exit $code); fix the file"
   [ -s "$work/matches" ] || return 0
   cut -d: -f1 "$work/matches" >"$work/hits"
   count="$(wc -l <"$work/hits" | tr -d ' ')"

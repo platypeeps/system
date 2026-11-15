@@ -137,6 +137,24 @@ class LeakGuardTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("holds no pattern", result.stderr)
 
+    def test_invalid_pattern_fails_check_closed(self) -> None:
+        """sd:8803: grep exit 2 was read as clean, so check passed."""
+        self.write_patterns("zebra-canary-[0-9+\n")
+        self.commit("a.txt", "anything\n", "add")
+        result = self.run_guard("check")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("could not apply", result.stderr)
+        # grep's own message quotes the pattern; it must not reach stderr.
+        self.assertNotIn("zebra-canary", result.stderr)
+
+    def test_invalid_pattern_refuses_a_push(self) -> None:
+        self.write_patterns("zebra-canary-[0-9+\n")
+        self.run_guard("install")
+        sha = self.commit("a.txt", "clean\n", "add")
+        pushed = self.push()
+        self.assertNotEqual(pushed.returncode, 0, pushed.stderr)
+        self.assertNotEqual(self.git(self.remote, "rev-parse", "main").strip(), sha)
+
     def test_leak_guard_patterns_names_another_file(self) -> None:
         other = self.tmp / "other-patterns"
         other.write_text("quokka\n")

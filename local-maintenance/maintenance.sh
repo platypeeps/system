@@ -195,6 +195,8 @@ recorded by machine-setup; override with MAINTENANCE_PROFILE). Pipe-separated
 directives, # comments allowed; a leading ~/ expands to $HOME:
 
   disk|<path>|<min-free-percent>      free space on the filesystem of <path>
+                                      (a low one names the 5 largest entries
+                                      directly under <path>)
   cert|<pem>|<warn-days>              x509 expiry within <warn-days>
   mount|<path>                        path is a mounted volume
   process|<name>|<label>              process is running (pgrep -x)
@@ -255,8 +257,23 @@ check_disk() { # path min-free-percent
   fi
   free=$((100 - used))
   if [ "$free" -lt "$2" ]; then
-    finding "disk: only ${free}% free on $1 (threshold ${2}%)" "disk: under ${2}% free on $1"
+    finding "disk: only ${free}% free on $1 (threshold ${2}%)$(largest "$1")" "disk: under ${2}% free on $1"
   fi
+}
+
+# largest PATH: "; largest: a 12G, b 3.1G, ..." for the 5 biggest entries
+# directly under PATH, so the finding says what to clean (sd:8799). du's
+# root line comes last and is dropped. Unreadable entries are skipped; a
+# bounded du that times out prints nothing extra.
+largest() {
+  st_step 600 du -k -x -d 1 "$1" 2>/dev/null | sed '$d' | sort -rn | head -5 |
+    awk -F '\t' '
+      { n = $2; sub(/.*\//, "", n); k = $1
+        if (k >= 1048576) s = sprintf("%.1fG", k / 1048576)
+        else if (k >= 1024) s = sprintf("%.1fM", k / 1024)
+        else s = k "K"
+        out = out (NR > 1 ? ", " : "") n " " s }
+      END { if (out != "") printf "; largest: %s", out }' || true
 }
 
 check_cert() { # pem warn-days

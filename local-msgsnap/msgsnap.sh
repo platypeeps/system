@@ -76,7 +76,9 @@ cmd_grant() {
 # the leak in the other direction — a terminal's own FDA making an ungranted
 # binary look granted — and this is the same mechanism seen from the other side.
 #
-# Returns 0 if the job produced output, 1 if it timed out.
+# Waits for the job to exit and returns its exit code; 1 if it is still
+# running after 30s. Output, even a whole line, is no proof of a finished
+# snapshot: a diagnostic or the first line of a copy counted as one (sd:8804).
 launchd_run() {
     for a in "$@"; do
         case "$a" in
@@ -107,8 +109,14 @@ launchd_run() {
     launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
     i=0
+    RC=""
     while [ "$i" -lt 30 ]; do
-        [ -s "$OUT" ] && break
+        # Only the job's own lines: nested sections indent with two tabs.
+        RC="$(launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | awk '
+            /^\tstate = / { done = ($0 ~ /not running/) }
+            /^\tlast exit code = [0-9]+$/ { code = $NF }
+            END { if (done && code != "") print code }')"
+        [ -n "$RC" ] && break
         sleep 1
         i=$((i + 1))
     done
@@ -116,15 +124,20 @@ launchd_run() {
     launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
     rm -f "$PLIST"
 
-    if [ -s "$OUT" ]; then
+    if [ "$RC" = 0 ]; then
         cat "$OUT"
         rm -f "$OUT"
         return 0
     fi
+    cat "$OUT" >&2
+    rm -f "$OUT"
+    if [ -n "$RC" ]; then
+        echo "msgsnap.sh: the launchd job exited $RC" >&2
+        return "$RC"
+    fi
     # Not a timeout to shrug at: an ungranted TCC read under launchd blocks
     # rather than failing, which is how a job here once hung for 27 minutes.
-    rm -f "$OUT"
-    echo "msgsnap.sh: no output after 30s — treat as NOT granted, see ../.claude/rules/macos-tcc.md" >&2
+    echo "msgsnap.sh: job not finished after 30s — treat as NOT granted, see ../.claude/rules/macos-tcc.md" >&2
     return 1
 }
 
@@ -137,7 +150,7 @@ cmd_check() {
 cmd_verify() {
     need_bin
     echo "launchd probe said:"
-    launchd_run --check | sed 's/^/  /'
+    launchd_run --check 2>&1 | sed 's/^/  /'
 }
 
 cmd_snap() {
