@@ -60,6 +60,7 @@ done
 ROOT="$(cd "$(dirname "$SELF")" && pwd)"
 CORE="$ROOT/core.md"
 LENS_DIR="$ROOT/lenses"
+. "$ROOT/../lib/bounded.sh"
 RANKER="$ROOT/rank.py"
 # The sibling entrypoint by path from our own resolved directory, never by
 # `jev` being on PATH: this script is reached through the ~/bin/common symlink,
@@ -257,59 +258,18 @@ exec "$@"' "$ROOT/../lib/config.sh" "$claude" "$@"
     exec 3>&1 >"$outfile"
     cd "$repo"
   fi
-  # The bound, applied. Until sd:790 `--timeout` was parsed into a variable
-  # nothing read, and a reviewer that never answered held the caller for as
-  # long as it liked. macOS ships no timeout(1) -- the one on this machine
-  # is Homebrew's coreutils, which a fresh Mac does not have -- but it does
-  # ship /usr/bin/perl, and perl can do what timeout(1) does: fork, put the
-  # child in a process group of its own, exec codex there, and at the bound
-  # kill the GROUP, TERM then KILL. The group and not the one process,
-  # because codex is a launcher that spawns its sandbox and the reviewer
-  # under it (review of #396): a signal to codex alone returns to the
-  # caller while the reviewer keeps running and keeps the pipe open. The
-  # same shape as two timeout paths in the command pack,
-  # dashboard/collectors.py (start_new_session + killpg) and
-  # lib/sd_db/runner_exec.py. A run cut off at the bound exits 124,
-  # timeout(1)'s own status, so a caller can tell it from the reviewer's
-  # own failure; a child that dies of a signal otherwise exits 128+signal.
+  # The bound, applied: lib/bounded.sh's st_bounded runs the reviewer in a
+  # process group of its own, so codex's sandbox and reviewer end with it
+  # (review of #396). At the bound, or on a TERM to the gate from a job's
+  # limit, the group gets TERM, then KILL after the grace (sd:8814). A run
+  # cut off at the bound exits 124, timeout(1)'s status; a denied group
+  # runs nothing and exits 125 (sd:7901).
   status=0
-  printf '%s' "$prompt" | GATE_VERB="$verb" GATE_ENGINE="$engine" perl -e '
-    use POSIX ":sys_wait_h";
-    my $secs = shift;
-    my $pid = fork;
-    defined $pid or die "adversarial-gate: fork: $!\n";
-    # A denied setpgid (sd:7901) leaves the reviewer in this shell group,
-    # where no signal reaches what it forks: refuse before the exec, 125.
-    if ($pid == 0) {
-      setpgrp(0, 0) or do {
-        print STDERR "adversarial-gate: process group denied ($!); the reviewer bound needs its own process group, nothing was run\n";
-        POSIX::_exit(125);
-      };
-      exec @ARGV or die "adversarial-gate: exec: $!\n";
-    }
-    # Until its setpgrp the child has no group and has forked nothing: a
-    # signal that finds no group goes to the child itself.
-    # Once reaped, the PID may be another process: only the group is signalled.
-    my $reaped = 0;
-    sub reap { my $got = waitpid($pid, $_[0]); $reaped = 1 if $got == $pid; $got }
-    sub hit { kill($_[0], -$pid) or $reaped or kill($_[0], $pid) }
-    $SIG{ALRM} = sub {
-      hit("TERM");
-      my $gone = 0;
-      for (1 .. 20) {
-        if (reap(WNOHANG) != 0) { $gone = 1; last; }
-        select(undef, undef, undef, 0.1);
-      }
-      hit("KILL");
-      reap(0) unless $gone;
-      print STDERR "adversarial-gate: $ENV{GATE_VERB}: $ENV{GATE_ENGINE} did not answer within $secs s; its process group was killed (exit 124)\n";
-      exit 124;
-    };
-    alarm $secs;
-    reap(0);
-    my $status = $?;
-    exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
-  ' "$timeout" "$@" || status=$?
+  printf '%s' "$prompt" | st_bounded "$timeout" "$@" || status=$?
+  case $status in
+    124) echo "adversarial-gate: $verb: $engine did not answer within $timeout s; its process group was killed (exit 124)" >&2 ;;
+    125) echo "adversarial-gate: $verb: $engine not run: the bound needs its own process group" >&2 ;;
+  esac
   [ "$engine" = codex ] || exec 1>&3 3>&-
   # Only a run that answered has findings to order, and the exit code is the
   # reviewer's either way: a cut-off run still exits 124.

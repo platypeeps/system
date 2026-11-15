@@ -587,6 +587,10 @@ args = sys.argv[1:]
 with open(os.path.join(state, "rsync.log"), "a") as log:
     log.write(" ".join(args).replace("\\r", "<CR>") + "\\n")
 changed = lines("changed")
+if "--dry-run" in args and lines("dryblock"):
+    # A dry run stuck on a share that does not answer (sd:8814).
+    import time
+    time.sleep(30)
 if "--dry-run" in args:
     print("Transfer starting: %d files" % len(changed))
     for name in changed:
@@ -662,6 +666,10 @@ with open(os.path.join(state, "brctl.log"), "a") as log:
     log.write(" ".join(sys.argv[1:]) + "\\n")
 stuck_file = os.path.join(state, "stuck")
 stuck = open(stuck_file).read().splitlines() if os.path.exists(stuck_file) else []
+if os.path.exists(os.path.join(state, "brctlblock")):
+    # brctl stuck on a permission check under launchd (sd:8814).
+    import time
+    time.sleep(30)
 if path not in stuck:
     name = os.path.join(state, "dataless")
     kept = [l for l in open(name).read().splitlines() if l != path]
@@ -701,7 +709,8 @@ class FakeTools(Fixture):
             **extra,
         )
         return subprocess.run(
-            ["/bin/sh", str(MIRROR_SYNC), "sync"], capture_output=True, text=True, env=environment
+            ["/bin/sh", str(MIRROR_SYNC), "sync"], capture_output=True, text=True, env=environment,
+            timeout=20,
         )
 
     def rsync_runs(self) -> list[str]:
@@ -728,6 +737,32 @@ class EvictedDestination(FakeTools):
         self.assertEqual(len(self.rsync_runs()), 2)
         self.assertIn(f"--- downloaded: {evicted}", result.stdout)
         self.assertTrue((self.mirror / "vault" / ".gitignore").is_file())
+
+    def test_a_dry_run_that_hangs_is_bounded(self) -> None:
+        """sd:8814: the recovery's dry run ends at the pair's bound."""
+        self.state_file("changed", ["vault/.gitignore"])
+        self.state_file("dataless", [f"{self.mirror}/vault/.gitignore"])
+        self.state_file("dryblock", ["1"])
+
+        result = self.sync(MIRROR_SYNC_IO_TIMEOUT="2", ST_BOUNDED_GRACE="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"evicted-file dry run ended 124: {self.mirror}", result.stderr)
+        self.assertFalse((self.state / "brctl.log").exists())
+
+    def test_a_download_that_hangs_is_bounded(self) -> None:
+        """sd:8814: each brctl download ends at the materialize wait."""
+        evicted = f"{self.mirror}/vault/.gitignore"
+        self.state_file("changed", ["vault/.gitignore"])
+        self.state_file("dataless", [evicted])
+        self.state_file("stuck", [evicted])
+        self.state_file("brctlblock", ["1"])
+
+        result = self.sync(ST_BOUNDED_GRACE="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"brctl download failed: {evicted}", result.stderr)
+        self.assertIn(f"still evicted after 2s: {evicted}", result.stderr)
 
     def test_only_evicted_files_the_pass_would_update_are_downloaded(self) -> None:
         self.write(self.mirror / "untouched.txt", "stays evicted\n")
@@ -3683,6 +3718,21 @@ class NasFullCopy(unittest.TestCase):
                          "the next night starts at the chunk the window closed on")
         self.assertIn("complete:", resumed.stdout)
         self.assertEqual(len(self.notified.read_text().splitlines()), 1)
+
+    def test_a_new_destination_starts_a_new_pass(self) -> None:
+        """sd:8813: the cursor belongs to one source and destination; a copy
+        retargeted mid-pass copies every name to the new share."""
+        self.tree("a", "b", "c", "d")
+        closed = self.run_copy(STUB_RCS="0 124", NAS_COPY_CHUNK="2")
+        self.assertEqual(closed.returncode, 0, closed.stdout + closed.stderr)
+        self.forget_calls()
+        other = self.work / "other-dst"
+        other.mkdir()
+        resumed = self.run_copy(NAS_COPY_CHUNK="2", NAS_COPY_DST=str(other))
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertEqual(self.lists()[0], ["a", "b"], "the new share gets the whole pass")
+        self.assertIn("complete:", resumed.stdout)
+        self.assertEqual((self.state_dir / "state").read_text().strip(), "synced")
 
     def test_a_completed_pass_starts_the_next_at_the_top(self) -> None:
         self.tree("a", "b", "c")

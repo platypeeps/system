@@ -1334,6 +1334,11 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
                         # column exists to keep.
                         note(_cause="invalid")
                         raise
+                    if not isinstance(parsed, dict):
+                        # `.get` below would raise AttributeError, which no
+                        # fallback catches (sd:8815).
+                        note(_cause="invalid")
+                        raise JevError("the response is not a JSON object")
                     note(_response=parsed)
                     if not conf.get("local"):
                         # Kev answers `kev-latest`; its row keeps the checkpoint.
@@ -1453,14 +1458,40 @@ def start_arms(payload: dict) -> str:
         return ""
 
 
-def answer_of(response: dict, qid: str) -> dict:
+def _probability(value) -> bool:
+    return type(value) in (int, float) and 0.0 <= value <= 1.0   # NaN fails both
+
+
+def _finite(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+#: The field each kind of answer must carry, and the shape it must have. An
+#: answer that misses it raised KeyError or printed NaN, and a noul of 2 passed
+#: every `--gate` (sd:8815); each now fails here, as invalid, so the caller's
+#: fallback runs.
+ANSWER_FIELDS = {
+    "noul": ("noul", _probability, "a number from 0 to 1"),
+    "choice": ("choice", lambda value: type(value) is str, "a criterion key"),
+    "score": ("score", _finite, "a finite number"),
+}
+
+
+def answer_of(response: dict, qid: str, kind: str | None = None) -> dict:
     answers = response.get("answers")
-    if not isinstance(answers, dict) or qid not in answers:
+    answer = answers.get(qid) if isinstance(answers, dict) else None
+    if not isinstance(answer, dict):
         # A response arrived and carried no judgment. That is its own outcome
         # class: the endpoint is up, and what came back is unusable.
         note(_cause="invalid")
         raise JevError(f"no answer for {qid!r} in the response")
-    return answers[qid]
+    if kind in ANSWER_FIELDS:
+        field, valid, shape = ANSWER_FIELDS[kind]
+        if not valid(answer.get(field)):
+            note(_cause="invalid")
+            raise JevError(f"the {kind} answer for {qid!r} has no {field} "
+                           f"that is {shape}: {answer.get(field)!r}")
+    return answer
 
 
 # --- verbs ------------------------------------------------------------------
@@ -1492,7 +1523,7 @@ def one_question(args, conf, definition: dict, **kw) -> dict:
         {args.id: definition},
         args.model or conf["model"],
     )
-    return answer_of(post(conf, payload, **kw), args.id)
+    return answer_of(post(conf, payload, **kw), args.id, definition["type"])
 
 
 def cmd_noul(args, conf, out, **kw) -> int:
@@ -1531,7 +1562,7 @@ def cmd_choice(args, conf, out, **kw) -> int:
          probabilities=distribution_of(answer, definition))
     if args.json:
         emit(answer, out)
-    elif args.unsure_below is not None and answer.get("confidence", 0.0) < args.unsure_below:
+    elif args.unsure_below is not None and (confidence_of(answer) or 0.0) < args.unsure_below:
         # Confidence-gated routing: the caller asked to be told "I do not
         # know" rather than to be handed the top of a flat distribution.
         out.write("unsure\n")
@@ -1617,7 +1648,7 @@ def cmd_status(args, conf, out, env=None, **kw) -> int:
     try:
         response = post(probe, build_payload("This sentence is in English.",
                                              {ANSWER_KEY: PROBE}, conf["model"]), **kw)
-        answer = answer_of(response, ANSWER_KEY)
+        answer = answer_of(response, ANSWER_KEY, PROBE["type"])
     except JevError as exc:
         out.write(f"jev: {conf['url']} unreachable or refusing: {exc}\n")
         return EXIT_ERROR
