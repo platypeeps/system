@@ -228,6 +228,38 @@ class BulkMoveTest(unittest.TestCase):
         run = self.move(str(self.data), FAKE_HELD=str(self.data / "a.bin"))
         self.assert_refused(run, self.data, "open")
 
+    def test_a_write_during_the_last_database_read_keeps_the_original(self):
+        """NEW (sd:8797 review). A writer outside the locked jobs updates
+        the source after the verify, during the last database read; the
+        original with that write stays, and the stale copy is not linked."""
+        bulk_move = _module()
+        real_idle, calls = bulk_move.check_idle, []
+
+        def writer(when):
+            calls.append(when)
+            if len(calls) == 2:
+                (self.data / "sub" / "b.txt").write_text("late\n")
+            real_idle(when)
+        with mock.patch.object(bulk_move, "check_idle", writer):
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(1, rc)
+        self.assertEqual(2, len(calls))
+        self.assertFalse(self.data.is_symlink())
+        self.assertEqual("late\n", (self.data / "sub" / "b.txt").read_text())
+        self.assertEqual([self.data.name], [p.name for p in self.data.parent.iterdir()])
+
+    def test_a_process_holding_the_original_after_the_swap_keeps_it(self):
+        """NEW (sd:8797 review). A handle opened before the swap still
+        writes the original; lsof on it after the swap refuses."""
+        bulk_move = _module()
+        answers = iter([False, True])
+        with mock.patch.object(bulk_move, "held_open", lambda path: next(answers)):
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(1, rc)
+        self.assertFalse(self.data.is_symlink())
+        self.assertEqual("b\n", (self.data / "sub" / "b.txt").read_text())
+        self.assertEqual([self.data.name], [p.name for p in self.data.parent.iterdir()])
+
     def test_an_interrupt_during_the_swap_restores_the_source(self):
         bulk_move = _module()
         with mock.patch.object(bulk_move, "held_open", lambda path: False), \

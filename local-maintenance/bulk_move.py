@@ -12,7 +12,10 @@ Writers are quiesced, not identified, as machine-setup's bulkmove stage
 does it (sd:8242): the move holds the flock of each loaded cron job that
 starts pack runs, so no slot starts one, and checks the database for an
 open run before the copy and again before the link. A run in progress,
-an open run or an unreadable database keeps the source.
+an open run or an unreadable database keeps the source. Other writers
+are not locked out, so after the link the original is checked again
+under a side name, by lsof and a full compare with the copy; a hit puts
+it back.
 
 Refused, with the reason on stderr and nothing changed: a missing path,
 a symlink, a path git tracks or a checkout, a folder holding a relative
@@ -324,12 +327,22 @@ def main(argv):
         print(f"move: the copy of {src} is not kept ({', '.join(bad[:5])}); removed it, kept the source",
               file=sys.stderr)
         return 1
+    # The jobs' locks and the database cover pack runs, not an editor or
+    # an intake job. So the original is checked again under its new name,
+    # after the link: a new open by path reaches the copy, lsof shows a
+    # handle opened before the swap, and a compare after lsof catches a
+    # write made at any time since the first verify (sd:8797 review).
     # The path is missing only between the rename and the symlink.
     aside = f"{src}.bulk-move-{os.getpid()}"
     os.rename(src, aside)
     try:
         os.symlink(dst, src)
-    except (OSError, KeyboardInterrupt) as why:  # Ctrl-C too: never leave it aside
+        if held_open(aside):
+            raise Refused("a process holds it open (lsof)")
+        late = mismatches(aside, dst)
+        if late:
+            raise Refused(f"it changed after the copy ({', '.join(late[:5])})")
+    except (Refused, OSError, KeyboardInterrupt) as why:  # Ctrl-C too: never leave it aside
         print(f"move: {src} kept ({why!r}): {restore(aside, src)}; the copy stays at {dst}",
               file=sys.stderr)
         return 1

@@ -35,7 +35,10 @@ the move holds the flock of each loaded cron job that starts pack runs
 meanwhile skips, and reads the open pack runs (`lib/open_runs.py`) before
 the copy and again before the link. A run in progress, an open run or an
 unreadable database keeps the source; one found after the copy removes
-the copy. It refuses, changing nothing: a path git
+the copy. Other writers (an editor, an intake job) are not locked out,
+so after the link the original is checked again under a side name: a
+process `lsof` shows holding it, or any difference from the copy, puts
+it back and leaves the copy where it is. It refuses, changing nothing: a path git
 tracks or a folder holding one, a checkout, build output (`target/`,
 `node_modules/`), a path a process holds open (`lsof`; an `lsof` that
 fails or exits nonzero refuses too), a relative symlink that leads out
