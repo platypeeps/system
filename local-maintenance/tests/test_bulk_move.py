@@ -247,10 +247,11 @@ class BulkMoveTest(unittest.TestCase):
         self.assertFalse(self.data.is_symlink())
         self.assertEqual("late\n", (self.data / "sub" / "b.txt").read_text())
         self.assertEqual([self.data.name], [p.name for p in self.data.parent.iterdir()])
+        self.assertFalse((self.bulk / "widget" / "runs" / "data").exists())
 
-    def test_a_process_holding_the_original_after_the_swap_keeps_it(self):
-        """NEW (sd:8797 review). A handle opened before the swap still
-        writes the original; lsof on it after the swap refuses."""
+    def test_a_process_holding_the_source_before_the_link_keeps_it(self):
+        """NEW (sd:8797 review). lsof runs again just before the link,
+        with the source in place; a handle on it refuses."""
         bulk_move = _module()
         answers = iter([False, True])
         with mock.patch.object(bulk_move, "held_open", lambda path: next(answers)):
@@ -259,6 +260,58 @@ class BulkMoveTest(unittest.TestCase):
         self.assertFalse(self.data.is_symlink())
         self.assertEqual("b\n", (self.data / "sub" / "b.txt").read_text())
         self.assertEqual([self.data.name], [p.name for p in self.data.parent.iterdir()])
+
+    def test_a_write_through_the_link_after_publication_stays_live(self):
+        """NEW (sd:8797 review round 2). Once the link is published the
+        copy is the live data: a write through src lands in dst, and no
+        rollback may put the older original back over it."""
+        bulk_move = _module()
+        real_held, calls = bulk_move.held_open, []
+
+        def writer(path):
+            calls.append(path)
+            if os.path.islink(self.data):
+                (self.data / "sub" / "b.txt").write_text("through the link\n")
+            return real_held(path)
+        with mock.patch.object(bulk_move, "held_open", writer):
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertTrue(self.data.is_symlink())
+        self.assertEqual("through the link\n", (self.data / "sub" / "b.txt").read_text())
+        self.assertEqual(1, rc)  # the original differs now, so it is kept, not deleted
+        aside = [p for p in self.data.parent.iterdir() if p.name.startswith("data.bulk-move-")]
+        self.assertEqual(1, len(aside))
+        self.assertEqual("b\n", (aside[0] / "sub" / "b.txt").read_text())
+
+    def test_a_handle_on_the_original_after_publication_keeps_both(self):
+        """NEW (sd:8797 review round 2). lsof shows a handle on the
+        original after the link: the link stays, the original is kept
+        beside it and named, and nothing is deleted."""
+        bulk_move = _module()
+        answers = iter([False, False, True])
+        with mock.patch.object(bulk_move, "held_open", lambda path: next(answers)), \
+                mock.patch("sys.stderr", new_callable=__import__("io").StringIO) as err:
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(1, rc)
+        self.assertTrue(self.data.is_symlink())
+        aside = [p for p in self.data.parent.iterdir() if p.name.startswith("data.bulk-move-")]
+        self.assertEqual(1, len(aside))
+        self.assertIn(str(aside[0]), err.getvalue())
+
+    def test_a_failed_lsof_before_the_link_keeps_the_source(self):
+        """NEW (sd:8797 review round 2, class pass). An lsof that fails
+        just before the link refuses: the copy goes, the source stays."""
+        bulk_move = _module()
+        answers = iter([False])
+
+        def lsof(path):
+            for answer in answers:
+                return answer
+            raise bulk_move.Refused("lsof gave no full answer (exit 1)")
+        with mock.patch.object(bulk_move, "held_open", lsof):
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(1, rc)
+        self.assertFalse(self.data.is_symlink())
+        self.assertFalse((self.bulk / "widget" / "runs" / "data").exists())
 
     def test_an_interrupt_during_the_swap_restores_the_source(self):
         bulk_move = _module()

@@ -36,9 +36,12 @@ meanwhile skips, and reads the open pack runs (`lib/open_runs.py`) before
 the copy and again before the link. A run in progress, an open run or an
 unreadable database keeps the source; one found after the copy removes
 the copy. Other writers (an editor, an intake job) are not locked out,
-so after the link the original is checked again under a side name: a
-process `lsof` shows holding it, or any difference from the copy, puts
-it back and leaves the copy where it is. It refuses, changing nothing: a path git
+so `lsof` and a full compare run again just before the link, with the
+source still in place; a hit, or an `lsof` that fails, removes the
+copy. Once linked, the copy is the live data and nothing rolls back:
+the original, set aside as `<path>.bulk-move-<pid>`, is deleted only
+when `lsof` and a compare find it unchanged. Otherwise it stays, the
+move exits 1 and names it: compare the two before deleting it. It refuses, changing nothing: a path git
 tracks or a folder holding one, a checkout, build output (`target/`,
 `node_modules/`), a path a process holds open (`lsof`; an `lsof` that
 fails or exits nonzero refuses too), a relative symlink that leads out
