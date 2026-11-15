@@ -32,7 +32,9 @@ tracks or a folder holding one, a checkout, build output (`target/`,
 fails or exits nonzero refuses too), a relative symlink that leads out
 of the folder, a missing or full bulk root, an existing destination, and
 a destination outside the bulk root or inside the source (a `..` or
-absolute folder, a bulk root inside the moved folder).
+absolute folder, a bulk root inside the moved folder). It also refuses a
+destination under `<bulk root>/*/lane/`: repo-sync's lane sweep deletes
+files there 14 days old, and the copy keeps the source's dates.
 
 With findings, `run` prints one line per finding, `SD_REPORT_ATTENTION:
 maintenance on <host>: <finding>`, and one per pending update under its finding,

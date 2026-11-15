@@ -92,6 +92,20 @@ class BulkMoveTest(unittest.TestCase):
         self.assertEqual("a.bin", os.readlink(dst / "link"))
         self.assertEqual([self.data.name], [p.name for p in self.data.parent.iterdir()])
 
+    def test_a_destination_the_lane_sweep_reads_is_refused(self):
+        # repo-sync's hyg_lane deletes old files under <root>/*/lane/.
+        lane = self.repo / "lane"
+        lane.mkdir()
+        (lane / "old.log").write_text("old\n")
+        self.assert_refused(self.move(str(lane)), lane, "lane")
+        loose = self.tmp / "home" / "Downloads" / "lane"
+        loose.parent.mkdir()
+        loose.write_text("x\n")
+        for folder in ("widget", "notes/lane"):
+            self.assert_refused(self.move(str(loose), folder), loose, "lane")
+        self.assertEqual(0, self.move(str(self.data), "notes").returncode)
+        self.assertFalse((self.bulk / "widget").exists())
+
     def test_a_tracked_file_is_refused(self):
         run = self.move(str(self.repo / "tracked.txt"))
         self.assert_refused(run, self.repo / "tracked.txt", "tracked")
