@@ -3684,6 +3684,21 @@ class NasFullCopy(unittest.TestCase):
         self.assertIn("complete:", resumed.stdout)
         self.assertEqual(len(self.notified.read_text().splitlines()), 1)
 
+    def test_a_new_destination_starts_a_new_pass(self) -> None:
+        """sd:8813: the cursor belongs to one source and destination; a copy
+        retargeted mid-pass copies every name to the new share."""
+        self.tree("a", "b", "c", "d")
+        closed = self.run_copy(STUB_RCS="0 124", NAS_COPY_CHUNK="2")
+        self.assertEqual(closed.returncode, 0, closed.stdout + closed.stderr)
+        self.forget_calls()
+        other = self.work / "other-dst"
+        other.mkdir()
+        resumed = self.run_copy(NAS_COPY_CHUNK="2", NAS_COPY_DST=str(other))
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertEqual(self.lists()[0], ["a", "b"], "the new share gets the whole pass")
+        self.assertIn("complete:", resumed.stdout)
+        self.assertEqual((self.state_dir / "state").read_text().strip(), "synced")
+
     def test_a_completed_pass_starts_the_next_at_the_top(self) -> None:
         self.tree("a", "b", "c")
         first = self.run_copy(NAS_COPY_CHUNK="2")
