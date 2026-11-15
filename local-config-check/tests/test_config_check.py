@@ -49,12 +49,12 @@ class ConfigCheckTest(unittest.TestCase):
             "exit 1\n")
         script.chmod(0o755)
 
-    def run_cc(self, *args, sd=False):
+    def run_cc(self, *args, sd=False, extra=None):
         path = "/usr/bin:/bin"
         if sd:
             path = f"{self.bin}:{path}"
         env = {"PATH": path, "HOME": str(self.tmp), "CONFIG_CHECK_ROOT": str(self.root),
-               "SYSTEM_TOOLS_CONFIG": str(self.config)}
+               "SYSTEM_TOOLS_CONFIG": str(self.config), **(extra or {})}
         return subprocess.run(["sh", str(ENTRYPOINT), *args], env=env, capture_output=True,
                               text=True, timeout=60)
 
@@ -122,6 +122,17 @@ class ConfigCheckTest(unittest.TestCase):
         self.assertNotIn("GOOD_DIR", proc.stdout)
         self.assertNotIn("TILDE_DIR", proc.stdout)
         self.assertNotIn("/nonexistent", proc.stdout)
+
+    def test_exported_value_wins_over_the_env_file(self):
+        # The tools read .env through st_source_env, where an export wins.
+        real = self.tmp / "exists"
+        real.mkdir()
+        self.folder("local-alpha", {".env.example": "DATA_DIR=x\nTOKEN=x\n"})
+        self.conf("alpha", ".env", "DATA_DIR=/nonexistent/a\nTOKEN=change-me\n")
+        proc = self.run_cc("check", extra={"DATA_DIR": str(real), "TOKEN": "set"})
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertNotIn("DATA_DIR", proc.stdout)
+        self.assertNotIn("TOKEN", proc.stdout)
 
     def test_marker_dir_may_be_absent(self):
         # A *_MARKER_DIR names a directory whose existence tells machines apart.
