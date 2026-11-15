@@ -26,7 +26,9 @@ compares the snapshot byte for byte.
 
 from __future__ import annotations
 
+import contextlib
 import csv
+import fcntl
 import fnmatch
 import hashlib
 import json
@@ -736,6 +738,20 @@ def arrival_rows(
     return rows
 
 
+@contextlib.contextmanager
+def state_lock(state_dir: Path):
+    """Hold the state folder's one lock (sd:8806).
+
+    `stamp` rewrites the log whole, so a `fetch` appending meanwhile would
+    lose its rows; both take this lock around their writes. The kernel drops
+    it when the process ends, so a killed run leaves nothing to clear.
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with (state_dir / "intake.lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
 def append_arrivals(path: Path, rows: list[dict]) -> None:
     """Add rows to the log. Never rewrites what is already there.
 
@@ -914,9 +930,14 @@ def cmd_fetch(config_path: Path, state_dir: Path, out, environ: dict[str, str] |
         return EXIT_ERROR
     roots, rules = loaded
 
-    entries, changes, first_run = survey(roots, state_dir)
-    stamp = now_iso()
-    write_state(state_dir / "intake-state.csv", entries, stamp)
+    with state_lock(state_dir):
+        entries, changes, first_run = survey(roots, state_dir)
+        stamp = now_iso()
+        rows = [] if first_run else arrival_rows(changes, rules, stamp, environ)
+        # The arrivals first (sd:8806, as mail since sd:4191): a run stopped
+        # between the two writes then reports a file twice, not never.
+        append_arrivals(state_dir / "arrivals.csv", rows)
+        write_state(state_dir / "intake-state.csv", entries, stamp)
 
     if first_run:
         # Baseline. Every one of the 2,892 files is technically new and none of
@@ -924,9 +945,6 @@ def cmd_fetch(config_path: Path, state_dir: Path, out, environ: dict[str, str] |
         print(f"baseline established: {len(entries)} files across {len(roots)} roots", file=out)
         print(f"state: {state_dir / 'intake-state.csv'}", file=out)
         return EXIT_NONE
-
-    rows = arrival_rows(changes, rules, stamp, environ)
-    append_arrivals(state_dir / "arrivals.csv", rows)
 
     if not rows:
         print(f"no change: {len(entries)} files across {len(roots)} roots", file=out)
@@ -1029,7 +1047,8 @@ def cmd_stamp(state_dir: Path, through: str | None, out) -> int:
         print(f"no arrivals log at {log}; run fetch first", file=out)
         return EXIT_ERROR
     cutoff = through or now_iso()
-    count = stamp_arrivals(log, cutoff, now_iso())
+    with state_lock(state_dir):
+        count = stamp_arrivals(log, cutoff, now_iso())
     if not count:
         print("nothing to stamp", file=out)
         return EXIT_NONE

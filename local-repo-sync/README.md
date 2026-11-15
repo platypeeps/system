@@ -387,8 +387,9 @@ safe classes:
   nothing and adds a note;
 - remove a worktree that holds such a branch, wherever it sits, when it has
   no uncommitted or untracked files, no ignored files but build output
-  directories (`target/`, `node_modules/`, `dist/`, Python caches; a regular
-  file of that name still counts), and no process has its cwd or an open
+  directories (`target/`, `node_modules/`, Python caches; a regular file
+  of that name still counts; `dist/` is not build output, since some repos
+  keep handwritten files there), and no process has its cwd or an open
   file inside it; the build output goes with it;
 - delete lane logs and scratch under the bulk storage root
   (`sd config get sd.bulk_storage_root`): in each `<root>/<repo>/lane/`, a

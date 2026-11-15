@@ -8,6 +8,7 @@ for write" would pass forever while someone added os.utime.
 """
 
 import contextlib
+import fcntl
 import hashlib
 import io
 import json
@@ -15,6 +16,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -394,6 +397,53 @@ class TestArrivalsLog(Harness):
         di.stamp_arrivals(log, cutoff, di.now_iso())
         pending = [r["rel_path"] for r in di.read_arrivals(log)]
         self.assertEqual(pending, ["late.pdf"])
+
+
+class TestArrivalsBeforeState(Harness):
+    def test_a_failed_append_leaves_the_arrival_for_the_next_fetch(self):
+        """NEW (sd:8806). A fetch appends the arrival before it moves the
+        snapshot: a failed append keeps the file new for the retry, as mail
+        does since sd:4191."""
+        self.make("seed.pdf")
+        self.run_verb("fetch")
+        self.make("late.pdf")
+        with unittest.mock.patch.object(di, "append_arrivals", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.run_verb("fetch")
+        code, _ = self.run_verb("fetch")
+        self.assertEqual(code, di.EXIT_FOUND)
+        pending = [r["rel_path"] for r in di.read_arrivals(self.state / "arrivals.csv")]
+        self.assertEqual(pending, ["late.pdf"])
+
+
+class TestStateLock(Harness):
+    """NEW (sd:8806). stamp rewrites the log whole, so a fetch appending
+    meanwhile loses its rows. Both take one lock on the state folder."""
+
+    def held(self, verb):
+        self.make("seed.pdf")
+        self.run_verb("fetch")
+        self.make("new.pdf")
+        if verb == "stamp":
+            self.run_verb("fetch")
+        with open(self.state / "intake.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            worker = threading.Thread(target=self.run_verb, args=(verb,))
+            worker.start()
+            time.sleep(0.5)
+            self.assertTrue(worker.is_alive(), f"{verb} ran while the lock was held")
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        worker.join(10)
+        self.assertFalse(worker.is_alive())
+
+    def test_stamp_waits_for_the_lock(self):
+        self.held("stamp")
+        self.assertEqual([], di.read_arrivals(self.state / "arrivals.csv"))
+
+    def test_fetch_waits_for_the_lock(self):
+        self.held("fetch")
+        pending = [r["rel_path"] for r in di.read_arrivals(self.state / "arrivals.csv")]
+        self.assertEqual(pending, ["new.pdf"])
 
 
 class TestPeek(Harness):
