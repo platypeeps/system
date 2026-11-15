@@ -14,8 +14,36 @@ rotation, the prunes, the build output) happen automatically.
 ./maintenance.sh run     # apply safe fixes, report findings (cron entrypoint)
 ./maintenance.sh uv-prune  # prune uv's cache (the login agent's entrypoint)
 ./maintenance.sh uv-prune-plist  # print that login agent's plist
+./maintenance.sh move <path> [folder]  # put a path on the bulk SSD, then link it
 ./maintenance.sh test    # run the unit tests
 ```
+
+## Move a path to the bulk storage root
+
+`move <path> [folder]` copies a file or folder to
+`<bulk root>/<folder>/<path inside its checkout>`, checks every file by
+size, content and extended attributes, then replaces the source with a symlink to the copy
+(sd:8797). `<folder>` defaults to the checkout's name; outside a checkout
+name it, and the copy goes to `<bulk root>/<folder>/<basename>`. The root
+is the workflow database's `sd.bulk_storage_root`. On macOS the copy is
+Apple's `ditto`, which keeps resource forks and Finder tags. A mismatch removes the
+copy and keeps the source.
+
+Writers are quiesced as machine-setup's bulkmove stage does it (sd:8242):
+the move holds the flock of each loaded cron job that starts pack runs
+(`build-dispatch`, `lane-run`, `night-build`), so a slot that fires
+meanwhile skips, and reads the open pack runs (`lib/open_runs.py`) before
+the copy and again before the link. A run in progress, an open run or an
+unreadable database keeps the source; one found after the copy removes
+the copy. It refuses, changing nothing: a path git
+tracks or a folder holding one, a checkout, build output (`target/`,
+`node_modules/`), a path a process holds open (`lsof`; an `lsof` that
+fails or exits nonzero refuses too), a relative symlink that leads out
+of the folder, a missing or full bulk root, an existing destination, and
+a destination outside the bulk root or inside the source (a `..` or
+absolute folder, a bulk root inside the moved folder). It also refuses a
+copy with any path under `<bulk root>/*/lane/`: repo-sync's lane sweep
+deletes files there 14 days old, and the copy keeps the source's dates.
 
 With findings, `run` prints one line per finding, `SD_REPORT_ATTENTION:
 maintenance on <host>: <finding>`, and one per pending update under its finding,
