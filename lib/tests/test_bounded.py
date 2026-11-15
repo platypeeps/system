@@ -294,11 +294,12 @@ def cron_scripts():
 #: arguments as they are, machine-setup's `run` helpers among them.
 START = (r"(?:^|[;&|(`{]|\$\()\s*(?:(?:!|if|then|do|else|elif|while|until|sudo|env|exec|eval"
          r"|command|run|run_ok|try_run)\s+|\w+=(?:\"\"|''|[^\s$`(]*)\s+)*")
-#: A hang-prone call: brew, mas, softwareupdate, curl, or git reaching a remote.
-#: A word followed by `|` or `)` is a case pattern, not a call.
-CALL = re.compile(START + r"(?:[^\s;&|()]*/)?(?P<call>(?:brew|mas|softwareupdate|curl)(?=[\s;]|$)"
+#: A hang-prone call: brew, mas, softwareupdate, curl, rsync, brctl, or git
+#: reaching a remote (sd:8814). A word followed by `|` or `)` is a case
+#: pattern, not a call.
+CALL = re.compile(START + r"(?:[^\s;&|()]*/)?(?P<call>(?:brew|mas|softwareupdate|curl|rsync|brctl)(?=[\s;]|$)"
                   r"|git(?:\s+-[Cc]\s+\S+|\s+-\w+)*\s+(?:fetch|pull|push|clone|ls-remote"
-                  r"|submodule\s+update|remote\s+update)\b)")
+                  r"|submodule\s+update|remote\s+(?:update|prune))\b)")
 #: curl carries its own bound in its own command: a positive number, or a
 #: variable (blanked to "" when quoted).
 CURL_BOUND = re.compile(r"^[^;&|)]*\s(?:-m\s+|--max-time[\s=]+)(?:0*[1-9]|[\"$])")
@@ -436,9 +437,13 @@ class CronCallsAreBounded(unittest.TestCase):
                 'x="`mas outdated`"',
                 "curl https://example.test; echo --max-time 10",
                 "curl --max-time 0 https://example.test",
+                'rsync -a --dry-run "$s" "$d" | while read -r n; do :; done',
+                'brctl download "$f" || echo failed',
+                'if out=$(git -C "$d" remote prune origin 2>&1); then :; fi',
             ]) + "\n")
             found = [line.split(":")[1] for line in unbounded_calls(script, "job.sh")]
-        self.assertEqual(found, ["1", "2", "3", "4", "5", "5", "6", "7", "9", "10", "11", "12", "13", "14"])
+        self.assertEqual(found, ["1", "2", "3", "4", "5", "5", "6", "7", "9", "10", "11", "12", "13", "14",
+                                 "15", "16", "17"])
 
     def test_the_scan_passes_a_bounded_call(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -453,6 +458,9 @@ class CronCallsAreBounded(unittest.TestCase):
                 'echo "  brew MISSING (brew install mas)"',
                 "# brew upgrade in a comment",
                 'git -C "$d" rev-parse HEAD',
+                'st_bounded 60 rsync -a --dry-run "$s" "$d" > "$f"',
+                'st_bounded 60 brctl download "$f"',
+                'out=$(st_step 120 git -C "$d" remote prune origin 2>&1)',
             ]) + "\n")
             self.assertEqual(unbounded_calls(script, "job.sh"), [])
 
