@@ -93,7 +93,7 @@ class JenkinsTest(unittest.TestCase):
     def run_jenkins(self, *args, **extra):
         (self.tmp / "answers.json").write_text(json.dumps(self.answers))
         return subprocess.run(["sh", str(self.tmp / "mezmo-jenkins" / "jenkins.sh"), *args],
-                              capture_output=True, text=True, env={**self.env, **extra}, timeout=60)
+                              check=False, capture_output=True, text=True, env={**self.env, **extra}, timeout=60)
 
     def urls(self):
         return [line.split()[-1] for line in self.calls.read_text().splitlines()]

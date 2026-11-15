@@ -72,7 +72,7 @@ class BulkMoveTest(unittest.TestCase):
 
     def move(self, *args, **extra):
         return subprocess.run(["sh", str(self.tmp / "local-maintenance" / "maintenance.sh"), "move", *args],
-                              capture_output=True, text=True, env={**self.env, **extra}, timeout=60)
+                              check=False, capture_output=True, text=True, env={**self.env, **extra}, timeout=60)
 
     def assert_refused(self, run, path, why):
         self.assertEqual(1, run.returncode, run.stdout + run.stderr)

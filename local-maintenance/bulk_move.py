@@ -41,7 +41,7 @@ def held_open(path):
     sys.path.insert(0, HERE)
     from in_use import in_use
     try:
-        run = subprocess.run(["lsof", "-nP", "-F", "n"], capture_output=True, timeout=120)
+        run = subprocess.run(["lsof", "-nP", "-F", "n"], check=False, capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise Refused(f"lsof gave no answer ({error}); kept {path}") from None
     # A nonzero exit may come with a partial listing, which proves nothing.
@@ -65,7 +65,7 @@ def checkout(path):
     """The top of the git checkout holding `path`, or None."""
     where = path if os.path.isdir(path) else os.path.dirname(path)
     run = subprocess.run(["git", "-C", where, "rev-parse", "--show-toplevel"],
-                         capture_output=True, text=True)
+                         check=False, capture_output=True, text=True)
     return os.path.realpath(run.stdout.strip()) if run.returncode == 0 else None
 
 
