@@ -213,10 +213,58 @@ class BulkMoveTest(unittest.TestCase):
                 mock.patch.object(bulk_move, "mismatches", spy):
             rc = bulk_move.main([str(self.bulk), str(self.data)])
         self.assertEqual(1, rc)
-        self.assertEqual(2, len(calls))
         self.assertFalse(self.data.is_symlink())
         self.assertEqual("late\n", (self.data / "sub" / "b.txt").read_text())
         self.assertFalse((self.bulk / "widget" / "runs" / "data").exists())
+
+    def test_the_source_stays_in_place_during_every_check(self):
+        # Lane review round 2: a check run while the source sat aside left
+        # the path missing for a full lsof and a second content read.
+        bulk_move = _module()
+        verify, seen = bulk_move.mismatches, []
+
+        def present():
+            seen.append(self.data.is_dir() and not self.data.is_symlink())
+
+        def spy(src, dst):
+            present()
+            return verify(src, dst)
+
+        def lsof(path):
+            present()
+            return False
+        with mock.patch.object(bulk_move, "held_open", lsof), mock.patch.object(bulk_move, "mismatches", spy):
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(0, rc)
+        self.assertTrue(seen)
+        self.assertEqual([True] * len(seen), seen)
+
+    def test_an_interrupt_during_the_swap_restores_the_source(self):
+        bulk_move = _module()
+        with mock.patch.object(bulk_move, "held_open", lambda path: False), \
+                mock.patch.object(bulk_move.os, "symlink", side_effect=KeyboardInterrupt):
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(1, rc)
+        self.assertFalse(self.data.is_symlink())
+        self.assertEqual("b\n", (self.data / "sub" / "b.txt").read_text())
+        self.assertEqual([self.data.name], [p.name for p in self.data.parent.iterdir()])
+
+    def test_a_source_recreated_during_the_swap_is_not_overwritten(self):
+        bulk_move = _module()
+
+        def writer_wins(target, link):
+            pathlib.Path(link).write_text("new\n")
+            raise FileExistsError(17, "File exists", link)
+        with mock.patch.object(bulk_move, "held_open", lambda path: False), \
+                mock.patch.object(bulk_move.os, "symlink", writer_wins), \
+                mock.patch("sys.stderr", new_callable=__import__("io").StringIO) as err:
+            rc = bulk_move.main([str(self.bulk), str(self.data)])
+        self.assertEqual(1, rc)
+        self.assertEqual("new\n", self.data.read_text())
+        aside = [p for p in self.data.parent.iterdir() if p.name.startswith("data.bulk-move-")]
+        self.assertEqual(1, len(aside))
+        self.assertEqual("b\n", (aside[0] / "sub" / "b.txt").read_text())
+        self.assertIn(str(aside[0]), err.getvalue())
 
     def test_a_failed_lsof_is_refused(self):
         self.assert_refused(self.move(str(self.data), FAKE_LSOF_FAIL="1"), self.data, "lsof")

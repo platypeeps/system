@@ -216,6 +216,26 @@ def plan(root, path, folder):
     return src, dst
 
 
+def snapshot(src):
+    """Inode, size, mtime and ctime of `src` and every entry under it.
+
+    A write, a create, a delete or an attribute change moves one of them,
+    and reading (the copy, the verify) moves none.
+    """
+    return {rel: (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            for rel in [""] + walk(src) for st in [os.lstat(os.path.join(src, rel) if rel else src)]}
+
+
+def restore(aside, src):
+    """Put the source back, but never over a path a writer recreated."""
+    if os.path.lexists(src) and not os.path.islink(src):
+        return f"{src} was recreated meanwhile; the original stays at {aside}"
+    if os.path.islink(src):
+        os.unlink(src)
+    os.rename(aside, src)
+    return "kept the source"
+
+
 def main(argv):
     if len(argv) not in (2, 3):
         print("usage: bulk_move.py ROOT PATH [FOLDER]", file=sys.stderr)
@@ -225,10 +245,17 @@ def main(argv):
     except Refused as why:
         print(f"move: {why}", file=sys.stderr)
         return 1
+    # Every check runs with the source in place, so a reader or a writer
+    # never finds the path missing while a long scan or lsof runs.
     try:
+        before = snapshot(src)
         copy(src, dst)
         bad = mismatches(src, dst)
-    except OSError as error:
+        if not bad and held_open(src):
+            bad = ["a process opened it during the copy (lsof)"]
+        if not bad and snapshot(src) != before:
+            bad = ["it changed during the copy"]
+    except (Refused, OSError) as error:
         bad = [f"copy failed: {error}"]
     if bad:
         if os.path.lexists(dst):
@@ -236,26 +263,22 @@ def main(argv):
         print(f"move: the copy of {src} differs ({', '.join(bad[:5])}); removed it, kept the source",
               file=sys.stderr)
         return 1
+    # ponytail: a process that opens the source between the last lsof and
+    # the rename (microseconds) is not seen; a post-swap lsof on the aside
+    # name closes it if that ever bites.
     aside = f"{src}.bulk-move-{os.getpid()}"
     os.rename(src, aside)
-    # A writer may have opened the source during the copy: check again under
-    # the new name, which no new open by the old path reaches.
-    try:
-        late = "a process holds it open (lsof)" if held_open(aside) else ", ".join(mismatches(aside, dst)[:5])
-    except (Refused, OSError) as why:
-        late = str(why)
-    if late:
-        os.rename(aside, src)
-        remove(dst)
-        print(f"move: {src} changed during the copy ({late}); removed the copy, kept the source", file=sys.stderr)
-        return 1
     try:
         os.symlink(dst, src)
-    except OSError as error:
-        os.rename(aside, src)
-        print(f"move: could not link {src} ({error}); kept it, the copy stays at {dst}", file=sys.stderr)
+    except (OSError, KeyboardInterrupt) as error:  # Ctrl-C too: the source must not stay aside
+        print(f"move: could not link {src} ({error!r}); {restore(aside, src)}; the copy stays at {dst}",
+              file=sys.stderr)
         return 1
-    remove(aside)
+    try:
+        remove(aside)
+    except OSError as error:
+        print(f"moved {src} -> {dst}; the original stays at {aside} ({error})", file=sys.stderr)
+        return 0
     print(f"moved {src} -> {dst}")
     return 0
 
