@@ -3666,6 +3666,16 @@ class NasFullCopy(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("repo-storage/system/nas-full-copy/x", self.lists()[0])
 
+    def test_each_excluded_folder_stays_out_of_the_copy(self) -> None:
+        """sd:8932: rsync timed out reading regenerable chunk files under one
+        repo's output folder and failed the night; NAS_COPY_EXCLUDE leaves
+        such folders out, by name, so a sibling sharing a prefix stays in."""
+        self.tree("a", "r/out/chunks/1.zst", "r/out/chunks-keep", "skip/x", "skipped")
+        result = self.run_copy(NAS_COPY_EXCLUDE="r/out/chunks/,skip")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.lists(), [["a", "r", "r/out", "r/out/chunks-keep", "repo-storage",
+                                         "repo-storage/system", "skipped"]])
+
     def forget_calls(self) -> None:
         for path in self.work.glob("rsync-calls*"):
             path.unlink()

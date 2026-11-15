@@ -361,8 +361,10 @@ A retry goes on at the chunk that failed. A file that vanishes between the
 listing and its chunk, as Google Drive files do, does not fail the chunk:
 rsync exit 24, or exit 23 when every error line names a file in the chunk
 that is gone from the source, moves the cursor and logs the names in the
-`.err` (sd:7321). Any other error fails the chunk as before. Set the two
-volumes in
+`.err` (sd:7321). Any other error fails the chunk as before.
+`NAS_COPY_EXCLUDE` names folders, relative to the source and comma-separated,
+that the copy leaves out, such as regenerable output rsync timed out on
+(sd:8932). Set the two volumes in
 `<config>/mirror-sync/.env` (see `.env.example`). The last run's outcome, the
 cursor and the lock sit in
 `${XDG_STATE_HOME:-~/.local/state}/system/mirror-sync/nas-full-copy/`, not in
