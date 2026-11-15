@@ -163,7 +163,7 @@ case "${1:-}" in
       echo "maintenance.sh move: sd.bulk_storage_root is not set or not read; set it with: sd config set sd.bulk_storage_root <dir>" >&2
       exit 1
     fi
-    exec python3 "$DIR/bulk_move.py" "$root" "$@"
+    python3 "$DIR/bulk_move.py" "$root" "$@"; exit $?
     ;;
   test)
     shift
