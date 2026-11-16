@@ -9,8 +9,8 @@
 # such as older sd-db snapshots in sd-backups/. An exact mirror would delete
 # that history on its first pass.
 #
-# /Volumes/local/Backup carries the nightly sd-db snapshot in sd-backups/,
-# so this pair is also how that snapshot leaves the machine.
+# /Volumes/local/Backup carries the nightly sd-db snapshot in sd-backups/;
+# the job copies that folder in its own step before this list (sd:9070).
 #
 # A promoted satellite pairs its SD_DB_BACKUP_DESTINATION folder with the
 # NAS's sd-backups folder, one folder to one folder, never a parent with the
@@ -23,12 +23,8 @@
 # them. Leave mirrors-nas-hourly.conf without it: the NAS prune deletes an
 # hourly copy only when its file names match its manifest.
 #
-# The snapshot folder is its own pair, and first (sd:9070). The sd-db-backup
-# job bounds each pair (MIRROR_SYNC_PAIR_BOUND), and rsync walks a root in
-# name order, so as part of the whole root sd-backups came last and a slow
-# night ended the copy before the snapshot left. The second pair copies the
-# rest of the root; its `/sd-backups` keeps the folder out of it, so it is
-# not copied twice. A bound that ends the second pair leaves the snapshot
-# on the NAS; the next night's additive copy goes on from what is there.
-/Volumes/local/Backup/sd-backups|/Volumes/Offsite/Backup/sd-backups|runner-journal/*.lock
-/Volumes/local/Backup|/Volumes/Offsite/Backup|/sd-backups
+# The sd-db-backup job copies the snapshot folder itself, first and
+# unbounded, from a pair it names (sd:9070); this list is the bulk copy,
+# each pair under a wall bound. Its `/sd-backups` leaves that folder out,
+# so it is not copied twice. A list without it still works.
+/Volumes/local/Backup|/Volumes/Offsite/Backup|/sd-backups,runner-journal/*.lock

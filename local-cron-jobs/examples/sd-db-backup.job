@@ -32,19 +32,23 @@
 # allows a copy 36 hours old, so one skipped night raises nothing; a
 # second in a row does.
 #
-# Each pair of the copy runs under a 3000 s wall bound
-# (MIRROR_SYNC_PAIR_BOUND, sd:9070). Copying all of Backup in one pass took
-# over an hour a night and ran into the 2 h job limit on 2026-11-16,
-# failing a run whose snapshot was safe. A pair at the bound counts as a
-# share that did not answer, so the run warns and passes, and the next
-# night's additive copy goes on. The example pair list has two pairs, the
-# snapshot folder first: 6000 s of copy fits in 2 h with the snapshot.
+# The copy has two steps (sd:9070). First the job copies the snapshot
+# folder to <NAS folder>/sd-backups from a pair it names itself
+# (MIRROR_SYNC_PAIRS), with no wall bound, whatever the installed list
+# holds. Then the bulk list runs with each pair under a 3000 s wall bound
+# (MIRROR_SYNC_PAIR_BOUND): copying all of Backup in one pass ran into the
+# 2 h job limit on 2026-11-16. A bulk pair at the bound counts as a share
+# that did not answer (75); the snapshot is already off the machine, so the
+# run warns and passes, and the next night's additive copy goes on.
 JOB_SCHEDULE="10 2 * * *"
 SD_DB_BACKUP_MOUNT=""
 [ -n "${SD_DB_BACKUP_DESTINATION:-}" ] || SD_DB_BACKUP_MOUNT=" --require-mount /Volumes/local"
 SD_DB_BACKUP_SNAPSHOT="\"$HOME/repos/platypeeps/sd-workflow/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}\"$SD_DB_BACKUP_MOUNT --keep 14"
 SD_DB_BACKUP_NAS_FOLDER="${SD_DB_BACKUP_NAS_FOLDER-}"
-SD_DB_BACKUP_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$SD_DB_BACKUP_NAS_FOLDER\" && env MIRROR_SYNC_CONF=mirrors-nas.conf MIRROR_SYNC_ADDITIVE=1 MIRROR_SYNC_PAIR_BOUND=3000 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync"
-JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT && { $SD_DB_BACKUP_NAS || { rc=\$?; [ \$rc -ne 75 ] || { echo 'warning: NAS copy skipped: the share did not answer'; exit 0; }; echo 'SD_REPORT_ATTENTION: data safe, one step failed: NAS copy'; exit \$rc; }; }"
+SD_DB_BACKUP_MIRROR="env MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync"
+SD_DB_BACKUP_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$SD_DB_BACKUP_NAS_FOLDER\" && MIRROR_SYNC_PAIRS=\"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}|$SD_DB_BACKUP_NAS_FOLDER/sd-backups|runner-journal/*.lock\" $SD_DB_BACKUP_MIRROR"
+SD_DB_BACKUP_BULK="MIRROR_SYNC_CONF=mirrors-nas.conf MIRROR_SYNC_PAIR_BOUND=3000 $SD_DB_BACKUP_MIRROR"
+JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT && { $SD_DB_BACKUP_NAS || { rc=\$?; [ \$rc -ne 75 ] || { echo 'warning: NAS copy skipped: the share did not answer'; exit 0; }; echo 'SD_REPORT_ATTENTION: data safe, one step failed: NAS copy'; exit \$rc; }; } && { $SD_DB_BACKUP_BULK || { rc=\$?; [ \$rc -ne 75 ] || { echo 'warning: snapshot copied; the rest of Backup did not finish (bound or share)'; exit 0; }; echo 'SD_REPORT_ATTENTION: data safe, one step failed: NAS copy'; exit \$rc; }; }"
 [ -n "$SD_DB_BACKUP_NAS_FOLDER" ] || JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT"
-unset SD_DB_BACKUP_MOUNT SD_DB_BACKUP_SNAPSHOT SD_DB_BACKUP_NAS SD_DB_BACKUP_NAS_FOLDER
+unset SD_DB_BACKUP_MOUNT SD_DB_BACKUP_SNAPSHOT SD_DB_BACKUP_NAS SD_DB_BACKUP_NAS_FOLDER \
+  SD_DB_BACKUP_MIRROR SD_DB_BACKUP_BULK

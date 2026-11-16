@@ -34,7 +34,7 @@ from pathlib import Path
 SET_BY_CASE = ("MIRROR_SYNC_ADDITIVE", "MIRROR_SYNC_BACKUP_ROOT",
                "MIRROR_SYNC_BACKUP_KEEP_DAYS", "MIRROR_SYNC_IO_TIMEOUT",
                "MIRROR_SYNC_MATERIALIZE_WAIT", "MIRROR_SYNC_PAIR_BOUND",
-               "MIRROR_SYNC_PROBE_TIMEOUT")
+               "MIRROR_SYNC_PROBE_TIMEOUT", "MIRROR_SYNC_PAIRS")
 
 FOLDER = Path(__file__).resolve().parent.parent
 #: The command pack checkout whose lib/ holds the sd_db the verifier imports
@@ -263,6 +263,24 @@ class PerPairExcludes(Fixture):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("excluding node_modules/,target/", result.stdout)
+
+
+class InlinePairs(Fixture):
+    def test_mirror_sync_pairs_replaces_the_list(self) -> None:
+        """sd:9070: the nightly job copies the snapshot folder as its own
+        step, from a pair it names, whatever the installed list holds."""
+        source = self.work / "sd-backups"
+        self.write(source / "snap" / "db.sqlite", "db\n")
+        self.write(source / "runner-journal" / "a.lock", "")
+        environment = {name: value for name, value in os.environ.items() if name not in SET_BY_CASE}
+        environment["MIRROR_SYNC_CONF"] = str(self.work / "absent.conf")
+        environment["MIRROR_SYNC_PAIRS"] = f"{source}|{self.work}/nas|runner-journal/*.lock"
+        result = subprocess.run(["/bin/sh", str(MIRROR_SYNC), "sync"],
+                                capture_output=True, text=True, env=environment)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.work / "nas" / "snap" / "db.sqlite").is_file())
+        self.assertFalse((self.work / "nas" / "runner-journal" / "a.lock").exists())
+        self.assertIn("all 1 pair(s) mirrored", result.stdout)
 
 
 class SpecialFiles(Fixture):
@@ -3115,7 +3133,10 @@ class NasCopy(unittest.TestCase):
                 lock.chmod(0)
                 nas = work / "nas" / "Backup"
                 nas.mkdir(parents=True)
-                excludes = _pairs(conf)[0][2:]
+                # The bulk pair may leave sd-backups out: the nightly job
+                # copies it itself with the same lock exclude (sd:9070).
+                excludes = [",".join(e for e in field.split(",") if e != "/sd-backups")
+                            for field in _pairs(conf)[0][2:]]
                 pairs = work / "pairs.conf"
                 pairs.write_text("|".join([str(source), str(nas), *excludes]) + "\n")
 
