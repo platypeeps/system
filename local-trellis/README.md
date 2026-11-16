@@ -35,7 +35,8 @@ option through (`--seed`, `--pipeline-type`, `--texture-size`,
    commit the pin records.
 4. Runs `setup.sh`: a Python 3.11 venv, PyPI packages, the Metal backends
    and the MPS patches. The PyPI packages are not pinned; only git
-   checkouts are.
+   checkouts are. `setup.sh` makes `.venv` only when it is absent, so
+   install first removes a venv whose python does not run.
 5. Installs `einops` into the venv (`uv pip install`), since
    ZhengPeng7/BiRefNet's remote code imports it and `setup.sh` does not
    install it. A rerun after a finished setup still adds it.
@@ -62,8 +63,9 @@ checkout's HEAD and the hash of its `git diff HEAD` in
 was clean or matched its line as the run began, and it records on every
 exit, a failed run's too. A checkout holding an edit install did not make
 keeps its old line, so the edit never counts as a patch. Before any pin
-moves, each checkout whose pin moves must be clean or match its line. Any other tracked change stops
-the install, naming each file, and no pin moves. A matching checkout is
+moves, each checkout whose pin moves must be at the HEAD its line
+records and be clean or match its line. A local commit or any other
+tracked change stops the install, naming each, and no pin moves. A matching checkout is
 reset, moved and patched again. git never replaces an untracked file in
 the way, and a replaced `origin` URL is printed.
 

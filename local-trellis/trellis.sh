@@ -108,8 +108,10 @@ dest_of() {
   if [ "$1" = . ]; then echo "$TRELLIS_HOME"; else echo "$TRELLIS_HOME/$1"; fi
 }
 
-# A checkout's HEAD, or nothing when there is none.
+# A checkout's HEAD, or nothing when there is none. A folder without its
+# own .git has none: git would answer with the parent checkout's HEAD.
 head_of() {
+  [ -e "$1/.git" ] || return 0
   git -C "$1" rev-parse -q --verify HEAD 2>/dev/null || :
 }
 
@@ -135,16 +137,24 @@ changed_files() {
   git -C "$1" status --porcelain --untracked-files=no | cut -c4-
 }
 
-# Whether install owns every tracked change in a checkout: none yet
-# cloned (no HEAD), no tracked change, or exactly its recorded line. A
-# failed read is not trusted: it proves nothing.
+# The HEAD and diff hash install recorded for a path, or nothing.
+recorded() {
+  awk -v p="$1" '$1 == p { print $2, $3 }' "$PATCHES" 2>/dev/null || :
+}
+
+# Whether install owns a checkout: none yet cloned (no HEAD), or HEAD is
+# the commit install left and every tracked change is its recorded line.
+# A HEAD install did not leave is a local commit; a failed read is not
+# trusted: it proves nothing.
 trusted() { # path
   tr_dest=$(dest_of "$1")
-  [ -n "$(head_of "$tr_dest")" ] || return 0
+  tr_head=$(head_of "$tr_dest")
+  [ -n "$tr_head" ] || return 0
+  tr_was=$(recorded "$1")
+  [ "${tr_was%% *}" = "$tr_head" ] || return 1
   tr_files=$(changed_files "$tr_dest") || return 1
   [ -n "$tr_files" ] || return 0
-  tr_was=$(awk -v p="$1" '$1 == p { print $2, $3 }' "$PATCHES" 2>/dev/null || :)
-  [ -n "$tr_was" ] && [ "$(fingerprint "$tr_dest")" = "$tr_was" ]
+  [ "$(fingerprint "$tr_dest")" = "$tr_was" ]
 }
 
 # The trusted checkouts at the start of this run, one path per line. Only
@@ -165,15 +175,19 @@ refuse_edits() {
     re_head=$(head_of "$re_dest")
     [ -n "$re_head" ] && [ "$re_head" != "$sha" ] || continue
     printf '%s\n' "$TRUSTED" | grep -qxF "$path" && continue
+    re_left=$(recorded "$path"); re_left=${re_left%% *}
+    if [ "$re_left" != "$re_head" ]; then
+      echo "$path: HEAD $re_head is not the commit install left (${re_left:-none recorded}); keep it on a branch"
+    fi
     if re_files=$(changed_files "$re_dest"); then
-      printf '%s\n' "$re_files" | sed "s|^|$path: |"
+      [ -z "$re_files" ] || printf '%s\n' "$re_files" | sed "s|^|$path: |"
     else
       echo "$path: git status failed"
     fi
   done)
   [ -z "$re_bad" ] && return 0
-  printf '%s\n' "$re_bad" | sed 's/^/trellis.sh: edit install did not make: /' >&2
-  die "no pin moved; commit, stash or revert those edits, then rerun install"
+  printf '%s\n' "$re_bad" | sed 's/^/trellis.sh: change install did not make: /' >&2
+  die "no pin moved; commit, stash or revert those edits, check out the commit install left, then rerun install"
 }
 
 # Record the trusted checkouts as they are now; every other line keeps
@@ -298,13 +312,16 @@ prep_build() {
 
 # HF_TOKEN for this run when it is empty: HUGGING_FACE_API_KEY, exported or
 # read from its assignment in TRELLIS_ENV_FILE. The file is read, not
-# sourced, and a computed value (`$...`) is ignored. Nothing is written.
+# sourced, and a computed value (`$...`) is ignored. A CR, the quotes and
+# a trailing `# comment` are dropped. Nothing is written.
 token_from_env() {
   [ -z "${HF_TOKEN:-}" ] || return 0
   te_key="${HUGGING_FACE_API_KEY:-}"
   if [ -z "$te_key" ] && [ -f "$TRELLIS_ENV_FILE" ]; then
     te_key=$(sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}HUGGING_FACE_API_KEY=//p' \
-      "$TRELLIS_ENV_FILE" | tail -1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/")
+      "$TRELLIS_ENV_FILE" | tail -1 | tr -d '\r' |
+      sed -e 's/^"\([^"]*\)".*/\1/' -e t -e "s/^'\([^']*\)'.*/\1/" -e t \
+        -e 's/[[:space:]]#.*//' -e 's/[[:space:]]*$//')
     case "$te_key" in *'$'*|*'`'*) te_key="" ;; esac
   fi
   [ -z "$te_key" ] || { HF_TOKEN="$te_key"; export HF_TOKEN; }
@@ -334,8 +351,11 @@ cache_mounted() {
     *) return 0 ;;
   esac
   cm_vol="/Volumes/$(printf '%s\n' "${HF_HUB_CACHE#/Volumes/}" | cut -d/ -f1)"
-  if [ -d "$cm_vol" ] &&
-     [ "$(df -P "$cm_vol" 2>/dev/null | awk 'NR == 2 { print $NF }')" = "$cm_vol" ]; then
+  # The mount point ends df's line and may hold spaces, so the line must
+  # end in " $cm_vol". A missing folder makes df fail: not mounted.
+  if df -P "$cm_vol" 2>/dev/null | awk -v v=" $cm_vol" '
+       NR == 2 && substr($0, length($0) - length(v) + 1) == v { found = 1 }
+       END { exit !found }'; then
     return 0
   fi
   WHY="Hugging Face cache volume $cm_vol is not mounted (HF_HUB_CACHE=$HF_HUB_CACHE)"
@@ -378,11 +398,16 @@ EOF
 # rebuild the Metal backends for a missing token.
 finished() {
   [ -f "$STAMP" ] && pins | cmp -s - "$STAMP" || return 1
-  [ -x "$TRELLIS_HOME/.venv/bin/python" ] || return 1
+  venv_runs || return 1
   pins | grep -v '^[[:space:]]*\(#\|$\)' | while read -r path url sha; do
     [ "$(head_of "$(dest_of "$path")")" = "$sha" ] || return 1
     [ "$(git -C "$(dest_of "$path")" remote get-url origin 2>/dev/null)" = "$url" ] || return 1
   done
+}
+
+# Whether the venv's python runs at all.
+venv_runs() {
+  "$TRELLIS_HOME/.venv/bin/python" -c '' </dev/null >/dev/null 2>&1
 }
 
 cmd_install() {
@@ -410,6 +435,12 @@ cmd_install() {
     [ "$(head_of "$(dest_of "$path")")" = "$sha" ] || die "$path is not at $sha"
   done
   prep_build
+  # setup.sh makes .venv only when it is absent, so a venv whose python
+  # is gone or broken goes first.
+  if [ -e "$TRELLIS_HOME/.venv" ] && ! venv_runs; then
+    echo "venv    $TRELLIS_HOME/.venv does not run; recreating it"
+    rm -rf "$TRELLIS_HOME/.venv"
+  fi
   (cd "$TRELLIS_HOME" && bash ./setup.sh) || die "setup.sh failed; rerun install"
   ensure_einops
   swap_rembg
