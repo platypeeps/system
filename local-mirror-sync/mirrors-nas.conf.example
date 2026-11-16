@@ -9,8 +9,8 @@
 # such as older sd-db snapshots in sd-backups/. An exact mirror would delete
 # that history on its first pass.
 #
-# /Volumes/local/Backup carries the nightly sd-db snapshot in sd-backups/,
-# so this pair is also how that snapshot leaves the machine.
+# /Volumes/local/Backup carries the nightly sd-db snapshot in sd-backups/;
+# the job copies that folder in its own step before this list (sd:9070).
 #
 # A promoted satellite pairs its SD_DB_BACKUP_DESTINATION folder with the
 # NAS's sd-backups folder, one folder to one folder, never a parent with the
@@ -22,4 +22,9 @@
 # failed the copy on 2026-10-24, and offsite-verify passes a copy without
 # them. Leave mirrors-nas-hourly.conf without it: the NAS prune deletes an
 # hourly copy only when its file names match its manifest.
-/Volumes/local/Backup|/Volumes/Offsite/Backup|runner-journal/*.lock
+#
+# The sd-db-backup job copies the snapshot folder itself, first and
+# unbounded, from a pair it names (sd:9070); this list is the bulk copy,
+# each pair under a wall bound. Its `/sd-backups` leaves that folder out,
+# so it is not copied twice. A list without it still works.
+/Volumes/local/Backup|/Volumes/Offsite/Backup|/sd-backups,runner-journal/*.lock

@@ -276,6 +276,10 @@ docs `...EXAMPLE` keys, URLs whose password is a `${VAR}`/`<name>`
 placeholder or an obvious dev value like `*_dev_password` — see
 `FAKE_FIXTURE_RE`).
 
+A match inside a base64 `data:` URI payload is encoded bytes, not a key,
+and is dropped (sd:9066): an AWS `ASIA` pattern matched JPEG data in a
+dashboard HTML. The same value anywhere else on the line still fails.
+
 A repository's own fake test keys are skipped by value (sd:4692): a Codex
 review copies them into its session log, where the weekly `critical` scan
 finds them. Copy `fixture-fingerprints.example` to
