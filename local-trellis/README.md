@@ -36,7 +36,10 @@ option through (`--seed`, `--pipeline-type`, `--texture-size`,
 4. Runs `setup.sh`: a Python 3.11 venv, PyPI packages, the Metal backends
    and the MPS patches. The PyPI packages are not pinned; only git
    checkouts are.
-5. Swaps background removal. TRELLIS.2's `pipeline.json` on Hugging Face
+5. Installs `einops` into the venv (`uv pip install`), since
+   ZhengPeng7/BiRefNet's remote code imports it and `setup.sh` does not
+   install it. A rerun after a finished setup still adds it.
+6. Swaps background removal. TRELLIS.2's `pipeline.json` on Hugging Face
    (`microsoft/TRELLIS.2-4B`) names `briaai/RMBG-2.0`, whose licence is
    non-commercial. Both pipelines build that model through one class,
    `trellis2/pipelines/rembg/BiRefNet.py`, so install adds a two-line
@@ -44,7 +47,7 @@ option through (`--seed`, `--pipeline-type`, `--texture-size`,
    `ZhengPeng7/BiRefNet` (MIT, the same architecture). A guard of that
    shape added by hand counts as done. A pin whose `BiRefNet.py` no longer
    has that `__init__` fails the install instead of skipping the swap.
-6. Writes `.local-trellis-installed`, the pin list it finished with.
+7. Writes `.local-trellis-installed`, the pin list it finished with.
 
 Rerun install at any time: it removes that record first, moves each
 checkout whose pin changed, and writes the record again only after every
@@ -78,10 +81,10 @@ answers `GatedRepoError` for that repository.
 ## Status
 
 `status` prints `ok` or one line per gap: `MISSING` for no checkout, no
-venv or an unmounted cache disk, `DIFFERS` for a checkout off its pin, an
+venv, no `einops` or an unmounted cache disk, `DIFFERS` for a checkout off its pin, an
 unfinished setup, a rembg not swapped, no token or the DINOv3 licence not
-accepted, `FAILED` when a probe itself fails: the token, the licence or
-`sd.bulk_storage_root`. It exits 0
+accepted, `FAILED` when a probe itself fails: `einops`, the token, the
+licence or `sd.bulk_storage_root`. It exits 0
 when all is in place, 3 when nothing is installed and 1 otherwise.
 `local-health-check` reads those codes.
 

@@ -34,14 +34,15 @@ usage: trellis.sh install|status|generate <image> [--output path]|test|help
   install    clone trellis-mac and every repository its setup.sh clones,
              each at its pinned commit, into TRELLIS_HOME; run setup.sh
              (venv, Python packages, Metal backends built as C++20 with
-             o-voxel's eigen submodule, MPS patches); swap
+             o-voxel's eigen submodule, MPS patches); add einops, which
+             BiRefNet imports; swap
              background removal to ZhengPeng7/BiRefNet. Safe to rerun: it
              moves a checkout whose pin changed and finishes a stopped run.
              Downloads several GB and builds native code.
   status     ok, or one MISSING/DIFFERS/FAILED line per gap: a checkout off
-             its pin, no venv, setup not finished, rembg not swapped, no
-             Hugging Face token, the DINOv3 licence not accepted, the model
-             cache disk not mounted. Exits 0 when all is in place, 3 when
+             its pin, no venv, no einops, setup not finished, rembg not
+             swapped, no Hugging Face token, the DINOv3 licence not
+             accepted, the model cache disk not mounted. Exits 0 when all is in place, 3 when
              nothing is installed, 1 otherwise;
              local-health-check reads these codes.
   generate   generate <image> [--output path] [generate.py options]: run
@@ -229,6 +230,25 @@ cache_mounted() {
   return 1
 }
 
+# ZhengPeng7/BiRefNet's remote code imports einops, which setup.sh does
+# not install. Installed after setup.sh, and on the finished path too: a
+# record written before this step leaves a venv without it.
+ensure_einops() {
+  ee_py="$TRELLIS_HOME/.venv/bin/python"
+  if "$ee_py" -c 'import einops' </dev/null >/dev/null 2>&1; then
+    echo "ok      einops"
+    return
+  fi
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install --python "$ee_py" einops </dev/null ||
+      die "einops did not install into the venv; rerun install"
+  else
+    "$ee_py" -m pip install einops </dev/null ||
+      die "einops did not install into the venv; rerun install"
+  fi
+  echo "einops  installed"
+}
+
 manual_steps() {
   cat <<EOF
 
@@ -258,6 +278,7 @@ cmd_install() {
   cache_from_root || :
   if finished; then
     echo "ok      setup finished at these pins"
+    ensure_einops
     manual_steps
     return
   fi
@@ -272,16 +293,22 @@ cmd_install() {
   done
   prep_build
   (cd "$TRELLIS_HOME" && bash ./setup.sh) || die "setup.sh failed; rerun install"
+  ensure_einops
   swap_rembg
   pins > "$STAMP"
   manual_steps
 }
 
-# The token and DINOv3 gate probe, run in the venv: `token yes|no`, then
-# with a token `gate ok`, `gate gated` (GatedRepoError: licence not
+# The probe, run in the venv: `einops yes|no`, `token yes|no`, then with
+# a token `gate ok`, `gate gated` (GatedRepoError: licence not
 # accepted) or `gate error <exception>`.
 PROBE='
 import os
+try:
+    import einops
+    print("einops yes")
+except ImportError:
+    print("einops no")
 from huggingface_hub import get_token
 token = get_token()
 print("token yes" if token else "token no")
@@ -337,23 +364,32 @@ cmd_status() {
   if [ -x "$st_py" ]; then
     # A failed probe proves nothing either way, so it is FAILED, never ok.
     st_probe=$(DINO_REPO="$DINO_REPO" "$st_py" -c "$PROBE" </dev/null 2>/dev/null) || st_probe=failed
-    case "$st_probe" in
-      "token yes"*) ;;
-      "token no"*)
+    st_einops=$(printf '%s\n' "$st_probe" | sed -n 's/^einops //p')
+    st_tok=$(printf '%s\n' "$st_probe" | sed -n 's/^token //p')
+    st_gate=$(printf '%s\n' "$st_probe" | sed -n 's/^gate //p')
+    case "$st_einops" in
+      yes) ;;
+      no) echo "MISSING einops in the venv (BiRefNet imports it) -- run: trellis.sh install"; st_bad=1 ;;
+      *) echo "FAILED  einops probe in the venv"; st_bad=1 ;;
+    esac
+    case "$st_tok" in
+      yes) ;;
+      no)
         echo "DIFFERS no Hugging Face token -- run: hf auth login, or set HUGGING_FACE_API_KEY"
         st_bad=1 ;;
       *) echo "FAILED  Hugging Face token probe in the venv"; st_bad=1 ;;
     esac
-    case "$st_probe" in
-      "token no"*|failed) ;;
-      *"gate ok"*) ;;
-      *"gate gated"*)
-        echo "DIFFERS DINOv3 licence not accepted -- accept it at $DINO_URL"
-        st_bad=1 ;;
-      *)
-        echo "FAILED  DINOv3 licence probe ($(printf '%s\n' "$st_probe" | sed -n 's/^gate //p'))"
-        st_bad=1 ;;
-    esac
+    if [ "$st_tok" = yes ]; then
+      case "$st_gate" in
+        ok) ;;
+        gated)
+          echo "DIFFERS DINOv3 licence not accepted -- accept it at $DINO_URL"
+          st_bad=1 ;;
+        *)
+          echo "FAILED  DINOv3 licence probe (${st_gate:-no answer})"
+          st_bad=1 ;;
+      esac
+    fi
   fi
   if [ "$st_bad" -ne 0 ]; then
     exit 1

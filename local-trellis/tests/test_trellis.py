@@ -56,6 +56,9 @@ cat > .venv/bin/python <<'PYFAKE'
 #!/bin/sh
 printf 'HF_TOKEN=%%s HF_HUB_CACHE=%%s\\n' "${HF_TOKEN:+set}" "$HF_HUB_CACHE" >> "$FAKE_ENV_LOG"
 if [ "$1" = -c ]; then
+  if [ -f "$(dirname "$0")/../einops" ]; then e=yes; else e=no; fi
+  if [ "$2" = "import einops" ]; then [ "$e" = yes ]; exit; fi
+  echo "einops $e"
   hf=${FAKE_HF:-yes}
   if [ "$hf" = env ]; then if [ -n "$HF_TOKEN" ]; then hf=yes; else hf=no; fi; fi
   case "$hf" in yes|no) echo "token $hf" ;; *) exit 1 ;; esac
@@ -114,6 +117,17 @@ class Trellis(unittest.TestCase):
         self.env_log = self.base / "python-env.log"
         self.cache = self.base / "hub"
         self.env_file = self.base / "env.sh"
+        # A fake uv: `pip install --python <venv python> einops` marks the
+        # venv, which the fake python reads as einops importing.
+        self.stubs = self.base / "stubs"
+        self.stubs.mkdir()
+        self.uv_log = self.base / "uv.log"
+        uv = self.stubs / "uv"
+        uv.write_text('#!/bin/sh\necho "$*" >> "$FAKE_UV_LOG"\n'
+                      '[ -z "$FAKE_UV_FAIL" ] || exit 1\n'
+                      '[ "$1 $2 $3" = "pip install --python" ] && [ "$5" = einops ] &&'
+                      ' touch "$(dirname "$4")/../einops"\n')
+        uv.chmod(0o755)
         up = self.base / "upstream"
         self.pins = {".": make_repo(up / "trellis-mac", {"setup.sh": FAKE_SETUP,
                                                           "generate.py": "# fake\n"})}
@@ -140,7 +154,9 @@ class Trellis(unittest.TestCase):
         self.pin_file.write_text("".join(lines))
 
     def run_sh(self, *args, **env):
-        e = {"HOME": str(self.home), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        e = {"HOME": str(self.home),
+             "PATH": f"{self.stubs}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+             "FAKE_UV_LOG": str(self.uv_log),
              "TRELLIS_PINS": str(self.pin_file), "FAKE_LOG": str(self.log),
              "FAKE_ENV_LOG": str(self.env_log), "HF_HUB_CACHE": str(self.cache),
              "TRELLIS_ENV_FILE": str(self.env_file),
@@ -271,7 +287,33 @@ class Trellis(unittest.TestCase):
                                capture_output=True, text=True).stdout
         self.assertEqual(found, "")
 
+    def test_install_puts_einops_in_the_venv_after_setup(self):
+        r = self.install()
+        self.assertLess(r.stdout.index("fake setup done"), r.stdout.index("einops"))
+        self.assertEqual(self.uv_log.read_text(),
+                         f"pip install --python {self.dest}/.venv/bin/python einops\n")
+
+    def test_install_adds_einops_to_a_finished_setup_from_before(self):
+        self.install()
+        (self.dest / ".venv/einops").unlink()
+        r = self.install()
+        self.assertNotIn("fake setup done", r.stdout)
+        self.assertTrue((self.dest / ".venv/einops").exists())
+        self.assertEqual(self.run_sh("status").returncode, 0)
+
+    def test_a_failed_einops_install_fails_install(self):
+        r = self.run_sh("install", FAKE_UV_FAIL="1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("einops", r.stderr)
+
     # -- status
+
+    def test_status_reports_einops_missing(self):
+        self.install()
+        (self.dest / ".venv/einops").unlink()
+        r = self.run_sh("status")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"MISSING +einops")
 
     def test_status_with_nothing_installed_is_missing_and_exits_3(self):
         r = self.run_sh("status")
