@@ -749,6 +749,44 @@ class NightlyBackupGradeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
         self.assertIn(self.SAFE, log)
 
+    def test_the_nas_copy_runs_each_pair_under_a_wall_bound(self):
+        """REGRESSION (sd:9070): the copy of the whole backup root ran to
+        the 2 h job limit and failed the run. Each pair now ends at a wall
+        bound, which mirror-sync reports as a share that did not answer
+        (75): a warning. The example's two pairs fit inside 2 h."""
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        mirror = fx.tmp / "local-mirror-sync/mirror-sync.sh"
+        mirror.parent.mkdir(parents=True)
+        seen = fx.tmp / "bound"
+        mirror.write_text(f'#!/bin/sh\nprintf %s "$MIRROR_SYNC_PAIR_BOUND" > "{seen}"\nexit 75\n')
+        sd_db = fx.home / "repos/platypeeps/sd-workflow/bin/sd-db"
+        sd_db.parent.mkdir(parents=True)
+        sd_db.write_text("#!/bin/sh\nexit 0\n")
+        sd_db.chmod(0o755)
+        fx.write_job(self.JOB.stem, self.JOB.read_text())
+        result = fx.exec_job(self.JOB.stem, {
+            "SD_DB_PYTHON": "true", "SD_DB_BACKUP_DESTINATION": str(fx.tmp / "backups"),
+            "SD_DB_BACKUP_NAS_FOLDER": str(fx.tmp / "nas")})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        bound = int(seen.read_text() or 0)
+        pairs = [line for line in (FOLDER.parent / "local-mirror-sync/mirrors-nas.conf.example")
+                 .read_text().splitlines() if line and not line.startswith("#")]
+        self.assertGreater(bound, 0)
+        # Two hours less ten minutes for the snapshot and the probes.
+        self.assertLessEqual(bound * len(pairs), 2 * 3600 - 600)
+
+    def test_the_snapshot_folder_is_the_first_nas_pair(self):
+        """sd:9070: rsync walks the root in name order, so sd-backups came
+        last and a bound would end the copy before the snapshot left. It is
+        its own pair, first; the rest of the root leaves it out."""
+        pairs = [line.split("|") for line in (FOLDER.parent / "local-mirror-sync/mirrors-nas.conf.example")
+                 .read_text().splitlines() if line and not line.startswith("#")]
+        self.assertEqual(len(pairs), 2, pairs)
+        self.assertTrue(pairs[0][0].endswith("/sd-backups"), pairs[0])
+        self.assertTrue(pairs[0][1].endswith("/sd-backups"), pairs[0])
+        self.assertIn("/sd-backups", pairs[1][2].split(","), pairs[1])
+
     def test_without_a_nas_folder_the_job_is_the_snapshot_alone(self):
         result, log = self.run_job(0, 4, nas=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -22,4 +22,13 @@
 # failed the copy on 2026-10-24, and offsite-verify passes a copy without
 # them. Leave mirrors-nas-hourly.conf without it: the NAS prune deletes an
 # hourly copy only when its file names match its manifest.
-/Volumes/local/Backup|/Volumes/Offsite/Backup|runner-journal/*.lock
+#
+# The snapshot folder is its own pair, and first (sd:9070). The sd-db-backup
+# job bounds each pair (MIRROR_SYNC_PAIR_BOUND), and rsync walks a root in
+# name order, so as part of the whole root sd-backups came last and a slow
+# night ended the copy before the snapshot left. The second pair copies the
+# rest of the root; its `/sd-backups` keeps the folder out of it, so it is
+# not copied twice. A bound that ends the second pair leaves the snapshot
+# on the NAS; the next night's additive copy goes on from what is there.
+/Volumes/local/Backup/sd-backups|/Volumes/Offsite/Backup/sd-backups|runner-journal/*.lock
+/Volumes/local/Backup|/Volumes/Offsite/Backup|/sd-backups

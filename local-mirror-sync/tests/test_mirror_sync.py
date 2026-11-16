@@ -3039,9 +3039,15 @@ class NasCopy(unittest.TestCase):
     def test_the_backup_folder_goes_to_one_backup_folder(self) -> None:
         for conf in self.CONFS:
             with self.subTest(conf=conf.name):
+                # The snapshot folder may be its own pair, first (sd:9070);
+                # a local list from before that copies Backup alone.
                 pairs = _pairs(conf)
-                self.assertEqual(len(pairs), 1, pairs)
-                source, destination = pairs[0][:2]
+                self.assertIn(len(pairs), (1, 2), pairs)
+                if len(pairs) == 2:
+                    self.assertTrue(pairs[0][0].rstrip("/").endswith("/Backup/sd-backups"), pairs[0])
+                    self.assertTrue(pairs[0][1].rstrip("/").endswith("/Backup/sd-backups"), pairs[0])
+                    self.assertNotEqual(pairs[0][0], pairs[0][1])
+                source, destination = pairs[-1][:2]
                 self.assertTrue(source.rstrip("/").endswith("/Backup"), source)
                 self.assertTrue(destination.rstrip("/").endswith("/Backup"), destination)
                 self.assertNotEqual(source, destination)
