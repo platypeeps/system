@@ -102,7 +102,11 @@ when a profile or a host jobs folder still names the job; remove it there.
 ## Examples
 
 `examples/` holds sample jobs that run tools in this repository. They are
-documentation: nothing installs them. Copy the ones you want:
+documentation: nothing installs them. They stay templates with
+`change-me` values; the installed truth is the config folder, which may be
+a clone of a private repository of its own (`local-machine-setup` README,
+"The config folder as a clone"). A job copied from an example is kept in
+step with it by hand. Copy the ones you want:
 
 ```sh
 mkdir -p ~/.config/system/cron-jobs/jobs

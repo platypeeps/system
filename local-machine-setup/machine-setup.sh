@@ -1757,6 +1757,7 @@ stage_repos() {
   else
     echo "  local-repo-sync missing from the repo"
   fi
+  config_clone
   local_blocks
   leak_guards
   sys_plugin
@@ -1962,6 +1963,47 @@ leak_guards() {
 # the repo's other keys, its comments and the lines outside the block stay.
 # A file git does not ignore is reported and never written: the block is
 # per machine, and a tracked copy would publish it.
+# The config root is a clone of the operator's private config repository
+# (sd:9091); MACHINE_SETUP_CONFIG_REMOTE names it. --apply joins a root that
+# is no clone yet: every file on disk stays as it is, a file only the remote
+# holds is written, and what differs then shows as uncommitted. A fresh
+# machine clones it by hand first: the profiles this script reads live there.
+# Uncommitted or unpushed config is DIFFERS, an attention line in status, so
+# an edit lands in git. repo-sync never lists the clone: it is no ~/repos path.
+config_clone() {
+  cc_root=$SYSTEM_TOOLS_CONFIG
+  cc_remote=${MACHINE_SETUP_CONFIG_REMOTE:-}
+  if [ ! -e "$cc_root/.git" ]; then
+    [ -n "$cc_remote" ] || return 0
+    if [ "$APPLY" -ne 1 ]; then
+      echo "  MISSING config root $cc_root is no clone of $cc_remote; update repos --apply joins it"
+      return 0
+    fi
+    # After the mixed reset, ls-files -d lists the files the root lacks.
+    if run_ok git -C "$cc_root" init -q -b main \
+       && run_ok git -C "$cc_root" remote add origin "$cc_remote" \
+       && run_ok bound_step 120 git -C "$cc_root" fetch -q origin \
+       && run_ok git -C "$cc_root" reset -q origin/main \
+       && run_ok git -C "$cc_root" branch -q -u origin/main \
+       && run_ok sh -c 'git -C "$1" ls-files -d -z | xargs -0 git -C "$1" checkout-index -q --' sh "$cc_root"; then
+      echo "  JOINED  config root $cc_root to $cc_remote"
+    else
+      # A half join would read as a clone with everything uncommitted.
+      rm -rf "$cc_root/.git"
+      return 0
+    fi
+  fi
+  if ! cc_dirty=$(git -C "$cc_root" status --porcelain 2>/dev/null); then
+    echo "  FAILED  git status in config root $cc_root"
+    return 0
+  fi
+  cc_n=$(printf '%s' "$cc_dirty" | grep -c . || :)
+  cc_ahead=$(git -C "$cc_root" rev-list --count '@{u}..HEAD' 2>/dev/null) || cc_ahead=0
+  [ "$cc_n" -eq 0 ] || echo "  DIFFERS config root $cc_root has $cc_n uncommitted change(s); commit them there"
+  [ "$cc_ahead" -eq 0 ] || echo "  DIFFERS config root $cc_root has $cc_ahead unpushed commit(s); push them"
+  [ "$cc_n$cc_ahead" != 00 ] || echo "  ok      config root $cc_root committed"
+}
+
 local_blocks() {
   if ! rows=$("$SD_PACK_ROOT/bin/sd-db" repo list 2>/dev/null </dev/null); then
     echo "  SKIP    CLAUDE.local.md shared keys: sd-db repo list failed"
