@@ -126,4 +126,5 @@ These files load when you touch matching paths.
 | `local-bin-links` and the research kit | `.claude/rules/bin-links.md` |
 | macOS TCC under launchd | `.claude/rules/macos-tcc.md` |
 | The 02:xx cron slot needs a scheduled wake | `.claude/rules/cron-wake.md` |
+| A fix to an example cron job names its port | `.claude/rules/cron-examples.md` |
 | Jev switch, exit codes, test pins | `.claude/rules/jev.md` |

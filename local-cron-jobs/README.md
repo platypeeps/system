@@ -110,6 +110,10 @@ cp examples/health-check-nightly.job ~/.config/system/cron-jobs/jobs/
 ./cron-jobs.sh install health-check-nightly
 ```
 
+A copy does not follow later fixes to its example. A PR that changes an
+example names, in its body, the commit that ports the change to the
+installed copy, or says why none needs it (sd:9112).
+
 Job files are sourced by `cron-jobs.sh` wherever they live, so `$ROOT` (this
 folder) is available to them: `"$ROOT/../local-<tool>/<tool>.sh"` reaches a
 sibling tool from any checkout.
