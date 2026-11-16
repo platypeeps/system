@@ -12,10 +12,12 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 TRELLIS_HOME="${TRELLIS_HOME:-$HOME/.local/share/trellis-mac}"
 STAMP="$TRELLIS_HOME/.local-trellis-installed"
-# What the last finished install left in each checkout: `<path> <HEAD>
-# <hash of git diff HEAD>`. Its own patches (C++20, the rembg guard and
-# cast, setup.sh's MPS patches) are those diffs; any other diff is an edit
-# install did not make, and no pin moves over it.
+# What install itself wrote in each checkout: `<path> <HEAD> <hash of git
+# diff HEAD>`. Its own patches (C++20, the rembg guard and cast, setup.sh's
+# MPS patches) are those diffs; any other diff is an edit install did not
+# make, and no pin moves over it. Only a checkout that was trusted when the
+# run began (see trusted) is recorded again, so an operator edit never
+# enters the record and the old line stands.
 PATCHES="$TRELLIS_HOME/.local-trellis-patches"
 REMBG="TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py"
 # The guard the swap inserts at the top of BiRefNet.__init__: the pipeline's
@@ -133,33 +135,59 @@ changed_files() {
   git -C "$1" status --porcelain --untracked-files=no | cut -c4-
 }
 
-# Before any pin moves: each checkout whose pin moves must hold no tracked
-# change, or exactly what the last finished install left (PATCHES).
+# Whether install owns every tracked change in a checkout: none yet
+# cloned (no HEAD), no tracked change, or exactly its recorded line. A
+# failed read is not trusted: it proves nothing.
+trusted() { # path
+  tr_dest=$(dest_of "$1")
+  [ -n "$(head_of "$tr_dest")" ] || return 0
+  tr_files=$(changed_files "$tr_dest") || return 1
+  [ -n "$tr_files" ] || return 0
+  tr_was=$(awk -v p="$1" '$1 == p { print $2, $3 }' "$PATCHES" 2>/dev/null || :)
+  [ -n "$tr_was" ] && [ "$(fingerprint "$tr_dest")" = "$tr_was" ]
+}
+
+# The trusted checkouts at the start of this run, one path per line. Only
+# these are recorded again; set once, before any step writes.
+TRUSTED=""
+take_trusted() {
+  TRUSTED=$(pins | grep -v '^[[:space:]]*\(#\|$\)' | while read -r path url sha; do
+    if trusted "$path"; then echo "$path"; fi
+  done)
+}
+
+# Before any pin moves: each checkout whose pin moves must be trusted.
 # Anything else refuses the whole install, naming the files, and no pin
-# moves. A failed read refuses too: it proves nothing.
+# moves.
 refuse_edits() {
   re_bad=$(pins | grep -v '^[[:space:]]*\(#\|$\)' | while read -r path url sha; do
     re_dest=$(dest_of "$path")
     re_head=$(head_of "$re_dest")
     [ -n "$re_head" ] && [ "$re_head" != "$sha" ] || continue
-    if ! re_files=$(changed_files "$re_dest"); then
+    printf '%s\n' "$TRUSTED" | grep -qxF "$path" && continue
+    if re_files=$(changed_files "$re_dest"); then
+      printf '%s\n' "$re_files" | sed "s|^|$path: |"
+    else
       echo "$path: git status failed"
-      continue
     fi
-    [ -n "$re_files" ] || continue
-    re_was=$(awk -v p="$path" '$1 == p { print $2, $3 }' "$PATCHES" 2>/dev/null || :)
-    [ -n "$re_was" ] && [ "$(fingerprint "$re_dest")" = "$re_was" ] && continue
-    printf '%s\n' "$re_files" | sed "s|^|$path: |"
   done)
   [ -z "$re_bad" ] && return 0
   printf '%s\n' "$re_bad" | sed 's/^/trellis.sh: edit install did not make: /' >&2
   die "no pin moved; commit, stash or revert those edits, then rerun install"
 }
 
-# Record what this finished install left in each checkout.
+# Record the trusted checkouts as they are now; every other line keeps
+# its old value. Runs when install exits, on success or failure, so the
+# C++20 edits of a run that failed in setup.sh are recorded as its own.
 record_patches() {
+  [ -d "$TRELLIS_HOME" ] || return 0
   pins | grep -v '^[[:space:]]*\(#\|$\)' | while read -r path url sha; do
-    printf '%s %s\n' "$path" "$(fingerprint "$(dest_of "$path")")"
+    if printf '%s\n' "$TRUSTED" | grep -qxF "$path"; then
+      rp_fp=$(fingerprint "$(dest_of "$path")")
+      case "$rp_fp" in " "*) ;; *) printf '%s %s\n' "$path" "$rp_fp" ;; esac
+    else
+      awk -v p="$path" '$1 == p' "$PATCHES" 2>/dev/null || :
+    fi
   done > "$PATCHES.tmp"
   mv "$PATCHES.tmp" "$PATCHES"
 }
@@ -361,11 +389,13 @@ cmd_install() {
   refuse_volume
   token_from_env
   cache_from_root || :
+  take_trusted
+  trap 'record_patches' EXIT
+  trap 'exit 1' INT TERM
   if finished; then
     echo "ok      setup finished at these pins"
     ensure_einops
     swap_rembg
-    record_patches
     manual_steps
     return
   fi
@@ -383,7 +413,6 @@ cmd_install() {
   (cd "$TRELLIS_HOME" && bash ./setup.sh) || die "setup.sh failed; rerun install"
   ensure_einops
   swap_rembg
-  record_patches
   pins > "$STAMP"
   manual_steps
 }

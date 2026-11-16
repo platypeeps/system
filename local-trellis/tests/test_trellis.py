@@ -421,6 +421,34 @@ class Trellis(unittest.TestCase):
         self.assertEqual(self.head("deps/mtlgemm"), self.pins["deps/mtlgemm"])
         self.assertEqual((self.dest / "generate.py").read_text(), "# operator fix\n")
 
+    def test_a_rerun_does_not_record_an_operator_edit_as_a_patch(self):
+        """Lane review repro: the finished path, then the full path."""
+        self.install()
+        (self.dest / "generate.py").write_text("# operator fix\n")
+        self.install()
+        self.pins["deps/mtlgemm"] = git("rev-parse", "HEAD", cwd=self.upstream("deps/mtlgemm"))
+        self.write_pins()
+        self.install()
+        self.pins["."] = git("rev-parse", "HEAD", cwd=self.upstream("."))
+        self.write_pins()
+        r = self.run_sh("install")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("generate.py", r.stderr)
+        self.assertEqual((self.dest / "generate.py").read_text(), "# operator fix\n")
+        self.assertNotEqual(self.head("."), self.pins["."])
+
+    def test_a_pin_moves_after_an_install_that_failed_in_setup(self):
+        r = self.run_sh("install", FAKE_SETUP_FAIL="1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("-std=c++20", (self.dest / "deps/mtlgemm/setup.py").read_text())
+        self.pins["deps/mtlgemm"] = commit_change(
+            self.upstream("deps/mtlgemm"), "setup.py", 'extra_compile_args = ["-std=c++17", "-O3"]\n')
+        self.write_pins()
+        self.install()
+        self.assertEqual(self.head("deps/mtlgemm"), self.pins["deps/mtlgemm"])
+        self.assertEqual((self.dest / "deps/mtlgemm/setup.py").read_text(),
+                         'extra_compile_args = ["-std=c++20", "-O3"]\n')
+
     def test_a_first_install_over_operator_files_keeps_them(self):
         self.dest.mkdir(parents=True)
         (self.dest / "generate.py").write_text("# operator copy\n")
