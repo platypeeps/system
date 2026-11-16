@@ -255,6 +255,7 @@ crash_report() { # <file>
   _t=$(printf '%s\n' "$_h" | sed -En 's/.*"bug_type"[[:space:]]*:[[:space:]]*"?([0-9]+).*/\1/p')
   [ -z "$_t" ] || [ "$_t" = 309 ] || [ "$_t" = 109 ]
 }
+DISPATCH_RE=$(printf '%s' "$LABEL_PREFIX.cron.build-dispatch" | sed 's/[][\\.*^$+?(){}|]/\\&/g')
 for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   [ -d "$d" ] || continue
   find "$d" -maxdepth 1 -name '*.panic' 2>/dev/null | while read -r p; do
@@ -267,12 +268,17 @@ for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   # library is that defect, not an app crash (sd:6729): it gets its own line.
   # A test binary that aborts under cargo-nextest or cargo is a failed test
   # the test run reports (sd:8767): a note with its count, no finding.
+  # Its parent may have exited first ("Exited process"): a <crate>-<16 hex>
+  # binary in the build-dispatch job's coalition is one too (sd:9088).
   find "$d" -maxdepth 1 -name '*.ips' ! -name 'JetsamEvent*' 2>/dev/null | while read -r p; do
     recent_report "$p" "$CUT_DAY" 1 && crash_report "$p" || continue
     _to=crashes
     ! grep -Eq '"parentProc"[[:space:]]*:[[:space:]]*"codex"' "$p" || ! grep -q '(blocked by sandbox)' "$p" || _to=codex-sandbox
     ! grep -Eq '"parentProc"[[:space:]]*:[[:space:]]*"cargo(-nextest)?"' "$p" || _to=cargo-tests
-    basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//; s/-[0-9][0-9]*\(\.[A-Za-z0-9_]*\)$/\1/' >> "$TMPD/$_to"
+    _n=$(basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//; s/-[0-9][0-9]*\(\.[A-Za-z0-9_]*\)$/\1/')
+    ! printf '%s\n' "$_n" | grep -Eq -- '-[0-9a-f]{16}$' ||
+      ! grep -Eq "\"coalitionName\"[[:space:]]*:[[:space:]]*\"$DISPATCH_RE\"" "$p" || _to=cargo-tests
+    printf '%s\n' "$_n" >> "$TMPD/$_to"
   done
 done
 if [ -s "$TMPD/panics" ]; then

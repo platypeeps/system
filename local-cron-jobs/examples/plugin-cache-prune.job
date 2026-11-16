@@ -1,0 +1,13 @@
+# Weekly eviction of superseded Claude Code plugin versions. `claude plugin
+# update` clones each release into its own directory under
+# ~/.claude/plugins/cache and never removes the old one, node_modules and all;
+# `claude plugin prune` covers auto-installed dependency plugins, a different
+# thing, and reports "nothing to prune" against a cache full of them. Measured
+# 2026-09-03: 17 claude-mem versions at ~475M each, one of them installed,
+# 7.4G dead, accumulated in nine days.
+#
+# The keep-set is installed_plugins.json, not a version sort -- "newest" is not
+# "installed", and settings.json puts one live plugin's bin/ on PATH. The
+# subcommand refuses to run when that manifest lists nothing.
+JOB_SCHEDULE="30 4 * * 0"
+JOB_COMMAND="sh \"$ROOT/../local-claude/claude.sh\" prune-plugin-cache --apply"

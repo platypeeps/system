@@ -1,0 +1,9 @@
+# Daily retention for Codex shell snapshots. Codex writes one
+# ~/.codex/shell_snapshots/<session>.sh per session: a dump of the login
+# shell's environment, exported API keys included, and deletes none.
+# secret-scan-weekly failed on them (2026-09-27). This deletes snapshots
+# older than a day; a live session keeps the one it sources.
+#
+# 04:41 is off the 02:xx slot (see the cron-wake rule) and after the 04:37 job.
+JOB_SCHEDULE="41 4 * * *"
+JOB_COMMAND="find \"$HOME/.codex/shell_snapshots\" -type f -name '*.sh' -mtime +0 -print -delete"

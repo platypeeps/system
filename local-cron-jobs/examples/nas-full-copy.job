@@ -1,0 +1,11 @@
+# Nightly additive copy of /Volumes/local to the NAS share,
+# 23:00 to 05:00. The script stops rsync at 05:00; the next night continues.
+# It files a `NAS Full Copy` brief on Today when a run completes and the NAS holds every source file.
+# A missing volume or an rsync error exits 1: the run's report asks for a person.
+# This Mac only: both volumes are mounted here.
+JOB_SCHEDULE="0 23 * * *"
+JOB_COMMAND="sh \"$ROOT/../local-mirror-sync/nas-full-copy.sh\" run"
+# The script bounds itself to 05:00 plus a 2 min kill grace (up to 6 h 2 min);
+# the wrapper's 2 h default killed the 2026-10-02 run at 01:00. The fall-back
+# night runs 7 h (23:00 MDT to 05:00 MST); 370m killed it on 2026-11-01.
+JOB_TIMEOUT=430m

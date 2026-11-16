@@ -1,0 +1,21 @@
+# Nightly copy of this config folder (~/.config/system) to the USB
+# backup disk, as a dated tarball in "/Volumes/local/Backup Local/system-config".
+#
+# The folder holds the private half of the system repo: job definitions, repo
+# lists, mirror targets and .env files. It has no git history, so this job is
+# its only backup. nas-full-copy carries all of /Volumes/local, these tarballs
+# included, to the NAS. "Backup Local" is not in mirrors.conf, so the .env
+# secrets stay out of iCloud (operator ruling 2026-10-08; /Volumes/local/Backup
+# is mirrored to iCloud).
+#
+# The mount is checked first: with the disk detached, /Volumes/local is an
+# ordinary folder on the boot disk, and a tarball written there is not a
+# backup. The check compares device ids and fails the job when they match.
+# The tarball is written to a temp name and renamed, so a reader never sees a
+# partial file. Tarballs older than 90 days are pruned on the USB disk; the NAS
+# copy is additive and keeps them.
+#
+# The tarballs contain .env secrets. The USB disk is mounted noowners, so the
+# 0700 mode of this folder does not protect them there.
+JOB_SCHEDULE="5 2 * * *"
+JOB_COMMAND='D="/Volumes/local/Backup Local/system-config"; if [ "$(stat -f %d /Volumes/local 2>/dev/null)" = "$(stat -f %d /)" ]; then echo "/Volumes/local is not mounted; refusing to write a backup to the boot disk" >&2; exit 1; fi; mkdir -p "$D" && T="$D/.partial-$$.tar.gz" && tar -czf "$T" -C "$HOME/.config" system && mv "$T" "$D/system-config-$(date +%Y-%m-%d).tar.gz" && find "$D" -name "system-config-*.tar.gz" -mtime +90 -delete && ls -l "$D/system-config-$(date +%Y-%m-%d).tar.gz"'
