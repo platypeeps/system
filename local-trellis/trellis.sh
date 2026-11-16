@@ -12,6 +12,11 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 TRELLIS_HOME="${TRELLIS_HOME:-$HOME/.local/share/trellis-mac}"
 STAMP="$TRELLIS_HOME/.local-trellis-installed"
+# What the last finished install left in each checkout: `<path> <HEAD>
+# <hash of git diff HEAD>`. Its own patches (C++20, the rembg guard and
+# cast, setup.sh's MPS patches) are those diffs; any other diff is an edit
+# install did not make, and no pin moves over it.
+PATCHES="$TRELLIS_HOME/.local-trellis-patches"
 REMBG="TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py"
 # The guard the swap inserts at the top of BiRefNet.__init__: the pipeline's
 # pipeline.json (microsoft/TRELLIS.2-4B) passes model_name briaai/RMBG-2.0,
@@ -117,9 +122,53 @@ refuse_volume() {
   fi
 }
 
+# A checkout's HEAD and the hash of its tracked changes.
+fingerprint() {
+  printf '%s %s\n' "$(head_of "$1")" \
+    "$(git -C "$1" diff --no-ext-diff --binary HEAD -- | git hash-object --stdin)"
+}
+
+# The tracked files a checkout changed, one per line.
+changed_files() {
+  git -C "$1" status --porcelain --untracked-files=no | cut -c4-
+}
+
+# Before any pin moves: each checkout whose pin moves must hold no tracked
+# change, or exactly what the last finished install left (PATCHES).
+# Anything else refuses the whole install, naming the files, and no pin
+# moves. A failed read refuses too: it proves nothing.
+refuse_edits() {
+  re_bad=$(pins | grep -v '^[[:space:]]*\(#\|$\)' | while read -r path url sha; do
+    re_dest=$(dest_of "$path")
+    re_head=$(head_of "$re_dest")
+    [ -n "$re_head" ] && [ "$re_head" != "$sha" ] || continue
+    if ! re_files=$(changed_files "$re_dest"); then
+      echo "$path: git status failed"
+      continue
+    fi
+    [ -n "$re_files" ] || continue
+    re_was=$(awk -v p="$path" '$1 == p { print $2, $3 }' "$PATCHES" 2>/dev/null || :)
+    [ -n "$re_was" ] && [ "$(fingerprint "$re_dest")" = "$re_was" ] && continue
+    printf '%s\n' "$re_files" | sed "s|^|$path: |"
+  done)
+  [ -z "$re_bad" ] && return 0
+  printf '%s\n' "$re_bad" | sed 's/^/trellis.sh: edit install did not make: /' >&2
+  die "no pin moved; commit, stash or revert those edits, then rerun install"
+}
+
+# Record what this finished install left in each checkout.
+record_patches() {
+  pins | grep -v '^[[:space:]]*\(#\|$\)' | while read -r path url sha; do
+    printf '%s %s\n' "$path" "$(fingerprint "$(dest_of "$path")")"
+  done > "$PATCHES.tmp"
+  mv "$PATCHES.tmp" "$PATCHES"
+}
+
 # Bring one checkout to its pin: clone it when absent, fetch and check out
-# the pin when HEAD differs. --force: setup.sh patches TRELLIS.2 in place,
-# and reruns those patches after a move.
+# the pin when HEAD differs. refuse_edits has passed, so a tracked change
+# here is the installer's own patch: reset drops it, and install applies
+# it again. The checkout runs without --force, so git refuses to replace
+# an untracked file in the way.
 checkout_pin() { # path url commit
   cp_dest=$(dest_of "$1")
   if [ ! -e "$cp_dest/.git" ]; then
@@ -129,9 +178,12 @@ checkout_pin() { # path url commit
     mkdir -p "$cp_dest"
     git -C "$cp_dest" init -q
   fi
-  if git -C "$cp_dest" remote get-url origin >/dev/null 2>&1; then
-    [ "$(git -C "$cp_dest" remote get-url origin)" = "$2" ] ||
+  if cp_was=$(git -C "$cp_dest" remote get-url origin 2>/dev/null); then
+    if [ "$cp_was" != "$2" ]; then
+      # Named, so an origin set by hand can be set back.
+      echo "origin  $1 was $cp_was, now $2"
       git -C "$cp_dest" remote set-url origin "$2"
+    fi
   else
     git -C "$cp_dest" remote add origin "$2"
   fi
@@ -141,7 +193,9 @@ checkout_pin() { # path url commit
   fi
   echo "fetch   $1 at $3"
   git -C "$cp_dest" fetch -q --depth 1 origin "$3"
-  git -C "$cp_dest" checkout -q --force --detach FETCH_HEAD
+  [ -z "$(head_of "$cp_dest")" ] || git -C "$cp_dest" reset -q --hard HEAD
+  git -C "$cp_dest" checkout -q --detach FETCH_HEAD ||
+    die "$1: git would not check out $3 (an untracked file in the way?); nothing was removed"
   [ "$(head_of "$cp_dest")" = "$3" ] || die "$1 did not reach $3"
 }
 
@@ -311,11 +365,13 @@ cmd_install() {
     echo "ok      setup finished at these pins"
     ensure_einops
     swap_rembg
+    record_patches
     manual_steps
     return
   fi
   # The stamp goes first: a run stopped at any later step reads as
   # unfinished in status until a rerun gets through every step.
+  refuse_edits
   rm -f "$STAMP"
   pins | grep -v '^[[:space:]]*\(#\|$\)' | while read -r path url sha; do
     checkout_pin "$path" "$url" "$sha"
@@ -327,6 +383,7 @@ cmd_install() {
   (cd "$TRELLIS_HOME" && bash ./setup.sh) || die "setup.sh failed; rerun install"
   ensure_einops
   swap_rembg
+  record_patches
   pins > "$STAMP"
   manual_steps
 }

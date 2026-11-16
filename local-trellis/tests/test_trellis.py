@@ -63,6 +63,7 @@ for f in %s; do
 done
 [ -f %s/README ] || { echo "o-voxel: eigen is missing" >&2; exit 1; }
 [ -z "$FAKE_SETUP_FAIL" ] || { echo "setup failed" >&2; exit 1; }
+grep -q 'mps patched' TRELLIS.2/trellis2/attn.py || echo '# mps patched' >> TRELLIS.2/trellis2/attn.py
 mkdir -p .venv/bin
 cat > .venv/bin/python <<'PYFAKE'
 #!/bin/sh
@@ -109,6 +110,13 @@ def make_repo(path, files, submodule=None):
     return pin
 
 
+def commit_change(repo, name, text):
+    """A new commit in `repo` that writes `name`; returns it."""
+    (repo / name).write_text(text)
+    git("commit", "-q", "-am", "change " + name, cwd=repo)
+    return git("rev-parse", "HEAD", cwd=repo)
+
+
 def default_pins():
     """The pin lines the script carries, as (path, url, commit)."""
     text = SCRIPT.read_text()
@@ -147,7 +155,8 @@ class Trellis(unittest.TestCase):
         for d in GUARDED:
             files, sub = {"README": d + "\n"}, None
             if d == "TRELLIS.2":
-                files = {"trellis2/pipelines/rembg/BiRefNet.py": BIREFNET}
+                files = {"trellis2/pipelines/rembg/BiRefNet.py": BIREFNET,
+                         "trellis2/attn.py": "attn = 'flash'\n"}
             for f in CXX:
                 if f.startswith(d + "/"):
                     files[f[len(d) + 1:]] = 'extra_compile_args = ["-std=c++17", "-O2"]\n'
@@ -337,6 +346,104 @@ class Trellis(unittest.TestCase):
         r = self.run_sh("install", FAKE_UV_FAIL="1")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("einops", r.stderr)
+
+    # -- edits in a checkout whose pin moves (sd:9000 lane review)
+
+    def upstream(self, d):
+        return self.base / "upstream" / ("trellis-mac" if d == "." else d.replace("/", "_"))
+
+    def test_a_pin_moves_over_the_installers_own_patches_and_reapplies_them(self):
+        self.install()
+        self.pins["deps/mtlgemm"] = commit_change(
+            self.upstream("deps/mtlgemm"), "setup.py", 'extra_compile_args = ["-std=c++17", "-O3"]\n')
+        self.pins["TRELLIS.2"] = commit_change(
+            self.upstream("TRELLIS.2"), "trellis2/pipelines/rembg/BiRefNet.py",
+            BIREFNET + "    # upstream change\n")
+        self.write_pins()
+        r = self.install()
+        self.assertIn("fake setup done", r.stdout)
+        for d in ("deps/mtlgemm", "TRELLIS.2"):
+            self.assertEqual(self.head(d), self.pins[d], d)
+        self.assertEqual((self.dest / "deps/mtlgemm/setup.py").read_text(),
+                         'extra_compile_args = ["-std=c++20", "-O3"]\n')
+        src = (self.dest / "TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py").read_text()
+        self.assertIn("# upstream change", src)
+        self.assertEqual(src.count('if model_name == "briaai/RMBG-2.0":'), 1, src)
+        self.assertEqual(src.count("self.model.float()"), 1, src)
+        self.assertEqual((self.dest / "TRELLIS.2/trellis2/attn.py").read_text().count("mps patched"), 1)
+        self.assertEqual(self.run_sh("status").returncode, 0)
+
+    def test_an_edit_install_did_not_make_refuses_and_moves_no_pin(self):
+        self.install()
+        before = {d: self.head(d) for d in self.pins}
+        (self.dest / "generate.py").write_text("# operator fix\n")
+        f = self.dest / "TRELLIS.2/trellis2/attn.py"
+        f.write_text(f.read_text() + "# operator tweak\n")
+        self.pins["."] = git("rev-parse", "HEAD", cwd=self.upstream("."))
+        self.pins["TRELLIS.2"] = git("rev-parse", "HEAD", cwd=self.upstream("TRELLIS.2"))
+        self.pins["deps/mtlgemm"] = git("rev-parse", "HEAD", cwd=self.upstream("deps/mtlgemm"))
+        self.write_pins()
+        r = self.run_sh("install")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("generate.py", r.stderr)
+        self.assertIn("trellis2/attn.py", r.stderr)
+        self.assertEqual({d: self.head(d) for d in before}, before)
+        self.assertEqual((self.dest / "generate.py").read_text(), "# operator fix\n")
+        self.assertIn("# operator tweak", f.read_text())
+
+    def test_an_edit_on_top_of_a_known_patch_refuses(self):
+        self.install()
+        f = self.dest / "deps/mtlgemm/setup.py"
+        f.write_text(f.read_text() + "# operator flag\n")
+        self.pins["deps/mtlgemm"] = git("rev-parse", "HEAD", cwd=self.upstream("deps/mtlgemm"))
+        self.write_pins()
+        r = self.run_sh("install")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("deps/mtlgemm", r.stderr)
+        self.assertIn("# operator flag", f.read_text())
+
+    def test_dirty_files_with_no_record_of_the_patches_refuse(self):
+        self.install()
+        (self.dest / ".local-trellis-patches").unlink()
+        self.pins["deps/mtlgemm"] = git("rev-parse", "HEAD", cwd=self.upstream("deps/mtlgemm"))
+        self.write_pins()
+        r = self.run_sh("install")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("setup.py", r.stderr)
+        self.assertIn("-std=c++20", (self.dest / "deps/mtlgemm/setup.py").read_text())
+
+    def test_an_edit_in_a_checkout_whose_pin_stays_is_left_alone(self):
+        self.install()
+        (self.dest / "generate.py").write_text("# operator fix\n")
+        self.pins["deps/mtlgemm"] = git("rev-parse", "HEAD", cwd=self.upstream("deps/mtlgemm"))
+        self.write_pins()
+        self.install()
+        self.assertEqual(self.head("deps/mtlgemm"), self.pins["deps/mtlgemm"])
+        self.assertEqual((self.dest / "generate.py").read_text(), "# operator fix\n")
+
+    def test_a_first_install_over_operator_files_keeps_them(self):
+        self.dest.mkdir(parents=True)
+        (self.dest / "generate.py").write_text("# operator copy\n")
+        r = self.run_sh("install")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual((self.dest / "generate.py").read_text(), "# operator copy\n")
+
+    def test_a_dependency_folder_that_is_no_checkout_is_kept(self):
+        d = self.dest / "deps/mtlbvh"
+        d.mkdir(parents=True)
+        (d / "local.txt").write_text("operator\n")
+        r = self.run_sh("install")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no git checkout", r.stderr)
+        self.assertEqual((d / "local.txt").read_text(), "operator\n")
+
+    def test_a_replaced_origin_is_named_so_it_can_be_restored(self):
+        self.install()
+        git("remote", "set-url", "origin", "https://example.test/fork.git", cwd=self.dest / "deps/mtlmesh")
+        r = self.install()
+        self.assertIn("https://example.test/fork.git", r.stdout)
+        self.assertEqual(git("remote", "get-url", "origin", cwd=self.dest / "deps/mtlmesh"),
+                         str(self.upstream("deps/mtlmesh")))
 
     # -- status
 

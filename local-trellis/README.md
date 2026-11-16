@@ -55,6 +55,15 @@ Rerun install at any time: it removes that record first, moves each
 checkout whose pin changed, and writes the record again only after every
 step passed. A stopped run reads as `setup not finished` in `status`.
 
+A pin moves only over changes install made itself. A finished install
+records each checkout's HEAD and the hash of its `git diff HEAD` in
+`.local-trellis-patches`: the C++20 edit, the rembg guard and cast, and
+`setup.sh`'s MPS patches. Before any pin moves, each checkout whose pin
+moves must be clean or match that record. Any other tracked change stops
+the install, naming each file, and no pin moves. A matching checkout is
+reset, moved and patched again. git never replaces an untracked file in
+the way, and a replaced `origin` URL is printed.
+
 ## Models and token at run time
 
 The model weights, about 15 GB, download on the first `generate` to
