@@ -985,6 +985,15 @@ stage_brew() {
     echo "  DIFFERS $f pinned"
     run bound_step 300 brew unpin "$f"
   done
+  # Rust comes from rustup alone (sd:7230). The rust formula's cargo in
+  # $BREW_PREFIX/bin shadows the keg-only rustup proxies in a login PATH,
+  # so cargo ignored rust-toolchain.toml and a gate ran the wrong clippy
+  # (sd:9058). A formula that depends on rust fails the uninstall: a step.
+  if printf '%s\n' "$formulae" | grep -qx rustup &&
+     printf '%s\n' "$formulae" | grep -qx rust; then
+    echo "  EXTRA   formula rust shadows rustup's cargo and rustc"
+    run bound_step 600 brew uninstall rust
+  fi
   python_firewall || :
   mosh_firewall
   tailscale_cli_link
