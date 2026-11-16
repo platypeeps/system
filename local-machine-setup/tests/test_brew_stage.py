@@ -41,7 +41,7 @@ LIB = FOLDER.parent / "lib"
 # replaces its answer.
 # $LEAVES is what `leaves --installed-on-request` prints. With
 # INSTALLS_STICK, `list --formula` also lists each formula installed.
-# INSTALL_RC fails an install after logging it; with INFO_RC_AFTER_INSTALL,
+# INSTALL_RC fails an install after logging it, UNINSTALL_RC an uninstall; with INFO_RC_AFTER_INSTALL,
 # brew info fails once an install was tried.
 # `install --dry-run NAME` would install NAME and $DEPS, or fails with
 # DRY_RC; `info --formula NAMES` heads each `(bottled)` unless $UNBOTTLED
@@ -99,6 +99,8 @@ case "$*" in
       esac
     done ;;
   "install --cask "*|"upgrade --formula") echo "$*" >> "$PINS" ;;
+  "uninstall "*) echo "$*" >> "$PINS"
+                 [ -z "$UNINSTALL_RC" ] || exit "$UNINSTALL_RC" ;;
   "install "*) echo "$*" >> "$PINS"
                [ -z "$INSTALL_SLEEP" ] || { sleep "$INSTALL_SLEEP"; echo "done $*" >> "$CALLS"; }
                [ -z "$INSTALL_RC" ] || exit "$INSTALL_RC" ;;
@@ -289,6 +291,31 @@ class BrewStageTest(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("python firewall", result.stdout + result.stderr)
+
+    def uninstalls(self):
+        text = self.pins.read_text() if self.pins.exists() else ""
+        return [line for line in text.splitlines() if line.startswith("uninstall ")]
+
+    def test_the_rust_formula_goes_when_rustup_is_installed(self):
+        """sd:9058: Homebrew rust's cargo in $BREW_PREFIX/bin shadowed the
+        rustup proxies, so cargo ignored rust-toolchain.toml and a gate ran
+        the wrong clippy. Rust comes from rustup alone (sd:7230)."""
+        dry = self.run_verb("update", "brew", formulae="rustup rust")
+        self.assertIn("EXTRA   formula rust shadows rustup's cargo and rustc", dry.stdout)
+        self.assertEqual(self.uninstalls(), [])
+        self.run_verb("update", "brew", "--apply", formulae="rustup rust")
+        self.assertEqual(self.uninstalls(), ["uninstall rust"])
+
+    def test_the_rust_formula_stays_without_rustup(self):
+        result = self.run_verb("update", "brew", "--apply", formulae="rust")
+        self.assertNotIn("shadows rustup", result.stdout)
+        self.assertEqual(self.uninstalls(), [])
+
+    def test_a_failed_rust_uninstall_is_a_failed_step(self):
+        result = self.run_verb("update", "brew", "--apply", formulae="rustup rust",
+                               UNINSTALL_RC="1")
+        self.assertIn("FAILED  brew uninstall rust (exit 1)", result.stdout)
+        self.assertNotEqual(result.returncode, 0)
 
     def tailscale_profile(self, brew="", cask="tailscale-app\n"):
         profiles = self.config_root / "machine-setup/profiles"
