@@ -9748,6 +9748,9 @@ environment:
                           (sd:8242); unset turns the stage off
   MACHINE_SETUP_BULK_LOCAL  bulkmove: the local folder (default ~/repo-storage)
   MACHINE_SETUP_BULK_COPY_SECS  bulkmove: each copy's bound (default 21600)
+  MACHINE_SETUP_CONFIG_REMOTE  repos: the private repository the config
+                          folder is a clone of; --apply joins a folder that
+                          is no clone yet (sd:9091); unset turns the join off
   SD_LANE_ROOT            bulkmove: the lane root it keeps outside the
                           local folder (default sd.lane_root)
   SD_PACK_ROOT            the command pack checkout
