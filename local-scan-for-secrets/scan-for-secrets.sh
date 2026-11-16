@@ -1448,6 +1448,38 @@ fi
 # The Hugging Face match ends with its boundary character; the value is the
 # 37 before it. Bytes, since that character may be a multibyte one.
 OUT=$(printf '%s\n' "$OUT" | LC_ALL=C sed "s/\(${US}hf_[A-Za-z0-9]\{34\}\)[^A-Za-z0-9].*\$/\1/")
+# A match inside a base64 data: URI is encoded bytes, not a key: an ASIA
+# pattern matched JPEG data in a dashboard HTML (sd:9066). s4s_in_data_uri
+# reads the hit's line again and passes only when every occurrence of the
+# value sits in a `data:<type>[;param]*;base64,` payload, one unbroken run of
+# base64 characters. The same value anywhere else on the line keeps the hit,
+# and so does a line it cannot read.
+s4s_in_data_uri() { # hit
+  d_path=${1%%"$US"*}; d_rest=${1#*"$US"}; d_line=${d_rest%%"$US"*}; d_match=${d_rest#*"$US"}
+  case $d_line in ''|*[!0-9]*) return 1 ;; esac
+  { printf '%s\n' "$d_match"; sed -n "${d_line}{p;q;}" < "$d_path"; } 2>/dev/null | LC_ALL=C awk '
+    NR == 1 { v = $0; next }
+    NR == 2 {
+      line = $0; from = 0
+      if (v !~ /^[A-Za-z0-9+\/=]+$/) { bad = 1; next }
+      while ((i = index(substr(line, from + 1), v)) > 0) {
+        at = from + i; seen = 1
+        # The last ;base64, before the value, found by index: a per-character
+        # walk back over a payload took seconds a line.
+        b = 0; while ((j = index(substr(line, b + 1, at - b - 1), ";base64,")) > 0) b += j
+        if (!b || substr(line, b + 8, at - b - 8) !~ /^[A-Za-z0-9+\/=]*$/ ||
+            substr(line, b > 200 ? b - 200 : 1, b > 200 ? 200 : b - 1) !~ /data:[A-Za-z0-9.+\/-]*(;[A-Za-z0-9.+=_-]*)*$/) bad = 1
+        from = at
+      }
+    }
+    END { exit !(seen && !bad) }'
+}
+if [ -n "$OUT" ]; then
+  OUT=$(printf '%s\n' "$OUT" | while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    s4s_in_data_uri "$hit" || printf '%s\n' "$hit"
+  done)
+fi
 # Known-fake fixtures: AWS docs example keys, and URL matches whose password
 # is a placeholder (${VAR}, <name>) or an obvious dev value. Matches end at
 # the "@" because rg/grep run with -o, hence the "@$" anchors.
