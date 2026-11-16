@@ -33,25 +33,40 @@ class BiRefNet:
         )
 '''
 
-FAKE_SETUP = '''#!/bin/sh
+# The setup.py files whose -std=c++17 torch 2.15 refuses (C++20 or later).
+CXX = ["deps/mtlbvh/setup.py", "deps/mtldiffrast/setup.py", "deps/mtlmesh/setup.py",
+       "deps/mtlgemm/setup.py", "deps/trellis2-apple/o-voxel/setup.py"]
+EIGEN = "deps/trellis2-apple/o-voxel/third_party/eigen"
+
+FAKE_SETUP = """#!/bin/sh
 set -e
 cd "$(dirname "$0")"
 for d in %s; do
-  [ -d "$d/.git" ] || { echo "setup.sh would clone $d at its tip" >&2; exit 1; }
+  [ -e "$d/.git" ] || { echo "setup.sh would clone $d at its tip" >&2; exit 1; }
 done
+for f in %s; do
+  if grep -q 'std=c++17' "$f" || ! grep -q 'std=c++20' "$f"; then
+    echo "$f: #error C++20 or later compatible compiler is required to use PyTorch" >&2; exit 1
+  fi
+done
+[ -f %s/README ] || { echo "o-voxel: eigen is missing" >&2; exit 1; }
 [ -z "$FAKE_SETUP_FAIL" ] || { echo "setup failed" >&2; exit 1; }
 mkdir -p .venv/bin
-cat > .venv/bin/python <<'EOF'
+cat > .venv/bin/python <<'PYFAKE'
 #!/bin/sh
+printf 'HF_TOKEN=%%s HF_HUB_CACHE=%%s\\n' "${HF_TOKEN:+set}" "$HF_HUB_CACHE" >> "$FAKE_ENV_LOG"
 if [ "$1" = -c ]; then
-  case "${FAKE_HF:-yes}" in yes|no) echo "$FAKE_HF" | sed 's/^$/yes/' ;; *) exit 1 ;; esac
+  hf=${FAKE_HF:-yes}
+  if [ "$hf" = env ]; then if [ -n "$HF_TOKEN" ]; then hf=yes; else hf=no; fi; fi
+  case "$hf" in yes|no) echo "token $hf" ;; *) exit 1 ;; esac
+  [ "$hf" = no ] || echo "gate ${FAKE_GATE:-ok}"
   exit 0
 fi
 printf '%%s\\n' "$*" > "$FAKE_LOG"
-EOF
+PYFAKE
 chmod +x .venv/bin/python
 echo "fake setup done"
-''' % " ".join(GUARDED)
+""" % (" ".join(GUARDED), " ".join(CXX), EIGEN)
 
 
 def git(*args, cwd=None):
@@ -59,8 +74,9 @@ def git(*args, cwd=None):
                           text=True).stdout.strip()
 
 
-def make_repo(path, files):
-    """A repository whose first commit holds `files`; returns that commit."""
+def make_repo(path, files, submodule=None):
+    """A repository whose first commit holds `files`, and `submodule`
+    (url, path) when given; returns that commit."""
     path.mkdir(parents=True)
     git("init", "-q", cwd=path)
     git("config", "user.email", "test@example.test", cwd=path)
@@ -69,6 +85,8 @@ def make_repo(path, files):
         f = path / name
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(text)
+    if submodule:
+        git("-c", "protocol.file.allow=always", "submodule", "add", "-q", *submodule, cwd=path)
     git("add", "-A", cwd=path)
     git("commit", "-q", "-m", "pin", cwd=path)
     pin = git("rev-parse", "HEAD", cwd=path)
@@ -93,13 +111,23 @@ class Trellis(unittest.TestCase):
         self.home.mkdir()
         self.dest = self.home / ".local/share/trellis-mac"
         self.log = self.base / "generate.log"
+        self.env_log = self.base / "python-env.log"
+        self.cache = self.base / "hub"
+        self.env_file = self.base / "env.sh"
         up = self.base / "upstream"
         self.pins = {".": make_repo(up / "trellis-mac", {"setup.sh": FAKE_SETUP,
                                                           "generate.py": "# fake\n"})}
+        make_repo(up / "eigen", {"README": "eigen\n"})
         for d in GUARDED:
-            files = ({"trellis2/pipelines/rembg/BiRefNet.py": BIREFNET}
-                     if d == "TRELLIS.2" else {"README": d + "\n"})
-            self.pins[d] = make_repo(up / d.replace("/", "_"), files)
+            files, sub = {"README": d + "\n"}, None
+            if d == "TRELLIS.2":
+                files = {"trellis2/pipelines/rembg/BiRefNet.py": BIREFNET}
+            for f in CXX:
+                if f.startswith(d + "/"):
+                    files[f[len(d) + 1:]] = 'extra_compile_args = ["-std=c++17", "-O2"]\n'
+            if d == "deps/trellis2-apple":
+                sub = (str(up / "eigen"), "o-voxel/third_party/eigen")
+            self.pins[d] = make_repo(up / d.replace("/", "_"), files, sub)
         self.pin_file = self.base / "pins"
         self.write_pins()
 
@@ -114,7 +142,13 @@ class Trellis(unittest.TestCase):
     def run_sh(self, *args, **env):
         e = {"HOME": str(self.home), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
              "TRELLIS_PINS": str(self.pin_file), "FAKE_LOG": str(self.log),
-             "LANG": "en_US.UTF-8", **env}
+             "FAKE_ENV_LOG": str(self.env_log), "HF_HUB_CACHE": str(self.cache),
+             "TRELLIS_ENV_FILE": str(self.env_file),
+             "SD_PACK_ROOT": str(self.base / "no-pack"), "LANG": "en_US.UTF-8",
+             # The fake trellis2-apple names its eigen submodule by a local path.
+             "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.file.allow",
+             "GIT_CONFIG_VALUE_0": "always", **env}
+        e = {k: v for k, v in e.items() if v is not None}
         return subprocess.run(["sh", str(SCRIPT), *args], env=e, capture_output=True,
                               text=True, stdin=subprocess.DEVNULL, cwd=self.base)
 
@@ -151,10 +185,31 @@ class Trellis(unittest.TestCase):
         self.install()
         self.install()
         src = (self.dest / "TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py").read_text()
-        self.assertEqual(src.count('model_name = "ZhengPeng7/BiRefNet"'), 1, src)
+        self.assertEqual(src.count('if model_name == "briaai/RMBG-2.0":'), 1, src)
         lines = src.splitlines()
         i = lines.index('    def __init__(self, model_name: str = "ZhengPeng7/BiRefNet"):')
-        self.assertTrue(lines[i + 1].strip().startswith('model_name = "ZhengPeng7/BiRefNet"'))
+        self.assertTrue(lines[i + 1].startswith('        if model_name == "briaai/RMBG-2.0":'))
+        self.assertEqual(lines[i + 2], '            model_name = "ZhengPeng7/BiRefNet"')
+
+    def test_a_hand_applied_guard_counts_as_swapped(self):
+        self.install()
+        f = self.dest / "TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py"
+        f.write_text(BIREFNET.replace(
+            '"ZhengPeng7/BiRefNet"):\n',
+            '"ZhengPeng7/BiRefNet"):\n        if model_name == "briaai/RMBG-2.0":\n'
+            '            model_name = "ZhengPeng7/BiRefNet"\n'))
+        r = self.run_sh("status")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.install()
+        self.assertEqual(f.read_text().count("briaai/RMBG-2.0"), 1)
+
+    def test_install_builds_with_cxx20_and_the_eigen_submodule(self):
+        self.install()
+        for f in CXX:
+            text = (self.dest / f).read_text()
+            self.assertIn("-std=c++20", text, f)
+            self.assertNotIn("-std=c++17", text, f)
+        self.assertTrue((self.dest / EIGEN / "README").exists())
 
     def test_install_of_a_finished_setup_runs_setup_sh_no_more(self):
         self.install()
@@ -269,6 +324,74 @@ class Trellis(unittest.TestCase):
         r = self.run_sh("status", FAKE_HF="crash")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertRegex(r.stdout, r"FAILED +Hugging Face token probe")
+
+    def test_status_reports_the_dinov3_licence_not_accepted(self):
+        self.install()
+        r = self.run_sh("status", FAKE_GATE="gated")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"DIFFERS +DINOv3 licence not accepted")
+        self.assertIn("dinov3-vitl16-pretrain-lvd1689m", r.stdout)
+
+    def test_a_failed_gate_probe_is_no_pass(self):
+        self.install()
+        r = self.run_sh("status", FAKE_GATE="error OSError")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"FAILED +DINOv3 licence probe")
+
+    def test_status_reports_an_unmounted_cache_volume(self):
+        self.install()
+        r = self.run_sh("status", HF_HUB_CACHE="/Volumes/sd-example-unmounted-9000/hub")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertRegex(r.stdout,
+                         r"MISSING +Hugging Face cache volume /Volumes/sd-example-unmounted-9000")
+
+    # -- the token and the cache at run time
+
+    def test_the_token_comes_from_the_env_file_and_is_written_nowhere(self):
+        self.env_file.write_text("# shell env\nexport HUGGING_FACE_API_KEY='hf_example9000'\n")
+        self.install(HF_TOKEN=None)
+        r = self.run_sh("status", FAKE_HF="env", HF_TOKEN=None)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("HF_TOKEN=set", self.env_log.read_text())
+        self.assertNotIn("hf_example9000", r.stdout + r.stderr)
+        found = subprocess.run(["grep", "-rl", "hf_example9000", str(self.home)],
+                               capture_output=True, text=True).stdout
+        self.assertEqual(found, "")
+
+    def test_no_token_anywhere_is_reported(self):
+        self.install(HF_TOKEN=None)
+        r = self.run_sh("status", FAKE_HF="env", HF_TOKEN=None)
+        self.assertRegex(r.stdout, r"DIFFERS +no Hugging Face token")
+
+    def fake_sd(self, body):
+        sd = self.base / "pack/bin/sd"
+        sd.parent.mkdir(parents=True)
+        sd.write_text("#!/bin/sh\n" + body)
+        sd.chmod(0o755)
+        return str(self.base / "pack")
+
+    def test_the_cache_defaults_to_the_bulk_storage_root(self):
+        pack = self.fake_sd(f'[ "$*" = "config get sd.bulk_storage_root" ] && echo {self.base}/bulk\n')
+        self.install()
+        r = self.run_sh("generate", "in.png", HF_HUB_CACHE=None, SD_PACK_ROOT=pack)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"HF_HUB_CACHE={self.base}/bulk/system/huggingface/hub",
+                      self.env_log.read_text().splitlines()[-1])
+
+    def test_an_unread_bulk_storage_root_stops_generate(self):
+        pack = self.fake_sd("exit 1\n")
+        self.install()
+        r = self.run_sh("generate", "in.png", HF_HUB_CACHE=None, SD_PACK_ROOT=pack)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("sd.bulk_storage_root", r.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_generate_refuses_an_unmounted_cache_volume(self):
+        self.install()
+        r = self.run_sh("generate", "in.png", HF_HUB_CACHE="/Volumes/sd-example-unmounted-9000/hub")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not mounted", r.stderr)
+        self.assertFalse(self.log.exists())
 
     # -- generate
 

@@ -27,40 +27,61 @@ option through (`--seed`, `--pipeline-type`, `--texture-size`,
    `deps/mtldiffrast`, `deps/mtlmesh`, `deps/mtlgemm`,
    `deps/trellis2-apple` and `TRELLIS.2`. `setup.sh` clones them at their
    tip only when the folder is missing, so it skips all of them.
-3. Runs `setup.sh`: a Python 3.11 venv, PyPI packages, the Metal backends
+3. Prepares the Metal builds. `setup.sh` installs torch 2.15, which
+   needs C++20, and the five `setup.py` files of `mtlbvh`,
+   `mtldiffrast`, `mtlmesh`, `mtlgemm` and `trellis2-apple/o-voxel` pass
+   `-std=c++17`; install changes each to `-std=c++20`. It also fetches
+   `trellis2-apple`'s submodules (`o-voxel/third_party/eigen`), at the
+   commit the pin records.
+4. Runs `setup.sh`: a Python 3.11 venv, PyPI packages, the Metal backends
    and the MPS patches. The PyPI packages are not pinned; only git
    checkouts are.
-4. Swaps background removal. TRELLIS.2's `pipeline.json` on Hugging Face
+5. Swaps background removal. TRELLIS.2's `pipeline.json` on Hugging Face
    (`microsoft/TRELLIS.2-4B`) names `briaai/RMBG-2.0`, whose licence is
    non-commercial. Both pipelines build that model through one class,
-   `trellis2/pipelines/rembg/BiRefNet.py`, so install adds one line at the
-   top of its `__init__` that sets `model_name` to `ZhengPeng7/BiRefNet`
-   (MIT, the same architecture). A pin whose `BiRefNet.py` no longer has
-   that `__init__` fails the install instead of skipping the swap.
-5. Writes `.local-trellis-installed`, the pin list it finished with.
+   `trellis2/pipelines/rembg/BiRefNet.py`, so install adds a two-line
+   guard at the top of its `__init__` that maps `briaai/RMBG-2.0` to
+   `ZhengPeng7/BiRefNet` (MIT, the same architecture). A guard of that
+   shape added by hand counts as done. A pin whose `BiRefNet.py` no longer
+   has that `__init__` fails the install instead of skipping the swap.
+6. Writes `.local-trellis-installed`, the pin list it finished with.
 
 Rerun install at any time: it removes that record first, moves each
 checkout whose pin changed, and writes the record again only after every
 step passed. A stopped run reads as `setup not finished` in `status`.
 
-The model weights, about 15 GB, download to the Hugging Face cache on the
-first `generate`.
+## Models and token at run time
+
+The model weights, about 15 GB, download on the first `generate` to
+`HF_HUB_CACHE`. When it is unset, every run sets it to
+`<sd.bulk_storage_root>/system/huggingface/hub`, an ejectable SSD; the venv
+and the native builds stay on the system disk. Without `sd` the cache is
+Hugging Face's default. When `sd` does not answer, or the cache's
+`/Volumes` disk is not mounted, `generate` stops and `status` says so,
+instead of downloading to the system disk.
+
+When `HF_TOKEN` is empty, each run takes it from `HUGGING_FACE_API_KEY`,
+exported or assigned in `~/.config/shell/env.sh` (`TRELLIS_ENV_FILE`). The
+file is read, not sourced, and the token is written nowhere.
 
 ## Two manual steps
 
 The script stores no Hugging Face token. Once per machine:
 
-1. `hf auth login`
+1. `hf auth login`, unless `HUGGING_FACE_API_KEY` holds a token
 2. Accept the licence at
    https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m
 
-`status` reports a missing token; it cannot see the licence.
+`status` reports both: a missing token, and the licence when Hugging Face
+answers `GatedRepoError` for that repository.
 
 ## Status
 
-`status` prints `ok` or one line per gap: `MISSING` for no checkout or no
-venv, `DIFFERS` for a checkout off its pin, an unfinished setup, a rembg not
-swapped or no token, `FAILED` when the token probe itself fails. It exits 0
+`status` prints `ok` or one line per gap: `MISSING` for no checkout, no
+venv or an unmounted cache disk, `DIFFERS` for a checkout off its pin, an
+unfinished setup, a rembg not swapped, no token or the DINOv3 licence not
+accepted, `FAILED` when a probe itself fails: the token, the licence or
+`sd.bulk_storage_root`. It exits 0
 when all is in place, 3 when nothing is installed and 1 otherwise.
 `local-health-check` reads those codes.
 

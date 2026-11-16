@@ -4,19 +4,28 @@
 # dependencies at their tip, so this script clones each one first, at its
 # pin, and setup.sh's `[ ! -d ... ]` guards then skip them. The checkout
 # and its venv live on the system disk; the model weights (about 15 GB) go
-# to the Hugging Face cache. Background removal uses ZhengPeng7/BiRefNet
-# (MIT) in place of the pipeline's briaai/RMBG-2.0 (non-commercial).
+# to the Hugging Face cache under the bulk storage root, an ejectable SSD.
+# Background removal uses ZhengPeng7/BiRefNet (MIT) in place of the
+# pipeline's briaai/RMBG-2.0 (non-commercial).
 # Usage: trellis.sh install|status|generate <image> [--output path]|test|help
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 TRELLIS_HOME="${TRELLIS_HOME:-$HOME/.local/share/trellis-mac}"
 STAMP="$TRELLIS_HOME/.local-trellis-installed"
 REMBG="TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py"
-# The line the swap inserts at the top of BiRefNet.__init__: the pipeline's
+# The guard the swap inserts at the top of BiRefNet.__init__: the pipeline's
 # pipeline.json (microsoft/TRELLIS.2-4B) passes model_name briaai/RMBG-2.0,
 # and both pipelines build their rembg model through this one class.
-SWAP='        model_name = "ZhengPeng7/BiRefNet"  # local-trellis: MIT weights, not briaai/RMBG-2.0'
-DINO_URL="https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m"
+SWAP_IF='        if model_name == "briaai/RMBG-2.0":  # local-trellis: MIT weights'
+SWAP_SET='            model_name = "ZhengPeng7/BiRefNet"'
+DINO_REPO="facebook/dinov3-vitl16-pretrain-lvd1689m"
+DINO_URL="https://huggingface.co/$DINO_REPO"
+# torch 2.15, which setup.sh installs, needs C++20; these pass -std=c++17.
+CXX_FILES="deps/mtlbvh/setup.py deps/mtldiffrast/setup.py deps/mtlmesh/setup.py deps/mtlgemm/setup.py deps/trellis2-apple/o-voxel/setup.py"
+# o-voxel builds against this repository's eigen submodule.
+SUBMODULE_REPO="deps/trellis2-apple"
+TRELLIS_ENV_FILE="${TRELLIS_ENV_FILE:-$HOME/.config/shell/env.sh}"
+SD_BIN="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}/bin/sd"
 
 usage() {
   cat <<'HELPEOF'
@@ -24,13 +33,15 @@ usage: trellis.sh install|status|generate <image> [--output path]|test|help
 
   install    clone trellis-mac and every repository its setup.sh clones,
              each at its pinned commit, into TRELLIS_HOME; run setup.sh
-             (venv, Python packages, Metal backends, MPS patches); swap
+             (venv, Python packages, Metal backends built as C++20 with
+             o-voxel's eigen submodule, MPS patches); swap
              background removal to ZhengPeng7/BiRefNet. Safe to rerun: it
              moves a checkout whose pin changed and finishes a stopped run.
              Downloads several GB and builds native code.
   status     ok, or one MISSING/DIFFERS/FAILED line per gap: a checkout off
              its pin, no venv, setup not finished, rembg not swapped, no
-             Hugging Face token. Exits 0 when all is in place, 3 when
+             Hugging Face token, the DINOv3 licence not accepted, the model
+             cache disk not mounted. Exits 0 when all is in place, 3 when
              nothing is installed, 1 otherwise;
              local-health-check reads these codes.
   generate   generate <image> [--output path] [generate.py options]: run
@@ -40,7 +51,7 @@ usage: trellis.sh install|status|generate <image> [--output path]|test|help
              unittest (-v).
 
 Two steps stay manual, since this script stores no token:
-  hf auth login
+  hf auth login (or export HUGGING_FACE_API_KEY)
   accept the licence at https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m
 
 env:
@@ -48,6 +59,12 @@ env:
                  path under /Volumes is refused
   TRELLIS_PINS   a file of `<path> <url> <commit>` lines that replaces
                  the pins in this script (tests)
+  HF_HUB_CACHE   model cache; when unset, <sd.bulk_storage_root>/system/
+                 huggingface/hub, or Hugging Face's default without sd. A
+                 cache on an unmounted /Volumes disk stops generate.
+  HF_TOKEN       when empty, taken at run time from HUGGING_FACE_API_KEY,
+                 exported or in TRELLIS_ENV_FILE (default
+                 ~/.config/shell/env.sh); never written anywhere
   PYTHON         interpreter for `test` (default python3)
 HELPEOF
 }
@@ -123,21 +140,93 @@ checkout_pin() { # path url commit
   [ "$(head_of "$cp_dest")" = "$3" ] || die "$1 did not reach $3"
 }
 
-# Insert SWAP as the first line of BiRefNet.__init__, once.
+# Whether BiRefNet.py maps briaai/RMBG-2.0 to ZhengPeng7/BiRefNet: an `if`
+# on that name directly above SWAP_SET, whatever its comment, so a guard
+# applied by hand counts too.
+swapped() {
+  [ -f "$TRELLIS_HOME/$REMBG" ] || return 1
+  SWAP_SET="$SWAP_SET" awk '
+    prev ~ /^        if model_name == "briaai\/RMBG-2.0":/ && $0 == ENVIRON["SWAP_SET"] { found = 1 }
+    { prev = $0 }
+    END { exit !found }' "$TRELLIS_HOME/$REMBG"
+}
+
+# Insert the guard as the first lines of BiRefNet.__init__, once.
 swap_rembg() {
   sr_file="$TRELLIS_HOME/$REMBG"
   [ -f "$sr_file" ] || die "$REMBG is missing; the TRELLIS.2 pin no longer has the rembg hook"
-  if grep -qxF "$SWAP" "$sr_file"; then
+  if swapped; then
     echo "ok      rembg already ZhengPeng7/BiRefNet"
     return
   fi
   sr_n=$(grep -c '^    def __init__(self, model_name' "$sr_file" || :)
   [ "$sr_n" = 1 ] ||
     die "$REMBG has $sr_n 'def __init__(self, model_name' lines, not 1; the swap needs updating for this pin"
-  SWAP="$SWAP" awk '{ print } /^    def __init__\(self, model_name/ { print ENVIRON["SWAP"] }' \
+  SWAP_IF="$SWAP_IF" SWAP_SET="$SWAP_SET" awk '
+    { print }
+    /^    def __init__\(self, model_name/ { print ENVIRON["SWAP_IF"]; print ENVIRON["SWAP_SET"] }' \
     "$sr_file" > "$sr_file.tmp"
   mv "$sr_file.tmp" "$sr_file"
   echo "swap    rembg briaai/RMBG-2.0 -> ZhengPeng7/BiRefNet"
+}
+
+# Before setup.sh: C++20 for the Metal builds, and o-voxel's eigen. Both
+# are idempotent; a checkout that moved gets them again.
+prep_build() {
+  for pb_f in $CXX_FILES; do
+    [ -f "$TRELLIS_HOME/$pb_f" ] || die "$pb_f is missing; the pins need review"
+    sed 's/-std=c++17/-std=c++20/g' "$TRELLIS_HOME/$pb_f" > "$TRELLIS_HOME/$pb_f.tmp"
+    mv "$TRELLIS_HOME/$pb_f.tmp" "$TRELLIS_HOME/$pb_f"
+  done
+  echo "c++20   Metal builds"
+  git -C "$TRELLIS_HOME/$SUBMODULE_REPO" submodule update -q --init --depth 1
+  echo "ok      $SUBMODULE_REPO submodules"
+}
+
+# HF_TOKEN for this run when it is empty: HUGGING_FACE_API_KEY, exported or
+# read from its assignment in TRELLIS_ENV_FILE. The file is read, not
+# sourced, and a computed value (`$...`) is ignored. Nothing is written.
+token_from_env() {
+  [ -z "${HF_TOKEN:-}" ] || return 0
+  te_key="${HUGGING_FACE_API_KEY:-}"
+  if [ -z "$te_key" ] && [ -f "$TRELLIS_ENV_FILE" ]; then
+    te_key=$(sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}HUGGING_FACE_API_KEY=//p' \
+      "$TRELLIS_ENV_FILE" | tail -1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/")
+    case "$te_key" in *'$'*|*'`'*) te_key="" ;; esac
+  fi
+  [ -z "$te_key" ] || { HF_TOKEN="$te_key"; export HF_TOKEN; }
+}
+
+# HF_HUB_CACHE for this run when it is unset: the bulk storage root's
+# system/huggingface/hub. No sd here means no root, and Hugging Face's
+# default. An sd that fails to answer is unknown, never the default.
+# Sets WHY on failure.
+cache_from_root() {
+  [ -z "${HF_HUB_CACHE:-}" ] || return 0
+  [ -x "$SD_BIN" ] || return 0
+  cr_root=$("$SD_BIN" config get sd.bulk_storage_root </dev/null 2>/dev/null) || cr_root=""
+  if [ -z "$cr_root" ]; then
+    WHY="sd.bulk_storage_root did not read; set HF_HUB_CACHE or fix sd"
+    return 1
+  fi
+  HF_HUB_CACHE="$cr_root/system/huggingface/hub"
+  export HF_HUB_CACHE
+}
+
+# Fails, setting WHY, when HF_HUB_CACHE is on a /Volumes disk that is not
+# mounted: a download would land on the system disk under that path.
+cache_mounted() {
+  case "${HF_HUB_CACHE:-}" in
+    /Volumes/?*) ;;
+    *) return 0 ;;
+  esac
+  cm_vol="/Volumes/$(printf '%s\n' "${HF_HUB_CACHE#/Volumes/}" | cut -d/ -f1)"
+  if [ -d "$cm_vol" ] &&
+     [ "$(df -P "$cm_vol" 2>/dev/null | awk 'NR == 2 { print $NF }')" = "$cm_vol" ]; then
+    return 0
+  fi
+  WHY="Hugging Face cache volume $cm_vol is not mounted (HF_HUB_CACHE=$HF_HUB_CACHE)"
+  return 1
 }
 
 manual_steps() {
@@ -156,7 +245,7 @@ EOF
 finished() {
   [ -f "$STAMP" ] && pins | cmp -s - "$STAMP" || return 1
   [ -x "$TRELLIS_HOME/.venv/bin/python" ] || return 1
-  grep -qxF "$SWAP" "$TRELLIS_HOME/$REMBG" 2>/dev/null || return 1
+  swapped || return 1
   pins | grep -v '^[[:space:]]*\(#\|$\)' | while read -r path url sha; do
     [ "$(head_of "$(dest_of "$path")")" = "$sha" ] || return 1
     [ "$(git -C "$(dest_of "$path")" remote get-url origin 2>/dev/null)" = "$url" ] || return 1
@@ -165,6 +254,8 @@ finished() {
 
 cmd_install() {
   refuse_volume
+  token_from_env
+  cache_from_root || :
   if finished; then
     echo "ok      setup finished at these pins"
     manual_steps
@@ -179,11 +270,33 @@ cmd_install() {
   pins | grep -v '^[[:space:]]*\(#\|$\)' | while read -r path url sha; do
     [ "$(head_of "$(dest_of "$path")")" = "$sha" ] || die "$path is not at $sha"
   done
+  prep_build
   (cd "$TRELLIS_HOME" && bash ./setup.sh) || die "setup.sh failed; rerun install"
   swap_rembg
   pins > "$STAMP"
   manual_steps
 }
+
+# The token and DINOv3 gate probe, run in the venv: `token yes|no`, then
+# with a token `gate ok`, `gate gated` (GatedRepoError: licence not
+# accepted) or `gate error <exception>`.
+PROBE='
+import os
+from huggingface_hub import get_token
+token = get_token()
+print("token yes" if token else "token no")
+if token:
+    try:
+        from huggingface_hub import auth_check
+        from huggingface_hub.utils import GatedRepoError
+        try:
+            auth_check(os.environ["DINO_REPO"])
+            print("gate ok")
+        except GatedRepoError:
+            print("gate gated")
+    except Exception as e:
+        print("gate error " + type(e).__name__)
+'
 
 cmd_status() {
   if [ ! -e "$TRELLIS_HOME/.git" ]; then
@@ -209,18 +322,37 @@ cmd_status() {
     echo "DIFFERS setup not finished at these pins -- run: trellis.sh install"
     st_bad=1
   fi
-  if ! grep -qxF "$SWAP" "$TRELLIS_HOME/$REMBG" 2>/dev/null; then
+  if ! swapped; then
     echo "DIFFERS rembg is not swapped to ZhengPeng7/BiRefNet -- run: trellis.sh install"
+    st_bad=1
+  fi
+  token_from_env
+  if ! cache_from_root; then
+    echo "FAILED  $WHY"
+    st_bad=1
+  elif ! cache_mounted; then
+    echo "MISSING $WHY"
     st_bad=1
   fi
   if [ -x "$st_py" ]; then
     # A failed probe proves nothing either way, so it is FAILED, never ok.
-    st_tok=$("$st_py" -c 'from huggingface_hub import get_token; print("yes" if get_token() else "no")' \
-      </dev/null 2>/dev/null) || st_tok=failed
-    case "$st_tok" in
-      yes) ;;
-      no) echo "DIFFERS no Hugging Face token -- run: hf auth login"; st_bad=1 ;;
+    st_probe=$(DINO_REPO="$DINO_REPO" "$st_py" -c "$PROBE" </dev/null 2>/dev/null) || st_probe=failed
+    case "$st_probe" in
+      "token yes"*) ;;
+      "token no"*)
+        echo "DIFFERS no Hugging Face token -- run: hf auth login, or set HUGGING_FACE_API_KEY"
+        st_bad=1 ;;
       *) echo "FAILED  Hugging Face token probe in the venv"; st_bad=1 ;;
+    esac
+    case "$st_probe" in
+      "token no"*|failed) ;;
+      *"gate ok"*) ;;
+      *"gate gated"*)
+        echo "DIFFERS DINOv3 licence not accepted -- accept it at $DINO_URL"
+        st_bad=1 ;;
+      *)
+        echo "FAILED  DINOv3 licence probe ($(printf '%s\n' "$st_probe" | sed -n 's/^gate //p'))"
+        st_bad=1 ;;
     esac
   fi
   if [ "$st_bad" -ne 0 ]; then
@@ -233,6 +365,12 @@ cmd_generate() {
   [ "$#" -ge 1 ] || { usage >&2; exit 1; }
   [ -x "$TRELLIS_HOME/.venv/bin/python" ] ||
     die "no venv at $TRELLIS_HOME/.venv; run: trellis.sh install"
+  token_from_env
+  cache_from_root || die "$WHY"
+  cache_mounted || die "$WHY"
+  if [ -n "${HF_HUB_CACHE:-}" ]; then
+    mkdir -p "$HF_HUB_CACHE"
+  fi
   exec "$TRELLIS_HOME/.venv/bin/python" "$TRELLIS_HOME/generate.py" "$@"
 }
 
