@@ -1,0 +1,12 @@
+# Nightly convergence run: machine-setup.sh update --apply re-runs every
+# stage for the recorded profile and fixes what it can — installs missing
+# packages, refreshes files the repo moved ahead of (sha-recorded, .bak
+# kept), reloads unloaded launchd items. Runs after repo-sync-nightly
+# (02:45) so the checkout it runs from is current. Actions needing sudo
+# defer (no terminal here). The last step, status --fail-on-drift, pages for
+# whatever the update could not fix: a failure of either step fails the job
+# (exit 1 on drift, as machine-setup-drift did). Output in
+# logs/machine-setup-update-nightly.log.
+# Until machine-setup-drift is uninstalled, it still runs at 03:30 as well.
+JOB_SCHEDULE="15 3 * * *"
+JOB_COMMAND="rc=0; sh \"$ROOT/../local-machine-setup/machine-setup.sh\" update --apply || rc=\$?; sh \"$ROOT/../local-machine-setup/machine-setup.sh\" status --fail-on-drift || rc=\$?; exit \$rc"

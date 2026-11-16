@@ -1,0 +1,25 @@
+# Weekly audit of the 3D printing library's CATALOGUE.md against the disk
+# (`print` plugin, /Volumes/local/3DPrinter/Models). `--fix-counts` heals the
+# one class a script can settle on its own -- a Formats number that no longer
+# matches the files -- and the Notes column is never touched.
+#
+# A nonzero exit is the notification, and it means a finding a person has to
+# settle: a row whose folder is gone, or a model folder with no row. An
+# unmounted /Volumes/local exits nonzero too, which is the same signal for a
+# different reason, and the log says which.
+#
+# /usr/bin/python3 on purpose: the script is stdlib-only, and the system
+# interpreter is the one that is there whatever else a launchd environment
+# lacks. `sd` resolves through JOB_PATH, which cron-jobs.sh builds with
+# ~/bin/common and ~/.local/bin.
+#
+# The lock check rides along because nothing else runs it: edit sd-plugin.json
+# and sd-plugin.lock goes stale in silence. Both commands run whatever the
+# other does -- `&&` would let a catalogue finding hide a drifted pin -- and
+# the job exits nonzero if either did.
+JOB_SCHEDULE="0 9 * * 0"          # Sundays, 09:00
+JOB_COMMAND='rc=0; /usr/bin/python3 /Volumes/local/3DPrinter/Models/_scripts/audit_catalogue.py --fix-counts || rc=$?; sd plugin lock --check /Volumes/local/3DPrinter/Models || rc=$?; exit $rc'
+JOB_DIR="/Volumes/local/3DPrinter/Models"
+JOB_PROMPT=""
+JOB_MODEL=""
+JOB_CLAUDE_ARGS=""

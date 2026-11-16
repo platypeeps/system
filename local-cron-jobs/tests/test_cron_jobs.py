@@ -1249,6 +1249,21 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
         rows = [line.split()[0] for line in result.stdout.splitlines()[1:]]
         self.assertEqual(sorted(rows), sorted(e.stem for e in examples))
 
+    def test_the_system_and_workflow_jobs_are_tracked_examples(self):
+        # sd:9089: these lived only in the config folder, with no history.
+        # Each is tracked here, and none reaches into a checkout by a fixed
+        # path: $ROOT/.. is the checkout that installs it.
+        for name in ("kiss-audit-weekly", "machine-setup-update-nightly",
+                     "machine-setup-upgrade-weekly", "offsite-verify",
+                     "plugin-cache-prune", "codex-snapshot-prune",
+                     "claude-mem-log-prune", "repos-mirror",
+                     "system-config-backup", "night-build", "nas-full-copy",
+                     "model-catalogue-audit"):
+            with self.subTest(job=name):
+                path = FOLDER / "examples" / f"{name}.job"
+                self.assertTrue(path.is_file(), path)
+                self.assertNotIn("repos/system", path.read_text())
+
     def test_help_names_the_configuration(self):
         text = self.run_script("help").stdout
         for name in ("CRON_JOBS_EXTRA_DIRS", "SYSTEM_TOOLS_LABEL_PREFIX", "<config>/cron-jobs/jobs"):
