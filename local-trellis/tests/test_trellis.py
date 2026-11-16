@@ -64,10 +64,13 @@ done
 [ -f %s/README ] || { echo "o-voxel: eigen is missing" >&2; exit 1; }
 [ -z "$FAKE_SETUP_FAIL" ] || { echo "setup failed" >&2; exit 1; }
 grep -q 'mps patched' TRELLIS.2/trellis2/attn.py || echo '# mps patched' >> TRELLIS.2/trellis2/attn.py
+# The real setup.sh makes the venv only when .venv is absent.
+if [ ! -d .venv ]; then
 mkdir -p .venv/bin
 cat > .venv/bin/python <<'PYFAKE'
 #!/bin/sh
 printf 'HF_TOKEN=%%s HF_HUB_CACHE=%%s\\n' "${HF_TOKEN:+set}" "$HF_HUB_CACHE" >> "$FAKE_ENV_LOG"
+[ -z "$FAKE_TOKEN_LOG" ] || printf '%%s\\n' "$HF_TOKEN" > "$FAKE_TOKEN_LOG"
 if [ "$1" = -c ]; then
   if [ -f "$(dirname "$0")/../einops" ]; then e=yes; else e=no; fi
   if [ "$2" = "import einops" ]; then [ "$e" = yes ]; exit; fi
@@ -81,13 +84,17 @@ fi
 printf '%%s\\n' "$*" > "$FAKE_LOG"
 PYFAKE
 chmod +x .venv/bin/python
+fi
 echo "fake setup done"
 """ % (" ".join(GUARDED), " ".join(CXX), EIGEN)
 
 
 def git(*args, cwd=None):
+    """git with no global or system config: the operator's settings
+    (signing, hooks, default branch) must not change a fixture."""
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
-                          text=True).stdout.strip()
+                          text=True, env=env).stdout.strip()
 
 
 def make_repo(path, files, submodule=None):
@@ -182,6 +189,7 @@ class Trellis(unittest.TestCase):
              "FAKE_ENV_LOG": str(self.env_log), "HF_HUB_CACHE": str(self.cache),
              "TRELLIS_ENV_FILE": str(self.env_file),
              "SD_PACK_ROOT": str(self.base / "no-pack"), "LANG": "en_US.UTF-8",
+             "GIT_CONFIG_NOSYSTEM": "1",
              # The fake trellis2-apple names its eigen submodule by a local path.
              "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.file.allow",
              "GIT_CONFIG_VALUE_0": "always", **env}
@@ -496,11 +504,7 @@ class Trellis(unittest.TestCase):
 
     def test_status_names_a_checkout_whose_pin_moved(self):
         self.install()
-        subprocess.run(["git", "-C", str(self.dest / "deps/mtlmesh"), "commit", "-q",
-                        "--allow-empty", "-m", "local", "--no-verify"],
-                       env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.test",
-                            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.test"},
-                       check=True)
+        self.local_commit("deps/mtlmesh")
         r = self.run_sh("status")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertRegex(r.stdout, r"DIFFERS +deps/mtlmesh .*pinned " + self.pins["deps/mtlmesh"])
@@ -621,6 +625,82 @@ class Trellis(unittest.TestCase):
         r = self.run_sh("generate", "in.png")
         self.assertEqual(r.returncode, 1)
         self.assertIn("trellis.sh install", r.stderr)
+
+    # -- review advisories (sd:9001)
+
+    def local_commit(self, d):
+        git("-c", "user.name=operator", "-c", "user.email=operator@example.test",
+            "commit", "-q", "--allow-empty", "--no-verify", "-m", "local", cwd=self.dest / d)
+        return self.head(d)
+
+    def test_fixture_git_ignores_a_global_config_that_breaks_commits(self):
+        cfg = self.base / "hostile.gitconfig"
+        cfg.write_text("[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n")
+        old = os.environ.get("GIT_CONFIG_GLOBAL")
+        os.environ["GIT_CONFIG_GLOBAL"] = str(cfg)
+        try:
+            make_repo(self.base / "upstream/hostile", {"README": "x\n"})
+        finally:
+            if old is None:
+                del os.environ["GIT_CONFIG_GLOBAL"]
+            else:
+                os.environ["GIT_CONFIG_GLOBAL"] = old
+
+    def test_install_recreates_a_venv_whose_python_is_broken(self):
+        self.install()
+        py = self.dest / ".venv/bin/python"
+        py.write_text("#!/bin/sh\nexit 1\n")
+        r = self.install()
+        self.assertIn("fake setup done", r.stdout)
+        self.assertEqual(self.run_sh("status").returncode, 0)
+
+    def test_a_local_commit_in_a_clean_checkout_refuses_a_pin_move(self):
+        self.install()
+        mine = self.local_commit("deps/mtlgemm")
+        self.pins["deps/mtlgemm"] = git("rev-parse", "HEAD", cwd=self.upstream("deps/mtlgemm"))
+        self.write_pins()
+        r = self.run_sh("install")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("deps/mtlgemm", r.stderr)
+        self.assertIn(mine, r.stderr)
+        self.assertEqual(self.head("deps/mtlgemm"), mine)
+
+    def test_status_reports_a_nested_dep_without_git_as_missing(self):
+        self.install()
+        git_dir = self.dest / "deps/mtlbvh/.git"
+        if git_dir.is_dir():
+            subprocess.run(["rm", "-rf", str(git_dir)], check=True)
+        else:
+            git_dir.unlink()
+        r = self.run_sh("status")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"MISSING +deps/mtlbvh, pinned")
+        self.assertNotRegex(r.stdout, r"DIFFERS +deps/mtlbvh")
+
+    def test_a_token_line_with_quotes_comment_and_crlf_reads_clean(self):
+        tok = self.base / "token.log"
+        for line in ("export HUGGING_FACE_API_KEY='hf_example9001'  # token\r\n",
+                     'HUGGING_FACE_API_KEY="hf_example9001" # token\r\n',
+                     "HUGGING_FACE_API_KEY=hf_example9001 # token\r\n"):
+            self.env_file.write_text("# shell env\r\n" + line)
+            self.install(HF_TOKEN=None)
+            r = self.run_sh("generate", "in.png", HF_TOKEN=None, FAKE_TOKEN_LOG=str(tok))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(tok.read_text(), "hf_example9001\n", repr(line))
+
+    def test_a_mounted_cache_volume_whose_name_has_a_space_is_mounted(self):
+        stubs = self.base / "df-stub"
+        stubs.mkdir()
+        df = stubs / "df"
+        # df -P <dir>: the mount point is the rest of the line, spaces kept.
+        df.write_text('#!/bin/sh\necho "Filesystem 512-blocks Used Available Capacity Mounted on"\n'
+                      'echo "/dev/disk9s1 100 1 99 1% $2"\n')
+        df.chmod(0o755)
+        self.install()
+        r = self.run_sh("generate", "in.png",
+                        HF_HUB_CACHE="/Volumes/Example Disk 9001/hub",
+                        PATH=f"{stubs}:{self.stubs}:{os.environ.get('PATH', '/usr/bin:/bin')}")
+        self.assertNotIn("not mounted", r.stderr)
 
     # -- usage
 
