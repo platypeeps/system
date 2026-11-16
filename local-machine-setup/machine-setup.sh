@@ -2498,11 +2498,52 @@ service_running() {
   done
 }
 
+# A .service line is a docker service folder, or `<folder> install` for a
+# tool that installs rather than runs a container (local-trellis, sd:9000):
+# the stage reads that folder's `status` and --apply runs its `install`.
+docker_services() {
+  manifest service | awk 'NF == 1'
+}
+
+install_services() {
+  manifest service | awk 'NF == 2 && $2 == "install" { print $1 }'
+}
+
+# One install tool: its status lines as they are, since each carries the
+# word the drift count reads; exit 3 or 1 then runs `install`. Any other
+# exit is a failed probe, which proves nothing, so nothing installs.
+service_tool() {
+  stt_entry="$ROOT/$1/${1#local-}.sh"
+  if [ ! -x "$stt_entry" ]; then
+    echo "  SKIP    $1 (no entrypoint at $1/${1#local-}.sh)"
+    return 0
+  fi
+  stt_rc=0
+  stt_out=$(bound_step 120 "$stt_entry" status 2>&1) || stt_rc=$?
+  case "$stt_rc" in
+    0) echo "  ok      $1 installed"; return 0 ;;
+    1|3)
+      [ -z "$stt_out" ] || printf '%s\n' "$stt_out" | sed 's/^/  /'
+      printf '%s\n' "$stt_out" | grep -qE 'DIFFERS|MISSING|FAILED' ||
+        echo "  DIFFERS $1 status exited $stt_rc"
+      run "$stt_entry" install ;;
+    *)
+      [ -z "$stt_out" ] || printf '%s\n' "$stt_out" | sed 's/^/    /'
+      echo "  FAILED  $1 status exited $stt_rc" ;;
+  esac
+}
+
 stage_services() {
   echo "== services"
-  svcs=$(manifest service)
+  manifest service | awk 'NF > 1 && !(NF == 2 && $2 == "install")' | while read -r odd; do
+    echo "  SKIP    $odd (only 'install' may follow the folder)"
+  done
+  for tool in $(install_services); do
+    service_tool "$tool"
+  done
+  svcs=$(docker_services)
   if [ -z "$svcs" ]; then
-    echo "  no services in this profile"
+    [ -n "$(manifest service)" ] || echo "  no services in this profile"
     return 0
   fi
   command -v docker >/dev/null 2>&1 || { echo "  docker MISSING"; return 0; }
@@ -5634,7 +5675,7 @@ service_clash_with_manifest() { # service -> "port:other" lines
   cs_svc="$1"
   cs_mine=$(service_ports "$cs_svc")
   [ -n "$cs_mine" ] || return 0
-  manifest service | grep -v "^$cs_svc$" | while read -r cs_other; do
+  docker_services | grep -v "^$cs_svc$" | while read -r cs_other; do
     [ -n "$cs_other" ] || continue
     for cs_p in $cs_mine; do
       case " $(service_ports "$cs_other") " in
@@ -5645,7 +5686,7 @@ service_clash_with_manifest() { # service -> "port:other" lines
 }
 
 candidates_service() {
-  cand_listed=$(manifest service)
+  cand_listed=$(docker_services)
   # One docker ps answers both the service states and the CONTAINER lines the
   # dashboard's Health > Containers reads (sd:5840). Its stderr is dropped: the
   # reason printed is a fixed sentence, so nothing docker says reaches a page.
@@ -6514,7 +6555,7 @@ cmd_doctor() {
   # Note every profile currently lists zero services, so the first branch is
   # dormant. It is written against the manifest rather than deleted so that
   # adding a service to a profile restores the check by itself.
-  if [ -n "$(manifest service)" ]; then
+  if [ -n "$(docker_services)" ]; then
     if docker info >/dev/null 2>&1; then
       echo "  ok      docker daemon running"
     else
@@ -7670,7 +7711,7 @@ tooling  (fnm node versions and rtk init are the `tooling` stage)
     (the iTerm2 prefs pointer is the `iterm2` stage once the drive has synced)
   - restore ~/.ssh from your password manager
   - tailscale: the brew stage installs the formula but nothing starts it
-    (.service is docker-only, and the daemon must run as root):
+    (.service starts docker services, and the daemon must run as root):
       sudo brew services start tailscale
       sudo tailscale up --ssh --accept-routes --advertise-exit-node
     Never the App Store app or the tailscale-app cask — sandboxed GUI
