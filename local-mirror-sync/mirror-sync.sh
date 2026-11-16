@@ -41,6 +41,8 @@ in <config>/mirror-sync/ (<config> is $SYSTEM_TOOLS_CONFIG, default
 the nightly job runs. A bare file name (mirrors-repos.conf) resolves in that
 folder too; a value with a slash is a path. The repos mirror and the NAS copy
 pass their own lists. Copy local-mirror-sync/<list>.example there to start.
+MIRROR_SYNC_PAIRS, if set, holds pair lines in the same format and is
+read instead of any list.
 
 The pair-list format, one pair per line ('|' separated, # comments ok):
   /path/to/source-directory|/path/to/destination-directory
@@ -129,10 +131,15 @@ HELPEOF
     ;;
 esac
 
-[ -f "$CONF" ] || { echo "mirror-sync.sh: missing $CONF (copy local-mirror-sync/$(basename "$CONF").example to $CONF, or see help for the format)" >&2; exit 1; }
+# MIRROR_SYNC_PAIRS, if set, holds the pair lines and replaces the list:
+# the nightly backup names its snapshot pair itself (sd:9070).
+PAIRS="${MIRROR_SYNC_PAIRS:-}"
+[ -n "$PAIRS" ] && CONF="MIRROR_SYNC_PAIRS"
+[ -n "$PAIRS" ] || [ -f "$CONF" ] || { echo "mirror-sync.sh: missing $CONF (copy local-mirror-sync/$(basename "$CONF").example to $CONF, or see help for the format)" >&2; exit 1; }
 
 pairs() {
-  sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$CONF" | grep -v '^$' || :
+  if [ -n "$PAIRS" ]; then printf '%s\n' "$PAIRS"; else cat "$CONF"; fi |
+    sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' || :
 }
 
 if [ "$MODE" = "list" ]; then

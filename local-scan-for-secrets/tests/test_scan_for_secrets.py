@@ -172,6 +172,38 @@ class IdentifierExports(unittest.TestCase):
                 self.assertIn("YOURS: $EXAMPLE_API_KEY found in", result.stdout)
 
 
+class Base64DataUri(unittest.TestCase):
+    """sd:9066: an AWS ASIA pattern matched JPEG bytes inside a base64
+    `data:` URI in a dashboard HTML. A match inside such a payload is image
+    data, not a key; the same value outside the payload is still a finding."""
+
+    scan = UrlCredentials.scan
+    # Joined here, so this file is not a finding of the repository scan.
+    KEY = "ASIA" + "QWERTYUIOPASDFGH"
+
+    def test_a_match_inside_a_data_uri_payload_is_not_a_finding(self) -> None:
+        uri = f"data:image/jpeg;base64,/9j/4AAQSkZJRg+{self.KEY}abc/def=="
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f'<img src="{uri}" alt="x">\n', path)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("AWS temporary", result.stdout)
+
+    def test_the_same_value_outside_the_payload_is_a_finding(self) -> None:
+        uri = f"data:image/jpeg;base64,/9j/4AAQ{self.KEY}xyz"
+        texts = {
+            "plain": f"AWS_ACCESS_KEY_ID={self.KEY}\n",
+            "beside a data uri": f'<img src="{uri}"> key {self.KEY}\n',
+            "not base64": f'<a href="data:text/plain,{self.KEY}">\n',
+        }
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for name, text in texts.items():
+                with self.subTest(searcher=searcher, text=name):
+                    result = self.scan(text, path)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("AWS temporary", result.stdout)
+
+
 class HuggingFaceToken(unittest.TestCase):
     """sd:4698: a Hugging Face token is hf_ and 34 letters or digits; a longer
     hf_ identifier in a Codex log is not one."""

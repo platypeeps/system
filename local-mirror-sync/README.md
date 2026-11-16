@@ -86,8 +86,11 @@ pass.
 after its snapshot and only if the snapshot succeeded. A separate schedule
 would not order them: after a night asleep, launchd runs missed jobs
 together at wake. That
-folder holds the nightly `sd-db-backup` snapshot, in `sd-backups/`, so this
-pass is how the snapshot leaves the machine. It runs additive, like
+folder holds the nightly `sd-db-backup` snapshot, in `sd-backups/`; the
+job copies that folder first, in its own unbounded step from a pair it
+names (`MIRROR_SYNC_PAIRS`), and then runs this list with each pair under
+a 3000 s wall bound, so a slow bulk copy never keeps the snapshot on the
+machine (sd:9070). It runs additive, like
 `repos-mirror`: the NAS folder already holds `sd-backups/` history, which
 an exact mirror would delete. It keeps no overwrite store: a file the pass
 overwrites on the NAS is gone (operator decision, 2026-09-26). The only thing this
