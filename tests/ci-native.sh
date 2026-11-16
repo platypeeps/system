@@ -340,6 +340,7 @@ case "$SUITE_LEG" in
     run_suite ai-apps sh local-ai-apps/ai-apps.sh test -v
     run_suite jev sh local-jev/jev.sh test -v
     run_suite kev sh local-kev/kev.sh test -v
+    run_suite trellis sh local-trellis/trellis.sh test -v
     run_suite leak-guard sh local-leak-guard/leak-guard.sh test -v
     run_suite claude sh local-claude/claude.sh test -v
     run_suite drive-intake sh local-drive-intake/drive-intake.sh test -v
