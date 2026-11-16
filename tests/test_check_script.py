@@ -664,6 +664,12 @@ class ThePostMergeTarget(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertRegex(run.stdout.splitlines()[0], r"\bREPO_SYNC_LANES_ONLY=1 ")
 
+    def test_the_health_check_waits_for_the_restarted_dashboard(self):
+        # The refresh restarts the dashboard; one try at --wait 0 failed while the new process started (sd:9120).
+        run = subprocess.run(["make", "-n", "post-merge"], cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertRegex(run.stdout.splitlines()[2], r'dashboard\.sh" health --wait 30$')
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

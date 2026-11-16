@@ -14,7 +14,8 @@ test:
 # `make post-merge` runs in the hub checkout after the lane merges a PR
 # here (pack sd:3566): move the checkout to the merge, rewrite stale agent
 # prompt targets (it writes nothing current and refuses hand edits), then
-# report service health so a stale build shows (sd:3568). The lane ends
+# report service health so a stale build shows (sd:3568), waiting up to
+# 30 s for the dashboard the refresh restarted (sd:9120). The lane ends
 # the target at 600 s, so the refresh waits on the lanes alone, not on
 # gates run by hand, and at most 420 s; then it refuses with nothing moved,
 # naming the busy lane, and the next refresh moves the checkout (sd:5799).
@@ -22,4 +23,4 @@ test:
 post-merge:
 	REPO_SYNC_LANES_ONLY=1 REPO_SYNC_DRAIN_WAIT=420 sh local-repo-sync/repo-sync.sh refresh "$(CURDIR)"
 	sh local-agent-prompt/agent-prompt.sh refresh --apply
-	sh "$${SD_PACK_ROOT:-$$HOME/repos/platypeeps/sd-workflow}/dashboard/dashboard.sh" health
+	sh "$${SD_PACK_ROOT:-$$HOME/repos/platypeeps/sd-workflow}/dashboard/dashboard.sh" health --wait 30
