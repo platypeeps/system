@@ -31,7 +31,19 @@ class BiRefNet:
         self.model = AutoModelForImageSegmentation.from_pretrained(
             model_name, trust_remote_code=True
         )
+        self.model.eval()
 '''
+
+# The guard and the fp16 fix as the operator applied them by hand, with
+# their own comments.
+HAND = BIREFNET.replace(
+    '"ZhengPeng7/BiRefNet"):\n',
+    '"ZhengPeng7/BiRefNet"):\n'
+    '        if model_name == "briaai/RMBG-2.0":  # non-commercial weights; same net, MIT\n'
+    '            model_name = "ZhengPeng7/BiRefNet"\n').replace(
+    '        self.model.eval()\n',
+    '        self.model.float()  # ZhengPeng7 ships fp16 weights; the input is fp32\n'
+    '        self.model.eval()\n')
 
 # The setup.py files whose -std=c++17 torch 2.15 refuses (C++20 or later).
 CXX = ["deps/mtlbvh/setup.py", "deps/mtldiffrast/setup.py", "deps/mtlmesh/setup.py",
@@ -207,17 +219,37 @@ class Trellis(unittest.TestCase):
         self.assertTrue(lines[i + 1].startswith('        if model_name == "briaai/RMBG-2.0":'))
         self.assertEqual(lines[i + 2], '            model_name = "ZhengPeng7/BiRefNet"')
 
-    def test_a_hand_applied_guard_counts_as_swapped(self):
+    def test_install_casts_the_fp16_weights_to_float_before_eval_once(self):
+        self.install()
+        self.install()
+        lines = (self.dest / "TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py").read_text().splitlines()
+        i = lines.index("        self.model.eval()")
+        self.assertTrue(lines[i - 1].startswith("        self.model.float()"), lines)
+        self.assertEqual(sum(1 for line in lines if "self.model.float()" in line), 1)
+
+    def test_a_hand_applied_guard_and_cast_count_as_swapped(self):
         self.install()
         f = self.dest / "TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py"
-        f.write_text(BIREFNET.replace(
-            '"ZhengPeng7/BiRefNet"):\n',
-            '"ZhengPeng7/BiRefNet"):\n        if model_name == "briaai/RMBG-2.0":\n'
-            '            model_name = "ZhengPeng7/BiRefNet"\n'))
+        f.write_text(HAND)
         r = self.run_sh("status")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.install()
-        self.assertEqual(f.read_text().count("briaai/RMBG-2.0"), 1)
+        self.assertEqual(f.read_text(), HAND)
+
+    def test_a_guard_without_the_cast_is_not_swapped_and_install_adds_it(self):
+        self.install()
+        f = self.dest / "TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py"
+        f.write_text(HAND.replace(
+            "        self.model.float()  # ZhengPeng7 ships fp16 weights; the input is fp32\n", ""))
+        r = self.run_sh("status")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"DIFFERS +rembg")
+        r = self.install()
+        self.assertNotIn("fake setup done", r.stdout)
+        text = f.read_text()
+        self.assertEqual(text.count("briaai/RMBG-2.0"), 1)
+        self.assertIn("        self.model.float()", text)
+        self.assertEqual(self.run_sh("status").returncode, 0)
 
     def test_install_builds_with_cxx20_and_the_eigen_submodule(self):
         self.install()

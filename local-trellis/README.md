@@ -44,8 +44,10 @@ option through (`--seed`, `--pipeline-type`, `--texture-size`,
    non-commercial. Both pipelines build that model through one class,
    `trellis2/pipelines/rembg/BiRefNet.py`, so install adds a two-line
    guard at the top of its `__init__` that maps `briaai/RMBG-2.0` to
-   `ZhengPeng7/BiRefNet` (MIT, the same architecture). A guard of that
-   shape added by hand counts as done. A pin whose `BiRefNet.py` no longer
+   `ZhengPeng7/BiRefNet` (MIT, the same architecture). Those weights are
+   fp16 and the input fp32, so it also adds `self.model.float()` right
+   before `self.model.eval()`. The swap counts as done only with both; a
+   guard and cast of that shape added by hand count. A pin whose `BiRefNet.py` no longer
    has that `__init__` fails the install instead of skipping the swap.
 7. Writes `.local-trellis-installed`, the pin list it finished with.
 

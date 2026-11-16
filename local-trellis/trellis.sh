@@ -18,6 +18,10 @@ REMBG="TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py"
 # and both pipelines build their rembg model through this one class.
 SWAP_IF='        if model_name == "briaai/RMBG-2.0":  # local-trellis: MIT weights'
 SWAP_SET='            model_name = "ZhengPeng7/BiRefNet"'
+# ZhengPeng7/BiRefNet ships fp16 weights and the input is fp32, so the
+# first conv fails ("Input type (float) and bias type (c10::Half)"): the
+# model is cast to float right before its eval().
+CAST='        self.model.float()  # local-trellis: ZhengPeng7 ships fp16 weights'
 DINO_REPO="facebook/dinov3-vitl16-pretrain-lvd1689m"
 DINO_URL="https://huggingface.co/$DINO_REPO"
 # torch 2.15, which setup.sh installs, needs C++20; these pass -std=c++17.
@@ -144,15 +148,29 @@ checkout_pin() { # path url commit
 # Whether BiRefNet.py maps briaai/RMBG-2.0 to ZhengPeng7/BiRefNet: an `if`
 # on that name directly above SWAP_SET, whatever its comment, so a guard
 # applied by hand counts too.
-swapped() {
-  [ -f "$TRELLIS_HOME/$REMBG" ] || return 1
+guarded() {
   SWAP_SET="$SWAP_SET" awk '
     prev ~ /^        if model_name == "briaai\/RMBG-2.0":/ && $0 == ENVIRON["SWAP_SET"] { found = 1 }
     { prev = $0 }
     END { exit !found }' "$TRELLIS_HOME/$REMBG"
 }
 
-# Insert the guard as the first lines of BiRefNet.__init__, once.
+# Whether self.model.float() sits directly above self.model.eval(),
+# whatever its comment.
+cast() {
+  awk '
+    prev ~ /^        self\.model\.float\(\)( |$)/ && $0 == "        self.model.eval()" { found = 1 }
+    { prev = $0 }
+    END { exit !found }' "$TRELLIS_HOME/$REMBG"
+}
+
+# The swap is done only with both: the name guard and the float cast.
+swapped() {
+  [ -f "$TRELLIS_HOME/$REMBG" ] && guarded && cast
+}
+
+# Insert the guard as the first lines of BiRefNet.__init__ and the cast
+# above its eval(), each once. A hook missing at this pin fails install.
 swap_rembg() {
   sr_file="$TRELLIS_HOME/$REMBG"
   [ -f "$sr_file" ] || die "$REMBG is missing; the TRELLIS.2 pin no longer has the rembg hook"
@@ -160,15 +178,27 @@ swap_rembg() {
     echo "ok      rembg already ZhengPeng7/BiRefNet"
     return
   fi
-  sr_n=$(grep -c '^    def __init__(self, model_name' "$sr_file" || :)
-  [ "$sr_n" = 1 ] ||
-    die "$REMBG has $sr_n 'def __init__(self, model_name' lines, not 1; the swap needs updating for this pin"
-  SWAP_IF="$SWAP_IF" SWAP_SET="$SWAP_SET" awk '
-    { print }
-    /^    def __init__\(self, model_name/ { print ENVIRON["SWAP_IF"]; print ENVIRON["SWAP_SET"] }' \
-    "$sr_file" > "$sr_file.tmp"
-  mv "$sr_file.tmp" "$sr_file"
-  echo "swap    rembg briaai/RMBG-2.0 -> ZhengPeng7/BiRefNet"
+  if ! guarded; then
+    sr_n=$(grep -c '^    def __init__(self, model_name' "$sr_file" || :)
+    [ "$sr_n" = 1 ] ||
+      die "$REMBG has $sr_n 'def __init__(self, model_name' lines, not 1; the swap needs updating for this pin"
+    SWAP_IF="$SWAP_IF" SWAP_SET="$SWAP_SET" awk '
+      { print }
+      /^    def __init__\(self, model_name/ { print ENVIRON["SWAP_IF"]; print ENVIRON["SWAP_SET"] }' \
+      "$sr_file" > "$sr_file.tmp"
+    mv "$sr_file.tmp" "$sr_file"
+    echo "swap    rembg briaai/RMBG-2.0 -> ZhengPeng7/BiRefNet"
+  fi
+  if ! cast; then
+    sr_n=$(grep -c '^        self\.model\.eval()$' "$sr_file" || :)
+    [ "$sr_n" = 1 ] ||
+      die "$REMBG has $sr_n 'self.model.eval()' lines, not 1; the fp16 cast needs updating for this pin"
+    CAST="$CAST" awk '
+      $0 == "        self.model.eval()" { print ENVIRON["CAST"] }
+      { print }' "$sr_file" > "$sr_file.tmp"
+    mv "$sr_file.tmp" "$sr_file"
+    echo "cast    rembg model to float before eval"
+  fi
 }
 
 # Before setup.sh: C++20 for the Metal builds, and o-voxel's eigen. Both
@@ -259,13 +289,14 @@ EOF
 }
 
 # Whether a run already finished at these pins: the record matches, every
-# checkout is at its pin, the venv and the swap are there. Setup then has
-# nothing to do, and machine-setup's --apply, which runs install for any
-# status gap, does not rebuild the Metal backends for a missing token.
+# checkout is at its pin, the venv is there. einops and the swap are not
+# asked: the finished path redoes both, so a record from before either
+# step does not rerun setup.sh. Setup then has nothing to do, and
+# machine-setup's --apply, which runs install for any status gap, does not
+# rebuild the Metal backends for a missing token.
 finished() {
   [ -f "$STAMP" ] && pins | cmp -s - "$STAMP" || return 1
   [ -x "$TRELLIS_HOME/.venv/bin/python" ] || return 1
-  swapped || return 1
   pins | grep -v '^[[:space:]]*\(#\|$\)' | while read -r path url sha; do
     [ "$(head_of "$(dest_of "$path")")" = "$sha" ] || return 1
     [ "$(git -C "$(dest_of "$path")" remote get-url origin 2>/dev/null)" = "$url" ] || return 1
@@ -279,6 +310,7 @@ cmd_install() {
   if finished; then
     echo "ok      setup finished at these pins"
     ensure_einops
+    swap_rembg
     manual_steps
     return
   fi
