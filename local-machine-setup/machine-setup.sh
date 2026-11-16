@@ -1970,6 +1970,7 @@ leak_guards() {
 # machine clones it by hand first: the profiles this script reads live there.
 # Uncommitted or unpushed config is DIFFERS, an attention line in status, so
 # an edit lands in git. repo-sync never lists the clone: it is no ~/repos path.
+# --apply also pulls a clean root on main that is only behind origin/main.
 config_clone() {
   cc_root=$SYSTEM_TOOLS_CONFIG
   cc_remote=${MACHINE_SETUP_CONFIG_REMOTE:-}
@@ -1999,6 +2000,18 @@ config_clone() {
   fi
   cc_n=$(printf '%s' "$cc_dirty" | grep -c . || :)
   cc_ahead=$(git -C "$cc_root" rev-list --count '@{u}..HEAD' 2>/dev/null) || cc_ahead=0
+  # --apply fast-forwards a clean root on main that is only behind (sd:9125);
+  # anything else stays as it is. Pushing stays by hand: the scan comes first.
+  if [ "$APPLY" -eq 1 ] && [ "$cc_n$cc_ahead" = 00 ]; then
+    cc_branch=$(git -C "$cc_root" symbolic-ref -q --short HEAD) || cc_branch=
+    if [ "$cc_branch" != main ]; then
+      echo "  SKIP    config root $cc_root is on ${cc_branch:-a detached HEAD}, not main; no pull"
+    elif run_ok bound_step 120 git -C "$cc_root" fetch -q origin \
+         && [ "$(git -C "$cc_root" rev-list --count HEAD..origin/main)" -gt 0 ] \
+         && run_ok git -C "$cc_root" merge -q --ff-only origin/main; then
+      echo "  PULLED  config root $cc_root to $(git -C "$cc_root" rev-parse --short HEAD)"
+    fi
+  fi
   [ "$cc_n" -eq 0 ] || echo "  DIFFERS config root $cc_root has $cc_n uncommitted change(s); commit them there"
   [ "$cc_ahead" -eq 0 ] || echo "  DIFFERS config root $cc_root has $cc_ahead unpushed commit(s); push them"
   [ "$cc_n$cc_ahead" != 00 ] || echo "  ok      config root $cc_root committed"

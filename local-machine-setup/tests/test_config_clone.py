@@ -80,3 +80,65 @@ class ConfigClone(base.SyntheticHome):
         out = self.run_repos(remote=False)
 
         self.assertNotIn("config root", out)
+
+    def push_from_elsewhere(self, name):
+        other = self.home.parent / name
+        self.git(None, "clone", "-q", str(self.remote), str(other))
+        (other / "new.txt").write_text(f"{name}\n")
+        self.git(other, "add", "-A")
+        self.git(other, "commit", "-q", "-m", name)
+        self.git(other, "push", "-q", "origin", "main")
+        return other
+
+    def committed_root(self):
+        self.run_repos("--apply")
+        self.git(self.config_root, "add", "-A")
+        self.git(self.config_root, "commit", "-q", "-m", "host files")
+        self.git(self.config_root, "push", "-q", "origin", "main")
+
+    def head(self, repo):
+        return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def test_apply_fast_forwards_a_clean_root_behind_main(self):
+        self.committed_root()
+        other = self.push_from_elsewhere("other")
+
+        out = self.run_repos("--apply")
+        self.assertIn(f"PULLED  config root {self.config_root} to {self.head(other)[:7]}", out)
+        self.assertEqual(self.head(self.config_root), self.head(other))
+        self.assertEqual((self.config_root / "new.txt").read_text(), "other\n")
+
+    def test_a_dry_run_does_not_pull(self):
+        self.committed_root()
+        before = self.head(self.config_root)
+        self.push_from_elsewhere("other")
+
+        out = self.run_repos()
+        self.assertNotIn("PULLED", out)
+        self.assertEqual(self.head(self.config_root), before)
+
+    def test_dirty_diverged_or_off_main_roots_are_left_as_they_are(self):
+        self.committed_root()
+        self.push_from_elsewhere("other")
+
+        (self.config_root / "shared.env").write_text("A=edited\n")
+        before = self.head(self.config_root)
+        out = self.run_repos("--apply")
+        self.assertNotIn("PULLED", out)
+        self.assertEqual(self.head(self.config_root), before)
+        self.assertEqual((self.config_root / "shared.env").read_text(), "A=edited\n")
+
+        self.git(self.config_root, "commit", "-q", "-am", "local edit")
+        before = self.head(self.config_root)
+        out = self.run_repos("--apply")
+        self.assertNotIn("PULLED", out)
+        self.assertIn("1 unpushed commit(s)", out)
+        self.assertEqual(self.head(self.config_root), before)
+
+        self.git(self.config_root, "reset", "-q", "--hard", "HEAD~1")
+        self.git(self.config_root, "switch", "-q", "-c", "join/host")
+        before = self.head(self.config_root)
+        out = self.run_repos("--apply")
+        self.assertIn("is on join/host, not main", out)
+        self.assertEqual(self.head(self.config_root), before)
