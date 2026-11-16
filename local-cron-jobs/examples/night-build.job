@@ -1,0 +1,7 @@
+# Night build batch (operator ruling 2026-10-08): up to 3 planning items from
+# system, the pack and home-assistant, built by sd-slice-builder agents and
+# queued for the hub lanes. Slot from rv-jobs: clear of the 02:05 backups, the
+# 03:00 Claude routines and the 04:30 brew upgrade. Prompt: prompts/night-build.md.
+JOB_SCHEDULE="10 0 * * *"
+JOB_TIMEOUT="110m"
+JOB_COMMAND=". \"\$HOME/.config/shell/env.sh\" >/dev/null 2>&1; cd \"$ROOT/..\" && claude -p \"\$(cat \"\$HOME/.config/system/cron-jobs/prompts/night-build.md\")\" --model opus --permission-mode auto < /dev/null"

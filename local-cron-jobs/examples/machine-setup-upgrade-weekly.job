@@ -1,0 +1,15 @@
+# Weekly package upgrade sweep (Monday 05:10): machine-setup.sh
+# upgrade-report runs brew update/upgrade/upgrade --cask/cleanup + mas
+# upgrade and emails what got upgraded, what failed, and what is still
+# outdated. Quiet no-op when nothing is outdated. This job only exits 1
+# when that email could not be delivered, so the failure notification
+# (banner + ntfy push) covers a lost report.
+# Monday 05:10 by operator ruling 2026-10-08: after profile-autocapture
+# (04:50), so no two brew runs share the lock. It is the one run that
+# upgrades any package or app, captures the AI-app inventory, and checks
+# TCC grants (sd:3062).
+JOB_SCHEDULE="10 5 * * 1"
+JOB_COMMAND="sh \"$ROOT/../local-machine-setup/machine-setup.sh\" upgrade-report"
+# 13h: brew upgrade and the deferred source-build install are bounded
+# at 6h each (system sd:7103; terra measured 3h of builds 2026-11-01).
+JOB_TIMEOUT=13h

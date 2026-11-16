@@ -1,0 +1,12 @@
+# Daily retention for claude-mem's logs. The worker writes one
+# ~/.claude-mem/logs/claude-mem-YYYY-MM-DD.log a day, 16-56 MB each, and
+# deletes none; claude-mem 13.25.3 has CLAUDE_MEM_LOG_LEVEL and no retention
+# setting. Measured 2026-09-25: 41 files, 997M. This keeps
+# CLAUDE_MEM_LOG_KEEP_DAYS (14) days, never today's or yesterday's file, and
+# trims pro-watchdog.log to its last 5000 lines. In claude-mem.db it deletes
+# tool_uses rows older than CLAUDE_MEM_TOOL_USES_KEEP_DAYS (7), nothing else.
+#
+# 04:37 is off the 02:xx slot (see the cron-wake rule), clear of the
+# watchdog's quarter hours, and after the 04:30 jobs.
+JOB_SCHEDULE="37 4 * * *"
+JOB_COMMAND="sh \"$ROOT/../local-claude/claude.sh\" prune-mem-logs --apply"

@@ -631,6 +631,32 @@ esac
         note = "- test binary abort(s) under cargo in the last day: 3"
         self.assertIn(note, out.split("notes:")[-1], out)
 
+    def test_a_test_binary_aborting_under_build_dispatch_is_no_app_crash(self):
+        """sd:9088: a cargo test binary (<crate>-<16 hex>) outlives its
+        parent, so parentProc reads 'Exited process'; under the
+        build-dispatch cron job's coalition it is still a test abort. The
+        same name in another coalition, or another name under build-dispatch,
+        still counts."""
+        reports = self.tmp / "reports-dispatch"
+        reports.mkdir()
+        head = '{"app_name":"cleanup","bug_type":"309"}\n'
+        dispatch = "local.system-tools.cron.build-dispatch"
+        for name, coalition in (("cleanup-64ac2bb2c9a0c249", dispatch),
+                                ("Other-Hex-0123456789abcdef", "com.example.terminal"),
+                                ("Dispatch-App", dispatch)):
+            (reports / (name + stamped(hours=1) + ".ips")).write_text(
+                head + '{\n  "parentProc" : "Exited process",\n  "coalitionName" : "'
+                + coalition + '"\n}\n')
+        out = self.run_check("dispatch", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                             verb="run")["out"]
+        crashes = [l for l in out.splitlines() if l.startswith("- app crash report(s)")]
+        self.assertEqual(len(crashes), 1, out)
+        self.assertNotIn("cleanup-", crashes[0])
+        self.assertIn("Other-Hex-0123456789abcdef(1) ", crashes[0])
+        self.assertIn("Dispatch-App(1) ", crashes[0])
+        note = "- test binary abort(s) under cargo in the last day: 1"
+        self.assertIn(note, out.split("notes:")[-1], out)
+
     def test_crashes_of_one_process_with_different_pids_count_as_one_app(self):
         """sd:5253: a process named with its pid (`.claude-mem-<pid>.tmp`) is one app, not one per pid."""
         reports = self.tmp / "reports-pids"

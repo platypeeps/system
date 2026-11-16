@@ -1,0 +1,39 @@
+# Mirror of the repo fleet to /Volumes/local, the portable USB disk, every 12
+# hours. It replaced both repos-mirror-weekly and the NAS-bound offsite-mirror
+# on 2026-09-23. The NAS pass over SMB measured about 80 minutes for a no-op
+# over 1.1M files; the local disk is much faster, so the copy can be fresher.
+#
+# 04:30 was the weekly slot: it follows mirror-sync-nightly (03:30), which
+# writes to the same disk and finished at 03:50 on the night it was measured.
+# 16:30 is the same slot twelve hours on.
+#
+# The destination is under "Backup Local", which mirrors.conf does NOT copy
+# to iCloud. The drive is attached to this Mac, so this copy does not survive
+# theft, fire or a dead Mac.
+#
+# A BACKUP, NOT AN EXACT MIRROR. An exact mirror copies a destructive edit as
+# faithfully as a useful one: `git reset --hard` deletes the work, the next
+# pass deletes the copy, and the pass reports success -- the loss in sd:1107
+# reproduced with the backup working perfectly. So this list runs additive
+# (MIRROR_SYNC_ADDITIVE): a source deletion is never propagated.
+# MIRROR_SYNC_BACKUP_ROOT covers the other half, moving whatever a pass is
+# about to OVERWRITE into "Backup Local/replaced/<run>/" instead of destroying
+# it. Between them, neither a deletion nor an overwrite can take the last copy
+# of something with it. mirror-sync.sh deletes a run folder there once it is
+# older than MIRROR_SYNC_BACKUP_KEEP_DAYS (default 14), so an overwrite stays
+# recoverable for two weeks and the store does not grow without bound.
+#
+# The cost is a destination that keeps what the source dropped, including
+# excluded trees an earlier exact pass copied. The age prune above covers only
+# "Backup Local/replaced"; the destination itself is never pruned, so remove a
+# tree that no longer belongs there by hand.
+#
+# openrsync ("rsync version 2.6.9 compatible", the rsync this machine has)
+# cannot do delete-with-backup at all: it fails with "mk_backup_dir: File
+# exists". Additive avoids that path entirely rather than working around it.
+#
+# A detached drive fails loudly: "/Volumes/local/Backup Local" is then a
+# missing destination parent, which mirror-sync.sh refuses. It exits 1 and
+# raises the failure notification.
+JOB_SCHEDULE="30 4,16 * * *"
+JOB_COMMAND="MIRROR_SYNC_CONF=\"mirrors-repos.conf\" MIRROR_SYNC_BACKUP_ROOT=\"/Volumes/local/Backup Local/replaced\" MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync"
