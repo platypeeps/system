@@ -2737,6 +2737,9 @@ telemetry_endpoint() {
 # over common's (manifest's `sort -u` would keep both). A profile's `!key`
 # line drops common's and unsets the key here (sd:9218); a profile that also
 # sets it FAILS and writes nothing. A setting no file names any more stays.
+# Only this machine's own `sd.*` keys pass: a fleet or plugin key is one
+# workflow database row for every machine, so one profile line would change
+# them all. The pack's sd_lib names them; nothing reads the database or hub.
 # Only a read that answers "not set" counts as unset: any other failed read,
 # or a line with no value, is a FAILED line and writes nothing.
 sd_settings() {
@@ -2744,7 +2747,7 @@ sd_settings() {
   ss_lines=$( { profile_entries common sdconfig | drop_negated "$ss_unsets" | sed 's/^/common /'
       profile_entries "$PROFILE" sdconfig | sed "s/^/$PROFILE /"
     } | awk '{ k = $2; if (!(k in at)) order[++n] = k; at[k] = $0 } END { for (i = 1; i <= n; i++) print at[order[i]] }'
-    [ -z "$ss_unsets" ] || printf '%s\n' "$ss_unsets" | sed "s/^/$PROFILE !/")
+    profile_drops "$PROFILE" sdconfig | awk 'NF' | sed "s/^/$PROFILE !/")
   [ -n "$ss_lines" ] || return 0
   ss_sd="$SD_PACK_ROOT/bin/sd"
   if [ ! -x "$ss_sd" ]; then
@@ -2752,22 +2755,23 @@ sd_settings() {
     return 0
   fi
   ss_err=$(mktemp)
-  # A key `sd config list` stores in the workflow database serves every
-  # machine (fleet and plugin keys): one profile line would change them all.
-  # A prefix whose list fails is `!fail <prefix>`, and its lines write nothing.
-  ss_db=$(printf '%s\n' "$ss_lines" | awk '{ k = $2; sub(/^!/, "", k); sub(/\..*/, "", k); print k }' | sort -u |
-    while read -r ss_prefix; do
-      bound_step 30 "$ss_sd" config list --json "$ss_prefix" 2>/dev/null </dev/null |
-        python3 -c 'import json, sys
-p = sys.argv[1]
-for k, v in json.load(sys.stdin).items():
-    if v.get("source") == "database": print(p + "." + k)' "$ss_prefix" || echo "!fail $ss_prefix"
-    done)
+  if ! ss_mine=$(python3 -I -c 'import sys
+sys.path.insert(0, sys.argv[1])
+import sd_lib
+print("\n".join("sd." + k for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS))))' "$SD_PACK_ROOT/bin" 2>"$ss_err" </dev/null); then
+    note_failure "sd settings: the pack's key list did not load: $(tail -1 "$ss_err")" 1
+    rm -f "$ss_err"
+    return 0
+  fi
   printf '%s\n' "$ss_lines" | while read -r ss_from ss_key ss_want; do
     ss_unset=
     case "$ss_key" in '!'*) ss_unset=1 ss_key=${ss_key#!} ;; esac
     if printf '%s\n' "$ss_unsets" | grep -qxF -- "$ss_key" && printf '%s\n' "$ss_lines" | awk -v k="$ss_key" '$2 == k { f = 1 } END { exit !f }'; then
       [ -z "$ss_unset" ] || note_failure "$ss_from.sdconfig: $ss_key is both set and unset" 1
+      continue
+    fi
+    if [ -n "$ss_unset" ] && [ -n "$ss_want" ]; then
+      note_failure "$ss_from.sdconfig: !$ss_key takes no value" 1
       continue
     fi
     if [ -z "$ss_unset" ] && [ -z "$ss_want" ]; then
@@ -2788,12 +2792,8 @@ for k, v in json.load(sys.stdin).items():
       note_failure "$ss_from.sdconfig: $ss_key is $ss_owner to set" 1
       continue
     fi
-    if printf '%s\n' "$ss_db" | grep -qxF -- "!fail ${ss_key%%.*}"; then
-      note_failure "sd config list ${ss_key%%.*} failed: no ${ss_key%%.*} key is written" 1
-      continue
-    fi
-    if printf '%s\n' "$ss_db" | grep -qxF -- "$ss_key"; then
-      note_failure "$ss_from.sdconfig: $ss_key is a workflow database setting, one for every machine" 1
+    if ! printf '%s\n' "$ss_mine" | grep -qxF -- "$ss_key"; then
+      note_failure "$ss_from.sdconfig: $ss_key is no per-machine sd setting (a fleet or plugin key is one row for every machine)" 1
       continue
     fi
     # stderr apart: a warning on a good read is no part of the value.

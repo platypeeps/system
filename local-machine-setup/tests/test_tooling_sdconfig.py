@@ -31,10 +31,6 @@ case "$2" in
        echo "$v" ;;
   set) grep -v "^$3=" "$SD_STORE" > "$SD_STORE.new" 2>/dev/null || :
        echo "$3=$4" >> "$SD_STORE.new"; mv "$SD_STORE.new" "$SD_STORE" ;;
-  list) [ -z "$SD_LIST_FAILS" ] || { echo "sd: database is locked" >&2; exit 2; }
-       printf '{'; sep=
-       for k in $SD_DB_KEYS; do case "$k" in "$4".*) printf '%s"%s": {"source": "database"}' "$sep" "${k#*.}"; sep=', ';; esac; done
-       printf '}\n' ;;
   unset) grep -v "^$3=" "$SD_STORE" > "$SD_STORE.new" 2>/dev/null || :
        mv "$SD_STORE.new" "$SD_STORE" ;;
   *) exit 2 ;;
@@ -73,8 +69,14 @@ class ToolingSdconfigTest(unittest.TestCase):
         fixture_config.seal(self, self.stubs)
         self.get_fails = ""
         self.get_warn = ""
-        self.db_keys = ""
-        self.list_fails = ""
+        self.write_sd_lib()
+
+    def write_sd_lib(self, body=None):
+        """The pack's key lists, as sd_lib declares them."""
+        (self.pack / "bin/sd_lib.py").write_text(body or (
+            'CORE_CONFIG = dict.fromkeys(("gate_slots", "bundle_max", "bulk_storage_root",'
+            ' "hub_name", "copilot_review", "fleet_owners"))\n'
+            'FLEET_KEYS = ("hub_name", "copilot_review", "fleet_owners")\n'))
 
     def tooling(self, *flags, verb=("update", "tooling")):
         env = {
@@ -88,8 +90,6 @@ class ToolingSdconfigTest(unittest.TestCase):
             "SD_STORE": str(self.store),
             "SD_GET_FAILS": self.get_fails,
             "SD_GET_WARN": self.get_warn,
-            "SD_DB_KEYS": self.db_keys,
-            "SD_LIST_FAILS": self.list_fails,
         }
         r = subprocess.run([str(self.folder / "machine-setup.sh"), *verb, *flags],
                            env=env, capture_output=True, text=True, cwd=self.tmp.name,
@@ -243,26 +243,44 @@ class ToolingSdconfigTest(unittest.TestCase):
         self.assertIn("  FAILED  sd config get sd.bundle_max", out)
         self.assertEqual(self.store.read_text(), "sd.bundle_max=5\n", out)
 
-    def test_a_database_key_is_never_set_or_unset(self):
+    def test_a_fleet_key_is_never_set_or_unset(self):
         """Review of sd:9218: a fleet key's row serves every machine, so one profile would change them all."""
-        self.db_keys = "sd.copilot_review sd.fleet_owners"
         self.store.write_text("sd.copilot_review=never\nsd.fleet_owners=example\n")
         (self.profiles / "personal.sdconfig").write_text("!sd.copilot_review\nsd.fleet_owners operator\n")
 
         out = self.tooling("--apply")
 
-        self.assertIn("  FAILED  personal.sdconfig: sd.copilot_review is a workflow database setting", out)
-        self.assertIn("  FAILED  personal.sdconfig: sd.fleet_owners is a workflow database setting", out)
+        self.assertIn("  FAILED  personal.sdconfig: sd.copilot_review is no per-machine sd setting", out)
+        self.assertIn("  FAILED  personal.sdconfig: sd.fleet_owners is no per-machine sd setting", out)
         self.assertEqual(self.store.read_text(), "sd.copilot_review=never\nsd.fleet_owners=example\n", out)
 
-    def test_an_unreadable_key_list_writes_nothing(self):
-        self.list_fails = "1"
+    def test_a_plugin_or_undeclared_key_is_refused(self):
+        (self.profiles / "personal.sdconfig").write_text("plugin.thing 1\nsd.no_such_key 2\n")
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  personal.sdconfig: plugin.thing is no per-machine sd setting", out)
+        self.assertIn("  FAILED  personal.sdconfig: sd.no_such_key is no per-machine sd setting", out)
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+
+    def test_an_unloadable_key_list_writes_nothing(self):
+        self.write_sd_lib("raise ImportError('example')\n")
         (self.profiles / "personal.sdconfig").write_text("sd.gate_slots 3\n")
 
         out = self.tooling("--apply")
 
-        self.assertIn("  FAILED  sd config list sd", out)
+        self.assertIn("  FAILED  sd settings: the pack's key list did not load: ImportError: example", out)
+        self.assertNotIn("Traceback", out)
         self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+
+    def test_a_bang_line_with_a_value_fails_and_writes_nothing(self):
+        self.store.write_text("sd.bundle_max=5\n")
+        (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max 4\n")
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  personal.sdconfig: !sd.bundle_max takes no value", out)
+        self.assertEqual(self.store.read_text(), "sd.bundle_max=5\n", out)
 
     def test_no_sdconfig_file_says_nothing(self):
         self.assertNotIn("sd setting", self.tooling("--apply"))
