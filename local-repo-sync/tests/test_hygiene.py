@@ -443,6 +443,45 @@ class HygieneTest(unittest.TestCase):
         self.assertFalse(wt.exists())
         self.assertEqual("", f.branch_sha(repo, "clean-merged"))
 
+    def test_a_worktree_whose_content_landed_in_a_wider_squash_goes(self):
+        """NEW (sd:9241). A builder branch landed inside a bundle squash
+        that also carried other work: no patch matches, but merging the
+        branch into main adds nothing, so its clean worktree goes."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.add_worktree(repo, "build/one")
+        tip = f.commit(wt, "one.txt", "one\n", "item one")
+        (repo / "one.txt").write_text("one\n")
+        f.git(repo, "add", "one.txt")
+        f.commit(repo, "two.txt", "two\n", "bundle: items one and two")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertFalse(wt.exists(), result.stdout)
+        self.assertEqual("", f.branch_sha(repo, "build/one"))
+        self.assertIn(tip, result.stdout)
+        self.assertIn("merge adds nothing", result.stdout)
+
+    def test_a_branch_whose_merge_still_changes_main_is_kept(self):
+        """NEW (sd:9241). A branch that landed and was then reverted still
+        changes main when merged, so it and its worktree stay."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.add_worktree(repo, "build/two")
+        f.commit(wt, "one.txt", "one\n", "item one")
+        (repo / "one.txt").write_text("one\n")
+        f.git(repo, "add", "one.txt")
+        f.commit(repo, "two.txt", "two\n", "bundle")
+        f.git(repo, "rm", "-q", "one.txt")
+        f.git(repo, "commit", "-q", "-m", "revert item one")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertTrue(wt.exists())
+        self.assertNotEqual("", f.branch_sha(repo, "build/two"))
+
     def test_a_merged_branch_in_a_worktree_with_ignored_files_keeps_both(self):
         """NEW. Requirement 3.5: ignored files (an .env, a local database)
         are not rebuildable in general, so they keep the worktree."""
@@ -1562,7 +1601,8 @@ class LaneProofTest(unittest.TestCase):
 
     def bundled(self, f, repo, name="builder-a"):
         """A pushed builder branch whose commit landed only inside a bundle
-        squash with another change, so no rule of hygiene's own proves it."""
+        squash with another change, then was edited on main, so no rule of
+        hygiene's own proves it."""
         f.git(repo, "switch", "-q", "-c", name)
         tip = f.commit(repo, f"{name}.txt", "builder\n", "builder work")
         f.git(repo, "push", "-q", "-u", "origin", name)
@@ -1571,6 +1611,9 @@ class LaneProofTest(unittest.TestCase):
         (repo / "bundle.txt").write_text("bundle\n")
         f.git(repo, "add", f"{name}.txt", "bundle.txt")
         f.git(repo, "commit", "-q", "-m", "bundle squash")
+        # A later edit of the same file makes merging the branch conflict,
+        # so the merge probe (sd:9241) proves nothing either.
+        f.commit(repo, f"{name}.txt", "builder, edited later\n", "later edit")
         f.git(repo, "push", "-q", "origin", "main")
         return tip
 

@@ -1969,7 +1969,7 @@ hyg_default() {
 }
 
 # Prints how <branch> landed on <compare-ref> and returns 0, or returns 1.
-# Three ways: the tip is an ancestor; the branch tree equals its merge base
+# Three ways, and a merge probe below: the tip is an ancestor; the branch tree equals its merge base
 # (nothing left to land); or a synthetic squash of the branch onto its merge
 # base is patch-equivalent to a commit on the default branch, which is what a
 # squash merge leaves. The synthetic commit goes to a throwaway object
@@ -1995,6 +1995,17 @@ hyg_merged() {
   fi
   h_objs=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
   rm -rf "$HYG_TMP/objects"; mkdir -p "$HYG_TMP/objects"
+  # A fourth way (sd:9241): merging the branch into the default branch
+  # cleanly gives the default tree, so the branch adds nothing. A builder
+  # branch landed inside a wider bundle squash passes only this way; a
+  # landed-then-reverted branch still changes the tree, so it stays.
+  h_dt=$(git -C "$1" rev-parse "$3^{tree}") || return 1
+  h_mg=$(GIT_OBJECT_DIRECTORY="$HYG_TMP/objects" \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES="$h_objs/objects" \
+    git -C "$1" merge-tree --write-tree --no-messages "$3" "$2" 2>/dev/null) || h_mg=""
+  if [ "$h_mg" = "$h_dt" ]; then
+    echo "merge adds nothing"; return 0
+  fi
   h_sq=$(GIT_OBJECT_DIRECTORY="$HYG_TMP/objects" \
     GIT_ALTERNATE_OBJECT_DIRECTORIES="$h_objs/objects" \
     GIT_AUTHOR_NAME=repo-sync GIT_AUTHOR_EMAIL=repo-sync@example.invalid \
