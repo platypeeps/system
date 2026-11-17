@@ -2302,17 +2302,24 @@ hyg_item_number() {
 hyg_keep_load() {
   HYG_KEEP_ALL=0
   : > "$HYG_TMP/keep"
-  [ -e "$CONF_DIR/keep-branches" ] || return 0
-  if ! awk '{ sub(/(^|[ \t])#.*/, ""); if (NF == 0) next
+  k_file="$CONF_DIR/keep-branches"
+  [ -e "$k_file" ] || [ -L "$k_file" ] || return 0
+  echo "=== keep-branches"
+  # A dangling link, a folder or an unreadable file is no list: keep all.
+  if ! { [ -f "$k_file" ] && [ -r "$k_file" ]; } || ! awk '{ sub(/\r$/, ""); sub(/(^|[ \t])#.*/, ""); if (NF == 0) next
       if (NF < 2) { print "BAD " NR; next } print $1 " " $2 }' \
-      "$CONF_DIR/keep-branches" > "$HYG_TMP/keep.all" 2>/dev/null; then
+      "$k_file" > "$HYG_TMP/keep.all" 2>/dev/null; then
     HYG_KEEP_ALL=1
-    hyg_fail "read keep-branches ($CONF_DIR/keep-branches): every branch kept this run"
+    hyg_fail "read keep-branches ($k_file): every branch kept this run"
     return 0
   fi
-  grep '^BAD ' "$HYG_TMP/keep.all" | while read -r _ k_n; do
-    hyg_fail "keep-branches line $k_n: want '<owner/name> <branch glob>'"
-  done
+  # A line without both fields may be the rule for a branch: keep all.
+  if grep -q '^BAD ' "$HYG_TMP/keep.all"; then
+    HYG_KEEP_ALL=1
+    grep '^BAD ' "$HYG_TMP/keep.all" | while read -r _ k_n; do
+      hyg_fail "keep-branches line $k_n: want '<owner/name> <branch glob>'; every branch kept this run"
+    done
+  fi
   grep -v '^BAD ' "$HYG_TMP/keep.all" > "$HYG_TMP/keep" || :
 }
 
@@ -2641,7 +2648,9 @@ hygiene() {
   echo "root    : $ROOT"
   if [ "$APPLY" = 1 ]; then echo "mode    : apply"; else echo "mode    : report only (--apply acts)"; fi
   echo
-  hyg_keep_load
+  # In this shell, so HYG_KEEP_ALL holds; printed, under its own header,
+  # only when it failed, so the nightly report names the failure.
+  hyg_section hyg_keep_load
 
   repo_list | while read -r subdir full_repo; do
     target="$ROOT/$subdir/${full_repo##*/}"
@@ -2658,10 +2667,11 @@ hygiene() {
   if [ "$APPLY" = 1 ]; then
     echo "hygiene : $h_acted done, $h_listed listed, $h_failed failed"
     [ "$h_failed" -eq 0 ] || return 1
-  elif [ "$h_found" -eq 0 ] && [ "$h_listed" -eq 0 ]; then
+  elif [ "$h_found" -eq 0 ] && [ "$h_listed" -eq 0 ] && [ "$h_failed" -eq 0 ]; then
     echo "hygiene : clean"
   else
-    echo "hygiene : $h_found to act on with --apply, $h_listed listed"
+    h_more=; [ "$h_failed" -eq 0 ] || h_more=", $h_failed failed"
+    echo "hygiene : $h_found to act on with --apply, $h_listed listed$h_more"
     return 1
   fi
 }

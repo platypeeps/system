@@ -217,6 +217,54 @@ class HygieneTest(unittest.TestCase):
 
         self.assertIn("FAILED keep-branches line 1: want '<owner/name> <branch glob>'", result.stdout)
 
+    # Review round 2 of sd:9230, class: the keep file fails open. Every case
+    # below keeps every branch for the run and reports a failure.
+    def test_a_dangling_keep_symlink_keeps_every_branch_and_fails(self):
+        f, repo = self.kept_fixture(b"")
+        keep = f.folder / "keep-branches"
+        keep.unlink()
+        keep.symlink_to(f.folder / "no-such-file")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED read keep-branches", result.stdout)
+
+    def test_a_keep_path_that_is_a_folder_keeps_every_branch_and_fails(self):
+        f, repo = self.kept_fixture(b"")
+        keep = f.folder / "keep-branches"
+        keep.unlink()
+        keep.mkdir()
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED read keep-branches", result.stdout)
+
+    def test_a_crlf_keep_line_still_keeps(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/landed\r\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("note: kept branch keep/landed (keep-branches)", result.stdout)
+
+    def test_a_malformed_keep_line_keeps_every_branch_under_apply(self):
+        f, repo = self.kept_fixture(b"keep/landed\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_a_keep_failure_is_no_clean_report_and_sits_under_a_header(self):
+        f, repo = self.kept_fixture(b"keep/landed\n")
+
+        result = f.run("hygiene", expect=1)
+
+        self.assertNotIn("hygiene : clean", result.stdout)
+        self.assertRegex(result.stdout, r"=== keep-branches\n  FAILED keep-branches line 1")
+
     def test_a_clean_fleet_reports_nothing_and_exits_0(self):
         """NEW. Requirement 9: without --apply, exit 0 when clean."""
         f = self.fixture()
