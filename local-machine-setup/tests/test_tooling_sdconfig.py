@@ -27,6 +27,7 @@ case "$2" in
   get) [ -z "$SD_GET_FAILS" ] || { echo "sd: database is locked" >&2; exit 2; }
        v=$(sed -n "s/^$3=//p" "$SD_STORE" 2>/dev/null)
        [ -n "$v" ] || { echo "sd: $3 is not set (help). Run:" >&2; exit 1; }
+       [ -z "$SD_GET_WARN" ] || echo "sd: warning: stale pin" >&2
        echo "$v" ;;
   set) grep -v "^$3=" "$SD_STORE" > "$SD_STORE.new" 2>/dev/null || :
        echo "$3=$4" >> "$SD_STORE.new"; mv "$SD_STORE.new" "$SD_STORE" ;;
@@ -65,6 +66,7 @@ class ToolingSdconfigTest(unittest.TestCase):
         write_exec(self.stubs / "sudo", "#!/bin/sh\nexit 1\n")
         fixture_config.seal(self, self.stubs)
         self.get_fails = ""
+        self.get_warn = ""
 
     def tooling(self, *flags):
         env = {
@@ -77,6 +79,7 @@ class ToolingSdconfigTest(unittest.TestCase):
             "SD_PACK_ROOT": str(self.pack),
             "SD_STORE": str(self.store),
             "SD_GET_FAILS": self.get_fails,
+            "SD_GET_WARN": self.get_warn,
         }
         r = subprocess.run([str(self.folder / "machine-setup.sh"), "update", "tooling", *flags],
                            env=env, capture_output=True, text=True, cwd=self.tmp.name,
@@ -111,6 +114,15 @@ class ToolingSdconfigTest(unittest.TestCase):
         self.assertIn("  FAILED  sd config get sd.gate_slots", out)
         self.assertNotIn("is unset", out)
         self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+
+    def test_a_warning_on_a_good_read_is_not_part_of_the_value(self):
+        (self.profiles / "personal.sdconfig").write_text("sd.gate_slots 5\n")
+        self.get_warn = "1"
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  ok      sd setting sd.gate_slots=5", out)
+        self.assertNotIn("DIFFERS", out)
 
     def test_the_profile_line_wins_over_common(self):
         (self.profiles / "common.sdconfig").write_text("sd.gate_slots 9\n")

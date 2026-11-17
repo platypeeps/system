@@ -2748,18 +2748,22 @@ sd_settings() {
     echo "  SKIP    sd settings: no $ss_sd (the repos stage clones the pack)"
     return 0
   fi
+  ss_err=$(mktemp)
   printf '%s\n' "$ss_lines" | while read -r ss_from ss_key ss_want; do
     if [ -z "$ss_want" ]; then
       note_failure "$ss_from.sdconfig: $ss_key has no value" 1
       continue
     fi
+    # stderr apart: a warning on a good read is no part of the value.
     ss_rc=0
-    ss_have=$(bound_step 30 "$ss_sd" config get "$ss_key" 2>&1 </dev/null) || ss_rc=$?
+    ss_have=$(bound_step 30 "$ss_sd" config get "$ss_key" 2>"$ss_err" </dev/null) || ss_rc=$?
     if [ "$ss_rc" -ne 0 ]; then
-      case "$ss_have" in
-        *"$ss_key is not set"*) ss_have= ;;
-        *) note_failure "sd config get $ss_key: $(printf '%s\n' "$ss_have" | head -1)" "$ss_rc"; continue ;;
-      esac
+      if grep -qF "$ss_key is not set" "$ss_err"; then
+        ss_have=
+      else
+        note_failure "sd config get $ss_key: $(head -1 "$ss_err")" "$ss_rc"
+        continue
+      fi
     fi
     if [ "$ss_have" = "$ss_want" ]; then
       echo "  ok      sd setting $ss_key=$ss_want"
@@ -2768,6 +2772,7 @@ sd_settings() {
       run bound_step 30 "$ss_sd" config set "$ss_key" "$ss_want"
     fi
   done
+  rm -f "$ss_err"
 }
 
 stage_tooling() {
