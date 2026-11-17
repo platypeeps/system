@@ -166,6 +166,22 @@ class ToolingSdconfigTest(unittest.TestCase):
 
         self.assertIn("      sd.bundle_max 5\n      sd.gate_slots 3\n", out)
 
+    def test_report_keeps_every_multi_field_kind_one_entry_per_line(self):
+        kinds = {
+            "mas": "497799835 Xcode\n409183694 Keynote\n",
+            "service": "local-trellis install\nlocal-redis start\n",
+            "node": "24\n26 link\n",
+            "release": "aa example/aa aa.tar.gz\nbb example/bb bb.tar.gz\n",
+            "app": "Visual Studio Code\nExample App\n",
+        }
+        for kind, lines in kinds.items():
+            with self.subTest(kind=kind):
+                (self.profiles / f"personal.{kind}").write_text(lines)
+                out = self.tooling(verb=("report", "personal"))
+                want = "".join(f"      {line}\n" for line in lines.splitlines())
+                self.assertIn(want, out)
+                (self.profiles / f"personal.{kind}").unlink()
+
     def test_no_sdconfig_file_says_nothing(self):
         self.assertNotIn("sd setting", self.tooling("--apply"))
 

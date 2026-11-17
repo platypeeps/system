@@ -6122,7 +6122,7 @@ cmd_report() {
 
   report_list() {
     case "$2" in
-      cron|macos|iterm2|spotlight|mailto|sdconfig)
+      cron|macos|iterm2|spotlight|mailto|sdconfig|mas|service|node|release|app)
         profile_entries "$1" "$2" | sed 's/^/      /' ;;
       *)
         if command -v column >/dev/null 2>&1; then
