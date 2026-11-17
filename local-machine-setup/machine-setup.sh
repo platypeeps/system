@@ -2752,6 +2752,17 @@ sd_settings() {
     return 0
   fi
   ss_err=$(mktemp)
+  # A key `sd config list` stores in the workflow database serves every
+  # machine (fleet and plugin keys): one profile line would change them all.
+  # A prefix whose list fails is `!fail <prefix>`, and its lines write nothing.
+  ss_db=$(printf '%s\n' "$ss_lines" | awk '{ k = $2; sub(/^!/, "", k); sub(/\..*/, "", k); print k }' | sort -u |
+    while read -r ss_prefix; do
+      bound_step 30 "$ss_sd" config list --json "$ss_prefix" 2>/dev/null </dev/null |
+        python3 -c 'import json, sys
+p = sys.argv[1]
+for k, v in json.load(sys.stdin).items():
+    if v.get("source") == "database": print(p + "." + k)' "$ss_prefix" || echo "!fail $ss_prefix"
+    done)
   printf '%s\n' "$ss_lines" | while read -r ss_from ss_key ss_want; do
     ss_unset=
     case "$ss_key" in '!'*) ss_unset=1 ss_key=${ss_key#!} ;; esac
@@ -2775,6 +2786,14 @@ sd_settings() {
     esac
     if [ -n "$ss_owner" ]; then
       note_failure "$ss_from.sdconfig: $ss_key is $ss_owner to set" 1
+      continue
+    fi
+    if printf '%s\n' "$ss_db" | grep -qxF -- "!fail ${ss_key%%.*}"; then
+      note_failure "sd config list ${ss_key%%.*} failed: no ${ss_key%%.*} key is written" 1
+      continue
+    fi
+    if printf '%s\n' "$ss_db" | grep -qxF -- "$ss_key"; then
+      note_failure "$ss_from.sdconfig: $ss_key is a workflow database setting, one for every machine" 1
       continue
     fi
     # stderr apart: a warning on a good read is no part of the value.
