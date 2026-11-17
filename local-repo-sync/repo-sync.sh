@@ -1987,8 +1987,10 @@ hyg_merged() {
   if [ "$h_bt" = "$h_mt" ]; then
     echo "tree equals merge base"; return 0
   fi
+  # --ignore-submodules=none: a submodule's `ignore` setting must not hide
+  # a changed gitlink the branch holds (sd:9241 review).
   git -C "$1" -c core.quotePath=false diff-tree -r --no-renames --name-only \
-    "$h_mt" "$h_bt" 2>/dev/null > "$HYG_TMP/branch.paths" || return 1
+    --ignore-submodules=none "$h_mt" "$h_bt" 2>/dev/null > "$HYG_TMP/branch.paths" || return 1
   while IFS= read -r h_path; do
     # git still quotes a name holding a quote, tab or newline; such a name
     # cannot be looked up as printed, so the branch stays.

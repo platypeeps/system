@@ -502,6 +502,32 @@ class HygieneTest(unittest.TestCase):
         self.assertTrue(wt.exists())
         self.assertNotEqual("", f.branch_sha(repo, "build/three"))
 
+    def test_an_ignored_submodule_update_does_not_prove_a_branch_landed(self):
+        """NEW (sd:9241 review). With submodule.<name>.ignore=all, git can
+        drop a changed gitlink from a diff; the branch's submodule update
+        is not on main, so the branch and its worktree stay."""
+        f = self.fixture()
+        repo = f.repo()
+        old = f.git(repo, "rev-parse", "HEAD")
+        f.commit(repo, ".gitmodules", '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n'
+                 "\tignore = all\n", "submodule")
+        f.git(repo, "update-index", "--add", "--cacheinfo", f"160000,{old},sub")
+        f.git(repo, "commit", "-q", "-m", "add sub")
+        f.git(repo, "config", "submodule.sub.ignore", "all")
+        f.git(repo, "push", "-q", "origin", "main")
+        new = f.git(repo, "rev-parse", "HEAD")
+        f.git(repo, "branch", "build/four")
+        f.git(repo, "update-index", "--cacheinfo", f"160000,{new},sub", "--add")
+        f.git(repo, "commit", "-q", "-m", "unlanded submodule update")
+        f.git(repo, "branch", "-f", "build/four", "HEAD")
+        f.git(repo, "reset", "-q", "--hard", "origin/main")
+        f.git(repo, "commit", "-q", "--allow-empty", "-m", "main moves on")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertNotEqual("", f.branch_sha(repo, "build/four"))
+
     def test_a_merged_branch_in_a_worktree_with_ignored_files_keeps_both(self):
         """NEW. Requirement 3.5: ignored files (an .env, a local database)
         are not rebuildable in general, so they keep the worktree."""
