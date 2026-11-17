@@ -81,7 +81,7 @@ STAGES="brew release shell appstore bin dotfiles envs prompts repos tmpdisk cron
 # The verbs dispatch accepts, in help's order. Help and the no-arg usage print
 # this list; three hand copies of it disagreed (sd:3548).
 VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt promote"
-KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node npm mailto release"
+KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node npm mailto release sdconfig"
 
 # Directories that hold credentials in the clear and are created world-readable
 # by the tools that own them. Codex snapshots the whole shell environment —
@@ -2731,8 +2731,32 @@ telemetry_endpoint() {
   TELEMETRY_OTEL="--otel $TELEMETRY_ENDPOINT $TELEMETRY_PROTOCOL $(hostname -s | tr '[:upper:]' '[:lower:]')"
 }
 
+# The pack settings common.sdconfig and <profile>.sdconfig name, one
+# `key value` line each (sd:9142): `sd config set` writes one this machine's
+# pack config lacks or holds differently. A `!key` line in the profile drops
+# common's. A setting no file names any more stays; unset it by hand.
+sd_settings() {
+  ss_lines=$(manifest sdconfig)
+  [ -n "$ss_lines" ] || return 0
+  ss_sd="$SD_PACK_ROOT/bin/sd"
+  if [ ! -x "$ss_sd" ]; then
+    echo "  SKIP    sd settings: no $ss_sd (the repos stage clones the pack)"
+    return 0
+  fi
+  printf '%s\n' "$ss_lines" | while read -r ss_key ss_want; do
+    ss_have=$(bound_step 30 "$ss_sd" config get "$ss_key" 2>/dev/null </dev/null) || ss_have=
+    if [ "$ss_have" = "$ss_want" ]; then
+      echo "  ok      sd setting $ss_key=$ss_want"
+    else
+      echo "  DIFFERS sd setting $ss_key is ${ss_have:-unset}, want $ss_want"
+      run bound_step 30 "$ss_sd" config set "$ss_key" "$ss_want"
+    fi
+  done
+}
+
 stage_tooling() {
   echo "== tooling"
+  sd_settings
   if command -v fnm >/dev/null 2>&1; then
     have=$(fnm ls 2>/dev/null || :)
     for v in $(node_versions); do
