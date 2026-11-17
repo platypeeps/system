@@ -170,6 +170,53 @@ class HygieneTest(unittest.TestCase):
 
         self.assertIn("LOCAL    branch local/topic", result.stdout)
 
+    def kept_fixture(self, keep):
+        """A landed branch keep/landed and an unpushed local/topic#1, with
+        `keep` written as <conf>/keep-branches (bytes, no newline added)."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "checkout", "-q", "-b", "local/topic#1")
+        f.commit(repo, "notes", "x\n", "never pushed")
+        f.git(repo, "checkout", "-q", "main")
+        f.git(repo, "branch", "keep/landed")
+        (f.folder / "keep-branches").write_bytes(keep)
+        return f, repo
+
+    def test_a_last_keep_line_without_a_newline_still_keeps(self):
+        """Review of sd:9230: `read` dropped an unterminated last line."""
+        f, repo = self.kept_fixture(b"owner/proj keep/landed")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("note: kept branch keep/landed (keep-branches)", result.stdout)
+
+    def test_a_hash_inside_a_branch_name_is_no_comment(self):
+        f, repo = self.kept_fixture(b"owner/proj local/topic#1  # a private patch\nowner/proj keep/*\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertIn("note: kept branch local/topic#1 (keep-branches)", result.stdout)
+        self.assertNotIn("LOCAL    branch local/topic#1", result.stdout)
+
+    def test_an_unreadable_keep_file_keeps_every_branch_and_fails(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/landed\n")
+        keep = f.folder / "keep-branches"
+        keep.chmod(0)
+        self.addCleanup(keep.chmod, 0o644)
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED read keep-branches", result.stdout)
+
+    def test_a_keep_line_with_one_field_is_reported(self):
+        f, repo = self.kept_fixture(b"keep/landed\nowner/proj local/*\n")
+
+        result = f.run("hygiene", expect=1)
+
+        self.assertIn("FAILED keep-branches line 1: want '<owner/name> <branch glob>'", result.stdout)
+
     def test_a_clean_fleet_reports_nothing_and_exits_0(self):
         """NEW. Requirement 9: without --apply, exit 0 when clean."""
         f = self.fixture()

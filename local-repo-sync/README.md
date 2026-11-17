@@ -400,8 +400,10 @@ safe classes:
 A branch local on purpose, such as a private patch never meant for
 upstream, goes in `<config>/repo-sync/keep-branches`, one
 `<owner/name> <branch glob>` line each (`owner/proj local/*`), `#`
-comments. Hygiene neither lists nor deletes it and prints a
-`kept branch` note instead (sd:9230).
+comments (a `#` inside a branch name stays). Hygiene neither lists nor
+deletes it and prints a `kept branch` note instead (sd:9230). A file it
+cannot read keeps every branch that run and fails; a line without both
+fields fails.
 
 Every deletion prints the branch and its tip sha with the command that
 restores it. Of the branches whose content is not on the default branch,
@@ -472,6 +474,7 @@ cp repos.personal.conf.example ~/.config/system/repo-sync/repos.personal.conf
 | `repos.personal.conf` | personal machine — for example `ha`, `platypeeps` |
 | `repos.work.conf` | work machine — for example `work` and the toolbox itself |
 | `repos.terra.conf` | terra machine — the toolbox repo and nothing else |
+| `keep-branches` | optional: branches local on purpose, one `<owner/name> <branch glob>` line each; hygiene skips them (see Hygiene) |
 
 `nightly` writes no conf and commits nothing.
 

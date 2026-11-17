@@ -2292,17 +2292,39 @@ hyg_item_number() {
     -e 's/.*-\([0-9][0-9]*\)$/\1/p' | head -1
 }
 
-# Whether `<conf>/keep-branches` names branch $2 of repo $1 (sd:9230): one
-# `<owner/name> <branch glob>` line each, `#` comments. Such a branch is local
-# on purpose (a private patch, a never-pushed experiment): hygiene neither
-# lists nor deletes it, so it stops raising the nightly alert.
+# `<conf>/keep-branches` names branches local on purpose (sd:9230): one
+# `<owner/name> <branch glob>` line each; `#` starts a comment only at a
+# line's start or after a blank, so `local/topic#1` is a branch name. Such a
+# branch is neither listed nor deleted. hyg_keep_load reads it once a run,
+# with awk (a last line without a newline still counts). It fails closed: a
+# file it cannot read keeps every branch for the run, and a line without
+# both fields is a FAILED line, never a silent no-op.
+hyg_keep_load() {
+  HYG_KEEP_ALL=0
+  : > "$HYG_TMP/keep"
+  [ -e "$CONF_DIR/keep-branches" ] || return 0
+  if ! awk '{ sub(/(^|[ \t])#.*/, ""); if (NF == 0) next
+      if (NF < 2) { print "BAD " NR; next } print $1 " " $2 }' \
+      "$CONF_DIR/keep-branches" > "$HYG_TMP/keep.all" 2>/dev/null; then
+    HYG_KEEP_ALL=1
+    hyg_fail "read keep-branches ($CONF_DIR/keep-branches): every branch kept this run"
+    return 0
+  fi
+  grep '^BAD ' "$HYG_TMP/keep.all" | while read -r _ k_n; do
+    hyg_fail "keep-branches line $k_n: want '<owner/name> <branch glob>'"
+  done
+  grep -v '^BAD ' "$HYG_TMP/keep.all" > "$HYG_TMP/keep" || :
+}
+
+# Whether the keep list names branch $2 of repo $1.
 hyg_kept() {
-  [ -f "$CONF_DIR/keep-branches" ] || return 1
-  sed 's/#.*//' "$CONF_DIR/keep-branches" | while read -r k_repo k_glob _; do
-    [ -n "$k_glob" ] && [ "$k_repo" = "$1" ] || continue
+  [ "$HYG_KEEP_ALL" = 1 ] && return 0
+  while read -r k_repo k_glob; do
+    [ "$k_repo" = "$1" ] || continue
     # shellcheck disable=SC2254 # the glob is the point
-    case "$2" in $k_glob) echo kept; break ;; esac
-  done | grep -q kept
+    case "$2" in $k_glob) return 0 ;; esac
+  done < "$HYG_TMP/keep"
+  return 1
 }
 
 hyg_repo() {
@@ -2619,6 +2641,7 @@ hygiene() {
   echo "root    : $ROOT"
   if [ "$APPLY" = 1 ]; then echo "mode    : apply"; else echo "mode    : report only (--apply acts)"; fi
   echo
+  hyg_keep_load
 
   repo_list | while read -r subdir full_repo; do
     target="$ROOT/$subdir/${full_repo##*/}"
