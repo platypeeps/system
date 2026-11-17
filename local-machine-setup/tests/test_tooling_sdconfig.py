@@ -194,6 +194,28 @@ class ToolingSdconfigTest(unittest.TestCase):
 
     # sd:9218: an `unset <key>` line unsets the key here; `!key` keeps its old
     # meaning, drop common's line only (lane review, 2026-11-17).
+    # Review round 5 of sd:9218, class: a line's key read from the wrong field.
+    def test_a_bang_line_drops_commons_unset_line_too(self):
+        self.store.write_text("sd.bundle_max=5\n")
+        (self.profiles / "common.sdconfig").write_text("unset sd.bundle_max\n")
+        (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max\n")
+
+        out = self.tooling("--apply")
+
+        self.assertEqual(self.store.read_text(), "sd.bundle_max=5\n", out)
+        self.assertNotIn("config unset", out)
+        self.assertNotIn("FAILED", out)
+
+    def test_a_fail_line_names_the_file_with_the_bad_line(self):
+        self.store.write_text("sd.gate_slots=5\n")
+        (self.profiles / "common.sdconfig").write_text("sd.gate_slots 4\nunset sd.gate_slots\n")
+        (self.profiles / "personal.sdconfig").write_text("sd.gate_slots 8\n")
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  common.sdconfig: sd.gate_slots is both set and unset", out)
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+
     def test_an_unset_line_unsets_the_key(self):
         self.store.write_text("sd.gate_slots=5\nsd.bundle_max=5\n")
         (self.profiles / "personal.sdconfig").write_text("unset sd.bundle_max  # trial over\n")

@@ -2745,16 +2745,21 @@ telemetry_endpoint() {
 sd_settings() {
   # Each key's winning line, profile over common; a key with a conflict or a
   # bad unset line anywhere becomes `<file> FAIL <reason>` instead.
-  ss_lines=$( { profile_entries common sdconfig | drop_negated "$(profile_drops "$PROFILE" sdconfig)" | sed 's/^/common /'
+  # A `!key` drops common's line for the key itself, set or unset alike:
+  # drop_negated reads a line's first word, `unset` for an unset line.
+  ss_lines=$( { profile_entries common sdconfig | sed 's/^/common /'
       profile_entries "$PROFILE" sdconfig | sed "s/^/$PROFILE /"
-    } | awk '{ if ($2 == "unset") { k = (NF < 3) ? "unset" : $3; kind = "u"
-          if (NF < 3) bad[k] = "unset needs a key"; else if (NF > 3 && !(k in bad)) bad[k] = "unset " k " takes no value" }
-        else { k = $2; kind = "s" }
+    } | SS_NEG="$(profile_drops "$PROFILE" sdconfig)" awk '
+      BEGIN { m = split(ENVIRON["SS_NEG"], a, "\n"); for (i = 1; i <= m; i++) { sub(/^[[:space:]]+/, "", a[i]); sub(/[[:space:]].*/, "", a[i]); if (a[i] != "") neg[a[i]] = 1 } }
+      { if ($2 == "unset") { k = (NF < 3) ? "unset" : $3; kind = "u" } else { k = $2; kind = "s" }
+        if ($1 == "common" && (k in neg)) next
+        if (kind == "u" && NF < 3 && !(k in bad)) { bad[k] = "unset needs a key"; badsrc[k] = $1 }
+        else if (kind == "u" && NF > 3 && !(k in bad)) { bad[k] = "unset " k " takes no value"; badsrc[k] = $1 }
         id = $1 SUBSEP k
-        if ((id in kinds) && kinds[id] != kind) bad[k] = k " is both set and unset"
-        kinds[id] = kind; src[k] = $1
+        if ((id in kinds) && kinds[id] != kind && !(k in bad)) { bad[k] = k " is both set and unset"; badsrc[k] = $1 }
+        kinds[id] = kind
         if (!(k in at)) order[++n] = k; at[k] = $0 }
-      END { for (i = 1; i <= n; i++) { k = order[i]; print (k in bad) ? src[k] " FAIL " bad[k] : at[k] } }')
+      END { for (i = 1; i <= n; i++) { k = order[i]; print (k in bad) ? badsrc[k] " FAIL " bad[k] : at[k] } }')
   [ -n "$ss_lines" ] || return 0
   ss_sd="$SD_PACK_ROOT/bin/sd"
   if [ ! -x "$ss_sd" ]; then
