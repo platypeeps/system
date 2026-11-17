@@ -2303,18 +2303,26 @@ hyg_keep_load() {
   HYG_KEEP_ALL=0
   k_file="$CONF_DIR/keep-branches"
   rm -f "$HYG_TMP/keep" "$HYG_TMP/keep.bad"
+  # A config folder that cannot be searched hides the file: no list, keep all.
+  if [ -d "$CONF_DIR" ] && ! [ -x "$CONF_DIR" ]; then
+    echo "=== keep-branches"
+    HYG_KEEP_ALL=1
+    hyg_fail "read keep-branches ($k_file): $CONF_DIR cannot be searched; every branch kept this run"
+    return 0
+  fi
   if ! [ -e "$k_file" ] && ! [ -L "$k_file" ]; then
     : > "$HYG_TMP/keep"
     return 0
   fi
   echo "=== keep-branches"
-  # A rule is exactly `<owner/name> <glob>`; any other line is reported by
+  # A rule is exactly `<owner/name> <glob>`, the glob using only `*` and
+  # `?`: a `[` class sh cannot parse matches nothing. Any other line is reported by
   # number in keep.bad, out of band. A dangling link, a folder, an
   # unreadable file or a failed write (a full disk) is no list: keep all.
   if ! { [ -f "$k_file" ] && [ -r "$k_file" ]; } || ! awk -v ok="$HYG_TMP/keep" -v bad="$HYG_TMP/keep.bad" '
       BEGIN { printf "" > ok; printf "" > bad }
       { sub(/\r$/, ""); sub(/(^|[ \t])#.*/, ""); if (NF == 0) next
-        if (NF == 2 && $1 ~ /^[^\/]+\/[^\/]+$/) print $1 " " $2 > ok; else print NR > bad }
+        if (NF == 2 && $1 ~ /^[^\/]+\/[^\/]+$/ && $2 !~ /[][\\]/) print $1 " " $2 > ok; else print NR > bad }
       END { if (close(ok) != 0 || close(bad) != 0) exit 1 }' "$k_file" 2>/dev/null \
       || ! [ -r "$HYG_TMP/keep" ] || ! [ -r "$HYG_TMP/keep.bad" ]; then
     HYG_KEEP_ALL=1
@@ -2324,9 +2332,11 @@ hyg_keep_load() {
   # A line that is no rule may be the rule for a branch: keep all.
   if [ -s "$HYG_TMP/keep.bad" ]; then
     HYG_KEEP_ALL=1
-    while read -r k_n; do
-      hyg_fail "keep-branches line $k_n: want '<owner/name> <branch glob>'; every branch kept this run"
-    done < "$HYG_TMP/keep.bad"
+    # The first five lines by number, then a count: a pasted log is one finding.
+    k_lines=$(head -5 "$HYG_TMP/keep.bad" | tr '\n' ' ' | sed 's/ $//; s/ /, /g')
+    k_more=$(($(wc -l < "$HYG_TMP/keep.bad") - 5))
+    [ "$k_more" -gt 0 ] && k_lines="$k_lines and $k_more more"
+    hyg_fail "keep-branches line $k_lines: want '<owner/name> <glob>' (glob: * and ? only); every branch kept this run"
   fi
 }
 

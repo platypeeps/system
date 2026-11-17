@@ -215,7 +215,7 @@ class HygieneTest(unittest.TestCase):
 
         result = f.run("hygiene", expect=1)
 
-        self.assertIn("FAILED keep-branches line 1: want '<owner/name> <branch glob>'", result.stdout)
+        self.assertIn("FAILED keep-branches line 1: want '<owner/name> <glob>'", result.stdout)
 
     # Review round 2 of sd:9230, class: the keep file fails open. Every case
     # below keeps every branch for the run and reports a failure.
@@ -282,6 +282,40 @@ class HygieneTest(unittest.TestCase):
 
         self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
         self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_a_keep_glob_with_a_bracket_keeps_every_branch(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/[landed\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_an_unsearchable_config_folder_keeps_every_branch(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/other\n")
+        conf = f.tmp / "conf"
+        conf.mkdir()
+        for c in f.folder.iterdir():
+            if c.is_file() and (c.suffix == ".conf" or c.name == "keep-branches"):
+                shutil.copy(c, conf / c.name)
+        # The list comes from the database, as on a hub; only the keep file hides.
+        shutil.copy(f.folder / f"repos.{f.profile}.conf", f.db / "clones")
+        conf.chmod(0o600)
+        self.addCleanup(conf.chmod, 0o755)
+
+        result = f.run("hygiene", "--apply", expect=1, extra_env={"REPO_SYNC_CONF_DIR": str(conf)})
+
+        conf.chmod(0o755)
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("cannot be searched", result.stdout)
+
+    def test_many_bad_keep_lines_are_one_finding(self):
+        f, repo = self.kept_fixture(b"x\n" * 9)
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertEqual(result.stdout.count("FAILED keep-branches"), 1, result.stdout)
+        self.assertIn("line 1, 2, 3, 4, 5 and 4 more", result.stdout)
 
     def test_a_keep_rule_named_bad_is_a_plain_rule(self):
         f, repo = self.kept_fixture(b"BAD/x 7\nowner/proj keep/landed\n")

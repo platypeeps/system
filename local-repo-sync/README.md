@@ -402,7 +402,8 @@ upstream, goes in `<config>/repo-sync/keep-branches`, one
 `<owner/name> <branch glob>` line each (`owner/proj local/*`), `#`
 comments (a `#` inside a branch name stays). Hygiene neither lists nor
 deletes it and prints a `kept branch` note instead (sd:9230). A file it
-cannot read, or any line that is not exactly `<owner/name> <glob>`,
+cannot read, or any line that is not exactly `<owner/name> <glob>` (the glob
+uses `*` and `?` only),
 keeps every branch that run and fails, so one typo pauses branch
 hygiene for the whole fleet until it is fixed.
 
