@@ -141,6 +141,197 @@ class HygieneTest(unittest.TestCase):
         self.assertIn("hygiene", result.stdout)
         self.assertIn("--apply", result.stdout)
 
+    def test_a_kept_branch_is_neither_listed_nor_deleted(self):
+        """sd:9230: a branch local on purpose stops raising the nightly alert."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "checkout", "-q", "-b", "local/topic")
+        f.commit(repo, "notes", "x\n", "never pushed")
+        f.git(repo, "checkout", "-q", "main")
+        f.git(repo, "branch", "keep/landed")
+        (f.folder / "keep-branches").write_text(
+            "# local on purpose\nowner/proj local/*\nowner/proj keep/landed\nowner/other main-*\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertNotIn("LOCAL    branch local/topic", result.stdout)
+        self.assertIn("note: kept branch local/topic (keep-branches)", result.stdout)
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+
+    def test_a_keep_line_for_another_repo_does_not_apply(self):
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "checkout", "-q", "-b", "local/topic")
+        f.commit(repo, "notes", "x\n", "never pushed")
+        f.git(repo, "checkout", "-q", "main")
+        (f.folder / "keep-branches").write_text("owner/other local/*\n")
+
+        result = f.run("hygiene", expect=1)
+
+        self.assertIn("LOCAL    branch local/topic", result.stdout)
+
+    def kept_fixture(self, keep):
+        """A landed branch keep/landed and an unpushed local/topic#1, with
+        `keep` written as <conf>/keep-branches (bytes, no newline added)."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "checkout", "-q", "-b", "local/topic#1")
+        f.commit(repo, "notes", "x\n", "never pushed")
+        f.git(repo, "checkout", "-q", "main")
+        f.git(repo, "branch", "keep/landed")
+        (f.folder / "keep-branches").write_bytes(keep)
+        return f, repo
+
+    def test_a_last_keep_line_without_a_newline_still_keeps(self):
+        """Review of sd:9230: `read` dropped an unterminated last line."""
+        f, repo = self.kept_fixture(b"owner/proj keep/landed")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("note: kept branch keep/landed (keep-branches)", result.stdout)
+
+    def test_a_hash_inside_a_branch_name_is_no_comment(self):
+        f, repo = self.kept_fixture(b"owner/proj local/topic#1  # a private patch\nowner/proj keep/*\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertIn("note: kept branch local/topic#1 (keep-branches)", result.stdout)
+        self.assertNotIn("LOCAL    branch local/topic#1", result.stdout)
+
+    def test_an_unreadable_keep_file_keeps_every_branch_and_fails(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/landed\n")
+        keep = f.folder / "keep-branches"
+        keep.chmod(0)
+        self.addCleanup(keep.chmod, 0o644)
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED read keep-branches", result.stdout)
+
+    def test_a_keep_line_with_one_field_is_reported(self):
+        f, repo = self.kept_fixture(b"keep/landed\nowner/proj local/*\n")
+
+        result = f.run("hygiene", expect=1)
+
+        self.assertIn("FAILED keep-branches line 1: want '<owner/name> <glob>'", result.stdout)
+
+    # Review round 2 of sd:9230, class: the keep file fails open. Every case
+    # below keeps every branch for the run and reports a failure.
+    def test_a_dangling_keep_symlink_keeps_every_branch_and_fails(self):
+        f, repo = self.kept_fixture(b"")
+        keep = f.folder / "keep-branches"
+        keep.unlink()
+        keep.symlink_to(f.folder / "no-such-file")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED read keep-branches", result.stdout)
+
+    def test_a_keep_path_that_is_a_folder_keeps_every_branch_and_fails(self):
+        f, repo = self.kept_fixture(b"")
+        keep = f.folder / "keep-branches"
+        keep.unlink()
+        keep.mkdir()
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED read keep-branches", result.stdout)
+
+    def test_a_crlf_keep_line_still_keeps(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/landed\r\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("note: kept branch keep/landed (keep-branches)", result.stdout)
+
+    def test_a_malformed_keep_line_keeps_every_branch_under_apply(self):
+        f, repo = self.kept_fixture(b"keep/landed\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_a_keep_failure_is_no_clean_report_and_sits_under_a_header(self):
+        f, repo = self.kept_fixture(b"keep/landed\n")
+
+        result = f.run("hygiene", expect=1)
+
+        self.assertNotIn("hygiene : clean", result.stdout)
+        self.assertRegex(result.stdout, r"=== keep-branches\n  FAILED keep-branches line 1")
+
+    # Review round 3 of sd:9230, class: a keep rule the parser cannot vouch
+    # for still lets the run delete. Each case keeps every branch and fails.
+    def test_a_keep_rule_without_an_owner_keeps_every_branch(self):
+        f, repo = self.kept_fixture(b"proj keep/other\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_a_keep_rule_with_a_third_field_keeps_every_branch(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/other extra\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_a_keep_glob_with_a_bracket_keeps_every_branch(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/[landed\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_an_unsearchable_config_folder_keeps_every_branch(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/other\n")
+        conf = f.tmp / "conf"
+        conf.mkdir()
+        for c in f.folder.iterdir():
+            if c.is_file() and (c.suffix == ".conf" or c.name == "keep-branches"):
+                shutil.copy(c, conf / c.name)
+        # The list comes from the database, as on a hub; only the keep file hides.
+        shutil.copy(f.folder / f"repos.{f.profile}.conf", f.db / "clones")
+        conf.chmod(0o600)
+        self.addCleanup(conf.chmod, 0o755)
+
+        result = f.run("hygiene", "--apply", expect=1, extra_env={"REPO_SYNC_CONF_DIR": str(conf)})
+
+        conf.chmod(0o755)
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("cannot be searched", result.stdout)
+
+    def test_many_bad_keep_lines_are_one_finding(self):
+        f, repo = self.kept_fixture(b"x\n" * 9)
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertEqual(result.stdout.count("FAILED keep-branches"), 1, result.stdout)
+        self.assertIn("line 1, 2, 3, 4, 5 and 4 more", result.stdout)
+
+    def test_a_keep_rule_named_bad_is_a_plain_rule(self):
+        f, repo = self.kept_fixture(b"BAD/x 7\nowner/proj keep/landed\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertNotIn("FAILED", result.stdout)
+        self.assertIn("note: kept branch keep/landed (keep-branches)", result.stdout)
+
+    def test_a_branch_kept_by_a_failed_load_says_so(self):
+        f, repo = self.kept_fixture(b"keep/landed\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertIn("note: kept branch keep/landed (keep-branches did not load)", result.stdout)
+
     def test_a_clean_fleet_reports_nothing_and_exits_0(self):
         """NEW. Requirement 9: without --apply, exit 0 when clean."""
         f = self.fixture()

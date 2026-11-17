@@ -2264,8 +2264,70 @@ hyg_item_number() {
     -e 's/.*-\([0-9][0-9]*\)$/\1/p' | head -1
 }
 
+# `<conf>/keep-branches` names branches local on purpose (sd:9230): one
+# `<owner/name> <branch glob>` line each; `#` starts a comment only at a
+# line's start or after a blank, so `local/topic#1` is a branch name. Such a
+# branch is neither listed nor deleted. hyg_keep_load reads it once a run,
+# with awk (a last line without a newline still counts). It fails closed: a
+# file it cannot read keeps every branch for the run, and a line without
+# both fields is a FAILED line, never a silent no-op.
+hyg_keep_load() {
+  HYG_KEEP_ALL=0
+  k_file="$CONF_DIR/keep-branches"
+  rm -f "$HYG_TMP/keep" "$HYG_TMP/keep.bad"
+  # A config folder that cannot be searched hides the file: no list, keep all.
+  if [ -d "$CONF_DIR" ] && ! [ -x "$CONF_DIR" ]; then
+    echo "=== keep-branches"
+    HYG_KEEP_ALL=1
+    hyg_fail "read keep-branches ($k_file): $CONF_DIR cannot be searched; every branch kept this run"
+    return 0
+  fi
+  if ! [ -e "$k_file" ] && ! [ -L "$k_file" ]; then
+    : > "$HYG_TMP/keep"
+    return 0
+  fi
+  echo "=== keep-branches"
+  # A rule is exactly `<owner/name> <glob>`, the glob using only `*` and
+  # `?`: a `[` class sh cannot parse matches nothing. Any other line is reported by
+  # number in keep.bad, out of band. A dangling link, a folder, an
+  # unreadable file or a failed write (a full disk) is no list: keep all.
+  if ! { [ -f "$k_file" ] && [ -r "$k_file" ]; } || ! awk -v ok="$HYG_TMP/keep" -v bad="$HYG_TMP/keep.bad" '
+      BEGIN { printf "" > ok; printf "" > bad }
+      { sub(/\r$/, ""); sub(/(^|[ \t])#.*/, ""); if (NF == 0) next
+        if (NF == 2 && $1 ~ /^[^\/]+\/[^\/]+$/ && $2 !~ /[][\\]/) print $1 " " $2 > ok; else print NR > bad }
+      END { if (close(ok) != 0 || close(bad) != 0) exit 1 }' "$k_file" 2>/dev/null \
+      || ! [ -r "$HYG_TMP/keep" ] || ! [ -r "$HYG_TMP/keep.bad" ]; then
+    HYG_KEEP_ALL=1
+    hyg_fail "read keep-branches ($k_file): every branch kept this run"
+    return 0
+  fi
+  # A line that is no rule may be the rule for a branch: keep all.
+  if [ -s "$HYG_TMP/keep.bad" ]; then
+    HYG_KEEP_ALL=1
+    # The first five lines by number, then a count: a pasted log is one finding.
+    k_lines=$(head -5 "$HYG_TMP/keep.bad" | tr '\n' ' ' | sed 's/ $//; s/ /, /g')
+    k_more=$(($(wc -l < "$HYG_TMP/keep.bad") - 5))
+    [ "$k_more" -gt 0 ] && k_lines="$k_lines and $k_more more"
+    hyg_fail "keep-branches line $k_lines: want '<owner/name> <glob>' (glob: * and ? only); every branch kept this run"
+  fi
+}
+
+# Whether the keep list names branch $2 of repo $1.
+hyg_kept() {
+  [ "$HYG_KEEP_ALL" = 1 ] && return 0
+  # The parsed list must be there: a missing copy keeps, never deletes.
+  [ -r "$HYG_TMP/keep" ] || return 0
+  while read -r k_repo k_glob; do
+    [ "$k_repo" = "$1" ] || continue
+    # shellcheck disable=SC2254 # the glob is the point
+    case "$2" in $k_glob) return 0 ;; esac
+  done < "$HYG_TMP/keep"
+  return 1
+}
+
 hyg_repo() {
   d=$1
+  h_repo_name=$2
   echo "=== $2 ($d)"
 
   # 3.3: remote-tracking refs for deleted remote branches. The lines are
@@ -2406,6 +2468,10 @@ hyg_repo() {
   HYG_LANE_ASKED=0
   while IFS=$US read -r b_name b_sha b_track b_up; do
     [ "$b_name" = "$def_name" ] && continue
+    if hyg_kept "$h_repo_name" "$b_name"; then
+      if [ "$HYG_KEEP_ALL" = 1 ]; then hyg_note "kept branch $b_name (keep-branches did not load)"; else hyg_note "kept branch $b_name (keep-branches)"; fi
+      continue
+    fi
     # The lane's proof is asked only while a delete could follow from it.
     if ! h_how=$(hyg_merged "$d" "refs/heads/$b_name" "$def_ref"); then
       h_how=""
@@ -2573,6 +2639,9 @@ hygiene() {
   echo "root    : $ROOT"
   if [ "$APPLY" = 1 ]; then echo "mode    : apply"; else echo "mode    : report only (--apply acts)"; fi
   echo
+  # In this shell, so HYG_KEEP_ALL holds; printed, under its own header,
+  # only when it failed, so the nightly report names the failure.
+  hyg_section hyg_keep_load
 
   repo_list | while read -r subdir full_repo; do
     target="$ROOT/$subdir/${full_repo##*/}"
@@ -2589,10 +2658,11 @@ hygiene() {
   if [ "$APPLY" = 1 ]; then
     echo "hygiene : $h_acted done, $h_listed listed, $h_failed failed"
     [ "$h_failed" -eq 0 ] || return 1
-  elif [ "$h_found" -eq 0 ] && [ "$h_listed" -eq 0 ]; then
+  elif [ "$h_found" -eq 0 ] && [ "$h_listed" -eq 0 ] && [ "$h_failed" -eq 0 ]; then
     echo "hygiene : clean"
   else
-    echo "hygiene : $h_found to act on with --apply, $h_listed listed"
+    h_more=; [ "$h_failed" -eq 0 ] || h_more=", $h_failed failed"
+    echo "hygiene : $h_found to act on with --apply, $h_listed listed$h_more"
     return 1
   fi
 }
