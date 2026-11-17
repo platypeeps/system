@@ -2734,24 +2734,27 @@ telemetry_endpoint() {
 # The pack settings common.sdconfig and <profile>.sdconfig name, one
 # `key value` line each (sd:9142): `sd config set` writes one this machine's
 # pack config lacks or holds differently. The profile's line for a key wins
-# over common's (manifest's `sort -u` would keep both). A profile's `!key`
-# line drops common's and unsets the key here (sd:9218); a profile that also
-# sets it FAILS and writes nothing. A setting no file names any more stays.
-# Only this machine's own `sd.*` keys pass: a fleet or plugin key is one
-# workflow database row for every machine, so one profile line would change
-# them all. The pack's sd_lib names them; nothing reads the database or hub.
+# over common's (manifest's `sort -u` would keep both); a profile's `!key`
+# line drops common's and leaves this machine's value alone. An
+# `unset key` line unsets the key here (sd:9218): only this machine's own
+# `sd.*` keys, which the pack's sd_lib names, since a fleet or plugin key is
+# one workflow database row for every machine. A key a file both sets and
+# unsets, or whose unset line is malformed, FAILS and writes nothing.
 # Only a read that answers "not set" counts as unset: any other failed read,
 # or a line with no value, is a FAILED line and writes nothing.
 sd_settings() {
-  ss_unsets=$(profile_drops "$PROFILE" sdconfig | awk 'NF { print $1 }')
-  ss_lines=$( { profile_entries common sdconfig | drop_negated "$ss_unsets" | sed 's/^/common /'
+  # Each key's winning line, profile over common; a key with a conflict or a
+  # bad unset line anywhere becomes `<file> FAIL <reason>` instead.
+  ss_lines=$( { profile_entries common sdconfig | drop_negated "$(profile_drops "$PROFILE" sdconfig)" | sed 's/^/common /'
       profile_entries "$PROFILE" sdconfig | sed "s/^/$PROFILE /"
-    } | awk '{ k = $2; if (!(k in at)) order[++n] = k; at[k] = $0 } END { for (i = 1; i <= n; i++) print at[order[i]] }'
-    # One unset line per key; a key any of whose `!` lines carries a value
-    # keeps that value, so the whole key fails and nothing is written for it.
-    profile_drops "$PROFILE" sdconfig | awk 'NF { k = $1; if (!(k in seen)) order[++n] = k; seen[k] = 1; if (NF > 1) bad[k] = $2 }
-      END { for (i = 1; i <= n; i++) print "!" order[i] ((order[i] in bad) ? " " bad[order[i]] : "") }' |
-      sed "s/^/$PROFILE /")
+    } | awk '{ if ($2 == "unset") { k = (NF < 3) ? "unset" : $3; kind = "u"
+          if (NF < 3) bad[k] = "unset needs a key"; else if (NF > 3 && !(k in bad)) bad[k] = "unset " k " takes no value" }
+        else { k = $2; kind = "s" }
+        id = $1 SUBSEP k
+        if ((id in kinds) && kinds[id] != kind) bad[k] = k " is both set and unset"
+        kinds[id] = kind; src[k] = $1
+        if (!(k in at)) order[++n] = k; at[k] = $0 }
+      END { for (i = 1; i <= n; i++) { k = order[i]; print (k in bad) ? src[k] " FAIL " bad[k] : at[k] } }')
   [ -n "$ss_lines" ] || return 0
   ss_sd="$SD_PACK_ROOT/bin/sd"
   if [ ! -x "$ss_sd" ]; then
@@ -2759,26 +2762,26 @@ sd_settings() {
     return 0
   fi
   ss_err=$(mktemp)
-  if ! ss_mine=$(bound_step 30 python3 -I -c 'import sys
+  # The key list gates unset lines only; a failed load leaves set lines working.
+  ss_mine=
+  if printf '%s\n' "$ss_lines" | awk '$2 == "unset" { f = 1 } END { exit !f }'; then
+    if ! ss_mine=$(bound_step 30 python3 -I -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import sd_lib
 print("\n".join("sd." + k for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS))))' "$SD_PACK_ROOT/bin" 2>"$ss_err" </dev/null); then
-    note_failure "sd settings: the pack's key list did not load: $(grep -v '^\[step ' "$ss_err" | tail -1)" 1
-    rm -f "$ss_err"
-    return 0
+      note_failure "sd settings: the pack's key list did not load: $(grep -v '^\[step ' "$ss_err" | tail -1)" 1
+      ss_mine=
+    fi
   fi
   printf '%s\n' "$ss_lines" | while read -r ss_from ss_key ss_want; do
+    if [ "$ss_key" = FAIL ]; then
+      note_failure "$ss_from.sdconfig: $ss_want" 1
+      continue
+    fi
     ss_unset=
-    case "$ss_key" in '!'*) ss_unset=1 ss_key=${ss_key#!} ;; esac
-    if printf '%s\n' "$ss_unsets" | grep -qxF -- "$ss_key" && printf '%s\n' "$ss_lines" | awk -v k="$ss_key" '$2 == k { f = 1 } END { exit !f }'; then
-      [ -z "$ss_unset" ] || note_failure "$ss_from.sdconfig: $ss_key is both set and unset" 1
-      continue
-    fi
-    if [ -n "$ss_unset" ] && [ -n "$ss_want" ]; then
-      note_failure "$ss_from.sdconfig: !$ss_key takes no value" 1
-      continue
-    fi
-    if [ -z "$ss_unset" ] && [ -z "$ss_want" ]; then
+    if [ "$ss_key" = unset ]; then
+      ss_unset=1 ss_key=$ss_want ss_want=
+    elif [ -z "$ss_want" ]; then
       note_failure "$ss_from.sdconfig: $ss_key has no value" 1
       continue
     fi
@@ -2796,7 +2799,10 @@ print("\n".join("sd." + k for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.F
       note_failure "$ss_from.sdconfig: $ss_key is $ss_owner to set" 1
       continue
     fi
-    if ! printf '%s\n' "$ss_mine" | grep -qxF -- "$ss_key"; then
+    if [ -n "$ss_unset" ] && [ -z "$ss_mine" ]; then
+      continue  # the key list did not load: FAILED above, and nothing is unset
+    fi
+    if [ -n "$ss_unset" ] && ! printf '%s\n' "$ss_mine" | grep -qxF -- "$ss_key"; then
       note_failure "$ss_from.sdconfig: $ss_key is no per-machine sd setting (a fleet or plugin key is one row for every machine)" 1
       continue
     fi

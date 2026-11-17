@@ -192,10 +192,11 @@ class ToolingSdconfigTest(unittest.TestCase):
                 self.assertIn(want, out)
                 (self.profiles / f"personal.{kind}").unlink()
 
-    def test_a_profile_bang_line_unsets_the_key(self):
-        """sd:9218: system sd:9110 reverts sd.bundle_max on one machine."""
+    # sd:9218: an `unset <key>` line unsets the key here; `!key` keeps its old
+    # meaning, drop common's line only (lane review, 2026-11-17).
+    def test_an_unset_line_unsets_the_key(self):
         self.store.write_text("sd.gate_slots=5\nsd.bundle_max=5\n")
-        (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max  # trial over\n")
+        (self.profiles / "personal.sdconfig").write_text("unset sd.bundle_max  # trial over\n")
 
         dry = self.tooling()
         self.assertIn("  DIFFERS sd setting sd.bundle_max is 5, want unset", dry)
@@ -205,19 +206,29 @@ class ToolingSdconfigTest(unittest.TestCase):
         self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
         self.assertIn("  ok      sd setting sd.bundle_max unset", self.tooling())
 
-    def test_a_bang_line_also_drops_common_and_writes_nothing_else(self):
-        self.store.write_text("sd.gate_slots=5\n")
+    def test_a_bang_line_only_drops_common_and_keeps_this_machines_value(self):
+        self.store.write_text("sd.gate_slots=5\nsd.bundle_max=5\n")
         (self.profiles / "common.sdconfig").write_text("sd.bundle_max 4\n")
         (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max\n")
 
         out = self.tooling("--apply")
 
-        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\nsd.bundle_max=5\n", out)
         self.assertNotIn("want 4", out)
+        self.assertNotIn("config unset", out)
+
+    def test_a_profile_unset_line_wins_over_commons_value(self):
+        self.store.write_text("sd.gate_slots=5\nsd.bundle_max=4\n")
+        (self.profiles / "common.sdconfig").write_text("sd.bundle_max 4\n")
+        (self.profiles / "personal.sdconfig").write_text("unset sd.bundle_max\n")
+
+        out = self.tooling("--apply")
+
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
 
     def test_a_key_both_set_and_unset_fails_and_writes_nothing(self):
         self.store.write_text("sd.bundle_max=5\n")
-        (self.profiles / "personal.sdconfig").write_text("sd.bundle_max 4\n!sd.bundle_max\n")
+        (self.profiles / "personal.sdconfig").write_text("sd.bundle_max 4\nunset sd.bundle_max\n")
 
         out = self.tooling("--apply")
 
@@ -226,7 +237,7 @@ class ToolingSdconfigTest(unittest.TestCase):
 
     def test_an_owned_key_is_never_unset(self):
         self.store.write_text("sd.bulk_storage_root=/nas\n")
-        (self.profiles / "personal.sdconfig").write_text("!sd.bulk_storage_root\n")
+        (self.profiles / "personal.sdconfig").write_text("unset sd.bulk_storage_root\n")
 
         out = self.tooling("--apply")
 
@@ -235,7 +246,7 @@ class ToolingSdconfigTest(unittest.TestCase):
 
     def test_a_failed_read_never_unsets(self):
         self.store.write_text("sd.bundle_max=5\n")
-        (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max\n")
+        (self.profiles / "personal.sdconfig").write_text("unset sd.bundle_max\n")
         self.get_fails = "1"
 
         out = self.tooling("--apply")
@@ -243,55 +254,47 @@ class ToolingSdconfigTest(unittest.TestCase):
         self.assertIn("  FAILED  sd config get sd.bundle_max", out)
         self.assertEqual(self.store.read_text(), "sd.bundle_max=5\n", out)
 
-    def test_a_fleet_key_is_never_set_or_unset(self):
-        """Review of sd:9218: a fleet key's row serves every machine, so one profile would change them all."""
-        self.store.write_text("sd.copilot_review=never\nsd.fleet_owners=example\n")
-        (self.profiles / "personal.sdconfig").write_text("!sd.copilot_review\nsd.fleet_owners operator\n")
+    def test_a_fleet_plugin_or_undeclared_key_is_never_unset(self):
+        self.store.write_text("sd.copilot_review=never\n")
+        (self.profiles / "personal.sdconfig").write_text(
+            "unset sd.copilot_review\nunset plugin.thing\nunset sd.no_such_key\n")
 
         out = self.tooling("--apply")
 
-        self.assertIn("  FAILED  personal.sdconfig: sd.copilot_review is no per-machine sd setting", out)
-        self.assertIn("  FAILED  personal.sdconfig: sd.fleet_owners is no per-machine sd setting", out)
-        self.assertEqual(self.store.read_text(), "sd.copilot_review=never\nsd.fleet_owners=example\n", out)
+        for key in ("sd.copilot_review", "plugin.thing", "sd.no_such_key"):
+            self.assertIn(f"  FAILED  personal.sdconfig: {key} is no per-machine sd setting", out)
+        self.assertNotIn("config unset", out)
+        self.assertEqual(self.store.read_text(), "sd.copilot_review=never\n", out)
 
-    def test_a_plugin_or_undeclared_key_is_refused(self):
-        (self.profiles / "personal.sdconfig").write_text("plugin.thing 1\nsd.no_such_key 2\n")
-
-        out = self.tooling("--apply")
-
-        self.assertIn("  FAILED  personal.sdconfig: plugin.thing is no per-machine sd setting", out)
-        self.assertIn("  FAILED  personal.sdconfig: sd.no_such_key is no per-machine sd setting", out)
-        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
-
-    def test_an_unloadable_key_list_writes_nothing(self):
+    def test_an_unloadable_key_list_fails_unset_lines_and_still_sets(self):
+        """Lane review of sd:9218: the key list gates unset lines only, not the whole file."""
         self.write_sd_lib("raise ImportError('example')\n")
-        (self.profiles / "personal.sdconfig").write_text("sd.gate_slots 3\n")
+        self.store.write_text("sd.gate_slots=5\nsd.bundle_max=5\n")
+        (self.profiles / "personal.sdconfig").write_text("sd.gate_slots 3\nunset sd.bundle_max\n")
 
         out = self.tooling("--apply")
 
         self.assertIn("  FAILED  sd settings: the pack's key list did not load: ImportError: example", out)
         self.assertNotIn("Traceback", out)
-        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+        self.assertEqual(sorted(self.store.read_text().splitlines()), ["sd.bundle_max=5", "sd.gate_slots=3"], out)
 
-    def test_a_bang_line_with_a_value_fails_and_writes_nothing(self):
+    def test_an_unset_line_with_a_value_or_no_key_fails(self):
         self.store.write_text("sd.bundle_max=5\n")
-        (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max 4\n")
+        (self.profiles / "personal.sdconfig").write_text("unset sd.bundle_max 4\nunset\n")
 
         out = self.tooling("--apply")
 
-        self.assertIn("  FAILED  personal.sdconfig: !sd.bundle_max takes no value", out)
+        self.assertIn("  FAILED  personal.sdconfig: unset sd.bundle_max takes no value", out)
+        self.assertIn("  FAILED  personal.sdconfig: unset needs a key", out)
         self.assertEqual(self.store.read_text(), "sd.bundle_max=5\n", out)
 
-    def test_one_bad_bang_line_stops_every_write_for_its_key(self):
-        """Review round 3 of sd:9218: a valid !key line beside a bad one still unset the key."""
+    def test_one_bad_unset_line_stops_every_write_for_its_key(self):
         self.store.write_text("sd.bundle_max=5\n")
-        (self.profiles / "common.sdconfig").write_text("sd.gate_slots 3\n")
-        (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max 4\n!sd.bundle_max\n!sd.gate_slots 2\n")
+        (self.profiles / "personal.sdconfig").write_text("unset sd.bundle_max 4\nunset sd.bundle_max\n")
 
         out = self.tooling("--apply")
 
-        self.assertIn("  FAILED  personal.sdconfig: !sd.bundle_max takes no value", out)
-        self.assertIn("  FAILED  personal.sdconfig: !sd.gate_slots takes no value", out)
+        self.assertIn("  FAILED  personal.sdconfig: unset sd.bundle_max takes no value", out)
         self.assertNotIn("config unset", out)
         self.assertEqual(self.store.read_text(), "sd.bundle_max=5\n", out)
 
