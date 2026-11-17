@@ -2754,6 +2754,12 @@ sd_settings() {
       note_failure "$ss_from.sdconfig: $ss_key has no value" 1
       continue
     fi
+    # The bulkmove stage sets this one to where it moved the data; a profile
+    # line would point it back at what that stage deleted.
+    if [ "$ss_key" = sd.bulk_storage_root ]; then
+      note_failure "$ss_from.sdconfig: sd.bulk_storage_root is the bulkmove stage's to set" 1
+      continue
+    fi
     # stderr apart: a warning on a good read is no part of the value.
     ss_rc=0
     ss_have=$(bound_step 30 "$ss_sd" config get "$ss_key" 2>"$ss_err" </dev/null) || ss_rc=$?
@@ -6108,7 +6114,7 @@ cmd_report() {
 
   report_list() {
     case "$2" in
-      cron|macos|iterm2|spotlight|mailto)
+      cron|macos|iterm2|spotlight|mailto|sdconfig)
         profile_entries "$1" "$2" | sed 's/^/      /' ;;
       *)
         if command -v column >/dev/null 2>&1; then
