@@ -2733,18 +2733,34 @@ telemetry_endpoint() {
 
 # The pack settings common.sdconfig and <profile>.sdconfig name, one
 # `key value` line each (sd:9142): `sd config set` writes one this machine's
-# pack config lacks or holds differently. A `!key` line in the profile drops
-# common's. A setting no file names any more stays; unset it by hand.
+# pack config lacks or holds differently. The profile's line for a key wins
+# over common's (manifest's `sort -u` would keep both), and a `!key` line
+# drops common's. A setting no file names any more stays; unset it by hand.
+# Only a read that answers "not set" counts as unset: any other failed read,
+# or a line with no value, is a FAILED line and writes nothing.
 sd_settings() {
-  ss_lines=$(manifest sdconfig)
+  ss_lines=$( { profile_entries common sdconfig | drop_negated "$(profile_drops "$PROFILE" sdconfig)" | sed 's/^/common /'
+      profile_entries "$PROFILE" sdconfig | sed "s/^/$PROFILE /"
+    } | awk '{ k = $2; if (!(k in at)) order[++n] = k; at[k] = $0 } END { for (i = 1; i <= n; i++) print at[order[i]] }')
   [ -n "$ss_lines" ] || return 0
   ss_sd="$SD_PACK_ROOT/bin/sd"
   if [ ! -x "$ss_sd" ]; then
     echo "  SKIP    sd settings: no $ss_sd (the repos stage clones the pack)"
     return 0
   fi
-  printf '%s\n' "$ss_lines" | while read -r ss_key ss_want; do
-    ss_have=$(bound_step 30 "$ss_sd" config get "$ss_key" 2>/dev/null </dev/null) || ss_have=
+  printf '%s\n' "$ss_lines" | while read -r ss_from ss_key ss_want; do
+    if [ -z "$ss_want" ]; then
+      note_failure "$ss_from.sdconfig: $ss_key has no value" 1
+      continue
+    fi
+    ss_rc=0
+    ss_have=$(bound_step 30 "$ss_sd" config get "$ss_key" 2>&1 </dev/null) || ss_rc=$?
+    if [ "$ss_rc" -ne 0 ]; then
+      case "$ss_have" in
+        *"$ss_key is not set"*) ss_have= ;;
+        *) note_failure "sd config get $ss_key: $(printf '%s\n' "$ss_have" | head -1)" "$ss_rc"; continue ;;
+      esac
+    fi
     if [ "$ss_have" = "$ss_want" ]; then
       echo "  ok      sd setting $ss_key=$ss_want"
     else

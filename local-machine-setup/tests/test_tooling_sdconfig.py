@@ -19,11 +19,15 @@ HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
 
-# `config get` prints the stored value or exits 1; `config set` stores it.
+# As the real one: `config get` prints the value, or says "is not set" and
+# exits 1; with $SD_GET_FAILS it fails as a locked database would.
 SD_STUB = r"""#!/bin/sh
 [ "$1" = config ] || exit 2
 case "$2" in
-  get) v=$(sed -n "s/^$3=//p" "$SD_STORE" 2>/dev/null); [ -n "$v" ] || exit 1; echo "$v" ;;
+  get) [ -z "$SD_GET_FAILS" ] || { echo "sd: database is locked" >&2; exit 2; }
+       v=$(sed -n "s/^$3=//p" "$SD_STORE" 2>/dev/null)
+       [ -n "$v" ] || { echo "sd: $3 is not set (help). Run:" >&2; exit 1; }
+       echo "$v" ;;
   set) grep -v "^$3=" "$SD_STORE" > "$SD_STORE.new" 2>/dev/null || :
        echo "$3=$4" >> "$SD_STORE.new"; mv "$SD_STORE.new" "$SD_STORE" ;;
   *) exit 2 ;;
@@ -60,6 +64,7 @@ class ToolingSdconfigTest(unittest.TestCase):
         write_exec(self.stubs / "brew", "#!/bin/sh\nexit 0\n")
         write_exec(self.stubs / "sudo", "#!/bin/sh\nexit 1\n")
         fixture_config.seal(self, self.stubs)
+        self.get_fails = ""
 
     def tooling(self, *flags):
         env = {
@@ -71,6 +76,7 @@ class ToolingSdconfigTest(unittest.TestCase):
             "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX,
             "SD_PACK_ROOT": str(self.pack),
             "SD_STORE": str(self.store),
+            "SD_GET_FAILS": self.get_fails,
         }
         r = subprocess.run([str(self.folder / "machine-setup.sh"), "update", "tooling", *flags],
                            env=env, capture_output=True, text=True, cwd=self.tmp.name,
@@ -95,6 +101,33 @@ class ToolingSdconfigTest(unittest.TestCase):
         self.assertIn("  DIFFERS sd setting sd.gate_slots is 5, want 3", out)
         self.assertEqual(self.store.read_text(), "sd.gate_slots=3\n", out)
         self.assertIn("  ok      sd setting sd.gate_slots=3", self.tooling())
+
+    def test_a_failed_read_is_a_failure_and_writes_nothing(self):
+        (self.profiles / "personal.sdconfig").write_text("sd.gate_slots 3\n")
+        self.get_fails = "1"
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  sd config get sd.gate_slots", out)
+        self.assertNotIn("is unset", out)
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+
+    def test_the_profile_line_wins_over_common(self):
+        (self.profiles / "common.sdconfig").write_text("sd.gate_slots 9\n")
+        (self.profiles / "personal.sdconfig").write_text("sd.gate_slots 3\n")
+
+        out = self.tooling("--apply")
+
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=3\n", out)
+        self.assertNotIn("want 9", out)
+
+    def test_a_line_with_no_value_fails_and_writes_nothing(self):
+        (self.profiles / "personal.sdconfig").write_text("sd.gate_slots #3\n")
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  personal.sdconfig: sd.gate_slots has no value", out)
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
 
     def test_no_sdconfig_file_says_nothing(self):
         self.assertNotIn("sd setting", self.tooling("--apply"))
