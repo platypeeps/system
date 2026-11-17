@@ -397,6 +397,12 @@ safe classes:
   empty after that. `lane/queue/` and anything a process holds open stay;
   unset or not mounted, nothing is swept.
 
+A branch local on purpose, such as a private patch never meant for
+upstream, goes in `<config>/repo-sync/keep-branches`, one
+`<owner/name> <branch glob>` line each (`owner/proj local/*`), `#`
+comments. Hygiene neither lists nor deletes it and prints a
+`kept branch` note instead (sd:9230).
+
 Every deletion prints the branch and its tip sha with the command that
 restores it. Of the branches whose content is not on the default branch,
 it lists and never deletes: one whose upstream is gone, one with commits

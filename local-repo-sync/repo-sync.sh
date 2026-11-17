@@ -2292,8 +2292,22 @@ hyg_item_number() {
     -e 's/.*-\([0-9][0-9]*\)$/\1/p' | head -1
 }
 
+# Whether `<conf>/keep-branches` names branch $2 of repo $1 (sd:9230): one
+# `<owner/name> <branch glob>` line each, `#` comments. Such a branch is local
+# on purpose (a private patch, a never-pushed experiment): hygiene neither
+# lists nor deletes it, so it stops raising the nightly alert.
+hyg_kept() {
+  [ -f "$CONF_DIR/keep-branches" ] || return 1
+  sed 's/#.*//' "$CONF_DIR/keep-branches" | while read -r k_repo k_glob _; do
+    [ -n "$k_glob" ] && [ "$k_repo" = "$1" ] || continue
+    # shellcheck disable=SC2254 # the glob is the point
+    case "$2" in $k_glob) echo kept; break ;; esac
+  done | grep -q kept
+}
+
 hyg_repo() {
   d=$1
+  h_repo_name=$2
   echo "=== $2 ($d)"
 
   # 3.3: remote-tracking refs for deleted remote branches. The lines are
@@ -2434,6 +2448,10 @@ hyg_repo() {
   HYG_LANE_ASKED=0
   while IFS=$US read -r b_name b_sha b_track b_up; do
     [ "$b_name" = "$def_name" ] && continue
+    if hyg_kept "$h_repo_name" "$b_name"; then
+      hyg_note "kept branch $b_name (keep-branches)"
+      continue
+    fi
     # The lane's proof is asked only while a delete could follow from it.
     if ! h_how=$(hyg_merged "$d" "refs/heads/$b_name" "$def_ref"); then
       h_how=""

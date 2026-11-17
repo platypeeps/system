@@ -141,6 +141,35 @@ class HygieneTest(unittest.TestCase):
         self.assertIn("hygiene", result.stdout)
         self.assertIn("--apply", result.stdout)
 
+    def test_a_kept_branch_is_neither_listed_nor_deleted(self):
+        """sd:9230: a branch local on purpose stops raising the nightly alert."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "checkout", "-q", "-b", "local/topic")
+        f.commit(repo, "notes", "x\n", "never pushed")
+        f.git(repo, "checkout", "-q", "main")
+        f.git(repo, "branch", "keep/landed")
+        (f.folder / "keep-branches").write_text(
+            "# local on purpose\nowner/proj local/*\nowner/proj keep/landed\nowner/other main-*\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertNotIn("LOCAL    branch local/topic", result.stdout)
+        self.assertIn("note: kept branch local/topic (keep-branches)", result.stdout)
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+
+    def test_a_keep_line_for_another_repo_does_not_apply(self):
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "checkout", "-q", "-b", "local/topic")
+        f.commit(repo, "notes", "x\n", "never pushed")
+        f.git(repo, "checkout", "-q", "main")
+        (f.folder / "keep-branches").write_text("owner/other local/*\n")
+
+        result = f.run("hygiene", expect=1)
+
+        self.assertIn("LOCAL    branch local/topic", result.stdout)
+
     def test_a_clean_fleet_reports_nothing_and_exits_0(self):
         """NEW. Requirement 9: without --apply, exit 0 when clean."""
         f = self.fixture()
