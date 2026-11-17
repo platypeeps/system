@@ -375,9 +375,10 @@ safe classes:
 - prune remote-tracking refs for deleted remote branches
   (`git remote prune`);
 - delete a local branch whose content is on the default branch: an
-  ancestor, a tree equal to its merge base, a clean merge into the
-  default branch that changes nothing (a builder branch inside a wider
-  bundle squash, sd:9241), or a patch-equivalent squash;
+  ancestor, a tree equal to its merge base, or every path it changed
+  holding the same content on the default branch (a squash merge, or a
+  builder branch inside a wider bundle squash, sd:9241; read from the
+  trees, so no merge driver takes part);
   the branch must also sit unmoved for `REPO_SYNC_HYGIENE_MIN_AGE` seconds
   (default 86400, at most 12 digits, read from its reflog), so a fresh
   branch survives;
