@@ -279,9 +279,21 @@ class NightTriage(unittest.TestCase):
         job's run count `recorded` then and `runs` now."""
         alert = dict(report("node1"), parked_at="2026-11-16T10:00:00+00:00", runs=runs)
         alert["notes"] = [{"id": 700, "kind": "comment", "session": "login", "resolved_at": None,
-                           "body": f"night-triage on node1: waits on job-1 on {on}: a weekly fix; "
+                           "body": f"night-triage on node1: waits until {on} on job-1: a weekly fix; "
                                    f"parked until then (runs: {recorded})."}]
         return alert
+
+    def test_a_date_in_the_summary_never_becomes_the_wake_date(self):
+        # sd:9243 review: a greedy parse took `on 2026-02-30:` from the
+        # summary, and every later scan died on the impossible date.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import night_triage
+        on = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
+        note, then = night_triage.verdict(
+            {"runs": 1}, {"outcome": "waiting", "on": on, "run": "job-1",
+                          "summary": "the vendor says on 2026-02-30: maybe"}, "node1")
+        self.assertEqual(then, night_triage.PARK)
+        self.assertIsNone(night_triage.wake({"fields": "{}"}, [{"body": note}], "node1"))
 
     def test_a_parked_alert_is_skipped(self):
         # sd:9243: an alert parked by hand, or waiting on a date to come with
@@ -329,7 +341,7 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(item["status"], "planning")
         self.assertIsNotNone(item.get("parked_at"))
         self.assertEqual(self.comments("1"), [
-            f"night-triage on node1: waits on job-1 on {on}: the fix lands with the weekly run; "
+            f"night-triage on node1: waits until {on} on job-1: the fix lands with the weekly run; "
             "parked until then (runs: 3)."])
         self.assertIn("waiting", (self.tmp / "prompt").read_text())
 
@@ -341,7 +353,7 @@ class NightTriage(unittest.TestCase):
             {"id": 1, "outcome": "waiting", "summary": "s", "run": "job-1", "on": on.replace("-", "")}])
         self.assertEqual(self.run_job().returncode, 0)
         note = self.comments("1")[0]
-        self.assertIn(f"waits on job-1 on {on}: s;", note)
+        self.assertIn(f"waits until {on} on job-1: s;", note)
         sys.path.insert(0, str(FOLDER))
         self.addCleanup(sys.path.remove, str(FOLDER))
         import night_triage

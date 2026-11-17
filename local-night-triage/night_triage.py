@@ -48,8 +48,10 @@ WHO = "night-triage"
 PARK = "park"  # verdict's second value for an alert that waits on a dated run
 ITEM = re.compile(r"^sd:\d+$")
 WAIT_DAYS = 8  # a wait names a run within this many days: a weekly job and a day's slack
-# This job's wait note, as verdict() writes it: the date and the job's run count.
-WAITS = re.compile(r"waits on (.+) on (\d{4}-\d{2}-\d{2}): .*\(runs: (\d+)\)\.$", re.S)
+# This job's wait note, as verdict() writes it: the date first, at a fixed
+# place, so a date in the model's run name or summary is never read (sd:9243
+# review); then the run and the job's run count.
+WAITS = re.compile(r": waits until (\d{4}-\d{2}-\d{2}) on (.+?): .*\(runs: (\d+)\)\.$", re.S)
 PENDING = "-"  # a claim row written before its claim note landed
 TRIES = 3  # settle attempts while other writers keep moving the report
 # The session `sd reports ingest` writes its followups under: the pack's
@@ -117,8 +119,12 @@ def wake(report, notes, host):
     waited = WAITS.search(ours[-1]["body"]) if ours else None
     if not waited:
         return None
-    run, on, runs = waited.groups()
-    if datetime.date.fromisoformat(on) < datetime.date.today():
+    on, run, runs = waited.groups()
+    try:
+        due = datetime.date.fromisoformat(on)
+    except ValueError:
+        return f"the wait note's date {on} is no date"
+    if due < datetime.date.today():
         return f"the wait for {run} on {on} passed"
     if runs_of(report) > int(runs):
         return "the job failed again"
@@ -279,7 +285,7 @@ def verdict(alert, entry, host):
     if on and _text(entry.get("run")) and summary:
         # The note carries YYYY-MM-DD whatever spelling the answer used:
         # WAITS reads only that, and an unread wait never wakes.
-        return (f"{WHO} on {host}: waits on {_text(entry['run'])} on {on.isoformat()}: {summary}; "
+        return (f"{WHO} on {host}: waits until {on.isoformat()} on {_text(entry['run'])}: {summary}; "
                 f"parked until then (runs: {alert.get('runs', 1)})."), PARK
     if outcome == "fixed":
         evidence = [_text(line) for line in entry.get("evidence") or [] if _text(line)]
