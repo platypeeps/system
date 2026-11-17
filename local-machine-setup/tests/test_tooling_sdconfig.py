@@ -68,7 +68,7 @@ class ToolingSdconfigTest(unittest.TestCase):
         self.get_fails = ""
         self.get_warn = ""
 
-    def tooling(self, *flags):
+    def tooling(self, *flags, verb=("update", "tooling")):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -81,7 +81,7 @@ class ToolingSdconfigTest(unittest.TestCase):
             "SD_GET_FAILS": self.get_fails,
             "SD_GET_WARN": self.get_warn,
         }
-        r = subprocess.run([str(self.folder / "machine-setup.sh"), "update", "tooling", *flags],
+        r = subprocess.run([str(self.folder / "machine-setup.sh"), *verb, *flags],
                            env=env, capture_output=True, text=True, cwd=self.tmp.name,
                            stdin=subprocess.DEVNULL, timeout=60)
         return r.stdout + r.stderr
@@ -140,6 +140,31 @@ class ToolingSdconfigTest(unittest.TestCase):
 
         self.assertIn("  FAILED  personal.sdconfig: sd.gate_slots has no value", out)
         self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+
+    def test_a_key_the_bulkmove_stage_owns_is_refused(self):
+        self.store.write_text("sd.bulk_storage_root=/nas\n")
+        (self.profiles / "personal.sdconfig").write_text("sd.bulk_storage_root /local\n")
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  personal.sdconfig: sd.bulk_storage_root is the bulkmove stage's", out)
+        self.assertEqual(self.store.read_text(), "sd.bulk_storage_root=/nas\n", out)
+
+    def test_keys_cswap_and_the_hub_role_own_are_refused(self):
+        (self.profiles / "personal.sdconfig").write_text("sys.cswap_account 2\nsd.hub_name hub.example.test\n")
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  personal.sdconfig: sys.cswap_account is local-cswap's", out)
+        self.assertIn("  FAILED  personal.sdconfig: sd.hub_name is the hub role's", out)
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+
+    def test_report_keeps_one_setting_per_line(self):
+        (self.profiles / "personal.sdconfig").write_text("sd.bundle_max 5\nsd.gate_slots 3\n")
+
+        out = self.tooling(verb=("report", "personal"))
+
+        self.assertIn("      sd.bundle_max 5\n      sd.gate_slots 3\n", out)
 
     def test_no_sdconfig_file_says_nothing(self):
         self.assertNotIn("sd setting", self.tooling("--apply"))
