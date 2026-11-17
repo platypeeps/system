@@ -282,6 +282,19 @@ class ToolingSdconfigTest(unittest.TestCase):
         self.assertIn("  FAILED  personal.sdconfig: !sd.bundle_max takes no value", out)
         self.assertEqual(self.store.read_text(), "sd.bundle_max=5\n", out)
 
+    def test_one_bad_bang_line_stops_every_write_for_its_key(self):
+        """Review round 3 of sd:9218: a valid !key line beside a bad one still unset the key."""
+        self.store.write_text("sd.bundle_max=5\n")
+        (self.profiles / "common.sdconfig").write_text("sd.gate_slots 3\n")
+        (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max 4\n!sd.bundle_max\n!sd.gate_slots 2\n")
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  personal.sdconfig: !sd.bundle_max takes no value", out)
+        self.assertIn("  FAILED  personal.sdconfig: !sd.gate_slots takes no value", out)
+        self.assertNotIn("config unset", out)
+        self.assertEqual(self.store.read_text(), "sd.bundle_max=5\n", out)
+
     def test_no_sdconfig_file_says_nothing(self):
         self.assertNotIn("sd setting", self.tooling("--apply"))
 

@@ -2747,7 +2747,11 @@ sd_settings() {
   ss_lines=$( { profile_entries common sdconfig | drop_negated "$ss_unsets" | sed 's/^/common /'
       profile_entries "$PROFILE" sdconfig | sed "s/^/$PROFILE /"
     } | awk '{ k = $2; if (!(k in at)) order[++n] = k; at[k] = $0 } END { for (i = 1; i <= n; i++) print at[order[i]] }'
-    profile_drops "$PROFILE" sdconfig | awk 'NF' | sed "s/^/$PROFILE !/")
+    # One unset line per key; a key any of whose `!` lines carries a value
+    # keeps that value, so the whole key fails and nothing is written for it.
+    profile_drops "$PROFILE" sdconfig | awk 'NF { k = $1; if (!(k in seen)) order[++n] = k; seen[k] = 1; if (NF > 1) bad[k] = $2 }
+      END { for (i = 1; i <= n; i++) print "!" order[i] ((order[i] in bad) ? " " bad[order[i]] : "") }' |
+      sed "s/^/$PROFILE /")
   [ -n "$ss_lines" ] || return 0
   ss_sd="$SD_PACK_ROOT/bin/sd"
   if [ ! -x "$ss_sd" ]; then
@@ -2755,11 +2759,11 @@ sd_settings() {
     return 0
   fi
   ss_err=$(mktemp)
-  if ! ss_mine=$(python3 -I -c 'import sys
+  if ! ss_mine=$(bound_step 30 python3 -I -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import sd_lib
 print("\n".join("sd." + k for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS))))' "$SD_PACK_ROOT/bin" 2>"$ss_err" </dev/null); then
-    note_failure "sd settings: the pack's key list did not load: $(tail -1 "$ss_err")" 1
+    note_failure "sd settings: the pack's key list did not load: $(grep -v '^\[step ' "$ss_err" | tail -1)" 1
     rm -f "$ss_err"
     return 0
   fi
