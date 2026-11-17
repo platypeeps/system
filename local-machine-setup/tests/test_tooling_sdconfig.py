@@ -172,6 +172,7 @@ class ToolingSdconfigTest(unittest.TestCase):
             "service": "local-trellis install\nlocal-redis start\n",
             "node": "24\n26 link\n",
             "release": "aa example/aa aa.tar.gz\nbb example/bb bb.tar.gz\n",
+            "app": "Visual Studio Code\nExample App\n",
         }
         for kind, lines in kinds.items():
             with self.subTest(kind=kind):
