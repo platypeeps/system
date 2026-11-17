@@ -81,7 +81,7 @@ STAGES="brew release shell appstore bin dotfiles envs prompts repos tmpdisk cron
 # The verbs dispatch accepts, in help's order. Help and the no-arg usage print
 # this list; three hand copies of it disagreed (sd:3548).
 VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt promote"
-KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node npm mailto release"
+KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node npm mailto release sdconfig"
 
 # Directories that hold credentials in the clear and are created world-readable
 # by the tools that own them. Codex snapshots the whole shell environment —
@@ -2731,8 +2731,53 @@ telemetry_endpoint() {
   TELEMETRY_OTEL="--otel $TELEMETRY_ENDPOINT $TELEMETRY_PROTOCOL $(hostname -s | tr '[:upper:]' '[:lower:]')"
 }
 
+# The pack settings common.sdconfig and <profile>.sdconfig name, one
+# `key value` line each (sd:9142): `sd config set` writes one this machine's
+# pack config lacks or holds differently. The profile's line for a key wins
+# over common's (manifest's `sort -u` would keep both), and a `!key` line
+# drops common's. A setting no file names any more stays; unset it by hand.
+# Only a read that answers "not set" counts as unset: any other failed read,
+# or a line with no value, is a FAILED line and writes nothing.
+sd_settings() {
+  ss_lines=$( { profile_entries common sdconfig | drop_negated "$(profile_drops "$PROFILE" sdconfig)" | sed 's/^/common /'
+      profile_entries "$PROFILE" sdconfig | sed "s/^/$PROFILE /"
+    } | awk '{ k = $2; if (!(k in at)) order[++n] = k; at[k] = $0 } END { for (i = 1; i <= n; i++) print at[order[i]] }')
+  [ -n "$ss_lines" ] || return 0
+  ss_sd="$SD_PACK_ROOT/bin/sd"
+  if [ ! -x "$ss_sd" ]; then
+    echo "  SKIP    sd settings: no $ss_sd (the repos stage clones the pack)"
+    return 0
+  fi
+  ss_err=$(mktemp)
+  printf '%s\n' "$ss_lines" | while read -r ss_from ss_key ss_want; do
+    if [ -z "$ss_want" ]; then
+      note_failure "$ss_from.sdconfig: $ss_key has no value" 1
+      continue
+    fi
+    # stderr apart: a warning on a good read is no part of the value.
+    ss_rc=0
+    ss_have=$(bound_step 30 "$ss_sd" config get "$ss_key" 2>"$ss_err" </dev/null) || ss_rc=$?
+    if [ "$ss_rc" -ne 0 ]; then
+      if grep -qF "$ss_key is not set" "$ss_err"; then
+        ss_have=
+      else
+        note_failure "sd config get $ss_key: $(head -1 "$ss_err")" "$ss_rc"
+        continue
+      fi
+    fi
+    if [ "$ss_have" = "$ss_want" ]; then
+      echo "  ok      sd setting $ss_key=$ss_want"
+    else
+      echo "  DIFFERS sd setting $ss_key is ${ss_have:-unset}, want $ss_want"
+      run bound_step 30 "$ss_sd" config set "$ss_key" "$ss_want"
+    fi
+  done
+  rm -f "$ss_err"
+}
+
 stage_tooling() {
   echo "== tooling"
+  sd_settings
   if command -v fnm >/dev/null 2>&1; then
     have=$(fnm ls 2>/dev/null || :)
     for v in $(node_versions); do
