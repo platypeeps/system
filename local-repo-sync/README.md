@@ -402,8 +402,9 @@ upstream, goes in `<config>/repo-sync/keep-branches`, one
 `<owner/name> <branch glob>` line each (`owner/proj local/*`), `#`
 comments (a `#` inside a branch name stays). Hygiene neither lists nor
 deletes it and prints a `kept branch` note instead (sd:9230). A file it
-cannot read keeps every branch that run and fails; a line without both
-fields fails.
+cannot read, or any line that is not exactly `<owner/name> <glob>`,
+keeps every branch that run and fails, so one typo pauses branch
+hygiene for the whole fleet until it is fixed.
 
 Every deletion prints the branch and its tip sha with the command that
 restores it. Of the branches whose content is not on the default branch,

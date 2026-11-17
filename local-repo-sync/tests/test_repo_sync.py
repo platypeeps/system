@@ -266,6 +266,9 @@ class Fixture:
         Pass expect=None to ignore the status.
         """
         env = dict(os.environ)
+        # A real bulk storage root must never reach the sd stub: hygiene's
+        # lane sweep deletes old files under it (review of sd:9230).
+        env.pop("SD_BULK_STORAGE_ROOT", None)
         env.update(
             REPO_SYNC_PROFILE=self.profile,
             GIT_LOG=str(self.git_log),

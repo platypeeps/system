@@ -2301,31 +2301,40 @@ hyg_item_number() {
 # both fields is a FAILED line, never a silent no-op.
 hyg_keep_load() {
   HYG_KEEP_ALL=0
-  : > "$HYG_TMP/keep"
   k_file="$CONF_DIR/keep-branches"
-  [ -e "$k_file" ] || [ -L "$k_file" ] || return 0
+  rm -f "$HYG_TMP/keep" "$HYG_TMP/keep.bad"
+  if ! [ -e "$k_file" ] && ! [ -L "$k_file" ]; then
+    : > "$HYG_TMP/keep"
+    return 0
+  fi
   echo "=== keep-branches"
-  # A dangling link, a folder or an unreadable file is no list: keep all.
-  if ! { [ -f "$k_file" ] && [ -r "$k_file" ]; } || ! awk '{ sub(/\r$/, ""); sub(/(^|[ \t])#.*/, ""); if (NF == 0) next
-      if (NF < 2) { print "BAD " NR; next } print $1 " " $2 }' \
-      "$k_file" > "$HYG_TMP/keep.all" 2>/dev/null; then
+  # A rule is exactly `<owner/name> <glob>`; any other line is reported by
+  # number in keep.bad, out of band. A dangling link, a folder, an
+  # unreadable file or a failed write (a full disk) is no list: keep all.
+  if ! { [ -f "$k_file" ] && [ -r "$k_file" ]; } || ! awk -v ok="$HYG_TMP/keep" -v bad="$HYG_TMP/keep.bad" '
+      BEGIN { printf "" > ok; printf "" > bad }
+      { sub(/\r$/, ""); sub(/(^|[ \t])#.*/, ""); if (NF == 0) next
+        if (NF == 2 && $1 ~ /^[^\/]+\/[^\/]+$/) print $1 " " $2 > ok; else print NR > bad }
+      END { if (close(ok) != 0 || close(bad) != 0) exit 1 }' "$k_file" 2>/dev/null \
+      || ! [ -r "$HYG_TMP/keep" ] || ! [ -r "$HYG_TMP/keep.bad" ]; then
     HYG_KEEP_ALL=1
     hyg_fail "read keep-branches ($k_file): every branch kept this run"
     return 0
   fi
-  # A line without both fields may be the rule for a branch: keep all.
-  if grep -q '^BAD ' "$HYG_TMP/keep.all"; then
+  # A line that is no rule may be the rule for a branch: keep all.
+  if [ -s "$HYG_TMP/keep.bad" ]; then
     HYG_KEEP_ALL=1
-    grep '^BAD ' "$HYG_TMP/keep.all" | while read -r _ k_n; do
+    while read -r k_n; do
       hyg_fail "keep-branches line $k_n: want '<owner/name> <branch glob>'; every branch kept this run"
-    done
+    done < "$HYG_TMP/keep.bad"
   fi
-  grep -v '^BAD ' "$HYG_TMP/keep.all" > "$HYG_TMP/keep" || :
 }
 
 # Whether the keep list names branch $2 of repo $1.
 hyg_kept() {
   [ "$HYG_KEEP_ALL" = 1 ] && return 0
+  # The parsed list must be there: a missing copy keeps, never deletes.
+  [ -r "$HYG_TMP/keep" ] || return 0
   while read -r k_repo k_glob; do
     [ "$k_repo" = "$1" ] || continue
     # shellcheck disable=SC2254 # the glob is the point
@@ -2478,7 +2487,7 @@ hyg_repo() {
   while IFS=$US read -r b_name b_sha b_track b_up; do
     [ "$b_name" = "$def_name" ] && continue
     if hyg_kept "$h_repo_name" "$b_name"; then
-      hyg_note "kept branch $b_name (keep-branches)"
+      if [ "$HYG_KEEP_ALL" = 1 ]; then hyg_note "kept branch $b_name (keep-branches did not load)"; else hyg_note "kept branch $b_name (keep-branches)"; fi
       continue
     fi
     # The lane's proof is asked only while a delete could follow from it.

@@ -265,6 +265,39 @@ class HygieneTest(unittest.TestCase):
         self.assertNotIn("hygiene : clean", result.stdout)
         self.assertRegex(result.stdout, r"=== keep-branches\n  FAILED keep-branches line 1")
 
+    # Review round 3 of sd:9230, class: a keep rule the parser cannot vouch
+    # for still lets the run delete. Each case keeps every branch and fails.
+    def test_a_keep_rule_without_an_owner_keeps_every_branch(self):
+        f, repo = self.kept_fixture(b"proj keep/other\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_a_keep_rule_with_a_third_field_keeps_every_branch(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/other extra\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_a_keep_rule_named_bad_is_a_plain_rule(self):
+        f, repo = self.kept_fixture(b"BAD/x 7\nowner/proj keep/landed\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertNotIn("FAILED", result.stdout)
+        self.assertIn("note: kept branch keep/landed (keep-branches)", result.stdout)
+
+    def test_a_branch_kept_by_a_failed_load_says_so(self):
+        f, repo = self.kept_fixture(b"keep/landed\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertIn("note: kept branch keep/landed (keep-branches did not load)", result.stdout)
+
     def test_a_clean_fleet_reports_nothing_and_exits_0(self):
         """NEW. Requirement 9: without --apply, exit 0 when clean."""
         f = self.fixture()
