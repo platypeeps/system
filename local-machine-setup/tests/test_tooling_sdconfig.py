@@ -150,6 +150,15 @@ class ToolingSdconfigTest(unittest.TestCase):
         self.assertIn("  FAILED  personal.sdconfig: sd.bulk_storage_root is the bulkmove stage's", out)
         self.assertEqual(self.store.read_text(), "sd.bulk_storage_root=/nas\n", out)
 
+    def test_keys_cswap_and_the_hub_role_own_are_refused(self):
+        (self.profiles / "personal.sdconfig").write_text("sys.cswap_account 2\nsd.hub_name hub.example.test\n")
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  personal.sdconfig: sys.cswap_account is local-cswap's", out)
+        self.assertIn("  FAILED  personal.sdconfig: sd.hub_name is the hub role's", out)
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+
     def test_report_keeps_one_setting_per_line(self):
         (self.profiles / "personal.sdconfig").write_text("sd.bundle_max 5\nsd.gate_slots 3\n")
 

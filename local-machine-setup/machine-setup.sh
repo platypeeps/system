@@ -2754,10 +2754,18 @@ sd_settings() {
       note_failure "$ss_from.sdconfig: $ss_key has no value" 1
       continue
     fi
-    # The bulkmove stage sets this one to where it moved the data; a profile
-    # line would point it back at what that stage deleted.
-    if [ "$ss_key" = sd.bulk_storage_root ]; then
-      note_failure "$ss_from.sdconfig: sd.bulk_storage_root is the bulkmove stage's to set" 1
+    # Keys another writer owns; a profile line would undo it on every run.
+    # bulkmove sets the root to where it moved the data (and deleted the
+    # old copy); cswap publishes its account each tick; the operator sets
+    # the hub name after a failover.
+    ss_owner=
+    case "$ss_key" in
+      sd.bulk_storage_root) ss_owner="the bulkmove stage's" ;;
+      sys.cswap_account) ss_owner="local-cswap's" ;;
+      sd.hub_name) ss_owner="the hub role's" ;;
+    esac
+    if [ -n "$ss_owner" ]; then
+      note_failure "$ss_from.sdconfig: $ss_key is $ss_owner to set" 1
       continue
     fi
     # stderr apart: a warning on a good read is no part of the value.
