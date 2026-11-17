@@ -31,6 +31,8 @@ case "$2" in
        echo "$v" ;;
   set) grep -v "^$3=" "$SD_STORE" > "$SD_STORE.new" 2>/dev/null || :
        echo "$3=$4" >> "$SD_STORE.new"; mv "$SD_STORE.new" "$SD_STORE" ;;
+  unset) grep -v "^$3=" "$SD_STORE" > "$SD_STORE.new" 2>/dev/null || :
+       mv "$SD_STORE.new" "$SD_STORE" ;;
   *) exit 2 ;;
 esac
 """
@@ -181,6 +183,57 @@ class ToolingSdconfigTest(unittest.TestCase):
                 want = "".join(f"      {line}\n" for line in lines.splitlines())
                 self.assertIn(want, out)
                 (self.profiles / f"personal.{kind}").unlink()
+
+    def test_a_profile_bang_line_unsets_the_key(self):
+        """sd:9218: system sd:9110 reverts sd.bundle_max on one machine."""
+        self.store.write_text("sd.gate_slots=5\nsd.bundle_max=5\n")
+        (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max  # trial over\n")
+
+        dry = self.tooling()
+        self.assertIn("  DIFFERS sd setting sd.bundle_max is 5, want unset", dry)
+        self.assertIn("bundle_max", self.store.read_text())
+
+        out = self.tooling("--apply")
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+        self.assertIn("  ok      sd setting sd.bundle_max unset", self.tooling())
+
+    def test_a_bang_line_also_drops_common_and_writes_nothing_else(self):
+        self.store.write_text("sd.gate_slots=5\n")
+        (self.profiles / "common.sdconfig").write_text("sd.bundle_max 4\n")
+        (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max\n")
+
+        out = self.tooling("--apply")
+
+        self.assertEqual(self.store.read_text(), "sd.gate_slots=5\n", out)
+        self.assertNotIn("want 4", out)
+
+    def test_a_key_both_set_and_unset_fails_and_writes_nothing(self):
+        self.store.write_text("sd.bundle_max=5\n")
+        (self.profiles / "personal.sdconfig").write_text("sd.bundle_max 4\n!sd.bundle_max\n")
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  personal.sdconfig: sd.bundle_max is both set and unset", out)
+        self.assertEqual(self.store.read_text(), "sd.bundle_max=5\n", out)
+
+    def test_an_owned_key_is_never_unset(self):
+        self.store.write_text("sd.bulk_storage_root=/nas\n")
+        (self.profiles / "personal.sdconfig").write_text("!sd.bulk_storage_root\n")
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  personal.sdconfig: sd.bulk_storage_root is the bulkmove stage's", out)
+        self.assertEqual(self.store.read_text(), "sd.bulk_storage_root=/nas\n", out)
+
+    def test_a_failed_read_never_unsets(self):
+        self.store.write_text("sd.bundle_max=5\n")
+        (self.profiles / "personal.sdconfig").write_text("!sd.bundle_max\n")
+        self.get_fails = "1"
+
+        out = self.tooling("--apply")
+
+        self.assertIn("  FAILED  sd config get sd.bundle_max", out)
+        self.assertEqual(self.store.read_text(), "sd.bundle_max=5\n", out)
 
     def test_no_sdconfig_file_says_nothing(self):
         self.assertNotIn("sd setting", self.tooling("--apply"))

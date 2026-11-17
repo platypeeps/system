@@ -2734,14 +2734,17 @@ telemetry_endpoint() {
 # The pack settings common.sdconfig and <profile>.sdconfig name, one
 # `key value` line each (sd:9142): `sd config set` writes one this machine's
 # pack config lacks or holds differently. The profile's line for a key wins
-# over common's (manifest's `sort -u` would keep both), and a `!key` line
-# drops common's. A setting no file names any more stays; unset it by hand.
+# over common's (manifest's `sort -u` would keep both). A profile's `!key`
+# line drops common's and unsets the key here (sd:9218); a profile that also
+# sets it FAILS and writes nothing. A setting no file names any more stays.
 # Only a read that answers "not set" counts as unset: any other failed read,
 # or a line with no value, is a FAILED line and writes nothing.
 sd_settings() {
-  ss_lines=$( { profile_entries common sdconfig | drop_negated "$(profile_drops "$PROFILE" sdconfig)" | sed 's/^/common /'
+  ss_unsets=$(profile_drops "$PROFILE" sdconfig | awk 'NF { print $1 }')
+  ss_lines=$( { profile_entries common sdconfig | drop_negated "$ss_unsets" | sed 's/^/common /'
       profile_entries "$PROFILE" sdconfig | sed "s/^/$PROFILE /"
-    } | awk '{ k = $2; if (!(k in at)) order[++n] = k; at[k] = $0 } END { for (i = 1; i <= n; i++) print at[order[i]] }')
+    } | awk '{ k = $2; if (!(k in at)) order[++n] = k; at[k] = $0 } END { for (i = 1; i <= n; i++) print at[order[i]] }'
+    [ -z "$ss_unsets" ] || printf '%s\n' "$ss_unsets" | sed "s/^/$PROFILE !/")
   [ -n "$ss_lines" ] || return 0
   ss_sd="$SD_PACK_ROOT/bin/sd"
   if [ ! -x "$ss_sd" ]; then
@@ -2750,7 +2753,13 @@ sd_settings() {
   fi
   ss_err=$(mktemp)
   printf '%s\n' "$ss_lines" | while read -r ss_from ss_key ss_want; do
-    if [ -z "$ss_want" ]; then
+    ss_unset=
+    case "$ss_key" in '!'*) ss_unset=1 ss_key=${ss_key#!} ;; esac
+    if printf '%s\n' "$ss_unsets" | grep -qxF -- "$ss_key" && printf '%s\n' "$ss_lines" | awk -v k="$ss_key" '$2 == k { f = 1 } END { exit !f }'; then
+      [ -z "$ss_unset" ] || note_failure "$ss_from.sdconfig: $ss_key is both set and unset" 1
+      continue
+    fi
+    if [ -z "$ss_unset" ] && [ -z "$ss_want" ]; then
       note_failure "$ss_from.sdconfig: $ss_key has no value" 1
       continue
     fi
@@ -2779,7 +2788,14 @@ sd_settings() {
         continue
       fi
     fi
-    if [ "$ss_have" = "$ss_want" ]; then
+    if [ -n "$ss_unset" ]; then
+      if [ -z "$ss_have" ]; then
+        echo "  ok      sd setting $ss_key unset"
+      else
+        echo "  DIFFERS sd setting $ss_key is $ss_have, want unset"
+        run bound_step 30 "$ss_sd" config unset "$ss_key"
+      fi
+    elif [ "$ss_have" = "$ss_want" ]; then
       echo "  ok      sd setting $ss_key=$ss_want"
     else
       echo "  DIFFERS sd setting $ss_key is ${ss_have:-unset}, want $ss_want"
