@@ -44,7 +44,9 @@ import sys
 from pathlib import Path
 
 WHO = "night-triage"
+PARK = "park"  # verdict's second value for an alert that waits on a dated run
 ITEM = re.compile(r"^sd:\d+$")
+DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PENDING = "-"  # a claim row written before its claim note landed
 TRIES = 3  # settle attempts while other writers keep moving the report
 # The session `sd reports ingest` writes its followups under: the pack's
@@ -123,6 +125,10 @@ def claim(binary, host, claims, context):
             continue
         current = show(binary, report["id"])
         if current["item"]["status"] != "planning":
+            continue
+        # A parked alert waits on a dated scheduled run (sd:9243).
+        if report.get("parked_at") or current["item"].get("parked_at"):
+            print(f"night-triage: sd:{report['id']} is parked; skipped", file=sys.stderr)
             continue
         if held_by_other(current["notes"], host):
             print(f"night-triage: sd:{report['id']} is claimed; skipped", file=sys.stderr)
@@ -221,10 +227,13 @@ def _text(value):
 
 
 def verdict(alert, entry, host):
-    """The note for one alert, and whether to acknowledge it."""
+    """The note for one alert, and what follows it: True acknowledges, PARK parks."""
     if not entry:
         return f"{WHO} on {host}: not settled: the run gave no answer for this alert.", False
     outcome, summary = entry.get("outcome"), _text(entry.get("summary"))
+    if outcome == "waiting" and _text(entry.get("run")) and DATE.match(_text(entry.get("on"))) and summary:
+        return (f"{WHO} on {host}: waits on {_text(entry['run'])} on {_text(entry['on'])}: {summary}; "
+                "parked until then."), PARK
     if outcome == "fixed":
         evidence = [_text(line) for line in entry.get("evidence") or [] if _text(line)]
         followups = entry.get("followups") or {}
@@ -285,7 +294,8 @@ def apply(binary, host, claims, context, reply):
                 # again adds one, and --resolve-followups would close it.
                 note, acknowledge = verdict(dict(alert, followups=_open_followups(current["notes"])),
                                             entry, host)
-                acknowledge = acknowledge and current["item"]["status"] == "planning"
+                if current["item"]["status"] != "planning":
+                    acknowledge = False
             try:
                 noted = json.loads(sd(binary, "task", "note", item, note, "--json",
                                       "--if-revision", current["revision"]))
@@ -295,6 +305,15 @@ def apply(binary, host, claims, context, reply):
                     raise  # an outage, not another writer
         else:
             raise RuntimeError(f"the report kept changing; not settled after {TRIES} reads")
+        if acknowledge == PARK:
+            try:
+                sd(binary, "task", "edit", item, "--park", "--if-revision", noted["revision"])
+            except RuntimeError:
+                if unchanged_since(item, noted["revision"]):
+                    raise
+                sd(binary, "task", "note", item, f"{mine(host)}: not parked: the report changed after "
+                                                 "the note above; the next run settles it.")
+            return
         if not acknowledge:
             return
         try:

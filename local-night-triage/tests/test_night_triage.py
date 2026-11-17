@@ -32,7 +32,8 @@ def save():
 
 def show(key):
     item = items[key]
-    return {"item": {"id": int(key), "status": item["status"]}, "notes": item["notes"],
+    return {"item": {"id": int(key), "status": item["status"], "parked_at": item.get("parked_at")},
+            "notes": item["notes"],
             "revision": str(item["revision"])}
 
 def flag(name):
@@ -42,13 +43,15 @@ def flag(name):
 # one exits 2, as argparse does (sd:8143 review: `sd today --all`).
 FLAGS = {"reports list": {"--json"}, "today": {"--json", "--only"}, "task show": {"--json"},
          "task status": {"--json", "--if-revision", "--reason"}, "task note": {"--json", "--if-revision"},
-         "reports acknowledge": {"--json", "--if-revision", "--resolve-followups"}}
+         "reports acknowledge": {"--json", "--if-revision", "--resolve-followups"},
+         "task edit": {"--json", "--if-revision", "--park"}}
 verb = "today" if args[:1] == ["today"] else " ".join(args[:2])
 if verb not in FLAGS or any(a.startswith("--") and a not in FLAGS[verb] for a in args):
     save(); print("fake sd: unrecognized arguments: " + " ".join(args), file=sys.stderr); sys.exit(2)
 
 if args[:2] == ["reports", "list"]:
     print(json.dumps([{"id": int(k), "kind": "report", "status": v["status"], "title": v["title"],
+                       "parked_at": v.get("parked_at"),
                        "fields": json.dumps({"report": {"host": v["host"], "job": "job-" + k}})}
                       for k, v in items.items()]))
 elif args[:1] == ["today"]:
@@ -83,6 +86,11 @@ elif args[:2] == ["task", "note"]:
         import signal; os.kill(os.getppid(), signal.SIGKILL); sys.exit(1)
     if "--json" in args:
         print(json.dumps(show(args[2])))
+elif args[:2] == ["task", "edit"]:
+    item = items[args[2]]
+    if flag("--if-revision") not in (None, str(item["revision"])):
+        save(); print("refused: the item changed", file=sys.stderr); sys.exit(1)
+    item["parked_at"] = "2026-11-17T15:40:00+00:00"; item["revision"] += 1
 elif args[:2] == ["reports", "acknowledge"]:
     item = items[args[2]]
     if os.environ.get("FAKE_SD_RACE") == "ack" and not state.get("raced"):
@@ -257,6 +265,38 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(self.items()["1"], report("node1", status="in_progress"))
         self.assertIn("sd:1 is claimed; skipped", result.stderr)
+
+    def test_a_parked_alert_is_skipped(self):
+        # sd:9243: a parked alert waits on something dated; the run leaves it.
+        alert = dict(report("node1"), parked_at="2026-11-16T10:00:00+00:00")
+        self.given({"1": alert}, [])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items()["1"], alert)
+        self.assertIn("sd:1 is parked; skipped", result.stderr)
+        self.assertNotIn('"id": 1', (self.tmp / "prompt").read_text())
+
+    def test_an_alert_waiting_on_a_dated_run_is_noted_and_parked(self):
+        # sd:9243: nothing can settle it before a scheduled run on a known date.
+        self.given({"1": report("node1", followups=[41])}, [
+            {"id": 1, "outcome": "waiting", "summary": "the fix lands with the weekly run",
+             "run": "job-1", "on": "2026-11-22"}])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        item = self.items()["1"]
+        self.assertEqual(item["status"], "planning")
+        self.assertIsNotNone(item.get("parked_at"))
+        self.assertEqual(self.comments("1"), [
+            "night-triage on node1: waits on job-1 on 2026-11-22: the fix lands with the weekly run; "
+            "parked until then."])
+        self.assertIn("waiting", (self.tmp / "prompt").read_text())
+
+    def test_a_wait_without_a_date_is_not_parked(self):
+        self.given({"1": report("node1")}, [
+            {"id": 1, "outcome": "waiting", "summary": "later", "run": "job-1", "on": "soon"}])
+        self.assertEqual(self.run_job().returncode, 0)
+        self.assertIsNone(self.items()["1"].get("parked_at"))
+        self.assertIn("not settled", self.comments("1")[0])
 
     def test_a_failed_model_run_leaves_the_alerts_as_they_were(self):
         self.given({"1": report("node1", followups=[41])}, [])
@@ -469,14 +509,15 @@ class NightTriage(unittest.TestCase):
         self.assertIn(f'INGEST_SESSION = "{night_triage.INGEST_SESSION}"', source)
 
     def test_every_sd_call_parses_with_the_pinned_pack(self):
-        self.given({"1": report("node1", followups=[41]), "2": report("node1")}, [
+        self.given({"1": report("node1", followups=[41]), "2": report("node1"), "3": report("node1")}, [
             {"id": 1, "outcome": "fixed", "summary": "s", "evidence": ["e"], "followups": {"41": "ok"}},
-            {"id": 2, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+            {"id": 2, "outcome": "filed", "summary": "s", "item": "sd:7"},
+            {"id": 3, "outcome": "waiting", "summary": "s", "run": "job-3", "on": "2026-11-22"}])
         self.assertEqual(self.run_job(CLAUDE_TOUCH="2").returncode, 0)
         calls = json.loads(self.state.read_text())["log"]
         verbs = {" ".join(c[:2]) if c[0] != "today" else "today" for c in calls}
         self.assertEqual(verbs, {"reports list", "today", "task show", "task note",
-                                 "reports acknowledge"})
+                                 "reports acknowledge", "task edit"})
         pack = pinned_pack()
         check = ("import importlib.machinery as m, importlib.util as u, json, sys\n"
                  "sys.path[:0] = [sys.argv[1] + '/bin', sys.argv[1] + '/lib']\n"
@@ -560,6 +601,22 @@ class RealPack(unittest.TestCase):
         self.assertTrue(any(b.startswith("night-triage on node1 claims it") for b in bodies), bodies)
         self.assertTrue(any("Evidence: cron-jobs.sh run job-a: exit 0" in b for b in bodies), bodies)
         self.assertIsNotNone(next(n for n in state["notes"] if n["id"] == followup)["resolved_at"])
+
+    def test_a_report_waiting_on_a_dated_run_is_parked(self):
+        # sd:9243: the pack parks a report through `sd task edit --park`.
+        item = self.ingest()
+        (self.tmp / "reply").write_text(json.dumps({"alerts": [
+            {"id": item, "outcome": "waiting", "summary": "fixed by the weekly run",
+             "run": "job-a", "on": "2026-11-22"}]}))
+        env = dict(os.environ, HOME=str(self.tmp), PATH=f"{self.bin}:{os.environ['PATH']}",
+                   SD_PACK_ROOT=str(self.pack), TMPDIR=str(self.tmp), CLAUDE_ARGS=str(self.tmp / "args"),
+                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"))
+        result = subprocess.run(["sh", str(self.tmp / "system/local-night-triage/night-triage.sh"), "run"],
+                                capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.state(item)
+        self.assertEqual(state["item"]["status"], "planning")
+        self.assertIsNotNone(state["item"]["parked_at"], result.stderr)
 
 
 if __name__ == "__main__":

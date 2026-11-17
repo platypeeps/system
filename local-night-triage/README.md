@@ -31,7 +31,7 @@ into `<config>/cron-jobs/jobs/`, list `night-triage` in the machine's
    `report` kind. The row goes into `state/claims` before the note, so a
    crash between the two still leaves a row to release. An alert whose
    latest note from anyone but the ingest and this job is a claim is
-   skipped, and so is one already `in_progress`.
+   skipped, and so is one already `in_progress` or parked (sd:9243).
 3. **Triage.** `claude -p` on Sonnet reads the alerts, the Operations, this
    machine section of `sd today`, and local status. A failed `sd today`
    fails the run. Operator ruling "Repair
@@ -56,6 +56,8 @@ into `<config>/cron-jobs/jobs/`, list `night-triage` in the machine's
    - `filed`: stays open and cites the item;
    - `operator`: stays open on Today, with the exact action and why no tool
      can do it;
+   - `waiting`, naming a scheduled run and its `YYYY-MM-DD` date: the note
+     says so, then `sd task edit N --park` parks the alert (sd:9243);
    - anything else: stays open with a "not settled" note.
 
 The raw reply stays as `state/<date>.reply`. `SD_PACK_ROOT` names the pack,
