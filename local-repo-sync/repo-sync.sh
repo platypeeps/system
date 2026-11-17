@@ -1997,8 +1997,10 @@ hyg_merged() {
     case "$h_path" in \"*) return 1 ;; esac
     # ls-tree prints mode and object id, so a mode change counts too; a
     # path the branch deleted must be absent on the default branch too.
-    h_a=$(git -C "$1" ls-tree "$2" -- "$h_path" 2>/dev/null) || return 1
-    h_b=$(git -C "$1" ls-tree "$3" -- "$h_path" 2>/dev/null) || return 1
+    # --literal-pathspecs: a name such as `:x.txt` is that file, not the
+    # pathspec magic that reads it as `x.txt` (sd:9241 review).
+    h_a=$(git -C "$1" --literal-pathspecs ls-tree "$2" -- "$h_path" 2>/dev/null) || return 1
+    h_b=$(git -C "$1" --literal-pathspecs ls-tree "$3" -- "$h_path" 2>/dev/null) || return 1
     [ "$h_a" = "$h_b" ] || return 1
   done < "$HYG_TMP/branch.paths"
   echo "its paths hold on the default branch"

@@ -463,6 +463,27 @@ class HygieneTest(unittest.TestCase):
         self.assertIn(tip, result.stdout)
         self.assertIn("its paths hold on the default branch", result.stdout)
 
+    def test_a_colon_named_file_that_never_landed_keeps_its_branch(self):
+        """sd:9241 review: ls-tree read `:x.txt` as `x.txt`, which main
+        holds unchanged, so a branch whose only file never reached main
+        read as landed and its worktree went."""
+        f = self.fixture()
+        repo = f.repo()
+        f.commit(repo, "x.txt", "x\n", "x")
+        f.git(repo, "push", "-q", "origin", "main")
+        wt = f.add_worktree(repo, "build/colon")
+        (wt / ":x.txt").write_text("colon\n")
+        f.git(wt, "--literal-pathspecs", "add", ":x.txt")
+        f.git(wt, "commit", "-q", "-m", "a colon file")
+        tip = f.git(wt, "rev-parse", "HEAD")
+        f.commit(repo, "two.txt", "two\n", "unrelated work")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        result = f.run("hygiene", "--apply", expect=None)
+
+        self.assertTrue(wt.exists(), result.stdout)
+        self.assertEqual(tip, f.branch_sha(repo, "build/colon"))
+
     def test_a_branch_whose_merge_still_changes_main_is_kept(self):
         """NEW (sd:9241). A branch that landed and was then reverted still
         changes main when merged, so it and its worktree stay."""
