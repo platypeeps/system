@@ -333,6 +333,21 @@ class NightTriage(unittest.TestCase):
             "parked until then (runs: 3)."])
         self.assertIn("waiting", (self.tmp / "prompt").read_text())
 
+    def test_a_compact_wait_date_is_written_so_the_wake_reads_it(self):
+        # sd:9243 review: fromisoformat takes 20261117; the note must carry
+        # YYYY-MM-DD, or the wake never reads it and the park never ends.
+        on = day(2)
+        self.given({"1": report("node1")}, [
+            {"id": 1, "outcome": "waiting", "summary": "s", "run": "job-1", "on": on.replace("-", "")}])
+        self.assertEqual(self.run_job().returncode, 0)
+        note = self.comments("1")[0]
+        self.assertIn(f"waits on job-1 on {on}: s;", note)
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        alert = {"fields": json.dumps({"repeats": {"count": 2}})}
+        self.assertEqual(night_triage.wake(alert, [{"body": note}], "node1"), "the job failed again")
+
     def test_a_wait_without_a_real_near_date_is_not_parked(self):
         # sd:9243 review: a shape-only date check parked a past or impossible
         # date; the wait must fall within the next 8 days.

@@ -275,8 +275,11 @@ def verdict(alert, entry, host):
     if not entry:
         return f"{WHO} on {host}: not settled: the run gave no answer for this alert.", False
     outcome, summary = entry.get("outcome"), _text(entry.get("summary"))
-    if outcome == "waiting" and _text(entry.get("run")) and _wait_date(_text(entry.get("on"))) and summary:
-        return (f"{WHO} on {host}: waits on {_text(entry['run'])} on {_text(entry['on'])}: {summary}; "
+    on = _wait_date(_text(entry.get("on"))) if outcome == "waiting" else None
+    if on and _text(entry.get("run")) and summary:
+        # The note carries YYYY-MM-DD whatever spelling the answer used:
+        # WAITS reads only that, and an unread wait never wakes.
+        return (f"{WHO} on {host}: waits on {_text(entry['run'])} on {on.isoformat()}: {summary}; "
                 f"parked until then (runs: {alert.get('runs', 1)})."), PARK
     if outcome == "fixed":
         evidence = [_text(line) for line in entry.get("evidence") or [] if _text(line)]
