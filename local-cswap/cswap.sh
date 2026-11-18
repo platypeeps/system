@@ -173,8 +173,8 @@ herdr_panes() {
 # that shape (null, malformed, an agent that is no object). `screen`: a
 # pane's screen on stdin to send, connected or wait <why>. The later of
 # Claude's two Remote Control banners decides, as the screen keeps old ones
-# above, and only an empty input box (the rules around the last ❯ line)
-# takes keys; dim text there is a prompt suggestion, so it reads as empty.
+# above, and only one empty input box below it (rule, ❯, rule; any other
+# shape waits) takes keys; dim text there is a prompt suggestion.
 rc_read() {
   python3 -I -c '
 import json, sys
@@ -242,22 +242,23 @@ else:
     raw = text.splitlines()
     lines = [plain(line) for line in raw]
     marks = [(i, banner(line)) for i, line in enumerate(lines) if banner(line)]
-    prompt = max([i for i, line in enumerate(lines) if line.strip().startswith("❯")], default=-1)
-    # The input box: every line from the rule above the last ❯ line to the
-    # rule below it. A draft can put its text on a continuation line.
-    top = max([i for i in range(prompt) if rule(lines[i])], default=-1)
-    bottom = min([i for i in range(prompt + 1, len(lines)) if rule(lines[i])], default=-1)
-    typed, dim = "", False
-    if prompt >= 0 and top >= 0 and bottom >= 0:
-        for i in range(top + 1, bottom):
-            part, dim = undimmed(raw[i], dim)
-            typed += part.strip().removeprefix("❯") if i == prompt else part
+    # Hold on doubt (sd:9282 bundle review): below the last banner, the
+    # screen must show one empty input box and nothing like a second one:
+    # exactly two rules and one ❯ line, adjacent, rule ❯ rule. A draft
+    # can hold rule or ❯ lines of its own, so any other shape waits.
+    below = range(marks[-1][0] + 1 if marks else 0, len(lines))
+    rules = [i for i in below if rule(lines[i])]
+    prompts = [i for i in below if lines[i].strip().startswith("❯")]
+    one_box = len(rules) == 2 and len(prompts) == 1 and rules[0] + 1 == prompts[0] == rules[1] - 1
+    typed = undimmed(raw[prompts[0]], False)[0].strip().removeprefix("❯") if one_box else ""
     if marks and marks[-1][1] == "active":
         print("connected")
     elif not marks:
         print("wait: no Remote Control drop on its screen yet")
-    elif prompt < 0 or top < 0 or bottom < 0:
+    elif not rules or not prompts:
         print("wait: no input box on its screen")
+    elif not one_box:
+        print("wait: its input box is not one empty line")
     elif typed.strip():
         print("wait: its input box holds text")
     else:

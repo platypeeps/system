@@ -600,7 +600,8 @@ class RemoteControlReconnects(Machine):
             # A draft whose text is on a continuation line, typed or dim.
             "draft-line-2": (f"{DROP_LINE}\n" + box(empty, "  second line"), False),
             "dim-then-typed": (f"{DROP_LINE}\n" + box(empty + "\x1b[2mtry this\x1b[0m", "  typed"), False),
-            "dim-two-lines": (f"{DROP_LINE}\n" + box(empty + "\x1b[2mone", "  two\x1b[22m"), True),
+            # A box of two lines is doubt, even when both are dim.
+            "dim-two-lines": (f"{DROP_LINE}\n" + box(empty + "\x1b[2mone", "  two\x1b[22m"), False),
             # SGR forms: colon truecolour and 256 colour hold a 2 that is no
             # dim; 0;2 is dim; a bare reset ends it.
             "colon-truecolour": (f"{DROP_LINE}\n" + box(empty + "\x1b[38:2::9:2:2mtyped\x1b[0m"), False),
@@ -611,6 +612,11 @@ class RemoteControlReconnects(Machine):
             "past-prompt": (f"\u276f an old prompt\n{DROP_LINE}\n" + box(empty), True),
             "no-bottom-rule": (f"{DROP_LINE}\n{RULE}\n{empty}", False),
             "labelled-rule": (f"{DROP_LINE}\n" + box(empty).replace(RULE, RULE + " control \u2500", 1), True),
+            # Bundle review: a draft that holds a rule line and a bare ❯
+            # line looks like a box of its own; the screen waits.
+            "draft-fake-box": (f"{DROP_LINE}\n" + box(empty, RULE, "\u276f"), False),
+            "draft-text-fake-box": (f"{DROP_LINE}\n" + box(empty + "a", "  b", RULE, "\u276f\u00a0"), False),
+            "two-boxes": (f"{DROP_LINE}\n" + box(empty) + "\n" + box(empty), False),
         }
         self.publish(THREE)
         self.panes(*[[f"w1:{name}", "claude", "idle", name, screen]
