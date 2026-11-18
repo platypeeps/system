@@ -685,6 +685,13 @@ class HygieneTest(unittest.TestCase):
 
         self.assertNotIn("DONE ", result.stdout)
 
+    def test_a_profile_is_one_whole_word_of_the_list(self):
+        # Lead re-review: `personal work` passed as a substring.
+        f = self.fixture()
+        for bad in ("personal work", "work terra", "erra"):
+            result = f.run("hygiene", expect=1, extra_env={"REPO_SYNC_PROFILE": bad})
+            self.assertIn(f"unknown profile '{bad}'", result.stderr, bad)
+
     def test_an_item_marker_inside_a_word_names_no_item(self):
         # Lead review: fix/xsd-9376suffix read as sd:9376.
         f = self.fixture()

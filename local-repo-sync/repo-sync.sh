@@ -92,14 +92,16 @@ fi
 
 # The profiles there are, one list: the check below and hygiene's fleet
 # list of repos (hyg_keep_load) both read it.
+# A profile is one whole word of it: `personal work` is none.
 PROFILES="personal work terra"
-case " $PROFILES " in
-  *" $PROFILE "*) ;;
-  *)
-    echo "repo-sync.sh: unknown profile '$PROFILE' (want: $PROFILES)" >&2
-    exit 1
-    ;;
-esac
+p_known=
+for p_name in $PROFILES; do
+  [ "$PROFILE" != "$p_name" ] || p_known=1
+done
+if [ -z "$p_known" ]; then
+  echo "repo-sync.sh: unknown profile '$PROFILE' (want: $PROFILES)" >&2
+  exit 1
+fi
 case "$PROFILE" in
   work) DEFAULT_ROOT="${WORK_ROOT:-$HOME/repos}" ;;
   *)    DEFAULT_ROOT="$HOME/repos" ;;
