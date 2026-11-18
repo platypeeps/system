@@ -168,7 +168,9 @@ def run_json(cmd, timeout, echo=True):
     `echo=False` keeps the command's output out of the error, for a command
     whose output may hold personal values (cswap's human list has emails)."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # Bytes, not text=True: a reply that is not UTF-8 raised
+        # UnicodeDecodeError out of the run (sd:9256 review).
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return None, "timeout after %ds" % timeout
     except OSError as e:
@@ -176,13 +178,14 @@ def run_json(cmd, timeout, echo=True):
     if r.returncode != 0:
         if not echo:
             return None, "exit %d" % r.returncode
-        return None, "exit %d: %s" % (r.returncode, (r.stderr or r.stdout).strip()[:500])
+        shown = (r.stderr or r.stdout).decode("utf-8", "replace")
+        return None, "exit %d: %s" % (r.returncode, shown.strip()[:500])
     try:
         return usage_sources.decode(r.stdout), None
     except usage_sources.ReadFailed:
         if not echo:
             return None, "unparseable output"
-        return None, "unparseable output: %s" % r.stdout.strip()[:500]
+        return None, "unparseable output: %s" % r.stdout.decode("utf-8", "replace").strip()[:500]
 
 
 def is_number(value):
@@ -553,7 +556,8 @@ def report_accounts(a) -> None:
     pct at reset (the last reading before it), newest first."""
     out = os.path.expanduser(a.out)
     try:
-        with open(out, encoding="utf-8") as f:
+        # A line that is not UTF-8 is a malformed line, skipped below.
+        with open(out, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError as e:
         print("agent-meter: cannot read the ledger %s: %s" % (out, e.strerror or e),

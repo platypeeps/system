@@ -696,6 +696,19 @@ class MeterRun(unittest.TestCase):
                 self.assertNotIn("nan", done.stdout)
                 self.assertNotIn("inf%", done.stdout)
 
+    def test_a_ledger_line_that_is_not_utf8_cannot_break_the_report(self):
+        # sd:9256 round 6: the ledger was read as strict UTF-8.
+        good = {"number": 2, "active": True, "status": "ok", "pct": 9.0,
+                "resetsAt": "2099-01-01T03:00:00+00:00", "expectedPct": 5.0,
+                "scoped": {}, "fetchedAt": None}
+        with self.out.open("wb") as f:
+            f.write(b'{"ts": "\xff"}\n')
+            f.write(json.dumps({"ts": "2026-10-28T08:00:00Z", "accounts": [good]}).encode()
+                    + b"\n")
+        done = self.run_accounts()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("account 2 (active)", done.stdout)
+
     def test_accounts_on_a_ledger_without_account_readings_says_so(self):
         self.write_ledger([("2026-10-27T16:00:00Z", None)])
         done = self.run_accounts()

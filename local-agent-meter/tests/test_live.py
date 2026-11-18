@@ -968,6 +968,20 @@ class Hostile(unittest.TestCase):
                 self.assertEqual((got["status"], got["error"]),
                                  ("unknown", "no active account with a seven-day share"))
 
+    def test_a_reply_that_is_not_utf8_is_an_error_not_a_raise(self):
+        # sd:9256 round 6: text=True raised UnicodeDecodeError out of the run.
+        for echo in (False, True):
+            with self.subTest(echo=echo):
+                data, error = load_meter().run_json(
+                    [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'{\\xff}')"],
+                    30, echo=echo)
+                self.assertIsNone(data)
+                self.assertTrue(error.startswith("unparseable output"), error)
+        data, error = load_meter().run_json(
+            [sys.executable, "-c", "import sys; sys.stderr.buffer.write(b'\\xff'); sys.exit(3)"],
+            30)
+        self.assertEqual((data, error[:6]), (None, "exit 3"))
+
     def test_a_deep_reply_from_a_command_is_an_error_not_a_raise(self):
         data, error = load_meter().run_json(
             [sys.executable, "-c", "print('[' * %d + ']' * %d)" % (LEVELS, LEVELS)], 30,
