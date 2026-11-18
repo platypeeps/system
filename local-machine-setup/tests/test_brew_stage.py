@@ -325,9 +325,12 @@ class BrewStageTest(unittest.TestCase):
         app = self.stubs.parent / "Applications"
         return link, app, {"MACHINE_SETUP_APPLICATIONS_DIR": str(app)}
 
-    def tailscale_daemon(self, daemon):
+    def tailscale_daemon(self, daemon, client="1.104.7-tabc"):
         prefix = self.home / "brewprefix"
         write_exec(prefix / "opt/tailscale/bin/tailscaled", "#!/bin/sh\n")
+        write_exec(prefix / "opt/tailscale/bin/tailscale",
+                   f'#!/bin/sh\nprintf "Client: 1.104.7\\n  long version: {client}\\n'
+                   f'Daemon: {daemon}\\n"\n')
         brew = (self.stubs / "brew").read_text()
         (self.stubs / "brew").write_text(brew.replace(
             "#!/bin/sh\n", f'#!/bin/sh\n[ "$1" = --prefix ] && {{ echo "{prefix}"; exit 0; }}\n', 1))
@@ -357,6 +360,17 @@ class BrewStageTest(unittest.TestCase):
         result = self.run_verb("update", "brew", "--apply", **env)
         self.assertIn("ok      tailscaled 1.104.7-tabc matches its binary", result.stdout)
         self.assertNotIn("restart", sudo_log.read_text() if sudo_log.exists() else "")
+
+    def test_the_formula_cli_probes_the_daemon_not_the_one_on_path(self):
+        # sd:9245 lane review: an old CLI first on PATH matched the old
+        # daemon and hid the upgrade.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.5-tdef", client="1.104.7-tabc")
+        write_exec(self.stubs / "tailscale",
+                   '#!/bin/sh\nprintf "Client: 1.104.5\\n  long version: 1.104.5-tdef\\n'
+                   'Daemon: 1.104.5-tdef\\n"\n')
+        self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("services restart tailscale", sudo_log.read_text())
 
     def test_a_new_build_of_the_same_version_is_restarted(self):
         # sd:9245 review: the short version hid a swapped binary.

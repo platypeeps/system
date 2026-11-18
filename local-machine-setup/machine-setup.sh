@@ -1010,10 +1010,11 @@ stage_brew() {
 # tailscale is not the brew formula has no brew service to restart.
 tailscale_daemon_match() {
   tailscale_runs_app && return 0
-  command -v tailscale >/dev/null 2>&1 || return 0
   tm_brew=$(bound_step 60 brew --prefix 2>/dev/null) || tm_brew=
   [ -n "$tm_brew" ] && [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
-  tm_out=$(bound_step 30 tailscale version --daemon 2>/dev/null) || tm_out=
+  # The formula's own CLI: another tailscale earlier on PATH can match
+  # the stale daemon and hide the upgrade (sd:9245 lane review).
+  tm_out=$(bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" version --daemon 2>/dev/null) || tm_out=
   tm_cli=$(printf '%s\n' "$tm_out" | sed -n 's/^ *long version: //p')
   tm_dmn=$(printf '%s\n' "$tm_out" | sed -n 's/^Daemon: //p')
   if [ -z "$tm_cli" ] || [ -z "$tm_dmn" ]; then
