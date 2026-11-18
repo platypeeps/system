@@ -1,0 +1,1297 @@
+"""The live readings: `agent-meter.py usage` (sd:9256) and `services` (sd:9259).
+
+Each reads a Settings list (a workflow database setting row), reads each
+entry, and writes one `heartbeat` state row per entry. A failed read is a
+row with status `unknown`, never `ok`; a provider with no usage API reads
+`no-source`, never 0. Keys come from the environment by name, and no key
+value reaches a row or the output.
+
+The readers are driven in-process with a fake fetch, the HTTP helper and
+the `http` kind against a server on 127.0.0.1, and the subcommands as the
+job runs them: a subprocess on a store `initialise` made in a directory the
+test owns. No test reaches the network.
+"""
+
+import contextlib
+import datetime
+import http.server
+import io
+import json
+import os
+import socket
+import sqlite3
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import sd_db
+from sd_db import writes
+from sd_db.migrate import initialise
+
+HERE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HERE))
+import service_status  # noqa: E402
+import usage_sources  # noqa: E402
+from usage_sources import ReadFailed  # noqa: E402
+
+SCRIPT = HERE / "agent-meter.py"
+NOW = datetime.datetime(2026, 11, 17, 20, 0, tzinfo=datetime.timezone.utc)
+SECRET = "sk-test-0123456789-secret"
+LOCAL = {"NO_PROXY": "*", "no_proxy": "*"}
+#: urllib reads the lower-case name first; both go.
+PROXIES = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+
+
+def local_only(test):
+    """No proxy for this test's reads, the environment restored after it."""
+    patcher = mock.patch.dict(os.environ, LOCAL)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    for name in PROXIES:
+        os.environ.pop(name, None)
+
+#: Each keyed reader: its variable, an answer in the live shape (checked
+#: 2026-11-17), and what the reading must hold.
+ANSWERS = {
+    "openrouter": ("OPENROUTER_API_KEY",
+                   {"data": {"usage_monthly": 12.5, "limit": 50, "limit_remaining": 37.5}},
+                   {"spend": {"amount": 12.5, "unit": "usd", "period": "month"},
+                    "balance": {"amount": 37.5, "unit": "usd"}}),
+    "moonshot": ("MOONSHOT_API_KEY",
+                 {"code": 0, "status": True, "data": {"available_balance": 4.25,
+                                                      "voucher_balance": 0, "cash_balance": 4.25}},
+                 {"balance": {"amount": 4.25, "unit": "usd"}}),
+    "deepinfra": ("DEEPINFRA_API_KEY",
+                  {"months": [{"period": "2026.11", "total_cost": 1234, "items": []}]},
+                  {"spend": {"amount": 12.34, "unit": "usd", "period": "month"}}),
+    "minimax": ("MINIMAX_API_KEY",
+                {"base_resp": {"status_code": 0}, "model_remains": [{
+                    "model_name": "general", "start_time": 1795000000000,
+                    "end_time": 1795018000000, "current_interval_remaining_percent": 80,
+                    "weekly_start_time": 1794500000000, "weekly_end_time": 1795104800000,
+                    "current_weekly_remaining_percent": 95}]},
+                {"windows": [
+                    {"name": "general", "used_percent": 20.0, "window_minutes": 300,
+                     "resets_at": "2026-11-18T16:06:40Z"},
+                    {"name": "general weekly", "used_percent": 5.0, "window_minutes": 10080,
+                     "resets_at": "2026-11-19T16:13:20Z"}]}),
+    "firecrawl": ("FIRECRAWL_API_KEY",
+                  {"success": True, "data": {"remainingCredits": 250, "planCredits": 1000,
+                                             "billingPeriodEnd": "2026-12-01T00:00:00Z"}},
+                  {"balance": {"amount": 250.0, "unit": "credits"},
+                   "windows": [{"name": "credits", "used_percent": 75.0, "window_minutes": None,
+                                "resets_at": "2026-12-01T00:00:00Z"}]}),
+    "heygen": ("HEYGEN_API_KEY", {"error": None, "data": {"remaining_quota": 600}},
+               {"balance": {"amount": 600.0, "unit": "quota"}}),
+    "runway": ("RUNWAYML_API_SECRET", {"creditBalance": 900, "tier": {}, "usage": {}},
+               {"balance": {"amount": 900.0, "unit": "credits"}}),
+    "openai": ("OPENAI_ADMIN_KEY",
+               {"data": [{"results": [{"amount": {"value": 1.5, "currency": "usd"}}]},
+                         {"results": [{"amount": {"value": 2.25, "currency": "usd"}}]}]},
+               {"spend": {"amount": 3.75, "unit": "usd", "period": "month"}}),
+}
+
+#: Values no number in an answer may be taken from.
+EXTREMES = ("12", True, None, float("nan"), float("inf"), float("-inf"), 10**400, [], {}, [1])
+
+
+def answering(answer, calls=None):
+    def fetch(url, headers=None, **_):
+        if calls is not None:
+            calls.append((url, headers))
+        return json.loads(json.dumps(answer)) if not callable(answer) else answer()
+    return fetch
+
+
+def failing(message):
+    def fetch(url, headers=None, **_):
+        raise ReadFailed(message)
+    return fetch
+
+
+def replace_numbers(value, extreme):
+    """Every number in value replaced by extreme (bools left alone)."""
+    if isinstance(value, dict):
+        return {k: replace_numbers(v, extreme) for k, v in value.items()}
+    if isinstance(value, list):
+        return [replace_numbers(v, extreme) for v in value]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return extreme
+    return value
+
+
+class Readers(unittest.TestCase):
+    def test_each_reader_reads_its_answer(self):
+        for name, (var, answer, expected) in ANSWERS.items():
+            with self.subTest(provider=name):
+                calls = []
+                got = usage_sources.read_provider(name, {var: SECRET}, answering(answer, calls), NOW)
+                self.assertEqual(got["status"], "ok", got)
+                self.assertEqual(got["read_at"], "2026-11-17T20:00:00Z")
+                for field, value in expected.items():
+                    self.assertEqual(got[field], value)
+                (url, headers), = calls
+                self.assertTrue(url.startswith("https://"))
+                self.assertIn(SECRET, " ".join(headers.values()))
+
+    def test_a_window_that_reset_is_never_current(self):
+        # sd:9256 round 8: the live usage path stored a window whose reset
+        # had passed as ok, while write_rows dropped it.
+        accounts = [{"number": 2, "active": True, "pct": 67.0, "resetsAt": "2026-11-17T20:00:00Z",
+                     "fetchedAt": "2026-11-17T12:00:00Z"}]
+        got = usage_sources.claude_reading(accounts, None, NOW)
+        self.assertEqual((got["status"], got["windows"], got.get("stale")), ("unknown", [], 1))
+        self.assertEqual(got["error"], "every window reset after its reading")
+        var, answer, _ = ANSWERS["firecrawl"]
+        answer = put(answer, ("data", "billingPeriodEnd"), "2026-11-01T00:00:00Z")
+        got = usage_sources.read_provider("firecrawl", {var: SECRET}, answering(answer), NOW)
+        self.assertEqual((got["status"], got["windows"], got.get("stale")), ("ok", [], 1))
+
+    def test_a_minimax_model_name_is_capped_and_kept_out_of_errors(self):
+        # sd:9256 round 8: the reply's model name went whole into labels
+        # and into the error text.
+        var, answer, _ = ANSWERS["minimax"]
+        long = json.loads(json.dumps(answer))
+        long["model_remains"][0]["model_name"] = "m" * 5000
+        got = usage_sources.read_provider("minimax", {var: SECRET}, answering(long), NOW)
+        self.assertEqual(got["status"], "ok", got)
+        self.assertTrue(all(len(w["name"]) <= usage_sources.LABEL for w in got["windows"]))
+        long["model_remains"][0]["end_time"] = 0
+        got = usage_sources.read_provider("minimax", {var: SECRET}, answering(long), NOW)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "end_time is not a window"))
+
+    def test_a_missing_key_is_unknown_and_names_the_variable_only(self):
+        for name, (var, answer, _) in ANSWERS.items():
+            with self.subTest(provider=name):
+                calls = []
+                got = usage_sources.read_provider(name, {var: ""}, answering(answer, calls), NOW)
+                self.assertEqual((got["status"], got["error"]), ("unknown", "%s not set" % var))
+                self.assertEqual(calls, [])
+
+    def test_a_failed_fetch_is_unknown_never_ok(self):
+        for name, (var, _, _) in ANSWERS.items():
+            with self.subTest(provider=name):
+                got = usage_sources.read_provider(name, {var: SECRET}, failing("HTTP 401"), NOW)
+                self.assertEqual((got["status"], got["error"]), ("unknown", "HTTP 401"))
+                self.assertIsNone(got["read_at"])
+                self.assertNotIn(SECRET, json.dumps(got))
+
+    def test_an_answer_of_another_shape_is_unknown_never_ok(self):
+        shapes = [{}, [], "x", None, 5, {"data": "x"}, {"data": None}, {"months": "x"},
+                  {"base_resp": {"status_code": 1}, "model_remains": []}, {"code": 1, "data": {}}]
+        for name, (var, _, _) in ANSWERS.items():
+            for shape in shapes:
+                with self.subTest(provider=name, shape=shape):
+                    got = usage_sources.read_provider(name, {var: SECRET}, answering(shape), NOW)
+                    self.assertEqual(got["status"], "unknown", got)
+
+    def test_every_extreme_number_is_unknown_not_a_crash_or_a_reading(self):
+        for name, (var, answer, _) in ANSWERS.items():
+            for extreme in EXTREMES:
+                with self.subTest(provider=name, extreme=extreme):
+                    bent = replace_numbers(answer, extreme)
+                    if name == "moonshot":
+                        bent["code"] = 0
+                    if name == "minimax":
+                        bent["base_resp"]["status_code"] = 0
+                    got = usage_sources.read_provider(name, {var: SECRET}, answering(bent), NOW)
+                    # sd:9256 round 7: "12" read as a number; only Codex's
+                    # balance is a string by its schema.
+                    self.assertEqual(got["status"], "unknown", got)
+                    json.dumps(got, allow_nan=False)
+
+    def test_an_openai_bucket_of_another_shape_is_unknown_not_zero(self):
+        # sd:9256 review: a number raised TypeError; no results read as 0.
+        for bucket in ({"results": 5}, {}, {"results": None}, {"results": "x"}, 5, None):
+            with self.subTest(bucket=bucket):
+                got = usage_sources.read_provider(
+                    "openai", {"OPENAI_ADMIN_KEY": SECRET}, answering({"data": [bucket]}), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+                self.assertIsNone(got["spend"])
+        got = usage_sources.read_provider(
+            "openai", {"OPENAI_ADMIN_KEY": SECRET}, answering({"data": [{"results": []}]}), NOW)
+        self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0))
+
+    def test_a_reader_that_raises_is_unknown_and_costs_no_other(self):
+        def strange(env, fetch, now):
+            raise TypeError("x")
+        with mock.patch.dict(usage_sources.READERS, {"strange": strange}):
+            got = usage_sources.read_provider("strange", {}, failing("unreached"), NOW)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "another shape: TypeError"))
+
+    def test_no_source_providers_read_no_source_not_zero(self):
+        for name in usage_sources.NO_SOURCE:
+            with self.subTest(provider=name):
+                got = usage_sources.read_provider(name, {}, failing("unreached"), NOW)
+                self.assertEqual(got["status"], "no-source")
+                self.assertEqual((got["windows"], got["balance"], got["spend"]), ([], None, None))
+
+    def test_a_name_with_no_reader_is_unknown(self):
+        got = usage_sources.read_provider("nosuch", {}, failing("unreached"), NOW)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "no reader for this name"))
+
+    def test_the_starting_list_names_every_reader_once(self):
+        names, problems = usage_sources.parse_providers(usage_sources.STARTING)
+        self.assertEqual(problems, [])
+        self.assertEqual(sorted(names), sorted(["claude", "codex", *usage_sources.READERS,
+                                                *usage_sources.NO_SOURCE]))
+
+    def test_the_providers_grammar(self):
+        names, problems = usage_sources.parse_providers(
+            "# comment\nclaude\n\n codex  # trailing\nclaude\nBad Name\nx/y\n")
+        self.assertEqual(names, ["claude", "codex"])
+        self.assertEqual(problems, ["line 6: not a provider name", "line 7: not a provider name"])
+
+    def test_claude_reads_every_account_and_the_active_ones_week(self):
+        accounts = [{"number": 1, "active": False, "pct": 10.0, "resetsAt": "a"},
+                    {"number": 2, "active": True, "pct": 67.0, "resetsAt": "2026-11-20T00:00:00Z",
+                     "fetchedAt": "2026-11-17T12:00:00Z"}]
+        got = usage_sources.claude_reading(accounts, None, NOW)
+        self.assertEqual(got["status"], "ok")
+        # sd:9256 review: cswap's fetch time, not the collector's.
+        self.assertEqual(got["read_at"], "2026-11-17T12:00:00Z")
+        self.assertEqual(got["accounts"], accounts)
+        self.assertEqual(got["windows"], [{"name": "seven_day", "used_percent": 67.0,
+                                           "window_minutes": 10080,
+                                           "resets_at": "2026-11-20T00:00:00Z"}])
+        failed = usage_sources.claude_reading(None, "exit 1", NOW)
+        self.assertEqual((failed["status"], failed["error"]), ("unknown", "exit 1"))
+        for fetched in (None, "", "yesterday", "2026-11-17T12:00:00"):
+            with self.subTest(fetched=fetched):
+                accounts[1]["fetchedAt"] = fetched
+                got = usage_sources.claude_reading(accounts, None, NOW)
+                self.assertEqual((got["status"], got["read_at"], got["windows"]),
+                                 ("unknown", None, []))
+
+
+class Server:
+    """A server on 127.0.0.1 answering each path from `routes`: (code, body)."""
+
+    def __init__(self, routes):
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                outer.seen.append((self.path, dict(self.headers)))
+                code, body, *extra = outer.routes.get(self.path, (404, b"{}"))
+                if callable(body):
+                    # A raw answer: the route writes the whole response.
+                    try:
+                        body(self.wfile)
+                    except OSError:
+                        pass
+                    return
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                for name, value in (extra[0] if extra else {}).items():
+                    self.send_header(name, value)
+                self.end_headers()
+                try:
+                    self.wfile.write(body if isinstance(body, bytes) else json.dumps(body).encode())
+                except OSError:
+                    pass  # the client stopped reading: a cap or a deadline
+
+            def log_message(self, *args):
+                pass
+
+        self.routes, self.seen = routes, []
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def closed_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+class Fetch(unittest.TestCase):
+    def setUp(self):
+        local_only(self)
+        self.server = Server({"/ok": (200, {"a": 1}), "/broken": (500, b"oops"),
+                              "/garbage": (200, b"<html>")})
+        self.addCleanup(self.server.close)
+
+    def test_a_failed_read_is_read_failed_with_no_body(self):
+        self.assertEqual(usage_sources.fetch_json(self.server.url + "/ok"), {"a": 1})
+        for path, message in (("/broken", "HTTP 500"), ("/garbage", "unparseable answer"),
+                              ("/missing", "HTTP 404")):
+            with self.subTest(path=path):
+                with self.assertRaises(ReadFailed) as caught:
+                    usage_sources.fetch_json(self.server.url + path, {"Authorization": SECRET})
+                self.assertEqual(str(caught.exception), message)
+        with self.assertRaises(ReadFailed) as caught:
+            usage_sources.fetch_json("http://127.0.0.1:%d/" % closed_port())
+        self.assertNotIn(SECRET, str(caught.exception))
+
+    def test_a_redirect_to_another_origin_never_carries_the_key(self):
+        # sd:9256 review: urllib sent the key on to the redirect's target.
+        other = Server({"/ok": (200, {"b": 2})})
+        self.addCleanup(other.close)
+        self.server.routes["/away"] = (302, b"", {"Location": other.url + "/ok"})
+        self.server.routes["/here"] = (302, b"", {"Location": "/ok"})
+        with self.assertRaises(ReadFailed) as caught:
+            usage_sources.fetch_json(self.server.url + "/away",
+                                     {"Authorization": "Bearer " + SECRET, "X-Api-Key": SECRET})
+        self.assertEqual(str(caught.exception), "redirect to another origin")
+        self.assertEqual(other.seen, [])
+        got = usage_sources.fetch_json(self.server.url + "/here", {"X-Api-Key": SECRET})
+        self.assertEqual(got, {"a": 1})
+        self.assertEqual(self.server.seen[-1][1].get("X-Api-Key"), SECRET)
+
+
+def drip(head, piece, tail, times=100, pause=0.1):
+    """A raw answer that sends head, then piece every pause seconds."""
+    def write(out):
+        out.write(head)
+        for _ in range(times):
+            out.write(piece)
+            out.flush()
+            time.sleep(pause)
+        out.write(tail)
+    return write
+
+
+class Bounded(unittest.TestCase):
+    """sd:9256 round 6: a source that keeps sending held the whole run."""
+
+    def setUp(self):
+        local_only(self)
+        ok = b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n"
+        self.server = Server({
+            "/body": (200, drip(ok + b"\r\n[", b"1,", b"1]")),
+            "/headers": (200, drip(ok, b"X-Drip: 1\r\n", b"\r\n{}")),
+            "/big": (200, b'"' + b"a" * (1 << 20) + b'"'),
+            "/google": (200, [dict(GOOGLE_OPEN, end="2026-11-17T19:00:00+00:00",
+                                   external_desc="x" * (2 << 20))])})
+        self.addCleanup(self.server.close)
+
+    def timed(self, call):
+        started = time.monotonic()
+        with self.assertRaises(ReadFailed) as caught:
+            call()
+        self.assertLess(time.monotonic() - started, 4)
+        return str(caught.exception)
+
+    def test_a_feed_that_keeps_sending_is_read_failed_at_the_deadline(self):
+        for path in ("/body", "/headers"):
+            with self.subTest(path=path):
+                self.timed(lambda: usage_sources.fetch_json(self.server.url + path, timeout=1))
+        self.timed(lambda: service_status.read_http(self.server.url + "/headers", timeout=1))
+
+    def test_a_google_history_over_the_default_cap_reads(self):
+        # sd:9256 round 7: the google-incidents feeds are full histories.
+        got = service_status.read_service(
+            ("g", "google-incidents", self.server.url + "/google", []), NOW)
+        self.assertEqual((got["status"], got.get("error")), ("ok", None))
+
+    def test_an_answer_over_the_cap_is_read_failed(self):
+        message = self.timed(lambda: usage_sources.fetch_json(self.server.url + "/big"))
+        self.assertIn("bytes", message)
+
+
+class Codex(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        self.day = self.home / "sessions/2026/11/17"
+        self.day.mkdir(parents=True)
+
+    def rollout(self, name, lines, mtime):
+        path = self.day / ("rollout-%s.jsonl" % name)
+        path.write_text("".join(json.dumps(line) + "\n" if not isinstance(line, str) else line + "\n"
+                                for line in lines), encoding="utf-8")
+        os.utime(path, (mtime, mtime))
+        return path
+
+    @staticmethod
+    def event(used=61.0, stamp="2026-11-17T19:00:00.000Z", **limits):
+        rate = {"primary": {"used_percent": used, "window_minutes": 10080,
+                            "resets_at": 4102444800},
+                "secondary": None,
+                "credits": {"has_credits": True, "unlimited": False, "balance": "62500.0"}}
+        rate.update(limits)
+        return {"timestamp": stamp, "type": "event_msg",
+                "payload": {"type": "token_count", "info": {"cwd": "/x"}, "rate_limits": rate}}
+
+    def test_the_newest_rollout_with_limits_is_the_reading(self):
+        self.rollout("old", [self.event(used=10.0, stamp="2026-11-16T00:00:00Z")], 1000)
+        self.rollout("new", [self.event(used=40.0, stamp="2026-11-17T18:00:00Z"),
+                             self.event(used=61.0), "{not json"], 2000)
+        got = usage_sources.codex_reading(self.home)
+        self.assertEqual(got["status"], "ok")
+        self.assertEqual(got["read_at"], "2026-11-17T19:00:00.000Z")
+        self.assertEqual(got["windows"], [{"name": "primary", "used_percent": 61.0,
+                                           "window_minutes": 10080,
+                                           "resets_at": "2100-01-01T00:00:00Z"}])
+        self.assertEqual(got["balance"], {"amount": 62500.0, "unit": "credits"})
+
+    def test_a_newest_rollout_without_limits_falls_back_to_the_one_before(self):
+        self.rollout("old", [self.event(used=10.0, stamp="2026-11-16T00:00:00Z")], 1000)
+        self.rollout("new", [{"timestamp": "2026-11-17T19:00:00Z", "type": "session_meta",
+                              "payload": {"type": "session_meta"}}], 2000)
+        got = usage_sources.codex_reading(self.home)
+        self.assertEqual((got["status"], got["read_at"]), ("ok", "2026-11-16T00:00:00Z"))
+
+    def test_the_newest_event_wins_whatever_file_was_touched_last(self):
+        # sd:9256 review: a file touched later held an older event.
+        at = datetime.datetime(2026, 11, 17, 19, 0, tzinfo=datetime.timezone.utc).timestamp()
+        self.rollout("touched", [self.event(used=10.0, stamp="2026-11-17T10:00:00Z")], at + 7200)
+        self.rollout("newer", [self.event(used=55.0, stamp="2026-11-17T19:00:00Z")], at + 60)
+        got = usage_sources.codex_reading(self.home)
+        self.assertEqual((got["read_at"], got["windows"][0]["used_percent"]),
+                         ("2026-11-17T19:00:00Z", 55.0))
+
+    def test_event_time_decides_whatever_the_mtimes_and_line_order(self):
+        # sd:9256 lane review: a copied rollout (old mtime) and a line out
+        # of time order hid the newest reading.
+        self.rollout("new", [self.event(30.0, "2026-11-17T19:00:00Z")], 2000)
+        self.rollout("copied", [self.event(90.0, "2026-11-17T21:00:00Z"),
+                                self.event(50.0, "2026-11-17T20:00:00Z")], 1000)
+        got = usage_sources.codex_reading(self.home)
+        self.assertEqual(got["read_at"], "2026-11-17T21:00:00Z")
+
+    def test_a_models_own_bucket_never_replaces_the_accounts(self):
+        # sd:9256 review: a newer model-specific snapshot won on time.
+        self.rollout("x", [self.event(used=40.0, stamp="2026-11-17T18:00:00Z", limit_id="codex"),
+                           self.event(used=90.0, stamp="2026-11-17T19:00:00Z",
+                                      limit_id="codex_other")], 2000)
+        got = usage_sources.codex_reading(self.home)
+        self.assertEqual((got["read_at"], got["windows"][0]["used_percent"]),
+                         ("2026-11-17T18:00:00Z", 40.0))
+        self.rollout("x", [self.event(used=90.0, limit_id="codex_other")], 2000)
+        self.assertEqual(usage_sources.codex_reading(self.home)["status"], "unknown")
+
+    def test_a_window_that_reset_is_never_current(self):
+        # sd:9256 round 8: an idle Codex's window that had reset read ok.
+        self.rollout("x", [self.event(primary={"used_percent": 61.0, "window_minutes": 10080,
+                                               "resets_at": 1794992575})], 2000)
+        later = datetime.datetime(2026, 11, 18, 10, 0, tzinfo=datetime.timezone.utc)
+        got = usage_sources.codex_reading(self.home, now=later)
+        self.assertEqual((got["status"], got["windows"], got.get("stale")), ("ok", [], 1))
+        self.assertEqual(got["balance"], {"amount": 62500.0, "unit": "credits"})
+
+    def test_no_limits_anywhere_is_unknown(self):
+        got = usage_sources.codex_reading(self.home)
+        self.assertEqual(got["status"], "unknown")
+        self.rollout("bad", [self.event(primary="x"), self.event(used=float("nan"))], 1000)
+        got = usage_sources.codex_reading(self.home)
+        self.assertEqual(got["status"], "unknown")
+
+    def test_every_extreme_value_is_skipped_not_a_reading(self):
+        for field in ("used_percent", "window_minutes", "resets_at"):
+            for extreme in EXTREMES + (0, -5, 1e308):
+                with self.subTest(field=field, extreme=extreme):
+                    if field == "used_percent" and extreme in (0, -5, "12", 1e308):
+                        continue  # a number; the meter row refuses one out of range
+                    if field == "resets_at" and extreme in (0, -5, "12"):
+                        continue
+                    if field != "used_percent" and extreme is None:
+                        continue  # Codex's schema allows null; see the null test
+                    event = self.event()
+                    event["payload"]["rate_limits"]["primary"][field] = extreme
+                    self.rollout("x", [event], 1000)
+                    got = usage_sources.codex_reading(self.home)
+                    self.assertEqual(got["status"], "unknown", got)
+                    json.dumps(got, allow_nan=False)
+
+
+SUMMARY = {"page": {"url": "https://status.example.test"},
+           "status": {"indicator": "minor", "description": "Minor"},
+           "components": [{"name": "Copilot", "status": "degraded_performance"},
+                          {"name": "Git", "status": "operational"}],
+           "incidents": [{"id": "abc", "name": "Copilot **slow**", "status": "investigating",
+                          "impact": "minor", "created_at": "2026-11-17T19:00:00Z"},
+                         {"id": "old", "name": "Done", "status": "resolved"}]}
+
+
+class Services(unittest.TestCase):
+    def read(self, kind, answer, url="https://status.example.test/api"):
+        return service_status.read_service(("svc", kind, url, ["claude"]), NOW,
+                                           fetch=answering(answer))
+
+    def test_the_services_grammar(self):
+        services, problems = service_status.parse_services(
+            "# watched\n"
+            "claude statuspage https://status.example.test/api/v2/summary.json claude\n"
+            "github statuspage https://example.test/s.json copilot,github  # both\n"
+            "slack slack https://example.test/current\n"
+            "claude http https://example.test\n"
+            "x rss https://example.test\n"
+            "y http ftp://example.test\n"
+            "z http https://example.test Bad\n"
+            "only two\n"
+            "v http http://[bad\n"
+            "w http http://example.test:99999\n")
+        self.assertEqual([s[0] for s in services], ["claude", "github", "slack"])
+        self.assertEqual(services[1][3], ["copilot", "github"])
+        self.assertEqual(services[2][3], [])
+        self.assertEqual(problems, [
+            "line 5: name is not a new lower-case name",
+            "line 6: kind is not one of statuspage, slack, google-incidents, http",
+            "line 7: url is not http(s)",
+            "line 8: a provider is not a lower-case name",
+            "line 9: want <name> <kind> <url> [provider]",
+            "line 10: url is not http(s)",
+            "line 11: url is not http(s)"])
+
+    def test_the_starting_list_parses_whole(self):
+        services, problems = service_status.parse_services(service_status.STARTING)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(services), len(service_status.STARTING.splitlines()))
+
+    def test_a_statuspage_summary(self):
+        got = self.read("statuspage", SUMMARY)
+        self.assertEqual((got["status"], got["indicator"]), ("degraded", "minor"))
+        self.assertEqual(got["incidents"], [{"title": "Copilot slow",
+                                             "url": "https://status.example.test/incidents/abc",
+                                             "impact": "minor",
+                                             "started_at": "2026-11-17T19:00:00Z"}])
+        self.assertEqual(got["components"], [{"name": "Copilot", "status": "degraded_performance"}])
+        self.assertEqual(got["providers"], ["claude"])
+        for indicator, status in (("none", "ok"), ("major", "outage"), ("critical", "outage"),
+                                  ("maintenance", "degraded")):
+            with self.subTest(indicator=indicator):
+                answer = dict(SUMMARY, status={"indicator": indicator})
+                self.assertEqual(self.read("statuspage", answer)["status"], status)
+
+    def test_slack_and_google(self):
+        self.assertEqual(self.read("slack", {"status": "ok", "active_incidents": []})["status"], "ok")
+        got = self.read("slack", {"status": "active", "active_incidents": [
+            {"title": "Huddles down", "type": "outage", "status": "active",
+             "url": "https://example.test/i", "date_created": "2026-11-17T19:00:00Z"}]})
+        self.assertEqual((got["status"], got["incidents"][0]["title"]), ("outage", "Huddles down"))
+        incidents = [{"end": "2026-11-01T00:00:00Z", "service_name": "Gmail"},
+                     {"begin": "2026-11-17T18:00:00Z", "end": None, "service_name": "Drive",
+                      "external_desc": "**Summary:**\nSlow uploads.\nMore.", "uri": "incidents/xyz",
+                      "status_impact": "SERVICE_DISRUPTION"}]
+        got = self.read("google-incidents", incidents,
+                        url="https://status.example.test/dashboard/incidents.json")
+        self.assertEqual(got["status"], "degraded")
+        self.assertEqual(got["incidents"], [{
+            "title": "Drive: Slow uploads.", "url": "https://status.example.test/dashboard/incidents/xyz",
+            "impact": "SERVICE_DISRUPTION", "started_at": "2026-11-17T18:00:00Z"}])
+        incidents[1]["status_impact"] = "SERVICE_OUTAGE"
+        self.assertEqual(self.read("google-incidents", incidents)["status"], "outage")
+        self.assertEqual(self.read("google-incidents", [])["status"], "ok")
+
+    def test_a_finished_slack_incident_is_no_incident(self):
+        # sd:9256 round 8: current can list a resolved incident, and its
+        # type made a finished outage read outage. A status the API does
+        # not document is unknown.
+        def answer(status):
+            return {"status": "active", "active_incidents": [
+                {"title": "Huddles down", "type": "outage", "status": status,
+                 "url": "https://example.test/i", "date_created": "2026-11-17T19:00:00Z"}]}
+        for status in ("resolved", "completed", "cancelled", "scheduled"):
+            with self.subTest(status=status):
+                got = self.read("slack", answer(status))
+                self.assertEqual((got["status"], got["incidents"]), ("ok", []))
+        for status in (None, "weird", 5):
+            with self.subTest(status=status):
+                self.assertEqual(self.read("slack", answer(status))["status"], "unknown")
+
+    def test_a_failed_or_strange_read_is_unknown_never_ok(self):
+        for kind in ("statuspage", "slack", "google-incidents"):
+            got = service_status.read_service(("svc", kind, "https://example.test", []), NOW,
+                                              fetch=failing("TimeoutError"))
+            self.assertEqual((got["status"], got["error"]), ("unknown", "TimeoutError"))
+            for shape in ({}, [], "x", None, 5, {"status": {"indicator": "weird"}},
+                          {"status": "broken", "active_incidents": []}, [5, "x"], {"status": "ok"}):
+                with self.subTest(kind=kind, shape=shape):
+                    got = self.read(kind, shape)
+                    if kind == "google-incidents" and shape == []:
+                        continue  # an empty incident list is a real ok
+                    self.assertEqual(got["status"], "unknown", got)
+
+    def test_a_collection_of_another_shape_is_unknown_never_ok(self):
+        # sd:9256 review: a string or a dict was walked as no incident.
+        shapes = {"statuspage": [dict(SUMMARY, incidents="abc"), dict(SUMMARY, incidents={"a": 1}),
+                                 dict(SUMMARY, incidents=[5]), dict(SUMMARY, components="x"),
+                                 dict(SUMMARY, components=[None])],
+                  "slack": [{"status": "ok", "active_incidents": [5]}],
+                  "google-incidents": [[5, "x"], [{"end": None}, "x"], [{}],
+                                       [{"begin": "2026-11-17T18:00:00Z", "end": 5,
+                                         "service_name": "Drive"}],
+                                       [{"begin": 5, "service_name": "Drive"}],
+                                       [{"begin": "2026-11-17T18:00:00Z", "service_name": 5}]]}
+        for kind, answers in shapes.items():
+            for answer in answers:
+                with self.subTest(kind=kind, answer=answer):
+                    self.assertEqual(self.read(kind, answer)["status"], "unknown")
+
+    def test_every_stored_field_is_a_short_string_or_none(self):
+        for value in ({"a": 1}, [1], 5, True, "x" * 1000):
+            # The shown fields only; a field that decides a status must be
+            # one the feed documents (see the schema tests).
+            incident = {"id": "abc", "status": "investigating", "name": value, "shortlink": value,
+                        "impact": value, "created_at": value, "title": value, "url": value,
+                        "type": "outage", "date_created": value, "service_name": value,
+                        "external_desc": value, "uri": value,
+                        "status_impact": "SERVICE_DISRUPTION", "begin": value}
+            answers = {"statuspage": dict(SUMMARY, incidents=[incident],
+                                          components=[{"name": value,
+                                                       "status": "partial_outage"}]),
+                       "slack": {"status": "active",
+                                 "active_incidents": [dict(incident, status="active")]},
+                       "google-incidents": [dict(incident, begin="2026-11-17T18:00:00Z",
+                                                 end=None, service_name="Drive")]}
+            for kind, answer in answers.items():
+                with self.subTest(kind=kind, value=value):
+                    got = self.read(kind, answer)
+                    self.assertNotEqual(got["status"], "unknown", got)
+                    for entry in got["incidents"] + got["components"]:
+                        for field, stored in entry.items():
+                            most = service_status.URL if field == "url" else service_status.TITLE
+                            self.assertTrue(stored is None or (isinstance(stored, str)
+                                            and len(stored) <= most), (field, stored))
+        got = self.read("google-incidents", [{"uri": "http://[bad",
+                                              "status_impact": "SERVICE_OUTAGE",
+                                              "begin": "2026-11-17T18:00:00Z",
+                                              "service_name": "Drive"}])
+        self.assertIsNone(got["incidents"][0]["url"])
+
+    def test_an_incident_url_is_a_whole_web_url_or_none(self):
+        # sd:9256 round 5: a URL cut at TITLE was a broken link, and any
+        # scheme was kept.
+        base = "https://status.example.test/"
+        for value, kept in ((base + "a" * 1900, True), (base + "a" * 2100, False),
+                            ("javascript:alert(1)", False), ("ftp://example.test/x", False),
+                            ("http:///x", False), (base + "a b", False)):
+            answers = {
+                "statuspage": dict(SUMMARY, incidents=[
+                    {"id": "abc", "status": "investigating", "name": "n",
+                     "shortlink": value, "impact": "minor", "created_at": None}]),
+                "slack": {"status": "active", "active_incidents": [
+                    {"title": "t", "type": "outage", "status": "active", "url": value,
+                     "date_created": None}]},
+                "google-incidents": [{"uri": value, "status_impact": "SERVICE_OUTAGE",
+                                      "begin": "2026-11-17T18:00:00Z", "service_name": "Drive"}]}
+            for kind, answer in answers.items():
+                with self.subTest(kind=kind, value=value[:40], length=len(value)):
+                    got = self.read(kind, answer)
+                    self.assertEqual(got["incidents"][0]["url"], value if kept else None)
+
+    def test_the_http_kind(self):
+        local_only(self)
+        server = Server({"/up": (200, b"<html>"), "/down": (503, b""), "/gone": (404, b"")})
+        self.addCleanup(server.close)
+        for path, status in (("/up", "ok"), ("/down", "outage"), ("/gone", "unknown")):
+            with self.subTest(path=path):
+                got = service_status.read_service(("p", "http", server.url + path, []), NOW)
+                self.assertEqual(got["status"], status, got)
+        got = service_status.read_service(("p", "http", "http://127.0.0.1:%d/" % closed_port(), []),
+                                          NOW)
+        self.assertEqual(got["status"], "unknown")
+        self.assertTrue(got["error"])
+
+
+CSWAP_LIST = {"accounts": [{"number": 1, "email": "one@example.test", "active": True,
+                            "usageStatus": "ok", "usage": {"sevenDay": {
+                                "pct": 40.0, "resetsAt": "2100-01-01T00:00:00Z",
+                                "expectedPct": 50.0}, "scoped": []},
+                            "usageFetchedAt": "2026-11-17T19:59:00Z"}]}
+CSWAP = "#!/bin/sh\ncat \"$CSWAP_FIXTURE\"\n"
+
+
+class Live(unittest.TestCase):
+    """The subcommands as the job runs them."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.db = root / "sd.db"
+        initialise(self.db)
+        self.cswap = root / "cswap"
+        self.cswap.write_text(CSWAP, encoding="utf-8")
+        self.cswap.chmod(self.cswap.stat().st_mode | stat.S_IXUSR)
+        (root / "cswap.json").write_text(json.dumps(CSWAP_LIST), encoding="utf-8")
+        day = root / "codex/sessions/2026/11/17"
+        day.mkdir(parents=True)
+        (day / "rollout-x.jsonl").write_text(json.dumps(Codex.event()) + "\n", encoding="utf-8")
+        keys = {var for var, _, _ in ANSWERS.values()}
+        self.env = {k: v for k, v in os.environ.items() if k not in keys and k not in PROXIES}
+        self.env.update(LOCAL, CSWAP_BIN=str(self.cswap), CSWAP_FIXTURE=str(root / "cswap.json"),
+                        CODEX_HOME=str(root / "codex"), SYSTEM_TOOLS_CONFIG=str(root / "config"))
+
+    def run_live(self, command, *args, db=None):
+        return subprocess.run([sys.executable, "-I", str(SCRIPT), command,
+                               "--db", str(db or self.db), *args],
+                              capture_output=True, text=True, env=self.env, timeout=120)
+
+    def connection(self):
+        connection = sd_db.connect(self.db, write=True)
+        self.addCleanup(connection.close)
+        return connection
+
+    def rows(self, prefix):
+        """{key: body} of the newest heartbeat row per key under prefix."""
+        found = {}
+        for key, body in self.connection().execute(
+                "SELECT key, body FROM state WHERE kind = 'heartbeat' AND key LIKE ? ORDER BY id",
+                (prefix + "%",)):
+            found[key] = json.loads(body) if body is not None else None
+        return found
+
+    def setting(self, key, value):
+        writes.set_setting(self.connection(), key, value)
+
+    def test_the_runs_read_a_config_folder_the_test_owns(self):
+        # sd:9256 round 8: the runs read this machine's config folder.
+        config = Path(self.env.get("SYSTEM_TOOLS_CONFIG", ""))
+        self.assertEqual(config.parent, Path(self.tmp.name))
+
+    def test_usage_on_a_store_that_never_held_the_list_starts_it_and_reads_each_line(self):
+        done = self.run_live("usage")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        held = writes.read_settings(self.connection(), ["dashboard.usage_providers"])
+        self.assertEqual(held, {"dashboard.usage_providers": usage_sources.STARTING})
+        rows = self.rows("usage:")
+        names, _ = usage_sources.parse_providers(usage_sources.STARTING)
+        self.assertEqual(sorted(rows), sorted("usage:" + n for n in names))
+        self.assertEqual(rows["usage:claude"]["status"], "ok")
+        self.assertEqual(rows["usage:claude"]["windows"][0]["used_percent"], 40.0)
+        self.assertEqual(rows["usage:codex"]["status"], "ok")
+        self.assertEqual(rows["usage:openrouter"],
+                         usage_sources.reading("openrouter", "unknown", "api",
+                                               error="OPENROUTER_API_KEY not set"))
+        self.assertEqual(rows["usage:gemini"]["status"], "no-source")
+        self.assertNotIn("example.test", json.dumps(rows))
+        self.assertIn("rows", done.stdout)
+
+    def test_usage_reads_the_held_list_only_and_names_a_refused_line(self):
+        self.setting("dashboard.usage_providers", "codex\nnot a name\ngroq\n")
+        done = self.run_live("usage")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(sorted(self.rows("usage:")), ["usage:codex", "usage:groq"])
+        self.assertIn("SD_REPORT_ATTENTION: dashboard.usage_providers line 2: not a provider name",
+                      done.stdout)
+
+    def test_a_cleared_list_reads_nothing_and_writes_nothing(self):
+        self.setting("dashboard.usage_providers", None)
+        done = self.run_live("usage")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("cleared", done.stdout)
+        self.assertEqual(self.rows("usage:"), {})
+        self.assertEqual(writes.read_settings(self.connection(), ["dashboard.usage_providers"]),
+                         {"dashboard.usage_providers": None})
+
+    def test_services_writes_one_row_per_line_and_a_failed_read_is_unknown(self):
+        server = Server({"/summary.json": (200, SUMMARY), "/broken.json": (500, b"")})
+        self.addCleanup(server.close)
+        self.setting("dashboard.status_services",
+                     "github statuspage %s/summary.json copilot\n"
+                     "broken statuspage %s/broken.json\n"
+                     "gone http http://127.0.0.1:%d/\n" % (server.url, server.url, closed_port()))
+        done = self.run_live("services")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        rows = self.rows("service-status:")
+        self.assertEqual(sorted(rows), ["service-status:broken", "service-status:github",
+                                        "service-status:gone"])
+        self.assertEqual(rows["service-status:github"]["status"], "degraded")
+        self.assertEqual(rows["service-status:github"]["providers"], ["copilot"])
+        self.assertEqual((rows["service-status:broken"]["status"],
+                          rows["service-status:broken"]["error"]), ("unknown", "HTTP 500"))
+        self.assertEqual(rows["service-status:gone"]["status"], "unknown")
+        self.assertIn("3 rows (1 degraded, 2 unknown)", done.stdout)
+
+    def test_the_newest_row_is_the_newest_read(self):
+        server = Server({"/s.json": (200, SUMMARY)})
+        self.addCleanup(server.close)
+        self.setting("dashboard.status_services", "svc statuspage %s/s.json\n" % server.url)
+        self.assertEqual(self.run_live("services").returncode, 0)
+        server.routes["/s.json"] = (500, b"")
+        self.assertEqual(self.run_live("services").returncode, 0)
+        self.assertEqual(self.rows("service-status:")["service-status:svc"]["status"], "unknown")
+
+    def test_services_on_a_never_held_list_starts_it(self):
+        # Every starting line points outside; an unroutable proxy keeps the
+        # test off the network, and each read is then unknown.
+        self.env.update({name: "http://127.0.0.1:%d" % closed_port() for name in PROXIES},
+                        NO_PROXY="", no_proxy="")
+        done = self.run_live("services")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        held = writes.read_settings(self.connection(), ["dashboard.status_services"])
+        self.assertEqual(held["dashboard.status_services"], service_status.STARTING)
+        rows = self.rows("service-status:")
+        self.assertEqual(len(rows), len(service_status.STARTING.splitlines()))
+        self.assertEqual({row["status"] for row in rows.values()}, {"unknown"})
+
+    def test_an_entry_dropped_from_its_list_is_retired_once(self):
+        # sd:9256 round 5: a dropped entry's last row stood as its newest
+        # row forever, an old outage flag with it.
+        server = Server({"/s.json": (200, SUMMARY)})
+        self.addCleanup(server.close)
+        line = "%s statuspage " + server.url + "/s.json\n"
+        cases = (("usage", "dashboard.usage_providers", "usage:", "codex\n", "groq\n"),
+                 ("services", "dashboard.status_services", "service-status:",
+                  line % "kept", line % "dropped"))
+        for command, list_key, prefix, kept, dropped in cases:
+            with self.subTest(command=command):
+                self.setting(list_key, kept + dropped)
+                self.assertEqual(self.run_live(command).returncode, 0)
+                first = self.rows(prefix)
+                self.assertEqual(len(first), 2)
+                self.assertNotIn("removed", {row["status"] for row in first.values()})
+                self.setting(list_key, kept)
+                done = self.run_live(command)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                rows = self.rows(prefix)
+                gone = prefix + dropped.split()[0]
+                self.assertEqual(rows[gone], {"status": "removed"})
+                self.assertNotEqual(rows[prefix + kept.split()[0]]["status"], "removed")
+                self.assertIn("1 removed", done.stdout)
+                self.assertEqual(self.run_live(command).returncode, 0)
+                again = self.connection().execute(
+                    "SELECT COUNT(*) FROM state WHERE kind = 'heartbeat' AND key = ?",
+                    (gone,)).fetchone()[0]
+                self.assertEqual(again, 2, "a second removed row")
+                self.setting(list_key, None)
+                done = self.run_live(command)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual({row["status"] for row in self.rows(prefix).values()},
+                                 {"removed"})
+        # One list's retirement never touches the other's keys.
+        self.assertEqual(sorted(self.rows("")), ["service-status:dropped", "service-status:kept",
+                                                 "usage:codex", "usage:groq"])
+
+    def test_a_null_heartbeat_body_is_retired_not_a_crash(self):
+        # sd:9256 round 7: json.loads(None) raised TypeError out of the run.
+        connection = self.connection()
+        with sd_db.transaction(connection):
+            connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES "
+                               "('heartbeat', 'usage:old', '2026-11-17T00:00:00Z', NULL)")
+        self.setting("dashboard.usage_providers", "codex\n")
+        done = self.run_live("usage")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.rows("usage:")["usage:old"], {"status": "removed"})
+
+    def test_a_row_write_that_fails_partway_lands_no_row_of_the_run(self):
+        """The rows are one step: the second insert fails after the first
+        row is in, and the transaction takes the first back. The run exits
+        1; the rows of the run before stand (sd:9256 round 7: the failure
+        used to come before the transaction began)."""
+        import argparse
+        meter = load_meter()
+        args = argparse.Namespace(db=str(self.db), command="services")
+        listed = "a http https://example.test/a\nb http https://example.test/b\n"
+        meter.live(args, "dashboard.status_services", listed, service_status.parse_services,
+                   lambda entry, now: (entry[0], {"status": "ok", "run": 1}), "service-status:")
+        real, calls = writes.record_state, []
+
+        def second_fails(*args, **kwargs):
+            calls.append(kwargs["key"])
+            if len(calls) == 2:
+                raise sqlite3.OperationalError("disk I/O error")
+            return real(*args, **kwargs)
+        said = io.StringIO()
+        with mock.patch.object(writes, "record_state", second_fails), \
+                contextlib.redirect_stderr(said), self.assertRaises(SystemExit) as stopped:
+            meter.live(args, "dashboard.status_services", listed, service_status.parse_services,
+                       lambda entry, now: (entry[0], {"status": "degraded", "run": 2}),
+                       "service-status:")
+        self.assertEqual(stopped.exception.code, 1)
+        # sd:9256 round 8: the message named no stage.
+        self.assertIn("no rows written: writing the rows failed: OperationalError",
+                      said.getvalue())
+        self.assertEqual(calls, ["service-status:a", "service-status:b"])
+        rows = self.rows("service-status:")
+        self.assertEqual({key: row["run"] for key, row in rows.items()},
+                         {"service-status:a": 1, "service-status:b": 1})
+
+    def test_no_db_is_refused_where_rows_are_all_a_run_writes(self):
+        # sd:9256 review: --no-db was ignored and the rows were written.
+        for command in ("usage", "services"):
+            with self.subTest(command=command):
+                done = subprocess.run([sys.executable, "-I", str(SCRIPT), command, "--no-db"],
+                                      capture_output=True, text=True, timeout=60,
+                                      env=dict(self.env, HOME=self.tmp.name))
+                self.assertEqual(done.returncode, 2, done.stdout)
+                self.assertIn("--no-db", done.stderr)
+                self.assertEqual(self.rows("usage:"), {})
+                self.assertEqual(self.rows("service-status:"), {})
+
+    def test_a_store_that_does_not_open_exits_1(self):
+        for command in ("usage", "services"):
+            with self.subTest(command=command):
+                done = self.run_live(command, db=Path(self.tmp.name) / "missing" / "sd.db")
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("did not open", done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
+
+    def test_a_pack_with_no_sd_db_names_the_folder_it_read(self):
+        # sd:9292: the guard said the store did not open, not where sd_db was
+        # sought. The gate has an installed sd_db too, so the pack's lib
+        # holds one that does not import; it is found first.
+        # Round 7: a pack that raises another error says so too.
+        missing = Path(self.tmp.name) / "no-pack"
+        (missing / "lib/sd_db").mkdir(parents=True)
+        self.env["SD_PACK_ROOT"] = str(missing)
+        for error in ("ImportError", "RuntimeError"):
+            (missing / "lib/sd_db/__init__.py").write_text('raise %s("no sd_db here")\n' % error)
+            for command in ("usage", "services"):
+                with self.subTest(command=command, error=error):
+                    done = self.run_live(command)
+                    self.assertEqual(done.returncode, 1)
+                    self.assertIn("no sd_db in %s" % (missing / "lib"), done.stderr)
+                    self.assertNotIn("Traceback", done.stderr)
+
+
+#: A body nested past json's depth: json.loads raises RecursionError.
+#: Python 3.15 parses 100000 levels and raises by 200000; older ones
+#: raise near 1000. DEEP, 10000 levels, is a field's value.
+LEVELS = 200000
+DEEP_TEXT = "[" * LEVELS + "]" * LEVELS
+DEEP = []
+for _ in range(10000):
+    DEEP = [DEEP]
+#: Magnitudes a number field may hold, as numbers and as strings.
+MAGNITUDES = (1e308, -1e308, "inf", "-inf", "nan", "Infinity", "1e400", 5e-324, -5e-324,
+              0, -1, 10**400)
+#: Values of the wrong type for any field, empty containers among them.
+WRONG = (None, "x", "", True, [], {}, [1], {"a": 1})
+
+
+def paths(value, here=()):
+    """Every path into value, the root and every container among them."""
+    yield here
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            yield from paths(inner, here + (key,))
+    elif isinstance(value, list):
+        for index, inner in enumerate(value):
+            yield from paths(inner, here + (index,))
+
+
+def put(value, path, new):
+    """value with the node at path replaced by new, copying the path only."""
+    if not path:
+        return new
+    out = dict(value) if isinstance(value, dict) else list(value)
+    out[path[0]] = put(value[path[0]], path[1:], new)
+    return out
+
+
+def hostile(answer, deep=True):
+    """(label, answer) for every field set to every hostile value, then
+    every number in the answer set to each magnitude at once."""
+    for path in list(paths(answer)):
+        for new in MAGNITUDES + WRONG + ((DEEP,) if deep else ()):
+            yield "%s=%s" % ("/".join(map(str, path)), repr(new)[:20]), put(answer, path, new)
+    for magnitude in MAGNITUDES:
+        yield "every number=%r" % (magnitude,), replace_numbers(answer, magnitude)
+
+
+def load_meter():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("agent_meter", SCRIPT)
+    meter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(meter)
+    return meter
+
+
+#: One open Google incident in the live shape.
+GOOGLE_OPEN = {"begin": "2026-11-17T18:00:00+00:00", "end": None, "service_name": "Drive",
+               "external_desc": "Slow.", "uri": "incidents/x", "status_impact": "SERVICE_OUTAGE"}
+
+
+class Hostile(unittest.TestCase):
+    """Every reader on hostile input (sd:9256 review, rounds 1 to 3): each
+    reading is ok with finite data, or unknown. None raises, and none
+    serialises a value that is not finite JSON."""
+
+    def check(self, label, read, states):
+        try:
+            got = read()
+            json.dumps(got, allow_nan=False)
+        except Exception as e:  # the property: nothing escapes
+            return ["%s: raised %s" % (label, type(e).__name__)]
+        if got["status"] not in states + ("unknown",):
+            return ["%s: status %s" % (label, got["status"])]
+        if "provider" in got and got["status"] == "ok" and not (
+                got["windows"] or got["balance"] or got["spend"]):
+            return ["%s: ok without data" % label]
+        return []
+
+    def deep_fetch(self):
+        """fetch_json against a server whose body is DEEP_TEXT."""
+        local_only(self)
+        server = Server({"/deep": (200, DEEP_TEXT.encode())})
+        self.addCleanup(server.close)
+        return lambda url, headers=None, **cap: usage_sources.fetch_json(server.url + "/deep", headers, **cap)
+
+    def test_every_usage_reader(self):
+        deep = self.deep_fetch()
+        failures = []
+        for name, (var, answer, _) in ANSWERS.items():
+            for label, bent in hostile(answer):
+                failures += self.check("%s %s" % (name, label), lambda: usage_sources.read_provider(
+                    name, {var: SECRET}, lambda url, headers=None: bent, NOW), ("ok",))
+            failures += self.check("%s deep text" % name, lambda: usage_sources.read_provider(
+                name, {var: SECRET}, deep, NOW), ())
+        self.assertEqual(failures, [])
+
+    def test_the_overflows_the_review_named(self):
+        two = {"data": [{"results": [{"amount": {"value": 1e308}}]},
+                        {"results": [{"amount": {"value": 1e308}}]}]}
+        tiny = {"data": {"remainingCredits": -1, "planCredits": 5e-324}}
+        for name, var, answer in (("openai", "OPENAI_ADMIN_KEY", two),
+                                  ("firecrawl", "FIRECRAWL_API_KEY", tiny)):
+            with self.subTest(provider=name):
+                got = usage_sources.read_provider(name, {var: SECRET}, answering(answer), NOW)
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "a value that is not finite JSON"))
+
+    def test_claude_from_every_cswap_reply(self):
+        meter = load_meter()
+        failures = []
+        with mock.patch.dict(os.environ, CSWAP_BIN=sys.executable):
+            for label, bent in hostile(CSWAP_LIST):
+                with mock.patch.object(meter, "run_json", return_value=(bent, None)):
+                    failures += self.check("cswap " + label, lambda: usage_sources.claude_reading(
+                        *meter.read_accounts(5), NOW), ("ok",))
+        self.assertEqual(failures, [])
+        for empty in ({"accounts": []}, put(CSWAP_LIST, ("accounts", 0, "usage"), {})):
+            with self.subTest(empty=empty):
+                with mock.patch.dict(os.environ, CSWAP_BIN=sys.executable), \
+                        mock.patch.object(meter, "run_json", return_value=(empty, None)):
+                    got = usage_sources.claude_reading(*meter.read_accounts(5), NOW)
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "no active account with a seven-day share"))
+
+    def test_a_flag_or_code_of_another_type_is_unknown(self):
+        # sd:9256 round 7: the string "false" counted as the active
+        # account, and False or 0.0 as a success code of 0.
+        meter = load_meter()
+        bent = [("active=%r" % v, put(CSWAP_LIST, ("accounts", 0, "active"), v))
+                for v in ("false", "true", 1, 0, "", [], {})]
+        bent += [("scoped=%r" % v, put(CSWAP_LIST, ("accounts", 0, "usage", "scoped"), v))
+                 for v in ("x", False, {"a": 1})]
+        bent += [("usage=%r" % v, put(CSWAP_LIST, ("accounts", 0, "usage"), v))
+                 for v in (False, "x", [1])]
+        for label, reply in bent:
+            with self.subTest(label), mock.patch.dict(os.environ, CSWAP_BIN=sys.executable), \
+                    mock.patch.object(meter, "run_json", return_value=(reply, None)):
+                got = usage_sources.claude_reading(*meter.read_accounts(5), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+        entry = {"number": 1, "active": "false", "status": "ok", "pct": 40.0,
+                 "resetsAt": None, "expectedPct": None, "scoped": {},
+                 "fetchedAt": "2026-11-17T19:59:00Z"}
+        with self.subTest("an entry"):
+            self.assertEqual(usage_sources.claude_reading([entry], None, NOW)["status"],
+                             "unknown")
+        for name, path in (("moonshot", ("code",)), ("minimax", ("base_resp", "status_code"))):
+            var, answer, _ = ANSWERS[name]
+            for value in (False, 0.0, "0"):
+                with self.subTest(provider=name, code=value):
+                    got = usage_sources.read_provider(name, {var: SECRET},
+                                                      answering(put(answer, path, value)), NOW)
+                    self.assertEqual(got["status"], "unknown", got)
+
+    def test_a_reply_that_is_not_utf8_is_an_error_not_a_raise(self):
+        # sd:9256 round 6: text=True raised UnicodeDecodeError out of the run.
+        for echo in (False, True):
+            with self.subTest(echo=echo):
+                data, error = load_meter().run_json(
+                    [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'{\\xff}')"],
+                    30, echo=echo)
+                self.assertIsNone(data)
+                self.assertTrue(error.startswith("unparseable output"), error)
+        data, error = load_meter().run_json(
+            [sys.executable, "-c", "import sys; sys.stderr.buffer.write(b'\\xff'); sys.exit(3)"],
+            30)
+        self.assertEqual((data, error[:6]), (None, "exit 3"))
+
+    def test_a_deep_reply_from_a_command_is_an_error_not_a_raise(self):
+        data, error = load_meter().run_json(
+            [sys.executable, "-c", "print('[' * %d + ']' * %d)" % (LEVELS, LEVELS)], 30,
+            echo=False)
+        self.assertEqual((data, error), (None, "unparseable output"))
+
+    def test_codex_from_every_event(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        day = Path(tmp.name) / "sessions/2026/11/17"
+        day.mkdir(parents=True)
+        failures = []
+        for label, bent in hostile(Codex.event(), deep=False):
+            (day / "rollout-x.jsonl").write_text(json.dumps(bent) + "\n", encoding="utf-8")
+            failures += self.check("codex " + label,
+                                   lambda: usage_sources.codex_reading(tmp.name), ("ok",))
+        (day / "rollout-x.jsonl").write_text(
+            '{"type": "token_count", "rate_limits": %s}\n' % DEEP_TEXT, encoding="utf-8")
+        got = usage_sources.codex_reading(tmp.name)
+        self.assertEqual(got["status"], "unknown")
+        self.assertEqual(failures, [])
+
+    def test_every_status_reader(self):
+        answers = {"statuspage": SUMMARY,
+                   "slack": {"status": "active", "active_incidents": [
+                       {"title": "Huddles", "type": "outage", "status": "active",
+                        "url": "https://example.test/i", "date_created": "2026-11-17T19:00:00Z"}]},
+                   "google-incidents": [{"begin": "2026-11-17T18:00:00Z", "end": None,
+                                         "service_name": "Drive", "external_desc": "Slow.",
+                                         "uri": "incidents/x", "status_impact": "SERVICE_OUTAGE"}]}
+        deep = self.deep_fetch()
+        failures = []
+        for kind, answer in answers.items():
+            for label, bent in hostile(answer):
+                failures += self.check("%s %s" % (kind, label), lambda: service_status.read_service(
+                    ("svc", kind, "https://status.example.test/a", []), NOW,
+                    fetch=lambda url, **_: bent), ("ok", "degraded", "outage"))
+            failures += self.check("%s deep text" % kind, lambda: service_status.read_service(
+                ("svc", kind, "https://status.example.test/a", []), NOW, fetch=deep), ())
+        self.assertEqual(failures, [])
+
+    def nullable(self):
+        """(source, label, read, still) per field each source's schema lets
+        be null: read() with that field null, and still(reading) what the
+        rest must keep. Codex: codex-rs protocol.rs RateLimitSnapshot;
+        cswap: claude_swap json_output.py; the rest: each API's docs."""
+        both = put(Codex.event(limit_id="codex"), ("payload", "rate_limits", "secondary"),
+                   {"used_percent": 23.0, "window_minutes": 300, "resets_at": 4102444800})
+        rate = ("payload", "rate_limits")
+        for path in (("primary", "window_minutes"), ("primary", "resets_at"), ("primary",),
+                     ("secondary",), ("credits",), ("credits", "balance"), ("limit_id",)):
+            event = put(both, rate + path, None)
+            yield ("codex", "/".join(path), lambda event=event: self.codex(event),
+                   lambda got, path=path: len(got["windows"]) == 2 - (len(path) == 1 and path[0]
+                                                                     in ("primary", "secondary")))
+        active = ("accounts", 0, "usage", "sevenDay", "resetsAt")
+        for label, reply in (("resetsAt", put(CSWAP_LIST, active, None)),
+                             ("another account's usage", put(
+                                 put(CSWAP_LIST, ("accounts",), CSWAP_LIST["accounts"] + [
+                                     {"number": 2, "active": False, "usageStatus": "error",
+                                      "usage": None, "usageFetchedAt": None}]),
+                                 ("accounts", 1, "usage"), None))):
+            yield ("cswap", label, lambda reply=reply: self.claude(reply),
+                   lambda got: got["windows"][0]["used_percent"] == 40.0)
+        openrouter = put(ANSWERS["openrouter"][1], ("data", "limit_remaining"), None)
+        yield ("openrouter", "limit_remaining", lambda: usage_sources.read_provider(
+            "openrouter", {"OPENROUTER_API_KEY": SECRET}, answering(openrouter), NOW),
+            lambda got: got["spend"]["amount"] == 12.5 and got["balance"] is None)
+        firecrawl = put(ANSWERS["firecrawl"][1], ("data", "billingPeriodEnd"), None)
+        yield ("firecrawl", "billingPeriodEnd", lambda: usage_sources.read_provider(
+            "firecrawl", {"FIRECRAWL_API_KEY": SECRET}, answering(firecrawl), NOW),
+            lambda got: got["windows"][0]["resets_at"] is None)
+        for kind, answer, still in (
+                ("statuspage", put(SUMMARY, ("incidents", 0), dict(SUMMARY["incidents"][0],
+                                                                  shortlink=None)),
+                 lambda got: got["incidents"][0]["url"].endswith("/incidents/abc")),
+                ("slack", {"status": "active", "active_incidents": [
+                    {"title": "t", "type": "outage", "status": "active", "url": None,
+                     "date_created": None}]},
+                 lambda got: got["status"] == "outage"),
+                ("google-incidents", [dict(GOOGLE_OPEN, end=None, uri=None)],
+                 lambda got: got["status"] == "outage")):
+            yield (kind, "null", lambda kind=kind, answer=answer: service_status.read_service(
+                ("svc", kind, "https://status.example.test/a", []), NOW,
+                fetch=lambda url, **_: answer), still)
+
+    def codex(self, event):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        day = Path(tmp.name) / "sessions/2026/11/17"
+        day.mkdir(parents=True)
+        (day / "rollout-x.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+        return usage_sources.codex_reading(tmp.name)
+
+    def claude(self, reply):
+        meter = load_meter()
+        with mock.patch.dict(os.environ, CSWAP_BIN=sys.executable), \
+                mock.patch.object(meter, "run_json", return_value=(reply, None)):
+            return usage_sources.claude_reading(*meter.read_accounts(5), NOW)
+
+    def test_null_where_the_schema_allows_null_keeps_the_rest(self):
+        # sd:9256 review: one null Codex field dropped the whole snapshot,
+        # and an older one was published as ok.
+        failures = []
+        for source, label, read, still in self.nullable():
+            got = read()
+            if got["status"] == "unknown" or not still(got):
+                failures.append("%s %s: %s %s" % (source, label, got["status"],
+                                                   got.get("error")))
+        self.assertEqual(failures, [])
+
+    def test_an_invalid_timestamp_never_closes_or_resets(self):
+        # sd:9256 review: any non-empty Google end closed the incident.
+        failures = []
+        for bad in ("garbage", "", "2026-13-01T00:00:00Z", "2026-11-17T18:00:00", 5, [], True):
+            cases = [("google %s" % url, lambda url=url: service_status.read_service(
+                ("svc", "google-incidents", url, []), NOW,
+                fetch=lambda u, **_: [dict(GOOGLE_OPEN, end=bad)]))
+                for url in ("https://status.cloud.google.com/incidents.json",
+                            "https://www.google.com/appsstatus/dashboard/incidents.json")]
+            cases.append(("google begin", lambda: service_status.read_service(
+                ("svc", "google-incidents", "https://example.test/i.json", []), NOW,
+                fetch=lambda u: [dict(GOOGLE_OPEN, begin=bad)])))
+            cases.append(("claude resetsAt", lambda: self.claude(
+                put(CSWAP_LIST, ("accounts", 0, "usage", "sevenDay", "resetsAt"), bad))))
+            cases.append(("firecrawl", lambda: usage_sources.read_provider(
+                "firecrawl", {"FIRECRAWL_API_KEY": SECRET}, answering(
+                    put(ANSWERS["firecrawl"][1], ("data", "billingPeriodEnd"), bad)), NOW)))
+            if not isinstance(bad, int) or isinstance(bad, bool):
+                # Codex sends epoch seconds: 5 is a time, 1970's.
+                cases.append(("codex resets_at", lambda: self.codex(put(
+                    Codex.event(), ("payload", "rate_limits", "primary", "resets_at"), bad))))
+            for label, read in cases:
+                got = read()
+                if got["status"] != "unknown":
+                    failures.append("%s=%r: %s" % (label, bad, got["status"]))
+        self.assertEqual(failures, [])
+
+    def test_a_status_field_the_feed_does_not_document_is_unknown(self):
+        failures = []
+        for bad in ([], None, "weird", 5):
+            for kind, answer in (
+                    ("statuspage", put(SUMMARY, ("components", 0, "status"), bad)),
+                    ("statuspage", put(SUMMARY, ("incidents", 0, "status"), bad)),
+                    ("slack", {"status": "active", "active_incidents": [
+                        {"title": "t", "type": bad, "status": "active"}]}),
+                    ("slack", {"status": "active", "active_incidents": [
+                        {"title": "t", "type": "outage", "status": bad}]}),
+                    ("google-incidents", [dict(GOOGLE_OPEN, status_impact=bad)])):
+                got = service_status.read_service(("svc", kind, "https://example.test/a", []),
+                                                  NOW, fetch=lambda url, **_: answer)
+                if got["status"] != "unknown":
+                    failures.append("%s %r: %s" % (kind, bad, got["status"]))
+        self.assertEqual(failures, [])
+
+    def test_the_newest_codex_snapshot_decides(self):
+        # A newer snapshot that does not read is unknown, not the older one.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        day = Path(tmp.name) / "sessions/2026/11/17"
+        day.mkdir(parents=True)
+        bad = put(Codex.event(stamp="2026-11-17T19:30:00Z"),
+                  ("payload", "rate_limits", "primary", "used_percent"), "x")
+        (day / "rollout-x.jsonl").write_text(
+            json.dumps(Codex.event(stamp="2026-11-17T19:00:00Z")) + "\n" + json.dumps(bad) + "\n",
+            encoding="utf-8")
+        got = usage_sources.codex_reading(tmp.name)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "primary.used_percent is not a number"))
+
+    def test_a_deep_body_over_http_is_read_failed(self):
+        local_only(self)
+        server = Server({"/deep": (200, DEEP_TEXT.encode())})
+        self.addCleanup(server.close)
+        with self.assertRaises(ReadFailed) as caught:
+            usage_sources.fetch_json(server.url + "/deep")
+        self.assertEqual(str(caught.exception), "unparseable answer")
+
+
+if __name__ == "__main__":
+    unittest.main()

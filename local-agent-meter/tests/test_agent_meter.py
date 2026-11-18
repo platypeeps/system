@@ -5,9 +5,10 @@ This drives `local-agent-meter/agent-meter.py`. A missing collector fails
 rather than skipping.
 
 The collector is driven as the job drives it, a subprocess with `--out` and
-`--db` under a directory the test owns. `codexbar` is a script on a PATH the
-test builds, printing what the real one prints for `claude` and `codex`;
-`rtk` is a script there too, one that fails, because `find_bin` falls back to
+`--db` under a directory the test owns. Claude reads from a `cswap` the
+test builds, Codex from a session log under a CODEX_HOME the test owns
+(sd:9256 dropped codexbar); `rtk` is a script on a PATH the test builds,
+one that fails, because `find_bin` falls back to
 the Homebrew prefix when PATH has none and the real binary's answer is not a
 fixture. What matters about `rtk` here is only that its failure is an
 `errors.rtk` entry beside the rows, not instead of them.
@@ -46,30 +47,23 @@ roles:
   reviewer: [codex, claude]
 """
 
-#: One `codexbar usage --format json --provider X` answer each, in the shape
-#: the live ledger holds: a list of one entry, `usage.primary` and
-#: `usage.secondary` each carrying `windowMinutes` and `usedPercent`.
-READINGS = {
-    "claude": [{"provider": "claude", "source": "claude", "usage": {
-        "primary": {"usedPercent": 61, "windowMinutes": 300,
-                    "resetsAt": "2026-09-16T21:10:00Z"},
-        "secondary": {"usedPercent": 37, "windowMinutes": 10080,
-                      "resetsAt": "2026-09-22T18:00:00Z"},
-        "tertiary": None}}],
-    "codex": [{"provider": "codex", "source": "oauth", "usage": {
-        "primary": {"usedPercent": 12.5, "windowMinutes": 300},
-        "secondary": {"usedPercent": 23, "windowMinutes": 10080}}}],
-}
+#: One Codex `token_count` event in the shape its rollout files hold:
+#: the rate limits beside `info`, which carries what the ledger must not.
+#: Its windows reset in 2100, so no run of these tests sees them reset.
+CODEX_EVENT = {"timestamp": "2026-11-03T14:00:00.000Z", "type": "event_msg", "payload": {
+    "type": "token_count",
+    "info": {"cwd": "/Users/someone/example.test", "last_message": "who@example.test"},
+    "rate_limits": {
+        "limit_id": "codex", "plan_type": "pro",
+        "primary": {"used_percent": 12.5, "window_minutes": 300, "resets_at": 4102444800},
+        "secondary": {"used_percent": 23, "window_minutes": 10080, "resets_at": 4103049600},
+        "credits": {"has_credits": False, "unlimited": False, "balance": None}}}}
 
+#: A codexbar that leaves a mark: no meter path may call it (sd:9256).
 CODEXBAR = """\
 #!/bin/sh
-# A codexbar that answers `usage --format json --provider <name>` from a file.
-while [ $# -gt 0 ]; do
-  case "$1" in --provider) shift; provider="$1" ;; esac
-  shift
-done
-[ -f "$CODEXBAR_FIXTURES/$provider.json" ] || { echo "no fixture for $provider" >&2; exit 1; }
-cat "$CODEXBAR_FIXTURES/$provider.json"
+touch "$CODEXBAR_MARK"
+exit 1
 """
 
 #: One `cswap list --json` answer in the live shape: per account its
@@ -96,7 +90,7 @@ CSWAP_LIST = {
          "organizationUuid": "00000000-0000-4000-8000-000000000002",
          "isOrganization": True, "active": True, "usageStatus": "ok",
          "usage": {
-             "sevenDay": {"pct": 67.0, "resetsAt": "2026-11-04T03:00:00+00:00",
+             "sevenDay": {"pct": 67.0, "resetsAt": "2100-01-04T03:00:00+00:00",
                           "expectedPct": 92.3},
              "scoped": []},
          "usageFetchedAt": "2026-11-03T14:05:15Z"},
@@ -131,8 +125,10 @@ class MeterRun(unittest.TestCase):
         self.bin.mkdir()
         self.fixtures = root / "fixtures"
         self.fixtures.mkdir()
-        for name, reading in READINGS.items():
-            (self.fixtures / f"{name}.json").write_text(json.dumps(reading), encoding="utf-8")
+        self.codex_home = root / "codex"
+        self.rollout = self.codex_home / "sessions/2026/11/03/rollout-2026-11-03T14-00-00-x.jsonl"
+        self.rollout.parent.mkdir(parents=True)
+        self.write_codex(CODEX_EVENT)
         self.executable(self.bin / "codexbar", CODEXBAR)
         self.executable(self.bin / "rtk", RTK)
         self.cswap = root / "cswap-bin" / "cswap"
@@ -151,6 +147,11 @@ class MeterRun(unittest.TestCase):
         (self.state / "providers.yaml").write_text(REGISTRY, encoding="utf-8")
         initialise(self.db)
 
+    def write_codex(self, event):
+        self.rollout.write_text(json.dumps(event) + "\n" + json.dumps(
+            {"timestamp": "2026-11-03T14:00:01.000Z", "type": "response_item",
+             "payload": {"type": "message"}}) + "\n", encoding="utf-8")
+
     @staticmethod
     def executable(path: Path, text: str) -> None:
         path.write_text(text, encoding="utf-8")
@@ -168,7 +169,8 @@ class MeterRun(unittest.TestCase):
         elif pack != "":
             env["SD_PACK_ROOT"] = str(pack)
         env["PATH"] = os.pathsep.join([str(self.bin), env.get("PATH", "/usr/bin:/bin")])
-        env["CODEXBAR_FIXTURES"] = str(self.fixtures)
+        env["CODEXBAR_MARK"] = str(self.fixtures / "codexbar-called")
+        env["CODEX_HOME"] = str(self.codex_home)
         # Never the real cswap under ~/.local/bin: its answer holds emails.
         env["CSWAP_BIN"] = str(self.cswap)
         env["CSWAP_FIXTURE"] = str(self.cswap_fixture)
@@ -195,22 +197,90 @@ class MeterRun(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_a_reading_is_four_meter_rows_on_their_bills_and_one_jsonl_line(self):
+    def test_a_reading_is_three_meter_rows_on_their_bills_and_one_jsonl_line(self):
+        """Claude's row is the active cswap account's seven days; Codex's
+        two are its session log's windows."""
         done = self.run_meter("--db", str(self.db))
         self.assertEqual(done.returncode, 0, done.stderr)
         (record,) = self.lines()
-        self.assertEqual(record["sd_db"], {"rows": 4})
+        self.assertEqual(record["sd_db"], {"rows": 3})
         self.assertNotIn("sd_db", record["errors"])
         self.assertIn("rtk", record["errors"])
-        stamp = record["ts"].replace("Z", "+00:00")
+        # Each row carries its reading's time, not the run's (sd:9256
+        # review): cswap's fetch of the active account, Codex's event.
+        fetched, event = "2026-11-03T14:05:15+00:00", "2026-11-03T14:00:00+00:00"
         self.assertEqual(
             self.meter_rows(),
-            [("claude", "anthropic", 300, 61.0, stamp, "meter") + (None,) * 6,
-             ("claude", "anthropic", 10080, 37.0, stamp, "meter") + (None,) * 6,
-             ("codex", "openai", 300, 12.5, stamp, "meter") + (None,) * 6,
-             ("codex", "openai", 10080, 23.0, stamp, "meter") + (None,) * 6],
+            [("claude", "anthropic", 10080, 67.0, fetched, "meter") + (None,) * 6,
+             ("codex", "openai", 300, 12.5, event, "meter") + (None,) * 6,
+             ("codex", "openai", 10080, 23.0, event, "meter") + (None,) * 6],
         )
-        self.assertIn("sd_db 4 rows", done.stdout)
+        self.assertIn("sd_db 3 rows", done.stdout)
+        self.assertEqual(record["usage"]["codex"]["read_at"], "2026-11-03T14:00:00.000Z")
+        self.assertEqual(record["usage"]["codex"]["windows"][0]["resets_at"], "2100-01-01T00:00:00Z")
+
+    def test_a_window_that_reset_after_its_reading_gets_no_row(self):
+        # sd:9256 review: an idle Codex's old share was stamped as current.
+        event = json.loads(json.dumps(CODEX_EVENT))
+        event["payload"]["rate_limits"]["primary"]["resets_at"] = 1793700000
+        self.write_codex(event)
+        done = self.run_meter("--db", str(self.db))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["sd_db"], {"rows": 2, "stale": 1})
+        self.assertEqual([row[:3] for row in self.meter_rows()],
+                         [("claude", "anthropic", 10080), ("codex", "openai", 10080)])
+
+    def test_a_reading_already_stored_gets_no_second_row(self):
+        # sd:9256 round 8: an idle Codex or a cached cswap reading carries
+        # its own read time, and every run inserted the same rows again.
+        self.assertEqual(self.run_meter("--db", str(self.db)).returncode, 0)
+        event = json.loads(json.dumps(CODEX_EVENT))
+        event["timestamp"] = "2026-11-03T15:00:00.000Z"
+        self.write_codex(event)
+        done = self.run_meter("--db", str(self.db))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # The repeat costs its own row only: Codex's new reading lands.
+        self.assertEqual(self.lines()[-1]["sd_db"], {"rows": 2, "seen": 1})
+        self.assertEqual([row[0] for row in self.meter_rows()], ["claude", "codex", "codex",
+                                                                 "codex", "codex"])
+
+    def test_deep_replies_cost_their_readings_not_the_ledger_line(self):
+        # sd:9256 review: json.loads raised RecursionError on a reply
+        # nested past its depth (200000 on 3.15), and the 4-hourly run
+        # wrote no line at all.
+        deep = "[" * 200000 + "]" * 200000
+        self.cswap_fixture.write_text(deep, encoding="utf-8")
+        self.rollout.write_text('{"type": "token_count", "rate_limits": %s}\n' % deep,
+                                encoding="utf-8")
+        done = self.run_meter("--db", str(self.db))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
+        (record,) = self.lines()
+        self.assertEqual((record["usage"]["claude"]["status"], record["usage"]["codex"]["status"]),
+                         ("unknown", "unknown"))
+        self.assertEqual(record["errors"]["cswap"], "unparseable output")
+        self.assertEqual(record["sd_db"], {"rows": 0})
+
+    def test_a_cached_claude_week_that_reset_gets_no_row(self):
+        # sd:9256 review: cswap's cached reading looked fresh.
+        data = json.loads(json.dumps(CSWAP_LIST))
+        data["accounts"][1]["usage"]["sevenDay"]["resetsAt"] = "2026-11-04T03:00:00+00:00"
+        self.cswap_fixture.write_text(json.dumps(data), encoding="utf-8")
+        done = self.run_meter("--db", str(self.db))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["sd_db"], {"rows": 2, "stale": 1})
+        self.assertEqual([row[0] for row in self.meter_rows()], ["codex", "codex"])
+
+    def test_no_meter_path_calls_codexbar(self):
+        """sd:9256: done when no meter path calls codexbar."""
+        for args in (["--db", str(self.db)], ["--no-db"]):
+            with self.subTest(args=args):
+                done = self.run_meter(*args)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertFalse((self.fixtures / "codexbar-called").exists())
+                self.assertNotIn("codexbar", self.out.read_text(encoding="utf-8"))
 
     def test_the_scheduled_run_without_db_writes_to_the_store_under_home(self):
         """The job passes no `--db`, so `sd_db.connect(None)` picks
@@ -227,10 +297,10 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         (record,) = self.lines()
         self.assertNotIn("sd_db", record["errors"])
-        self.assertEqual(record["sd_db"], {"rows": 4})
+        self.assertEqual(record["sd_db"], {"rows": 3})
         self.db = store / "sd.db"
         self.assertEqual([row[:3] for row in self.meter_rows()],
-                         [("claude", "anthropic", 300), ("claude", "anthropic", 10080),
+                         [("claude", "anthropic", 10080),
                           ("codex", "openai", 300), ("codex", "openai", 10080)])
 
     def test_a_missing_database_is_an_error_entry_and_the_jsonl_line_still_lands(self):
@@ -242,7 +312,7 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(record["sd_db"], {"rows": 0})
         self.assertIn("FileNotFoundError", record["errors"]["sd_db"])
         self.assertIn(str(gone), record["errors"]["sd_db"])
-        self.assertEqual(record["codexbar"]["claude"]["usage"]["primary"]["usedPercent"], 61)
+        self.assertEqual(record["usage"]["codex"]["windows"][0]["used_percent"], 12.5)
         self.assertEqual(self.meter_rows(), [])
         self.assertIn("sd_db ERR", done.stdout)
 
@@ -304,8 +374,8 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         (record,) = self.lines()
         self.assertNotIn("sd_db", record["errors"])
-        self.assertEqual(record["sd_db"], {"rows": 4})
-        self.assertEqual(len(self.meter_rows()), 4)
+        self.assertEqual(record["sd_db"], {"rows": 3})
+        self.assertEqual(len(self.meter_rows()), 3)
 
     def test_no_db_writes_the_jsonl_line_and_no_row(self):
         done = self.run_meter("--no-db")
@@ -323,7 +393,7 @@ class MeterRun(unittest.TestCase):
         (config / "agent-meter" / ".env").write_text(f"AGENT_METER_FILE={self.out}\n", encoding="utf-8")
         env = dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config), AGENT_METER_FILE="",
                    PATH=os.pathsep.join([str(self.bin), os.environ.get("PATH", "/usr/bin:/bin")]),
-                   CODEXBAR_FIXTURES=str(self.fixtures), CSWAP_BIN=str(self.cswap),
+                   CODEX_HOME=str(self.codex_home), CSWAP_BIN=str(self.cswap),
                    CSWAP_FIXTURE=str(self.cswap_fixture))
         done = subprocess.run([sys.executable, str(SCRIPT), "--no-db", "--timeout", "10"],
                               capture_output=True, text=True, env=env, timeout=60)
@@ -331,23 +401,22 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(self.lines(), [])
         self.assertTrue((config / "agent-meter" / "meter.jsonl").is_file())
 
-    def test_one_refused_window_costs_that_window_and_the_other_three_land(self):
-        """A percentage codexbar reports outside 0..100 is refused by the
+    def test_one_refused_window_costs_that_window_and_the_other_two_land(self):
+        """A percentage a source reports outside 0..100 is refused by the
         library; the refusal is one `errors` entry and the run goes on."""
-        reading = json.loads((self.fixtures / "codex.json").read_text())
-        reading[0]["usage"]["primary"]["usedPercent"] = 140
-        (self.fixtures / "codex.json").write_text(json.dumps(reading), encoding="utf-8")
+        event = json.loads(json.dumps(CODEX_EVENT))
+        event["payload"]["rate_limits"]["primary"]["used_percent"] = 140
+        self.write_codex(event)
         done = self.run_meter("--db", str(self.db))
         self.assertEqual(done.returncode, 0, done.stderr)
         (record,) = self.lines()
-        self.assertEqual(record["sd_db"], {"rows": 3})
+        self.assertEqual(record["sd_db"], {"rows": 2})
         self.assertIn("140", record["errors"]["sd_db.codex.primary"])
         self.assertNotIn("sd_db", record["errors"])
         self.assertEqual([row[:3] for row in self.meter_rows()],
-                         [("claude", "anthropic", 300), ("claude", "anthropic", 10080),
-                          ("codex", "openai", 10080)])
+                         [("claude", "anthropic", 10080), ("codex", "openai", 10080)])
         # The cron log says so too, not only the JSONL line.
-        self.assertIn("sd_db 3 rows, 1 refused", done.stdout)
+        self.assertIn("sd_db 2 rows, 1 refused", done.stdout)
 
     def test_a_store_without_its_registry_is_one_top_level_error_and_no_row(self):
         """Only a `MeterRefused` is a per-window entry. A store with no
@@ -366,13 +435,14 @@ class MeterRun(unittest.TestCase):
         self.assertIn("sd_db ERR", done.stdout)
 
     def test_a_provider_that_did_not_read_gets_no_row(self):
-        (self.fixtures / "codex.json").unlink()
+        self.rollout.unlink()
         done = self.run_meter("--db", str(self.db))
         self.assertEqual(done.returncode, 0, done.stderr)
         (record,) = self.lines()
-        self.assertEqual(record["sd_db"], {"rows": 2})
-        self.assertIn("codexbar.codex", record["errors"])
-        self.assertEqual([row[0] for row in self.meter_rows()], ["claude", "claude"])
+        self.assertEqual(record["sd_db"], {"rows": 1})
+        self.assertEqual(record["usage"]["codex"]["status"], "unknown")
+        self.assertIn("usage.codex", record["errors"])
+        self.assertEqual([row[0] for row in self.meter_rows()], ["claude"])
 
     # sd:7322: each cswap account, keyed by number, on every reading.
 
@@ -386,7 +456,7 @@ class MeterRun(unittest.TestCase):
              "resetsAt": "2026-11-03T18:00:00.222257+00:00", "expectedPct": 97.7,
              "scoped": {"Fable": 5.0}, "fetchedAt": "2026-11-03T14:07:07Z"},
             {"number": 2, "active": True, "status": "ok", "pct": 67.0,
-             "resetsAt": "2026-11-04T03:00:00+00:00", "expectedPct": 92.3,
+             "resetsAt": "2100-01-04T03:00:00+00:00", "expectedPct": 92.3,
              "scoped": {}, "fetchedAt": "2026-11-03T14:05:15Z"},
         ])
         self.assertIn("cswap 2 accounts", done.stdout)
@@ -410,7 +480,8 @@ class MeterRun(unittest.TestCase):
         (record,) = self.lines()
         self.assertIsNone(record["accounts"])
         self.assertEqual(record["errors"]["cswap"], "exit 1")
-        self.assertEqual(record["codexbar"]["claude"]["usage"]["primary"]["usedPercent"], 61)
+        self.assertEqual(record["usage"]["claude"]["status"], "unknown")
+        self.assertEqual(record["usage"]["codex"]["status"], "ok")
         self.assertIn("cswap ERR", done.stdout)
         for value in PRIVATE:
             self.assertNotIn(value, self.out.read_text(encoding="utf-8"))
@@ -444,48 +515,17 @@ class MeterRun(unittest.TestCase):
         self.assertIn("unexpected cswap shape", record["errors"]["cswap"])
         self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
 
-    # sd:7325: codexbar's entry holds the account's identity in several places.
+    # sd:9256: a Codex event carries the session's text beside its limits.
 
-    def test_no_codexbar_identity_field_reaches_the_ledger(self):
-        reading = json.loads(json.dumps(READINGS["claude"]))
-        entry = reading[0]
-        entry["account"] = "who@example.test"
-        entry["usage"]["accountEmail"] = "who@example.test"
-        entry["usage"]["loginMethod"] = "Max (Example Org)"
-        entry["usage"]["identity"] = {
-            "accountEmail": "who@example.test", "accountID": "acct-example-1",
-            "loginMethod": "Max", "providerID": "claude"}
-        entry["usage"]["organizationName"] = "Example Org Three"
-        entry["usage"]["primary"]["accountName"] = "Example Person"
-        entry["pace"] = {"secondary": {"stage": "behind", "deltaPercent": -3,
-                                        "expectedUsedPercent": 40,
-                                        "willLastToReset": True,
-                                        "summary": "who@example.test is behind"}}
-        (self.fixtures / "claude.json").write_text(json.dumps(reading), encoding="utf-8")
+    def test_only_codex_rate_limit_fields_reach_the_ledger(self):
         done = self.run_meter("--no-db")
         self.assertEqual(done.returncode, 0, done.stderr)
         text = self.out.read_text(encoding="utf-8")
-        for value in ("example.test", "Example", "acct-example-1", "Max"):
+        for value in ("example.test", "/Users/someone", "plan_type"):
             self.assertNotIn(value, text)
-            self.assertNotIn(value, done.stdout + done.stderr)
         (record,) = self.lines()
-        kept = record["codexbar"]["claude"]
-        self.assertEqual(kept["provider"], "claude")
-        self.assertEqual(kept["usage"]["primary"]["usedPercent"], 61)
-        self.assertEqual(kept["usage"]["secondary"]["windowMinutes"], 10080)
-        self.assertEqual(kept["pace"]["secondary"]["deltaPercent"], -3)
-
-    def test_a_codexbar_error_entry_keeps_its_message_and_no_identity(self):
-        failed = [{"provider": "claude", "source": "oauth",
-                   "account": "who@example.test",
-                   "error": {"message": "token expired for who@example.test", "code": 7,
-                             "email": "who@example.test"}}]
-        (self.fixtures / "claude.json").write_text(json.dumps(failed), encoding="utf-8")
-        done = self.run_meter("--no-db")
-        self.assertEqual(done.returncode, 0, done.stderr)
-        (record,) = self.lines()
-        self.assertEqual(record["errors"]["codexbar.claude"], "token expired for <email>")
-        self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
+        self.assertEqual([w["window_minutes"] for w in record["usage"]["codex"]["windows"]],
+                         [300, 10080])
 
     # sd:7332: rtk's total_saved is read as a number or not at all.
 
@@ -670,6 +710,31 @@ class MeterRun(unittest.TestCase):
                 self.assertNotIn("nan", done.stdout)
                 self.assertNotIn("inf%", done.stdout)
 
+    def test_a_ledger_line_that_is_not_utf8_cannot_break_the_report(self):
+        # sd:9256 round 6: the ledger was read as strict UTF-8.
+        good = {"number": 2, "active": True, "status": "ok", "pct": 9.0,
+                "resetsAt": "2099-01-01T03:00:00+00:00", "expectedPct": 5.0,
+                "scoped": {}, "fetchedAt": None}
+        with self.out.open("wb") as f:
+            f.write(b'{"ts": "\xff"}\n')
+            f.write(json.dumps({"ts": "2026-10-28T08:00:00Z", "accounts": [good]}).encode()
+                    + b"\n")
+        done = self.run_accounts()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("account 2 (active)", done.stdout)
+
+    def test_a_ledger_active_flag_that_is_not_a_boolean_is_not_active(self):
+        # sd:9256 round 7: bool("false") is True.
+        good = {"number": 2, "active": "false", "status": "ok", "pct": 9.0,
+                "resetsAt": "2099-01-01T03:00:00+00:00", "expectedPct": 5.0,
+                "scoped": {}, "fetchedAt": None}
+        self.out.write_text(json.dumps({"ts": "2026-10-28T08:00:00Z", "accounts": [good]})
+                            + "\n", encoding="utf-8")
+        done = self.run_accounts()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("account 2", done.stdout)
+        self.assertNotIn("(active)", done.stdout)
+
     def test_accounts_on_a_ledger_without_account_readings_says_so(self):
         self.write_ledger([("2026-10-27T16:00:00Z", None)])
         done = self.run_accounts()
@@ -682,12 +747,14 @@ class MeterRun(unittest.TestCase):
         self.assertIn(str(self.out), done.stderr)
         self.assertNotIn("Traceback", done.stderr)
 
-    def test_help_names_the_accounts_subcommand(self):
+    def test_help_names_the_subcommands(self):
         done = subprocess.run([sys.executable, str(SCRIPT), "--help"],
                               capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("accounts", done.stdout)
         self.assertIn("used at reset", done.stdout)
+        self.assertIn("usage providers", done.stdout)
+        self.assertIn("status services", done.stdout)
 
 
 if __name__ == "__main__":

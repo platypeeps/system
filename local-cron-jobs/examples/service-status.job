@@ -1,0 +1,17 @@
+# Every 5 min: one `heartbeat` row per 'status services' line in the sd
+# database, the Health page's and the Usage flags' feed (system sd:9259):
+# status (ok, degraded, outage, unknown, removed), open incidents and read time.
+# A failed read stores `unknown`, never `ok`. The list is the setting row
+# dashboard.status_services (Settings); a store that never held it
+# starts with the services the operator chose on 2026-11-17.
+# Hub only: the rows go to the hub's database. A refused list line is an
+# SD_REPORT_ATTENTION line; a store that does not open exits 1.
+# SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
+# after ~/.config/shell/env.sh; this file is sourced before env.sh is.
+JOB_SCHEDULE="*/5 * * * *"
+JOB_TIMEOUT="4m"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/.venv/bin/python\" \"$ROOT/../local-agent-meter/agent-meter.py\" services"
+JOB_DIR="$ROOT/../local-agent-meter"
+JOB_PROMPT=""
+JOB_MODEL=""
+JOB_CLAUDE_ARGS=""

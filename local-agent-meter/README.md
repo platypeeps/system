@@ -1,8 +1,9 @@
 # local-agent-meter
 
-Appends one agent-usage reading to a JSONL ledger every four hours: `codexbar usage`
-per provider (claude, codex), each cswap account's seven-day use, and `rtk gain` for
-token-proxy savings.
+Appends one agent-usage reading to a JSONL ledger every four hours: per provider its
+usage (claude from `cswap list --json`, codex from its session logs), each cswap
+account's seven-day use, and `rtk gain` for token-proxy savings. Two live readings
+feed the dashboard's Usage view and Health page; see "Live readings".
 
 The ledger is, in order: `--out`, else `AGENT_METER_FILE` (exported, or set in
 `<config>/agent-meter/.env`; copy `.env.example`), else
@@ -19,16 +20,25 @@ and the later Usage-screen slice (8d) reads those rows for its gauges. The rows 
 in first, in one
 transaction; the JSONL line then records `sd_db.rows`, or `errors.sd_db` when the
 library could not be imported or the database could not be opened, or
-`errors.sd_db.<provider>.<window>` when one sample was refused. Nothing about the
-rows changes the exit, which stays 0.
+`errors.sd_db.<provider>.<window>` when one sample was refused. A row is stamped
+with its reading's `read_at`; a reading already stored under that time is counted in
+`sd_db.seen` and not written again. Nothing about the rows changes the exit, which
+stays 0.
 
-## What the ledger keeps from codexbar
+## What the ledger keeps
 
-Since sd:7325 each provider entry is cut to a list of fields (`CODEXBAR_KEEP`):
-the provider, source, the three rate windows, `updatedAt`, the extra windows and
-the pace numbers. codexbar also reports the account's email, id, login method and
-organization; none of them reaches the ledger. An error's message goes to `errors`
-with any email in it replaced by `<email>`.
+Since sd:9256 the ledger's `usage` holds one reading per provider (`--providers`,
+default `claude,codex`), the shape the live rows have (below). Claude's window is
+the active cswap account's seven days; Codex's are the `rate_limits` of the newest
+`token_count` event in `$CODEX_HOME/sessions` (default `~/.codex`), with that event's
+time as `read_at`. Only the limits are copied: the event's session text is not. The
+`meter` rows come from these windows. A window whose reset is past is dropped
+from the reading and counted in its `stale`, on every path. Lines from before
+sd:9256 hold `codexbar` instead; `accounts` reads neither.
+
+cswap gives no five-hour number, so no `claude` 300-minute row is written after
+sd:9256. A `meter` row has no `removed` status: the last codexbar-era row stays in
+the table, and the Usage screen's month read stops showing it when the month turns.
 
 From `rtk gain` the ledger keeps `summary.total_saved` and `summary.avg_savings_pct`
 (sd:7344), each only when it is a finite number.
@@ -58,7 +68,7 @@ registry does not name, so a name such as `claude#1` needs a pack change first.
 
     ./agent-meter.py                       # append one reading, write the rows
     ./agent-meter.py --out /tmp/probe.jsonl --no-db              # the JSONL line only
-    PYTHONPATH=$SD_PACK_ROOT/lib python3 tests/test_agent_meter.py   # the collector's tests
+    PYTHONPATH=$SD_PACK_ROOT/lib python3 -m unittest discover -s tests -t .   # the tests
 
 A probe store somewhere harmless: `--db` opens an existing database and never
 creates one, and the sample reads `providers.yaml` beside it for each provider's
@@ -74,7 +84,37 @@ The rows need `sd_db`, which the script loads from the command pack checkout's `
 the interpreter has installed (sd:3279). With no `lib/sd_db` there, the script still
 appends the JSONL line, with the missing import in `errors.sd_db`.
 
-The tests are `tests/test_agent_meter.py`, a `run_suite` line of `tests/ci-native.sh`.
+The tests are `tests/test_*.py`, the `agent-meter` `run_suite` line of `tests/ci-native.sh`.
+
+## Live readings
+
+    ./agent-meter.py usage                 # one row per 'usage providers' line
+    ./agent-meter.py services              # one row per 'status services' line
+
+Each reads a Settings list, a workflow database setting row, and writes one
+`heartbeat` state row per entry in one transaction; the newest row per key is the
+answer and the retention job keeps one per key. A database that never held the row
+gets the starting list written once, so Settings shows what the job reads; a cleared
+row reads nothing. A key the list no longer names, or every key of a cleared row, gets
+one row with status `removed`, once; a reader skips a removed key. A refused line is
+an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open exits 1. Neither writes the ledger.
+
+- `usage` (sd:9256): setting `dashboard.usage_providers`, one provider per line, `#`
+  comments. Row `usage:<provider>`: `status` (`ok`, `unknown`, `no-source`, `removed`), `source`,
+  `read_at`, `windows` (name, used percent, minutes, reset), `balance` and `spend`
+  (amount and unit), `accounts` for claude, `error` when unknown. Keys come from the
+  environment by name (`usage_sources.py` names each); no key, answer body or
+  account field reaches a row. A failed read is `unknown`, never 0; a provider with
+  no usage API is `no-source`.
+- `services` (sd:9259): setting `dashboard.status_services`, one
+  `<name> <kind> <url> [provider[,provider]]` line each; kinds `statuspage`
+  (summary.json), `slack` (slack-status.com v2.0.0), `google-incidents`
+  (incidents.json) and `http` (the page answers). Row `service-status:<name>`:
+  `status` (`ok`, `degraded`, `outage`, `unknown`, `removed`), `indicator`, open `incidents`
+  (title, url, impact, start), non-operational `components`, `providers`, `read_at`
+  and `error`. A failed read is `unknown`, never `ok`.
+
+Run them on the hub only: the rows go to the hub's database.
 
 ## Schedule
 
@@ -90,6 +130,10 @@ to the job file, `cron-jobs.sh verify agent-meter` says STALE until
 `cron-jobs.sh install agent-meter` rewrites the plist. The framework adds failure notification and `logs/failures.log`.
 Keep this job as the one schedule for the collector: a second one appends duplicate
 readings to the same ledger.
+
+The live readings have their own jobs, `agent-usage.job` (every 15 minutes) and
+`service-status.job` (every 5 minutes); copy and install them the same way. They
+write no ledger line.
 
 ## Duplicate collectors
 
