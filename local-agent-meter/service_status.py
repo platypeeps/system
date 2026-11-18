@@ -14,7 +14,8 @@ answer, an HTTP error, an answer of another shape) is `unknown`, never `ok`:
 the job cannot tell its own network from the service's. A collection of
 another shape, or an entry in it that is not an object, is another shape
 too. Every incident and component field is a string of at most TITLE
-characters, or None.
+characters, or None; an incident url is a whole http(s) URL of at most
+URL characters, or None.
 """
 
 import urllib.error
@@ -28,6 +29,8 @@ from usage_sources import NAME, TIMEOUT, USER_AGENT, ReadFailed, event_time, fet
 KINDS = ("statuspage", "slack", "google-incidents", "http")
 #: The longest incident title kept; Google's descriptions run to pages.
 TITLE = 200
+#: The longest incident url kept; a longer one is dropped, never cut.
+URL = 2048
 
 #: The 'status services' list a database that never held the row starts
 #: with (operator 2026-11-17, notes #59922 and #59926; feeds checked then).
@@ -128,9 +131,18 @@ def short(value):
     return value[:TITLE] if isinstance(value, str) else None
 
 
+def whole_url(value):
+    """A link shown as is: a whole http(s) URL of at most URL characters,
+    or None. A cut URL is a broken link (sd:9256 review)."""
+    if (not isinstance(value, str) or len(value) > URL
+            or any(c <= " " or c == "\x7f" for c in value)):
+        return None
+    return value if web_url(value) else None
+
+
 def link(base, uri):
     try:
-        return short(urllib.parse.urljoin(base, uri)) if isinstance(uri, str) else None
+        return whole_url(urllib.parse.urljoin(base, uri)) if isinstance(uri, str) else None
     except ValueError:
         return None
 
@@ -158,7 +170,7 @@ def read_statuspage(url, fetch):
         url = incident.get("shortlink")
         if not isinstance(url, str) and base and isinstance(incident.get("id"), str):
             url = base.rstrip("/") + "/incidents/" + incident["id"]
-        incidents.append({"title": title(incident.get("name")), "url": short(url),
+        incidents.append({"title": title(incident.get("name")), "url": whole_url(url),
                           "impact": short(incident.get("impact")),
                           "started_at": shown_time(incident.get("created_at"))})
     components = [{"name": title(c.get("name")), "status": c["status"]}
@@ -174,7 +186,7 @@ def read_slack(url, fetch):
     active = data.get("active_incidents") if isinstance(data, dict) else None
     if state not in ("ok", "active") or not isinstance(active, list):
         raise ReadFailed("no status")
-    incidents = [{"title": title(i.get("title")), "url": short(i.get("url")),
+    incidents = [{"title": title(i.get("title")), "url": whole_url(i.get("url")),
                   "impact": one_of(i.get("type"), SLACK_TYPE, "an incident type"),
                   "started_at": shown_time(i.get("date_created"))}
                  for i in entries(active, "active_incidents")]

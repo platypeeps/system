@@ -530,14 +530,34 @@ class Services(unittest.TestCase):
                     self.assertNotEqual(got["status"], "unknown", got)
                     for entry in got["incidents"] + got["components"]:
                         for field, stored in entry.items():
+                            most = service_status.URL if field == "url" else service_status.TITLE
                             self.assertTrue(stored is None or (isinstance(stored, str)
-                                            and len(stored) <= service_status.TITLE),
-                                            (field, stored))
+                                            and len(stored) <= most), (field, stored))
         got = self.read("google-incidents", [{"uri": "http://[bad",
                                               "status_impact": "SERVICE_OUTAGE",
                                               "begin": "2026-11-17T18:00:00Z",
                                               "service_name": "Drive"}])
         self.assertIsNone(got["incidents"][0]["url"])
+
+    def test_an_incident_url_is_a_whole_web_url_or_none(self):
+        # sd:9256 round 5: a URL cut at TITLE was a broken link, and any
+        # scheme was kept.
+        base = "https://status.example.test/"
+        for value, kept in ((base + "a" * 1900, True), (base + "a" * 2100, False),
+                            ("javascript:alert(1)", False), ("ftp://example.test/x", False),
+                            ("http:///x", False), (base + "a b", False)):
+            answers = {
+                "statuspage": dict(SUMMARY, incidents=[
+                    {"id": "abc", "status": "investigating", "name": "n",
+                     "shortlink": value, "impact": "minor", "created_at": None}]),
+                "slack": {"status": "active", "active_incidents": [
+                    {"title": "t", "type": "outage", "url": value, "date_created": None}]},
+                "google-incidents": [{"uri": value, "status_impact": "SERVICE_OUTAGE",
+                                      "begin": "2026-11-17T18:00:00Z", "service_name": "Drive"}]}
+            for kind, answer in answers.items():
+                with self.subTest(kind=kind, value=value[:40], length=len(value)):
+                    got = self.read(kind, answer)
+                    self.assertEqual(got["incidents"][0]["url"], value if kept else None)
 
     def test_the_http_kind(self):
         local_only(self)
