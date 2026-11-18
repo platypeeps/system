@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """agent-meter — append one agent-usage reading to a JSONL ledger.
 
-Reads the meters and changes nothing else: `codexbar usage` per provider, and
-`rtk gain` for the token-proxy savings. One JSON object per line, appended.
+Reads the meters and changes nothing else: per provider its usage (claude
+from `cswap list --json`, codex from its session logs, see usage_sources.py),
+and `rtk gain` for the token-proxy savings. One JSON object per line, appended.
 
 The ledger is `--out`, else AGENT_METER_FILE (exported, or set in
 <config>/agent-meter/.env), else <config>/agent-meter/meter.jsonl, where
@@ -48,8 +49,19 @@ pct used at reset: the last reading before the reset. Readings come every
 4 h, so that is a lower bound, printed with how long before the reset it
 was read. Slot numbers follow `cswap swap` and `cswap move`.
 
+Since sd:9256 and sd:9259 two live readings feed the dashboard, each
+from a Settings list (a workflow database setting row) and each one
+`heartbeat` state row per entry, the latest per key being the answer:
+`usage` reads every 'usage providers' line (rows `usage:<provider>`),
+`services` every 'status services' line (rows `service-status:<name>`).
+A failed read is a row with status `unknown`, never `ok`; a provider with
+no usage API is `no-source`; a key its list no longer names, or every key
+of a cleared list, gets one row with status `removed`. Neither writes the
+ledger.
+
   agent-meter.py [--out PATH] [--db PATH | --no-db] [--providers claude,codex] [--timeout S]
   agent-meter.py accounts [--out PATH]
+  agent-meter.py usage|services [--db PATH]
 """
 
 import argparse
@@ -57,16 +69,22 @@ import datetime
 import json
 import math
 import os
-import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import system_tools_config  # noqa: E402
 
-sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow").expanduser() / "lib"))
+# The script's own folder: `python -I` (the job's launch) leaves it off.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import service_status  # noqa: E402
+import usage_sources  # noqa: E402
+
+PACK_LIB = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow").expanduser() / "lib"
+sys.path.insert(0, str(PACK_LIB))
 
 TOOL = "agent-meter"
 # The config directory's own ledger. Created on first use; a ledger named by
@@ -92,8 +110,14 @@ DUP_GAP_S = 3600
 # here for `--help` only; `--db` left unset hands None to the library, so the
 # two cannot drift.
 DEFAULT_DB = "~/.local/share/sd/sd.db"
-# The two rate windows codexbar reports per provider, each a `meter` row.
-WINDOWS = ("primary", "secondary")
+#: The Settings lists the live readings follow (the pack's `setting_rows.LISTS`
+#: shows them), and the `heartbeat` state key prefix of each reading's row.
+USAGE_LIST = "dashboard.usage_providers"
+SERVICES_LIST = "dashboard.status_services"
+USAGE_KEY = "usage:"
+SERVICES_KEY = "service-status:"
+#: Reads at once in a live run: 25 services at the 20 s timeout fit 5 minutes.
+WORKERS = 8
 
 
 def find_bin(name):
@@ -133,7 +157,7 @@ def prior_ts(path):
             continue
         try:
             return datetime.datetime.strptime(
-                json.loads(line)["ts"], "%Y-%m-%dT%H:%M:%SZ"
+                usage_sources.decode(line)["ts"], "%Y-%m-%dT%H:%M:%SZ"
             ).replace(tzinfo=datetime.timezone.utc)
         except Exception:
             continue
@@ -146,7 +170,9 @@ def run_json(cmd, timeout, echo=True):
     `echo=False` keeps the command's output out of the error, for a command
     whose output may hold personal values (cswap's human list has emails)."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # Bytes, not text=True: a reply that is not UTF-8 raised
+        # UnicodeDecodeError out of the run (sd:9256 review).
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return None, "timeout after %ds" % timeout
     except OSError as e:
@@ -154,13 +180,14 @@ def run_json(cmd, timeout, echo=True):
     if r.returncode != 0:
         if not echo:
             return None, "exit %d" % r.returncode
-        return None, "exit %d: %s" % (r.returncode, (r.stderr or r.stdout).strip()[:500])
+        shown = (r.stderr or r.stdout).decode("utf-8", "replace")
+        return None, "exit %d: %s" % (r.returncode, shown.strip()[:500])
     try:
-        return json.loads(r.stdout), None
-    except ValueError:
+        return usage_sources.decode(r.stdout), None
+    except usage_sources.ReadFailed:
         if not echo:
             return None, "unparseable output"
-        return None, "unparseable output: %s" % r.stdout.strip()[:500]
+        return None, "unparseable output: %s" % r.stdout.decode("utf-8", "replace").strip()[:500]
 
 
 def is_number(value):
@@ -193,6 +220,15 @@ def is_time(value):
     return value is None or isinstance(value, str)
 
 
+def either(value, kind):
+    """value when it is a kind, an empty kind for null, else TypeError."""
+    if value is None:
+        return kind()
+    if not isinstance(value, kind):
+        raise TypeError("a %s field of another type" % kind.__name__)
+    return value
+
+
 def account_entry(account):
     """The fields of one cswap account the ledger keeps, and no other.
 
@@ -204,13 +240,18 @@ def account_entry(account):
     number = account["number"]
     if not is_slot(number):
         raise TypeError("account number is not a slot number")
-    usage = account.get("usage") or {}
-    week = usage.get("sevenDay") or {}
-    entry = {"number": number, "active": bool(account.get("active")),
+    # A flag is a JSON boolean and a container its own type, or null where
+    # cswap leaves it out: bool("false") is True (sd:9256 review).
+    active = account.get("active", False)
+    if not isinstance(active, bool):
+        raise TypeError("active is not a boolean")
+    usage = either(account.get("usage"), dict)
+    week = either(usage.get("sevenDay"), dict)
+    entry = {"number": number, "active": active,
              "status": account.get("usageStatus"),
              "pct": week.get("pct"), "resetsAt": week.get("resetsAt"),
              "expectedPct": week.get("expectedPct"),
-             "scoped": {s["name"]: s.get("pct") for s in usage.get("scoped") or []
+             "scoped": {s["name"]: s.get("pct") for s in either(usage.get("scoped"), list)
                         if isinstance(s, dict) and isinstance(s.get("name"), str)},
              "fetchedAt": account.get("usageFetchedAt")}
     pcts = [entry["pct"], entry["expectedPct"], *entry["scoped"].values()]
@@ -243,49 +284,13 @@ def read_accounts(timeout):
         return None, "unexpected cswap shape: %s" % type(e).__name__
 
 
-#: The codexbar fields the ledger keeps, and no other. A whitelist on purpose:
-#: an entry also holds the account's email, id, login method and organization
-#: (`account`, `usage.accountEmail`, `usage.identity`, `usage.loginMethod`),
-#: and the ledger is snapshotted into another repository. `True` keeps a
-#: scalar leaf, a dict keeps those keys of a dict, a list holds a dict spec
-#: for each item. Free text is out (`pace.*.summary`); an error's message lives in `errors`, not the entry.
-_WINDOW = {"usedPercent": True, "windowMinutes": True, "resetsAt": True}
-CODEXBAR_KEEP = {
-    "provider": True, "source": True, "version": True,
-    "usage": {
-        "primary": _WINDOW, "secondary": _WINDOW, "tertiary": _WINDOW,
-        "updatedAt": True,
-        "extraRateWindows": [{"id": True, "title": True, "window": _WINDOW}],
-    },
-    "pace": {w: {"stage": True, "deltaPercent": True, "expectedUsedPercent": True,
-                 "willLastToReset": True}
-             for w in WINDOWS},
-    "rateWindowLabels": {w: True for w in WINDOWS},
-}
-
-
-EMAIL = re.compile(r"\S+@\S+")
-
-
-def keep_fields(value, spec):
-    """value cut down to spec; a field of another shape is dropped, not copied."""
-    if spec is True:
-        return value if value is None or isinstance(value, (str, int, float, bool)) else None
-    if isinstance(spec, list):
-        return ([keep_fields(item, spec[0]) for item in value]
-                if isinstance(value, list) else None)
-    if not isinstance(value, dict):
-        return None
-    return {key: keep_fields(value[key], sub) for key, sub in spec.items() if key in value}
-
-
 def write_rows(record, a) -> None:
     """One `meter` cost row per provider per window, or the reason there is none.
 
     Every failure is an `errors` entry on the record and never an exception:
     the import (the pack's `lib/` holds `sd_db`; a pack without it does not),
     the open (no database, a schema this library does not match), a refusal
-    per window (a provider the registry does not name, a percentage codexbar
+    per window (a provider the registry does not name, a percentage a source
     reported outside 0..100: the library's `MeterRefused` and only that), or
     anything else on the way to the commit (no registry beside the store,
     an SQLite error), which is the run's and not one window's. The JSONL line that follows
@@ -305,73 +310,178 @@ def write_rows(record, a) -> None:
         # Named import, so an installed build older than this script fails
         # here as one `errors.sd_db` entry and not once per window below.
         from sd_db.meter import MeterRefused, sample
+        from sd_db.writes import stamp
         connection = sd_db.connect(a.db, write=True)
     except Exception as e:
         record["errors"]["sd_db"] = "%s: %s" % (type(e).__name__, e)
         record["sd_db"] = {"rows": 0}
         return
-    rows = 0
+    rows = seen = 0
+    # The readers drop a window that reset after its reading, so the live
+    # row and this one agree; they count it (sd:9256 round 8).
+    stale = sum(entry.get("stale") or 0 for entry in record["usage"].values())
     try:
         with sd_db.transaction(connection):
-            for prov, entry in record["codexbar"].items():
-                usage = (entry.get("usage") if isinstance(entry, dict) else None) or {}
-                for window in WINDOWS:
-                    reading = usage.get(window) or {}
-                    minutes, percent = reading.get("windowMinutes"), reading.get("usedPercent")
+            for prov, entry in record["usage"].items():
+                # A row is stamped when its reading was taken: Codex's
+                # last event, cswap's fetch (sd:9256 review). A window
+                # with no read time is never stamped as this run.
+                taken = entry.get("read_at")
+                windows = entry.get("windows") or []
+                if windows and usage_sources.event_time(taken) is None:
+                    record["errors"]["sd_db.%s" % prov] = "a reading with no read time"
+                    continue
+                for window in windows:
+                    minutes, percent = window.get("window_minutes"), window.get("used_percent")
                     if minutes is None or percent is None:
+                        continue
+                    # An idle Codex or cswap's cache gives the same reading
+                    # run after run: it is stored once (sd:9256 round 8).
+                    if connection.execute(
+                            "SELECT 1 FROM cost WHERE source = 'meter' AND provider = ? "
+                            "AND window_minutes = ? AND timestamp = ?",
+                            (prov, minutes, stamp(taken))).fetchone():
+                        seen += 1
                         continue
                     try:
                         sample(connection, provider=prov, window_minutes=minutes,
-                               used_percent=percent, now=record["ts"])
+                               used_percent=percent, now=taken)
                         rows += 1
                     except MeterRefused as e:
                         # The library's own refusal is this window's and no
                         # other's. Anything else (no registry beside the
                         # store, an SQLite error) is the run's, and reaches
                         # the handler below as one `errors.sd_db`.
-                        record["errors"]["sd_db.%s.%s" % (prov, window)] = str(e)
+                        record["errors"]["sd_db.%s.%s" % (prov, window["name"])] = str(e)
     except Exception as e:
         # The transaction rolled back, so the count is the truth: nothing landed.
         record["errors"]["sd_db"] = "%s: %s" % (type(e).__name__, e)
         rows = 0
     finally:
         connection.close()
-    record["sd_db"] = {"rows": rows}
+    record["sd_db"] = {"rows": rows, **({"stale": stale} if stale else {}),
+                       **({"seen": seen} if seen else {})}
+
+
+def read_one(provider, accounts, accounts_error, now):
+    """One provider's reading: claude from cswap's accounts, codex from its
+    session logs, the rest from their own usage APIs."""
+    if provider == "claude":
+        return usage_sources.claude_reading(accounts, accounts_error, now)
+    if provider == "codex":
+        return usage_sources.codex_reading(now=now)
+    return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now)
+
+
+def live(a, list_key, starting, parse, read, row_key) -> None:
+    """Read one Settings list, read each entry, write one `heartbeat` row each.
+
+    The list is the setting row `list_key`. A database that never held it
+    gets `starting`, written once, so Settings shows what the job reads; a
+    cleared row is "not configured" and nothing is read. A refused line is
+    an SD_REPORT_ATTENTION line and the rest still run. The rows land in one
+    transaction: all of a run's readings, or none and the old ones stand.
+    A store that does not open, read or take the rows exits 1.
+
+    A key under `row_key` whose name the list no longer holds gets one
+    `{"status": "removed"}` row, so its last reading stops being its
+    newest; a cleared list retires every key (sd:9256 review).
+    """
+    try:
+        import sd_db
+        from sd_db import writes
+    except Exception as e:  # any pack that does not import, as write_rows
+        print("agent-meter %s: no sd_db in %s: %s: %s"
+              % (a.command, PACK_LIB, type(e).__name__, e), file=sys.stderr)
+        sys.exit(1)
+    try:
+        connection = sd_db.connect(a.db, write=True)
+    except Exception as e:
+        print("agent-meter %s: the workflow database did not open: %s: %s"
+              % (a.command, type(e).__name__, e), file=sys.stderr)
+        sys.exit(1)
+    # The step the message names when one fails (sd:9256 round 8).
+    stage = "reading the list"
+    try:
+        held = writes.read_settings(connection, [list_key])
+        if list_key not in held:
+            try:
+                writes.set_setting(connection, list_key, starting, before=None)
+                held = {list_key: starting}
+                print("agent-meter %s: %s started with %d lines"
+                      % (a.command, list_key, len(starting.splitlines())))
+            except writes.SettingStale:
+                held = writes.read_settings(connection, [list_key])
+        text = held.get(list_key)
+        if text is None:
+            print("agent-meter %s: %s is cleared; nothing to read" % (a.command, list_key))
+        entries, problems = parse(text) if text is not None else ([], [])
+        for problem in problems:
+            print("SD_REPORT_ATTENTION: %s %s" % (list_key, problem))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        stage = "reading the entries"
+        with ThreadPoolExecutor(WORKERS) as pool:
+            readings = list(pool.map(lambda entry: read(entry, now), entries))
+        stage = "checking the rows are JSON"
+        for _, body in readings:
+            # A row is finite JSON or the run writes none (sd:9256 review).
+            json.dumps(body, allow_nan=False)
+        stage = "writing the rows"
+        with sd_db.transaction(connection):
+            named = {name for name, _ in readings}
+            readings += [(key[len(row_key):], REMOVED)
+                         for key in newest_live(connection, row_key)
+                         if key[len(row_key):] not in named]
+            for name, body in readings:
+                writes.record_state(connection, "heartbeat", key=row_key + name, body=body)
+    except Exception as e:
+        print("agent-meter %s: no rows written: %s failed: %s: %s"
+              % (a.command, stage, type(e).__name__, e), file=sys.stderr)
+        sys.exit(1)
+    finally:
+        connection.close()
+    counts = {}
+    for _, body in readings:
+        counts[body["status"]] = counts.get(body["status"], 0) + 1
+    print("agent-meter %s: %d rows (%s)" % (a.command, len(readings), ", ".join(
+        "%d %s" % (n, status) for status, n in sorted(counts.items()))))
+
+
+#: The row a key gets when its list no longer names it (sd:9256 review).
+REMOVED = {"status": "removed"}
+
+
+def newest_live(connection, row_key):
+    """Keys under row_key whose newest heartbeat row is not REMOVED."""
+    end = row_key[:-1] + chr(ord(row_key[-1]) + 1)
+    found = []
+    for key, body in connection.execute(
+            "SELECT key, body FROM state WHERE id IN (SELECT MAX(id) FROM state"
+            " WHERE kind = 'heartbeat' AND key >= ? AND key < ? GROUP BY key)",
+            (row_key, end)):
+        try:
+            if json.loads(body) == REMOVED:
+                continue
+        except (TypeError, ValueError):
+            pass  # a NULL body or one that does not parse is retired too
+        found.append(key)
+    return sorted(found)
+
+
+def read_usage(name, now):
+    accounts, error = read_accounts(30) if name == "claude" else (None, None)
+    return name, read_one(name, accounts, error, now)
+
+
+def read_service(entry, now):
+    return entry[0], service_status.read_service(entry, now)
 
 
 def collect(a) -> None:
-    record = {"ts": datetime.datetime.now(datetime.timezone.utc)
-                                     .strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "codexbar": {}, "accounts": None, "rtk": None, "errors": {}}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    record = {"ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "usage": {}, "accounts": None, "rtk": None, "errors": {}}
     brief = []
-
-    codexbar = find_bin("codexbar")
-    providers = [p.strip() for p in a.providers.split(",") if p.strip()]
-    for prov in providers:
-        if not codexbar:
-            record["errors"]["codexbar"] = "codexbar binary not found"
-            break
-        data, err = run_json(
-            [codexbar, "usage", "--format", "json", "--provider", prov], a.timeout)
-        if err is None and isinstance(data, list) and data:
-            raw = data[0] if isinstance(data[0], dict) else {}
-            entry = keep_fields(raw, CODEXBAR_KEEP) or {}
-            record["codexbar"][prov] = entry
-            usage = entry.get("usage") or {}
-            pri = (usage.get("primary") or {}).get("usedPercent")
-            sec = (usage.get("secondary") or {}).get("usedPercent")
-            failure = raw.get("error")
-            err = failure.get("message") if isinstance(failure, dict) else None
-            if isinstance(err, str):
-                # A message can quote the account it failed for.
-                err = EMAIL.sub("<email>", err)
-            brief.append("%s %s%%/%s%%" % (prov, pri, sec) if err is None
-                         else "%s ERR" % prov)
-            if err is not None:
-                record["errors"]["codexbar." + prov] = err
-        else:
-            record["errors"]["codexbar." + prov] = err or "empty response"
-            brief.append("%s ERR" % prov)
 
     accounts, err = read_accounts(a.timeout)
     record["accounts"] = accounts
@@ -380,6 +490,16 @@ def collect(a) -> None:
     else:
         record["errors"]["cswap"] = err
         brief.append("cswap ERR")
+
+    for prov in [p.strip() for p in a.providers.split(",") if p.strip()]:
+        entry = read_one(prov, accounts, err, now)
+        record["usage"][prov] = entry
+        if entry["status"] == "ok":
+            brief.append("%s %s" % (prov, "/".join(
+                "%s%%" % fmt_pct(w["used_percent"]) for w in entry["windows"]) or "ok"))
+        else:
+            record["errors"]["usage." + prov] = entry.get("error") or entry["status"]
+            brief.append("%s %s" % (prov, "ERR" if entry["status"] == "unknown" else entry["status"]))
 
     rtk = find_bin("rtk")
     if rtk:
@@ -431,7 +551,7 @@ def collect(a) -> None:
               "`cron-jobs.sh verify agent-meter` and ~/Library/LaunchAgents for a "
               "stray plist." % (gap, DUP_GAP_S), file=sys.stderr)
     with open(out, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, separators=(",", ":")) + "\n")
+        f.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
     # The cron log's one line says what the JSONL line says: no rows and why
     # is ERR; some rows with a refused window among them names the count.
     refused = sum(1 for key in record["errors"] if key.startswith("sd_db."))
@@ -463,7 +583,8 @@ def report_accounts(a) -> None:
     pct at reset (the last reading before it), newest first."""
     out = os.path.expanduser(a.out)
     try:
-        with open(out, encoding="utf-8") as f:
+        # A line that is not UTF-8 is a malformed line, skipped below.
+        with open(out, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError as e:
         print("agent-meter: cannot read the ledger %s: %s" % (out, e.strerror or e),
@@ -472,10 +593,11 @@ def report_accounts(a) -> None:
     windows = {}   # number -> {reset: (read_at, pct, expectedPct)}
     active = {}    # number -> (read_at, active) of its latest reading
     # Skip, never raise: one malformed reading costs that reading only.
-    malformed = (ValueError, KeyError, TypeError, AttributeError, OverflowError)
+    malformed = (ValueError, KeyError, TypeError, AttributeError, OverflowError,
+                 usage_sources.ReadFailed)
     for line in lines:
         try:
-            record = json.loads(line)
+            record = usage_sources.decode(line)
             stamp = record["ts"]
             accounts = record.get("accounts") or []
             if not isinstance(accounts, list):
@@ -502,7 +624,7 @@ def report_accounts(a) -> None:
             if seen is None or read_at >= seen[0]:
                 windows[number][key] = (read_at, pct, expected)
             if number not in active or read_at >= active[number][0]:
-                active[number] = (read_at, bool(account.get("active")))
+                active[number] = (read_at, account.get("active") is True)
     if not windows:
         print("agent-meter: no account readings in %s" % out)
         return
@@ -534,14 +656,16 @@ def fmt_pct(value):
 def main() -> None:
     p = argparse.ArgumentParser(prog="agent-meter.py", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", nargs="?", choices=["accounts"],
+    p.add_argument("command", nargs="?", choices=["accounts", "usage", "services"],
                    help="accounts: per cswap account, the pct used at each "
-                        "past 7-day reset and the current pace; omit to "
-                        "append one reading")
+                        "past 7-day reset and the current pace; usage: one "
+                        "row per 'usage providers' line; services: one row "
+                        "per 'status services' line; omit to append one reading")
     p.add_argument("--out", default=default_out(),
                    help="JSONL ledger to append to (default: %(default)s)")
     p.add_argument("--providers", default=",".join(PROVIDERS),
-                   help="comma-separated codexbar providers (default: %(default)s)")
+                   help="comma-separated providers the ledger reading holds "
+                        "(default: %(default)s)")
     p.add_argument("--timeout", type=int, default=120,
                    help="seconds per meter command (default 120)")
     where = p.add_mutually_exclusive_group()
@@ -551,8 +675,16 @@ def main() -> None:
     where.add_argument("--no-db", action="store_true",
                        help="write the JSONL line only, no meter rows")
     a = p.parse_args()
+    if a.no_db and a.command in ("usage", "services"):
+        p.error("--no-db: %s writes rows and nothing else" % a.command)
     if a.command == "accounts":
         report_accounts(a)
+    elif a.command == "usage":
+        live(a, USAGE_LIST, usage_sources.STARTING,
+             usage_sources.parse_providers, read_usage, USAGE_KEY)
+    elif a.command == "services":
+        live(a, SERVICES_LIST, service_status.STARTING,
+             service_status.parse_services, read_service, SERVICES_KEY)
     else:
         collect(a)
 

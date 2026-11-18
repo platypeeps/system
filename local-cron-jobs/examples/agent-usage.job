@@ -1,0 +1,19 @@
+# Every 15 min: one `heartbeat` row per 'usage providers' line in the sd
+# database, the Usage view's feed (system sd:9256). Claude per cswap
+# account, Codex from its session logs, every other provider through its
+# own usage or balance API with its key from ~/.config/shell/env.sh; a
+# failed read is `unknown`, a provider with no usage API `no-source`,
+# a provider the list no longer names `removed`.
+# The list is the setting row dashboard.usage_providers (Settings); a
+# store that never held it starts with the providers agent-meter knows.
+# Hub only: the rows go to the hub's database. It writes no ledger line;
+# agent-meter.job keeps the four-hourly ledger.
+# SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
+# after ~/.config/shell/env.sh; this file is sourced before env.sh is.
+JOB_SCHEDULE="*/15 * * * *"
+JOB_TIMEOUT="10m"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/.venv/bin/python\" \"$ROOT/../local-agent-meter/agent-meter.py\" usage"
+JOB_DIR="$ROOT/../local-agent-meter"
+JOB_PROMPT=""
+JOB_MODEL=""
+JOB_CLAUDE_ARGS=""
