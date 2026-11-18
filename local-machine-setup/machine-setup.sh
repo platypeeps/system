@@ -1013,8 +1013,11 @@ tailscale_daemon_match() {
   tm_brew=$(bound_step 60 brew --prefix 2>/dev/null) || tm_brew=
   [ -n "$tm_brew" ] && [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
   # The formula's own CLI: another tailscale earlier on PATH can match
-  # the stale daemon and hide the upgrade (sd:9245 lane review).
-  tm_out=$(bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" version --daemon 2>/dev/null) || tm_out=
+  # the stale daemon and hide the upgrade (sd:9245 lane review). The
+  # socket is the brew service's: by default the CLI may ask the app's.
+  tm_out=$(bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" \
+    --socket=/var/run/tailscaled.socket \
+    version --daemon 2>/dev/null) || tm_out=
   tm_cli=$(printf '%s\n' "$tm_out" | sed -n 's/^ *long version: //p')
   tm_dmn=$(printf '%s\n' "$tm_out" | sed -n 's/^Daemon: //p')
   if [ -z "$tm_cli" ] || [ -z "$tm_dmn" ]; then

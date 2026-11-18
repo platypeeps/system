@@ -328,9 +328,13 @@ class BrewStageTest(unittest.TestCase):
     def tailscale_daemon(self, daemon, client="1.104.7-tabc"):
         prefix = self.home / "brewprefix"
         write_exec(prefix / "opt/tailscale/bin/tailscaled", "#!/bin/sh\n")
+        # The keg CLI answers the service's daemon only on its socket;
+        # without it, it answers the app's (already new) daemon.
         write_exec(prefix / "opt/tailscale/bin/tailscale",
-                   f'#!/bin/sh\nprintf "Client: 1.104.7\\n  long version: {client}\\n'
-                   f'Daemon: {daemon}\\n"\n')
+                   '#!/bin/sh\ncase "$1" in --socket=/var/run/tailscaled.socket) d="'
+                   f'{daemon}" ;; *) d="{client}" ;; esac\n'
+                   f'printf "Client: 1.104.7\\n  long version: {client}\\n'
+                   'Daemon: %s\\n" "$d"\n')
         brew = (self.stubs / "brew").read_text()
         (self.stubs / "brew").write_text(brew.replace(
             "#!/bin/sh\n", f'#!/bin/sh\n[ "$1" = --prefix ] && {{ echo "{prefix}"; exit 0; }}\n', 1))
