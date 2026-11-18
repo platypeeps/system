@@ -133,6 +133,24 @@ class CacheCleanupTest(Harness):
         self.assertIn("- uv cache prune failed (exit 2)", run.stdout)
         self.assertEqual("1", skips.read_text().strip())
 
+    def test_a_skip_names_its_holders_and_alerts_once_a_streak(self):
+        # sd:9377: the finding fired every night on a skip the operator
+        # accepted, and named no holder.
+        self.uv(foreign=True)
+        _stub(self.bin / "ps", "printf '%s\\n' " + " ".join(
+            ["'uvx mcp-proxy-for-aws'"] * 5 + ["'/opt/example/bin/uv run kev.serve'", "'/bin/zsh'"]))
+        holders = "(5x uvx mcp-proxy-for-aws; /opt/example/bin/uv run kev.serve)"
+        for night in (1, 2):
+            run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+            self.assertIn(f"holds the cache; skipped {holders}", run.stdout)
+        run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+        self.assertIn(f"- uv cache prune skipped 3 nights running: another uv process holds the cache {holders}",
+                      run.stdout)
+        for night in (4, 5):
+            run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+            self.assertEqual(self.attention(run), [], night)
+            self.assertIn(f"skipped {night} nights running, reported on the third {holders}", run.stdout)
+
     def test_a_prune_skipped_three_nights_running_is_a_finding(self):
         self.uv(foreign=True)
         for night in (1, 2):

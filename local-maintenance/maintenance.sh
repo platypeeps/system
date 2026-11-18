@@ -90,6 +90,13 @@ uv_prune() {
     sleep 1; waited=$((waited + 1))
   done
   if pgrep -x uv >/dev/null 2>&1 || pgrep -x uvx >/dev/null 2>&1; then
+    # Name them, each command once with a count, so a finding says which
+    # session or service to stop (sd:9377).
+    holders=$(ps -A -o command= 2>/dev/null | awk '
+      { n = split($1, w, "/"); if (w[n] != "uv" && w[n] != "uvx") next
+        c = $0; if (length(c) > 80) c = substr(c, 1, 77) "..."; if (!(c in k)) o[++m] = c; k[c]++ }
+      END { for (i = 1; i <= m; i++) printf "%s%s%s", (i > 1 ? "; " : ""), (k[o[i]] > 1 ? k[o[i]] "x " : ""), o[i] }')
+    echo "uv-prune: holders: ${holders:-unknown, ps listed none}"
     echo "uv-prune: another uv process holds the cache; skipped"
     uv_prune_resume || return 1
     return 0
@@ -598,8 +605,10 @@ fi
 
 # The login agent's uv-prune never runs again on an always-on hub, so run
 # takes it too. In a subshell: its traps would replace this run's. It skips
-# while another uv holds the cache; three such nights in a row are a
-# finding, as the cache then only grows.
+# while another uv holds the cache; the third such night in a row is a
+# finding, as the cache then only grows. It names the holders, and is
+# raised once a streak: the nights after it are actions, so a skip the
+# operator accepted does not alert every night (sd:9377).
 UV_SKIPS="$HOME/.local/state/maintenance/uv-prune-skips"
 if [ "$APPLY" -eq 0 ]; then
   if command -v uv >/dev/null 2>&1 && uv_cache=$(uv cache dir 2>/dev/null) && [ -d "$uv_cache" ]; then
@@ -614,11 +623,14 @@ else
     skips=$((skips + 1))
     { mkdir -p "$(dirname "$UV_SKIPS")" && echo "$skips" > "$UV_SKIPS"; } 2>/dev/null || true
     why=$(grep '; skipped$' "$TMPD/uv" | tail -1 | sed -e 's/^uv-prune: //' -e 's/; skipped$//')
-    if [ "$skips" -ge 3 ]; then
-      finding "uv cache prune skipped $skips nights running: $why" \
+    holders=$(sed -n 's/^uv-prune: holders: //p' "$TMPD/uv" | tail -1)
+    if [ "$skips" -eq 3 ]; then
+      finding "uv cache prune skipped $skips nights running: $why${holders:+ ($holders)}" \
         "uv cache prune skipped 3 or more nights running: $why"
+    elif [ "$skips" -gt 3 ]; then
+      action "uv-prune: $why; skipped $skips nights running, reported on the third${holders:+ ($holders)}"
     else
-      action "uv-prune: $why; skipped"
+      action "uv-prune: $why; skipped${holders:+ ($holders)}"
     fi
   elif grep -q ' MB -> .*(prune exit 0)$' "$TMPD/uv"; then
     rm -f "$UV_SKIPS"
