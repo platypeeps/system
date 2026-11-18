@@ -87,8 +87,10 @@ ANSWERS = {
                   {"balance": {"amount": 250.0, "unit": "credits"},
                    "windows": [{"name": "credits", "used_percent": 75.0, "window_minutes": None,
                                 "resets_at": "2026-12-01T00:00:00Z"}]}),
-    "heygen": ("HEYGEN_API_KEY", {"error": None, "data": {"remaining_quota": 600}},
-               {"balance": {"amount": 600.0, "unit": "quota"}}),
+    # /v2/user/remaining_quota answers 410 since 2026-11-18; /v3/users/me holds the wallet (sd:9415).
+    "heygen": ("HEYGEN_API_KEY", {"data": {"billing_type": "wallet",
+                                           "wallet": {"currency": "usd", "remaining_balance": 100.0}}},
+               {"balance": {"amount": 100.0, "unit": "usd"}}),
     "runway": ("RUNWAYML_API_SECRET", {"creditBalance": 900, "tier": {}, "usage": {}},
                {"balance": {"amount": 900.0, "unit": "credits"}}),
     "openai": ("OPENAI_ADMIN_KEY",
