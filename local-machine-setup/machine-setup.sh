@@ -1011,12 +1011,15 @@ stage_brew() {
 # system service is restarted: its plist must run the keg's tailscaled,
 # so another daemon on the socket is never restarted for (lane review).
 tailscale_daemon_match() {
+  # The upgrade sweep calls this before it loads the profile; without it
+  # the manifest reads common alone (sd:9245 lane review).
+  [ -n "${PROFILE:-}" ] || { (load_profile) >/dev/null 2>&1 && load_profile; } || return 0
   manifest brew | sed 's|.*/||' | grep -qx tailscale || return 0
   tm_brew=$(bound_step 60 brew --prefix 2>/dev/null) || tm_brew=
   [ -n "$tm_brew" ] && [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
   tm_plist=
   for f in "$LAUNCHDAEMONS_DIR/sh.brew.tailscale.plist" "$LAUNCHDAEMONS_DIR/homebrew.mxcl.tailscale.plist"; do
-    grep -qF "$tm_brew/opt/tailscale/bin/tailscaled" "$f" 2>/dev/null && tm_plist=$f
+    grep -qF "<string>$tm_brew/opt/tailscale/bin/tailscaled</string>" "$f" 2>/dev/null && tm_plist=$f
   done
   [ -n "$tm_plist" ] || return 0
   tailscale_daemon_versions
@@ -1035,7 +1038,9 @@ tailscale_daemon_match() {
   # night (lane review).
   for _ in 1 2 3 4 5; do
     tailscale_daemon_versions
-    [ "$tm_cli" != "$tm_dmn" ] || { echo "  ok      tailscaled restarted on $tm_dmn"; return 0; }
+    # An empty answer is a daemon still down, never a match.
+    [ -z "$tm_dmn" ] || [ "$tm_cli" != "$tm_dmn" ] ||
+      { echo "  ok      tailscaled restarted on $tm_dmn"; return 0; }
     sleep 1
   done
   note_failure "tailscaled still runs ${tm_dmn:-an unknown version} after the restart, not $tm_cli" 1
