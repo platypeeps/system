@@ -332,6 +332,55 @@ class HygieneTest(unittest.TestCase):
 
         self.assertIn("note: kept branch keep/landed (keep-branches did not load)", result.stdout)
 
+    # sd:9253: review advisories of sd:9230.
+    def test_a_rule_for_no_listed_repo_is_noted(self):
+        # A typo or a BOM in the repo field kept nothing, in silence.
+        f, repo = self.kept_fixture(
+            b"owner/proj keep/landed\nowner/porj local/*\n\xef\xbb\xbfowner/proj local/*\n")
+
+        result = f.run("hygiene", expect=1)
+
+        self.assertIn("note: keep-branches line 2 names no listed repo; it keeps nothing", result.stdout)
+        self.assertIn("note: keep-branches line 3 names no listed repo; it keeps nothing", result.stdout)
+        self.assertNotIn("keep-branches line 1 names", result.stdout)
+        self.assertIn("LOCAL    branch local/topic#1", result.stdout)
+
+    def test_a_glob_in_the_repo_field_keeps_every_branch(self):
+        f, repo = self.kept_fixture(b"owner/* keep/other\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_a_keep_load_failure_names_its_cause(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/landed\n")
+        keep = f.folder / "keep-branches"
+        keep.chmod(0)
+        self.addCleanup(keep.chmod, 0o644)
+        self.assertIn("keep-branches): not readable; every branch kept",
+                      f.run("hygiene", expect=1).stdout)
+        keep.chmod(0o644)
+        keep.unlink()
+        keep.mkdir()
+        self.assertIn("keep-branches): not a file; every branch kept",
+                      f.run("hygiene", expect=1).stdout)
+
+    def test_a_keep_parse_that_fails_names_awk_or_the_write(self):
+        # The parse's awk exits 1 only when a close in END failed.
+        for rc, why in ((2, "awk failed (exit 2)"), (1, "writing ")):
+            f, repo = self.kept_fixture(b"owner/proj keep/landed\n")
+            real = shutil.which("awk")
+            (f.bin / "awk").write_text(
+                f'#!/bin/sh\ncase "$*" in *keep.bad*) exit {rc} ;; esac\n'
+                f'exec {real} "$@"\n')
+            (f.bin / "awk").chmod(0o755)
+
+            result = f.run("hygiene", "--apply", expect=1)
+
+            self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+            self.assertIn(f"keep-branches): {why}", result.stdout)
+
     def test_a_clean_fleet_reports_nothing_and_exits_0(self):
         """NEW. Requirement 9: without --apply, exit 0 when clean."""
         f = self.fixture()

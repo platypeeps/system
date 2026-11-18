@@ -2288,17 +2288,33 @@ hyg_keep_load() {
   fi
   echo "=== keep-branches"
   # A rule is exactly `<owner/name> <glob>`, the glob using only `*` and
-  # `?`: a `[` class sh cannot parse matches nothing. Any other line is reported by
-  # number in keep.bad, out of band. A dangling link, a folder, an
-  # unreadable file or a failed write (a full disk) is no list: keep all.
-  if ! { [ -f "$k_file" ] && [ -r "$k_file" ]; } || ! awk -v ok="$HYG_TMP/keep" -v bad="$HYG_TMP/keep.bad" '
+  # `?`: a `[` class sh cannot parse matches nothing. The repo field takes
+  # no glob: it is compared whole (sd:9253). Any other line is reported by
+  # number in keep.bad, out of band; keep holds `<line> <repo> <glob>`. A
+  # dangling link, a folder, an unreadable file or a failed write (a full
+  # disk) is no list: keep all, and say which.
+  k_why=
+  if ! [ -f "$k_file" ]; then
+    k_why="not a file"
+  elif ! [ -r "$k_file" ]; then
+    k_why="not readable"
+  else
+    k_rc=0
+    awk -v ok="$HYG_TMP/keep" -v bad="$HYG_TMP/keep.bad" '
       BEGIN { printf "" > ok; printf "" > bad }
       { sub(/\r$/, ""); sub(/(^|[ \t])#.*/, ""); if (NF == 0) next
-        if (NF == 2 && $1 ~ /^[^\/]+\/[^\/]+$/ && $2 !~ /[][\\]/) print $1 " " $2 > ok; else print NR > bad }
-      END { if (close(ok) != 0 || close(bad) != 0) exit 1 }' "$k_file" 2>/dev/null \
-      || ! [ -r "$HYG_TMP/keep" ] || ! [ -r "$HYG_TMP/keep.bad" ]; then
+        if (NF == 2 && $1 ~ /^[^\/]+\/[^\/]+$/ && $1 !~ /[][*?\\]/ && $2 !~ /[][\\]/) print NR " " $1 " " $2 > ok; else print NR > bad }
+      END { if (close(ok) != 0 || close(bad) != 0) exit 1 }' "$k_file" 2>/dev/null || k_rc=$?
+    # awk exits 1 from END when a close failed: the write did not land.
+    if [ "$k_rc" -ne 0 ] && [ "$k_rc" -ne 1 ]; then
+      k_why="awk failed (exit $k_rc)"
+    elif [ "$k_rc" -eq 1 ] || ! [ -r "$HYG_TMP/keep" ] || ! [ -r "$HYG_TMP/keep.bad" ]; then
+      k_why="writing $HYG_TMP failed"
+    fi
+  fi
+  if [ -n "$k_why" ]; then
     HYG_KEEP_ALL=1
-    hyg_fail "read keep-branches ($k_file): every branch kept this run"
+    hyg_fail "read keep-branches ($k_file): $k_why; every branch kept this run"
     return 0
   fi
   # A line that is no rule may be the rule for a branch: keep all.
@@ -2310,6 +2326,12 @@ hyg_keep_load() {
     [ "$k_more" -gt 0 ] && k_lines="$k_lines and $k_more more"
     hyg_fail "keep-branches line $k_lines: want '<owner/name> <glob>' (glob: * and ? only); every branch kept this run"
   fi
+  # A rule for no listed repo, a typo or a BOM in its first field, keeps
+  # nothing; it was silent (sd:9253). A note, as a fleet change can leave one.
+  repo_list | awk 'NR == FNR { listed[$2] = 1; next }
+    !($2 in listed) { print $1 }' - "$HYG_TMP/keep" | while read -r k_line; do
+    hyg_note "keep-branches line $k_line names no listed repo; it keeps nothing"
+  done
 }
 
 # Whether the keep list names branch $2 of repo $1.
@@ -2317,7 +2339,7 @@ hyg_kept() {
   [ "$HYG_KEEP_ALL" = 1 ] && return 0
   # The parsed list must be there: a missing copy keeps, never deletes.
   [ -r "$HYG_TMP/keep" ] || return 0
-  while read -r k_repo k_glob; do
+  while read -r _ k_repo k_glob; do
     [ "$k_repo" = "$1" ] || continue
     # shellcheck disable=SC2254 # the glob is the point
     case "$2" in $k_glob) return 0 ;; esac
