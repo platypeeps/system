@@ -408,6 +408,21 @@ class ToolingSdconfigTest(unittest.TestCase):
         self.assertEqual(json.loads(config.read_text()), {"config": {"sd": {"gate_slots": "5"}}}, out)
         self.assertIn("  ok      sd setting sd.review_slots unset", self.tooling())
 
+    def test_a_config_json_that_does_not_load_is_named(self):
+        # sd:9282 round 1: a malformed config.json read as a key list that
+        # did not load.
+        from tests.test_backbone import PACK
+        write_exec(self.stubs / "python3", f"#!/bin/sh\nexec {sys.executable} \"$@\"\n")
+        config = self.home / ".config/sd-ai-command-pack/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text("{not json")
+        (self.profiles / "personal.sdconfig").write_text("unset sd.review_slots\n")
+        self.env = {"SD_PACK_ROOT": str(PACK)}
+
+        out = self.tooling("--apply")
+
+        self.assertRegex(out, r"  FAILED  sd settings: the machine config did not load: \S*config.json is not valid JSON")
+
     def test_no_sdconfig_file_says_nothing(self):
         self.assertNotIn("sd setting", self.tooling("--apply"))
 

@@ -1025,9 +1025,10 @@ tailscale_daemon_match() {
   [ -n "$tm_plist" ] || return 0
   tailscale_daemon_versions
   if [ -z "$tm_cli" ] || [ -z "$tm_dmn" ]; then
-    # FAILED, a drift word: a probe that failed checked nothing (sd:9282).
-    echo "  FAILED  tailscaled version unknown: tailscale version --daemon gave no answer"
-    return 0
+    # FAILED, a drift word: a probe that failed checked nothing (sd:9282),
+    # and a failure: the run must not stay green (sd:9282 round 1).
+    note_failure "tailscaled version unknown: tailscale version --daemon gave no answer" 1
+    return 1
   fi
   if [ "$tm_cli" = "$tm_dmn" ]; then
     echo "  ok      tailscaled $tm_dmn matches its binary"
@@ -1037,25 +1038,29 @@ tailscale_daemon_match() {
   run_ok bound_step 120 sudo -n "$tm_brew/bin/brew" services restart tailscale || return 1
   [ "$APPLY" -eq 1 ] || return 0
   # A restart that did not take must say so, not repeat silently each
-  # night (lane review).
+  # night (lane review). The binary's version is the one from before:
+  # a CLI that does not answer clears tm_cli (sd:9282 round 1).
+  tm_want=$tm_cli
   for _ in 1 2 3 4 5; do
     tailscale_daemon_versions
     # An empty answer is a daemon still down, never a match.
-    if [ -n "$tm_dmn" ] && [ "$tm_cli" = "$tm_dmn" ]; then
+    if [ -n "$tm_dmn" ] && [ "$tm_want" = "$tm_dmn" ]; then
       echo "  ok      tailscaled restarted on $tm_dmn"
       # It answers its version before its backend runs, and the sd
       # stage's `tailscale status` then SKIPs the serve routes (sd:9282).
-      # A backend still down after 5 s is that stage's SKIP to report.
+      # A backend still down after 5 s (logged out, say) is that stage's
+      # SKIP, not a failed restart; a WARN says so here.
       for _ in 1 2 3 4 5; do
         bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" \
-          --socket=/var/run/tailscaled.socket status >/dev/null 2>&1 && break
+          --socket=/var/run/tailscaled.socket status >/dev/null 2>&1 && return 0
         sleep 1
       done
+      echo "  WARN    tailscaled backend not running 5 s after the restart; the sd stage skips its serve checks"
       return 0
     fi
     sleep 1
   done
-  note_failure "tailscaled still runs ${tm_dmn:-an unknown version} after the restart, not $tm_cli" 1
+  note_failure "tailscaled still runs ${tm_dmn:-an unknown version} after the restart, not $tm_want" 1
   return 1
 }
 
@@ -2847,16 +2852,26 @@ sd_settings() {
     ss_mine=$(bound_step 30 python3 -I -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import sd_lib
-held = sd_lib.machine_config().get("config")
+try:
+    held = sd_lib.machine_config().get("config")
+except Exception as error:
+    print(error, file=sys.stderr)
+    sys.exit(3)
 held = held.get("sd") if isinstance(held, dict) else None
 held = held if isinstance(held, dict) else {}
 for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS)):
     print("sd." + k, "held" if k in held else "-")' "$SD_PACK_ROOT/bin" 2>"$ss_err" </dev/null) || ss_krc=$?
     if [ "$ss_krc" -ne 0 ]; then
       # A timeout's own message is the command, inline script and all.
-      ss_why="timed out"
+      # Exit 3 is the probe's own: config.json, not the key list, failed.
+      ss_why="the pack's key list did not load: timed out"
       [ "$ss_krc" -eq 124 ] || ss_why=$(grep -v '^\[step ' "$ss_err" | tail -1)
-      note_failure "sd settings: the pack's key list did not load: $ss_why" 1
+      case $ss_krc in
+        124) ;;
+        3) ss_why="the machine config did not load: $ss_why" ;;
+        *) ss_why="the pack's key list did not load: $ss_why" ;;
+      esac
+      note_failure "sd settings: $ss_why" 1
       ss_mine=
     fi
   fi
@@ -7577,7 +7592,7 @@ cmd_upgrade() {
     # Formulae only: bare `brew upgrade` takes casks too, with no askpass and
     # past BREW_SKIPPED_CASKS, and failed the step on them (sd:8101).
     sweep_step "brew upgrade" "$SOURCE_BUILD_BOUND" brew upgrade --formula
-    tailscale_daemon_match || failed="$failed, tailscaled restart"
+    tailscale_daemon_match || failed="$failed, tailscaled"
     # The profile's missing formulae: the brew stage leaves one that needs a
     # source build to this sweep (sd:7103).
     fw=$(formula_wants) || failed="$failed, brew formula list"
@@ -7855,7 +7870,7 @@ cmd_upgrade_report() {
     failed=""
     {
       rustup_sweep
-      tailscale_daemon_match || failed="$failed, tailscaled restart"
+      tailscale_daemon_match || failed="$failed, tailscaled"
     } > "$tmp/out" 2>&1
     cat "$tmp/out"
     inventory_capture || rc=1

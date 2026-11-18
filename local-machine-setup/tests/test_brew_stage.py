@@ -381,6 +381,43 @@ class BrewStageTest(unittest.TestCase):
         self.assertIn("FAILED  tailscaled still runs an unknown version after the restart",
                       result.stdout)
 
+    def test_the_fixture_env_hides_this_mac_s_launch_daemons(self):
+        # sd:9282 round 1: a case without tailscale_profile read the real
+        # /Library/LaunchDaemons, and could restart this Mac's tailscaled.
+        folder = pathlib.Path(fixture_config.env()["MACHINE_SETUP_LAUNCHDAEMONS_DIR"])
+        self.assertFalse(folder.exists(), folder)
+
+    # sd:9282 round 1, class: a failure printed while the run stays green.
+    def test_a_daemon_that_gives_no_answer_fails_the_run(self):
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("")
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("  FAILED  tailscaled version unknown: tailscale version --daemon gave no answer (exit 1)\n",
+                      result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(sudo_log.exists() and "restart" in sudo_log.read_text())
+
+    def test_a_silent_daemon_fails_the_upgrade_sweep(self):
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        self.tailscale_daemon("")
+        result = self.run_verb("upgrade", "--apply", **env)
+        self.assertRegex(result.stdout, r"failed steps: (.*, )?tailscaled(,|\n)")
+
+    def test_a_backend_never_up_after_the_restart_warns(self):
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        self.tailscale_daemon("1.104.5-tdef")
+        result = self.run_verb("update", "brew", "--apply", STATUS_UP="99", **env)
+        self.assertIn("ok      tailscaled restarted on 1.104.7-tabc", result.stdout)
+        self.assertIn("  WARN    tailscaled backend not running 5 s after the restart;", result.stdout)
+        self.assertNotIn("FAILED  tailscaled", result.stdout)
+
+    def test_a_restart_that_leaves_no_daemon_names_the_binary(self):
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        self.tailscale_daemon("1.104.5-tdef", after="")
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("FAILED  tailscaled still runs an unknown version after the restart, not 1.104.7-tabc (exit 1)",
+                      result.stdout)
+
     def test_the_upgrade_sweep_reads_the_machine_profile(self):
         # sd:9245 lane review: the sweep read the manifest before it loaded
         # the profile, so a machine profile's tailscale was never checked.
