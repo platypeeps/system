@@ -2,8 +2,8 @@
 
 Appends one agent-usage reading to a JSONL ledger every four hours: per provider its
 usage (claude from `cswap list --json`, codex from its session logs), each cswap
-account's seven-day use, and `rtk gain` for token-proxy savings. A live reading
-feeds the dashboard's Usage view; see "Live readings".
+account's seven-day use, and `rtk gain` for token-proxy savings. Two live readings
+feed the dashboard's Usage view and Health page; see "Live readings".
 
 The ledger is, in order: `--out`, else `AGENT_METER_FILE` (exported, or set in
 `<config>/agent-meter/.env`; copy `.env.example`), else
@@ -82,6 +82,7 @@ The tests are `tests/test_*.py`, the `agent-meter` `run_suite` line of `tests/ci
 ## Live readings
 
     ./agent-meter.py usage                 # one row per 'usage providers' line
+    ./agent-meter.py services              # one row per 'status services' line
 
 Each reads a Settings list, a workflow database setting row, and writes one
 `heartbeat` state row per entry in one transaction; the newest row per key is the
@@ -97,6 +98,14 @@ still run; a store that does not open exits 1. Neither writes the ledger.
   environment by name (`usage_sources.py` names each); no key, answer body or
   account field reaches a row. A failed read is `unknown`, never 0; a provider with
   no usage API is `no-source`.
+- `services` (sd:9259): setting `dashboard.status_services`, one
+  `<name> <kind> <url> [provider[,provider]]` line each; kinds `statuspage`
+  (summary.json), `slack` (slack-status.com v2.0.0), `google-incidents`
+  (incidents.json) and `http` (the page answers). Row `service-status:<name>`:
+  `status` (`ok`, `degraded`, `outage`, `unknown`), `indicator`, open `incidents`
+  (title, url, impact, start), non-operational `components`, `providers`, `read_at`
+  and `error`. A failed read is `unknown`, never `ok`.
+
 Run them on the hub only: the rows go to the hub's database.
 
 ## Schedule
@@ -114,8 +123,9 @@ to the job file, `cron-jobs.sh verify agent-meter` says STALE until
 Keep this job as the one schedule for the collector: a second one appends duplicate
 readings to the same ledger.
 
-The live reading has its own job, `agent-usage.job` (every 15 minutes); copy and
-install it the same way. It writes no ledger line.
+The live readings have their own jobs, `agent-usage.job` (every 15 minutes) and
+`service-status.job` (every 5 minutes); copy and install them the same way. They
+write no ledger line.
 
 ## Duplicate collectors
 

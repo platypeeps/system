@@ -1,4 +1,4 @@
-"""The live reading: `agent-meter.py usage` (sd:9256).
+"""The live readings: `agent-meter.py usage` (sd:9256) and `services` (sd:9259).
 
 Each reads a Settings list (a workflow database setting row), reads each
 entry, and writes one `heartbeat` state row per entry. A failed read is a
@@ -31,6 +31,7 @@ from sd_db.migrate import initialise
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
+import service_status  # noqa: E402
 import usage_sources  # noqa: E402
 from usage_sources import ReadFailed  # noqa: E402
 
@@ -320,6 +321,110 @@ class Codex(unittest.TestCase):
                     json.dumps(got, allow_nan=False)
 
 
+SUMMARY = {"page": {"url": "https://status.example.test"},
+           "status": {"indicator": "minor", "description": "Minor"},
+           "components": [{"name": "Copilot", "status": "degraded_performance"},
+                          {"name": "Git", "status": "operational"}],
+           "incidents": [{"id": "abc", "name": "Copilot **slow**", "status": "investigating",
+                          "impact": "minor", "created_at": "2026-11-17T19:00:00Z"},
+                         {"id": "old", "name": "Done", "status": "resolved"}]}
+
+
+class Services(unittest.TestCase):
+    def read(self, kind, answer, url="https://status.example.test/api"):
+        return service_status.read_service(("svc", kind, url, ["claude"]), NOW,
+                                           fetch=answering(answer))
+
+    def test_the_services_grammar(self):
+        services, problems = service_status.parse_services(
+            "# watched\n"
+            "claude statuspage https://status.example.test/api/v2/summary.json claude\n"
+            "github statuspage https://example.test/s.json copilot,github  # both\n"
+            "slack slack https://example.test/current\n"
+            "claude http https://example.test\n"
+            "x rss https://example.test\n"
+            "y http ftp://example.test\n"
+            "z http https://example.test Bad\n"
+            "only two\n")
+        self.assertEqual([s[0] for s in services], ["claude", "github", "slack"])
+        self.assertEqual(services[1][3], ["copilot", "github"])
+        self.assertEqual(services[2][3], [])
+        self.assertEqual(problems, [
+            "line 5: name is not a new lower-case name",
+            "line 6: kind is not one of statuspage, slack, google-incidents, http",
+            "line 7: url is not http(s)",
+            "line 8: a provider is not a lower-case name",
+            "line 9: want <name> <kind> <url> [provider]"])
+
+    def test_the_starting_list_parses_whole(self):
+        services, problems = service_status.parse_services(service_status.STARTING)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(services), len(service_status.STARTING.splitlines()))
+
+    def test_a_statuspage_summary(self):
+        got = self.read("statuspage", SUMMARY)
+        self.assertEqual((got["status"], got["indicator"]), ("degraded", "minor"))
+        self.assertEqual(got["incidents"], [{"title": "Copilot slow",
+                                             "url": "https://status.example.test/incidents/abc",
+                                             "impact": "minor",
+                                             "started_at": "2026-11-17T19:00:00Z"}])
+        self.assertEqual(got["components"], [{"name": "Copilot", "status": "degraded_performance"}])
+        self.assertEqual(got["providers"], ["claude"])
+        for indicator, status in (("none", "ok"), ("major", "outage"), ("critical", "outage"),
+                                  ("maintenance", "degraded")):
+            with self.subTest(indicator=indicator):
+                answer = dict(SUMMARY, status={"indicator": indicator})
+                self.assertEqual(self.read("statuspage", answer)["status"], status)
+
+    def test_slack_and_google(self):
+        self.assertEqual(self.read("slack", {"status": "ok", "active_incidents": []})["status"], "ok")
+        got = self.read("slack", {"status": "active", "active_incidents": [
+            {"title": "Huddles down", "type": "outage", "url": "https://example.test/i",
+             "date_created": "2026-11-17T19:00:00Z"}]})
+        self.assertEqual((got["status"], got["incidents"][0]["title"]), ("outage", "Huddles down"))
+        incidents = [{"end": "2026-11-01T00:00:00Z", "service_name": "Gmail"},
+                     {"begin": "2026-11-17T18:00:00Z", "end": None, "service_name": "Drive",
+                      "external_desc": "**Summary:**\nSlow uploads.\nMore.", "uri": "incidents/xyz",
+                      "status_impact": "SERVICE_DISRUPTION"}]
+        got = self.read("google-incidents", incidents,
+                        url="https://status.example.test/dashboard/incidents.json")
+        self.assertEqual(got["status"], "degraded")
+        self.assertEqual(got["incidents"], [{
+            "title": "Drive: Slow uploads.", "url": "https://status.example.test/dashboard/incidents/xyz",
+            "impact": "SERVICE_DISRUPTION", "started_at": "2026-11-17T18:00:00Z"}])
+        incidents[1]["status_impact"] = "SERVICE_OUTAGE"
+        self.assertEqual(self.read("google-incidents", incidents)["status"], "outage")
+        self.assertEqual(self.read("google-incidents", [])["status"], "ok")
+
+    def test_a_failed_or_strange_read_is_unknown_never_ok(self):
+        for kind in ("statuspage", "slack", "google-incidents"):
+            got = service_status.read_service(("svc", kind, "https://example.test", []), NOW,
+                                              fetch=failing("TimeoutError"))
+            self.assertEqual((got["status"], got["error"]), ("unknown", "TimeoutError"))
+            for shape in ({}, [], "x", None, 5, {"status": {"indicator": "weird"}},
+                          {"status": "broken", "active_incidents": []}, [5, "x"], {"status": "ok"}):
+                with self.subTest(kind=kind, shape=shape):
+                    got = self.read(kind, shape)
+                    if kind == "google-incidents" and shape in ([], [5, "x"]):
+                        # An empty incident list is a real ok; entries of
+                        # another shape are no open incident.
+                        continue
+                    self.assertEqual(got["status"], "unknown", got)
+
+    def test_the_http_kind(self):
+        os.environ.update(LOCAL)
+        server = Server({"/up": (200, b"<html>"), "/down": (503, b""), "/gone": (404, b"")})
+        self.addCleanup(server.close)
+        for path, status in (("/up", "ok"), ("/down", "outage"), ("/gone", "unknown")):
+            with self.subTest(path=path):
+                got = service_status.read_service(("p", "http", server.url + path, []), NOW)
+                self.assertEqual(got["status"], status, got)
+        got = service_status.read_service(("p", "http", "http://127.0.0.1:%d/" % closed_port(), []),
+                                          NOW)
+        self.assertEqual(got["status"], "unknown")
+        self.assertTrue(got["error"])
+
+
 CSWAP_LIST = {"accounts": [{"number": 1, "email": "one@example.test", "active": True,
                             "usageStatus": "ok", "usage": {"sevenDay": {
                                 "pct": 40.0, "resetsAt": "2026-11-20T00:00:00Z",
@@ -406,8 +511,50 @@ class Live(unittest.TestCase):
         self.assertEqual(writes.read_settings(self.connection(), ["dashboard.usage_providers"]),
                          {"dashboard.usage_providers": None})
 
+    def test_services_writes_one_row_per_line_and_a_failed_read_is_unknown(self):
+        server = Server({"/summary.json": (200, SUMMARY), "/broken.json": (500, b"")})
+        self.addCleanup(server.close)
+        self.setting("dashboard.status_services",
+                     "github statuspage %s/summary.json copilot\n"
+                     "broken statuspage %s/broken.json\n"
+                     "gone http http://127.0.0.1:%d/\n" % (server.url, server.url, closed_port()))
+        done = self.run_live("services")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        rows = self.rows("service-status:")
+        self.assertEqual(sorted(rows), ["service-status:broken", "service-status:github",
+                                        "service-status:gone"])
+        self.assertEqual(rows["service-status:github"]["status"], "degraded")
+        self.assertEqual(rows["service-status:github"]["providers"], ["copilot"])
+        self.assertEqual((rows["service-status:broken"]["status"],
+                          rows["service-status:broken"]["error"]), ("unknown", "HTTP 500"))
+        self.assertEqual(rows["service-status:gone"]["status"], "unknown")
+        self.assertIn("3 rows (1 degraded, 2 unknown)", done.stdout)
+
+    def test_the_newest_row_is_the_newest_read(self):
+        server = Server({"/s.json": (200, SUMMARY)})
+        self.addCleanup(server.close)
+        self.setting("dashboard.status_services", "svc statuspage %s/s.json\n" % server.url)
+        self.assertEqual(self.run_live("services").returncode, 0)
+        server.routes["/s.json"] = (500, b"")
+        self.assertEqual(self.run_live("services").returncode, 0)
+        self.assertEqual(self.rows("service-status:")["service-status:svc"]["status"], "unknown")
+
+    def test_services_on_a_never_held_list_starts_it(self):
+        # Every starting line points outside; an unroutable proxy keeps the
+        # test off the network, and each read is then unknown.
+        self.env.update(HTTPS_PROXY="http://127.0.0.1:%d" % closed_port(),
+                        HTTP_PROXY="http://127.0.0.1:%d" % closed_port(),
+                        NO_PROXY="", no_proxy="")
+        done = self.run_live("services")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        held = writes.read_settings(self.connection(), ["dashboard.status_services"])
+        self.assertEqual(held["dashboard.status_services"], service_status.STARTING)
+        rows = self.rows("service-status:")
+        self.assertEqual(len(rows), len(service_status.STARTING.splitlines()))
+        self.assertEqual({row["status"] for row in rows.values()}, {"unknown"})
+
     def test_a_store_that_does_not_open_exits_1(self):
-        for command in ("usage",):
+        for command in ("usage", "services"):
             with self.subTest(command=command):
                 done = self.run_live(command, db=Path(self.tmp.name) / "missing" / "sd.db")
                 self.assertEqual(done.returncode, 1)

@@ -672,6 +672,7 @@ class MeterRun(unittest.TestCase):
         self.assertIn("accounts", done.stdout)
         self.assertIn("used at reset", done.stdout)
         self.assertIn("usage providers", done.stdout)
+        self.assertIn("status services", done.stdout)
 
 
 if __name__ == "__main__":

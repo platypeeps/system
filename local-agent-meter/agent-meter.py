@@ -49,16 +49,17 @@ pct used at reset: the last reading before the reset. Readings come every
 4 h, so that is a lower bound, printed with how long before the reset it
 was read. Slot numbers follow `cswap swap` and `cswap move`.
 
-Since sd:9256 a live reading feeds the dashboard from a Settings list (a
-workflow database setting row), one `heartbeat` state row per entry, the
-latest per key being the answer: `usage` reads every 'usage providers'
-line (rows `usage:<provider>`). A failed read is a row with status
-`unknown`, never `ok`; a provider with no usage API is `no-source`. It
-writes no ledger line.
+Since sd:9256 and sd:9259 two live readings feed the dashboard, each
+from a Settings list (a workflow database setting row) and each one
+`heartbeat` state row per entry, the latest per key being the answer:
+`usage` reads every 'usage providers' line (rows `usage:<provider>`),
+`services` every 'status services' line (rows `service-status:<name>`).
+A failed read is a row with status `unknown`, never `ok`; a provider with
+no usage API is `no-source`. Neither writes the ledger.
 
   agent-meter.py [--out PATH] [--db PATH | --no-db] [--providers claude,codex] [--timeout S]
   agent-meter.py accounts [--out PATH]
-  agent-meter.py usage [--db PATH]
+  agent-meter.py usage|services [--db PATH]
 """
 
 import argparse
@@ -77,6 +78,7 @@ import system_tools_config  # noqa: E402
 
 # The script's own folder: `python -I` (the job's launch) leaves it off.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import service_status  # noqa: E402
 import usage_sources  # noqa: E402
 
 sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow").expanduser() / "lib"))
@@ -108,8 +110,10 @@ DEFAULT_DB = "~/.local/share/sd/sd.db"
 #: The Settings lists the live readings follow (the pack's `setting_rows.LISTS`
 #: shows them), and the `heartbeat` state key prefix of each reading's row.
 USAGE_LIST = "dashboard.usage_providers"
+SERVICES_LIST = "dashboard.status_services"
 USAGE_KEY = "usage:"
-#: Reads at once in a live run.
+SERVICES_KEY = "service-status:"
+#: Reads at once in a live run: 25 services at the 20 s timeout fit 5 minutes.
 WORKERS = 8
 
 
@@ -387,6 +391,10 @@ def read_usage(name, now):
     return name, read_one(name, accounts, error, now)
 
 
+def read_service(entry, now):
+    return entry[0], service_status.read_service(entry, now)
+
+
 def collect(a) -> None:
     now = datetime.datetime.now(datetime.timezone.utc)
     record = {"ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -564,10 +572,11 @@ def fmt_pct(value):
 def main() -> None:
     p = argparse.ArgumentParser(prog="agent-meter.py", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", nargs="?", choices=["accounts", "usage"],
+    p.add_argument("command", nargs="?", choices=["accounts", "usage", "services"],
                    help="accounts: per cswap account, the pct used at each "
                         "past 7-day reset and the current pace; usage: one "
-                        "row per 'usage providers' line; omit to append one reading")
+                        "row per 'usage providers' line; services: one row "
+                        "per 'status services' line; omit to append one reading")
     p.add_argument("--out", default=default_out(),
                    help="JSONL ledger to append to (default: %(default)s)")
     p.add_argument("--providers", default=",".join(PROVIDERS),
@@ -587,6 +596,9 @@ def main() -> None:
     elif a.command == "usage":
         live(a, USAGE_LIST, usage_sources.STARTING,
              usage_sources.parse_providers, read_usage, USAGE_KEY)
+    elif a.command == "services":
+        live(a, SERVICES_LIST, service_status.STARTING,
+             service_status.parse_services, read_service, SERVICES_KEY)
     else:
         collect(a)
 
