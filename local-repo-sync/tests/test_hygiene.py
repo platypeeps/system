@@ -345,6 +345,17 @@ class HygieneTest(unittest.TestCase):
         self.assertNotIn("keep-branches line 1 names", result.stdout)
         self.assertIn("LOCAL    branch local/topic#1", result.stdout)
 
+    def test_a_rule_is_noted_when_no_repo_is_listed(self):
+        # sd:9282 round 1: with an empty list, NR == FNR read the rules as
+        # the list, so no rule was noted.
+        f = self.fixture()
+        (f.folder / f"repos.{f.profile}.conf").write_text("")
+        (f.folder / "keep-branches").write_text("owner/proj local/*\n")
+
+        result = f.run("hygiene")
+
+        self.assertIn("note: keep-branches line 1 names no listed repo; it keeps nothing", result.stdout)
+
     def test_a_glob_in_the_repo_field_keeps_every_branch(self):
         f, repo = self.kept_fixture(b"owner/* keep/other\n")
 

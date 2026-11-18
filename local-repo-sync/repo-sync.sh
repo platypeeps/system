@@ -2328,10 +2328,13 @@ hyg_keep_load() {
   fi
   # A rule for no listed repo, a typo or a BOM in its first field, keeps
   # nothing; it was silent (sd:9253). A note, as a fleet change can leave one.
-  repo_list | awk 'NR == FNR { listed[$2] = 1; next }
-    !($2 in listed) { print $1 }' - "$HYG_TMP/keep" | while read -r k_line; do
-    hyg_note "keep-branches line $k_line names no listed repo; it keeps nothing"
-  done
+  # By file name, not NR == FNR: an empty list would read the rules as it.
+  if repo_list > "$HYG_TMP/keep.repos"; then
+    awk 'FILENAME == ARGV[1] { listed[$2] = 1; next }
+      !($2 in listed) { print $1 }' "$HYG_TMP/keep.repos" "$HYG_TMP/keep" | while read -r k_line; do
+      hyg_note "keep-branches line $k_line names no listed repo; it keeps nothing"
+    done
+  fi
 }
 
 # Whether the keep list names branch $2 of repo $1.
