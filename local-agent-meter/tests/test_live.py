@@ -553,6 +553,28 @@ class Live(unittest.TestCase):
         self.assertEqual(len(rows), len(service_status.STARTING.splitlines()))
         self.assertEqual({row["status"] for row in rows.values()}, {"unknown"})
 
+    def test_a_row_write_that_fails_partway_lands_no_row_of_the_run(self):
+        """The rows are one step: the second body fails to serialise after
+        the first row is inserted, and the transaction takes the first back.
+        The run exits 1; the rows of the run before stand."""
+        import argparse
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("agent_meter", SCRIPT)
+        meter = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(meter)
+        args = argparse.Namespace(db=str(self.db), command="services")
+        listed = "a http https://example.test/a\nb http https://example.test/b\n"
+        meter.live(args, "dashboard.status_services", listed, service_status.parse_services,
+                   lambda entry, now: (entry[0], {"status": "ok", "run": 1}), "service-status:")
+        bodies = {"a": {"status": "degraded", "run": 2}, "b": {"status": "ok", "bad": {1}}}
+        with self.assertRaises(SystemExit) as stopped:
+            meter.live(args, "dashboard.status_services", listed, service_status.parse_services,
+                       lambda entry, now: (entry[0], bodies[entry[0]]), "service-status:")
+        self.assertEqual(stopped.exception.code, 1)
+        rows = self.rows("service-status:")
+        self.assertEqual({key: row["run"] for key, row in rows.items()},
+                         {"service-status:a": 1, "service-status:b": 1})
+
     def test_a_store_that_does_not_open_exits_1(self):
         for command in ("usage", "services"):
             with self.subTest(command=command):
