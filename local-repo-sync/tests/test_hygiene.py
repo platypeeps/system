@@ -45,6 +45,22 @@ case "$*" in
 esac
 """
 
+#: A sqlite3 stub that answers from rows in the database file itself, one
+#: per line: `item <id> <status> <repo>` or `assignment <id> <item>`. An item
+#: query with a `repo in (...)` list matches only a listed repo, as SQL does.
+SQLITE_ROWS_STUB = """#!/bin/sh
+q=$3
+id=$(printf '%s\\n' "$q" | sed -n 's/.* where id = \\([0-9]*\\).*/\\1/p')
+while read -r t i v r; do
+  [ "$i" = "$id" ] || continue
+  case "$t $q" in
+    "assignment "*"from assignment"*) echo "$v" ;;
+    "item "*"repo in ("*) case "$q" in *"'$r'"*) echo "$v" ;; esac ;;
+    "item "*"from item"*) echo "$v" ;;
+  esac
+done < "$2"
+"""
+
 
 class HygieneFixture(Fixture):
     """A Fixture whose repositories have history, branches and worktrees."""
@@ -629,14 +645,13 @@ class HygieneTest(unittest.TestCase):
 
     # sd:9376: DONE lines named the wrong item.
     def done_db(self, f, items, assignments=()):
-        """A real sd database: `items` are (id, status, repo) rows."""
-        import sqlite3
-        db = f.tmp / "sd-real.db"
-        with sqlite3.connect(db) as c:
-            c.execute("create table item (id integer primary key, status text, repo text)")
-            c.execute("create table assignment (id integer primary key, item integer)")
-            c.executemany("insert into item values (?, ?, ?)", items)
-            c.executemany("insert into assignment values (?, ?)", assignments)
+        """An sd database for SQLITE_ROWS_STUB: `items` are (id, status,
+        repo) rows, `assignments` (id, item) rows."""
+        (f.bin / "sqlite3").write_text(SQLITE_ROWS_STUB)
+        (f.bin / "sqlite3").chmod(0o755)
+        db = f.tmp / "sd-rows.db"
+        db.write_text("".join(f"item {i} {st} {r}\n" for i, st, r in items)
+                      + "".join(f"assignment {i} {it} -\n" for i, it in assignments))
         return {"REPO_SYNC_SD_DB": str(db)}
 
     def branches(self, f, repo, *names):
