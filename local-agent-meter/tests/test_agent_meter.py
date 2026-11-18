@@ -231,6 +231,23 @@ class MeterRun(unittest.TestCase):
         self.assertEqual([row[:3] for row in self.meter_rows()],
                          [("claude", "anthropic", 10080), ("codex", "openai", 10080)])
 
+    def test_deep_replies_cost_their_readings_not_the_ledger_line(self):
+        # sd:9256 review: json.loads raised RecursionError on a reply
+        # nested past its depth (200000 on 3.15), and the 4-hourly run
+        # wrote no line at all.
+        deep = "[" * 200000 + "]" * 200000
+        self.cswap_fixture.write_text(deep, encoding="utf-8")
+        self.rollout.write_text('{"type": "token_count", "rate_limits": %s}\n' % deep,
+                                encoding="utf-8")
+        done = self.run_meter("--db", str(self.db))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
+        (record,) = self.lines()
+        self.assertEqual((record["usage"]["claude"]["status"], record["usage"]["codex"]["status"]),
+                         ("unknown", "unknown"))
+        self.assertEqual(record["errors"]["cswap"], "unparseable output")
+        self.assertEqual(record["sd_db"], {"rows": 0})
+
     def test_a_cached_claude_week_that_reset_gets_no_row(self):
         # sd:9256 review: cswap's cached reading looked fresh.
         data = json.loads(json.dumps(CSWAP_LIST))

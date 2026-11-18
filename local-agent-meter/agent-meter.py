@@ -154,7 +154,7 @@ def prior_ts(path):
             continue
         try:
             return datetime.datetime.strptime(
-                json.loads(line)["ts"], "%Y-%m-%dT%H:%M:%SZ"
+                usage_sources.decode(line)["ts"], "%Y-%m-%dT%H:%M:%SZ"
             ).replace(tzinfo=datetime.timezone.utc)
         except Exception:
             continue
@@ -177,8 +177,8 @@ def run_json(cmd, timeout, echo=True):
             return None, "exit %d" % r.returncode
         return None, "exit %d: %s" % (r.returncode, (r.stderr or r.stdout).strip()[:500])
     try:
-        return json.loads(r.stdout), None
-    except ValueError:
+        return usage_sources.decode(r.stdout), None
+    except usage_sources.ReadFailed:
         if not echo:
             return None, "unparseable output"
         return None, "unparseable output: %s" % r.stdout.strip()[:500]
@@ -385,6 +385,9 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
         now = datetime.datetime.now(datetime.timezone.utc)
         with ThreadPoolExecutor(WORKERS) as pool:
             readings = list(pool.map(lambda entry: read(entry, now), entries))
+        for _, body in readings:
+            # A row is finite JSON or the run writes none (sd:9256 review).
+            json.dumps(body, allow_nan=False)
         with sd_db.transaction(connection):
             for name, body in readings:
                 writes.record_state(connection, "heartbeat", key=row_key + name, body=body)
@@ -484,7 +487,7 @@ def collect(a) -> None:
               "`cron-jobs.sh verify agent-meter` and ~/Library/LaunchAgents for a "
               "stray plist." % (gap, DUP_GAP_S), file=sys.stderr)
     with open(out, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, separators=(",", ":")) + "\n")
+        f.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
     # The cron log's one line says what the JSONL line says: no rows and why
     # is ERR; some rows with a refused window among them names the count.
     refused = sum(1 for key in record["errors"] if key.startswith("sd_db."))
@@ -525,10 +528,11 @@ def report_accounts(a) -> None:
     windows = {}   # number -> {reset: (read_at, pct, expectedPct)}
     active = {}    # number -> (read_at, active) of its latest reading
     # Skip, never raise: one malformed reading costs that reading only.
-    malformed = (ValueError, KeyError, TypeError, AttributeError, OverflowError)
+    malformed = (ValueError, KeyError, TypeError, AttributeError, OverflowError,
+                 usage_sources.ReadFailed)
     for line in lines:
         try:
-            record = json.loads(line)
+            record = usage_sources.decode(line)
             stamp = record["ts"]
             accounts = record.get("accounts") or []
             if not isinstance(accounts, list):

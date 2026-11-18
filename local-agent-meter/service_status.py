@@ -21,6 +21,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import json
+
 from usage_sources import NAME, TIMEOUT, USER_AGENT, ReadFailed, fetch_json, iso
 
 KINDS = ("statuspage", "slack", "google-incidents", "http")
@@ -219,9 +221,14 @@ def read_service(service, now, fetch=fetch_json, http=read_http):
            "status": "unknown", "indicator": None, "incidents": [], "components": [],
            "read_at": iso(now)}
     try:
-        out.update(http(url) if kind == "http" else READERS[kind](url, fetch))
+        got = http(url) if kind == "http" else READERS[kind](url, fetch)
+        # The one rule for a status: one of the three, in finite JSON.
+        if got.get("status") not in ("ok", "degraded", "outage"):
+            raise ReadFailed("no status in the answer")
+        json.dumps(got, allow_nan=False)
+        out.update(got)
     except ReadFailed as e:
         out["error"] = str(e)
-    except (AttributeError, TypeError, ValueError) as e:
+    except (AttributeError, TypeError, ValueError, OverflowError, RecursionError) as e:
         out["error"] = "another shape: %s" % type(e).__name__
     return out

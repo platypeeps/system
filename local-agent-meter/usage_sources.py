@@ -63,6 +63,29 @@ def number(value, what):
     return float(value)
 
 
+def decode(text):
+    """JSON text as a value, or ReadFailed. The one decoder for every answer,
+    feed, rollout line and cswap reply: a body nested past the parser's depth
+    raises RecursionError, which stopped the whole run (sd:9256 review)."""
+    try:
+        return json.loads(text)
+    except (RecursionError, ValueError, MemoryError):
+        raise ReadFailed("unparseable answer") from None
+
+
+def unsettled(fields):
+    """Why fields are not an ok reading, or None. The one rule for ok: it
+    carries a window, a balance or a spend, and finite JSON only, so no sum
+    or share that overflowed to inf is ever stored (sd:9256 review)."""
+    if not (fields.get("windows") or fields.get("balance") or fields.get("spend")):
+        return "no usage in the answer"
+    try:
+        json.dumps(fields, allow_nan=False)
+    except (ValueError, TypeError, RecursionError):
+        return "a value that is not finite JSON"
+    return None
+
+
 def iso(moment):
     return moment.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -104,10 +127,7 @@ def fetch_json(url, headers=None, timeout=TIMEOUT):
         raise ReadFailed("HTTP %d" % e.code) from None
     except Exception as e:  # URLError, timeout, TLS: the class says enough
         raise ReadFailed(type(getattr(e, "reason", None) or e).__name__) from None
-    try:
-        return json.loads(body)
-    except ValueError:
-        raise ReadFailed("unparseable answer") from None
+    return decode(body)
 
 
 def key(env, name):
@@ -290,9 +310,12 @@ def read_provider(name, env, fetch, now):
         fields = reader(env, fetch, now)
     except ReadFailed as e:
         return reading(name, "unknown", "api", error=str(e))
-    except (AttributeError, TypeError, ValueError) as e:
+    except (AttributeError, TypeError, ValueError, OverflowError) as e:
         # One provider's answer never costs the run (sd:9256 review).
         return reading(name, "unknown", "api", error="another shape: %s" % type(e).__name__)
+    why = unsettled(fields)
+    if why:
+        return reading(name, "unknown", "api", error=why)
     return reading(name, "ok", "api", read_at=iso(now), **fields)
 
 
@@ -309,13 +332,20 @@ def claude_reading(accounts, error, now):
     active = [account for account in accounts
               if account.get("active") and is_number(account.get("pct"))][:1]
     if not active:
-        return reading("claude", "ok", "cswap", accounts=accounts)
+        # An empty list, or an active account with no usage yet, is no
+        # reading: ok needs data (sd:9256 review).
+        return reading("claude", "unknown", "cswap", accounts=accounts,
+                       error="no active account with a seven-day share")
     account = active[0]
     if event_time(account.get("fetchedAt")) is None:
         return reading("claude", "unknown", "cswap", accounts=accounts,
                        error="the active account has no fetch time")
+    fields = {"windows": [window("seven_day", account["pct"], 10080, account.get("resetsAt"))]}
+    why = unsettled(fields)
+    if why:
+        return reading("claude", "unknown", "cswap", accounts=accounts, error=why)
     return reading("claude", "ok", "cswap", read_at=account["fetchedAt"], accounts=accounts,
-                   windows=[window("seven_day", account["pct"], 10080, account.get("resetsAt"))])
+                   **fields)
 
 
 def event_time(stamp):
@@ -362,7 +392,7 @@ def codex_reading(home=None):
             if '"token_count"' not in line or '"rate_limits"' not in line:
                 continue
             try:
-                event = json.loads(line)
+                event = decode(line)
                 payload = event["payload"]
                 limits = payload.get("rate_limits")
                 if payload.get("type") != "token_count" or not isinstance(limits, dict):
@@ -373,6 +403,8 @@ def codex_reading(home=None):
                 if at is None:
                     continue
                 fields = codex_fields(limits)
+                if unsettled(fields):
+                    continue
             except (ValueError, KeyError, TypeError, AttributeError, ReadFailed):
                 continue
             # The file's last account-wide event is its newest one.

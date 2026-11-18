@@ -717,5 +717,172 @@ class Live(unittest.TestCase):
                 self.assertNotIn("Traceback", done.stderr)
 
 
+#: A body nested past json's depth: json.loads raises RecursionError.
+#: Python 3.15 parses 100000 levels and raises by 200000; older ones
+#: raise near 1000. DEEP, 10000 levels, is a field's value.
+LEVELS = 200000
+DEEP_TEXT = "[" * LEVELS + "]" * LEVELS
+DEEP = []
+for _ in range(10000):
+    DEEP = [DEEP]
+#: Magnitudes a number field may hold, as numbers and as strings.
+MAGNITUDES = (1e308, -1e308, "inf", "-inf", "nan", "Infinity", "1e400", 5e-324, -5e-324,
+              0, -1, 10**400)
+#: Values of the wrong type for any field, empty containers among them.
+WRONG = (None, "x", "", True, [], {}, [1], {"a": 1})
+
+
+def paths(value, here=()):
+    """Every path into value, the root and every container among them."""
+    yield here
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            yield from paths(inner, here + (key,))
+    elif isinstance(value, list):
+        for index, inner in enumerate(value):
+            yield from paths(inner, here + (index,))
+
+
+def put(value, path, new):
+    """value with the node at path replaced by new, copying the path only."""
+    if not path:
+        return new
+    out = dict(value) if isinstance(value, dict) else list(value)
+    out[path[0]] = put(value[path[0]], path[1:], new)
+    return out
+
+
+def hostile(answer, deep=True):
+    """(label, answer) for every field set to every hostile value, then
+    every number in the answer set to each magnitude at once."""
+    for path in list(paths(answer)):
+        for new in MAGNITUDES + WRONG + ((DEEP,) if deep else ()):
+            yield "%s=%s" % ("/".join(map(str, path)), repr(new)[:20]), put(answer, path, new)
+    for magnitude in MAGNITUDES:
+        yield "every number=%r" % (magnitude,), replace_numbers(answer, magnitude)
+
+
+def load_meter():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("agent_meter", SCRIPT)
+    meter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(meter)
+    return meter
+
+
+class Hostile(unittest.TestCase):
+    """Every reader on hostile input (sd:9256 review, rounds 1 to 3): each
+    reading is ok with finite data, or unknown. None raises, and none
+    serialises a value that is not finite JSON."""
+
+    def check(self, label, read, states):
+        try:
+            got = read()
+            json.dumps(got, allow_nan=False)
+        except Exception as e:  # the property: nothing escapes
+            return ["%s: raised %s" % (label, type(e).__name__)]
+        if got["status"] not in states + ("unknown",):
+            return ["%s: status %s" % (label, got["status"])]
+        if "provider" in got and got["status"] == "ok" and not (
+                got["windows"] or got["balance"] or got["spend"]):
+            return ["%s: ok without data" % label]
+        return []
+
+    def deep_fetch(self):
+        """fetch_json against a server whose body is DEEP_TEXT."""
+        local_only(self)
+        server = Server({"/deep": (200, DEEP_TEXT.encode())})
+        self.addCleanup(server.close)
+        return lambda url, headers=None: usage_sources.fetch_json(server.url + "/deep", headers)
+
+    def test_every_usage_reader(self):
+        deep = self.deep_fetch()
+        failures = []
+        for name, (var, answer, _) in ANSWERS.items():
+            for label, bent in hostile(answer):
+                failures += self.check("%s %s" % (name, label), lambda: usage_sources.read_provider(
+                    name, {var: SECRET}, lambda url, headers=None: bent, NOW), ("ok",))
+            failures += self.check("%s deep text" % name, lambda: usage_sources.read_provider(
+                name, {var: SECRET}, deep, NOW), ())
+        self.assertEqual(failures, [])
+
+    def test_the_overflows_the_review_named(self):
+        two = {"data": [{"results": [{"amount": {"value": 1e308}}]},
+                        {"results": [{"amount": {"value": 1e308}}]}]}
+        tiny = {"data": {"remainingCredits": -1, "planCredits": 5e-324}}
+        for name, var, answer in (("openai", "OPENAI_ADMIN_KEY", two),
+                                  ("firecrawl", "FIRECRAWL_API_KEY", tiny)):
+            with self.subTest(provider=name):
+                got = usage_sources.read_provider(name, {var: SECRET}, answering(answer), NOW)
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "a value that is not finite JSON"))
+
+    def test_claude_from_every_cswap_reply(self):
+        meter = load_meter()
+        failures = []
+        with mock.patch.dict(os.environ, CSWAP_BIN=sys.executable):
+            for label, bent in hostile(CSWAP_LIST):
+                with mock.patch.object(meter, "run_json", return_value=(bent, None)):
+                    failures += self.check("cswap " + label, lambda: usage_sources.claude_reading(
+                        *meter.read_accounts(5), NOW), ("ok",))
+        self.assertEqual(failures, [])
+        for empty in ({"accounts": []}, put(CSWAP_LIST, ("accounts", 0, "usage"), {})):
+            with self.subTest(empty=empty):
+                with mock.patch.dict(os.environ, CSWAP_BIN=sys.executable), \
+                        mock.patch.object(meter, "run_json", return_value=(empty, None)):
+                    got = usage_sources.claude_reading(*meter.read_accounts(5), NOW)
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "no active account with a seven-day share"))
+
+    def test_a_deep_reply_from_a_command_is_an_error_not_a_raise(self):
+        data, error = load_meter().run_json(
+            [sys.executable, "-c", "print('[' * %d + ']' * %d)" % (LEVELS, LEVELS)], 30,
+            echo=False)
+        self.assertEqual((data, error), (None, "unparseable output"))
+
+    def test_codex_from_every_event(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        day = Path(tmp.name) / "sessions/2026/11/17"
+        day.mkdir(parents=True)
+        failures = []
+        for label, bent in hostile(Codex.event(), deep=False):
+            (day / "rollout-x.jsonl").write_text(json.dumps(bent) + "\n", encoding="utf-8")
+            failures += self.check("codex " + label,
+                                   lambda: usage_sources.codex_reading(tmp.name), ("ok",))
+        (day / "rollout-x.jsonl").write_text(
+            '{"type": "token_count", "rate_limits": %s}\n' % DEEP_TEXT, encoding="utf-8")
+        got = usage_sources.codex_reading(tmp.name)
+        self.assertEqual(got["status"], "unknown")
+        self.assertEqual(failures, [])
+
+    def test_every_status_reader(self):
+        answers = {"statuspage": SUMMARY,
+                   "slack": {"status": "active", "active_incidents": [
+                       {"title": "Huddles", "type": "outage", "url": "https://example.test/i",
+                        "date_created": "2026-11-17T19:00:00Z"}]},
+                   "google-incidents": [{"begin": "2026-11-17T18:00:00Z", "end": None,
+                                         "service_name": "Drive", "external_desc": "Slow.",
+                                         "uri": "incidents/x", "status_impact": "SERVICE_OUTAGE"}]}
+        deep = self.deep_fetch()
+        failures = []
+        for kind, answer in answers.items():
+            for label, bent in hostile(answer):
+                failures += self.check("%s %s" % (kind, label), lambda: service_status.read_service(
+                    ("svc", kind, "https://status.example.test/a", []), NOW,
+                    fetch=lambda url: bent), ("ok", "degraded", "outage"))
+            failures += self.check("%s deep text" % kind, lambda: service_status.read_service(
+                ("svc", kind, "https://status.example.test/a", []), NOW, fetch=deep), ())
+        self.assertEqual(failures, [])
+
+    def test_a_deep_body_over_http_is_read_failed(self):
+        local_only(self)
+        server = Server({"/deep": (200, DEEP_TEXT.encode())})
+        self.addCleanup(server.close)
+        with self.assertRaises(ReadFailed) as caught:
+            usage_sources.fetch_json(server.url + "/deep")
+        self.assertEqual(str(caught.exception), "unparseable answer")
+
+
 if __name__ == "__main__":
     unittest.main()
