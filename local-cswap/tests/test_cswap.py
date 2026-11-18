@@ -146,8 +146,12 @@ else:
     sys.exit(64)
 """
 
-DROPPED = "  Remote Control disconnected"
-CONNECTED = "  /remote-control is active"
+# A pane's screen: a Remote Control line, then the input box. INPUT is the
+# empty input line; the screen keeps older lines above the newest.
+RULE = "\u2500" * 20
+INPUT = f"{RULE}\n\u276f\u00a0\n{RULE}\n  [model] | git:(main)"
+DROPPED = f"  Remote Control disconnected\n{INPUT}"
+CONNECTED = f"  /remote-control is active \u00b7 Continue here\n{INPUT}"
 
 
 def executable(path, text):
@@ -528,14 +532,52 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.called("herdr"), [])
 
-    def test_a_connected_screen_gets_no_rc(self):
+    def test_the_latest_remote_control_line_decides(self):
+        # Lead review: an old "is active" line above a newer drop kept the
+        # pane from its /rc; a newer "is active" means connected.
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", CONNECTED + "\n" + DROPPED],
-                   ["w1:p2", "claude", "idle", "s2", "  nothing yet"])
+                   ["w1:p2", "claude", "idle", "s2", DROPPED + "\n" + CONNECTED],
+                   ["w1:p3", "claude", "idle", "s3", "  nothing yet\n" + INPUT])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
         # Not dropped yet: it stays owed, and is sent once it drops.
-        self.assertEqual(self.owed(), ["w1:p2"])
+        self.assertEqual(self.owed(), ["w1:p3"])
+
+    def test_a_pane_with_typed_input_or_no_input_line_gets_no_keys(self):
+        self.publish(THREE)
+        typed = DROPPED.replace("\u276f\u00a0", "\u276f half a prompt")
+        self.panes(["w1:p1", "claude", "idle", "s1", typed],
+                   ["w1:p2", "claude", "idle", "s2", "  Remote Control disconnected"])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1", "w1:p2"])
+        self.assertIn("reconnect: w1:p1 wait: its input line holds text", result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+
+    def test_a_herdr_down_at_the_switch_is_asked_again(self):
+        # Fold-in: a list that failed at the switch owed nothing, and the
+        # next sync (no switch) never asked again.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere", FAKE_HERDR_DOWN="1")
+        self.assertEqual(self.prompts(), [])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertFalse((self.script.parent / "state/rc-pending").exists())
+
+    def test_a_list_that_is_not_the_agent_list_is_a_parse_failure(self):
+        self.publish(THREE)
+        for answer in ("null", '{"result": null}', '{"result": {"agents": [null]}}',
+                       '{"result": {"agents": [{"agent": "claude", "pane_id": "w1:p1", "agent_session": 7}]}}'):
+            executable(self.stubs / "herdr", f"#!/bin/sh\necho '{answer}'\n")
+            result = self.run_verb("sync", FAKE_FENCE="elsewhere")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("gave no agent list this can parse", result.stdout, answer)
+            self.assertNotIn("could not write", result.stdout, answer)
+            self.assertTrue((self.script.parent / "state/rc-pending").exists(), answer)
 
     def test_a_gone_pane_or_new_session_is_not_owed(self):
         self.publish(THREE)
@@ -553,7 +595,7 @@ class RemoteControlReconnects(Machine):
         self.publish(ONE)
         self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
         self.sync("holder", code=1, FAKE_AUTO_TO="2", FAKE_AUTO_RC="0", FAKE_SET_FAIL="1")
-        self.assertEqual(self.owed(), ["w1:p1"])
+        self.assertTrue((self.script.parent / "state/rc-pending").exists())
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("holder")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
@@ -567,7 +609,7 @@ class RemoteControlReconnects(Machine):
         self.env["FAKE_HERDR"] = str(self.tmp / "missing.json")
         executable(self.stubs / "herdr", "#!/bin/sh\necho '{not json'\n")
         result = self.sync("elsewhere")
-        self.assertIn("was not readable", result.stdout)
+        self.assertIn("gave no agent list this can parse", result.stdout)
         self.assertEqual(self.owed(), ["w1:p1"])
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         result = self.sync("elsewhere")
@@ -589,6 +631,8 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.active(), 3)
         self.assertEqual([l for l in result.stdout.splitlines() if l.startswith("reconnect")],
                          ["reconnect: skipped: no herdr on PATH"])
+        # Nothing to owe on a machine with no herdr: no mark stays behind.
+        self.assertFalse((self.script.parent / "state/rc-pending").exists())
 
     def test_a_herdr_that_does_not_answer_is_one_skip_line(self):
         self.publish(THREE)

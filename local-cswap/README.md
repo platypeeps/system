@@ -27,9 +27,10 @@ It reads the row with the pack's `SD_FOLLOWED` marker set, so `sd` starts no fol
 Each `cswap`, `sd` and `sd-db` call runs under `lib/bounded.sh`.
 
 A switch drops each session's Remote Control link, and `/rc` in a dropped session reconnects it under the new account (sd:9427).
-So a sync that switches the account, on the hub or a satellite, lists each claude pane `herdr agent list` names in `state/rc-owed`, before any later step can fail.
-Every sync then submits `/rc` (`herdr agent prompt`) to each owed pane that is idle or done and whose screen reads `Remote Control disconnected`, not `/remote-control is active`.
-A working or blocked pane gets no keys, as a key can answer a permission dialog; it stays owed, and the next sync tries again.
+So a sync that switches the account, on the hub or a satellite, writes `state/rc-pending` before any later step can fail.
+Once `herdr agent list` answers with a list it can parse, each claude pane it names is owed in `state/rc-owed`.
+Every sync then submits `/rc` (`herdr agent prompt`) to each owed pane that is idle or done, whose latest Remote Control line reads `Remote Control disconnected`, not `/remote-control is active`, and whose input line (the last `❯` line) is empty.
+Any other pane gets no keys, as a key can answer a permission dialog or join a half-typed prompt; it stays owed, and the next sync tries again.
 A pane leaves the list once sent, gone, running another session, connected, or owed for 30 minutes.
 A sync that switches nothing writes no list, so a connected session is never toggled off.
 Cron's PATH may lack herdr, so sync also looks in `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin` (`CSWAP_HERDR_DIRS`).

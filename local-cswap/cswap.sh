@@ -44,18 +44,22 @@ REFUSAL_LIMIT=30
 
 # Remote Control (sd:9427): a switch drops every session's link, and /rc in
 # a dropped session reconnects it under the new account. A switch writes
-# each claude pane herdr lists here as owed (pane, session, epoch); every
-# sync sends /rc to an owed pane that is idle or done and whose screen reads
-# "Remote Control disconnected", not "/remote-control is active". A working
-# or blocked pane gets no keys, as a key can answer a permission dialog; it
-# stays owed for the next sync, until sent, gone, connected or RC_OWED_FOR
-# seconds old. Cron's PATH may lack herdr, so HERDR_DIRS is tried after it.
+# RC_PENDING; once herdr lists the panes, each claude pane is owed in
+# RC_OWED (pane, session, epoch). Every sync sends /rc to an owed pane that
+# is idle or done, whose latest Remote Control line reads "Remote Control
+# disconnected", not "/remote-control is active", and whose input line is
+# empty. Any other pane gets no keys, as a key can answer a permission
+# dialog or join a half-typed prompt; it stays owed for the next sync,
+# until sent, gone, connected or RC_OWED_FOR seconds old. Cron's PATH may
+# lack herdr, so HERDR_DIRS is tried after it.
 RC_OWED="$ROOT/state/rc-owed"
+RC_PENDING="$ROOT/state/rc-pending"
 RC_OWED_FOR=1800
 HERDR_DIRS="${CSWAP_HERDR_DIRS-$HOME/.local/bin /opt/homebrew/bin /usr/local/bin}"
 SWITCHED=""
 HERDR=""
 AGENTS=""
+PANES=""
 
 # shellcheck source=/dev/null
 [[ -f "$ROOT/cswap-auto.conf" ]] && . "$ROOT/cswap-auto.conf"
@@ -151,70 +155,125 @@ herdr_bin() {
   return 1
 }
 
-# Sets HERDR and AGENTS (`herdr agent list` JSON), or prints one skip line
-# and exits 1: no herdr, or no herdr server answering.
-herdr_agents() {
+# Sets HERDR, and PANES to "pane session status" lines, one per claude pane
+# `herdr agent list` names. Else one skip line and exit 1: no herdr (2), no
+# herdr server answering, or an answer that is not the agent list (3).
+herdr_panes() {
   if ! HERDR=$(herdr_bin); then
     echo "reconnect: skipped: no herdr on PATH${HERDR_DIRS:+ or in $HERDR_DIRS}"
-    return 1
+    return 2
   fi
   AGENTS=$(st_step 20 "$HERDR" agent list) ||
     { echo "reconnect: skipped: herdr agent list did not answer; is herdr running?"; return 1; }
+  PANES=$(rc_read panes <<<"$AGENTS") ||
+    { echo "reconnect: skipped: herdr agent list gave no agent list this can parse"; return 3; }
 }
 
-# The account just switched: every claude pane owes /rc. Written at once,
-# before a later step can fail, so the next sync still sends it.
+# herdr's answers, read by python. `panes`: `herdr agent list` JSON on stdin
+# to "pane session status" lines for claude panes; exit 3 when it has not
+# that shape (null, malformed, an agent that is no object). `screen`: a
+# pane's screen on stdin to send, connected or wait <why>. The later of the
+# two Remote Control lines decides, as the screen keeps old ones above, and
+# only an empty input line (the last ❯ line) takes keys.
+rc_read() {
+  python3 -I -c '
+import json, sys
+text = sys.stdin.read()
+if sys.argv[1] == "panes":
+    try:
+        agents = json.loads(text)["result"]["agents"]
+        if not isinstance(agents, list):
+            raise TypeError
+        for a in agents:
+            if a["agent"] != "claude":
+                continue
+            session = a.get("agent_session") or {}
+            words = [a["pane_id"], session.get("value") or "-", a.get("agent_status") or "-"]
+            if not all(isinstance(w, str) and w and w.split() == [w] for w in words):
+                raise TypeError
+            print(*words)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        sys.exit(3)
+else:
+    lines = text.splitlines()
+    def last(needle):
+        return max([i for i, line in enumerate(lines) if needle in line], default=-1)
+    dropped, active = last("Remote Control disconnected"), last("/remote-control is active")
+    prompts = [line.strip()[1:].strip() for line in lines if line.strip().startswith("❯")]
+    if active > dropped:
+        print("connected")
+    elif dropped < 0:
+        print("wait: no Remote Control drop on its screen yet")
+    elif not prompts:
+        print("wait: no input line on its screen")
+    elif prompts[-1]:
+        print("wait: its input line holds text")
+    else:
+        print("send")
+' "$1"
+}
+
+# The account just switched: every claude pane owes /rc. The pending mark
+# is written at once, before a later step can fail, and stays until herdr
+# lists the panes, so a herdr that does not answer now is asked again.
 owe_rc() {
   SWITCHED=1
-  herdr_agents || return 0
-  if { mkdir -p "${RC_OWED%/*}" && python3 -I -c '
-import json, sys, time
-for a in json.loads(sys.stdin.read() or "{}").get("result", {}).get("agents", []):
-    if a.get("agent") == "claude" and a.get("pane_id"):
-        print(a["pane_id"], (a.get("agent_session") or {}).get("value") or "-", int(time.time()))
-' <<<"$AGENTS" >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
+  { mkdir -p "${RC_PENDING%/*}" && date +%s >"$RC_PENDING"; } 2>/dev/null ||
+    echo "reconnect: could not write $RC_PENDING; no pane owes /rc for this switch"
+}
+
+# A pending switch to owed panes, once herdr lists them. A machine with no
+# herdr has nothing to owe, so the mark goes.
+list_owed() {
+  local since now rc=0
+  [[ -s "$RC_PENDING" ]] || return 0
+  now=$(date +%s)
+  since=$(cat "$RC_PENDING" 2>/dev/null) || since=""
+  [[ "$since" =~ ^[0-9]+$ ]] || since=$now
+  if ((now - since > RC_OWED_FOR)); then
+    rm -f "$RC_PENDING"
+    echo "reconnect: herdr listed no panes for ${RC_OWED_FOR}s after the switch; none owes /rc"
+    return 0
+  fi
+  herdr_panes || rc=$?
+  if ((rc == 2)); then rm -f "$RC_PENDING"; return 0; fi
+  ((rc == 0)) || return 0
+  if { awk -v since="$since" 'NF == 3 { print $1, $2, since }' <<<"$PANES" >"$RC_OWED.new" &&
+    mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
+    rm -f "$RC_PENDING"
     echo "reconnect: $(wc -l <"$RC_OWED" | tr -d ' ') claude pane(s) owe /rc"
   else
-    echo "reconnect: skipped: could not write $RC_OWED"
+    echo "reconnect: could not write $RC_OWED; the next sync tries again"
   fi
 }
 
 # Send /rc to each owed pane that may have it; keep the rest owed.
 reconnect() {
-  local pane session since action screen plan keep=""
+  local pane session since action screen verdict plan keep=""
+  list_owed
   [[ -s "$RC_OWED" ]] || return 0
-  herdr_agents || return 0
-  plan=$(python3 -I -c '
-import json, sys, time
-agents = {a.get("pane_id"): a for a in json.loads(sys.argv[2] or "{}").get("result", {}).get("agents", [])}
-for line in open(sys.argv[1]):
-    try:
-        pane, session, since = line.split()
-        since = int(since)
-    except ValueError:
-        continue
-    a = agents.get(pane)
-    if not a or a.get("agent") != "claude" or ((a.get("agent_session") or {}).get("value") or "-") != session:
-        print("gone", pane, session, since)
-    elif time.time() - since > int(sys.argv[3]):
-        print("old", pane, session, since)
-    elif a.get("agent_status") in ("idle", "done"):
-        print("try", pane, session, since)
-    else:
-        print("keep", pane, session, since)
-' "$RC_OWED" "$AGENTS" "$RC_OWED_FOR") ||
-    { echo "reconnect: skipped: herdr's agent list or $RC_OWED was not readable"; return 0; }
+  herdr_panes || return 0
+  plan=$(awk -v now="$(date +%s)" -v limit="$RC_OWED_FOR" '
+    FILENAME == "-" { if (NF == 3) status[$1 " " $2] = $3; next }
+    NF != 3 || $3 !~ /^[0-9]+$/ { next }
+    !(($1 " " $2) in status) { print "gone", $0; next }
+    now - $3 > limit { print "old", $0; next }
+    status[$1 " " $2] == "idle" || status[$1 " " $2] == "done" { print "try", $0; next }
+    { print "keep", $0 }' - "$RC_OWED" <<<"$PANES") ||
+    { echo "reconnect: skipped: $RC_OWED was not readable"; return 0; }
   while read -r action pane session since; do
     case "$action" in
       keep) keep+="$pane $session $since"$'\n' ;;
       gone) echo "reconnect: $pane is gone or runs another session; not owed" ;;
       old) echo "reconnect: $pane stayed busy or showed no drop for ${RC_OWED_FOR}s; not owed" ;;
       try)
-        if ! screen=$(st_step 10 "$HERDR" agent read "$pane"); then
+        if ! screen=$(st_step 10 "$HERDR" agent read "$pane") ||
+          ! verdict=$(rc_read screen <<<"$screen"); then
           keep+="$pane $session $since"$'\n'
-        elif [[ "$screen" == *"/remote-control is active"* ]]; then
+        elif [[ "$verdict" == connected ]]; then
           echo "reconnect: $pane is connected; not owed"
-        elif [[ "$screen" != *"Remote Control disconnected"* ]]; then
+        elif [[ "$verdict" != send ]]; then
+          echo "reconnect: $pane $verdict"
           keep+="$pane $session $since"$'\n'
         elif st_step 10 "$HERDR" agent prompt "$pane" /rc >/dev/null; then
           echo "reconnect: sent /rc to $pane"
