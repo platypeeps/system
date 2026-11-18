@@ -2328,13 +2328,25 @@ hyg_keep_load() {
   fi
   # A rule for no listed repo, a typo or a BOM in its first field, keeps
   # nothing; it was silent (sd:9253). A note, as a fleet change can leave one.
-  # By file name, not NR == FNR: an empty list would read the rules as it.
-  if repo_list > "$HYG_TMP/keep.repos"; then
-    awk 'FILENAME == ARGV[1] { listed[$2] = 1; next }
-      !($2 in listed) { print $1 }' "$HYG_TMP/keep.repos" "$HYG_TMP/keep" | while read -r k_line; do
-      hyg_note "keep-branches line $k_line names no listed repo; it keeps nothing"
-    done
+  # The file serves the fleet, so the list is every profile's: a rule for
+  # another machine's repo is no orphan (sd:9348). A profile whose list
+  # does not load is unknown: no rule is judged then. By file name, not
+  # NR == FNR: an empty list would read the rules as it.
+  k_fleet=1
+  repo_list > "$HYG_TMP/keep.repos" || k_fleet=
+  for k_profile in personal work terra; do
+    [ -n "$k_fleet" ] || break
+    [ "$k_profile" != "$PROFILE" ] || continue
+    sd_db repo list --clones "$k_profile" >> "$HYG_TMP/keep.repos" 2>/dev/null || k_fleet=
+  done
+  if [ -z "$k_fleet" ]; then
+    hyg_note "keep-branches: a profile's repo list did not load; no rule checked for a listed repo"
+    return 0
   fi
+  awk 'FILENAME == ARGV[1] { listed[$2] = 1; next }
+    !($2 in listed) { print $1 }' "$HYG_TMP/keep.repos" "$HYG_TMP/keep" | while read -r k_line; do
+    hyg_note "keep-branches line $k_line names no repo any profile lists; it keeps nothing"
+  done
 }
 
 # Whether the keep list names branch $2 of repo $1.

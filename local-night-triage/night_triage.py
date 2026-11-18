@@ -63,6 +63,9 @@ INGEST_SESSION = "cron"
 CLAIM_HOURS = 24
 # The pack's audit note for a park or an unpark (sd_db.workflow.edit_item).
 PARK_MARK = re.compile(r"^(Parked|Unparked) by \S+$", re.M)
+# The job parks right after its wait note; a park later than this is not
+# the job's (sd:9348).
+PARK_WINDOW = datetime.timedelta(minutes=10)
 # One line of the audit comment the pack's edit_item writes, as its
 # workflow.AUDIT_LINE: a park mark counts only in such a note, never in a
 # followup or comment someone wrote (sd:9282 round 1).
@@ -129,7 +132,11 @@ def wake(report, notes, host):
 
     Only a park this job made wakes: its latest note is a wait, and the
     one park or unpark since is the park that followed it. A park after an
-    unpark is a hand park, which stays (sd:9272). It wakes the day after
+    unpark is a hand park, which stays (sd:9272); so is a park that came
+    more than PARK_WINDOW after the wait note: the pack's audit note names
+    the login, not the job, and a run that died between its note and its
+    park leaves a later hand park looking like the job's (sd:9348). It
+    wakes the day after
     the dated run, or as soon as the job failed again, which the pack
     folds into this report without a note (sd:9243 review).
     """
@@ -138,7 +145,18 @@ def wake(report, notes, host):
     if not waited:
         return None
     since = notes[next(i for i, n in enumerate(notes) if n is ours[-1]) + 1:]
-    if [m for n in since if is_audit(n) for m in PARK_MARK.findall(n["body"])] != ["Parked"]:
+    marks = [(m, n) for n in since if is_audit(n) for m in PARK_MARK.findall(n["body"])]
+    if [m for m, _ in marks] != ["Parked"]:
+        return None
+    try:
+        gap = (datetime.datetime.fromisoformat(marks[0][1]["timestamp"])
+               - datetime.datetime.fromisoformat(ours[-1]["timestamp"]))
+    except (KeyError, TypeError, ValueError):
+        # No proof the park is the job's: it stays, and says why.
+        print(f"night-triage: park note {marks[0][1].get('id')} or wait note {ours[-1].get('id')} "
+              "has no readable timestamp; left parked", file=sys.stderr)
+        return None
+    if not datetime.timedelta(0) <= gap <= PARK_WINDOW:
         return None
     on, run, runs = waited.groups()
     try:

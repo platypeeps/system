@@ -340,8 +340,8 @@ class HygieneTest(unittest.TestCase):
 
         result = f.run("hygiene", expect=1)
 
-        self.assertIn("note: keep-branches line 2 names no listed repo; it keeps nothing", result.stdout)
-        self.assertIn("note: keep-branches line 3 names no listed repo; it keeps nothing", result.stdout)
+        self.assertIn("note: keep-branches line 2 names no repo any profile lists; it keeps nothing", result.stdout)
+        self.assertIn("note: keep-branches line 3 names no repo any profile lists; it keeps nothing", result.stdout)
         self.assertNotIn("keep-branches line 1 names", result.stdout)
         self.assertIn("LOCAL    branch local/topic#1", result.stdout)
 
@@ -354,7 +354,24 @@ class HygieneTest(unittest.TestCase):
 
         result = f.run("hygiene")
 
-        self.assertIn("note: keep-branches line 1 names no listed repo; it keeps nothing", result.stdout)
+        self.assertIn("note: keep-branches line 1 names no repo any profile lists; it keeps nothing", result.stdout)
+
+    def test_a_rule_for_another_profile_s_repo_is_no_orphan(self):
+        # sd:9348: the keep file serves the fleet; a rule for a repo only
+        # another machine's profile lists was noted as an orphan.
+        f, repo = self.kept_fixture(b"owner/proj keep/landed\nowner/elsewhere local/*\n")
+        (f.folder / "repos.work.conf").write_text("a owner/elsewhere\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertNotIn("keep-branches line 2", result.stdout)
+        self.assertIn("note: kept branch keep/landed (keep-branches)", result.stdout)
+
+    def test_a_profile_list_that_does_not_load_judges_no_rule(self):
+        f, repo = self.kept_fixture(b"owner/porj local/*\n")
+        result = f.run("hygiene", expect=1, extra_env={"CLONES_RC": "1"})
+        self.assertNotIn("keep-branches line 1 names", result.stdout)
+        self.assertIn("note: keep-branches: a profile's repo list did not load; no rule checked", result.stdout)
 
     def test_a_glob_in_the_repo_field_keeps_every_branch(self):
         f, repo = self.kept_fixture(b"owner/* keep/other\n")

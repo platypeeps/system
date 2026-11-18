@@ -25,8 +25,13 @@ def day(offset):
     return (datetime.date.today() + datetime.timedelta(days=offset)).isoformat()
 
 FAKE_SD = r'''#!PYTHON
-import json, os, sys
+import datetime, json, os, sys
 path = os.environ["FAKE_SD_STATE"]
+
+def stamp():
+    """A note's time, as the pack writes it."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
 state = json.load(open(path))
 args = sys.argv[1:]
 state["log"].append(args)
@@ -84,7 +89,7 @@ elif args[:2] == ["task", "note"]:
     if flag("--if-revision") not in (None, str(item["revision"])):
         save(); print("refused: the item changed", file=sys.stderr); sys.exit(1)
     item["notes"].append({"id": 900 + len(item["notes"]), "kind": "comment", "session": "login",
-                          "body": args[3], "resolved_at": None})
+                          "body": args[3], "resolved_at": None, "timestamp": stamp()})
     item["revision"] += 1
     save()
     # FAKE_SD_LOSE: the claim note commits, then its answer is lost.
@@ -103,7 +108,7 @@ elif args[:2] == ["task", "edit"]:
     # As the pack's edit_item: an audit note names who parked it.
     item["notes"].append({"id": 900 + len(item["notes"]), "kind": "comment", "session": "login",
                           "body": ("Unparked" if "--unpark" in args else "Parked") + " by login",
-                          "resolved_at": None})
+                          "resolved_at": None, "timestamp": stamp()})
     item["revision"] += 1
 elif args[:2] == ["reports", "acknowledge"]:
     item = items[args[2]]
@@ -288,10 +293,11 @@ class NightTriage(unittest.TestCase):
         job's run count `recorded` then and `runs` now."""
         alert = dict(report("node1"), parked_at="2026-11-16T10:00:00+00:00", runs=runs)
         alert["notes"] = [{"id": 700, "kind": "comment", "session": "login", "resolved_at": None,
+                           "timestamp": "2026-11-16T10:00:00+00:00",
                            "body": f"night-triage on node1: waits until {on} on job-1: a weekly fix; "
                                    f"parked until then (runs: {recorded})."},
                           {"id": 701, "kind": "comment", "session": "login", "resolved_at": None,
-                           "body": "Parked by login"}]
+                           "timestamp": "2026-11-16T10:00:02+00:00", "body": "Parked by login"}]
         return alert
 
     def test_a_hand_park_after_an_unpark_is_never_woken(self):
@@ -460,8 +466,9 @@ class NightTriage(unittest.TestCase):
         self.addCleanup(sys.path.remove, str(FOLDER))
         import night_triage
         alert = {"fields": json.dumps({"repeats": {"count": 2}})}
-        self.assertEqual(night_triage.wake(alert, [{"body": note},
-                                                   {"kind": "comment", "body": "Parked by login"}], "node1"),
+        self.assertEqual(night_triage.wake(alert, [{"body": note, "timestamp": "2026-11-16T10:00:00+00:00"},
+                                                   {"kind": "comment", "body": "Parked by login",
+                                                    "timestamp": "2026-11-16T10:00:02+00:00"}], "node1"),
                          "the job failed again")
 
     def test_a_park_mark_in_a_followup_is_no_park(self):
@@ -476,6 +483,26 @@ class NightTriage(unittest.TestCase):
             with self.subTest(kind=kind):
                 notes = wait + [{"kind": kind, "session": "abc", "body": body}]
                 self.assertEqual(night_triage.wake(alert, notes, "node1"), "the job failed again")
+
+    def test_a_hand_park_after_a_crash_before_the_job_s_park_stays(self):
+        # sd:9348: the run died between its wait note and its --park; a
+        # hand park a day later read as the job's and woke.
+        alert = self.parked(day(-1))
+        alert["notes"][1]["timestamp"] = "2026-11-17T09:00:00+00:00"
+        self.given({"1": json.loads(json.dumps(alert))}, [])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items()["1"], alert)
+        self.assertIn("sd:1 is parked; skipped", result.stderr)
+
+    def test_a_park_without_a_timestamp_stays_and_says_so(self):
+        alert = self.parked(day(-1))
+        del alert["notes"][1]["timestamp"]
+        self.given({"1": json.loads(json.dumps(alert))}, [])
+        result = self.run_job()
+        self.assertEqual(self.items()["1"], alert)
+        self.assertIn("night-triage: park note 701 or wait note 700 has no readable timestamp; left parked",
+                      result.stderr)
 
     def test_a_claim_without_a_timestamp_is_held_and_says_so(self):
         alert = report("node1")
@@ -832,6 +859,15 @@ class RealPack(unittest.TestCase):
         self.assertTrue(any(b.startswith("night-triage on node1 claims it") for b in bodies), bodies)
         self.assertTrue(any("Evidence: cron-jobs.sh run job-a: exit 0" in b for b in bodies), bodies)
         self.assertIsNotNone(next(n for n in state["notes"] if n["id"] == followup)["resolved_at"])
+
+    def test_the_audit_line_is_the_pack_s(self):
+        # sd:9348: AUDIT_LINE is a copy of the pack's; a pack that changes
+        # its audit text would strand every park. The gate's pin fails here.
+        from sd_db import workflow
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        self.assertEqual(night_triage.AUDIT_LINE.pattern, workflow.AUDIT_LINE.pattern)
 
     def claimed_hours_ago(self, hours):
         """The job's run on a report another session claimed `hours` ago,

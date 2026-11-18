@@ -1017,12 +1017,24 @@ tailscale_daemon_match() {
   [ -n "${PROFILE:-}" ] || { (load_profile) >/dev/null 2>&1 && load_profile; } || return 0
   manifest brew | sed 's|.*/||' | grep -qx tailscale || return 0
   tm_brew=$(bound_step 60 brew --prefix 2>/dev/null) || tm_brew=
-  [ -n "$tm_brew" ] && [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
-  tm_plist=
+  # A skipped check says so: silence read as a daemon that matched
+  # (sd:9348).
+  [ -n "$tm_brew" ] || { echo "  SKIP    tailscaled check: brew --prefix gave no answer"; return 0; }
+  [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
+  tm_plist= tm_other=
   for f in "$LAUNCHDAEMONS_DIR/sh.brew.tailscale.plist" "$LAUNCHDAEMONS_DIR/homebrew.mxcl.tailscale.plist"; do
-    grep -qF "<string>$tm_brew/opt/tailscale/bin/tailscaled</string>" "$f" 2>/dev/null && tm_plist=$f
+    if grep -qF "<string>$tm_brew/opt/tailscale/bin/tailscaled</string>" "$f" 2>/dev/null; then
+      tm_plist=$f
+    elif [ -e "$f" ]; then
+      tm_other=$f
+    fi
   done
-  [ -n "$tm_plist" ] || return 0
+  if [ -z "$tm_plist" ]; then
+    # A plist that names a Cellar path or another binary is no service
+    # this restarts; no plist at all is a machine with no brew service.
+    [ -z "$tm_other" ] || echo "  SKIP    tailscaled check: $tm_other runs no $tm_brew/opt/tailscale/bin/tailscaled"
+    return 0
+  fi
   tailscale_daemon_versions
   if [ -z "$tm_cli" ] || [ -z "$tm_dmn" ]; then
     # FAILED, a drift word: a probe that failed checked nothing (sd:9282),
@@ -1040,22 +1052,28 @@ tailscale_daemon_match() {
   # A restart that did not take must say so, not repeat silently each
   # night (lane review). The binary's version is the one from before:
   # a CLI that does not answer clears tm_cli (sd:9282 round 1).
+  # Both waits below take TM_WAIT probes a second apart: a restart that
+  # takes longer than the backend wait failed where that wait warned
+  # (sd:9348).
   tm_want=$tm_cli
-  for _ in 1 2 3 4 5; do
+  for _ in $TM_WAIT; do
     tailscale_daemon_versions
     # An empty answer is a daemon still down, never a match.
     if [ -n "$tm_dmn" ] && [ "$tm_want" = "$tm_dmn" ]; then
       echo "  ok      tailscaled restarted on $tm_dmn"
       # It answers its version before its backend runs, and the sd
       # stage's `tailscale status` then SKIPs the serve routes (sd:9282).
-      # A backend still down after 5 s (logged out, say) is that stage's
-      # SKIP, not a failed restart; a WARN says so here.
-      for _ in 1 2 3 4 5; do
+      # `status` exits 0 while BackendState is still Starting, so only
+      # Running is up (sd:9348). A backend still down after the wait
+      # (logged out, say) is that stage's SKIP, not a failed restart; a
+      # WARN says so here.
+      for _ in $TM_WAIT; do
         bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" \
-          --socket=/var/run/tailscaled.socket status >/dev/null 2>&1 && return 0
+          --socket=/var/run/tailscaled.socket status --json 2>/dev/null |
+          grep -q '"BackendState": *"Running"' && return 0
         sleep 1
       done
-      echo "  WARN    tailscaled backend not running 5 s after the restart; the sd stage skips its serve checks"
+      echo "  WARN    tailscaled backend not running 10 s after the restart; the sd stage skips its serve checks"
       return 0
     fi
     sleep 1
@@ -1063,6 +1081,9 @@ tailscale_daemon_match() {
   note_failure "tailscaled still runs ${tm_dmn:-an unknown version} after the restart, not $tm_want" 1
   return 1
 }
+
+# The probes a restart check takes, a second apart: 10 s.
+TM_WAIT="1 2 3 4 5 6 7 8 9 10"
 
 # Sets tm_cli and tm_dmn from the formula's own CLI: another tailscale
 # earlier on PATH can match the stale daemon (sd:9245 lane review). The
