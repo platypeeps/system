@@ -80,6 +80,13 @@ class LaneRunJobTest(unittest.TestCase):
         for retired in ("-C", "--satellite-only", "change-me"):
             self.assertNotIn(retired, text)
 
+    def test_the_comments_describe_the_hand_off_at_the_budget(self):
+        # A hosted run hands off lanes at its budget and exits (pack sd:9332).
+        notes = self.JOB.read_text().split("JOB_SCHEDULE=", 1)[0]
+        self.assertIn("pack sd:9332", notes)
+        for stale in ("one after another", "logs `skipped`"):
+            self.assertNotIn(stale, notes)
+
     def test_the_job_runs_the_pack_sd_ship_with_exactly_those_words(self):
         fx = Fixture()
         self.addCleanup(fx.destroy)
