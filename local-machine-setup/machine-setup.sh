@@ -920,6 +920,7 @@ stage_brew() {
     note_failure "brew stage: brew could not list what is installed; nothing changed" 1
     return 0
   fi
+  brew_keeps_tailscale
 
 
   manifest tap | while read -r t; do
@@ -1024,7 +1025,8 @@ tailscale_daemon_match() {
   [ -n "$tm_plist" ] || return 0
   tailscale_daemon_versions
   if [ -z "$tm_cli" ] || [ -z "$tm_dmn" ]; then
-    echo "  WARN    tailscaled version unknown: tailscale version --daemon gave no answer"
+    # FAILED, a drift word: a probe that failed checked nothing (sd:9282).
+    echo "  FAILED  tailscaled version unknown: tailscale version --daemon gave no answer"
     return 0
   fi
   if [ "$tm_cli" = "$tm_dmn" ]; then
@@ -1039,8 +1041,18 @@ tailscale_daemon_match() {
   for _ in 1 2 3 4 5; do
     tailscale_daemon_versions
     # An empty answer is a daemon still down, never a match.
-    [ -z "$tm_dmn" ] || [ "$tm_cli" != "$tm_dmn" ] ||
-      { echo "  ok      tailscaled restarted on $tm_dmn"; return 0; }
+    if [ -n "$tm_dmn" ] && [ "$tm_cli" = "$tm_dmn" ]; then
+      echo "  ok      tailscaled restarted on $tm_dmn"
+      # It answers its version before its backend runs, and the sd
+      # stage's `tailscale status` then SKIPs the serve routes (sd:9282).
+      # A backend still down after 5 s is that stage's SKIP to report.
+      for _ in 1 2 3 4 5; do
+        bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" \
+          --socket=/var/run/tailscaled.socket status >/dev/null 2>&1 && break
+        sleep 1
+      done
+      return 0
+    fi
     sleep 1
   done
   note_failure "tailscaled still runs ${tm_dmn:-an unknown version} after the restart, not $tm_cli" 1
@@ -7493,6 +7505,21 @@ rustup_sweep() {
   fi
 }
 
+# `sudo brew services start|restart tailscale` leaves root-owned files in
+# its keg, and brew, which refuses to run as root, cannot remove them: the
+# cleanup failed every week (sd:8241). Upgrades and installs clean up too,
+# and the brew stage restarts tailscaled (sd:9282). Keeps the operator's
+# own list, and adds tailscale once.
+# ponytail: old tailscale kegs stay; remove them by hand with sudo.
+brew_keeps_tailscale() {
+  case ",${HOMEBREW_NO_CLEANUP_FORMULAE:-}," in
+    *,tailscale,*) ;;
+    *) HOMEBREW_NO_CLEANUP_FORMULAE="${HOMEBREW_NO_CLEANUP_FORMULAE:+$HOMEBREW_NO_CLEANUP_FORMULAE,}tailscale"
+       export HOMEBREW_NO_CLEANUP_FORMULAE ;;
+  esac
+  echo "  SKIP    brew cleanup of tailscale: sudo brew services leaves root-owned files"
+}
+
 # Maintenance sweep: refresh what is already installed. Dry run by default
 # like every other mutating verb. A step that fails or times out does not stop
 # the sweep; the steps after it still run, and the sweep exits 1 naming it.
@@ -7504,14 +7531,7 @@ cmd_upgrade() {
   failed=""
   ASKPASS_READY=""
   if command -v brew >/dev/null 2>&1; then
-    # `sudo brew services start tailscale` leaves root-owned files in its
-    # keg, and brew, which refuses to run as root, cannot remove them: the
-    # cleanup failed every week (sd:8241). Upgrades clean up too. Keep the
-    # operator's own list.
-    # ponytail: old tailscale kegs stay; remove them by hand with sudo.
-    HOMEBREW_NO_CLEANUP_FORMULAE="${HOMEBREW_NO_CLEANUP_FORMULAE:+$HOMEBREW_NO_CLEANUP_FORMULAE,}tailscale"
-    export HOMEBREW_NO_CLEANUP_FORMULAE
-    echo "  SKIP    brew cleanup of tailscale: sudo brew services leaves root-owned files"
+    brew_keeps_tailscale
     run_step 600 brew update || failed="$failed, brew update"
     # The brew stage's unpin (sd:6433) first: the weekly sweep can run
     # before the nightly update --apply, and a stale python pin fails
@@ -7799,9 +7819,14 @@ cmd_upgrade_report() {
       && [ ! -s "$tmp/wants.before" ] && [ ! -s "$tmp/unknown.before" ]; then
     rc=0
     echo "nothing outdated — no upgrade"
-    # The rustup toolchain is in no inventory, so a quiet week still moves it.
+    # The rustup toolchain is in no inventory, so a quiet week still moves
+    # it. Nor is a daemon older than its binary: a restart that failed
+    # after an earlier upgrade stays stale (sd:9282).
     failed=""
-    rustup_sweep > "$tmp/out" 2>&1
+    {
+      rustup_sweep
+      tailscale_daemon_match || failed="$failed, tailscaled restart"
+    } > "$tmp/out" 2>&1
     cat "$tmp/out"
     inventory_capture || rc=1
     cat "$tmp/inventory"
@@ -8185,7 +8210,10 @@ cmd_status() {
     # Its report half only: status --apply stays read-only.
     mf=$(APPLY=0; mosh_firewall | grep DIFFERS || :)
     [ -z "$mf" ] || printf '%s\n' "$mf"
-    for v in "$mt" "$mb" "$ub" "$sb" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf"; do
+    # A stale or silent tailscaled is drift too (sd:9282).
+    td=$(APPLY=0; tailscale_daemon_match | grep -E 'DIFFERS|FAILED' || :)
+    [ -z "$td" ] || printf '%s\n' "$td"
+    for v in "$mt" "$mb" "$ub" "$sb" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf" "$td"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
