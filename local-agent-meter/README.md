@@ -88,11 +88,12 @@ Each reads a Settings list, a workflow database setting row, and writes one
 `heartbeat` state row per entry in one transaction; the newest row per key is the
 answer and the retention job keeps one per key. A database that never held the row
 gets the starting list written once, so Settings shows what the job reads; a cleared
-row reads nothing. A refused line is an `SD_REPORT_ATTENTION` line and the rest
-still run; a store that does not open exits 1. Neither writes the ledger.
+row reads nothing. A key the list no longer names, or every key of a cleared row, gets
+one row with status `removed`, once; a reader skips a removed key. A refused line is
+an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open exits 1. Neither writes the ledger.
 
 - `usage` (sd:9256): setting `dashboard.usage_providers`, one provider per line, `#`
-  comments. Row `usage:<provider>`: `status` (`ok`, `unknown`, `no-source`), `source`,
+  comments. Row `usage:<provider>`: `status` (`ok`, `unknown`, `no-source`, `removed`), `source`,
   `read_at`, `windows` (name, used percent, minutes, reset), `balance` and `spend`
   (amount and unit), `accounts` for claude, `error` when unknown. Keys come from the
   environment by name (`usage_sources.py` names each); no key, answer body or
@@ -102,7 +103,7 @@ still run; a store that does not open exits 1. Neither writes the ledger.
   `<name> <kind> <url> [provider[,provider]]` line each; kinds `statuspage`
   (summary.json), `slack` (slack-status.com v2.0.0), `google-incidents`
   (incidents.json) and `http` (the page answers). Row `service-status:<name>`:
-  `status` (`ok`, `degraded`, `outage`, `unknown`), `indicator`, open `incidents`
+  `status` (`ok`, `degraded`, `outage`, `unknown`, `removed`), `indicator`, open `incidents`
   (title, url, impact, start), non-operational `components`, `providers`, `read_at`
   and `error`. A failed read is `unknown`, never `ok`.
 

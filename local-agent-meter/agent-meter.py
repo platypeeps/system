@@ -55,7 +55,9 @@ from a Settings list (a workflow database setting row) and each one
 `usage` reads every 'usage providers' line (rows `usage:<provider>`),
 `services` every 'status services' line (rows `service-status:<name>`).
 A failed read is a row with status `unknown`, never `ok`; a provider with
-no usage API is `no-source`. Neither writes the ledger.
+no usage API is `no-source`; a key its list no longer names, or every key
+of a cleared list, gets one row with status `removed`. Neither writes the
+ledger.
 
   agent-meter.py [--out PATH] [--db PATH | --no-db] [--providers claude,codex] [--timeout S]
   agent-meter.py accounts [--out PATH]
