@@ -30,6 +30,11 @@ from pathlib import Path
 TIMEOUT = 20
 #: The largest answer read; a bigger one is ReadFailed (sd:9256 review).
 MAX_BODY = 1 << 20
+
+
+def is_zero(value):
+    """A success code of 0: the JSON integer, not False or 0.0."""
+    return type(value) is int and value == 0
 #: How many of the newest rollout files the Codex reader opens, and how
 #: much of each one's tail, before it says unknown.
 CODEX_FILES = 20
@@ -55,12 +60,8 @@ def is_number(value):
 
 
 def number(value, what):
-    """A finite number, or ReadFailed naming the field (never its value)."""
-    if isinstance(value, str):
-        try:
-            value = float(value)
-        except ValueError:
-            raise ReadFailed("%s is not a number" % what) from None
+    """A finite JSON number, or ReadFailed naming the field (never its
+    value). A numeric string is not a number (sd:9256 review)."""
     if not is_number(value):
         raise ReadFailed("%s is not a number" % what)
     return float(value)
@@ -221,7 +222,8 @@ def read_openrouter(env, fetch, now):
 def read_moonshot(env, fetch, now):
     data = fetch("https://api.moonshot.ai/v1/users/me/balance",
                  {"Authorization": "Bearer " + key(env, "MOONSHOT_API_KEY")})
-    if not isinstance(data, dict) or data.get("code") != 0 or not isinstance(data.get("data"), dict):
+    if (not isinstance(data, dict) or not is_zero(data.get("code"))
+            or not isinstance(data.get("data"), dict)):
         raise ReadFailed("refused or another shape")
     return {"balance": {"amount": number(data["data"].get("available_balance"),
                                          "available_balance"), "unit": "usd"}}
@@ -247,7 +249,8 @@ def read_minimax(env, fetch, now):
                  {"Authorization": "Bearer " + key(env, "MINIMAX_API_KEY")})
     base = data.get("base_resp") if isinstance(data, dict) else None
     models = data.get("model_remains") if isinstance(data, dict) else None
-    if not isinstance(base, dict) or base.get("status_code") != 0 or not isinstance(models, list):
+    if (not isinstance(base, dict) or not is_zero(base.get("status_code"))
+            or not isinstance(models, list)):
         raise ReadFailed("refused or another shape")
     windows = []
     for model in models:
@@ -380,7 +383,7 @@ def claude_reading(accounts, error, now):
     # The active account's seven days is the provider's window, as the
     # meter row has always had it; every account stays in `accounts`.
     active = [account for account in accounts
-              if account.get("active") and is_number(account.get("pct"))][:1]
+              if account.get("active") is True and is_number(account.get("pct"))][:1]
     if not active:
         # An empty list, or an active account with no usage yet, is no
         # reading: ok needs data (sd:9256 review).
@@ -511,7 +514,14 @@ def codex_fields(limits):
             raise ReadFailed("credits of another shape")
         balance = credits.get("balance")
         if credits["has_credits"] and not credits["unlimited"] and balance is not None:
-            out["balance"] = {"amount": number(balance, "credits.balance"), "unit": "credits"}
+            # The one numeric string: Codex's balance is Option<String>.
+            if not isinstance(balance, str):
+                raise ReadFailed("credits.balance is not a string")
+            try:
+                amount = float(balance)
+            except ValueError:
+                raise ReadFailed("credits.balance is not a number") from None
+            out["balance"] = {"amount": number(amount, "credits.balance"), "unit": "credits"}
     return out
 
 

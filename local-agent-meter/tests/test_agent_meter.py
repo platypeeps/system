@@ -709,6 +709,18 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("account 2 (active)", done.stdout)
 
+    def test_a_ledger_active_flag_that_is_not_a_boolean_is_not_active(self):
+        # sd:9256 round 7: bool("false") is True.
+        good = {"number": 2, "active": "false", "status": "ok", "pct": 9.0,
+                "resetsAt": "2099-01-01T03:00:00+00:00", "expectedPct": 5.0,
+                "scoped": {}, "fetchedAt": None}
+        self.out.write_text(json.dumps({"ts": "2026-10-28T08:00:00Z", "accounts": [good]})
+                            + "\n", encoding="utf-8")
+        done = self.run_accounts()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("account 2", done.stdout)
+        self.assertNotIn("(active)", done.stdout)
+
     def test_accounts_on_a_ledger_without_account_readings_says_so(self):
         self.write_ledger([("2026-10-27T16:00:00Z", None)])
         done = self.run_accounts()

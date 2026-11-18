@@ -172,9 +172,8 @@ class Readers(unittest.TestCase):
                     if name == "minimax":
                         bent["base_resp"]["status_code"] = 0
                     got = usage_sources.read_provider(name, {var: SECRET}, answering(bent), NOW)
-                    if extreme == "12":
-                        # A numeric string is a number some APIs send (Codex credits).
-                        continue
+                    # sd:9256 round 7: "12" read as a number; only Codex's
+                    # balance is a string by its schema.
                     self.assertEqual(got["status"], "unknown", got)
                     json.dumps(got, allow_nan=False)
 
@@ -967,6 +966,35 @@ class Hostile(unittest.TestCase):
                     got = usage_sources.claude_reading(*meter.read_accounts(5), NOW)
                 self.assertEqual((got["status"], got["error"]),
                                  ("unknown", "no active account with a seven-day share"))
+
+    def test_a_flag_or_code_of_another_type_is_unknown(self):
+        # sd:9256 round 7: the string "false" counted as the active
+        # account, and False or 0.0 as a success code of 0.
+        meter = load_meter()
+        bent = [("active=%r" % v, put(CSWAP_LIST, ("accounts", 0, "active"), v))
+                for v in ("false", "true", 1, 0, "", [], {})]
+        bent += [("scoped=%r" % v, put(CSWAP_LIST, ("accounts", 0, "usage", "scoped"), v))
+                 for v in ("x", False, {"a": 1})]
+        bent += [("usage=%r" % v, put(CSWAP_LIST, ("accounts", 0, "usage"), v))
+                 for v in (False, "x", [1])]
+        for label, reply in bent:
+            with self.subTest(label), mock.patch.dict(os.environ, CSWAP_BIN=sys.executable), \
+                    mock.patch.object(meter, "run_json", return_value=(reply, None)):
+                got = usage_sources.claude_reading(*meter.read_accounts(5), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+        entry = {"number": 1, "active": "false", "status": "ok", "pct": 40.0,
+                 "resetsAt": None, "expectedPct": None, "scoped": {},
+                 "fetchedAt": "2026-11-17T19:59:00Z"}
+        with self.subTest("an entry"):
+            self.assertEqual(usage_sources.claude_reading([entry], None, NOW)["status"],
+                             "unknown")
+        for name, path in (("moonshot", ("code",)), ("minimax", ("base_resp", "status_code"))):
+            var, answer, _ = ANSWERS[name]
+            for value in (False, 0.0, "0"):
+                with self.subTest(provider=name, code=value):
+                    got = usage_sources.read_provider(name, {var: SECRET},
+                                                      answering(put(answer, path, value)), NOW)
+                    self.assertEqual(got["status"], "unknown", got)
 
     def test_a_reply_that_is_not_utf8_is_an_error_not_a_raise(self):
         # sd:9256 round 6: text=True raised UnicodeDecodeError out of the run.

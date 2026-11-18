@@ -218,6 +218,15 @@ def is_time(value):
     return value is None or isinstance(value, str)
 
 
+def either(value, kind):
+    """value when it is a kind, an empty kind for null, else TypeError."""
+    if value is None:
+        return kind()
+    if not isinstance(value, kind):
+        raise TypeError("a %s field of another type" % kind.__name__)
+    return value
+
+
 def account_entry(account):
     """The fields of one cswap account the ledger keeps, and no other.
 
@@ -229,13 +238,18 @@ def account_entry(account):
     number = account["number"]
     if not is_slot(number):
         raise TypeError("account number is not a slot number")
-    usage = account.get("usage") or {}
-    week = usage.get("sevenDay") or {}
-    entry = {"number": number, "active": bool(account.get("active")),
+    # A flag is a JSON boolean and a container its own type, or null where
+    # cswap leaves it out: bool("false") is True (sd:9256 review).
+    active = account.get("active", False)
+    if not isinstance(active, bool):
+        raise TypeError("active is not a boolean")
+    usage = either(account.get("usage"), dict)
+    week = either(usage.get("sevenDay"), dict)
+    entry = {"number": number, "active": active,
              "status": account.get("usageStatus"),
              "pct": week.get("pct"), "resetsAt": week.get("resetsAt"),
              "expectedPct": week.get("expectedPct"),
-             "scoped": {s["name"]: s.get("pct") for s in usage.get("scoped") or []
+             "scoped": {s["name"]: s.get("pct") for s in either(usage.get("scoped"), list)
                         if isinstance(s, dict) and isinstance(s.get("name"), str)},
              "fetchedAt": account.get("usageFetchedAt")}
     pcts = [entry["pct"], entry["expectedPct"], *entry["scoped"].values()]
@@ -597,7 +611,7 @@ def report_accounts(a) -> None:
             if seen is None or read_at >= seen[0]:
                 windows[number][key] = (read_at, pct, expected)
             if number not in active or read_at >= active[number][0]:
-                active[number] = (read_at, bool(account.get("active")))
+                active[number] = (read_at, account.get("active") is True)
     if not windows:
         print("agent-meter: no account readings in %s" % out)
         return
