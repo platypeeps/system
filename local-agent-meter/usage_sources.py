@@ -150,18 +150,18 @@ def within(call, seconds):
     return done["value"]
 
 
-def read_capped(response):
-    """The body, or ReadFailed past MAX_BODY bytes."""
+def read_capped(response, cap=MAX_BODY):
+    """The body, or ReadFailed past cap bytes."""
     chunks, size = [], 0
     while chunk := response.read1(65536):
         size += len(chunk)
-        if size > MAX_BODY:
-            raise ReadFailed("answer over %d bytes" % MAX_BODY)
+        if size > cap:
+            raise ReadFailed("answer over %d bytes" % cap)
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-def fetch_json(url, headers=None, timeout=TIMEOUT):
+def fetch_json(url, headers=None, timeout=TIMEOUT, cap=MAX_BODY):
     """GET url as JSON, or ReadFailed with a message that holds no body.
     The whole read, headers and body, takes at most timeout seconds."""
     request = urllib.request.Request(url, headers={**(headers or {}), "User-Agent": USER_AGENT})
@@ -169,7 +169,7 @@ def fetch_json(url, headers=None, timeout=TIMEOUT):
     def get():
         # Built per call: the proxy handler reads the environment when built.
         with urllib.request.build_opener(SameOrigin).open(request, timeout=timeout) as response:
-            return read_capped(response)
+            return read_capped(response, cap)
     try:
         body = within(get, timeout)
     except ReadFailed:

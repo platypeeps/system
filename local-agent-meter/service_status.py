@@ -30,6 +30,9 @@ from usage_sources import (NAME, TIMEOUT, USER_AGENT, ReadFailed, event_time, fe
 KINDS = ("statuspage", "slack", "google-incidents", "http")
 #: The longest incident title kept; Google's descriptions run to pages.
 TITLE = 200
+#: The google-incidents feeds are whole histories (about 290 KB each on
+#: 2026-11-17, growing with each incident); other feeds take MAX_BODY.
+GOOGLE_MAX_BODY = 16 << 20
 #: The longest incident url kept; a longer one is dropped, never cut.
 URL = 2048
 
@@ -198,7 +201,7 @@ def read_slack(url, fetch):
 
 
 def read_google(url, fetch):
-    data = fetch(url)
+    data = fetch(url, cap=GOOGLE_MAX_BODY)
     incidents = []
     for incident in entries(data, "incident list"):
         # The fields the open-or-closed call reads are checked first: only

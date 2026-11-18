@@ -99,7 +99,7 @@ EXTREMES = ("12", True, None, float("nan"), float("inf"), float("-inf"), 10**400
 
 
 def answering(answer, calls=None):
-    def fetch(url, headers=None):
+    def fetch(url, headers=None, **_):
         if calls is not None:
             calls.append((url, headers))
         return json.loads(json.dumps(answer)) if not callable(answer) else answer()
@@ -107,7 +107,7 @@ def answering(answer, calls=None):
 
 
 def failing(message):
-    def fetch(url, headers=None):
+    def fetch(url, headers=None, **_):
         raise ReadFailed(message)
     return fetch
 
@@ -263,7 +263,10 @@ class Server:
                 for name, value in (extra[0] if extra else {}).items():
                     self.send_header(name, value)
                 self.end_headers()
-                self.wfile.write(body if isinstance(body, bytes) else json.dumps(body).encode())
+                try:
+                    self.wfile.write(body if isinstance(body, bytes) else json.dumps(body).encode())
+                except OSError:
+                    pass  # the client stopped reading: a cap or a deadline
 
             def log_message(self, *args):
                 pass
@@ -340,7 +343,9 @@ class Bounded(unittest.TestCase):
         self.server = Server({
             "/body": (200, drip(ok + b"\r\n[", b"1,", b"1]")),
             "/headers": (200, drip(ok, b"X-Drip: 1\r\n", b"\r\n{}")),
-            "/big": (200, b'"' + b"a" * (1 << 20) + b'"')})
+            "/big": (200, b'"' + b"a" * (1 << 20) + b'"'),
+            "/google": (200, [dict(GOOGLE_OPEN, end="2026-11-17T19:00:00+00:00",
+                                   external_desc="x" * (2 << 20))])})
         self.addCleanup(self.server.close)
 
     def timed(self, call):
@@ -355,6 +360,12 @@ class Bounded(unittest.TestCase):
             with self.subTest(path=path):
                 self.timed(lambda: usage_sources.fetch_json(self.server.url + path, timeout=1))
         self.timed(lambda: service_status.read_http(self.server.url + "/headers", timeout=1))
+
+    def test_a_google_history_over_the_default_cap_reads(self):
+        # sd:9256 round 7: the google-incidents feeds are full histories.
+        got = service_status.read_service(
+            ("g", "google-incidents", self.server.url + "/google", []), NOW)
+        self.assertEqual((got["status"], got.get("error")), ("ok", None))
 
     def test_an_answer_over_the_cap_is_read_failed(self):
         message = self.timed(lambda: usage_sources.fetch_json(self.server.url + "/big"))
@@ -926,7 +937,7 @@ class Hostile(unittest.TestCase):
         local_only(self)
         server = Server({"/deep": (200, DEEP_TEXT.encode())})
         self.addCleanup(server.close)
-        return lambda url, headers=None: usage_sources.fetch_json(server.url + "/deep", headers)
+        return lambda url, headers=None, **cap: usage_sources.fetch_json(server.url + "/deep", headers, **cap)
 
     def test_every_usage_reader(self):
         deep = self.deep_fetch()
@@ -1046,7 +1057,7 @@ class Hostile(unittest.TestCase):
             for label, bent in hostile(answer):
                 failures += self.check("%s %s" % (kind, label), lambda: service_status.read_service(
                     ("svc", kind, "https://status.example.test/a", []), NOW,
-                    fetch=lambda url: bent), ("ok", "degraded", "outage"))
+                    fetch=lambda url, **_: bent), ("ok", "degraded", "outage"))
             failures += self.check("%s deep text" % kind, lambda: service_status.read_service(
                 ("svc", kind, "https://status.example.test/a", []), NOW, fetch=deep), ())
         self.assertEqual(failures, [])
@@ -1093,7 +1104,7 @@ class Hostile(unittest.TestCase):
                  lambda got: got["status"] == "outage")):
             yield (kind, "null", lambda kind=kind, answer=answer: service_status.read_service(
                 ("svc", kind, "https://status.example.test/a", []), NOW,
-                fetch=lambda url: answer), still)
+                fetch=lambda url, **_: answer), still)
 
     def codex(self, event):
         tmp = tempfile.TemporaryDirectory()
@@ -1126,7 +1137,7 @@ class Hostile(unittest.TestCase):
         for bad in ("garbage", "", "2026-13-01T00:00:00Z", "2026-11-17T18:00:00", 5, [], True):
             cases = [("google %s" % url, lambda url=url: service_status.read_service(
                 ("svc", "google-incidents", url, []), NOW,
-                fetch=lambda u: [dict(GOOGLE_OPEN, end=bad)]))
+                fetch=lambda u, **_: [dict(GOOGLE_OPEN, end=bad)]))
                 for url in ("https://status.cloud.google.com/incidents.json",
                             "https://www.google.com/appsstatus/dashboard/incidents.json")]
             cases.append(("google begin", lambda: service_status.read_service(
@@ -1157,7 +1168,7 @@ class Hostile(unittest.TestCase):
                         {"title": "t", "type": bad}]}),
                     ("google-incidents", [dict(GOOGLE_OPEN, status_impact=bad)])):
                 got = service_status.read_service(("svc", kind, "https://example.test/a", []),
-                                                  NOW, fetch=lambda url: answer)
+                                                  NOW, fetch=lambda url, **_: answer)
                 if got["status"] != "unknown":
                     failures.append("%s %r: %s" % (kind, bad, got["status"]))
         self.assertEqual(failures, [])
