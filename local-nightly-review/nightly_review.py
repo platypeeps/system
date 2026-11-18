@@ -5,6 +5,7 @@
   batch <reply> <out> <date> <source>     the model's reply as a batch file at <out>,
                                           through <out>.part and a rename
   check <file> <date>                     refuse a batch file the job must not file;
+                                          add the context an older file lacks;
                                           print its question count
 
 Stdlib only, and no database: the store is read and written through the
@@ -32,6 +33,20 @@ SUPPRESS_DAYS = 90
 #: A batch is open 7 days at most, so an older one holds no newer ruling.
 EXPIRE_DAYS = 7
 REF_SOURCE = "task-ref"
+#: What the Review band says the batch asks (sd:9480): the pack prints each
+#: as a Purpose, Rubric or Feeds line of the batch header, 400 characters each.
+CONTEXT = {
+    "purpose": ("Tonight's suggestions: at most five changes the nightly review "
+                "(claude -p, read-only, prompt.md) found in the past day's sd items, "
+                "lane runs, sessions and cron job logs on the hub."),
+    "rubric": ["Approve: the evidence shows a real cost in the past day and the change "
+               "is worth a task.",
+               "Reject: the problem is not real, not worth the time, or already handled; "
+               "the subject stays out of the queue for 90 days."],
+    "feeds": ("At the next 06:15 run, Approve files one sd task under the ref "
+              "review-approved:<note>; Reject keeps the subject out for 90 days; "
+              "a suggestion not ruled in 7 days expires. No setting changes."),
+}
 REPLY_KEYS = {"questions"}
 QUESTION_KEYS = {"subject", "text", "evidence"}
 
@@ -139,7 +154,12 @@ def batch(reply, out, day, source):
     """Write the batch file the job files: every field but the questions is the job's own."""
     questions = _reply(Path(reply).read_text(encoding="utf-8"))
     found = {"schema": 1, "queue": QUEUE, "batch": day, "title": f"Nightly review {day}", "source": source,
-             "mode": "open", "limit": LIMIT, "questions": questions}
+             "mode": "open", "limit": LIMIT, "context": CONTEXT, "questions": questions}
+    _write(out, found)
+
+
+def _write(out, found):
+    """The batch file at out, through out.part and a rename."""
     out = Path(out)
     part = out.with_name(out.name + ".part")
     part.write_text(json.dumps(found, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -164,6 +184,10 @@ def check(path, day):
     if found.get("queue") != QUEUE or found.get("batch") != day:
         raise Refused(f"{path} is batch {found.get('batch')} of queue {found.get('queue')}, "
                       f"not {day} of {QUEUE}")
+    context = found.get("context")
+    if context is not None and (not isinstance(context, dict) or not all(context.get(key) for key in CONTEXT)):
+        raise Refused(f"{path} lacks one of the context lines {', '.join(CONTEXT)}; "
+                      "the Review band would not say what it asks")
     limit = found.get("limit")
     if type(limit) is not int or not 1 <= limit <= LIMIT:
         raise Refused(f"{path} sets limit {limit}; the nightly batch holds at most {LIMIT}")
@@ -171,6 +195,10 @@ def check(path, day):
     if not isinstance(questions, list) or any(
             not isinstance(question, dict) or question.get("options") != OPTIONS for question in questions):
         raise Refused(f"{path} asks a question without exactly the options {' and '.join(OPTIONS)}")
+    if context is None:
+        # A file the job wrote before sd:9480 (a run stopped before filing):
+        # the context is the job's own field, so it is added, not refused.
+        _write(path, {**found, "context": CONTEXT})
     print(len(questions))
 
 
