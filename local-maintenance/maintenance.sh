@@ -607,9 +607,9 @@ fi
 # The login agent's uv-prune never runs again on an always-on hub, so run
 # takes it too. In a subshell: its traps would replace this run's. It skips
 # while another uv holds the cache; the third such night in a row is a
-# finding, as the cache then only grows. It names the holders, and is
-# raised once a streak: the nights after it are actions, so a skip the
-# operator accepted does not alert every night (sd:9377).
+# finding, as the cache then only grows. It names the holders, and each
+# later night of the streak raises the same finding, which folds into the
+# open report instead of a new alert (sd:9377).
 UV_SKIPS="$HOME/.local/state/maintenance/uv-prune-skips"
 if [ "$APPLY" -eq 0 ]; then
   if command -v uv >/dev/null 2>&1 && uv_cache=$(uv cache dir 2>/dev/null) && [ -d "$uv_cache" ]; then
@@ -627,11 +627,12 @@ else
     UV_SKIPS_NEXT=$skips
     why=$(grep '; skipped$' "$TMPD/uv" | tail -1 | sed -e 's/^uv-prune: //' -e 's/; skipped$//')
     holders=$(sed -n 's/^uv-prune: holders: //p' "$TMPD/uv" | tail -1)
-    if [ "$skips" -eq 3 ]; then
+    # From the third night on, every run raises the same finding: its
+    # reason line stays the same, so it folds into the open report and
+    # keeps it open until a prune succeeds (sd:9282 bundle review).
+    if [ "$skips" -ge 3 ]; then
       finding "uv cache prune skipped $skips nights running: $why${holders:+ ($holders)}" \
         "uv cache prune skipped 3 or more nights running: $why"
-    elif [ "$skips" -gt 3 ]; then
-      action "uv-prune: $why; skipped $skips nights running, reported on the third${holders:+ ($holders)}"
     else
       action "uv-prune: $why; skipped${holders:+ ($holders)}"
     fi

@@ -133,7 +133,7 @@ class CacheCleanupTest(Harness):
         self.assertIn("- uv cache prune failed (exit 2)", run.stdout)
         self.assertEqual("1", skips.read_text().strip())
 
-    def test_a_skip_names_its_holders_and_alerts_once_a_streak(self):
+    def test_a_skip_names_its_holders_and_keeps_its_alert_open(self):
         # sd:9377: the finding fired every night on a skip the operator
         # accepted, and named no holder.
         self.uv(foreign=True)
@@ -148,10 +148,16 @@ class CacheCleanupTest(Harness):
         run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
         self.assertIn(f"- uv cache prune skipped 3 nights running: another uv process holds the cache {holders}",
                       run.stdout)
+        # Bundle review: night 4 reported healthy and closed night 3's
+        # alert. Each later night raises the same reason line, so the
+        # pack folds it into the open report.
         for night in (4, 5):
             run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
-            self.assertEqual(self.attention(run), [], night)
-            self.assertIn(f"skipped {night} nights running, reported on the third {holders}", run.stdout)
+            self.assertEqual(self.attention(run), [
+                "SD_REPORT_ATTENTION: maintenance on fixturehost: uv cache prune skipped "
+                "3 or more nights running: another uv process holds the cache"], night)
+            self.assertIn(f"- uv cache prune skipped {night} nights running: another uv process holds the cache "
+                          f"{holders}", run.stdout)
             self.assertNotIn("s3cret", run.stdout)
 
     def test_a_third_night_that_dies_before_its_report_alerts_next_night(self):
