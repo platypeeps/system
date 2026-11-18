@@ -20,6 +20,7 @@ import json
 import math
 import os
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +28,8 @@ from pathlib import Path
 
 #: Seconds one HTTP read may take.
 TIMEOUT = 20
+#: The largest answer read; a bigger one is ReadFailed (sd:9256 review).
+MAX_BODY = 1 << 20
 #: How many of the newest rollout files the Codex reader opens, and how
 #: much of each one's tail, before it says unknown.
 CODEX_FILES = 20
@@ -124,13 +127,50 @@ def when(value, what):
     return value
 
 
+def within(call, seconds):
+    """call() within seconds in all, or ReadFailed. The socket timeout bounds
+    each wait, not the read: a source that keeps sending (headers or body)
+    held the whole run (sd:9256 review). A daemon thread is left behind on
+    a timeout; it ends with its socket or with the process."""
+    done = {}
+
+    def run():
+        try:
+            done["value"] = call()
+        except BaseException as e:  # handed to the caller below
+            done["error"] = e
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        raise ReadFailed("no whole answer in %gs" % seconds)
+    if "error" in done:
+        raise done["error"]
+    return done["value"]
+
+
+def read_capped(response):
+    """The body, or ReadFailed past MAX_BODY bytes."""
+    chunks, size = [], 0
+    while chunk := response.read1(65536):
+        size += len(chunk)
+        if size > MAX_BODY:
+            raise ReadFailed("answer over %d bytes" % MAX_BODY)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def fetch_json(url, headers=None, timeout=TIMEOUT):
-    """GET url as JSON, or ReadFailed with a message that holds no body."""
+    """GET url as JSON, or ReadFailed with a message that holds no body.
+    The whole read, headers and body, takes at most timeout seconds."""
     request = urllib.request.Request(url, headers={**(headers or {}), "User-Agent": USER_AGENT})
-    try:
+
+    def get():
         # Built per call: the proxy handler reads the environment when built.
         with urllib.request.build_opener(SameOrigin).open(request, timeout=timeout) as response:
-            body = response.read()
+            return read_capped(response)
+    try:
+        body = within(get, timeout)
     except ReadFailed:
         raise
     except urllib.error.HTTPError as e:

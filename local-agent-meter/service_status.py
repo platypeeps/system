@@ -24,7 +24,8 @@ import urllib.request
 
 import json
 
-from usage_sources import NAME, TIMEOUT, USER_AGENT, ReadFailed, event_time, fetch_json, iso, when
+from usage_sources import (NAME, TIMEOUT, USER_AGENT, ReadFailed, event_time, fetch_json, iso,
+                           when, within)
 
 KINDS = ("statuspage", "slack", "google-incidents", "http")
 #: The longest incident title kept; Google's descriptions run to pages.
@@ -227,9 +228,14 @@ def read_google(url, fetch):
 def read_http(url, fetch=None, timeout=TIMEOUT):
     """The page answers: 2xx and 3xx are ok, 5xx an outage, the rest unknown."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
+
+    def status():
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            code = response.status
+            return response.status
+    try:
+        code = within(status, timeout)
+    except ReadFailed:
+        raise
     except urllib.error.HTTPError as e:
         code = e.code
         e.close()

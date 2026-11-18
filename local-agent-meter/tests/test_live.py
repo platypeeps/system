@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -251,6 +252,13 @@ class Server:
             def do_GET(self):
                 outer.seen.append((self.path, dict(self.headers)))
                 code, body, *extra = outer.routes.get(self.path, (404, b"{}"))
+                if callable(body):
+                    # A raw answer: the route writes the whole response.
+                    try:
+                        body(self.wfile)
+                    except OSError:
+                        pass
+                    return
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 for name, value in (extra[0] if extra else {}).items():
@@ -310,6 +318,48 @@ class Fetch(unittest.TestCase):
         got = usage_sources.fetch_json(self.server.url + "/here", {"X-Api-Key": SECRET})
         self.assertEqual(got, {"a": 1})
         self.assertEqual(self.server.seen[-1][1].get("X-Api-Key"), SECRET)
+
+
+def drip(head, piece, tail, times=100, pause=0.1):
+    """A raw answer that sends head, then piece every pause seconds."""
+    def write(out):
+        out.write(head)
+        for _ in range(times):
+            out.write(piece)
+            out.flush()
+            time.sleep(pause)
+        out.write(tail)
+    return write
+
+
+class Bounded(unittest.TestCase):
+    """sd:9256 round 6: a source that keeps sending held the whole run."""
+
+    def setUp(self):
+        local_only(self)
+        ok = b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n"
+        self.server = Server({
+            "/body": (200, drip(ok + b"\r\n[", b"1,", b"1]")),
+            "/headers": (200, drip(ok, b"X-Drip: 1\r\n", b"\r\n{}")),
+            "/big": (200, b'"' + b"a" * (1 << 20) + b'"')})
+        self.addCleanup(self.server.close)
+
+    def timed(self, call):
+        started = time.monotonic()
+        with self.assertRaises(ReadFailed) as caught:
+            call()
+        self.assertLess(time.monotonic() - started, 4)
+        return str(caught.exception)
+
+    def test_a_feed_that_keeps_sending_is_read_failed_at_the_deadline(self):
+        for path in ("/body", "/headers"):
+            with self.subTest(path=path):
+                self.timed(lambda: usage_sources.fetch_json(self.server.url + path, timeout=1))
+        self.timed(lambda: service_status.read_http(self.server.url + "/headers", timeout=1))
+
+    def test_an_answer_over_the_cap_is_read_failed(self):
+        message = self.timed(lambda: usage_sources.fetch_json(self.server.url + "/big"))
+        self.assertIn("bytes", message)
 
 
 class Codex(unittest.TestCase):
