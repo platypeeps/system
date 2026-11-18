@@ -17,6 +17,7 @@ import http.server
 import json
 import os
 import socket
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -678,7 +679,7 @@ class Live(unittest.TestCase):
         for key, body in self.connection().execute(
                 "SELECT key, body FROM state WHERE kind = 'heartbeat' AND key LIKE ? ORDER BY id",
                 (prefix + "%",)):
-            found[key] = json.loads(body)
+            found[key] = json.loads(body) if body is not None else None
         return found
 
     def setting(self, key, value):
@@ -798,24 +799,42 @@ class Live(unittest.TestCase):
         self.assertEqual(sorted(self.rows("")), ["service-status:dropped", "service-status:kept",
                                                  "usage:codex", "usage:groq"])
 
+    def test_a_null_heartbeat_body_is_retired_not_a_crash(self):
+        # sd:9256 round 7: json.loads(None) raised TypeError out of the run.
+        connection = self.connection()
+        with sd_db.transaction(connection):
+            connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES "
+                               "('heartbeat', 'usage:old', '2026-11-17T00:00:00Z', NULL)")
+        self.setting("dashboard.usage_providers", "codex\n")
+        done = self.run_live("usage")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.rows("usage:")["usage:old"], {"status": "removed"})
+
     def test_a_row_write_that_fails_partway_lands_no_row_of_the_run(self):
-        """The rows are one step: the second body fails to serialise after
-        the first row is inserted, and the transaction takes the first back.
-        The run exits 1; the rows of the run before stand."""
+        """The rows are one step: the second insert fails after the first
+        row is in, and the transaction takes the first back. The run exits
+        1; the rows of the run before stand (sd:9256 round 7: the failure
+        used to come before the transaction began)."""
         import argparse
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("agent_meter", SCRIPT)
-        meter = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(meter)
+        meter = load_meter()
         args = argparse.Namespace(db=str(self.db), command="services")
         listed = "a http https://example.test/a\nb http https://example.test/b\n"
         meter.live(args, "dashboard.status_services", listed, service_status.parse_services,
                    lambda entry, now: (entry[0], {"status": "ok", "run": 1}), "service-status:")
-        bodies = {"a": {"status": "degraded", "run": 2}, "b": {"status": "ok", "bad": {1}}}
-        with self.assertRaises(SystemExit) as stopped:
+        real, calls = writes.record_state, []
+
+        def second_fails(*args, **kwargs):
+            calls.append(kwargs["key"])
+            if len(calls) == 2:
+                raise sqlite3.OperationalError("disk I/O error")
+            return real(*args, **kwargs)
+        with mock.patch.object(writes, "record_state", second_fails), \
+                self.assertRaises(SystemExit) as stopped:
             meter.live(args, "dashboard.status_services", listed, service_status.parse_services,
-                       lambda entry, now: (entry[0], bodies[entry[0]]), "service-status:")
+                       lambda entry, now: (entry[0], {"status": "degraded", "run": 2}),
+                       "service-status:")
         self.assertEqual(stopped.exception.code, 1)
+        self.assertEqual(calls, ["service-status:a", "service-status:b"])
         rows = self.rows("service-status:")
         self.assertEqual({key: row["run"] for key, row in rows.items()},
                          {"service-status:a": 1, "service-status:b": 1})
@@ -844,16 +863,18 @@ class Live(unittest.TestCase):
         # sd:9292: the guard said the store did not open, not where sd_db was
         # sought. The gate has an installed sd_db too, so the pack's lib
         # holds one that does not import; it is found first.
+        # Round 7: a pack that raises another error says so too.
         missing = Path(self.tmp.name) / "no-pack"
         (missing / "lib/sd_db").mkdir(parents=True)
-        (missing / "lib/sd_db/__init__.py").write_text('raise ImportError("no sd_db here")\n')
         self.env["SD_PACK_ROOT"] = str(missing)
-        for command in ("usage", "services"):
-            with self.subTest(command=command):
-                done = self.run_live(command)
-                self.assertEqual(done.returncode, 1)
-                self.assertIn("no sd_db in %s" % (missing / "lib"), done.stderr)
-                self.assertNotIn("Traceback", done.stderr)
+        for error in ("ImportError", "RuntimeError"):
+            (missing / "lib/sd_db/__init__.py").write_text('raise %s("no sd_db here")\n' % error)
+            for command in ("usage", "services"):
+                with self.subTest(command=command, error=error):
+                    done = self.run_live(command)
+                    self.assertEqual(done.returncode, 1)
+                    self.assertIn("no sd_db in %s" % (missing / "lib"), done.stderr)
+                    self.assertNotIn("Traceback", done.stderr)
 
 
 #: A body nested past json's depth: json.loads raises RecursionError.

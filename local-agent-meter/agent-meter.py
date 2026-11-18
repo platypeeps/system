@@ -382,7 +382,7 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
     try:
         import sd_db
         from sd_db import writes
-    except ImportError as e:
+    except Exception as e:  # any pack that does not import, as write_rows
         print("agent-meter %s: no sd_db in %s: %s: %s"
               % (a.command, PACK_LIB, type(e).__name__, e), file=sys.stderr)
         sys.exit(1)
@@ -449,8 +449,8 @@ def newest_live(connection, row_key):
         try:
             if json.loads(body) == REMOVED:
                 continue
-        except ValueError:
-            pass  # a row that does not parse is retired too
+        except (TypeError, ValueError):
+            pass  # a NULL body or one that does not parse is retired too
         found.append(key)
     return sorted(found)
 
