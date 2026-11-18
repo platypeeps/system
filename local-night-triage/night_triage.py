@@ -290,9 +290,12 @@ def verdict(alert, entry, host):
         # (sd:9243 lane review).
         return (f"{WHO} on {host}: not parked: followups a person wrote stay in view: "
                 f"{', '.join(people)}. Reported wait: {summary or '(none)'}"), False
-    if on and job and _text(entry.get("run")) != job:
+    if on and _text(entry.get("run")) != job:
+        # A report that names no job cannot vouch for the wait (sd:9243
+        # lane review), so it stays in view.
         return (f"{WHO} on {host}: not parked: the wait names {_text(entry.get('run')) or '(none)'}, "
-                f"not this alert's job {job}. Reported: {summary or '(none)'}"), False
+                f"not this alert's job {job or '(none: the report names no job)'}. "
+                f"Reported: {summary or '(none)'}"), False
     if on and _text(entry.get("run")) and summary:
         # The note carries YYYY-MM-DD whatever spelling the answer used:
         # WAITS reads only that, and an unread wait never wakes.

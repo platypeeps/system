@@ -290,7 +290,7 @@ class NightTriage(unittest.TestCase):
         import night_triage
         on = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
         note, then = night_triage.verdict(
-            {"runs": 1}, {"outcome": "waiting", "on": on, "run": "job-1",
+            {"runs": 1, "job": "job-1"}, {"outcome": "waiting", "on": on, "run": "job-1",
                           "summary": "the vendor says on 2026-02-30: maybe"}, "node1")
         self.assertEqual(then, night_triage.PARK)
         self.assertIsNone(night_triage.wake({"fields": "{}"}, [{"body": note}], "node1"))
@@ -314,6 +314,15 @@ class NightTriage(unittest.TestCase):
             {"outcome": "waiting", "on": day(3), "run": "other-job", "summary": "s"}, "node1")
         self.assertFalse(then)
         self.assertIn("not this alert's job job-1", note)
+
+    def test_a_wait_on_a_report_with_no_job_does_not_park(self):
+        # sd:9243 lane review: with no job to compare, any run parked it.
+        sys.path.insert(0, str(FOLDER))
+        import night_triage
+        note, then = night_triage.verdict(
+            {"runs": 1}, {"outcome": "waiting", "on": day(3), "run": "job-1", "summary": "s"}, "node1")
+        self.assertFalse(then)
+        self.assertIn("the report names no job", note)
 
     def test_a_parked_alert_is_skipped(self):
         # sd:9243: an alert parked by hand, or waiting on a date to come with
