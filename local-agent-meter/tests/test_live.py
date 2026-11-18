@@ -12,8 +12,10 @@ job runs them: a subprocess on a store `initialise` made in a directory the
 test owns. No test reaches the network.
 """
 
+import contextlib
 import datetime
 import http.server
+import io
 import json
 import os
 import socket
@@ -137,6 +139,32 @@ class Readers(unittest.TestCase):
                 (url, headers), = calls
                 self.assertTrue(url.startswith("https://"))
                 self.assertIn(SECRET, " ".join(headers.values()))
+
+    def test_a_window_that_reset_is_never_current(self):
+        # sd:9256 round 8: the live usage path stored a window whose reset
+        # had passed as ok, while write_rows dropped it.
+        accounts = [{"number": 2, "active": True, "pct": 67.0, "resetsAt": "2026-11-17T20:00:00Z",
+                     "fetchedAt": "2026-11-17T12:00:00Z"}]
+        got = usage_sources.claude_reading(accounts, None, NOW)
+        self.assertEqual((got["status"], got["windows"], got.get("stale")), ("unknown", [], 1))
+        self.assertEqual(got["error"], "every window reset after its reading")
+        var, answer, _ = ANSWERS["firecrawl"]
+        answer = put(answer, ("data", "billingPeriodEnd"), "2026-11-01T00:00:00Z")
+        got = usage_sources.read_provider("firecrawl", {var: SECRET}, answering(answer), NOW)
+        self.assertEqual((got["status"], got["windows"], got.get("stale")), ("ok", [], 1))
+
+    def test_a_minimax_model_name_is_capped_and_kept_out_of_errors(self):
+        # sd:9256 round 8: the reply's model name went whole into labels
+        # and into the error text.
+        var, answer, _ = ANSWERS["minimax"]
+        long = json.loads(json.dumps(answer))
+        long["model_remains"][0]["model_name"] = "m" * 5000
+        got = usage_sources.read_provider("minimax", {var: SECRET}, answering(long), NOW)
+        self.assertEqual(got["status"], "ok", got)
+        self.assertTrue(all(len(w["name"]) <= usage_sources.LABEL for w in got["windows"]))
+        long["model_remains"][0]["end_time"] = 0
+        got = usage_sources.read_provider("minimax", {var: SECRET}, answering(long), NOW)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "end_time is not a window"))
 
     def test_a_missing_key_is_unknown_and_names_the_variable_only(self):
         for name, (var, answer, _) in ANSWERS.items():
@@ -391,7 +419,7 @@ class Codex(unittest.TestCase):
     @staticmethod
     def event(used=61.0, stamp="2026-11-17T19:00:00.000Z", **limits):
         rate = {"primary": {"used_percent": used, "window_minutes": 10080,
-                            "resets_at": 1794992575},
+                            "resets_at": 4102444800},
                 "secondary": None,
                 "credits": {"has_credits": True, "unlimited": False, "balance": "62500.0"}}
         rate.update(limits)
@@ -407,7 +435,7 @@ class Codex(unittest.TestCase):
         self.assertEqual(got["read_at"], "2026-11-17T19:00:00.000Z")
         self.assertEqual(got["windows"], [{"name": "primary", "used_percent": 61.0,
                                            "window_minutes": 10080,
-                                           "resets_at": "2026-11-18T09:02:55Z"}])
+                                           "resets_at": "2100-01-01T00:00:00Z"}])
         self.assertEqual(got["balance"], {"amount": 62500.0, "unit": "credits"})
 
     def test_a_newest_rollout_without_limits_falls_back_to_the_one_before(self):
@@ -436,6 +464,15 @@ class Codex(unittest.TestCase):
                          ("2026-11-17T18:00:00Z", 40.0))
         self.rollout("x", [self.event(used=90.0, limit_id="codex_other")], 2000)
         self.assertEqual(usage_sources.codex_reading(self.home)["status"], "unknown")
+
+    def test_a_window_that_reset_is_never_current(self):
+        # sd:9256 round 8: an idle Codex's window that had reset read ok.
+        self.rollout("x", [self.event(primary={"used_percent": 61.0, "window_minutes": 10080,
+                                               "resets_at": 1794992575})], 2000)
+        later = datetime.datetime(2026, 11, 18, 10, 0, tzinfo=datetime.timezone.utc)
+        got = usage_sources.codex_reading(self.home, now=later)
+        self.assertEqual((got["status"], got["windows"], got.get("stale")), ("ok", [], 1))
+        self.assertEqual(got["balance"], {"amount": 62500.0, "unit": "credits"})
 
     def test_no_limits_anywhere_is_unknown(self):
         got = usage_sources.codex_reading(self.home)
@@ -654,7 +691,7 @@ class Services(unittest.TestCase):
 
 CSWAP_LIST = {"accounts": [{"number": 1, "email": "one@example.test", "active": True,
                             "usageStatus": "ok", "usage": {"sevenDay": {
-                                "pct": 40.0, "resetsAt": "2026-11-20T00:00:00Z",
+                                "pct": 40.0, "resetsAt": "2100-01-01T00:00:00Z",
                                 "expectedPct": 50.0}, "scoped": []},
                             "usageFetchedAt": "2026-11-17T19:59:00Z"}]}
 CSWAP = "#!/bin/sh\ncat \"$CSWAP_FIXTURE\"\n"
@@ -679,7 +716,7 @@ class Live(unittest.TestCase):
         keys = {var for var, _, _ in ANSWERS.values()}
         self.env = {k: v for k, v in os.environ.items() if k not in keys and k not in PROXIES}
         self.env.update(LOCAL, CSWAP_BIN=str(self.cswap), CSWAP_FIXTURE=str(root / "cswap.json"),
-                        CODEX_HOME=str(root / "codex"))
+                        CODEX_HOME=str(root / "codex"), SYSTEM_TOOLS_CONFIG=str(root / "config"))
 
     def run_live(self, command, *args, db=None):
         return subprocess.run([sys.executable, "-I", str(SCRIPT), command,
@@ -702,6 +739,11 @@ class Live(unittest.TestCase):
 
     def setting(self, key, value):
         writes.set_setting(self.connection(), key, value)
+
+    def test_the_runs_read_a_config_folder_the_test_owns(self):
+        # sd:9256 round 8: the runs read this machine's config folder.
+        config = Path(self.env.get("SYSTEM_TOOLS_CONFIG", ""))
+        self.assertEqual(config.parent, Path(self.tmp.name))
 
     def test_usage_on_a_store_that_never_held_the_list_starts_it_and_reads_each_line(self):
         done = self.run_live("usage")
@@ -846,12 +888,16 @@ class Live(unittest.TestCase):
             if len(calls) == 2:
                 raise sqlite3.OperationalError("disk I/O error")
             return real(*args, **kwargs)
+        said = io.StringIO()
         with mock.patch.object(writes, "record_state", second_fails), \
-                self.assertRaises(SystemExit) as stopped:
+                contextlib.redirect_stderr(said), self.assertRaises(SystemExit) as stopped:
             meter.live(args, "dashboard.status_services", listed, service_status.parse_services,
                        lambda entry, now: (entry[0], {"status": "degraded", "run": 2}),
                        "service-status:")
         self.assertEqual(stopped.exception.code, 1)
+        # sd:9256 round 8: the message named no stage.
+        self.assertIn("no rows written: writing the rows failed: OperationalError",
+                      said.getvalue())
         self.assertEqual(calls, ["service-status:a", "service-status:b"])
         rows = self.rows("service-status:")
         self.assertEqual({key: row["run"] for key, row in rows.items()},
@@ -1107,7 +1153,7 @@ class Hostile(unittest.TestCase):
         rest must keep. Codex: codex-rs protocol.rs RateLimitSnapshot;
         cswap: claude_swap json_output.py; the rest: each API's docs."""
         both = put(Codex.event(limit_id="codex"), ("payload", "rate_limits", "secondary"),
-                   {"used_percent": 23.0, "window_minutes": 300, "resets_at": 1794992575})
+                   {"used_percent": 23.0, "window_minutes": 300, "resets_at": 4102444800})
         rate = ("payload", "rate_limits")
         for path in (("primary", "window_minutes"), ("primary", "resets_at"), ("primary",),
                      ("secondary",), ("credits",), ("credits", "balance"), ("limit_id",)):

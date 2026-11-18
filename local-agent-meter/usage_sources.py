@@ -42,6 +42,8 @@ CODEX_TAIL = 4 * 1024 * 1024
 USER_AGENT = "agent-meter/1"
 #: The longest rate window a reading takes: a year.
 MAX_MINUTES = 366 * 24 * 60
+#: The longest window label a reply's own name gives (sd:9256 round 8).
+LABEL = 100
 #: A provider or service name in a Settings list.
 NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
@@ -200,6 +202,34 @@ def window(name, used, minutes, resets_at):
     return {"name": name, "used_percent": used, "window_minutes": minutes, "resets_at": resets_at}
 
 
+def drop_reset(fields, now):
+    """Drops each window that reset at or before now: its share is not
+    what is used now. Every reader's path applies it, so the live row and
+    the meter row agree (sd:9256 round 8). Returns the stale count."""
+    windows, kept = fields.get("windows") or [], []
+    for entry in windows:
+        reset = event_time(entry.get("resets_at"))
+        if reset is None or reset > now:
+            kept.append(entry)
+    fields["windows"] = kept
+    return len(windows) - len(kept)
+
+
+def settled(provider, source, fields, now, **extra):
+    """The reading for fields read at extra's read_at: ok, or unknown with
+    the reason. A stale window is counted in `stale`."""
+    stale = drop_reset(fields, now)
+    if stale:
+        extra["stale"] = stale
+    why = unsettled(fields)
+    if why and stale and not (fields.get("balance") or fields.get("spend")):
+        why = "every window reset after its reading"
+    if why:
+        extra.pop("read_at", None)
+        return reading(provider, "unknown", source, error=why, **extra)
+    return reading(provider, "ok", source, **extra, **fields)
+
+
 # ---------------------------------------------------------------- readers
 # Each takes (env, fetch, now) and returns the reading's fields, or raises
 # ReadFailed. `fetch` is fetch_json, swapped in tests.
@@ -256,7 +286,8 @@ def read_minimax(env, fetch, now):
     for model in models:
         if not isinstance(model, dict) or not isinstance(model.get("model_name"), str):
             raise ReadFailed("a model entry of another shape")
-        name = model["model_name"]
+        # The name labels a window and no error: it is the reply's text.
+        name = model["model_name"][:LABEL - len(" weekly")]
         # Times are milliseconds; the remaining share is a whole percent.
         for label, start, end, left in (
                 (name, "start_time", "end_time", "current_interval_remaining_percent"),
@@ -264,7 +295,7 @@ def read_minimax(env, fetch, now):
                  "current_weekly_remaining_percent")):
             begin, finish = number(model.get(start), start), number(model.get(end), end)
             if not begin < finish or not 0 <= number(model.get(left), left) <= 100:
-                raise ReadFailed("%s is not a window" % label)
+                raise ReadFailed("%s is not a window" % end)
             windows.append(window(label, 100 - number(model.get(left), left),
                                   int((finish - begin) // 60000),
                                   from_epoch(finish / 1000, end)))
@@ -366,10 +397,7 @@ def read_provider(name, env, fetch, now):
     except (AttributeError, TypeError, ValueError, OverflowError) as e:
         # One provider's answer never costs the run (sd:9256 review).
         return reading(name, "unknown", "api", error="another shape: %s" % type(e).__name__)
-    why = unsettled(fields)
-    if why:
-        return reading(name, "unknown", "api", error=why)
-    return reading(name, "ok", "api", read_at=iso(now), **fields)
+    return settled(name, "api", fields, now, read_at=iso(now))
 
 
 def claude_reading(accounts, error, now):
@@ -400,11 +428,8 @@ def claude_reading(accounts, error, now):
     except ReadFailed as e:
         return reading("claude", "unknown", "cswap", accounts=accounts, error=str(e))
     fields = {"windows": [window("seven_day", account["pct"], 10080, resets)]}
-    why = unsettled(fields)
-    if why:
-        return reading("claude", "unknown", "cswap", accounts=accounts, error=why)
-    return reading("claude", "ok", "cswap", read_at=account["fetchedAt"], accounts=accounts,
-                   **fields)
+    return settled("claude", "cswap", fields, now, read_at=account["fetchedAt"],
+                   accounts=accounts)
 
 
 def event_time(stamp):
@@ -422,7 +447,7 @@ def account_wide(limits):
     return limits.get("limit_id") in (None, "codex")
 
 
-def codex_reading(home=None):
+def codex_reading(home=None, now=None):
     """codex from the newest account-wide `token_count` with `rate_limits`,
     by the event's own time, across the newest rollouts. A model's own
     bucket (another `limit_id`) is never the account's reading.
@@ -430,7 +455,9 @@ def codex_reading(home=None):
     `read_at` is that event's time, so a Codex left idle reads old and the
     view can call it stale rather than current. A file's mtime orders the
     reads only: a rollout is not newer than its last write, so the scan
-    stops at a file last written before the newest event found."""
+    stops at a file last written before the newest event found. A window
+    that reset before `now`, the clock when omitted, is dropped."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
     root = Path(home or os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
     try:
         files = sorted(root.glob("*/*/*/rollout-*.jsonl"),
@@ -479,10 +506,7 @@ def codex_reading(home=None):
     except (AttributeError, TypeError, ValueError, OverflowError) as e:
         return reading("codex", "unknown", "codex-sessions",
                        error="another shape: %s" % type(e).__name__)
-    why = unsettled(fields)
-    if why:
-        return reading("codex", "unknown", "codex-sessions", error=why)
-    return reading("codex", "ok", "codex-sessions", read_at=best[1], **fields)
+    return settled("codex", "codex-sessions", fields, now, read_at=best[1])
 
 
 def codex_fields(limits):

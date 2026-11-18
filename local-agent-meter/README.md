@@ -20,8 +20,10 @@ and the later Usage-screen slice (8d) reads those rows for its gauges. The rows 
 in first, in one
 transaction; the JSONL line then records `sd_db.rows`, or `errors.sd_db` when the
 library could not be imported or the database could not be opened, or
-`errors.sd_db.<provider>.<window>` when one sample was refused. Nothing about the
-rows changes the exit, which stays 0.
+`errors.sd_db.<provider>.<window>` when one sample was refused. A row is stamped
+with its reading's `read_at`; a reading already stored under that time is counted in
+`sd_db.seen` and not written again. Nothing about the rows changes the exit, which
+stays 0.
 
 ## What the ledger keeps
 
@@ -30,8 +32,13 @@ default `claude,codex`), the shape the live rows have (below). Claude's window i
 the active cswap account's seven days; Codex's are the `rate_limits` of the newest
 `token_count` event in `$CODEX_HOME/sessions` (default `~/.codex`), with that event's
 time as `read_at`. Only the limits are copied: the event's session text is not. The
-`meter` rows come from these windows. Lines from before sd:9256 hold `codexbar`
-instead; `accounts` reads neither.
+`meter` rows come from these windows. A window whose reset is past is dropped
+from the reading and counted in its `stale`, on every path. Lines from before
+sd:9256 hold `codexbar` instead; `accounts` reads neither.
+
+cswap gives no five-hour number, so no `claude` 300-minute row is written after
+sd:9256. A `meter` row has no `removed` status: the last codexbar-era row stays in
+the table, and the Usage screen's month read stops showing it when the month turns.
 
 From `rtk gain` the ledger keeps `summary.total_saved` and `summary.avg_savings_pct`
 (sd:7344), each only when it is a finite number.

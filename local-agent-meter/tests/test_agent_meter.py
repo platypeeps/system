@@ -231,6 +231,20 @@ class MeterRun(unittest.TestCase):
         self.assertEqual([row[:3] for row in self.meter_rows()],
                          [("claude", "anthropic", 10080), ("codex", "openai", 10080)])
 
+    def test_a_reading_already_stored_gets_no_second_row(self):
+        # sd:9256 round 8: an idle Codex or a cached cswap reading carries
+        # its own read time, and every run inserted the same rows again.
+        self.assertEqual(self.run_meter("--db", str(self.db)).returncode, 0)
+        event = json.loads(json.dumps(CODEX_EVENT))
+        event["timestamp"] = "2026-11-03T15:00:00.000Z"
+        self.write_codex(event)
+        done = self.run_meter("--db", str(self.db))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # The repeat costs its own row only: Codex's new reading lands.
+        self.assertEqual(self.lines()[-1]["sd_db"], {"rows": 2, "seen": 1})
+        self.assertEqual([row[0] for row in self.meter_rows()], ["claude", "codex", "codex",
+                                                                 "codex", "codex"])
+
     def test_deep_replies_cost_their_readings_not_the_ledger_line(self):
         # sd:9256 review: json.loads raised RecursionError on a reply
         # nested past its depth (200000 on 3.15), and the 4-hourly run

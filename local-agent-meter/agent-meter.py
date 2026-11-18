@@ -310,13 +310,16 @@ def write_rows(record, a) -> None:
         # Named import, so an installed build older than this script fails
         # here as one `errors.sd_db` entry and not once per window below.
         from sd_db.meter import MeterRefused, sample
+        from sd_db.writes import stamp
         connection = sd_db.connect(a.db, write=True)
     except Exception as e:
         record["errors"]["sd_db"] = "%s: %s" % (type(e).__name__, e)
         record["sd_db"] = {"rows": 0}
         return
-    rows = stale = 0
-    now = usage_sources.event_time(record["ts"])
+    rows = seen = 0
+    # The readers drop a window that reset after its reading, so the live
+    # row and this one agree; they count it (sd:9256 round 8).
+    stale = sum(entry.get("stale") or 0 for entry in record["usage"].values())
     try:
         with sd_db.transaction(connection):
             for prov, entry in record["usage"].items():
@@ -332,11 +335,13 @@ def write_rows(record, a) -> None:
                     minutes, percent = window.get("window_minutes"), window.get("used_percent")
                     if minutes is None or percent is None:
                         continue
-                    reset = usage_sources.event_time(window.get("resets_at"))
-                    if reset is not None and reset <= now:
-                        # The window reset after its reading: its share is
-                        # not what is used now.
-                        stale += 1
+                    # An idle Codex or cswap's cache gives the same reading
+                    # run after run: it is stored once (sd:9256 round 8).
+                    if connection.execute(
+                            "SELECT 1 FROM cost WHERE source = 'meter' AND provider = ? "
+                            "AND window_minutes = ? AND timestamp = ?",
+                            (prov, minutes, stamp(taken))).fetchone():
+                        seen += 1
                         continue
                     try:
                         sample(connection, provider=prov, window_minutes=minutes,
@@ -354,7 +359,8 @@ def write_rows(record, a) -> None:
         rows = 0
     finally:
         connection.close()
-    record["sd_db"] = {"rows": rows, **({"stale": stale} if stale else {})}
+    record["sd_db"] = {"rows": rows, **({"stale": stale} if stale else {}),
+                       **({"seen": seen} if seen else {})}
 
 
 def read_one(provider, accounts, accounts_error, now):
@@ -363,7 +369,7 @@ def read_one(provider, accounts, accounts_error, now):
     if provider == "claude":
         return usage_sources.claude_reading(accounts, accounts_error, now)
     if provider == "codex":
-        return usage_sources.codex_reading()
+        return usage_sources.codex_reading(now=now)
     return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now)
 
 
@@ -394,6 +400,8 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
         print("agent-meter %s: the workflow database did not open: %s: %s"
               % (a.command, type(e).__name__, e), file=sys.stderr)
         sys.exit(1)
+    # The step the message names when one fails (sd:9256 round 8).
+    stage = "reading the list"
     try:
         held = writes.read_settings(connection, [list_key])
         if list_key not in held:
@@ -411,11 +419,14 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
         for problem in problems:
             print("SD_REPORT_ATTENTION: %s %s" % (list_key, problem))
         now = datetime.datetime.now(datetime.timezone.utc)
+        stage = "reading the entries"
         with ThreadPoolExecutor(WORKERS) as pool:
             readings = list(pool.map(lambda entry: read(entry, now), entries))
+        stage = "checking the rows are JSON"
         for _, body in readings:
             # A row is finite JSON or the run writes none (sd:9256 review).
             json.dumps(body, allow_nan=False)
+        stage = "writing the rows"
         with sd_db.transaction(connection):
             named = {name for name, _ in readings}
             readings += [(key[len(row_key):], REMOVED)
@@ -424,8 +435,8 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
             for name, body in readings:
                 writes.record_state(connection, "heartbeat", key=row_key + name, body=body)
     except Exception as e:
-        print("agent-meter %s: no rows written: %s: %s" % (a.command, type(e).__name__, e),
-              file=sys.stderr)
+        print("agent-meter %s: no rows written: %s failed: %s: %s"
+              % (a.command, stage, type(e).__name__, e), file=sys.stderr)
         sys.exit(1)
     finally:
         connection.close()
