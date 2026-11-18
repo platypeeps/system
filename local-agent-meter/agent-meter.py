@@ -81,7 +81,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import service_status  # noqa: E402
 import usage_sources  # noqa: E402
 
-sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow").expanduser() / "lib"))
+PACK_LIB = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow").expanduser() / "lib"
+sys.path.insert(0, str(PACK_LIB))
 
 TOOL = "agent-meter"
 # The config directory's own ledger. Created on first use; a ledger named by
@@ -364,6 +365,11 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
     try:
         import sd_db
         from sd_db import writes
+    except ImportError as e:
+        print("agent-meter %s: no sd_db in %s: %s: %s"
+              % (a.command, PACK_LIB, type(e).__name__, e), file=sys.stderr)
+        sys.exit(1)
+    try:
         connection = sd_db.connect(a.db, write=True)
     except Exception as e:
         print("agent-meter %s: the workflow database did not open: %s: %s"

@@ -780,6 +780,21 @@ class Live(unittest.TestCase):
                 self.assertIn("did not open", done.stderr)
                 self.assertNotIn("Traceback", done.stderr)
 
+    def test_a_pack_with_no_sd_db_names_the_folder_it_read(self):
+        # sd:9292: the guard said the store did not open, not where sd_db was
+        # sought. The gate has an installed sd_db too, so the pack's lib
+        # holds one that does not import; it is found first.
+        missing = Path(self.tmp.name) / "no-pack"
+        (missing / "lib/sd_db").mkdir(parents=True)
+        (missing / "lib/sd_db/__init__.py").write_text('raise ImportError("no sd_db here")\n')
+        self.env["SD_PACK_ROOT"] = str(missing)
+        for command in ("usage", "services"):
+            with self.subTest(command=command):
+                done = self.run_live(command)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("no sd_db in %s" % (missing / "lib"), done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
+
 
 #: A body nested past json's depth: json.loads raises RecursionError.
 #: Python 3.15 parses 100000 levels and raises by 200000; older ones
