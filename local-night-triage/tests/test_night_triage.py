@@ -295,6 +295,26 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(then, night_triage.PARK)
         self.assertIsNone(night_triage.wake({"fields": "{}"}, [{"body": note}], "node1"))
 
+    def test_a_wait_never_parks_an_alert_with_a_persons_followup(self):
+        # sd:9243 lane review: a park hid an operator's open followup.
+        alert = report("node1", followups=[41], session="login")
+        self.given({"1": alert}, [
+            {"id": 1, "outcome": "waiting", "summary": "later", "run": "job-1", "on": day(3)}])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.items()["1"].get("parked_at"))
+        self.assertIn("not parked: followups a person wrote", self.comments("1")[0])
+
+    def test_a_wait_naming_another_job_does_not_park(self):
+        # sd:9243 lane review: any run name and date parked the alert.
+        sys.path.insert(0, str(FOLDER))
+        import night_triage
+        note, then = night_triage.verdict(
+            {"runs": 1, "job": "job-1"},
+            {"outcome": "waiting", "on": day(3), "run": "other-job", "summary": "s"}, "node1")
+        self.assertFalse(then)
+        self.assertIn("not this alert's job job-1", note)
+
     def test_a_parked_alert_is_skipped(self):
         # sd:9243: an alert parked by hand, or waiting on a date to come with
         # no new failure, is left alone.

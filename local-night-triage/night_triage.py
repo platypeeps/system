@@ -282,6 +282,17 @@ def verdict(alert, entry, host):
         return f"{WHO} on {host}: not settled: the run gave no answer for this alert.", False
     outcome, summary = entry.get("outcome"), _text(entry.get("summary"))
     on = _wait_date(_text(entry.get("on"))) if outcome == "waiting" else None
+    people = [f"#{f['id']} ({f.get('session') or 'unknown'})" for f in alert.get("followups") or []
+              if f.get("session") != INGEST_SESSION]
+    job = _text(alert.get("job"))
+    if on and people:
+        # A park hides the alert; a followup a person wrote stays in view
+        # (sd:9243 lane review).
+        return (f"{WHO} on {host}: not parked: followups a person wrote stay in view: "
+                f"{', '.join(people)}. Reported wait: {summary or '(none)'}"), False
+    if on and job and _text(entry.get("run")) != job:
+        return (f"{WHO} on {host}: not parked: the wait names {_text(entry.get('run')) or '(none)'}, "
+                f"not this alert's job {job}. Reported: {summary or '(none)'}"), False
     if on and _text(entry.get("run")) and summary:
         # The note carries YYYY-MM-DD whatever spelling the answer used:
         # WAITS reads only that, and an unread wait never wakes.
@@ -290,8 +301,6 @@ def verdict(alert, entry, host):
     if outcome == "fixed":
         evidence = [_text(line) for line in entry.get("evidence") or [] if _text(line)]
         followups = entry.get("followups") or {}
-        people = [f"#{f['id']} ({f.get('session') or 'unknown'})" for f in alert["followups"]
-                  if f.get("session") != INGEST_SESSION]
         if people:
             return (f"{WHO} on {host}: not acknowledged: followups a person wrote need a fix or "
                     f"check they accept: {', '.join(people)}. Reported: {summary or '(none)'}"), False
