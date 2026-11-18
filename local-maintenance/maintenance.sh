@@ -622,7 +622,9 @@ else
     skips=$(cat "$UV_SKIPS" 2>/dev/null) || skips=0
     case $skips in ''|*[!0-9]*) skips=0 ;; esac
     skips=$((skips + 1))
-    { mkdir -p "$(dirname "$UV_SKIPS")" && echo "$skips" > "$UV_SKIPS"; } 2>/dev/null || true
+    # Written only after the report is out (end of run): a run that dies
+    # between the two must not count the third night and skip its alert.
+    UV_SKIPS_NEXT=$skips
     why=$(grep '; skipped$' "$TMPD/uv" | tail -1 | sed -e 's/^uv-prune: //' -e 's/; skipped$//')
     holders=$(sed -n 's/^uv-prune: holders: //p' "$TMPD/uv" | tail -1)
     if [ "$skips" -eq 3 ]; then
@@ -827,4 +829,10 @@ if [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ]; then
   awk -v p="SD_REPORT_ATTENTION: maintenance on $(hostname -s): " '
     /^[ \t]/ { sub(/^[ \t]+/, ""); if (NF) print p h " " $0; next }
     NF { h = $0; print p $0 }' "$KEYS"
+fi
+
+# The uv skip streak, persisted once the report above is out (sd:9377).
+if [ -n "${UV_SKIPS_NEXT:-}" ]; then
+  { mkdir -p "$(dirname "$UV_SKIPS")" && echo "$UV_SKIPS_NEXT" > "$UV_SKIPS"; } 2>/dev/null ||
+    echo "uv-prune: could not record skip $UV_SKIPS_NEXT in $UV_SKIPS; the streak starts again"
 fi
