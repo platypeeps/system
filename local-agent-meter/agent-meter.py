@@ -356,6 +356,10 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
     an SD_REPORT_ATTENTION line and the rest still run. The rows land in one
     transaction: all of a run's readings, or none and the old ones stand.
     A store that does not open, read or take the rows exits 1.
+
+    A key under `row_key` whose name the list no longer holds gets one
+    `{"status": "removed"}` row, so its last reading stops being its
+    newest; a cleared list retires every key (sd:9256 review).
     """
     try:
         import sd_db
@@ -378,8 +382,7 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
         text = held.get(list_key)
         if text is None:
             print("agent-meter %s: %s is cleared; nothing to read" % (a.command, list_key))
-            return
-        entries, problems = parse(text)
+        entries, problems = parse(text) if text is not None else ([], [])
         for problem in problems:
             print("SD_REPORT_ATTENTION: %s %s" % (list_key, problem))
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -389,6 +392,10 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
             # A row is finite JSON or the run writes none (sd:9256 review).
             json.dumps(body, allow_nan=False)
         with sd_db.transaction(connection):
+            named = {name for name, _ in readings}
+            readings += [(key[len(row_key):], REMOVED)
+                         for key in newest_live(connection, row_key)
+                         if key[len(row_key):] not in named]
             for name, body in readings:
                 writes.record_state(connection, "heartbeat", key=row_key + name, body=body)
     except Exception as e:
@@ -402,6 +409,27 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
         counts[body["status"]] = counts.get(body["status"], 0) + 1
     print("agent-meter %s: %d rows (%s)" % (a.command, len(readings), ", ".join(
         "%d %s" % (n, status) for status, n in sorted(counts.items()))))
+
+
+#: The row a key gets when its list no longer names it (sd:9256 review).
+REMOVED = {"status": "removed"}
+
+
+def newest_live(connection, row_key):
+    """Keys under row_key whose newest heartbeat row is not REMOVED."""
+    end = row_key[:-1] + chr(ord(row_key[-1]) + 1)
+    found = []
+    for key, body in connection.execute(
+            "SELECT key, body FROM state WHERE id IN (SELECT MAX(id) FROM state"
+            " WHERE kind = 'heartbeat' AND key >= ? AND key < ? GROUP BY key)",
+            (row_key, end)):
+        try:
+            if json.loads(body) == REMOVED:
+                continue
+        except ValueError:
+            pass  # a row that does not parse is retired too
+        found.append(key)
+    return sorted(found)
 
 
 def read_usage(name, now):

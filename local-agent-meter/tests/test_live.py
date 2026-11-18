@@ -680,6 +680,44 @@ class Live(unittest.TestCase):
         self.assertEqual(len(rows), len(service_status.STARTING.splitlines()))
         self.assertEqual({row["status"] for row in rows.values()}, {"unknown"})
 
+    def test_an_entry_dropped_from_its_list_is_retired_once(self):
+        # sd:9256 round 5: a dropped entry's last row stood as its newest
+        # row forever, an old outage flag with it.
+        server = Server({"/s.json": (200, SUMMARY)})
+        self.addCleanup(server.close)
+        line = "%s statuspage " + server.url + "/s.json\n"
+        cases = (("usage", "dashboard.usage_providers", "usage:", "codex\n", "groq\n"),
+                 ("services", "dashboard.status_services", "service-status:",
+                  line % "kept", line % "dropped"))
+        for command, list_key, prefix, kept, dropped in cases:
+            with self.subTest(command=command):
+                self.setting(list_key, kept + dropped)
+                self.assertEqual(self.run_live(command).returncode, 0)
+                first = self.rows(prefix)
+                self.assertEqual(len(first), 2)
+                self.assertNotIn("removed", {row["status"] for row in first.values()})
+                self.setting(list_key, kept)
+                done = self.run_live(command)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                rows = self.rows(prefix)
+                gone = prefix + dropped.split()[0]
+                self.assertEqual(rows[gone], {"status": "removed"})
+                self.assertNotEqual(rows[prefix + kept.split()[0]]["status"], "removed")
+                self.assertIn("1 removed", done.stdout)
+                self.assertEqual(self.run_live(command).returncode, 0)
+                again = self.connection().execute(
+                    "SELECT COUNT(*) FROM state WHERE kind = 'heartbeat' AND key = ?",
+                    (gone,)).fetchone()[0]
+                self.assertEqual(again, 2, "a second removed row")
+                self.setting(list_key, None)
+                done = self.run_live(command)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual({row["status"] for row in self.rows(prefix).values()},
+                                 {"removed"})
+        # One list's retirement never touches the other's keys.
+        self.assertEqual(sorted(self.rows("")), ["service-status:dropped", "service-status:kept",
+                                                 "usage:codex", "usage:groq"])
+
     def test_a_row_write_that_fails_partway_lands_no_row_of_the_run(self):
         """The rows are one step: the second body fails to serialise after
         the first row is inserted, and the transaction takes the first back.
