@@ -564,7 +564,7 @@ profile_entries() {
 profile_drops() {
   f="$PROFILE_DIR/$1.$2"
   if [ -f "$f" ]; then
-    sed -n -e 's/#.*//' -e 's/^[[:space:]]*![[:space:]]*//p' "$f"
+    sed -n -e 's/#.*//' -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*![[:space:]]*//p' "$f"
   fi
 }
 
@@ -2839,13 +2839,24 @@ sd_settings() {
   fi
   ss_err=$(mktemp)
   # The key list gates unset lines only; a failed load leaves set lines working.
+  # Each per-machine key, then `held` when config.json holds it, an empty
+  # value too, which `config get` reads as not set (sd:9226); else `-`.
   ss_mine=
   if printf '%s\n' "$ss_lines" | awk '$2 == "unset" { f = 1 } END { exit !f }'; then
-    if ! ss_mine=$(bound_step 30 python3 -I -c 'import sys
+    ss_krc=0
+    ss_mine=$(bound_step 30 python3 -I -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import sd_lib
-print("\n".join("sd." + k for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS))))' "$SD_PACK_ROOT/bin" 2>"$ss_err" </dev/null); then
-      note_failure "sd settings: the pack's key list did not load: $(grep -v '^\[step ' "$ss_err" | tail -1)" 1
+held = sd_lib.machine_config().get("config")
+held = held.get("sd") if isinstance(held, dict) else None
+held = held if isinstance(held, dict) else {}
+for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS)):
+    print("sd." + k, "held" if k in held else "-")' "$SD_PACK_ROOT/bin" 2>"$ss_err" </dev/null) || ss_krc=$?
+    if [ "$ss_krc" -ne 0 ]; then
+      # A timeout's own message is the command, inline script and all.
+      ss_why="timed out"
+      [ "$ss_krc" -eq 124 ] || ss_why=$(grep -v '^\[step ' "$ss_err" | tail -1)
+      note_failure "sd settings: the pack's key list did not load: $ss_why" 1
       ss_mine=
     fi
   fi
@@ -2878,7 +2889,7 @@ print("\n".join("sd." + k for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.F
     if [ -n "$ss_unset" ] && [ -z "$ss_mine" ]; then
       continue  # the key list did not load: FAILED above, and nothing is unset
     fi
-    if [ -n "$ss_unset" ] && ! printf '%s\n' "$ss_mine" | grep -qxF -- "$ss_key"; then
+    if [ -n "$ss_unset" ] && ! printf '%s\n' "$ss_mine" | awk -v k="$ss_key" '$1 == k { f = 1 } END { exit !f }'; then
       note_failure "$ss_from.sdconfig: $ss_key is no per-machine sd setting (a fleet or plugin key is one row for every machine)" 1
       continue
     fi
@@ -2894,11 +2905,14 @@ print("\n".join("sd." + k for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.F
       fi
     fi
     if [ -n "$ss_unset" ]; then
-      if [ -z "$ss_have" ]; then
-        echo "  ok      sd setting $ss_key unset"
-      else
+      if [ -n "$ss_have" ]; then
         echo "  DIFFERS sd setting $ss_key is $ss_have, want unset"
         run bound_step 30 "$ss_sd" config unset "$ss_key"
+      elif printf '%s\n' "$ss_mine" | awk -v k="$ss_key" '$1 == k && $2 == "held" { f = 1 } END { exit !f }'; then
+        echo "  DIFFERS sd setting $ss_key holds an empty value, want unset"
+        run bound_step 30 "$ss_sd" config unset "$ss_key"
+      else
+        echo "  ok      sd setting $ss_key unset"
       fi
     elif [ "$ss_have" = "$ss_want" ]; then
       echo "  ok      sd setting $ss_key=$ss_want"
@@ -5611,6 +5625,14 @@ cmd_compare() {
     [ "$both" -gt 0 ] && comm -12 "$tmp/$pa.$kind" "$tmp/$pb.$kind" | sed 's/^/  =       /'
     [ -n "$onlya" ] && printf '%s\n' "$onlya" | sed "s/^/  <$pa    /"
     [ -n "$onlyb" ] && printf '%s\n' "$onlyb" | sed "s/^/  >$pb    /"
+    # What each drops of common's, apart: a drop is no entry (sd:4916),
+    # yet two profiles that differ only in one differ (sd:9226).
+    for pr in "$pa" "$pb"; do
+      profile_drops "$pr" "$kind" | grep . | sort -u > "$tmp/$pr.$kind.drops" || :
+    done
+    comm -12 "$tmp/$pa.$kind.drops" "$tmp/$pb.$kind.drops" | sed "s/^/  =       drops common's /"
+    comm -23 "$tmp/$pa.$kind.drops" "$tmp/$pb.$kind.drops" | sed "s/^/  <$pa    drops common's /"
+    comm -13 "$tmp/$pa.$kind.drops" "$tmp/$pb.$kind.drops" | sed "s/^/  >$pb    drops common's /"
     echo
   done
 }
@@ -6236,6 +6258,9 @@ cmd_adopt() {
 # Readable overview of what each profile carries: a counts matrix, then per-
 # profile sections listing every entry of every kind. Lists are columnized
 # when `column` exists; cron and macos lines stay one per line (multi-field).
+# A `!name` line is no entry (sd:4916), so no count holds it; each section
+# names what it drops after its entries, or a profile that drops common's
+# entry reads as one that keeps it (sd:9226).
 cmd_report() {
   require_config
   only="$1"
@@ -6256,25 +6281,30 @@ cmd_report() {
 
   report_section() {
     total=0
+    drops=0
     for kind in $KINDS; do
       n=$(profile_entries "$1" "$kind" | grep -c . || :)
       total=$((total + n))
+      n=$(profile_drops "$1" "$kind" | grep -c . || :)
+      drops=$((drops + n))
     done
     if [ "$1" = "common" ]; then
       echo "== common — applies to every profile ($total entries)"
     else
       echo "== $1 — on top of common ($total entries)"
     fi
-    if [ "$total" -eq 0 ]; then
+    if [ "$total" -eq 0 ] && [ "$drops" -eq 0 ]; then
       echo "      (empty — captured on that machine, not guessed from this one)"
       echo
       return 0
     fi
     for kind in $KINDS; do
       n=$(profile_entries "$1" "$kind" | grep -c . || :)
-      [ "$n" -eq 0 ] && continue
+      dr=$(profile_drops "$1" "$kind" | grep . || :)
+      [ "$n" -eq 0 ] && [ -z "$dr" ] && continue
       echo "    $kind ($n)"
-      report_list "$1" "$kind"
+      [ "$n" -eq 0 ] || report_list "$1" "$kind"
+      [ -z "$dr" ] || printf '%s\n' "$dr" | sed "s/^/      drops common's /"
     done
     echo
   }
