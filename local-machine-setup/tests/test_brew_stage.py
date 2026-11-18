@@ -325,6 +325,55 @@ class BrewStageTest(unittest.TestCase):
         app = self.stubs.parent / "Applications"
         return link, app, {"MACHINE_SETUP_APPLICATIONS_DIR": str(app)}
 
+    def tailscale_daemon(self, daemon):
+        prefix = self.home / "brewprefix"
+        write_exec(prefix / "opt/tailscale/bin/tailscaled", "#!/bin/sh\n")
+        brew = (self.stubs / "brew").read_text()
+        (self.stubs / "brew").write_text(brew.replace(
+            "#!/bin/sh\n", f'#!/bin/sh\n[ "$1" = --prefix ] && {{ echo "{prefix}"; exit 0; }}\n', 1))
+        write_exec(self.stubs / "tailscale",
+                   '#!/bin/sh\nprintf "Client: 1.104.7\\n  long version: 1.104.7-tabc\\n'
+                   f'Daemon: {daemon}\\n"\n')
+        sudo_log = self.home / "sudo.log"
+        write_exec(self.stubs / "sudo", f'#!/bin/sh\necho "$*" >> "{sudo_log}"\n')
+        return sudo_log
+
+    def test_a_daemon_older_than_its_binary_is_restarted(self):
+        """sd:9245: brew upgraded tailscale under a running tailscaled,
+        which kept 1.104.5 against a 1.104.7 binary and dropped its
+        control link."""
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.5-tdef")
+        dry = self.run_verb("update", "brew", **env)
+        self.assertIn("DIFFERS tailscaled runs 1.104.5-tdef, its binary is 1.104.7-tabc", dry.stdout)
+        self.assertFalse(sudo_log.exists() and "restart" in sudo_log.read_text())
+        self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("services restart tailscale", sudo_log.read_text())
+        self.assertIn("-n ", sudo_log.read_text())
+
+    def test_a_daemon_that_matches_is_left_alone(self):
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.7-tabc")
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("ok      tailscaled 1.104.7-tabc matches its binary", result.stdout)
+        self.assertNotIn("restart", sudo_log.read_text() if sudo_log.exists() else "")
+
+    def test_a_new_build_of_the_same_version_is_restarted(self):
+        # sd:9245 review: the short version hid a swapped binary.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.7-told")
+        self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("services restart tailscale", sudo_log.read_text())
+
+    def test_a_tailscale_that_is_not_the_brew_formula_is_left_alone(self):
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.5-tdef")
+        for f in (self.home / "brewprefix/opt/tailscale/bin").iterdir():
+            f.unlink()
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertNotIn("tailscaled runs", result.stdout)
+        self.assertNotIn("restart", sudo_log.read_text() if sudo_log.exists() else "")
+
     def test_the_tailscale_app_cask_gets_a_cli_wrapper(self):
         """sd:6554: the cask ships no CLI; sd-db and repo-sync.sh call
         `tailscale` from PATH. sd:6583: through a symlink the app dies, so

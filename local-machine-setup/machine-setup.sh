@@ -997,6 +997,35 @@ stage_brew() {
   python_firewall || :
   mosh_firewall
   tailscale_cli_link
+  tailscale_daemon_match || :
+}
+
+# A brew upgrade replaces tailscale's binary under a running tailscaled,
+# which keeps the old one; the mismatch dropped a satellite's control link
+# twice (sd:9245). Restart it through the repair drop-in's sudo -n, which
+# allows `brew services restart tailscale`. The app cask's daemon is no
+# brew service. Fails when the restart does, so the sweep counts it.
+# The full versions are compared, build id too: an upgrade that keeps the
+# short version still swaps the binary (sd:9245 review). A machine whose
+# tailscale is not the brew formula has no brew service to restart.
+tailscale_daemon_match() {
+  tailscale_runs_app && return 0
+  command -v tailscale >/dev/null 2>&1 || return 0
+  tm_brew=$(bound_step 60 brew --prefix 2>/dev/null) || tm_brew=
+  [ -n "$tm_brew" ] && [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
+  tm_out=$(bound_step 30 tailscale version --daemon 2>/dev/null) || tm_out=
+  tm_cli=$(printf '%s\n' "$tm_out" | sed -n 's/^ *long version: //p')
+  tm_dmn=$(printf '%s\n' "$tm_out" | sed -n 's/^Daemon: //p')
+  if [ -z "$tm_cli" ] || [ -z "$tm_dmn" ]; then
+    echo "  WARN    tailscaled version unknown: tailscale version --daemon gave no answer"
+    return 0
+  fi
+  if [ "$tm_cli" = "$tm_dmn" ]; then
+    echo "  ok      tailscaled $tm_dmn matches its binary"
+    return 0
+  fi
+  echo "  DIFFERS tailscaled runs $tm_dmn, its binary is $tm_cli"
+  run_ok bound_step 120 sudo -n "$tm_brew/bin/brew" services restart tailscale
 }
 
 # True when the profile runs Tailscale as the tailscale-app cask, not the
@@ -7468,6 +7497,7 @@ cmd_upgrade() {
     # Formulae only: bare `brew upgrade` takes casks too, with no askpass and
     # past BREW_SKIPPED_CASKS, and failed the step on them (sd:8101).
     sweep_step "brew upgrade" "$SOURCE_BUILD_BOUND" brew upgrade --formula
+    tailscale_daemon_match || failed="$failed, tailscaled restart"
     # The profile's missing formulae: the brew stage leaves one that needs a
     # source build to this sweep (sd:7103).
     fw=$(formula_wants) || failed="$failed, brew formula list"
