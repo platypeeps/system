@@ -130,6 +130,7 @@ PLISTBUDDY="${MACHINE_SETUP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
 # The applications folder the apps scan and the iterm2 stage look in. The
 # override exists for the tests, so a capture there never lists this Mac's apps.
 APPLICATIONS_DIR="${MACHINE_SETUP_APPLICATIONS_DIR:-/Applications}"
+LAUNCHDAEMONS_DIR="${MACHINE_SETUP_LAUNCHDAEMONS_DIR:-/Library/LaunchDaemons}"
 
 # Every mutation is opt-in. Without --apply the script only prints its plan,
 # so `setup` on an unfamiliar machine is safe to run first and read.
@@ -1006,20 +1007,19 @@ stage_brew() {
 # allows `brew services restart tailscale`. The app cask's daemon is no
 # brew service. Fails when the restart does, so the sweep counts it.
 # The full versions are compared, build id too: an upgrade that keeps the
-# short version still swaps the binary (sd:9245 review). A machine whose
-# tailscale is not the brew formula has no brew service to restart.
+# short version still swaps the binary (sd:9245 review). Only brew's own
+# system service is restarted: its plist must run the keg's tailscaled,
+# so another daemon on the socket is never restarted for (lane review).
 tailscale_daemon_match() {
-  tailscale_runs_app && return 0
+  manifest brew | sed 's|.*/||' | grep -qx tailscale || return 0
   tm_brew=$(bound_step 60 brew --prefix 2>/dev/null) || tm_brew=
   [ -n "$tm_brew" ] && [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
-  # The formula's own CLI: another tailscale earlier on PATH can match
-  # the stale daemon and hide the upgrade (sd:9245 lane review). The
-  # socket is the brew service's: by default the CLI may ask the app's.
-  tm_out=$(bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" \
-    --socket=/var/run/tailscaled.socket \
-    version --daemon 2>/dev/null) || tm_out=
-  tm_cli=$(printf '%s\n' "$tm_out" | sed -n 's/^ *long version: //p')
-  tm_dmn=$(printf '%s\n' "$tm_out" | sed -n 's/^Daemon: //p')
+  tm_plist=
+  for f in "$LAUNCHDAEMONS_DIR/sh.brew.tailscale.plist" "$LAUNCHDAEMONS_DIR/homebrew.mxcl.tailscale.plist"; do
+    grep -qF "$tm_brew/opt/tailscale/bin/tailscaled" "$f" 2>/dev/null && tm_plist=$f
+  done
+  [ -n "$tm_plist" ] || return 0
+  tailscale_daemon_versions
   if [ -z "$tm_cli" ] || [ -z "$tm_dmn" ]; then
     echo "  WARN    tailscaled version unknown: tailscale version --daemon gave no answer"
     return 0
@@ -1029,7 +1029,28 @@ tailscale_daemon_match() {
     return 0
   fi
   echo "  DIFFERS tailscaled runs $tm_dmn, its binary is $tm_cli"
-  run_ok bound_step 120 sudo -n "$tm_brew/bin/brew" services restart tailscale
+  run_ok bound_step 120 sudo -n "$tm_brew/bin/brew" services restart tailscale || return 1
+  [ "$APPLY" -eq 1 ] || return 0
+  # A restart that did not take must say so, not repeat silently each
+  # night (lane review).
+  for _ in 1 2 3 4 5; do
+    tailscale_daemon_versions
+    [ "$tm_cli" != "$tm_dmn" ] || { echo "  ok      tailscaled restarted on $tm_dmn"; return 0; }
+    sleep 1
+  done
+  note_failure "tailscaled still runs ${tm_dmn:-an unknown version} after the restart, not $tm_cli" 1
+  return 1
+}
+
+# Sets tm_cli and tm_dmn from the formula's own CLI: another tailscale
+# earlier on PATH can match the stale daemon (sd:9245 lane review). The
+# socket is the brew service's: by default the CLI may ask the app's.
+tailscale_daemon_versions() {
+  tm_out=$(bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" \
+    --socket=/var/run/tailscaled.socket \
+    version --daemon 2>/dev/null) || tm_out=
+  tm_cli=$(printf '%s\n' "$tm_out" | sed -n 's/^ *long version: //p')
+  tm_dmn=$(printf '%s\n' "$tm_out" | sed -n 's/^Daemon: //p')
 }
 
 # True when the profile runs Tailscale as the tailscale-app cask, not the
@@ -9933,6 +9954,8 @@ environment:
   MACHINE_SETUP_NSMB_CONF  tests only: the file that stands in for /etc/nsmb.conf
   MACHINE_SETUP_APPLICATIONS_DIR  tests only: the folder the apps scan and
                           the App Store sweep read (default /Applications)
+  MACHINE_SETUP_LAUNCHDAEMONS_DIR  tests only: the folder that holds brew's
+                          tailscale service plist (default /Library/LaunchDaemons)
 HELPEOF
       exit 0
       ;;
