@@ -300,18 +300,22 @@ def write_rows(record, a) -> None:
     try:
         with sd_db.transaction(connection):
             for prov, entry in record["usage"].items():
-                # A row is stamped when its reading was taken: a Codex left
-                # idle reads its last event, not this run (sd:9256 review).
-                taken = entry.get("read_at") or record["ts"]
-                at = usage_sources.event_time(taken)
-                for window in entry.get("windows") or []:
+                # A row is stamped when its reading was taken: Codex's
+                # last event, cswap's fetch (sd:9256 review). A window
+                # with no read time is never stamped as this run.
+                taken = entry.get("read_at")
+                windows = entry.get("windows") or []
+                if windows and usage_sources.event_time(taken) is None:
+                    record["errors"]["sd_db.%s" % prov] = "a reading with no read time"
+                    continue
+                for window in windows:
                     minutes, percent = window.get("window_minutes"), window.get("used_percent")
                     if minutes is None or percent is None:
                         continue
                     reset = usage_sources.event_time(window.get("resets_at"))
-                    if at is not None and at < now and reset is not None and reset <= now:
-                        # A reading older than this run whose window reset
-                        # since: its share is not what is used now.
+                    if reset is not None and reset <= now:
+                        # The window reset after its reading: its share is
+                        # not what is used now.
                         stale += 1
                         continue
                     try:

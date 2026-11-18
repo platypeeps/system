@@ -297,15 +297,25 @@ def read_provider(name, env, fetch, now):
 
 
 def claude_reading(accounts, error, now):
-    """claude from `cswap list --json`'s account entries (agent-meter's)."""
+    """claude from `cswap list --json`'s account entries (agent-meter's).
+
+    `read_at` is when cswap fetched the active account's usage, not this
+    run: cswap answers from its cache (sd:9256 review). An active window
+    with no fetch time is unknown; no active window gives no read_at."""
     if error is not None:
         return reading("claude", "unknown", "cswap", error=error)
     # The active account's seven days is the provider's window, as the
     # meter row has always had it; every account stays in `accounts`.
-    windows = [window("seven_day", account["pct"], 10080, account.get("resetsAt"))
-               for account in accounts if account.get("active") and is_number(account.get("pct"))]
-    return reading("claude", "ok", "cswap", read_at=iso(now), accounts=accounts,
-                   windows=windows[:1])
+    active = [account for account in accounts
+              if account.get("active") and is_number(account.get("pct"))][:1]
+    if not active:
+        return reading("claude", "ok", "cswap", accounts=accounts)
+    account = active[0]
+    if event_time(account.get("fetchedAt")) is None:
+        return reading("claude", "unknown", "cswap", accounts=accounts,
+                       error="the active account has no fetch time")
+    return reading("claude", "ok", "cswap", read_at=account["fetchedAt"], accounts=accounts,
+                   windows=[window("seven_day", account["pct"], 10080, account.get("resetsAt"))])
 
 
 def event_time(stamp):
@@ -317,9 +327,16 @@ def event_time(stamp):
     return moment if moment.tzinfo is not None else None
 
 
+def account_wide(limits):
+    """The account's own bucket: Codex reads a missing `limit_id` as
+    "codex" and shows that one first (app-server account_processor.rs)."""
+    return limits.get("limit_id") in (None, "codex")
+
+
 def codex_reading(home=None):
-    """codex from the newest `token_count` with `rate_limits`, by the event's
-    own time, across the newest rollouts.
+    """codex from the newest account-wide `token_count` with `rate_limits`,
+    by the event's own time, across the newest rollouts. A model's own
+    bucket (another `limit_id`) is never the account's reading.
 
     `read_at` is that event's time, so a Codex left idle reads old and the
     view can call it stale rather than current. A file's mtime orders the
@@ -350,13 +367,15 @@ def codex_reading(home=None):
                 limits = payload.get("rate_limits")
                 if payload.get("type") != "token_count" or not isinstance(limits, dict):
                     continue
+                if not account_wide(limits):
+                    continue
                 at = event_time(event.get("timestamp"))
                 if at is None:
                     continue
                 fields = codex_fields(limits)
             except (ValueError, KeyError, TypeError, AttributeError, ReadFailed):
                 continue
-            # The file's last valid event is its newest; the others are older.
+            # The file's last account-wide event is its newest one.
             if best_at is None or at > best_at:
                 best, best_at = reading("codex", "ok", "codex-sessions",
                                         read_at=event["timestamp"], **fields), at
@@ -364,7 +383,7 @@ def codex_reading(home=None):
     if best is not None:
         return best
     return reading("codex", "unknown", "codex-sessions",
-                   error="no token_count with rate_limits in the newest %d rollouts" % CODEX_FILES)
+                   error="no account-wide token_count in the newest %d rollouts" % CODEX_FILES)
 
 
 def codex_fields(limits):

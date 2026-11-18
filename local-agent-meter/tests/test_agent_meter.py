@@ -90,7 +90,7 @@ CSWAP_LIST = {
          "organizationUuid": "00000000-0000-4000-8000-000000000002",
          "isOrganization": True, "active": True, "usageStatus": "ok",
          "usage": {
-             "sevenDay": {"pct": 67.0, "resetsAt": "2026-11-04T03:00:00+00:00",
+             "sevenDay": {"pct": 67.0, "resetsAt": "2100-01-04T03:00:00+00:00",
                           "expectedPct": 92.3},
              "scoped": []},
          "usageFetchedAt": "2026-11-03T14:05:15Z"},
@@ -206,12 +206,12 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(record["sd_db"], {"rows": 3})
         self.assertNotIn("sd_db", record["errors"])
         self.assertIn("rtk", record["errors"])
-        stamp = record["ts"].replace("Z", "+00:00")
-        # Codex's rows carry its event's time, not the run's (sd:9256 review).
-        event = "2026-11-03T14:00:00+00:00"
+        # Each row carries its reading's time, not the run's (sd:9256
+        # review): cswap's fetch of the active account, Codex's event.
+        fetched, event = "2026-11-03T14:05:15+00:00", "2026-11-03T14:00:00+00:00"
         self.assertEqual(
             self.meter_rows(),
-            [("claude", "anthropic", 10080, 67.0, stamp, "meter") + (None,) * 6,
+            [("claude", "anthropic", 10080, 67.0, fetched, "meter") + (None,) * 6,
              ("codex", "openai", 300, 12.5, event, "meter") + (None,) * 6,
              ("codex", "openai", 10080, 23.0, event, "meter") + (None,) * 6],
         )
@@ -230,6 +230,17 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(record["sd_db"], {"rows": 2, "stale": 1})
         self.assertEqual([row[:3] for row in self.meter_rows()],
                          [("claude", "anthropic", 10080), ("codex", "openai", 10080)])
+
+    def test_a_cached_claude_week_that_reset_gets_no_row(self):
+        # sd:9256 review: cswap's cached reading looked fresh.
+        data = json.loads(json.dumps(CSWAP_LIST))
+        data["accounts"][1]["usage"]["sevenDay"]["resetsAt"] = "2026-11-04T03:00:00+00:00"
+        self.cswap_fixture.write_text(json.dumps(data), encoding="utf-8")
+        done = self.run_meter("--db", str(self.db))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["sd_db"], {"rows": 2, "stale": 1})
+        self.assertEqual([row[0] for row in self.meter_rows()], ["codex", "codex"])
 
     def test_no_meter_path_calls_codexbar(self):
         """sd:9256: done when no meter path calls codexbar."""
@@ -414,7 +425,7 @@ class MeterRun(unittest.TestCase):
              "resetsAt": "2026-11-03T18:00:00.222257+00:00", "expectedPct": 97.7,
              "scoped": {"Fable": 5.0}, "fetchedAt": "2026-11-03T14:07:07Z"},
             {"number": 2, "active": True, "status": "ok", "pct": 67.0,
-             "resetsAt": "2026-11-04T03:00:00+00:00", "expectedPct": 92.3,
+             "resetsAt": "2100-01-04T03:00:00+00:00", "expectedPct": 92.3,
              "scoped": {}, "fetchedAt": "2026-11-03T14:05:15Z"},
         ])
         self.assertIn("cswap 2 accounts", done.stdout)

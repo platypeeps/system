@@ -221,15 +221,24 @@ class Readers(unittest.TestCase):
 
     def test_claude_reads_every_account_and_the_active_ones_week(self):
         accounts = [{"number": 1, "active": False, "pct": 10.0, "resetsAt": "a"},
-                    {"number": 2, "active": True, "pct": 67.0, "resetsAt": "2026-11-20T00:00:00Z"}]
+                    {"number": 2, "active": True, "pct": 67.0, "resetsAt": "2026-11-20T00:00:00Z",
+                     "fetchedAt": "2026-11-17T12:00:00Z"}]
         got = usage_sources.claude_reading(accounts, None, NOW)
         self.assertEqual(got["status"], "ok")
+        # sd:9256 review: cswap's fetch time, not the collector's.
+        self.assertEqual(got["read_at"], "2026-11-17T12:00:00Z")
         self.assertEqual(got["accounts"], accounts)
         self.assertEqual(got["windows"], [{"name": "seven_day", "used_percent": 67.0,
                                            "window_minutes": 10080,
                                            "resets_at": "2026-11-20T00:00:00Z"}])
         failed = usage_sources.claude_reading(None, "exit 1", NOW)
         self.assertEqual((failed["status"], failed["error"]), ("unknown", "exit 1"))
+        for fetched in (None, "", "yesterday", "2026-11-17T12:00:00"):
+            with self.subTest(fetched=fetched):
+                accounts[1]["fetchedAt"] = fetched
+                got = usage_sources.claude_reading(accounts, None, NOW)
+                self.assertEqual((got["status"], got["read_at"], got["windows"]),
+                                 ("unknown", None, []))
 
 
 class Server:
@@ -355,6 +364,17 @@ class Codex(unittest.TestCase):
         got = usage_sources.codex_reading(self.home)
         self.assertEqual((got["read_at"], got["windows"][0]["used_percent"]),
                          ("2026-11-17T19:00:00Z", 55.0))
+
+    def test_a_models_own_bucket_never_replaces_the_accounts(self):
+        # sd:9256 review: a newer model-specific snapshot won on time.
+        self.rollout("x", [self.event(used=40.0, stamp="2026-11-17T18:00:00Z", limit_id="codex"),
+                           self.event(used=90.0, stamp="2026-11-17T19:00:00Z",
+                                      limit_id="codex_other")], 2000)
+        got = usage_sources.codex_reading(self.home)
+        self.assertEqual((got["read_at"], got["windows"][0]["used_percent"]),
+                         ("2026-11-17T18:00:00Z", 40.0))
+        self.rollout("x", [self.event(used=90.0, limit_id="codex_other")], 2000)
+        self.assertEqual(usage_sources.codex_reading(self.home)["status"], "unknown")
 
     def test_no_limits_anywhere_is_unknown(self):
         got = usage_sources.codex_reading(self.home)
