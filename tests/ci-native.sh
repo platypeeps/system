@@ -331,7 +331,7 @@ case "$SUITE_LEG" in
     run_suite agent-prompt sh local-agent-prompt/agent-prompt.sh test -v
     run_suite health-check sh local-health-check/health-check.sh test -v
     run_suite cron-jobs sh local-cron-jobs/cron-jobs.sh test -v
-    run_suite agent-meter "$PYTHON" local-agent-meter/tests/test_agent_meter.py -v
+    run_suite agent-meter "$PYTHON" -m unittest discover -s local-agent-meter/tests -t local-agent-meter -v
     run_suite dependabot sh local-dependabot/dependabot.sh test -v
     run_suite herdr sh local-herdr/herdr.sh test -v
     run_suite adversarial-gate sh local-adversarial-gate/adversarial-gate.sh test -v

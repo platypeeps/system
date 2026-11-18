@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """agent-meter — append one agent-usage reading to a JSONL ledger.
 
-Reads the meters and changes nothing else: `codexbar usage` per provider, and
-`rtk gain` for the token-proxy savings. One JSON object per line, appended.
+Reads the meters and changes nothing else: per provider its usage (claude
+from `cswap list --json`, codex from its session logs, see usage_sources.py),
+and `rtk gain` for the token-proxy savings. One JSON object per line, appended.
 
 The ledger is `--out`, else AGENT_METER_FILE (exported, or set in
 <config>/agent-meter/.env), else <config>/agent-meter/meter.jsonl, where
@@ -48,8 +49,16 @@ pct used at reset: the last reading before the reset. Readings come every
 4 h, so that is a lower bound, printed with how long before the reset it
 was read. Slot numbers follow `cswap swap` and `cswap move`.
 
+Since sd:9256 a live reading feeds the dashboard from a Settings list (a
+workflow database setting row), one `heartbeat` state row per entry, the
+latest per key being the answer: `usage` reads every 'usage providers'
+line (rows `usage:<provider>`). A failed read is a row with status
+`unknown`, never `ok`; a provider with no usage API is `no-source`. It
+writes no ledger line.
+
   agent-meter.py [--out PATH] [--db PATH | --no-db] [--providers claude,codex] [--timeout S]
   agent-meter.py accounts [--out PATH]
+  agent-meter.py usage [--db PATH]
 """
 
 import argparse
@@ -57,14 +66,18 @@ import datetime
 import json
 import math
 import os
-import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import system_tools_config  # noqa: E402
+
+# The script's own folder: `python -I` (the job's launch) leaves it off.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import usage_sources  # noqa: E402
 
 sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-workflow").expanduser() / "lib"))
 
@@ -92,8 +105,12 @@ DUP_GAP_S = 3600
 # here for `--help` only; `--db` left unset hands None to the library, so the
 # two cannot drift.
 DEFAULT_DB = "~/.local/share/sd/sd.db"
-# The two rate windows codexbar reports per provider, each a `meter` row.
-WINDOWS = ("primary", "secondary")
+#: The Settings lists the live readings follow (the pack's `setting_rows.LISTS`
+#: shows them), and the `heartbeat` state key prefix of each reading's row.
+USAGE_LIST = "dashboard.usage_providers"
+USAGE_KEY = "usage:"
+#: Reads at once in a live run.
+WORKERS = 8
 
 
 def find_bin(name):
@@ -243,49 +260,13 @@ def read_accounts(timeout):
         return None, "unexpected cswap shape: %s" % type(e).__name__
 
 
-#: The codexbar fields the ledger keeps, and no other. A whitelist on purpose:
-#: an entry also holds the account's email, id, login method and organization
-#: (`account`, `usage.accountEmail`, `usage.identity`, `usage.loginMethod`),
-#: and the ledger is snapshotted into another repository. `True` keeps a
-#: scalar leaf, a dict keeps those keys of a dict, a list holds a dict spec
-#: for each item. Free text is out (`pace.*.summary`); an error's message lives in `errors`, not the entry.
-_WINDOW = {"usedPercent": True, "windowMinutes": True, "resetsAt": True}
-CODEXBAR_KEEP = {
-    "provider": True, "source": True, "version": True,
-    "usage": {
-        "primary": _WINDOW, "secondary": _WINDOW, "tertiary": _WINDOW,
-        "updatedAt": True,
-        "extraRateWindows": [{"id": True, "title": True, "window": _WINDOW}],
-    },
-    "pace": {w: {"stage": True, "deltaPercent": True, "expectedUsedPercent": True,
-                 "willLastToReset": True}
-             for w in WINDOWS},
-    "rateWindowLabels": {w: True for w in WINDOWS},
-}
-
-
-EMAIL = re.compile(r"\S+@\S+")
-
-
-def keep_fields(value, spec):
-    """value cut down to spec; a field of another shape is dropped, not copied."""
-    if spec is True:
-        return value if value is None or isinstance(value, (str, int, float, bool)) else None
-    if isinstance(spec, list):
-        return ([keep_fields(item, spec[0]) for item in value]
-                if isinstance(value, list) else None)
-    if not isinstance(value, dict):
-        return None
-    return {key: keep_fields(value[key], sub) for key, sub in spec.items() if key in value}
-
-
 def write_rows(record, a) -> None:
     """One `meter` cost row per provider per window, or the reason there is none.
 
     Every failure is an `errors` entry on the record and never an exception:
     the import (the pack's `lib/` holds `sd_db`; a pack without it does not),
     the open (no database, a schema this library does not match), a refusal
-    per window (a provider the registry does not name, a percentage codexbar
+    per window (a provider the registry does not name, a percentage a source
     reported outside 0..100: the library's `MeterRefused` and only that), or
     anything else on the way to the commit (no registry beside the store,
     an SQLite error), which is the run's and not one window's. The JSONL line that follows
@@ -313,11 +294,9 @@ def write_rows(record, a) -> None:
     rows = 0
     try:
         with sd_db.transaction(connection):
-            for prov, entry in record["codexbar"].items():
-                usage = (entry.get("usage") if isinstance(entry, dict) else None) or {}
-                for window in WINDOWS:
-                    reading = usage.get(window) or {}
-                    minutes, percent = reading.get("windowMinutes"), reading.get("usedPercent")
+            for prov, entry in record["usage"].items():
+                for window in entry.get("windows") or []:
+                    minutes, percent = window.get("window_minutes"), window.get("used_percent")
                     if minutes is None or percent is None:
                         continue
                     try:
@@ -329,7 +308,7 @@ def write_rows(record, a) -> None:
                         # other's. Anything else (no registry beside the
                         # store, an SQLite error) is the run's, and reaches
                         # the handler below as one `errors.sd_db`.
-                        record["errors"]["sd_db.%s.%s" % (prov, window)] = str(e)
+                        record["errors"]["sd_db.%s.%s" % (prov, window["name"])] = str(e)
     except Exception as e:
         # The transaction rolled back, so the count is the truth: nothing landed.
         record["errors"]["sd_db"] = "%s: %s" % (type(e).__name__, e)
@@ -339,39 +318,80 @@ def write_rows(record, a) -> None:
     record["sd_db"] = {"rows": rows}
 
 
-def collect(a) -> None:
-    record = {"ts": datetime.datetime.now(datetime.timezone.utc)
-                                     .strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "codexbar": {}, "accounts": None, "rtk": None, "errors": {}}
-    brief = []
+def read_one(provider, accounts, accounts_error, now):
+    """One provider's reading: claude from cswap's accounts, codex from its
+    session logs, the rest from their own usage APIs."""
+    if provider == "claude":
+        return usage_sources.claude_reading(accounts, accounts_error, now)
+    if provider == "codex":
+        return usage_sources.codex_reading()
+    return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now)
 
-    codexbar = find_bin("codexbar")
-    providers = [p.strip() for p in a.providers.split(",") if p.strip()]
-    for prov in providers:
-        if not codexbar:
-            record["errors"]["codexbar"] = "codexbar binary not found"
-            break
-        data, err = run_json(
-            [codexbar, "usage", "--format", "json", "--provider", prov], a.timeout)
-        if err is None and isinstance(data, list) and data:
-            raw = data[0] if isinstance(data[0], dict) else {}
-            entry = keep_fields(raw, CODEXBAR_KEEP) or {}
-            record["codexbar"][prov] = entry
-            usage = entry.get("usage") or {}
-            pri = (usage.get("primary") or {}).get("usedPercent")
-            sec = (usage.get("secondary") or {}).get("usedPercent")
-            failure = raw.get("error")
-            err = failure.get("message") if isinstance(failure, dict) else None
-            if isinstance(err, str):
-                # A message can quote the account it failed for.
-                err = EMAIL.sub("<email>", err)
-            brief.append("%s %s%%/%s%%" % (prov, pri, sec) if err is None
-                         else "%s ERR" % prov)
-            if err is not None:
-                record["errors"]["codexbar." + prov] = err
-        else:
-            record["errors"]["codexbar." + prov] = err or "empty response"
-            brief.append("%s ERR" % prov)
+
+def live(a, list_key, starting, parse, read, row_key) -> None:
+    """Read one Settings list, read each entry, write one `heartbeat` row each.
+
+    The list is the setting row `list_key`. A database that never held it
+    gets `starting`, written once, so Settings shows what the job reads; a
+    cleared row is "not configured" and nothing is read. A refused line is
+    an SD_REPORT_ATTENTION line and the rest still run. The rows land in one
+    transaction: all of a run's readings, or none and the old ones stand.
+    A store that does not open, read or take the rows exits 1.
+    """
+    try:
+        import sd_db
+        from sd_db import writes
+        connection = sd_db.connect(a.db, write=True)
+    except Exception as e:
+        print("agent-meter %s: the workflow database did not open: %s: %s"
+              % (a.command, type(e).__name__, e), file=sys.stderr)
+        sys.exit(1)
+    try:
+        held = writes.read_settings(connection, [list_key])
+        if list_key not in held:
+            try:
+                writes.set_setting(connection, list_key, starting, before=None)
+                held = {list_key: starting}
+                print("agent-meter %s: %s started with %d lines"
+                      % (a.command, list_key, len(starting.splitlines())))
+            except writes.SettingStale:
+                held = writes.read_settings(connection, [list_key])
+        text = held.get(list_key)
+        if text is None:
+            print("agent-meter %s: %s is cleared; nothing to read" % (a.command, list_key))
+            return
+        entries, problems = parse(text)
+        for problem in problems:
+            print("SD_REPORT_ATTENTION: %s %s" % (list_key, problem))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        with ThreadPoolExecutor(WORKERS) as pool:
+            readings = list(pool.map(lambda entry: read(entry, now), entries))
+        with sd_db.transaction(connection):
+            for name, body in readings:
+                writes.record_state(connection, "heartbeat", key=row_key + name, body=body)
+    except Exception as e:
+        print("agent-meter %s: no rows written: %s: %s" % (a.command, type(e).__name__, e),
+              file=sys.stderr)
+        sys.exit(1)
+    finally:
+        connection.close()
+    counts = {}
+    for _, body in readings:
+        counts[body["status"]] = counts.get(body["status"], 0) + 1
+    print("agent-meter %s: %d rows (%s)" % (a.command, len(readings), ", ".join(
+        "%d %s" % (n, status) for status, n in sorted(counts.items()))))
+
+
+def read_usage(name, now):
+    accounts, error = read_accounts(30) if name == "claude" else (None, None)
+    return name, read_one(name, accounts, error, now)
+
+
+def collect(a) -> None:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    record = {"ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "usage": {}, "accounts": None, "rtk": None, "errors": {}}
+    brief = []
 
     accounts, err = read_accounts(a.timeout)
     record["accounts"] = accounts
@@ -380,6 +400,16 @@ def collect(a) -> None:
     else:
         record["errors"]["cswap"] = err
         brief.append("cswap ERR")
+
+    for prov in [p.strip() for p in a.providers.split(",") if p.strip()]:
+        entry = read_one(prov, accounts, err, now)
+        record["usage"][prov] = entry
+        if entry["status"] == "ok":
+            brief.append("%s %s" % (prov, "/".join(
+                "%s%%" % fmt_pct(w["used_percent"]) for w in entry["windows"]) or "ok"))
+        else:
+            record["errors"]["usage." + prov] = entry.get("error") or entry["status"]
+            brief.append("%s %s" % (prov, "ERR" if entry["status"] == "unknown" else entry["status"]))
 
     rtk = find_bin("rtk")
     if rtk:
@@ -534,14 +564,15 @@ def fmt_pct(value):
 def main() -> None:
     p = argparse.ArgumentParser(prog="agent-meter.py", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", nargs="?", choices=["accounts"],
+    p.add_argument("command", nargs="?", choices=["accounts", "usage"],
                    help="accounts: per cswap account, the pct used at each "
-                        "past 7-day reset and the current pace; omit to "
-                        "append one reading")
+                        "past 7-day reset and the current pace; usage: one "
+                        "row per 'usage providers' line; omit to append one reading")
     p.add_argument("--out", default=default_out(),
                    help="JSONL ledger to append to (default: %(default)s)")
     p.add_argument("--providers", default=",".join(PROVIDERS),
-                   help="comma-separated codexbar providers (default: %(default)s)")
+                   help="comma-separated providers the ledger reading holds "
+                        "(default: %(default)s)")
     p.add_argument("--timeout", type=int, default=120,
                    help="seconds per meter command (default 120)")
     where = p.add_mutually_exclusive_group()
@@ -553,6 +584,9 @@ def main() -> None:
     a = p.parse_args()
     if a.command == "accounts":
         report_accounts(a)
+    elif a.command == "usage":
+        live(a, USAGE_LIST, usage_sources.STARTING,
+             usage_sources.parse_providers, read_usage, USAGE_KEY)
     else:
         collect(a)
 
