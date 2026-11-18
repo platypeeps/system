@@ -150,6 +150,10 @@ class NightlyReview(unittest.TestCase):
         self.assertTrue(context["purpose"] and context["feeds"], context)
         self.assertEqual([line.split(":", 1)[0] for line in context["rubric"]], ["Approve", "Reject"])
         self.assertIn("review-approved:", context["feeds"])
+        # Bundle review: the pack files the task when the operator rules
+        # (review.rule), not at the next run.
+        self.assertIn("when you rule", context["feeds"])
+        self.assertNotIn("06:15", context["feeds"])
 
     def test_a_batch_file_without_its_context_is_refused(self):
         written = self.tmp / "no-context.json"

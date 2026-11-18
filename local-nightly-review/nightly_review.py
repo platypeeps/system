@@ -43,8 +43,8 @@ CONTEXT = {
                "is worth a task.",
                "Reject: the problem is not real, not worth the time, or already handled; "
                "the subject stays out of the queue for 90 days."],
-    "feeds": ("At the next 06:15 run, Approve files one sd task under the ref "
-              "review-approved:<note>; Reject keeps the subject out for 90 days; "
+    "feeds": ("Approve files one sd task under the ref review-approved:<note> when "
+              "you rule; Reject keeps the subject out of the queue for 90 days; "
               "a suggestion not ruled in 7 days expires. No setting changes."),
 }
 REPLY_KEYS = {"questions"}
@@ -198,6 +198,9 @@ def check(path, day):
     if context is None:
         # A file the job wrote before sd:9480 (a run stopped before filing):
         # the context is the job's own field, so it is added, not refused.
+        # Rewritten on disk, not kept in memory: `sd-db review file` reads
+        # the file, the rename is atomic (a crash leaves either file, and
+        # both file), and the file then matches what was filed.
         _write(path, {**found, "context": CONTEXT})
     print(len(questions))
 

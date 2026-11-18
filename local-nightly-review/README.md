@@ -23,7 +23,9 @@ into this machine's `<config>/cron-jobs/jobs/<host>/` on the hub, then run
 ## Steps
 
 1. **Apply.** `sd-db review apply nightly` files one task for each Approve
-   ruling, under the ref `review-approved:<note>`. It expires a suggestion that
+   ruling, under the ref `review-approved:<note>`, that has none yet: the
+   pack files that task when the operator rules (sd:4924), so this step is
+   the backstop. It expires a suggestion that
    waited 7 days without a ruling, and closes each settled batch.
    Then `sd-db review priorities` (pack sd:6726) applies priority rulings,
    closes items left unranked for 30 days, and files one batch of P1-P4
