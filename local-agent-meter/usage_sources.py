@@ -321,11 +321,13 @@ def read_heygen(env, fetch, now):
     # /v2/user/remaining_quota answers 410 since 2026-11-18; its successor holds the wallet (sd:9415).
     data = fetch("https://api.heygen.com/v3/users/me", {"X-Api-Key": key(env, "HEYGEN_API_KEY")})
     data = data.get("data") if isinstance(data, dict) else None
-    wallet = data.get("wallet") if isinstance(data, dict) else None
-    if not isinstance(wallet, dict):
-        raise ReadFailed("no wallet object")
-    if wallet.get("currency") != "usd":
-        raise ReadFailed("wallet currency is not usd")
+    if not isinstance(data, dict):
+        raise ReadFailed("no data object")
+    # A plan account has no wallet, or one in another currency: the
+    # meter has no usd balance for it, one plain unknown each read.
+    wallet = data.get("wallet")
+    if not isinstance(wallet, dict) or wallet.get("currency") != "usd":
+        raise ReadFailed("no usd wallet")
     return {"balance": {"amount": number(wallet.get("remaining_balance"), "remaining_balance"),
                         "unit": "usd"}}
 

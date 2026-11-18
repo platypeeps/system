@@ -129,6 +129,18 @@ def replace_numbers(value, extreme):
 
 
 class Readers(unittest.TestCase):
+    def test_a_heygen_account_without_a_usd_wallet_is_no_usd_wallet(self):
+        # Lead re-review on sd:9415: a plan account (no wallet, a null one,
+        # or one in another currency) reads as one plain unknown.
+        for data in ({"billing_type": "subscription"}, {"billing_type": "subscription", "wallet": None},
+                     {"billing_type": "wallet", "wallet": {"currency": "eur", "remaining_balance": 5}}):
+            with self.subTest(data=data):
+                got = usage_sources.read_provider("heygen", {"HEYGEN_API_KEY": SECRET},
+                                                  answering({"data": data}), NOW)
+                self.assertEqual((got["status"], got["source"], got["error"]),
+                                 ("unknown", "api", "no usd wallet"))
+                self.assertIsNone(got["balance"])
+
     def test_each_reader_reads_its_answer(self):
         for name, (var, answer, expected) in ANSWERS.items():
             with self.subTest(provider=name):
