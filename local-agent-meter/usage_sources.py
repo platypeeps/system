@@ -21,6 +21,7 @@ import math
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -73,12 +74,31 @@ def from_epoch(seconds, what):
         raise ReadFailed("%s is not a time" % what) from None
 
 
+def origin(url):
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme, parts.hostname, parts.port or {"http": 80, "https": 443}.get(parts.scheme)
+
+
+class SameOrigin(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect within its origin only: urllib sends every header,
+    the key too, on to wherever a redirect points (sd:9256 review)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if origin(newurl) != origin(req.full_url):
+            fp.close()
+            raise ReadFailed("redirect to another origin")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch_json(url, headers=None, timeout=TIMEOUT):
     """GET url as JSON, or ReadFailed with a message that holds no body."""
     request = urllib.request.Request(url, headers={**(headers or {}), "User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # Built per call: the proxy handler reads the environment when built.
+        with urllib.request.build_opener(SameOrigin).open(request, timeout=timeout) as response:
             body = response.read()
+    except ReadFailed:
+        raise
     except urllib.error.HTTPError as e:
         e.close()
         raise ReadFailed("HTTP %d" % e.code) from None
@@ -169,6 +189,8 @@ def read_minimax(env, fetch, now):
                 (name + " weekly", "weekly_start_time", "weekly_end_time",
                  "current_weekly_remaining_percent")):
             begin, finish = number(model.get(start), start), number(model.get(end), end)
+            if not begin < finish or not 0 <= number(model.get(left), left) <= 100:
+                raise ReadFailed("%s is not a window" % label)
             windows.append(window(label, 100 - number(model.get(left), left),
                                   int((finish - begin) // 60000),
                                   from_epoch(finish / 1000, end)))
@@ -222,7 +244,11 @@ def read_openai(env, fetch, now):
         raise ReadFailed("no data list")
     total = 0.0
     for bucket in buckets:
-        for result in (bucket.get("results") or []) if isinstance(bucket, dict) else []:
+        # A bucket with no results list is not a day with no spend.
+        results = bucket.get("results") if isinstance(bucket, dict) else None
+        if not isinstance(results, list):
+            raise ReadFailed("a bucket of another shape")
+        for result in results:
             amount = result.get("amount") if isinstance(result, dict) else None
             if not isinstance(amount, dict):
                 raise ReadFailed("a result of another shape")
@@ -264,6 +290,9 @@ def read_provider(name, env, fetch, now):
         fields = reader(env, fetch, now)
     except ReadFailed as e:
         return reading(name, "unknown", "api", error=str(e))
+    except (AttributeError, TypeError, ValueError) as e:
+        # One provider's answer never costs the run (sd:9256 review).
+        return reading(name, "unknown", "api", error="another shape: %s" % type(e).__name__)
     return reading(name, "ok", "api", read_at=iso(now), **fields)
 
 

@@ -24,6 +24,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import sd_db
 from sd_db import writes
@@ -39,6 +40,17 @@ SCRIPT = HERE / "agent-meter.py"
 NOW = datetime.datetime(2026, 11, 17, 20, 0, tzinfo=datetime.timezone.utc)
 SECRET = "sk-test-0123456789-secret"
 LOCAL = {"NO_PROXY": "*", "no_proxy": "*"}
+#: urllib reads the lower-case name first; both go.
+PROXIES = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+
+
+def local_only(test):
+    """No proxy for this test's reads, the environment restored after it."""
+    patcher = mock.patch.dict(os.environ, LOCAL)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    for name in PROXIES:
+        os.environ.pop(name, None)
 
 #: Each keyed reader: its variable, an answer in the live shape (checked
 #: 2026-11-17), and what the reading must hold.
@@ -165,6 +177,25 @@ class Readers(unittest.TestCase):
                     self.assertEqual(got["status"], "unknown", got)
                     json.dumps(got, allow_nan=False)
 
+    def test_an_openai_bucket_of_another_shape_is_unknown_not_zero(self):
+        # sd:9256 review: a number raised TypeError; no results read as 0.
+        for bucket in ({"results": 5}, {}, {"results": None}, {"results": "x"}, 5, None):
+            with self.subTest(bucket=bucket):
+                got = usage_sources.read_provider(
+                    "openai", {"OPENAI_ADMIN_KEY": SECRET}, answering({"data": [bucket]}), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+                self.assertIsNone(got["spend"])
+        got = usage_sources.read_provider(
+            "openai", {"OPENAI_ADMIN_KEY": SECRET}, answering({"data": [{"results": []}]}), NOW)
+        self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0))
+
+    def test_a_reader_that_raises_is_unknown_and_costs_no_other(self):
+        def strange(env, fetch, now):
+            raise TypeError("x")
+        with mock.patch.dict(usage_sources.READERS, {"strange": strange}):
+            got = usage_sources.read_provider("strange", {}, failing("unreached"), NOW)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "another shape: TypeError"))
+
     def test_no_source_providers_read_no_source_not_zero(self):
         for name in usage_sources.NO_SOURCE:
             with self.subTest(provider=name):
@@ -209,16 +240,19 @@ class Server:
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                code, body = outer.routes.get(self.path, (404, b"{}"))
+                outer.seen.append((self.path, dict(self.headers)))
+                code, body, *extra = outer.routes.get(self.path, (404, b"{}"))
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
+                for name, value in (extra[0] if extra else {}).items():
+                    self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(body if isinstance(body, bytes) else json.dumps(body).encode())
 
             def log_message(self, *args):
                 pass
 
-        self.routes = routes
+        self.routes, self.seen = routes, []
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = "http://127.0.0.1:%d" % self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -236,7 +270,7 @@ def closed_port():
 
 class Fetch(unittest.TestCase):
     def setUp(self):
-        os.environ.update(LOCAL)
+        local_only(self)
         self.server = Server({"/ok": (200, {"a": 1}), "/broken": (500, b"oops"),
                               "/garbage": (200, b"<html>")})
         self.addCleanup(self.server.close)
@@ -252,6 +286,21 @@ class Fetch(unittest.TestCase):
         with self.assertRaises(ReadFailed) as caught:
             usage_sources.fetch_json("http://127.0.0.1:%d/" % closed_port())
         self.assertNotIn(SECRET, str(caught.exception))
+
+    def test_a_redirect_to_another_origin_never_carries_the_key(self):
+        # sd:9256 review: urllib sent the key on to the redirect's target.
+        other = Server({"/ok": (200, {"b": 2})})
+        self.addCleanup(other.close)
+        self.server.routes["/away"] = (302, b"", {"Location": other.url + "/ok"})
+        self.server.routes["/here"] = (302, b"", {"Location": "/ok"})
+        with self.assertRaises(ReadFailed) as caught:
+            usage_sources.fetch_json(self.server.url + "/away",
+                                     {"Authorization": "Bearer " + SECRET, "X-Api-Key": SECRET})
+        self.assertEqual(str(caught.exception), "redirect to another origin")
+        self.assertEqual(other.seen, [])
+        got = usage_sources.fetch_json(self.server.url + "/here", {"X-Api-Key": SECRET})
+        self.assertEqual(got, {"a": 1})
+        self.assertEqual(self.server.seen[-1][1].get("X-Api-Key"), SECRET)
 
 
 class Codex(unittest.TestCase):
@@ -345,7 +394,9 @@ class Services(unittest.TestCase):
             "x rss https://example.test\n"
             "y http ftp://example.test\n"
             "z http https://example.test Bad\n"
-            "only two\n")
+            "only two\n"
+            "v http http://[bad\n"
+            "w http http://example.test:99999\n")
         self.assertEqual([s[0] for s in services], ["claude", "github", "slack"])
         self.assertEqual(services[1][3], ["copilot", "github"])
         self.assertEqual(services[2][3], [])
@@ -354,7 +405,9 @@ class Services(unittest.TestCase):
             "line 6: kind is not one of statuspage, slack, google-incidents, http",
             "line 7: url is not http(s)",
             "line 8: a provider is not a lower-case name",
-            "line 9: want <name> <kind> <url> [provider]"])
+            "line 9: want <name> <kind> <url> [provider]",
+            "line 10: url is not http(s)",
+            "line 11: url is not http(s)"])
 
     def test_the_starting_list_parses_whole(self):
         services, problems = service_status.parse_services(service_status.STARTING)
@@ -405,14 +458,47 @@ class Services(unittest.TestCase):
                           {"status": "broken", "active_incidents": []}, [5, "x"], {"status": "ok"}):
                 with self.subTest(kind=kind, shape=shape):
                     got = self.read(kind, shape)
-                    if kind == "google-incidents" and shape in ([], [5, "x"]):
-                        # An empty incident list is a real ok; entries of
-                        # another shape are no open incident.
-                        continue
+                    if kind == "google-incidents" and shape == []:
+                        continue  # an empty incident list is a real ok
                     self.assertEqual(got["status"], "unknown", got)
 
+    def test_a_collection_of_another_shape_is_unknown_never_ok(self):
+        # sd:9256 review: a string or a dict was walked as no incident.
+        shapes = {"statuspage": [dict(SUMMARY, incidents="abc"), dict(SUMMARY, incidents={"a": 1}),
+                                 dict(SUMMARY, incidents=[5]), dict(SUMMARY, components="x"),
+                                 dict(SUMMARY, components=[None])],
+                  "slack": [{"status": "ok", "active_incidents": [5]}],
+                  "google-incidents": [[5, "x"], [{"end": None}, "x"]]}
+        for kind, answers in shapes.items():
+            for answer in answers:
+                with self.subTest(kind=kind, answer=answer):
+                    self.assertEqual(self.read(kind, answer)["status"], "unknown")
+
+    def test_every_stored_field_is_a_short_string_or_none(self):
+        for value in ({"a": 1}, [1], 5, True, "x" * 1000):
+            incident = {"id": "abc", "status": "investigating", "name": value, "shortlink": value,
+                        "impact": value, "created_at": value, "title": value, "url": value,
+                        "type": value, "date_created": value, "service_name": value,
+                        "external_desc": value, "uri": value, "status_impact": value,
+                        "begin": value}
+            answers = {"statuspage": dict(SUMMARY, incidents=[incident],
+                                          components=[{"name": value, "status": value}]),
+                       "slack": {"status": "active", "active_incidents": [incident]},
+                       "google-incidents": [incident]}
+            for kind, answer in answers.items():
+                with self.subTest(kind=kind, value=value):
+                    got = self.read(kind, answer)
+                    self.assertNotEqual(got["status"], "unknown", got)
+                    for entry in got["incidents"] + got["components"]:
+                        for field, stored in entry.items():
+                            self.assertTrue(stored is None or (isinstance(stored, str)
+                                            and len(stored) <= service_status.TITLE),
+                                            (field, stored))
+        got = self.read("google-incidents", [{"uri": "http://[bad", "status_impact": "X"}])
+        self.assertIsNone(got["incidents"][0]["url"])
+
     def test_the_http_kind(self):
-        os.environ.update(LOCAL)
+        local_only(self)
         server = Server({"/up": (200, b"<html>"), "/down": (503, b""), "/gone": (404, b"")})
         self.addCleanup(server.close)
         for path, status in (("/up", "ok"), ("/down", "outage"), ("/gone", "unknown")):
@@ -450,7 +536,7 @@ class Live(unittest.TestCase):
         day.mkdir(parents=True)
         (day / "rollout-x.jsonl").write_text(json.dumps(Codex.event()) + "\n", encoding="utf-8")
         keys = {var for var, _, _ in ANSWERS.values()}
-        self.env = {k: v for k, v in os.environ.items() if k not in keys}
+        self.env = {k: v for k, v in os.environ.items() if k not in keys and k not in PROXIES}
         self.env.update(LOCAL, CSWAP_BIN=str(self.cswap), CSWAP_FIXTURE=str(root / "cswap.json"),
                         CODEX_HOME=str(root / "codex"))
 
@@ -542,8 +628,7 @@ class Live(unittest.TestCase):
     def test_services_on_a_never_held_list_starts_it(self):
         # Every starting line points outside; an unroutable proxy keeps the
         # test off the network, and each read is then unknown.
-        self.env.update(HTTPS_PROXY="http://127.0.0.1:%d" % closed_port(),
-                        HTTP_PROXY="http://127.0.0.1:%d" % closed_port(),
+        self.env.update({name: "http://127.0.0.1:%d" % closed_port() for name in PROXIES},
                         NO_PROXY="", no_proxy="")
         done = self.run_live("services")
         self.assertEqual(done.returncode, 0, done.stderr)

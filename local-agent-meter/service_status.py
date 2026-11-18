@@ -11,7 +11,10 @@ The 'status services' list holds one service per line:
 
 `status` is `ok`, `degraded`, `outage` or `unknown`. A read that fails (no
 answer, an HTTP error, an answer of another shape) is `unknown`, never `ok`:
-the job cannot tell its own network from the service's.
+the job cannot tell its own network from the service's. A collection of
+another shape, or an entry in it that is not an object, is another shape
+too. Every incident and component field is a string of at most TITLE
+characters, or None.
 """
 
 import urllib.error
@@ -60,6 +63,15 @@ INDICATOR = {"none": "ok", "minor": "degraded", "maintenance": "degraded",
              "major": "outage", "critical": "outage"}
 
 
+def web_url(url):
+    try:
+        parts = urllib.parse.urlsplit(url)
+        parts.port  # a bad port raises here, not at the read
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
 def parse_services(text):
     """[(name, kind, url, providers)] in order, and one problem per refused line."""
     services, problems, seen = [], [], set()
@@ -76,7 +88,7 @@ def parse_services(text):
             problems.append("line %d: name is not a new lower-case name" % number)
         elif kind not in KINDS:
             problems.append("line %d: kind is not one of %s" % (number, ", ".join(KINDS)))
-        elif urllib.parse.urlsplit(url).scheme not in ("http", "https") or not urllib.parse.urlsplit(url).netloc:
+        elif not web_url(url):
             problems.append("line %d: url is not http(s)" % number)
         elif not all(NAME.fullmatch(p) for p in providers):
             problems.append("line %d: a provider is not a lower-case name" % number)
@@ -87,7 +99,26 @@ def parse_services(text):
 
 
 def title(text):
-    return " ".join(str(text or "").replace("*", "").split())[:TITLE]
+    return " ".join(text.replace("*", "").split())[:TITLE] if isinstance(text, str) else ""
+
+
+def short(value):
+    """A stored field: a string cut to TITLE, or None."""
+    return value[:TITLE] if isinstance(value, str) else None
+
+
+def link(base, uri):
+    try:
+        return short(urllib.parse.urljoin(base, uri)) if isinstance(uri, str) else None
+    except ValueError:
+        return None
+
+
+def entries(value, what):
+    """A list of objects, or ReadFailed: a strange entry is not no incident."""
+    if not isinstance(value, list) or not all(isinstance(entry, dict) for entry in value):
+        raise ReadFailed("%s of another shape" % what)
+    return value
 
 
 def read_statuspage(url, fetch):
@@ -99,17 +130,18 @@ def read_statuspage(url, fetch):
     page = data.get("page") if isinstance(data.get("page"), dict) else {}
     base = page.get("url") if isinstance(page.get("url"), str) else ""
     incidents = []
-    for incident in data.get("incidents") or []:
-        if not isinstance(incident, dict) or incident.get("status") in ("resolved", "postmortem"):
+    for incident in entries(data.get("incidents"), "incidents"):
+        if incident.get("status") in ("resolved", "postmortem"):
             continue
-        link = incident.get("shortlink")
-        if not isinstance(link, str) and base and isinstance(incident.get("id"), str):
-            link = base.rstrip("/") + "/incidents/" + incident["id"]
-        incidents.append({"title": title(incident.get("name")), "url": link if isinstance(link, str) else None,
-                          "impact": incident.get("impact"), "started_at": incident.get("created_at")})
-    components = [{"name": title(c.get("name")), "status": c.get("status")}
-                  for c in data.get("components") or []
-                  if isinstance(c, dict) and c.get("status") not in (None, "operational")]
+        url = incident.get("shortlink")
+        if not isinstance(url, str) and base and isinstance(incident.get("id"), str):
+            url = base.rstrip("/") + "/incidents/" + incident["id"]
+        incidents.append({"title": title(incident.get("name")), "url": short(url),
+                          "impact": short(incident.get("impact")),
+                          "started_at": short(incident.get("created_at"))})
+    components = [{"name": title(c.get("name")), "status": short(c.get("status"))}
+                  for c in entries(data.get("components"), "components")
+                  if c.get("status") not in (None, "operational")]
     return {"status": INDICATOR[indicator], "indicator": indicator,
             "incidents": incidents, "components": components}
 
@@ -120,8 +152,9 @@ def read_slack(url, fetch):
     active = data.get("active_incidents") if isinstance(data, dict) else None
     if state not in ("ok", "active") or not isinstance(active, list):
         raise ReadFailed("no status")
-    incidents = [{"title": title(i.get("title")), "url": i.get("url"), "impact": i.get("type"),
-                  "started_at": i.get("date_created")} for i in active if isinstance(i, dict)]
+    incidents = [{"title": title(i.get("title")), "url": short(i.get("url")),
+                  "impact": short(i.get("type")), "started_at": short(i.get("date_created"))}
+                 for i in entries(active, "active_incidents")]
     status = "ok"
     if state == "active" or incidents:
         status = "outage" if any(i["impact"] == "outage" for i in incidents) else "degraded"
@@ -130,21 +163,19 @@ def read_slack(url, fetch):
 
 def read_google(url, fetch):
     data = fetch(url)
-    if not isinstance(data, list):
-        raise ReadFailed("not an incident list")
     incidents = []
-    for incident in data:
-        if not isinstance(incident, dict) or incident.get("end"):
+    for incident in entries(data, "incident list"):
+        if incident.get("end"):
             continue
-        desc = str(incident.get("external_desc") or "").strip().splitlines()
+        desc = incident.get("external_desc")
+        desc = desc.strip().splitlines() if isinstance(desc, str) else []
         # The summary's first line is a heading ("**Summary:**"); take the line after.
         lines = [line for line in desc if line.strip() and not line.strip().startswith("**Summary")]
-        uri = incident.get("uri")
-        incidents.append({"title": title("%s: %s" % (incident.get("service_name") or "",
+        incidents.append({"title": title("%s: %s" % (title(incident.get("service_name")),
                                                      lines[0] if lines else "")),
-                          "url": urllib.parse.urljoin(url, uri) if isinstance(uri, str) else None,
-                          "impact": incident.get("status_impact"),
-                          "started_at": incident.get("begin")})
+                          "url": link(url, incident.get("uri")),
+                          "impact": short(incident.get("status_impact")),
+                          "started_at": short(incident.get("begin"))})
     status = "ok"
     if incidents:
         status = "outage" if any(i["impact"] == "SERVICE_OUTAGE" for i in incidents) else "degraded"
