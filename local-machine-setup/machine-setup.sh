@@ -1035,6 +1035,21 @@ tailscale_daemon_match() {
     [ -z "$tm_other" ] || echo "  SKIP    tailscaled check: $tm_other runs no $tm_brew/opt/tailscale/bin/tailscaled"
     return 0
   fi
+  # The plist on disk is not the service: launchd must hold it, running
+  # the keg's tailscaled, before a version gap is drift or a restart is
+  # due (sd:9282 lead review). A print that fails or times out is no
+  # answer, said aloud.
+  tm_label=${tm_plist##*/}
+  tm_label=${tm_label%.plist}
+  if ! tm_svc=$(bound_step 30 launchctl print "system/$tm_label" 2>/dev/null); then
+    echo "  SKIP    tailscaled check: launchd holds no system/$tm_label"
+    return 0
+  fi
+  if ! printf '%s\n' "$tm_svc" | grep -qx "	state = running" ||
+    ! printf '%s\n' "$tm_svc" | grep -qxF "	program = $tm_brew/opt/tailscale/bin/tailscaled"; then
+    echo "  SKIP    tailscaled check: system/$tm_label is not running $tm_brew/opt/tailscale/bin/tailscaled"
+    return 0
+  fi
   tailscale_daemon_versions
   if [ -z "$tm_cli" ] || [ -z "$tm_dmn" ]; then
     # FAILED, a drift word: a probe that failed checked nothing (sd:9282),

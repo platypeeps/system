@@ -326,7 +326,7 @@ class BrewStageTest(unittest.TestCase):
         return link, app, {"MACHINE_SETUP_APPLICATIONS_DIR": str(app),
                            "MACHINE_SETUP_LAUNCHDAEMONS_DIR": str(self.home / "LaunchDaemons")}
 
-    def tailscale_daemon(self, daemon, client="1.104.7-tabc", takes=True, after=None):
+    def tailscale_daemon(self, daemon, client="1.104.7-tabc", takes=True, after=None, service="running"):
         prefix = self.home / "brewprefix"
         write_exec(prefix / "opt/tailscale/bin/tailscaled", "#!/bin/sh\n")
         daemons = self.home / "LaunchDaemons"
@@ -357,6 +357,16 @@ class BrewStageTest(unittest.TestCase):
         write_exec(self.stubs / "tailscale",
                    '#!/bin/sh\nprintf "Client: 1.104.7\\n  long version: 1.104.7-tabc\\n'
                    f'Daemon: {daemon}\\n"\n')
+        # launchd's view of the service: `print system/<label>` as the real
+        # one prints it, running the keg's daemon; "stopped" and "other"
+        # change one line, and "unloaded" exits 113 as launchctl does.
+        program = f"{prefix}/opt/tailscale/bin/tailscaled" if service != "other" else "/usr/local/bin/tailscaled"
+        state = "not running" if service == "stopped" else "running"
+        print_ok = "" if service != "unloaded" else "exit 113\n"
+        write_exec(self.stubs / "launchctl",
+                   '#!/bin/sh\n[ "$1 $2" = "print system/sh.brew.tailscale" ] || exit 1\n' + print_ok
+                   + f'printf "system/sh.brew.tailscale = {{\\n\\tstate = {state}\\n\\n'
+                   f'\\tprogram = {program}\\n\\tpid = 9197\\n}}\\n"\n')
         sudo_log = self.home / "sudo.log"
         after = client if after is None else after
         restart = f'case "$*" in *"services restart tailscale"*) printf %s "{after}" > "{running}" ;; esac\n'
@@ -541,6 +551,18 @@ class BrewStageTest(unittest.TestCase):
         result = self.run_verb("update", "brew", "--apply", **env)
         self.assertIn("ok      tailscaled restarted on 1.104.7-tabc", result.stdout)
         self.assertNotIn("FAILED  tailscaled", result.stdout)
+
+    def test_a_service_launchd_does_not_run_is_never_checked(self):
+        # sd:9282 lead review: the plist on disk was read as the service.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        for service, line in (("unloaded", "launchd holds no system/sh.brew.tailscale"),
+                              ("stopped", "system/sh.brew.tailscale is not running"),
+                              ("other", "system/sh.brew.tailscale is not running")):
+            sudo_log = self.tailscale_daemon("1.104.5-tdef", service=service)
+            result = self.run_verb("update", "brew", "--apply", **env)
+            self.assertIn(f"SKIP    tailscaled check: {line}", result.stdout, service)
+            self.assertNotIn("DIFFERS tailscaled", result.stdout, service)
+            self.assertNotIn("restart", sudo_log.read_text() if sudo_log.exists() else "", service)
 
     def test_a_restart_that_takes_says_so(self):
         _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
