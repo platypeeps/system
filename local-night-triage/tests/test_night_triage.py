@@ -297,16 +297,19 @@ class NightTriage(unittest.TestCase):
                            "body": f"night-triage on node1: waits until {on} on job-1: a weekly fix; "
                                    f"parked until then (runs: {recorded})."},
                           {"id": 701, "kind": "comment", "session": "login", "resolved_at": None,
-                           "timestamp": "2026-11-16T10:00:02+00:00", "body": "Parked by login"}]
+                           "timestamp": "2026-11-16T10:00:02+00:00", "body": "Parked by login"},
+                          {"id": 702, "kind": "comment", "session": "login", "resolved_at": None,
+                           "timestamp": "2026-11-16T10:00:03+00:00",
+                           "body": "night-triage on node1: parked by this run."}]
         return alert
 
     def test_a_hand_park_after_an_unpark_is_never_woken(self):
         # sd:9272: the job's wait note was still its latest, so the wake
         # unparked a park the operator made by hand.
         alert = self.parked(day(-1))
-        alert["notes"] += [{"id": 702, "kind": "comment", "session": "login", "resolved_at": None,
+        alert["notes"] += [{"id": 703, "kind": "comment", "session": "login", "resolved_at": None,
                             "body": "Unparked by login"},
-                           {"id": 703, "kind": "comment", "session": "login", "resolved_at": None,
+                           {"id": 704, "kind": "comment", "session": "login", "resolved_at": None,
                             "body": "Parked by login"}]
         self.given({"1": json.loads(json.dumps(alert))}, [])
         result = self.run_job()
@@ -423,7 +426,7 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(self.items()["1"]["parked_at"])
         self.assertIn("filed as sd:77", self.comments("1")[-1])
-        self.assertIn("unparked: the wait for job-1 on", self.comments("1")[1])
+        self.assertIn("unparked: the wait for job-1 on", self.comments("1")[2])
 
     def test_a_wait_whose_job_failed_again_is_unparked_and_triaged(self):
         # sd:9243 review: a repeat folds into the parked report and adds no
@@ -433,7 +436,7 @@ class NightTriage(unittest.TestCase):
         result = self.run_job()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(self.items()["1"]["parked_at"])
-        self.assertIn("unparked: the job failed again", self.comments("1")[1])
+        self.assertIn("unparked: the job failed again", self.comments("1")[2])
 
     def test_an_alert_waiting_on_a_dated_run_is_noted_and_parked(self):
         # sd:9243: nothing can settle it before a scheduled run on a known date.
@@ -450,7 +453,7 @@ class NightTriage(unittest.TestCase):
         self.assertIsNotNone(item.get("parked_at"))
         self.assertEqual(self.comments("1"), [
             f"night-triage on node1: waits until {on} on job-1: the fix lands with the weekly run; "
-            "parked until then (runs: 3)."])
+            "parked until then (runs: 3).", "night-triage on node1: parked by this run."])
         self.assertIn("waiting", (self.tmp / "prompt").read_text())
 
     def test_a_compact_wait_date_is_written_so_the_wake_reads_it(self):
@@ -467,8 +470,9 @@ class NightTriage(unittest.TestCase):
         import night_triage
         alert = {"fields": json.dumps({"repeats": {"count": 2}})}
         self.assertEqual(night_triage.wake(alert, [{"body": note, "timestamp": "2026-11-16T10:00:00+00:00"},
-                                                   {"kind": "comment", "body": "Parked by login",
-                                                    "timestamp": "2026-11-16T10:00:02+00:00"}], "node1"),
+                                                   {"kind": "comment", "body": "Parked by login"},
+                                                   {"body": "night-triage on node1: parked by this run."}],
+                                                  "node1"),
                          "the job failed again")
 
     def test_a_park_mark_in_a_followup_is_no_park(self):
@@ -485,24 +489,34 @@ class NightTriage(unittest.TestCase):
                 self.assertEqual(night_triage.wake(alert, notes, "node1"), "the job failed again")
 
     def test_a_hand_park_after_a_crash_before_the_job_s_park_stays(self):
-        # sd:9348: the run died between its wait note and its --park; a
-        # hand park a day later read as the job's and woke.
-        alert = self.parked(day(-1))
-        alert["notes"][1]["timestamp"] = "2026-11-17T09:00:00+00:00"
-        self.given({"1": json.loads(json.dumps(alert))}, [])
-        result = self.run_job()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.items()["1"], alert)
-        self.assertIn("sd:1 is parked; skipped", result.stderr)
+        # sd:9348, and the bundle review: the run died between its wait
+        # note and its --park; the operator's own park, a day or only two
+        # minutes later, has no parked note of the job's and stays.
+        for when in ("2026-11-17T09:00:00+00:00", "2026-11-16T10:02:00+00:00"):
+            with self.subTest(park=when):
+                alert = self.parked(day(-1))
+                del alert["notes"][2]
+                alert["notes"][1]["timestamp"] = when
+                self.given({"1": json.loads(json.dumps(alert))}, [])
+                result = self.run_job()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.items()["1"], alert)
+                self.assertIn("sd:1 is parked; skipped", result.stderr)
 
-    def test_a_park_without_a_timestamp_stays_and_says_so(self):
-        alert = self.parked(day(-1))
-        del alert["notes"][1]["timestamp"]
-        self.given({"1": json.loads(json.dumps(alert))}, [])
-        result = self.run_job()
-        self.assertEqual(self.items()["1"], alert)
-        self.assertIn("night-triage: park note 701 or wait note 700 has no readable timestamp; left parked",
-                      result.stderr)
+    def test_a_parked_note_not_right_after_the_park_is_no_proof(self):
+        # The marker must follow the job's park: one after another note,
+        # or one a hand park follows, holds.
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        alert = {"fields": json.dumps({"repeats": {"count": 2}})}
+        wait, park, marker = self.parked(day(2))["notes"]
+        other = {"kind": "comment", "session": "abc", "body": "a note"}
+        for notes in ([wait, park, other, marker], [wait, other, park, marker],
+                      [wait, park, marker, dict(park, body="Unparked by login"), park]):
+            with self.subTest(notes=[n["body"][:20] for n in notes]):
+                self.assertIsNone(night_triage.wake(alert, notes, "node1"))
+        self.assertEqual(night_triage.wake(alert, [wait, park, marker, other], "node1"), "the job failed again")
 
     def test_a_claim_without_a_timestamp_is_held_and_says_so(self):
         alert = report("node1")

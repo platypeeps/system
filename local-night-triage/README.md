@@ -37,9 +37,10 @@ into `<config>/cron-jobs/jobs/`, list `night-triage` in the machine's
    (sd:9272). A park this job made wakes: `sd task edit N --unpark` and
    a note, once the day after its wait date comes, or once the job's run
    count (`repeats`, which a folded repeat bumps) passes the one the wait
-   note recorded. A park is this job's only while its wait note is its
-   latest note and the one park or unpark since is that park: a park
-   after an unpark is a hand park, and stays (sd:9272).
+   note recorded. A park is this job's only when its own notes prove it:
+   its wait note, the pack's `Parked by` note and the job's
+   `parked by this run.` note, adjacent, and no park or unpark since.
+   Any other shape is a hand park, or a doubt, and stays (sd:9272).
 3. **Triage.** `claude -p` on Sonnet reads the alerts, the Operations, this
    machine section of `sd today`, and local status. A failed `sd today`
    fails the run. Operator ruling "Repair
@@ -66,7 +67,8 @@ into `<config>/cron-jobs/jobs/`, list `night-triage` in the machine's
      can do it;
    - `waiting`, naming a scheduled run and a real date within 8 days: the
      note gives the date and the job's run count, then
-     `sd task edit N --park` parks the alert (sd:9243); another date
+     `sd task edit N --park` parks the alert (sd:9243) and a
+     `parked by this run.` note marks the park as the job's; another date
      gets a "not settled" note;
    - anything else: stays open with a "not settled" note.
 

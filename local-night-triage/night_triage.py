@@ -63,9 +63,6 @@ INGEST_SESSION = "cron"
 CLAIM_HOURS = 24
 # The pack's audit note for a park or an unpark (sd_db.workflow.edit_item).
 PARK_MARK = re.compile(r"^(Parked|Unparked) by \S+$", re.M)
-# The job parks right after its wait note; a park later than this is not
-# the job's (sd:9348).
-PARK_WINDOW = datetime.timedelta(minutes=10)
 # One line of the audit comment the pack's edit_item writes, as its
 # workflow.AUDIT_LINE: a park mark counts only in such a note, never in a
 # followup or comment someone wrote (sd:9282 round 1).
@@ -83,6 +80,12 @@ def mine(host):
 
 def is_ours(note, host):
     return note["body"].startswith(mine(host))
+
+
+def parked_note(host):
+    """The note the job writes right after its own park: the pack's audit
+    note names the login, not the job, so this is the job's marker."""
+    return f"{mine(host)}: parked by this run."
 
 
 def is_claim(note, host):
@@ -130,33 +133,24 @@ def _wait_date(text):
 def wake(report, notes, host):
     """Why a parked alert comes back to triage, or None to leave it parked.
 
-    Only a park this job made wakes: its latest note is a wait, and the
-    one park or unpark since is the park that followed it. A park after an
-    unpark is a hand park, which stays (sd:9272); so is a park that came
-    more than PARK_WINDOW after the wait note: the pack's audit note names
-    the login, not the job, and a run that died between its note and its
-    park leaves a later hand park looking like the job's (sd:9348). It
-    wakes the day after
-    the dated run, or as soon as the job failed again, which the pack
-    folds into this report without a note (sd:9243 review).
+    Only a park this job made wakes, proved by its own notes, never by a
+    time window (sd:9282 bundle review): its wait note, the pack's one
+    "Parked by" audit note, then the job's parked note, adjacent, and no
+    park or unpark audit since. Any other shape holds: a hand park, even
+    minutes after a wait note whose run died before its park, has no
+    parked note (sd:9348); a hand unpark and park after it is an audit
+    (sd:9272). It wakes the day after the dated run, or as soon as the
+    job failed again, which the pack folds into this report without a
+    note (sd:9243 review).
     """
-    ours = [n for n in notes if is_ours(n, host)]
-    waited = WAITS.search(ours[-1]["body"]) if ours else None
-    if not waited:
+    ours = [i for i, n in enumerate(notes) if is_ours(n, host)]
+    if len(ours) < 2 or notes[ours[-1]]["body"] != parked_note(host) or ours[-2] != ours[-1] - 2:
         return None
-    since = notes[next(i for i, n in enumerate(notes) if n is ours[-1]) + 1:]
-    marks = [(m, n) for n in since if is_audit(n) for m in PARK_MARK.findall(n["body"])]
-    if [m for m, _ in marks] != ["Parked"]:
+    waited = WAITS.search(notes[ours[-2]]["body"])
+    audit = notes[ours[-1] - 1]
+    if not waited or not is_audit(audit) or PARK_MARK.findall(audit["body"]) != ["Parked"]:
         return None
-    try:
-        gap = (datetime.datetime.fromisoformat(marks[0][1]["timestamp"])
-               - datetime.datetime.fromisoformat(ours[-1]["timestamp"]))
-    except (KeyError, TypeError, ValueError):
-        # No proof the park is the job's: it stays, and says why.
-        print(f"night-triage: park note {marks[0][1].get('id')} or wait note {ours[-1].get('id')} "
-              "has no readable timestamp; left parked", file=sys.stderr)
-        return None
-    if not datetime.timedelta(0) <= gap <= PARK_WINDOW:
+    if any(PARK_MARK.search(n["body"]) for n in notes[ours[-1] + 1:] if is_audit(n)):
         return None
     on, run, runs = waited.groups()
     try:
@@ -432,6 +426,10 @@ def apply(binary, host, claims, context, reply):
                     raise
                 sd(binary, "task", "note", item, f"{mine(host)}: not parked: the report changed after "
                                                  "the note above; the next run settles it.")
+                return
+            # The job's marker on its own park. If this write fails, the park
+            # has no marker and never wakes: it holds, and the run fails.
+            sd(binary, "task", "note", item, parked_note(host))
             return
         if not acknowledge:
             return
