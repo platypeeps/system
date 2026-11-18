@@ -1021,7 +1021,7 @@ tailscale_daemon_match() {
   # (sd:9348).
   [ -n "$tm_brew" ] || { echo "  SKIP    tailscaled check: brew --prefix gave no answer"; return 0; }
   [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
-  tm_plist= tm_other=
+  tm_plist='' tm_other=''
   for f in "$LAUNCHDAEMONS_DIR/sh.brew.tailscale.plist" "$LAUNCHDAEMONS_DIR/homebrew.mxcl.tailscale.plist"; do
     if grep -qF "<string>$tm_brew/opt/tailscale/bin/tailscaled</string>" "$f" 2>/dev/null; then
       tm_plist=$f

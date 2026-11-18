@@ -2246,6 +2246,7 @@ hyg_item_state() {
     h_real=$(cd "$2" 2>/dev/null && pwd -P) || h_real=$2
     for h_k in "$2" "$h_real"; do
       printf '%s\n' "$h_k"
+      # shellcheck disable=SC2088  # writing a literal ~/ key on purpose
       case "$h_k" in ("$HOME"/*) printf '~/%s\n' "${h_k#"$HOME"/}" ;; esac
     done | awk '!seen[$0]++ { gsub(/\047/, "\047\047"); printf "%s\047%s\047", (NR > 1 ? ", " : ""), $0 }')
   hyg_sd_query "select status from item where id = $1 and repo in ($h_keys)"
