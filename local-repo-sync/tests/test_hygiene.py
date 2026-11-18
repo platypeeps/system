@@ -627,6 +627,72 @@ class HygieneTest(unittest.TestCase):
         self.assertIn("(sd:5783 is done", result.stdout)
         self.assertNotIn("sd:529", result.stdout)
 
+    # sd:9376: DONE lines named the wrong item.
+    def done_db(self, f, items, assignments=()):
+        """A real sd database: `items` are (id, status, repo) rows."""
+        import sqlite3
+        db = f.tmp / "sd-real.db"
+        with sqlite3.connect(db) as c:
+            c.execute("create table item (id integer primary key, status text, repo text)")
+            c.execute("create table assignment (id integer primary key, item integer)")
+            c.executemany("insert into item values (?, ?, ?)", items)
+            c.executemany("insert into assignment values (?, ?)", assignments)
+        return {"REPO_SYNC_SD_DB": str(db)}
+
+    def branches(self, f, repo, *names):
+        for name in names:
+            f.git(repo, "switch", "-q", "-c", name, "main")
+            f.commit(repo, name.replace("/", "_") + ".txt", "work\n", name)
+            f.git(repo, "push", "-q", "-u", "origin", name)
+        f.git(repo, "switch", "-q", "main")
+
+    def test_a_rebase_backup_build_branch_reads_its_assignment(self):
+        f = self.fixture()
+        repo = f.repo()
+        self.branches(f, repo, "build/sd-803-prerebase")
+        here = real(repo)
+        env = self.done_db(f, [(803, "done", here), (5783, "done", here)], [(803, 5783)])
+
+        result = f.run("hygiene", extra_env=env, expect=1)
+
+        self.assertIn("DONE     branch build/sd-803-prerebase", result.stdout)
+        self.assertIn("(sd:5783 is done", result.stdout)
+        self.assertNotIn("sd:803 is done", result.stdout)
+
+    def test_a_date_in_a_branch_name_is_no_item(self):
+        f = self.fixture()
+        repo = f.repo()
+        self.branches(f, repo, "fix/pack-advisories-1118", "fix/notes-2026-11-18")
+        here = real(repo)
+        env = self.done_db(f, [(1118, "done", here), (18, "done", here)])
+
+        result = f.run("hygiene", extra_env=env)
+
+        self.assertNotIn("DONE ", result.stdout)
+
+    def test_an_item_of_another_repo_is_not_the_branch_s(self):
+        f = self.fixture()
+        repo = f.repo()
+        self.branches(f, repo, "feat/thing-1234", "feat/other-1235")
+        env = self.done_db(f, [(1234, "done", "~/repos/elsewhere"), (1235, "done", real(repo))])
+
+        result = f.run("hygiene", extra_env=env, expect=1)
+
+        self.assertNotIn("sd:1234", result.stdout)
+        self.assertIn("DONE     branch feat/other-1235", result.stdout)
+
+    def test_an_item_keyed_under_the_home_is_the_branch_s(self):
+        # The pack stores a repo under the home as `~/<path>` (paths.key).
+        f = self.fixture()
+        repo = f.repo()
+        self.branches(f, repo, "feat/other-1235")
+        home = real(f.tmp)
+        env = self.done_db(f, [(1235, "done", "~/" + str(pathlib.Path(real(repo)).relative_to(home)))])
+
+        result = f.run("hygiene", extra_env={**env, "HOME": home}, expect=1)
+
+        self.assertIn("DONE     branch feat/other-1235", result.stdout)
+
     def test_a_landed_branch_for_a_done_item_is_deleted(self):
         """NEW. Requirement 5: the report-only classes cover branches whose
         content is not on the default branch. A landed branch goes by 3.4,
