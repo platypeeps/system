@@ -18,9 +18,10 @@ Never merge, push, use sudo, delete user data, edit a scheduled job or a permiss
 
 Reply with one JSON object and nothing else:
 
-{"alerts": [{"id": <alert id>, "outcome": "fixed" | "filed" | "operator", "summary": "<one line: cause and what you did>", "evidence": ["<the command and the output line that proves the fix>"], "followups": {"<followup note id>": "<how it is fixed or why it needs nothing, with evidence>"}, "item": "sd:<n>", "action": "<the exact operator action>", "why": "<why no tool can do it>"}]}
+{"alerts": [{"id": <alert id>, "outcome": "fixed" | "filed" | "operator" | "waiting", "summary": "<one line: cause and what you did>", "evidence": ["<the command and the output line that proves the fix>"], "followups": {"<followup note id>": "<how it is fixed or why it needs nothing, with evidence>"}, "item": "sd:<n>", "action": "<the exact operator action>", "why": "<why no tool can do it>", "run": "<the scheduled run>", "on": "YYYY-MM-DD"}]}
 
 - `fixed`: a clean run proves it; give `evidence` and one `followups` entry for every open followup of the alert. Missing evidence leaves the alert open. A followup a person wrote (its session is not `cron`) stays theirs to close: say what you did for it, and the alert stays open for them.
 - `filed`: a code bug or a hub-session followup; `item` names what you filed. The alert stays open and cites it.
 - `operator`: it truly needs the person (restart the machine, a decision, a login, money); a delete, restart or rerun a hub session can do is `filed`, not `operator`; `action` names the exact action and `why` says why no tool can. The alert stays open on Today.
+- `waiting`: only a scheduled run on a known date, within the next 8 days, can settle it (a weekly job that has not run since the fix); `run` names that job and `on` its date. The alert is parked until the day after that date, or until the job fails again; then it comes back to you. Anything you can fix, file or hand over is not `waiting`.
 - Answer every alert listed. With no alerts, reply `{"alerts": []}`.

@@ -5,6 +5,7 @@ reaches the real model, launchd or the workflow database. The machine is
 `node1`; `node2` is another machine of the fleet.
 """
 
+import datetime
 import json
 import os
 import shutil
@@ -15,6 +16,11 @@ import unittest
 from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parents[1]
+
+
+def day(offset):
+    """A date `offset` days from today, local time, as the job reads it."""
+    return (datetime.date.today() + datetime.timedelta(days=offset)).isoformat()
 
 FAKE_SD = r'''#!PYTHON
 import json, os, sys
@@ -32,7 +38,8 @@ def save():
 
 def show(key):
     item = items[key]
-    return {"item": {"id": int(key), "status": item["status"]}, "notes": item["notes"],
+    return {"item": {"id": int(key), "status": item["status"], "parked_at": item.get("parked_at")},
+            "notes": item["notes"],
             "revision": str(item["revision"])}
 
 def flag(name):
@@ -42,14 +49,17 @@ def flag(name):
 # one exits 2, as argparse does (sd:8143 review: `sd today --all`).
 FLAGS = {"reports list": {"--json"}, "today": {"--json", "--only"}, "task show": {"--json"},
          "task status": {"--json", "--if-revision", "--reason"}, "task note": {"--json", "--if-revision"},
-         "reports acknowledge": {"--json", "--if-revision", "--resolve-followups"}}
+         "reports acknowledge": {"--json", "--if-revision", "--resolve-followups"},
+         "task edit": {"--json", "--if-revision", "--park", "--unpark"}}
 verb = "today" if args[:1] == ["today"] else " ".join(args[:2])
 if verb not in FLAGS or any(a.startswith("--") and a not in FLAGS[verb] for a in args):
     save(); print("fake sd: unrecognized arguments: " + " ".join(args), file=sys.stderr); sys.exit(2)
 
 if args[:2] == ["reports", "list"]:
     print(json.dumps([{"id": int(k), "kind": "report", "status": v["status"], "title": v["title"],
-                       "fields": json.dumps({"report": {"host": v["host"], "job": "job-" + k}})}
+                       "parked_at": v.get("parked_at"),
+                       "fields": json.dumps({"report": {"host": v["host"], "job": "job-" + k},
+                                             **({"repeats": {"count": v["runs"]}} if "runs" in v else {})})}
                       for k, v in items.items()]))
 elif args[:1] == ["today"]:
     print("Attention (1)\n\nOperations, this machine (1)\n#1  job-1  a finding on node1\n\nDecisions (0)")
@@ -83,6 +93,12 @@ elif args[:2] == ["task", "note"]:
         import signal; os.kill(os.getppid(), signal.SIGKILL); sys.exit(1)
     if "--json" in args:
         print(json.dumps(show(args[2])))
+elif args[:2] == ["task", "edit"]:
+    item = items[args[2]]
+    if flag("--if-revision") not in (None, str(item["revision"])):
+        save(); print("refused: the item changed", file=sys.stderr); sys.exit(1)
+    item["parked_at"] = None if "--unpark" in args else "2026-11-17T15:40:00+00:00"
+    item["revision"] += 1
 elif args[:2] == ["reports", "acknowledge"]:
     item = items[args[2]]
     if os.environ.get("FAKE_SD_RACE") == "ack" and not state.get("raced"):
@@ -257,6 +273,132 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(self.items()["1"], report("node1", status="in_progress"))
         self.assertIn("sd:1 is claimed; skipped", result.stderr)
+
+    def parked(self, on, runs=1, recorded=1):
+        """An alert an earlier run parked to wait on job-1 on `on`, with the
+        job's run count `recorded` then and `runs` now."""
+        alert = dict(report("node1"), parked_at="2026-11-16T10:00:00+00:00", runs=runs)
+        alert["notes"] = [{"id": 700, "kind": "comment", "session": "login", "resolved_at": None,
+                           "body": f"night-triage on node1: waits until {on} on job-1: a weekly fix; "
+                                   f"parked until then (runs: {recorded})."}]
+        return alert
+
+    def test_a_date_in_the_summary_never_becomes_the_wake_date(self):
+        # sd:9243 review: a greedy parse took `on 2026-02-30:` from the
+        # summary, and every later scan died on the impossible date.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import night_triage
+        on = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
+        note, then = night_triage.verdict(
+            {"runs": 1, "job": "job-1"}, {"outcome": "waiting", "on": on, "run": "job-1",
+                          "summary": "the vendor says on 2026-02-30: maybe"}, "node1")
+        self.assertEqual(then, night_triage.PARK)
+        self.assertIsNone(night_triage.wake({"fields": "{}"}, [{"body": note}], "node1"))
+
+    def test_a_wait_never_parks_an_alert_with_a_persons_followup(self):
+        # sd:9243 lane review: a park hid an operator's open followup.
+        alert = report("node1", followups=[41], session="login")
+        self.given({"1": alert}, [
+            {"id": 1, "outcome": "waiting", "summary": "later", "run": "job-1", "on": day(3)}])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.items()["1"].get("parked_at"))
+        self.assertIn("not parked: followups a person wrote", self.comments("1")[0])
+
+    def test_a_wait_naming_another_job_does_not_park(self):
+        # sd:9243 lane review: any run name and date parked the alert.
+        sys.path.insert(0, str(FOLDER))
+        import night_triage
+        note, then = night_triage.verdict(
+            {"runs": 1, "job": "job-1"},
+            {"outcome": "waiting", "on": day(3), "run": "other-job", "summary": "s"}, "node1")
+        self.assertFalse(then)
+        self.assertIn("not this alert's job job-1", note)
+
+    def test_a_wait_on_a_report_with_no_job_does_not_park(self):
+        # sd:9243 lane review: with no job to compare, any run parked it.
+        sys.path.insert(0, str(FOLDER))
+        import night_triage
+        note, then = night_triage.verdict(
+            {"runs": 1}, {"outcome": "waiting", "on": day(3), "run": "job-1", "summary": "s"}, "node1")
+        self.assertFalse(then)
+        self.assertIn("the report names no job", note)
+
+    def test_a_parked_alert_is_skipped(self):
+        # sd:9243: an alert parked by hand, or waiting on a date to come with
+        # no new failure, is left alone.
+        alerts = {"1": dict(report("node1"), parked_at="2026-11-16T10:00:00+00:00"),
+                  "2": self.parked(day(3))}
+        self.given(json.loads(json.dumps(alerts)), [])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items(), alerts)
+        self.assertIn("sd:1 is parked; skipped", result.stderr)
+        self.assertIn("sd:2 is parked; skipped", result.stderr)
+
+    def test_a_wait_whose_date_passed_is_unparked_and_triaged(self):
+        # sd:9243 review: the park wakes once the dated run should have run.
+        self.given({"1": self.parked(day(-1))}, [
+            {"id": 1, "outcome": "filed", "summary": "the weekly run failed too", "item": "sd:77"}])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.items()["1"]["parked_at"])
+        self.assertIn("filed as sd:77", self.comments("1")[-1])
+        self.assertIn("unparked: the wait for job-1 on", self.comments("1")[1])
+
+    def test_a_wait_whose_job_failed_again_is_unparked_and_triaged(self):
+        # sd:9243 review: a repeat folds into the parked report and adds no
+        # note; the run count it bumps wakes the park before the date.
+        self.given({"1": self.parked(day(3), runs=2, recorded=1)}, [
+            {"id": 1, "outcome": "operator", "summary": "s", "action": "a", "why": "w"}])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.items()["1"]["parked_at"])
+        self.assertIn("unparked: the job failed again", self.comments("1")[1])
+
+    def test_an_alert_waiting_on_a_dated_run_is_noted_and_parked(self):
+        # sd:9243: nothing can settle it before a scheduled run on a known date.
+        on = day(5)
+        alert = report("node1", followups=[41])
+        alert["runs"] = 3
+        self.given({"1": alert}, [
+            {"id": 1, "outcome": "waiting", "summary": "the fix lands with the weekly run",
+             "run": "job-1", "on": on}])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        item = self.items()["1"]
+        self.assertEqual(item["status"], "planning")
+        self.assertIsNotNone(item.get("parked_at"))
+        self.assertEqual(self.comments("1"), [
+            f"night-triage on node1: waits until {on} on job-1: the fix lands with the weekly run; "
+            "parked until then (runs: 3)."])
+        self.assertIn("waiting", (self.tmp / "prompt").read_text())
+
+    def test_a_compact_wait_date_is_written_so_the_wake_reads_it(self):
+        # sd:9243 review: fromisoformat takes 20261117; the note must carry
+        # YYYY-MM-DD, or the wake never reads it and the park never ends.
+        on = day(2)
+        self.given({"1": report("node1")}, [
+            {"id": 1, "outcome": "waiting", "summary": "s", "run": "job-1", "on": on.replace("-", "")}])
+        self.assertEqual(self.run_job().returncode, 0)
+        note = self.comments("1")[0]
+        self.assertIn(f"waits until {on} on job-1: s;", note)
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        alert = {"fields": json.dumps({"repeats": {"count": 2}})}
+        self.assertEqual(night_triage.wake(alert, [{"body": note}], "node1"), "the job failed again")
+
+    def test_a_wait_without_a_real_near_date_is_not_parked(self):
+        # sd:9243 review: a shape-only date check parked a past or impossible
+        # date; the wait must fall within the next 8 days.
+        for on in ("soon", "2026-99-99", day(-1), day(9)):
+            with self.subTest(on=on):
+                self.given({"1": report("node1")}, [
+                    {"id": 1, "outcome": "waiting", "summary": "later", "run": "job-1", "on": on}])
+                self.assertEqual(self.run_job().returncode, 0)
+                self.assertIsNone(self.items()["1"].get("parked_at"))
+                self.assertIn("not settled", self.comments("1")[0])
 
     def test_a_failed_model_run_leaves_the_alerts_as_they_were(self):
         self.given({"1": report("node1", followups=[41])}, [])
@@ -469,14 +611,16 @@ class NightTriage(unittest.TestCase):
         self.assertIn(f'INGEST_SESSION = "{night_triage.INGEST_SESSION}"', source)
 
     def test_every_sd_call_parses_with_the_pinned_pack(self):
-        self.given({"1": report("node1", followups=[41]), "2": report("node1")}, [
+        self.given({"1": report("node1", followups=[41]), "2": report("node1"), "3": report("node1"),
+                    "4": self.parked(day(-1))}, [
             {"id": 1, "outcome": "fixed", "summary": "s", "evidence": ["e"], "followups": {"41": "ok"}},
-            {"id": 2, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+            {"id": 2, "outcome": "filed", "summary": "s", "item": "sd:7"},
+            {"id": 3, "outcome": "waiting", "summary": "s", "run": "job-3", "on": day(2)}])
         self.assertEqual(self.run_job(CLAUDE_TOUCH="2").returncode, 0)
         calls = json.loads(self.state.read_text())["log"]
         verbs = {" ".join(c[:2]) if c[0] != "today" else "today" for c in calls}
         self.assertEqual(verbs, {"reports list", "today", "task show", "task note",
-                                 "reports acknowledge"})
+                                 "reports acknowledge", "task edit"})
         pack = pinned_pack()
         check = ("import importlib.machinery as m, importlib.util as u, json, sys\n"
                  "sys.path[:0] = [sys.argv[1] + '/bin', sys.argv[1] + '/lib']\n"
@@ -523,7 +667,7 @@ class RealPack(unittest.TestCase):
             (self.bin / name).write_text(text)
             (self.bin / name).chmod(0o755)
 
-    def ingest(self):
+    def ingest(self, run="r1", hour="08"):
         from contextlib import closing
         from unittest import mock
         from sd_db import connect, reporting
@@ -531,9 +675,31 @@ class RealPack(unittest.TestCase):
         log.write_text("boom\n")
         with closing(connect(self.database)) as connection, \
                 mock.patch("sd_db.ship.socket.gethostname", return_value="node1"):
-            state = reporting.ingest_log(connection, job="job-a", run_id="r1", started="2026-11-08T08:00:00Z",
-                                         ended="2026-11-08T08:01:00Z", exit_code=1, log_path=str(log), offset=0)
+            state = reporting.ingest_log(connection, job="job-a", run_id=run, started=f"2026-11-08T{hour}:00:00Z",
+                                         ended=f"2026-11-08T{hour}:01:00Z", exit_code=1, log_path=str(log), offset=0)
         return state["item"]["id"]
+
+    def run_job(self, reply):
+        (self.tmp / "reply").write_text(json.dumps({"alerts": reply}))
+        env = dict(os.environ, HOME=str(self.tmp), PATH=f"{self.bin}:{os.environ['PATH']}",
+                   SD_PACK_ROOT=str(self.pack), TMPDIR=str(self.tmp), CLAUDE_ARGS=str(self.tmp / "args"),
+                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"))
+        return subprocess.run(["sh", str(self.tmp / "system/local-night-triage/night-triage.sh"), "run"],
+                              capture_output=True, text=True, env=env, timeout=120)
+
+    def test_a_repeat_folded_into_a_parked_report_wakes_it(self):
+        # sd:9243 review: the pack folds a repeat into the parked report;
+        # the next run unparks it and triages it.
+        item = self.ingest()
+        result = self.run_job([{"id": item, "outcome": "waiting", "summary": "s", "run": "job-a", "on": day(2)}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNotNone(self.state(item)["item"]["parked_at"])
+        self.assertEqual(self.ingest(run="r2", hour="09"), item)
+        result = self.run_job([{"id": item, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.state(item)
+        self.assertIsNone(state["item"]["parked_at"], result.stderr)
+        self.assertTrue(any("filed as sd:7" in n["body"] for n in state["notes"]))
 
     def state(self, item):
         from contextlib import closing
@@ -560,6 +726,22 @@ class RealPack(unittest.TestCase):
         self.assertTrue(any(b.startswith("night-triage on node1 claims it") for b in bodies), bodies)
         self.assertTrue(any("Evidence: cron-jobs.sh run job-a: exit 0" in b for b in bodies), bodies)
         self.assertIsNotNone(next(n for n in state["notes"] if n["id"] == followup)["resolved_at"])
+
+    def test_a_report_waiting_on_a_dated_run_is_parked(self):
+        # sd:9243: the pack parks a report through `sd task edit --park`.
+        item = self.ingest()
+        (self.tmp / "reply").write_text(json.dumps({"alerts": [
+            {"id": item, "outcome": "waiting", "summary": "fixed by the weekly run",
+             "run": "job-a", "on": day(2)}]}))
+        env = dict(os.environ, HOME=str(self.tmp), PATH=f"{self.bin}:{os.environ['PATH']}",
+                   SD_PACK_ROOT=str(self.pack), TMPDIR=str(self.tmp), CLAUDE_ARGS=str(self.tmp / "args"),
+                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"))
+        result = subprocess.run(["sh", str(self.tmp / "system/local-night-triage/night-triage.sh"), "run"],
+                                capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.state(item)
+        self.assertEqual(state["item"]["status"], "planning")
+        self.assertIsNotNone(state["item"]["parked_at"], result.stderr)
 
 
 if __name__ == "__main__":
