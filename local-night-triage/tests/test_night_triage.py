@@ -873,13 +873,20 @@ class RealPack(unittest.TestCase):
         """The job's run on a report another session claimed `hours` ago,
         through the pack's own `sd task show --json`; whether it filed."""
         from contextlib import closing
-        from sd_db import connect
+        from unittest import mock
+        from sd_db import connect, writes
         item = self.ingest()
-        stamp = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
-        with closing(connect(self.database)) as connection, connection:
-            connection.execute(
-                "INSERT INTO note (item, timestamp, kind, body, session) VALUES (?, ?, 'comment', ?, 'abc')",
-                (item, stamp.isoformat(timespec="seconds"), "claimed: triaging"))
+
+        # The pack writes the note and stamps it with its own clock and
+        # format (lead re-review: hand SQL bound a format of its own);
+        # only the clock is set back.
+        class Earlier(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.datetime.now(tz) - datetime.timedelta(hours=hours)
+
+        with closing(connect(self.database)) as connection, mock.patch.object(writes, "datetime", Earlier):
+            writes.add_note(connection, item, "comment", "claimed: triaging", session="abc")
         result = self.run_job([{"id": item, "outcome": "filed", "summary": "s", "item": "sd:7"}])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("readable timestamp", result.stderr)
