@@ -121,6 +121,34 @@ esac
 exit 0
 """
 
+# herdr's panes live in FAKE_HERDR as JSON: [pane, agent, status, session,
+# screen] rows. `agent list` fails with FAKE_HERDR_DOWN (no server); `agent
+# read` prints the pane's screen; `agent prompt` is logged and sends nothing.
+HERDR = r"""#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["FAKE_CALLS"], "a") as log:
+    log.write("herdr " + " ".join(sys.argv[1:]) + "\n")
+panes = json.load(open(os.environ["FAKE_HERDR"]))
+args = sys.argv[1:]
+if args[:2] == ["agent", "list"]:
+    if os.environ.get("FAKE_HERDR_DOWN"):
+        print("herdr: server not running", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({"id": "cli:agent:list", "result": {"agents": [
+        {"agent": a, "agent_status": st, "pane_id": p,
+         "agent_session": {"agent": a, "kind": "id", "value": se}}
+        for p, a, st, se, _ in panes]}}))
+elif args[:2] == ["agent", "read"]:
+    print(next(sc for p, *_, sc in panes if p == args[2]))
+elif args[:2] == ["agent", "prompt"]:
+    pass
+else:
+    sys.exit(64)
+"""
+
+DROPPED = "  Remote Control disconnected"
+CONNECTED = "  /remote-control is active"
+
 
 def executable(path, text):
     path.write_text(text)
@@ -159,7 +187,10 @@ class Machine(unittest.TestCase):
         self.env = {"PATH": f"{stubs}:/usr/bin:/bin", "HOME": str(self.home),
                     "SYSTEM_TOOLS_CONFIG": str(self.tmp / "config"),
                     "SD_PACK_ROOT": str(self.tmp / "pack"), "FAKE_CALLS": str(self.calls),
-                    "FAKE_CSWAP_STATE": str(self.state), "FAKE_ROW": str(self.row)}
+                    "FAKE_CSWAP_STATE": str(self.state), "FAKE_ROW": str(self.row),
+                    # Never the machine's own herdr: a test must not send /rc.
+                    "CSWAP_HERDR_DIRS": ""}
+        self.stubs = stubs
         self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=1)
 
     def accounts(self, pairs, active):
@@ -451,6 +482,121 @@ class APinFollow(Machine):
         result = self.run_verb("status", FAKE_FENCE="elsewhere", FAKE_SD_MISMATCH="1")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(self.called("follow"), [])
+
+
+class RemoteControlReconnects(Machine):
+    """sd:9427: a switch drops every Remote Control link; /rc restores it."""
+
+    def panes(self, *rows, where=None):
+        path = self.tmp / "herdr.json"
+        path.write_text(json.dumps(rows))
+        self.env["FAKE_HERDR"] = str(path)
+        executable((where or self.stubs) / "herdr", HERDR)
+
+    def prompts(self):
+        return self.called("herdr agent prompt")
+
+    def owed(self):
+        path = self.script.parent / "state/rc-owed"
+        return [line.split()[0] for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_a_switch_sends_rc_to_idle_panes_only(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
+                   ["w1:p2", "claude", "done", "s2", DROPPED],
+                   ["w1:p3", "claude", "working", "s3", DROPPED],
+                   ["w1:p4", "claude", "blocked", "s4", DROPPED],
+                   ["w1:p5", "codex", "idle", "s5", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc", "herdr agent prompt w1:p2 /rc"])
+        self.assertEqual(self.owed(), ["w1:p3", "w1:p4"])
+        self.assertIn("2 pane(s) still owe /rc", result.stdout)
+
+    def test_a_busy_pane_gets_rc_once_it_is_idle(self):
+        self.publish(THREE)
+        self.panes(["w1:p3", "claude", "working", "s3", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.panes(["w1:p3", "claude", "idle", "s3", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p3 /rc"])
+        self.assertEqual(self.owed(), [])
+
+    def test_no_switch_sends_nothing(self):
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.called("herdr"), [])
+
+    def test_a_connected_screen_gets_no_rc(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", CONNECTED + "\n" + DROPPED],
+                   ["w1:p2", "claude", "idle", "s2", "  nothing yet"])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        # Not dropped yet: it stays owed, and is sent once it drops.
+        self.assertEqual(self.owed(), ["w1:p2"])
+
+    def test_a_gone_pane_or_new_session_is_not_owed(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED],
+                   ["w1:p2", "claude", "working", "s2", DROPPED])
+        self.sync("elsewhere")
+        self.panes(["w1:p2", "claude", "idle", "s9", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), [])
+
+    def test_the_hub_s_auto_switch_sends_rc_even_when_its_publish_fails(self):
+        # Step: auto switched, then the publish failed and the run exited 1.
+        # Recovery: the owed list was written first; the next run sends.
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("holder", code=1, FAKE_AUTO_TO="2", FAKE_AUTO_RC="0", FAKE_SET_FAIL="1")
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("holder")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+
+    def test_a_long_owed_pane_is_dropped_and_an_unreadable_list_keeps_it(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("elsewhere")
+        owed = self.script.parent / "state/rc-owed"
+        owed.write_text("w1:p1 s1 1000\n")
+        self.env["FAKE_HERDR"] = str(self.tmp / "missing.json")
+        executable(self.stubs / "herdr", "#!/bin/sh\necho '{not json'\n")
+        result = self.sync("elsewhere")
+        self.assertIn("was not readable", result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertIn("reconnect: w1:p1 stayed busy", result.stdout)
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), [])
+
+    def test_cron_s_path_without_herdr_finds_it_in_a_fallback_dir(self):
+        self.publish(THREE)
+        brew = self.tmp / "brew-bin"
+        brew.mkdir()
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED], where=brew)
+        self.sync("elsewhere", CSWAP_HERDR_DIRS=f"{self.tmp}/none {brew}")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+
+    def test_no_herdr_is_one_skip_line_and_the_switch_stands(self):
+        self.publish(THREE)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.active(), 3)
+        self.assertEqual([l for l in result.stdout.splitlines() if l.startswith("reconnect")],
+                         ["reconnect: skipped: no herdr on PATH"])
+
+    def test_a_herdr_that_does_not_answer_is_one_skip_line(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_HERDR_DOWN="1")
+        self.assertEqual(self.prompts(), [])
+        self.assertIn("reconnect: skipped: herdr agent list did not answer", result.stdout)
+        self.assertEqual(result.stdout.count("reconnect:"), 1)
 
 
 class TheRetiredAgent(Machine):

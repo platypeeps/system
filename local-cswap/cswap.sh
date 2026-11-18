@@ -42,6 +42,21 @@ UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 REFUSALS="$ROOT/state/build-refusals"
 REFUSAL_LIMIT=30
 
+# Remote Control (sd:9427): a switch drops every session's link, and /rc in
+# a dropped session reconnects it under the new account. A switch writes
+# each claude pane herdr lists here as owed (pane, session, epoch); every
+# sync sends /rc to an owed pane that is idle or done and whose screen reads
+# "Remote Control disconnected", not "/remote-control is active". A working
+# or blocked pane gets no keys, as a key can answer a permission dialog; it
+# stays owed for the next sync, until sent, gone, connected or RC_OWED_FOR
+# seconds old. Cron's PATH may lack herdr, so HERDR_DIRS is tried after it.
+RC_OWED="$ROOT/state/rc-owed"
+RC_OWED_FOR=1800
+HERDR_DIRS="${CSWAP_HERDR_DIRS-$HOME/.local/bin /opt/homebrew/bin /usr/local/bin}"
+SWITCHED=""
+HERDR=""
+AGENTS=""
+
 # shellcheck source=/dev/null
 [[ -f "$ROOT/cswap-auto.conf" ]] && . "$ROOT/cswap-auto.conf"
 CSWAP_BIN="${CSWAP_BIN:-$HOME/.local/bin/cswap}"
@@ -126,6 +141,97 @@ retire_agent() {
   fi
 }
 
+# The herdr binary on stdout: PATH first, then HERDR_DIRS.
+herdr_bin() {
+  local d
+  command -v herdr 2>/dev/null && return 0
+  for d in $HERDR_DIRS; do
+    [[ -x "$d/herdr" ]] && { echo "$d/herdr"; return 0; }
+  done
+  return 1
+}
+
+# Sets HERDR and AGENTS (`herdr agent list` JSON), or prints one skip line
+# and exits 1: no herdr, or no herdr server answering.
+herdr_agents() {
+  if ! HERDR=$(herdr_bin); then
+    echo "reconnect: skipped: no herdr on PATH${HERDR_DIRS:+ or in $HERDR_DIRS}"
+    return 1
+  fi
+  AGENTS=$(st_step 20 "$HERDR" agent list) ||
+    { echo "reconnect: skipped: herdr agent list did not answer; is herdr running?"; return 1; }
+}
+
+# The account just switched: every claude pane owes /rc. Written at once,
+# before a later step can fail, so the next sync still sends it.
+owe_rc() {
+  SWITCHED=1
+  herdr_agents || return 0
+  if { mkdir -p "${RC_OWED%/*}" && python3 -I -c '
+import json, sys, time
+for a in json.loads(sys.stdin.read() or "{}").get("result", {}).get("agents", []):
+    if a.get("agent") == "claude" and a.get("pane_id"):
+        print(a["pane_id"], (a.get("agent_session") or {}).get("value") or "-", int(time.time()))
+' <<<"$AGENTS" >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
+    echo "reconnect: $(wc -l <"$RC_OWED" | tr -d ' ') claude pane(s) owe /rc"
+  else
+    echo "reconnect: skipped: could not write $RC_OWED"
+  fi
+}
+
+# Send /rc to each owed pane that may have it; keep the rest owed.
+reconnect() {
+  local pane session since action screen plan keep=""
+  [[ -s "$RC_OWED" ]] || return 0
+  herdr_agents || return 0
+  plan=$(python3 -I -c '
+import json, sys, time
+agents = {a.get("pane_id"): a for a in json.loads(sys.argv[2] or "{}").get("result", {}).get("agents", [])}
+for line in open(sys.argv[1]):
+    try:
+        pane, session, since = line.split()
+        since = int(since)
+    except ValueError:
+        continue
+    a = agents.get(pane)
+    if not a or a.get("agent") != "claude" or ((a.get("agent_session") or {}).get("value") or "-") != session:
+        print("gone", pane, session, since)
+    elif time.time() - since > int(sys.argv[3]):
+        print("old", pane, session, since)
+    elif a.get("agent_status") in ("idle", "done"):
+        print("try", pane, session, since)
+    else:
+        print("keep", pane, session, since)
+' "$RC_OWED" "$AGENTS" "$RC_OWED_FOR") ||
+    { echo "reconnect: skipped: herdr's agent list or $RC_OWED was not readable"; return 0; }
+  while read -r action pane session since; do
+    case "$action" in
+      keep) keep+="$pane $session $since"$'\n' ;;
+      gone) echo "reconnect: $pane is gone or runs another session; not owed" ;;
+      old) echo "reconnect: $pane stayed busy or showed no drop for ${RC_OWED_FOR}s; not owed" ;;
+      try)
+        if ! screen=$(st_step 10 "$HERDR" agent read "$pane"); then
+          keep+="$pane $session $since"$'\n'
+        elif [[ "$screen" == *"/remote-control is active"* ]]; then
+          echo "reconnect: $pane is connected; not owed"
+        elif [[ "$screen" != *"Remote Control disconnected"* ]]; then
+          keep+="$pane $session $since"$'\n'
+        elif st_step 10 "$HERDR" agent prompt "$pane" /rc >/dev/null; then
+          echo "reconnect: sent /rc to $pane"
+        else
+          keep+="$pane $session $since"$'\n'
+        fi ;;
+    esac
+  done <<<"$plan"
+  if [[ -z "$keep" ]]; then
+    rm -f "$RC_OWED" 2>/dev/null || :
+  else
+    { printf '%s' "$keep" >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null ||
+      echo "reconnect: could not update $RC_OWED"
+    echo "reconnect: $(printf '%s' "$keep" | wc -l | tr -d ' ') pane(s) still owe /rc; the next sync tries again"
+  fi
+}
+
 # The hub: one `cswap auto` tick, then publish the active account. The row
 # is written only when it differs (one database row per write), and is
 # compared on every run, so a failed write is retried by the next one.
@@ -133,6 +239,7 @@ lead() {
   local rc=0 json active row number uuid
   # shellcheck disable=SC2086 # deliberate word splitting of the configured flags
   st_bounded 120 "$CSWAP_BIN" auto --once $CSWAP_AUTO_ARGS --strategy consume-first || rc=$?
+  [[ "$rc" != 0 ]] || owe_rc
   json=$(accounts) || fail list "cswap list --json failed"
   active=$(pick active <<<"$json") || fail list "cswap names no single active account"
   read -r number uuid <<<"$active"
@@ -220,12 +327,16 @@ follow() {
   st_bounded 60 "$CSWAP_BIN" switch "$number" >/dev/null ||
     fail switch "cswap switch $number failed; the next run tries again"
   echo "following the hub: switched to account $number"
+  owe_rc
 }
 
 cmd_sync() {
   retire_agent
   [[ -x "$CSWAP_BIN" ]] || fail list "cswap not executable at $CSWAP_BIN"
+  # Panes an earlier run left owed, even one that failed after its switch.
+  reconnect
   if leads; then lead; else follow; fi
+  [[ -z "$SWITCHED" ]] || reconnect
 }
 
 cmd_status() {
@@ -287,7 +398,10 @@ usage: cswap.sh sync|status
            nothing and exits 1. A hub that refuses this machine's
            sd_db build skips the run (exit 0) until repo-sync.sh follow
            catches up, and fails from the 30th such run in a row. It
-           also boots out the retired cswap-auto LaunchAgent.
+           also boots out the retired cswap-auto LaunchAgent. After a
+           switch it sends /rc through herdr to each idle claude pane
+           whose Remote Control dropped, and retries a busy one on the
+           next sync; no herdr is one skip line.
            local-cron-jobs runs it every minute.
   status   whether this machine uses the hub's account; exits 0 same
            account / 1 another account, hub unreadable or the retired
@@ -295,7 +409,9 @@ usage: cswap.sh sync|status
            published) — local-health-check reads these codes
 
 environment: CSWAP_BIN, CSWAP_AUTO_ARGS (see cswap-auto.conf),
-             SD_PACK_ROOT (default ~/repos/platypeeps/sd-workflow)
+             SD_PACK_ROOT (default ~/repos/platypeeps/sd-workflow),
+             CSWAP_HERDR_DIRS (where to look for herdr after PATH;
+             default ~/.local/bin /opt/homebrew/bin /usr/local/bin)
 HELPEOF
     exit 0
     ;;
