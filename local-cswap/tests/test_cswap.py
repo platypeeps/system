@@ -139,7 +139,12 @@ if args[:2] == ["agent", "list"]:
          "agent_session": {"agent": a, "kind": "id", "value": se}}
         for p, a, st, se, _ in panes]}}))
 elif args[:2] == ["agent", "read"]:
-    print(next(sc for p, *_, sc in panes if p == args[2]))
+    # Like herdr: the ANSI codes only with --format ansi.
+    import re
+    screen = next(sc for p, *_, sc in panes if p == args[2])
+    if args[3:5] != ["--format", "ansi"]:
+        screen = re.sub(r"\x1b\[[0-9;]*m", "", screen)
+    print(screen)
 elif args[:2] == ["agent", "prompt"]:
     pass
 else:
@@ -556,6 +561,21 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+
+    def test_a_dim_suggestion_on_the_input_line_is_no_typed_text(self):
+        # Lead live check: an idle pane showed `❯ what next here`, a dim
+        # (SGR 2) prompt suggestion, and never got its /rc. Typed text,
+        # even in a truecolor run whose parameters hold a 2, still blocks.
+        self.publish(THREE)
+        dim = DROPPED.replace("\u276f\u00a0", "\u276f\u00a0\x1b[0m\x1b[2mwhat next here\x1b[0m")
+        typed = DROPPED.replace("\u276f\u00a0", "\u276f\u00a0\x1b[38;2;200;200;200mfix the\x1b[0m")
+        mixed = DROPPED.replace("\u276f\u00a0", "\u276f\u00a0x\x1b[2m suggestion\x1b[22m")
+        self.panes(["w1:p1", "claude", "idle", "s1", dim],
+                   ["w1:p2", "claude", "idle", "s2", typed],
+                   ["w1:p3", "claude", "idle", "s3", mixed])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.owed(), ["w1:p2", "w1:p3"])
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
         # Fold-in: a list that failed at the switch owed nothing, and the

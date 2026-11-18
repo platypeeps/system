@@ -174,7 +174,8 @@ herdr_panes() {
 # that shape (null, malformed, an agent that is no object). `screen`: a
 # pane's screen on stdin to send, connected or wait <why>. The later of the
 # two Remote Control lines decides, as the screen keeps old ones above, and
-# only an empty input line (the last ❯ line) takes keys.
+# only an empty input line (the last ❯ line) takes keys; dim text there is
+# a prompt suggestion, not typed input, so it reads as empty.
 rc_read() {
   python3 -I -c '
 import json, sys
@@ -195,11 +196,40 @@ if sys.argv[1] == "panes":
     except (ValueError, KeyError, TypeError, AttributeError):
         sys.exit(3)
 else:
-    lines = text.splitlines()
+    import re
+    # The screen comes with its ANSI codes (--format ansi): a prompt
+    # suggestion is dim (SGR 2) text on the input line, typed text is not.
+    sgr = re.compile(r"\x1b\[([0-9;:]*)m")
+    other = re.compile(r"\x1b(\[[0-9;:?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|.)")
+    def plain(line):
+        return other.sub("", sgr.sub("", line))
+    def undimmed(line):
+        out, dim, pos = [], False, 0
+        for m in sgr.finditer(line):
+            if not dim:
+                out.append(line[pos:m.start()])
+            codes, i = (m.group(1) or "0").replace(":", ";").split(";"), 0
+            while i < len(codes):
+                code = codes[i]
+                if code in ("38", "48", "58"):
+                    i += 3 if codes[i + 1:i + 2] == ["5"] else 5
+                    continue
+                if code in ("", "0", "22"):
+                    dim = False
+                elif code == "2":
+                    dim = True
+                i += 1
+            pos = m.end()
+        if not dim:
+            out.append(line[pos:])
+        return plain("".join(out))
+    raw = text.splitlines()
+    lines = [plain(line) for line in raw]
     def last(needle):
         return max([i for i, line in enumerate(lines) if needle in line], default=-1)
     dropped, active = last("Remote Control disconnected"), last("/remote-control is active")
-    prompts = [line.strip()[1:].strip() for line in lines if line.strip().startswith("❯")]
+    prompts = [undimmed(r).strip().removeprefix("\u276f").strip()
+               for r, line in zip(raw, lines) if line.strip().startswith("\u276f")]
     if active > dropped:
         print("connected")
     elif dropped < 0:
@@ -267,7 +297,7 @@ reconnect() {
       gone) echo "reconnect: $pane is gone or runs another session; not owed" ;;
       old) echo "reconnect: $pane stayed busy or showed no drop for ${RC_OWED_FOR}s; not owed" ;;
       try)
-        if ! screen=$(st_step 10 "$HERDR" agent read "$pane") ||
+        if ! screen=$(st_step 10 "$HERDR" agent read "$pane" --format ansi) ||
           ! verdict=$(rc_read screen <<<"$screen"); then
           keep+="$pane $session $since"$'\n'
         elif [[ "$verdict" == connected ]]; then
