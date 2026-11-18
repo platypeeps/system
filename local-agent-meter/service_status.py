@@ -23,7 +23,7 @@ import urllib.request
 
 import json
 
-from usage_sources import NAME, TIMEOUT, USER_AGENT, ReadFailed, fetch_json, iso
+from usage_sources import NAME, TIMEOUT, USER_AGENT, ReadFailed, event_time, fetch_json, iso, when
 
 KINDS = ("statuspage", "slack", "google-incidents", "http")
 #: The longest incident title kept; Google's descriptions run to pages.
@@ -63,6 +63,25 @@ typesafe http https://status.typesafe.ai typesafe
 #: A statuspage indicator as a status; anything else is unknown.
 INDICATOR = {"none": "ok", "minor": "degraded", "maintenance": "degraded",
              "major": "outage", "critical": "outage"}
+#: The values each feed documents for a field that decides a status. Any
+#: other value, or another type, reads unknown (sd:9256 review).
+INCIDENT_OPEN = ("investigating", "identified", "monitoring")
+INCIDENT_CLOSED = ("resolved", "postmortem")
+COMPONENT = ("operational", "degraded_performance", "partial_outage", "major_outage",
+             "under_maintenance")
+SLACK_TYPE = ("incident", "notice", "outage")
+GOOGLE_IMPACT = ("SERVICE_INFORMATION", "SERVICE_DISRUPTION", "SERVICE_OUTAGE")
+
+
+def one_of(value, allowed, what):
+    if not isinstance(value, str) or value not in allowed:
+        raise ReadFailed("%s is not one the feed documents" % what)
+    return value
+
+
+def shown_time(value):
+    """A time shown and never decided on: kept if it parses, else None."""
+    return value if isinstance(value, str) and event_time(value) is not None else None
 
 
 def web_url(url):
@@ -133,17 +152,18 @@ def read_statuspage(url, fetch):
     base = page.get("url") if isinstance(page.get("url"), str) else ""
     incidents = []
     for incident in entries(data.get("incidents"), "incidents"):
-        if incident.get("status") in ("resolved", "postmortem"):
+        if one_of(incident.get("status"), INCIDENT_OPEN + INCIDENT_CLOSED,
+                  "an incident status") in INCIDENT_CLOSED:
             continue
         url = incident.get("shortlink")
         if not isinstance(url, str) and base and isinstance(incident.get("id"), str):
             url = base.rstrip("/") + "/incidents/" + incident["id"]
         incidents.append({"title": title(incident.get("name")), "url": short(url),
                           "impact": short(incident.get("impact")),
-                          "started_at": short(incident.get("created_at"))})
-    components = [{"name": title(c.get("name")), "status": short(c.get("status"))}
+                          "started_at": shown_time(incident.get("created_at"))})
+    components = [{"name": title(c.get("name")), "status": c["status"]}
                   for c in entries(data.get("components"), "components")
-                  if c.get("status") not in (None, "operational")]
+                  if one_of(c.get("status"), COMPONENT, "a component status") != "operational"]
     return {"status": INDICATOR[indicator], "indicator": indicator,
             "incidents": incidents, "components": components}
 
@@ -155,7 +175,8 @@ def read_slack(url, fetch):
     if state not in ("ok", "active") or not isinstance(active, list):
         raise ReadFailed("no status")
     incidents = [{"title": title(i.get("title")), "url": short(i.get("url")),
-                  "impact": short(i.get("type")), "started_at": short(i.get("date_created"))}
+                  "impact": one_of(i.get("type"), SLACK_TYPE, "an incident type"),
+                  "started_at": shown_time(i.get("date_created"))}
                  for i in entries(active, "active_incidents")]
     status = "ok"
     if state == "active" or incidents:
@@ -167,14 +188,11 @@ def read_google(url, fetch):
     data = fetch(url)
     incidents = []
     for incident in entries(data, "incident list"):
-        # The fields the open-or-closed call reads are checked first: a
-        # truthy non-string end would close an open incident (sd:9256).
-        end = incident.get("end")
-        if end is not None and not isinstance(end, str):
-            raise ReadFailed("an incident end of another shape")
-        if end:
+        # The fields the open-or-closed call reads are checked first: only
+        # a time closes an incident; any other end is unknown (sd:9256).
+        if when(incident.get("end"), "an incident end") is not None:
             continue
-        if not isinstance(incident.get("begin"), str):
+        if when(incident.get("begin"), "an incident begin") is None:
             raise ReadFailed("an open incident with no begin")
         desc = incident.get("external_desc")
         desc = desc.strip().splitlines() if isinstance(desc, str) else []
@@ -185,8 +203,9 @@ def read_google(url, fetch):
             raise ReadFailed("an open incident with no title")
         incidents.append({"title": title("%s: %s" % (service, lines[0] if lines else "")),
                           "url": link(url, incident.get("uri")),
-                          "impact": short(incident.get("status_impact")),
-                          "started_at": short(incident.get("begin"))})
+                          "impact": one_of(incident.get("status_impact"), GOOGLE_IMPACT,
+                                           "an incident impact"),
+                          "started_at": incident["begin"]})
     status = "ok"
     if incidents:
         status = "outage" if any(i["impact"] == "SERVICE_OUTAGE" for i in incidents) else "degraded"

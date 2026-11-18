@@ -391,6 +391,8 @@ class Codex(unittest.TestCase):
                         continue  # a number; the meter row refuses one out of range
                     if field == "resets_at" and extreme in (0, -5, "12"):
                         continue
+                    if field != "used_percent" and extreme is None:
+                        continue  # Codex's schema allows null; see the null test
                     event = self.event()
                     event["payload"]["rate_limits"]["primary"][field] = extreme
                     self.rollout("x", [event], 1000)
@@ -509,13 +511,16 @@ class Services(unittest.TestCase):
 
     def test_every_stored_field_is_a_short_string_or_none(self):
         for value in ({"a": 1}, [1], 5, True, "x" * 1000):
+            # The shown fields only; a field that decides a status must be
+            # one the feed documents (see the schema tests).
             incident = {"id": "abc", "status": "investigating", "name": value, "shortlink": value,
                         "impact": value, "created_at": value, "title": value, "url": value,
-                        "type": value, "date_created": value, "service_name": value,
-                        "external_desc": value, "uri": value, "status_impact": value,
-                        "begin": value}
+                        "type": "outage", "date_created": value, "service_name": value,
+                        "external_desc": value, "uri": value,
+                        "status_impact": "SERVICE_DISRUPTION", "begin": value}
             answers = {"statuspage": dict(SUMMARY, incidents=[incident],
-                                          components=[{"name": value, "status": value}]),
+                                          components=[{"name": value,
+                                                       "status": "partial_outage"}]),
                        "slack": {"status": "active", "active_incidents": [incident]},
                        "google-incidents": [dict(incident, begin="2026-11-17T18:00:00Z",
                                                  end=None, service_name="Drive")]}
@@ -528,7 +533,8 @@ class Services(unittest.TestCase):
                             self.assertTrue(stored is None or (isinstance(stored, str)
                                             and len(stored) <= service_status.TITLE),
                                             (field, stored))
-        got = self.read("google-incidents", [{"uri": "http://[bad", "status_impact": "X",
+        got = self.read("google-incidents", [{"uri": "http://[bad",
+                                              "status_impact": "SERVICE_OUTAGE",
                                               "begin": "2026-11-17T18:00:00Z",
                                               "service_name": "Drive"}])
         self.assertIsNone(got["incidents"][0]["url"])
@@ -770,6 +776,11 @@ def load_meter():
     return meter
 
 
+#: One open Google incident in the live shape.
+GOOGLE_OPEN = {"begin": "2026-11-17T18:00:00+00:00", "end": None, "service_name": "Drive",
+               "external_desc": "Slow.", "uri": "incidents/x", "status_impact": "SERVICE_OUTAGE"}
+
+
 class Hostile(unittest.TestCase):
     """Every reader on hostile input (sd:9256 review, rounds 1 to 3): each
     reading is ok with finite data, or unknown. None raises, and none
@@ -874,6 +885,131 @@ class Hostile(unittest.TestCase):
             failures += self.check("%s deep text" % kind, lambda: service_status.read_service(
                 ("svc", kind, "https://status.example.test/a", []), NOW, fetch=deep), ())
         self.assertEqual(failures, [])
+
+    def nullable(self):
+        """(source, label, read, still) per field each source's schema lets
+        be null: read() with that field null, and still(reading) what the
+        rest must keep. Codex: codex-rs protocol.rs RateLimitSnapshot;
+        cswap: claude_swap json_output.py; the rest: each API's docs."""
+        both = put(Codex.event(limit_id="codex"), ("payload", "rate_limits", "secondary"),
+                   {"used_percent": 23.0, "window_minutes": 300, "resets_at": 1794992575})
+        rate = ("payload", "rate_limits")
+        for path in (("primary", "window_minutes"), ("primary", "resets_at"), ("primary",),
+                     ("secondary",), ("credits",), ("credits", "balance"), ("limit_id",)):
+            event = put(both, rate + path, None)
+            yield ("codex", "/".join(path), lambda event=event: self.codex(event),
+                   lambda got, path=path: len(got["windows"]) == 2 - (len(path) == 1 and path[0]
+                                                                     in ("primary", "secondary")))
+        active = ("accounts", 0, "usage", "sevenDay", "resetsAt")
+        for label, reply in (("resetsAt", put(CSWAP_LIST, active, None)),
+                             ("another account's usage", put(
+                                 put(CSWAP_LIST, ("accounts",), CSWAP_LIST["accounts"] + [
+                                     {"number": 2, "active": False, "usageStatus": "error",
+                                      "usage": None, "usageFetchedAt": None}]),
+                                 ("accounts", 1, "usage"), None))):
+            yield ("cswap", label, lambda reply=reply: self.claude(reply),
+                   lambda got: got["windows"][0]["used_percent"] == 40.0)
+        openrouter = put(ANSWERS["openrouter"][1], ("data", "limit_remaining"), None)
+        yield ("openrouter", "limit_remaining", lambda: usage_sources.read_provider(
+            "openrouter", {"OPENROUTER_API_KEY": SECRET}, answering(openrouter), NOW),
+            lambda got: got["spend"]["amount"] == 12.5 and got["balance"] is None)
+        firecrawl = put(ANSWERS["firecrawl"][1], ("data", "billingPeriodEnd"), None)
+        yield ("firecrawl", "billingPeriodEnd", lambda: usage_sources.read_provider(
+            "firecrawl", {"FIRECRAWL_API_KEY": SECRET}, answering(firecrawl), NOW),
+            lambda got: got["windows"][0]["resets_at"] is None)
+        for kind, answer, still in (
+                ("statuspage", put(SUMMARY, ("incidents", 0), dict(SUMMARY["incidents"][0],
+                                                                  shortlink=None)),
+                 lambda got: got["incidents"][0]["url"].endswith("/incidents/abc")),
+                ("slack", {"status": "active", "active_incidents": [
+                    {"title": "t", "type": "outage", "url": None, "date_created": None}]},
+                 lambda got: got["status"] == "outage"),
+                ("google-incidents", [dict(GOOGLE_OPEN, end=None, uri=None)],
+                 lambda got: got["status"] == "outage")):
+            yield (kind, "null", lambda kind=kind, answer=answer: service_status.read_service(
+                ("svc", kind, "https://status.example.test/a", []), NOW,
+                fetch=lambda url: answer), still)
+
+    def codex(self, event):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        day = Path(tmp.name) / "sessions/2026/11/17"
+        day.mkdir(parents=True)
+        (day / "rollout-x.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+        return usage_sources.codex_reading(tmp.name)
+
+    def claude(self, reply):
+        meter = load_meter()
+        with mock.patch.dict(os.environ, CSWAP_BIN=sys.executable), \
+                mock.patch.object(meter, "run_json", return_value=(reply, None)):
+            return usage_sources.claude_reading(*meter.read_accounts(5), NOW)
+
+    def test_null_where_the_schema_allows_null_keeps_the_rest(self):
+        # sd:9256 review: one null Codex field dropped the whole snapshot,
+        # and an older one was published as ok.
+        failures = []
+        for source, label, read, still in self.nullable():
+            got = read()
+            if got["status"] == "unknown" or not still(got):
+                failures.append("%s %s: %s %s" % (source, label, got["status"],
+                                                   got.get("error")))
+        self.assertEqual(failures, [])
+
+    def test_an_invalid_timestamp_never_closes_or_resets(self):
+        # sd:9256 review: any non-empty Google end closed the incident.
+        failures = []
+        for bad in ("garbage", "", "2026-13-01T00:00:00Z", "2026-11-17T18:00:00", 5, [], True):
+            cases = [("google %s" % url, lambda url=url: service_status.read_service(
+                ("svc", "google-incidents", url, []), NOW,
+                fetch=lambda u: [dict(GOOGLE_OPEN, end=bad)]))
+                for url in ("https://status.cloud.google.com/incidents.json",
+                            "https://www.google.com/appsstatus/dashboard/incidents.json")]
+            cases.append(("google begin", lambda: service_status.read_service(
+                ("svc", "google-incidents", "https://example.test/i.json", []), NOW,
+                fetch=lambda u: [dict(GOOGLE_OPEN, begin=bad)])))
+            cases.append(("claude resetsAt", lambda: self.claude(
+                put(CSWAP_LIST, ("accounts", 0, "usage", "sevenDay", "resetsAt"), bad))))
+            cases.append(("firecrawl", lambda: usage_sources.read_provider(
+                "firecrawl", {"FIRECRAWL_API_KEY": SECRET}, answering(
+                    put(ANSWERS["firecrawl"][1], ("data", "billingPeriodEnd"), bad)), NOW)))
+            if not isinstance(bad, int) or isinstance(bad, bool):
+                # Codex sends epoch seconds: 5 is a time, 1970's.
+                cases.append(("codex resets_at", lambda: self.codex(put(
+                    Codex.event(), ("payload", "rate_limits", "primary", "resets_at"), bad))))
+            for label, read in cases:
+                got = read()
+                if got["status"] != "unknown":
+                    failures.append("%s=%r: %s" % (label, bad, got["status"]))
+        self.assertEqual(failures, [])
+
+    def test_a_status_field_the_feed_does_not_document_is_unknown(self):
+        failures = []
+        for bad in ([], None, "weird", 5):
+            for kind, answer in (
+                    ("statuspage", put(SUMMARY, ("components", 0, "status"), bad)),
+                    ("statuspage", put(SUMMARY, ("incidents", 0, "status"), bad)),
+                    ("slack", {"status": "active", "active_incidents": [
+                        {"title": "t", "type": bad}]}),
+                    ("google-incidents", [dict(GOOGLE_OPEN, status_impact=bad)])):
+                got = service_status.read_service(("svc", kind, "https://example.test/a", []),
+                                                  NOW, fetch=lambda url: answer)
+                if got["status"] != "unknown":
+                    failures.append("%s %r: %s" % (kind, bad, got["status"]))
+        self.assertEqual(failures, [])
+
+    def test_the_newest_codex_snapshot_decides(self):
+        # A newer snapshot that does not read is unknown, not the older one.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        day = Path(tmp.name) / "sessions/2026/11/17"
+        day.mkdir(parents=True)
+        bad = put(Codex.event(stamp="2026-11-17T19:30:00Z"),
+                  ("payload", "rate_limits", "primary", "used_percent"), "x")
+        (day / "rollout-x.jsonl").write_text(
+            json.dumps(Codex.event(stamp="2026-11-17T19:00:00Z")) + "\n" + json.dumps(bad) + "\n",
+            encoding="utf-8")
+        got = usage_sources.codex_reading(tmp.name)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "primary.used_percent is not a number"))
 
     def test_a_deep_body_over_http_is_read_failed(self):
         local_only(self)

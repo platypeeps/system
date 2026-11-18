@@ -113,6 +113,17 @@ class SameOrigin(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def when(value, what):
+    """A time field a source may leave null: None, or an aware ISO-8601
+    string kept as sent. Anything else is ReadFailed: a time that does not
+    parse never resets or closes anything (sd:9256 review)."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or event_time(value) is None:
+        raise ReadFailed("%s is not a time" % what)
+    return value
+
+
 def fetch_json(url, headers=None, timeout=TIMEOUT):
     """GET url as JSON, or ReadFailed with a message that holds no body."""
     request = urllib.request.Request(url, headers={**(headers or {}), "User-Agent": USER_AGENT})
@@ -228,8 +239,7 @@ def read_firecrawl(env, fetch, now):
     out = {"balance": {"amount": left, "unit": "credits"}}
     if plan > 0:
         out["windows"] = [window("credits", max(0.0, (plan - left) / plan * 100), None,
-                                 data.get("billingPeriodEnd") if isinstance(
-                                     data.get("billingPeriodEnd"), str) else None)]
+                                 when(data.get("billingPeriodEnd"), "billingPeriodEnd"))]
     return out
 
 
@@ -340,7 +350,13 @@ def claude_reading(accounts, error, now):
     if event_time(account.get("fetchedAt")) is None:
         return reading("claude", "unknown", "cswap", accounts=accounts,
                        error="the active account has no fetch time")
-    fields = {"windows": [window("seven_day", account["pct"], 10080, account.get("resetsAt"))]}
+    try:
+        # cswap leaves resetsAt out when Anthropic sends none; a value
+        # that is not a time is not a reset (sd:9256 review).
+        resets = when(account.get("resetsAt"), "resetsAt")
+    except ReadFailed as e:
+        return reading("claude", "unknown", "cswap", accounts=accounts, error=str(e))
+    fields = {"windows": [window("seven_day", account["pct"], 10080, resets)]}
     why = unsettled(fields)
     if why:
         return reading("claude", "unknown", "cswap", accounts=accounts, error=why)
@@ -378,10 +394,10 @@ def codex_reading(home=None):
                        key=lambda p: p.stat().st_mtime, reverse=True)[:CODEX_FILES]
     except OSError as e:
         return reading("codex", "unknown", "codex-sessions", error=type(e).__name__)
-    best, best_at = None, None
+    best = None  # (time, stamp, rate_limits) of the newest account-wide event
     for path in files:
         try:
-            if best_at is not None and path.stat().st_mtime < best_at.timestamp():
+            if best is not None and path.stat().st_mtime < best[0].timestamp():
                 break
             with open(path, "rb") as f:
                 f.seek(max(0, path.stat().st_size - CODEX_TAIL))
@@ -401,24 +417,37 @@ def codex_reading(home=None):
                     continue
                 at = event_time(event.get("timestamp"))
                 if at is None:
-                    continue
-                fields = codex_fields(limits)
-                if unsettled(fields):
-                    continue
+                    continue  # an event with no time has no place in the order
             except (ValueError, KeyError, TypeError, AttributeError, ReadFailed):
                 continue
             # The file's last account-wide event is its newest one.
-            if best_at is None or at > best_at:
-                best, best_at = reading("codex", "ok", "codex-sessions",
-                                        read_at=event["timestamp"], **fields), at
+            if best is None or at > best[0]:
+                best = (at, event["timestamp"], limits)
             break
-    if best is not None:
-        return best
-    return reading("codex", "unknown", "codex-sessions",
-                   error="no account-wide token_count in the newest %d rollouts" % CODEX_FILES)
+    if best is None:
+        return reading("codex", "unknown", "codex-sessions",
+                       error="no account-wide token_count in the newest %d rollouts" % CODEX_FILES)
+    # The newest snapshot decides: one that does not read is unknown, never
+    # an older one published as current (sd:9256 review).
+    try:
+        fields = codex_fields(best[2])
+    except ReadFailed as e:
+        return reading("codex", "unknown", "codex-sessions", error=str(e))
+    except (AttributeError, TypeError, ValueError, OverflowError) as e:
+        return reading("codex", "unknown", "codex-sessions",
+                       error="another shape: %s" % type(e).__name__)
+    why = unsettled(fields)
+    if why:
+        return reading("codex", "unknown", "codex-sessions", error=why)
+    return reading("codex", "ok", "codex-sessions", read_at=best[1], **fields)
 
 
 def codex_fields(limits):
+    """Codex's RateLimitSnapshot (codex-rs protocol.rs). primary, secondary
+    and credits may be null, and so may a window's window_minutes and
+    resets_at and the credits' balance: a null drops only what needs it.
+    used_percent is a number (it can pass 100), has_credits and unlimited
+    are booleans. Any other type or value is ReadFailed."""
     windows = []
     for name in ("primary", "secondary"):
         entry = limits.get(name)
@@ -427,15 +456,22 @@ def codex_fields(limits):
         if not isinstance(entry, dict):
             raise ReadFailed("%s is not an object" % name)
         minutes = entry.get("window_minutes")
-        if not isinstance(minutes, int) or isinstance(minutes, bool) or not 0 < minutes <= MAX_MINUTES:
+        if minutes is not None and (not isinstance(minutes, int) or isinstance(minutes, bool)
+                                    or not 0 < minutes <= MAX_MINUTES):
             raise ReadFailed("%s.window_minutes is not minutes" % name)
+        resets = entry.get("resets_at")
         windows.append(window(name, number(entry.get("used_percent"), name + ".used_percent"),
-                              minutes, from_epoch(entry.get("resets_at"), name + ".resets_at")))
+                              minutes,
+                              None if resets is None else from_epoch(resets, name + ".resets_at")))
     out = {"windows": windows}
     credits = limits.get("credits")
-    if isinstance(credits, dict) and credits.get("has_credits") and not credits.get("unlimited"):
-        out["balance"] = {"amount": number(credits.get("balance"), "credits.balance"),
-                          "unit": "credits"}
+    if credits is not None:
+        if not (isinstance(credits, dict) and isinstance(credits.get("has_credits"), bool)
+                and isinstance(credits.get("unlimited"), bool)):
+            raise ReadFailed("credits of another shape")
+        balance = credits.get("balance")
+        if credits["has_credits"] and not credits["unlimited"] and balance is not None:
+            out["balance"] = {"amount": number(balance, "credits.balance"), "unit": "credits"}
     return out
 
 
