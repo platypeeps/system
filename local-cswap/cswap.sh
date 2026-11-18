@@ -46,9 +46,8 @@ REFUSAL_LIMIT=30
 # a dropped session reconnects it under the new account. A switch writes
 # RC_PENDING; once herdr lists the panes, each claude pane is owed in
 # RC_OWED (pane, session, epoch). Every sync sends /rc to an owed pane that
-# is idle or done, whose latest Remote Control line reads "Remote Control
-# disconnected", not "/remote-control is active", and whose input line is
-# empty. Any other pane gets no keys, as a key can answer a permission
+# is idle or done, whose latest Remote Control banner is the drop, not
+# "/remote-control is active", and whose input box holds no typed text. Any other pane gets no keys, as a key can answer a permission
 # dialog or join a half-typed prompt; it stays owed for the next sync,
 # until sent, gone, connected or RC_OWED_FOR seconds old. Cron's PATH may
 # lack herdr, so HERDR_DIRS is tried after it.
@@ -172,10 +171,10 @@ herdr_panes() {
 # herdr's answers, read by python. `panes`: `herdr agent list` JSON on stdin
 # to "pane session status" lines for claude panes; exit 3 when it has not
 # that shape (null, malformed, an agent that is no object). `screen`: a
-# pane's screen on stdin to send, connected or wait <why>. The later of the
-# two Remote Control lines decides, as the screen keeps old ones above, and
-# only an empty input line (the last ❯ line) takes keys; dim text there is
-# a prompt suggestion, not typed input, so it reads as empty.
+# pane's screen on stdin to send, connected or wait <why>. The later of
+# Claude's two Remote Control banners decides, as the screen keeps old ones
+# above, and only an empty input box (the rules around the last ❯ line)
+# takes keys; dim text there is a prompt suggestion, so it reads as empty.
 rc_read() {
   python3 -I -c '
 import json, sys
@@ -197,47 +196,70 @@ if sys.argv[1] == "panes":
         sys.exit(3)
 else:
     import re
-    # The screen comes with its ANSI codes (--format ansi): a prompt
-    # suggestion is dim (SGR 2) text on the input line, typed text is not.
+    # The screen comes with its ANSI codes (--format ansi). The own
+    # banners of Claude are matched on the text with every escape removed, anchored
+    # at line start in the form Claude prints them, so prose that quotes
+    # them is no banner; a line that holds both texts is neither.
     sgr = re.compile(r"\x1b\[([0-9;:]*)m")
     other = re.compile(r"\x1b(\[[0-9;:?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|.)")
+    DROP, ACTIVE = "Remote Control disconnected", "/remote-control is active"
     def plain(line):
         return other.sub("", sgr.sub("", line))
-    def undimmed(line):
-        out, dim, pos = [], False, 0
+    def banner(line):
+        if DROP in line and ACTIVE in line:
+            return None
+        if line.startswith("⏺ " + DROP + " — "):
+            return "drop"
+        if line.startswith("  " + ACTIVE + " · "):
+            return "active"
+        return None
+    # SGR state across a run of lines: text inside a dim (SGR 2) run is a
+    # prompt suggestion, not typed input, and is dropped. A parameter with
+    # colons (38:2::r:g:b) is one parameter; 38/48/58 with ; take their
+    # colour words with them, so a 2 there is no dim.
+    def undimmed(line, dim):
+        out, pos = [], 0
         for m in sgr.finditer(line):
             if not dim:
                 out.append(line[pos:m.start()])
-            codes, i = (m.group(1) or "0").replace(":", ";").split(";"), 0
-            while i < len(codes):
-                code = codes[i]
-                if code in ("38", "48", "58"):
-                    i += 3 if codes[i + 1:i + 2] == ["5"] else 5
+            params, i = (m.group(1) or "0").split(";"), 0
+            while i < len(params):
+                code = params[i].split(":")[0]
+                if code in ("38", "48", "58") and ":" not in params[i]:
+                    i += 3 if params[i + 1:i + 2] == ["5"] else 5
                     continue
-                if code in ("", "0", "22"):
+                if code in ("", "0", "00", "22"):
                     dim = False
-                elif code == "2":
+                elif code in ("2", "02"):
                     dim = True
                 i += 1
             pos = m.end()
         if not dim:
             out.append(line[pos:])
-        return plain("".join(out))
+        return plain("".join(out)), dim
+    def rule(text):
+        return re.fullmatch(r"─+( [^─]* ─+)?", text.strip()) is not None
     raw = text.splitlines()
     lines = [plain(line) for line in raw]
-    def last(needle):
-        return max([i for i, line in enumerate(lines) if needle in line], default=-1)
-    dropped, active = last("Remote Control disconnected"), last("/remote-control is active")
-    prompts = [undimmed(r).strip().removeprefix("\u276f").strip()
-               for r, line in zip(raw, lines) if line.strip().startswith("\u276f")]
-    if active > dropped:
+    marks = [(i, banner(line)) for i, line in enumerate(lines) if banner(line)]
+    prompt = max([i for i, line in enumerate(lines) if line.strip().startswith("❯")], default=-1)
+    # The input box: every line from the rule above the last ❯ line to the
+    # rule below it. A draft can put its text on a continuation line.
+    top = max([i for i in range(prompt) if rule(lines[i])], default=-1)
+    bottom = min([i for i in range(prompt + 1, len(lines)) if rule(lines[i])], default=-1)
+    typed, dim = "", False
+    if prompt >= 0 and top >= 0 and bottom >= 0:
+        for i in range(top + 1, bottom):
+            part, dim = undimmed(raw[i], dim)
+            typed += part.strip().removeprefix("❯") if i == prompt else part
+    if marks and marks[-1][1] == "active":
         print("connected")
-    elif dropped < 0:
+    elif not marks:
         print("wait: no Remote Control drop on its screen yet")
-    elif not prompts:
-        print("wait: no input line on its screen")
-    elif prompts[-1]:
-        print("wait: its input line holds text")
+    elif prompt < 0 or top < 0 or bottom < 0:
+        print("wait: no input box on its screen")
+    elif typed.strip():
+        print("wait: its input box holds text")
     else:
         print("send")
 ' "$1"

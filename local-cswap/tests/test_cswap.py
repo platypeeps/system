@@ -155,8 +155,15 @@ else:
 # empty input line; the screen keeps older lines above the newest.
 RULE = "\u2500" * 20
 INPUT = f"{RULE}\n\u276f\u00a0\n{RULE}\n  [model] | git:(main)"
-DROPPED = f"  Remote Control disconnected\n{INPUT}"
-CONNECTED = f"  /remote-control is active \u00b7 Continue here\n{INPUT}"
+# The banners as Claude prints them, colours and all (a hub pane, read
+# with --format ansi). Prose that quotes their text is no banner.
+YELLOW = "\x1b[0m\x1b[38;2;255;193;7m"
+DROP_LINE = (f"{YELLOW}\u23fa\x1b[0m \x1b[0m{YELLOW}Remote Control disconnected \u2014 signed-in "
+             "claude.ai account or organization changed on this machine \u2014 run\x1b[0m")
+ACTIVE_LINE = ("  /remote-control is active\x1b[0m\x1b[38;2;153;153;153m \u00b7 Continue here, "
+               "on your phone, or at \x1b[0m")
+DROPPED = f"{DROP_LINE}\n{INPUT}"
+CONNECTED = f"{ACTIVE_LINE}\n{INPUT}"
 
 
 def executable(path, text):
@@ -553,11 +560,11 @@ class RemoteControlReconnects(Machine):
         self.publish(THREE)
         typed = DROPPED.replace("\u276f\u00a0", "\u276f half a prompt")
         self.panes(["w1:p1", "claude", "idle", "s1", typed],
-                   ["w1:p2", "claude", "idle", "s2", "  Remote Control disconnected"])
+                   ["w1:p2", "claude", "idle", "s2", DROP_LINE])
         result = self.sync("elsewhere")
         self.assertEqual(self.prompts(), [])
         self.assertEqual(self.owed(), ["w1:p1", "w1:p2"])
-        self.assertIn("reconnect: w1:p1 wait: its input line holds text", result.stdout)
+        self.assertIn("reconnect: w1:p1 wait: its input box holds text", result.stdout)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
@@ -576,6 +583,41 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
         self.assertEqual(self.owed(), ["w1:p2", "w1:p3"])
+
+    def test_each_way_a_screen_can_mislead(self):
+        # Class pass on the screen read (lead re-review): each pane is one
+        # row of the PR's failure table; True means it gets /rc.
+        box = lambda *rows: "\n".join([RULE, *rows, RULE, "  [model] | git:(main)"])
+        empty = "\u276f\u00a0"
+        cases = {
+            # Banner text quoted in prose, or both texts on one line.
+            "quoted-drop": (f"{ACTIVE_LINE}\n  the job waits for Remote Control disconnected \u2014 x\n"
+                            + box(empty), False),
+            "quoted-active": (f"{DROP_LINE}\n> quote:   /remote-control is active \u00b7 here\n"
+                              + box(empty), True),
+            "both-one-line": (f"{ACTIVE_LINE}\n\u23fa Remote Control disconnected \u2014 then "
+                              "/remote-control is active \u00b7 x\n" + box(empty), False),
+            # A draft whose text is on a continuation line, typed or dim.
+            "draft-line-2": (f"{DROP_LINE}\n" + box(empty, "  second line"), False),
+            "dim-then-typed": (f"{DROP_LINE}\n" + box(empty + "\x1b[2mtry this\x1b[0m", "  typed"), False),
+            "dim-two-lines": (f"{DROP_LINE}\n" + box(empty + "\x1b[2mone", "  two\x1b[22m"), True),
+            # SGR forms: colon truecolour and 256 colour hold a 2 that is no
+            # dim; 0;2 is dim; a bare reset ends it.
+            "colon-truecolour": (f"{DROP_LINE}\n" + box(empty + "\x1b[38:2::9:2:2mtyped\x1b[0m"), False),
+            "256-colour": (f"{DROP_LINE}\n" + box(empty + "\x1b[38;5;2mtyped\x1b[0m"), False),
+            "dim-combined": (f"{DROP_LINE}\n" + box(empty + "\x1b[0;2msuggestion\x1b[0m"), True),
+            "bare-reset": (f"{DROP_LINE}\n" + box(empty + "\x1b[2mhint\x1b[mtyped"), False),
+            # The box: a past prompt above it, or no rule below the ❯ line.
+            "past-prompt": (f"\u276f an old prompt\n{DROP_LINE}\n" + box(empty), True),
+            "no-bottom-rule": (f"{DROP_LINE}\n{RULE}\n{empty}", False),
+            "labelled-rule": (f"{DROP_LINE}\n" + box(empty).replace(RULE, RULE + " control \u2500", 1), True),
+        }
+        self.publish(THREE)
+        self.panes(*[[f"w1:{name}", "claude", "idle", name, screen]
+                     for name, (screen, _) in cases.items()])
+        self.sync("elsewhere")
+        sent = {line.split()[3][3:] for line in self.prompts()}
+        self.assertEqual(sent, {name for name, (_, gets) in cases.items() if gets})
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
         # Fold-in: a list that failed at the switch owed nothing, and the
