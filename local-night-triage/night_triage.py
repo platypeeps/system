@@ -63,6 +63,15 @@ INGEST_SESSION = "cron"
 CLAIM_HOURS = 24
 # The pack's audit note for a park or an unpark (sd_db.workflow.edit_item).
 PARK_MARK = re.compile(r"^(Parked|Unparked) by \S+$", re.M)
+# One line of the audit comment the pack's edit_item writes, as its
+# workflow.AUDIT_LINE: a park mark counts only in such a note, never in a
+# followup or comment someone wrote (sd:9282 round 1).
+AUDIT_LINE = re.compile(r"(?:Updated [a-z_]+(?:, [a-z_]+)*|Changed kind \S+ -> \S+|Unparked|Parked) by \S+")
+
+
+def is_audit(note):
+    lines = str(note.get("body") or "").splitlines()
+    return note.get("kind") == "comment" and bool(lines) and all(AUDIT_LINE.fullmatch(x) for x in lines)
 
 
 def mine(host):
@@ -129,7 +138,7 @@ def wake(report, notes, host):
     if not waited:
         return None
     since = notes[next(i for i, n in enumerate(notes) if n is ours[-1]) + 1:]
-    if [m for n in since for m in PARK_MARK.findall(n["body"])] != ["Parked"]:
+    if [m for n in since if is_audit(n) for m in PARK_MARK.findall(n["body"])] != ["Parked"]:
         return None
     on, run, runs = waited.groups()
     try:
@@ -171,7 +180,10 @@ def held_by_other(notes, host):
         age = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(
             others[-1]["timestamp"])
     except (KeyError, TypeError, ValueError):
-        return True  # an age it cannot read is no proof the claim is stale
+        # An age it cannot read is no proof the claim is stale.
+        print(f"night-triage: claim note {others[-1].get('id')} has no readable timestamp; held",
+              file=sys.stderr)
+        return True
     return age < datetime.timedelta(hours=CLAIM_HOURS)
 
 

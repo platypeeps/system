@@ -460,8 +460,32 @@ class NightTriage(unittest.TestCase):
         self.addCleanup(sys.path.remove, str(FOLDER))
         import night_triage
         alert = {"fields": json.dumps({"repeats": {"count": 2}})}
-        self.assertEqual(night_triage.wake(alert, [{"body": note}, {"body": "Parked by login"}], "node1"),
+        self.assertEqual(night_triage.wake(alert, [{"body": note},
+                                                   {"kind": "comment", "body": "Parked by login"}], "node1"),
                          "the job failed again")
+
+    def test_a_park_mark_in_a_followup_is_no_park(self):
+        # sd:9282 round 1: a followup that quoted "Unparked by login" read
+        # as a hand unpark, so the job's own park never woke.
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        wait = self.parked(day(2))["notes"]
+        alert = {"fields": json.dumps({"repeats": {"count": 2}})}
+        for kind, body in (("followup", "Rerun it.\nUnparked by login"), ("comment", "Unparked by login, then retry")):
+            with self.subTest(kind=kind):
+                notes = wait + [{"kind": kind, "session": "abc", "body": body}]
+                self.assertEqual(night_triage.wake(alert, notes, "node1"), "the job failed again")
+
+    def test_a_claim_without_a_timestamp_is_held_and_says_so(self):
+        alert = report("node1")
+        alert["notes"].append({"id": 50, "kind": "comment", "session": "abc", "resolved_at": None,
+                               "body": "claimed: triaging"})
+        self.given({"1": alert}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("night-triage: claim note 50 has no readable timestamp; held", result.stderr)
+        self.assertIn("sd:1 is claimed; skipped", result.stderr)
 
     def test_a_wait_without_a_real_near_date_is_not_parked(self):
         # sd:9243 review: a shape-only date check parked a past or impossible
@@ -808,6 +832,33 @@ class RealPack(unittest.TestCase):
         self.assertTrue(any(b.startswith("night-triage on node1 claims it") for b in bodies), bodies)
         self.assertTrue(any("Evidence: cron-jobs.sh run job-a: exit 0" in b for b in bodies), bodies)
         self.assertIsNotNone(next(n for n in state["notes"] if n["id"] == followup)["resolved_at"])
+
+    def claimed_hours_ago(self, hours):
+        """The job's run on a report another session claimed `hours` ago,
+        through the pack's own `sd task show --json`; whether it filed."""
+        from contextlib import closing
+        from sd_db import connect
+        item = self.ingest()
+        stamp = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+        with closing(connect(self.database)) as connection, connection:
+            connection.execute(
+                "INSERT INTO note (item, timestamp, kind, body, session) VALUES (?, ?, 'comment', ?, 'abc')",
+                (item, stamp.isoformat(timespec="seconds"), "claimed: triaging"))
+        result = self.run_job([{"id": item, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("readable timestamp", result.stderr)
+        return any("filed as sd:7" in n["body"] for n in self.state(item)["notes"]), result.stderr
+
+    # sd:9282 round 1: the stale-claim check reads `timestamp` from the
+    # pack's notes; these bind that name and its format to the pack.
+    def test_a_day_old_claim_in_the_pack_is_stale(self):
+        filed, stderr = self.claimed_hours_ago(48)
+        self.assertTrue(filed, stderr)
+
+    def test_an_hour_old_claim_in_the_pack_holds(self):
+        filed, stderr = self.claimed_hours_ago(1)
+        self.assertFalse(filed, stderr)
+        self.assertIn("is claimed; skipped", stderr)
 
     def test_a_report_waiting_on_a_dated_run_is_parked(self):
         # sd:9243: the pack parks a report through `sd task edit --park`.
