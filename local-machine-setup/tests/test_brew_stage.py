@@ -564,6 +564,22 @@ class BrewStageTest(unittest.TestCase):
             self.assertNotIn("DIFFERS tailscaled", result.stdout, service)
             self.assertNotIn("restart", sudo_log.read_text() if sudo_log.exists() else "", service)
 
+    def test_the_plist_launchd_runs_is_the_service(self):
+        # Lead re-review: with both brew plists naming the keg, a stale
+        # sh.brew one that launchd does not hold hid the live mxcl one.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.5-tdef")
+        daemons = self.home / "LaunchDaemons"
+        (daemons / "homebrew.mxcl.tailscale.plist").write_text(
+            (daemons / "sh.brew.tailscale.plist").read_text())
+        launchctl = (self.stubs / "launchctl").read_text()
+        (self.stubs / "launchctl").write_text(launchctl.replace(
+            '[ "$1 $2" = "print system/sh.brew.tailscale" ] || exit 1',
+            '[ "$1 $2" = "print system/homebrew.mxcl.tailscale" ] || exit 113'))
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("DIFFERS tailscaled runs 1.104.5-tdef", result.stdout)
+        self.assertIn("services restart tailscale", sudo_log.read_text())
+
     def test_a_restart_that_takes_says_so(self):
         _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
         self.tailscale_daemon("1.104.5-tdef")

@@ -1021,33 +1021,37 @@ tailscale_daemon_match() {
   # (sd:9348).
   [ -n "$tm_brew" ] || { echo "  SKIP    tailscaled check: brew --prefix gave no answer"; return 0; }
   [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
-  tm_plist='' tm_other=''
+  # Each plist that names the keg's tailscaled is asked of launchd, and
+  # the one that runs is the service: the plist on disk is not (sd:9282
+  # lead review), and a stale second plist must not hide the live one.
+  # A print that fails or times out is no answer, said aloud.
+  tm_keg="$tm_brew/opt/tailscale/bin/tailscaled"
+  tm_label='' tm_other='' tm_skip=''
   for f in "$LAUNCHDAEMONS_DIR/sh.brew.tailscale.plist" "$LAUNCHDAEMONS_DIR/homebrew.mxcl.tailscale.plist"; do
-    if grep -qF "<string>$tm_brew/opt/tailscale/bin/tailscaled</string>" "$f" 2>/dev/null; then
-      tm_plist=$f
+    if grep -qF "<string>$tm_keg</string>" "$f" 2>/dev/null; then
+      tm_l=${f##*/}
+      tm_l=${tm_l%.plist}
+      if ! tm_svc=$(bound_step 30 launchctl print "system/$tm_l" 2>/dev/null); then
+        tm_skip="${tm_skip:+$tm_skip; }launchd holds no system/$tm_l"
+      elif printf '%s\n' "$tm_svc" | grep -qx "	state = running" &&
+        printf '%s\n' "$tm_svc" | grep -qxF "	program = $tm_keg"; then
+        tm_label=$tm_l
+        break
+      else
+        tm_skip="${tm_skip:+$tm_skip; }system/$tm_l is not running $tm_keg"
+      fi
     elif [ -e "$f" ]; then
       tm_other=$f
     fi
   done
-  if [ -z "$tm_plist" ]; then
+  if [ -z "$tm_label" ]; then
     # A plist that names a Cellar path or another binary is no service
     # this restarts; no plist at all is a machine with no brew service.
-    [ -z "$tm_other" ] || echo "  SKIP    tailscaled check: $tm_other runs no $tm_brew/opt/tailscale/bin/tailscaled"
-    return 0
-  fi
-  # The plist on disk is not the service: launchd must hold it, running
-  # the keg's tailscaled, before a version gap is drift or a restart is
-  # due (sd:9282 lead review). A print that fails or times out is no
-  # answer, said aloud.
-  tm_label=${tm_plist##*/}
-  tm_label=${tm_label%.plist}
-  if ! tm_svc=$(bound_step 30 launchctl print "system/$tm_label" 2>/dev/null); then
-    echo "  SKIP    tailscaled check: launchd holds no system/$tm_label"
-    return 0
-  fi
-  if ! printf '%s\n' "$tm_svc" | grep -qx "	state = running" ||
-    ! printf '%s\n' "$tm_svc" | grep -qxF "	program = $tm_brew/opt/tailscale/bin/tailscaled"; then
-    echo "  SKIP    tailscaled check: system/$tm_label is not running $tm_brew/opt/tailscale/bin/tailscaled"
+    if [ -n "$tm_skip" ]; then
+      echo "  SKIP    tailscaled check: $tm_skip"
+    elif [ -n "$tm_other" ]; then
+      echo "  SKIP    tailscaled check: $tm_other runs no $tm_keg"
+    fi
     return 0
   fi
   tailscale_daemon_versions
