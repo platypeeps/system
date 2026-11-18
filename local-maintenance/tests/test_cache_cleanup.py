@@ -137,9 +137,11 @@ class CacheCleanupTest(Harness):
         # sd:9377: the finding fired every night on a skip the operator
         # accepted, and named no holder.
         self.uv(foreign=True)
-        _stub(self.bin / "ps", "printf '%s\\n' " + " ".join(
-            ["'uvx mcp-proxy-for-aws'"] * 5 + ["'/opt/example/bin/uv run kev.serve'", "'/bin/zsh'"]))
-        holders = "(5x uvx mcp-proxy-for-aws; /opt/example/bin/uv run kev.serve)"
+        # `ps -o pid= -o comm=` names the executable only, never the
+        # arguments; a stub that sees `command=` prints a secret argument.
+        _stub(self.bin / "ps", 'case "$*" in *command*) echo "4 uv run --token s3cret" ;; '
+              '*) printf "%s\\n" "  101 uvx" "  102 uvx" "  3 /opt/example/bin/uv" "  4 /bin/zsh" ;; esac\n')
+        holders = "(uvx pid 101 102; uv pid 3)"
         for night in (1, 2):
             run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
             self.assertIn(f"holds the cache; skipped {holders}", run.stdout)
@@ -150,6 +152,7 @@ class CacheCleanupTest(Harness):
             run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
             self.assertEqual(self.attention(run), [], night)
             self.assertIn(f"skipped {night} nights running, reported on the third {holders}", run.stdout)
+            self.assertNotIn("s3cret", run.stdout)
 
     def test_a_prune_skipped_three_nights_running_is_a_finding(self):
         self.uv(foreign=True)

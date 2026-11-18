@@ -90,12 +90,13 @@ uv_prune() {
     sleep 1; waited=$((waited + 1))
   done
   if pgrep -x uv >/dev/null 2>&1 || pgrep -x uvx >/dev/null 2>&1; then
-    # Name them, each command once with a count, so a finding says which
-    # session or service to stop (sd:9377).
-    holders=$(ps -A -o command= 2>/dev/null | awk '
-      { n = split($1, w, "/"); if (w[n] != "uv" && w[n] != "uvx") next
-        c = $0; if (length(c) > 80) c = substr(c, 1, 77) "..."; if (!(c in k)) o[++m] = c; k[c]++ }
-      END { for (i = 1; i <= m; i++) printf "%s%s%s", (i > 1 ? "; " : ""), (k[o[i]] > 1 ? k[o[i]] "x " : ""), o[i] }')
+    # Name them by executable and pid, so a finding says which process to
+    # stop (sd:9377). Never the arguments: they can carry a token or path.
+    holders=$(ps -A -o pid= -o comm= 2>/dev/null | awk '
+      { pid = $1; sub(/^ *[0-9]+ +/, ""); n = split($0, w, "/"); c = w[n]
+        if (c != "uv" && c != "uvx") next
+        if (!(c in p)) o[++m] = c; p[c] = p[c] (p[c] == "" ? "" : " ") pid }
+      END { for (i = 1; i <= m; i++) printf "%s%s pid %s", (i > 1 ? "; " : ""), o[i], p[o[i]] }')
     echo "uv-prune: holders: ${holders:-unknown, ps listed none}"
     echo "uv-prune: another uv process holds the cache; skipped"
     uv_prune_resume || return 1
