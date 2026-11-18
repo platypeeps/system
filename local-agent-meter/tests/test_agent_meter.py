@@ -49,13 +49,14 @@ roles:
 
 #: One Codex `token_count` event in the shape its rollout files hold:
 #: the rate limits beside `info`, which carries what the ledger must not.
+#: Its windows reset in 2100, so no run of these tests sees them reset.
 CODEX_EVENT = {"timestamp": "2026-11-03T14:00:00.000Z", "type": "event_msg", "payload": {
     "type": "token_count",
     "info": {"cwd": "/Users/someone/example.test", "last_message": "who@example.test"},
     "rate_limits": {
         "limit_id": "codex", "plan_type": "pro",
-        "primary": {"used_percent": 12.5, "window_minutes": 300, "resets_at": 1794992575},
-        "secondary": {"used_percent": 23, "window_minutes": 10080, "resets_at": 1795592575},
+        "primary": {"used_percent": 12.5, "window_minutes": 300, "resets_at": 4102444800},
+        "secondary": {"used_percent": 23, "window_minutes": 10080, "resets_at": 4103049600},
         "credits": {"has_credits": False, "unlimited": False, "balance": None}}}}
 
 #: A codexbar that leaves a mark: no meter path may call it (sd:9256).
@@ -206,15 +207,29 @@ class MeterRun(unittest.TestCase):
         self.assertNotIn("sd_db", record["errors"])
         self.assertIn("rtk", record["errors"])
         stamp = record["ts"].replace("Z", "+00:00")
+        # Codex's rows carry its event's time, not the run's (sd:9256 review).
+        event = "2026-11-03T14:00:00+00:00"
         self.assertEqual(
             self.meter_rows(),
             [("claude", "anthropic", 10080, 67.0, stamp, "meter") + (None,) * 6,
-             ("codex", "openai", 300, 12.5, stamp, "meter") + (None,) * 6,
-             ("codex", "openai", 10080, 23.0, stamp, "meter") + (None,) * 6],
+             ("codex", "openai", 300, 12.5, event, "meter") + (None,) * 6,
+             ("codex", "openai", 10080, 23.0, event, "meter") + (None,) * 6],
         )
         self.assertIn("sd_db 3 rows", done.stdout)
         self.assertEqual(record["usage"]["codex"]["read_at"], "2026-11-03T14:00:00.000Z")
-        self.assertEqual(record["usage"]["codex"]["windows"][0]["resets_at"], "2026-11-18T09:02:55Z")
+        self.assertEqual(record["usage"]["codex"]["windows"][0]["resets_at"], "2100-01-01T00:00:00Z")
+
+    def test_a_window_that_reset_after_its_reading_gets_no_row(self):
+        # sd:9256 review: an idle Codex's old share was stamped as current.
+        event = json.loads(json.dumps(CODEX_EVENT))
+        event["payload"]["rate_limits"]["primary"]["resets_at"] = 1793700000
+        self.write_codex(event)
+        done = self.run_meter("--db", str(self.db))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["sd_db"], {"rows": 2, "stale": 1})
+        self.assertEqual([row[:3] for row in self.meter_rows()],
+                         [("claude", "anthropic", 10080), ("codex", "openai", 10080)])
 
     def test_no_meter_path_calls_codexbar(self):
         """sd:9256: done when no meter path calls codexbar."""

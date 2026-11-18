@@ -308,19 +308,34 @@ def claude_reading(accounts, error, now):
                    windows=windows[:1])
 
 
-def codex_reading(home=None):
-    """codex from the newest rollout's last `token_count` with `rate_limits`.
+def event_time(stamp):
+    """An event's aware time, or None."""
+    try:
+        moment = datetime.datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo is not None else None
 
-    `read_at` is that event's own time, so a Codex left idle reads old and
-    the view can call it stale rather than current."""
+
+def codex_reading(home=None):
+    """codex from the newest `token_count` with `rate_limits`, by the event's
+    own time, across the newest rollouts.
+
+    `read_at` is that event's time, so a Codex left idle reads old and the
+    view can call it stale rather than current. A file's mtime orders the
+    reads only: a rollout is not newer than its last write, so the scan
+    stops at a file last written before the newest event found."""
     root = Path(home or os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
     try:
         files = sorted(root.glob("*/*/*/rollout-*.jsonl"),
                        key=lambda p: p.stat().st_mtime, reverse=True)[:CODEX_FILES]
     except OSError as e:
         return reading("codex", "unknown", "codex-sessions", error=type(e).__name__)
+    best, best_at = None, None
     for path in files:
         try:
+            if best_at is not None and path.stat().st_mtime < best_at.timestamp():
+                break
             with open(path, "rb") as f:
                 f.seek(max(0, path.stat().st_size - CODEX_TAIL))
                 lines = f.read().decode("utf-8", "replace").splitlines()
@@ -335,12 +350,19 @@ def codex_reading(home=None):
                 limits = payload.get("rate_limits")
                 if payload.get("type") != "token_count" or not isinstance(limits, dict):
                     continue
-                if not isinstance(event.get("timestamp"), str):
+                at = event_time(event.get("timestamp"))
+                if at is None:
                     continue
-                return reading("codex", "ok", "codex-sessions", read_at=event["timestamp"],
-                               **codex_fields(limits))
+                fields = codex_fields(limits)
             except (ValueError, KeyError, TypeError, AttributeError, ReadFailed):
                 continue
+            # The file's last valid event is its newest; the others are older.
+            if best_at is None or at > best_at:
+                best, best_at = reading("codex", "ok", "codex-sessions",
+                                        read_at=event["timestamp"], **fields), at
+            break
+    if best is not None:
+        return best
     return reading("codex", "unknown", "codex-sessions",
                    error="no token_count with rate_limits in the newest %d rollouts" % CODEX_FILES)
 

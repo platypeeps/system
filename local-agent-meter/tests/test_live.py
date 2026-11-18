@@ -347,6 +347,15 @@ class Codex(unittest.TestCase):
         got = usage_sources.codex_reading(self.home)
         self.assertEqual((got["status"], got["read_at"]), ("ok", "2026-11-16T00:00:00Z"))
 
+    def test_the_newest_event_wins_whatever_file_was_touched_last(self):
+        # sd:9256 review: a file touched later held an older event.
+        at = datetime.datetime(2026, 11, 17, 19, 0, tzinfo=datetime.timezone.utc).timestamp()
+        self.rollout("touched", [self.event(used=10.0, stamp="2026-11-17T10:00:00Z")], at + 7200)
+        self.rollout("newer", [self.event(used=55.0, stamp="2026-11-17T19:00:00Z")], at + 60)
+        got = usage_sources.codex_reading(self.home)
+        self.assertEqual((got["read_at"], got["windows"][0]["used_percent"]),
+                         ("2026-11-17T19:00:00Z", 55.0))
+
     def test_no_limits_anywhere_is_unknown(self):
         got = usage_sources.codex_reading(self.home)
         self.assertEqual(got["status"], "unknown")
@@ -659,6 +668,18 @@ class Live(unittest.TestCase):
         rows = self.rows("service-status:")
         self.assertEqual({key: row["run"] for key, row in rows.items()},
                          {"service-status:a": 1, "service-status:b": 1})
+
+    def test_no_db_is_refused_where_rows_are_all_a_run_writes(self):
+        # sd:9256 review: --no-db was ignored and the rows were written.
+        for command in ("usage", "services"):
+            with self.subTest(command=command):
+                done = subprocess.run([sys.executable, "-I", str(SCRIPT), command, "--no-db"],
+                                      capture_output=True, text=True, timeout=60,
+                                      env=dict(self.env, HOME=self.tmp.name))
+                self.assertEqual(done.returncode, 2, done.stdout)
+                self.assertIn("--no-db", done.stderr)
+                self.assertEqual(self.rows("usage:"), {})
+                self.assertEqual(self.rows("service-status:"), {})
 
     def test_a_store_that_does_not_open_exits_1(self):
         for command in ("usage", "services"):

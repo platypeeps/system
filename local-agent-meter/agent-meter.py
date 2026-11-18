@@ -295,17 +295,28 @@ def write_rows(record, a) -> None:
         record["errors"]["sd_db"] = "%s: %s" % (type(e).__name__, e)
         record["sd_db"] = {"rows": 0}
         return
-    rows = 0
+    rows = stale = 0
+    now = usage_sources.event_time(record["ts"])
     try:
         with sd_db.transaction(connection):
             for prov, entry in record["usage"].items():
+                # A row is stamped when its reading was taken: a Codex left
+                # idle reads its last event, not this run (sd:9256 review).
+                taken = entry.get("read_at") or record["ts"]
+                at = usage_sources.event_time(taken)
                 for window in entry.get("windows") or []:
                     minutes, percent = window.get("window_minutes"), window.get("used_percent")
                     if minutes is None or percent is None:
                         continue
+                    reset = usage_sources.event_time(window.get("resets_at"))
+                    if at is not None and at < now and reset is not None and reset <= now:
+                        # A reading older than this run whose window reset
+                        # since: its share is not what is used now.
+                        stale += 1
+                        continue
                     try:
                         sample(connection, provider=prov, window_minutes=minutes,
-                               used_percent=percent, now=record["ts"])
+                               used_percent=percent, now=taken)
                         rows += 1
                     except MeterRefused as e:
                         # The library's own refusal is this window's and no
@@ -319,7 +330,7 @@ def write_rows(record, a) -> None:
         rows = 0
     finally:
         connection.close()
-    record["sd_db"] = {"rows": rows}
+    record["sd_db"] = {"rows": rows, **({"stale": stale} if stale else {})}
 
 
 def read_one(provider, accounts, accounts_error, now):
@@ -591,6 +602,8 @@ def main() -> None:
     where.add_argument("--no-db", action="store_true",
                        help="write the JSONL line only, no meter rows")
     a = p.parse_args()
+    if a.no_db and a.command in ("usage", "services"):
+        p.error("--no-db: %s writes rows and nothing else" % a.command)
     if a.command == "accounts":
         report_accounts(a)
     elif a.command == "usage":
