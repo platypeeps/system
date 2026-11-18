@@ -77,6 +77,10 @@ INCIDENT_CLOSED = ("resolved", "postmortem")
 COMPONENT = ("operational", "degraded_performance", "partial_outage", "major_outage",
              "under_maintenance")
 SLACK_TYPE = ("incident", "notice", "outage")
+#: Slack's incident status: `current` can still list a resolved one, and
+#: planned maintenance is scheduled, completed or cancelled (sd:9256 round 8).
+SLACK_OPEN = ("active",)
+SLACK_DONE = ("resolved", "completed", "cancelled", "scheduled")
 GOOGLE_IMPACT = ("SERVICE_INFORMATION", "SERVICE_DISRUPTION", "SERVICE_OUTAGE")
 
 
@@ -193,9 +197,11 @@ def read_slack(url, fetch):
     incidents = [{"title": title(i.get("title")), "url": whole_url(i.get("url")),
                   "impact": one_of(i.get("type"), SLACK_TYPE, "an incident type"),
                   "started_at": shown_time(i.get("date_created"))}
-                 for i in entries(active, "active_incidents")]
+                 for i in entries(active, "active_incidents")
+                 if one_of(i.get("status"), SLACK_OPEN + SLACK_DONE,
+                           "an incident status") in SLACK_OPEN]
     status = "ok"
-    if state == "active" or incidents:
+    if incidents or (state == "active" and not active):
         status = "outage" if any(i["impact"] == "outage" for i in incidents) else "degraded"
     return {"status": status, "indicator": state, "incidents": incidents, "components": []}
 

@@ -524,8 +524,8 @@ class Services(unittest.TestCase):
     def test_slack_and_google(self):
         self.assertEqual(self.read("slack", {"status": "ok", "active_incidents": []})["status"], "ok")
         got = self.read("slack", {"status": "active", "active_incidents": [
-            {"title": "Huddles down", "type": "outage", "url": "https://example.test/i",
-             "date_created": "2026-11-17T19:00:00Z"}]})
+            {"title": "Huddles down", "type": "outage", "status": "active",
+             "url": "https://example.test/i", "date_created": "2026-11-17T19:00:00Z"}]})
         self.assertEqual((got["status"], got["incidents"][0]["title"]), ("outage", "Huddles down"))
         incidents = [{"end": "2026-11-01T00:00:00Z", "service_name": "Gmail"},
                      {"begin": "2026-11-17T18:00:00Z", "end": None, "service_name": "Drive",
@@ -540,6 +540,22 @@ class Services(unittest.TestCase):
         incidents[1]["status_impact"] = "SERVICE_OUTAGE"
         self.assertEqual(self.read("google-incidents", incidents)["status"], "outage")
         self.assertEqual(self.read("google-incidents", [])["status"], "ok")
+
+    def test_a_finished_slack_incident_is_no_incident(self):
+        # sd:9256 round 8: current can list a resolved incident, and its
+        # type made a finished outage read outage. A status the API does
+        # not document is unknown.
+        def answer(status):
+            return {"status": "active", "active_incidents": [
+                {"title": "Huddles down", "type": "outage", "status": status,
+                 "url": "https://example.test/i", "date_created": "2026-11-17T19:00:00Z"}]}
+        for status in ("resolved", "completed", "cancelled", "scheduled"):
+            with self.subTest(status=status):
+                got = self.read("slack", answer(status))
+                self.assertEqual((got["status"], got["incidents"]), ("ok", []))
+        for status in (None, "weird", 5):
+            with self.subTest(status=status):
+                self.assertEqual(self.read("slack", answer(status))["status"], "unknown")
 
     def test_a_failed_or_strange_read_is_unknown_never_ok(self):
         for kind in ("statuspage", "slack", "google-incidents"):
@@ -582,7 +598,8 @@ class Services(unittest.TestCase):
             answers = {"statuspage": dict(SUMMARY, incidents=[incident],
                                           components=[{"name": value,
                                                        "status": "partial_outage"}]),
-                       "slack": {"status": "active", "active_incidents": [incident]},
+                       "slack": {"status": "active",
+                                 "active_incidents": [dict(incident, status="active")]},
                        "google-incidents": [dict(incident, begin="2026-11-17T18:00:00Z",
                                                  end=None, service_name="Drive")]}
             for kind, answer in answers.items():
@@ -612,7 +629,8 @@ class Services(unittest.TestCase):
                     {"id": "abc", "status": "investigating", "name": "n",
                      "shortlink": value, "impact": "minor", "created_at": None}]),
                 "slack": {"status": "active", "active_incidents": [
-                    {"title": "t", "type": "outage", "url": value, "date_created": None}]},
+                    {"title": "t", "type": "outage", "status": "active", "url": value,
+                     "date_created": None}]},
                 "google-incidents": [{"uri": value, "status_impact": "SERVICE_OUTAGE",
                                       "begin": "2026-11-17T18:00:00Z", "service_name": "Drive"}]}
             for kind, answer in answers.items():
@@ -1067,8 +1085,8 @@ class Hostile(unittest.TestCase):
     def test_every_status_reader(self):
         answers = {"statuspage": SUMMARY,
                    "slack": {"status": "active", "active_incidents": [
-                       {"title": "Huddles", "type": "outage", "url": "https://example.test/i",
-                        "date_created": "2026-11-17T19:00:00Z"}]},
+                       {"title": "Huddles", "type": "outage", "status": "active",
+                        "url": "https://example.test/i", "date_created": "2026-11-17T19:00:00Z"}]},
                    "google-incidents": [{"begin": "2026-11-17T18:00:00Z", "end": None,
                                          "service_name": "Drive", "external_desc": "Slow.",
                                          "uri": "incidents/x", "status_impact": "SERVICE_OUTAGE"}]}
@@ -1119,7 +1137,8 @@ class Hostile(unittest.TestCase):
                                                                   shortlink=None)),
                  lambda got: got["incidents"][0]["url"].endswith("/incidents/abc")),
                 ("slack", {"status": "active", "active_incidents": [
-                    {"title": "t", "type": "outage", "url": None, "date_created": None}]},
+                    {"title": "t", "type": "outage", "status": "active", "url": None,
+                     "date_created": None}]},
                  lambda got: got["status"] == "outage"),
                 ("google-incidents", [dict(GOOGLE_OPEN, end=None, uri=None)],
                  lambda got: got["status"] == "outage")):
@@ -1186,7 +1205,9 @@ class Hostile(unittest.TestCase):
                     ("statuspage", put(SUMMARY, ("components", 0, "status"), bad)),
                     ("statuspage", put(SUMMARY, ("incidents", 0, "status"), bad)),
                     ("slack", {"status": "active", "active_incidents": [
-                        {"title": "t", "type": bad}]}),
+                        {"title": "t", "type": bad, "status": "active"}]}),
+                    ("slack", {"status": "active", "active_incidents": [
+                        {"title": "t", "type": "outage", "status": bad}]}),
                     ("google-incidents", [dict(GOOGLE_OPEN, status_impact=bad)])):
                 got = service_status.read_service(("svc", kind, "https://example.test/a", []),
                                                   NOW, fetch=lambda url, **_: answer)
