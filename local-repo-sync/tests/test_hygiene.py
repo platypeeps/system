@@ -434,7 +434,7 @@ class HygieneTest(unittest.TestCase):
         self.assertNotEqual("", f.branch_sha(repo, "main"))
 
     def test_a_squash_with_different_content_is_not_deleted(self):
-        """NEW. The squash probe compares patches, so a branch whose content
+        """NEW. The path probe compares contents, so a branch whose content
         differs from what landed stays."""
         f = self.fixture()
         repo = f.repo()
@@ -633,6 +633,112 @@ class HygieneTest(unittest.TestCase):
 
         self.assertFalse(wt.exists())
         self.assertEqual("", f.branch_sha(repo, "clean-merged"))
+
+    def test_a_worktree_whose_content_landed_in_a_wider_squash_goes(self):
+        """NEW (sd:9241). A builder branch landed inside a bundle squash
+        that also carried other work: no patch matches, but merging the
+        branch into main adds nothing, so its clean worktree goes."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.add_worktree(repo, "build/one")
+        tip = f.commit(wt, "one.txt", "one\n", "item one")
+        (repo / "one.txt").write_text("one\n")
+        f.git(repo, "add", "one.txt")
+        f.commit(repo, "two.txt", "two\n", "bundle: items one and two")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertFalse(wt.exists(), result.stdout)
+        self.assertEqual("", f.branch_sha(repo, "build/one"))
+        self.assertIn(tip, result.stdout)
+        self.assertIn("its paths hold on the default branch", result.stdout)
+
+    def test_a_colon_named_file_that_never_landed_keeps_its_branch(self):
+        """sd:9241 review: ls-tree read `:x.txt` as `x.txt`, which main
+        holds unchanged, so a branch whose only file never reached main
+        read as landed and its worktree went."""
+        f = self.fixture()
+        repo = f.repo()
+        f.commit(repo, "x.txt", "x\n", "x")
+        f.git(repo, "push", "-q", "origin", "main")
+        wt = f.add_worktree(repo, "build/colon")
+        (wt / ":x.txt").write_text("colon\n")
+        f.git(wt, "--literal-pathspecs", "add", ":x.txt")
+        f.git(wt, "commit", "-q", "-m", "a colon file")
+        tip = f.git(wt, "rev-parse", "HEAD")
+        f.commit(repo, "two.txt", "two\n", "unrelated work")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        result = f.run("hygiene", "--apply", expect=None)
+
+        self.assertTrue(wt.exists(), result.stdout)
+        self.assertEqual(tip, f.branch_sha(repo, "build/colon"))
+
+    def test_a_branch_whose_merge_still_changes_main_is_kept(self):
+        """NEW (sd:9241). A branch that landed and was then reverted still
+        changes main when merged, so it and its worktree stay."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.add_worktree(repo, "build/two")
+        f.commit(wt, "one.txt", "one\n", "item one")
+        (repo / "one.txt").write_text("one\n")
+        f.git(repo, "add", "one.txt")
+        f.commit(repo, "two.txt", "two\n", "bundle")
+        f.git(repo, "rm", "-q", "one.txt")
+        f.git(repo, "commit", "-q", "-m", "revert item one")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertTrue(wt.exists())
+        self.assertNotEqual("", f.branch_sha(repo, "build/two"))
+
+    def test_a_merge_driver_that_keeps_main_does_not_prove_a_branch_landed(self):
+        """NEW (sd:9241 review). A merge driver that keeps main's file and
+        exits 0 makes the merge give main's tree; the builder's edit is
+        not on main, so the branch and its worktree stay."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "config", "merge.keepmain.driver", "true")
+        f.commit(repo, ".gitattributes", "x.txt merge=keepmain\n", "attributes")
+        f.commit(repo, "x.txt", "base\n", "x")
+        f.git(repo, "push", "-q", "origin", "main")
+        wt = f.add_worktree(repo, "build/three")
+        f.commit(wt, "x.txt", "builder edit\n", "unlanded edit")
+        f.commit(repo, "x.txt", "main edit\n", "main moves on")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertTrue(wt.exists())
+        self.assertNotEqual("", f.branch_sha(repo, "build/three"))
+
+    def test_an_ignored_submodule_update_does_not_prove_a_branch_landed(self):
+        """NEW (sd:9241 review). With submodule.<name>.ignore=all, git can
+        drop a changed gitlink from a diff; the branch's submodule update
+        is not on main, so the branch and its worktree stay."""
+        f = self.fixture()
+        repo = f.repo()
+        old = f.git(repo, "rev-parse", "HEAD")
+        f.commit(repo, ".gitmodules", '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n'
+                 "\tignore = all\n", "submodule")
+        f.git(repo, "update-index", "--add", "--cacheinfo", f"160000,{old},sub")
+        f.git(repo, "commit", "-q", "-m", "add sub")
+        f.git(repo, "config", "submodule.sub.ignore", "all")
+        f.git(repo, "push", "-q", "origin", "main")
+        new = f.git(repo, "rev-parse", "HEAD")
+        f.git(repo, "branch", "build/four")
+        f.git(repo, "update-index", "--cacheinfo", f"160000,{new},sub", "--add")
+        f.git(repo, "commit", "-q", "-m", "unlanded submodule update")
+        f.git(repo, "branch", "-f", "build/four", "HEAD")
+        f.git(repo, "reset", "-q", "--hard", "origin/main")
+        f.git(repo, "commit", "-q", "--allow-empty", "-m", "main moves on")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertNotEqual("", f.branch_sha(repo, "build/four"))
 
     def test_a_merged_branch_in_a_worktree_with_ignored_files_keeps_both(self):
         """NEW. Requirement 3.5: ignored files (an .env, a local database)
@@ -969,8 +1075,8 @@ class HygieneTest(unittest.TestCase):
         self.assertEqual(sha, f.branch_sha(repo, "ws-branch"))
 
     def test_report_mode_writes_no_object_into_the_checkout(self):
-        """NEW (review round 1). The squash probe's synthetic commit goes to a
-        throwaway object directory."""
+        """NEW (review round 1). Report mode writes no object: the probe
+        reads trees only (sd:9241)."""
         f = self.fixture()
         repo = f.repo()
         f.git(repo, "switch", "-q", "-c", "probe-me")
@@ -1753,7 +1859,8 @@ class LaneProofTest(unittest.TestCase):
 
     def bundled(self, f, repo, name="builder-a"):
         """A pushed builder branch whose commit landed only inside a bundle
-        squash with another change, so no rule of hygiene's own proves it."""
+        squash with another change, then was edited on main, so no rule of
+        hygiene's own proves it."""
         f.git(repo, "switch", "-q", "-c", name)
         tip = f.commit(repo, f"{name}.txt", "builder\n", "builder work")
         f.git(repo, "push", "-q", "-u", "origin", name)
@@ -1762,6 +1869,9 @@ class LaneProofTest(unittest.TestCase):
         (repo / "bundle.txt").write_text("bundle\n")
         f.git(repo, "add", f"{name}.txt", "bundle.txt")
         f.git(repo, "commit", "-q", "-m", "bundle squash")
+        # A later edit of the same file makes merging the branch conflict,
+        # so the path probe (sd:9241) proves nothing either.
+        f.commit(repo, f"{name}.txt", "builder, edited later\n", "later edit")
         f.git(repo, "push", "-q", "origin", "main")
         return tip
 

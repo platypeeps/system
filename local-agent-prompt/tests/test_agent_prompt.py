@@ -388,7 +388,12 @@ class SharedPolicy(unittest.TestCase):
         start = next((line for line in rules if "sd reports list" in line), "")
         self.assertIn("On the hub", start)
         self.assertIn("builders", start)
-        self.assertTrue(any("sd reports acknowledge" in line and "in_progress" in line for line in rules), rules)
+        # sd:9240: report items refuse in_progress, so a session claims an alert with a
+        # comment note; two hub sessions triaged the same alerts at once (2026-11-17).
+        claim = next((line for line in rules if line.startswith("Claim each alert")), "")
+        self.assertIn("`sd task note N", claim)
+        self.assertIn("refuse in_progress", claim)
+        self.assertNotIn("sd task status N in_progress", claim)
         # Lane review: --resolve-followups closes every open followup, so it means the fix is done.
         # An alert with only an item filed stays open, citing the item: plain `acknowledge`
         # refuses while the ingest's followup is open.

@@ -37,6 +37,7 @@ Usage:
   night_triage.py apply <sd> <host> <claims> <context.json> <reply>
 """
 
+import datetime
 import json
 import re
 import subprocess
@@ -44,7 +45,13 @@ import sys
 from pathlib import Path
 
 WHO = "night-triage"
+PARK = "park"  # verdict's second value for an alert that waits on a dated run
 ITEM = re.compile(r"^sd:\d+$")
+WAIT_DAYS = 8  # a wait names a run within this many days: a weekly job and a day's slack
+# This job's wait note, as verdict() writes it: the date first, at a fixed
+# place, so a date in the model's run name or summary is never read (sd:9243
+# review); then the run and the job's run count.
+WAITS = re.compile(r": waits until (\d{4}-\d{2}-\d{2}) on (.+?): .*\(runs: (\d+)\)\.$", re.S)
 PENDING = "-"  # a claim row written before its claim note landed
 TRIES = 3  # settle attempts while other writers keep moving the report
 # The session `sd reports ingest` writes its followups under: the pack's
@@ -83,6 +90,45 @@ def report_fields(report):
     fields = report.get("fields") or "{}"
     fields = json.loads(fields) if isinstance(fields, str) else fields
     return (fields or {}).get("report") or {}
+
+
+def runs_of(report):
+    """How many runs the report holds: the pack folds a repeat into it."""
+    return int((json.loads(report.get("fields") or "{}") if isinstance(report.get("fields"), str)
+                else report.get("fields") or {}).get("repeats", {}).get("count") or 1)
+
+
+def _wait_date(text):
+    """The date a `waiting` answer names, if it is a real one within WAIT_DAYS."""
+    try:
+        on = datetime.date.fromisoformat(text)
+    except ValueError:
+        return None
+    today = datetime.date.today()
+    return on if today <= on <= today + datetime.timedelta(days=WAIT_DAYS) else None
+
+
+def wake(report, notes, host):
+    """Why a parked alert comes back to triage, or None to leave it parked.
+
+    Only a park this job made wakes: its latest note is a wait. It wakes
+    the day after the dated run, or as soon as the job failed again, which
+    the pack folds into this report without a note (sd:9243 review).
+    """
+    ours = [n for n in notes if is_ours(n, host)]
+    waited = WAITS.search(ours[-1]["body"]) if ours else None
+    if not waited:
+        return None
+    on, run, runs = waited.groups()
+    try:
+        due = datetime.date.fromisoformat(on)
+    except ValueError:
+        return f"the wait note's date {on} is no date"
+    if due < datetime.date.today():
+        return f"the wait for {run} on {on} passed"
+    if runs_of(report) > int(runs):
+        return "the job failed again"
+    return None
 
 
 def host_of(report):
@@ -124,6 +170,15 @@ def claim(binary, host, claims, context):
         current = show(binary, report["id"])
         if current["item"]["status"] != "planning":
             continue
+        # A parked alert waits on a dated scheduled run (sd:9243).
+        if report.get("parked_at") or current["item"].get("parked_at"):
+            why = wake(report, current["notes"], host)
+            if not why:
+                print(f"night-triage: sd:{report['id']} is parked; skipped", file=sys.stderr)
+                continue
+            sd(binary, "task", "edit", str(report["id"]), "--unpark", "--if-revision", current["revision"])
+            sd(binary, "task", "note", str(report["id"]), f"{mine(host)}: unparked: {why}.")
+            current = show(binary, report["id"])
         if held_by_other(current["notes"], host):
             print(f"night-triage: sd:{report['id']} is claimed; skipped", file=sys.stderr)
             continue
@@ -142,6 +197,7 @@ def claim(binary, host, claims, context):
         _write_claims(claims, held)
         fields = report_fields(report)
         found.append({"id": report["id"], "title": report.get("title"), "job": fields.get("job"),
+                      "runs": runs_of(report),
                       "basis": fields.get("attention_basis"), "log": fields.get("source_path"),
                       "followups": _open_followups(moved["notes"]),
                       "notes": _history(moved["notes"], host)})
@@ -221,15 +277,33 @@ def _text(value):
 
 
 def verdict(alert, entry, host):
-    """The note for one alert, and whether to acknowledge it."""
+    """The note for one alert, and what follows it: True acknowledges, PARK parks."""
     if not entry:
         return f"{WHO} on {host}: not settled: the run gave no answer for this alert.", False
     outcome, summary = entry.get("outcome"), _text(entry.get("summary"))
+    on = _wait_date(_text(entry.get("on"))) if outcome == "waiting" else None
+    people = [f"#{f['id']} ({f.get('session') or 'unknown'})" for f in alert.get("followups") or []
+              if f.get("session") != INGEST_SESSION]
+    job = _text(alert.get("job"))
+    if on and people:
+        # A park hides the alert; a followup a person wrote stays in view
+        # (sd:9243 lane review).
+        return (f"{WHO} on {host}: not parked: followups a person wrote stay in view: "
+                f"{', '.join(people)}. Reported wait: {summary or '(none)'}"), False
+    if on and _text(entry.get("run")) != job:
+        # A report that names no job cannot vouch for the wait (sd:9243
+        # lane review), so it stays in view.
+        return (f"{WHO} on {host}: not parked: the wait names {_text(entry.get('run')) or '(none)'}, "
+                f"not this alert's job {job or '(none: the report names no job)'}. "
+                f"Reported: {summary or '(none)'}"), False
+    if on and _text(entry.get("run")) and summary:
+        # The note carries YYYY-MM-DD whatever spelling the answer used:
+        # WAITS reads only that, and an unread wait never wakes.
+        return (f"{WHO} on {host}: waits until {on.isoformat()} on {_text(entry['run'])}: {summary}; "
+                f"parked until then (runs: {alert.get('runs', 1)})."), PARK
     if outcome == "fixed":
         evidence = [_text(line) for line in entry.get("evidence") or [] if _text(line)]
         followups = entry.get("followups") or {}
-        people = [f"#{f['id']} ({f.get('session') or 'unknown'})" for f in alert["followups"]
-                  if f.get("session") != INGEST_SESSION]
         if people:
             return (f"{WHO} on {host}: not acknowledged: followups a person wrote need a fix or "
                     f"check they accept: {', '.join(people)}. Reported: {summary or '(none)'}"), False
@@ -285,7 +359,8 @@ def apply(binary, host, claims, context, reply):
                 # again adds one, and --resolve-followups would close it.
                 note, acknowledge = verdict(dict(alert, followups=_open_followups(current["notes"])),
                                             entry, host)
-                acknowledge = acknowledge and current["item"]["status"] == "planning"
+                if current["item"]["status"] != "planning":
+                    acknowledge = False
             try:
                 noted = json.loads(sd(binary, "task", "note", item, note, "--json",
                                       "--if-revision", current["revision"]))
@@ -295,6 +370,15 @@ def apply(binary, host, claims, context, reply):
                     raise  # an outage, not another writer
         else:
             raise RuntimeError(f"the report kept changing; not settled after {TRIES} reads")
+        if acknowledge == PARK:
+            try:
+                sd(binary, "task", "edit", item, "--park", "--if-revision", noted["revision"])
+            except RuntimeError:
+                if unchanged_since(item, noted["revision"]):
+                    raise
+                sd(binary, "task", "note", item, f"{mine(host)}: not parked: the report changed after "
+                                                 "the note above; the next run settles it.")
+            return
         if not acknowledge:
             return
         try:

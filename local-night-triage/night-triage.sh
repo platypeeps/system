@@ -44,7 +44,8 @@ Usage: night-triage.sh <command>
          2. claim: `sd reports list`; each planning alert whose report names
             this machine (lower-cased `hostname -s`) is claimed with a note
             (a report takes no `sd task status`); one another session
-            claimed is skipped.
+            claimed, or a parked one, is skipped; a park this job made
+            wakes the day after its wait date, or when the job fails again.
          3. triage: `claude -p` on Sonnet reads the alerts, `sd today`'s
             Operations, this machine, and local status; it may rerun a failed
             job, restart a service, clear a stale cron file and file bugs with

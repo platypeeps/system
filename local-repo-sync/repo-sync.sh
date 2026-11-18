@@ -1970,19 +1970,13 @@ hyg_default() {
 
 # Prints how <branch> landed on <compare-ref> and returns 0, or returns 1.
 # Three ways: the tip is an ancestor; the branch tree equals its merge base
-# (nothing left to land); or a synthetic squash of the branch onto its merge
-# base is patch-equivalent to a commit on the default branch, which is what a
-# squash merge leaves. The synthetic commit goes to a throwaway object
-# directory, with the repository's objects as an alternate, so even report
-# mode writes nothing into the checkout. The identity is inline so the probe
-# needs no user config.
-#
-# `git cherry` compares patch ids, which ignore whitespace, so a branch that
-# differs from what landed only in whitespace would pass it. A cherry match is
-# therefore confirmed with `git patch-id --verbatim` against every commit on
-# the default branch since the merge base; without that confirmation the
-# branch stays. Prefixes, renames and colour are pinned so user config cannot
-# make the two sides differ.
+# (nothing left to land); or every path the branch changed since the merge
+# base holds the same mode and object on the default branch, so the branch
+# adds nothing. The third covers a squash merge and a builder branch landed
+# inside a wider bundle squash (sd:9241); a branch landed and later
+# reverted fails it and stays. It reads trees only: no merge runs, so no
+# configured merge driver can hide an unlanded edit (sd:9241 review), and
+# report mode writes no object.
 hyg_merged() {
   if git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null; then
     echo "ancestor"; return 0
@@ -1993,45 +1987,23 @@ hyg_merged() {
   if [ "$h_bt" = "$h_mt" ]; then
     echo "tree equals merge base"; return 0
   fi
-  h_objs=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
-  rm -rf "$HYG_TMP/objects"; mkdir -p "$HYG_TMP/objects"
-  h_sq=$(GIT_OBJECT_DIRECTORY="$HYG_TMP/objects" \
-    GIT_ALTERNATE_OBJECT_DIRECTORIES="$h_objs/objects" \
-    GIT_AUTHOR_NAME=repo-sync GIT_AUTHOR_EMAIL=repo-sync@example.invalid \
-    GIT_COMMITTER_NAME=repo-sync GIT_COMMITTER_EMAIL=repo-sync@example.invalid \
-    git -C "$1" commit-tree "$h_bt" -p "$h_mb" -m "repo-sync hygiene squash probe" \
-    2>/dev/null) || return 1
-  case "$(GIT_OBJECT_DIRECTORY="$HYG_TMP/objects" \
-    GIT_ALTERNATE_OBJECT_DIRECTORIES="$h_objs/objects" \
-    git -C "$1" cherry "$3" "$h_sq" 2>/dev/null)" in
-    -*) ;;
-    *) return 1 ;;
-  esac
-  h_want=$(git -C "$1" diff-tree -p --no-renames --no-color --no-ext-diff \
-      --src-prefix=a/ --dst-prefix=b/ "$h_mt" "$h_bt" 2>/dev/null \
-    | git -C "$1" patch-id --verbatim 2>/dev/null | cut -d ' ' -f 1)
-  [ -n "$h_want" ] || return 1
-  if git -C "$1" log -p --no-renames --no-color --no-ext-diff --no-merges \
-      --src-prefix=a/ --dst-prefix=b/ --pretty=medium "$h_mb..$3" 2>/dev/null \
-    | git -C "$1" patch-id --verbatim 2>/dev/null | cut -d ' ' -f 1 \
-    | grep -qxF "$h_want"; then
-    # A squash that landed and was reverted later still matches above. The
-    # branch counts as landed only while every path it changed still holds,
-    # on the default branch, what the branch tip holds.
-    git -C "$1" -c core.quotePath=false diff-tree -r --no-renames --name-only \
-      "$h_mt" "$h_bt" 2>/dev/null > "$HYG_TMP/squash.paths" || return 1
-    while IFS= read -r h_path; do
-      # git still quotes a name holding a quote, tab or newline; such a name
-      # cannot be looked up as printed, so the branch stays.
-      case "$h_path" in \"*) return 1 ;; esac
-      # ls-tree prints mode and object id, so a mode change counts too.
-      h_a=$(git -C "$1" ls-tree "$2" -- "$h_path" 2>/dev/null || true)
-      h_b=$(git -C "$1" ls-tree "$3" -- "$h_path" 2>/dev/null || true)
-      [ "$h_a" = "$h_b" ] || return 1
-    done < "$HYG_TMP/squash.paths"
-    echo "squash"; return 0
-  fi
-  return 1
+  # --ignore-submodules=none: a submodule's `ignore` setting must not hide
+  # a changed gitlink the branch holds (sd:9241 review).
+  git -C "$1" -c core.quotePath=false diff-tree -r --no-renames --name-only \
+    --ignore-submodules=none "$h_mt" "$h_bt" 2>/dev/null > "$HYG_TMP/branch.paths" || return 1
+  while IFS= read -r h_path; do
+    # git still quotes a name holding a quote, tab or newline; such a name
+    # cannot be looked up as printed, so the branch stays.
+    case "$h_path" in \"*) return 1 ;; esac
+    # ls-tree prints mode and object id, so a mode change counts too; a
+    # path the branch deleted must be absent on the default branch too.
+    # --literal-pathspecs: a name such as `:x.txt` is that file, not the
+    # pathspec magic that reads it as `x.txt` (sd:9241 review).
+    h_a=$(git -C "$1" --literal-pathspecs ls-tree "$2" -- "$h_path" 2>/dev/null) || return 1
+    h_b=$(git -C "$1" --literal-pathspecs ls-tree "$3" -- "$h_path" 2>/dev/null) || return 1
+    [ "$h_a" = "$h_b" ] || return 1
+  done < "$HYG_TMP/branch.paths"
+  echo "its paths hold on the default branch"
 }
 
 # Returns 0 when the pack's lane proves branch $2 of repo $1 landed at tip
@@ -3064,8 +3036,8 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              pid is not running (or runs with another start time), prunes
              remote-tracking refs for deleted remote branches, and deletes
              local branches whose content is on the default branch
-             (ancestor, tree equal to the merge base, or a patch-equivalent
-             squash, or listed at its tip by the pack's sd-ship lane
+             (ancestor, tree equal to the merge base, or every changed
+             path holding the same content there, or listed at its tip by the pack's sd-ship lane
              prune --dry-run as landed by a merged lane head), removing a
              clean, unused worktree that holds one
              (build output does not count against clean; it goes with the
