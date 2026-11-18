@@ -323,7 +323,139 @@ class BrewStageTest(unittest.TestCase):
         (profiles / "personal.cask").write_text(cask)
         link = self.home / ".local/bin/tailscale"
         app = self.stubs.parent / "Applications"
-        return link, app, {"MACHINE_SETUP_APPLICATIONS_DIR": str(app)}
+        return link, app, {"MACHINE_SETUP_APPLICATIONS_DIR": str(app),
+                           "MACHINE_SETUP_LAUNCHDAEMONS_DIR": str(self.home / "LaunchDaemons")}
+
+    def tailscale_daemon(self, daemon, client="1.104.7-tabc", takes=True, after=None):
+        prefix = self.home / "brewprefix"
+        write_exec(prefix / "opt/tailscale/bin/tailscaled", "#!/bin/sh\n")
+        daemons = self.home / "LaunchDaemons"
+        daemons.mkdir(exist_ok=True)
+        (daemons / "sh.brew.tailscale.plist").write_text(
+            f"<string>{prefix}/opt/tailscale/bin/tailscaled</string>\n")
+        running = self.home / "tailscaled.version"
+        running.write_text(daemon)
+        # The keg CLI answers the service's daemon only on its socket;
+        # without it, it answers the app's (already new) daemon.
+        write_exec(prefix / "opt/tailscale/bin/tailscale",
+                   '#!/bin/sh\ncase "$1" in --socket=/var/run/tailscaled.socket) d=$(cat "'
+                   f'{running}") ;; *) d="{client}" ;; esac\n'
+                   # A daemon that is down answers nothing: the CLI fails.
+                   '[ -n "$d" ] || exit 1\n'
+                   f'printf "Client: 1.104.7\\n  long version: {client}\\n'
+                   'Daemon: %s\\n" "$d"\n')
+        brew = (self.stubs / "brew").read_text()
+        (self.stubs / "brew").write_text(brew.replace(
+            "#!/bin/sh\n", f'#!/bin/sh\n[ "$1" = --prefix ] && {{ echo "{prefix}"; exit 0; }}\n', 1))
+        write_exec(self.stubs / "tailscale",
+                   '#!/bin/sh\nprintf "Client: 1.104.7\\n  long version: 1.104.7-tabc\\n'
+                   f'Daemon: {daemon}\\n"\n')
+        sudo_log = self.home / "sudo.log"
+        after = client if after is None else after
+        restart = f'case "$*" in *"services restart tailscale"*) printf %s "{after}" > "{running}" ;; esac\n'
+        write_exec(self.stubs / "sudo", f'#!/bin/sh\necho "$*" >> "{sudo_log}"\n'
+                   + (restart if takes else ""))
+        return sudo_log
+
+    def test_a_restart_that_does_not_take_fails(self):
+        # sd:9245 lane review: a restart that left the old daemon repeated
+        # every night in silence.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        self.tailscale_daemon("1.104.5-tdef", takes=False)
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("FAILED  tailscaled still runs 1.104.5-tdef after the restart, not 1.104.7-tabc",
+                      result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_a_daemon_that_gives_no_answer_after_the_restart_fails(self):
+        # sd:9245 lane review: an empty probe matched an empty version and
+        # read as a restart that took.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        self.tailscale_daemon("1.104.5-tdef", after="")
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertNotIn("restarted on", result.stdout)
+        self.assertIn("FAILED  tailscaled still runs an unknown version after the restart",
+                      result.stdout)
+
+    def test_the_upgrade_sweep_reads_the_machine_profile(self):
+        # sd:9245 lane review: the sweep read the manifest before it loaded
+        # the profile, so a machine profile's tailscale was never checked.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.5-tdef")
+        self.run_verb("upgrade", "--apply", **env)
+        self.assertIn("services restart tailscale",
+                      sudo_log.read_text() if sudo_log.exists() else "")
+
+    def test_a_plist_naming_another_daemon_binary_is_not_brew_s(self):
+        # sd:9245 lane review: a substring match took tailscaled-old.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.5-tdef")
+        plist = self.home / "LaunchDaemons/sh.brew.tailscale.plist"
+        plist.write_text(plist.read_text().replace("tailscaled<", "tailscaled-old<"))
+        self.run_verb("update", "brew", "--apply", **env)
+        self.assertNotIn("restart", sudo_log.read_text() if sudo_log.exists() else "")
+
+    def test_a_restart_that_takes_says_so(self):
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        self.tailscale_daemon("1.104.5-tdef")
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("ok      tailscaled restarted on 1.104.7-tabc", result.stdout)
+
+    def test_a_daemon_brew_does_not_run_is_never_restarted(self):
+        # sd:9245 lane review: another tailscaled can own the socket.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.5-tdef")
+        (self.home / "LaunchDaemons/sh.brew.tailscale.plist").write_text("<string>/usr/local/bin/tailscaled</string>\n")
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertNotIn("tailscaled runs", result.stdout)
+        self.assertNotIn("restart", sudo_log.read_text() if sudo_log.exists() else "")
+
+    def test_a_daemon_older_than_its_binary_is_restarted(self):
+        """sd:9245: brew upgraded tailscale under a running tailscaled,
+        which kept 1.104.5 against a 1.104.7 binary and dropped its
+        control link."""
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.5-tdef")
+        dry = self.run_verb("update", "brew", **env)
+        self.assertIn("DIFFERS tailscaled runs 1.104.5-tdef, its binary is 1.104.7-tabc", dry.stdout)
+        self.assertFalse(sudo_log.exists() and "restart" in sudo_log.read_text())
+        self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("services restart tailscale", sudo_log.read_text())
+        self.assertIn("-n ", sudo_log.read_text())
+
+    def test_a_daemon_that_matches_is_left_alone(self):
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.7-tabc")
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("ok      tailscaled 1.104.7-tabc matches its binary", result.stdout)
+        self.assertNotIn("restart", sudo_log.read_text() if sudo_log.exists() else "")
+
+    def test_the_formula_cli_probes_the_daemon_not_the_one_on_path(self):
+        # sd:9245 lane review: an old CLI first on PATH matched the old
+        # daemon and hid the upgrade.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.5-tdef", client="1.104.7-tabc")
+        write_exec(self.stubs / "tailscale",
+                   '#!/bin/sh\nprintf "Client: 1.104.5\\n  long version: 1.104.5-tdef\\n'
+                   'Daemon: 1.104.5-tdef\\n"\n')
+        self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("services restart tailscale", sudo_log.read_text())
+
+    def test_a_new_build_of_the_same_version_is_restarted(self):
+        # sd:9245 review: the short version hid a swapped binary.
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.7-told")
+        self.run_verb("update", "brew", "--apply", **env)
+        self.assertIn("services restart tailscale", sudo_log.read_text())
+
+    def test_a_tailscale_that_is_not_the_brew_formula_is_left_alone(self):
+        _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+        sudo_log = self.tailscale_daemon("1.104.5-tdef")
+        for f in (self.home / "brewprefix/opt/tailscale/bin").iterdir():
+            f.unlink()
+        result = self.run_verb("update", "brew", "--apply", **env)
+        self.assertNotIn("tailscaled runs", result.stdout)
+        self.assertNotIn("restart", sudo_log.read_text() if sudo_log.exists() else "")
 
     def test_the_tailscale_app_cask_gets_a_cli_wrapper(self):
         """sd:6554: the cask ships no CLI; sd-db and repo-sync.sh call
