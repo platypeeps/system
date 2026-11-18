@@ -453,10 +453,11 @@ def codex_reading(home=None, now=None):
     bucket (another `limit_id`) is never the account's reading.
 
     `read_at` is that event's time, so a Codex left idle reads old and the
-    view can call it stale rather than current. A file's mtime orders the
-    reads only: a rollout is not newer than its last write, so the scan
-    stops at a file last written before the newest event found. A window
-    that reset before `now`, the clock when omitted, is dropped."""
+    view can call it stale rather than current. A file's mtime picks the
+    rollouts to read, never the reading: a copied rollout keeps an old
+    mtime, so every picked file's tail is read and event time alone
+    decides (sd:9256 lane review). A window that reset before `now`, the
+    clock when omitted, is dropped."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     root = Path(home or os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
     try:
@@ -467,14 +468,12 @@ def codex_reading(home=None, now=None):
     best = None  # (time, stamp, rate_limits) of the newest account-wide event
     for path in files:
         try:
-            if best is not None and path.stat().st_mtime < best[0].timestamp():
-                break
             with open(path, "rb") as f:
                 f.seek(max(0, path.stat().st_size - CODEX_TAIL))
                 lines = f.read().decode("utf-8", "replace").splitlines()
         except OSError:
             continue
-        for line in reversed(lines):
+        for line in lines:
             if '"token_count"' not in line or '"rate_limits"' not in line:
                 continue
             try:
@@ -490,10 +489,8 @@ def codex_reading(home=None, now=None):
                     continue  # an event with no time has no place in the order
             except (ValueError, KeyError, TypeError, AttributeError, ReadFailed):
                 continue
-            # The file's last account-wide event is its newest one.
             if best is None or at > best[0]:
                 best = (at, event["timestamp"], limits)
-            break
     if best is None:
         return reading("codex", "unknown", "codex-sessions",
                        error="no account-wide token_count in the newest %d rollouts" % CODEX_FILES)

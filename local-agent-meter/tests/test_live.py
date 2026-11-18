@@ -454,6 +454,15 @@ class Codex(unittest.TestCase):
         self.assertEqual((got["read_at"], got["windows"][0]["used_percent"]),
                          ("2026-11-17T19:00:00Z", 55.0))
 
+    def test_event_time_decides_whatever_the_mtimes_and_line_order(self):
+        # sd:9256 lane review: a copied rollout (old mtime) and a line out
+        # of time order hid the newest reading.
+        self.rollout("new", [self.event(30.0, "2026-11-17T19:00:00Z")], 2000)
+        self.rollout("copied", [self.event(90.0, "2026-11-17T21:00:00Z"),
+                                self.event(50.0, "2026-11-17T20:00:00Z")], 1000)
+        got = usage_sources.codex_reading(self.home)
+        self.assertEqual(got["read_at"], "2026-11-17T21:00:00Z")
+
     def test_a_models_own_bucket_never_replaces_the_accounts(self):
         # sd:9256 review: a newer model-specific snapshot won on time.
         self.rollout("x", [self.event(used=40.0, stamp="2026-11-17T18:00:00Z", limit_id="codex"),
