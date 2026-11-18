@@ -1,6 +1,6 @@
 # Merge lane for every repository this machine hosts (sd:3003). One job file,
 # the same on every machine: `lane run --hosted` runs the lane of each managed
-# repository whose lane host is this machine, one after another. `NULL` means
+# repository whose lane host is this machine, side by side. `NULL` means
 # the hub. Move a repository's lane with `sd-db repo lane-host <path>
 # <host>|hub` or the dashboard's Move lane control; the next run follows it.
 # It replaces one job file per repository, hub or satellite.
@@ -8,11 +8,16 @@
 # It needs no `-C`: it reads the repo table, not a working folder. A lane
 # whose runner lock is held is skipped and never waited for. The job drains
 # each queue and exits; it is not a poller, and an empty queue exits 0 at once.
-# A slot that finds this job's own run still active logs `skipped` and exits 0.
+#
+# At its 40-minute budget the run starts no lane, hands off each lane still
+# running and exits (pack sd:9332). launchd runs one instance of a job at a
+# time, so the next slot then starts a fresh run; it skips the lanes a
+# handed-off child holds. Each handed-off child TERMs itself at the run's
+# TERM point.
 #
 # JOB_TIMEOUT is above one lane run on purpose (review, `make check` and a
-# merge take 30-60 minutes): a limit below that could stop a merge part way.
-# Lanes run one after another, so a long run delays the next lane to a later slot.
+# merge take 30-60 minutes): a run still waits for a lane it cannot hand
+# off, and a limit below that could stop a merge part way.
 #
 # SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
 # after ~/.config/shell/env.sh; this file is sourced before env.sh is.
