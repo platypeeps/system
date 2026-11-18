@@ -477,7 +477,11 @@ class Services(unittest.TestCase):
                                  dict(SUMMARY, incidents=[5]), dict(SUMMARY, components="x"),
                                  dict(SUMMARY, components=[None])],
                   "slack": [{"status": "ok", "active_incidents": [5]}],
-                  "google-incidents": [[5, "x"], [{"end": None}, "x"]]}
+                  "google-incidents": [[5, "x"], [{"end": None}, "x"], [{}],
+                                       [{"begin": "2026-11-17T18:00:00Z", "end": 5,
+                                         "service_name": "Drive"}],
+                                       [{"begin": 5, "service_name": "Drive"}],
+                                       [{"begin": "2026-11-17T18:00:00Z", "service_name": 5}]]}
         for kind, answers in shapes.items():
             for answer in answers:
                 with self.subTest(kind=kind, answer=answer):
@@ -493,7 +497,8 @@ class Services(unittest.TestCase):
             answers = {"statuspage": dict(SUMMARY, incidents=[incident],
                                           components=[{"name": value, "status": value}]),
                        "slack": {"status": "active", "active_incidents": [incident]},
-                       "google-incidents": [incident]}
+                       "google-incidents": [dict(incident, begin="2026-11-17T18:00:00Z",
+                                                 end=None, service_name="Drive")]}
             for kind, answer in answers.items():
                 with self.subTest(kind=kind, value=value):
                     got = self.read(kind, answer)
@@ -503,7 +508,9 @@ class Services(unittest.TestCase):
                             self.assertTrue(stored is None or (isinstance(stored, str)
                                             and len(stored) <= service_status.TITLE),
                                             (field, stored))
-        got = self.read("google-incidents", [{"uri": "http://[bad", "status_impact": "X"}])
+        got = self.read("google-incidents", [{"uri": "http://[bad", "status_impact": "X",
+                                              "begin": "2026-11-17T18:00:00Z",
+                                              "service_name": "Drive"}])
         self.assertIsNone(got["incidents"][0]["url"])
 
     def test_the_http_kind(self):

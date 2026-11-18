@@ -165,14 +165,23 @@ def read_google(url, fetch):
     data = fetch(url)
     incidents = []
     for incident in entries(data, "incident list"):
-        if incident.get("end"):
+        # The fields the open-or-closed call reads are checked first: a
+        # truthy non-string end would close an open incident (sd:9256).
+        end = incident.get("end")
+        if end is not None and not isinstance(end, str):
+            raise ReadFailed("an incident end of another shape")
+        if end:
             continue
+        if not isinstance(incident.get("begin"), str):
+            raise ReadFailed("an open incident with no begin")
         desc = incident.get("external_desc")
         desc = desc.strip().splitlines() if isinstance(desc, str) else []
         # The summary's first line is a heading ("**Summary:**"); take the line after.
         lines = [line for line in desc if line.strip() and not line.strip().startswith("**Summary")]
-        incidents.append({"title": title("%s: %s" % (title(incident.get("service_name")),
-                                                     lines[0] if lines else "")),
+        service = title(incident.get("service_name"))
+        if not (service or lines):
+            raise ReadFailed("an open incident with no title")
+        incidents.append({"title": title("%s: %s" % (service, lines[0] if lines else "")),
                           "url": link(url, incident.get("uri")),
                           "impact": short(incident.get("status_impact")),
                           "started_at": short(incident.get("begin"))})
