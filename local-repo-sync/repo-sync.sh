@@ -90,14 +90,19 @@ else
   PROFILE="personal"
 fi
 
-case "$PROFILE" in
-  work)     DEFAULT_ROOT="${WORK_ROOT:-$HOME/repos}" ;;
-  personal) DEFAULT_ROOT="$HOME/repos" ;;
-  terra)  DEFAULT_ROOT="$HOME/repos" ;;
+# The profiles there are, one list: the check below and hygiene's fleet
+# list of repos (hyg_keep_load) both read it.
+PROFILES="personal work terra"
+case " $PROFILES " in
+  *" $PROFILE "*) ;;
   *)
-    echo "repo-sync.sh: unknown profile '$PROFILE' (want: personal, work, terra)" >&2
+    echo "repo-sync.sh: unknown profile '$PROFILE' (want: $PROFILES)" >&2
     exit 1
     ;;
+esac
+case "$PROFILE" in
+  work) DEFAULT_ROOT="${WORK_ROOT:-$HOME/repos}" ;;
+  *)    DEFAULT_ROOT="$HOME/repos" ;;
 esac
 
 ROOT="${REPO_SYNC_ROOT:-$DEFAULT_ROOT}"
@@ -2277,7 +2282,9 @@ hyg_item_number() {
   esac
   printf '%s\n' "$1" | awk '
     function day(m, d) { return m >= 1 && m <= 12 && d >= 1 && d <= 31 }
-    match($0, /sd[-_:][0-9]+/) { s = substr($0, RSTART + 3, RLENGTH - 3); print s + 0; exit }
+    # The marker is a token: xsd-9376 or sd-9376x names no item.
+    match($0, /(^|[^A-Za-z0-9])sd[-_:][0-9]+([^A-Za-z0-9]|$)/) {
+      s = substr($0, RSTART, RLENGTH); match(s, /[0-9]+/); print substr(s, RSTART, RLENGTH) + 0; exit }
     /-[0-9][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]$/ { exit }
     match($0, /-[0-9]+$/) {
       n = substr($0, RSTART + 1)
@@ -2357,7 +2364,7 @@ hyg_keep_load() {
   # NR == FNR: an empty list would read the rules as it.
   k_fleet=1
   repo_list > "$HYG_TMP/keep.repos" || k_fleet=
-  for k_profile in personal work terra; do
+  for k_profile in $PROFILES; do
     [ -n "$k_fleet" ] || break
     [ "$k_profile" != "$PROFILE" ] || continue
     sd_db repo list --clones "$k_profile" >> "$HYG_TMP/keep.repos" 2>/dev/null || k_fleet=

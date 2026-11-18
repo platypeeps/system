@@ -685,6 +685,20 @@ class HygieneTest(unittest.TestCase):
 
         self.assertNotIn("DONE ", result.stdout)
 
+    def test_an_item_marker_inside_a_word_names_no_item(self):
+        # Lead review: fix/xsd-9376suffix read as sd:9376.
+        f = self.fixture()
+        repo = f.repo()
+        self.branches(f, repo, "fix/xsd-9376suffix", "fix/sd-9377suffix", "fix/sd_9378.x")
+        here = real(repo)
+        env = self.done_db(f, [(9376, "done", here), (9377, "done", here), (9378, "done", here)])
+
+        result = f.run("hygiene", extra_env=env, expect=1)
+
+        self.assertNotIn("sd:9376", result.stdout)
+        self.assertNotIn("sd:9377", result.stdout)
+        self.assertIn("DONE     branch fix/sd_9378.x", result.stdout)
+
     def test_an_item_of_another_repo_is_not_the_branch_s(self):
         f = self.fixture()
         repo = f.repo()
