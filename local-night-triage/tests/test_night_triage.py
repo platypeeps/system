@@ -8,12 +8,14 @@ reaches the real model, launchd or the workflow database. The machine is
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 FOLDER = Path(__file__).resolve().parents[1]
 
@@ -98,6 +100,10 @@ elif args[:2] == ["task", "edit"]:
     if flag("--if-revision") not in (None, str(item["revision"])):
         save(); print("refused: the item changed", file=sys.stderr); sys.exit(1)
     item["parked_at"] = None if "--unpark" in args else "2026-11-17T15:40:00+00:00"
+    # As the pack's edit_item: an audit note names who parked it.
+    item["notes"].append({"id": 900 + len(item["notes"]), "kind": "comment", "session": "login",
+                          "body": ("Unparked" if "--unpark" in args else "Parked") + " by login",
+                          "resolved_at": None})
     item["revision"] += 1
 elif args[:2] == ["reports", "acknowledge"]:
     item = items[args[2]]
@@ -164,7 +170,9 @@ class NightTriage(unittest.TestCase):
         self.tool(self.bin / "claude", FAKE_CLAUDE)
         self.tool(self.bin / "hostname", "#!/bin/sh\necho Node1\n")
         self.state = self.tmp / "sd.json"
+        # CLAUDE_BIN set to the fake: an inherited one is the real model.
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", SD_PACK_ROOT=str(self.tmp / "pack"),
+                        CLAUDE_BIN=str(self.bin / "claude"),
                         FAKE_SD_STATE=str(self.state), CLAUDE_ARGS=str(self.tmp / "args"),
                         CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"),
                         TMPDIR=str(self.tmp))
@@ -189,7 +197,8 @@ class NightTriage(unittest.TestCase):
         """The job's verdict notes: claim and release notes left out."""
         return [n["body"] for n in self.items()[key]["notes"] if n["kind"] == "comment"
                 and not n["body"].startswith("night-triage on node1 claims it")
-                and "claim released" not in n["body"]]
+                and "claim released" not in n["body"]
+                and not re.fullmatch(r"(Parked|Unparked) by \S+", n["body"])]
 
     def notes(self, key, text):
         return [n["body"] for n in self.items()[key]["notes"] if text in n["body"]]
@@ -280,8 +289,72 @@ class NightTriage(unittest.TestCase):
         alert = dict(report("node1"), parked_at="2026-11-16T10:00:00+00:00", runs=runs)
         alert["notes"] = [{"id": 700, "kind": "comment", "session": "login", "resolved_at": None,
                            "body": f"night-triage on node1: waits until {on} on job-1: a weekly fix; "
-                                   f"parked until then (runs: {recorded})."}]
+                                   f"parked until then (runs: {recorded})."},
+                          {"id": 701, "kind": "comment", "session": "login", "resolved_at": None,
+                           "body": "Parked by login"}]
         return alert
+
+    def test_a_hand_park_after_an_unpark_is_never_woken(self):
+        # sd:9272: the job's wait note was still its latest, so the wake
+        # unparked a park the operator made by hand.
+        alert = self.parked(day(-1))
+        alert["notes"] += [{"id": 702, "kind": "comment", "session": "login", "resolved_at": None,
+                            "body": "Unparked by login"},
+                           {"id": 703, "kind": "comment", "session": "login", "resolved_at": None,
+                            "body": "Parked by login"}]
+        self.given({"1": json.loads(json.dumps(alert))}, [])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items()["1"], alert)
+        self.assertIn("sd:1 is parked; skipped", result.stderr)
+
+    def test_a_park_another_session_claimed_stays_parked(self):
+        # sd:9272: the unpark ran before the claim check, so a skipped
+        # alert was left unparked.
+        alert = self.parked(day(-1))
+        alert["notes"].append({"id": 702, "kind": "comment", "session": "abc", "resolved_at": None,
+                               "body": "claimed: triaging"})
+        self.given({"1": json.loads(json.dumps(alert))}, [])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items()["1"], alert)
+        self.assertIn("sd:1 is claimed; skipped", result.stderr)
+
+    def test_a_report_with_null_repeats_has_one_run(self):
+        # sd:9272: `"repeats": null` raised AttributeError.
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        self.assertEqual(night_triage.runs_of({"fields": json.dumps({"repeats": None})}), 1)
+        self.assertEqual(night_triage.runs_of({"fields": {"repeats": None}}), 1)
+
+    def test_a_claim_a_crashed_session_left_goes_stale(self):
+        # sd:9272: a session's "claimed: triaging" note is never cleared,
+        # so one that crashed kept the alert from triage forever.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for hours, taken in ((48, True), (1, False)):
+            with self.subTest(hours=hours):
+                alert = report("node1")
+                alert["notes"].append({"id": 50, "kind": "comment", "session": "abc", "resolved_at": None,
+                                       "body": "claimed: triaging", "timestamp":
+                                       (now - datetime.timedelta(hours=hours)).isoformat(timespec="seconds")})
+                self.given({"1": alert}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+                result = self.run_job()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(bool(self.notes("1", "filed as sd:7")), taken, result.stderr)
+
+    def test_an_inherited_claude_bin_never_runs(self):
+        # sd:9272: the tests passed CLAUDE_BIN through, which may name the
+        # real model.
+        marker = self.tmp / "real-model-ran"
+        real = self.tmp / "real-claude"
+        self.tool(real, f"#!/bin/sh\ntouch {marker}\n")
+        with mock.patch.dict(os.environ, CLAUDE_BIN=str(real)):
+            self.setUp()
+        self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        result = self.run_job()
+        self.assertFalse(marker.exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_a_date_in_the_summary_never_becomes_the_wake_date(self):
         # sd:9243 review: a greedy parse took `on 2026-02-30:` from the
@@ -387,7 +460,8 @@ class NightTriage(unittest.TestCase):
         self.addCleanup(sys.path.remove, str(FOLDER))
         import night_triage
         alert = {"fields": json.dumps({"repeats": {"count": 2}})}
-        self.assertEqual(night_triage.wake(alert, [{"body": note}], "node1"), "the job failed again")
+        self.assertEqual(night_triage.wake(alert, [{"body": note}, {"body": "Parked by login"}], "node1"),
+                         "the job failed again")
 
     def test_a_wait_without_a_real_near_date_is_not_parked(self):
         # sd:9243 review: a shape-only date check parked a past or impossible
@@ -681,11 +755,24 @@ class RealPack(unittest.TestCase):
 
     def run_job(self, reply):
         (self.tmp / "reply").write_text(json.dumps({"alerts": reply}))
+        # CLAUDE_BIN set to the fake: an inherited one is the real model.
         env = dict(os.environ, HOME=str(self.tmp), PATH=f"{self.bin}:{os.environ['PATH']}",
                    SD_PACK_ROOT=str(self.pack), TMPDIR=str(self.tmp), CLAUDE_ARGS=str(self.tmp / "args"),
-                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"))
+                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"),
+                   CLAUDE_BIN=str(self.bin / "claude"))
         return subprocess.run(["sh", str(self.tmp / "system/local-night-triage/night-triage.sh"), "run"],
                               capture_output=True, text=True, env=env, timeout=120)
+
+    def test_an_inherited_claude_bin_never_runs(self):
+        # sd:9272: the real-pack tests passed CLAUDE_BIN through.
+        marker = self.tmp / "real-model-ran"
+        real = self.tmp / "real-claude"
+        real.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        real.chmod(0o755)
+        item = self.ingest()
+        with mock.patch.dict(os.environ, CLAUDE_BIN=str(real)):
+            self.run_job([{"id": item, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        self.assertFalse(marker.exists())
 
     def test_a_repeat_folded_into_a_parked_report_wakes_it(self):
         # sd:9243 review: the pack folds a repeat into the parked report;
@@ -710,14 +797,9 @@ class RealPack(unittest.TestCase):
     def test_a_fixed_report_is_claimed_noted_and_acknowledged(self):
         item = self.ingest()
         followup = next(n["id"] for n in self.state(item)["notes"] if n["kind"] == "followup")
-        (self.tmp / "reply").write_text(json.dumps({"alerts": [
+        result = self.run_job([
             {"id": item, "outcome": "fixed", "summary": "a stale lock; cleared and reran",
-             "evidence": ["cron-jobs.sh run job-a: exit 0"], "followups": {str(followup): "the rerun passed"}}]}))
-        env = dict(os.environ, HOME=str(self.tmp), PATH=f"{self.bin}:{os.environ['PATH']}",
-                   SD_PACK_ROOT=str(self.pack), TMPDIR=str(self.tmp), CLAUDE_ARGS=str(self.tmp / "args"),
-                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"))
-        result = subprocess.run(["sh", str(self.tmp / "system/local-night-triage/night-triage.sh"), "run"],
-                                capture_output=True, text=True, env=env, timeout=120)
+             "evidence": ["cron-jobs.sh run job-a: exit 0"], "followups": {str(followup): "the rerun passed"}}])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'"id": {item}', (self.tmp / "prompt").read_text())
         state = self.state(item)
@@ -730,14 +812,9 @@ class RealPack(unittest.TestCase):
     def test_a_report_waiting_on_a_dated_run_is_parked(self):
         # sd:9243: the pack parks a report through `sd task edit --park`.
         item = self.ingest()
-        (self.tmp / "reply").write_text(json.dumps({"alerts": [
+        result = self.run_job([
             {"id": item, "outcome": "waiting", "summary": "fixed by the weekly run",
-             "run": "job-a", "on": day(2)}]}))
-        env = dict(os.environ, HOME=str(self.tmp), PATH=f"{self.bin}:{os.environ['PATH']}",
-                   SD_PACK_ROOT=str(self.pack), TMPDIR=str(self.tmp), CLAUDE_ARGS=str(self.tmp / "args"),
-                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"))
-        result = subprocess.run(["sh", str(self.tmp / "system/local-night-triage/night-triage.sh"), "run"],
-                                capture_output=True, text=True, env=env, timeout=120)
+             "run": "job-a", "on": day(2)}])
         self.assertEqual(result.returncode, 0, result.stderr)
         state = self.state(item)
         self.assertEqual(state["item"]["status"], "planning")

@@ -31,11 +31,15 @@ into `<config>/cron-jobs/jobs/`, list `night-triage` in the machine's
    `report` kind. The row goes into `state/claims` before the note, so a
    crash between the two still leaves a row to release. An alert whose
    latest note from anyone but the ingest and this job is a claim is
-   skipped, and so is one already `in_progress` or parked (sd:9243).
-   A park this job made wakes: `sd task edit N --unpark` and a note, once
-   the day after its wait date comes, or once the job's run count
-   (`repeats`, which a folded repeat bumps) passes the one the wait note
-   recorded.
+   skipped, before any unpark, and so is one already `in_progress` or
+   parked (sd:9243). A claim older than 24 hours is a crashed
+   session's and holds nothing; one whose age cannot be read still holds
+   (sd:9272). A park this job made wakes: `sd task edit N --unpark` and
+   a note, once the day after its wait date comes, or once the job's run
+   count (`repeats`, which a folded repeat bumps) passes the one the wait
+   note recorded. A park is this job's only while its wait note is its
+   latest note and the one park or unpark since is that park: a park
+   after an unpark is a hand park, and stays (sd:9272).
 3. **Triage.** `claude -p` on Sonnet reads the alerts, the Operations, this
    machine section of `sd today`, and local status. A failed `sd today`
    fails the run. Operator ruling "Repair
