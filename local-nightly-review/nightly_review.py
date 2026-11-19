@@ -185,7 +185,12 @@ def check(path, day):
         raise Refused(f"{path} is batch {found.get('batch')} of queue {found.get('queue')}, "
                       f"not {day} of {QUEUE}")
     context = found.get("context")
-    if context is not None and (not isinstance(context, dict) or not all(context.get(key) for key in CONTEXT)):
+    def line(value):
+        return isinstance(value, str) and value.strip() != ""
+    if context is not None and (
+            not isinstance(context, dict) or not line(context.get("purpose")) or not line(context.get("feeds"))
+            or not isinstance(context.get("rubric"), list) or not context["rubric"]
+            or not all(line(entry) for entry in context["rubric"])):
         raise Refused(f"{path} lacks one of the context lines {', '.join(CONTEXT)}; "
                       "the Review band would not say what it asks")
     limit = found.get("limit")

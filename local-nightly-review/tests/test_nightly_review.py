@@ -156,16 +156,24 @@ class NightlyReview(unittest.TestCase):
         self.assertNotIn("06:15", context["feeds"])
 
     def test_a_batch_file_without_its_context_is_refused(self):
-        written = self.tmp / "no-context.json"
-        written.write_text(json.dumps({
-            "schema": 1, "queue": "nightly", "batch": self.today, "title": "Nightly review",
-            "source": "system@0000000", "mode": "open", "limit": 5,
-            "context": {"purpose": "p", "rubric": ["Approve: a"]},
-            "questions": [{"subject": "a", "text": "Do a", "options": ["Approve", "Reject"]}]}))
-        result = subprocess.run([sys.executable, str(FOLDER / "nightly_review.py"), "check", str(written), self.today],
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("lacks one of the context lines", result.stderr)
+        # Re-review fold-in: purpose and feeds are nonblank strings, the
+        # rubric a list of nonblank strings; any other shape is refused.
+        good = {"purpose": "p", "rubric": ["Approve: a"], "feeds": "f"}
+        for name, bad in (("no feeds", {"purpose": "p", "rubric": ["Approve: a"]}),
+                          ("blank purpose", dict(good, purpose="  ")), ("number feeds", dict(good, feeds=7)),
+                          ("list purpose", dict(good, purpose=["p"])), ("string rubric", dict(good, rubric="Approve: a")),
+                          ("empty rubric", dict(good, rubric=[])), ("blank rubric line", dict(good, rubric=["Approve: a", " "])),
+                          ("number rubric line", dict(good, rubric=[1]))):
+            with self.subTest(name):
+                written = self.tmp / "no-context.json"
+                written.write_text(json.dumps({
+                    "schema": 1, "queue": "nightly", "batch": self.today, "title": "Nightly review",
+                    "source": "system@0000000", "mode": "open", "limit": 5, "context": bad,
+                    "questions": [{"subject": "a", "text": "Do a", "options": ["Approve", "Reject"]}]}))
+                result = subprocess.run([sys.executable, str(FOLDER / "nightly_review.py"), "check", str(written),
+                                         self.today], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("lacks one of the context lines", result.stderr)
 
     def test_a_run_sweeps_priorities_after_apply(self):
         # sd:6751: the pack's nightly priority sweep (pack sd:6726) runs from this job.
