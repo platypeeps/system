@@ -50,7 +50,7 @@ UV_PRUNE_LABEL="$LABEL_PREFIX.uv-cache-prune"
 # that finds a record restores it first and prunes nothing. The exit status
 # is nonzero only while an agent stays down, and the plist's KeepAlive
 # (SuccessfulExit false) makes launchd run this again until it is restored.
-UV_PRUNE_PAUSE="${UV_PRUNE_PAUSE-$LABEL_PREFIX.google-workspace-mcp}"
+UV_PRUNE_PAUSE="${UV_PRUNE_PAUSE-$LABEL_PREFIX.google-workspace-mcp $LABEL_PREFIX.kev}"
 UV_PRUNE_STATE="${UV_PRUNE_STATE:-$HOME/.local/state/uv-prune/paused}"
 uv_prune() {
   uid=$(id -u)
@@ -83,6 +83,20 @@ uv_prune() {
     fi
     paused="$paused $label"
     launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+  done
+  # A uvx tool run, such as an MCP proxy a Claude session started, holds
+  # the cache lock for as long as it runs and skipped the prune for nights
+  # (sd:9460). One that has run over 12 hours is ended; uv forwards the
+  # TERM to its tool. A `uv run` service is not touched: pause it above.
+  for pid in $(ps -axo pid=,etime=,command= | awk '
+      $3 ~ /(^|\/)uvx$/ || ($3 ~ /(^|\/)uv$/ && $4 == "tool" && $5 == "uvx") {
+        n = split($2, t, /[-:]/); secs = t[n] + 60 * t[n - 1]
+        if (n >= 3) secs += 3600 * t[n - 2]
+        if (n == 4) secs += 86400 * t[1]
+        if (secs > 43200) print $1
+      }'); do
+    echo "uv-prune: ended uvx $pid, running over 12 hours"
+    kill "$pid" 2>/dev/null || true
   done
   # Give the paused agents' uv and uvx processes time to exit.
   waited=0
@@ -188,9 +202,10 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|move|test
          prune uv's cache (what the uv-cache-prune login agent runs;
          `run` runs it nightly too).
          Pauses the LaunchAgents in UV_PRUNE_PAUSE (default
-         $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp, prefix default
-         local.system-tools), skips when any other uv process is
-         left, never passes --force, and starts the paused agents again.
+         $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp and .kev, prefix
+         default local.system-tools), ends uvx runs older than 12 hours,
+         skips when any other uv process is left, never passes --force,
+         and starts the paused agents again.
          Exits 1 only while a paused agent stays down; its label stays in
          ~/.local/state/uv-prune/paused, and the next run restores it first.
   uv-prune-plist
