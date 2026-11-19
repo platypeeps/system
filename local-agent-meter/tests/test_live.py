@@ -545,6 +545,17 @@ class Readers(unittest.TestCase):
                 self.assertEqual(got["status"], "no-source")
                 self.assertEqual((got["windows"], got["balance"], got["spend"]), ([], None, None))
 
+    def test_a_zerogpu_error_reads_the_seconds_left(self):
+        # sd:9586: Hugging Face has no quota API; its error text is the source.
+        got = usage_sources.huggingface_error(
+            "You have exceeded your GPU quota (60s requested vs. 23s left). Try later.", NOW)
+        self.assertEqual(got, usage_sources.reading(
+            "huggingface", "ok", "error", read_at="2026-11-17T20:00:00Z",
+            balance={"amount": 23.0, "unit": "seconds"}))
+        for text in ("", "GPU task aborted", "(60s requested vs. -1s left)", "(xs requested vs. 1s left)"):
+            with self.subTest(text=text):
+                self.assertIsNone(usage_sources.huggingface_error(text, NOW))
+
     def test_a_name_with_no_reader_is_unknown(self):
         got = usage_sources.read_provider("nosuch", {}, failing("unreached"), NOW)
         self.assertEqual((got["status"], got["error"]), ("unknown", "no reader for this name"))
@@ -553,7 +564,7 @@ class Readers(unittest.TestCase):
         names, problems = usage_sources.parse_providers(usage_sources.STARTING)
         self.assertEqual(problems, [])
         self.assertEqual(sorted(names), sorted(["claude", "codex", *usage_sources.READERS,
-                                                *usage_sources.NO_SOURCE]))
+                                                *usage_sources.NO_SOURCE, *usage_sources.PASSED]))
 
     def test_the_providers_grammar(self):
         names, problems = usage_sources.parse_providers(
@@ -1093,7 +1104,9 @@ class Live(unittest.TestCase):
         self.assertEqual(held, {"dashboard.usage_providers": usage_sources.STARTING})
         rows = self.rows("usage:")
         names, _ = usage_sources.parse_providers(usage_sources.STARTING)
-        self.assertEqual(sorted(rows), sorted("usage:" + n for n in names))
+        # A passed-in provider gets its row from its caller (sd:9586).
+        self.assertEqual(sorted(rows), sorted("usage:" + n for n in names
+                                              if n not in usage_sources.PASSED))
         self.assertEqual(rows["usage:claude"]["status"], "ok")
         self.assertEqual(rows["usage:claude"]["windows"][0]["used_percent"], 40.0)
         self.assertEqual(rows["usage:codex"]["status"], "ok")
@@ -1111,6 +1124,26 @@ class Live(unittest.TestCase):
         self.assertEqual(sorted(self.rows("usage:")), ["usage:codex", "usage:groq"])
         self.assertIn("SD_REPORT_ATTENTION: dashboard.usage_providers line 2: not a provider name",
                       done.stdout)
+
+    def test_a_zerogpu_error_is_the_huggingface_row_until_the_next_one(self):
+        # sd:9586: the caller passes the error; a live run leaves its row.
+        self.setting("dashboard.usage_providers", "huggingface\ngroq\n")
+        done = self.run_live("usage", "--huggingface-error",
+                             "You have exceeded your GPU quota (60s requested vs. 23s left)")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(sorted(self.rows("usage:")), ["usage:huggingface"])
+        row = self.rows("usage:")["usage:huggingface"]
+        self.assertEqual((row["status"], row["balance"]), ("ok", {"amount": 23.0, "unit": "seconds"}))
+        done = self.run_live("usage")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.rows("usage:")["usage:huggingface"], row)
+        self.assertEqual(self.rows("usage:")["usage:groq"]["status"], "no-source")
+
+    def test_an_error_text_of_another_kind_writes_no_row(self):
+        done = self.run_live("usage", "--huggingface-error", "GPU task aborted")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("no ZeroGPU quota", done.stderr)
+        self.assertEqual(self.rows("usage:"), {})
 
     def test_a_cleared_list_reads_nothing_and_writes_nothing(self):
         self.setting("dashboard.usage_providers", None)

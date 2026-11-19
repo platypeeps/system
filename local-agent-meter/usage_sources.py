@@ -581,13 +581,31 @@ READERS = {
 }
 
 #: Providers with a key in the environment and no usage API a key can call
-#: (checked 2026-11-17): Gemini and Groq bill in their consoles only, the
-#: Hugging Face token has no billing endpoint, TypeSafe shows usage in its
-#: console only.
-NO_SOURCE = ("gemini", "groq", "huggingface", "typesafe")
+#: (checked 2026-11-17): Gemini and Groq bill in their consoles only,
+#: TypeSafe shows usage in its console only.
+NO_SOURCE = ("gemini", "groq", "typesafe")
+
+#: Providers whose reading a caller passes in, as `usage --huggingface-error`:
+#: the Hugging Face token has no quota endpoint, so the ZeroGPU error text
+#: is the source, and a live run leaves the newest row standing (sd:9586).
+PASSED = ("huggingface",)
 
 #: The 'usage providers' list a database that never held the row starts with.
-STARTING = "\n".join(["claude", "codex", *READERS, *NO_SOURCE]) + "\n"
+STARTING = "\n".join(["claude", "codex", *READERS, *NO_SOURCE, *PASSED]) + "\n"
+
+#: ZeroGPU's quota error: "... GPU quota (60s requested vs. 0s left)".
+ZEROGPU = re.compile(r"\((\d{1,9})s requested vs\. (\d{1,9})s left\)")
+
+
+def huggingface_error(text, now):
+    """The huggingface reading in a ZeroGPU quota error: the seconds left,
+    read now; None for a text that holds no such error (sd:9586)."""
+    found = ZEROGPU.search(text or "")
+    if not found:
+        return None
+    return settled("huggingface", "error",
+                   {"balance": {"amount": float(found.group(2)), "unit": "seconds"}},
+                   now, read_at=iso(now))
 
 
 def read_provider(name, env, fetch, now):
