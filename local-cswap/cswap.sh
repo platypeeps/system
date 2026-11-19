@@ -42,29 +42,6 @@ UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 REFUSALS="$ROOT/state/build-refusals"
 REFUSAL_LIMIT=30
 
-# Remote Control (sd:9427): a switch drops every session's link, and /rc in
-# a dropped session reconnects it under the new account. A switch writes
-# RC_PENDING; once herdr lists the panes, each claude pane is owed in
-# RC_OWED (pane, session, epoch). Every sync sends /rc to an owed pane that
-# is idle or done, whose latest Remote Control banner is the drop, not
-# "/remote-control is active", and whose input box holds no typed text. Any other pane gets no keys, as a key can answer a permission
-# dialog or join a half-typed prompt; it stays owed for the next sync,
-# until sent, gone, connected or RC_OWED_FOR seconds old. Right before the
-# keys, `herdr agent get` and a fresh screen read check the pane again; a
-# gap of milliseconds remains, as herdr has no check-and-send. Cron's PATH
-# may lack herdr, so HERDR_DIRS is tried after it.
-RC_OWED="$ROOT/state/rc-owed"
-RC_PENDING="$ROOT/state/rc-pending"
-RC_OWED_FOR=1800
-# One reconnect pass may spend this many seconds, checked before each
-# pane: a pane not reached stays owed (sd:9282 lane review). Tests set
-# CSWAP_RC_BUDGET.
-RC_BUDGET="${CSWAP_RC_BUDGET:-60}"
-HERDR_DIRS="${CSWAP_HERDR_DIRS-$HOME/.local/bin /opt/homebrew/bin /usr/local/bin}"
-HERDR=""
-AGENTS=""
-PANES=""
-
 # shellcheck source=/dev/null
 [[ -f "$ROOT/cswap-auto.conf" ]] && . "$ROOT/cswap-auto.conf"
 CSWAP_BIN="${CSWAP_BIN:-$HOME/.local/bin/cswap}"
@@ -149,232 +126,6 @@ retire_agent() {
   fi
 }
 
-# The herdr binary on stdout: PATH first, then HERDR_DIRS.
-herdr_bin() {
-  local d
-  command -v herdr 2>/dev/null && return 0
-  for d in $HERDR_DIRS; do
-    [[ -x "$d/herdr" ]] && { echo "$d/herdr"; return 0; }
-  done
-  return 1
-}
-
-# Sets HERDR, and PANES to "pane session status" lines, one per claude pane
-# `herdr agent list` names. Else one skip line and exit 1: no herdr (2), no
-# herdr server answering, or an answer that is not the agent list (3).
-herdr_panes() {
-  if ! HERDR=$(herdr_bin); then
-    echo "reconnect: skipped: no herdr on PATH${HERDR_DIRS:+ or in $HERDR_DIRS}"
-    return 2
-  fi
-  AGENTS=$(st_step 20 "$HERDR" agent list) ||
-    { echo "reconnect: skipped: herdr agent list did not answer; is herdr running?"; return 1; }
-  PANES=$(rc_read panes <<<"$AGENTS") ||
-    { echo "reconnect: skipped: herdr agent list gave no agent list this can parse"; return 3; }
-}
-
-# herdr's answers, read by python. `panes`: `herdr agent list` JSON on stdin
-# to "pane session status" lines for claude panes; exit 3 when it has not
-# that shape (null, malformed, an agent that is no object); `pane`: one
-# `herdr agent get` answer, the same way, one line or none. `screen`: a
-# pane's screen on stdin to send, connected or wait <why>. The later of
-# Claude's two Remote Control banners decides, as the screen keeps old ones
-# above, and only one empty input box below it (rule, ❯, rule; any other
-# shape waits) takes keys; dim text there is a prompt suggestion.
-rc_read() {
-  python3 -I -c '
-import json, sys
-text = sys.stdin.read()
-if sys.argv[1] in ("panes", "pane"):
-    try:
-        found = json.loads(text)["result"]
-        agents = found["agents"] if sys.argv[1] == "panes" else [found["agent"]]
-        if not isinstance(agents, list):
-            raise TypeError
-        for a in agents:
-            if a["agent"] != "claude":
-                continue
-            session = a.get("agent_session") or {}
-            words = [a["pane_id"], session.get("value") or "-", a.get("agent_status") or "-"]
-            if not all(isinstance(w, str) and w and w.split() == [w] for w in words):
-                raise TypeError
-            print(*words)
-    except (ValueError, KeyError, TypeError, AttributeError):
-        sys.exit(3)
-else:
-    import re
-    # The screen comes with its ANSI codes (--format ansi). The own
-    # banners of Claude are matched on the text with every escape removed, anchored
-    # at line start in the form Claude prints them, so prose that quotes
-    # them is no banner; a line that holds both texts is neither.
-    sgr = re.compile(r"\x1b\[([0-9;:]*)m")
-    other = re.compile(r"\x1b(\[[0-9;:?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|.)")
-    DROP, ACTIVE = "Remote Control disconnected", "/remote-control is active"
-    def plain(line):
-        return other.sub("", sgr.sub("", line))
-    def banner(line):
-        if DROP in line and ACTIVE in line:
-            return None
-        if line.startswith("⏺ " + DROP + " — "):
-            return "drop"
-        if line.startswith("  " + ACTIVE + " · "):
-            return "active"
-        return None
-    # SGR state across a run of lines: text inside a dim (SGR 2) run is a
-    # prompt suggestion, not typed input, and is dropped. A parameter with
-    # colons (38:2::r:g:b) is one parameter; 38/48/58 with ; take their
-    # colour words with them, so a 2 there is no dim.
-    def undimmed(line, dim):
-        out, pos = [], 0
-        for m in sgr.finditer(line):
-            if not dim:
-                out.append(line[pos:m.start()])
-            params, i = (m.group(1) or "0").split(";"), 0
-            while i < len(params):
-                code = params[i].split(":")[0]
-                if code in ("38", "48", "58") and ":" not in params[i]:
-                    i += 3 if params[i + 1:i + 2] == ["5"] else 5
-                    continue
-                if code in ("", "0", "00", "22"):
-                    dim = False
-                elif code in ("2", "02"):
-                    dim = True
-                i += 1
-            pos = m.end()
-        if not dim:
-            out.append(line[pos:])
-        return plain("".join(out)), dim
-    def rule(text):
-        return re.fullmatch(r"─+( [^─]* ─+)?", text.strip()) is not None
-    raw = text.splitlines()
-    lines = [plain(line) for line in raw]
-    marks = [(i, banner(line)) for i, line in enumerate(lines) if banner(line)]
-    # Hold on doubt (sd:9282 bundle review): below the last banner, the
-    # screen must show one empty input box and nothing like a second one:
-    # exactly two rules and one ❯ line, adjacent, rule ❯ rule. A draft
-    # can hold rule or ❯ lines of its own, so any other shape waits.
-    below = range(marks[-1][0] + 1 if marks else 0, len(lines))
-    rules = [i for i in below if rule(lines[i])]
-    prompts = [i for i in below if lines[i].strip().startswith("❯")]
-    one_box = len(rules) == 2 and len(prompts) == 1 and rules[0] + 1 == prompts[0] == rules[1] - 1
-    typed = undimmed(raw[prompts[0]], False)[0].strip().removeprefix("❯") if one_box else ""
-    if marks and marks[-1][1] == "active":
-        print("connected")
-    elif not marks:
-        print("wait: no Remote Control drop on its screen yet")
-    elif not rules or not prompts:
-        print("wait: no input box on its screen")
-    elif not one_box:
-        print("wait: its input box is not one empty line")
-    elif typed.strip():
-        print("wait: its input box holds text")
-    else:
-        print("send")
-' "$1"
-}
-
-# The account just switched: every claude pane owes /rc. The pending mark
-# is written at once, before a later step can fail, and stays until herdr
-# lists the panes, so a herdr that does not answer now is asked again.
-owe_rc() {
-  { mkdir -p "${RC_PENDING%/*}" && date +%s >"$RC_PENDING"; } 2>/dev/null ||
-    echo "reconnect: could not write $RC_PENDING; no pane owes /rc for this switch"
-}
-
-# A pending switch to owed panes, once herdr lists them. A machine with no
-# herdr has nothing to owe, so the mark goes.
-list_owed() {
-  local since now rc=0
-  [[ -s "$RC_PENDING" ]] || return 0
-  now=$(date +%s)
-  since=$(cat "$RC_PENDING" 2>/dev/null) || since=""
-  [[ "$since" =~ ^[0-9]+$ ]] || since=$now
-  if ((now - since > RC_OWED_FOR)); then
-    rm -f "$RC_PENDING"
-    echo "reconnect: herdr listed no panes for ${RC_OWED_FOR}s after the switch; none owes /rc"
-    return 0
-  fi
-  herdr_panes || rc=$?
-  if ((rc == 2)); then rm -f "$RC_PENDING"; return 0; fi
-  ((rc == 0)) || return 0
-  if { awk -v since="$since" 'NF == 3 { print $1, $2, since }' <<<"$PANES" >"$RC_OWED.new" &&
-    mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
-    rm -f "$RC_PENDING"
-    echo "reconnect: $(wc -l <"$RC_OWED" | tr -d ' ') claude pane(s) owe /rc"
-  else
-    echo "reconnect: could not write $RC_OWED; the next sync tries again"
-  fi
-}
-
-# Right before a send (operator ruling 2026-11-18): the pane ($1) still
-# runs the owed session ($2), is still idle or done, and a fresh read of
-# its screen still says send. Else one line, and it stays owed. A gap of
-# milliseconds remains between this check and the keys: herdr has no
-# check-and-send.
-recheck() {
-  local now screen verdict=""
-  now=$(st_step 10 "$HERDR" agent get "$1" | rc_read pane) || now=""
-  if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
-    echo "reconnect: $1 changed before the send (${now:-no answer}); still owed"
-    return 1
-  fi
-  if ! screen=$(st_step 10 "$HERDR" agent read "$1" --format ansi) ||
-    ! verdict=$(rc_read screen <<<"$screen") || [[ "$verdict" != send ]]; then
-    echo "reconnect: $1 changed before the send (${verdict:-no screen}); still owed"
-    return 1
-  fi
-}
-
-# Send /rc to each owed pane that may have it; keep the rest owed.
-reconnect() {
-  local pane session since action screen verdict plan keep="" deadline
-  deadline=$(($(date +%s) + RC_BUDGET))
-  list_owed
-  [[ -s "$RC_OWED" ]] || return 0
-  herdr_panes || return 0
-  plan=$(awk -v now="$(date +%s)" -v limit="$RC_OWED_FOR" '
-    FILENAME == "-" { if (NF == 3) status[$1 " " $2] = $3; next }
-    NF != 3 || $3 !~ /^[0-9]+$/ { next }
-    !(($1 " " $2) in status) { print "gone", $0; next }
-    now - $3 > limit { print "old", $0; next }
-    status[$1 " " $2] == "idle" || status[$1 " " $2] == "done" { print "try", $0; next }
-    { print "keep", $0 }' - "$RC_OWED" <<<"$PANES") ||
-    { echo "reconnect: skipped: $RC_OWED was not readable"; return 0; }
-  while read -r action pane session since; do
-    case "$action" in
-      keep) keep+="$pane $session $since"$'\n' ;;
-      gone) echo "reconnect: $pane is gone or runs another session; not owed" ;;
-      old) echo "reconnect: $pane stayed busy or showed no drop for ${RC_OWED_FOR}s; not owed" ;;
-      try)
-        if (($(date +%s) >= deadline)); then
-          echo "reconnect: the ${RC_BUDGET}s budget is spent; $pane stays owed"
-          keep+="$pane $session $since"$'\n'
-        elif ! screen=$(st_step 10 "$HERDR" agent read "$pane" --format ansi) ||
-          ! verdict=$(rc_read screen <<<"$screen"); then
-          keep+="$pane $session $since"$'\n'
-        elif [[ "$verdict" == connected ]]; then
-          echo "reconnect: $pane is connected; not owed"
-        elif [[ "$verdict" != send ]]; then
-          echo "reconnect: $pane $verdict"
-          keep+="$pane $session $since"$'\n'
-        elif ! recheck "$pane" "$session"; then
-          keep+="$pane $session $since"$'\n'
-        elif st_step 10 "$HERDR" agent prompt "$pane" /rc >/dev/null; then
-          echo "reconnect: sent /rc to $pane"
-        else
-          keep+="$pane $session $since"$'\n'
-        fi ;;
-    esac
-  done <<<"$plan"
-  if [[ -z "$keep" ]]; then
-    rm -f "$RC_OWED" 2>/dev/null || :
-  else
-    { printf '%s' "$keep" >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null ||
-      echo "reconnect: could not update $RC_OWED"
-    echo "reconnect: $(printf '%s' "$keep" | wc -l | tr -d ' ') pane(s) still owe /rc; the next sync tries again"
-  fi
-}
-
 # The hub: one `cswap auto` tick, then publish the active account. The row
 # is written only when it differs (one database row per write), and is
 # compared on every run, so a failed write is retried by the next one.
@@ -382,7 +133,6 @@ lead() {
   local rc=0 json active row number uuid
   # shellcheck disable=SC2086 # deliberate word splitting of the configured flags
   st_bounded 120 "$CSWAP_BIN" auto --once $CSWAP_AUTO_ARGS --strategy consume-first || rc=$?
-  [[ "$rc" != 0 ]] || owe_rc
   json=$(accounts) || fail list "cswap list --json failed"
   active=$(pick active <<<"$json") || fail list "cswap names no single active account"
   read -r number uuid <<<"$active"
@@ -470,18 +220,12 @@ follow() {
   st_bounded 60 "$CSWAP_BIN" switch "$number" >/dev/null ||
     fail switch "cswap switch $number failed; the next run tries again"
   echo "following the hub: switched to account $number"
-  owe_rc
 }
 
 cmd_sync() {
   retire_agent
   [[ -x "$CSWAP_BIN" ]] || fail list "cswap not executable at $CSWAP_BIN"
-  # The account first, then one reconnect pass for every owed pane, this
-  # run's and an earlier run's: slow panes never delay a switch (sd:9282
-  # lane review). A sync that fails exits before the pass, and its panes
-  # stay owed for the next run.
   if leads; then lead; else follow; fi
-  reconnect
 }
 
 cmd_status() {
@@ -543,10 +287,7 @@ usage: cswap.sh sync|status
            nothing and exits 1. A hub that refuses this machine's
            sd_db build skips the run (exit 0) until repo-sync.sh follow
            catches up, and fails from the 30th such run in a row. It
-           also boots out the retired cswap-auto LaunchAgent. After a
-           switch it sends /rc through herdr to each idle claude pane
-           whose Remote Control dropped, and retries a busy one on the
-           next sync; no herdr is one skip line.
+           also boots out the retired cswap-auto LaunchAgent.
            local-cron-jobs runs it every minute.
   status   whether this machine uses the hub's account; exits 0 same
            account / 1 another account, hub unreadable or the retired
@@ -554,11 +295,7 @@ usage: cswap.sh sync|status
            published) — local-health-check reads these codes
 
 environment: CSWAP_BIN, CSWAP_AUTO_ARGS (see cswap-auto.conf),
-             SD_PACK_ROOT (default ~/repos/platypeeps/sd-workflow),
-             CSWAP_HERDR_DIRS (where to look for herdr after PATH;
-             default ~/.local/bin /opt/homebrew/bin /usr/local/bin),
-             CSWAP_RC_BUDGET (seconds one reconnect pass may spend;
-             default 60)
+             SD_PACK_ROOT (default ~/repos/platypeeps/sd-workflow)
 HELPEOF
     exit 0
     ;;
