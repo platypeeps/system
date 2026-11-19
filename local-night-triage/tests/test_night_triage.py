@@ -712,6 +712,17 @@ class NightTriage(unittest.TestCase):
                 notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
                 self.assertTrue(night_triage.held_by_other(notes, "node1"))
 
+    def test_a_claim_whose_reason_opens_with_a_negation_still_holds(self):
+        # sd:9578 review: only `claimed by <nobody>` denies ownership; a
+        # reason after the claim that opens with `none` or `no one` does not.
+        import night_triage
+        for body in ("Claimed: none of the fixes worked; investigating",
+                     "claimed: nobody else touch this", "Claimed - no one answered, so mine",
+                     "claimed. Noone paged yet", "Claimed: none"):
+            with self.subTest(body=body):
+                notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
+                self.assertTrue(night_triage.held_by_other(notes, "node1"))
+
     def test_a_claim_a_crashed_run_left_is_released_by_the_next_run(self):
         self.given({"1": self.left_claim()}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:77"}])
         self.assertEqual(self.run_job().returncode, 0)

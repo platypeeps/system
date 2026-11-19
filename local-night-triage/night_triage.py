@@ -207,9 +207,11 @@ def _others(notes, host):
 # (`claimed: triaging`, `Claimed by me`) or `<who> claims it`, up to
 # three words, as this job writes on another host. A note that only
 # mentions a claim later, a run named `claims-sync`, or one that says
-# nobody holds it claims nothing (sd:9348 review, sd:9578).
+# nobody holds it (`Claimed by no one`, `Nobody claims it`) claims
+# nothing; a reason after the claim that opens with `none` still holds
+# (sd:9348 review, sd:9578).
 NOBODY = r"(?:nobody|no one|noone|none)(?![\w-])"
-CLAIM = re.compile(r"\s*(?!%s)(?:claimed\b(?!\W*(?:by\s+)?%s)|(?:\S+ ){0,3}claims it\b)"
+CLAIM = re.compile(r"\s*(?!%s)(?:claimed\b(?!\s+by\s+%s)|(?:\S+ ){0,3}claims it\b)"
                    % (NOBODY, NOBODY), re.I)
 
 
