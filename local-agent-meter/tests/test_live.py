@@ -126,6 +126,33 @@ ANSWERS = {
                {"data": [{"results": [{"amount": {"value": 1.5, "currency": "usd"}}]},
                          {"results": [{"amount": {"value": 2.25, "currency": "usd"}}]}]},
                {"spend": {"amount": 3.75, "unit": "usd", "period": "month"}}),
+    # Checked 2026-11-19: Baseten's totals are decimal strings in usd.
+    "baseten": ("BASETEN_API_KEY",
+                {"dedicated_usage": {"subtotal": "0.00", "credits_used": "0.00", "total": "0.00",
+                                     "minutes": 0, "breakdown": []},
+                 "model_apis_usage": {"subtotal": "242.95", "credits_used": "0.00",
+                                      "total": "242.95", "breakdown": []},
+                 "training_usage": {"total": "1.05", "minutes": 3, "breakdown": []}},
+                {"spend": {"amount": 244.0, "unit": "usd", "period": "month"}}),
+    # A metric with no use this month is null, not 0.
+    "langsmith": ("LANGSMITH_API_KEY",
+                  [{"billable_metric_name": "Base Traces", "value": 0.25,
+                    "start_timestamp": "2026-11-01T00:00:00Z", "groups": {}},
+                   {"billable_metric_name": "Sandbox", "value": None, "groups": None},
+                   {"billable_metric_name": "Fleet", "value": 1.5, "groups": None}],
+                  {"spend": {"amount": 1.75, "unit": "units", "period": "month"}}),
+    # You.com's API reference: the balance is in cents.
+    "youcom": ("YDC_API_KEY",
+               {"data": {"type": "account", "id": "abc", "attributes": {"balance": 718924.5}}},
+               {"balance": {"amount": 7189.245, "unit": "usd"}}),
+    "openwhispr": ("OPENWHISPR_API_KEY",
+                   {"data": {"words_used": 2500, "words_remaining": 7500, "limit": 10000,
+                             "plan": "basic", "is_subscribed": True,
+                             "current_period_end": "2026-12-01T00:00:00.000Z"}},
+                   {"spend": {"amount": 2500.0, "unit": "words", "period": "billing period"},
+                    "balance": {"amount": 7500.0, "unit": "words"},
+                    "windows": [{"name": "words", "used_percent": 25.0, "window_minutes": None,
+                                 "resets_at": "2026-12-01T00:00:00.000Z"}]}),
     # Both GitHub readers ask /user for the login, then the month's usage
     # (checked 2026-11-19); one answer here serves both calls (sd:9592).
     "github": ("GH_TOKEN",
@@ -273,11 +300,18 @@ class Readers(unittest.TestCase):
                         bent["code"] = 0
                     if name == "minimax":
                         bent["base_resp"]["status_code"] = 0
+                    # Baseten's totals are decimal strings by its schema.
+                    if name == "baseten":
+                        bent = {k: {**v, "total": extreme} for k, v in answer.items()}
                     if name == "anthropic-api":
                         continue  # no JSON number: see the amount-string test
                     got = usage_sources.read_provider(name, {var: SECRET}, answering(bent), NOW)
                     # sd:9256 round 7: "12" read as a number; only Codex's
-                    # balance is a string by its schema.
+                    # balance and Baseten's totals are strings by schema.
+                    # A LangSmith metric of null is a month with no use.
+                    if (name, extreme) in (("baseten", "12"), ("langsmith", None)):
+                        self.assertEqual(got["status"], "ok", got)
+                        continue
                     self.assertEqual(got["status"], "unknown", got)
                     json.dumps(got, allow_nan=False)
 
@@ -293,6 +327,88 @@ class Readers(unittest.TestCase):
             "openai", {"OPENAI_ADMIN_KEY": SECRET}, answering({"data": [{"results": []}]}), NOW)
         self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0))
 
+    def test_an_unlimited_openwhispr_plan_reads_words_used_only(self):
+        answer = {"data": {"words_used": 40, "words_remaining": -1, "limit": -1,
+                           "current_period_end": "2027-08-20T15:38:34.000Z"}}
+        got = usage_sources.read_provider("openwhispr", {"OPENWHISPR_API_KEY": SECRET},
+                                          answering(answer), NOW)
+        self.assertEqual((got["status"], got["windows"], got["balance"]), ("ok", [], None))
+        self.assertEqual(got["spend"]["amount"], 40.0)
+        for bad in ({"words_used": -1, "limit": -1}, {"words_used": 1, "limit": -2}):
+            with self.subTest(bad=bad):
+                got = usage_sources.read_provider("openwhispr", {"OPENWHISPR_API_KEY": SECRET},
+                                                  answering({"data": bad}), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+
+    def test_the_month_readers_ask_for_utc_days(self):
+        calls = []
+        first = datetime.datetime(2026, 12, 1, 0, 30, tzinfo=datetime.timezone.utc)
+        usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                    answering(ANSWERS["baseten"][1], calls), first)
+        self.assertIn("start_date=2026-12-01&end_date=2026-12-02", calls[0][0])
+        # A clock in another zone still asks for the UTC day.
+        late = datetime.datetime(2026, 11, 30, 23, 0, tzinfo=datetime.timezone(
+            -datetime.timedelta(hours=7)))
+        usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                    answering(ANSWERS["baseten"][1], calls), late)
+        self.assertIn("start_date=2026-12-01&end_date=2026-12-02", calls[1][0])
+        usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                                    answering(ANSWERS["langsmith"][1], calls), late)
+        self.assertIn("starting_on=2026-12-01T00:00:00Z&ending_before=2027-01-01T00:00:00Z",
+                      calls[2][0])
+
+    def test_a_baseten_usage_section_of_another_shape_is_unknown(self):
+        # Lane review: a malformed section was dropped and the rest
+        # published as the month's total.
+        for bad in ([], None, "x", 5, {"subtotal": "1.00"}):
+            for name in ("dedicated_usage", "inference"):
+                with self.subTest(bad=bad, name=name):
+                    answer = {"model_apis_usage": {"total": "2.00"}, name: bad}
+                    got = usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                                      answering(answer), NOW)
+                    self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
+
+    def test_a_baseten_section_under_a_new_name_still_counts(self):
+        # A new usage kind is never left out of the month's total.
+        answer = {"model_apis_usage": {"total": "2.00"}, "inference": {"total": "3.00"}}
+        got = usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                          answering(answer), NOW)
+        self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 5.0), got)
+
+    def test_a_langsmith_null_value_with_groups_is_unknown_not_zero(self):
+        # A null value reads 0 only with no groups: groups would hold use.
+        for groups in ({"traces": 4}, [1]):
+            with self.subTest(groups=groups):
+                answer = [{"billable_metric_name": "Base Traces", "value": None,
+                           "groups": groups}]
+                got = usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                                                  answering(answer), NOW)
+                self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
+        for groups in (None, {}, []):
+            with self.subTest(groups=groups):
+                answer = [{"billable_metric_name": "Fleet", "value": None, "groups": groups}]
+                got = usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                                                  answering(answer), NOW)
+                self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0), got)
+
+    def test_a_baseten_total_that_is_no_decimal_string_is_unknown(self):
+        for total in ("", "-1.00", "1e400", "nan", " 1.00", "1,000.00", "inf"):
+            with self.subTest(total=total):
+                got = usage_sources.read_provider(
+                    "baseten", {"BASETEN_API_KEY": SECRET},
+                    answering({"model_apis_usage": {"total": total}}), NOW)
+                self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
+
+    def test_the_month_readers_ask_for_this_month(self):
+        calls = []
+        usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                    answering(ANSWERS["baseten"][1], calls), NOW)
+        usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                                    answering(ANSWERS["langsmith"][1], calls), NOW)
+        # Baseten's end date is exclusive: the next UTC day takes in today.
+        self.assertIn("start_date=2026-11-01&end_date=2026-11-18", calls[0][0])
+        self.assertIn("starting_on=2026-11-01T00:00:00Z&ending_before=2026-12-01T00:00:00Z",
+                      calls[1][0])
     def test_the_github_readers_ask_this_month_for_the_login_they_read(self):
         # sd:9592: the billing endpoints are per user; /user names the login.
         for name, path in (("github", "/settings/billing/usage?"),
@@ -429,6 +545,17 @@ class Readers(unittest.TestCase):
                 self.assertEqual(got["status"], "no-source")
                 self.assertEqual((got["windows"], got["balance"], got["spend"]), ([], None, None))
 
+    def test_a_zerogpu_error_reads_the_seconds_left(self):
+        # sd:9586: Hugging Face has no quota API; its error text is the source.
+        got = usage_sources.huggingface_error(
+            "You have exceeded your GPU quota (60s requested vs. 23s left). Try later.", NOW)
+        self.assertEqual(got, usage_sources.reading(
+            "huggingface", "ok", "error", read_at="2026-11-17T20:00:00Z",
+            balance={"amount": 23.0, "unit": "seconds"}))
+        for text in ("", "GPU task aborted", "(60s requested vs. -1s left)", "(xs requested vs. 1s left)"):
+            with self.subTest(text=text):
+                self.assertIsNone(usage_sources.huggingface_error(text, NOW))
+
     def test_a_name_with_no_reader_is_unknown(self):
         got = usage_sources.read_provider("nosuch", {}, failing("unreached"), NOW)
         self.assertEqual((got["status"], got["error"]), ("unknown", "no reader for this name"))
@@ -437,7 +564,7 @@ class Readers(unittest.TestCase):
         names, problems = usage_sources.parse_providers(usage_sources.STARTING)
         self.assertEqual(problems, [])
         self.assertEqual(sorted(names), sorted(["claude", "codex", *usage_sources.READERS,
-                                                *usage_sources.NO_SOURCE]))
+                                                *usage_sources.NO_SOURCE, *usage_sources.PASSED]))
 
     def test_the_providers_grammar(self):
         names, problems = usage_sources.parse_providers(
@@ -1069,7 +1196,9 @@ class Live(unittest.TestCase):
         self.assertEqual(held, {"dashboard.usage_providers": usage_sources.STARTING})
         rows = self.rows("usage:")
         names, _ = usage_sources.parse_providers(usage_sources.STARTING)
-        self.assertEqual(sorted(rows), sorted("usage:" + n for n in names))
+        # A passed-in provider gets its row from its caller (sd:9586).
+        self.assertEqual(sorted(rows), sorted("usage:" + n for n in names
+                                              if n not in usage_sources.PASSED))
         self.assertEqual(rows["usage:claude"]["status"], "ok")
         self.assertEqual(rows["usage:claude"]["windows"][0]["used_percent"], 40.0)
         self.assertEqual(rows["usage:codex"]["status"], "ok")
@@ -1088,6 +1217,26 @@ class Live(unittest.TestCase):
         self.assertEqual(sorted(self.rows("usage:")), ["usage:codex", "usage:groq"])
         self.assertIn("SD_REPORT_ATTENTION: dashboard.usage_providers line 2: not a provider name",
                       done.stdout)
+
+    def test_a_zerogpu_error_is_the_huggingface_row_until_the_next_one(self):
+        # sd:9586: the caller passes the error; a live run leaves its row.
+        self.setting("dashboard.usage_providers", "huggingface\ngroq\n")
+        done = self.run_live("usage", "--huggingface-error",
+                             "You have exceeded your GPU quota (60s requested vs. 23s left)")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(sorted(self.rows("usage:")), ["usage:huggingface"])
+        row = self.rows("usage:")["usage:huggingface"]
+        self.assertEqual((row["status"], row["balance"]), ("ok", {"amount": 23.0, "unit": "seconds"}))
+        done = self.run_live("usage")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.rows("usage:")["usage:huggingface"], row)
+        self.assertEqual(self.rows("usage:")["usage:groq"]["status"], "no-source")
+
+    def test_an_error_text_of_another_kind_writes_no_row(self):
+        done = self.run_live("usage", "--huggingface-error", "GPU task aborted")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("no ZeroGPU quota", done.stderr)
+        self.assertEqual(self.rows("usage:"), {})
 
     def test_a_cleared_list_reads_nothing_and_writes_nothing(self):
         self.setting("dashboard.usage_providers", None)
