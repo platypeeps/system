@@ -102,6 +102,11 @@ elif args[:2] == ["task", "note"]:
         print(json.dumps(show(args[2])))
 elif args[:2] == ["task", "edit"]:
     item = items[args[2]]
+    if os.environ.get("FAKE_SD_RACE") == "park" and "--park" in args and not state.get("raced"):
+        state["raced"] = True
+        item["notes"].append({"id": 78, "kind": "followup", "session": "cron", "body": "failed again",
+                              "resolved_at": None})
+        item["revision"] += 1
     if flag("--if-revision") not in (None, str(item["revision"])):
         save(); print("refused: the item changed", file=sys.stderr); sys.exit(1)
     item["parked_at"] = None if "--unpark" in args else "2026-11-17T15:40:00+00:00"
@@ -570,6 +575,16 @@ class NightTriage(unittest.TestCase):
         result = self.run_job()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any("filed as sd:7" in body for body in self.comments("1")), self.comments("1"))
+
+    def test_a_writer_before_the_park_leaves_the_alert_unparked(self):
+        # A followup between the wait note and the park refuses the park:
+        # the alert stays in view, and the next run settles it.
+        self.given({"1": report("node1")}, [
+            {"id": 1, "outcome": "waiting", "summary": "s", "run": "job-1", "on": day(2)}])
+        result = self.run_job(FAKE_SD_RACE="park")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.items()["1"].get("parked_at"))
+        self.assertIn("not parked: the report changed after the note above", self.comments("1")[-1])
 
     def test_a_claim_without_a_timestamp_is_held_and_says_so(self):
         alert = report("node1")
