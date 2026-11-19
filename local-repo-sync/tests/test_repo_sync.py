@@ -35,6 +35,7 @@ import subprocess
 import tempfile
 import sys
 import unittest
+from unittest import mock
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
 LIB = FOLDER.parent / "lib"
@@ -254,7 +255,12 @@ class Fixture:
 
     @staticmethod
     def _git(args, cwd):
-        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+        # The operator's global and system config can sign commits or run
+        # hooks; the fixture's git sees neither (sd:9488).
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_CONFIG_NOSYSTEM="1")
+        subprocess.run(["git", *args], cwd=cwd, check=True,
+                       capture_output=True, env=env)
 
     # --- running it ---------------------------------------------------------
 
@@ -388,6 +394,24 @@ class RepoSyncTest(unittest.TestCase):
         f = Fixture(**kwargs)
         self.addCleanup(f.destroy)
         return f
+
+    def test_local_clone_ignores_the_operators_git_config(self):
+        """REGRESSION (sd:9488). A global config that signs commits or
+        runs hooks must not reach the fixture's seed commit and push."""
+        f = self.fixture()
+        hostile = f.tmp / "hostile"
+        hooks = hostile / "hooks"
+        hooks.mkdir(parents=True)
+        for hook in ("pre-commit", "pre-push"):
+            (hooks / hook).write_text("#!/bin/sh\nexit 1\n")
+            (hooks / hook).chmod(0o755)
+        (hostile / "gitconfig").write_text(
+            f"[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n"
+            f"[core]\n\thooksPath = {hooks}\n")
+        with mock.patch.dict(os.environ,
+                             GIT_CONFIG_GLOBAL=str(hostile / "gitconfig")):
+            target = f.local_clone("a/signed")
+        self.assertTrue((target / ".git").is_dir())
 
     def test_nightly_leaves_the_confs_and_commits_nothing(self):
         """REGRESSION (sd:3983). The list lives in the database now: nightly

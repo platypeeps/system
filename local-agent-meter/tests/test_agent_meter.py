@@ -219,6 +219,20 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(record["usage"]["codex"]["read_at"], "2026-11-03T14:00:00.000Z")
         self.assertEqual(record["usage"]["codex"]["windows"][0]["resets_at"], "2100-01-01T00:00:00Z")
 
+    def test_a_future_stamped_event_is_skipped_and_logged_as_an_error(self):
+        # sd:9499: one such event outranked every real reading for good.
+        future = json.loads(json.dumps(CODEX_EVENT))
+        future["timestamp"] = "2099-01-01T00:00:00.000Z"
+        future["payload"]["rate_limits"]["primary"]["used_percent"] = 99.0
+        self.rollout.write_text(json.dumps(CODEX_EVENT) + "\n" + json.dumps(future) + "\n",
+                                encoding="utf-8")
+        done = self.run_meter("--db", str(self.db))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["usage"]["codex"]["read_at"], "2026-11-03T14:00:00.000Z")
+        self.assertEqual(record["errors"].get("usage.codex"),
+                         "1 token_count event stamped after now, skipped")
+
     def test_a_window_that_reset_after_its_reading_gets_no_row(self):
         # sd:9256 review: an idle Codex's old share was stamped as current.
         event = json.loads(json.dumps(CODEX_EVENT))

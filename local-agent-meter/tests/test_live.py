@@ -488,6 +488,25 @@ class Codex(unittest.TestCase):
         self.rollout("x", [self.event(used=90.0, limit_id="codex_other")], 2000)
         self.assertEqual(usage_sources.codex_reading(self.home)["status"], "unknown")
 
+    def test_an_event_stamped_after_now_never_outranks_a_real_reading(self):
+        # sd:9499: event time had no upper bound, so one future-stamped
+        # token_count beat every real reading for good. Five minutes of
+        # clock skew still read; a later stamp is skipped and counted.
+        now = datetime.datetime(2026, 11, 17, 20, 0, tzinfo=datetime.timezone.utc)
+        self.rollout("x", [self.event(used=40.0, stamp="2026-11-17T19:00:00Z"),
+                           self.event(used=99.0, stamp="2027-01-01T00:00:00Z")], 2000)
+        got = usage_sources.codex_reading(self.home, now=now)
+        self.assertEqual((got["status"], got["read_at"], got["windows"][0]["used_percent"],
+                          got.get("future")), ("ok", "2026-11-17T19:00:00Z", 40.0, 1))
+        self.rollout("x", [self.event(used=40.0, stamp="2026-11-17T19:00:00Z"),
+                           self.event(used=50.0, stamp="2026-11-17T20:04:00Z")], 2000)
+        got = usage_sources.codex_reading(self.home, now=now)
+        self.assertEqual((got["read_at"], got.get("future")), ("2026-11-17T20:04:00Z", None))
+        self.rollout("x", [self.event(used=99.0, stamp="2027-01-01T00:00:00Z")], 2000)
+        got = usage_sources.codex_reading(self.home, now=now)
+        self.assertEqual((got["status"], got.get("future")), ("unknown", 1))
+        self.assertIn("stamped after now", got["error"])
+
     def test_a_window_that_reset_is_never_current(self):
         # sd:9256 round 8: an idle Codex's window that had reset read ok.
         self.rollout("x", [self.event(primary={"used_percent": 61.0, "window_minutes": 10080,
