@@ -497,6 +497,10 @@ def collect(a) -> None:
         if entry["status"] == "ok":
             brief.append("%s %s" % (prov, "/".join(
                 "%s%%" % fmt_pct(w["used_percent"]) for w in entry["windows"]) or "ok"))
+            if entry.get("future"):
+                # An ok reading still names what it skipped (sd:9499).
+                record["errors"]["usage." + prov] = "%d token_count event%s stamped after now, skipped" % (
+                    entry["future"], "" if entry["future"] == 1 else "s")
         else:
             record["errors"]["usage." + prov] = entry.get("error") or entry["status"]
             brief.append("%s %s" % (prov, "ERR" if entry["status"] == "unknown" else entry["status"]))

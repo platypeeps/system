@@ -9,11 +9,11 @@
 # whose runner lock is held is skipped and never waited for. The job drains
 # each queue and exits; it is not a poller, and an empty queue exits 0 at once.
 #
-# At its 40-minute budget the run starts no lane, hands off each lane still
-# running and exits (pack sd:9332). launchd runs one instance of a job at a
-# time, so the next slot then starts a fresh run; it skips the lanes a
-# handed-off child holds. Each handed-off child TERMs itself at the run's
-# TERM point.
+# Once pack sd:9332 lands, the run starts no lane at its 40-minute budget,
+# hands off each lane still running and exits. launchd runs one instance of
+# a job at a time, so the next slot then starts a fresh run; it skips the
+# lanes a handed-off child holds. Each handed-off child TERMs itself at the
+# run's TERM point.
 #
 # JOB_TIMEOUT is above one lane run on purpose (review, `make check` and a
 # merge take 30-60 minutes): a run still waits for a lane it cannot hand

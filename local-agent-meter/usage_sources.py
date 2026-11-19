@@ -39,6 +39,9 @@ def is_zero(value):
 #: much of each one's tail, before it says unknown.
 CODEX_FILES = 20
 CODEX_TAIL = 4 * 1024 * 1024
+#: How far past now a token_count's stamp may be and still read: clock
+#: skew. A later stamp would outrank every real reading (sd:9499).
+CODEX_SKEW = datetime.timedelta(minutes=5)
 USER_AGENT = "agent-meter/1"
 #: The longest rate window a reading takes: a year.
 MAX_MINUTES = 366 * 24 * 60
@@ -462,7 +465,8 @@ def codex_reading(home=None, now=None):
     rollouts to read, never the reading: a copied rollout keeps an old
     mtime, so every picked file's tail is read and event time alone
     decides (sd:9256 lane review). A window that reset before `now`, the
-    clock when omitted, is dropped."""
+    clock when omitted, is dropped. An event stamped more than CODEX_SKEW
+    after `now` is skipped and counted in `future` (sd:9499)."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     root = Path(home or os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
     try:
@@ -471,6 +475,7 @@ def codex_reading(home=None, now=None):
     except OSError as e:
         return reading("codex", "unknown", "codex-sessions", error=type(e).__name__)
     best = None  # (time, stamp, rate_limits) of the newest account-wide event
+    future = 0
     for path in files:
         try:
             with open(path, "rb") as f:
@@ -492,10 +497,17 @@ def codex_reading(home=None, now=None):
                 at = event_time(event.get("timestamp"))
                 if at is None:
                     continue  # an event with no time has no place in the order
+                if at > now + CODEX_SKEW:
+                    future += 1
+                    continue
             except (ValueError, KeyError, TypeError, AttributeError, ReadFailed):
                 continue
             if best is None or at > best[0]:
                 best = (at, event["timestamp"], limits)
+    counted = {"future": future} if future else {}
+    if best is None and future:
+        return reading("codex", "unknown", "codex-sessions", **counted,
+                       error="every account-wide token_count is stamped after now")
     if best is None:
         return reading("codex", "unknown", "codex-sessions",
                        error="no account-wide token_count in the newest %d rollouts" % CODEX_FILES)
@@ -504,11 +516,11 @@ def codex_reading(home=None, now=None):
     try:
         fields = codex_fields(best[2])
     except ReadFailed as e:
-        return reading("codex", "unknown", "codex-sessions", error=str(e))
+        return reading("codex", "unknown", "codex-sessions", error=str(e), **counted)
     except (AttributeError, TypeError, ValueError, OverflowError) as e:
-        return reading("codex", "unknown", "codex-sessions",
+        return reading("codex", "unknown", "codex-sessions", **counted,
                        error="another shape: %s" % type(e).__name__)
-    return settled("codex", "codex-sessions", fields, now, read_at=best[1])
+    return settled("codex", "codex-sessions", fields, now, read_at=best[1], **counted)
 
 
 def codex_fields(limits):
