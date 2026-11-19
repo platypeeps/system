@@ -739,15 +739,22 @@ report_unrecorded() { # job, log offset, run identity, start, end, exit
 # Files this run's report. The retry record goes to .<job>.reporting
 # first, so launchd's KILL during the report's bound leaves it for the
 # next run's replay; .unreported takes it only once the report fails,
-# and stays untouched by a report that lands.
+# and stays untouched by a report that lands. One the replay could not
+# move is an older run's: this run leaves it alone and goes without.
 file_run_report() { # job, log offset, run identity, start, end, exit
-  local inflight="$LOG_DIR/.$1.reporting"
-  { printf '%s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" > "$inflight.tmp" \
-      && mv -f "$inflight.tmp" "$inflight"; } || rm -f "$inflight.tmp" "$inflight"
-  [ ! -f "$inflight" ] || drop_carry "$1"
+  local inflight="$LOG_DIR/.$1.reporting" own=""
+  if [ ! -e "$inflight" ]; then
+    if printf '%s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" > "$inflight.tmp" \
+        && mv -f "$inflight.tmp" "$inflight"; then
+      own=1
+      drop_carry "$1"
+    else
+      rm -f "$inflight.tmp"
+    fi
+  fi
   if record_run_report "$1" "$3" "$4" "$5" "$6" "$2" \
       || report_unrecorded "$1" "$2" "$3" "$4" "$5" "$6"; then
-    rm -f "$inflight"
+    [ -z "$own" ] || rm -f "$inflight"
     drop_carry "$1"
   fi
 }
@@ -799,13 +806,22 @@ drop_carry() { # job
 # launchd KILLs the runner ExitTimeOut seconds after its TERM, a value the
 # plist fixed at install, while the grace is read from the job file at each
 # run: a grace raised since install is cut to fit, until a reinstall.
+# A plist from before ExitTimeOut has launchd's 20 s and no budget key;
+# launchd names the run by its label (XPC_SERVICE_NAME), and the grace
+# keeps the 10 s that plist was rendered for. A hand run is not capped.
+LEGACY_GRACE=10
 keep_grace_in_plist() { # job
-  local budget
-  budget="$(decimal "$INSTALLED_EXIT_TIMEOUT" 999999999)" || return 0
-  [ "$((JOB_GRACE + EXIT_REPORT_ROOM))" -gt "$budget" ] || return 0
-  local was="$JOB_GRACE"
-  JOB_GRACE=$((budget > EXIT_REPORT_ROOM ? budget - EXIT_REPORT_ROOM : 0))
-  echo "[$1] $(date '+%Y-%m-%dT%H:%M:%S%z') grace ${was}s cut to ${JOB_GRACE}s: the installed plist's ExitTimeOut is ${budget}s; reinstall the job"
+  local budget cap
+  if budget="$(decimal "$INSTALLED_EXIT_TIMEOUT" 999999999)"; then
+    cap=$((budget > EXIT_REPORT_ROOM ? budget - EXIT_REPORT_ROOM : 0))
+  elif [ "${XPC_SERVICE_NAME:-}" = "$(label_for "$1")" ]; then
+    budget=20 cap="$LEGACY_GRACE"
+  else
+    return 0
+  fi
+  [ "$JOB_GRACE" -gt "$cap" ] || return 0
+  echo "[$1] $(date '+%Y-%m-%dT%H:%M:%S%z') grace ${JOB_GRACE}s cut to ${cap}s: the installed plist's ExitTimeOut is ${budget}s; reinstall the job"
+  JOB_GRACE="$cap"
 }
 
 # The outcome line every run that started owes its log. cmd_exec writes "done"

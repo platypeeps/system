@@ -1811,6 +1811,32 @@ class HostJobsTest(unittest.TestCase):
         self.assertIn("grace 20s cut to 1s", log)
         self.assertIn("the job still runs 1s after TERM", log)
 
+    def test_a_plist_from_before_the_cap_keeps_the_old_grace(self):
+        """Build 1232 round 6. A plist installed before this change has
+        no CRON_JOBS_EXIT_TIMEOUT and launchd's 20 s ExitTimeOut; the
+        30 s default grace outran it. Under such a plist the grace
+        stays at the old 10 s until a reinstall."""
+        self.fx.write_job("demo", self.JOB.format("true"))
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        environment = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]
+        environment.pop("CRON_JOBS_EXIT_TIMEOUT")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
+                                  "JOB_COMMAND='trap \"\" TERM; kill -TERM "
+                                  "$(ps -o ppid= -p $PPID); sleep 14'\n")
+        run = {**environment, "PATH": self.fx.path(), "SD_REPORT_BIN": "/usr/bin/true",
+               "XPC_SERVICE_NAME": f"{LABEL_PREFIX}.cron.demo"}
+        log_path = self.fx.folder / "logs" / "demo.log"
+        log_path.parent.mkdir(exist_ok=True)
+        started = time.monotonic()
+        with open(log_path, "a") as out:
+            subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                           env=run, stdout=out, stderr=out, timeout=60)
+        self.assertLess(time.monotonic() - started, 13)
+        log = log_path.read_text()
+        self.assertIn("grace 30s cut to 10s", log)
+        self.assertIn("the job still runs 10s after TERM", log)
+
     def test_a_grace_that_is_not_a_number_is_refused(self):
         self.fx.write_job("demo", "CRON_JOBS_TIMEOUT_GRACE=soon\n" + self.JOB.format("true"))
         result = self.run_script("install", "demo")
@@ -2346,6 +2372,24 @@ class RunReportTest(unittest.TestCase):
         logs = self.fx.folder / "logs"
         self.assertEqual(sorted(p.name for p in logs.glob(".demo.report*")), [])
         self.assertFalse((logs / ".demo.unreported").exists())
+
+    def test_a_retry_record_the_replay_cannot_move_is_kept(self):
+        """Build 1232 round 6. The replay could not append `.reporting`
+        to `.unreported` and left it; this run's report then wrote over
+        it, or removed it, and the older run was lost for good."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        inflight = logs / ".demo.reporting"
+        inflight.write_text("0 20260101T000000Z-1 a b 7\n")
+        (logs / ".demo.unreported").mkdir()
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.exec_job()
+        self.assertEqual(inflight.read_text(), "0 20260101T000000Z-1 a b 7\n")
+        (logs / ".demo.unreported").rmdir()
+        self.sd_log.unlink()
+        self.assertEqual(self.exec_job().returncode, 0)
+        self.assertEqual(self.ingests()[0][:2], ("20260101T000000Z-1", "7"), self.ingests())
+        self.assertFalse(inflight.exists())
 
     def test_a_failed_report_keeps_the_exit_code(self):
         # PIN. A report that fails is logged; the job's own code stands.
