@@ -2373,23 +2373,58 @@ class RunReportTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in logs.glob(".demo.report*")), [])
         self.assertFalse((logs / ".demo.unreported").exists())
 
+    def kill_mid_report(self, command):
+        """A run launchd KILLs while its report is filed; its run id."""
+        self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="{command}"\n')
+        env = {"PATH": self.fx.path(), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "SD_REPORT_BIN": str(self.sd),
+               "FAKE_SD_LOG": str(self.sd_log), "FAKE_SD_SLEEP": "3"}
+        run = subprocess.Popen(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                               env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 30
+        while not self.reports() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self.reports(), "the report starts")
+        run.kill()
+        run.wait(timeout=10)
+        killed = self.ingests()[-1][0]
+        time.sleep(3.5)
+        return killed
+
     def test_a_retry_record_the_replay_cannot_move_is_kept(self):
-        """Build 1232 round 6. The replay could not append `.reporting`
-        to `.unreported` and left it; this run's report then wrote over
-        it, or removed it, and the older run was lost for good."""
+        """Build 1232 rounds 6 and 7. The replay could not move an older
+        run's retry record; this run then overwrote it (round 6), or,
+        kept from the one slot, went without and a KILL mid-report lost
+        it (round 7). Each run now has its own record."""
         logs = self.fx.folder / "logs"
         logs.mkdir(exist_ok=True)
-        inflight = logs / ".demo.reporting"
-        inflight.write_text("0 20260101T000000Z-1 a b 7\n")
+        older = logs / ".demo.reporting.20260101T000000Z-1"
+        older.write_text("0 20260101T000000Z-1 a b 7\n")
         (logs / ".demo.unreported").mkdir()
-        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
-        self.exec_job()
-        self.assertEqual(inflight.read_text(), "0 20260101T000000Z-1 a b 7\n")
+        newer = self.kill_mid_report("exit 5")
+        self.assertEqual(older.read_text(), "0 20260101T000000Z-1 a b 7\n")
         (logs / ".demo.unreported").rmdir()
         self.sd_log.unlink()
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
         self.assertEqual(self.exec_job().returncode, 0)
-        self.assertEqual(self.ingests()[0][:2], ("20260101T000000Z-1", "7"), self.ingests())
-        self.assertFalse(inflight.exists())
+        runs = [(r, rc) for r, rc, _ in self.ingests()]
+        self.assertEqual(runs[:2], [("20260101T000000Z-1", "7"), (newer, "5")], runs)
+        self.assertEqual(sorted(p.name for p in logs.glob(".demo.report*")), [])
+
+    def test_a_record_appended_to_an_unterminated_queue_stays_whole(self):
+        """Build 1232 round 7. A short write or a kill can leave the queue
+        without its last newline; the next append joined two runs into one
+        line, and the newer run had no entry of its own."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("0 20260101T000000Z-1 a b 7")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        self.exec_job(FAKE_SD_EXIT="3")
+        lines = pending.read_text().splitlines()
+        self.assertEqual(len(lines), 2, lines)
+        self.assertEqual(lines[0], "0 20260101T000000Z-1 a b 7")
+        self.assertRegex(lines[1], r"^\d+ [0-9TZ]+-\d+ \S+ \S+ 3$")
 
     def test_a_failed_report_keeps_the_exit_code(self):
         # PIN. A report that fails is logged; the job's own code stands.

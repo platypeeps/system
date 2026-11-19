@@ -248,8 +248,8 @@ file may set its own). Each plist's `ExitTimeOut` is that grace plus
 30 s, so launchd's KILL waits for the outcome; a job still running then
 is named in the log (sd:7105). A grace raised after install is cut to
 fit the installed `ExitTimeOut` until a reinstall (10 s under a plist
-from before that key), and the run's retry
-record (`.<job>.reporting`) is on disk before its report starts. The
+from before that key), and the run's retry record
+(`.<job>.reporting.<run>`) is on disk before its report starts. The
 wrapper pushes through `local-notify` with `-c ntfy -p high` and no `-b`,
 so it reaches the phone where `NTFY_TOPIC` is set in local-notify's `.env`,
 and only an ntfy delivery counts as sent. The

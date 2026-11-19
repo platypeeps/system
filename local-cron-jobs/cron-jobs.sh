@@ -724,7 +724,8 @@ record_run_report() { # job, run identity, start, end, exit, log offset
 # push, so a push that hangs or fails cannot lose it.
 report_unrecorded() { # job, log offset, run identity, start, end, exit
   local saved=0
-  printf '%s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" >> "$LOG_DIR/.$1.unreported" || saved=1
+  queue_append "$LOG_DIR/.$1.unreported" "$2 $3 $4 $5 $6
+" || saved=1
   osascript -e "display notification \"Job '$1': report not recorded. See local-cron-jobs/logs/$1.log.\" with title \"cron-jobs report\"" 2>/dev/null || true
   # Optional phone push via ntfy.sh: set NTFY_TOPIC in <config>/cron-jobs/notify.conf.
   local NTFY_TOPIC=""
@@ -736,21 +737,30 @@ report_unrecorded() { # job, log offset, run identity, start, end, exit
   return "$saved"
 }
 
-# Files this run's report. The retry record goes to .<job>.reporting
-# first, so launchd's KILL during the report's bound leaves it for the
-# next run's replay; .unreported takes it only once the report fails,
-# and stays untouched by a report that lands. One the replay could not
-# move is an older run's: this run leaves it alone and goes without.
+# Appends whole lines to the retry queue. A short write or a kill can
+# leave its last line unterminated; it is ended first, or the append
+# joined two runs into one line.
+queue_append() { # file, newline-terminated text
+  if [ -s "$1" ] && [ -n "$(tail -c 1 "$1" 2>/dev/null)" ]; then
+    printf '\n' >> "$1" || return 1
+  fi
+  printf '%s' "$2" >> "$1"
+}
+
+# Files this run's report. The retry record goes to
+# .<job>.reporting.<run> first, so launchd's KILL during the report's
+# bound leaves it for the next run's replay; .unreported takes it only
+# once the report fails, and stays untouched by a report that lands.
+# One file per run: an older record the replay could not move never
+# shares a name with this run's.
 file_run_report() { # job, log offset, run identity, start, end, exit
-  local inflight="$LOG_DIR/.$1.reporting" own=""
-  if [ ! -e "$inflight" ]; then
-    if printf '%s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" > "$inflight.tmp" \
-        && mv -f "$inflight.tmp" "$inflight"; then
-      own=1
-      drop_carry "$1"
-    else
-      rm -f "$inflight.tmp"
-    fi
+  local inflight="$LOG_DIR/.$1.reporting.$3" own=""
+  if printf '%s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" > "$inflight.tmp" \
+      && mv -f "$inflight.tmp" "$inflight"; then
+    own=1
+    drop_carry "$1"
+  else
+    rm -f "$inflight.tmp"
   fi
   if record_run_report "$1" "$3" "$4" "$5" "$6" "$2" \
       || report_unrecorded "$1" "$2" "$3" "$4" "$5" "$6"; then
@@ -767,11 +777,18 @@ file_run_report() { # job, log offset, run identity, start, end, exit
 replay_unrecorded() { # job
   local pending="$LOG_DIR/.$1.unreported" offset run started ended code left="" bare="" used=""
   REPLAY_CARRY=""
-  # A run killed while it filed its report left its line here; it is the
-  # newest run, so it goes last.
-  if [ -f "$LOG_DIR/.$1.reporting" ]; then
-    cat "$LOG_DIR/.$1.reporting" >> "$pending" && rm -f "$LOG_DIR/.$1.reporting"
-  fi
+  # A run killed while it filed its report left its line in its own
+  # file. Run ids sort by time, so the glob's order is the runs'; the
+  # first that cannot move stops the rest, which keeps that order.
+  local inflight
+  for inflight in "$LOG_DIR/.$1.reporting".*; do
+    # A temp file is a write a kill cut short; under the lock no writer
+    # of this job is left.
+    case "$inflight" in *.tmp) rm -f "$inflight"; continue ;; esac
+    [ -f "$inflight" ] || continue
+    queue_append "$pending" "$(cat "$inflight")
+" && rm -f "$inflight" || break
+  done
   [ -s "$pending" ] || { rm -f "$pending"; return 0; }
   while read -r offset run started ended code; do
     case "$offset" in ''|*[!0-9]*) used=1; continue ;; esac

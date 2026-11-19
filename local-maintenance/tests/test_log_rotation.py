@@ -29,10 +29,10 @@ class LogRotationTest(Harness):
         self.assertEqual(b"", self.log.read_bytes())
 
     def test_a_pending_report_defers_the_rotation(self):
-        # `.reporting` is the record of a run killed while it filed its
+        # `.reporting.<run>` is the record of a run killed while it filed its
         # report (build 1232 round 5); the next run moves it to
         # `.unreported`. Both point into the log.
-        for name in (".demo.unreported", ".demo.reporting"):
+        for name in (".demo.unreported", ".demo.reporting.20260101T000000Z-1"):
             with self.subTest(name):
                 record = self.logs / name
                 record.write_text("0 run-1 a b 7\n")
