@@ -116,6 +116,26 @@ ANSWERS = {
                {"data": [{"results": [{"amount": {"value": 1.5, "currency": "usd"}}]},
                          {"results": [{"amount": {"value": 2.25, "currency": "usd"}}]}]},
                {"spend": {"amount": 3.75, "unit": "usd", "period": "month"}}),
+    # Both GitHub readers ask /user for the login, then the month's usage
+    # (checked 2026-11-19); one answer here serves both calls (sd:9592).
+    "github": ("GH_TOKEN",
+               {"login": "operator", "usageItems": [
+                   {"date": "2026-11-02", "product": "actions", "sku": "actions_linux",
+                    "quantity": 120, "unitType": "Minutes", "pricePerUnit": 0.008,
+                    "grossAmount": 0.96, "discountAmount": 0.96, "netAmount": 0},
+                   {"date": "2026-11-03", "product": "copilot", "sku": "copilot_pro",
+                    "quantity": 1, "unitType": "UserMonths", "pricePerUnit": 10,
+                    "grossAmount": 10, "discountAmount": 0, "netAmount": 10}]},
+               {"spend": {"amount": 10.0, "unit": "usd", "period": "month"}}),
+    "copilot": ("GH_TOKEN",
+                {"login": "operator", "timePeriod": {"year": 2026, "month": 11},
+                 "user": "operator", "usageItems": [
+                     {"product": "Copilot", "sku": "Copilot Premium Request", "model": "m-1",
+                      "unitType": "requests", "pricePerUnit": 0.04, "grossQuantity": 350,
+                      "grossAmount": 14, "discountQuantity": 300, "discountAmount": 12,
+                      "netQuantity": 50, "netAmount": 2}]},
+                {"spend": {"amount": 2.0, "unit": "usd", "period": "month"},
+                 "requests": 350.0}),
 }
 
 #: Values no number in an answer may be taken from.
@@ -169,9 +189,10 @@ class Readers(unittest.TestCase):
                 self.assertEqual(got["read_at"], "2026-11-17T20:00:00Z")
                 for field, value in expected.items():
                     self.assertEqual(got[field], value)
-                (url, headers), = calls
-                self.assertTrue(url.startswith("https://"))
-                self.assertIn(SECRET, " ".join(headers.values()))
+                self.assertTrue(calls)
+                for url, headers in calls:
+                    self.assertTrue(url.startswith("https://"))
+                    self.assertIn(SECRET, " ".join(headers.values()))
 
     def test_a_window_that_reset_is_never_current(self):
         # sd:9256 round 8: the live usage path stored a window whose reset
@@ -250,6 +271,42 @@ class Readers(unittest.TestCase):
         got = usage_sources.read_provider(
             "openai", {"OPENAI_ADMIN_KEY": SECRET}, answering({"data": [{"results": []}]}), NOW)
         self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0))
+
+    def test_the_github_readers_ask_this_month_for_the_login_they_read(self):
+        # sd:9592: the billing endpoints are per user; /user names the login.
+        for name, path in (("github", "/settings/billing/usage?"),
+                           ("copilot", "/settings/billing/premium_request/usage?")):
+            with self.subTest(provider=name):
+                var, answer, _ = ANSWERS[name]
+                calls = []
+                usage_sources.read_provider(name, {var: SECRET}, answering(answer, calls), NOW)
+                self.assertEqual([url for url, _ in calls], [
+                    "https://api.github.com/user",
+                    "https://api.github.com/users/operator" + path + "year=2026&month=11"])
+
+    def test_a_github_login_of_another_shape_is_unknown_and_never_sent(self):
+        for login in (None, 5, "", "a/b", "../x", "x" * 40, "-x", "x?y"):
+            for name in ("github", "copilot"):
+                with self.subTest(provider=name, login=login):
+                    var, answer, _ = ANSWERS[name]
+                    calls = []
+                    got = usage_sources.read_provider(
+                        name, {var: SECRET}, answering(put(answer, ("login",), login), calls), NOW)
+                    self.assertEqual((got["status"], got["error"]), ("unknown", "no login"))
+                    self.assertEqual(len(calls), 1)
+
+    def test_an_empty_github_month_is_zero_and_a_missing_list_is_unknown(self):
+        for name in ("github", "copilot"):
+            with self.subTest(provider=name):
+                got = usage_sources.read_provider(
+                    name, {"GH_TOKEN": SECRET},
+                    answering({"login": "operator", "usageItems": []}), NOW)
+                self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0))
+                for items in (None, "x", 5, [5], [None]):
+                    got = usage_sources.read_provider(
+                        name, {"GH_TOKEN": SECRET},
+                        answering({"login": "operator", "usageItems": items}), NOW)
+                    self.assertEqual(got["status"], "unknown", got)
 
     def test_a_reader_that_raises_is_unknown_and_costs_no_other(self):
         def strange(env, fetch, now):

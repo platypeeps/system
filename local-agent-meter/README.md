@@ -106,6 +106,9 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   environment by name (`usage_sources.py` names each); no key, answer body or
   account field reaches a row. A failed read is `unknown`, never 0; a provider with
   no usage API is `no-source`.
+  `github` (the month's bill after discounts) and `copilot` (premium requests, in
+  `requests`, and their cost) read `GH_TOKEN`, which needs the `user` scope; add
+  their lines to a list written before sd:9592.
 - `services` (sd:9259): setting `dashboard.status_services`, one
   `<name> <kind> <url> [provider[,provider]]` line each; kinds `statuspage`
   (summary.json), `slack` (slack-status.com v2.0.0), `google-incidents`

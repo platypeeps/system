@@ -368,6 +368,45 @@ def read_openai(env, fetch, now):
     return {"spend": {"amount": total, "unit": "usd", "period": "month"}}
 
 
+#: A GitHub login: what /user may name before it goes into a path.
+GITHUB_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+
+
+def github_items(env, fetch, now, path):
+    """The month's usageItems from a per-user billing endpoint. They need
+    a token with the `user` scope; /user names the login (sd:9592)."""
+    headers = {"Authorization": "Bearer " + key(env, "GH_TOKEN"),
+               "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    user = fetch("https://api.github.com/user", headers)
+    login = user.get("login") if isinstance(user, dict) else None
+    if not isinstance(login, str) or not GITHUB_LOGIN.fullmatch(login):
+        raise ReadFailed("no login")
+    data = fetch("https://api.github.com/users/%s/settings/billing/%s?year=%d&month=%d"
+                 % (login, path, now.year, now.month), headers)
+    items = data.get("usageItems") if isinstance(data, dict) else None
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        raise ReadFailed("no usageItems list")
+    return items
+
+
+def month_spend(items):
+    return {"amount": sum(number(item.get("netAmount"), "netAmount") for item in items),
+            "unit": "usd", "period": "month"}
+
+
+def read_github(env, fetch, now):
+    """The month's GitHub bill after discounts: Actions, storage, Copilot."""
+    return {"spend": month_spend(github_items(env, fetch, now, "usage"))}
+
+
+def read_copilot(env, fetch, now):
+    """The month's Copilot premium requests, and what they cost past the
+    plan's allowance."""
+    items = github_items(env, fetch, now, "premium_request/usage")
+    return {"spend": month_spend(items),
+            "requests": sum(number(item.get("grossQuantity"), "grossQuantity") for item in items)}
+
+
 READERS = {
     "openrouter": read_openrouter,
     "moonshot": read_moonshot,
@@ -377,6 +416,8 @@ READERS = {
     "heygen": read_heygen,
     "runway": read_runway,
     "openai": read_openai,
+    "github": read_github,
+    "copilot": read_copilot,
 }
 
 #: Providers with a key in the environment and no usage API a key can call
