@@ -9,11 +9,16 @@
 # whose runner lock is held is skipped and never waited for. The job drains
 # each queue and exits; it is not a poller, and an empty queue exits 0 at once.
 #
-# Once pack sd:9332 lands, the run starts no lane at its 40-minute budget,
-# hands off each lane still running and exits. launchd runs one instance of
-# a job at a time, so the next slot then starts a fresh run; it skips the
-# lanes a handed-off child holds. Each handed-off child TERMs itself at the
+# The run starts no lane at its 40-minute budget, hands off each lane
+# still running and exits (pack sd:9332). launchd runs one instance of a
+# job at a time, so the next slot starts a fresh run; it skips the lanes
+# a handed-off child holds. Each handed-off child TERMs itself at the
 # run's TERM point.
+#
+# CRON_JOBS_TIMEOUT_GRACE is 30 s, not the wrapper's 10 s, so a lane's
+# TERM unwind (about 5 s per ship group) ends before the wrapper's KILL,
+# with room for a gate that ignores TERM; a KILL before it ends leaves
+# sd-ship sessions with no record (pack sd:9392).
 #
 # JOB_TIMEOUT is above one lane run on purpose (review, `make check` and a
 # merge take 30-60 minutes): a run still waits for a lane it cannot hand
@@ -23,4 +28,5 @@
 # after ~/.config/shell/env.sh; this file is sourced before env.sh is.
 JOB_SCHEDULE="*/5 * * * *"
 JOB_TIMEOUT="120m"
+CRON_JOBS_TIMEOUT_GRACE=30
 JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd-ship\" lane run --hosted"

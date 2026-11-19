@@ -1264,6 +1264,26 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
                 self.assertTrue(path.is_file(), path)
                 self.assertNotIn("repos/system", path.read_text())
 
+    def test_the_lane_run_example_outwaits_the_lane_unwind(self):
+        # pack sd:9392 row 6: a lane run's TERM unwind (GROUP_CLEANUP_SECONDS,
+        # 5 s, per group) must end before the wrapper's KILL, or sd-ship
+        # sessions are left with no record. 30 s leaves room for a deaf gate.
+        example = FOLDER / "examples" / "lane-run.job"
+        grace = subprocess.run(
+            ["bash", "-c", '. "$1"; printf %s "${CRON_JOBS_TIMEOUT_GRACE:-10}"', "_", example],
+            capture_output=True, text=True, check=True).stdout
+        self.assertEqual(grace, "30")
+        self.assertNotIn("sd:9332 lands", example.read_text())
+
+    def test_a_job_file_sets_its_own_grace(self):
+        # The lane-run example relies on this: the job file is sourced
+        # before the run, so its CRON_JOBS_TIMEOUT_GRACE is the one used.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nCRON_JOBS_TIMEOUT_GRACE=1\n'
+                                  'JOB_TIMEOUT=1\nJOB_COMMAND=\'trap "" TERM; sleep 4\'\n')
+        started = time.monotonic()
+        run = self.fx.exec_job("demo")
+        self.assertLess(time.monotonic() - started, 4, run.stdout + run.stderr)
+
     def test_help_names_the_configuration(self):
         text = self.run_script("help").stdout
         for name in ("CRON_JOBS_EXTRA_DIRS", "SYSTEM_TOOLS_LABEL_PREFIX", "<config>/cron-jobs/jobs"):
