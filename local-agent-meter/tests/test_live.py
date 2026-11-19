@@ -26,6 +26,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -46,6 +47,24 @@ SECRET = "sk-test-0123456789-secret"
 LOCAL = {"NO_PROXY": "*", "no_proxy": "*"}
 #: urllib reads the lower-case name first; both go.
 PROXIES = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+
+
+class PinnedClock(datetime.datetime):
+    """The readers' datetime here: a reading that falls back to the host
+    clock fails. The fixtures are stamped 2026-11-17, so an unpinned read
+    passed or failed by the host's date (sd:9575)."""
+
+    @classmethod
+    def now(cls, tz=None):
+        raise AssertionError("a reader read the host clock: pass now=NOW")
+
+
+def setUpModule():
+    # usage_sources' own name only: the datetime module stays whole.
+    clock = mock.patch.object(usage_sources, "datetime", types.SimpleNamespace(
+        datetime=PinnedClock, timezone=datetime.timezone, timedelta=datetime.timedelta))
+    clock.start()
+    unittest.addModuleCleanup(clock.stop)
 
 
 def local_only(test):
@@ -444,7 +463,7 @@ class Codex(unittest.TestCase):
         self.rollout("old", [self.event(used=10.0, stamp="2026-11-16T00:00:00Z")], 1000)
         self.rollout("new", [self.event(used=40.0, stamp="2026-11-17T18:00:00Z"),
                              self.event(used=61.0), "{not json"], 2000)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual(got["status"], "ok")
         self.assertEqual(got["read_at"], "2026-11-17T19:00:00.000Z")
         self.assertEqual(got["windows"], [{"name": "primary", "used_percent": 61.0,
@@ -456,7 +475,7 @@ class Codex(unittest.TestCase):
         self.rollout("old", [self.event(used=10.0, stamp="2026-11-16T00:00:00Z")], 1000)
         self.rollout("new", [{"timestamp": "2026-11-17T19:00:00Z", "type": "session_meta",
                               "payload": {"type": "session_meta"}}], 2000)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual((got["status"], got["read_at"]), ("ok", "2026-11-16T00:00:00Z"))
 
     def test_the_newest_event_wins_whatever_file_was_touched_last(self):
@@ -464,7 +483,7 @@ class Codex(unittest.TestCase):
         at = datetime.datetime(2026, 11, 17, 19, 0, tzinfo=datetime.timezone.utc).timestamp()
         self.rollout("touched", [self.event(used=10.0, stamp="2026-11-17T10:00:00Z")], at + 7200)
         self.rollout("newer", [self.event(used=55.0, stamp="2026-11-17T19:00:00Z")], at + 60)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual((got["read_at"], got["windows"][0]["used_percent"]),
                          ("2026-11-17T19:00:00Z", 55.0))
 
@@ -474,7 +493,7 @@ class Codex(unittest.TestCase):
         self.rollout("new", [self.event(30.0, "2026-11-17T19:00:00Z")], 2000)
         self.rollout("copied", [self.event(90.0, "2026-11-17T21:00:00Z"),
                                 self.event(50.0, "2026-11-17T20:00:00Z")], 1000)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW + datetime.timedelta(hours=2))
         self.assertEqual(got["read_at"], "2026-11-17T21:00:00Z")
 
     def test_a_models_own_bucket_never_replaces_the_accounts(self):
@@ -482,11 +501,11 @@ class Codex(unittest.TestCase):
         self.rollout("x", [self.event(used=40.0, stamp="2026-11-17T18:00:00Z", limit_id="codex"),
                            self.event(used=90.0, stamp="2026-11-17T19:00:00Z",
                                       limit_id="codex_other")], 2000)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual((got["read_at"], got["windows"][0]["used_percent"]),
                          ("2026-11-17T18:00:00Z", 40.0))
         self.rollout("x", [self.event(used=90.0, limit_id="codex_other")], 2000)
-        self.assertEqual(usage_sources.codex_reading(self.home)["status"], "unknown")
+        self.assertEqual(usage_sources.codex_reading(self.home, now=NOW)["status"], "unknown")
 
     def test_an_event_stamped_after_now_never_outranks_a_real_reading(self):
         # sd:9499: event time had no upper bound, so one future-stamped
@@ -517,10 +536,10 @@ class Codex(unittest.TestCase):
         self.assertEqual(got["balance"], {"amount": 62500.0, "unit": "credits"})
 
     def test_no_limits_anywhere_is_unknown(self):
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual(got["status"], "unknown")
         self.rollout("bad", [self.event(primary="x"), self.event(used=float("nan"))], 1000)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual(got["status"], "unknown")
 
     def test_every_extreme_value_is_skipped_not_a_reading(self):
@@ -536,7 +555,7 @@ class Codex(unittest.TestCase):
                     event = self.event()
                     event["payload"]["rate_limits"]["primary"][field] = extreme
                     self.rollout("x", [event], 1000)
-                    got = usage_sources.codex_reading(self.home)
+                    got = usage_sources.codex_reading(self.home, now=NOW)
                     self.assertEqual(got["status"], "unknown", got)
                     json.dumps(got, allow_nan=False)
 
@@ -1163,10 +1182,10 @@ class Hostile(unittest.TestCase):
         for label, bent in hostile(Codex.event(), deep=False):
             (day / "rollout-x.jsonl").write_text(json.dumps(bent) + "\n", encoding="utf-8")
             failures += self.check("codex " + label,
-                                   lambda: usage_sources.codex_reading(tmp.name), ("ok",))
+                                   lambda: usage_sources.codex_reading(tmp.name, now=NOW), ("ok",))
         (day / "rollout-x.jsonl").write_text(
             '{"type": "token_count", "rate_limits": %s}\n' % DEEP_TEXT, encoding="utf-8")
-        got = usage_sources.codex_reading(tmp.name)
+        got = usage_sources.codex_reading(tmp.name, now=NOW)
         self.assertEqual(got["status"], "unknown")
         self.assertEqual(failures, [])
 
@@ -1240,7 +1259,7 @@ class Hostile(unittest.TestCase):
         day = Path(tmp.name) / "sessions/2026/11/17"
         day.mkdir(parents=True)
         (day / "rollout-x.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
-        return usage_sources.codex_reading(tmp.name)
+        return usage_sources.codex_reading(tmp.name, now=NOW)
 
     def claude(self, reply):
         meter = load_meter()
@@ -1314,7 +1333,7 @@ class Hostile(unittest.TestCase):
         (day / "rollout-x.jsonl").write_text(
             json.dumps(Codex.event(stamp="2026-11-17T19:00:00Z")) + "\n" + json.dumps(bad) + "\n",
             encoding="utf-8")
-        got = usage_sources.codex_reading(tmp.name)
+        got = usage_sources.codex_reading(tmp.name, now=NOW)
         self.assertEqual((got["status"], got["error"]), ("unknown", "primary.used_percent is not a number"))
 
     def test_a_deep_body_over_http_is_read_failed(self):
