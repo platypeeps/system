@@ -50,11 +50,9 @@ UV_PRUNE_LABEL="$LABEL_PREFIX.uv-cache-prune"
 # that finds a record restores it first and prunes nothing. The exit status
 # is nonzero only while an agent stays down, and the plist's KeepAlive
 # (SuccessfulExit false) makes launchd run this again until it is restored.
-UV_PRUNE_PAUSE="${UV_PRUNE_PAUSE-$LABEL_PREFIX.google-workspace-mcp $LABEL_PREFIX.kev}"
-# A login agent rendered before kev joined the default names the MCP alone;
-# that old default reads as the new one, so kev is paused there too.
-[ "$UV_PRUNE_PAUSE" != "$LABEL_PREFIX.google-workspace-mcp" ] \
-  || UV_PRUNE_PAUSE="$LABEL_PREFIX.google-workspace-mcp $LABEL_PREFIX.kev"
+# kev is not on the list: it serves from its venv's python and runs no uv
+# process, so pausing it only made it reload its model (sd:9556).
+UV_PRUNE_PAUSE="${UV_PRUNE_PAUSE-$LABEL_PREFIX.google-workspace-mcp}"
 UV_PRUNE_STATE="${UV_PRUNE_STATE:-$HOME/.local/state/uv-prune/paused}"
 uv_prune() {
   uid=$(id -u)
@@ -204,7 +202,7 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|move|test
          prune uv's cache (what the uv-cache-prune login agent runs;
          `run` runs it nightly too).
          Pauses the LaunchAgents in UV_PRUNE_PAUSE (default
-         $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp and .kev, prefix
+         $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp, prefix
          default local.system-tools), skips when any other uv process is
          left, never passes --force, and starts the paused agents again.
          Exits 1 only while a paused agent stays down; its label stays in

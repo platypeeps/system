@@ -82,7 +82,14 @@ cmd_serve() {
   require_checkout
   cd "$KEV_DIR"
   if [ -n "${KEV_API_KEY:-}" ]; then export KEV_API_KEY; else unset KEV_API_KEY; fi
-  exec uv run --extra serve python -m kev.serve --run "$KEV_MODEL" \
+  # The venv's python, not `uv run`: a uv process lives as long as its
+  # child, and uv-prune would have to boot kev out, so kev reloaded its
+  # model at every prune (sd:9556). `install` keeps the venv in sync.
+  [ -x .venv/bin/python ] || {
+    echo "kev: no venv in $KEV_DIR; run kev.sh install" >&2
+    exit 3
+  }
+  exec .venv/bin/python -m kev.serve --run "$KEV_MODEL" \
     --host 127.0.0.1 --port "$KEV_PORT"
 }
 

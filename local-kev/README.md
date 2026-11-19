@@ -58,6 +58,8 @@ over the file, an empty one too: `KEV_API_KEY=` switches auth off, and
 | `SYSTEM_TOOLS_LABEL_PREFIX` | `local.system-tools` | The LaunchAgent label is `<prefix>.kev`; set it once in `<config>/shared.env` |
 
 Kev pins Python 3.13 in its own `.python-version`; `uv` fetches it.
+`serve` runs the venv's python that `install` built, not `uv run`: no uv
+process runs beside the server, so the nightly uv prune leaves it alone.
 The server runs on MLX, so it needs Apple Silicon.
 
 ## The LaunchAgent

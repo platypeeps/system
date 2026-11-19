@@ -162,9 +162,9 @@ At login only one such server runs: the Google Workspace MCP, a KeepAlive
 agent. `uv-prune` does these steps:
 
 1. Pause each loaded agent in `UV_PRUNE_PAUSE` (default
-   `$SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp` and `.kev`; the
-   rendered plist carries the value) with `launchctl bootout`.
-   A plist rendered when the default named the MCP alone pauses kev too.
+   `$SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp`; the rendered plist
+   carries the value) with `launchctl bootout`. kev is not paused: it
+   serves from its venv's python, so no uv process of its runs.
    A `uvx` run, such as a Claude session's MCP proxy, is never
    signalled: nothing proves its client is gone. While one holds the
    lock the prune skips; the login prune after a reboot cleans the cache.
