@@ -112,6 +112,14 @@ uv_prune() {
     sleep 1; waited=$((waited + 1))
   done
   if pgrep -x uv >/dev/null 2>&1 || pgrep -x uvx >/dev/null 2>&1; then
+    # Name them by executable and pid, so a finding says which process to
+    # stop (sd:9377). Never the arguments: they can carry a token or path.
+    holders=$(ps -A -o pid= -o comm= 2>/dev/null | awk '
+      { pid = $1; sub(/^ *[0-9]+ +/, ""); n = split($0, w, "/"); c = w[n]
+        if (c != "uv" && c != "uvx") next
+        if (!(c in p)) o[++m] = c; p[c] = p[c] (p[c] == "" ? "" : " ") pid }
+      END { for (i = 1; i <= m; i++) printf "%s%s pid %s", (i > 1 ? "; " : ""), o[i], p[o[i]] }')
+    echo "uv-prune: holders: ${holders:-unknown, ps listed none}"
     echo "uv-prune: another uv process holds the cache; skipped"
     uv_prune_resume || return 1
     return 0
@@ -621,8 +629,10 @@ fi
 
 # The login agent's uv-prune never runs again on an always-on hub, so run
 # takes it too. In a subshell: its traps would replace this run's. It skips
-# while another uv holds the cache; three such nights in a row are a
-# finding, as the cache then only grows.
+# while another uv holds the cache; the third such night in a row is a
+# finding, as the cache then only grows. It names the holders, and each
+# later night of the streak raises the same finding, which folds into the
+# open report instead of a new alert (sd:9377).
 UV_SKIPS="$HOME/.local/state/maintenance/uv-prune-skips"
 if [ "$APPLY" -eq 0 ]; then
   if command -v uv >/dev/null 2>&1 && uv_cache=$(uv cache dir 2>/dev/null) && [ -d "$uv_cache" ]; then
@@ -635,13 +645,19 @@ else
     skips=$(cat "$UV_SKIPS" 2>/dev/null) || skips=0
     case $skips in ''|*[!0-9]*) skips=0 ;; esac
     skips=$((skips + 1))
-    { mkdir -p "$(dirname "$UV_SKIPS")" && echo "$skips" > "$UV_SKIPS"; } 2>/dev/null || true
+    # Written only after the report is out (end of run): a run that dies
+    # between the two must not count the third night and skip its alert.
+    UV_SKIPS_NEXT=$skips
     why=$(grep '; skipped$' "$TMPD/uv" | tail -1 | sed -e 's/^uv-prune: //' -e 's/; skipped$//')
+    holders=$(sed -n 's/^uv-prune: holders: //p' "$TMPD/uv" | tail -1)
+    # From the third night on, every run raises the same finding: its
+    # reason line stays the same, so it folds into the open report and
+    # keeps it open until a prune succeeds (sd:9282 bundle review).
     if [ "$skips" -ge 3 ]; then
-      finding "uv cache prune skipped $skips nights running: $why" \
+      finding "uv cache prune skipped $skips nights running: $why${holders:+ ($holders)}" \
         "uv cache prune skipped 3 or more nights running: $why"
     else
-      action "uv-prune: $why; skipped"
+      action "uv-prune: $why; skipped${holders:+ ($holders)}"
     fi
   elif grep -q ' MB -> .*(prune exit 0)$' "$TMPD/uv"; then
     rm -f "$UV_SKIPS"
@@ -837,4 +853,10 @@ if [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ]; then
   awk -v p="SD_REPORT_ATTENTION: maintenance on $(hostname -s): " '
     /^[ \t]/ { sub(/^[ \t]+/, ""); if (NF) print p h " " $0; next }
     NF { h = $0; print p $0 }' "$KEYS"
+fi
+
+# The uv skip streak, persisted once the report above is out (sd:9377).
+if [ -n "${UV_SKIPS_NEXT:-}" ]; then
+  { mkdir -p "$(dirname "$UV_SKIPS")" && echo "$UV_SKIPS_NEXT" > "$UV_SKIPS"; } 2>/dev/null ||
+    echo "uv-prune: could not record skip $UV_SKIPS_NEXT in $UV_SKIPS; the streak starts again"
 fi

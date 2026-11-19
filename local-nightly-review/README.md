@@ -23,7 +23,9 @@ into this machine's `<config>/cron-jobs/jobs/<host>/` on the hub, then run
 ## Steps
 
 1. **Apply.** `sd-db review apply nightly` files one task for each Approve
-   ruling, under the ref `review-approved:<note>`. It expires a suggestion that
+   ruling, under the ref `review-approved:<note>`, that has none yet: the
+   pack files that task when the operator rules (sd:4924), so this step is
+   the backstop. It expires a suggestion that
    waited 7 days without a ruling, and closes each settled batch.
    Then `sd-db review priorities` (pack sd:6726) applies priority rulings,
    closes items left unranked for 30 days, and files one batch of P1-P4
@@ -37,13 +39,17 @@ into this machine's `<config>/cron-jobs/jobs/<host>/` on the hub, then run
    `nightly_review.py batch` writes the reply as
    `<bulk root>/system/nightly-review/<date>.json`, through a `.part` file and a
    rename. The job sets every field but the questions: queue `nightly`, mode
-   `open`, limit 5, and the options Approve and Reject.
+   `open`, limit 5, the options Approve and Reject, and the context the
+   Review band shows (sd:9480): a Purpose line (what the suggestions are and
+   where they come from), one Rubric line per option, and a Feeds line (what
+   each label changes, and when).
    A malformed suggestion is dropped and named on stderr; the rest file. A reply
    whose every suggestion is malformed is refused. The raw reply stays as
    `<date>.reply` beside the batch file.
 3. **File.** `nightly_review.py check` refuses a file that is not an open
-   batch of the `nightly` queue for today, with a limit of 5 and the options
-   Approve and Reject. The job files no blind or sealed batch: those need the
+   batch of the `nightly` queue for today, with a limit of 5, the options
+   Approve and Reject, and all three context lines. A file written before
+   sd:9480, which holds no context, gets the job's own added. The job files no blind or sealed batch: those need the
    dashboard's Scoring tab on Decide (lead ruling on sd:3635). Then `sd-db review file`
    files the first five suggestions in the model's order. It drops a subject
    rejected in the last 90 days and prints each drop.

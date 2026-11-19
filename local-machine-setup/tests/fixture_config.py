@@ -37,6 +37,9 @@ NO_KEYCHAIN = HERE / "fixtures" / "security-no-item"
 # Names no file, so the sd stage finds no uv and no case downloads
 # sd-serve's python (sd:6492); test_brew_stage stubs it.
 NO_UV = HERE / "fixtures" / "no-uv"
+# Names no folder, so the brew stage finds no tailscale service plist and
+# never probes or restarts this Mac's tailscaled; test_brew_stage sets its own.
+NO_LAUNCHDAEMONS = HERE / "fixtures" / "no-launchdaemons"
 # Already as the system stage wants it, so no case reads this Mac's
 # /etc/nsmb.conf or adds a drift line for it; test_nsmb_conf sets its own.
 NSMB_CONF = HERE / "fixtures" / "nsmb.conf"
@@ -82,6 +85,7 @@ def env(config=CONFIG):
     """The variables that point machine-setup.sh at `config`."""
     return {"SYSTEM_TOOLS_CONFIG": str(config),
             "MACHINE_SETUP_APPLICATIONS_DIR": str(NO_APPLICATIONS),
+            "MACHINE_SETUP_LAUNCHDAEMONS_DIR": str(NO_LAUNCHDAEMONS),
             "MACHINE_SETUP_SPOTLIGHT_SUDOERS": str(NO_SUDOERS),
             "MACHINE_SETUP_NSMB_CONF": str(NSMB_CONF),
             "MACHINE_SETUP_REPAIRS_SUDOERS": str(NO_REPAIRS_SUDOERS),
