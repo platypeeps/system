@@ -24,6 +24,7 @@ FOLDER = Path(__file__).resolve().parent.parent
 ENTRYPOINT = FOLDER / "maintenance.sh"
 # The default pause label: SYSTEM_TOOLS_LABEL_PREFIX is unset in these runs.
 LABEL = "local.system-tools.google-workspace-mcp"
+KEV = "local.system-tools.kev"
 
 STUBS = {
     "uv": """\
@@ -38,10 +39,15 @@ exit 0
     "launchctl": """\
 #!/bin/sh
 echo "launchctl $*" >> "$STUB_LOG"
+# One file per loaded label in STUB_LOADED_DIR.
 case "$1" in
-  print) [ -f "$STUB_LOADED" ] ;;
-  bootout) rm -f "$STUB_LOADED" ;;
-  bootstrap) [ -z "$STUB_BOOTSTRAP_FAILS" ] || exit 5; : > "$STUB_LOADED" ;;
+  print|bootout) f="$STUB_LOADED_DIR/${2##*/}" ;;
+  bootstrap) f="$STUB_LOADED_DIR/$(basename "$3" .plist)" ;;
+esac
+case "$1" in
+  print) [ -f "$f" ] ;;
+  bootout) rm -f "$f" ;;
+  bootstrap) [ -z "$STUB_BOOTSTRAP_FAILS" ] || exit 5; : > "$f" ;;
 esac
 """,
     "pgrep": """\
@@ -53,7 +59,7 @@ if [ "$2" = uvx ] && [ -n "$STUB_UVX_POLLS" ]; then
   echo $((n - 1)) > "$STUB_UVX_COUNT"
   exit 0
 fi
-[ -f "$STUB_LOADED" ] || [ -n "$STUB_FOREIGN_UV" ]
+[ -n "$(ls -A "$STUB_LOADED_DIR")" ] || [ -n "$STUB_FOREIGN_UV" ]
 """,
 }
 
@@ -73,14 +79,17 @@ class UvPrune(unittest.TestCase):
         self.cache.mkdir()
         self.log = self.root / "log"
         self.log.write_text("")
-        self.loaded = self.root / "loaded"
+        loaded = self.root / "loaded"
+        loaded.mkdir()
+        self.loaded = loaded / LABEL
+        self.kev = loaded / KEV
         self.state = self.root / ".local" / "state" / "uv-prune" / "paused"
         self.env = {
             "PATH": f"{bin_dir}:/usr/bin:/bin",
             "HOME": str(self.root),
             "STUB_LOG": str(self.log),
             "STUB_CACHE": str(self.cache),
-            "STUB_LOADED": str(self.loaded),
+            "STUB_LOADED_DIR": str(self.loaded.parent),
             "UV_PRUNE_WAIT": "1",
         }
 
@@ -101,6 +110,8 @@ class UvPrune(unittest.TestCase):
         self.assertEqual(calls, [
             f"launchctl print gui/{uid}/{LABEL}",
             f"launchctl bootout gui/{uid}/{LABEL}",
+            # kev is the default's second label; it is not loaded here.
+            f"launchctl print gui/{uid}/local.system-tools.kev",
             "uv cache prune",
             f"launchctl print gui/{uid}/{LABEL}",
             f"launchctl bootstrap gui/{uid} {self.root}/Library/LaunchAgents/{LABEL}.plist",
@@ -123,6 +134,56 @@ class UvPrune(unittest.TestCase):
         self.assertNotIn("uv cache prune", self.calls())
         self.assertTrue(any(c.startswith("launchctl bootstrap") for c in self.calls()))
         self.assertIn("skipped", result.stdout)
+
+    def test_the_kev_agent_is_paused_by_default(self):
+        """REGRESSION (sd:9460). kev serves through `uv run` around the
+        clock, so it holds uv's cache lock like the Workspace MCP."""
+        self.run_prune()
+        uid = os.getuid()
+        self.assertIn(f"launchctl print gui/{uid}/{KEV}", self.calls())
+
+    def test_both_loaded_agents_are_paused_and_started_again(self):
+        """sd:9460 review 2: with the MCP and kev loaded, each is paused
+        before the prune and started again after it."""
+        self.loaded.touch()
+        self.kev.touch()
+        result = self.run_prune()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [c for c in self.calls() if c != "uv cache dir"]
+        uid = os.getuid()
+        agents = f"{self.root}/Library/LaunchAgents"
+        self.assertEqual(calls, [
+            f"launchctl print gui/{uid}/{LABEL}",
+            f"launchctl bootout gui/{uid}/{LABEL}",
+            f"launchctl print gui/{uid}/{KEV}",
+            f"launchctl bootout gui/{uid}/{KEV}",
+            "uv cache prune",
+            f"launchctl print gui/{uid}/{LABEL}",
+            f"launchctl bootstrap gui/{uid} {agents}/{LABEL}.plist",
+            f"launchctl print gui/{uid}/{KEV}",
+            f"launchctl bootstrap gui/{uid} {agents}/{KEV}.plist",
+        ])
+        self.assertTrue(self.loaded.exists())
+        self.assertTrue(self.kev.exists())
+        self.assertFalse(self.state.exists())
+
+    def test_an_installed_agent_with_the_old_single_label_pauses_kev_too(self):
+        """REGRESSION (sd:9460 review 2). A login agent rendered before
+        kev joined the default carries UV_PRUNE_PAUSE with the MCP label
+        alone; that old default reads as the new one."""
+        self.kev.touch()
+        result = self.run_prune(UV_PRUNE_PAUSE=LABEL)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        uid = os.getuid()
+        self.assertIn(f"launchctl bootout gui/{uid}/{KEV}", self.calls())
+        self.assertTrue(self.kev.exists())
+        plist = self.render_plist(UV_PRUNE_PAUSE=LABEL)
+        self.assertEqual(plist["EnvironmentVariables"]["UV_PRUNE_PAUSE"], f"{LABEL} {KEV}")
+
+    def test_another_pause_list_is_kept_as_set(self):
+        self.kev.touch()
+        self.run_prune(UV_PRUNE_PAUSE="org.example.other")
+        self.assertNotIn(f"launchctl bootout gui/{os.getuid()}/{KEV}", self.calls())
 
     def test_a_failed_prune_still_resumes_the_agent_and_reports_the_failure(self):
         # Exit 0: the agent's exit status drives launchd's relaunch, and a
@@ -213,14 +274,15 @@ class UvPrune(unittest.TestCase):
                          ["/bin/sh", str(ENTRYPOINT), "uv-prune"])
         # The record lives under $HOME; set it as the Workspace MCP plist does.
         self.assertEqual(plist["EnvironmentVariables"]["HOME"], str(self.root))
-        self.assertEqual(plist["EnvironmentVariables"]["UV_PRUNE_PAUSE"], LABEL)
+        self.assertEqual(plist["EnvironmentVariables"]["UV_PRUNE_PAUSE"],
+                         f"{LABEL} local.system-tools.kev")
         self.assertEqual(plist["Label"], "local.system-tools.uv-cache-prune")
 
     def test_the_label_prefix_names_the_agent_and_the_paused_label(self):
         plist = self.render_plist(SYSTEM_TOOLS_LABEL_PREFIX="org.example")
         self.assertEqual(plist["Label"], "org.example.uv-cache-prune")
         self.assertEqual(plist["EnvironmentVariables"]["UV_PRUNE_PAUSE"],
-                         "org.example.google-workspace-mcp")
+                         "org.example.google-workspace-mcp org.example.kev")
         self.assertEqual(plist["StandardErrorPath"], "/tmp/org.example.uv-cache-prune.err")
 
     def test_the_agent_runs_at_standard_priority(self):

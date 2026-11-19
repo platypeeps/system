@@ -50,7 +50,11 @@ UV_PRUNE_LABEL="$LABEL_PREFIX.uv-cache-prune"
 # that finds a record restores it first and prunes nothing. The exit status
 # is nonzero only while an agent stays down, and the plist's KeepAlive
 # (SuccessfulExit false) makes launchd run this again until it is restored.
-UV_PRUNE_PAUSE="${UV_PRUNE_PAUSE-$LABEL_PREFIX.google-workspace-mcp}"
+UV_PRUNE_PAUSE="${UV_PRUNE_PAUSE-$LABEL_PREFIX.google-workspace-mcp $LABEL_PREFIX.kev}"
+# A login agent rendered before kev joined the default names the MCP alone;
+# that old default reads as the new one, so kev is paused there too.
+[ "$UV_PRUNE_PAUSE" != "$LABEL_PREFIX.google-workspace-mcp" ] \
+  || UV_PRUNE_PAUSE="$LABEL_PREFIX.google-workspace-mcp $LABEL_PREFIX.kev"
 UV_PRUNE_STATE="${UV_PRUNE_STATE:-$HOME/.local/state/uv-prune/paused}"
 uv_prune() {
   uid=$(id -u)
@@ -84,6 +88,10 @@ uv_prune() {
     paused="$paused $label"
     launchctl bootout "gui/$uid/$label" 2>/dev/null || true
   done
+  # A uvx run, such as a Claude session's MCP proxy, is never signalled:
+  # nothing here proves its client is gone, and a launcher can hand its
+  # pipes on (operator ruling, sd:9460). The prune skips while one holds
+  # the lock; the login prune after a reboot cleans the cache.
   # Give the paused agents' uv and uvx processes time to exit.
   waited=0
   while { pgrep -x uv || pgrep -x uvx; } >/dev/null 2>&1 && [ "$waited" -lt "${UV_PRUNE_WAIT:-20}" ]; do
@@ -196,8 +204,8 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|move|test
          prune uv's cache (what the uv-cache-prune login agent runs;
          `run` runs it nightly too).
          Pauses the LaunchAgents in UV_PRUNE_PAUSE (default
-         $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp, prefix default
-         local.system-tools), skips when any other uv process is
+         $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp and .kev, prefix
+         default local.system-tools), skips when any other uv process is
          left, never passes --force, and starts the paused agents again.
          Exits 1 only while a paused agent stays down; its label stays in
          ~/.local/state/uv-prune/paused, and the next run restores it first.
