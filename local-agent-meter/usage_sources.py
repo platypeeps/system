@@ -401,20 +401,24 @@ def read_anthropic_api(env, fetch, now):
 GITHUB_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 
 
-def github_items(env, fetch, now, path):
-    """The month's usageItems from a per-user billing endpoint. They need
-    a token with the `user` scope; /user names the login (sd:9592)."""
+def github_report(env, fetch, now):
+    """A reader of the month's usageItems from a per-user billing report.
+    They need a token with the `user` scope; /user names the login
+    (sd:9592)."""
     headers = {"Authorization": "Bearer " + key(env, "GH_TOKEN"),
                "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     user = fetch("https://api.github.com/user", headers)
     login = user.get("login") if isinstance(user, dict) else None
     if not isinstance(login, str) or not GITHUB_LOGIN.fullmatch(login):
         raise ReadFailed("no login")
-    data = fetch("https://api.github.com/users/%s/settings/billing/%s?year=%d&month=%d"
-                 % (login, path, now.year, now.month), headers)
-    items = data.get("usageItems") if isinstance(data, dict) else None
-    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
-        raise ReadFailed("no usageItems list")
+
+    def items(path):
+        data = fetch("https://api.github.com/users/%s/settings/billing/%s?year=%d&month=%d"
+                     % (login, path, now.year, now.month), headers)
+        found = data.get("usageItems") if isinstance(data, dict) else None
+        if not isinstance(found, list) or not all(isinstance(item, dict) for item in found):
+            raise ReadFailed("no usageItems list")
+        return found
     return items
 
 
@@ -423,17 +427,47 @@ def month_spend(items):
             "unit": "usd", "period": "month"}
 
 
+def gross(items):
+    return sum(number(item.get("grossQuantity"), "grossQuantity") for item in items)
+
+
+def unless_absent(read, path):
+    """read(path), or None when the report answers 404: it does not apply
+    to this account. Any other failure stays a failure."""
+    try:
+        return read(path)
+    except ReadFailed as e:
+        if str(e) != "HTTP 404":
+            raise
+        return None
+
+
 def read_github(env, fetch, now):
     """The month's GitHub bill after discounts: Actions, storage, Copilot."""
-    return {"spend": month_spend(github_items(env, fetch, now, "usage"))}
+    return {"spend": month_spend(github_report(env, fetch, now)("usage"))}
 
 
 def read_copilot(env, fetch, now):
-    """The month's Copilot premium requests, and what they cost past the
-    plan's allowance."""
-    items = github_items(env, fetch, now, "premium_request/usage")
-    return {"spend": month_spend(items),
-            "requests": sum(number(item.get("grossQuantity"), "grossQuantity") for item in items)}
+    """The month's Copilot use and what it cost past the plan's allowance.
+
+    Personal plans on AI credits bill in the AI-credit report, in
+    `credits`; the premium-request report misses their use and overage
+    (sd:9592 review). An older plan bills premium requests, in
+    `requests`. No answer names the plan, so the AI-credit report is read
+    first and the premium-request one only when it is empty or absent."""
+    read = github_report(env, fetch, now)
+    ai = unless_absent(read, "ai_credit/usage")
+    if ai:
+        if any(item.get("unitType") != "ai-credits" for item in ai):
+            raise ReadFailed("an AI-credit item in another unit")
+        return {"spend": month_spend(ai), "credits": gross(ai)}
+    premium = read("premium_request/usage") if ai is None else unless_absent(
+        read, "premium_request/usage")
+    if premium:
+        return {"spend": month_spend(premium), "requests": gross(premium)}
+    if ai is None:
+        return {"spend": month_spend([]), "requests": 0.0}
+    return {"spend": month_spend([]), "credits": 0.0}
 
 
 READERS = {

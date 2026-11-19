@@ -77,6 +77,16 @@ def local_only(test):
 
 #: Each keyed reader: its variable, an answer in the live shape (checked
 #: 2026-11-17), and what the reading must hold.
+#: One AI-credit item and one premium-request item, in the live shape.
+AI_CREDITS = {"product": "Copilot", "sku": "Copilot AI Credits", "model": "m-1",
+              "unitType": "ai-credits", "pricePerUnit": 0.01, "grossQuantity": 1800.0,
+              "grossAmount": 18.0, "discountQuantity": 1500.0, "discountAmount": 15.0,
+              "netQuantity": 300.0, "netAmount": 3.0}
+PREMIUM = {"product": "Copilot", "sku": "Copilot Premium Request", "model": "m-1",
+           "unitType": "requests", "pricePerUnit": 0.04, "grossQuantity": 350,
+           "grossAmount": 14, "discountQuantity": 300, "discountAmount": 12,
+           "netQuantity": 50, "netAmount": 2}
+
 ANSWERS = {
     "openrouter": ("OPENROUTER_API_KEY",
                    {"data": {"usage_monthly": 12.5, "limit": 50, "limit_remaining": 37.5}},
@@ -127,15 +137,13 @@ ANSWERS = {
                     "quantity": 1, "unitType": "UserMonths", "pricePerUnit": 10,
                     "grossAmount": 10, "discountAmount": 0, "netAmount": 10}]},
                {"spend": {"amount": 10.0, "unit": "usd", "period": "month"}}),
+    # A personal plan on AI credits (checked 2026-11-19): the AI-credit
+    # report holds the month; its premium-request report is empty.
     "copilot": ("GH_TOKEN",
                 {"login": "operator", "timePeriod": {"year": 2026, "month": 11},
-                 "user": "operator", "usageItems": [
-                     {"product": "Copilot", "sku": "Copilot Premium Request", "model": "m-1",
-                      "unitType": "requests", "pricePerUnit": 0.04, "grossQuantity": 350,
-                      "grossAmount": 14, "discountQuantity": 300, "discountAmount": 12,
-                      "netQuantity": 50, "netAmount": 2}]},
-                {"spend": {"amount": 2.0, "unit": "usd", "period": "month"},
-                 "requests": 350.0}),
+                 "user": "operator", "usageItems": [AI_CREDITS]},
+                {"spend": {"amount": 3.0, "unit": "usd", "period": "month"},
+                 "credits": 1800.0}),
     # Daily buckets; each amount a decimal string in cents (checked
     # 2026-11-19, sd:9594).
     "anthropic-api": ("ANTHROPIC_ADMIN_KEY",
@@ -288,7 +296,7 @@ class Readers(unittest.TestCase):
     def test_the_github_readers_ask_this_month_for_the_login_they_read(self):
         # sd:9592: the billing endpoints are per user; /user names the login.
         for name, path in (("github", "/settings/billing/usage?"),
-                           ("copilot", "/settings/billing/premium_request/usage?")):
+                           ("copilot", "/settings/billing/ai_credit/usage?")):
             with self.subTest(provider=name):
                 var, answer, _ = ANSWERS[name]
                 calls = []
@@ -320,6 +328,56 @@ class Readers(unittest.TestCase):
                         name, {"GH_TOKEN": SECRET},
                         answering({"login": "operator", "usageItems": items}), NOW)
                     self.assertEqual(got["status"], "unknown", got)
+
+    def copilot(self, ai, premium, calls=None):
+        """The copilot reading with each report's answer: items, or a
+        ReadFailed to raise."""
+        def fetch(url, headers=None, **_):
+            if calls is not None:
+                calls.append(url)
+            if url.endswith("/user"):
+                return {"login": "operator"}
+            answer = ai if "/ai_credit/" in url else premium
+            if isinstance(answer, ReadFailed):
+                raise answer
+            return {"timePeriod": {"year": 2026, "month": 11}, "user": "operator",
+                    "usageItems": json.loads(json.dumps(answer))}
+        return usage_sources.read_provider("copilot", {"GH_TOKEN": SECRET}, fetch, NOW)
+
+    def test_an_ai_credit_plan_reads_credits_and_never_requests(self):
+        # sd:9592 review: personal plans on AI credits bill in that report;
+        # the premium-request report missed their usage and overage.
+        calls = []
+        got = self.copilot([AI_CREDITS, AI_CREDITS], [PREMIUM], calls)
+        self.assertEqual((got["status"], got["spend"]["amount"], got["credits"]), ("ok", 6.0, 3600.0))
+        self.assertNotIn("requests", got)
+        self.assertFalse([url for url in calls if "premium_request" in url])
+
+    def test_a_premium_request_plan_falls_back_and_reads_requests(self):
+        for ai in ([], ReadFailed("HTTP 404")):
+            with self.subTest(ai=ai):
+                got = self.copilot(ai, [PREMIUM])
+                self.assertEqual((got["status"], got["spend"]["amount"], got["requests"]),
+                                 ("ok", 2.0, 350.0))
+                self.assertNotIn("credits", got)
+
+    def test_an_empty_copilot_month_and_a_missing_report(self):
+        got = self.copilot([], [])
+        self.assertEqual((got["status"], got["spend"]["amount"], got["credits"]), ("ok", 0.0, 0.0))
+        got = self.copilot([], ReadFailed("HTTP 404"))
+        self.assertEqual((got["status"], got["credits"]), ("ok", 0.0))
+        got = self.copilot(ReadFailed("HTTP 404"), ReadFailed("HTTP 404"))
+        self.assertEqual((got["status"], got["error"]), ("unknown", "HTTP 404"))
+        # Only a 404 says a report does not apply: any other failure is unknown.
+        got = self.copilot(ReadFailed("HTTP 500"), [PREMIUM])
+        self.assertEqual((got["status"], got["error"]), ("unknown", "HTTP 500"))
+
+    def test_an_ai_credit_item_in_another_unit_is_unknown(self):
+        for unit in ("requests", None, "AI-Credits", 5):
+            with self.subTest(unit=unit):
+                got = self.copilot([put(AI_CREDITS, ("unitType",), unit)], [])
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "an AI-credit item in another unit"))
 
     def test_the_anthropic_cost_report_asks_for_this_month(self):
         var, answer, _ = ANSWERS["anthropic-api"]
