@@ -368,6 +368,88 @@ def read_openai(env, fetch, now):
     return {"spend": {"amount": total, "unit": "usd", "period": "month"}}
 
 
+#: A money amount Baseten sends as a decimal string: "242.95".
+DECIMAL = re.compile(r"\d{1,15}(\.\d{1,6})?")
+
+
+def month_start(now):
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def next_month(now):
+    start = month_start(now)
+    return (start + datetime.timedelta(days=32)).replace(day=1)
+
+
+def read_baseten(env, fetch, now):
+    """The month's cost: the sum of each usage kind's `total` (dedicated,
+    training, model APIs, ...), a decimal string in usd. Baseten takes
+    about 23 s to answer (checked 2026-11-19), past TIMEOUT."""
+    data = fetch("https://api.baseten.co/v1/billing/usage_summary?start_date=%s&end_date=%s"
+                 % (month_start(now).strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")),
+                 {"Authorization": "Api-Key " + key(env, "BASETEN_API_KEY")}, timeout=60)
+    kinds = [v for v in data.values() if isinstance(v, dict)] if isinstance(data, dict) else []
+    if not kinds:
+        raise ReadFailed("no usage kinds")
+    total = 0.0
+    for kind in kinds:
+        value = kind.get("total")
+        if not isinstance(value, str) or not DECIMAL.fullmatch(value):
+            raise ReadFailed("total is not a decimal string")
+        total += float(value)
+    return {"spend": {"amount": total, "unit": "usd", "period": "month"}}
+
+
+def read_langsmith(env, fetch, now):
+    """The month's LangChain Standard Units: the sum over billable metrics;
+    a metric with no use this month has a null value."""
+    data = fetch("https://api.smith.langchain.com/api/v1/orgs/current/billing/usage"
+                 "?starting_on=%s&ending_before=%s" % (iso(month_start(now)), iso(next_month(now))),
+                 {"x-api-key": key(env, "LANGSMITH_API_KEY")})
+    if not isinstance(data, list) or not data:
+        raise ReadFailed("no metrics list")
+    total = 0.0
+    for metric in data:
+        if not isinstance(metric, dict) or "value" not in metric:
+            raise ReadFailed("a metric of another shape")
+        if metric["value"] is not None:
+            total += number(metric["value"], "value")
+    return {"spend": {"amount": total, "unit": "units", "period": "month"}}
+
+
+def read_youcom(env, fetch, now):
+    """The account's credit, sent in cents (You.com's API reference,
+    get-account-balance)."""
+    data = fetch("https://api.you.com/v1/billing/account_balance",
+                 {"X-API-Key": key(env, "YDC_API_KEY")})
+    data = data.get("data") if isinstance(data, dict) else None
+    attributes = data.get("attributes") if isinstance(data, dict) else None
+    if not isinstance(attributes, dict):
+        raise ReadFailed("no data.attributes object")
+    return {"balance": {"amount": number(attributes.get("balance"), "balance") / 100,
+                        "unit": "usd"}}
+
+
+def read_openwhispr(env, fetch, now):
+    """Words used this billing period; a limit of -1 is unlimited, so the
+    share and the words left show only on a capped plan."""
+    data = fetch("https://api.openwhispr.com/api/v1/usage",
+                 {"Authorization": "Bearer " + key(env, "OPENWHISPR_API_KEY")})
+    data = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        raise ReadFailed("no data object")
+    used = number(data.get("words_used"), "words_used")
+    limit = number(data.get("limit"), "limit")
+    if used < 0 or (limit < 0 and limit != -1):
+        raise ReadFailed("words_used or limit is not a count")
+    out = {"spend": {"amount": used, "unit": "words", "period": "billing period"}}
+    if limit > 0:
+        out["windows"] = [window("words", min(100.0, used / limit * 100), None,
+                                 when(data.get("current_period_end"), "current_period_end"))]
+        out["balance"] = {"amount": max(0.0, limit - used), "unit": "words"}
+    return out
+
+
 READERS = {
     "openrouter": read_openrouter,
     "moonshot": read_moonshot,
@@ -377,15 +459,17 @@ READERS = {
     "heygen": read_heygen,
     "runway": read_runway,
     "openai": read_openai,
+    "baseten": read_baseten,
+    "langsmith": read_langsmith,
+    "youcom": read_youcom,
+    "openwhispr": read_openwhispr,
 }
 
 #: Providers with a key in the environment and no usage API a key can call
 #: (checked 2026-11-17): Gemini and Groq bill in their consoles only, the
-#: Hugging Face token has no billing endpoint, TypeSafe and You.com show
-#: usage in their consoles only. Baseten (`/v1/billing/usage_summary`) and
-#: LangSmith (`/api/v1/orgs/current/billing/usage`) answer, but in units
-#: the Usage view does not draw yet.
-NO_SOURCE = ("gemini", "groq", "huggingface", "typesafe", "youcom", "baseten", "langsmith")
+#: Hugging Face token has no billing endpoint, TypeSafe shows usage in its
+#: console only.
+NO_SOURCE = ("gemini", "groq", "huggingface", "typesafe")
 
 #: The 'usage providers' list a database that never held the row starts with.
 STARTING = "\n".join(["claude", "codex", *READERS, *NO_SOURCE]) + "\n"

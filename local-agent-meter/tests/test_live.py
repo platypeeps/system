@@ -97,6 +97,33 @@ ANSWERS = {
                {"data": [{"results": [{"amount": {"value": 1.5, "currency": "usd"}}]},
                          {"results": [{"amount": {"value": 2.25, "currency": "usd"}}]}]},
                {"spend": {"amount": 3.75, "unit": "usd", "period": "month"}}),
+    # Checked 2026-11-19: Baseten's totals are decimal strings in usd.
+    "baseten": ("BASETEN_API_KEY",
+                {"dedicated_usage": {"subtotal": "0.00", "credits_used": "0.00", "total": "0.00",
+                                     "minutes": 0, "breakdown": []},
+                 "model_apis_usage": {"subtotal": "242.95", "credits_used": "0.00",
+                                      "total": "242.95", "breakdown": []},
+                 "training_usage": {"total": "1.05", "minutes": 3, "breakdown": []}},
+                {"spend": {"amount": 244.0, "unit": "usd", "period": "month"}}),
+    # A metric with no use this month is null, not 0.
+    "langsmith": ("LANGSMITH_API_KEY",
+                  [{"billable_metric_name": "Base Traces", "value": 0.25,
+                    "start_timestamp": "2026-11-01T00:00:00Z", "groups": {}},
+                   {"billable_metric_name": "Sandbox", "value": None, "groups": None},
+                   {"billable_metric_name": "Fleet", "value": 1.5, "groups": None}],
+                  {"spend": {"amount": 1.75, "unit": "units", "period": "month"}}),
+    # You.com's API reference: the balance is in cents.
+    "youcom": ("YDC_API_KEY",
+               {"data": {"type": "account", "id": "abc", "attributes": {"balance": 718924.5}}},
+               {"balance": {"amount": 7189.245, "unit": "usd"}}),
+    "openwhispr": ("OPENWHISPR_API_KEY",
+                   {"data": {"words_used": 2500, "words_remaining": 7500, "limit": 10000,
+                             "plan": "basic", "is_subscribed": True,
+                             "current_period_end": "2026-12-01T00:00:00.000Z"}},
+                   {"spend": {"amount": 2500.0, "unit": "words", "period": "billing period"},
+                    "balance": {"amount": 7500.0, "unit": "words"},
+                    "windows": [{"name": "words", "used_percent": 25.0, "window_minutes": None,
+                                 "resets_at": "2026-12-01T00:00:00.000Z"}]}),
 }
 
 #: Values no number in an answer may be taken from.
@@ -214,9 +241,16 @@ class Readers(unittest.TestCase):
                         bent["code"] = 0
                     if name == "minimax":
                         bent["base_resp"]["status_code"] = 0
+                    # Baseten's totals are decimal strings by its schema.
+                    if name == "baseten":
+                        bent = {k: {**v, "total": extreme} for k, v in answer.items()}
                     got = usage_sources.read_provider(name, {var: SECRET}, answering(bent), NOW)
                     # sd:9256 round 7: "12" read as a number; only Codex's
-                    # balance is a string by its schema.
+                    # balance and Baseten's totals are strings by schema.
+                    # A LangSmith metric of null is a month with no use.
+                    if (name, extreme) in (("baseten", "12"), ("langsmith", None)):
+                        self.assertEqual(got["status"], "ok", got)
+                        continue
                     self.assertEqual(got["status"], "unknown", got)
                     json.dumps(got, allow_nan=False)
 
@@ -231,6 +265,37 @@ class Readers(unittest.TestCase):
         got = usage_sources.read_provider(
             "openai", {"OPENAI_ADMIN_KEY": SECRET}, answering({"data": [{"results": []}]}), NOW)
         self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0))
+
+    def test_an_unlimited_openwhispr_plan_reads_words_used_only(self):
+        answer = {"data": {"words_used": 40, "words_remaining": -1, "limit": -1,
+                           "current_period_end": "2027-08-20T15:38:34.000Z"}}
+        got = usage_sources.read_provider("openwhispr", {"OPENWHISPR_API_KEY": SECRET},
+                                          answering(answer), NOW)
+        self.assertEqual((got["status"], got["windows"], got["balance"]), ("ok", [], None))
+        self.assertEqual(got["spend"]["amount"], 40.0)
+        for bad in ({"words_used": -1, "limit": -1}, {"words_used": 1, "limit": -2}):
+            with self.subTest(bad=bad):
+                got = usage_sources.read_provider("openwhispr", {"OPENWHISPR_API_KEY": SECRET},
+                                                  answering({"data": bad}), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+
+    def test_a_baseten_total_that_is_no_decimal_string_is_unknown(self):
+        for total in ("", "-1.00", "1e400", "nan", " 1.00", "1,000.00", "inf"):
+            with self.subTest(total=total):
+                got = usage_sources.read_provider(
+                    "baseten", {"BASETEN_API_KEY": SECRET},
+                    answering({"model_apis_usage": {"total": total}}), NOW)
+                self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
+
+    def test_the_month_readers_ask_for_this_month(self):
+        calls = []
+        usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                    answering(ANSWERS["baseten"][1], calls), NOW)
+        usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                                    answering(ANSWERS["langsmith"][1], calls), NOW)
+        self.assertIn("start_date=2026-11-01&end_date=2026-11-17", calls[0][0])
+        self.assertIn("starting_on=2026-11-01T00:00:00Z&ending_before=2026-12-01T00:00:00Z",
+                      calls[1][0])
 
     def test_a_reader_that_raises_is_unknown_and_costs_no_other(self):
         def strange(env, fetch, now):
