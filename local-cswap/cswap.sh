@@ -49,8 +49,10 @@ REFUSAL_LIMIT=30
 # is idle or done, whose latest Remote Control banner is the drop, not
 # "/remote-control is active", and whose input box holds no typed text. Any other pane gets no keys, as a key can answer a permission
 # dialog or join a half-typed prompt; it stays owed for the next sync,
-# until sent, gone, connected or RC_OWED_FOR seconds old. Cron's PATH may
-# lack herdr, so HERDR_DIRS is tried after it.
+# until sent, gone, connected or RC_OWED_FOR seconds old. Right before the
+# keys, `herdr agent get` and a fresh screen read check the pane again; a
+# gap of milliseconds remains, as herdr has no check-and-send. Cron's PATH
+# may lack herdr, so HERDR_DIRS is tried after it.
 RC_OWED="$ROOT/state/rc-owed"
 RC_PENDING="$ROOT/state/rc-pending"
 RC_OWED_FOR=1800
@@ -170,7 +172,8 @@ herdr_panes() {
 
 # herdr's answers, read by python. `panes`: `herdr agent list` JSON on stdin
 # to "pane session status" lines for claude panes; exit 3 when it has not
-# that shape (null, malformed, an agent that is no object). `screen`: a
+# that shape (null, malformed, an agent that is no object); `pane`: one
+# `herdr agent get` answer, the same way, one line or none. `screen`: a
 # pane's screen on stdin to send, connected or wait <why>. The later of
 # Claude's two Remote Control banners decides, as the screen keeps old ones
 # above, and only one empty input box below it (rule, ❯, rule; any other
@@ -179,9 +182,10 @@ rc_read() {
   python3 -I -c '
 import json, sys
 text = sys.stdin.read()
-if sys.argv[1] == "panes":
+if sys.argv[1] in ("panes", "pane"):
     try:
-        agents = json.loads(text)["result"]["agents"]
+        found = json.loads(text)["result"]
+        agents = found["agents"] if sys.argv[1] == "panes" else [found["agent"]]
         if not isinstance(agents, list):
             raise TypeError
         for a in agents:
@@ -300,6 +304,25 @@ list_owed() {
   fi
 }
 
+# Right before a send (operator ruling 2026-11-18): the pane ($1) still
+# runs the owed session ($2), is still idle or done, and a fresh read of
+# its screen still says send. Else one line, and it stays owed. A gap of
+# milliseconds remains between this check and the keys: herdr has no
+# check-and-send.
+recheck() {
+  local now screen verdict=""
+  now=$(st_step 10 "$HERDR" agent get "$1" | rc_read pane) || now=""
+  if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
+    echo "reconnect: $1 changed before the send (${now:-no answer}); still owed"
+    return 1
+  fi
+  if ! screen=$(st_step 10 "$HERDR" agent read "$1" --format ansi) ||
+    ! verdict=$(rc_read screen <<<"$screen") || [[ "$verdict" != send ]]; then
+    echo "reconnect: $1 changed before the send (${verdict:-no screen}); still owed"
+    return 1
+  fi
+}
+
 # Send /rc to each owed pane that may have it; keep the rest owed.
 reconnect() {
   local pane session since action screen verdict plan keep=""
@@ -327,6 +350,8 @@ reconnect() {
           echo "reconnect: $pane is connected; not owed"
         elif [[ "$verdict" != send ]]; then
           echo "reconnect: $pane $verdict"
+          keep+="$pane $session $since"$'\n'
+        elif ! recheck "$pane" "$session"; then
           keep+="$pane $session $since"$'\n'
         elif st_step 10 "$HERDR" agent prompt "$pane" /rc >/dev/null; then
           echo "reconnect: sent /rc to $pane"

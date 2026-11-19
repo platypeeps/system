@@ -122,26 +122,41 @@ exit 0
 """
 
 # herdr's panes live in FAKE_HERDR as JSON: [pane, agent, status, session,
-# screen] rows. `agent list` fails with FAKE_HERDR_DOWN (no server); `agent
-# read` prints the pane's screen; `agent prompt` is logged and sends nothing.
+# screen] rows, and an optional sixth {"status", "session", "screen"}: the
+# pane's state once its screen was read once, as a pane that changes
+# between the read and the send. `agent list` fails with FAKE_HERDR_DOWN
+# (no server); `agent get` answers one pane; `agent read` prints its
+# screen; `agent prompt` is logged and sends nothing.
 HERDR = r"""#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["FAKE_CALLS"], "a") as log:
     log.write("herdr " + " ".join(sys.argv[1:]) + "\n")
 panes = json.load(open(os.environ["FAKE_HERDR"]))
 args = sys.argv[1:]
+read = os.environ["FAKE_HERDR"] + ".read"
+seen = open(read).read().split() if os.path.exists(read) else []
+def state(row):
+    p, a, st, se, sc = row[:5]
+    later = row[5] if len(row) > 5 and p in seen else {}
+    return p, a, later.get("status", st), later.get("session", se), later.get("screen", sc)
+def agent(row):
+    p, a, st, se, _ = state(row)
+    return {"agent": a, "agent_status": st, "pane_id": p,
+            "agent_session": {"agent": a, "kind": "id", "value": se}}
 if args[:2] == ["agent", "list"]:
     if os.environ.get("FAKE_HERDR_DOWN"):
         print("herdr: server not running", file=sys.stderr)
         sys.exit(1)
-    print(json.dumps({"id": "cli:agent:list", "result": {"agents": [
-        {"agent": a, "agent_status": st, "pane_id": p,
-         "agent_session": {"agent": a, "kind": "id", "value": se}}
-        for p, a, st, se, _ in panes]}}))
+    print(json.dumps({"id": "cli:agent:list", "result": {"agents": [agent(r) for r in panes]}}))
+elif args[:2] == ["agent", "get"]:
+    print(json.dumps({"id": "cli:agent:get", "result": {"type": "agent_info", "agent": next(
+        agent(r) for r in panes if r[0] == args[2])}}))
 elif args[:2] == ["agent", "read"]:
     # Like herdr: the ANSI codes only with --format ansi.
     import re
-    screen = next(sc for p, *_, sc in panes if p == args[2])
+    screen = next(state(r)[4] for r in panes if r[0] == args[2])
+    with open(read, "a") as f:
+        f.write(args[2] + "\n")
     if args[3:5] != ["--format", "ansi"]:
         screen = re.sub(r"\x1b\[[0-9;]*m", "", screen)
     print(screen)
@@ -624,6 +639,25 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         sent = {line.split()[3][3:] for line in self.prompts()}
         self.assertEqual(sent, {name for name, (_, gets) in cases.items() if gets})
+
+    def test_a_pane_that_changes_before_the_send_gets_no_keys(self):
+        # Operator ruling 2026-11-18: re-read right before the send. Each
+        # pane says send on its first read, then changes: text typed, a
+        # turn started, another session, a reconnect. None gets keys; each
+        # stays owed. The unchanged pane gets /rc.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"screen": DROPPED.replace("\u276f\u00a0", "\u276f typed")}],
+                   ["w1:p2", "claude", "idle", "s2", DROPPED, {"status": "working"}],
+                   ["w1:p3", "claude", "idle", "s3", DROPPED, {"session": "s9"}],
+                   ["w1:p4", "claude", "idle", "s4", DROPPED, {"screen": CONNECTED}],
+                   ["w1:p5", "claude", "idle", "s5", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p5 /rc"])
+        self.assertEqual(self.owed(), ["w1:p1", "w1:p2", "w1:p3", "w1:p4"])
+        self.assertIn("reconnect: w1:p2 changed before the send (w1:p2 s2 working); still owed", result.stdout)
+        self.assertIn("reconnect: w1:p1 changed before the send (wait: its input box holds text); still owed",
+                      result.stdout)
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
         # Fold-in: a list that failed at the switch owed nothing, and the
