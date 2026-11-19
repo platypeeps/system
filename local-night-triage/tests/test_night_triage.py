@@ -681,6 +681,48 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(self.items()["1"], alert)
         self.assertIn("sd:1 is claimed; skipped", result.stderr)
 
+    def test_a_note_that_only_mentions_a_claim_is_no_claim(self):
+        import night_triage
+        for body in ("Nobody claims it now", "Claimed by no one", "the claim was released",
+                     "No one claims it", "none claims it yet", "Noone claims it"):
+            with self.subTest(body=body):
+                notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
+                self.assertFalse(night_triage.held_by_other(notes, "node1"))
+
+    def test_the_claim_forms_are_claims(self):
+        import night_triage
+        for body in ("claimed: triaging", "night-triage on node2 claims it: a run",
+                     "Claimed: investigating", "Night-triage on node2 Claims it: a run",
+                     "a session claims it: debugging the job", "The operator claims it",
+                     "nobody-else-bot claims it: a run"):
+            with self.subTest(body=body):
+                notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
+                self.assertTrue(night_triage.held_by_other(notes, "node1"))
+
+    def test_every_claim_form_main_honoured_still_holds(self):
+        # sd:9578 review: the anchored matcher dropped claims the one before
+        # it held. One body per form the old `\s*(?:claimed\b|(?:\S+ ){0,3}
+        # claims it\b)` took: claimed with no colon, leading space, a bare
+        # `claims it`, and one to three words before it.
+        import night_triage
+        for body in ("Claimed by me while I debug this", "claimed - looking", "claimed.",
+                     "claimed", "  claimed: triaging", "\nThe operator claims it",
+                     "claims it: debugging", "operator claims it", "the operator claims it"):
+            with self.subTest(body=body):
+                notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
+                self.assertTrue(night_triage.held_by_other(notes, "node1"))
+
+    def test_a_claim_whose_reason_opens_with_a_negation_still_holds(self):
+        # sd:9578 review: only `claimed by <nobody>` denies ownership; a
+        # reason after the claim that opens with `none` or `no one` does not.
+        import night_triage
+        for body in ("Claimed: none of the fixes worked; investigating",
+                     "claimed: nobody else touch this", "Claimed - no one answered, so mine",
+                     "claimed. Noone paged yet", "Claimed: none"):
+            with self.subTest(body=body):
+                notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
+                self.assertTrue(night_triage.held_by_other(notes, "node1"))
+
     def test_a_claim_a_crashed_run_left_is_released_by_the_next_run(self):
         self.given({"1": self.left_claim()}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:77"}])
         self.assertEqual(self.run_job().returncode, 0)
