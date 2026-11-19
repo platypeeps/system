@@ -364,8 +364,12 @@ class Readers(unittest.TestCase):
     def test_an_empty_copilot_month_and_a_missing_report(self):
         got = self.copilot([], [])
         self.assertEqual((got["status"], got["spend"]["amount"], got["credits"]), ("ok", 0.0, 0.0))
-        got = self.copilot([], ReadFailed("HTTP 404"))
-        self.assertEqual((got["status"], got["credits"]), ("ok", 0.0))
+        # sd:9592 review: an empty AI-credit report does not establish the
+        # plan, so a fallback that cannot be read is no reading, not zero.
+        for failure in ("HTTP 404", "HTTP 500"):
+            got = self.copilot([], ReadFailed(failure))
+            self.assertEqual((got["status"], got["error"], got["spend"]),
+                             ("unknown", failure, None))
         got = self.copilot(ReadFailed("HTTP 404"), ReadFailed("HTTP 404"))
         self.assertEqual((got["status"], got["error"]), ("unknown", "HTTP 404"))
         # Only a 404 says a report does not apply: any other failure is unknown.

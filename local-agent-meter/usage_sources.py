@@ -454,15 +454,17 @@ def read_copilot(env, fetch, now):
     `credits`; the premium-request report misses their use and overage
     (sd:9592 review). An older plan bills premium requests, in
     `requests`. No answer names the plan, so the AI-credit report is read
-    first and the premium-request one only when it is empty or absent."""
+    first and the premium-request one only when it is empty or absent;
+    the fallback must read."""
     read = github_report(env, fetch, now)
     ai = unless_absent(read, "ai_credit/usage")
     if ai:
         if any(item.get("unitType") != "ai-credits" for item in ai):
             raise ReadFailed("an AI-credit item in another unit")
         return {"spend": month_spend(ai), "credits": gross(ai)}
-    premium = read("premium_request/usage") if ai is None else unless_absent(
-        read, "premium_request/usage")
+    # An empty AI-credit report does not establish the plan: a fallback
+    # that cannot be read, a 404 too, is unknown, never zero (sd:9592).
+    premium = read("premium_request/usage")
     if premium:
         return {"spend": month_spend(premium), "requests": gross(premium)}
     if ai is None:
