@@ -20,6 +20,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
@@ -152,8 +153,10 @@ elif args[:2] == ["agent", "get"]:
     print(json.dumps({"id": "cli:agent:get", "result": {"type": "agent_info", "agent": next(
         agent(r) for r in panes if r[0] == args[2])}}))
 elif args[:2] == ["agent", "read"]:
-    # Like herdr: the ANSI codes only with --format ansi.
-    import re
+    # Like herdr: the ANSI codes only with --format ansi. FAKE_HERDR_SLOW
+    # seconds per read make a slow pane.
+    import re, time
+    time.sleep(float(os.environ.get("FAKE_HERDR_SLOW") or 0))
     screen = next(state(r)[4] for r in panes if r[0] == args[2])
     with open(read, "a") as f:
         f.write(args[2] + "\n")
@@ -551,6 +554,28 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p3", "claude", "idle", "s3", DROPPED])
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p3 /rc"])
+        self.assertEqual(self.owed(), [])
+
+    def test_slow_panes_neither_delay_the_switch_nor_outrun_the_budget(self):
+        # sd:9282 lane review: owed panes were read before the account
+        # sync, with no shared deadline. Now the switch comes first, and
+        # the pass stops at its budget; the panes it did not reach stay
+        # owed, and a later sync sends them.
+        owed = self.script.parent / "state/rc-owed"
+        owed.parent.mkdir(exist_ok=True)
+        now = int(time.time())
+        owed.write_text("".join(f"w1:p{n} s{n} {now}\n" for n in (1, 2, 3)))
+        self.publish(THREE)
+        self.panes(*(["w1:p%d" % n, "claude", "idle", "s%d" % n, DROPPED] for n in (1, 2, 3)))
+        result = self.sync("elsewhere", FAKE_HERDR_SLOW="1.5", CSWAP_RC_BUDGET="2")
+        calls = self.calls.read_text().splitlines()
+        first_read = next(i for i, c in enumerate(calls) if c.startswith("herdr agent read"))
+        self.assertLess(next(i for i, c in enumerate(calls) if c.startswith("cswap switch")), first_read)
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.owed(), ["w1:p2", "w1:p3"])
+        self.assertIn("reconnect: the 2s budget is spent; w1:p3 stays owed", result.stdout)
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p2 /rc", "herdr agent prompt w1:p3 /rc"])
         self.assertEqual(self.owed(), [])
 
     def test_no_switch_sends_nothing(self):

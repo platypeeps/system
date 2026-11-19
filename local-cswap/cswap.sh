@@ -56,8 +56,11 @@ REFUSAL_LIMIT=30
 RC_OWED="$ROOT/state/rc-owed"
 RC_PENDING="$ROOT/state/rc-pending"
 RC_OWED_FOR=1800
+# One reconnect pass may spend this many seconds, checked before each
+# pane: a pane not reached stays owed (sd:9282 lane review). Tests set
+# CSWAP_RC_BUDGET.
+RC_BUDGET="${CSWAP_RC_BUDGET:-60}"
 HERDR_DIRS="${CSWAP_HERDR_DIRS-$HOME/.local/bin /opt/homebrew/bin /usr/local/bin}"
-SWITCHED=""
 HERDR=""
 AGENTS=""
 PANES=""
@@ -274,7 +277,6 @@ else:
 # is written at once, before a later step can fail, and stays until herdr
 # lists the panes, so a herdr that does not answer now is asked again.
 owe_rc() {
-  SWITCHED=1
   { mkdir -p "${RC_PENDING%/*}" && date +%s >"$RC_PENDING"; } 2>/dev/null ||
     echo "reconnect: could not write $RC_PENDING; no pane owes /rc for this switch"
 }
@@ -325,7 +327,8 @@ recheck() {
 
 # Send /rc to each owed pane that may have it; keep the rest owed.
 reconnect() {
-  local pane session since action screen verdict plan keep=""
+  local pane session since action screen verdict plan keep="" deadline
+  deadline=$(($(date +%s) + RC_BUDGET))
   list_owed
   [[ -s "$RC_OWED" ]] || return 0
   herdr_panes || return 0
@@ -343,7 +346,10 @@ reconnect() {
       gone) echo "reconnect: $pane is gone or runs another session; not owed" ;;
       old) echo "reconnect: $pane stayed busy or showed no drop for ${RC_OWED_FOR}s; not owed" ;;
       try)
-        if ! screen=$(st_step 10 "$HERDR" agent read "$pane" --format ansi) ||
+        if (($(date +%s) >= deadline)); then
+          echo "reconnect: the ${RC_BUDGET}s budget is spent; $pane stays owed"
+          keep+="$pane $session $since"$'\n'
+        elif ! screen=$(st_step 10 "$HERDR" agent read "$pane" --format ansi) ||
           ! verdict=$(rc_read screen <<<"$screen"); then
           keep+="$pane $session $since"$'\n'
         elif [[ "$verdict" == connected ]]; then
@@ -470,10 +476,12 @@ follow() {
 cmd_sync() {
   retire_agent
   [[ -x "$CSWAP_BIN" ]] || fail list "cswap not executable at $CSWAP_BIN"
-  # Panes an earlier run left owed, even one that failed after its switch.
-  reconnect
+  # The account first, then one reconnect pass for every owed pane, this
+  # run's and an earlier run's: slow panes never delay a switch (sd:9282
+  # lane review). A sync that fails exits before the pass, and its panes
+  # stay owed for the next run.
   if leads; then lead; else follow; fi
-  [[ -z "$SWITCHED" ]] || reconnect
+  reconnect
 }
 
 cmd_status() {
@@ -548,7 +556,9 @@ usage: cswap.sh sync|status
 environment: CSWAP_BIN, CSWAP_AUTO_ARGS (see cswap-auto.conf),
              SD_PACK_ROOT (default ~/repos/platypeeps/sd-workflow),
              CSWAP_HERDR_DIRS (where to look for herdr after PATH;
-             default ~/.local/bin /opt/homebrew/bin /usr/local/bin)
+             default ~/.local/bin /opt/homebrew/bin /usr/local/bin),
+             CSWAP_RC_BUDGET (seconds one reconnect pass may spend;
+             default 60)
 HELPEOF
     exit 0
     ;;
