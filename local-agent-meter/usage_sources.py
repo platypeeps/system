@@ -392,9 +392,10 @@ def read_baseten(env, fetch, now):
                  % (month_start(today).strftime("%Y-%m-%d"),
                     (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d")),
                  {"Authorization": "Api-Key " + key(env, "BASETEN_API_KEY")}, timeout=60)
-    # Every `*_usage` section counts: one of another shape is no reading,
-    # never a total of the rest (sd:9590 lane review).
-    kinds = [v for k, v in data.items() if k.endswith("_usage")] if isinstance(data, dict) else []
+    # Every top-level value is a usage section, under any name, and counts:
+    # one of another shape is no reading, never a total of the rest
+    # (sd:9590 lane review).
+    kinds = list(data.values()) if isinstance(data, dict) else []
     if not kinds:
         raise ReadFailed("no usage kinds")
     total = 0.0

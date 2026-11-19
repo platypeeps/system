@@ -300,11 +300,19 @@ class Readers(unittest.TestCase):
         # Lane review: a malformed section was dropped and the rest
         # published as the month's total.
         for bad in ([], None, "x", 5, {"subtotal": "1.00"}):
-            with self.subTest(bad=bad):
-                answer = {"model_apis_usage": {"total": "2.00"}, "dedicated_usage": bad}
-                got = usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
-                                                  answering(answer), NOW)
-                self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
+            for name in ("dedicated_usage", "inference"):
+                with self.subTest(bad=bad, name=name):
+                    answer = {"model_apis_usage": {"total": "2.00"}, name: bad}
+                    got = usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                                      answering(answer), NOW)
+                    self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
+
+    def test_a_baseten_section_under_a_new_name_still_counts(self):
+        # A new usage kind is never left out of the month's total.
+        answer = {"model_apis_usage": {"total": "2.00"}, "inference": {"total": "3.00"}}
+        got = usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                          answering(answer), NOW)
+        self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 5.0), got)
 
     def test_a_baseten_total_that_is_no_decimal_string_is_unknown(self):
         for total in ("", "-1.00", "1e400", "nan", " 1.00", "1,000.00", "inf"):
