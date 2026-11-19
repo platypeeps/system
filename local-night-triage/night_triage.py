@@ -92,6 +92,17 @@ def park_reason(note, host):
     return f"{mine(host)}: waits until {on} on {' '.join(run.split())}: parked (runs: {runs})."
 
 
+def own_reason(reason, host):
+    """The wait park_reason() wrote for this host, or None."""
+    return re.fullmatch(re.escape(mine(host)) + WAITS.pattern, reason or "", re.S)
+
+
+def is_own_park(note, host):
+    """The pack's audit note for a park this job made on this host."""
+    return is_audit(note) and any(m.group(1) == "Parked" and own_reason(m.group(2), host)
+                                  for m in PARK_MARK.finditer(note["body"]))
+
+
 def is_claim(note, host):
     return note["body"].startswith(f"{mine(host)} claims it")
 
@@ -154,7 +165,7 @@ def wake(report, notes, host):
               "line; held", file=sys.stderr)
         return None
     kind, reason = marks[-1].groups()
-    waited = re.fullmatch(re.escape(mine(host)) + WAITS.pattern, reason or "", re.S)
+    waited = own_reason(reason, host)
     if kind != "Parked" or not waited:
         return None
     on, run, runs = waited.groups()
@@ -185,13 +196,23 @@ def _write_claims(path, rows):
 
 
 def _others(notes, host):
-    """Notes by anyone but the ingest and this job, oldest first."""
-    return [n for n in notes if n.get("session") != INGEST_SESSION and not is_ours(n, host)]
+    """Notes by anyone but the ingest and this job, oldest first. The
+    pack's audit note of the job's own park is the job's: its reason may
+    name a run such as `claims-sync` (sd:9348 review)."""
+    return [n for n in notes if n.get("session") != INGEST_SESSION and not is_ours(n, host)
+            and not is_own_park(n, host)]
+
+
+# A claim note opens with the claim: the shared prompt's
+# `claimed: triaging`, or `<who> claims it`, as this job writes on
+# another host; a note that only mentions a claim later, or a run named
+# `claims-sync`, claims nothing (sd:9348 review).
+CLAIM = re.compile(r"\s*(?:claimed\b|(?:\S+ ){0,3}claims it\b)", re.I)
 
 
 def held_by_other(notes, host):
     others = _others(notes, host)
-    if not others or not re.search(r"\bclaim", others[-1]["body"], re.I):
+    if not others or not CLAIM.match(others[-1]["body"]):
         return False
     try:
         age = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(

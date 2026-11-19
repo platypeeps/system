@@ -30,7 +30,8 @@ into `<config>/cron-jobs/jobs/`, list `night-triage` in the machine's
    report takes no `sd task status`: the pack refuses every move of the
    `report` kind. The row goes into `state/claims` before the note, so a
    crash between the two still leaves a row to release. An alert whose
-   latest note from anyone but the ingest and this job is a claim is
+   latest note from anyone but the ingest and this job starts with a
+   claim is
    skipped, before any unpark, and so is one already `in_progress` or
    parked (sd:9243). A claim older than 24 hours is a crashed
    session's and holds nothing; one whose age cannot be read still holds

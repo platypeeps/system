@@ -548,6 +548,27 @@ class NightTriage(unittest.TestCase):
         quoted = {"kind": "comment", "session": "abc", "body": park["body"] + "\nso it waits"}
         self.assertIsNone(night_triage.wake(alert, [wait, dict(park, body="Parked by login"), quoted], "node1"))
 
+    def test_a_run_named_claims_sync_wakes_its_own_park(self):
+        # sd:9348 review: the job's own park note names its run; one named
+        # claims-sync read as another session's claim and held the wake
+        # 24 h. A note that mentions a claim later on claims nothing either.
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        for later in (None, "the job failed; no claim here"):
+            with self.subTest(later=later):
+                alert = self.parked(day(-1))
+                for note in alert["notes"]:
+                    note["body"] = note["body"].replace("job-1", "claims-sync")
+                    note["timestamp"] = now
+                if later:
+                    alert["notes"].append({"id": 703, "kind": "comment", "session": "abc",
+                                           "resolved_at": None, "timestamp": now, "body": later})
+                self.given({"1": alert}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+                result = self.run_job()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("is claimed; skipped", result.stderr)
+                self.assertIsNone(self.items()["1"]["parked_at"])
+                self.assertTrue(self.notes("1", "filed as sd:7"), result.stderr)
+
     def test_a_park_line_the_job_cannot_read_is_held_and_says_so(self):
         # sd:9348 (4): a pack whose park text drifted strands the park;
         # the run says so instead of holding it in silence.
