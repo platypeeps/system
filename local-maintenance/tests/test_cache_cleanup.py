@@ -133,6 +133,53 @@ class CacheCleanupTest(Harness):
         self.assertIn("- uv cache prune failed (exit 2)", run.stdout)
         self.assertEqual("1", skips.read_text().strip())
 
+    def test_a_skip_names_its_holders_and_keeps_its_alert_open(self):
+        # sd:9377: the finding fired every night on a skip the operator
+        # accepted, and named no holder.
+        self.uv(foreign=True)
+        # `ps -o pid= -o comm=` names the executable only, never the
+        # arguments; a stub that sees `command=` prints a secret argument.
+        _stub(self.bin / "ps", 'case "$*" in *command*) echo "4 uv run --token s3cret" ;; '
+              '*) printf "%s\\n" "  101 uvx" "  102 uvx" "  3 /opt/example/bin/uv" "  4 /bin/zsh" ;; esac\n')
+        holders = "(uvx pid 101 102; uv pid 3)"
+        for night in (1, 2):
+            run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+            self.assertIn(f"holds the cache; skipped {holders}", run.stdout)
+        run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+        self.assertIn(f"- uv cache prune skipped 3 nights running: another uv process holds the cache {holders}",
+                      run.stdout)
+        # Bundle review: night 4 reported healthy and closed night 3's
+        # alert. Each later night raises the same reason line, so the
+        # pack folds it into the open report.
+        for night in (4, 5):
+            run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+            self.assertEqual(self.attention(run), [
+                "SD_REPORT_ATTENTION: maintenance on fixturehost: uv cache prune skipped "
+                "3 or more nights running: another uv process holds the cache"], night)
+            self.assertIn(f"- uv cache prune skipped {night} nights running: another uv process holds the cache "
+                          f"{holders}", run.stdout)
+            self.assertNotIn("s3cret", run.stdout)
+
+    def test_a_third_night_that_dies_before_its_report_alerts_next_night(self):
+        # Lead re-review: the count was written before the report, so a
+        # run that died between them made night 4 an action, never alerted.
+        self.uv(foreign=True)
+        for _ in (1, 2):
+            self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+        # `hostname` runs only for the attention lines: here it kills the
+        # run there, as a crash would. It kills only maintenance.sh shells.
+        _stub(self.bin / "hostname",
+              'for p in $PPID $(ps -o ppid= -p $PPID); do\n'
+              '  ps -o command= -p "$p" | grep -q maintenance.sh && kill -KILL "$p"\n'
+              'done\nexit 1\n')
+        died = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+        self.assertEqual((died.returncode, self.attention(died)), (-9, []))
+        _stub(self.bin / "hostname", 'echo "fixturehost"\n')
+        run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+        self.assertEqual(self.attention(run), [
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: uv cache prune skipped "
+            "3 or more nights running: another uv process holds the cache"])
+
     def test_a_prune_skipped_three_nights_running_is_a_finding(self):
         self.uv(foreign=True)
         for night in (1, 2):
