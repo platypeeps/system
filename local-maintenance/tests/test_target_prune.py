@@ -340,6 +340,41 @@ exec /bin/rm "$@"
         self.assertIn(f"- build output prune: could not move {target} into {self.trash}", run.stdout)
         self.assertEqual(list(self.trash.rglob("CACHEDIR.TAG")), [])
 
+    def test_move_findings_keep_the_per_run_trash_folder_out_of_the_key(self):
+        # sd:9489: each run moves into a new mktemp folder in the trash, and
+        # the move's error names it; in the key, each run opened a new
+        # finding (sd:4182). The report keeps the reason; the key drops it.
+        prefix = "SD_REPORT_ATTENTION: maintenance on fixturehost: build output prune: "
+        checkout, target = self.cargo_target("example-stuck-key")
+        checkout.chmod(0o555)
+        self.addCleanup(checkout.chmod, 0o755)
+        run = self.maintenance("# nothing to check\n")
+        self.assertIn("Permission denied", run.stdout)
+        self.assertEqual(self.attention(run), [
+            f"{prefix}could not move {target} into {self.trash}; kept"])
+
+    def test_a_move_that_does_not_come_back_keeps_the_trash_folder_out_of_the_key(self):
+        # sd:9489: the same per-run folder names where target/ went.
+        _checkout, target = self.cargo_target("example-gone-key")
+        (self.tmp / "local-maintenance" / "prune_move.py").write_text(
+            "import os, sys\nos.rename(sys.argv[1], sys.argv[2])\n"
+            "sys.exit(f'could not restore {sys.argv[2]}')\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertIn(str(self.trash), run.stdout)
+        self.assertEqual(self.attention(run), [
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: build output prune: "
+            f"{target} did not come back from the prune trash;"
+            " kept until no build holds a lock there"])
+
+    def test_an_unfinished_delete_keeps_the_trash_folder_out_of_the_key(self):
+        _checkout, target = self.cargo_target("example-undeleted-key")
+        _stub(self.bin / "rm", "exit 1\n")
+        run = self.maintenance("# nothing to check\n")
+        self.assertIn(str(self.trash), run.stdout)
+        self.assertEqual(self.attention(run), [
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: build output prune: "
+            f"could not finish deleting {target}; the next run deletes it"])
+
     def test_an_idle_probe_that_fails_keeps_the_target_and_says_so(self):
         # A failed probe is no answer: it is not proof the folder is idle.
         _stub(self.bin / "find", 'case " $* " in *" -mmin "*) echo "find: probe failed" >&2; exit 1 ;; esac\n'
