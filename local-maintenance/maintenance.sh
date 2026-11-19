@@ -367,14 +367,16 @@ check_logs() { # dir-or-file max-mb
       # A cron job's log rotates under the job's lock, and not while a lost
       # run report still points into it: truncation took the report's slice
       # (sd:8808). The lock is cron-jobs' `.<job>.flock`, taken as it takes it.
+      # `.reporting` is a run killed while it filed its report.
       job_lock="$(dirname "$f")/.$(basename "$f" .log).flock"
       pending="$(dirname "$f")/.$(basename "$f" .log).unreported"
+      inflight="$(dirname "$f")/.$(basename "$f" .log).reporting"
       rot_rc=0
       ( if [ -f "$job_lock" ]; then
           exec 8>>"$job_lock" || exit 9
           perl -e 'use Fcntl ":flock"; open(my $fh, ">&=", 8) or exit 2; flock($fh, LOCK_EX|LOCK_NB) or exit 1; exit 0' || exit 9
         fi
-        [ ! -e "$pending" ] || exit 9
+        [ ! -e "$pending" ] && [ ! -e "$inflight" ] || exit 9
         tail -n 2000 "$f" > "$f.1" && : > "$f" ) 2>/dev/null || rot_rc=$?
       if [ "$rot_rc" -eq 9 ]; then
         action "rotation of $f deferred: its job runs or holds an unrecorded report (${mb}MB)"

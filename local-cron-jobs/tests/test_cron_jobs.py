@@ -1783,6 +1783,34 @@ class HostJobsTest(unittest.TestCase):
             capture_output=True, text=True, check=True).stdout.strip()
         self.assertEqual(out, "600")
 
+    def test_a_grace_raised_after_install_keeps_to_the_plist(self):
+        """Build 1232 round 5 (class: a runtime wait the install-time
+        ExitTimeOut does not bound). The plist fixed ExitTimeOut at 31 s;
+        the job file then raised the grace to 20 s, and launchd would KILL
+        the runner before it wrote the outcome. The run keeps the grace the
+        installed plist allows and says so."""
+        self.fx.write_job("demo", "CRON_JOBS_TIMEOUT_GRACE=1\n" + self.JOB.format("true"))
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        environment = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]
+        self.assertEqual(environment.get("CRON_JOBS_EXIT_TIMEOUT"), "31")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nCRON_JOBS_TIMEOUT_GRACE=20\n'
+                                  "JOB_COMMAND='trap \"\" TERM; kill -TERM "
+                                  "$(ps -o ppid= -p $PPID); sleep 8'\n")
+        run = {**environment, "PATH": self.fx.path(), "SD_REPORT_BIN": "/usr/bin/true"}
+        started = time.monotonic()
+        # launchd's way: stdout already on the log, so no hand-run tee
+        # waits for the job's sleep.
+        log_path = self.fx.folder / "logs" / "demo.log"
+        log_path.parent.mkdir(exist_ok=True)
+        with open(log_path, "a") as out:
+            subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                           env=run, stdout=out, stderr=out, timeout=60)
+        self.assertLess(time.monotonic() - started, 6)
+        log = log_path.read_text()
+        self.assertIn("grace 20s cut to 1s", log)
+        self.assertIn("the job still runs 1s after TERM", log)
+
     def test_a_grace_that_is_not_a_number_is_refused(self):
         self.fx.write_job("demo", "CRON_JOBS_TIMEOUT_GRACE=soon\n" + self.JOB.format("true"))
         result = self.run_script("install", "demo")
@@ -2288,6 +2316,36 @@ class RunReportTest(unittest.TestCase):
                 self.assertLess(time.monotonic() - started, 15)
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertIn("report was not recorded", result.stderr)
+
+    def test_a_runner_killed_while_it_reports_keeps_the_retry_record(self):
+        """Build 1232 round 5. launchd KILLs the runner ExitTimeOut after
+        its TERM, which can fall inside the report's own 60 s bound. The
+        retry record was written only after the report failed, so a KILL
+        mid-report lost the run. It is now on disk before the report
+        starts, and the next run files it."""
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
+        env = {"PATH": self.fx.path(), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "SD_REPORT_BIN": str(self.sd),
+               "FAKE_SD_LOG": str(self.sd_log), "FAKE_SD_SLEEP": "3"}
+        run = subprocess.Popen(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                               env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 30
+        while not self.reports() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(len(self.reports()), 1, "the report starts")
+        run.kill()
+        run.wait(timeout=10)
+        lost = self.ingests()[0][0]
+        time.sleep(3.5)
+        self.sd_log.unlink()
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        runs = [(r, rc) for r, rc, _ in self.ingests()]
+        self.assertEqual(runs[0], (lost, "7"), runs)
+        self.assertEqual(len(runs), 2, runs)
+        logs = self.fx.folder / "logs"
+        self.assertEqual(sorted(p.name for p in logs.glob(".demo.report*")), [])
+        self.assertFalse((logs / ".demo.unreported").exists())
 
     def test_a_failed_report_keeps_the_exit_code(self):
         # PIN. A report that fails is logged; the job's own code stands.

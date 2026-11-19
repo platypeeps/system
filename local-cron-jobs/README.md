@@ -245,7 +245,10 @@ shutdown, is named as the cause in the log, the report and the push
 The wrapper sends the job TERM and waits `CRON_JOBS_TIMEOUT_GRACE`
 seconds for it (default 30, so a lane run's unwind ends first; a job
 file may set its own). Each plist's `ExitTimeOut` is that grace plus
-30 s, so launchd's KILL waits for the outcome; a job still running then is named in the log (sd:7105). The
+30 s, so launchd's KILL waits for the outcome; a job still running then
+is named in the log (sd:7105). A grace raised after install is cut to
+fit the installed `ExitTimeOut` until a reinstall, and the run's retry
+record (`.<job>.reporting`) is on disk before its report starts. The
 wrapper pushes through `local-notify` with `-c ntfy -p high` and no `-b`,
 so it reaches the phone where `NTFY_TOPIC` is set in local-notify's `.env`,
 and only an ntfy delivery counts as sent. The

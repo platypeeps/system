@@ -78,6 +78,11 @@ st_source_env cron-jobs
 # The grace before any job file sets its own: load_job puts it back for
 # each job, so one job's grace never reaches the next in `install --all`.
 BASE_TIMEOUT_GRACE="${CRON_JOBS_TIMEOUT_GRACE-}"
+# The ExitTimeOut the installed plist gave launchd, which a run cannot
+# change: cmd_exec cuts a grace raised since install to fit it. Unset, so
+# a job that runs this script is not bound by its own plist.
+INSTALLED_EXIT_TIMEOUT="${CRON_JOBS_EXIT_TIMEOUT-}"
+unset CRON_JOBS_EXIT_TIMEOUT
 LABEL_PREFIX="$(st_label_prefix)"
 # The prefix may sit in <config>/shared.env, which no job reads on its own.
 SYSTEM_TOOLS_LABEL_PREFIX="$LABEL_PREFIX"; export SYSTEM_TOOLS_LABEL_PREFIX
@@ -233,7 +238,8 @@ job_file() {
 # lock the same night rather than holding it until someone looks (sd:2018).
 DEFAULT_JOB_TIMEOUT=2h
 # Seconds launchd's ExitTimeOut leaves past the grace for the EXIT trap's
-# outcome, report and push.
+# outcome and retry record. The report and push may run past it: the
+# record is on disk before they start (file_run_report).
 EXIT_REPORT_ROOM=30
 
 # A whole number as plain decimal, or fail: digits only, at most MAX.
@@ -478,6 +484,9 @@ EOF
         <string>$x_path</string>
         <key>HOME</key>
         <string>$x_home</string>
+        <!-- ExitTimeOut below, so a run keeps its grace inside it. -->
+        <key>CRON_JOBS_EXIT_TIMEOUT</key>
+        <string>$exit_timeout</string>
         <!-- The config root, always: under a root that is not the default
              one below HOME, exec would otherwise look for the job file in
              an empty folder (sd:2519). -->
@@ -727,6 +736,22 @@ report_unrecorded() { # job, log offset, run identity, start, end, exit
   return "$saved"
 }
 
+# Files this run's report. The retry record goes to .<job>.reporting
+# first, so launchd's KILL during the report's bound leaves it for the
+# next run's replay; .unreported takes it only once the report fails,
+# and stays untouched by a report that lands.
+file_run_report() { # job, log offset, run identity, start, end, exit
+  local inflight="$LOG_DIR/.$1.reporting"
+  { printf '%s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" > "$inflight.tmp" \
+      && mv -f "$inflight.tmp" "$inflight"; } || rm -f "$inflight.tmp" "$inflight"
+  [ ! -f "$inflight" ] || drop_carry "$1"
+  if record_run_report "$1" "$3" "$4" "$5" "$6" "$2" \
+      || report_unrecorded "$1" "$2" "$3" "$4" "$5" "$6"; then
+    rm -f "$inflight"
+    drop_carry "$1"
+  fi
+}
+
 # Files each pending run's report, oldest first, under the lock. The first
 # that fails stops the replay and keeps itself and every later line. A
 # slice runs to the log's end, so an older one also holds the newer runs'
@@ -735,6 +760,11 @@ report_unrecorded() { # job, log offset, run identity, start, end, exit
 replay_unrecorded() { # job
   local pending="$LOG_DIR/.$1.unreported" offset run started ended code left="" bare="" used=""
   REPLAY_CARRY=""
+  # A run killed while it filed its report left its line here; it is the
+  # newest run, so it goes last.
+  if [ -f "$LOG_DIR/.$1.reporting" ]; then
+    cat "$LOG_DIR/.$1.reporting" >> "$pending" && rm -f "$LOG_DIR/.$1.reporting"
+  fi
   [ -s "$pending" ] || { rm -f "$pending"; return 0; }
   while read -r offset run started ended code; do
     case "$offset" in ''|*[!0-9]*) used=1; continue ;; esac
@@ -764,6 +794,18 @@ drop_carry() { # job
   keep="$(grep ' ' "$pending" || true)"
   if [ -z "$keep" ]; then rm -f "$pending"; return 0; fi
   { printf '%s\n' "$keep" > "$pending.tmp" && mv -f "$pending.tmp" "$pending"; } || rm -f "$pending.tmp"
+}
+
+# launchd KILLs the runner ExitTimeOut seconds after its TERM, a value the
+# plist fixed at install, while the grace is read from the job file at each
+# run: a grace raised since install is cut to fit, until a reinstall.
+keep_grace_in_plist() { # job
+  local budget
+  budget="$(decimal "$INSTALLED_EXIT_TIMEOUT" 999999999)" || return 0
+  [ "$((JOB_GRACE + EXIT_REPORT_ROOM))" -gt "$budget" ] || return 0
+  local was="$JOB_GRACE"
+  JOB_GRACE=$((budget > EXIT_REPORT_ROOM ? budget - EXIT_REPORT_ROOM : 0))
+  echo "[$1] $(date '+%Y-%m-%dT%H:%M:%S%z') grace ${was}s cut to ${JOB_GRACE}s: the installed plist's ExitTimeOut is ${budget}s; reinstall the job"
 }
 
 # The outcome line every run that started owes its log. cmd_exec writes "done"
@@ -962,12 +1004,7 @@ exec_exit() {
   # The report, once: the normal end clears EXEC_JOB before it files its own.
   local ended
   ended="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  if [ -z "$owed" ]; then :
-  elif record_run_report "$owed" "$EXEC_RUN" "$EXEC_STARTED" "$ended" "$code" "$EXEC_OFFSET"; then
-    drop_carry "$owed"
-  elif report_unrecorded "$owed" "$EXEC_OFFSET" "$EXEC_RUN" "$EXEC_STARTED" "$ended" "$code"; then
-    drop_carry "$owed"
-  fi
+  [ -z "$owed" ] || file_run_report "$owed" "$EXEC_OFFSET" "$EXEC_RUN" "$EXEC_STARTED" "$ended" "$code"
   [ -z "$owed" ] || push_at_risk "$owed" "$code" "$EXEC_OWN_OFFSET" \
     "${EXEC_IN_JOB:+$INTERRUPTED; }" || true
 }
@@ -1434,6 +1471,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
   st_shell_env
 
   load_job "$job"
+  keep_grace_in_plist "$job"
 
   # launchd hands a job 256 open files (`launchctl limit maxfiles`), where a
   # login shell gets 1048576. Claude needs more than 256 and aborts at startup
@@ -1553,11 +1591,7 @@ if attrs:
   report_ended="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   # A bare offset this run carried goes only once its report is filed or
   # saved as a full line, which holds that offset (drop_carry).
-  if record_run_report "$job" "$report_run" "$report_started" "$report_ended" "$rc" "$report_offset"; then
-    drop_carry "$job"
-  elif report_unrecorded "$job" "$report_offset" "$report_run" "$report_started" "$report_ended" "$rc"; then
-    drop_carry "$job"
-  fi
+  file_run_report "$job" "$report_offset" "$report_run" "$report_started" "$report_ended" "$rc"
   push_at_risk "$job" "$rc" "$own_offset" || true
   [ "$rc" -eq 0 ] || exit "$rc"
 }
