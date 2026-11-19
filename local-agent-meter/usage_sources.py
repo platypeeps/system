@@ -20,6 +20,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import threading
 import urllib.error
 import urllib.parse
@@ -562,7 +563,98 @@ def account_wide(limits):
     return limits.get("limit_id") in (None, "codex")
 
 
-def codex_reading(home=None, now=None):
+#: What `codex app-server` is sent: the handshake, then one usage read.
+CODEX_ASK = b"".join(json.dumps(m).encode() + b"\n" for m in (
+    {"id": 1, "method": "initialize",
+     "params": {"clientInfo": {"name": "agent-meter", "version": "1"}}},
+    {"method": "initialized"},
+    {"id": 2, "method": "account/rateLimits/read",
+     "params": {"excludeResetCreditDetails": True}}))
+
+
+def codex_app_server(binary):
+    """The result of `account/rateLimits/read` from `binary app-server`,
+    within TIMEOUT seconds, or ReadFailed. The server asks the account
+    live, so an idle Codex reads current (sd:9655). No reply text reaches
+    the error: an error reply gives its code only."""
+    try:
+        proc = subprocess.Popen([binary, "app-server"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        raise ReadFailed(type(e).__name__) from None
+
+    def talk():
+        proc.stdin.write(CODEX_ASK)
+        proc.stdin.flush()
+        while line := proc.stdout.readline(MAX_BODY + 1):
+            if len(line) > MAX_BODY:
+                raise ReadFailed("answer over %d bytes" % MAX_BODY)
+            message = decode(line)
+            if isinstance(message, dict) and message.get("id") == 2:
+                return message
+        raise ReadFailed("app-server closed with no answer")
+    try:
+        message = within(talk, TIMEOUT)
+    except OSError as e:
+        raise ReadFailed(type(e).__name__) from None
+    finally:
+        proc.kill()
+        proc.wait()
+    if "error" in message:
+        code = (message["error"] or {}).get("code") if isinstance(message["error"], dict) else None
+        raise ReadFailed("app-server error %s" % code if is_number(code) else "app-server error")
+    result = message.get("result")
+    if not isinstance(result, dict):
+        raise ReadFailed("app-server result of another shape")
+    return result
+
+
+def codex_live_limits(result):
+    """The account's RateLimitSnapshot of a rateLimits/read result, in the
+    rollout's snake_case so codex_fields reads both. The `codex` bucket of
+    rateLimitsByLimitId first, else rateLimits; a model's bucket is never
+    the account's."""
+    buckets = result.get("rateLimitsByLimitId")
+    snap = buckets.get("codex") if isinstance(buckets, dict) else None
+    snap = snap if snap is not None else result.get("rateLimits")
+    if not isinstance(snap, dict):
+        raise ReadFailed("rateLimits is not an object")
+    limits = {"limit_id": snap.get("limitId")}
+    if not account_wide(limits):
+        raise ReadFailed("no account-wide bucket")
+    for name in ("primary", "secondary"):
+        entry = snap.get(name)
+        limits[name] = {"used_percent": entry.get("usedPercent"),
+                        "window_minutes": entry.get("windowDurationMins"),
+                        "resets_at": entry.get("resetsAt")} if isinstance(entry, dict) else entry
+    credits = snap.get("credits")
+    limits["credits"] = {"has_credits": credits.get("hasCredits"),
+                         "unlimited": credits.get("unlimited"),
+                         "balance": credits.get("balance")} if isinstance(credits, dict) else credits
+    return limits
+
+
+def codex_reading(home=None, now=None, binary=None):
+    """codex live from `binary app-server`, read at `now` (sd:9655); with
+    no binary or no live answer, from the session rollouts, the live
+    failure in `live_error`."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if not binary:
+        live_error = "no codex binary"
+    else:
+        try:
+            fields = codex_fields(codex_live_limits(codex_app_server(binary)))
+            return settled("codex", "codex-app-server", fields, now, read_at=iso(now))
+        except ReadFailed as e:
+            live_error = str(e)
+        except (AttributeError, TypeError, ValueError, OverflowError) as e:
+            live_error = "another shape: %s" % type(e).__name__
+    got = codex_rollout_reading(home, now)
+    got["live_error"] = live_error
+    return got
+
+
+def codex_rollout_reading(home=None, now=None):
     """codex from the newest account-wide `token_count` with `rate_limits`,
     by the event's own time, across the newest rollouts. A model's own
     bucket (another `limit_id`) is never the account's reading.

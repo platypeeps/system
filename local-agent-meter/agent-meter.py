@@ -2,7 +2,7 @@
 """agent-meter — append one agent-usage reading to a JSONL ledger.
 
 Reads the meters and changes nothing else: per provider its usage (claude
-from `cswap list --json`, codex from its session logs, see usage_sources.py),
+from `cswap list --json`, codex from `codex app-server`, see usage_sources.py),
 and `rtk gain` for the token-proxy savings. One JSON object per line, appended.
 
 The ledger is `--out`, else AGENT_METER_FILE (exported, or set in
@@ -365,11 +365,12 @@ def write_rows(record, a) -> None:
 
 def read_one(provider, accounts, accounts_error, now):
     """One provider's reading: claude from cswap's accounts, codex from its
-    session logs, the rest from their own usage APIs."""
+    app-server (its session logs when that fails), the rest from their own usage APIs."""
     if provider == "claude":
         return usage_sources.claude_reading(accounts, accounts_error, now)
     if provider == "codex":
-        return usage_sources.codex_reading(now=now)
+        return usage_sources.codex_reading(
+            now=now, binary=os.environ.get("CODEX_BIN") or find_bin("codex"))
     return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now)
 
 

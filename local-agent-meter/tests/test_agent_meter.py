@@ -131,6 +131,7 @@ class MeterRun(unittest.TestCase):
         self.write_codex(CODEX_EVENT)
         self.executable(self.bin / "codexbar", CODEXBAR)
         self.executable(self.bin / "rtk", RTK)
+        self.executable(self.bin / "codex", "#!/bin/sh\nexit 1\n")
         self.cswap = root / "cswap-bin" / "cswap"
         self.cswap.parent.mkdir()
         self.executable(self.cswap, CSWAP)
@@ -171,6 +172,8 @@ class MeterRun(unittest.TestCase):
         env["PATH"] = os.pathsep.join([str(self.bin), env.get("PATH", "/usr/bin:/bin")])
         env["CODEXBAR_MARK"] = str(self.fixtures / "codexbar-called")
         env["CODEX_HOME"] = str(self.codex_home)
+        # A codex whose app-server never answers: the rollout is the reading.
+        env["CODEX_BIN"] = str(self.bin / "codex")
         # Never the real cswap under ~/.local/bin: its answer holds emails.
         env["CSWAP_BIN"] = str(self.cswap)
         env["CSWAP_FIXTURE"] = str(self.cswap_fixture)
