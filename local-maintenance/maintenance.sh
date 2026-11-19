@@ -86,26 +86,32 @@ uv_prune() {
   done
   # A uvx tool run, such as an MCP proxy a Claude session started, holds
   # the cache lock for as long as it runs and skipped the prune for nights
-  # (sd:9460). One that has run over 12 hours is ended; uv forwards the
-  # TERM to its tool. A `uv run` service is not touched: pause it above.
-  # The executable is `comm`, the line's last field, so a space in its
-  # path neither hides a uvx nor makes another program one. Only `uv`'s
-  # arguments are read, as a prefix after that path.
-  ps -axo pid=,etime=,comm= | while read -r pid etime comm; do
-    case "$comm" in
-      uvx|*/uvx) ;;
-      uv|*/uv)
-        case "$(ps -o args= -p "$pid")" in "$comm tool uvx "*) ;; *) continue ;; esac ;;
-      *) continue ;;
-    esac
-    echo "$etime" | awk '{
-      n = split($1, t, /[-:]/); secs = t[n] + 60 * t[n - 1]
-      if (n >= 3) secs += 3600 * t[n - 2]
-      if (n == 4) secs += 86400 * t[1]
-      exit !(secs > 43200) }' || continue
-    echo "uv-prune: ended uvx $pid, running over 12 hours"
-    kill "$pid" 2>/dev/null || true
-  done
+  # (sd:9460). Only a stale one is ended: its parent is gone (PPID 1),
+  # launchd does not run it as a job, and lsof shows it holding this
+  # cache's lock. A uvx whose parent still runs, such as a live session,
+  # is never signalled; the prune then skips below, as before. A failed
+  # lsof or launchctl list is no answer, so it ends nothing. uv forwards
+  # the TERM to its tool. The executable is `comm`, the line's last
+  # field, so a space in its path neither hides a uvx nor makes another
+  # program one. Only `uv`'s arguments are read, as a prefix after it.
+  if lock_pids=$(st_step 60 lsof -nP -t -- "$cache/.lock" 2>/dev/null) \
+      && launchd_jobs=$(launchctl list 2>/dev/null); then
+    # launchctl's status, not awk's: a pipe's status is its last command's.
+    job_pids=$(printf '%s\n' "$launchd_jobs" | awk 'NR > 1 { print $1 }')
+    ps -axo pid=,ppid=,comm= | while read -r pid ppid comm; do
+      [ "$ppid" = 1 ] || continue
+      case "$comm" in
+        uvx|*/uvx) ;;
+        uv|*/uv)
+          case "$(ps -o args= -p "$pid")" in "$comm tool uvx "*) ;; *) continue ;; esac ;;
+        *) continue ;;
+      esac
+      printf '%s\n' "$lock_pids" | grep -qx "$pid" || continue
+      ! printf '%s\n' "$job_pids" | grep -qx "$pid" || continue
+      echo "uv-prune: ended uvx $pid: its parent is gone and it held $cache"
+      kill "$pid" 2>/dev/null || true
+    done
+  fi
   # Give the paused agents' uv and uvx processes time to exit.
   waited=0
   while { pgrep -x uv || pgrep -x uvx; } >/dev/null 2>&1 && [ "$waited" -lt "${UV_PRUNE_WAIT:-20}" ]; do
@@ -219,9 +225,10 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|move|test
          `run` runs it nightly too).
          Pauses the LaunchAgents in UV_PRUNE_PAUSE (default
          $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp and .kev, prefix
-         default local.system-tools), ends uvx runs older than 12 hours,
-         skips when any other uv process is left, never passes --force,
-         and starts the paused agents again.
+         default local.system-tools), ends a uvx run whose parent is
+         gone and that holds the cache's lock, skips when any other uv
+         process is left, never passes --force, and starts the paused
+         agents again.
          Exits 1 only while a paused agent stays down; its label stays in
          ~/.local/state/uv-prune/paused, and the next run restores it first.
   uv-prune-plist
