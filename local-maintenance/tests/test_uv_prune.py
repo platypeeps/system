@@ -46,8 +46,14 @@ esac
 """,
     "ps": """\
 #!/bin/sh
-# STUB_PS: the process table, one `pid etime command` line each.
-[ -z "$STUB_PS" ] || cat "$STUB_PS"
+# STUB_PS: the process table, one `pid<TAB>etime<TAB>comm<TAB>args` line
+# each; comm is the executable path, args the flattened argv.
+[ -n "$STUB_PS" ] || exit 0
+case "$*" in
+  "-axo pid=,etime=,comm=") awk -F'\t' '{print $1, $2, $3}' "$STUB_PS" ;;
+  "-axo pid=,etime=,command=") awk -F'\t' '{print $1, $2, $4}' "$STUB_PS" ;;
+  "-o args= -p "*) awk -F'\t' -v p="$4" '$1 == p {print $4}' "$STUB_PS" ;;
+esac
 """,
     "pgrep": """\
 #!/bin/sh
@@ -146,24 +152,34 @@ class UvPrune(unittest.TestCase):
         Only a uvx tool run that old is ended; a young one and a `uv run`
         service stay."""
         procs = {}
-        for name in ("old_uvx", "old_tool", "young", "service"):
+        for name in ("old_uvx", "old_tool", "spaced_uvx", "young", "service",
+                     "spaced_other"):
             proc = subprocess.Popen(["sleep", "60"])
             self.addCleanup(proc.wait)
             self.addCleanup(proc.kill)
             procs[name] = proc
         table = self.root / "ps"
-        table.write_text(
-            f"{procs['old_uvx'].pid} 12:00:01 /opt/homebrew/bin/uvx mcp-proxy\n"
-            f"{procs['old_tool'].pid} 3-04:43:42 "
-            "/opt/homebrew/bin/uv tool uvx mcp-proxy-for-aws@latest\n"
-            f"{procs['young'].pid} 05:03:45 /opt/homebrew/bin/uv tool uvx x\n"
-            f"{procs['service'].pid} 4-07:05:25 uv run --extra serve kev\n")
+        rows = [
+            ("old_uvx", "12:00:01", "/opt/homebrew/bin/uvx", "mcp-proxy"),
+            ("old_tool", "3-04:43:42", "/opt/homebrew/bin/uv",
+             "tool uvx mcp-proxy-for-aws@latest"),
+            # A space in the path: the executable is comm, never a word
+            # of the flattened command line (review of sd:9460).
+            ("spaced_uvx", "1-00:00:00", "/Volumes/Dev Tools/bin/uvx", "x"),
+            ("young", "05:03:45", "/opt/homebrew/bin/uv", "tool uvx x"),
+            ("service", "4-07:05:25", "uv", "run --extra serve kev"),
+            ("spaced_other", "2-00:00:00", "/Volumes/uvx Tools/bin/other",
+             "tool uvx x"),
+        ]
+        table.write_text("".join(
+            f"{procs[name].pid}\t{etime}\t{comm}\t{comm} {args}\n"
+            for name, etime, comm, args in rows))
         result = self.run_prune(STUB_PS=str(table))
         self.assertEqual(result.returncode, 0, result.stderr)
-        for name in ("old_uvx", "old_tool"):
+        for name in ("old_uvx", "old_tool", "spaced_uvx"):
             self.assertIsNotNone(procs[name].wait(timeout=5), name)
             self.assertIn(f"ended uvx {procs[name].pid}", result.stdout)
-        for name in ("young", "service"):
+        for name in ("young", "service", "spaced_other"):
             self.assertIsNone(procs[name].poll(), name)
         self.assertIn("uv cache prune", self.calls())
 

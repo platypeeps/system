@@ -88,13 +88,21 @@ uv_prune() {
   # the cache lock for as long as it runs and skipped the prune for nights
   # (sd:9460). One that has run over 12 hours is ended; uv forwards the
   # TERM to its tool. A `uv run` service is not touched: pause it above.
-  for pid in $(ps -axo pid=,etime=,command= | awk '
-      $3 ~ /(^|\/)uvx$/ || ($3 ~ /(^|\/)uv$/ && $4 == "tool" && $5 == "uvx") {
-        n = split($2, t, /[-:]/); secs = t[n] + 60 * t[n - 1]
-        if (n >= 3) secs += 3600 * t[n - 2]
-        if (n == 4) secs += 86400 * t[1]
-        if (secs > 43200) print $1
-      }'); do
+  # The executable is `comm`, the line's last field, so a space in its
+  # path neither hides a uvx nor makes another program one. Only `uv`'s
+  # arguments are read, as a prefix after that path.
+  ps -axo pid=,etime=,comm= | while read -r pid etime comm; do
+    case "$comm" in
+      uvx|*/uvx) ;;
+      uv|*/uv)
+        case "$(ps -o args= -p "$pid")" in "$comm tool uvx "*) ;; *) continue ;; esac ;;
+      *) continue ;;
+    esac
+    echo "$etime" | awk '{
+      n = split($1, t, /[-:]/); secs = t[n] + 60 * t[n - 1]
+      if (n >= 3) secs += 3600 * t[n - 2]
+      if (n == 4) secs += 86400 * t[1]
+      exit !(secs > 43200) }' || continue
     echo "uv-prune: ended uvx $pid, running over 12 hours"
     kill "$pid" 2>/dev/null || true
   done
