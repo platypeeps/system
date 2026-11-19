@@ -279,6 +279,23 @@ class Readers(unittest.TestCase):
                                                   answering({"data": bad}), NOW)
                 self.assertEqual(got["status"], "unknown", got)
 
+    def test_the_month_readers_ask_for_utc_days(self):
+        calls = []
+        first = datetime.datetime(2026, 12, 1, 0, 30, tzinfo=datetime.timezone.utc)
+        usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                    answering(ANSWERS["baseten"][1], calls), first)
+        self.assertIn("start_date=2026-12-01&end_date=2026-12-02", calls[0][0])
+        # A clock in another zone still asks for the UTC day.
+        late = datetime.datetime(2026, 11, 30, 23, 0, tzinfo=datetime.timezone(
+            -datetime.timedelta(hours=7)))
+        usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                    answering(ANSWERS["baseten"][1], calls), late)
+        self.assertIn("start_date=2026-12-01&end_date=2026-12-02", calls[1][0])
+        usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                                    answering(ANSWERS["langsmith"][1], calls), late)
+        self.assertIn("starting_on=2026-12-01T00:00:00Z&ending_before=2027-01-01T00:00:00Z",
+                      calls[2][0])
+
     def test_a_baseten_total_that_is_no_decimal_string_is_unknown(self):
         for total in ("", "-1.00", "1e400", "nan", " 1.00", "1,000.00", "inf"):
             with self.subTest(total=total):
@@ -293,7 +310,8 @@ class Readers(unittest.TestCase):
                                     answering(ANSWERS["baseten"][1], calls), NOW)
         usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
                                     answering(ANSWERS["langsmith"][1], calls), NOW)
-        self.assertIn("start_date=2026-11-01&end_date=2026-11-17", calls[0][0])
+        # Baseten's end date is exclusive: the next UTC day takes in today.
+        self.assertIn("start_date=2026-11-01&end_date=2026-11-18", calls[0][0])
         self.assertIn("starting_on=2026-11-01T00:00:00Z&ending_before=2026-12-01T00:00:00Z",
                       calls[1][0])
 

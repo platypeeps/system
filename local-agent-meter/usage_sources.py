@@ -373,7 +373,8 @@ DECIMAL = re.compile(r"\d{1,15}(\.\d{1,6})?")
 
 
 def month_start(now):
-    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    """The first of now's month in UTC: the providers bill by UTC days."""
+    return now.astimezone(datetime.timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
 def next_month(now):
@@ -384,9 +385,12 @@ def next_month(now):
 def read_baseten(env, fetch, now):
     """The month's cost: the sum of each usage kind's `total` (dedicated,
     training, model APIs, ...), a decimal string in usd. Baseten takes
-    about 23 s to answer (checked 2026-11-19), past TIMEOUT."""
+    about 23 s to answer (checked 2026-11-19), past TIMEOUT. Dates are
+    UTC days and the end date is exclusive: the next day takes in today."""
+    today = now.astimezone(datetime.timezone.utc)
     data = fetch("https://api.baseten.co/v1/billing/usage_summary?start_date=%s&end_date=%s"
-                 % (month_start(now).strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")),
+                 % (month_start(today).strftime("%Y-%m-%d"),
+                    (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d")),
                  {"Authorization": "Api-Key " + key(env, "BASETEN_API_KEY")}, timeout=60)
     kinds = [v for v in data.values() if isinstance(v, dict)] if isinstance(data, dict) else []
     if not kinds:
