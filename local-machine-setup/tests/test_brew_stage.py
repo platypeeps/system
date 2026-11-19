@@ -326,7 +326,8 @@ class BrewStageTest(unittest.TestCase):
         return link, app, {"MACHINE_SETUP_APPLICATIONS_DIR": str(app),
                            "MACHINE_SETUP_LAUNCHDAEMONS_DIR": str(self.home / "LaunchDaemons")}
 
-    def tailscale_daemon(self, daemon, client="1.104.7-tabc", takes=True, after=None, service="running"):
+    def tailscale_daemon(self, daemon, client="1.104.7-tabc", takes=True, after=None, service="running",
+                         args=(), socket="/var/run/tailscaled.socket"):
         prefix = self.home / "brewprefix"
         write_exec(prefix / "opt/tailscale/bin/tailscaled", "#!/bin/sh\n")
         daemons = self.home / "LaunchDaemons"
@@ -338,7 +339,7 @@ class BrewStageTest(unittest.TestCase):
         # The keg CLI answers the service's daemon only on its socket;
         # without it, it answers the app's (already new) daemon.
         write_exec(prefix / "opt/tailscale/bin/tailscale",
-                   '#!/bin/sh\ncase "$1" in --socket=/var/run/tailscaled.socket) d=$(cat "'
+                   f'#!/bin/sh\ncase "$1" in --socket={socket}) d=$(cat "'
                    f'{running}") ;; *) d="{client}" ;; esac\n'
                    # A daemon that is down answers nothing: the CLI fails.
                    '[ -n "$d" ] || exit 1\n'
@@ -363,10 +364,14 @@ class BrewStageTest(unittest.TestCase):
         program = f"{prefix}/opt/tailscale/bin/tailscaled" if service != "other" else "/usr/local/bin/tailscaled"
         state = "not running" if service == "stopped" else "running"
         print_ok = "" if service != "unloaded" else "exit 113\n"
+        # The arguments block as a real print shows it (one per line, two
+        # tabs), the program first, then `args`.
+        arguments = "".join(f"\\t\\t{a}\\n" for a in (program, *args))
         write_exec(self.stubs / "launchctl",
                    '#!/bin/sh\n[ "$1 $2" = "print system/sh.brew.tailscale" ] || exit 1\n' + print_ok
                    + f'printf "system/sh.brew.tailscale = {{\\n\\tstate = {state}\\n\\n'
-                   f'\\tprogram = {program}\\n\\tpid = 9197\\n}}\\n"\n')
+                   f'\\tprogram = {program}\\n\\targuments = {{\\n{arguments}\\t}}\\n'
+                   f'\\tpid = 9197\\n}}\\n"\n')
         sudo_log = self.home / "sudo.log"
         after = client if after is None else after
         restart = f'case "$*" in *"services restart tailscale"*) printf %s "{after}" > "{running}" ;; esac\n'
@@ -596,6 +601,28 @@ class BrewStageTest(unittest.TestCase):
         result = self.run_verb("update", "brew", "--apply", **env)
         self.assertNotIn("tailscaled runs", result.stdout)
         self.assertNotIn("restart", sudo_log.read_text() if sudo_log.exists() else "")
+
+    def test_the_probe_asks_the_socket_the_service_was_started_with(self):
+        # sd:9282 lane review: the default socket can be another
+        # daemon's. Each form Go's flag package takes names the socket.
+        for args in (["--socket=/var/run/other.socket"], ["-socket", "/var/run/other.socket"],
+                     ["-socket=/var/run/other.socket"], ["--port=41641", "--socket", "/var/run/other.socket"]):
+            with self.subTest(args=args):
+                _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+                sudo_log = self.tailscale_daemon("1.104.5-tdef", args=args, socket="/var/run/other.socket")
+                result = self.run_verb("update", "brew", **env)
+                self.assertIn("DIFFERS tailscaled runs 1.104.5-tdef, its binary is 1.104.7-tabc", result.stdout)
+                self.assertFalse(sudo_log.exists() and "restart" in sudo_log.read_text())
+
+    def test_a_socket_the_service_names_unreadably_is_skipped(self):
+        for args in (["--socket="], ["--socket"]):
+            with self.subTest(args=args):
+                _, _, env = self.tailscale_profile(brew="tailscale\n", cask="")
+                sudo_log = self.tailscale_daemon("1.104.5-tdef", args=args)
+                result = self.run_verb("update", "brew", "--apply", **env)
+                self.assertIn("SKIP    tailscaled check: system/sh.brew.tailscale names a socket this cannot read",
+                              result.stdout)
+                self.assertFalse(sudo_log.exists() and "restart" in sudo_log.read_text())
 
     def test_a_daemon_older_than_its_binary_is_restarted(self):
         """sd:9245: brew upgraded tailscale under a running tailscaled,

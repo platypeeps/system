@@ -1054,6 +1054,27 @@ tailscale_daemon_match() {
     fi
     return 0
   fi
+  # The socket is the one the running service was started with (sd:9282
+  # lane review): its arguments name it as -socket or --socket, with = or
+  # as the next argument, as Go's flag package takes it; with none named,
+  # tailscaled's default. A flag with no value is a socket this cannot
+  # read, so nothing is probed or restarted.
+  tm_sock=$(printf '%s\n' "$tm_svc" | awk '
+    /^\targuments = [{]$/ { inside = 1; next }
+    inside && /^\t[}]$/ { exit }
+    inside { sub(/^\t\t/, ""); arg[++n] = $0 }
+    END {
+      s = "/var/run/tailscaled.socket"
+      for (i = 1; i <= n; i++) {
+        if (arg[i] ~ /^--?socket=/) { s = arg[i]; sub(/^--?socket=/, "", s) }
+        else if (arg[i] ~ /^--?socket$/) s = (i < n) ? arg[++i] : ""
+      }
+      print s
+    }')
+  if [ -z "$tm_sock" ]; then
+    echo "  SKIP    tailscaled check: system/$tm_label names a socket this cannot read"
+    return 0
+  fi
   tailscale_daemon_versions
   if [ -z "$tm_cli" ] || [ -z "$tm_dmn" ]; then
     # FAILED, a drift word: a probe that failed checked nothing (sd:9282),
@@ -1088,7 +1109,7 @@ tailscale_daemon_match() {
       # WARN says so here.
       for _ in $TM_WAIT; do
         bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" \
-          --socket=/var/run/tailscaled.socket status --json 2>/dev/null |
+          --socket="$tm_sock" status --json 2>/dev/null |
           grep -q '"BackendState": *"Running"' && return 0
         sleep 1
       done
@@ -1106,10 +1127,11 @@ TM_WAIT="1 2 3 4 5 6 7 8 9 10"
 
 # Sets tm_cli and tm_dmn from the formula's own CLI: another tailscale
 # earlier on PATH can match the stale daemon (sd:9245 lane review). The
-# socket is the brew service's: by default the CLI may ask the app's.
+# socket is the brew service's, tm_sock: by default the CLI may ask the
+# app's.
 tailscale_daemon_versions() {
   tm_out=$(bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" \
-    --socket=/var/run/tailscaled.socket \
+    --socket="$tm_sock" \
     version --daemon 2>/dev/null) || tm_out=
   tm_cli=$(printf '%s\n' "$tm_out" | sed -n 's/^ *long version: //p')
   tm_dmn=$(printf '%s\n' "$tm_out" | sed -n 's/^Daemon: //p')
