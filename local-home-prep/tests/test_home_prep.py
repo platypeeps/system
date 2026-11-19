@@ -130,15 +130,15 @@ class HomePrep(unittest.TestCase):
     def test_selects_only_open_home_items_due_tomorrow(self):
         chore = self.add("Fill the softener with salt", "--no-repo", "--recur", "FREQ=MONTHLY")
         hoa = self.add("Board packet: draft the agenda mail", "--belongs-to", str(self.hoa))
-        personal = self.add("Renew the car registration", "--kind", "personal")
+        renewal = self.add("Renew the car registration", "--kind", "task", "--no-repo")
         self.add("Code change in another repo", "--belongs-to", str(self.code))
         self.add("A chore due today", "--no-repo", due=date.today().isoformat())
         self.add("A chore due in two days", "--no-repo", due=(date.today() + timedelta(days=2)).isoformat())
         closed = self.add("A chore already done", "--no-repo")
         self.pack("sd", "task", "status", str(closed), "done", "--reason", "test")
-        result_ = self.run_job(reply=result(prepped(chore, hoa, personal)))
+        result_ = self.run_job(reply=result(prepped(chore, hoa, renewal)))
         self.assertEqual(result_.returncode, 0, result_.stdout + result_.stderr)
-        self.assertEqual(self.prompted(), sorted([chore, hoa, personal]))
+        self.assertEqual(self.prompted(), sorted([chore, hoa, renewal]))
         self.assertIn("operator@example.test", self.prompt())
 
     def test_nothing_due_runs_no_model(self):
