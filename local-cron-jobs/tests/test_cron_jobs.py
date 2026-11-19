@@ -1734,6 +1734,55 @@ class HostJobsTest(unittest.TestCase):
             plist = agents / f"{LABEL_PREFIX}.cron.{job}.plist"
             self.assertEqual(want, plistlib.loads(plist.read_bytes()).get("ExitTimeOut"), job)
 
+    def exit_timeout_after_install(self, line):
+        self.fx.write_job("demo", line + self.JOB.format("true"))
+        result = self.run_script("install", "demo")
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        data = plist.read_bytes() if plist.exists() else b""
+        return result, (plistlib.loads(data).get("ExitTimeOut") if data else None)
+
+    def test_a_grace_with_leading_zeros_is_read_as_decimal(self):
+        """Build 1232 round 4 (class: a number checked for shape only,
+        then read three ways). `08` failed sh arithmetic after the plist
+        was opened; `010` gave Perl 10 s and sh 8 s. One decimal value
+        now feeds Perl, stop_workload and ExitTimeOut alike."""
+        for grace, want in (("08", 38), ("010", 40), ("0", 30)):
+            with self.subTest(grace=grace):
+                result, exit_timeout = self.exit_timeout_after_install(
+                    f"CRON_JOBS_TIMEOUT_GRACE={grace}\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(want, exit_timeout)
+
+    def test_a_grace_out_of_range_is_refused_and_keeps_the_plist(self):
+        _, kept = self.exit_timeout_after_install("")
+        self.assertEqual(60, kept)
+        for grace in ("3601", "99999999999999999999"):
+            with self.subTest(grace=grace):
+                result, exit_timeout = self.exit_timeout_after_install(
+                    f"CRON_JOBS_TIMEOUT_GRACE={grace}\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("CRON_JOBS_TIMEOUT_GRACE", result.stderr)
+                self.assertEqual(60, exit_timeout)
+
+    def test_a_job_timeout_too_large_for_sh_arithmetic_is_refused(self):
+        # 99999999999999999999h wrapped to a negative limit in $(( )).
+        for limit in ("99999999999999999999h", "9999999999"):
+            with self.subTest(limit=limit):
+                self.fx.write_job("demo", f'JOB_TIMEOUT="{limit}"\n' + self.JOB.format("true"))
+                result = self.run_script("install", "demo")
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("JOB_TIMEOUT", result.stderr)
+
+    def test_a_job_timeout_with_leading_zeros_is_decimal(self):
+        self.fx.write_job("demo", 'JOB_TIMEOUT="010m"\n' + self.JOB.format("true"))
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        script = self.fx.folder / "cron-jobs.sh"
+        out = subprocess.run(
+            ["bash", "-c", f'eval "$(sed -n -e "/^decimal()/,/^}}/p" -e "/^timeout_seconds()/,/^}}/p" {script})"; '
+                           'timeout_seconds 010m'],
+            capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(out, "600")
+
     def test_a_grace_that_is_not_a_number_is_refused(self):
         self.fx.write_job("demo", "CRON_JOBS_TIMEOUT_GRACE=soon\n" + self.JOB.format("true"))
         result = self.run_script("install", "demo")

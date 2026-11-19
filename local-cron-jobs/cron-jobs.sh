@@ -236,13 +236,23 @@ DEFAULT_JOB_TIMEOUT=2h
 # outcome, report and push.
 EXIT_REPORT_ROOM=30
 
-# A limit as whole seconds: N, Ns, Nm or Nh. Leading zeros are dropped
-# first, since `$(( ))` reads 010 as octal.
-timeout_seconds() { # value
-  local n="${1%[smh]}"
+# A whole number as plain decimal, or fail: digits only, at most MAX.
+# Leading zeros go first, since `$(( ))` reads 010 as octal and 08 as an
+# error while Perl reads both as decimal; nine digits at most, so neither
+# the comparison nor a caller's `$(( ))` can overflow.
+decimal() { # value max
+  local n="$1"
   case "$n" in '' | *[!0-9]*) return 1 ;; esac
   n="${n#"${n%%[!0]*}"}"
   n="${n:-0}"
+  [ "${#n}" -le 9 ] && [ "$n" -le "$2" ] || return 1
+  echo "$n"
+}
+
+# A limit as whole seconds: N, Ns, Nm or Nh.
+timeout_seconds() { # value
+  local n
+  n="$(decimal "${1%[smh]}" 999999999)" || return 1
   case "$1" in
     *h) echo $((n * 3600)) ;;
     *m) echo $((n * 60)) ;;
@@ -264,13 +274,15 @@ load_job() {
   if [ -n "$JOB_PROMPT" ] && [ -n "$JOB_COMMAND" ]; then
     echo "ERROR: $f sets both JOB_PROMPT and JOB_COMMAND — pick one" >&2; exit 1
   fi
-  JOB_GRACE="${CRON_JOBS_TIMEOUT_GRACE:-30}"
-  case "$JOB_GRACE" in
-    '' | *[!0-9]*) echo "ERROR: $f: CRON_JOBS_TIMEOUT_GRACE '$JOB_GRACE' is not a whole number of seconds" >&2; exit 1 ;;
-  esac
+  # One decimal value for all three waits: Perl's, stop_workload's and
+  # the plist's ExitTimeOut. Checked here, before any plist is opened.
+  JOB_GRACE="$(decimal "${CRON_JOBS_TIMEOUT_GRACE:-30}" 3600)" || {
+    echo "ERROR: $f: CRON_JOBS_TIMEOUT_GRACE '${CRON_JOBS_TIMEOUT_GRACE}' is not a whole number of seconds from 0 to 3600" >&2
+    exit 1
+  }
   local limit="${JOB_TIMEOUT:-${CRON_JOBS_JOB_TIMEOUT:-$DEFAULT_JOB_TIMEOUT}}"
   JOB_TIMEOUT_SECONDS="$(timeout_seconds "$limit")" || {
-    echo "ERROR: $f: JOB_TIMEOUT (or CRON_JOBS_JOB_TIMEOUT) '$limit' is not N, Ns, Nm or Nh" >&2
+    echo "ERROR: $f: JOB_TIMEOUT (or CRON_JOBS_JOB_TIMEOUT) '$limit' is not N, Ns, Nm or Nh, N at most nine digits" >&2
     exit 1
   }
 }
@@ -401,7 +413,7 @@ xml_escape() { # text: the text with &, < and > as XML entities
 }
 
 write_plist() { # job name
-  local job="$1" label plist x_label x_root x_job x_log x_path x_home x_config x_launch
+  local job="$1" label plist x_label x_root x_job x_log x_path x_home x_config x_launch exit_timeout
   label="$(label_for "$job")"
   plist="$(plist_for "$job")"
   # Every value below is XML text: a path holding `&` or `<` made a plist
@@ -410,6 +422,9 @@ write_plist() { # job name
   x_log="$(xml_escape "$LOG_DIR/$job.log")"; x_path="$(xml_escape "$JOB_PATH")"
   x_home="$(xml_escape "$HOME")"; x_config="$(xml_escape "$SYSTEM_TOOLS_CONFIG")"
   x_launch="$(xml_escape "$JOB_LAUNCH")"
+  # Every value is computed before the plist is opened: a failure while
+  # it is open leaves the installed plist empty.
+  exit_timeout=$((JOB_GRACE + EXIT_REPORT_ROOM))
   {
     cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -478,7 +493,7 @@ EOF
          this. The runner waits the job's grace, then writes its outcome;
          unset (20 s) under a 30 s grace left no outcome at all (sd:7105). -->
     <key>ExitTimeOut</key>
-    <integer>$((JOB_GRACE + EXIT_REPORT_ROOM))</integer>
+    <integer>$exit_timeout</integer>
 </dict>
 </plist>
 EOF
