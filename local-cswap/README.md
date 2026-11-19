@@ -31,6 +31,8 @@ So a sync that switches the account, on the hub or a satellite, writes `state/rc
 Once `herdr agent list` answers with a list it can parse, each claude pane it names is owed in `state/rc-owed`.
 Every sync then submits `/rc` (`herdr agent prompt`) to each owed pane that is idle or done, whose latest Remote Control banner, as Claude prints it at line start, is `⏺ Remote Control disconnected — `, not `  /remote-control is active · `, and whose input box (the rules around the last `❯` line) holds no typed text; dim text there is a prompt suggestion.
 Any other pane gets no keys, as a key can answer a permission dialog or join a half-typed prompt; it stays owed, and the next sync tries again.
+Right before the keys, `herdr agent get` and a fresh screen read check the pane again; a gap of milliseconds remains, as herdr has no check-and-send.
+The account sync runs first, then one reconnect pass of at most 60 seconds, checked before each pane; a pane it does not reach stays owed.
 A pane leaves the list once sent, gone, running another session, connected, or owed for 30 minutes.
 A sync that switches nothing writes no list, so a connected session is never toggled off.
 Cron's PATH may lack herdr, so sync also looks in `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin` (`CSWAP_HERDR_DIRS`).
