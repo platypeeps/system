@@ -20,7 +20,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 #: The kinds an operator acts on; reports, ideas and work items are not home chores.
-KINDS = {"task", "followup", "personal"}
+KINDS = {"task", "followup"}
 CLOSED = {"done", "cancelled"}
 #: Each note starts with this and the due date, so a recurring item's next due date counts anew.
 MARK = "Prepped for {due}:"

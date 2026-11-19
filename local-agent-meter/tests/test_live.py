@@ -26,6 +26,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -48,6 +49,24 @@ LOCAL = {"NO_PROXY": "*", "no_proxy": "*"}
 PROXIES = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
 
 
+class PinnedClock(datetime.datetime):
+    """The readers' datetime here: a reading that falls back to the host
+    clock fails. The fixtures are stamped 2026-11-17, so an unpinned read
+    passed or failed by the host's date (sd:9575)."""
+
+    @classmethod
+    def now(cls, tz=None):
+        raise AssertionError("a reader read the host clock: pass now=NOW")
+
+
+def setUpModule():
+    # usage_sources' own name only: the datetime module stays whole.
+    clock = mock.patch.object(usage_sources, "datetime", types.SimpleNamespace(
+        datetime=PinnedClock, timezone=datetime.timezone, timedelta=datetime.timedelta))
+    clock.start()
+    unittest.addModuleCleanup(clock.stop)
+
+
 def local_only(test):
     """No proxy for this test's reads, the environment restored after it."""
     patcher = mock.patch.dict(os.environ, LOCAL)
@@ -58,6 +77,16 @@ def local_only(test):
 
 #: Each keyed reader: its variable, an answer in the live shape (checked
 #: 2026-11-17), and what the reading must hold.
+#: One AI-credit item and one premium-request item, in the live shape.
+AI_CREDITS = {"product": "Copilot", "sku": "Copilot AI Credits", "model": "m-1",
+              "unitType": "ai-credits", "pricePerUnit": 0.01, "grossQuantity": 1800.0,
+              "grossAmount": 18.0, "discountQuantity": 1500.0, "discountAmount": 15.0,
+              "netQuantity": 300.0, "netAmount": 3.0}
+PREMIUM = {"product": "Copilot", "sku": "Copilot Premium Request", "model": "m-1",
+           "unitType": "requests", "pricePerUnit": 0.04, "grossQuantity": 350,
+           "grossAmount": 14, "discountQuantity": 300, "discountAmount": 12,
+           "netQuantity": 50, "netAmount": 2}
+
 ANSWERS = {
     "openrouter": ("OPENROUTER_API_KEY",
                    {"data": {"usage_monthly": 12.5, "limit": 50, "limit_remaining": 37.5}},
@@ -124,6 +153,35 @@ ANSWERS = {
                     "balance": {"amount": 7500.0, "unit": "words"},
                     "windows": [{"name": "words", "used_percent": 25.0, "window_minutes": None,
                                  "resets_at": "2026-12-01T00:00:00.000Z"}]}),
+    # Both GitHub readers ask /user for the login, then the month's usage
+    # (checked 2026-11-19); one answer here serves both calls (sd:9592).
+    "github": ("GH_TOKEN",
+               {"login": "operator", "usageItems": [
+                   {"date": "2026-11-02", "product": "actions", "sku": "actions_linux",
+                    "quantity": 120, "unitType": "Minutes", "pricePerUnit": 0.008,
+                    "grossAmount": 0.96, "discountAmount": 0.96, "netAmount": 0},
+                   {"date": "2026-11-03", "product": "copilot", "sku": "copilot_pro",
+                    "quantity": 1, "unitType": "UserMonths", "pricePerUnit": 10,
+                    "grossAmount": 10, "discountAmount": 0, "netAmount": 10}]},
+               {"spend": {"amount": 10.0, "unit": "usd", "period": "month"}}),
+    # A personal plan on AI credits (checked 2026-11-19): the AI-credit
+    # report holds the month; its premium-request report is empty.
+    "copilot": ("GH_TOKEN",
+                {"login": "operator", "timePeriod": {"year": 2026, "month": 11},
+                 "user": "operator", "usageItems": [AI_CREDITS]},
+                {"spend": {"amount": 3.0, "unit": "usd", "period": "month"},
+                 "credits": 1800.0}),
+    # Daily buckets; each amount a decimal string in cents (checked
+    # 2026-11-19, sd:9594).
+    "anthropic-api": ("ANTHROPIC_ADMIN_KEY",
+                      {"data": [{"starting_at": "2026-11-01T00:00:00Z",
+                                 "ending_at": "2026-11-02T00:00:00Z",
+                                 "results": [{"currency": "USD", "amount": "150", "model": None}]},
+                                {"starting_at": "2026-11-02T00:00:00Z",
+                                 "ending_at": "2026-11-03T00:00:00Z",
+                                 "results": [{"currency": "USD", "amount": "225.00"}]}],
+                       "has_more": False, "next_page": None},
+                      {"spend": {"amount": 3.75, "unit": "usd", "period": "month"}}),
 }
 
 #: Values no number in an answer may be taken from.
@@ -177,9 +235,10 @@ class Readers(unittest.TestCase):
                 self.assertEqual(got["read_at"], "2026-11-17T20:00:00Z")
                 for field, value in expected.items():
                     self.assertEqual(got[field], value)
-                (url, headers), = calls
-                self.assertTrue(url.startswith("https://"))
-                self.assertIn(SECRET, " ".join(headers.values()))
+                self.assertTrue(calls)
+                for url, headers in calls:
+                    self.assertTrue(url.startswith("https://"))
+                    self.assertIn(SECRET, " ".join(headers.values()))
 
     def test_a_window_that_reset_is_never_current(self):
         # sd:9256 round 8: the live usage path stored a window whose reset
@@ -244,6 +303,8 @@ class Readers(unittest.TestCase):
                     # Baseten's totals are decimal strings by its schema.
                     if name == "baseten":
                         bent = {k: {**v, "total": extreme} for k, v in answer.items()}
+                    if name == "anthropic-api":
+                        continue  # no JSON number: see the amount-string test
                     got = usage_sources.read_provider(name, {var: SECRET}, answering(bent), NOW)
                     # sd:9256 round 7: "12" read as a number; only Codex's
                     # balance and Baseten's totals are strings by schema.
@@ -348,6 +409,127 @@ class Readers(unittest.TestCase):
         self.assertIn("start_date=2026-11-01&end_date=2026-11-18", calls[0][0])
         self.assertIn("starting_on=2026-11-01T00:00:00Z&ending_before=2026-12-01T00:00:00Z",
                       calls[1][0])
+    def test_the_github_readers_ask_this_month_for_the_login_they_read(self):
+        # sd:9592: the billing endpoints are per user; /user names the login.
+        for name, path in (("github", "/settings/billing/usage?"),
+                           ("copilot", "/settings/billing/ai_credit/usage?")):
+            with self.subTest(provider=name):
+                var, answer, _ = ANSWERS[name]
+                calls = []
+                usage_sources.read_provider(name, {var: SECRET}, answering(answer, calls), NOW)
+                self.assertEqual([url for url, _ in calls], [
+                    "https://api.github.com/user",
+                    "https://api.github.com/users/operator" + path + "year=2026&month=11"])
+
+    def test_a_github_login_of_another_shape_is_unknown_and_never_sent(self):
+        for login in (None, 5, "", "a/b", "../x", "x" * 40, "-x", "x?y"):
+            for name in ("github", "copilot"):
+                with self.subTest(provider=name, login=login):
+                    var, answer, _ = ANSWERS[name]
+                    calls = []
+                    got = usage_sources.read_provider(
+                        name, {var: SECRET}, answering(put(answer, ("login",), login), calls), NOW)
+                    self.assertEqual((got["status"], got["error"]), ("unknown", "no login"))
+                    self.assertEqual(len(calls), 1)
+
+    def test_an_empty_github_month_is_zero_and_a_missing_list_is_unknown(self):
+        for name in ("github", "copilot"):
+            with self.subTest(provider=name):
+                got = usage_sources.read_provider(
+                    name, {"GH_TOKEN": SECRET},
+                    answering({"login": "operator", "usageItems": []}), NOW)
+                self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0))
+                for items in (None, "x", 5, [5], [None]):
+                    got = usage_sources.read_provider(
+                        name, {"GH_TOKEN": SECRET},
+                        answering({"login": "operator", "usageItems": items}), NOW)
+                    self.assertEqual(got["status"], "unknown", got)
+
+    def copilot(self, ai, premium, calls=None):
+        """The copilot reading with each report's answer: items, or a
+        ReadFailed to raise."""
+        def fetch(url, headers=None, **_):
+            if calls is not None:
+                calls.append(url)
+            if url.endswith("/user"):
+                return {"login": "operator"}
+            answer = ai if "/ai_credit/" in url else premium
+            if isinstance(answer, ReadFailed):
+                raise answer
+            return {"timePeriod": {"year": 2026, "month": 11}, "user": "operator",
+                    "usageItems": json.loads(json.dumps(answer))}
+        return usage_sources.read_provider("copilot", {"GH_TOKEN": SECRET}, fetch, NOW)
+
+    def test_an_ai_credit_plan_reads_credits_and_never_requests(self):
+        # sd:9592 review: personal plans on AI credits bill in that report;
+        # the premium-request report missed their usage and overage.
+        calls = []
+        got = self.copilot([AI_CREDITS, AI_CREDITS], [PREMIUM], calls)
+        self.assertEqual((got["status"], got["spend"]["amount"], got["credits"]), ("ok", 6.0, 3600.0))
+        self.assertNotIn("requests", got)
+        self.assertFalse([url for url in calls if "premium_request" in url])
+
+    def test_a_premium_request_plan_falls_back_and_reads_requests(self):
+        for ai in ([], ReadFailed("HTTP 404")):
+            with self.subTest(ai=ai):
+                got = self.copilot(ai, [PREMIUM])
+                self.assertEqual((got["status"], got["spend"]["amount"], got["requests"]),
+                                 ("ok", 2.0, 350.0))
+                self.assertNotIn("credits", got)
+
+    def test_an_empty_copilot_month_and_a_missing_report(self):
+        got = self.copilot([], [])
+        self.assertEqual((got["status"], got["spend"]["amount"], got["credits"]), ("ok", 0.0, 0.0))
+        # sd:9592 review: an empty AI-credit report does not establish the
+        # plan, so a fallback that cannot be read is no reading, not zero.
+        for failure in ("HTTP 404", "HTTP 500"):
+            got = self.copilot([], ReadFailed(failure))
+            self.assertEqual((got["status"], got["error"], got["spend"]),
+                             ("unknown", failure, None))
+        got = self.copilot(ReadFailed("HTTP 404"), ReadFailed("HTTP 404"))
+        self.assertEqual((got["status"], got["error"]), ("unknown", "HTTP 404"))
+        # Only a 404 says a report does not apply: any other failure is unknown.
+        got = self.copilot(ReadFailed("HTTP 500"), [PREMIUM])
+        self.assertEqual((got["status"], got["error"]), ("unknown", "HTTP 500"))
+
+    def test_an_ai_credit_item_in_another_unit_is_unknown(self):
+        for unit in ("requests", None, "AI-Credits", 5):
+            with self.subTest(unit=unit):
+                got = self.copilot([put(AI_CREDITS, ("unitType",), unit)], [])
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "an AI-credit item in another unit"))
+
+    def test_the_anthropic_cost_report_asks_for_this_month(self):
+        var, answer, _ = ANSWERS["anthropic-api"]
+        calls = []
+        usage_sources.read_provider("anthropic-api", {var: SECRET}, answering(answer, calls), NOW)
+        (url, headers), = calls
+        self.assertEqual(url, "https://api.anthropic.com/v1/organizations/cost_report"
+                              "?starting_at=2026-11-01T00:00:00Z&bucket_width=1d&limit=31")
+        self.assertEqual((headers["x-api-key"], headers["anthropic-version"]),
+                         (SECRET, "2023-06-01"))
+
+    def test_an_anthropic_amount_that_is_not_decimal_cents_is_unknown(self):
+        # sd:9594: the amount is a string, so a number, nan or an exponent
+        # must not read as cents.
+        var, answer, _ = ANSWERS["anthropic-api"]
+        path = ("data", 0, "results", 0, "amount")
+        for amount in (150, None, "", "nan", "inf", "1e400", "-5", "1,5", "12abc", " 12", "1" * 400):
+            with self.subTest(amount=amount):
+                got = usage_sources.read_provider(
+                    "anthropic-api", {var: SECRET}, answering(put(answer, path, amount)), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+                self.assertIsNone(got["spend"])
+        for bent in (put(answer, ("data", 0, "results", 0, "currency"), "EUR"),
+                     put(answer, ("has_more",), True), put(answer, ("has_more",), None),
+                     put(answer, ("data", 0, "results"), None)):
+            with self.subTest(bent=bent):
+                got = usage_sources.read_provider("anthropic-api", {var: SECRET},
+                                                  answering(bent), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+        got = usage_sources.read_provider("anthropic-api", {var: SECRET},
+                                          answering({"data": [], "has_more": False}), NOW)
+        self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0))
 
     def test_a_reader_that_raises_is_unknown_and_costs_no_other(self):
         def strange(env, fetch, now):
@@ -561,7 +743,7 @@ class Codex(unittest.TestCase):
         self.rollout("old", [self.event(used=10.0, stamp="2026-11-16T00:00:00Z")], 1000)
         self.rollout("new", [self.event(used=40.0, stamp="2026-11-17T18:00:00Z"),
                              self.event(used=61.0), "{not json"], 2000)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual(got["status"], "ok")
         self.assertEqual(got["read_at"], "2026-11-17T19:00:00.000Z")
         self.assertEqual(got["windows"], [{"name": "primary", "used_percent": 61.0,
@@ -573,7 +755,7 @@ class Codex(unittest.TestCase):
         self.rollout("old", [self.event(used=10.0, stamp="2026-11-16T00:00:00Z")], 1000)
         self.rollout("new", [{"timestamp": "2026-11-17T19:00:00Z", "type": "session_meta",
                               "payload": {"type": "session_meta"}}], 2000)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual((got["status"], got["read_at"]), ("ok", "2026-11-16T00:00:00Z"))
 
     def test_the_newest_event_wins_whatever_file_was_touched_last(self):
@@ -581,7 +763,7 @@ class Codex(unittest.TestCase):
         at = datetime.datetime(2026, 11, 17, 19, 0, tzinfo=datetime.timezone.utc).timestamp()
         self.rollout("touched", [self.event(used=10.0, stamp="2026-11-17T10:00:00Z")], at + 7200)
         self.rollout("newer", [self.event(used=55.0, stamp="2026-11-17T19:00:00Z")], at + 60)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual((got["read_at"], got["windows"][0]["used_percent"]),
                          ("2026-11-17T19:00:00Z", 55.0))
 
@@ -591,7 +773,7 @@ class Codex(unittest.TestCase):
         self.rollout("new", [self.event(30.0, "2026-11-17T19:00:00Z")], 2000)
         self.rollout("copied", [self.event(90.0, "2026-11-17T21:00:00Z"),
                                 self.event(50.0, "2026-11-17T20:00:00Z")], 1000)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW + datetime.timedelta(hours=2))
         self.assertEqual(got["read_at"], "2026-11-17T21:00:00Z")
 
     def test_a_models_own_bucket_never_replaces_the_accounts(self):
@@ -599,11 +781,11 @@ class Codex(unittest.TestCase):
         self.rollout("x", [self.event(used=40.0, stamp="2026-11-17T18:00:00Z", limit_id="codex"),
                            self.event(used=90.0, stamp="2026-11-17T19:00:00Z",
                                       limit_id="codex_other")], 2000)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual((got["read_at"], got["windows"][0]["used_percent"]),
                          ("2026-11-17T18:00:00Z", 40.0))
         self.rollout("x", [self.event(used=90.0, limit_id="codex_other")], 2000)
-        self.assertEqual(usage_sources.codex_reading(self.home)["status"], "unknown")
+        self.assertEqual(usage_sources.codex_reading(self.home, now=NOW)["status"], "unknown")
 
     def test_an_event_stamped_after_now_never_outranks_a_real_reading(self):
         # sd:9499: event time had no upper bound, so one future-stamped
@@ -634,10 +816,10 @@ class Codex(unittest.TestCase):
         self.assertEqual(got["balance"], {"amount": 62500.0, "unit": "credits"})
 
     def test_no_limits_anywhere_is_unknown(self):
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual(got["status"], "unknown")
         self.rollout("bad", [self.event(primary="x"), self.event(used=float("nan"))], 1000)
-        got = usage_sources.codex_reading(self.home)
+        got = usage_sources.codex_reading(self.home, now=NOW)
         self.assertEqual(got["status"], "unknown")
 
     def test_every_extreme_value_is_skipped_not_a_reading(self):
@@ -653,7 +835,7 @@ class Codex(unittest.TestCase):
                     event = self.event()
                     event["payload"]["rate_limits"]["primary"][field] = extreme
                     self.rollout("x", [event], 1000)
-                    got = usage_sources.codex_reading(self.home)
+                    got = usage_sources.codex_reading(self.home, now=NOW)
                     self.assertEqual(got["status"], "unknown", got)
                     json.dumps(got, allow_nan=False)
 
@@ -1280,10 +1462,10 @@ class Hostile(unittest.TestCase):
         for label, bent in hostile(Codex.event(), deep=False):
             (day / "rollout-x.jsonl").write_text(json.dumps(bent) + "\n", encoding="utf-8")
             failures += self.check("codex " + label,
-                                   lambda: usage_sources.codex_reading(tmp.name), ("ok",))
+                                   lambda: usage_sources.codex_reading(tmp.name, now=NOW), ("ok",))
         (day / "rollout-x.jsonl").write_text(
             '{"type": "token_count", "rate_limits": %s}\n' % DEEP_TEXT, encoding="utf-8")
-        got = usage_sources.codex_reading(tmp.name)
+        got = usage_sources.codex_reading(tmp.name, now=NOW)
         self.assertEqual(got["status"], "unknown")
         self.assertEqual(failures, [])
 
@@ -1357,7 +1539,7 @@ class Hostile(unittest.TestCase):
         day = Path(tmp.name) / "sessions/2026/11/17"
         day.mkdir(parents=True)
         (day / "rollout-x.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
-        return usage_sources.codex_reading(tmp.name)
+        return usage_sources.codex_reading(tmp.name, now=NOW)
 
     def claude(self, reply):
         meter = load_meter()
@@ -1431,7 +1613,7 @@ class Hostile(unittest.TestCase):
         (day / "rollout-x.jsonl").write_text(
             json.dumps(Codex.event(stamp="2026-11-17T19:00:00Z")) + "\n" + json.dumps(bad) + "\n",
             encoding="utf-8")
-        got = usage_sources.codex_reading(tmp.name)
+        got = usage_sources.codex_reading(tmp.name, now=NOW)
         self.assertEqual((got["status"], got["error"]), ("unknown", "primary.used_percent is not a number"))
 
     def test_a_deep_body_over_http_is_read_failed(self):
