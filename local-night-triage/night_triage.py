@@ -152,8 +152,9 @@ def _others(notes, host):
 
 
 # The two claim forms: a session's `claimed: <why>` and another run's
-# `<who> on <host> claims it`; a note that only names a claim is none.
-CLAIM = re.compile(r"claimed:|\S.* on \S+ claims it\b")
+# `<who> on <host> claims it`, in any case; a note that only names a
+# claim is none.
+CLAIM = re.compile(r"claimed:|\S.* on \S+ claims it\b", re.I)
 
 
 def held_by_other(notes, host):

@@ -462,7 +462,8 @@ class NightTriage(unittest.TestCase):
 
     def test_the_claim_forms_are_claims(self):
         import night_triage
-        for body in ("claimed: triaging", "night-triage on node2 claims it: a run"):
+        for body in ("claimed: triaging", "night-triage on node2 claims it: a run",
+                     "Claimed: investigating", "Night-triage on node2 Claims it: a run"):
             with self.subTest(body=body):
                 notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
                 self.assertTrue(night_triage.held_by_other(notes, "node1"))
