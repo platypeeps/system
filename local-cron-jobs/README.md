@@ -243,8 +243,8 @@ signal that ends the runner while the job runs, such as launchd's TERM at
 shutdown, is named as the cause in the log, the report and the push
 (`interrupted by a signal to the runner`), and the grade stays the job's.
 The wrapper sends the job TERM and waits `CRON_JOBS_TIMEOUT_GRACE`
-seconds for it (default 10; a job file may set its own, as `lane-run`
-does); a job still running then is named in the log (sd:7105). The
+seconds for it (default 30, so a lane run's unwind ends first; a job
+file may set its own); a job still running then is named in the log (sd:7105). The
 wrapper pushes through `local-notify` with `-c ntfy -p high` and no `-b`,
 so it reaches the phone where `NTFY_TOPIC` is set in local-notify's `.env`,
 and only an ntfy delivery counts as sent. The

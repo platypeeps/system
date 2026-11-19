@@ -23,7 +23,7 @@
 #                  0 turns it off. Default: CRON_JOBS_JOB_TIMEOUT, else 2h.
 #                  A run past it logs its process group's processes, has
 #                  the group sent TERM, then KILL after
-#                  CRON_JOBS_TIMEOUT_GRACE seconds (default 10), and fails
+#                  CRON_JOBS_TIMEOUT_GRACE seconds (default 30), and fails
 #                  with exit 124.
 #
 # Usage:
@@ -880,7 +880,7 @@ run_bounded() { # job, seconds, command...
   local job="$1" limit="$2" rc=0
   shift 2
   EXEC_IN_JOB=1
-  perl -e "$RUN_BOUNDED" "$job" "$limit" "${CRON_JOBS_TIMEOUT_GRACE:-10}" "$@" || rc=$?
+  perl -e "$RUN_BOUNDED" "$job" "$limit" "${CRON_JOBS_TIMEOUT_GRACE:-30}" "$@" || rc=$?
   EXEC_IN_JOB=""
   return "$rc"
 }
@@ -892,7 +892,7 @@ run_bounded() { # job, seconds, command...
 # exits, as this shell is in its trap and reaps nothing, so `ps` and not
 # `kill -0` tells whether it is gone.
 stop_workload() { # job
-  local pid tries=0 grace="${CRON_JOBS_TIMEOUT_GRACE:-10}"
+  local pid tries=0 grace="${CRON_JOBS_TIMEOUT_GRACE:-30}"
   pid="$(pgrep -P "$$" -x perl 2>/dev/null | head -n 1)" || true
   [ -n "$pid" ] || return 0
   kill -TERM "$pid" 2>/dev/null || true

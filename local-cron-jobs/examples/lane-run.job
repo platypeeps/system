@@ -15,10 +15,11 @@
 # a handed-off child holds. Each handed-off child TERMs itself at the
 # run's TERM point.
 #
-# CRON_JOBS_TIMEOUT_GRACE is 30 s, not the wrapper's 10 s, so a lane's
-# TERM unwind (about 5 s per ship group) ends before the wrapper's KILL,
+# The wrapper's default grace, 30 s (CRON_JOBS_TIMEOUT_GRACE), lets a
+# lane's TERM unwind (about 5 s per ship group) end before its KILL,
 # with room for a gate that ignores TERM; a KILL before it ends leaves
-# sd-ship sessions with no record (pack sd:9392).
+# sd-ship sessions with no record (pack sd:9392). It is the default,
+# not a line here, so every lane host's installed copy gets it.
 #
 # JOB_TIMEOUT is above one lane run on purpose (review, `make check` and a
 # merge take 30-60 minutes): a run still waits for a lane it cannot hand
@@ -28,5 +29,4 @@
 # after ~/.config/shell/env.sh; this file is sourced before env.sh is.
 JOB_SCHEDULE="*/5 * * * *"
 JOB_TIMEOUT="120m"
-CRON_JOBS_TIMEOUT_GRACE=30
 JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd-ship\" lane run --hosted"
