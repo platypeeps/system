@@ -314,6 +314,22 @@ class Readers(unittest.TestCase):
                                           answering(answer), NOW)
         self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 5.0), got)
 
+    def test_a_langsmith_null_value_with_groups_is_unknown_not_zero(self):
+        # A null value reads 0 only with no groups: groups would hold use.
+        for groups in ({"traces": 4}, [1]):
+            with self.subTest(groups=groups):
+                answer = [{"billable_metric_name": "Base Traces", "value": None,
+                           "groups": groups}]
+                got = usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                                                  answering(answer), NOW)
+                self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
+        for groups in (None, {}, []):
+            with self.subTest(groups=groups):
+                answer = [{"billable_metric_name": "Fleet", "value": None, "groups": groups}]
+                got = usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                                                  answering(answer), NOW)
+                self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0), got)
+
     def test_a_baseten_total_that_is_no_decimal_string_is_unknown(self):
         for total in ("", "-1.00", "1e400", "nan", " 1.00", "1,000.00", "inf"):
             with self.subTest(total=total):

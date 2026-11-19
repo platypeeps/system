@@ -409,7 +409,7 @@ def read_baseten(env, fetch, now):
 
 def read_langsmith(env, fetch, now):
     """The month's LangChain Standard Units: the sum over billable metrics;
-    a metric with no use this month has a null value."""
+    a metric with no use this month has a null value and no groups."""
     data = fetch("https://api.smith.langchain.com/api/v1/orgs/current/billing/usage"
                  "?starting_on=%s&ending_before=%s" % (iso(month_start(now)), iso(next_month(now))),
                  {"x-api-key": key(env, "LANGSMITH_API_KEY")})
@@ -421,6 +421,9 @@ def read_langsmith(env, fetch, now):
             raise ReadFailed("a metric of another shape")
         if metric["value"] is not None:
             total += number(metric["value"], "value")
+        elif metric.get("groups"):
+            # Use under groups with no value is not a month with no use.
+            raise ReadFailed("a null value with groups")
     return {"spend": {"amount": total, "unit": "units", "period": "month"}}
 
 
