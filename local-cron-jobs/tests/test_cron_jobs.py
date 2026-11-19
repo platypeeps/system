@@ -3141,29 +3141,28 @@ class FailureNotificationTest(unittest.TestCase):
 
     def term_the_runner_from_outside(self, sleep, timeout_line=""):
         """A run TERMed by another process, launchd's way, while its job
-        sleeps for `sleep`. Returns once the runner has exited."""
-        began = self.fx.tmp / "job-began"
+        sleeps for `sleep`. Returns the job's pid once the runner has exited."""
+        began = self.fx.tmp / f"job-began-{sleep}"
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n' + timeout_line
-                          + f"JOB_COMMAND=': > {began}; exec sleep {sleep}'\n")
-        self.addCleanup(subprocess.run, ["pkill", "-9", "-f", f"^sleep {sleep.replace('.', '[.]')}$"])
+                          + f"JOB_COMMAND='{names_its_pid(began, f'exec sleep {sleep}')}'\n")
         run = subprocess.Popen(
             ["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
             env={"PATH": self.fx.path(), "HOME": str(self.fx.home),
                  "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "SD_REPORT_BIN": "/usr/bin/true"},
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        deadline = time.monotonic() + 10
-        while not began.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertTrue(began.exists(), "the job starts")
+        pid = job_pid(began)
+        self.assertIsNotNone(pid, "the job starts")
+        self.addCleanup(kill_group, pid)
         os.kill(run.pid, signal.SIGTERM)
         self.assertEqual(run.wait(timeout=30), -signal.SIGTERM)
+        return pid
 
     def test_a_runner_ended_by_a_signal_stops_its_job(self):
         # Left alone, the job ran on with nobody to report its end.
         for sleep, timeout_line in (("53.1", ""), ("53.2", 'JOB_TIMEOUT="0"\n')):
             with self.subTest(timeout_line or "default limit"):
-                self.term_the_runner_from_outside(sleep, timeout_line)
-                self.assertEqual(pids_of(f"sleep {sleep}"), [], f"sleep {sleep} outlived its runner")
+                pid = self.term_the_runner_from_outside(sleep, timeout_line)
+                self.assertTrue(group_gone(pid, within=0), f"sleep {sleep} outlived its runner")
                 self.assert_interrupted()
 
     def test_a_terminal_interrupt_ends_the_job_and_stays_at_risk(self):
@@ -3177,8 +3176,7 @@ class FailureNotificationTest(unittest.TestCase):
         # sh cannot take that back, so the job never saw the INT.
         began = self.fx.tmp / "job-began"
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
-                                  f"JOB_COMMAND=': > {began}; exec sleep 54.1'\n")
-        self.addCleanup(subprocess.run, ["pkill", "-9", "-f", "^sleep 54[.]1$"])
+                                  f"JOB_COMMAND='{names_its_pid(began, 'exec sleep 54.1')}'\n")
         run = subprocess.Popen(
             ["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
             env={"PATH": self.fx.path(), "HOME": str(self.fx.home),
@@ -3186,13 +3184,12 @@ class FailureNotificationTest(unittest.TestCase):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
             preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
         self.addCleanup(kill_group, run.pid)
-        deadline = time.monotonic() + 10
-        while not began.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertTrue(began.exists(), "the job starts")
+        pid = job_pid(began)
+        self.assertIsNotNone(pid, "the job starts")
+        self.addCleanup(kill_group, pid)
         os.killpg(run.pid, signal.SIGINT)
         run.wait(timeout=30)
-        self.assertEqual(pids_of("sleep 54.1"), [], "sleep 54.1 outlived the run")
+        self.assertTrue(group_gone(pid, within=0), "sleep 54.1 outlived the run")
         self.assertIn("demo FAILED rc=130", (self.fx.folder / "logs" / "failures.log").read_text())
         self.assertNotIn(self.INTERRUPTED, self.log())
         self.assertEqual(len(self.pushes()), 1, self.pushes())
@@ -3605,11 +3602,51 @@ class RunStampTest(UnfinishedRunTest.__base__):
 
 
 def kill_group(pgid):
-    """SIGKILL a process group that may already be gone."""
+    """SIGKILL a process group that may already be gone. A group left
+    holding only a zombie answers EPERM on macOS: nothing is left to end."""
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
+
+
+def names_its_pid(pid_file, tail):
+    """Shell text for a job that writes its own pid to `pid_file`, then
+    runs `tail`. The job leads its own process group, so that pid finds
+    this run's processes and no other's: `pgrep -f` and `pkill -f` found
+    every process on the machine with the same command line, another
+    gate's included (sd:9522, sd:9567). `echo` is a builtin, so nothing
+    the job forks can swallow a signal before it."""
+    return f'echo $$ > "{pid_file}"; {tail}'
+
+
+def job_pid(pid_file, within=10):
+    """The pid the job wrote, once it has written all of it, or None."""
+    deadline = time.monotonic() + within
+    while True:
+        text = pid_file.read_text() if pid_file.exists() else ""
+        if text.endswith("\n"):
+            return int(text)
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.05)
+
+
+def group_alive(pgid):
+    """Whether any process of the group runs. EPERM is a group holding
+    only a zombie on macOS, which runs nothing."""
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def group_gone(pgid, within=5):
+    deadline = time.monotonic() + within
+    while group_alive(pgid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return not group_alive(pgid)
 
 
 def started(log, before=0):
@@ -3657,15 +3694,11 @@ class StaleLockTest(UnfinishedRunTest.__base__):
         gate's workload too. Waiting for the workload, not the `starting`
         line, also means it holds the lock before the runner is killed."""
         pid_file = self.fx.tmp / "workload.pid"
-        run = self.run_in_background(f"'echo $$ > \"{pid_file}\"; {tail}'")
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            text = pid_file.read_text() if pid_file.exists() else ""
-            if text.endswith("\n"):
-                self.addCleanup(kill_group, int(text))
-                return run
-            time.sleep(0.05)
-        self.fail("the workload never started")
+        run = self.run_in_background(f"'{names_its_pid(pid_file, tail)}'")
+        pid = job_pid(pid_file)
+        self.assertIsNotNone(pid, "the workload never started")
+        self.addCleanup(kill_group, pid)
+        return run
 
     def second_run(self):
         return subprocess.run(
@@ -3807,16 +3840,6 @@ class AbandonedRunTest(UnfinishedRunTest.__base__):
         self.assertEqual(done.returncode, 0, done.stdout)
 
 
-def pids_of(command):
-    """The pids of processes whose whole command line is `command`.
-
-    Anchored and with its dots escaped, so another process whose arguments
-    merely contain the text is not taken for the job's."""
-    pattern = "^" + command.replace(".", "\\.") + "$"
-    found = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
-    return [int(pid) for pid in found.stdout.split()]
-
-
 class JobTimeoutTest(unittest.TestCase):
     """JOB_TIMEOUT: a hung run is stopped, with its whole process group (sd:2018).
 
@@ -3825,8 +3848,9 @@ class JobTimeoutTest(unittest.TestCase):
     active" and exited 0. A run past its limit now has its process group sent
     TERM, then KILL after a grace period, and fails with exit 124.
 
-    Each workload sleeps for a duration no other test uses, so `pgrep -f`
-    finds its own processes and nothing else.
+    Each workload writes its own pid, which leads its process group: the
+    test looks for and ends that group alone. `pgrep -f` and `pkill -f`
+    found another gate's run of the same test too (sd:9567).
     """
 
     def setUp(self):
@@ -3844,21 +3868,29 @@ class JobTimeoutTest(unittest.TestCase):
         return self.fx.exec_job("demo", {"CRON_JOBS_TIMEOUT_GRACE": "1", **(env or {})},
                                 timeout=timeout)
 
-    def reap(self, pattern):
-        """Kill what a failing case left behind, so the next one starts clean."""
-        self.addCleanup(subprocess.run, ["pkill", "-9", "-f", "^" + pattern.replace(".", "\\.") + "$"])
+    def own(self, tail):
+        """JOB_COMMAND for `tail` behind a line naming the job's pid. The
+        cleanup ends that group if a failing case left it running."""
+        self.pid_file = self.fx.tmp / "job.pid"
+        self.pid_file.unlink(missing_ok=True)
+        self.addCleanup(self.end_own, self.pid_file)
+        return f"'{names_its_pid(self.pid_file, tail)}'"
 
-    def assert_gone(self, pattern):
-        deadline = time.monotonic() + 5
-        while pids_of(pattern) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertEqual(pids_of(pattern), [], f"{pattern} outlived the run")
+    @staticmethod
+    def end_own(pid_file):
+        pid = job_pid(pid_file, within=0)
+        if pid is not None:
+            kill_group(pid)
+
+    def assert_gone(self):
+        pid = job_pid(self.pid_file, within=0)
+        self.assertIsNotNone(pid, "the job never wrote its pid")
+        self.assertTrue(group_gone(pid), "the job's process group outlived the run")
 
     def test_a_hung_job_is_stopped_with_its_process_group(self):
         """The background child as well as the foreground one: the group,
         not the shell `bash -c` started."""
-        self.reap("sleep 41.4142")
-        self.job("'sleep 41.4142 & sleep 41.4142; wait'", timeout="1")
+        self.job(self.own("sleep 41.4142 & sleep 41.4142; wait"), timeout="1")
         began = time.monotonic()
         result = self.run_job()
         self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
@@ -3870,7 +3902,7 @@ class JobTimeoutTest(unittest.TestCase):
         # TERM reached the background child too: KILL, which goes to the
         # group as well, was never needed.
         self.assertNotIn("sending KILL", log)
-        self.assert_gone("sleep 41.4142")
+        self.assert_gone()
 
     def test_a_denied_process_group_runs_nothing_and_holds_no_lock(self):
         """sd:7901, operator ruling 2026-11-06: with setpgid denied no
@@ -3920,8 +3952,7 @@ class JobTimeoutTest(unittest.TestCase):
         """sd:7901 review: 5cc43789 probed the group before it reaped the
         job. On Linux an unreaped zombie leader answers that probe, so a
         job that died at the TERM waited the grace and logged a KILL."""
-        self.reap("sleep 47.1828")
-        self.job("'sleep 47.1828'", timeout="1")
+        self.job(self.own("exec sleep 47.1828"), timeout="1")
         began = time.monotonic()
         result = self.run_job(env={"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
                                    "PERL5OPT": "-MZombieGroup", "CRON_JOBS_TIMEOUT_GRACE": "5"})
@@ -3933,8 +3964,7 @@ class JobTimeoutTest(unittest.TestCase):
         """sd:7901 review: once the job was reaped, a KILL that found its
         group empty fell back to the bare PID, which another process may
         hold by then. The group probe here answers yes past the reap."""
-        self.reap("sleep 53.5897")
-        self.job("'sleep 53.5897'", timeout="1")
+        self.job(self.own("exec sleep 53.5897"), timeout="1")
         kills = self.fx.folder / "kills"
         result = self.run_job(env={"PERL5LIB": str(FOLDER.parent / "lib/tests/denied_group"),
                                    "PERL5OPT": "-MKillLog", "KILL_LOG": str(kills),
@@ -3948,8 +3978,7 @@ class JobTimeoutTest(unittest.TestCase):
         """sd:5064: the log named the group only, so what hung was a guess.
         Each process in the group goes to the log, with its parent and age,
         before TERM."""
-        self.reap("sleep 45.2361")
-        self.job("'sleep 45.2361 & sleep 45.2361; wait'", timeout="1")
+        self.job(self.own("sleep 45.2361 & sleep 45.2361; wait"), timeout="1")
         self.assertEqual(self.run_job().returncode, 124)
         log = self.log.read_text().splitlines()
         head = next(i for i, line in enumerate(log) if "timed out after 1s" in line)
@@ -3961,8 +3990,7 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertTrue(all(row[2] == group for row in tree), log)
 
     def test_the_lock_is_free_after_a_timeout(self):
-        self.reap("sleep 43.1415")
-        self.job("'sleep 43.1415'", timeout="1")
+        self.job(self.own("exec sleep 43.1415"), timeout="1")
         self.assertEqual(self.run_job().returncode, 124)
         self.job('"true"', timeout="1")
         after = self.run_job()
@@ -3970,13 +3998,12 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
 
     def test_a_job_that_ignores_term_is_killed(self):
-        self.reap("sleep 42.7182")
-        self.job("\"trap '' TERM; sleep 42.7182; exit 0\"", timeout="1")
+        self.job(self.own('trap "" TERM; sleep 42.7182; exit 0'), timeout="1")
         result = self.run_job()
         self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
         self.assertRegex(self.log.read_text(),
                          r"process group \d+ still running 1s after TERM; sending KILL")
-        self.assert_gone("sleep 42.7182")
+        self.assert_gone()
 
     def test_a_job_within_its_limit_keeps_its_exit_code(self):
         """PIN: the limit changes nothing for a run that ends inside it."""
@@ -3992,8 +4019,7 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_the_machine_default_applies_when_the_job_sets_none(self):
-        self.reap("sleep 44.1421")
-        self.job("'sleep 44.1421'")
+        self.job(self.own("exec sleep 44.1421"))
         result = self.run_job({"CRON_JOBS_JOB_TIMEOUT": "1"})
         self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
         self.assertIn("timed out after 1s", self.log.read_text())
@@ -4034,8 +4060,7 @@ class JobTimeoutTest(unittest.TestCase):
         """PIN. The job runs in a process group of its own, and launchd's
         TERM on `bootout` goes to the runner's group. The runner passes it on,
         or a stopped job would leave its workload running."""
-        self.reap("sleep 45.2718")
-        self.job("'sleep 45.2718'", timeout="1h")
+        self.job(self.own("exec sleep 45.2718"), timeout="1h")
         run = subprocess.Popen(
             ["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
             env={"PATH": self.fx.path(), "HOME": str(self.fx.home),
@@ -4046,14 +4071,49 @@ class JobTimeoutTest(unittest.TestCase):
         self.addCleanup(run.wait)
         self.addCleanup(kill_group, run.pid)
         self.assertTrue(started(self.log), "the run starts")
-        deadline = time.monotonic() + 5
-        while not pids_of("sleep 45.2718") and time.monotonic() < deadline:
-            time.sleep(0.05)
+        self.assertIsNotNone(job_pid(self.pid_file), "the job starts")
         os.killpg(run.pid, signal.SIGTERM)
-        self.assert_gone("sleep 45.2718")
+        self.assert_gone()
         # Reaped here: a group left holding only a zombie answers killpg
         # with EPERM on macOS, and the cleanup above would raise it.
         run.wait(timeout=10)
+
+
+class OwnGroupCleanupTest(unittest.TestCase):
+    """A run of a signal or timeout test looks for and ends its own job
+    only (sd:9567).
+
+    REGRESSION. These tests found their job by its command line, through
+    `pgrep -f` and `pkill -f` on the whole machine. Gates run this suite
+    side by side: one run's cleanup ended another's job, and a job of
+    another run read as this one's job outliving its run.
+    """
+
+    CASES = (
+        ("FailureNotificationTest", "test_a_runner_ended_by_a_signal_stops_its_job", ("53.1", "53.2")),
+        ("FailureNotificationTest", "test_a_terminal_interrupt_ends_the_job_and_stays_at_risk", ("54.1",)),
+        ("JobTimeoutTest", "test_a_hung_job_is_stopped_with_its_process_group", ("41.4142",)),
+        ("JobTimeoutTest", "test_a_job_gone_at_the_term_ends_inside_the_grace", ("47.1828",)),
+        ("JobTimeoutTest", "test_a_reaped_job_s_pid_is_never_signalled", ("53.5897",)),
+        ("JobTimeoutTest", "test_a_timeout_logs_the_process_tree_before_the_kill", ("45.2361",)),
+        ("JobTimeoutTest", "test_the_lock_is_free_after_a_timeout", ("43.1415",)),
+        ("JobTimeoutTest", "test_a_job_that_ignores_term_is_killed", ("42.7182",)),
+        ("JobTimeoutTest", "test_the_machine_default_applies_when_the_job_sets_none", ("44.1421",)),
+        ("JobTimeoutTest", "test_a_signal_to_the_runner_still_reaches_the_job", ("45.2718",)),
+    )
+
+    def test_a_run_leaves_processes_it_did_not_start_alone(self):
+        for case, name, sleeps in self.CASES:
+            with self.subTest(name):
+                decoys = [subprocess.Popen(["sleep", seconds]) for seconds in sleeps]
+                for decoy in decoys:
+                    self.addCleanup(decoy.wait)
+                    self.addCleanup(decoy.kill)
+                result = unittest.TestResult()
+                globals()[case](name).run(result)
+                self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
+                self.assertEqual([decoy.poll() for decoy in decoys], [None] * len(decoys),
+                                 "a run's cleanup ended a process it did not start")
 
 
 class TimeoutBreakerTest(unittest.TestCase):
