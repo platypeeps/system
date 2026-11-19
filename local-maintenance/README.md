@@ -94,8 +94,11 @@ keep state in them), and idle build output in checkouts (sd:5994).
 Every night `run` also clears caches no other job cleans (sd:8746):
 exited docker containers (`docker rm`; created ones stay), `brew cleanup
 -s`, `npm cache clean --force` (skipped while npm runs), and `uv-prune`
-below. A uv prune skipped three nights in a row is a finding: on an
-always-on machine another uv server may never let go of the cache.
+below. A uv prune skipped three nights in a row is a finding, naming
+the uv commands that hold the cache: on an always-on machine another uv
+server may never let go of it. Each later night of the streak raises
+the same finding, which folds into the open report, so the alert stays
+open until a prune succeeds.
 
 `run` installs the pending updates it finds (sd:6927):
 `sudo -A softwareupdate -i <label>` for each macOS update that needs no

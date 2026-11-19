@@ -139,6 +139,42 @@ class NightlyReview(unittest.TestCase):
         self.assertEqual(found[0]["item"]["title"], f"Nightly review {self.today}")
         self.assertTrue(found[0]["header"]["source"].startswith("system@"), found[0]["header"])
 
+    def test_the_filed_batch_says_what_it_asks(self):
+        # sd:9480: the Review band shows Purpose, Rubric and Feeds lines,
+        # one rubric line per option; the pack will refuse a batch without.
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [found] = self.batches()
+        context = found["header"]["context"]
+        self.assertIsNotNone(context, found["header"])
+        self.assertTrue(context["purpose"] and context["feeds"], context)
+        self.assertEqual([line.split(":", 1)[0] for line in context["rubric"]], ["Approve", "Reject"])
+        self.assertIn("review-approved:", context["feeds"])
+        # Bundle review: the pack files the task when the operator rules
+        # (review.rule), not at the next run.
+        self.assertIn("when you rule", context["feeds"])
+        self.assertNotIn("06:15", context["feeds"])
+
+    def test_a_batch_file_without_its_context_is_refused(self):
+        # Re-review fold-in: purpose and feeds are nonblank strings, the
+        # rubric a list of nonblank strings; any other shape is refused.
+        good = {"purpose": "p", "rubric": ["Approve: a"], "feeds": "f"}
+        for name, bad in (("no feeds", {"purpose": "p", "rubric": ["Approve: a"]}),
+                          ("blank purpose", dict(good, purpose="  ")), ("number feeds", dict(good, feeds=7)),
+                          ("list purpose", dict(good, purpose=["p"])), ("string rubric", dict(good, rubric="Approve: a")),
+                          ("empty rubric", dict(good, rubric=[])), ("blank rubric line", dict(good, rubric=["Approve: a", " "])),
+                          ("number rubric line", dict(good, rubric=[1]))):
+            with self.subTest(name):
+                written = self.tmp / "no-context.json"
+                written.write_text(json.dumps({
+                    "schema": 1, "queue": "nightly", "batch": self.today, "title": "Nightly review",
+                    "source": "system@0000000", "mode": "open", "limit": 5, "context": bad,
+                    "questions": [{"subject": "a", "text": "Do a", "options": ["Approve", "Reject"]}]}))
+                result = subprocess.run([sys.executable, str(FOLDER / "nightly_review.py"), "check", str(written),
+                                         self.today], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("lacks one of the context lines", result.stderr)
+
     def test_a_run_sweeps_priorities_after_apply(self):
         # sd:6751: the pack's nightly priority sweep (pack sd:6726) runs from this job.
         result = self.run_job()
@@ -424,6 +460,8 @@ class NightlyReview(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.model_runs(), 0)
         self.assertEqual([q["subject"] for q in self.batches()[0]["questions"]], ["a:b"])
+        # A file the job wrote before sd:9480 carries no context; it files with the job's own.
+        self.assertTrue(self.batches()[0]["header"]["context"]["purpose"].startswith("Tonight's suggestions:"))
 
     # ------------------------------------------------------------ apply and the rejected subjects
 

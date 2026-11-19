@@ -90,14 +90,21 @@ else
   PROFILE="personal"
 fi
 
+# The profiles there are, one list: the check below and hygiene's fleet
+# list of repos (hyg_keep_load) both read it.
+# A profile is one whole word of it: `personal work` is none.
+PROFILES="personal work terra"
+p_known=
+for p_name in $PROFILES; do
+  [ "$PROFILE" != "$p_name" ] || p_known=1
+done
+if [ -z "$p_known" ]; then
+  echo "repo-sync.sh: unknown profile '$PROFILE' (want: $PROFILES)" >&2
+  exit 1
+fi
 case "$PROFILE" in
-  work)     DEFAULT_ROOT="${WORK_ROOT:-$HOME/repos}" ;;
-  personal) DEFAULT_ROOT="$HOME/repos" ;;
-  terra)  DEFAULT_ROOT="$HOME/repos" ;;
-  *)
-    echo "repo-sync.sh: unknown profile '$PROFILE' (want: personal, work, terra)" >&2
-    exit 1
-    ;;
+  work) DEFAULT_ROOT="${WORK_ROOT:-$HOME/repos}" ;;
+  *)    DEFAULT_ROOT="$HOME/repos" ;;
 esac
 
 ROOT="${REPO_SYNC_ROOT:-$DEFAULT_ROOT}"
@@ -2237,9 +2244,19 @@ hyg_lane() {
 
 # The workflow item state for number $1, or nothing. Reads the sd database
 # read-only when it exists on this machine and sqlite3 is installed; a
-# machine without it simply lists no done-item branches.
+# machine without it simply lists no done-item branches. Only an item of
+# checkout $2's repo counts: a number in another repo's branch is not its
+# item (sd:9376). The repo column holds `~/<path>` under the home, else
+# the absolute path (the pack's paths.key), so each form is tried.
 hyg_item_state() {
-  hyg_sd_query "select status from item where id = $1"
+  h_keys=$(
+    h_real=$(cd "$2" 2>/dev/null && pwd -P) || h_real=$2
+    for h_k in "$2" "$h_real"; do
+      printf '%s\n' "$h_k"
+      # shellcheck disable=SC2088  # writing a literal ~/ key on purpose
+      case "$h_k" in ("$HOME"/*) printf '~/%s\n' "${h_k#"$HOME"/}" ;; esac
+    done | awk '!seen[$0]++ { gsub(/\047/, "\047\047"); printf "%s\047%s\047", (NR > 1 ? ", " : ""), $0 }')
+  hyg_sd_query "select status from item where id = $1 and repo in ($h_keys)"
 }
 
 # Runs one read-only query on the sd database; prints nothing without one.
@@ -2252,16 +2269,31 @@ hyg_sd_query() {
 
 # The item number a branch name carries: sd-<n>, sd_<n> or a trailing -<n>.
 # build/sd-<n> is the exception: n is the bundle's lead assignment, so its
-# item comes from that row, and none is named without the database (sd:8095).
+# item comes from that row, and none is named without the database (sd:8095);
+# build/sd-<n>-<suffix> too, as a rebase backup (sd:9376). A trailing -<n>
+# that reads as a date, MMDD, YYYYMMDD or the day of a -YYYY-MM-DD, is no
+# item (fix/pack-advisories-1118); an item so numbered loses only its DONE
+# hint, as that line is report only.
 hyg_item_number() {
   case "$1" in
-    build/sd-*[!0-9]*) ;;
-    build/sd-?*) hyg_sd_query "select item from assignment where id = ${1#build/sd-}"; return ;;
+    build/sd-[0-9]*)
+      h_lead=$(printf '%s\n' "${1#build/sd-}" | sed -n 's/^\([0-9][0-9]*\)\(-.*\)\{0,1\}$/\1/p')
+      [ -z "$h_lead" ] || hyg_sd_query "select item from assignment where id = $h_lead"
+      return ;;
+    build/sd-*) return ;;
   esac
-  printf '%s\n' "$1" | sed -n \
-    -e 's/.*sd[-_:]\([0-9][0-9]*\).*/\1/p' \
-    -e 't' \
-    -e 's/.*-\([0-9][0-9]*\)$/\1/p' | head -1
+  printf '%s\n' "$1" | awk '
+    function day(m, d) { return m >= 1 && m <= 12 && d >= 1 && d <= 31 }
+    # The marker is a token: xsd-9376 or sd-9376x names no item.
+    match($0, /(^|[^A-Za-z0-9])sd[-_:][0-9]+([^A-Za-z0-9]|$)/) {
+      s = substr($0, RSTART, RLENGTH); match(s, /[0-9]+/); print substr(s, RSTART, RLENGTH) + 0; exit }
+    /-[0-9][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]$/ { exit }
+    match($0, /-[0-9]+$/) {
+      n = substr($0, RSTART + 1)
+      if (length(n) == 4 && day(substr(n, 1, 2) + 0, substr(n, 3, 2) + 0)) exit
+      if (length(n) == 8 && substr(n, 1, 2) == "20" && day(substr(n, 5, 2) + 0, substr(n, 7, 2) + 0)) exit
+      print n + 0
+    }'
 }
 
 # `<conf>/keep-branches` names branches local on purpose (sd:9230): one
@@ -2288,17 +2320,33 @@ hyg_keep_load() {
   fi
   echo "=== keep-branches"
   # A rule is exactly `<owner/name> <glob>`, the glob using only `*` and
-  # `?`: a `[` class sh cannot parse matches nothing. Any other line is reported by
-  # number in keep.bad, out of band. A dangling link, a folder, an
-  # unreadable file or a failed write (a full disk) is no list: keep all.
-  if ! { [ -f "$k_file" ] && [ -r "$k_file" ]; } || ! awk -v ok="$HYG_TMP/keep" -v bad="$HYG_TMP/keep.bad" '
+  # `?`: a `[` class sh cannot parse matches nothing. The repo field takes
+  # no glob: it is compared whole (sd:9253). Any other line is reported by
+  # number in keep.bad, out of band; keep holds `<line> <repo> <glob>`. A
+  # dangling link, a folder, an unreadable file or a failed write (a full
+  # disk) is no list: keep all, and say which.
+  k_why=
+  if ! [ -f "$k_file" ]; then
+    k_why="not a file"
+  elif ! [ -r "$k_file" ]; then
+    k_why="not readable"
+  else
+    k_rc=0
+    awk -v ok="$HYG_TMP/keep" -v bad="$HYG_TMP/keep.bad" '
       BEGIN { printf "" > ok; printf "" > bad }
       { sub(/\r$/, ""); sub(/(^|[ \t])#.*/, ""); if (NF == 0) next
-        if (NF == 2 && $1 ~ /^[^\/]+\/[^\/]+$/ && $2 !~ /[][\\]/) print $1 " " $2 > ok; else print NR > bad }
-      END { if (close(ok) != 0 || close(bad) != 0) exit 1 }' "$k_file" 2>/dev/null \
-      || ! [ -r "$HYG_TMP/keep" ] || ! [ -r "$HYG_TMP/keep.bad" ]; then
+        if (NF == 2 && $1 ~ /^[^\/]+\/[^\/]+$/ && $1 !~ /[][*?\\]/ && $2 !~ /[][\\]/) print NR " " $1 " " $2 > ok; else print NR > bad }
+      END { if (close(ok) != 0 || close(bad) != 0) exit 1 }' "$k_file" 2>/dev/null || k_rc=$?
+    # awk exits 1 from END when a close failed: the write did not land.
+    if [ "$k_rc" -ne 0 ] && [ "$k_rc" -ne 1 ]; then
+      k_why="awk failed (exit $k_rc)"
+    elif [ "$k_rc" -eq 1 ] || ! [ -r "$HYG_TMP/keep" ] || ! [ -r "$HYG_TMP/keep.bad" ]; then
+      k_why="writing $HYG_TMP failed"
+    fi
+  fi
+  if [ -n "$k_why" ]; then
     HYG_KEEP_ALL=1
-    hyg_fail "read keep-branches ($k_file): every branch kept this run"
+    hyg_fail "read keep-branches ($k_file): $k_why; every branch kept this run"
     return 0
   fi
   # A line that is no rule may be the rule for a branch: keep all.
@@ -2310,6 +2358,27 @@ hyg_keep_load() {
     [ "$k_more" -gt 0 ] && k_lines="$k_lines and $k_more more"
     hyg_fail "keep-branches line $k_lines: want '<owner/name> <glob>' (glob: * and ? only); every branch kept this run"
   fi
+  # A rule for no listed repo, a typo or a BOM in its first field, keeps
+  # nothing; it was silent (sd:9253). A note, as a fleet change can leave one.
+  # The file serves the fleet, so the list is every profile's: a rule for
+  # another machine's repo is no orphan (sd:9348). A profile whose list
+  # does not load is unknown: no rule is judged then. By file name, not
+  # NR == FNR: an empty list would read the rules as it.
+  k_fleet=1
+  repo_list > "$HYG_TMP/keep.repos" || k_fleet=
+  for k_profile in $PROFILES; do
+    [ -n "$k_fleet" ] || break
+    [ "$k_profile" != "$PROFILE" ] || continue
+    sd_db repo list --clones "$k_profile" >> "$HYG_TMP/keep.repos" 2>/dev/null || k_fleet=
+  done
+  if [ -z "$k_fleet" ]; then
+    hyg_note "keep-branches: a profile's repo list did not load; no rule checked for a listed repo"
+    return 0
+  fi
+  awk 'FILENAME == ARGV[1] { listed[$2] = 1; next }
+    !($2 in listed) { print $1 }' "$HYG_TMP/keep.repos" "$HYG_TMP/keep" | while read -r k_line; do
+    hyg_note "keep-branches line $k_line names no repo any profile lists; it keeps nothing"
+  done
 }
 
 # Whether the keep list names branch $2 of repo $1.
@@ -2317,7 +2386,7 @@ hyg_kept() {
   [ "$HYG_KEEP_ALL" = 1 ] && return 0
   # The parsed list must be there: a missing copy keeps, never deletes.
   [ -r "$HYG_TMP/keep" ] || return 0
-  while read -r k_repo k_glob; do
+  while read -r _ k_repo k_glob; do
     [ "$k_repo" = "$1" ] || continue
     # shellcheck disable=SC2254 # the glob is the point
     case "$2" in $k_glob) return 0 ;; esac
@@ -2578,7 +2647,7 @@ hyg_repo() {
       fi
     fi
     h_item=$(hyg_item_number "$b_name")
-    if [ -n "$h_item" ] && [ "$(hyg_item_state "$h_item")" = "done" ]; then
+    if [ -n "$h_item" ] && [ "$(hyg_item_state "$h_item" "$d")" = "done" ]; then
       hyg_list "DONE     branch $b_name $b_sha (sd:$h_item is done; a landing candidate)"
     fi
   done < "$HYG_TMP/branches"

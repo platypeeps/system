@@ -564,7 +564,7 @@ profile_entries() {
 profile_drops() {
   f="$PROFILE_DIR/$1.$2"
   if [ -f "$f" ]; then
-    sed -n -e 's/#.*//' -e 's/^[[:space:]]*![[:space:]]*//p' "$f"
+    sed -n -e 's/#.*//' -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*![[:space:]]*//p' "$f"
   fi
 }
 
@@ -920,6 +920,7 @@ stage_brew() {
     note_failure "brew stage: brew could not list what is installed; nothing changed" 1
     return 0
   fi
+  brew_keeps_tailscale
 
 
   manifest tap | while read -r t; do
@@ -1016,16 +1017,70 @@ tailscale_daemon_match() {
   [ -n "${PROFILE:-}" ] || { (load_profile) >/dev/null 2>&1 && load_profile; } || return 0
   manifest brew | sed 's|.*/||' | grep -qx tailscale || return 0
   tm_brew=$(bound_step 60 brew --prefix 2>/dev/null) || tm_brew=
-  [ -n "$tm_brew" ] && [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
-  tm_plist=
+  # A skipped check says so: silence read as a daemon that matched
+  # (sd:9348).
+  [ -n "$tm_brew" ] || { echo "  SKIP    tailscaled check: brew --prefix gave no answer"; return 0; }
+  [ -x "$tm_brew/opt/tailscale/bin/tailscaled" ] || return 0
+  # Each plist that names the keg's tailscaled is asked of launchd, and
+  # the one that runs is the service: the plist on disk is not (sd:9282
+  # lead review), and a stale second plist must not hide the live one.
+  # A print that fails or times out is no answer, said aloud.
+  tm_keg="$tm_brew/opt/tailscale/bin/tailscaled"
+  tm_label='' tm_other='' tm_skip=''
   for f in "$LAUNCHDAEMONS_DIR/sh.brew.tailscale.plist" "$LAUNCHDAEMONS_DIR/homebrew.mxcl.tailscale.plist"; do
-    grep -qF "<string>$tm_brew/opt/tailscale/bin/tailscaled</string>" "$f" 2>/dev/null && tm_plist=$f
+    if grep -qF "<string>$tm_keg</string>" "$f" 2>/dev/null; then
+      tm_l=${f##*/}
+      tm_l=${tm_l%.plist}
+      if ! tm_svc=$(bound_step 30 launchctl print "system/$tm_l" 2>/dev/null); then
+        tm_skip="${tm_skip:+$tm_skip; }launchd holds no system/$tm_l"
+      elif printf '%s\n' "$tm_svc" | grep -qx "	state = running" &&
+        printf '%s\n' "$tm_svc" | grep -qxF "	program = $tm_keg"; then
+        tm_label=$tm_l
+        break
+      else
+        tm_skip="${tm_skip:+$tm_skip; }system/$tm_l is not running $tm_keg"
+      fi
+    elif [ -e "$f" ]; then
+      tm_other=$f
+    fi
   done
-  [ -n "$tm_plist" ] || return 0
+  if [ -z "$tm_label" ]; then
+    # A plist that names a Cellar path or another binary is no service
+    # this restarts; no plist at all is a machine with no brew service.
+    if [ -n "$tm_skip" ]; then
+      echo "  SKIP    tailscaled check: $tm_skip"
+    elif [ -n "$tm_other" ]; then
+      echo "  SKIP    tailscaled check: $tm_other runs no $tm_keg"
+    fi
+    return 0
+  fi
+  # The socket is the one the running service was started with (sd:9282
+  # lane review): its arguments name it as -socket or --socket, with = or
+  # as the next argument, as Go's flag package takes it; with none named,
+  # tailscaled's default. A flag with no value is a socket this cannot
+  # read, so nothing is probed or restarted.
+  tm_sock=$(printf '%s\n' "$tm_svc" | awk '
+    /^\targuments = [{]$/ { inside = 1; next }
+    inside && /^\t[}]$/ { exit }
+    inside { sub(/^\t\t/, ""); arg[++n] = $0 }
+    END {
+      s = "/var/run/tailscaled.socket"
+      for (i = 1; i <= n; i++) {
+        if (arg[i] ~ /^--?socket=/) { s = arg[i]; sub(/^--?socket=/, "", s) }
+        else if (arg[i] ~ /^--?socket$/) s = (i < n) ? arg[++i] : ""
+      }
+      print s
+    }')
+  if [ -z "$tm_sock" ]; then
+    echo "  SKIP    tailscaled check: system/$tm_label names a socket this cannot read"
+    return 0
+  fi
   tailscale_daemon_versions
   if [ -z "$tm_cli" ] || [ -z "$tm_dmn" ]; then
-    echo "  WARN    tailscaled version unknown: tailscale version --daemon gave no answer"
-    return 0
+    # FAILED, a drift word: a probe that failed checked nothing (sd:9282),
+    # and a failure: the run must not stay green (sd:9282 round 1).
+    note_failure "tailscaled version unknown: tailscale version --daemon gave no answer" 1
+    return 1
   fi
   if [ "$tm_cli" = "$tm_dmn" ]; then
     echo "  ok      tailscaled $tm_dmn matches its binary"
@@ -1035,24 +1090,48 @@ tailscale_daemon_match() {
   run_ok bound_step 120 sudo -n "$tm_brew/bin/brew" services restart tailscale || return 1
   [ "$APPLY" -eq 1 ] || return 0
   # A restart that did not take must say so, not repeat silently each
-  # night (lane review).
-  for _ in 1 2 3 4 5; do
+  # night (lane review). The binary's version is the one from before:
+  # a CLI that does not answer clears tm_cli (sd:9282 round 1).
+  # Both waits below take TM_WAIT probes a second apart: a restart that
+  # takes longer than the backend wait failed where that wait warned
+  # (sd:9348).
+  tm_want=$tm_cli
+  for _ in $TM_WAIT; do
     tailscale_daemon_versions
     # An empty answer is a daemon still down, never a match.
-    [ -z "$tm_dmn" ] || [ "$tm_cli" != "$tm_dmn" ] ||
-      { echo "  ok      tailscaled restarted on $tm_dmn"; return 0; }
+    if [ -n "$tm_dmn" ] && [ "$tm_want" = "$tm_dmn" ]; then
+      echo "  ok      tailscaled restarted on $tm_dmn"
+      # It answers its version before its backend runs, and the sd
+      # stage's `tailscale status` then SKIPs the serve routes (sd:9282).
+      # `status` exits 0 while BackendState is still Starting, so only
+      # Running is up (sd:9348). A backend still down after the wait
+      # (logged out, say) is that stage's SKIP, not a failed restart; a
+      # WARN says so here.
+      for _ in $TM_WAIT; do
+        bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" \
+          --socket="$tm_sock" status --json 2>/dev/null |
+          grep -q '"BackendState": *"Running"' && return 0
+        sleep 1
+      done
+      echo "  WARN    tailscaled backend not running 10 s after the restart; the sd stage skips its serve checks"
+      return 0
+    fi
     sleep 1
   done
-  note_failure "tailscaled still runs ${tm_dmn:-an unknown version} after the restart, not $tm_cli" 1
+  note_failure "tailscaled still runs ${tm_dmn:-an unknown version} after the restart, not $tm_want" 1
   return 1
 }
 
+# The probes a restart check takes, a second apart: 10 s.
+TM_WAIT="1 2 3 4 5 6 7 8 9 10"
+
 # Sets tm_cli and tm_dmn from the formula's own CLI: another tailscale
 # earlier on PATH can match the stale daemon (sd:9245 lane review). The
-# socket is the brew service's: by default the CLI may ask the app's.
+# socket is the brew service's, tm_sock: by default the CLI may ask the
+# app's.
 tailscale_daemon_versions() {
   tm_out=$(bound_step 30 "$tm_brew/opt/tailscale/bin/tailscale" \
-    --socket=/var/run/tailscaled.socket \
+    --socket="$tm_sock" \
     version --daemon 2>/dev/null) || tm_out=
   tm_cli=$(printf '%s\n' "$tm_out" | sed -n 's/^ *long version: //p')
   tm_dmn=$(printf '%s\n' "$tm_out" | sed -n 's/^Daemon: //p')
@@ -2827,13 +2906,34 @@ sd_settings() {
   fi
   ss_err=$(mktemp)
   # The key list gates unset lines only; a failed load leaves set lines working.
+  # Each per-machine key, then `held` when config.json holds it, an empty
+  # value too, which `config get` reads as not set (sd:9226); else `-`.
   ss_mine=
   if printf '%s\n' "$ss_lines" | awk '$2 == "unset" { f = 1 } END { exit !f }'; then
-    if ! ss_mine=$(bound_step 30 python3 -I -c 'import sys
+    ss_krc=0
+    ss_mine=$(bound_step 30 python3 -I -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import sd_lib
-print("\n".join("sd." + k for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS))))' "$SD_PACK_ROOT/bin" 2>"$ss_err" </dev/null); then
-      note_failure "sd settings: the pack's key list did not load: $(grep -v '^\[step ' "$ss_err" | tail -1)" 1
+try:
+    held = sd_lib.machine_config().get("config")
+except Exception as error:
+    print(error, file=sys.stderr)
+    sys.exit(3)
+held = held.get("sd") if isinstance(held, dict) else None
+held = held if isinstance(held, dict) else {}
+for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS)):
+    print("sd." + k, "held" if k in held else "-")' "$SD_PACK_ROOT/bin" 2>"$ss_err" </dev/null) || ss_krc=$?
+    if [ "$ss_krc" -ne 0 ]; then
+      # A timeout's own message is the command, inline script and all.
+      # Exit 3 is the probe's own: config.json, not the key list, failed.
+      ss_why="the pack's key list did not load: timed out"
+      [ "$ss_krc" -eq 124 ] || ss_why=$(grep -v '^\[step ' "$ss_err" | tail -1)
+      case $ss_krc in
+        124) ;;
+        3) ss_why="the machine config did not load: $ss_why" ;;
+        *) ss_why="the pack's key list did not load: $ss_why" ;;
+      esac
+      note_failure "sd settings: $ss_why" 1
       ss_mine=
     fi
   fi
@@ -2866,7 +2966,7 @@ print("\n".join("sd." + k for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.F
     if [ -n "$ss_unset" ] && [ -z "$ss_mine" ]; then
       continue  # the key list did not load: FAILED above, and nothing is unset
     fi
-    if [ -n "$ss_unset" ] && ! printf '%s\n' "$ss_mine" | grep -qxF -- "$ss_key"; then
+    if [ -n "$ss_unset" ] && ! printf '%s\n' "$ss_mine" | awk -v k="$ss_key" '$1 == k { f = 1 } END { exit !f }'; then
       note_failure "$ss_from.sdconfig: $ss_key is no per-machine sd setting (a fleet or plugin key is one row for every machine)" 1
       continue
     fi
@@ -2882,11 +2982,14 @@ print("\n".join("sd." + k for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.F
       fi
     fi
     if [ -n "$ss_unset" ]; then
-      if [ -z "$ss_have" ]; then
-        echo "  ok      sd setting $ss_key unset"
-      else
+      if [ -n "$ss_have" ]; then
         echo "  DIFFERS sd setting $ss_key is $ss_have, want unset"
         run bound_step 30 "$ss_sd" config unset "$ss_key"
+      elif printf '%s\n' "$ss_mine" | awk -v k="$ss_key" '$1 == k && $2 == "held" { f = 1 } END { exit !f }'; then
+        echo "  DIFFERS sd setting $ss_key holds an empty value, want unset"
+        run bound_step 30 "$ss_sd" config unset "$ss_key"
+      else
+        echo "  ok      sd setting $ss_key unset"
       fi
     elif [ "$ss_have" = "$ss_want" ]; then
       echo "  ok      sd setting $ss_key=$ss_want"
@@ -5599,6 +5702,14 @@ cmd_compare() {
     [ "$both" -gt 0 ] && comm -12 "$tmp/$pa.$kind" "$tmp/$pb.$kind" | sed 's/^/  =       /'
     [ -n "$onlya" ] && printf '%s\n' "$onlya" | sed "s/^/  <$pa    /"
     [ -n "$onlyb" ] && printf '%s\n' "$onlyb" | sed "s/^/  >$pb    /"
+    # What each drops of common's, apart: a drop is no entry (sd:4916),
+    # yet two profiles that differ only in one differ (sd:9226).
+    for pr in "$pa" "$pb"; do
+      profile_drops "$pr" "$kind" | grep . | sort -u > "$tmp/$pr.$kind.drops" || :
+    done
+    comm -12 "$tmp/$pa.$kind.drops" "$tmp/$pb.$kind.drops" | sed "s/^/  =       drops common's /"
+    comm -23 "$tmp/$pa.$kind.drops" "$tmp/$pb.$kind.drops" | sed "s/^/  <$pa    drops common's /"
+    comm -13 "$tmp/$pa.$kind.drops" "$tmp/$pb.$kind.drops" | sed "s/^/  >$pb    drops common's /"
     echo
   done
 }
@@ -6224,6 +6335,9 @@ cmd_adopt() {
 # Readable overview of what each profile carries: a counts matrix, then per-
 # profile sections listing every entry of every kind. Lists are columnized
 # when `column` exists; cron and macos lines stay one per line (multi-field).
+# A `!name` line is no entry (sd:4916), so no count holds it; each section
+# names what it drops after its entries, or a profile that drops common's
+# entry reads as one that keeps it (sd:9226).
 cmd_report() {
   require_config
   only="$1"
@@ -6244,25 +6358,30 @@ cmd_report() {
 
   report_section() {
     total=0
+    drops=0
     for kind in $KINDS; do
       n=$(profile_entries "$1" "$kind" | grep -c . || :)
       total=$((total + n))
+      n=$(profile_drops "$1" "$kind" | grep -c . || :)
+      drops=$((drops + n))
     done
     if [ "$1" = "common" ]; then
       echo "== common — applies to every profile ($total entries)"
     else
       echo "== $1 — on top of common ($total entries)"
     fi
-    if [ "$total" -eq 0 ]; then
+    if [ "$total" -eq 0 ] && [ "$drops" -eq 0 ]; then
       echo "      (empty — captured on that machine, not guessed from this one)"
       echo
       return 0
     fi
     for kind in $KINDS; do
       n=$(profile_entries "$1" "$kind" | grep -c . || :)
-      [ "$n" -eq 0 ] && continue
+      dr=$(profile_drops "$1" "$kind" | grep . || :)
+      [ "$n" -eq 0 ] && [ -z "$dr" ] && continue
       echo "    $kind ($n)"
-      report_list "$1" "$kind"
+      [ "$n" -eq 0 ] || report_list "$1" "$kind"
+      [ -z "$dr" ] || printf '%s\n' "$dr" | sed "s/^/      drops common's /"
     done
     echo
   }
@@ -7493,6 +7612,21 @@ rustup_sweep() {
   fi
 }
 
+# `sudo brew services start|restart tailscale` leaves root-owned files in
+# its keg, and brew, which refuses to run as root, cannot remove them: the
+# cleanup failed every week (sd:8241). Upgrades and installs clean up too,
+# and the brew stage restarts tailscaled (sd:9282). Keeps the operator's
+# own list, and adds tailscale once.
+# ponytail: old tailscale kegs stay; remove them by hand with sudo.
+brew_keeps_tailscale() {
+  case ",${HOMEBREW_NO_CLEANUP_FORMULAE:-}," in
+    *,tailscale,*) ;;
+    *) HOMEBREW_NO_CLEANUP_FORMULAE="${HOMEBREW_NO_CLEANUP_FORMULAE:+$HOMEBREW_NO_CLEANUP_FORMULAE,}tailscale"
+       export HOMEBREW_NO_CLEANUP_FORMULAE ;;
+  esac
+  echo "  SKIP    brew cleanup of tailscale: sudo brew services leaves root-owned files"
+}
+
 # Maintenance sweep: refresh what is already installed. Dry run by default
 # like every other mutating verb. A step that fails or times out does not stop
 # the sweep; the steps after it still run, and the sweep exits 1 naming it.
@@ -7504,14 +7638,7 @@ cmd_upgrade() {
   failed=""
   ASKPASS_READY=""
   if command -v brew >/dev/null 2>&1; then
-    # `sudo brew services start tailscale` leaves root-owned files in its
-    # keg, and brew, which refuses to run as root, cannot remove them: the
-    # cleanup failed every week (sd:8241). Upgrades clean up too. Keep the
-    # operator's own list.
-    # ponytail: old tailscale kegs stay; remove them by hand with sudo.
-    HOMEBREW_NO_CLEANUP_FORMULAE="${HOMEBREW_NO_CLEANUP_FORMULAE:+$HOMEBREW_NO_CLEANUP_FORMULAE,}tailscale"
-    export HOMEBREW_NO_CLEANUP_FORMULAE
-    echo "  SKIP    brew cleanup of tailscale: sudo brew services leaves root-owned files"
+    brew_keeps_tailscale
     run_step 600 brew update || failed="$failed, brew update"
     # The brew stage's unpin (sd:6433) first: the weekly sweep can run
     # before the nightly update --apply, and a stale python pin fails
@@ -7527,7 +7654,7 @@ cmd_upgrade() {
     # Formulae only: bare `brew upgrade` takes casks too, with no askpass and
     # past BREW_SKIPPED_CASKS, and failed the step on them (sd:8101).
     sweep_step "brew upgrade" "$SOURCE_BUILD_BOUND" brew upgrade --formula
-    tailscale_daemon_match || failed="$failed, tailscaled restart"
+    tailscale_daemon_match || failed="$failed, tailscaled"
     # The profile's missing formulae: the brew stage leaves one that needs a
     # source build to this sweep (sd:7103).
     fw=$(formula_wants) || failed="$failed, brew formula list"
@@ -7799,9 +7926,14 @@ cmd_upgrade_report() {
       && [ ! -s "$tmp/wants.before" ] && [ ! -s "$tmp/unknown.before" ]; then
     rc=0
     echo "nothing outdated — no upgrade"
-    # The rustup toolchain is in no inventory, so a quiet week still moves it.
+    # The rustup toolchain is in no inventory, so a quiet week still moves
+    # it. Nor is a daemon older than its binary: a restart that failed
+    # after an earlier upgrade stays stale (sd:9282).
     failed=""
-    rustup_sweep > "$tmp/out" 2>&1
+    {
+      rustup_sweep
+      tailscale_daemon_match || failed="$failed, tailscaled"
+    } > "$tmp/out" 2>&1
     cat "$tmp/out"
     inventory_capture || rc=1
     cat "$tmp/inventory"
@@ -8185,7 +8317,10 @@ cmd_status() {
     # Its report half only: status --apply stays read-only.
     mf=$(APPLY=0; mosh_firewall | grep DIFFERS || :)
     [ -z "$mf" ] || printf '%s\n' "$mf"
-    for v in "$mt" "$mb" "$ub" "$sb" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf"; do
+    # A stale or silent tailscaled is drift too (sd:9282).
+    td=$(APPLY=0; tailscale_daemon_match | grep -E 'DIFFERS|FAILED' || :)
+    [ -z "$td" ] || printf '%s\n' "$td"
+    for v in "$mt" "$mb" "$ub" "$sb" "$xb" "$mc" "$xc" "$sp" "$bp" "$mf" "$td"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else

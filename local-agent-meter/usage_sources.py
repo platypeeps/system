@@ -318,13 +318,18 @@ def read_firecrawl(env, fetch, now):
 
 
 def read_heygen(env, fetch, now):
-    data = fetch("https://api.heygen.com/v2/user/remaining_quota",
-                 {"X-Api-Key": key(env, "HEYGEN_API_KEY")})
+    # /v2/user/remaining_quota answers 410 since 2026-11-18; its successor holds the wallet (sd:9415).
+    data = fetch("https://api.heygen.com/v3/users/me", {"X-Api-Key": key(env, "HEYGEN_API_KEY")})
     data = data.get("data") if isinstance(data, dict) else None
     if not isinstance(data, dict):
         raise ReadFailed("no data object")
-    return {"balance": {"amount": number(data.get("remaining_quota"), "remaining_quota"),
-                        "unit": "quota"}}
+    # A plan account has no wallet, or one in another currency: the
+    # meter has no usd balance for it, one plain unknown each read.
+    wallet = data.get("wallet")
+    if not isinstance(wallet, dict) or wallet.get("currency") != "usd":
+        raise ReadFailed("no usd wallet")
+    return {"balance": {"amount": number(wallet.get("remaining_balance"), "remaining_balance"),
+                        "unit": "usd"}}
 
 
 def read_runway(env, fetch, now):
