@@ -699,6 +699,19 @@ class NightTriage(unittest.TestCase):
                 notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
                 self.assertTrue(night_triage.held_by_other(notes, "node1"))
 
+    def test_every_claim_form_main_honoured_still_holds(self):
+        # sd:9578 review: the anchored matcher dropped claims the one before
+        # it held. One body per form the old `\s*(?:claimed\b|(?:\S+ ){0,3}
+        # claims it\b)` took: claimed with no colon, leading space, a bare
+        # `claims it`, and one to three words before it.
+        import night_triage
+        for body in ("Claimed by me while I debug this", "claimed - looking", "claimed.",
+                     "claimed", "  claimed: triaging", "\nThe operator claims it",
+                     "claims it: debugging", "operator claims it", "the operator claims it"):
+            with self.subTest(body=body):
+                notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
+                self.assertTrue(night_triage.held_by_other(notes, "node1"))
+
     def test_a_claim_a_crashed_run_left_is_released_by_the_next_run(self):
         self.given({"1": self.left_claim()}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:77"}])
         self.assertEqual(self.run_job().returncode, 0)

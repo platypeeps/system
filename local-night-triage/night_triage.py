@@ -203,11 +203,14 @@ def _others(notes, host):
             and not is_own_park(n, host)]
 
 
-# The claim forms, in any case: a session's `claimed: <why>` (the shared
-# rule) and `<who> claims it`, which a person or another run writes
-# (`night-triage on <host> claims it`). A note that only names a claim,
-# or says nobody holds it, is none.
-CLAIM = re.compile(r"claimed:|(?!(?:nobody|no one|noone|none)\s)\S.*? claims it\b", re.I)
+# A claim note opens with the claim, in any case: a session's `claimed`
+# (`claimed: triaging`, `Claimed by me`) or `<who> claims it`, up to
+# three words, as this job writes on another host. A note that only
+# mentions a claim later, a run named `claims-sync`, or one that says
+# nobody holds it claims nothing (sd:9348 review, sd:9578).
+NOBODY = r"(?:nobody|no one|noone|none)(?![\w-])"
+CLAIM = re.compile(r"\s*(?!%s)(?:claimed\b(?!\W*(?:by\s+)?%s)|(?:\S+ ){0,3}claims it\b)"
+                   % (NOBODY, NOBODY), re.I)
 
 
 def held_by_other(notes, host):
