@@ -17,6 +17,7 @@ import os
 import plistlib
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -24,6 +25,9 @@ FOLDER = Path(__file__).resolve().parent.parent
 ENTRYPOINT = FOLDER / "maintenance.sh"
 # The default pause label: SYSTEM_TOOLS_LABEL_PREFIX is unset in these runs.
 LABEL = "local.system-tools.google-workspace-mcp"
+KEV = "local.system-tools.kev"
+# The one stdio MCP server uv-prune may end, as a uvx tool argument.
+PROXY = "mcp-proxy-for-aws@latest https://example.test/mcp"
 
 STUBS = {
     "uv": """\
@@ -38,10 +42,15 @@ exit 0
     "launchctl": """\
 #!/bin/sh
 echo "launchctl $*" >> "$STUB_LOG"
+# One file per loaded label in STUB_LOADED_DIR.
 case "$1" in
-  print) [ -f "$STUB_LOADED" ] ;;
-  bootout) rm -f "$STUB_LOADED" ;;
-  bootstrap) [ -z "$STUB_BOOTSTRAP_FAILS" ] || exit 5; : > "$STUB_LOADED" ;;
+  print|bootout) f="$STUB_LOADED_DIR/${2##*/}" ;;
+  bootstrap) f="$STUB_LOADED_DIR/$(basename "$3" .plist)" ;;
+esac
+case "$1" in
+  print) [ -f "$f" ] ;;
+  bootout) rm -f "$f" ;;
+  bootstrap) [ -z "$STUB_BOOTSTRAP_FAILS" ] || exit 5; : > "$f" ;;
   # STUB_LAUNCHD_PIDS: the pids launchd runs as jobs.
   list)
     [ -z "$STUB_LIST_FAILS" ] || exit 1
@@ -59,6 +68,9 @@ case "$*" in
   "-axo pid=,ppid=,comm=") awk -F'\t' '{print $1, $2, $5}' "$STUB_PS" ;;
   "-axo pid=,etime=,comm=") awk -F'\t' '{print $1, $3, $5}' "$STUB_PS" ;;
   "-o args= -p "*) awk -F'\t' -v p="$4" '$1 == p {print $6}' "$STUB_PS" ;;
+  "-A -o pid= -o comm=") awk -F'\t' '{print $1, $5}' "$STUB_PS" ;;
+  # Whether a signalled process is gone: the real state of a real pid.
+  "-o stat= -p "*) exec /bin/ps "$@" ;;
 esac
 """,
     "lsof": """\
@@ -84,7 +96,7 @@ if [ -n "$STUB_PS" ]; then
     case "$(/bin/ps -o stat= -p "$pid" 2>/dev/null)" in ""|Z*) ;; *) exit 0 ;; esac
   done
 fi
-[ -f "$STUB_LOADED" ] || [ -n "$STUB_FOREIGN_UV" ]
+[ -n "$(ls -A "$STUB_LOADED_DIR")" ] || [ -n "$STUB_FOREIGN_UV" ]
 """,
 }
 
@@ -104,14 +116,17 @@ class UvPrune(unittest.TestCase):
         self.cache.mkdir()
         self.log = self.root / "log"
         self.log.write_text("")
-        self.loaded = self.root / "loaded"
+        loaded = self.root / "loaded"
+        loaded.mkdir()
+        self.loaded = loaded / LABEL
+        self.kev = loaded / KEV
         self.state = self.root / ".local" / "state" / "uv-prune" / "paused"
         self.env = {
             "PATH": f"{bin_dir}:/usr/bin:/bin",
             "HOME": str(self.root),
             "STUB_LOG": str(self.log),
             "STUB_CACHE": str(self.cache),
-            "STUB_LOADED": str(self.loaded),
+            "STUB_LOADED_DIR": str(self.loaded.parent),
             "UV_PRUNE_WAIT": "1",
         }
 
@@ -132,8 +147,7 @@ class UvPrune(unittest.TestCase):
         self.assertEqual(calls, [
             f"launchctl print gui/{uid}/{LABEL}",
             f"launchctl bootout gui/{uid}/{LABEL}",
-            # kev is the default's second label; the stub's bootout above
-            # unloaded every agent, so it is not loaded here.
+            # kev is the default's second label; it is not loaded here.
             f"launchctl print gui/{uid}/local.system-tools.kev",
             "uv cache prune",
             f"launchctl print gui/{uid}/{LABEL}",
@@ -163,18 +177,71 @@ class UvPrune(unittest.TestCase):
         clock, so it holds uv's cache lock like the Workspace MCP."""
         self.run_prune()
         uid = os.getuid()
-        self.assertIn(f"launchctl print gui/{uid}/local.system-tools.kev",
-                      self.calls())
+        self.assertIn(f"launchctl print gui/{uid}/{KEV}", self.calls())
 
-    def processes(self, rows):
+    def test_both_loaded_agents_are_paused_and_started_again(self):
+        """sd:9460 review 2: with the MCP and kev loaded, each is paused
+        before the prune and started again after it."""
+        self.loaded.touch()
+        self.kev.touch()
+        result = self.run_prune()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [c for c in self.calls() if c != "uv cache dir"]
+        uid = os.getuid()
+        agents = f"{self.root}/Library/LaunchAgents"
+        self.assertEqual(calls, [
+            f"launchctl print gui/{uid}/{LABEL}",
+            f"launchctl bootout gui/{uid}/{LABEL}",
+            f"launchctl print gui/{uid}/{KEV}",
+            f"launchctl bootout gui/{uid}/{KEV}",
+            "uv cache prune",
+            f"launchctl print gui/{uid}/{LABEL}",
+            f"launchctl bootstrap gui/{uid} {agents}/{LABEL}.plist",
+            f"launchctl print gui/{uid}/{KEV}",
+            f"launchctl bootstrap gui/{uid} {agents}/{KEV}.plist",
+        ])
+        self.assertTrue(self.loaded.exists())
+        self.assertTrue(self.kev.exists())
+        self.assertFalse(self.state.exists())
+
+    def test_an_installed_agent_with_the_old_single_label_pauses_kev_too(self):
+        """REGRESSION (sd:9460 review 2). A login agent rendered before
+        kev joined the default carries UV_PRUNE_PAUSE with the MCP label
+        alone; that old default reads as the new one."""
+        self.kev.touch()
+        result = self.run_prune(UV_PRUNE_PAUSE=LABEL)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        uid = os.getuid()
+        self.assertIn(f"launchctl bootout gui/{uid}/{KEV}", self.calls())
+        self.assertTrue(self.kev.exists())
+        plist = self.render_plist(UV_PRUNE_PAUSE=LABEL)
+        self.assertEqual(plist["EnvironmentVariables"]["UV_PRUNE_PAUSE"], f"{LABEL} {KEV}")
+
+    def test_another_pause_list_is_kept_as_set(self):
+        self.kev.touch()
+        self.run_prune(UV_PRUNE_PAUSE="org.example.other")
+        self.assertNotIn(f"launchctl bootout gui/{os.getuid()}/{KEV}", self.calls())
+
+    def processes(self, rows, stubborn=()):
         """Start one real process per row and list it in STUB_PS.
 
         A row is (name, ppid, etime, cache, comm, args); a ppid of None
-        names this test process, a live parent."""
+        names this test process, a live parent. A name in stubborn
+        ignores TERM."""
         procs = {}
         lines = []
         for name, ppid, etime, cache, comm, args in rows:
-            proc = subprocess.Popen(["sleep", "60"])
+            if name in stubborn:
+                # SIG_IGN outlives the exec; wait until sleep runs.
+                proc = subprocess.Popen(["sh", "-c", "trap '' TERM; exec sleep 60"])
+                for _ in range(50):
+                    out = subprocess.run(["/bin/ps", "-o", "comm=", "-p", str(proc.pid)],
+                                         capture_output=True, text=True).stdout
+                    if out.strip().endswith("sleep"):
+                        break
+                    time.sleep(0.1)
+            else:
+                proc = subprocess.Popen(["sleep", "60"])
             self.addCleanup(proc.wait)
             self.addCleanup(proc.kill)
             procs[name] = proc
@@ -184,24 +251,62 @@ class UvPrune(unittest.TestCase):
         table.write_text("".join(lines))
         return procs, str(table)
 
-    def test_an_orphaned_uvx_that_holds_this_cache_is_ended(self):
-        """REGRESSION (sd:9460). A uvx whose parent is gone holds uv's
-        cache lock with nothing left to serve; it is ended at any age,
-        and the prune runs."""
+    def test_an_orphaned_mcp_proxy_that_holds_this_cache_is_ended(self):
+        """REGRESSION (sd:9460). A stdio MCP server whose client is gone
+        holds uv's cache lock with nothing left to serve; it is ended at
+        any age, and the prune runs."""
         procs, table = self.processes([
-            ("uvx", 1, "05:00:00", self.cache, "/opt/homebrew/bin/uvx", "mcp-proxy"),
-            ("tool", 1, "02:00", self.cache, "/opt/homebrew/bin/uv",
-             "tool uvx mcp-proxy-for-aws@latest"),
+            ("uvx", 1, "05:00:00", self.cache, "/opt/homebrew/bin/uvx", PROXY),
+            ("tool", 1, "02:00", self.cache, "/opt/homebrew/bin/uv", f"tool uvx {PROXY}"),
+            ("pinned", 1, "02:00", self.cache, "/opt/homebrew/bin/uvx",
+             "mcp-proxy-for-aws==1.2.0 https://example.test/mcp"),
             # A space in the path: the executable is comm, never a word
             # of the flattened command line (review of sd:9460).
-            ("spaced", 1, "01:00:00", self.cache, "/Volumes/Dev Tools/bin/uvx", "x"),
+            ("spaced", 1, "01:00:00", self.cache, "/Volumes/Dev Tools/bin/uvx", PROXY),
         ])
         result = self.run_prune(STUB_PS=table)
         self.assertEqual(result.returncode, 0, result.stderr)
         for name, proc in procs.items():
             self.assertIsNotNone(proc.wait(timeout=5), name)
-            self.assertIn(f"ended uvx {proc.pid}: its parent is gone", result.stdout)
+            self.assertIn(f"ended uvx {proc.pid} (mcp-proxy-for-aws): its client is gone",
+                          result.stdout)
         self.assertIn("uv cache prune", self.calls())
+
+    def test_an_orphaned_uvx_that_is_no_listed_stdio_server_is_not_signalled(self):
+        """REGRESSION (sd:9460 review 2). PPID 1 is no proof of a stale
+        run: a `nohup uvx` server outlives its shell and still serves.
+        Only a tool in UV_PRUNE_STDIO_MCP is ended; the prune skips."""
+        procs, table = self.processes([
+            ("server", 1, "3-00:00:00", self.cache, "/opt/homebrew/bin/uvx",
+             "example-http-server --port 8000"),
+            ("tool", 1, "3-00:00:00", self.cache, "/opt/homebrew/bin/uv",
+             "tool uvx example-http-server"),
+            # An option first, or a longer name, matches no listed tool.
+            ("from", 1, "3-00:00:00", self.cache, "/opt/homebrew/bin/uvx",
+             "--from example mcp-proxy-for-aws"),
+            ("longer", 1, "3-00:00:00", self.cache, "/opt/homebrew/bin/uvx",
+             "mcp-proxy-for-aws-extra"),
+        ])
+        result = self.run_prune(STUB_PS=table)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name, proc in procs.items():
+            self.assertIsNone(proc.poll(), name)
+        self.assertNotIn("ended uvx", result.stdout)
+        self.assertIn("another uv process holds the cache; skipped", result.stdout)
+
+    def test_a_proxy_that_outlives_the_term_is_reported_not_ended(self):
+        """REGRESSION (sd:9460 review 2). "ended" is said only once the
+        process is gone; one that ignores TERM is reported as not ended."""
+        procs, table = self.processes([
+            ("stuck", 1, "3-00:00:00", self.cache, "/opt/homebrew/bin/uvx", PROXY),
+        ], stubborn=("stuck",))
+        result = self.run_prune(STUB_PS=table)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(procs["stuck"].poll())
+        pid = procs["stuck"].pid
+        self.assertIn(f"could not end uvx {pid} (mcp-proxy-for-aws)", result.stdout)
+        self.assertNotIn("ended uvx", result.stdout)
+        self.assertIn("skipped", result.stdout)
 
     def test_a_uvx_whose_parent_lives_is_not_signalled_and_the_prune_skips(self):
         """REGRESSION (sd:9460 review). Age is no permission: a days-old
@@ -209,7 +314,7 @@ class UvPrune(unittest.TestCase):
         restart path. It stays, and the prune skips as before."""
         procs, table = self.processes([
             ("live", None, "3-04:43:42", self.cache, "/opt/homebrew/bin/uv",
-             "tool uvx mcp-proxy-for-aws@latest"),
+             f"tool uvx {PROXY}"),
         ])
         result = self.run_prune(STUB_PS=table)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -223,7 +328,7 @@ class UvPrune(unittest.TestCase):
         holds another cache's lock, not the one this prune needs."""
         other = self.root / "other-cache"
         procs, table = self.processes([
-            ("other", 1, "3-00:00:00", other, "/opt/homebrew/bin/uvx", "x"),
+            ("other", 1, "3-00:00:00", other, "/opt/homebrew/bin/uvx", PROXY),
         ])
         result = self.run_prune(STUB_PS=table)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -234,7 +339,7 @@ class UvPrune(unittest.TestCase):
         """launchd is the parent of its jobs too: PPID 1 alone is not an
         orphan, and only the agents in UV_PRUNE_PAUSE come back."""
         procs, table = self.processes([
-            ("job", 1, "4-00:00:00", self.cache, "/opt/homebrew/bin/uvx", "serve"),
+            ("job", 1, "4-00:00:00", self.cache, "/opt/homebrew/bin/uvx", PROXY),
         ])
         result = self.run_prune(STUB_PS=table, STUB_LAUNCHD_PIDS=str(procs["job"].pid))
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -246,7 +351,7 @@ class UvPrune(unittest.TestCase):
         for flag in ("STUB_LSOF_FAILS", "STUB_LIST_FAILS"):
             with self.subTest(flag=flag):
                 procs, table = self.processes([
-                    ("uvx", 1, "3-00:00:00", self.cache, "/opt/homebrew/bin/uvx", "x"),
+                    ("uvx", 1, "3-00:00:00", self.cache, "/opt/homebrew/bin/uvx", PROXY),
                 ])
                 result = self.run_prune(STUB_PS=table, **{flag: "1"})
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -259,7 +364,7 @@ class UvPrune(unittest.TestCase):
         procs, table = self.processes([
             ("service", 1, "4-07:05:25", self.cache, "uv", "run --extra serve kev"),
             ("other", 1, "2-00:00:00", self.cache, "/Volumes/uvx Tools/bin/other",
-             "tool uvx x"),
+             f"tool uvx {PROXY}"),
         ])
         result = self.run_prune(STUB_PS=table)
         self.assertEqual(result.returncode, 0, result.stderr)
