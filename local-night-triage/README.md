@@ -30,8 +30,8 @@ into `<config>/cron-jobs/jobs/`, list `night-triage` in the machine's
    report takes no `sd task status`: the pack refuses every move of the
    `report` kind. The row goes into `state/claims` before the note, so a
    crash between the two still leaves a row to release. An alert whose
-   latest note from anyone but the ingest and this job is a claim is
-   skipped, and so is one already `in_progress` or parked (sd:9243).
+   latest note from anyone but the ingest and this job is a claim
+   (`claimed: ...` or `<who> on <host> claims it`) is skipped, and so is one already `in_progress` or parked (sd:9243).
    A park this job made wakes: `sd task edit N --unpark` and a note, once
    the day after its wait date comes, or once the job's run count
    (`repeats`, which a folded repeat bumps) passes the one the wait note

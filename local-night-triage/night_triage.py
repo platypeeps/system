@@ -151,9 +151,14 @@ def _others(notes, host):
     return [n for n in notes if n.get("session") != INGEST_SESSION and not is_ours(n, host)]
 
 
+# The two claim forms: a session's `claimed: <why>` and another run's
+# `<who> on <host> claims it`; a note that only names a claim is none.
+CLAIM = re.compile(r"claimed:|\S.* on \S+ claims it\b")
+
+
 def held_by_other(notes, host):
     others = _others(notes, host)
-    return bool(others) and re.search(r"\bclaim", others[-1]["body"], re.I) is not None
+    return bool(others) and CLAIM.match(others[-1]["body"]) is not None
 
 
 def claim(binary, host, claims, context):
