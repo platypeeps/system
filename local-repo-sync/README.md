@@ -406,16 +406,19 @@ upstream, goes in `<config>/repo-sync/keep-branches`, one
 comments (a `#` inside a branch name stays). Hygiene neither lists nor
 deletes it and prints a `kept branch` note instead (sd:9230). A file it
 cannot read, or any line that is not exactly `<owner/name> <glob>` (the glob
-uses `*` and `?` only),
-keeps every branch that run and fails, so one typo pauses branch
-hygiene for the whole fleet until it is fixed.
+uses `*` and `?` only; the repo field none),
+keeps every branch that run and fails with its cause, so one typo pauses
+branch hygiene for the whole fleet until it is fixed. A rule whose repo
+is in no conf keeps nothing; hygiene notes its line (sd:9253).
 
 Every deletion prints the branch and its tip sha with the command that
 restores it. Of the branches whose content is not on the default branch,
 it lists and never deletes: one whose upstream is gone, one with commits
 on no remote, one named for a done sd item
 (read from the sd database when present, `REPO_SYNC_SD_DB`; a `build/sd-<n>`
-branch counts by its lead assignment's item), and a checkout
+or `build/sd-<n>-<suffix>` branch counts by its lead assignment's item,
+only an item of that checkout's repo counts, and a trailing date such as
+`-1118` names no item), and a checkout
 still behind its upstream. It never touches a stash, a remote branch, the
 default branch, or a dirty or in-use worktree. All checks are local git
 plumbing, except two calls to `origin`: the remote prune, and

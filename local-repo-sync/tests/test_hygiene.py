@@ -45,6 +45,22 @@ case "$*" in
 esac
 """
 
+#: A sqlite3 stub that answers from rows in the database file itself, one
+#: per line: `item <id> <status> <repo>` or `assignment <id> <item>`. An item
+#: query with a `repo in (...)` list matches only a listed repo, as SQL does.
+SQLITE_ROWS_STUB = """#!/bin/sh
+q=$3
+id=$(printf '%s\\n' "$q" | sed -n 's/.* where id = \\([0-9]*\\).*/\\1/p')
+while read -r t i v r; do
+  [ "$i" = "$id" ] || continue
+  case "$t $q" in
+    "assignment "*"from assignment"*) echo "$v" ;;
+    "item "*"repo in ("*) case "$q" in *"'$r'"*) echo "$v" ;; esac ;;
+    "item "*"from item"*) echo "$v" ;;
+  esac
+done < "$2"
+"""
+
 
 class HygieneFixture(Fixture):
     """A Fixture whose repositories have history, branches and worktrees."""
@@ -332,6 +348,83 @@ class HygieneTest(unittest.TestCase):
 
         self.assertIn("note: kept branch keep/landed (keep-branches did not load)", result.stdout)
 
+    # sd:9253: review advisories of sd:9230.
+    def test_a_rule_for_no_listed_repo_is_noted(self):
+        # A typo or a BOM in the repo field kept nothing, in silence.
+        f, repo = self.kept_fixture(
+            b"owner/proj keep/landed\nowner/porj local/*\n\xef\xbb\xbfowner/proj local/*\n")
+
+        result = f.run("hygiene", expect=1)
+
+        self.assertIn("note: keep-branches line 2 names no repo any profile lists; it keeps nothing", result.stdout)
+        self.assertIn("note: keep-branches line 3 names no repo any profile lists; it keeps nothing", result.stdout)
+        self.assertNotIn("keep-branches line 1 names", result.stdout)
+        self.assertIn("LOCAL    branch local/topic#1", result.stdout)
+
+    def test_a_rule_is_noted_when_no_repo_is_listed(self):
+        # sd:9282 round 1: with an empty list, NR == FNR read the rules as
+        # the list, so no rule was noted.
+        f = self.fixture()
+        (f.folder / f"repos.{f.profile}.conf").write_text("")
+        (f.folder / "keep-branches").write_text("owner/proj local/*\n")
+
+        result = f.run("hygiene")
+
+        self.assertIn("note: keep-branches line 1 names no repo any profile lists; it keeps nothing", result.stdout)
+
+    def test_a_rule_for_another_profile_s_repo_is_no_orphan(self):
+        # sd:9348: the keep file serves the fleet; a rule for a repo only
+        # another machine's profile lists was noted as an orphan.
+        f, repo = self.kept_fixture(b"owner/proj keep/landed\nowner/elsewhere local/*\n")
+        (f.folder / "repos.work.conf").write_text("a owner/elsewhere\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertNotIn("keep-branches line 2", result.stdout)
+        self.assertIn("note: kept branch keep/landed (keep-branches)", result.stdout)
+
+    def test_a_profile_list_that_does_not_load_judges_no_rule(self):
+        f, repo = self.kept_fixture(b"owner/porj local/*\n")
+        result = f.run("hygiene", expect=1, extra_env={"CLONES_RC": "1"})
+        self.assertNotIn("keep-branches line 1 names", result.stdout)
+        self.assertIn("note: keep-branches: a profile's repo list did not load; no rule checked", result.stdout)
+
+    def test_a_glob_in_the_repo_field_keeps_every_branch(self):
+        f, repo = self.kept_fixture(b"owner/* keep/other\n")
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+        self.assertIn("FAILED keep-branches line 1", result.stdout)
+
+    def test_a_keep_load_failure_names_its_cause(self):
+        f, repo = self.kept_fixture(b"owner/proj keep/landed\n")
+        keep = f.folder / "keep-branches"
+        keep.chmod(0)
+        self.addCleanup(keep.chmod, 0o644)
+        self.assertIn("keep-branches): not readable; every branch kept",
+                      f.run("hygiene", expect=1).stdout)
+        keep.chmod(0o644)
+        keep.unlink()
+        keep.mkdir()
+        self.assertIn("keep-branches): not a file; every branch kept",
+                      f.run("hygiene", expect=1).stdout)
+
+    def test_a_keep_parse_that_fails_names_awk_or_the_write(self):
+        # The parse's awk exits 1 only when a close in END failed.
+        for rc, why in ((2, "awk failed (exit 2)"), (1, "writing ")):
+            f, repo = self.kept_fixture(b"owner/proj keep/landed\n")
+            real = shutil.which("awk")
+            (f.bin / "awk").write_text(
+                f'#!/bin/sh\ncase "$*" in *keep.bad*) exit {rc} ;; esac\n'
+                f'exec {real} "$@"\n')
+            (f.bin / "awk").chmod(0o755)
+
+            result = f.run("hygiene", "--apply", expect=1)
+
+            self.assertTrue(f.branch_sha(repo, "keep/landed"), result.stdout)
+            self.assertIn(f"keep-branches): {why}", result.stdout)
+
     def test_a_clean_fleet_reports_nothing_and_exits_0(self):
         """NEW. Requirement 9: without --apply, exit 0 when clean."""
         f = self.fixture()
@@ -549,6 +642,92 @@ class HygieneTest(unittest.TestCase):
         self.assertNotIn("build/sd-397", result.stdout)
         self.assertIn("(sd:5783 is done", result.stdout)
         self.assertNotIn("sd:529", result.stdout)
+
+    # sd:9376: DONE lines named the wrong item.
+    def done_db(self, f, items, assignments=()):
+        """An sd database for SQLITE_ROWS_STUB: `items` are (id, status,
+        repo) rows, `assignments` (id, item) rows."""
+        (f.bin / "sqlite3").write_text(SQLITE_ROWS_STUB)
+        (f.bin / "sqlite3").chmod(0o755)
+        db = f.tmp / "sd-rows.db"
+        db.write_text("".join(f"item {i} {st} {r}\n" for i, st, r in items)
+                      + "".join(f"assignment {i} {it} -\n" for i, it in assignments))
+        return {"REPO_SYNC_SD_DB": str(db)}
+
+    def branches(self, f, repo, *names):
+        for name in names:
+            f.git(repo, "switch", "-q", "-c", name, "main")
+            f.commit(repo, name.replace("/", "_") + ".txt", "work\n", name)
+            f.git(repo, "push", "-q", "-u", "origin", name)
+        f.git(repo, "switch", "-q", "main")
+
+    def test_a_rebase_backup_build_branch_reads_its_assignment(self):
+        f = self.fixture()
+        repo = f.repo()
+        self.branches(f, repo, "build/sd-803-prerebase")
+        here = real(repo)
+        env = self.done_db(f, [(803, "done", here), (5783, "done", here)], [(803, 5783)])
+
+        result = f.run("hygiene", extra_env=env, expect=1)
+
+        self.assertIn("DONE     branch build/sd-803-prerebase", result.stdout)
+        self.assertIn("(sd:5783 is done", result.stdout)
+        self.assertNotIn("sd:803 is done", result.stdout)
+
+    def test_a_date_in_a_branch_name_is_no_item(self):
+        f = self.fixture()
+        repo = f.repo()
+        self.branches(f, repo, "fix/pack-advisories-1118", "fix/notes-2026-11-18")
+        here = real(repo)
+        env = self.done_db(f, [(1118, "done", here), (18, "done", here)])
+
+        result = f.run("hygiene", extra_env=env)
+
+        self.assertNotIn("DONE ", result.stdout)
+
+    def test_a_profile_is_one_whole_word_of_the_list(self):
+        # Lead re-review: `personal work` passed as a substring.
+        f = self.fixture()
+        for bad in ("personal work", "work terra", "erra"):
+            result = f.run("hygiene", expect=1, extra_env={"REPO_SYNC_PROFILE": bad})
+            self.assertIn(f"unknown profile '{bad}'", result.stderr, bad)
+
+    def test_an_item_marker_inside_a_word_names_no_item(self):
+        # Lead review: fix/xsd-9376suffix read as sd:9376.
+        f = self.fixture()
+        repo = f.repo()
+        self.branches(f, repo, "fix/xsd-9376suffix", "fix/sd-9377suffix", "fix/sd_9378.x")
+        here = real(repo)
+        env = self.done_db(f, [(9376, "done", here), (9377, "done", here), (9378, "done", here)])
+
+        result = f.run("hygiene", extra_env=env, expect=1)
+
+        self.assertNotIn("sd:9376", result.stdout)
+        self.assertNotIn("sd:9377", result.stdout)
+        self.assertIn("DONE     branch fix/sd_9378.x", result.stdout)
+
+    def test_an_item_of_another_repo_is_not_the_branch_s(self):
+        f = self.fixture()
+        repo = f.repo()
+        self.branches(f, repo, "feat/thing-1234", "feat/other-1235")
+        env = self.done_db(f, [(1234, "done", "~/repos/elsewhere"), (1235, "done", real(repo))])
+
+        result = f.run("hygiene", extra_env=env, expect=1)
+
+        self.assertNotIn("sd:1234", result.stdout)
+        self.assertIn("DONE     branch feat/other-1235", result.stdout)
+
+    def test_an_item_keyed_under_the_home_is_the_branch_s(self):
+        # The pack stores a repo under the home as `~/<path>` (paths.key).
+        f = self.fixture()
+        repo = f.repo()
+        self.branches(f, repo, "feat/other-1235")
+        home = real(f.tmp)
+        env = self.done_db(f, [(1235, "done", "~/" + str(pathlib.Path(real(repo)).relative_to(home)))])
+
+        result = f.run("hygiene", extra_env={**env, "HOME": home}, expect=1)
+
+        self.assertIn("DONE     branch feat/other-1235", result.stdout)
 
     def test_a_landed_branch_for_a_done_item_is_deleted(self):
         """NEW. Requirement 5: the report-only classes cover branches whose
