@@ -296,6 +296,16 @@ class Readers(unittest.TestCase):
         self.assertIn("starting_on=2026-12-01T00:00:00Z&ending_before=2027-01-01T00:00:00Z",
                       calls[2][0])
 
+    def test_a_baseten_usage_section_of_another_shape_is_unknown(self):
+        # Lane review: a malformed section was dropped and the rest
+        # published as the month's total.
+        for bad in ([], None, "x", 5, {"subtotal": "1.00"}):
+            with self.subTest(bad=bad):
+                answer = {"model_apis_usage": {"total": "2.00"}, "dedicated_usage": bad}
+                got = usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
+                                                  answering(answer), NOW)
+                self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
+
     def test_a_baseten_total_that_is_no_decimal_string_is_unknown(self):
         for total in ("", "-1.00", "1e400", "nan", " 1.00", "1,000.00", "inf"):
             with self.subTest(total=total):
