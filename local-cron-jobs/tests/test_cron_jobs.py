@@ -3650,6 +3650,23 @@ class StaleLockTest(UnfinishedRunTest.__base__):
         self.assertTrue(started(self.log, before), "the run starts")
         return run
 
+    def run_own_workload(self, tail):
+        """Start a run whose workload writes its pid, then runs `tail`, and
+        return the run once the workload is up. Its pid leads its own group,
+        and only that group is ended (sd:9522): `pkill -f` ended another
+        gate's workload too. Waiting for the workload, not the `starting`
+        line, also means it holds the lock before the runner is killed."""
+        pid_file = self.fx.tmp / "workload.pid"
+        run = self.run_in_background(f"'echo $$ > \"{pid_file}\"; {tail}'")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            text = pid_file.read_text() if pid_file.exists() else ""
+            if text.endswith("\n"):
+                self.addCleanup(kill_group, int(text))
+                return run
+            time.sleep(0.05)
+        self.fail("the workload never started")
+
     def second_run(self):
         return subprocess.run(
             ["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
@@ -3678,8 +3695,7 @@ class StaleLockTest(UnfinishedRunTest.__base__):
         alone, and the runner's death is not the job's. The run shares this
         test's process group on purpose: group identity proves nothing, the
         held file does."""
-        run = self.run_in_background('"exec sleep 31.4159"')
-        self.addCleanup(subprocess.run, ["pkill", "-f", "sleep 31.4159"])
+        run = self.run_own_workload("exec sleep 31.4159")
         os.kill(run.pid, signal.SIGKILL)
         run.wait()
         second = self.second_run()
@@ -3689,8 +3705,7 @@ class StaleLockTest(UnfinishedRunTest.__base__):
         """REGRESSION (#576 review). The log's tee is a helper, not the job.
         The workload here closes its own copy of the lock and keeps writing,
         so after the runner is killed only tee could still hold it."""
-        run = self.run_in_background("'exec 8>&-; exec sleep 32.7182'")
-        self.addCleanup(subprocess.run, ["pkill", "-f", "sleep 32.7182"])
+        run = self.run_own_workload("exec 8>&-; exec sleep 32.7182")
         os.kill(run.pid, signal.SIGKILL)
         run.wait()
         after = self.exec_job('"true"')
@@ -3709,6 +3724,30 @@ class StaleLockTest(UnfinishedRunTest.__base__):
             start_new_session=True) for _ in range(6)]
         errors = [run.communicate(timeout=60)[1] for run in runs]
         self.assertEqual(len([error for error in errors if "skipped" not in error]), 1, errors)
+
+
+class StaleLockCleanupTest(unittest.TestCase):
+    """A run of StaleLockTest ends its own workload and no other (sd:9522).
+
+    REGRESSION. Its cleanup was `pkill -f "sleep 31.4159"`, which ends every
+    process with that command line on the machine. Gates run this suite side
+    by side, so one run's cleanup ended another's workload, its lock went
+    free, and that run's second run started: "skipped: previous run still
+    active" not found. Four loops at once failed 24 of 120 runs.
+    """
+
+    def test_a_run_leaves_a_workload_it_did_not_start_alone(self):
+        decoys = [subprocess.Popen(["sleep", seconds]) for seconds in ("31.4159", "32.7182")]
+        for decoy in decoys:
+            self.addCleanup(decoy.wait)
+            self.addCleanup(decoy.kill)
+        for name in ("test_a_job_that_outlives_its_runner_still_holds_the_lock",
+                     "test_a_surviving_tee_does_not_hold_the_lock"):
+            result = unittest.TestResult()
+            StaleLockTest(name).run(result)
+            self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
+        self.assertEqual([decoy.poll() for decoy in decoys], [None, None],
+                         "a run's cleanup ended a process it did not start")
 
 class AbandonedRunTest(UnfinishedRunTest.__base__):
     """A run that died unseen is reported, as its own state (sd:1259).
