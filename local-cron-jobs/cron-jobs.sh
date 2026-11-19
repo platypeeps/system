@@ -198,12 +198,28 @@ agent_quarantine() { # job binary
 # (sd:5293); this keeps the newest five per job, so the log dir stays bounded.
 # It lists from the log dir: macOS ls opens its cwd, and a JOB_DIR in the
 # vault drew a Full Disk Access denial for /bin/ls on each run (sd:6437).
+# A job name may hold dots, so the glob also lists a job named
+# `<job>.debug.x`'s files; only those whose middle is a run id are kept.
 prune_debug_files() { # job
-  local old
+  local old run
   # shellcheck disable=SC2012 # the names are this script's own (job, UTC stamp, pid): no whitespace, and ls -t is the mtime order wanted
-  (cd "$LOG_DIR" && ls -t "$1".debug.*.log 2>/dev/null) | tail -n +6 | while IFS= read -r old; do
+  (cd "$LOG_DIR" && ls -t "$1".debug.*.log 2>/dev/null) | while IFS= read -r old; do
+    run="${old#"$1".debug.}"
+    ! is_run_id "${run%.log}" || printf '%s\n' "$old"
+  done | tail -n +6 | while IFS= read -r old; do
     rm -f "$LOG_DIR/$old"
   done
+}
+
+# Is this a run id as cmd_exec makes one (UTC stamp, pid)? State files
+# put it after the job's name, and a job name may hold dots, so only a
+# whole run id tells this job's file from another job's.
+is_run_id() { # value
+  case "$1" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-[0-9]*) ;;
+    *) return 1 ;;
+  esac
+  case "${1#*Z-}" in *[!0-9]*) return 1 ;; esac
 }
 
 label_for()  { echo "$LABEL_PREFIX.cron.$1"; }
@@ -737,14 +753,21 @@ report_unrecorded() { # job, log offset, run identity, start, end, exit
   return "$saved"
 }
 
-# Appends whole lines to the retry queue. A short write or a kill can
-# leave its last line unterminated; it is ended first, or the append
-# joined two runs into one line.
+# Adds whole lines to the retry queue. The new queue is written aside
+# and renamed into place, so a short write or a kill leaves the old one
+# whole; an unterminated last line, from a runner before this, is ended
+# first, or the append joined two runs into one line.
 queue_append() { # file, newline-terminated text
-  if [ -s "$1" ] && [ -n "$(tail -c 1 "$1" 2>/dev/null)" ]; then
-    printf '\n' >> "$1" || return 1
-  fi
-  printf '%s' "$2" >> "$1"
+  local tmp="$1.tmp"
+  [ ! -e "$1" ] || [ -f "$1" ] || return 1
+  # A subshell, so its `exit` ends only the copy, not the runner.
+  (
+    if [ -s "$1" ]; then
+      cat "$1" || exit 1
+      [ -z "$(tail -c 1 "$1")" ] || printf '\n' || exit 1
+    fi
+    printf '%s' "$2"
+  ) > "$tmp" && mv -f "$tmp" "$1" || { rm -f "$tmp"; return 1; }
 }
 
 # Files this run's report. The retry record goes to
@@ -780,12 +803,16 @@ replay_unrecorded() { # job
   # A run killed while it filed its report left its line in its own
   # file. Run ids sort by time, so the glob's order is the runs'; the
   # first that cannot move stops the rest, which keeps that order.
-  local inflight
+  # Only a whole run id after the prefix is this job's: a job named
+  # `<job>.reporting.x` has files under the same glob.
+  local inflight name
   for inflight in "$LOG_DIR/.$1.reporting".*; do
+    [ -f "$inflight" ] || continue
+    name="${inflight#"$LOG_DIR/.$1.reporting."}"
     # A temp file is a write a kill cut short; under the lock no writer
     # of this job is left.
-    case "$inflight" in *.tmp) rm -f "$inflight"; continue ;; esac
-    [ -f "$inflight" ] || continue
+    case "$name" in *.tmp) ! is_run_id "${name%.tmp}" || rm -f "$inflight"; continue ;; esac
+    is_run_id "$name" || continue
     queue_append "$pending" "$(cat "$inflight")
 " && rm -f "$inflight" || break
   done
@@ -794,6 +821,12 @@ replay_unrecorded() { # job
     case "$offset" in ''|*[!0-9]*) used=1; continue ;; esac
     [ -n "$run" ] || { REPLAY_CARRY="$offset"; bare="$bare$offset
 "; continue; }
+    # A partial record, cut short by a runner before whole-queue writes,
+    # is refused by ingest and would hold every later run behind it.
+    if ! is_run_id "$run" || [ -z "$ended" ] || case "$code" in ''|*[!0-9]*) true ;; *) false ;; esac; then
+      echo "[$1] dropped a malformed retry record: $offset $run $started $ended $code" >&2
+      used=1; continue
+    fi
     if [ -z "$left" ] && record_run_report "$1" "$run" "$started" "$ended" "$code" "$offset"; then
       used=1; continue
     fi

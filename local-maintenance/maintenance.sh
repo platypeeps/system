@@ -377,7 +377,15 @@ check_logs() { # dir-or-file max-mb
           perl -e 'use Fcntl ":flock"; open(my $fh, ">&=", 8) or exit 2; flock($fh, LOCK_EX|LOCK_NB) or exit 1; exit 0' || exit 9
         fi
         [ ! -e "$pending" ] || exit 9
-        for r in "$inflight".*; do [ ! -e "$r" ] || exit 9; done
+        # A whole run id only: a job named `<job>.reporting.x` has files
+        # under the same glob.
+        for r in "$inflight".*; do
+          r="${r#"$inflight".}"
+          case "$r" in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-[0-9]*)
+              case "${r#*Z-}" in *[!0-9]*) ;; *) exit 9 ;; esac ;;
+          esac
+        done
         tail -n 2000 "$f" > "$f.1" && : > "$f" ) 2>/dev/null || rot_rc=$?
       if [ "$rot_rc" -eq 9 ]; then
         action "rotation of $f deferred: its job runs or holds an unrecorded report (${mb}MB)"

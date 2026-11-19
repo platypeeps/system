@@ -2426,6 +2426,74 @@ class RunReportTest(unittest.TestCase):
         self.assertEqual(lines[0], "0 20260101T000000Z-1 a b 7")
         self.assertRegex(lines[1], r"^\d+ [0-9TZ]+-\d+ \S+ \S+ 3$")
 
+    def test_replay_leaves_a_dotted_job_s_files_alone(self):
+        """Build 1232 round 8 (class: a state-file operation that does not
+        touch exactly one whole record of its own job). Job names may hold
+        dots; `demo`'s glob `.demo.reporting.*` took the lock and the queue
+        of a job named `demo.reporting.worker`, filed them and deleted them."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        other = {".demo.reporting.worker.unreported": "0 20260101T000000Z-9 a b 4\n",
+                 ".demo.reporting.worker.flock": ""}
+        for name, text in other.items():
+            (logs / name).write_text(text)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        for name, text in other.items():
+            self.assertEqual((logs / name).read_text(), text, name)
+        self.assertNotIn("20260101T000000Z-9", [r for r, _, _ in self.ingests()])
+
+    def test_a_queue_append_publishes_a_whole_new_queue(self):
+        """Round 8. The append wrote into the live queue, so a short write
+        left a fragment the next append completed. The queue is now
+        rewritten aside and renamed into place: the old file, held here
+        through a second link, is never changed."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("0 20260101T000000Z-1 a b 7\n")
+        held = self.fx.tmp / "held-queue"
+        os.link(pending, held)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        self.exec_job(FAKE_SD_EXIT="3")
+        self.assertEqual(held.read_text(), "0 20260101T000000Z-1 a b 7\n")
+        self.assertEqual(len(pending.read_text().splitlines()), 2, pending.read_text())
+
+    def test_a_partial_record_does_not_block_the_queue(self):
+        """Round 8. A record with a run id and missing fields was filed,
+        ingest refused it, and the replay stopped before every later run.
+        It is dropped as malformed and the replay goes on."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        (logs / ".demo.unreported").write_text(
+            "12 20260101T000000Z-1\n0 20260101T000000Z-1 a b 7\n")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        runs = [(r, rc, off) for r, rc, off in self.ingests()]
+        self.assertEqual(runs[0], ("20260101T000000Z-1", "7", "0"), runs)
+        self.assertEqual(len(runs), 2, runs)
+        self.assertFalse((logs / ".demo.unreported").exists())
+
+    def test_debug_pruning_leaves_a_dotted_job_s_log_alone(self):
+        """Round 8. `demo`'s prune glob `demo.debug.*.log` also listed the
+        log of a job named `demo.debug.worker`, and deleted it among the
+        oldest."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        other = logs / "demo.debug.worker.log"
+        other.write_text("worker\n")
+        os.utime(other, (1_000_000, 1_000_000))
+        for n in range(6):
+            (logs / f"demo.debug.20260101T00000{n}Z-1.log").write_text("x")
+        script = self.fx.folder / "cron-jobs.sh"
+        subprocess.run(
+            ["bash", "-c", f'eval "$(sed -n -e "/^is_run_id()/,/^}}/p" '
+                           f'-e "/^prune_debug_files()/,/^}}/p" {script})"; '
+                           f'LOG_DIR="{logs}"; prune_debug_files demo'],
+            capture_output=True, text=True, check=True)
+        self.assertTrue(other.exists())
+        self.assertEqual(len(list(logs.glob("demo.debug.2026*.log"))), 5)
+
     def test_a_failed_report_keeps_the_exit_code(self):
         # PIN. A report that fails is logged; the job's own code stands.
         for command, code in (("true", 0), ("exit 7", 7)):
