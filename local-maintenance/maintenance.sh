@@ -55,10 +55,6 @@ UV_PRUNE_PAUSE="${UV_PRUNE_PAUSE-$LABEL_PREFIX.google-workspace-mcp $LABEL_PREFI
 # that old default reads as the new one, so kev is paused there too.
 [ "$UV_PRUNE_PAUSE" != "$LABEL_PREFIX.google-workspace-mcp" ] \
   || UV_PRUNE_PAUSE="$LABEL_PREFIX.google-workspace-mcp $LABEL_PREFIX.kev"
-# The stdio MCP servers uv-prune may end once their client is gone: one
-# that speaks over stdin and stdout has nothing left to serve (sd:9460).
-# Any other uvx, such as a `nohup uvx` server, may still serve; it stays.
-UV_PRUNE_STDIO_MCP="mcp-proxy-for-aws"
 UV_PRUNE_STATE="${UV_PRUNE_STATE:-$HOME/.local/state/uv-prune/paused}"
 uv_prune() {
   uid=$(id -u)
@@ -92,38 +88,10 @@ uv_prune() {
     paused="$paused $label"
     launchctl bootout "gui/$uid/$label" 2>/dev/null || true
   done
-  # A uvx tool run, such as an MCP proxy a Claude session started, holds
-  # the cache lock for as long as it runs and skipped the prune for nights
-  # (sd:9460). Only an orphaned stdio MCP server is ended: its parent is
-  # gone (PPID 1), launchd does not run it as a job, lsof shows it holding
-  # this cache's lock, and its tool is in UV_PRUNE_STDIO_MCP. A uvx whose
-  # parent still runs, or any other tool, is never signalled; the prune
-  # then skips below, as before. A failed lsof or launchctl list is no
-  # answer, so it ends nothing. uv forwards the TERM to its tool.
-  # The executable is `comm`, the line's last field, so a space in its
-  # path neither hides a uvx nor makes another program one. The tool is
-  # the first argument after that path (and `tool uvx` for uv), less any
-  # @version or ==version; an option there matches no tool.
-  if lock_pids=$(st_step 60 lsof -nP -t -- "$cache/.lock" 2>/dev/null) \
-      && launchd_jobs=$(launchctl list 2>/dev/null); then
-    # launchctl's status, not awk's: a pipe's status is its last command's.
-    job_pids=$(printf '%s\n' "$launchd_jobs" | awk 'NR > 1 { print $1 }')
-    ps -axo pid=,ppid=,comm= | while read -r pid ppid comm; do
-      [ "$ppid" = 1 ] || continue
-      case "$comm" in
-        uvx|*/uvx) prefix="$comm " ;;
-        uv|*/uv) prefix="$comm tool uvx " ;;
-        *) continue ;;
-      esac
-      args=$(ps -o args= -p "$pid") || continue
-      case "$args" in "$prefix"*) ;; *) continue ;; esac
-      tool=${args#"$prefix"}; tool=${tool%% *}; tool=${tool%%@*}; tool=${tool%%==*}
-      case " $UV_PRUNE_STDIO_MCP " in *" $tool "*) ;; *) continue ;; esac
-      printf '%s\n' "$lock_pids" | grep -qx "$pid" || continue
-      ! printf '%s\n' "$job_pids" | grep -qx "$pid" || continue
-      uv_prune_end "$pid" "$tool"
-    done
-  fi
+  # A uvx run, such as a Claude session's MCP proxy, is never signalled:
+  # nothing here proves its client is gone, and a launcher can hand its
+  # pipes on (operator ruling, sd:9460). The prune skips while one holds
+  # the lock; the login prune after a reboot cleans the cache.
   # Give the paused agents' uv and uvx processes time to exit.
   waited=0
   while { pgrep -x uv || pgrep -x uvx; } >/dev/null 2>&1 && [ "$waited" -lt "${UV_PRUNE_WAIT:-20}" ]; do
@@ -151,23 +119,6 @@ uv_prune() {
   echo "uv-prune: $cache $((before / 1024)) MB -> $((after / 1024)) MB (prune exit $prune_rc)"
   uv_prune_resume || return 1
   return 0
-}
-# End one orphaned stdio MCP server. It counts as ended only once it is
-# gone: kill -0 fails (ESRCH; it was ours to signal) or it is a zombie.
-uv_prune_end() {
-  if kill "$1" 2>/dev/null; then
-    n=0
-    while [ "$n" -lt 5 ]; do
-      if ! kill -0 "$1" 2>/dev/null; then
-        echo "uv-prune: ended uvx $1 ($2): its client is gone and it held $cache"; return 0
-      fi
-      case "$(ps -o stat= -p "$1" 2>/dev/null)" in
-        Z*) echo "uv-prune: ended uvx $1 ($2): its client is gone and it held $cache"; return 0 ;;
-      esac
-      sleep 1; n=$((n + 1))
-    done
-  fi
-  echo "uv-prune: could not end uvx $1 ($2), an orphaned stdio MCP server"
 }
 # Start every paused agent again, retrying a failed bootstrap. An agent
 # already loaded counts as restored. What stays down stays in the record and
@@ -254,10 +205,8 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|move|test
          `run` runs it nightly too).
          Pauses the LaunchAgents in UV_PRUNE_PAUSE (default
          $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp and .kev, prefix
-         default local.system-tools), ends an orphaned stdio MCP server
-         from UV_PRUNE_STDIO_MCP that holds the cache's lock, skips when
-         any other uv process is left, never passes --force, and starts
-         the paused agents again.
+         default local.system-tools), skips when any other uv process is
+         left, never passes --force, and starts the paused agents again.
          Exits 1 only while a paused agent stays down; its label stays in
          ~/.local/state/uv-prune/paused, and the next run restores it first.
   uv-prune-plist

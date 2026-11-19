@@ -165,14 +165,9 @@ agent. `uv-prune` does these steps:
    `$SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp` and `.kev`; the
    rendered plist carries the value) with `launchctl bootout`.
    A plist rendered when the default named the MCP alone pauses kev too.
-   End each orphaned stdio MCP server: a `uvx` run of a tool in
-   `UV_PRUNE_STDIO_MCP` (`mcp-proxy-for-aws`) whose parent is gone
-   (PPID 1), that launchd does not run as a job, and that holds the
-   cache's `.lock` (lsof). A uvx whose parent, such as a live Claude
-   session, still runs is never signalled, nor is any other tool: a
-   `nohup uvx` server still serves. A failed `lsof` or `launchctl list`
-   ends nothing. A run that does not exit within 5 seconds is reported
-   as not ended.
+   A `uvx` run, such as a Claude session's MCP proxy, is never
+   signalled: nothing proves its client is gone. While one holds the
+   lock the prune skips; the login prune after a reboot cleans the cache.
 2. Wait up to `UV_PRUNE_WAIT` seconds (20) for its uv processes to exit.
 3. Skip the prune, exit 0, when any `uv` or `uvx` process is still left.
 4. Run `uv cache prune` with `UV_LOCK_TIMEOUT` of `UV_PRUNE_LOCK_TIMEOUT` (60).

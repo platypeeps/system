@@ -110,10 +110,6 @@ class CacheCleanupTest(Harness):
         # Not loaded: no agent is paused, so the real launchd is never asked.
         _stub(self.bin / "launchctl", 'echo "launchctl $*" >> "$CALLS"\nexit 1\n')
         _stub(self.bin / "pgrep", "exit 0\n" if foreign else "exit 1\n")
-        # An empty process table: the real one could name a uvx the run
-        # would end (sd:9460). Other ps calls, such as the crash stub's
-        # parent lookup below, read the real one.
-        _stub(self.bin / "ps", 'case "$1" in -axo) exit 0 ;; esac\nexec /bin/ps "$@"\n')
 
     def test_run_prunes_the_uv_cache(self):
         self.uv(foreign=False)
