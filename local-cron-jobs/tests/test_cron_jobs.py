@@ -1633,9 +1633,10 @@ class HostJobsTest(unittest.TestCase):
             env["CRON_JOBS_HOST"] = host
         return env
 
-    def run_script(self, *args, host="Mini"):
+    def run_script(self, *args, host="Mini", extra=None):
         return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), *args],
-                              env=self.env(host), capture_output=True, text=True, timeout=60)
+                              env={**self.env(host), **(extra or {})},
+                              capture_output=True, text=True, timeout=60)
 
     def rows(self, host="Mini"):
         result = self.run_script("list", host=host)
@@ -1704,6 +1705,40 @@ class HostJobsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
         self.assertEqual("Interactive", plistlib.loads(plist.read_bytes()).get("ProcessType"))
+
+    def test_launchd_waits_out_the_grace_before_its_kill(self):
+        """Review of build 1232: on bootout or shutdown launchd TERMs the
+        runner and KILLs it after ExitTimeOut (20 s unset). The runner
+        waits the job's grace and then writes its outcome, so the plist's
+        ExitTimeOut is the grace plus room for that report, whatever sets
+        the grace: the wrapper default, the job file or the environment."""
+        cases = (({}, "", 60), ({}, "CRON_JOBS_TIMEOUT_GRACE=5\n", 35),
+                 ({"CRON_JOBS_TIMEOUT_GRACE": "12"}, "", 42))
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        for env, line, want in cases:
+            with self.subTest(env=env, line=line):
+                self.fx.write_job("demo", line + self.JOB.format("true"))
+                result = self.run_script("install", "demo", extra=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(want, plistlib.loads(plist.read_bytes()).get("ExitTimeOut"))
+
+    def test_one_job_s_grace_does_not_reach_the_next(self):
+        # install --all loads every job in one shell; a grace a job file
+        # sets stays with that job.
+        self.fx.write_job("first", "CRON_JOBS_TIMEOUT_GRACE=5\n" + self.JOB.format("true"))
+        self.fx.write_job("second", self.JOB.format("true"))
+        result = self.run_script("install", "--all")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agents = self.fx.home / "Library" / "LaunchAgents"
+        for job, want in (("first", 35), ("second", 60)):
+            plist = agents / f"{LABEL_PREFIX}.cron.{job}.plist"
+            self.assertEqual(want, plistlib.loads(plist.read_bytes()).get("ExitTimeOut"), job)
+
+    def test_a_grace_that_is_not_a_number_is_refused(self):
+        self.fx.write_job("demo", "CRON_JOBS_TIMEOUT_GRACE=soon\n" + self.JOB.format("true"))
+        result = self.run_script("install", "demo")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CRON_JOBS_TIMEOUT_GRACE", result.stderr)
 
     def test_plist_values_are_xml_escaped(self):
         """A config root named with `&`, `<` and `>` still renders a plist

@@ -24,7 +24,8 @@
 #                  A run past it logs its process group's processes, has
 #                  the group sent TERM, then KILL after
 #                  CRON_JOBS_TIMEOUT_GRACE seconds (default 30), and fails
-#                  with exit 124.
+#                  with exit 124. The plist's ExitTimeOut is that grace
+#                  plus EXIT_REPORT_ROOM.
 #
 # Usage:
 #   cron-jobs.sh list                     jobs, schedules, installed/loaded state, folder
@@ -74,6 +75,9 @@ CONF_DIR="$(st_config_dir cron-jobs)"
 # too: a health check or runner status a job calls needs the same label
 # prefix as this script. An exported value wins over the file.
 st_source_env cron-jobs
+# The grace before any job file sets its own: load_job puts it back for
+# each job, so one job's grace never reaches the next in `install --all`.
+BASE_TIMEOUT_GRACE="${CRON_JOBS_TIMEOUT_GRACE-}"
 LABEL_PREFIX="$(st_label_prefix)"
 # The prefix may sit in <config>/shared.env, which no job reads on its own.
 SYSTEM_TOOLS_LABEL_PREFIX="$LABEL_PREFIX"; export SYSTEM_TOOLS_LABEL_PREFIX
@@ -228,6 +232,9 @@ job_file() {
 # enough for the slowest prompt job; short enough that a hung run frees its
 # lock the same night rather than holding it until someone looks (sd:2018).
 DEFAULT_JOB_TIMEOUT=2h
+# Seconds launchd's ExitTimeOut leaves past the grace for the EXIT trap's
+# outcome, report and push.
+EXIT_REPORT_ROOM=30
 
 # A limit as whole seconds: N, Ns, Nm or Nh. Leading zeros are dropped
 # first, since `$(( ))` reads 010 as octal.
@@ -247,7 +254,7 @@ load_job() {
   local f; f="$(job_file "$1")"
   [ -f "$f" ] || { echo "ERROR: no such job '$1' (expected $f)" >&2; exit 1; }
   JOB_SCHEDULE="" JOB_PROMPT="" JOB_COMMAND="" JOB_DIR="" JOB_MODEL="" JOB_CLAUDE_ARGS=""
-  JOB_RESULT_OK="" JOB_TIMEOUT=""
+  JOB_RESULT_OK="" JOB_TIMEOUT="" CRON_JOBS_TIMEOUT_GRACE="$BASE_TIMEOUT_GRACE"
   # shellcheck source=/dev/null
   # shellcheck disable=SC1090
   . "$f"
@@ -257,6 +264,10 @@ load_job() {
   if [ -n "$JOB_PROMPT" ] && [ -n "$JOB_COMMAND" ]; then
     echo "ERROR: $f sets both JOB_PROMPT and JOB_COMMAND — pick one" >&2; exit 1
   fi
+  JOB_GRACE="${CRON_JOBS_TIMEOUT_GRACE:-30}"
+  case "$JOB_GRACE" in
+    '' | *[!0-9]*) echo "ERROR: $f: CRON_JOBS_TIMEOUT_GRACE '$JOB_GRACE' is not a whole number of seconds" >&2; exit 1 ;;
+  esac
   local limit="${JOB_TIMEOUT:-${CRON_JOBS_JOB_TIMEOUT:-$DEFAULT_JOB_TIMEOUT}}"
   JOB_TIMEOUT_SECONDS="$(timeout_seconds "$limit")" || {
     echo "ERROR: $f: JOB_TIMEOUT (or CRON_JOBS_JOB_TIMEOUT) '$limit' is not N, Ns, Nm or Nh" >&2
@@ -462,6 +473,12 @@ EOF
     <!-- Unset (Standard) throttles the job; lane gates ran ~8x slow (sd:6504). -->
     <key>ProcessType</key>
     <string>Interactive</string>
+
+    <!-- On bootout or shutdown launchd TERMs the runner and KILLs it after
+         this. The runner waits the job's grace, then writes its outcome;
+         unset (20 s) under a 30 s grace left no outcome at all (sd:7105). -->
+    <key>ExitTimeOut</key>
+    <integer>$((JOB_GRACE + EXIT_REPORT_ROOM))</integer>
 </dict>
 </plist>
 EOF
@@ -880,7 +897,7 @@ run_bounded() { # job, seconds, command...
   local job="$1" limit="$2" rc=0
   shift 2
   EXEC_IN_JOB=1
-  perl -e "$RUN_BOUNDED" "$job" "$limit" "${CRON_JOBS_TIMEOUT_GRACE:-30}" "$@" || rc=$?
+  perl -e "$RUN_BOUNDED" "$job" "$limit" "$JOB_GRACE" "$@" || rc=$?
   EXEC_IN_JOB=""
   return "$rc"
 }
@@ -892,7 +909,7 @@ run_bounded() { # job, seconds, command...
 # exits, as this shell is in its trap and reaps nothing, so `ps` and not
 # `kill -0` tells whether it is gone.
 stop_workload() { # job
-  local pid tries=0 grace="${CRON_JOBS_TIMEOUT_GRACE:-30}"
+  local pid tries=0 grace="$JOB_GRACE"
   pid="$(pgrep -P "$$" -x perl 2>/dev/null | head -n 1)" || true
   [ -n "$pid" ] || return 0
   kill -TERM "$pid" 2>/dev/null || true
