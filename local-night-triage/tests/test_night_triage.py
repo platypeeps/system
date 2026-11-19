@@ -446,7 +446,7 @@ class NightTriage(unittest.TestCase):
     def test_another_sessions_claim_note_is_skipped(self):
         alert = report("node1")
         alert["notes"].append({"id": 50, "kind": "comment", "session": "operator", "resolved_at": None,
-                               "body": "claimed: triaging"})
+                               "body": "a session claims it: debugging the job"})
         self.given({"1": alert}, [])
         result = self.run_job()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -455,7 +455,8 @@ class NightTriage(unittest.TestCase):
 
     def test_a_note_that_only_mentions_a_claim_is_no_claim(self):
         import night_triage
-        for body in ("Nobody claims it now", "Claimed by no one", "the claim was released"):
+        for body in ("Nobody claims it now", "Claimed by no one", "the claim was released",
+                     "No one claims it", "none claims it yet", "Noone claims it"):
             with self.subTest(body=body):
                 notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
                 self.assertFalse(night_triage.held_by_other(notes, "node1"))
@@ -463,7 +464,9 @@ class NightTriage(unittest.TestCase):
     def test_the_claim_forms_are_claims(self):
         import night_triage
         for body in ("claimed: triaging", "night-triage on node2 claims it: a run",
-                     "Claimed: investigating", "Night-triage on node2 Claims it: a run"):
+                     "Claimed: investigating", "Night-triage on node2 Claims it: a run",
+                     "a session claims it: debugging the job", "The operator claims it",
+                     "nobody-else-bot claims it: a run"):
             with self.subTest(body=body):
                 notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
                 self.assertTrue(night_triage.held_by_other(notes, "node1"))
@@ -485,10 +488,10 @@ class NightTriage(unittest.TestCase):
     def test_a_left_claim_another_session_took_over_is_left_to_it(self):
         alert = self.left_claim()
         alert["notes"].append({"id": 801, "kind": "comment", "session": "operator", "resolved_at": None,
-                               "body": "night-triage on node2 claims it: a run"})
+                               "body": "the operator claims it: debugging it"})
         self.given({"1": alert}, [])
         self.assertEqual(self.run_job().returncode, 0)
-        self.assertEqual(self.comments("1"), ["night-triage on node2 claims it: a run"])
+        self.assertEqual(self.comments("1"), ["the operator claims it: debugging it"])
         self.assertNotIn('"id": 1', (self.tmp / "prompt").read_text())
         self.assertFalse((self.folder / "state/claims").exists())
 

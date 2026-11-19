@@ -151,10 +151,11 @@ def _others(notes, host):
     return [n for n in notes if n.get("session") != INGEST_SESSION and not is_ours(n, host)]
 
 
-# The two claim forms: a session's `claimed: <why>` and another run's
-# `<who> on <host> claims it`, in any case; a note that only names a
-# claim is none.
-CLAIM = re.compile(r"claimed:|\S.* on \S+ claims it\b", re.I)
+# The claim forms, in any case: a session's `claimed: <why>` (the shared
+# rule) and `<who> claims it`, which a person or another run writes
+# (`night-triage on <host> claims it`). A note that only names a claim,
+# or says nobody holds it, is none.
+CLAIM = re.compile(r"claimed:|(?!(?:nobody|no one|noone|none)\s)\S.*? claims it\b", re.I)
 
 
 def held_by_other(notes, host):
