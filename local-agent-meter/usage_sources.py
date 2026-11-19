@@ -368,6 +368,35 @@ def read_openai(env, fetch, now):
     return {"spend": {"amount": total, "unit": "usd", "period": "month"}}
 
 
+#: A cost report amount: a decimal string of cents, no sign or exponent.
+CENTS = re.compile(r"[0-9]{1,15}(?:\.[0-9]{1,12})?")
+
+
+def read_anthropic_api(env, fetch, now):
+    """The month's API cost from the Admin API cost report: one daily
+    bucket per day, so a month fits one page of 31 (sd:9594)."""
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    data = fetch("https://api.anthropic.com/v1/organizations/cost_report?starting_at=%s"
+                 "&bucket_width=1d&limit=31" % iso(start),
+                 {"x-api-key": key(env, "ANTHROPIC_ADMIN_KEY"), "anthropic-version": "2023-06-01"})
+    buckets = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(buckets, list) or data.get("has_more") is not False:
+        raise ReadFailed("no data list on one page")
+    cents = 0.0
+    for bucket in buckets:
+        results = bucket.get("results") if isinstance(bucket, dict) else None
+        if not isinstance(results, list):
+            raise ReadFailed("a bucket of another shape")
+        for result in results:
+            if not isinstance(result, dict) or result.get("currency") != "USD":
+                raise ReadFailed("a result of another shape")
+            amount = result.get("amount")
+            if not isinstance(amount, str) or not CENTS.fullmatch(amount):
+                raise ReadFailed("amount is not decimal cents")
+            cents += float(amount)
+    return {"spend": {"amount": cents / 100, "unit": "usd", "period": "month"}}
+
+
 #: A GitHub login: what /user may name before it goes into a path.
 GITHUB_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 
@@ -418,6 +447,7 @@ READERS = {
     "openai": read_openai,
     "github": read_github,
     "copilot": read_copilot,
+    "anthropic-api": read_anthropic_api,
 }
 
 #: Providers with a key in the environment and no usage API a key can call

@@ -136,6 +136,17 @@ ANSWERS = {
                       "netQuantity": 50, "netAmount": 2}]},
                 {"spend": {"amount": 2.0, "unit": "usd", "period": "month"},
                  "requests": 350.0}),
+    # Daily buckets; each amount a decimal string in cents (checked
+    # 2026-11-19, sd:9594).
+    "anthropic-api": ("ANTHROPIC_ADMIN_KEY",
+                      {"data": [{"starting_at": "2026-11-01T00:00:00Z",
+                                 "ending_at": "2026-11-02T00:00:00Z",
+                                 "results": [{"currency": "USD", "amount": "150", "model": None}]},
+                                {"starting_at": "2026-11-02T00:00:00Z",
+                                 "ending_at": "2026-11-03T00:00:00Z",
+                                 "results": [{"currency": "USD", "amount": "225.00"}]}],
+                       "has_more": False, "next_page": None},
+                      {"spend": {"amount": 3.75, "unit": "usd", "period": "month"}}),
 }
 
 #: Values no number in an answer may be taken from.
@@ -254,6 +265,8 @@ class Readers(unittest.TestCase):
                         bent["code"] = 0
                     if name == "minimax":
                         bent["base_resp"]["status_code"] = 0
+                    if name == "anthropic-api":
+                        continue  # no JSON number: see the amount-string test
                     got = usage_sources.read_provider(name, {var: SECRET}, answering(bent), NOW)
                     # sd:9256 round 7: "12" read as a number; only Codex's
                     # balance is a string by its schema.
@@ -307,6 +320,38 @@ class Readers(unittest.TestCase):
                         name, {"GH_TOKEN": SECRET},
                         answering({"login": "operator", "usageItems": items}), NOW)
                     self.assertEqual(got["status"], "unknown", got)
+
+    def test_the_anthropic_cost_report_asks_for_this_month(self):
+        var, answer, _ = ANSWERS["anthropic-api"]
+        calls = []
+        usage_sources.read_provider("anthropic-api", {var: SECRET}, answering(answer, calls), NOW)
+        (url, headers), = calls
+        self.assertEqual(url, "https://api.anthropic.com/v1/organizations/cost_report"
+                              "?starting_at=2026-11-01T00:00:00Z&bucket_width=1d&limit=31")
+        self.assertEqual((headers["x-api-key"], headers["anthropic-version"]),
+                         (SECRET, "2023-06-01"))
+
+    def test_an_anthropic_amount_that_is_not_decimal_cents_is_unknown(self):
+        # sd:9594: the amount is a string, so a number, nan or an exponent
+        # must not read as cents.
+        var, answer, _ = ANSWERS["anthropic-api"]
+        path = ("data", 0, "results", 0, "amount")
+        for amount in (150, None, "", "nan", "inf", "1e400", "-5", "1,5", "12abc", " 12", "1" * 400):
+            with self.subTest(amount=amount):
+                got = usage_sources.read_provider(
+                    "anthropic-api", {var: SECRET}, answering(put(answer, path, amount)), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+                self.assertIsNone(got["spend"])
+        for bent in (put(answer, ("data", 0, "results", 0, "currency"), "EUR"),
+                     put(answer, ("has_more",), True), put(answer, ("has_more",), None),
+                     put(answer, ("data", 0, "results"), None)):
+            with self.subTest(bent=bent):
+                got = usage_sources.read_provider("anthropic-api", {var: SECRET},
+                                                  answering(bent), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+        got = usage_sources.read_provider("anthropic-api", {var: SECRET},
+                                          answering({"data": [], "has_more": False}), NOW)
+        self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0))
 
     def test_a_reader_that_raises_is_unknown_and_costs_no_other(self):
         def strange(env, fetch, now):
