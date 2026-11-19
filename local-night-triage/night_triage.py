@@ -82,10 +82,12 @@ def is_ours(note, host):
     return note["body"].startswith(mine(host))
 
 
-def parked_note(host):
-    """The note the job writes right after its own park: the pack's audit
-    note names the login, not the job, so this is the job's marker."""
-    return f"{mine(host)}: parked by this run."
+def parking_note(host):
+    """The note the job writes right before its own park: the pack's audit
+    note names the login, not the job, so this is the job's marker. Before,
+    not after: a run that dies between the two leaves a marker and no park,
+    which is harmless, not a park no run can wake (sd:9282 re-review)."""
+    return f"{mine(host)}: parking this run."
 
 
 def is_claim(note, host):
@@ -134,23 +136,24 @@ def wake(report, notes, host):
     """Why a parked alert comes back to triage, or None to leave it parked.
 
     Only a park this job made wakes, proved by its own notes, never by a
-    time window (sd:9282 bundle review): its wait note, the pack's one
-    "Parked by" audit note, then the job's parked note, adjacent, and no
-    park or unpark audit since. Any other shape holds: a hand park, even
-    minutes after a wait note whose run died before its park, has no
-    parked note (sd:9348); a hand unpark and park after it is an audit
+    time window (sd:9282 bundle review): its wait note, its parking note,
+    then the pack's one "Parked by" audit note, adjacent, and no park or
+    unpark audit since. Any other shape holds: a hand park, even minutes
+    after a wait note whose run died before its marker, has no parking
+    note before it (sd:9348); a hand unpark and park after it is an audit
     (sd:9272). It wakes the day after the dated run, or as soon as the
     job failed again, which the pack folds into this report without a
     note (sd:9243 review).
     """
     ours = [i for i, n in enumerate(notes) if is_ours(n, host)]
-    if len(ours) < 2 or notes[ours[-1]]["body"] != parked_note(host) or ours[-2] != ours[-1] - 2:
+    if (len(ours) < 2 or notes[ours[-1]]["body"] != parking_note(host) or ours[-2] != ours[-1] - 1
+            or ours[-1] + 1 >= len(notes)):
         return None
     waited = WAITS.search(notes[ours[-2]]["body"])
-    audit = notes[ours[-1] - 1]
+    audit = notes[ours[-1] + 1]
     if not waited or not is_audit(audit) or PARK_MARK.findall(audit["body"]) != ["Parked"]:
         return None
-    if any(PARK_MARK.search(n["body"]) for n in notes[ours[-1] + 1:] if is_audit(n)):
+    if any(PARK_MARK.search(n["body"]) for n in notes[ours[-1] + 2:] if is_audit(n)):
         return None
     on, run, runs = waited.groups()
     try:
@@ -419,17 +422,18 @@ def apply(binary, host, claims, context, reply):
         else:
             raise RuntimeError(f"the report kept changing; not settled after {TRIES} reads")
         if acknowledge == PARK:
+            # The job's marker, then its park, each on the revision before
+            # it: nothing lands between the wait note and the park.
+            revision = noted["revision"]
             try:
-                sd(binary, "task", "edit", item, "--park", "--if-revision", noted["revision"])
+                revision = json.loads(sd(binary, "task", "note", item, parking_note(host), "--json",
+                                         "--if-revision", revision))["revision"]
+                sd(binary, "task", "edit", item, "--park", "--if-revision", revision)
             except RuntimeError:
-                if unchanged_since(item, noted["revision"]):
+                if unchanged_since(item, revision):
                     raise
                 sd(binary, "task", "note", item, f"{mine(host)}: not parked: the report changed after "
                                                  "the note above; the next run settles it.")
-                return
-            # The job's marker on its own park. If this write fails, the park
-            # has no marker and never wakes: it holds, and the run fails.
-            sd(binary, "task", "note", item, parked_note(host))
             return
         if not acknowledge:
             return
