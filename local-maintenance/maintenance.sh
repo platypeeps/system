@@ -790,21 +790,26 @@ while IFS= read -r t; do
     finding "build output prune: could not make a folder in $PRUNE_TRASH; kept $t"
     continue
   fi
+  # $bin is a new mktemp folder each run, and the move's error names it:
+  # the keys below leave both out, or each run opens a new finding (sd:9489).
   move_rc=0
   python3 "$DIR/prune_move.py" "$t" "$bin/target" 2> "$TMPD/move.err" || move_rc=$?
   if [ "$move_rc" -eq 0 ]; then
     if st_step 600 rm -rf "$bin"; then
       action "removed idle build output $t (untouched 3 days)"
     else
-      finding "build output prune: could not finish deleting $t; the next run deletes $bin"
+      finding "build output prune: could not finish deleting $t; the next run deletes $bin" \
+        "build output prune: could not finish deleting $t; the next run deletes it"
     fi
   elif ! rmdir "$bin" 2>/dev/null; then
     # Not empty: target/ moved and could not come back.
-    finding "build output prune: $t did not come back from $bin ($(tail -1 "$TMPD/move.err")); kept until no build holds a lock there"
+    finding "build output prune: $t did not come back from $bin ($(tail -1 "$TMPD/move.err")); kept until no build holds a lock there" \
+      "build output prune: $t did not come back from the prune trash; kept until no build holds a lock there"
   elif [ "$move_rc" -eq 76 ]; then
     action "kept idle build output $t: a build started during the move"
   elif [ "$move_rc" -ne 75 ]; then
-    finding "build output prune: could not move $t into $PRUNE_TRASH ($(tail -1 "$TMPD/move.err")); kept"
+    finding "build output prune: could not move $t into $PRUNE_TRASH ($(tail -1 "$TMPD/move.err")); kept" \
+      "build output prune: could not move $t into $PRUNE_TRASH; kept"
   fi
 done < "$TARGETS"
 
