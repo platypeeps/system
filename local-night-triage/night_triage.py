@@ -11,7 +11,8 @@ A report takes no status through `sd task status`: the pack gives the
 `report` kind no status choices and refuses `in_progress` (sd:8143
 review). So the claim is a note, `night-triage on <host> claims it`, and
 the settle note releases it. An alert is someone else's while the latest
-note by anyone but the ingest and this job is a claim; it is skipped.
+note by anyone but the ingest and this job is a claim, under CLAIM_HOURS
+old; it is skipped.
 
 The claims file holds one line per alert held: `<id> <claim note id>`.
 The row goes in before the claim note, with `-` for the id, so a run that
@@ -57,6 +58,20 @@ TRIES = 3  # settle attempts while other writers keep moving the report
 # The session `sd reports ingest` writes its followups under: the pack's
 # sd_db.reporting.INGEST_SESSION, pinned by tests/test_night_triage.py.
 INGEST_SESSION = "cron"
+# Another session's claim note is never cleared; one older than this is a
+# session that crashed, and no longer holds the alert (sd:9272).
+CLAIM_HOURS = 24
+# The pack's audit note for a park or an unpark (sd_db.workflow.edit_item).
+PARK_MARK = re.compile(r"^(Parked|Unparked) by \S+$", re.M)
+# One line of the audit comment the pack's edit_item writes, as its
+# workflow.AUDIT_LINE: a park mark counts only in such a note, never in a
+# followup or comment someone wrote (sd:9282 round 1).
+AUDIT_LINE = re.compile(r"(?:Updated [a-z_]+(?:, [a-z_]+)*|Changed kind \S+ -> \S+|Unparked|Parked) by \S+")
+
+
+def is_audit(note):
+    lines = str(note.get("body") or "").splitlines()
+    return note.get("kind") == "comment" and bool(lines) and all(AUDIT_LINE.fullmatch(x) for x in lines)
 
 
 def mine(host):
@@ -65,6 +80,14 @@ def mine(host):
 
 def is_ours(note, host):
     return note["body"].startswith(mine(host))
+
+
+def parking_note(host):
+    """The note the job writes right before its own park: the pack's audit
+    note names the login, not the job, so this is the job's marker. Before,
+    not after: a run that dies between the two leaves a marker and no park,
+    which is harmless, not a park no run can wake (sd:9282 re-review)."""
+    return f"{mine(host)}: parking this run."
 
 
 def is_claim(note, host):
@@ -94,8 +117,9 @@ def report_fields(report):
 
 def runs_of(report):
     """How many runs the report holds: the pack folds a repeat into it."""
-    return int((json.loads(report.get("fields") or "{}") if isinstance(report.get("fields"), str)
-                else report.get("fields") or {}).get("repeats", {}).get("count") or 1)
+    fields = report.get("fields") or "{}"
+    fields = json.loads(fields) if isinstance(fields, str) else fields
+    return int(((fields or {}).get("repeats") or {}).get("count") or 1)
 
 
 def _wait_date(text):
@@ -111,13 +135,25 @@ def _wait_date(text):
 def wake(report, notes, host):
     """Why a parked alert comes back to triage, or None to leave it parked.
 
-    Only a park this job made wakes: its latest note is a wait. It wakes
-    the day after the dated run, or as soon as the job failed again, which
-    the pack folds into this report without a note (sd:9243 review).
+    Only a park this job made wakes, proved by its own notes, never by a
+    time window (sd:9282 bundle review): its wait note, its parking note,
+    then the pack's one "Parked by" audit note, adjacent, and no park or
+    unpark audit since. Any other shape holds: a hand park, even minutes
+    after a wait note whose run died before its marker, has no parking
+    note before it (sd:9348); a hand unpark and park after it is an audit
+    (sd:9272). It wakes the day after the dated run, or as soon as the
+    job failed again, which the pack folds into this report without a
+    note (sd:9243 review).
     """
-    ours = [n for n in notes if is_ours(n, host)]
-    waited = WAITS.search(ours[-1]["body"]) if ours else None
-    if not waited:
+    ours = [i for i, n in enumerate(notes) if is_ours(n, host)]
+    if (len(ours) < 2 or notes[ours[-1]]["body"] != parking_note(host) or ours[-2] != ours[-1] - 1
+            or ours[-1] + 1 >= len(notes)):
+        return None
+    waited = WAITS.search(notes[ours[-2]]["body"])
+    audit = notes[ours[-1] + 1]
+    if not waited or not is_audit(audit) or PARK_MARK.findall(audit["body"]) != ["Parked"]:
+        return None
+    if any(PARK_MARK.search(n["body"]) for n in notes[ours[-1] + 2:] if is_audit(n)):
         return None
     on, run, runs = waited.groups()
     try:
@@ -153,7 +189,17 @@ def _others(notes, host):
 
 def held_by_other(notes, host):
     others = _others(notes, host)
-    return bool(others) and re.search(r"\bclaim", others[-1]["body"], re.I) is not None
+    if not others or not re.search(r"\bclaim", others[-1]["body"], re.I):
+        return False
+    try:
+        age = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(
+            others[-1]["timestamp"])
+    except (KeyError, TypeError, ValueError):
+        # An age it cannot read is no proof the claim is stale.
+        print(f"night-triage: claim note {others[-1].get('id')} has no readable timestamp; held",
+              file=sys.stderr)
+        return True
+    return age < datetime.timedelta(hours=CLAIM_HOURS)
 
 
 def claim(binary, host, claims, context):
@@ -170,6 +216,10 @@ def claim(binary, host, claims, context):
         current = show(binary, report["id"])
         if current["item"]["status"] != "planning":
             continue
+        # Before any unpark: a skipped alert stays as it was (sd:9272).
+        if held_by_other(current["notes"], host):
+            print(f"night-triage: sd:{report['id']} is claimed; skipped", file=sys.stderr)
+            continue
         # A parked alert waits on a dated scheduled run (sd:9243).
         if report.get("parked_at") or current["item"].get("parked_at"):
             why = wake(report, current["notes"], host)
@@ -179,9 +229,10 @@ def claim(binary, host, claims, context):
             sd(binary, "task", "edit", str(report["id"]), "--unpark", "--if-revision", current["revision"])
             sd(binary, "task", "note", str(report["id"]), f"{mine(host)}: unparked: {why}.")
             current = show(binary, report["id"])
-        if held_by_other(current["notes"], host):
-            print(f"night-triage: sd:{report['id']} is claimed; skipped", file=sys.stderr)
-            continue
+            # A claim that came in with the unpark.
+            if held_by_other(current["notes"], host):
+                print(f"night-triage: sd:{report['id']} is claimed; skipped", file=sys.stderr)
+                continue
         # Record the intent first: a crash after the note still leaves a row.
         row = [str(report["id"]), PENDING]
         held.append(row)
@@ -371,10 +422,15 @@ def apply(binary, host, claims, context, reply):
         else:
             raise RuntimeError(f"the report kept changing; not settled after {TRIES} reads")
         if acknowledge == PARK:
+            # The job's marker, then its park, each on the revision before
+            # it: nothing lands between the wait note and the park.
+            revision = noted["revision"]
             try:
-                sd(binary, "task", "edit", item, "--park", "--if-revision", noted["revision"])
+                revision = json.loads(sd(binary, "task", "note", item, parking_note(host), "--json",
+                                         "--if-revision", revision))["revision"]
+                sd(binary, "task", "edit", item, "--park", "--if-revision", revision)
             except RuntimeError:
-                if unchanged_since(item, noted["revision"]):
+                if unchanged_since(item, revision):
                     raise
                 sd(binary, "task", "note", item, f"{mine(host)}: not parked: the report changed after "
                                                  "the note above; the next run settles it.")
