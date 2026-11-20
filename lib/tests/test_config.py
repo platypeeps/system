@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -370,7 +371,9 @@ class ShellEnv(unittest.TestCase):
                      # A failed assignment that a later export hides from `$?`.
                      "TOKEN=$(false)\nexport OTHER=1\n"):
             self.env_sh(text)
-            for sh in ("/bin/sh", "/bin/bash"):
+            # bash 3.2 ignores the rule that set -e is off left of `||`; a
+            # newer bash or dash on PATH keeps it, which hid a failed line.
+            for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
                 with self.subTest(text=text, sh=sh):
                     result = subprocess.run(
                         [sh, "-c", f'. "{LIB}/config.sh"; set -e; st_shell_env; case $- in *e*) echo after ;; esac'],
