@@ -1,7 +1,7 @@
 # local-agent-meter
 
 Appends one agent-usage reading to a JSONL ledger every four hours: per provider its
-usage (claude from `cswap list --json`, codex from its session logs), each cswap
+usage (claude from `cswap list --json`, codex from `codex app-server`), each cswap
 account's seven-day use, and `rtk gain` for token-proxy savings. Two live readings
 feed the dashboard's Usage view and Health page; see "Live readings".
 
@@ -29,12 +29,15 @@ stays 0.
 
 Since sd:9256 the ledger's `usage` holds one reading per provider (`--providers`,
 default `claude,codex`), the shape the live rows have (below). Claude's window is
-the active cswap account's seven days; Codex's are the `rate_limits` of the newest
-`token_count` event in `$CODEX_HOME/sessions` (default `~/.codex`), with that event's
-time as `read_at`. Only the limits are copied: the event's session text is not. The
-`meter` rows come from these windows. A window whose reset is past is dropped
-from the reading and counted in its `stale`, on every path. Lines from before
-sd:9256 hold `codexbar` instead; `accounts` reads neither.
+the active cswap account's seven days. Codex's come live from `codex app-server`
+(`account/rateLimits/read`, the account's `codex` bucket), read at the run's time;
+`CODEX_BIN` names the binary, else `PATH` and Homebrew. With no binary or no answer
+in 20 s, they are the `rate_limits` of the newest `token_count` event in
+`$CODEX_HOME/sessions` (default `~/.codex`), with that event's time as `read_at`, and
+the live failure in `live_error` (sd:9655). Only the limits are copied: the event's
+session text is not. The `meter` rows come from these windows. A window whose
+reset is past is dropped from the reading and counted in its `stale`, on every
+path. Lines from before sd:9256 hold `codexbar` instead; `accounts` reads neither.
 
 cswap gives no five-hour number, so no `claude` 300-minute row is written after
 sd:9256. A `meter` row has no `removed` status: the last codexbar-era row stays in

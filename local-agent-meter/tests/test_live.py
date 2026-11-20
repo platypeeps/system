@@ -851,6 +851,92 @@ class Codex(unittest.TestCase):
                     json.dumps(got, allow_nan=False)
 
 
+FAKE_CODEX = """#!%s
+import json, sys, time
+if sys.argv[1:] != ["app-server"]:
+    sys.exit(2)
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("id") == 1:
+        print(json.dumps({"id": 1, "result": {}}), flush=True)
+    elif message.get("id") == 2:
+        reply = %r
+        if reply == "hang":
+            time.sleep(60)
+        print(json.dumps({"method": "account/updated", "params": {}}), flush=True)
+        print(reply, flush=True)
+"""
+
+
+def live_snapshot(used=9, limit_id="codex"):
+    return {"limitId": limit_id, "limitName": None, "planType": "pro",
+            "primary": {"usedPercent": used, "windowDurationMins": 10080,
+                        "resetsAt": 4102444800},
+            "secondary": None,
+            "credits": {"hasCredits": True, "unlimited": False, "balance": "100.5"}}
+
+
+class CodexLive(unittest.TestCase):
+    """sd:9655: an idle Codex's newest rollout is hours old, so the reading
+    comes live from `codex app-server` (account/rateLimits/read); the
+    rollouts are read only when the app-server gives no answer."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        day = self.home / "sessions/2026/11/17"
+        day.mkdir(parents=True)
+        (day / "rollout-x.jsonl").write_text(
+            json.dumps(Codex.event(used=61.0, stamp="2026-11-17T12:00:00Z")) + "\n",
+            encoding="utf-8")
+        self.binary = self.home / "codex"
+
+    def answer(self, reply):
+        text = reply if isinstance(reply, str) else json.dumps(reply)
+        self.binary.write_text(FAKE_CODEX % (sys.executable, text), encoding="utf-8")
+        self.binary.chmod(0o755)
+        return usage_sources.codex_reading(self.home, now=NOW, binary=str(self.binary))
+
+    def test_the_live_answer_is_the_reading_read_now(self):
+        got = self.answer({"id": 2, "result": {"rateLimits": live_snapshot()}})
+        self.assertEqual((got["status"], got["source"], got["read_at"]),
+                         ("ok", "codex-app-server", "2026-11-17T20:00:00Z"))
+        self.assertEqual(got["windows"], [{"name": "primary", "used_percent": 9.0,
+                                           "window_minutes": 10080,
+                                           "resets_at": "2100-01-01T00:00:00Z"}])
+        self.assertEqual(got["balance"], {"amount": 100.5, "unit": "credits"})
+
+    def test_the_accounts_bucket_wins_over_a_models(self):
+        got = self.answer({"id": 2, "result": {
+            "rateLimits": live_snapshot(used=90, limit_id="codex_other"),
+            "rateLimitsByLimitId": {"codex": live_snapshot(used=12),
+                                    "codex_other": live_snapshot(90, "codex_other")}}})
+        self.assertEqual((got["source"], got["windows"][0]["used_percent"]),
+                         ("codex-app-server", 12.0))
+
+    def test_no_live_answer_falls_back_to_the_rollouts(self):
+        for reply in ({"id": 2, "error": {"code": -32600, "message": "x"}},
+                      {"id": 2, "result": {"rateLimits": live_snapshot(limit_id="other")}},
+                      {"id": 2, "result": {"rateLimits": {"primary": "x"}}},
+                      {"id": 2, "result": []}, "{not json", "hang"):
+            with self.subTest(reply=reply), mock.patch.object(usage_sources, "TIMEOUT", 2):
+                got = self.answer(reply)
+                self.assertEqual((got["status"], got["source"], got["read_at"]),
+                                 ("ok", "codex-sessions", "2026-11-17T12:00:00Z"))
+                self.assertTrue(got["live_error"])
+                self.assertNotIn('"x"', json.dumps(got))
+
+    def test_a_missing_binary_falls_back_to_the_rollouts(self):
+        got = usage_sources.codex_reading(self.home, now=NOW,
+                                          binary=str(self.home / "absent"))
+        self.assertEqual((got["source"], got["live_error"]),
+                         ("codex-sessions", "FileNotFoundError"))
+        got = usage_sources.codex_reading(self.home, now=NOW)
+        self.assertEqual((got["source"], got["live_error"]),
+                         ("codex-sessions", "no codex binary"))
+
+
 SUMMARY = {"page": {"url": "https://status.example.test"},
            "status": {"indicator": "minor", "description": "Minor"},
            "components": [{"name": "Copilot", "status": "degraded_performance"},
@@ -1069,6 +1155,12 @@ class Live(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items() if k not in keys and k not in PROXIES}
         self.env.update(LOCAL, CSWAP_BIN=str(self.cswap), CSWAP_FIXTURE=str(root / "cswap.json"),
                         CODEX_HOME=str(root / "codex"), SYSTEM_TOOLS_CONFIG=str(root / "config"))
+        # Never the real codex: its app-server reads the account live.
+        codex = root / "codex-bin"
+        reply = json.dumps({"id": 2, "result": {"rateLimits": live_snapshot()}})
+        codex.write_text(FAKE_CODEX % (sys.executable, reply), encoding="utf-8")
+        codex.chmod(0o755)
+        self.env["CODEX_BIN"] = str(codex)
 
     def run_live(self, command, *args, db=None):
         return subprocess.run([sys.executable, "-I", str(SCRIPT), command,
@@ -1110,6 +1202,7 @@ class Live(unittest.TestCase):
         self.assertEqual(rows["usage:claude"]["status"], "ok")
         self.assertEqual(rows["usage:claude"]["windows"][0]["used_percent"], 40.0)
         self.assertEqual(rows["usage:codex"]["status"], "ok")
+        self.assertEqual(rows["usage:codex"]["source"], "codex-app-server")
         self.assertEqual(rows["usage:openrouter"],
                          usage_sources.reading("openrouter", "unknown", "api",
                                                error="OPENROUTER_API_KEY not set"))
