@@ -369,8 +369,14 @@ class ShellEnv(unittest.TestCase):
         env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
         for text in ("export OTHER=1\nif true; then\n", "export OTHER=1\nfalse\n",
                      # A failed assignment that a later export hides from `$?`.
-                     "TOKEN=$(false)\nexport OTHER=1\n"):
+                     "TOKEN=$(false)\nexport OTHER=1\n",
+                     # A syntax error in a file env.sh sources passes its
+                     # parse check, and a dot syntax error is fatal in POSIX
+                     # mode whatever set -e says; so is an `exit`.
+                     '. "$HOME/.config/shell/part.sh"\nexport OTHER=1\n',
+                     "export OTHER=1\nexit 0\n"):
             self.env_sh(text)
+            (self.home / ".config/shell/part.sh").write_text("export PART=1\nif true; then\n")
             # bash 3.2 ignores the rule that set -e is off left of `||`; a
             # newer bash or dash on PATH keeps it, which hid a failed line.
             for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):

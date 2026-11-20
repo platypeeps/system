@@ -69,24 +69,29 @@ st_obsidian_vault() {
 # same mapping in sd_dashboard/claude_env.py, since its package may run outside
 # this checkout.
 st_shell_env() {
-    # A file that does not parse is skipped, and one that fails is named: a
-    # bare `.` under set -e ended the caller with stdout on /dev/null, so
-    # every cron run failed for 10 minutes and no job log said why
-    # (sd:9652). The parse check comes first, as a POSIX shell exits on a
-    # dot script's syntax error whatever the context. A child shell under
-    # set -e finds any failed command, even one a later export hides from
-    # `$?`; set -e is off for the real `.`, as bash 3.2 exits on a failure inside
-    # it even in an `if` test, so the exports that work still load.
-    # ponytail: env.sh runs twice when it parses; one keychain read extra.
+    # The file is dotted here only after a subshell has sourced it, and
+    # all it sources, and lived: a bare `.` under set -e ended the caller
+    # with stdout on /dev/null, so every cron run failed for 10 minutes and
+    # no job log said why (sd:9652). A syntax error in any file of the
+    # chain, or an `exit`, ends a POSIX shell whatever set -e says; such a
+    # file is named and skipped. A second child under set -e names any
+    # failed command, even one a later export hides from `$?`. set -e is
+    # off for the real `.`, as bash 3.2 exits on a failure inside it even
+    # in an `if` test, so the exports that work still load. The set -e
+    # child is its own process, not a subshell: left of `||` or in an
+    # `if`, a subshell runs with set -e off in bash 4+ and dash.
+    # ponytail: env.sh runs three times; two keychain reads extra.
     _st_env="$HOME/.config/shell/env.sh"
     if [ -f "$_st_env" ]; then
-        if ! "${BASH:-sh}" -n "$_st_env" 2>/dev/null; then
-            echo "st_shell_env: $_st_env does not parse; skipped, so its exports are missing" >&2
+        # A subshell, so the probe runs in this same shell: bash in POSIX
+        # mode lives through a syntax error that ends dash.
+        # shellcheck source=/dev/null
+        _st_ok=$(set +e; . "$_st_env" >/dev/null 2>&1 </dev/null; echo ok) || :
+        if [ "$_st_ok" != ok ]; then
+            echo "st_shell_env: $_st_env or a file it sources ends the shell; skipped, so its exports are missing" >&2
         else
-            # Its own process, not a subshell: left of `||` or in an `if`, a
-            # subshell runs with set -e off in bash 4+ and dash.
             # shellcheck disable=SC2016 # $1 expands in the child
-            "${BASH:-sh}" -ec '. "$1"' st_shell_env "$_st_env" >/dev/null 2>&1 ||
+            "${BASH:-sh}" -ec '. "$1"' st_shell_env "$_st_env" >/dev/null 2>&1 </dev/null ||
                 echo "st_shell_env: a command in $_st_env failed (exit $?); a value it sets may be missing" >&2
             case $- in *e*) _st_e=1; set +e ;; *) _st_e= ;; esac
             # shellcheck source=/dev/null
@@ -94,7 +99,7 @@ st_shell_env() {
             [ -z "$_st_e" ] || set -e
         fi
     fi
-    unset _st_env _st_e
+    unset _st_env _st_e _st_ok
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
     return 0
