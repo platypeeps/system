@@ -4477,13 +4477,13 @@ BULK_LOCAL="${MACHINE_SETUP_BULK_LOCAL:-$HOME/repo-storage}"
 BULK_NAS="${MACHINE_SETUP_BULK_NAS:-}"
 BULK_COPY_SECS="${MACHINE_SETUP_BULK_COPY_SECS:-21600}"
 # The cron jobs that start build, draft and lane runs on a satellite.
-# Three at most: their locks take fds 5-7.
-BULK_JOBS="build-dispatch lane-run night-build"
+# Four at most: their locks take fds 5-7 and 9 (8 is a cron run's own).
+BULK_JOBS="build-dispatch lane-run lane-run-pack night-build"
 
-# bound_step with the job locks' fds 5-7 closed: no child holds a lock,
+# bound_step with the job locks' fds closed: no child holds a lock,
 # so none can keep a job's slots off past the stage (review of build
 # 782). The stage's shell keeps them; a flock ends with its last fd.
-bulk_step() { bound_step "$@" 5>&- 6>&- 7>&-; }
+bulk_step() { bound_step "$@" 5>&- 6>&- 7>&- 9>&-; }
 
 # This host's open build and draft runs, and the lane entries it runs,
 # one per line; fails when the database cannot be read. maintenance.sh
@@ -4502,14 +4502,14 @@ bulk_idle() { # when
 }
 
 # Takes each loaded job's own lock, the flock a cron run holds on fd 8
-# (local-cron-jobs, sd:1251), on fds 5-7 of this shell, and keeps them.
+# (local-cron-jobs, sd:1251), on fds 5-7 and 9 of this shell, and keeps them.
 # A slot that fires meanwhile finds its lock held and skips; a job is
 # never booted out, which would TERM a run mid-merge (sd:3317). A lock a
 # run holds refuses; the run goes on. The lock sits beside the log
 # launchd names for the label, as cron-jobs.sh's hold_job_lock finds it.
 # An unloaded job, or one whose log folder is gone, cannot start a run.
 # The kernel drops the locks when this shell exits, however it exits:
-# bulk_step closes fds 5-7 in every child, so none holds them on.
+# bulk_step closes those fds in every child, so none holds them on.
 bulk_hold_locks() {
   bh_fd=5
   for bh_job in $BULK_JOBS; do
@@ -4534,6 +4534,7 @@ bulk_hold_locks() {
          return 1 ;;
     esac
     bh_fd=$((bh_fd + 1))
+    [ "$bh_fd" -eq 8 ] && bh_fd=9 # fd 8 is a cron run's own lock
   done
 }
 
@@ -4635,7 +4636,7 @@ stage_bulkmove() {
     run_ok bulk_step "$BULK_COPY_SECS" rsync -a "$BULK_LOCAL/" "$bm_dst/" || return 0
   fi
   bulkmove_quiet "$bm_dst" "$bm_switched" || :
-  exec 5>&- 6>&- 7>&-
+  exec 5>&- 6>&- 7>&- 9>&-
 }
 
 # A folder's real path, links and trailing slashes resolved; one that

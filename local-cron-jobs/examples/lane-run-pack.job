@@ -12,8 +12,8 @@
 # so the shared run leaves this lane alone. A held runner lock makes a slot
 # exit at once, so the two jobs never run one lane twice. A plain `lane run`
 # refuses on a machine that does not host the lane, so a moved pack lane
-# stops here; move this job with it. Bulkmove holds no lock for it: that
-# stage runs only on a satellite and skips one holding the hub role.
+# stops here; move this job with it. A bulk move holds this job's lock too
+# (BULK_JOBS in machine-setup.sh, JOBS in local-maintenance/bulk_move.py).
 #
 # SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
 # after ~/.config/shell/env.sh; this file is sourced before env.sh is.
