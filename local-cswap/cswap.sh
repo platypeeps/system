@@ -210,8 +210,12 @@ if sys.argv[1] in ("panes", "pane"):
         for a in agents:
             if a["agent"] != "claude":
                 continue
+            # No session id, none sent or a false one, is no pane to owe or
+            # send to: a new session in the pane could pass for the old one.
             session = a.get("agent_session") or {}
-            words = [a["pane_id"], session.get("value") or "-", a.get("agent_status") or "-"]
+            if not session.get("value"):
+                continue
+            words = [a["pane_id"], session["value"], a.get("agent_status") or "-"]
             if not all(isinstance(w, str) and w and w.split() == [w] for w in words):
                 raise TypeError
             print(*words)

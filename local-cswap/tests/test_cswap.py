@@ -142,8 +142,9 @@ def state(row):
     return p, a, later.get("status", st), later.get("session", se), later.get("screen", sc)
 def agent(row):
     p, a, st, se, _ = state(row)
+    # A session of None is herdr naming none: agent_session false.
     return {"agent": a, "agent_status": st, "pane_id": p,
-            "agent_session": {"agent": a, "kind": "id", "value": se}}
+            "agent_session": se is not None and {"agent": a, "kind": "id", "value": se}}
 if args[:2] == ["agent", "list"]:
     import time
     time.sleep(float(os.environ.get("FAKE_HERDR_LIST_SLOW") or 0))
@@ -740,6 +741,25 @@ class RemoteControlReconnects(Machine):
             self.assertIn("gave no agent list this can parse", result.stdout, answer)
             self.assertNotIn("could not write", result.stdout, answer)
             self.assertTrue((self.script.parent / "state/rc-pending").exists(), answer)
+
+    def test_a_pane_with_no_session_id_is_never_owed_or_sent(self):
+        # Review on sd:9427: a missing or false session read as "-" in
+        # both list and get, so a new session in the same pane passed
+        # the recheck and got /rc.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", None, DROPPED],
+                   ["w1:p2", "claude", "idle", "", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), [])
+
+    def test_a_session_herdr_stops_naming_gets_no_keys(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"session": None}])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.assertIn("w1:p1 changed before the send (no answer)", result.stdout)
 
     def test_a_gone_pane_or_new_session_is_not_owed(self):
         self.publish(THREE)
