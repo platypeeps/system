@@ -50,11 +50,9 @@ UV_PRUNE_LABEL="$LABEL_PREFIX.uv-cache-prune"
 # that finds a record restores it first and prunes nothing. The exit status
 # is nonzero only while an agent stays down, and the plist's KeepAlive
 # (SuccessfulExit false) makes launchd run this again until it is restored.
-UV_PRUNE_PAUSE="${UV_PRUNE_PAUSE-$LABEL_PREFIX.google-workspace-mcp $LABEL_PREFIX.kev}"
-# A login agent rendered before kev joined the default names the MCP alone;
-# that old default reads as the new one, so kev is paused there too.
-[ "$UV_PRUNE_PAUSE" != "$LABEL_PREFIX.google-workspace-mcp" ] \
-  || UV_PRUNE_PAUSE="$LABEL_PREFIX.google-workspace-mcp $LABEL_PREFIX.kev"
+# kev is not on the list: it serves from its venv's python and runs no uv
+# process, so pausing it only made it reload its model (sd:9556).
+UV_PRUNE_PAUSE="${UV_PRUNE_PAUSE-$LABEL_PREFIX.google-workspace-mcp}"
 UV_PRUNE_STATE="${UV_PRUNE_STATE:-$HOME/.local/state/uv-prune/paused}"
 uv_prune() {
   uid=$(id -u)
@@ -204,7 +202,7 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|move|test
          prune uv's cache (what the uv-cache-prune login agent runs;
          `run` runs it nightly too).
          Pauses the LaunchAgents in UV_PRUNE_PAUSE (default
-         $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp and .kev, prefix
+         $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp, prefix
          default local.system-tools), skips when any other uv process is
          left, never passes --force, and starts the paused agents again.
          Exits 1 only while a paused agent stays down; its label stays in
@@ -369,14 +367,25 @@ check_logs() { # dir-or-file max-mb
       # A cron job's log rotates under the job's lock, and not while a lost
       # run report still points into it: truncation took the report's slice
       # (sd:8808). The lock is cron-jobs' `.<job>.flock`, taken as it takes it.
+      # `.reporting.<run>` is a run killed while it filed its report.
       job_lock="$(dirname "$f")/.$(basename "$f" .log).flock"
       pending="$(dirname "$f")/.$(basename "$f" .log).unreported"
+      inflight="$(dirname "$f")/.$(basename "$f" .log).reporting"
       rot_rc=0
       ( if [ -f "$job_lock" ]; then
           exec 8>>"$job_lock" || exit 9
           perl -e 'use Fcntl ":flock"; open(my $fh, ">&=", 8) or exit 2; flock($fh, LOCK_EX|LOCK_NB) or exit 1; exit 0' || exit 9
         fi
         [ ! -e "$pending" ] || exit 9
+        # A whole run id only: a job named `<job>.reporting.x` has files
+        # under the same glob.
+        for r in "$inflight".*; do
+          r="${r#"$inflight".}"
+          case "$r" in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-[0-9]*)
+              case "${r#*Z-}" in *[!0-9]*) ;; *) exit 9 ;; esac ;;
+          esac
+        done
         tail -n 2000 "$f" > "$f.1" && : > "$f" ) 2>/dev/null || rot_rc=$?
       if [ "$rot_rc" -eq 9 ]; then
         action "rotation of $f deferred: its job runs or holds an unrecorded report (${mb}MB)"

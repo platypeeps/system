@@ -148,11 +148,11 @@ A merged change to a scheduled job runs at its next slot: pause the job, or hold
 
 # Review rounds
 
-A change that moves state in steps gets the failure table (step, state moved, failure, recovery, test) in its `design.md` or PR body before the first review round.
+A change that moves state in steps, or changes a parser, a journal or event matching, gets the failure table (step, state moved, failure, recovery, test) in its `design.md` or PR body before the first review round: one parser took nine rounds without one (MWS sd:9491).
 New proof or validation code carries a property test over extreme magnitudes (overflow, inf, subnormal, zero, nested input) before round 1: that class cost 6 rounds on sd:2406 alone.
 Trigger: the first blocking round: 34 of 82 blocking rounds in 14 days repeated a prior blocker.
 After a review pass, only add commits; never amend, rebase or squash: a moved head forces a full re-review (26 of 32 kept passes).
-Then stop single-finding fixes and do one class pass: name the class and enumerate every instance from the code, not the findings.
+Then stop single-finding fixes and do one class pass: name the class and enumerate every instance from the code, not the findings. Keep it inside the change's own scope; a new reader, audit or entry kind becomes its own item: each one MWS build 1226 added drew a new blocker (operator 2026-11-19).
 Add each instance to the failure table; fix each row lacking a recovery or a test, fail-first.
 Send the next round with the table; as integrator, name the class in the round brief and record the trigger in `sd task note`.
 Split the PR if the table shows it does too much; a deferred advisory filed as its own item does not count, so cite it in later rounds.

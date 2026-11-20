@@ -1264,6 +1264,29 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
                 self.assertTrue(path.is_file(), path)
                 self.assertNotIn("repos/system", path.read_text())
 
+    def test_the_lane_run_example_outwaits_the_lane_unwind(self):
+        # pack sd:9392 row 6: a lane run's TERM unwind (GROUP_CLEANUP_SECONDS,
+        # 5 s, per group) must end before the wrapper's KILL, or sd-ship
+        # sessions are left with no record. 30 s leaves room for a deaf gate.
+        # A lane host keeps its own installed copy of the job (machine-setup
+        # seeds a missing one only), so the wrapper's default carries the
+        # grace, not a line in the example that never reaches those copies.
+        example = FOLDER / "examples" / "lane-run.job"
+        defaults = re.findall(r'"\$\{CRON_JOBS_TIMEOUT_GRACE:-(\d+)\}"',
+                              (FOLDER / "cron-jobs.sh").read_text())
+        self.assertEqual(set(defaults), {"30"})
+        self.assertNotIn("CRON_JOBS_TIMEOUT_GRACE=", example.read_text())
+        self.assertNotIn("sd:9332 lands", example.read_text())
+
+    def test_a_job_file_sets_its_own_grace(self):
+        # The job file is sourced before the run, so a job may set its
+        # own CRON_JOBS_TIMEOUT_GRACE.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nCRON_JOBS_TIMEOUT_GRACE=1\n'
+                                  'JOB_TIMEOUT=1\nJOB_COMMAND=\'trap "" TERM; sleep 4\'\n')
+        started = time.monotonic()
+        run = self.fx.exec_job("demo")
+        self.assertLess(time.monotonic() - started, 4, run.stdout + run.stderr)
+
     def test_help_names_the_configuration(self):
         text = self.run_script("help").stdout
         for name in ("CRON_JOBS_EXTRA_DIRS", "SYSTEM_TOOLS_LABEL_PREFIX", "<config>/cron-jobs/jobs"):
@@ -1610,9 +1633,10 @@ class HostJobsTest(unittest.TestCase):
             env["CRON_JOBS_HOST"] = host
         return env
 
-    def run_script(self, *args, host="Mini"):
+    def run_script(self, *args, host="Mini", extra=None):
         return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), *args],
-                              env=self.env(host), capture_output=True, text=True, timeout=60)
+                              env={**self.env(host), **(extra or {})},
+                              capture_output=True, text=True, timeout=60)
 
     def rows(self, host="Mini"):
         result = self.run_script("list", host=host)
@@ -1681,6 +1705,167 @@ class HostJobsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
         self.assertEqual("Interactive", plistlib.loads(plist.read_bytes()).get("ProcessType"))
+
+    def test_launchd_waits_out_the_grace_before_its_kill(self):
+        """Review of build 1232: on bootout or shutdown launchd TERMs the
+        runner and KILLs it after ExitTimeOut (20 s unset). The runner
+        waits the job's grace and then writes its outcome, so the plist's
+        ExitTimeOut is the grace plus room for that report, whatever sets
+        the grace: the wrapper default, the job file or the environment."""
+        cases = (({}, "", 60), ({}, "CRON_JOBS_TIMEOUT_GRACE=5\n", 35),
+                 ({"CRON_JOBS_TIMEOUT_GRACE": "12"}, "", 42))
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        for env, line, want in cases:
+            with self.subTest(env=env, line=line):
+                self.fx.write_job("demo", line + self.JOB.format("true"))
+                result = self.run_script("install", "demo", extra=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(want, plistlib.loads(plist.read_bytes()).get("ExitTimeOut"))
+
+    def test_one_job_s_grace_does_not_reach_the_next(self):
+        # install --all loads every job in one shell; a grace a job file
+        # sets stays with that job.
+        self.fx.write_job("first", "CRON_JOBS_TIMEOUT_GRACE=5\n" + self.JOB.format("true"))
+        self.fx.write_job("second", self.JOB.format("true"))
+        result = self.run_script("install", "--all")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agents = self.fx.home / "Library" / "LaunchAgents"
+        for job, want in (("first", 35), ("second", 60)):
+            plist = agents / f"{LABEL_PREFIX}.cron.{job}.plist"
+            self.assertEqual(want, plistlib.loads(plist.read_bytes()).get("ExitTimeOut"), job)
+
+    def exit_timeout_after_install(self, line):
+        self.fx.write_job("demo", line + self.JOB.format("true"))
+        result = self.run_script("install", "demo")
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        data = plist.read_bytes() if plist.exists() else b""
+        return result, (plistlib.loads(data).get("ExitTimeOut") if data else None)
+
+    def test_a_grace_with_leading_zeros_is_read_as_decimal(self):
+        """Build 1232 round 4 (class: a number checked for shape only,
+        then read three ways). `08` failed sh arithmetic after the plist
+        was opened; `010` gave Perl 10 s and sh 8 s. One decimal value
+        now feeds Perl, stop_workload and ExitTimeOut alike."""
+        for grace, want in (("08", 38), ("010", 40), ("0", 30)):
+            with self.subTest(grace=grace):
+                result, exit_timeout = self.exit_timeout_after_install(
+                    f"CRON_JOBS_TIMEOUT_GRACE={grace}\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(want, exit_timeout)
+
+    def test_a_grace_out_of_range_is_refused_and_keeps_the_plist(self):
+        _, kept = self.exit_timeout_after_install("")
+        self.assertEqual(60, kept)
+        for grace in ("3601", "99999999999999999999"):
+            with self.subTest(grace=grace):
+                result, exit_timeout = self.exit_timeout_after_install(
+                    f"CRON_JOBS_TIMEOUT_GRACE={grace}\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("CRON_JOBS_TIMEOUT_GRACE", result.stderr)
+                self.assertEqual(60, exit_timeout)
+
+    def test_a_job_timeout_too_large_for_sh_arithmetic_is_refused(self):
+        # 99999999999999999999h wrapped to a negative limit in $(( )).
+        for limit in ("99999999999999999999h", "9999999999"):
+            with self.subTest(limit=limit):
+                self.fx.write_job("demo", f'JOB_TIMEOUT="{limit}"\n' + self.JOB.format("true"))
+                result = self.run_script("install", "demo")
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("JOB_TIMEOUT", result.stderr)
+
+    def test_a_job_timeout_with_leading_zeros_is_decimal(self):
+        self.fx.write_job("demo", 'JOB_TIMEOUT="010m"\n' + self.JOB.format("true"))
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        script = self.fx.folder / "cron-jobs.sh"
+        out = subprocess.run(
+            ["bash", "-c", f'eval "$(sed -n -e "/^decimal()/,/^}}/p" -e "/^timeout_seconds()/,/^}}/p" {script})"; '
+                           'timeout_seconds 010m'],
+            capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(out, "600")
+
+    def test_a_grace_raised_after_install_keeps_to_the_plist(self):
+        """Build 1232 round 5 (class: a runtime wait the install-time
+        ExitTimeOut does not bound). The plist fixed ExitTimeOut at 31 s;
+        the job file then raised the grace to 20 s, and launchd would KILL
+        the runner before it wrote the outcome. The run keeps the grace the
+        installed plist allows and says so."""
+        self.fx.write_job("demo", "CRON_JOBS_TIMEOUT_GRACE=1\n" + self.JOB.format("true"))
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        environment = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]
+        self.assertEqual(environment.get("CRON_JOBS_EXIT_TIMEOUT"), "31")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nCRON_JOBS_TIMEOUT_GRACE=20\n'
+                                  "JOB_COMMAND='trap \"\" TERM; kill -TERM "
+                                  "$(ps -o ppid= -p $PPID); sleep 8'\n")
+        run = {**environment, "PATH": self.fx.path(), "SD_REPORT_BIN": "/usr/bin/true"}
+        started = time.monotonic()
+        # launchd's way: stdout already on the log, so no hand-run tee
+        # waits for the job's sleep.
+        log_path = self.fx.folder / "logs" / "demo.log"
+        log_path.parent.mkdir(exist_ok=True)
+        with open(log_path, "a") as out:
+            subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                           env=run, stdout=out, stderr=out, timeout=60)
+        self.assertLess(time.monotonic() - started, 6)
+        log = log_path.read_text()
+        self.assertIn("grace 20s cut to 1s", log)
+        self.assertIn("the job still runs 1s after TERM", log)
+
+    def test_a_job_timeout_keeps_the_configured_grace(self):
+        """Lane review, round 11 (class: a launchd shutdown bound applied
+        to a wait launchd does not govern). The plist's ExitTimeOut cap
+        also cut the grace after JOB_TIMEOUT, where no launchd KILL
+        comes: a job given 3 s to unwind got its KILL after 1 s. Only
+        the runner's own shutdown wait keeps to the cap."""
+        self.fx.write_job("demo", "CRON_JOBS_TIMEOUT_GRACE=1\n" + self.JOB.format("true"))
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        environment = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nCRON_JOBS_TIMEOUT_GRACE=3\n'
+                                  'JOB_TIMEOUT="1"\n'
+                                  "JOB_COMMAND='trap \"sleep 2; exit 0\" TERM; "
+                                  "sleep 30 & wait'\n")
+        run = {**environment, "PATH": self.fx.path(), "SD_REPORT_BIN": "/usr/bin/true"}
+        log_path = self.fx.folder / "logs" / "demo.log"
+        log_path.parent.mkdir(exist_ok=True)
+        with open(log_path, "a") as out:
+            subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                           env=run, stdout=out, stderr=out, timeout=60)
+        log = log_path.read_text()
+        self.assertIn("timed out after 1s", log)
+        self.assertNotIn("sending KILL", log)
+
+    def test_a_plist_from_before_the_cap_keeps_the_old_grace(self):
+        """Build 1232 round 6. A plist installed before this change has
+        no CRON_JOBS_EXIT_TIMEOUT and launchd's 20 s ExitTimeOut; the
+        30 s default grace outran it. Under such a plist the grace
+        stays at the old 10 s until a reinstall."""
+        self.fx.write_job("demo", self.JOB.format("true"))
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        environment = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]
+        environment.pop("CRON_JOBS_EXIT_TIMEOUT")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
+                                  "JOB_COMMAND='trap \"\" TERM; kill -TERM "
+                                  "$(ps -o ppid= -p $PPID); sleep 14'\n")
+        run = {**environment, "PATH": self.fx.path(), "SD_REPORT_BIN": "/usr/bin/true",
+               "XPC_SERVICE_NAME": f"{LABEL_PREFIX}.cron.demo"}
+        log_path = self.fx.folder / "logs" / "demo.log"
+        log_path.parent.mkdir(exist_ok=True)
+        started = time.monotonic()
+        with open(log_path, "a") as out:
+            subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                           env=run, stdout=out, stderr=out, timeout=60)
+        self.assertLess(time.monotonic() - started, 13)
+        log = log_path.read_text()
+        self.assertIn("grace 30s cut to 10s", log)
+        self.assertIn("the job still runs 10s after TERM", log)
+
+    def test_a_grace_that_is_not_a_number_is_refused(self):
+        self.fx.write_job("demo", "CRON_JOBS_TIMEOUT_GRACE=soon\n" + self.JOB.format("true"))
+        result = self.run_script("install", "demo")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CRON_JOBS_TIMEOUT_GRACE", result.stderr)
 
     def test_plist_values_are_xml_escaped(self):
         """A config root named with `&`, `<` and `>` still renders a plist
@@ -2181,6 +2366,256 @@ class RunReportTest(unittest.TestCase):
                 self.assertLess(time.monotonic() - started, 15)
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertIn("report was not recorded", result.stderr)
+
+    def test_a_runner_killed_while_it_reports_keeps_the_retry_record(self):
+        """Build 1232 round 5. launchd KILLs the runner ExitTimeOut after
+        its TERM, which can fall inside the report's own 60 s bound. The
+        retry record was written only after the report failed, so a KILL
+        mid-report lost the run. It is now on disk before the report
+        starts, and the next run files it."""
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
+        env = {"PATH": self.fx.path(), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "SD_REPORT_BIN": str(self.sd),
+               "FAKE_SD_LOG": str(self.sd_log), "FAKE_SD_SLEEP": "3"}
+        run = subprocess.Popen(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                               env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 30
+        while not self.reports() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(len(self.reports()), 1, "the report starts")
+        run.kill()
+        run.wait(timeout=10)
+        lost = self.ingests()[0][0]
+        time.sleep(3.5)
+        self.sd_log.unlink()
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        runs = [(r, rc) for r, rc, _ in self.ingests()]
+        self.assertEqual(runs[0], (lost, "7"), runs)
+        self.assertEqual(len(runs), 2, runs)
+        logs = self.fx.folder / "logs"
+        self.assertEqual(sorted(p.name for p in logs.glob(".demo.report*")), [])
+        self.assertFalse((logs / ".demo.unreported").exists())
+
+    def kill_mid_report(self, command):
+        """A run launchd KILLs while its report is filed; its run id."""
+        self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="{command}"\n')
+        env = {"PATH": self.fx.path(), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "SD_REPORT_BIN": str(self.sd),
+               "FAKE_SD_LOG": str(self.sd_log), "FAKE_SD_SLEEP": "3"}
+        run = subprocess.Popen(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                               env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 30
+        while not self.reports() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self.reports(), "the report starts")
+        run.kill()
+        run.wait(timeout=10)
+        killed = self.ingests()[-1][0]
+        time.sleep(3.5)
+        return killed
+
+    def test_a_retry_record_the_replay_cannot_move_is_kept(self):
+        """Build 1232 rounds 6 and 7. The replay could not move an older
+        run's retry record; this run then overwrote it (round 6), or,
+        kept from the one slot, went without and a KILL mid-report lost
+        it (round 7). Each run now has its own record."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        older = logs / ".demo.reporting.20260101T000000Z-1"
+        older.write_text("0 20260101T000000Z-1 a b 7\n")
+        (logs / ".demo.unreported").mkdir()
+        newer = self.kill_mid_report("exit 5")
+        self.assertEqual(older.read_text(), "0 20260101T000000Z-1 a b 7\n")
+        (logs / ".demo.unreported").rmdir()
+        self.sd_log.unlink()
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        runs = [(r, rc) for r, rc, _ in self.ingests()]
+        self.assertEqual(runs[:2], [("20260101T000000Z-1", "7"), (newer, "5")], runs)
+        self.assertEqual(sorted(p.name for p in logs.glob(".demo.report*")), [])
+
+    def test_a_torn_queue_record_is_refused_not_completed(self):
+        """Round 10 (class: a place that repairs or accepts a partial
+        record). An append ended an unterminated last line with a
+        newline, so a write cut at `12` of `124` became a whole record
+        with exit 12. The torn tail is now dropped, never completed."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("0 20260101T000000Z-1 a b 12")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        result = self.exec_job(FAKE_SD_EXIT="3")
+        lines = pending.read_text().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertRegex(lines[0], r"^\d+ [0-9TZ]+-\d+ \S+ \S+ 3$")
+        self.assertIn("torn retry record", result.stderr)
+
+    def test_a_torn_queue_tail_goes_and_is_never_filed(self):
+        """Round 10, same class. The replay left a torn tail in place,
+        so it waited for the next append to complete it."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("0 20260101T000000Z-1 a b 12")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        self.assertNotIn("20260101T000000Z-1", [r for r, _, _ in self.ingests()])
+        self.assertFalse(pending.exists())
+
+    def test_a_torn_in_flight_record_is_refused(self):
+        """Round 10, same class. The replay read an in-flight record
+        with `$(cat)`, which drops the missing newline unseen, and
+        filed a record cut short as whole."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        record = logs / ".demo.reporting.20260101T000000Z-1"
+        record.write_text("0 20260101T000000Z-1 a b 12")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        self.assertNotIn("20260101T000000Z-1", [r for r, _, _ in self.ingests()])
+        self.assertFalse(record.exists())
+
+    def test_drop_carry_refuses_a_torn_tail(self):
+        """Round 10, same class. drop_carry's grep printed an
+        unterminated last line with a newline and wrote it back whole."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("0\n0 20260101T000000Z-1 a b 7\n0 20260101T000000Z-2 a b 12")
+        script = self.fx.folder / "cron-jobs.sh"
+        subprocess.run(
+            ["sh", "-c", f'eval "$(sed -n -e "/^whole_records()/,/^}}/p" '
+                         f'-e "/^drop_carry()/,/^}}/p" {script})"; '
+                         f'LOG_DIR="{logs}"; REPLAY_CARRY=0; drop_carry demo'],
+            capture_output=True, text=True, check=True)
+        self.assertEqual(pending.read_text(), "0 20260101T000000Z-1 a b 7\n")
+
+    def test_replay_leaves_a_dotted_job_s_files_alone(self):
+        """Build 1232 round 8 (class: a state-file operation that does not
+        touch exactly one whole record of its own job). Job names may hold
+        dots; `demo`'s glob `.demo.reporting.*` took the lock and the queue
+        of a job named `demo.reporting.worker`, filed them and deleted them."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        other = {".demo.reporting.worker.unreported": "0 20260101T000000Z-9 a b 4\n",
+                 ".demo.reporting.worker.flock": ""}
+        for name, text in other.items():
+            (logs / name).write_text(text)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        for name, text in other.items():
+            self.assertEqual((logs / name).read_text(), text, name)
+        self.assertNotIn("20260101T000000Z-9", [r for r, _, _ in self.ingests()])
+
+    def test_a_queue_append_publishes_a_whole_new_queue(self):
+        """Round 8. The append wrote into the live queue, so a short write
+        left a fragment the next append completed. The queue is now
+        rewritten aside and renamed into place: the old file, held here
+        through a second link, is never changed."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("0 20260101T000000Z-1 a b 7\n")
+        held = self.fx.tmp / "held-queue"
+        os.link(pending, held)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        self.exec_job(FAKE_SD_EXIT="3")
+        self.assertEqual(held.read_text(), "0 20260101T000000Z-1 a b 7\n")
+        self.assertEqual(len(pending.read_text().splitlines()), 2, pending.read_text())
+
+    def shim(self, tool, fails_when):
+        """A PATH whose `tool` exits 2 when its arguments match the case
+        pattern `fails_when`, and runs the real one otherwise."""
+        bin_dir = self.fx.tmp / f"shim-{tool}"
+        bin_dir.mkdir()
+        real = shutil.which(tool)
+        script = bin_dir / tool
+        script.write_text(f'#!/bin/sh\ncase " $* " in {fails_when}) exit 2 ;; esac\n'
+                          f'exec {real} "$@"\n')
+        script.chmod(0o755)
+        return self.fx.path(bin_dir)
+
+    def test_an_unreadable_retry_record_is_not_moved(self):
+        """Round 9 (class: a failed read of a retry record ignored before
+        the record is rewritten or removed). The replay appended the
+        output of a failed `cat`, an empty line, and deleted the record."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        record = logs / ".demo.reporting.20260101T000000Z-1"
+        record.write_text("0 20260101T000000Z-1 a b 7\n")
+        record.chmod(0)
+        self.addCleanup(lambda: record.exists() and record.chmod(0o600))
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.exec_job()
+        self.assertTrue(record.exists(), "the unread record was removed")
+        record.chmod(0o600)
+        self.assertEqual(record.read_text(), "0 20260101T000000Z-1 a b 7\n")
+        pending = logs / ".demo.unreported"
+        lines = pending.read_text().splitlines() if pending.exists() else []
+        self.assertNotIn("", lines)
+
+    def test_a_failed_tail_does_not_join_two_records(self):
+        """Round 9, same class. queue_append's `tail -c 1` decides the
+        missing newline; a failed tail read as "ends in a newline", and
+        the append joined two runs into one line."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("0 20260101T000000Z-1 a b 7\n")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        self.exec_job(FAKE_SD_EXIT="3", PATH=self.shim("tail", "*' -c 1 '*"))
+        lines = pending.read_text().splitlines()
+        self.assertEqual(lines[0], "0 20260101T000000Z-1 a b 7", lines)
+        for line in lines:
+            self.assertEqual(len(line.split()), 5, line)
+
+    def test_a_failed_grep_keeps_the_queue(self):
+        """Round 9, same class. drop_carry took grep's error (exit 2) for
+        "no full line left" and deleted the queue with its records."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("12\n0 20260101T000000Z-1 a b 7\n")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        self.exec_job(FAKE_SD_EXIT="3", PATH=self.shim("grep", "'   '"))
+        self.assertTrue(pending.exists(), "grep failed and the queue went")
+        self.assertIn("0 20260101T000000Z-1 a b 7", pending.read_text().splitlines())
+
+    def test_a_partial_record_does_not_block_the_queue(self):
+        """Round 8. A record with a run id and missing fields was filed,
+        ingest refused it, and the replay stopped before every later run.
+        It is dropped as malformed and the replay goes on."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        (logs / ".demo.unreported").write_text(
+            "12 20260101T000000Z-1\n0 20260101T000000Z-1 a b 7\n")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        runs = [(r, rc, off) for r, rc, off in self.ingests()]
+        self.assertEqual(runs[0], ("20260101T000000Z-1", "7", "0"), runs)
+        self.assertEqual(len(runs), 2, runs)
+        self.assertFalse((logs / ".demo.unreported").exists())
+
+    def test_debug_pruning_leaves_a_dotted_job_s_log_alone(self):
+        """Round 8. `demo`'s prune glob `demo.debug.*.log` also listed the
+        log of a job named `demo.debug.worker`, and deleted it among the
+        oldest."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        other = logs / "demo.debug.worker.log"
+        other.write_text("worker\n")
+        os.utime(other, (1_000_000, 1_000_000))
+        for n in range(6):
+            (logs / f"demo.debug.20260101T00000{n}Z-1.log").write_text("x")
+        script = self.fx.folder / "cron-jobs.sh"
+        subprocess.run(
+            ["bash", "-c", f'eval "$(sed -n -e "/^is_run_id()/,/^}}/p" '
+                           f'-e "/^prune_debug_files()/,/^}}/p" {script})"; '
+                           f'LOG_DIR="{logs}"; prune_debug_files demo'],
+            capture_output=True, text=True, check=True)
+        self.assertTrue(other.exists())
+        self.assertEqual(len(list(logs.glob("demo.debug.2026*.log"))), 5)
 
     def test_a_failed_report_keeps_the_exit_code(self):
         # PIN. A report that fails is logged; the job's own code stands.

@@ -23,8 +23,9 @@
 #                  0 turns it off. Default: CRON_JOBS_JOB_TIMEOUT, else 2h.
 #                  A run past it logs its process group's processes, has
 #                  the group sent TERM, then KILL after
-#                  CRON_JOBS_TIMEOUT_GRACE seconds (default 10), and fails
-#                  with exit 124.
+#                  CRON_JOBS_TIMEOUT_GRACE seconds (default 30), and fails
+#                  with exit 124. The plist's ExitTimeOut is that grace
+#                  plus EXIT_REPORT_ROOM.
 #
 # Usage:
 #   cron-jobs.sh list                     jobs, schedules, installed/loaded state, folder
@@ -74,6 +75,14 @@ CONF_DIR="$(st_config_dir cron-jobs)"
 # too: a health check or runner status a job calls needs the same label
 # prefix as this script. An exported value wins over the file.
 st_source_env cron-jobs
+# The grace before any job file sets its own: load_job puts it back for
+# each job, so one job's grace never reaches the next in `install --all`.
+BASE_TIMEOUT_GRACE="${CRON_JOBS_TIMEOUT_GRACE-}"
+# The ExitTimeOut the installed plist gave launchd, which a run cannot
+# change: cmd_exec cuts a grace raised since install to fit it. Unset, so
+# a job that runs this script is not bound by its own plist.
+INSTALLED_EXIT_TIMEOUT="${CRON_JOBS_EXIT_TIMEOUT-}"
+unset CRON_JOBS_EXIT_TIMEOUT
 LABEL_PREFIX="$(st_label_prefix)"
 # The prefix may sit in <config>/shared.env, which no job reads on its own.
 SYSTEM_TOOLS_LABEL_PREFIX="$LABEL_PREFIX"; export SYSTEM_TOOLS_LABEL_PREFIX
@@ -189,12 +198,28 @@ agent_quarantine() { # job binary
 # (sd:5293); this keeps the newest five per job, so the log dir stays bounded.
 # It lists from the log dir: macOS ls opens its cwd, and a JOB_DIR in the
 # vault drew a Full Disk Access denial for /bin/ls on each run (sd:6437).
+# A job name may hold dots, so the glob also lists a job named
+# `<job>.debug.x`'s files; only those whose middle is a run id are kept.
 prune_debug_files() { # job
-  local old
+  local old run
   # shellcheck disable=SC2012 # the names are this script's own (job, UTC stamp, pid): no whitespace, and ls -t is the mtime order wanted
-  (cd "$LOG_DIR" && ls -t "$1".debug.*.log 2>/dev/null) | tail -n +6 | while IFS= read -r old; do
+  (cd "$LOG_DIR" && ls -t "$1".debug.*.log 2>/dev/null) | while IFS= read -r old; do
+    run="${old#"$1".debug.}"
+    ! is_run_id "${run%.log}" || printf '%s\n' "$old"
+  done | tail -n +6 | while IFS= read -r old; do
     rm -f "$LOG_DIR/$old"
   done
+}
+
+# Is this a run id as cmd_exec makes one (UTC stamp, pid)? State files
+# put it after the job's name, and a job name may hold dots, so only a
+# whole run id tells this job's file from another job's.
+is_run_id() { # value
+  case "$1" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-[0-9]*) ;;
+    *) return 1 ;;
+  esac
+  case "${1#*Z-}" in *[!0-9]*) return 1 ;; esac
 }
 
 label_for()  { echo "$LABEL_PREFIX.cron.$1"; }
@@ -228,14 +253,28 @@ job_file() {
 # enough for the slowest prompt job; short enough that a hung run frees its
 # lock the same night rather than holding it until someone looks (sd:2018).
 DEFAULT_JOB_TIMEOUT=2h
+# Seconds launchd's ExitTimeOut leaves past the grace for the EXIT trap's
+# outcome and retry record. The report and push may run past it: the
+# record is on disk before they start (file_run_report).
+EXIT_REPORT_ROOM=30
 
-# A limit as whole seconds: N, Ns, Nm or Nh. Leading zeros are dropped
-# first, since `$(( ))` reads 010 as octal.
-timeout_seconds() { # value
-  local n="${1%[smh]}"
+# A whole number as plain decimal, or fail: digits only, at most MAX.
+# Leading zeros go first, since `$(( ))` reads 010 as octal and 08 as an
+# error while Perl reads both as decimal; nine digits at most, so neither
+# the comparison nor a caller's `$(( ))` can overflow.
+decimal() { # value max
+  local n="$1"
   case "$n" in '' | *[!0-9]*) return 1 ;; esac
   n="${n#"${n%%[!0]*}"}"
   n="${n:-0}"
+  [ "${#n}" -le 9 ] && [ "$n" -le "$2" ] || return 1
+  echo "$n"
+}
+
+# A limit as whole seconds: N, Ns, Nm or Nh.
+timeout_seconds() { # value
+  local n
+  n="$(decimal "${1%[smh]}" 999999999)" || return 1
   case "$1" in
     *h) echo $((n * 3600)) ;;
     *m) echo $((n * 60)) ;;
@@ -247,7 +286,7 @@ load_job() {
   local f; f="$(job_file "$1")"
   [ -f "$f" ] || { echo "ERROR: no such job '$1' (expected $f)" >&2; exit 1; }
   JOB_SCHEDULE="" JOB_PROMPT="" JOB_COMMAND="" JOB_DIR="" JOB_MODEL="" JOB_CLAUDE_ARGS=""
-  JOB_RESULT_OK="" JOB_TIMEOUT=""
+  JOB_RESULT_OK="" JOB_TIMEOUT="" CRON_JOBS_TIMEOUT_GRACE="$BASE_TIMEOUT_GRACE"
   # shellcheck source=/dev/null
   # shellcheck disable=SC1090
   . "$f"
@@ -257,9 +296,15 @@ load_job() {
   if [ -n "$JOB_PROMPT" ] && [ -n "$JOB_COMMAND" ]; then
     echo "ERROR: $f sets both JOB_PROMPT and JOB_COMMAND — pick one" >&2; exit 1
   fi
+  # One decimal value for all three waits: Perl's, stop_workload's (cut
+  # to the installed plist, keep_grace_in_plist) and the plist's ExitTimeOut. Checked here, before any plist is opened.
+  JOB_GRACE="$(decimal "${CRON_JOBS_TIMEOUT_GRACE:-30}" 3600)" || {
+    echo "ERROR: $f: CRON_JOBS_TIMEOUT_GRACE '${CRON_JOBS_TIMEOUT_GRACE}' is not a whole number of seconds from 0 to 3600" >&2
+    exit 1
+  }
   local limit="${JOB_TIMEOUT:-${CRON_JOBS_JOB_TIMEOUT:-$DEFAULT_JOB_TIMEOUT}}"
   JOB_TIMEOUT_SECONDS="$(timeout_seconds "$limit")" || {
-    echo "ERROR: $f: JOB_TIMEOUT (or CRON_JOBS_JOB_TIMEOUT) '$limit' is not N, Ns, Nm or Nh" >&2
+    echo "ERROR: $f: JOB_TIMEOUT (or CRON_JOBS_JOB_TIMEOUT) '$limit' is not N, Ns, Nm or Nh, N at most nine digits" >&2
     exit 1
   }
 }
@@ -390,7 +435,7 @@ xml_escape() { # text: the text with &, < and > as XML entities
 }
 
 write_plist() { # job name
-  local job="$1" label plist x_label x_root x_job x_log x_path x_home x_config x_launch
+  local job="$1" label plist x_label x_root x_job x_log x_path x_home x_config x_launch exit_timeout
   label="$(label_for "$job")"
   plist="$(plist_for "$job")"
   # Every value below is XML text: a path holding `&` or `<` made a plist
@@ -399,6 +444,9 @@ write_plist() { # job name
   x_log="$(xml_escape "$LOG_DIR/$job.log")"; x_path="$(xml_escape "$JOB_PATH")"
   x_home="$(xml_escape "$HOME")"; x_config="$(xml_escape "$SYSTEM_TOOLS_CONFIG")"
   x_launch="$(xml_escape "$JOB_LAUNCH")"
+  # Every value is computed before the plist is opened: a failure while
+  # it is open leaves the installed plist empty.
+  exit_timeout=$((JOB_GRACE + EXIT_REPORT_ROOM))
   {
     cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -452,6 +500,9 @@ EOF
         <string>$x_path</string>
         <key>HOME</key>
         <string>$x_home</string>
+        <!-- ExitTimeOut below, so a run keeps its grace inside it. -->
+        <key>CRON_JOBS_EXIT_TIMEOUT</key>
+        <string>$exit_timeout</string>
         <!-- The config root, always: under a root that is not the default
              one below HOME, exec would otherwise look for the job file in
              an empty folder (sd:2519). -->
@@ -462,6 +513,12 @@ EOF
     <!-- Unset (Standard) throttles the job; lane gates ran ~8x slow (sd:6504). -->
     <key>ProcessType</key>
     <string>Interactive</string>
+
+    <!-- On bootout or shutdown launchd TERMs the runner and KILLs it after
+         this. The runner waits the job's grace, then writes its outcome;
+         unset (20 s) under a 30 s grace left no outcome at all (sd:7105). -->
+    <key>ExitTimeOut</key>
+    <integer>$exit_timeout</integer>
 </dict>
 </plist>
 EOF
@@ -683,7 +740,8 @@ record_run_report() { # job, run identity, start, end, exit, log offset
 # push, so a push that hangs or fails cannot lose it.
 report_unrecorded() { # job, log offset, run identity, start, end, exit
   local saved=0
-  printf '%s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" >> "$LOG_DIR/.$1.unreported" || saved=1
+  queue_append "$LOG_DIR/.$1.unreported" "$2 $3 $4 $5 $6
+" || saved=1
   osascript -e "display notification \"Job '$1': report not recorded. See local-cron-jobs/logs/$1.log.\" with title \"cron-jobs report\"" 2>/dev/null || true
   # Optional phone push via ntfy.sh: set NTFY_TOPIC in <config>/cron-jobs/notify.conf.
   local NTFY_TOPIC=""
@@ -695,6 +753,52 @@ report_unrecorded() { # job, log offset, run identity, start, end, exit
   return "$saved"
 }
 
+# Prints a record file's whole lines. A line without its newline is a
+# write cut short: `12` of `124` reads as a valid exit code, so it is
+# dropped and logged, never ended with a newline.
+whole_records() { # file
+  local last
+  last="$(tail -c 1 "$1")" || return 1
+  [ -n "$last" ] || { cat "$1"; return; }
+  echo "[$(basename "$1")] dropped a torn retry record: $(tail -n 1 "$1")" >&2
+  sed '$d' "$1"
+}
+
+# Adds whole lines to the retry queue. The new queue is written aside
+# and renamed into place, so a short write or a kill leaves the old one
+# whole; a torn last line, from a runner before this, is dropped.
+queue_append() { # file, newline-terminated text
+  local tmp="$1.tmp"
+  [ ! -e "$1" ] || [ -f "$1" ] || return 1
+  # A subshell, so its `exit` ends only the copy, not the runner.
+  (
+    [ ! -s "$1" ] || whole_records "$1" || exit 1
+    printf '%s' "$2"
+  ) > "$tmp" && mv -f "$tmp" "$1" || { rm -f "$tmp"; return 1; }
+}
+
+# Files this run's report. The retry record goes to
+# .<job>.reporting.<run> first, so launchd's KILL during the report's
+# bound leaves it for the next run's replay; .unreported takes it only
+# once the report fails, and stays untouched by a report that lands.
+# One file per run: an older record the replay could not move never
+# shares a name with this run's.
+file_run_report() { # job, log offset, run identity, start, end, exit
+  local inflight="$LOG_DIR/.$1.reporting.$3" own=""
+  if printf '%s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" > "$inflight.tmp" \
+      && mv -f "$inflight.tmp" "$inflight"; then
+    own=1
+    drop_carry "$1"
+  else
+    rm -f "$inflight.tmp"
+  fi
+  if record_run_report "$1" "$3" "$4" "$5" "$6" "$2" \
+      || report_unrecorded "$1" "$2" "$3" "$4" "$5" "$6"; then
+    [ -z "$own" ] || rm -f "$inflight"
+    drop_carry "$1"
+  fi
+}
+
 # Files each pending run's report, oldest first, under the lock. The first
 # that fails stops the replay and keeps itself and every later line. A
 # slice runs to the log's end, so an older one also holds the newer runs'
@@ -703,17 +807,48 @@ report_unrecorded() { # job, log offset, run identity, start, end, exit
 replay_unrecorded() { # job
   local pending="$LOG_DIR/.$1.unreported" offset run started ended code left="" bare="" used=""
   REPLAY_CARRY=""
+  # A run killed while it filed its report left its line in its own
+  # file. Run ids sort by time, so the glob's order is the runs'; the
+  # first that cannot move stops the rest, which keeps that order.
+  # Only a whole run id after the prefix is this job's: a job named
+  # `<job>.reporting.x` has files under the same glob.
+  local inflight name text
+  for inflight in "$LOG_DIR/.$1.reporting".*; do
+    [ -f "$inflight" ] || continue
+    name="${inflight#"$LOG_DIR/.$1.reporting."}"
+    # A temp file is a write a kill cut short; under the lock no writer
+    # of this job is left.
+    case "$name" in *.tmp) ! is_run_id "${name%.tmp}" || rm -f "$inflight"; continue ;; esac
+    is_run_id "$name" || continue
+    # A failed read moves nothing: its record stays for the next run.
+    text="$(whole_records "$inflight")" || break
+    [ -n "$text" ] || { rm -f "$inflight"; continue; }
+    queue_append "$pending" "$text
+" && rm -f "$inflight" || break
+  done
   [ -s "$pending" ] || { rm -f "$pending"; return 0; }
   while read -r offset run started ended code; do
     case "$offset" in ''|*[!0-9]*) used=1; continue ;; esac
     [ -n "$run" ] || { REPLAY_CARRY="$offset"; bare="$bare$offset
 "; continue; }
+    # A partial record, cut short by a runner before whole-queue writes,
+    # is refused by ingest and would hold every later run behind it.
+    if ! is_run_id "$run" || [ -z "$ended" ] || case "$code" in ''|*[!0-9]*) true ;; *) false ;; esac; then
+      echo "[$1] dropped a malformed retry record: $offset $run $started $ended $code" >&2
+      used=1; continue
+    fi
     if [ -z "$left" ] && record_run_report "$1" "$run" "$started" "$ended" "$code" "$offset"; then
       used=1; continue
     fi
     left="$left$offset $run $started $ended $code
 "
   done < "$pending"
+  # read fails on a last line without its newline, so the loop never
+  # files it; a torn record is dropped, not left for an append to end.
+  if [ -n "$offset$run" ]; then
+    echo "[$1] dropped a torn retry record: $offset $run $started $ended $code" >&2
+    used=1
+  fi
   # Rewrite only when a line was filed or skipped as malformed, through a
   # temp file renamed over the record: a failed write keeps the old record
   # whole, and its filed runs replay again, which ingest folds by run id.
@@ -729,9 +864,36 @@ drop_carry() { # job
   local pending="$LOG_DIR/.$1.unreported" keep
   [ -n "$REPLAY_CARRY" ] && [ -f "$pending" ] || return 0
   REPLAY_CARRY=""
-  keep="$(grep ' ' "$pending" || true)"
+  # grep exits 1 for no full line; any other failure keeps the queue.
+  keep="$(whole_records "$pending")" || return 0
+  keep="$(printf '%s\n' "$keep" | grep ' ')" || [ $? -eq 1 ] || return 0
   if [ -z "$keep" ]; then rm -f "$pending"; return 0; fi
   { printf '%s\n' "$keep" > "$pending.tmp" && mv -f "$pending.tmp" "$pending"; } || rm -f "$pending.tmp"
+}
+
+# launchd KILLs the runner ExitTimeOut seconds after its TERM, a value the
+# plist fixed at install, while the grace is read from the job file at each
+# run: a grace raised since install is cut to fit, until a reinstall. Only
+# the shutdown wait (stop_workload) is cut: after JOB_TIMEOUT no launchd
+# KILL comes, so perl keeps the job's own grace.
+# A plist from before ExitTimeOut has launchd's 20 s and no budget key;
+# launchd names the run by its label (XPC_SERVICE_NAME), and the grace
+# keeps the 10 s that plist was rendered for. A hand run is not capped.
+LEGACY_GRACE=10
+SHUTDOWN_GRACE=""
+keep_grace_in_plist() { # job
+  local budget cap
+  SHUTDOWN_GRACE="$JOB_GRACE"
+  if budget="$(decimal "$INSTALLED_EXIT_TIMEOUT" 999999999)"; then
+    cap=$((budget > EXIT_REPORT_ROOM ? budget - EXIT_REPORT_ROOM : 0))
+  elif [ "${XPC_SERVICE_NAME:-}" = "$(label_for "$1")" ]; then
+    budget=20 cap="$LEGACY_GRACE"
+  else
+    return 0
+  fi
+  [ "$JOB_GRACE" -gt "$cap" ] || return 0
+  echo "[$1] $(date '+%Y-%m-%dT%H:%M:%S%z') shutdown grace ${JOB_GRACE}s cut to ${cap}s: the installed plist's ExitTimeOut is ${budget}s; reinstall the job"
+  SHUTDOWN_GRACE="$cap"
 }
 
 # The outcome line every run that started owes its log. cmd_exec writes "done"
@@ -880,7 +1042,7 @@ run_bounded() { # job, seconds, command...
   local job="$1" limit="$2" rc=0
   shift 2
   EXEC_IN_JOB=1
-  perl -e "$RUN_BOUNDED" "$job" "$limit" "${CRON_JOBS_TIMEOUT_GRACE:-10}" "$@" || rc=$?
+  perl -e "$RUN_BOUNDED" "$job" "$limit" "$JOB_GRACE" "$@" || rc=$?
   EXEC_IN_JOB=""
   return "$rc"
 }
@@ -892,7 +1054,7 @@ run_bounded() { # job, seconds, command...
 # exits, as this shell is in its trap and reaps nothing, so `ps` and not
 # `kill -0` tells whether it is gone.
 stop_workload() { # job
-  local pid tries=0 grace="${CRON_JOBS_TIMEOUT_GRACE:-10}"
+  local pid tries=0 grace="${SHUTDOWN_GRACE:-$JOB_GRACE}"
   pid="$(pgrep -P "$$" -x perl 2>/dev/null | head -n 1)" || true
   [ -n "$pid" ] || return 0
   kill -TERM "$pid" 2>/dev/null || true
@@ -930,12 +1092,7 @@ exec_exit() {
   # The report, once: the normal end clears EXEC_JOB before it files its own.
   local ended
   ended="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  if [ -z "$owed" ]; then :
-  elif record_run_report "$owed" "$EXEC_RUN" "$EXEC_STARTED" "$ended" "$code" "$EXEC_OFFSET"; then
-    drop_carry "$owed"
-  elif report_unrecorded "$owed" "$EXEC_OFFSET" "$EXEC_RUN" "$EXEC_STARTED" "$ended" "$code"; then
-    drop_carry "$owed"
-  fi
+  [ -z "$owed" ] || file_run_report "$owed" "$EXEC_OFFSET" "$EXEC_RUN" "$EXEC_STARTED" "$ended" "$code"
   [ -z "$owed" ] || push_at_risk "$owed" "$code" "$EXEC_OWN_OFFSET" \
     "${EXEC_IN_JOB:+$INTERRUPTED; }" || true
 }
@@ -1402,6 +1559,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
   st_shell_env
 
   load_job "$job"
+  keep_grace_in_plist "$job"
 
   # launchd hands a job 256 open files (`launchctl limit maxfiles`), where a
   # login shell gets 1048576. Claude needs more than 256 and aborts at startup
@@ -1521,11 +1679,7 @@ if attrs:
   report_ended="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   # A bare offset this run carried goes only once its report is filed or
   # saved as a full line, which holds that offset (drop_carry).
-  if record_run_report "$job" "$report_run" "$report_started" "$report_ended" "$rc" "$report_offset"; then
-    drop_carry "$job"
-  elif report_unrecorded "$job" "$report_offset" "$report_run" "$report_started" "$report_ended" "$rc"; then
-    drop_carry "$job"
-  fi
+  file_run_report "$job" "$report_offset" "$report_run" "$report_started" "$report_ended" "$rc"
   push_at_risk "$job" "$rc" "$own_offset" || true
   [ "$rc" -eq 0 ] || exit "$rc"
 }
