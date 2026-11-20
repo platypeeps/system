@@ -401,6 +401,14 @@ class BulkMoveTest(unittest.TestCase):
         jobs = re.search(r'^BULK_JOBS="([^"]*)"', setup, re.M).group(1).split()
         self.assertEqual(jobs, list(_module().JOBS))
 
+    def test_every_lane_job_example_is_held(self):
+        """sd:9670 review. lane-run-pack started pack lane runs a move held no lock for."""
+        examples = FOLDER.parent / "local-cron-jobs" / "examples"
+        lanes = sorted(job.stem for job in examples.glob("lane-run*.job"))
+        self.assertIn("lane-run-pack", lanes)
+        for job in lanes:
+            self.assertIn(job, _module().JOBS)
+
     def test_a_failed_lsof_is_refused(self):
         self.assert_refused(self.move(str(self.data), FAKE_LSOF_FAIL="1"), self.data, "lsof")
 

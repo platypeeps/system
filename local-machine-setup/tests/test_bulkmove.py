@@ -338,6 +338,18 @@ class BulkmoveTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertFalse(self.local.exists(), out)
 
+    def test_all_four_jobs_loaded_hold_their_locks_and_the_move_finishes(self):
+        """sd:9670 review. The fourth lock skips fd 8 to fd 9; the loop's last test then
+        returned 1 when the last job was loaded, and the move stopped before its copy."""
+        for job in ("lane-run-pack", "night-build"):
+            (self.loaded / f"{PREFIX}.cron.{job}").touch()
+        rc, out = self.run_stage()
+        self.assertEqual(rc, 0, out)
+        for job in ("build-dispatch", "lane-run", "lane-run-pack", "night-build"):
+            self.assertIn(f"held    {job}'s lock", out)
+            self.assertTrue(self.lock_free(job), out)
+        self.assertFalse(self.local.exists(), out)
+
     # Review of build 772: once the root names the NAS, jobs write there,
     # so a rerun must not copy the stale local folder over newer files.
     def test_a_rerun_after_the_switch_keeps_newer_nas_files(self):
