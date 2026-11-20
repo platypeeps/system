@@ -19,7 +19,9 @@ on sd:4042) and closes the older one of that host (pack sd:4641). Each job
 prints one line per finding, so a smaller set is a subset of the open
 report's lines and folds into it (pack sd:4658, sd:4664). An
 acknowledged report takes the same findings while they repeat without a
-break on the host, and stays done (pack sd:4629).
+break on the host, and stays done (pack sd:4629). A clean run closes the
+host's open report as recovered, so findings that come back after it
+open a fresh one (pack sd:7729).
 """
 
 import re
@@ -205,17 +207,26 @@ class EndToEndTest(unittest.TestCase):
         _, state = self.doctor_run("r2")
         self.assertEqual(state["recorded"], "folded", state)
 
-    def test_warnings_that_return_fold_into_their_open_report(self):
-        """A clean night between files nothing and closes nothing."""
+    def test_warnings_that_return_after_a_clean_night_file_a_fresh_report(self):
+        """PIN of the pack (pack sd:7729): a clean night files nothing and
+        closes the open report as recovered, so the warnings coming back
+        are a new report, the one open."""
         _, first = self.doctor_run("r1", "2026-10-10")
         self.doctor.write_text("")
         self.doctor_rc.write_text("0\n")
         _, clean = self.doctor_run("r2", "2026-10-11")
         self.assertEqual(clean["recorded"], "heartbeat", clean)
+        with closing(connect(self.database)) as connection:
+            older = workflow.item_state(connection, first["item"]["id"])
+        self.assertEqual(older["item"]["status"], "done")
+        self.assertIn(reporting.RECOVERED,
+                      [n["body"] for n in older["notes"] if n["kind"] == "status_change"][-1])
         self.doctor.write_text("Warning: one\nWarning: two\n")
         self.doctor_rc.write_text("1\n")
         _, back = self.doctor_run("r3", "2026-10-12")
-        self.assertEqual((back["recorded"], back["item"]["id"]), ("folded", first["item"]["id"]), back)
+        self.assertEqual(back["recorded"], "report", back)
+        self.assertNotEqual(back["item"]["id"], first["item"]["id"])
+        self.assertEqual(self.open_reports(), [back["item"]["id"]])
 
     def test_an_acknowledged_report_takes_an_unbroken_repeat_and_stays_done(self):
         """PIN of the pack (sd:4629): the same findings the next night, with no

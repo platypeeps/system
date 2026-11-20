@@ -2,7 +2,7 @@
 """agent-meter — append one agent-usage reading to a JSONL ledger.
 
 Reads the meters and changes nothing else: per provider its usage (claude
-from `cswap list --json`, codex from its session logs, see usage_sources.py),
+from `cswap list --json`, codex from `codex app-server`, see usage_sources.py),
 and `rtk gain` for the token-proxy savings. One JSON object per line, appended.
 
 The ledger is `--out`, else AGENT_METER_FILE (exported, or set in
@@ -59,9 +59,15 @@ no usage API is `no-source`; a key its list no longer names, or every key
 of a cleared list, gets one row with status `removed`. Neither writes the
 ledger.
 
+A provider with no usage API a key can call but an error text that holds
+its quota (Hugging Face ZeroGPU, sd:9586) gets its row from the caller:
+`usage --huggingface-error TEXT` writes that one row, and a live run
+leaves it standing until the next.
+
   agent-meter.py [--out PATH] [--db PATH | --no-db] [--providers claude,codex] [--timeout S]
   agent-meter.py accounts [--out PATH]
   agent-meter.py usage|services [--db PATH]
+  agent-meter.py usage --huggingface-error TEXT [--db PATH]
 """
 
 import argparse
@@ -365,11 +371,12 @@ def write_rows(record, a) -> None:
 
 def read_one(provider, accounts, accounts_error, now):
     """One provider's reading: claude from cswap's accounts, codex from its
-    session logs, the rest from their own usage APIs."""
+    app-server (its session logs when that fails), the rest from their own usage APIs."""
     if provider == "claude":
         return usage_sources.claude_reading(accounts, accounts_error, now)
     if provider == "codex":
-        return usage_sources.codex_reading(now=now)
+        return usage_sources.codex_reading(
+            now=now, binary=os.environ.get("CODEX_BIN") or find_bin("codex"))
     return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now)
 
 
@@ -422,13 +429,15 @@ def live(a, list_key, starting, parse, read, row_key) -> None:
         stage = "reading the entries"
         with ThreadPoolExecutor(WORKERS) as pool:
             readings = list(pool.map(lambda entry: read(entry, now), entries))
+        named = {name for name, _ in readings}
+        # A passed-in reading's row stands until its caller's next one.
+        readings = [(name, body) for name, body in readings if body is not None]
         stage = "checking the rows are JSON"
         for _, body in readings:
             # A row is finite JSON or the run writes none (sd:9256 review).
             json.dumps(body, allow_nan=False)
         stage = "writing the rows"
         with sd_db.transaction(connection):
-            named = {name for name, _ in readings}
             readings += [(key[len(row_key):], REMOVED)
                          for key in newest_live(connection, row_key)
                          if key[len(row_key):] not in named]
@@ -469,8 +478,31 @@ def newest_live(connection, row_key):
 
 
 def read_usage(name, now):
+    if name in usage_sources.PASSED:
+        return name, None
     accounts, error = read_accounts(30) if name == "claude" else (None, None)
     return name, read_one(name, accounts, error, now)
+
+
+def record_passed(a, name, body):
+    """One reading a caller passed in, as its `usage:<name>` row (sd:9586)."""
+    try:
+        import sd_db
+        from sd_db import writes
+        connection = sd_db.connect(a.db, write=True)
+    except Exception as e:
+        print("agent-meter usage: the workflow database did not open: %s: %s"
+              % (type(e).__name__, e), file=sys.stderr)
+        sys.exit(1)
+    try:
+        with sd_db.transaction(connection):
+            writes.record_state(connection, "heartbeat", key=USAGE_KEY + name, body=body)
+    except Exception as e:
+        print("agent-meter usage: no row written: %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        sys.exit(1)
+    finally:
+        connection.close()
+    print("agent-meter usage: %s %s" % (name, body["status"]))
 
 
 def read_service(entry, now):
@@ -678,11 +710,24 @@ def main() -> None:
                             "(default: %s, sd_db's own default)" % DEFAULT_DB)
     where.add_argument("--no-db", action="store_true",
                        help="write the JSONL line only, no meter rows")
+    p.add_argument("--huggingface-error", metavar="TEXT",
+                   help="usage: write the huggingface row from a ZeroGPU quota "
+                        "error, '(60s requested vs. 0s left)', and read nothing else")
     a = p.parse_args()
+    if a.huggingface_error is not None and a.command != "usage":
+        p.error("--huggingface-error goes with usage")
     if a.no_db and a.command in ("usage", "services"):
         p.error("--no-db: %s writes rows and nothing else" % a.command)
     if a.command == "accounts":
         report_accounts(a)
+    elif a.huggingface_error is not None:
+        body = usage_sources.huggingface_error(
+            a.huggingface_error, datetime.datetime.now(datetime.timezone.utc))
+        if body is None:
+            print("agent-meter usage: no ZeroGPU quota in the error text; no row written",
+                  file=sys.stderr)
+            sys.exit(1)
+        record_passed(a, "huggingface", body)
     elif a.command == "usage":
         live(a, USAGE_LIST, usage_sources.STARTING,
              usage_sources.parse_providers, read_usage, USAGE_KEY)

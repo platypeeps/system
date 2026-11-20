@@ -22,8 +22,8 @@ repos. Run `preview`, then one `run` by hand, and read the notes. Then copy
 ## Steps
 
 1. **Select.** `sd store items --open --json` lists the open items. An item
-   counts when it is due tomorrow (local date), is a task, followup or
-   personal item, is not parked, and has no repo or a repo in
+   counts when it is due tomorrow (local date), is a task or followup, is not
+   parked, and has no repo or a repo in
    `HOME_PREP_REPOS`. An item with a `Prepped for <tomorrow>:` note already is
    skipped, so a rerun preps only the rest. A note for an earlier due date of a
    recurring item does not count.

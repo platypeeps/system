@@ -8,12 +8,14 @@ reaches the real model, launchd or the workflow database. The machine is
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 FOLDER = Path(__file__).resolve().parents[1]
 
@@ -23,8 +25,13 @@ def day(offset):
     return (datetime.date.today() + datetime.timedelta(days=offset)).isoformat()
 
 FAKE_SD = r'''#!PYTHON
-import json, os, sys
+import datetime, json, os, sys
 path = os.environ["FAKE_SD_STATE"]
+
+def stamp():
+    """A note's time, as the pack writes it."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
 state = json.load(open(path))
 args = sys.argv[1:]
 state["log"].append(args)
@@ -50,7 +57,7 @@ def flag(name):
 FLAGS = {"reports list": {"--json"}, "today": {"--json", "--only"}, "task show": {"--json"},
          "task status": {"--json", "--if-revision", "--reason"}, "task note": {"--json", "--if-revision"},
          "reports acknowledge": {"--json", "--if-revision", "--resolve-followups"},
-         "task edit": {"--json", "--if-revision", "--park", "--unpark"}}
+         "task edit": {"--json", "--if-revision", "--park", "--unpark", "--reason"}}
 verb = "today" if args[:1] == ["today"] else " ".join(args[:2])
 if verb not in FLAGS or any(a.startswith("--") and a not in FLAGS[verb] for a in args):
     save(); print("fake sd: unrecognized arguments: " + " ".join(args), file=sys.stderr); sys.exit(2)
@@ -82,7 +89,7 @@ elif args[:2] == ["task", "note"]:
     if flag("--if-revision") not in (None, str(item["revision"])):
         save(); print("refused: the item changed", file=sys.stderr); sys.exit(1)
     item["notes"].append({"id": 900 + len(item["notes"]), "kind": "comment", "session": "login",
-                          "body": args[3], "resolved_at": None})
+                          "body": args[3], "resolved_at": None, "timestamp": stamp()})
     item["revision"] += 1
     save()
     # FAKE_SD_LOSE: the claim note commits, then its answer is lost.
@@ -95,9 +102,20 @@ elif args[:2] == ["task", "note"]:
         print(json.dumps(show(args[2])))
 elif args[:2] == ["task", "edit"]:
     item = items[args[2]]
+    if os.environ.get("FAKE_SD_RACE") == "park" and "--park" in args and not state.get("raced"):
+        state["raced"] = True
+        item["notes"].append({"id": 78, "kind": "followup", "session": "cron", "body": "failed again",
+                              "resolved_at": None})
+        item["revision"] += 1
     if flag("--if-revision") not in (None, str(item["revision"])):
         save(); print("refused: the item changed", file=sys.stderr); sys.exit(1)
     item["parked_at"] = None if "--unpark" in args else "2026-11-17T15:40:00+00:00"
+    # As the pack's edit_item: an audit note names who parked it, and a
+    # park's `--reason` after a colon (pack sd:9520).
+    reason = f": {flag('--reason')}" if flag("--reason") else ""
+    item["notes"].append({"id": 900 + len(item["notes"]), "kind": "comment", "session": "login",
+                          "body": ("Unparked by login" if "--unpark" in args else "Parked by login" + reason),
+                          "resolved_at": None, "timestamp": stamp()})
     item["revision"] += 1
 elif args[:2] == ["reports", "acknowledge"]:
     item = items[args[2]]
@@ -164,7 +182,9 @@ class NightTriage(unittest.TestCase):
         self.tool(self.bin / "claude", FAKE_CLAUDE)
         self.tool(self.bin / "hostname", "#!/bin/sh\necho Node1\n")
         self.state = self.tmp / "sd.json"
+        # CLAUDE_BIN set to the fake: an inherited one is the real model.
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", SD_PACK_ROOT=str(self.tmp / "pack"),
+                        CLAUDE_BIN=str(self.bin / "claude"),
                         FAKE_SD_STATE=str(self.state), CLAUDE_ARGS=str(self.tmp / "args"),
                         CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"),
                         TMPDIR=str(self.tmp))
@@ -189,7 +209,8 @@ class NightTriage(unittest.TestCase):
         """The job's verdict notes: claim and release notes left out."""
         return [n["body"] for n in self.items()[key]["notes"] if n["kind"] == "comment"
                 and not n["body"].startswith("night-triage on node1 claims it")
-                and "claim released" not in n["body"]]
+                and "claim released" not in n["body"]
+                and not re.fullmatch(r"(Parked|Unparked) by \S+(: .*)?", n["body"])]
 
     def notes(self, key, text):
         return [n["body"] for n in self.items()[key]["notes"] if text in n["body"]]
@@ -279,9 +300,76 @@ class NightTriage(unittest.TestCase):
         job's run count `recorded` then and `runs` now."""
         alert = dict(report("node1"), parked_at="2026-11-16T10:00:00+00:00", runs=runs)
         alert["notes"] = [{"id": 700, "kind": "comment", "session": "login", "resolved_at": None,
+                           "timestamp": "2026-11-16T10:00:00+00:00",
                            "body": f"night-triage on node1: waits until {on} on job-1: a weekly fix; "
-                                   f"parked until then (runs: {recorded})."}]
+                                   f"parked until then (runs: {recorded})."},
+                          {"id": 701, "kind": "comment", "session": "login", "resolved_at": None,
+                           "timestamp": "2026-11-16T10:00:01+00:00",
+                           "body": f"Parked by login: night-triage on node1: waits until {on} on job-1: "
+                                   f"parked (runs: {recorded})."}]
         return alert
+
+    def test_a_hand_park_after_an_unpark_is_never_woken(self):
+        # sd:9272: the job's wait note was still its latest, so the wake
+        # unparked a park the operator made by hand.
+        alert = self.parked(day(-1))
+        alert["notes"] += [{"id": 703, "kind": "comment", "session": "login", "resolved_at": None,
+                            "body": "Unparked by login"},
+                           {"id": 704, "kind": "comment", "session": "login", "resolved_at": None,
+                            "body": "Parked by login"}]
+        self.given({"1": json.loads(json.dumps(alert))}, [])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items()["1"], alert)
+        self.assertIn("sd:1 is parked; skipped", result.stderr)
+
+    def test_a_park_another_session_claimed_stays_parked(self):
+        # sd:9272: the unpark ran before the claim check, so a skipped
+        # alert was left unparked.
+        alert = self.parked(day(-1))
+        alert["notes"].append({"id": 702, "kind": "comment", "session": "abc", "resolved_at": None,
+                               "body": "claimed: triaging"})
+        self.given({"1": json.loads(json.dumps(alert))}, [])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items()["1"], alert)
+        self.assertIn("sd:1 is claimed; skipped", result.stderr)
+
+    def test_a_report_with_null_repeats_has_one_run(self):
+        # sd:9272: `"repeats": null` raised AttributeError.
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        self.assertEqual(night_triage.runs_of({"fields": json.dumps({"repeats": None})}), 1)
+        self.assertEqual(night_triage.runs_of({"fields": {"repeats": None}}), 1)
+
+    def test_a_claim_a_crashed_session_left_goes_stale(self):
+        # sd:9272: a session's "claimed: triaging" note is never cleared,
+        # so one that crashed kept the alert from triage forever.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for hours, taken in ((48, True), (1, False)):
+            with self.subTest(hours=hours):
+                alert = report("node1")
+                alert["notes"].append({"id": 50, "kind": "comment", "session": "abc", "resolved_at": None,
+                                       "body": "claimed: triaging", "timestamp":
+                                       (now - datetime.timedelta(hours=hours)).isoformat(timespec="seconds")})
+                self.given({"1": alert}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+                result = self.run_job()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(bool(self.notes("1", "filed as sd:7")), taken, result.stderr)
+
+    def test_an_inherited_claude_bin_never_runs(self):
+        # sd:9272: the tests passed CLAUDE_BIN through, which may name the
+        # real model.
+        marker = self.tmp / "real-model-ran"
+        real = self.tmp / "real-claude"
+        self.tool(real, f"#!/bin/sh\ntouch {marker}\n")
+        with mock.patch.dict(os.environ, CLAUDE_BIN=str(real)):
+            self.setUp()
+        self.given({"1": report("node1")}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        result = self.run_job()
+        self.assertFalse(marker.exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_a_date_in_the_summary_never_becomes_the_wake_date(self):
         # sd:9243 review: a greedy parse took `on 2026-02-30:` from the
@@ -372,6 +460,9 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(self.comments("1"), [
             f"night-triage on node1: waits until {on} on job-1: the fix lands with the weekly run; "
             "parked until then (runs: 3)."])
+        # sd:9348: the park note itself carries the job's proof.
+        self.assertEqual(item["notes"][-1]["body"],
+                         f"Parked by login: night-triage on node1: waits until {on} on job-1: parked (runs: 3).")
         self.assertIn("waiting", (self.tmp / "prompt").read_text())
 
     def test_a_compact_wait_date_is_written_so_the_wake_reads_it(self):
@@ -387,7 +478,144 @@ class NightTriage(unittest.TestCase):
         self.addCleanup(sys.path.remove, str(FOLDER))
         import night_triage
         alert = {"fields": json.dumps({"repeats": {"count": 2}})}
-        self.assertEqual(night_triage.wake(alert, [{"body": note}], "node1"), "the job failed again")
+        park = {"kind": "comment", "body": f"Parked by login: {night_triage.park_reason(note, 'node1')}"}
+        self.assertEqual(night_triage.wake(alert, [{"body": note}, park], "node1"), "the job failed again")
+
+    def test_a_park_mark_in_a_followup_is_no_park(self):
+        # sd:9282 round 1: a followup that quoted "Unparked by login" read
+        # as a hand unpark, so the job's own park never woke.
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        wait = self.parked(day(2))["notes"]
+        alert = {"fields": json.dumps({"repeats": {"count": 2}})}
+        for kind, body in (("followup", "Rerun it.\nUnparked by login"), ("comment", "Unparked by login, then retry")):
+            with self.subTest(kind=kind):
+                notes = wait + [{"kind": kind, "session": "abc", "body": body}]
+                self.assertEqual(night_triage.wake(alert, notes, "node1"), "the job failed again")
+
+    def test_a_hand_park_after_a_crash_before_the_job_s_park_stays(self):
+        # sd:9348 lane review: the run died after its wait note and its
+        # "parking this run." intent note, before its --park; the
+        # operator's own park after them read as the job's and woke.
+        for legacy in (True, False):
+            with self.subTest(intent_note=legacy):
+                alert = self.parked(day(-1))
+                hand = dict(alert["notes"][1], body="Parked by login")
+                intent = {"id": 701, "kind": "comment", "session": "login", "resolved_at": None,
+                          "body": "night-triage on node1: parking this run."}
+                alert["notes"][1:] = [intent, dict(hand, id=702)] if legacy else [hand]
+                self.given({"1": json.loads(json.dumps(alert))}, [])
+                result = self.run_job()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.items()["1"], alert)
+                self.assertIn("sd:1 is parked; skipped", result.stderr)
+
+    def test_a_park_with_the_job_s_reason_wakes(self):
+        # sd:9348: the park note's reason alone proves the job's park; no
+        # note of the job's need sit before it.
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        wait, park = self.parked(day(-1))["notes"]
+        one, two = {"fields": json.dumps({"repeats": {"count": 1}})}, {"fields": json.dumps({"repeats": {"count": 2}})}
+        other = {"kind": "comment", "session": "abc", "body": "a note"}
+        self.assertIn("the wait for job-1 on", night_triage.wake(one, [park], "node1"))
+        self.assertIn("the wait for job-1 on", night_triage.wake(one, [wait, other, park, other], "node1"))
+        later = dict(park, body=park["body"].replace(day(-1), day(3)))
+        self.assertEqual(night_triage.wake(two, [wait, later], "node1"), "the job failed again")
+        self.assertIsNone(night_triage.wake(one, [wait, later], "node1"))
+
+    def test_a_park_with_another_reason_or_none_stays(self):
+        # sd:9348: only the latest park line counts, and only with this
+        # job's reason for this host.
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        wait, park = self.parked(day(-1))["notes"]
+        alert = {"fields": json.dumps({"repeats": {"count": 2}})}
+        bodies = ("Parked by login", "Parked by login: holding for the vendor",
+                  park["body"].replace("on node1:", "on node2:"),
+                  park["body"].replace("Parked by login: ", "Parked by login: see "),
+                  park["body"].replace("(runs: 1).", "(runs: one)."))
+        for body in bodies:
+            with self.subTest(body=body):
+                self.assertIsNone(night_triage.wake(alert, [wait, dict(park, body=body)], "node1"))
+        for after in ("Unparked by login", "Parked by login"):
+            with self.subTest(after=after):
+                self.assertIsNone(night_triage.wake(alert, [wait, park, dict(park, body=after)], "node1"))
+        # The reason quoted in a person's comment is no park note.
+        quoted = {"kind": "comment", "session": "abc", "body": park["body"] + "\nso it waits"}
+        self.assertIsNone(night_triage.wake(alert, [wait, dict(park, body="Parked by login"), quoted], "node1"))
+
+    def test_a_run_named_claims_sync_wakes_its_own_park(self):
+        # sd:9348 review: the job's own park note names its run; one named
+        # claims-sync read as another session's claim and held the wake
+        # 24 h. A note that mentions a claim later on claims nothing either.
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        for later in (None, "the job failed; no claim here"):
+            with self.subTest(later=later):
+                alert = self.parked(day(-1))
+                for note in alert["notes"]:
+                    note["body"] = note["body"].replace("job-1", "claims-sync")
+                    note["timestamp"] = now
+                if later:
+                    alert["notes"].append({"id": 703, "kind": "comment", "session": "abc",
+                                           "resolved_at": None, "timestamp": now, "body": later})
+                self.given({"1": alert}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+                result = self.run_job()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("is claimed; skipped", result.stderr)
+                self.assertIsNone(self.items()["1"]["parked_at"])
+                self.assertTrue(self.notes("1", "filed as sd:7"), result.stderr)
+
+    def test_a_park_line_the_job_cannot_read_is_held_and_says_so(self):
+        # sd:9348 (4): a pack whose park text drifted strands the park;
+        # the run says so instead of holding it in silence.
+        alert = self.parked(day(-1))
+        alert["notes"][1]["body"] = "Parked (by login)"
+        self.given({"1": json.loads(json.dumps(alert))}, [])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.items()["1"], alert)
+        self.assertIn("sd:1 is parked, but no note reads as the pack's park line; held", result.stderr)
+
+    def test_a_run_that_dies_between_its_wait_note_and_its_park_strands_nothing(self):
+        # A crash between the wait note and the park leaves an unparked
+        # alert, which the next run triages as any other; a hand park
+        # after it stays parked.
+        on = day(2)
+        self.given({"1": report("node1")}, [
+            {"id": 1, "outcome": "waiting", "summary": "s", "run": "job-1", "on": on}])
+        died = self.run_job(FAKE_SD_DOWN="task edit 1 --park")
+        self.assertNotEqual(died.returncode, 0)
+        item = self.items()["1"]
+        self.assertIsNone(item.get("parked_at"))
+        self.assertTrue(item["notes"][-1]["body"].startswith(f"night-triage on node1: waits until {on}"))
+        self.given({"1": item}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any("filed as sd:7" in body for body in self.comments("1")), self.comments("1"))
+
+    def test_a_writer_before_the_park_leaves_the_alert_unparked(self):
+        # A followup between the wait note and the park refuses the park:
+        # the alert stays in view, and the next run settles it.
+        self.given({"1": report("node1")}, [
+            {"id": 1, "outcome": "waiting", "summary": "s", "run": "job-1", "on": day(2)}])
+        result = self.run_job(FAKE_SD_RACE="park")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.items()["1"].get("parked_at"))
+        self.assertIn("not parked: the report changed after the note above", self.comments("1")[-1])
+
+    def test_a_claim_without_a_timestamp_is_held_and_says_so(self):
+        alert = report("node1")
+        alert["notes"].append({"id": 50, "kind": "comment", "session": "abc", "resolved_at": None,
+                               "body": "claimed: triaging"})
+        self.given({"1": alert}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("night-triage: claim note 50 has no readable timestamp; held", result.stderr)
+        self.assertIn("sd:1 is claimed; skipped", result.stderr)
 
     def test_a_wait_without_a_real_near_date_is_not_parked(self):
         # sd:9243 review: a shape-only date check parked a past or impossible
@@ -452,6 +680,48 @@ class NightTriage(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.items()["1"], alert)
         self.assertIn("sd:1 is claimed; skipped", result.stderr)
+
+    def test_a_note_that_only_mentions_a_claim_is_no_claim(self):
+        import night_triage
+        for body in ("Nobody claims it now", "Claimed by no one", "the claim was released",
+                     "No one claims it", "none claims it yet", "Noone claims it"):
+            with self.subTest(body=body):
+                notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
+                self.assertFalse(night_triage.held_by_other(notes, "node1"))
+
+    def test_the_claim_forms_are_claims(self):
+        import night_triage
+        for body in ("claimed: triaging", "night-triage on node2 claims it: a run",
+                     "Claimed: investigating", "Night-triage on node2 Claims it: a run",
+                     "a session claims it: debugging the job", "The operator claims it",
+                     "nobody-else-bot claims it: a run"):
+            with self.subTest(body=body):
+                notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
+                self.assertTrue(night_triage.held_by_other(notes, "node1"))
+
+    def test_every_claim_form_main_honoured_still_holds(self):
+        # sd:9578 review: the anchored matcher dropped claims the one before
+        # it held. One body per form the old `\s*(?:claimed\b|(?:\S+ ){0,3}
+        # claims it\b)` took: claimed with no colon, leading space, a bare
+        # `claims it`, and one to three words before it.
+        import night_triage
+        for body in ("Claimed by me while I debug this", "claimed - looking", "claimed.",
+                     "claimed", "  claimed: triaging", "\nThe operator claims it",
+                     "claims it: debugging", "operator claims it", "the operator claims it"):
+            with self.subTest(body=body):
+                notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
+                self.assertTrue(night_triage.held_by_other(notes, "node1"))
+
+    def test_a_claim_whose_reason_opens_with_a_negation_still_holds(self):
+        # sd:9578 review: only `claimed by <nobody>` denies ownership; a
+        # reason after the claim that opens with `none` or `no one` does not.
+        import night_triage
+        for body in ("Claimed: none of the fixes worked; investigating",
+                     "claimed: nobody else touch this", "Claimed - no one answered, so mine",
+                     "claimed. Noone paged yet", "Claimed: none"):
+            with self.subTest(body=body):
+                notes = [{"id": 50, "kind": "comment", "session": "operator", "body": body}]
+                self.assertTrue(night_triage.held_by_other(notes, "node1"))
 
     def test_a_claim_a_crashed_run_left_is_released_by_the_next_run(self):
         self.given({"1": self.left_claim()}, [{"id": 1, "outcome": "filed", "summary": "s", "item": "sd:77"}])
@@ -681,11 +951,24 @@ class RealPack(unittest.TestCase):
 
     def run_job(self, reply):
         (self.tmp / "reply").write_text(json.dumps({"alerts": reply}))
+        # CLAUDE_BIN set to the fake: an inherited one is the real model.
         env = dict(os.environ, HOME=str(self.tmp), PATH=f"{self.bin}:{os.environ['PATH']}",
                    SD_PACK_ROOT=str(self.pack), TMPDIR=str(self.tmp), CLAUDE_ARGS=str(self.tmp / "args"),
-                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"))
+                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"),
+                   CLAUDE_BIN=str(self.bin / "claude"))
         return subprocess.run(["sh", str(self.tmp / "system/local-night-triage/night-triage.sh"), "run"],
                               capture_output=True, text=True, env=env, timeout=120)
+
+    def test_an_inherited_claude_bin_never_runs(self):
+        # sd:9272: the real-pack tests passed CLAUDE_BIN through.
+        marker = self.tmp / "real-model-ran"
+        real = self.tmp / "real-claude"
+        real.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        real.chmod(0o755)
+        item = self.ingest()
+        with mock.patch.dict(os.environ, CLAUDE_BIN=str(real)):
+            self.run_job([{"id": item, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        self.assertFalse(marker.exists())
 
     def test_a_repeat_folded_into_a_parked_report_wakes_it(self):
         # sd:9243 review: the pack folds a repeat into the parked report;
@@ -710,14 +993,9 @@ class RealPack(unittest.TestCase):
     def test_a_fixed_report_is_claimed_noted_and_acknowledged(self):
         item = self.ingest()
         followup = next(n["id"] for n in self.state(item)["notes"] if n["kind"] == "followup")
-        (self.tmp / "reply").write_text(json.dumps({"alerts": [
+        result = self.run_job([
             {"id": item, "outcome": "fixed", "summary": "a stale lock; cleared and reran",
-             "evidence": ["cron-jobs.sh run job-a: exit 0"], "followups": {str(followup): "the rerun passed"}}]}))
-        env = dict(os.environ, HOME=str(self.tmp), PATH=f"{self.bin}:{os.environ['PATH']}",
-                   SD_PACK_ROOT=str(self.pack), TMPDIR=str(self.tmp), CLAUDE_ARGS=str(self.tmp / "args"),
-                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"))
-        result = subprocess.run(["sh", str(self.tmp / "system/local-night-triage/night-triage.sh"), "run"],
-                                capture_output=True, text=True, env=env, timeout=120)
+             "evidence": ["cron-jobs.sh run job-a: exit 0"], "followups": {str(followup): "the rerun passed"}}])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'"id": {item}', (self.tmp / "prompt").read_text())
         state = self.state(item)
@@ -727,17 +1005,55 @@ class RealPack(unittest.TestCase):
         self.assertTrue(any("Evidence: cron-jobs.sh run job-a: exit 0" in b for b in bodies), bodies)
         self.assertIsNotNone(next(n for n in state["notes"] if n["id"] == followup)["resolved_at"])
 
+    def test_the_audit_line_is_the_pack_s(self):
+        # sd:9348: AUDIT_LINE is a copy of the pack's; a pack that changes
+        # its audit text would strand every park. The gate's pin fails here.
+        from sd_db import workflow
+        sys.path.insert(0, str(FOLDER))
+        self.addCleanup(sys.path.remove, str(FOLDER))
+        import night_triage
+        self.assertEqual(night_triage.AUDIT_LINE.pattern, workflow.AUDIT_LINE.pattern)
+
+    def claimed_hours_ago(self, hours):
+        """The job's run on a report another session claimed `hours` ago,
+        through the pack's own `sd task show --json`; whether it filed."""
+        from contextlib import closing
+        from unittest import mock
+        from sd_db import connect, writes
+        item = self.ingest()
+
+        # The pack writes the note and stamps it with its own clock and
+        # format (lead re-review: hand SQL bound a format of its own);
+        # only the clock is set back.
+        class Earlier(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.datetime.now(tz) - datetime.timedelta(hours=hours)
+
+        with closing(connect(self.database)) as connection, mock.patch.object(writes, "datetime", Earlier):
+            writes.add_note(connection, item, "comment", "claimed: triaging", session="abc")
+        result = self.run_job([{"id": item, "outcome": "filed", "summary": "s", "item": "sd:7"}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("readable timestamp", result.stderr)
+        return any("filed as sd:7" in n["body"] for n in self.state(item)["notes"]), result.stderr
+
+    # sd:9282 round 1: the stale-claim check reads `timestamp` from the
+    # pack's notes; these bind that name and its format to the pack.
+    def test_a_day_old_claim_in_the_pack_is_stale(self):
+        filed, stderr = self.claimed_hours_ago(48)
+        self.assertTrue(filed, stderr)
+
+    def test_an_hour_old_claim_in_the_pack_holds(self):
+        filed, stderr = self.claimed_hours_ago(1)
+        self.assertFalse(filed, stderr)
+        self.assertIn("is claimed; skipped", stderr)
+
     def test_a_report_waiting_on_a_dated_run_is_parked(self):
         # sd:9243: the pack parks a report through `sd task edit --park`.
         item = self.ingest()
-        (self.tmp / "reply").write_text(json.dumps({"alerts": [
+        result = self.run_job([
             {"id": item, "outcome": "waiting", "summary": "fixed by the weekly run",
-             "run": "job-a", "on": day(2)}]}))
-        env = dict(os.environ, HOME=str(self.tmp), PATH=f"{self.bin}:{os.environ['PATH']}",
-                   SD_PACK_ROOT=str(self.pack), TMPDIR=str(self.tmp), CLAUDE_ARGS=str(self.tmp / "args"),
-                   CLAUDE_STDIN=str(self.tmp / "prompt"), CLAUDE_REPLY=str(self.tmp / "reply"))
-        result = subprocess.run(["sh", str(self.tmp / "system/local-night-triage/night-triage.sh"), "run"],
-                                capture_output=True, text=True, env=env, timeout=120)
+             "run": "job-a", "on": day(2)}])
         self.assertEqual(result.returncode, 0, result.stderr)
         state = self.state(item)
         self.assertEqual(state["item"]["status"], "planning")

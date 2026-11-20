@@ -1,0 +1,22 @@
+# The pack's own merge lane, on the hub only (pack sd:9668). Its lane runs
+# review, `make check` and a merge, 30-60 minutes. Inside the shared
+# lane-run job it kept that run alive, and launchd starts no tick of a job
+# while a run lives, so every other lane waited up to 120 minutes.
+#
+# Install it in `<config>/cron-jobs/jobs/<hub>/` only once the pack has
+# pack sd:9668 (`sd-ship lane run --help` lists `--skip`), beside a copy of
+# lane-run.job whose command line reads, escaped as below:
+#
+#   JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd-ship\" lane run --hosted --skip \"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}\""
+#
+# so the shared run leaves this lane alone. A held runner lock makes a slot
+# exit at once, so the two jobs never run one lane twice. A plain `lane run`
+# refuses on a machine that does not host the lane, so a moved pack lane
+# stops here; move this job with it. A bulk move holds this job's lock too
+# (BULK_JOBS in machine-setup.sh, JOBS in local-maintenance/bulk_move.py).
+#
+# SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
+# after ~/.config/shell/env.sh; this file is sourced before env.sh is.
+JOB_SCHEDULE="*/5 * * * *"
+JOB_TIMEOUT="120m"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd-ship\" -C \"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}\" lane run"

@@ -3945,13 +3945,16 @@ def job_pid(pid_file, within=10):
 
 
 def group_alive(pgid):
-    """Whether any process of the group runs. EPERM is a group holding
-    only a zombie on macOS, which runs nothing."""
-    try:
-        os.killpg(pgid, 0)
-    except (ProcessLookupError, PermissionError):
-        return False
-    return True
+    """Whether any process of the group runs: a live member in `ps`. A
+    zombie runs nothing, but killpg 0 succeeds for it on Linux (and
+    answers EPERM on macOS), so the signal cannot tell (sd:9575)."""
+    out = subprocess.run(["ps", "-A", "-o", "pgid=,stat="],
+                         capture_output=True, text=True, check=True).stdout
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == str(pgid) and not fields[1].startswith("Z"):
+            return True
+    return False
 
 
 def group_gone(pgid, within=5):
@@ -3959,6 +3962,37 @@ def group_gone(pgid, within=5):
     while group_alive(pgid) and time.monotonic() < deadline:
         time.sleep(0.05)
     return not group_alive(pgid)
+
+
+class GroupAliveTest(unittest.TestCase):
+    """group_alive reads the group's live members, not killpg 0 (sd:9575).
+
+    REGRESSION. On Linux killpg 0 succeeds for a group that holds only a
+    zombie, so a job that had ended read as one outliving its run."""
+
+    def test_a_group_holding_only_a_zombie_runs_nothing(self):
+        child = subprocess.Popen(["sh", "-c", "exit 0"], start_new_session=True)
+        self.addCleanup(child.wait)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not ps_states(child.pid).startswith("Z"):
+            time.sleep(0.05)
+        self.assertTrue(ps_states(child.pid).startswith("Z"), "the child is a zombie")
+        # Linux's answer: killpg 0 finds the zombie and succeeds.
+        with unittest.mock.patch.object(os, "killpg", return_value=None):
+            self.assertFalse(group_alive(child.pid))
+
+    def test_a_group_with_a_running_member_is_alive(self):
+        child = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.assertTrue(group_alive(child.pid))
+
+
+def ps_states(pid):
+    """The `ps` state of pid, or "" once it is gone."""
+    out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                         capture_output=True, text=True).stdout
+    return out.strip()
 
 
 def started(log, before=0):

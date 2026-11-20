@@ -1,7 +1,7 @@
 # local-agent-meter
 
 Appends one agent-usage reading to a JSONL ledger every four hours: per provider its
-usage (claude from `cswap list --json`, codex from its session logs), each cswap
+usage (claude from `cswap list --json`, codex from `codex app-server`), each cswap
 account's seven-day use, and `rtk gain` for token-proxy savings. Two live readings
 feed the dashboard's Usage view and Health page; see "Live readings".
 
@@ -29,12 +29,15 @@ stays 0.
 
 Since sd:9256 the ledger's `usage` holds one reading per provider (`--providers`,
 default `claude,codex`), the shape the live rows have (below). Claude's window is
-the active cswap account's seven days; Codex's are the `rate_limits` of the newest
-`token_count` event in `$CODEX_HOME/sessions` (default `~/.codex`), with that event's
-time as `read_at`. Only the limits are copied: the event's session text is not. The
-`meter` rows come from these windows. A window whose reset is past is dropped
-from the reading and counted in its `stale`, on every path. Lines from before
-sd:9256 hold `codexbar` instead; `accounts` reads neither.
+the active cswap account's seven days. Codex's come live from `codex app-server`
+(`account/rateLimits/read`, the account's `codex` bucket), read at the run's time;
+`CODEX_BIN` names the binary, else `PATH` and Homebrew. With no binary or no answer
+in 20 s, they are the `rate_limits` of the newest `token_count` event in
+`$CODEX_HOME/sessions` (default `~/.codex`), with that event's time as `read_at`, and
+the live failure in `live_error` (sd:9655). Only the limits are copied: the event's
+session text is not. The `meter` rows come from these windows. A window whose
+reset is past is dropped from the reading and counted in its `stale`, on every
+path. Lines from before sd:9256 hold `codexbar` instead; `accounts` reads neither.
 
 cswap gives no five-hour number, so no `claude` 300-minute row is written after
 sd:9256. A `meter` row has no `removed` status: the last codexbar-era row stays in
@@ -106,6 +109,16 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   environment by name (`usage_sources.py` names each); no key, answer body or
   account field reaches a row. A failed read is `unknown`, never 0; a provider with
   no usage API is `no-source`.
+  `github` (the month's bill after discounts) and `copilot` read `GH_TOKEN`, which
+  needs the `user` scope. `copilot` holds the month's AI credits, in `credits`, and
+  their cost; a plan still on premium requests reads `requests` instead. Add
+  their lines to a list written before sd:9592. `anthropic-api` (the month's API
+  cost from the Admin API cost report) reads `ANTHROPIC_ADMIN_KEY` (sd:9594).
+  `huggingface` has no quota API: pass a ZeroGPU quota error,
+  `agent-meter.py usage --huggingface-error "<text>"`, and its row holds the
+  seconds left (`balance`, unit `seconds`) and `read_at`, `source` `error`.
+  A live run leaves that row standing until the next one; a text with no
+  `(<n>s requested vs. <n>s left)` writes nothing and exits 1 (sd:9586).
 - `services` (sd:9259): setting `dashboard.status_services`, one
   `<name> <kind> <url> [provider[,provider]]` line each; kinds `statuspage`
   (summary.json), `slack` (slack-status.com v2.0.0), `google-incidents`

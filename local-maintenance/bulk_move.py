@@ -42,7 +42,7 @@ BUILD_OUTPUT = ("target", "node_modules")
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The cron jobs that start build, draft and lane runs: machine-setup's
 # BULK_JOBS, which a test keeps equal.
-JOBS = ("build-dispatch", "lane-run", "night-build")
+JOBS = ("build-dispatch", "lane-run", "lane-run-pack", "night-build")
 
 
 class Refused(Exception):

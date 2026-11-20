@@ -9,11 +9,11 @@
 # whose runner lock is held is skipped and never waited for. The job drains
 # each queue and exits; it is not a poller, and an empty queue exits 0 at once.
 #
-# The run starts no lane at its 40-minute budget, hands off each lane
-# still running and exits (pack sd:9332). launchd runs one instance of a
-# job at a time, so the next slot starts a fresh run; it skips the lanes
-# a handed-off child holds. Each handed-off child TERMs itself at the
-# run's TERM point.
+# launchd runs one instance of a job at a time, so one long lane keeps the
+# run alive and the other lanes wait for it. Give such a lane its own job:
+# on the hub, the pack lane runs from lane-run-pack.job, and the hub's copy
+# of this file adds `--skip` with the pack path (pack sd:9668); that job's
+# comments give the escaped command line and when to install it.
 #
 # The wrapper's default grace, 30 s (CRON_JOBS_TIMEOUT_GRACE), lets a
 # lane's TERM unwind (about 5 s per ship group) end before its KILL,
@@ -22,8 +22,7 @@
 # not a line here, so every lane host's installed copy gets it.
 #
 # JOB_TIMEOUT is above one lane run on purpose (review, `make check` and a
-# merge take 30-60 minutes): a run still waits for a lane it cannot hand
-# off, and a limit below that could stop a merge part way.
+# merge take 30-60 minutes): a limit below that could stop a merge part way.
 #
 # SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
 # after ~/.config/shell/env.sh; this file is sourced before env.sh is.
