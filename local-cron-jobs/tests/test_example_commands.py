@@ -80,12 +80,30 @@ class LaneRunJobTest(unittest.TestCase):
         for retired in ("-C", "--satellite-only", "change-me"):
             self.assertNotIn(retired, text)
 
-    def test_the_comments_describe_the_hand_off_at_the_budget(self):
-        # A hosted run hands off lanes at its budget and exits (pack sd:9332).
+    def test_the_comments_name_the_own_job_for_a_long_lane(self):
+        # pack sd:9332's hand-off was dropped; a long lane gets its own job (pack sd:9668).
         notes = self.JOB.read_text().split("JOB_SCHEDULE=", 1)[0]
-        self.assertIn("pack sd:9332", notes)
-        for stale in ("one after another", "logs `skipped`"):
+        self.assertIn("pack sd:9668", notes)
+        self.assertIn("lane-run-pack.job", notes)
+        for stale in ("one after another", "logs `skipped`", "sd:9332", "hands off"):
             self.assertNotIn(stale, notes)
+
+    def test_the_pack_job_runs_only_the_pack_lane(self):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        pack, marker = fx.tmp / "custom-pack", fx.tmp / "pack-ran"
+        ship = pack / "bin" / "sd-ship"
+        ship.parent.mkdir(parents=True)
+        ship.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$PACK_MARKER"\n')
+        ship.chmod(0o755)
+        env_sh = fx.home / ".config" / "shell" / "env.sh"
+        env_sh.parent.mkdir(parents=True)
+        env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{marker}"\n')
+        job = EXAMPLES / "lane-run-pack.job"
+        fx.write_job(job.stem, job.read_text())
+        result = fx.exec_job(job.stem)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(marker.read_text().splitlines(), [f"-C {pack} lane run"])
 
     def test_the_job_runs_the_pack_sd_ship_with_exactly_those_words(self):
         fx = Fixture()
