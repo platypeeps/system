@@ -91,7 +91,8 @@ PREMIUM = {"product": "Copilot", "sku": "Copilot Premium Request", "model": "m-1
 
 ANSWERS = {
     "openrouter": ("OPENROUTER_API_KEY",
-                   {"data": {"usage_monthly": 12.5, "limit": 50, "limit_remaining": 37.5}},
+                   {"data": {"usage_monthly": 12.5, "limit": 50, "limit_remaining": 37.5,
+                             "limit_reset": "monthly"}},
                    {"spend": {"amount": 12.5, "unit": "usd", "period": "month",
                               "resets_at": NEXT, "limit": 50.0},
                     "balance": {"amount": 37.5, "unit": "usd"}}),
@@ -619,6 +620,18 @@ class Readers(unittest.TestCase):
         self.assertEqual(got["spend"]["limit"], 9.0)
         got = usage_sources.read_provider("openrouter", {var: SECRET}, answering(unset), NOW)
         self.assertNotIn("limit", got["spend"])
+        # Review on sd:9701: a key limit that resets daily, weekly or
+        # never is no cap on the month's spend.
+        for reset in ("daily", "weekly", None, "yearly", 5):
+            with self.subTest(reset=reset):
+                other = put(answer, ("data", "limit_reset"), reset)
+                got = usage_sources.read_provider("openrouter", {var: SECRET},
+                                                  answering(other), NOW)
+                self.assertEqual(got["status"], "ok", got)
+                self.assertNotIn("limit", got["spend"])
+                got = usage_sources.read_provider("openrouter", {var: SECRET},
+                                                  answering(other), NOW, cap=9.0)
+                self.assertEqual(got["spend"]["limit"], 9.0)
         var, answer, _ = ANSWERS["baseten"]
         got = usage_sources.read_provider("baseten", {var: SECRET}, answering(answer), NOW, cap=250.0)
         self.assertEqual(got["spend"], {"amount": 244.0, "unit": "usd", "period": "month",

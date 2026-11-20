@@ -251,7 +251,9 @@ def read_openrouter(env, fetch, now):
         raise ReadFailed("no data object")
     out = {"spend": {"amount": number(data.get("usage_monthly"), "usage_monthly"),
                      "unit": "usd", "period": "month"}}
-    if data.get("limit") is not None:
+    # The key's limit caps the month's spend only when it resets monthly;
+    # a daily, weekly or lifetime limit is another counter (sd:9701 review).
+    if data.get("limit") is not None and data.get("limit_reset") == "monthly":
         out["spend"]["limit"] = number(data["limit"], "limit")
     if data.get("limit_remaining") is not None:
         out["balance"] = {"amount": number(data["limit_remaining"], "limit_remaining"),
