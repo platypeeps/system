@@ -8543,15 +8543,18 @@ for d in stc.cron_job_dirs():
         break' "$1") || { echo "job $1: its job folders could not be read" >&2; return 1; }
   [ -n "$jd_file" ] || return 0
   # The job's ROOT is local-cron-jobs, as cron-jobs.sh sets it.
+  # The child checks for a newline, exit 3, before `$()` strips a trailing
+  # one: stripped, the name points at another folder.
+  jd_rc=0
   # shellcheck disable=SC2016 # the child expands its own arguments
   jd_value=$(ROOT="$ROOT/local-cron-jobs" sh -ec 'eval "$2=\"\""; . "$1" >/dev/null 2>&1 </dev/null
-    eval "printf \"%s\n\" \"\$$2\""' sh "$jd_file" "$2") ||
-    { echo "$jd_file: does not source to its end; $2 is not known" >&2; return 1; }
-  case "$jd_value" in
-    *'
-'*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; return 1 ;;
+    eval "v=\$$2"; case "$v" in *"
+"*) exit 3 ;; esac; printf "%s\n" "$v"' sh "$jd_file" "$2") || jd_rc=$?
+  case $jd_rc in
+    0) printf '%s\n' "$jd_value" ;;
+    3) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; return 1 ;;
+    *) echo "$jd_file: does not source to its end; $2 is not known" >&2; return 1 ;;
   esac
-  printf '%s\n' "$jd_value"
 }
 hourly_destination() { job_destination sd-db-backup-hourly SD_DB_BACKUP_HOURLY_DESTINATION; }
 

@@ -490,6 +490,24 @@ class Undo(PromoteCase):
         self.assertTrue(hourly.exists())
         self.assertTrue(self.nightly.exists())
 
+    def test_a_root_ending_in_a_newline_stops_the_run_before_any_delete(self):
+        """$() strips a trailing newline, so the check saw `hourly` and
+        the run would delete that other folder: both readers."""
+        for name, at in (("SD_DB_BACKUP_HOURLY_DESTINATION", self.hourly_at),
+                         ("SD_DB_BACKUP_DESTINATION", self.nightly_at)):
+            with self.subTest(name=name):
+                self.setUp()
+                root = self.fixture.home / f"hub-role/{name}\n"
+                snapshot(root / PROMOTED)
+                other = self.fixture.home / f"hub-role/{name}"
+                snapshot(other / PROMOTED)
+                at(root)
+                self.handed_back()
+                result = self.run_undo("--apply", expect=1)
+                self.assertIn(f"{name} holds a newline", result.stderr)
+                self.assertTrue(other.exists(), "the stripped newline deleted another folder")
+                self.assertTrue(root.exists())
+
     def test_a_root_that_leads_to_a_folder_ending_in_a_newline_is_left(self):
         """codex: $() strips a trailing newline from pwd -P, which then names another folder."""
         real = self.fixture.home / "records\n"
