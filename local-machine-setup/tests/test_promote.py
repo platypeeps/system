@@ -1399,14 +1399,15 @@ class StandbyStatus(PromoteCase):
         self.assert_full_block(self.run_status())
 
     def test_an_hourly_job_that_cannot_be_read_checks_the_full_block(self):
-        """An hourly job file that does not source may name a local root;
+        """An hourly job file that does not source to its end, or exits 0
+        before the reader's check, may name a local root;
         an empty value read from it is no proof that it does not. bash 5
         goes on after a failed `.` where set -e is off, so the script runs
         under it too, not only under /bin/sh."""
         hourly = self.jobs / "sd-db-backup-hourly.job"
         root = 'SD_DB_BACKUP_HOURLY_DESTINATION="$HOME/sd-backups-hourly"\n'
         shells = sorted({"/bin/sh"} | {p for p in map(shutil.which, ("bash", "dash")) if p})
-        for case in ("unreadable", "failed command"):
+        for case in ("unreadable", "failed command", "early exit 0"):
             for sh in shells:
                 with self.subTest(case=case, sh=sh):
                     if hourly.exists():
@@ -1416,6 +1417,10 @@ class StandbyStatus(PromoteCase):
                     self.no_standby()
                     if case == "failed command":
                         hourly.write_text(self.JOB + 'SD_DB_BACKUP_HOURLY_DESTINATION="$(false)"\n')
+                    elif case == "early exit 0":
+                        # Ends the reader's child with 0 before its check:
+                        # no proof the file names no root.
+                        hourly.write_text(self.JOB + "exit 0\n" + root)
                     else:
                         hourly.write_text(self.JOB + root)
                         hourly.chmod(0)

@@ -508,6 +508,22 @@ class Undo(PromoteCase):
                 self.assertTrue(other.exists(), "the stripped newline deleted another folder")
                 self.assertTrue(root.exists())
 
+    def test_a_job_that_exits_before_its_root_stops_the_run_before_any_delete(self):
+        """An `exit 0` before the root reads as a job with no root, so the
+        undo would leave that root out of its proof: both readers."""
+        for name, job in (("SD_DB_BACKUP_HOURLY_DESTINATION", "sd-db-backup-hourly"),
+                          ("SD_DB_BACKUP_DESTINATION", "sd-db-backup")):
+            with self.subTest(name=name):
+                self.setUp()
+                root = self.fixture.home / f"hub-role/{job}"
+                snapshot(root / PROMOTED)
+                (self.config / f"cron-jobs/jobs/{job}.job").write_text(
+                    f'JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\nexit 0\n{name}="{root}"\n')
+                self.handed_back()
+                result = self.run_undo("--apply", expect=1)
+                self.assertIn(f"{name} is not known", result.stderr)
+                self.assertTrue(root.exists())
+
     def test_a_root_that_leads_to_a_folder_ending_in_a_newline_is_left(self):
         """codex: $() strips a trailing newline from pwd -P, which then names another folder."""
         real = self.fixture.home / "records\n"

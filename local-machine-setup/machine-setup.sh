@@ -8544,15 +8544,17 @@ for d in stc.cron_job_dirs():
   [ -n "$jd_file" ] || return 0
   # The job's ROOT is local-cron-jobs, as cron-jobs.sh sets it.
   # The child checks for a newline, exit 3, before `$()` strips a trailing
-  # one: stripped, the name points at another folder.
+  # one: stripped, the name points at another folder. It prints `reached:`
+  # only past that check: a job that exits 0 early prints nothing, which
+  # must not read as a job that names no root.
   jd_rc=0
   # shellcheck disable=SC2016 # the child expands its own arguments
   jd_value=$(ROOT="$ROOT/local-cron-jobs" sh -ec 'eval "$2=\"\""; . "$1" >/dev/null 2>&1 </dev/null
     eval "v=\$$2"; case "$v" in *"
-"*) exit 3 ;; esac; printf "%s\n" "$v"' sh "$jd_file" "$2") || jd_rc=$?
-  case $jd_rc in
-    0) printf '%s\n' "$jd_value" ;;
-    3) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; return 1 ;;
+"*) exit 3 ;; esac; printf "reached:%s" "$v"' sh "$jd_file" "$2") || jd_rc=$?
+  case $jd_rc:$jd_value in
+    0:reached:*) printf '%s\n' "${jd_value#reached:}" ;;
+    3:*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; return 1 ;;
     *) echo "$jd_file: does not source to its end; $2 is not known" >&2; return 1 ;;
   esac
 }
