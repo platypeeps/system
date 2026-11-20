@@ -243,7 +243,14 @@ signal that ends the runner while the job runs, such as launchd's TERM at
 shutdown, is named as the cause in the log, the report and the push
 (`interrupted by a signal to the runner`), and the grade stays the job's.
 The wrapper sends the job TERM and waits `CRON_JOBS_TIMEOUT_GRACE`
-seconds for it; a job still running then is named in the log (sd:7105). The
+seconds for it (default 30, so a lane run's unwind ends first; a job
+file may set its own). Each plist's `ExitTimeOut` is that grace plus
+30 s, so launchd's KILL waits for the outcome; a job still running then
+is named in the log (sd:7105). A grace raised after install is cut to
+fit the installed `ExitTimeOut` until a reinstall (10 s under a plist
+from before that key), for that shutdown wait only: a `JOB_TIMEOUT`
+keeps the job's own grace. The run's retry record
+(`.<job>.reporting.<run>`) is on disk before its report starts. The
 wrapper pushes through `local-notify` with `-c ntfy -p high` and no `-b`,
 so it reaches the phone where `NTFY_TOPIC` is set in local-notify's `.env`,
 and only an ntfy delivery counts as sent. The

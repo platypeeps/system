@@ -91,9 +91,14 @@ class KevCase(unittest.TestCase):
         self.path = f"{stubs}:/usr/bin:/bin"
         self.port = free_port()
 
-    def installed(self):
-        (self.checkout / ".git").mkdir(parents=True)
-        (self.checkout / "pyproject.toml").write_text("")
+    def installed(self, checkout=None):
+        checkout = checkout or self.checkout
+        (checkout / ".git").mkdir(parents=True)
+        (checkout / "pyproject.toml").write_text("")
+        python = checkout / ".venv" / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        python.write_text(STUB)
+        python.chmod(0o755)
 
     def serve(self, status=200, body=None):
         handler = type("Handler", (Answer,), {"status": status, "seen": []})
@@ -139,11 +144,10 @@ class TheEntrypoint(KevCase):
 class TheDefaultCheckout(KevCase):
     def test_unset_kev_dir_runs_the_checkout_beside_the_wrapper(self):
         beside = self.folder / "kev"
-        beside.mkdir()
-        (beside / "pyproject.toml").write_text("")
+        self.installed(beside)
         result = self.run_script("serve", env={"KEV_DIR": None})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"uv [{beside}] run", self.calls.read_text())
+        self.assertIn(f"python [{beside}] -m kev.serve", self.calls.read_text())
 
 
 class TheStatus(KevCase):
@@ -309,8 +313,23 @@ class TheInstallAndServe(KevCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(
             self.calls.read_text().strip(),
-            f"uv [{self.checkout}] run --extra serve python -m kev.serve "
+            f"python [{self.checkout}] -m kev.serve "
             f"--run jaredpalmer/kev-4b@v1.0 --host 127.0.0.1 --port {self.port}")
+
+    def test_serve_runs_no_uv_process(self):
+        """REGRESSION (sd:9556). `uv run` stayed alive as long as kev, so
+        every uv-prune had to boot kev out and kev reloaded its model.
+        serve execs the venv's python: no uv process outlives the start."""
+        self.installed()
+        self.run_script("serve")
+        self.assertNotIn("uv ", self.calls.read_text())
+
+    def test_serve_needs_the_installed_venv(self):
+        (self.checkout / ".git").mkdir(parents=True)
+        (self.checkout / "pyproject.toml").write_text("")
+        result = self.run_script("serve")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("kev.sh install", result.stderr)
 
     def test_serve_takes_another_checkpoint(self):
         self.installed()

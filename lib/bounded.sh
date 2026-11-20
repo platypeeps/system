@@ -18,10 +18,10 @@
 # An INT, TERM or HUP to this process ends the command the same way: the
 # signal goes on to the group, KILL follows after the grace, and the exit is
 # 128 plus the signal. Passing the signal on alone was not enough: cron-jobs
-# TERMs a job's group at its limit and KILLs it after its own grace (10 s by
+# TERMs a job's group at its limit and KILLs it after its own grace (30 s by
 # default), and that KILL never reaches a group of its own, so a command that
 # ignored the TERM outlived the job. The default grace stays well under that
-# 10 s; lib/tests/test_bounded.py reads cron-jobs' default to hold it there.
+# 30 s; lib/tests/test_bounded.py reads cron-jobs' default to hold it there.
 ST_BOUNDED_DEFAULT_GRACE=5
 # A sandbox can deny setpgid (sd:7901). The command would then stay in the
 # caller's group, and no signal would reach what it forks: the child refuses

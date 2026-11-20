@@ -15,6 +15,12 @@
 # of this file adds `--skip` with the pack path (pack sd:9668); that job's
 # comments give the escaped command line and when to install it.
 #
+# The wrapper's default grace, 30 s (CRON_JOBS_TIMEOUT_GRACE), lets a
+# lane's TERM unwind (about 5 s per ship group) end before its KILL,
+# with room for a gate that ignores TERM; a KILL before it ends leaves
+# sd-ship sessions with no record (pack sd:9392). It is the default,
+# not a line here, so every lane host's installed copy gets it.
+#
 # JOB_TIMEOUT is above one lane run on purpose (review, `make check` and a
 # merge take 30-60 minutes): a limit below that could stop a merge part way.
 #

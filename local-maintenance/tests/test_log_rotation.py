@@ -29,11 +29,26 @@ class LogRotationTest(Harness):
         self.assertEqual(b"", self.log.read_bytes())
 
     def test_a_pending_report_defers_the_rotation(self):
-        (self.logs / ".demo.unreported").write_text("0 run-1 a b 7\n")
+        # `.reporting.<run>` is the record of a run killed while it filed its
+        # report (build 1232 round 5); the next run moves it to
+        # `.unreported`. Both point into the log.
+        for name in (".demo.unreported", ".demo.reporting.20260101T000000Z-1"):
+            with self.subTest(name):
+                record = self.logs / name
+                record.write_text("0 run-1 a b 7\n")
+                run = self.rotate()
+                record.unlink()
+                self.assertEqual(self.body, self.log.read_bytes())
+                self.assertIn(f"- rotation of {self.log} deferred: its job", run.stdout)
+                self.assertEqual(self.attention(run), [])
+
+    def test_a_dotted_job_s_files_do_not_defer_the_rotation(self):
+        # Build 1232 round 8: `.demo.reporting.*` matched the lock of a job
+        # named `demo.reporting.worker`, and its presence deferred `demo`.
+        (self.logs / ".demo.reporting.worker.flock").write_bytes(b"")
         run = self.rotate()
-        self.assertEqual(self.body, self.log.read_bytes())
-        self.assertIn(f"- rotation of {self.log} deferred: its job", run.stdout)
-        self.assertEqual(self.attention(run), [])
+        self.assertIn(f"- rotated {self.log}", run.stdout)
+        self.assertEqual(b"", self.log.read_bytes())
 
     def test_a_running_job_defers_the_rotation(self):
         lock = self.logs / ".demo.flock"

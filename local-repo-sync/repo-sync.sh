@@ -1877,7 +1877,7 @@ refresh_answer() {
     # of its own that this bound's KILL does not reach. So this bound waits
     # longer than theirs before its KILL: an inner bound ends its group
     # first, and no step outlives the update holding the drain's lane locks.
-    # Still under cron-jobs' 10 s grace at the job's limit. The update runs
+    # Still under cron-jobs' 30 s grace at the job's limit. The update runs
     # with the default grace, not this one.
     # shellcheck disable=SC2034 # read by st_bounded in this subshell
     (ST_BOUNDED_GRACE=$((ST_BOUNDED_DEFAULT_GRACE + 3))
