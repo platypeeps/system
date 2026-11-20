@@ -165,6 +165,44 @@ class ClaudeSettingsBaseline(SyntheticHome):
                                 input="{}", capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0)
 
+    def test_the_bare_rtk_hook_is_guarded_off_in_builder_sessions(self):
+        """sd:9714: rtk rewrites a Bash line after auto mode reviewed it,
+        and the denial ends a headless build; builders run without it."""
+        bare = {"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]}
+        self.settings.write_text(json.dumps({"hooks": {"PreToolUse": [bare]}}) + "\n")
+
+        self.assertIn("STALE   settings.json hooks.PreToolUse rtk hook claude (unguarded)",
+                      self.run_tooling())
+        self.run_tooling("--apply")
+
+        [rtk] = json.loads(self.settings.read_text())["hooks"]["PreToolUse"][:1]
+        self.assertEqual(rtk["hooks"], [{"type": "command",
+                                         "command": '[ -n "$SD_BUILD_RUN" ] || rtk hook claude'}])
+        self.assertIn("ok      settings.json baseline", self.run_tooling("--apply"))
+
+    def test_the_guarded_rtk_hook_is_left_alone_and_reads_ok(self):
+        guarded = '[ -n "$SD_BUILD_RUN" ] || rtk hook claude'
+        self.settings.write_text(json.dumps({"hooks": {"PreToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": guarded}]}]}}) + "\n")
+        write_exec(self.stubs / "rtk", "#!/bin/sh\necho rtk-ran \"$@\"\n")
+        (self.home / ".gemini/hooks").mkdir(parents=True)
+        (self.home / ".gemini/hooks/rtk-hook-gemini.sh").write_text("")
+
+        out = self.run_tooling("--apply")
+
+        self.assertIn("ok      rtk hook present in ~/.claude/settings.json", out)
+        self.assertNotIn("rtk-ran", out)
+        self.assertNotIn("rtk hook claude", out)
+        self.assertEqual(json.loads(self.settings.read_text())["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+                         guarded)
+
+    def test_the_guarded_rtk_hook_skips_rtk_only_in_a_build_run(self):
+        guarded = '[ -n "$SD_BUILD_RUN" ] || echo rewritten'
+        for env, out in (({"SD_BUILD_RUN": "e3cb"}, ""), ({}, "rewritten\n")):
+            result = subprocess.run(["sh", "-c", guarded], env={"PATH": "/usr/bin:/bin", **env},
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual((result.returncode, result.stdout), (0, out))
+
     def test_a_fresh_baseline_turns_off_the_background_updater(self):
         """sd:3033: Claude Code updates in the weekly upgrade only."""
         self.settings.write_text("{}\n")
