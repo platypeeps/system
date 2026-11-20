@@ -764,7 +764,8 @@ queue_append() { # file, newline-terminated text
   (
     if [ -s "$1" ]; then
       cat "$1" || exit 1
-      [ -z "$(tail -c 1 "$1")" ] || printf '\n' || exit 1
+      last="$(tail -c 1 "$1")" || exit 1
+      [ -z "$last" ] || printf '\n' || exit 1
     fi
     printf '%s' "$2"
   ) > "$tmp" && mv -f "$tmp" "$1" || { rm -f "$tmp"; return 1; }
@@ -805,7 +806,7 @@ replay_unrecorded() { # job
   # first that cannot move stops the rest, which keeps that order.
   # Only a whole run id after the prefix is this job's: a job named
   # `<job>.reporting.x` has files under the same glob.
-  local inflight name
+  local inflight name text
   for inflight in "$LOG_DIR/.$1.reporting".*; do
     [ -f "$inflight" ] || continue
     name="${inflight#"$LOG_DIR/.$1.reporting."}"
@@ -813,7 +814,10 @@ replay_unrecorded() { # job
     # of this job is left.
     case "$name" in *.tmp) ! is_run_id "${name%.tmp}" || rm -f "$inflight"; continue ;; esac
     is_run_id "$name" || continue
-    queue_append "$pending" "$(cat "$inflight")
+    # A failed read moves nothing: its record stays for the next run.
+    text="$(cat "$inflight")" || break
+    [ -n "$text" ] || { rm -f "$inflight"; continue; }
+    queue_append "$pending" "$text
 " && rm -f "$inflight" || break
   done
   [ -s "$pending" ] || { rm -f "$pending"; return 0; }
@@ -848,7 +852,8 @@ drop_carry() { # job
   local pending="$LOG_DIR/.$1.unreported" keep
   [ -n "$REPLAY_CARRY" ] && [ -f "$pending" ] || return 0
   REPLAY_CARRY=""
-  keep="$(grep ' ' "$pending" || true)"
+  # grep exits 1 for no full line; any other failure keeps the queue.
+  keep="$(grep ' ' "$pending")" || [ $? -eq 1 ] || return 0
   if [ -z "$keep" ]; then rm -f "$pending"; return 0; fi
   { printf '%s\n' "$keep" > "$pending.tmp" && mv -f "$pending.tmp" "$pending"; } || rm -f "$pending.tmp"
 }

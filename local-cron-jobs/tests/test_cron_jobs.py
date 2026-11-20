@@ -2459,6 +2459,64 @@ class RunReportTest(unittest.TestCase):
         self.assertEqual(held.read_text(), "0 20260101T000000Z-1 a b 7\n")
         self.assertEqual(len(pending.read_text().splitlines()), 2, pending.read_text())
 
+    def shim(self, tool, fails_when):
+        """A PATH whose `tool` exits 2 when its arguments match the case
+        pattern `fails_when`, and runs the real one otherwise."""
+        bin_dir = self.fx.tmp / f"shim-{tool}"
+        bin_dir.mkdir()
+        real = shutil.which(tool)
+        script = bin_dir / tool
+        script.write_text(f'#!/bin/sh\ncase " $* " in {fails_when}) exit 2 ;; esac\n'
+                          f'exec {real} "$@"\n')
+        script.chmod(0o755)
+        return self.fx.path(bin_dir)
+
+    def test_an_unreadable_retry_record_is_not_moved(self):
+        """Round 9 (class: a failed read of a retry record ignored before
+        the record is rewritten or removed). The replay appended the
+        output of a failed `cat`, an empty line, and deleted the record."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        record = logs / ".demo.reporting.20260101T000000Z-1"
+        record.write_text("0 20260101T000000Z-1 a b 7\n")
+        record.chmod(0)
+        self.addCleanup(lambda: record.exists() and record.chmod(0o600))
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.exec_job()
+        self.assertTrue(record.exists(), "the unread record was removed")
+        record.chmod(0o600)
+        self.assertEqual(record.read_text(), "0 20260101T000000Z-1 a b 7\n")
+        pending = logs / ".demo.unreported"
+        lines = pending.read_text().splitlines() if pending.exists() else []
+        self.assertNotIn("", lines)
+
+    def test_a_failed_tail_does_not_join_two_records(self):
+        """Round 9, same class. queue_append's `tail -c 1` decides the
+        missing newline; a failed tail read as "ends in a newline", and
+        the append joined two runs into one line."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("0 20260101T000000Z-1 a b 7")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        self.exec_job(FAKE_SD_EXIT="3", PATH=self.shim("tail", "*' -c 1 '*"))
+        lines = pending.read_text().splitlines()
+        self.assertEqual(lines[0], "0 20260101T000000Z-1 a b 7", lines)
+        for line in lines:
+            self.assertEqual(len(line.split()), 5, line)
+
+    def test_a_failed_grep_keeps_the_queue(self):
+        """Round 9, same class. drop_carry took grep's error (exit 2) for
+        "no full line left" and deleted the queue with its records."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("12\n0 20260101T000000Z-1 a b 7\n")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        self.exec_job(FAKE_SD_EXIT="3", PATH=self.shim("grep", "*.unreported*"))
+        self.assertTrue(pending.exists(), "grep failed and the queue went")
+        self.assertIn("0 20260101T000000Z-1 a b 7", pending.read_text().splitlines())
+
     def test_a_partial_record_does_not_block_the_queue(self):
         """Round 8. A record with a run id and missing fields was filed,
         ingest refused it, and the replay stopped before every later run.
