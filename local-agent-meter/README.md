@@ -103,9 +103,11 @@ one row with status `removed`, once; a reader skips a removed key. A refused lin
 an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open exits 1. Neither writes the ledger.
 
 - `usage` (sd:9256): setting `dashboard.usage_providers`, one provider per line, `#`
-  comments. Row `usage:<provider>`: `status` (`ok`, `unknown`, `no-source`, `removed`), `source`,
+  comments; a line may add `cap=N`, N a positive decimal in the spend's unit: the
+  spend's limit when the provider's answer has none (Baseten's budget has no read API). Row `usage:<provider>`: `status` (`ok`, `unknown`, `no-source`, `removed`), `source`,
   `read_at`, `windows` (name, used percent, minutes, reset), `balance` and `spend`
-  (amount and unit), `accounts` for claude, `error` when unknown. Keys come from the
+  (amount and unit; `resets_at`, the cycle end: the next UTC month start for a
+  month, OpenWhispr's period end; `limit`, OpenRouter's key limit, else the cap), `accounts` for claude, `error` when unknown. Keys come from the
   environment by name (`usage_sources.py` names each); no key, answer body or
   account field reaches a row. A failed read is `unknown`, never 0; a provider with
   no usage API is `no-source`.
