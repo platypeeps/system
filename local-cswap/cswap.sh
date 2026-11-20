@@ -284,7 +284,14 @@ else:
     rules = [i for i in below if rule(lines[i]) and coloured(i)]
     prompts = [i for i in below if lines[i].strip().startswith("❯")]
     one_box = len(rules) == 2 and len(prompts) == 1 and rules[0] + 1 == prompts[0] == rules[1] - 1
-    typed = undimmed(raw[prompts[0]], False)[0].strip().removeprefix("❯") if one_box else ""
+    # Empty is a match, never what is left after deleting (sd:9427 class
+    # pass): the line is exactly ❯ and its NBSP, plus at most dim text (a
+    # prompt suggestion). No strip, as a draft can be blanks of any kind,
+    # and no control sequence but colour, as a cursor move can stand for
+    # typed blanks.
+    line = raw[prompts[0]] if one_box else ""
+    empty = (one_box and other.search(sgr.sub("", line)) is None
+             and undimmed(line, False)[0] == "❯\u00a0")
     if marks and marks[-1][1] == "active":
         print("wait: its latest Remote Control banner is active, maybe from the old account")
     elif not marks:
@@ -293,7 +300,7 @@ else:
         print("wait: no input box on its screen")
     elif not one_box:
         print("wait: its input box is not one empty line")
-    elif typed.strip():
+    elif not empty:
         print("wait: its input box holds text")
     else:
         print("send")

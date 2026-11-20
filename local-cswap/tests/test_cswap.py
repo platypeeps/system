@@ -703,6 +703,24 @@ class RemoteControlReconnects(Machine):
             "draft-fake-banner": (f"{DROP_LINE}\n" + box(
                 empty + "first line", "\u23fa Remote Control disconnected \u2014 x",
                 TYPED_RULE, "\u276f"), False),
+            # Class pass (sd:9427 review round 4): the check proved the
+            # box empty by deleting what it read and finding nothing left.
+            # Each deletion that can hide a draft is one row; the box is
+            # empty only when the line is exactly ❯ and its NBSP, plus at
+            # most a dim suggestion.
+            # 1. strip(): a whitespace-only draft, ASCII or Unicode.
+            "nbsp-draft": (f"{DROP_LINE}\n" + box(empty + "\u00a0"), False),
+            "space-draft": (f"{DROP_LINE}\n" + box(empty + " "), False),
+            "tab-draft": (f"{DROP_LINE}\n" + box(empty + "\t"), False),
+            "ideographic-space-draft": (f"{DROP_LINE}\n" + box(empty + "\u3000"), False),
+            # 2. plain(): a control sequence that is no colour, such as a
+            #    cursor move that stands for typed blanks.
+            "cursor-forward-draft": (f"{DROP_LINE}\n" + box(empty + "\x1b[3C"), False),
+            "erase-after-separator": (f"{DROP_LINE}\n" + box(empty + "x\x1b[1D\x1b[K"), False),
+            # 3. undimmed(): typed blanks before the dim suggestion.
+            "space-then-dim": (f"{DROP_LINE}\n" + box(empty + " \x1b[2mhint\x1b[0m"), False),
+            # The live shape of a suggestion (read 2026-11-20) still sends.
+            "live-suggestion": (f"{DROP_LINE}\n" + box(empty + "\x1b[0m\x1b[2mwalk me\x1b[0m"), True),
             "draft-fake-banner-flush": (f"{DROP_LINE}\n" + box(
                 empty + "first line", "\u23fa Remote Control disconnected \u2014 x",
                 TYPED_RULE, "\u276f\u00a0"), False),
@@ -720,7 +738,7 @@ class RemoteControlReconnects(Machine):
         # turn started, another session, a reconnect. None gets keys; each
         # stays owed. The unchanged pane gets /rc.
         self.publish(THREE)
-        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"screen": DROPPED.replace("\u276f\u00a0", "\u276f typed")}],
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"screen": DROPPED.replace("\u276f\u00a0", "\u276f\u00a0\u00a0")}],
                    ["w1:p2", "claude", "idle", "s2", DROPPED, {"status": "working"}],
                    ["w1:p3", "claude", "idle", "s3", DROPPED, {"session": "s9"}],
                    ["w1:p4", "claude", "idle", "s4", DROPPED, {"screen": CONNECTED}],
