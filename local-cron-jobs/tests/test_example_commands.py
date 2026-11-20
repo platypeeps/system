@@ -93,15 +93,30 @@ class LaneRunJobTest(unittest.TestCase):
         line = next(text.lstrip("# ") for text in (EXAMPLES / "lane-run-pack.job").read_text().splitlines()
                     if text.lstrip("# ").startswith("JOB_COMMAND="))
         job = self.JOB.read_text().split("JOB_COMMAND=", 1)[0] + line + "\n"
-        self.assertEqual(self.run_with_recorder("lane-run", job), "lane run --hosted --skip {pack}")
+        self.assertEqual(self.run_with_recorder("lane-run", job),
+                         ["lane", "run", "--hosted", "--skip", "{pack}"])
+
+    def test_the_pack_job_runs_only_the_pack_lane(self):
+        job = EXAMPLES / "lane-run-pack.job"
+        self.assertEqual(self.run_with_recorder(job.stem, job.read_text()),
+                         ["-C", "{pack}", "lane", "run"])
+
+    def test_the_job_runs_the_pack_sd_ship_with_exactly_those_words(self):
+        self.assertEqual(self.run_with_recorder(self.JOB.stem, self.JOB.read_text()),
+                         ["lane", "run", "--hosted"])
 
     def run_with_recorder(self, stem, text):
+        """Run the job with a recording sd-ship; return its arguments, one each.
+
+        The pack path holds a space and the recorder writes one line per
+        argument, so a lost quote splits the path and fails (sd:9671).
+        """
         fx = Fixture()
         self.addCleanup(fx.destroy)
-        pack, marker = fx.tmp / "custom-pack", fx.tmp / "pack-ran"
+        pack, marker = fx.tmp / "custom pack", fx.tmp / "pack-ran"
         ship = pack / "bin" / "sd-ship"
         ship.parent.mkdir(parents=True)
-        ship.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$PACK_MARKER"\n')
+        ship.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$PACK_MARKER"\n')
         ship.chmod(0o755)
         env_sh = fx.home / ".config" / "shell" / "env.sh"
         env_sh.parent.mkdir(parents=True)
@@ -109,40 +124,7 @@ class LaneRunJobTest(unittest.TestCase):
         fx.write_job(stem, text)
         result = fx.exec_job(stem)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        return marker.read_text().strip().replace(str(pack), "{pack}")
-
-    def test_the_pack_job_runs_only_the_pack_lane(self):
-        fx = Fixture()
-        self.addCleanup(fx.destroy)
-        pack, marker = fx.tmp / "custom-pack", fx.tmp / "pack-ran"
-        ship = pack / "bin" / "sd-ship"
-        ship.parent.mkdir(parents=True)
-        ship.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$PACK_MARKER"\n')
-        ship.chmod(0o755)
-        env_sh = fx.home / ".config" / "shell" / "env.sh"
-        env_sh.parent.mkdir(parents=True)
-        env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{marker}"\n')
-        job = EXAMPLES / "lane-run-pack.job"
-        fx.write_job(job.stem, job.read_text())
-        result = fx.exec_job(job.stem)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(marker.read_text().splitlines(), [f"-C {pack} lane run"])
-
-    def test_the_job_runs_the_pack_sd_ship_with_exactly_those_words(self):
-        fx = Fixture()
-        self.addCleanup(fx.destroy)
-        pack, marker = fx.tmp / "custom-pack", fx.tmp / "pack-ran"
-        ship = pack / "bin" / "sd-ship"
-        ship.parent.mkdir(parents=True)
-        ship.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$PACK_MARKER"\n')
-        ship.chmod(0o755)
-        env_sh = fx.home / ".config" / "shell" / "env.sh"
-        env_sh.parent.mkdir(parents=True)
-        env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{marker}"\n')
-        fx.write_job(self.JOB.stem, self.JOB.read_text())
-        result = fx.exec_job(self.JOB.stem)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(marker.read_text().splitlines(), ["lane run --hosted"])
+        return [arg.replace(str(pack), "{pack}") for arg in marker.read_text().splitlines()]
 
 
 #: The pack the gate pins (`.sd-pack-rev`), which the hub runs once the pin lands.
