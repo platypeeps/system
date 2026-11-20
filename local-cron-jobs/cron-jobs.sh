@@ -753,20 +753,26 @@ report_unrecorded() { # job, log offset, run identity, start, end, exit
   return "$saved"
 }
 
+# Prints a record file's whole lines. A line without its newline is a
+# write cut short: `12` of `124` reads as a valid exit code, so it is
+# dropped and logged, never ended with a newline.
+whole_records() { # file
+  local last
+  last="$(tail -c 1 "$1")" || return 1
+  [ -n "$last" ] || { cat "$1"; return; }
+  echo "[$(basename "$1")] dropped a torn retry record: $(tail -n 1 "$1")" >&2
+  sed '$d' "$1"
+}
+
 # Adds whole lines to the retry queue. The new queue is written aside
 # and renamed into place, so a short write or a kill leaves the old one
-# whole; an unterminated last line, from a runner before this, is ended
-# first, or the append joined two runs into one line.
+# whole; a torn last line, from a runner before this, is dropped.
 queue_append() { # file, newline-terminated text
   local tmp="$1.tmp"
   [ ! -e "$1" ] || [ -f "$1" ] || return 1
   # A subshell, so its `exit` ends only the copy, not the runner.
   (
-    if [ -s "$1" ]; then
-      cat "$1" || exit 1
-      last="$(tail -c 1 "$1")" || exit 1
-      [ -z "$last" ] || printf '\n' || exit 1
-    fi
+    [ ! -s "$1" ] || whole_records "$1" || exit 1
     printf '%s' "$2"
   ) > "$tmp" && mv -f "$tmp" "$1" || { rm -f "$tmp"; return 1; }
 }
@@ -815,7 +821,7 @@ replay_unrecorded() { # job
     case "$name" in *.tmp) ! is_run_id "${name%.tmp}" || rm -f "$inflight"; continue ;; esac
     is_run_id "$name" || continue
     # A failed read moves nothing: its record stays for the next run.
-    text="$(cat "$inflight")" || break
+    text="$(whole_records "$inflight")" || break
     [ -n "$text" ] || { rm -f "$inflight"; continue; }
     queue_append "$pending" "$text
 " && rm -f "$inflight" || break
@@ -837,6 +843,12 @@ replay_unrecorded() { # job
     left="$left$offset $run $started $ended $code
 "
   done < "$pending"
+  # read fails on a last line without its newline, so the loop never
+  # files it; a torn record is dropped, not left for an append to end.
+  if [ -n "$offset$run" ]; then
+    echo "[$1] dropped a torn retry record: $offset $run $started $ended $code" >&2
+    used=1
+  fi
   # Rewrite only when a line was filed or skipped as malformed, through a
   # temp file renamed over the record: a failed write keeps the old record
   # whole, and its filed runs replay again, which ingest folds by run id.
@@ -853,7 +865,8 @@ drop_carry() { # job
   [ -n "$REPLAY_CARRY" ] && [ -f "$pending" ] || return 0
   REPLAY_CARRY=""
   # grep exits 1 for no full line; any other failure keeps the queue.
-  keep="$(grep ' ' "$pending")" || [ $? -eq 1 ] || return 0
+  keep="$(whole_records "$pending")" || return 0
+  keep="$(printf '%s\n' "$keep" | grep ' ')" || [ $? -eq 1 ] || return 0
   if [ -z "$keep" ]; then rm -f "$pending"; return 0; fi
   { printf '%s\n' "$keep" > "$pending.tmp" && mv -f "$pending.tmp" "$pending"; } || rm -f "$pending.tmp"
 }

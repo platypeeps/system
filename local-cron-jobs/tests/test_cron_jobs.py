@@ -2411,20 +2411,61 @@ class RunReportTest(unittest.TestCase):
         self.assertEqual(runs[:2], [("20260101T000000Z-1", "7"), (newer, "5")], runs)
         self.assertEqual(sorted(p.name for p in logs.glob(".demo.report*")), [])
 
-    def test_a_record_appended_to_an_unterminated_queue_stays_whole(self):
-        """Build 1232 round 7. A short write or a kill can leave the queue
-        without its last newline; the next append joined two runs into one
-        line, and the newer run had no entry of its own."""
+    def test_a_torn_queue_record_is_refused_not_completed(self):
+        """Round 10 (class: a place that repairs or accepts a partial
+        record). An append ended an unterminated last line with a
+        newline, so a write cut at `12` of `124` became a whole record
+        with exit 12. The torn tail is now dropped, never completed."""
         logs = self.fx.folder / "logs"
         logs.mkdir(exist_ok=True)
         pending = logs / ".demo.unreported"
-        pending.write_text("0 20260101T000000Z-1 a b 7")
+        pending.write_text("0 20260101T000000Z-1 a b 12")
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
-        self.exec_job(FAKE_SD_EXIT="3")
+        result = self.exec_job(FAKE_SD_EXIT="3")
         lines = pending.read_text().splitlines()
-        self.assertEqual(len(lines), 2, lines)
-        self.assertEqual(lines[0], "0 20260101T000000Z-1 a b 7")
-        self.assertRegex(lines[1], r"^\d+ [0-9TZ]+-\d+ \S+ \S+ 3$")
+        self.assertEqual(len(lines), 1, lines)
+        self.assertRegex(lines[0], r"^\d+ [0-9TZ]+-\d+ \S+ \S+ 3$")
+        self.assertIn("torn retry record", result.stderr)
+
+    def test_a_torn_queue_tail_goes_and_is_never_filed(self):
+        """Round 10, same class. The replay left a torn tail in place,
+        so it waited for the next append to complete it."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("0 20260101T000000Z-1 a b 12")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        self.assertNotIn("20260101T000000Z-1", [r for r, _, _ in self.ingests()])
+        self.assertFalse(pending.exists())
+
+    def test_a_torn_in_flight_record_is_refused(self):
+        """Round 10, same class. The replay read an in-flight record
+        with `$(cat)`, which drops the missing newline unseen, and
+        filed a record cut short as whole."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        record = logs / ".demo.reporting.20260101T000000Z-1"
+        record.write_text("0 20260101T000000Z-1 a b 12")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        self.assertNotIn("20260101T000000Z-1", [r for r, _, _ in self.ingests()])
+        self.assertFalse(record.exists())
+
+    def test_drop_carry_refuses_a_torn_tail(self):
+        """Round 10, same class. drop_carry's grep printed an
+        unterminated last line with a newline and wrote it back whole."""
+        logs = self.fx.folder / "logs"
+        logs.mkdir(exist_ok=True)
+        pending = logs / ".demo.unreported"
+        pending.write_text("0\n0 20260101T000000Z-1 a b 7\n0 20260101T000000Z-2 a b 12")
+        script = self.fx.folder / "cron-jobs.sh"
+        subprocess.run(
+            ["sh", "-c", f'eval "$(sed -n -e "/^whole_records()/,/^}}/p" '
+                         f'-e "/^drop_carry()/,/^}}/p" {script})"; '
+                         f'LOG_DIR="{logs}"; REPLAY_CARRY=0; drop_carry demo'],
+            capture_output=True, text=True, check=True)
+        self.assertEqual(pending.read_text(), "0 20260101T000000Z-1 a b 7\n")
 
     def test_replay_leaves_a_dotted_job_s_files_alone(self):
         """Build 1232 round 8 (class: a state-file operation that does not
@@ -2497,7 +2538,7 @@ class RunReportTest(unittest.TestCase):
         logs = self.fx.folder / "logs"
         logs.mkdir(exist_ok=True)
         pending = logs / ".demo.unreported"
-        pending.write_text("0 20260101T000000Z-1 a b 7")
+        pending.write_text("0 20260101T000000Z-1 a b 7\n")
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
         self.exec_job(FAKE_SD_EXIT="3", PATH=self.shim("tail", "*' -c 1 '*"))
         lines = pending.read_text().splitlines()
@@ -2513,7 +2554,7 @@ class RunReportTest(unittest.TestCase):
         pending = logs / ".demo.unreported"
         pending.write_text("12\n0 20260101T000000Z-1 a b 7\n")
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
-        self.exec_job(FAKE_SD_EXIT="3", PATH=self.shim("grep", "*.unreported*"))
+        self.exec_job(FAKE_SD_EXIT="3", PATH=self.shim("grep", "'   '"))
         self.assertTrue(pending.exists(), "grep failed and the queue went")
         self.assertIn("0 20260101T000000Z-1 a b 7", pending.read_text().splitlines())
 
