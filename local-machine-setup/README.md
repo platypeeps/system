@@ -458,7 +458,7 @@ Get the standby ready, once:
    A slot timeout or a killed run writes nothing there.
 5. Run `machine-setup.sh promote` (a dry run) or `status`, and read the `hub-ready` block.
    Each line reads `ok`, `--` (cannot be read now) or `NOT-READY`; it is not counted as drift.
-   On a satellite whose `<config>/cron-jobs/jobs/<host>/` holds none of `sd-db-backup`, `sd-db-backup-hourly`, `offsite-verify` and `shadow-sync-nightly`, `status` prints one `not a standby` line and checks nothing; `promote` still checks it all.
+   On a satellite with none of `sd-db-backup`, `sd-db-backup-hourly`, `offsite-verify` and `shadow-sync-nightly` outside the shared `cron-jobs/jobs/` (its host folder and any `CRON_JOBS_EXTRA_DIRS`), and no `SD_DB_BACKUP_HOURLY_DESTINATION`, `status` prints one `not a standby` line and checks nothing; `promote` still checks it all.
    - The gate line reads `ok` only for a pass under 8 days old; a failure, an older pass or no record is `NOT-READY`.
      A later try with no verdict adds "last try timed out" or "last try did not finish".
    - The backup age line dates the snapshot `restore --newest` would restore: the newest that passes its checks, hashes included.

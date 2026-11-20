@@ -8357,7 +8357,7 @@ cmd_status() {
   if [ -e "$SD_HUB_CONFIG" ] || [ -f "$PROMOTE_MARKER" ] || [ -f "$UNDO_MARKER" ] || [ -e "$DRILL_HOME" ] || hub_role; then
     if no_standby; then
       echo "== hub-ready"
-      echo "  skip    not a standby: this host's cron-jobs folder holds no $STANDBY_JOBS job file; nothing checked"
+      echo "  skip    not a standby: no $STANDBY_JOBS job file outside the shared cron-jobs/jobs, and no hourly backup root; nothing checked"
     else
       hub_ready
     fi
@@ -8588,18 +8588,33 @@ hub_name_matches() {
 }
 
 # A satellite that is no standby (sd:9638): no marker, no drill, not the
-# holder, and its own cron-jobs/jobs/<host> folder holds none of these. Read
-# from disk, so no setting says it. Status skips hub-ready there; promote and
-# the drill still run it, so they refuse such a machine as before. A folder
-# that cannot be read counts as a standby, which checks everything.
+# holder, no role job file in a folder of its own, and an hourly job that
+# names no local root. Its own folders are every one cron-jobs.sh reads but
+# the shared jobs/, which the config clone gives every machine, the hub's
+# role jobs with it. The hourly root is what README step 2 has a standby
+# set wherever its job files sit, so one set up in the shared folder still
+# reads as a standby. Read from disk, so no setting says it. Status skips
+# hub-ready there; promote and the drill still run it, so they refuse such a
+# machine as before. A folder or job file that cannot be read counts as a
+# standby, which checks everything.
 STANDBY_JOBS="sd-db-backup sd-db-backup-hourly offsite-verify shadow-sync-nightly"
 no_standby() {
   [ ! -f "$PROMOTE_MARKER" ] && [ ! -f "$UNDO_MARKER" ] && [ ! -e "$DRILL_HOME" ] || return 1
   ! hub_holder || return 1
-  ns_jobs=$(host_cron_jobs) || return 1
+  ns_jobs=$(PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
+for d in stc.cron_job_dirs()[:-1]:
+    try:
+        listed = os.listdir(d)
+    except FileNotFoundError:
+        continue
+    for n in listed:
+        if n.endswith(".job"):
+            print(n[:-4])') || return 1
   for ns_job in $STANDBY_JOBS; do
     ! printf '%s\n' "$ns_jobs" | grep -qxF "$ns_job" || return 1
   done
+  ns_dest=$(hourly_destination) || return 1
+  [ -z "$ns_dest" ]
 }
 
 # The hub-ready block (design, "Satellite readiness"): read-only, one line per

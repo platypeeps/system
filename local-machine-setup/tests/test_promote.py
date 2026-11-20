@@ -1329,41 +1329,79 @@ class StalledShareInSteps(PromoteCase):
 class StandbyStatus(PromoteCase):
     """sd:9638: status skips hub-ready on a satellite that is no standby.
 
-    The fixture's role job files sit in the shared jobs folder, which every
-    machine has; a standby keeps its own in jobs/<host>.
+    The shared jobs folder is the config clone every machine holds, so the
+    hub's own role jobs sit there on a satellite that is no standby. A
+    standby is told apart by what promote reads as its own: a role job file
+    in a folder other than the shared one, or an hourly job that names a
+    local root. Every other case shows the full block.
     """
 
     HOST = "standby-host"
+    JOB = 'JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n'
 
     def setUp(self):
         super().setUp()
         # status's macos stage reads preferences; none bear on hub-ready.
         write_stub(self.fixture.stubs, "defaults", "exit 1\n")
+        self.jobs = self.config / "cron-jobs" / "jobs"
 
-    def run_status(self):
-        return self.fixture.run("status", **self.promote_env(CRON_JOBS_HOST=self.HOST)).stdout
+    def no_standby(self):
+        """As a satellite that is no standby: the shared folder holds the
+        hub's role jobs, its hourly job names no local root, and the
+        builder jobs are missing."""
+        (self.jobs / "sd-db-backup-hourly.job").write_text(self.JOB)
+        for job in ("night-build", "build-dispatch"):
+            (self.jobs / f"{job}.job").unlink()
+
+    def run_status(self, **extra):
+        return self.fixture.run("status", **self.promote_env(CRON_JOBS_HOST=self.HOST, **extra)).stdout
+
+    def assert_full_block(self, out):
+        self.assertNotIn("not a standby", out)
+        self.assertIn("names hub.example.test", out)
 
     def test_a_host_with_no_hub_role_job_file_reports_one_line(self):
-        # As a satellite that is no standby: the builder jobs are missing.
-        for job in ("night-build", "build-dispatch"):
-            (self.config / "cron-jobs" / "jobs" / f"{job}.job").unlink()
+        self.no_standby()
         out = self.run_status()
         block = out.split("== hub-ready", 1)[1].split("\n\n", 1)[0]
         self.assertIn("skip    not a standby", block, out)
         self.assertNotIn("NOT-READY", out)
 
     def test_a_host_with_a_hub_role_job_file_checks_the_full_block(self):
-        host = self.config / "cron-jobs" / "jobs" / self.HOST
+        self.no_standby()
+        host = self.jobs / self.HOST
         host.mkdir()
-        (host / "offsite-verify.job").write_text('JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n')
+        (host / "offsite-verify.job").write_text(self.JOB)
+        self.assert_full_block(self.run_status())
+
+    def test_a_role_job_in_an_extra_dir_checks_the_full_block(self):
+        self.no_standby()
+        extra = self.tmp / "extra-jobs"
+        extra.mkdir()
+        (extra / "shadow-sync-nightly.job").write_text(self.JOB)
+        self.assert_full_block(self.run_status(CRON_JOBS_EXTRA_DIRS=str(extra)))
+
+    def test_shared_role_jobs_with_a_local_hourly_root_check_the_full_block(self):
+        """The review's case: a standby set up with its role jobs in the
+        shared folder, its hourly job naming a local root (the fixture's)."""
+        for job in ("night-build", "build-dispatch"):
+            (self.jobs / f"{job}.job").unlink()
         out = self.run_status()
-        self.assertNotIn("not a standby", out)
-        self.assertIn("names hub.example.test", out)
+        self.assert_full_block(out)
+        self.assertIn("NOT-READY no job file night-build.job", out)
+
+    def test_an_unreadable_host_folder_checks_the_full_block(self):
+        self.no_standby()
+        host = self.jobs / self.HOST
+        host.mkdir()
+        host.chmod(0)
+        self.addCleanup(host.chmod, 0o755)
+        self.assert_full_block(self.run_status())
 
     def test_promote_still_checks_a_host_that_is_no_standby(self):
+        self.no_standby()
         out = self.run_promote(CRON_JOBS_HOST=self.HOST).stdout
-        self.assertNotIn("not a standby", out)
-        self.assertIn("names hub.example.test", out)
+        self.assert_full_block(out)
 
 
 class HubRole(unittest.TestCase):
