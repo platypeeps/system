@@ -30,6 +30,7 @@ A switch drops each session's Remote Control link, and `/rc` in a dropped sessio
 So a sync that switches the account, on the hub or a satellite, writes `state/rc-pending` before any later step can fail.
 Once `herdr agent list` answers with a list it can parse, each claude pane it names is owed in `state/rc-owed`.
 Every sync then submits `/rc` (`herdr agent prompt`) to each owed pane that is idle or done, whose latest Remote Control banner, as Claude prints it at line start, is `⏺ Remote Control disconnected — `, not `  /remote-control is active · `, and whose input box (the rules around the last `❯` line) holds no typed text; dim text there is a prompt suggestion.
+Only a drop banner and box rules in Claude's own colour count: text typed into a draft is plain, so a draft that types a banner or a box is never read as an empty box.
 A pane herdr names no session id for is not owed. Any other pane gets no keys, as a key can answer a permission dialog or join a half-typed prompt; it stays owed, and the next sync tries again.
 An active banner stays owed too: it may be the old account's, printed before the drop.
 Right before the keys, `herdr agent get` and a fresh screen read check the pane again; a gap of milliseconds remains, as herdr has no check-and-send.

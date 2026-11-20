@@ -268,13 +268,20 @@ else:
         return re.fullmatch(r"─+( [^─]* ─+)?", text.strip()) is not None
     raw = text.splitlines()
     lines = [plain(line) for line in raw]
-    marks = [(i, banner(line)) for i, line in enumerate(lines) if banner(line)]
+    # Claude draws its drop banner and its box rules in colour; text typed
+    # into a draft is plain, so a typed banner or rule is neither (sd:9427
+    # review: a draft with a fake banner, a rule and a bare ❯ read as an
+    # empty box). A typed active banner still counts: it only waits.
+    def coloured(i):
+        return raw[i].startswith("\x1b[")
+    marks = [(i, banner(line)) for i, line in enumerate(lines)
+             if banner(line) == "active" or (banner(line) == "drop" and coloured(i))]
     # Hold on doubt (sd:9282 bundle review): below the last banner, the
     # screen must show one empty input box and nothing like a second one:
     # exactly two rules and one ❯ line, adjacent, rule ❯ rule. A draft
     # can hold rule or ❯ lines of its own, so any other shape waits.
     below = range(marks[-1][0] + 1 if marks else 0, len(lines))
-    rules = [i for i in below if rule(lines[i])]
+    rules = [i for i in below if rule(lines[i]) and coloured(i)]
     prompts = [i for i in below if lines[i].strip().startswith("❯")]
     one_box = len(rules) == 2 and len(prompts) == 1 and rules[0] + 1 == prompts[0] == rules[1] - 1
     typed = undimmed(raw[prompts[0]], False)[0].strip().removeprefix("❯") if one_box else ""

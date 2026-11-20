@@ -174,7 +174,10 @@ else:
 
 # A pane's screen: a Remote Control line, then the input box. INPUT is the
 # empty input line; the screen keeps older lines above the newest.
-RULE = "\u2500" * 20
+# The box rules as Claude draws them, in their own colour (read from a
+# hub pane, 2026-11-20); a rule typed into a draft is plain text.
+RULE = "\x1b[0m\x1b[38;2;136;136;136m" + "\u2500" * 20 + "\x1b[0m"
+TYPED_RULE = "\u2500" * 20
 INPUT = f"{RULE}\n\u276f\u00a0\n{RULE}\n  [model] | git:(main)"
 # The banners as Claude prints them, colours and all (a hub pane, read
 # with --format ansi). Prose that quotes their text is no banner.
@@ -693,6 +696,16 @@ class RemoteControlReconnects(Machine):
             "draft-fake-box": (f"{DROP_LINE}\n" + box(empty, RULE, "\u276f"), False),
             "draft-text-fake-box": (f"{DROP_LINE}\n" + box(empty + "a", "  b", RULE, "\u276f\u00a0"), False),
             "two-boxes": (f"{DROP_LINE}\n" + box(empty) + "\n" + box(empty), False),
+            # Review on sd:9427: a draft that types a drop banner, a rule
+            # and a bare ❯ hid the real prompt above its fake banner, and
+            # the real bottom rule closed the fake box. Typed text is
+            # plain; Claude's own banner and rules carry colour.
+            "draft-fake-banner": (f"{DROP_LINE}\n" + box(
+                empty + "first line", "\u23fa Remote Control disconnected \u2014 x",
+                TYPED_RULE, "\u276f"), False),
+            "draft-fake-banner-flush": (f"{DROP_LINE}\n" + box(
+                empty + "first line", "\u23fa Remote Control disconnected \u2014 x",
+                TYPED_RULE, "\u276f\u00a0"), False),
         }
         self.publish(THREE)
         self.panes(*[[f"w1:{name}", "claude", "idle", name, screen]
