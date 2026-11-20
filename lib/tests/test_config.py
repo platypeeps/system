@@ -362,6 +362,20 @@ class ShellEnv(unittest.TestCase):
         env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
         self.assertEqual(shell("set -e; st_shell_env; echo after", env).stdout, "after\n")
 
+    def test_a_broken_env_sh_neither_ends_the_shell_nor_hides_it(self):
+        """sd:9652: an env.sh mid-edit ended every cron run under set -e,
+        with stdout still on /dev/null, so no job log named the failure."""
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        for text in ("export OTHER=1\nif true; then\n", "export OTHER=1\nfalse\n"):
+            self.env_sh(text)
+            for sh in ("/bin/sh", "/bin/bash"):
+                with self.subTest(text=text, sh=sh):
+                    result = subprocess.run(
+                        [sh, "-c", f'. "{LIB}/config.sh"; set -e; st_shell_env; case $- in *e*) echo after ;; esac'],
+                        env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.stdout, "after\n", result.stderr)
+                    self.assertIn(".config/shell/env.sh", result.stderr)
+
 
 #: `<environ>.get(X) or <file values>.get(X)`, the same name on both sides: an
 #: exported empty value is falsy, so the file wins where the shell keeps it.
