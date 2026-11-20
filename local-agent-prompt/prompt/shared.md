@@ -197,5 +197,4 @@ Run a one-off step on a satellite as a machine-setup stage or job that `refresh.
 
 # Time
 
-Report every time in the machine's local zone with its label, for example `09:36 MDT`; convert UTC (`Z`) first.
-Keep raw timestamps unchanged inside quoted tool output and code blocks.
+Report every time in the machine's local zone with its label, for example `09:36 MDT`; convert UTC (`Z`) first, but keep raw timestamps unchanged inside quoted tool output and code blocks.
