@@ -1811,6 +1811,30 @@ class HostJobsTest(unittest.TestCase):
         self.assertIn("grace 20s cut to 1s", log)
         self.assertIn("the job still runs 1s after TERM", log)
 
+    def test_a_job_timeout_keeps_the_configured_grace(self):
+        """Lane review, round 11 (class: a launchd shutdown bound applied
+        to a wait launchd does not govern). The plist's ExitTimeOut cap
+        also cut the grace after JOB_TIMEOUT, where no launchd KILL
+        comes: a job given 3 s to unwind got its KILL after 1 s. Only
+        the runner's own shutdown wait keeps to the cap."""
+        self.fx.write_job("demo", "CRON_JOBS_TIMEOUT_GRACE=1\n" + self.JOB.format("true"))
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        environment = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nCRON_JOBS_TIMEOUT_GRACE=3\n'
+                                  'JOB_TIMEOUT="1"\n'
+                                  "JOB_COMMAND='trap \"sleep 2; exit 0\" TERM; "
+                                  "sleep 30 & wait'\n")
+        run = {**environment, "PATH": self.fx.path(), "SD_REPORT_BIN": "/usr/bin/true"}
+        log_path = self.fx.folder / "logs" / "demo.log"
+        log_path.parent.mkdir(exist_ok=True)
+        with open(log_path, "a") as out:
+            subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                           env=run, stdout=out, stderr=out, timeout=60)
+        log = log_path.read_text()
+        self.assertIn("timed out after 1s", log)
+        self.assertNotIn("sending KILL", log)
+
     def test_a_plist_from_before_the_cap_keeps_the_old_grace(self):
         """Build 1232 round 6. A plist installed before this change has
         no CRON_JOBS_EXIT_TIMEOUT and launchd's 20 s ExitTimeOut; the

@@ -296,8 +296,8 @@ load_job() {
   if [ -n "$JOB_PROMPT" ] && [ -n "$JOB_COMMAND" ]; then
     echo "ERROR: $f sets both JOB_PROMPT and JOB_COMMAND — pick one" >&2; exit 1
   fi
-  # One decimal value for all three waits: Perl's, stop_workload's and
-  # the plist's ExitTimeOut. Checked here, before any plist is opened.
+  # One decimal value for all three waits: Perl's, stop_workload's (cut
+  # to the installed plist, keep_grace_in_plist) and the plist's ExitTimeOut. Checked here, before any plist is opened.
   JOB_GRACE="$(decimal "${CRON_JOBS_TIMEOUT_GRACE:-30}" 3600)" || {
     echo "ERROR: $f: CRON_JOBS_TIMEOUT_GRACE '${CRON_JOBS_TIMEOUT_GRACE}' is not a whole number of seconds from 0 to 3600" >&2
     exit 1
@@ -873,13 +873,17 @@ drop_carry() { # job
 
 # launchd KILLs the runner ExitTimeOut seconds after its TERM, a value the
 # plist fixed at install, while the grace is read from the job file at each
-# run: a grace raised since install is cut to fit, until a reinstall.
+# run: a grace raised since install is cut to fit, until a reinstall. Only
+# the shutdown wait (stop_workload) is cut: after JOB_TIMEOUT no launchd
+# KILL comes, so perl keeps the job's own grace.
 # A plist from before ExitTimeOut has launchd's 20 s and no budget key;
 # launchd names the run by its label (XPC_SERVICE_NAME), and the grace
 # keeps the 10 s that plist was rendered for. A hand run is not capped.
 LEGACY_GRACE=10
+SHUTDOWN_GRACE=""
 keep_grace_in_plist() { # job
   local budget cap
+  SHUTDOWN_GRACE="$JOB_GRACE"
   if budget="$(decimal "$INSTALLED_EXIT_TIMEOUT" 999999999)"; then
     cap=$((budget > EXIT_REPORT_ROOM ? budget - EXIT_REPORT_ROOM : 0))
   elif [ "${XPC_SERVICE_NAME:-}" = "$(label_for "$1")" ]; then
@@ -888,8 +892,8 @@ keep_grace_in_plist() { # job
     return 0
   fi
   [ "$JOB_GRACE" -gt "$cap" ] || return 0
-  echo "[$1] $(date '+%Y-%m-%dT%H:%M:%S%z') grace ${JOB_GRACE}s cut to ${cap}s: the installed plist's ExitTimeOut is ${budget}s; reinstall the job"
-  JOB_GRACE="$cap"
+  echo "[$1] $(date '+%Y-%m-%dT%H:%M:%S%z') shutdown grace ${JOB_GRACE}s cut to ${cap}s: the installed plist's ExitTimeOut is ${budget}s; reinstall the job"
+  SHUTDOWN_GRACE="$cap"
 }
 
 # The outcome line every run that started owes its log. cmd_exec writes "done"
@@ -1050,7 +1054,7 @@ run_bounded() { # job, seconds, command...
 # exits, as this shell is in its trap and reaps nothing, so `ps` and not
 # `kill -0` tells whether it is gone.
 stop_workload() { # job
-  local pid tries=0 grace="$JOB_GRACE"
+  local pid tries=0 grace="${SHUTDOWN_GRACE:-$JOB_GRACE}"
   pid="$(pgrep -P "$$" -x perl 2>/dev/null | head -n 1)" || true
   [ -n "$pid" ] || return 0
   kill -TERM "$pid" 2>/dev/null || true
