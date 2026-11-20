@@ -1326,6 +1326,46 @@ class StalledShareInSteps(PromoteCase):
         self.assertIsNotNone(self.marker_step())
 
 
+class StandbyStatus(PromoteCase):
+    """sd:9638: status skips hub-ready on a satellite that is no standby.
+
+    The fixture's role job files sit in the shared jobs folder, which every
+    machine has; a standby keeps its own in jobs/<host>.
+    """
+
+    HOST = "standby-host"
+
+    def setUp(self):
+        super().setUp()
+        # status's macos stage reads preferences; none bear on hub-ready.
+        write_stub(self.fixture.stubs, "defaults", "exit 1\n")
+
+    def run_status(self):
+        return self.fixture.run("status", **self.promote_env(CRON_JOBS_HOST=self.HOST)).stdout
+
+    def test_a_host_with_no_hub_role_job_file_reports_one_line(self):
+        # As a satellite that is no standby: the builder jobs are missing.
+        for job in ("night-build", "build-dispatch"):
+            (self.config / "cron-jobs" / "jobs" / f"{job}.job").unlink()
+        out = self.run_status()
+        block = out.split("== hub-ready", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("skip    not a standby", block, out)
+        self.assertNotIn("NOT-READY", out)
+
+    def test_a_host_with_a_hub_role_job_file_checks_the_full_block(self):
+        host = self.config / "cron-jobs" / "jobs" / self.HOST
+        host.mkdir()
+        (host / "offsite-verify.job").write_text('JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n')
+        out = self.run_status()
+        self.assertNotIn("not a standby", out)
+        self.assertIn("names hub.example.test", out)
+
+    def test_promote_still_checks_a_host_that_is_no_standby(self):
+        out = self.run_promote(CRON_JOBS_HOST=self.HOST).stdout
+        self.assertNotIn("not a standby", out)
+        self.assertIn("names hub.example.test", out)
+
+
 class HubRole(unittest.TestCase):
     """The agents and cron stages add the hub-role labels only for the holder."""
 

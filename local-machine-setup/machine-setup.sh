@@ -8355,7 +8355,12 @@ cmd_status() {
   done
   # Read-only and outside the drift count: see hub_ready.
   if [ -e "$SD_HUB_CONFIG" ] || [ -f "$PROMOTE_MARKER" ] || [ -f "$UNDO_MARKER" ] || [ -e "$DRILL_HOME" ] || hub_role; then
-    hub_ready
+    if no_standby; then
+      echo "== hub-ready"
+      echo "  skip    not a standby: this host's cron-jobs folder holds no $STANDBY_JOBS job file; nothing checked"
+    else
+      hub_ready
+    fi
     echo
   fi
   # A 02:xx cron job runs only on a repeating wake (.claude/rules/cron-wake.md).
@@ -8580,6 +8585,21 @@ hub_name_matches() {
     *.*/*.*) [ "$hm_a" = "$hm_b" ] ;;
     *) [ "${hm_a%%.*}" = "${hm_b%%.*}" ] ;;
   esac
+}
+
+# A satellite that is no standby (sd:9638): no marker, no drill, not the
+# holder, and its own cron-jobs/jobs/<host> folder holds none of these. Read
+# from disk, so no setting says it. Status skips hub-ready there; promote and
+# the drill still run it, so they refuse such a machine as before. A folder
+# that cannot be read counts as a standby, which checks everything.
+STANDBY_JOBS="sd-db-backup sd-db-backup-hourly offsite-verify shadow-sync-nightly"
+no_standby() {
+  [ ! -f "$PROMOTE_MARKER" ] && [ ! -f "$UNDO_MARKER" ] && [ ! -e "$DRILL_HOME" ] || return 1
+  ! hub_holder || return 1
+  ns_jobs=$(host_cron_jobs) || return 1
+  for ns_job in $STANDBY_JOBS; do
+    ! printf '%s\n' "$ns_jobs" | grep -qxF "$ns_job" || return 1
+  done
 }
 
 # The hub-ready block (design, "Satellite readiness"): read-only, one line per
