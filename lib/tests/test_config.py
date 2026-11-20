@@ -374,9 +374,15 @@ class ShellEnv(unittest.TestCase):
                      # parse check, and a dot syntax error is fatal in POSIX
                      # mode whatever set -e says; so is an `exit`.
                      '. "$HOME/.config/shell/part.sh"\nexport OTHER=1\n',
-                     "export OTHER=1\nexit 0\n"):
+                     "export OTHER=1\nexit 0\n",
+                     # set -e turned on inside the chain: bash 5 keeps it off
+                     # in a probe left of `||`, so the probe passed and the
+                     # real `.` ended the caller.
+                     "set -e\nfalse\nexport OTHER=1\n",
+                     '. "$HOME/.config/shell/part2.sh"\nexport OTHER=1\n'):
             self.env_sh(text)
             (self.home / ".config/shell/part.sh").write_text("export PART=1\nif true; then\n")
+            (self.home / ".config/shell/part2.sh").write_text("set -e\nfalse\nexport PART=1\n")
             # bash 3.2 ignores the rule that set -e is off left of `||`; a
             # newer bash or dash on PATH keeps it, which hid a failed line.
             for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
@@ -386,6 +392,18 @@ class ShellEnv(unittest.TestCase):
                         env=env, capture_output=True, text=True, check=False)
                     self.assertEqual(result.stdout, "after\n", result.stderr)
                     self.assertIn(".config/shell/env.sh", result.stderr)
+
+    def test_set_e_from_env_sh_does_not_reach_the_caller(self):
+        """An env.sh that turns set -e on would end a caller that runs
+        without it at its next failed command."""
+        self.env_sh("set -e\nexport OTHER=1\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
+            with self.subTest(sh=sh):
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; false; echo "after $OTHER"'],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "after 1\n", result.stderr)
 
 
 #: `<environ>.get(X) or <file values>.get(X)`, the same name on both sides: an

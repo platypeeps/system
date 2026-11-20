@@ -79,25 +79,31 @@ st_shell_env() {
     # off for the real `.`, as bash 3.2 exits on a failure inside it even
     # in an `if` test, so the exports that work still load. The set -e
     # child is its own process, not a subshell: left of `||` or in an
-    # `if`, a subshell runs with set -e off in bash 4+ and dash.
+    # `if`, a subshell runs with set -e off in bash 4+ and dash. For the
+    # same reason the probe is a bare assignment, with the caller's set -e
+    # off: left of `||`, bash 5 ignored a `set -e` env.sh turns on, so the
+    # probe passed a file whose failure then ended the caller. The caller's
+    # own -e state comes back after the `.`, whatever env.sh left set.
     # ponytail: env.sh runs three times; two keychain reads extra.
     _st_env="$HOME/.config/shell/env.sh"
     if [ -f "$_st_env" ]; then
+        case $- in *e*) _st_e=1 ;; *) _st_e= ;; esac
+        set +e
         # A subshell, so the probe runs in this same shell: bash in POSIX
         # mode lives through a syntax error that ends dash.
         # shellcheck source=/dev/null
-        _st_ok=$(set +e; . "$_st_env" >/dev/null 2>&1 </dev/null; echo ok) || :
+        _st_ok=$(. "$_st_env" >/dev/null 2>&1 </dev/null; echo ok)
         if [ "$_st_ok" != ok ]; then
             echo "st_shell_env: $_st_env or a file it sources ends the shell; skipped, so its exports are missing" >&2
         else
             # shellcheck disable=SC2016 # $1 expands in the child
             "${BASH:-sh}" -ec '. "$1"' st_shell_env "$_st_env" >/dev/null 2>&1 </dev/null ||
                 echo "st_shell_env: a command in $_st_env failed (exit $?); a value it sets may be missing" >&2
-            case $- in *e*) _st_e=1; set +e ;; *) _st_e= ;; esac
             # shellcheck source=/dev/null
             . "$_st_env" >/dev/null 2>&1
-            [ -z "$_st_e" ] || set -e
+            set +e
         fi
+        [ -z "$_st_e" ] || set -e
     fi
     unset _st_env _st_e _st_ok
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
