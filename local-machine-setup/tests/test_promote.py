@@ -1398,6 +1398,33 @@ class StandbyStatus(PromoteCase):
         self.addCleanup(host.chmod, 0o755)
         self.assert_full_block(self.run_status())
 
+    def test_an_hourly_job_that_cannot_be_read_checks_the_full_block(self):
+        """An hourly job file that does not source may name a local root;
+        an empty value read from it is no proof that it does not. bash 5
+        goes on after a failed `.` where set -e is off, so the script runs
+        under it too, not only under /bin/sh."""
+        hourly = self.jobs / "sd-db-backup-hourly.job"
+        root = 'SD_DB_BACKUP_HOURLY_DESTINATION="$HOME/sd-backups-hourly"\n'
+        shells = sorted({"/bin/sh"} | {p for p in map(shutil.which, ("bash", "dash")) if p})
+        for case in ("unreadable", "failed command"):
+            for sh in shells:
+                with self.subTest(case=case, sh=sh):
+                    if hourly.exists():
+                        hourly.chmod(0o644)
+                    for job in ("night-build", "build-dispatch"):
+                        (self.jobs / f"{job}.job").write_text(self.JOB)
+                    self.no_standby()
+                    if case == "failed command":
+                        hourly.write_text(self.JOB + 'SD_DB_BACKUP_HOURLY_DESTINATION="$(false)"\n')
+                    else:
+                        hourly.write_text(self.JOB + root)
+                        hourly.chmod(0)
+                        self.addCleanup(hourly.chmod, 0o644)
+                    env = self.fixture.env(**self.promote_env(CRON_JOBS_HOST=self.HOST))
+                    out = subprocess.run([sh, str(SCRIPT), "status"], env=env, capture_output=True,
+                                         text=True, check=False).stdout
+                    self.assert_full_block(out)
+
     def test_promote_still_checks_a_host_that_is_no_standby(self):
         self.no_standby()
         out = self.run_promote(CRON_JOBS_HOST=self.HOST).stdout

@@ -8526,25 +8526,32 @@ rm_target() { # path allowed-root
 }
 
 # The local root a hub-role backup job writes, from that job's own file: the
-# job is sourced as cron-jobs.sh sources it, in a subshell. Prints nothing
-# when no file defines the job or the file names no destination. Fails on
-# a destination with a newline: a reader would split it into other paths.
+# job is sourced as cron-jobs.sh sources it, under set -e. Prints nothing
+# when no file defines the job or the file names no destination. Fails when
+# the lookup fails, when the file does not source to its end, or on a
+# destination with a newline: a reader would split it into other paths. An
+# empty value from a file that did not source is no proof of no root, so a
+# caller must see the failure. The source runs in its own process: in a
+# subshell where set -e is off (an `if`, left of `||`), bash 5 goes on
+# after a failed `.` or command and prints what it read so far.
 job_destination() { # job, variable
   jd_file=$(PYTHONPATH="$ROOT/lib" python3 -c 'import sys, system_tools_config as stc
 for d in stc.cron_job_dirs():
     f = d / (sys.argv[1] + ".job")
     if f.is_file():
         print(f)
-        break' "$1")
+        break' "$1") || { echo "job $1: its job folders could not be read" >&2; return 1; }
   [ -n "$jd_file" ] || return 0
   # The job's ROOT is local-cron-jobs, as cron-jobs.sh sets it.
-  # shellcheck disable=SC1090,SC2030,SC2154 # eval sets jd_value
-  (ROOT="$ROOT/local-cron-jobs"; eval "$2=''"; . "$jd_file" >/dev/null 2>&1; eval "jd_value=\$$2"
-   case "$jd_value" in
-     *'
-'*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; exit 1 ;;
-     *) printf '%s\n' "$jd_value" ;;
-   esac)
+  # shellcheck disable=SC2016 # the child expands its own arguments
+  jd_value=$(ROOT="$ROOT/local-cron-jobs" sh -ec 'eval "$2=\"\""; . "$1" >/dev/null 2>&1 </dev/null
+    eval "printf \"%s\n\" \"\$$2\""' sh "$jd_file" "$2") ||
+    { echo "$jd_file: does not source to its end; $2 is not known" >&2; return 1; }
+  case "$jd_value" in
+    *'
+'*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; return 1 ;;
+  esac
+  printf '%s\n' "$jd_value"
 }
 hourly_destination() { job_destination sd-db-backup-hourly SD_DB_BACKUP_HOURLY_DESTINATION; }
 
