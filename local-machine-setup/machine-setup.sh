@@ -4534,8 +4534,9 @@ bulk_hold_locks() {
          return 1 ;;
     esac
     bh_fd=$((bh_fd + 1))
-    [ "$bh_fd" -eq 8 ] && bh_fd=9 # fd 8 is a cron run's own lock
+    if [ "$bh_fd" -eq 8 ]; then bh_fd=9; fi # fd 8 is a cron run's own lock
   done
+  return 0
 }
 
 # The NAS files the copy would replace (sd:8319), reported, not refused:
