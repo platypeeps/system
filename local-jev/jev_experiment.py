@@ -2175,6 +2175,13 @@ def cmd_sheet(args, out, env) -> int:
     sheet, _key, summary = drawn_sheet(args.out, tag)
     batch = {"schema": 1, "queue": SHEET_QUEUE, "batch": tag, "title": f"Label: {tag} review tiers",
              "source": f"hand-label sheet {tag}, seed {SEED}", "mode": "blind",
+             # pack sd:9479 refuses a batch without it; like the title, it names no arm.
+             "context": {
+                 "purpose": f"Hand-label the tier each sampled {tag} change needed, read from its diff: "
+                            "the ground truth the experiment's routing answers are scored against.",
+                 "rubric": [f"{tier}: {TIER_CRITERIA[tier]}" for tier in TIERS],
+                 "feeds": f"Once every row has a label, a rerun closes the batch and writes "
+                          f"labels/hand-{tag}.jsonl, which the experiment's analysis reads."},
              "questions": [{"subject": f"{tag}-{int(row['row']):03d}", "text": sheet_text(row),
                             "options": list(TIERS)} for row in sheet]}
     review, database = sd_db_module("review"), sd_db_module("database")

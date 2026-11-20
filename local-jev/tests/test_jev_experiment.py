@@ -2194,6 +2194,20 @@ class TheLabelSheet(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.out / "labels").iterdir()), ["C1.jsonl", "sheet-C1.json"])
         self.assertEqual(json.loads(printed)["open"], 4)
 
+    def test_the_batch_carries_its_context_and_names_no_arm(self):
+        # pack sd:9479 refuses a batch with no Purpose, Rubric or Feeds line.
+        heads = range(4)
+        self.write([kit_row(n) for n in heads], kit_answers(heads, kev=(0, 1), jev=(1, 2)))
+        db = checkpoint_db([])
+        self.assertEqual(self.sheet(db=db)[0], 0)
+        context = filed_batch(db)["header"]["context"]
+        self.assertIsNotNone(context)
+        self.assertTrue(context["purpose"] and context["rubric"] and context["feeds"], context)
+        self.assertEqual(len(context["rubric"]), len(experiment.TIERS))
+        for line in (context["purpose"], context["feeds"], *context["rubric"]):
+            for arm in experiment.ARMS:
+                self.assertNotIn(arm, line.lower())
+
     def test_the_key_maps_every_row(self):
         heads = range(8)
         rows = [kit_row(n) for n in heads]
