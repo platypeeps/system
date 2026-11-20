@@ -12,7 +12,8 @@
 # launchd runs one instance of a job at a time, so one long lane keeps the
 # run alive and the other lanes wait for it. Give such a lane its own job:
 # on the hub, the pack lane runs from lane-run-pack.job, and the hub's copy
-# of this file ends its command with `--skip "$SD_PACK_ROOT"` (pack sd:9668).
+# of this file adds `--skip` with the pack path (pack sd:9668); that job's
+# comments give the escaped command line and when to install it.
 #
 # JOB_TIMEOUT is above one lane run on purpose (review, `make check` and a
 # merge take 30-60 minutes): a limit below that could stop a merge part way.

@@ -88,6 +88,29 @@ class LaneRunJobTest(unittest.TestCase):
         for stale in ("one after another", "logs `skipped`", "sd:9332", "hands off"):
             self.assertNotIn(stale, notes)
 
+    def test_the_documented_hub_override_skips_the_pack_path(self):
+        # sd:9670 review: an unescaped $SD_PACK_ROOT expanded before env.sh and ran `--skip ""`.
+        line = next(text.lstrip("# ") for text in (EXAMPLES / "lane-run-pack.job").read_text().splitlines()
+                    if text.lstrip("# ").startswith("JOB_COMMAND="))
+        job = self.JOB.read_text().split("JOB_COMMAND=", 1)[0] + line + "\n"
+        self.assertEqual(self.run_with_recorder("lane-run", job), "lane run --hosted --skip {pack}")
+
+    def run_with_recorder(self, stem, text):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        pack, marker = fx.tmp / "custom-pack", fx.tmp / "pack-ran"
+        ship = pack / "bin" / "sd-ship"
+        ship.parent.mkdir(parents=True)
+        ship.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$PACK_MARKER"\n')
+        ship.chmod(0o755)
+        env_sh = fx.home / ".config" / "shell" / "env.sh"
+        env_sh.parent.mkdir(parents=True)
+        env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{marker}"\n')
+        fx.write_job(stem, text)
+        result = fx.exec_job(stem)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return marker.read_text().strip().replace(str(pack), "{pack}")
+
     def test_the_pack_job_runs_only_the_pack_lane(self):
         fx = Fixture()
         self.addCleanup(fx.destroy)
