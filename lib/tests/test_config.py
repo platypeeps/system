@@ -366,7 +366,9 @@ class ShellEnv(unittest.TestCase):
         """sd:9652: an env.sh mid-edit ended every cron run under set -e,
         with stdout still on /dev/null, so no job log named the failure."""
         env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
-        for text in ("export OTHER=1\nif true; then\n", "export OTHER=1\nfalse\n"):
+        for text in ("export OTHER=1\nif true; then\n", "export OTHER=1\nfalse\n",
+                     # A failed assignment that a later export hides from `$?`.
+                     "TOKEN=$(false)\nexport OTHER=1\n"):
             self.env_sh(text)
             for sh in ("/bin/sh", "/bin/bash"):
                 with self.subTest(text=text, sh=sh):

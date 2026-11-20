@@ -73,23 +73,26 @@ st_shell_env() {
     # bare `.` under set -e ended the caller with stdout on /dev/null, so
     # every cron run failed for 10 minutes and no job log said why
     # (sd:9652). The parse check comes first, as a POSIX shell exits on a
-    # dot script's syntax error whatever the context; set -e is off for the
-    # `.`, as bash 3.2 exits on a failure inside it even in an `if` test.
+    # dot script's syntax error whatever the context. A subshell under set -e
+    # then finds any failed command, even one a later export hides from `$?`;
+    # set -e is off for the real `.`, as bash 3.2 exits on a failure inside
+    # it even in an `if` test, so the exports that work still load.
+    # ponytail: env.sh runs twice when it parses; one keychain read extra.
     _st_env="$HOME/.config/shell/env.sh"
     if [ -f "$_st_env" ]; then
         if ! "${BASH:-sh}" -n "$_st_env" 2>/dev/null; then
             echo "st_shell_env: $_st_env does not parse; skipped, so its exports are missing" >&2
         else
+            # shellcheck source=/dev/null
+            (set -e; . "$_st_env") >/dev/null 2>&1 ||
+                echo "st_shell_env: a command in $_st_env failed (exit $?); a value it sets may be missing" >&2
             case $- in *e*) _st_e=1; set +e ;; *) _st_e= ;; esac
             # shellcheck source=/dev/null
             . "$_st_env" >/dev/null 2>&1
-            _st_rc=$?
             [ -z "$_st_e" ] || set -e
-            [ "$_st_rc" -eq 0 ] ||
-                echo "st_shell_env: $_st_env ended with exit $_st_rc; its later exports may be missing" >&2
         fi
     fi
-    unset _st_env _st_e _st_rc
+    unset _st_env _st_e
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
     return 0
