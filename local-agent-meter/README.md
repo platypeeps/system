@@ -133,15 +133,16 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   ungrouped ones) and
   `stale=<days>` (1 to 365; drop an open none, minor or maintenance
   incident with no update for longer; a major or critical one, or one
-  with no `updated_at`, stays);
-  with either,
+  with no `updated_at`, stays; alone it keeps the page's `status`);
+  with `groups=`,
   `status` is the worst kept component or incident (sd:9722). An incident
   is dropped only when every component it names is listed outside the
   groups. Cloudflare keeps its core products in a group of their own:
   name `cloudflare-sites-and-services` with the region. A page whose
   indicator is worse than every component and incident it lists reads
   `unknown`: nothing proves the cause is outside the filter. A kept
-  outage still reads `outage` on a critical page.
+  outage still reads `outage` on a critical page. Maintenance explains
+  only a maintenance indicator, never a minor one.
   A list still equal to the earlier default moves to the new one on the
   next run. An edited list stays as it is: add
   `groups=north-america,cloudflare-sites-and-services stale=3` to its

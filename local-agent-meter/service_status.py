@@ -11,12 +11,14 @@ sit outside them; a group the page lacks, or a nested one, reads
 unknown. `stale=<days>`
 drops an open incident of impact none, minor or maintenance with no
 update for more than that many days (1 to 365); a major or critical
-one, or one with no updated_at, stays.
+one, or one with no updated_at, stays. Alone it filters only the
+incident list: the status stays the page's.
 A page may group its core products (Cloudflare's
-`cloudflare-sites-and-services`), so name that group too. With either, the
-status is the worst kept component or incident, never the page's; an
+`cloudflare-sites-and-services`), so name that group too. With groups=,
+the status is the worst kept component or incident, never the page's; an
 indicator worse than everything the page lists reads unknown, unless
-what is kept already shows that status.
+what is kept already shows that status. Maintenance explains only a
+maintenance indicator, never a minor one.
 
 `kind` is one of KINDS. Each read becomes one reading:
 
@@ -249,9 +251,11 @@ WORST = ("ok", "degraded", "outage")
 #: indicator only at its rank or above (lane review). A component counts
 #: at the least it can mean: Cloudflare showed minor over 40
 #: partial_outage ones on 2026-11-21.
-RANK = {"none": 0, "minor": 1, "maintenance": 1, "major": 2, "critical": 3}
+#: Maintenance ranks below minor: it explains a maintenance page, never
+#: a minor one (lane review).
+RANK = {"none": 0, "maintenance": 0.5, "minor": 1, "major": 2, "critical": 3}
 COMPONENT_RANK = {"operational": 0, "degraded_performance": 1, "partial_outage": 1,
-                  "under_maintenance": 1, "major_outage": 2}
+                  "under_maintenance": 0.5, "major_outage": 2}
 
 
 def group_key(name):
@@ -320,7 +324,10 @@ def read_statuspage(url, fetch, options=None, now=None):
     # recomputes the status from them, so it needs some: else a major
     # page with nothing listed read ok (review).
     listed = entries(data.get("components"), "components")
-    if options and not listed:
+    # Only groups= recomputes the status; stale= alone filters the
+    # incident list and keeps the page's status (lane review).
+    scoped = "groups" in options
+    if scoped and not listed:
         raise ReadFailed("no components to filter")
     for c in listed:
         one_of(c.get("status"), COMPONENT, "a component status")
@@ -381,7 +388,7 @@ def read_statuspage(url, fetch, options=None, now=None):
                           "started_at": shown_time(incident.get("created_at"))})
     components = [{"name": title(c.get("name")), "status": c["status"]}
                   for c in kept if c["status"] != "operational"]
-    if options:
+    if scoped:
         for c in components:
             worst = max(worst, COMPONENT_STATUS[c["status"]], key=WORST.index)
         # The filter may hide only a cause the page lists: an indicator
@@ -393,7 +400,7 @@ def read_statuspage(url, fetch, options=None, now=None):
         # outage stands on a critical page (lane review).
         if RANK[indicator] > whole and worst != INDICATOR[indicator]:
             raise ReadFailed("the page's status has no listed cause to filter")
-    return {"status": worst if options else INDICATOR[indicator], "indicator": indicator,
+    return {"status": worst if scoped else INDICATOR[indicator], "indicator": indicator,
             "incidents": incidents, "components": components}
 
 

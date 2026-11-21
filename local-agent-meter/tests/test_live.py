@@ -1139,12 +1139,16 @@ class ServiceFilters(unittest.TestCase):
     def test_a_filter_on_a_page_with_no_components_is_unknown(self):
         # Review: stale=3 on a major page with neither components nor
         # incidents recomputed ok, a false all-clear.
+        # stale= alone keeps the page's status (lane review).
         bare = {"status": {"indicator": "major"}}
-        for options in ({"stale": 3}, {"groups": ["north-america"]}):
+        for options, want in (({"stale": 3}, "outage"),
+                              ({"groups": ["north-america"]}, "unknown")):
             for answer in (bare, dict(bare, components=[]), dict(bare, incidents=[])):
                 with self.subTest(options=options, answer=answer):
                     got = self.read(options, answer)
-                    self.assertEqual(got["status"], "unknown", got)
+                    # No components key is a truncated answer: unknown.
+                    self.assertEqual(got["status"],
+                                     want if "components" in answer else "unknown", got)
 
     def test_a_filter_on_a_page_worse_than_its_listed_causes_is_unknown(self):
         # Review: a critical page with no `incidents` key (or an empty one)
@@ -1152,11 +1156,12 @@ class ServiceFilters(unittest.TestCase):
         # nothing showed the outage sat outside the groups or was stale.
         calm = [dict(c, status="operational") for c in REGIONS["components"]]
         bare = {"status": {"indicator": "critical"}, "components": calm}
-        for options in ({"stale": 3}, {"groups": ["north-america"]}):
+        for options, want in (({"stale": 3}, "outage"),
+                              ({"groups": ["north-america"]}, "unknown")):
             for answer in (bare, dict(bare, incidents=[])):
                 with self.subTest(options=options, incidents="incidents" in answer):
                     got = self.read(options, answer)
-                    self.assertEqual(got["status"], "unknown", got)
+                    self.assertEqual(got["status"], want, got)
         # Review: an operational selected group on a critical page whose
         # only cause outside it is degraded; the drop explains no outage.
         mild = [dict(c, status="degraded_performance") if c["id"] == "fra" else c
@@ -1429,8 +1434,45 @@ class ServiceFilters(unittest.TestCase):
         # A kept cause milder than the page still reads unknown.
         mild = [dict(c, status="degraded_performance") if c["id"] == "iad" else c
                 for c in calm]
-        got = self.read({"stale": 3}, dict(page, components=mild))
+        got = self.read({"groups": ["north-america"]}, dict(page, components=mild))
         self.assertEqual(got["status"], "unknown", got)
+
+    def test_stale_alone_keeps_the_page_status(self):
+        # Lane review: stale= alone read ok for a minor page whose only
+        # cause was an old incident still in monitoring, and unknown for
+        # a major page with no listed cause. Age filters the list only;
+        # without groups= the status is the page's.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        old = dict(REGIONS["incidents"][2], components=[{"id": "fra"}])
+        cases = [("minor", [old], "degraded"), ("major", [], "outage"),
+                 ("none", [old], "ok")]
+        for indicator, incidents, want in cases:
+            with self.subTest(indicator=indicator):
+                page = dict(REGIONS, status={"indicator": indicator},
+                            components=calm, incidents=incidents)
+                got = self.read({"stale": 3}, page)
+                self.assertEqual((got["status"], got["incidents"]), (want, []), got)
+
+    def test_maintenance_explains_no_minor_page(self):
+        # Lane review: maintenance ranked with minor, so an excluded
+        # under_maintenance component or maintenance incident explained
+        # a minor page, and groups= read ok.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        held = [dict(c, status="under_maintenance") if c["id"] == "fra" else c
+                for c in calm]
+        work = {"id": "m", "name": "FRA work", "status": "identified",
+                "impact": "maintenance", "created_at": "2026-11-17T10:00:00Z",
+                "components": [{"id": "fra"}]}
+        for label, components, incidents in (("component", held, []),
+                                             ("incident", calm, [work])):
+            with self.subTest(label):
+                page = dict(REGIONS, status={"indicator": "minor"},
+                            components=components, incidents=incidents)
+                got = self.read({"groups": ["north-america"]}, page)
+                self.assertEqual(got["status"], "unknown", got)
+                got = self.read({"groups": ["north-america"]},
+                                dict(page, status={"indicator": "maintenance"}))
+                self.assertEqual(got["status"], "ok", got)
 
     def test_an_impact_of_none_or_unknown_explains_no_indicator(self):
         # Lane review: a dropped incident of impact none (or one the
@@ -1446,11 +1488,10 @@ class ServiceFilters(unittest.TestCase):
             for options in ({"groups": ["north-america"]}, {"stale": 3}):
                 with self.subTest(impact=impact, options=options):
                     got = self.read(options, page)
-                    if impact == "none" or "groups" in options:
+                    if "groups" in options:
                         self.assertEqual(got["status"], "unknown", got)
                     else:
-                        # stale= keeps an impact it cannot place; it
-                        # still shows as at least degraded.
+                        # stale= alone keeps the page's minor status.
                         self.assertEqual(got["status"], "degraded", got)
 
     def test_a_line_without_groups_reads_no_component_id(self):
