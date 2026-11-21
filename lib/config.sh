@@ -128,10 +128,11 @@ st_shell_env() {
             # The trap counts each failed command; when the chain's last
             # status is not 0, the `.` itself counts once more, so one
             # less is the chain's own count: a false `[ ] && x` last
-            # line fails no command.
+            # line fails no command. errtrace carries the trap into a
+            # function: without it a failed read inside one went unseen.
             _st_fail=0
-            # shellcheck disable=SC3047 # bash only, behind the guard
-            ! (trap : ERR) 2>/dev/null || trap '_st_fail=$((_st_fail + 1))' ERR
+            # shellcheck disable=SC3047,SC3041 # bash only, behind the guard
+            ! (trap : ERR) 2>/dev/null || { set -E; trap '_st_fail=$((_st_fail + 1))' ERR; }
             set -a
             . "$_st_env" 2>&1 >/dev/null </dev/null
             _st_rc=$?

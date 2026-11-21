@@ -560,6 +560,9 @@ class ShellEnv(unittest.TestCase):
         has the ERR trap that names a failed command."""
         base = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
         cases = (('if [ -n "${FLAG:-}" ]; then TOKEN=$(false); fi\nexport OTHER=1\n', True),
+                 # Review of c04bf1e3: bash does not inherit an ERR trap
+                 # into a function unless errtrace is on.
+                 ('load_auth() { AUTH=$(false); export AUTH; }\nload_auth\nexport OTHER=1\n', True),
                  ('export OTHER=1\n[ -n "${NOPE:-}" ] && export NOPE2=1\n', False))
         for text, warns in cases:
             self.env_sh(text)
