@@ -9,9 +9,10 @@ each group's own row and its components (the name lower-cased, spaces as
 `-`) and the ungrouped ones, and drops an incident whose components all
 sit outside them; a group the page lacks, or a nested one, reads
 unknown. `stale=<days>`
-drops an open incident of impact none, minor or maintenance with no
-update for more than that many days (1 to 365); a major or critical
-one, or one with no updated_at, stays. Alone it filters only the
+drops an incident in monitoring, of impact none, minor or
+maintenance, with no update for more than that many days (1 to 365);
+one still investigating or identified, a major or critical one, or
+one with no updated_at, stays. Alone it filters only the
 incident list: the status stays the page's.
 A page may group its core products (Cloudflare's
 `cloudflare-sites-and-services`), so name that group too. With groups=,
@@ -297,7 +298,11 @@ STALE_IMPACT = ("none", "minor", "maintenance")
 def stale(incident, days, now):
     """True when a quiet incident had no update for more than `days`.
     It ages by its last update, not its creation; an impact or a time of
-    another shape, or no updated_at, keeps it (lane review)."""
+    another shape, or no updated_at, keeps it (lane review). Only an
+    incident in monitoring ages: one still investigating or identified
+    is a live outage, however quiet (lane review)."""
+    if incident.get("status") != "monitoring":
+        return False
     if incident.get("impact") not in STALE_IMPACT:
         return False
     # Without a last update, creation alone proves no quiet (review).

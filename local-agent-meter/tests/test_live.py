@@ -1283,9 +1283,25 @@ class ServiceFilters(unittest.TestCase):
         # identified minor incident by created_at alone and hid it.
         for change in ({}, {"updated_at": None}, {"updated_at": ""}):
             with self.subTest(change=change):
-                page = self.stale_page(status="identified", **change)
+                page = self.stale_page(**change)
                 got = self.read({"stale": 3}, page)
                 self.assertEqual([i["title"] for i in got["incidents"]], ["Old"])
+
+    def test_a_stale_filter_keeps_an_incident_still_being_worked(self):
+        # Lane review at 34ced33b: with groups= and stale=3, an open
+        # in-scope incident with no update for four days stopped
+        # counting, so a live outage read ok. Only monitoring ages.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        for status in ("investigating", "identified"):
+            for options in ({"groups": ["north-america"], "stale": 3}, {"stale": 3}):
+                with self.subTest(status=status, options=options):
+                    page = dict(self.stale_page(
+                        status=status, updated_at="2026-11-13T09:00:00Z",
+                        components=[{"id": "iad"}]),
+                        components=calm, status={"indicator": "minor"})
+                    got = self.read(options, page)
+                    self.assertEqual(([i["title"] for i in got["incidents"]],
+                                      got["status"]), (["Old"], "degraded"))
 
     def test_a_stale_filter_keeps_an_incident_it_cannot_place(self):
         # Class pass: an impact or a time of another shape keeps it.
