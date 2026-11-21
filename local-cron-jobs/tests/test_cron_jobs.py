@@ -1664,6 +1664,7 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         errexit is off, so a failed plist write went on to bootout and
         bootstrap and reported `installed:`."""
         self.plist().write_text("the plist launchd holds\n")
+        self.helper_plist().write_text("helper\n")
         self.agents.chmod(0o500)
         self.addCleanup(self.agents.chmod, 0o700)
         result = self.run_script("reinstall-after-run", "demo")
@@ -1674,6 +1675,52 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertNotIn(f"{LABEL_PREFIX}.cron.demo", "\n".join(self.bootouts()))
         self.assertNotIn("launchctl bootstrap", self.calls.read_text())
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def failed_marker(self, job="demo"):
+        return self.fx.folder / "logs" / f".{job}.reinstall.failed"
+
+    def test_uninstall_cancels_a_pending_reinstall(self):
+        """Review blocker: an uninstall between the run's end and the
+        helper's install was undone by the helper. uninstall removes the
+        helper's plist under the job's lock; the helper, holding that lock,
+        installs only while its plist is still there."""
+        self.helper_plist().write_text("helper\n")
+        self.failed_marker().write_text("old\n")
+        result = self.run_script("uninstall", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.helper_plist().exists())
+        self.assertFalse(self.failed_marker().exists())
+        self.assertIn(f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo",
+                      self.bootouts())
+
+    def test_a_cancelled_helper_installs_nothing(self):
+        result = self.run_script("reinstall-after-run", "demo")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("demo: reinstall cancelled", result.stdout)
+        self.assertNotIn("installed:", out)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertFalse(self.plist().exists())
+        self.assertFalse(self.failed_marker().exists())
+
+    def test_a_failed_helper_leaves_a_record_and_a_success_clears_it(self):
+        """Review blocker: a helper failure reached only the job log, after
+        the night's report. It now leaves logs/.<job>.reinstall.failed,
+        which the cron stage reports as FAILED, a drift word."""
+        self.helper_plist().write_text("helper\n")
+        self.hold()
+        result = self.run_script("reinstall-after-run", "demo",
+                                 env={"CRON_JOBS_REINSTALL_WAIT": "1"})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("a run still holds the lock after 1 s", self.failed_marker().read_text())
+
+    def test_a_helper_success_clears_the_failure_record(self):
+        self.helper_plist().write_text("helper\n")
+        self.failed_marker().write_text("an earlier failure\n")
+        result = self.run_script("reinstall-after-run", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout)
+        self.assertFalse(self.failed_marker().exists())
 
     def test_a_run_tells_its_workload_which_job_it_is(self):
         out = self.fx.tmp / "run-job"

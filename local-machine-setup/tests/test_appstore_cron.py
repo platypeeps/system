@@ -747,6 +747,18 @@ exit 0
         self.assertNotIn("PENDING", result.stdout)
         self.assertIn("install busy-stale", self.cron_log.read_text().splitlines())
 
+    def test_a_failed_deferred_reinstall_is_drift(self):
+        """Review blocker: a helper that failed after the night's report
+        left the job stale with no alert. Its record is a FAILED line, a
+        drift word, so the next status --fail-on-drift fails the job."""
+        logs = self.folder.parent / "local-cron-jobs/logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / ".busy-stale.reinstall.failed").write_text(
+            "cron-jobs.sh: busy-stale: a run still holds the lock after 14400 s\n")
+        result = self.run_stage("cron")
+        self.assertIn("FAILED  busy-stale — its deferred reinstall failed: "
+                      "cron-jobs.sh: busy-stale: a run still holds the lock after 14400 s", result.stdout)
+
 class CronRetiredTest(StageTest):
     """A job in local-cron-jobs/retired-jobs.txt is uninstalled, never reinstalled (sd:3155).
 

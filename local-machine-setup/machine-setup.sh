@@ -2421,6 +2421,10 @@ stage_cron() {
         run_ok install -m 644 "$ROOT/local-cron-jobs/examples/$j.job" "$seed_dir/$j.job" ||
         continue
     fi
+    # A deferred reinstall (sd:9826) fails after the night's report; its
+    # record is a FAILED line, so the next status --fail-on-drift alerts.
+    jf="$ROOT/local-cron-jobs/logs/.$j.reinstall.failed"
+    [ ! -f "$jf" ] || echo "  FAILED  $j — its deferred reinstall failed: $(tail -n 1 "$jf")"
     jp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$j.plist"
     owner=0
     [ ! -f "$jp" ] || cron_plist_ours "$jp" "$j" 2>/dev/null || owner=$?

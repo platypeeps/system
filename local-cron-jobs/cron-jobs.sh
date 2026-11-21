@@ -1811,19 +1811,33 @@ EOF
 # The helper's half: wait, bounded, for the run to let the lock go, install,
 # then remove the helper. A run that outlasts the wait keeps the old plist,
 # so verify still reads it STALE and the next update retries.
+# A failure lands after the night's report, so it is also written to
+# logs/.<job>.reinstall.failed; machine-setup's cron stage prints it as a
+# FAILED line, which status --fail-on-drift counts, and a later success
+# removes it. An uninstall in between cancels: the helper's plist is gone.
 cmd_reinstall_after_run() { # job
-  local job="$1" waited=0 rc=0 wait="${CRON_JOBS_REINSTALL_WAIT:-14400}"
+  local job="$1" waited=0 rc=0 wait="${CRON_JOBS_REINSTALL_WAIT:-14400}" why=""
+  local errs="$LOG_DIR/.$job.reinstall.err"
   while lock_is_live "$LOG_DIR/.$job.flock" && [ "$waited" -lt "$wait" ]; do
     sleep 1
     waited=$((waited + 1))
   done
   if lock_is_live "$LOG_DIR/.$job.flock"; then
-    echo "cron-jobs.sh: $job: a run still holds the lock after $wait s; not reinstalled, the next update retries" >&2
+    why="cron-jobs.sh: $job: a run still holds the lock after $wait s; not reinstalled, the next update retries"
+    echo "$why" >&2
     rc=1
   else
     # In a subshell: load_job exits on a missing or broken job file, and
     # that exit skipped the cleanup below, leaving the helper loaded.
-    ( cmd_install "$job" ) || rc=$?
+    ( REINSTALL_HELPER=1; cmd_install "$job" ) 2> "$errs" || rc=$?
+    cat "$errs" >&2
+    [ "$rc" -eq 0 ] || why="$(tail -n 1 "$errs")"
+    rm -f "$errs"
+  fi
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "${why:-cron-jobs.sh: $job: install exited $rc}" > "$LOG_DIR/.$job.reinstall.failed"
+  else
+    rm -f "$LOG_DIR/.$job.reinstall.failed"
   fi
   rm -f "$LOG_DIR/.$job.reinstall.plist"
   # Last: the bootout ends this process with its label.
@@ -1842,6 +1856,12 @@ cmd_install() {
   # Before the plist is written: a refused install leaves the file launchd
   # holds, so `verify` still reads it STALE and the next install retries.
   hold_job_lock "$job" || return 1
+  # The helper's cancellation, read under the lock uninstall takes too.
+  if [ -n "${REINSTALL_HELPER:-}" ] && [ ! -f "$LOG_DIR/.$job.reinstall.plist" ]; then
+    exec 8>&-
+    echo "cancelled: $job: reinstall cancelled; uninstalled since its run asked for it"
+    return 0
+  fi
   # Checked by hand: under `||` (each_or_one, the reinstall helper) errexit
   # is off, and a failed write went on to unload the working agent.
   if ! { mkdir -p "$AGENT_DIR" && write_plist "$job"; }; then
@@ -1882,13 +1902,19 @@ cmd_install() {
 # The lock only where there is a label to boot out: a job never loaded here
 # has no run to kill, and `uninstall --all` leaves it no lock file.
 cmd_uninstall() {
-  local job="$1"
-  if is_loaded "$job"; then
+  local job="$1" helper="$LOG_DIR/.$1.reinstall.plist"
+  if is_loaded "$job" || [ -f "$helper" ]; then
     hold_job_lock "$job" || return 1
-    launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
+    # A pending reinstall is cancelled under the lock the helper's install
+    # takes, so it cannot load the job again after this.
+    if [ -f "$helper" ]; then
+      rm -f "$helper"
+      launchctl bootout "$DOMAIN/$(reinstall_label "$job")" 2>/dev/null || true
+    fi
+    ! is_loaded "$job" || launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
     exec 8>&-
   fi
-  rm -f "$(plist_for "$job")"
+  rm -f "$(plist_for "$job")" "$LOG_DIR/.$job.reinstall.failed"
   echo "uninstalled: $job"
 }
 
