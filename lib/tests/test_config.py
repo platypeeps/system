@@ -393,6 +393,28 @@ class ShellEnv(unittest.TestCase):
                     self.assertEqual(result.stdout, "after\n", result.stderr)
                     self.assertIn(".config/shell/env.sh", result.stderr)
 
+    def test_a_load_guard_does_not_hide_a_failed_command(self):
+        """Review of b670a102: the set -e probe ran after the import, so
+        it inherited the guard env.sh exports and returned at once: a
+        failed token read gave no warning. A clean guarded file warns
+        nothing, and a caller that already holds the guard neither."""
+        guard = ('[ -n "${__SHELL_ENV_GUARD:-}" ] && return 0\n'
+                 "export __SHELL_ENV_GUARD=1\n")
+        base = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        cases = ((guard + "TOKEN=$(false)\nexport OTHER=1\n", base, True),
+                 (guard + "export OTHER=1\n", base, False),
+                 (guard + "TOKEN=$(false)\nexport OTHER=1\n",
+                  {**base, "__SHELL_ENV_GUARD": "1", "OTHER": "1"}, False))
+        for text, env, warns in cases:
+            self.env_sh(text)
+            for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
+                with self.subTest(text=text, sh=sh, env=sorted(env)):
+                    result = subprocess.run(
+                        [sh, "-c", f'. "{LIB}/config.sh"; set -e; st_shell_env; echo "after $OTHER"'],
+                        env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.stdout, "after 1\n", result.stderr)
+                    self.assertEqual("a command in" in result.stderr, warns, result.stderr)
+
     def test_the_committed_template_maps_its_plain_assignment(self):
         """Review of b39ec9c1: shell-env.example assigns without
         `export`, and only exports crossed, so a launchd job lost the
@@ -477,8 +499,12 @@ class ShellEnv(unittest.TestCase):
         part = self.home / ".config/shell/part.sh"
         for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
             with self.subTest(sh=sh):
-                # The first read of the chain passes, then breaks part.sh.
-                self.env_sh(f'. "{part}"\nprintf \'exit 0\\n\' > "{part}"\nexport OTHER=1\n')
+                # The first two reads of the chain pass, the probe's and
+                # the import's; the second then breaks part.sh.
+                seen = self.home / "seen"
+                seen.unlink(missing_ok=True)
+                self.env_sh(f'. "{part}"\nif [ -f "{seen}" ]; then printf \'exit 0\\n\' > "{part}"; fi\n'
+                            f': > "{seen}"\nexport OTHER=1\n')
                 part.write_text("export PART='a b'\n")
                 result = subprocess.run(
                     [sh, "-c", f'. "{LIB}/config.sh"; set -e; st_shell_env; echo "after $OTHER $PART"'],

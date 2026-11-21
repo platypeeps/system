@@ -84,8 +84,8 @@ st_shell_env() {
     # posix, so a function's eval does not make the names local. The
     # assignment is bare, with the caller's set -e off: left of `||`,
     # bash 5 ignored a set -e the chain turns on. A second child under
-    # set -e names a failed command, even one a later export hides from
-    # `$?`; it only warns.
+    # set -e, run first in the same environment, names a failed command,
+    # even one a later export hides from `$?`; it only warns.
     # shell-env.example assigns without `export`, so the subshell sources
     # under set -a and every assignment crosses, exported: the jobs and
     # the claude they start are what read these values.
@@ -98,6 +98,8 @@ st_shell_env() {
     if [ -f "$_st_env" ]; then
         case $- in *e*) _st_e=1 ;; *) _st_e= ;; esac
         set +e
+        _st_nl='
+'
         # shellcheck source=/dev/null
         # The chain's stderr goes ahead of the exports marker: bash, POSIX
         # mode too, returns from a file with a syntax error and goes on, so
@@ -120,6 +122,13 @@ st_shell_env() {
                 ( [ -z "${BASH_VERSION:-}" ] || set -o posix; "$@" -p ) |
                     sed -n "s/^$1 \([A-Za-z_][A-Za-z0-9_]*\).*/\1/p"
             }
+            # The set -e probe runs first, in the environment the import
+            # sees: run after the import it inherited a load guard the
+            # chain exports and returned at once, so a failed command
+            # went unnamed. Its exit code is the first output line.
+            # shellcheck disable=SC2016 # $1 expands in the child
+            "${BASH:-sh}" -ec '. "$1"' st_shell_env "$_st_env" >/dev/null 2>&1 </dev/null
+            echo "#st_shell_env probe $?"
             for _st_n in $(_st_names export); do
                 eval "_st_b_$_st_n=\${$_st_n-}; _st_h_$_st_n=1"
             done
@@ -150,15 +159,16 @@ st_shell_env() {
         case $_st_ok in
             *'#st_shell_env ok')
                 eval "${_st_ok#*'#st_shell_env exports'}"
-                # shellcheck disable=SC2016 # $1 expands in the child
-                "${BASH:-sh}" -ec '. "$1"' st_shell_env "$_st_env" >/dev/null 2>&1 </dev/null ||
-                    echo "st_shell_env: a command in $_st_env failed (exit $?); a value it sets may be missing" >&2
+                _st_rc=${_st_ok%%"$_st_nl"*}
+                _st_rc=${_st_rc#'#st_shell_env probe '}
+                [ "$_st_rc" = 0 ] ||
+                    echo "st_shell_env: a command in $_st_env failed (exit $_st_rc); a value it sets may be missing" >&2
                 ;;
             *) echo "st_shell_env: $_st_env or a file it sources ends the shell; skipped, so its exports are missing" >&2 ;;
         esac
         [ -z "$_st_e" ] || set -e
     fi
-    unset _st_env _st_e _st_ok
+    unset _st_env _st_e _st_ok _st_rc _st_nl
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
     [ -z "$_st_x" ] || set -x
