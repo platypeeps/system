@@ -251,10 +251,11 @@ def group_key(name):
 
 def tree_checked(listed):
     """ReadFailed unless the component tree is one the group filter can
-    trust: unique string ids, a bool or absent group flag, and every
+    trust: unique nonempty string ids, a bool or absent group flag, and every
     parent link naming a group. A broken link hid an outage (review)."""
     ids = [c.get("id") for c in listed]
-    if not all(isinstance(i, str) for i in ids) or len(set(ids)) != len(ids):
+    # An empty or blank id names nothing: it is no proof (review).
+    if not all(isinstance(i, str) and i.strip() for i in ids) or len(set(ids)) != len(ids):
         raise ReadFailed("component ids of another shape")
     groups = set()
     for c in listed:
@@ -341,7 +342,7 @@ def read_statuspage(url, fetch, options=None, now=None):
             # the groups; a missing, odd or unlisted id keeps it (review).
             hit = [c.get("id") for c in entries(incident.get("components") or [],
                                                 "incident components")]
-            if hit and all(isinstance(i, str) and i in outside for i in hit):
+            if hit and all(isinstance(i, str) and i.strip() and i in outside for i in hit):
                 continue
         if "stale" in options and stale(incident, options["stale"], now):
             continue

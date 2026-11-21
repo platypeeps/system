@@ -1058,6 +1058,26 @@ class ServiceFilters(unittest.TestCase):
             ("svc", "statuspage", "https://status.example.test/api", [], options), NOW,
             fetch=answering(answer))
 
+    def test_an_empty_component_id_is_no_proof_an_incident_is_outside(self):
+        # Review: an excluded component with id "" and a critical
+        # incident linked only to "" read ok: the empty id counted as
+        # proof the incident sat outside the groups.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        for empty in ("", "   "):
+            with self.subTest(empty=empty):
+                comps = [dict(c, id=empty) if c["id"] == "fra" else c for c in calm]
+                incident = dict(REGIONS["incidents"][0], impact="critical",
+                                components=[{"id": empty}])
+                got = self.read({"groups": ["north-america"]},
+                                dict(REGIONS, components=comps, incidents=[incident]))
+                self.assertEqual(got["status"], "unknown", got)
+        # A well-formed page with an empty incident link keeps the incident.
+        incident = dict(REGIONS["incidents"][0], impact="critical",
+                        components=[{"id": ""}])
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=calm, incidents=[incident]))
+        self.assertEqual(got["status"], "outage", got)
+
     def test_a_group_with_a_malformed_name_is_unknown(self):
         # Review: a group in major_outage named [] had no key, so it
         # sat outside the chosen groups and its outage read ok.
