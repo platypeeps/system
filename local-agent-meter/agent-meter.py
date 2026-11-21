@@ -36,7 +36,8 @@ still lands, which is the point of the try.
 Since sd:7322 each reading also carries `accounts`: per Claude account that
 `cswap list --json` manages, keyed by its slot number, the seven-day `pct`,
 `resetsAt`, `expectedPct`, the `scoped` (per-model) pcts by name, `active`,
-`status` and `fetchedAt`. Only those fields are copied: no email, no
+`status` and `fetchedAt`, plus `alias` when cswap names the slot with a
+short lower-case name (sd:9860). Only those fields are copied: no email, no
 organization name, no UUID. A cswap that is missing or fails is
 `accounts: null` and `errors.cswap`, with none of its output, since the
 human list it may print holds emails. `CSWAP_BIN` names the binary, else
@@ -266,6 +267,12 @@ def account_entry(account):
     if not (is_time(entry["resetsAt"]) and is_time(entry["fetchedAt"])
             and is_time(entry["status"])):
         raise TypeError("a time or status is not a string")
+    # `cswap alias <num> <name>` labels the slot (sd:9860). Only a short
+    # lower-case name is kept: anything else may be an email, and an
+    # optional label is no reason to fail the read.
+    alias = account.get("alias")
+    if isinstance(alias, str) and usage_sources.NAME.fullmatch(alias):
+        entry["alias"] = alias
     return entry
 
 
