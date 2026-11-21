@@ -355,9 +355,16 @@ else:
 # Only a switch writes it and nothing deletes it, so no sync can lose a
 # newer switch's mark; one older than RC_OWED_FOR owes nothing
 # (sd:9427 review). Which herdr session listed for which switch is
-# RC_LISTED, written only under RC_LOCK.
+# RC_LISTED, written only under RC_LOCK. Owed rows carry the mark's
+# epoch, so each mark is later than the last: a second switch within
+# one second would keep the first one's sent rows and owe nothing.
 owe_rc() {
-  { mkdir -p "${RC_PENDING%/*}" && printf '%s %s\n' "$(date +%s)" "$$" >"$RC_PENDING.$$" &&
+  local since prev
+  since=$(date +%s)
+  prev=$(head -n 1 "$RC_PENDING" 2>/dev/null) || prev=""
+  prev=${prev%% *}
+  [[ "$prev" =~ ^[0-9]+$ ]] && ((prev >= since)) && since=$((prev + 1))
+  { mkdir -p "${RC_PENDING%/*}" && printf '%s %s\n' "$since" "$$" >"$RC_PENDING.$$" &&
     mv "$RC_PENDING.$$" "$RC_PENDING"; } 2>/dev/null ||
     echo "reconnect: could not write $RC_PENDING; no pane owes /rc for this switch"
 }

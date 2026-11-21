@@ -657,6 +657,18 @@ class RemoteControlReconnects(Machine):
                 self.assertEqual(self.owed(), ["w1:p1"])
         self.assertEqual(len(self.called("herdr agent list")), 1)
 
+    def test_two_switches_in_one_second_each_owe_their_panes(self):
+        # Owed rows carry their switch's second: a second switch within
+        # it kept the first one's sent row, and its pane got no /rc. A
+        # `date` stub holds the clock; each mark is later than the last.
+        executable(self.stubs / "date", '#!/bin/sh\n[ "$1" = +%s ] && { echo 1795000000; exit 0; }\n'
+                                        'exec /bin/date "$@"\n')
+        for account in (THREE, ONE):
+            self.publish(account)
+            self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+            result = self.sync("elsewhere")
+            self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+
     def test_the_managed_herdr_session_is_the_one_asked(self):
         # Review on sd:9427: cron's herdr calls went to herdr's default
         # session, not local-herdr's `sd`; an empty default list cleared
@@ -1151,7 +1163,7 @@ class RemoteControlReconnects(Machine):
         (state / "rc-owed").write_text(f"sd w1:p1 s1 {now}\nsd w1:p2 s2 {now}\n")
         failing = self.tmp / "failing-printf.sh"
         failing.write_text('printf() { case "$*" in *w1:p2*) return 1;; esac; builtin printf "$@"; }\n')
-        self.publish(THREE)
+        self.publish(ONE)  # no switch: the seeded mark is the one listed
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
                    ["w1:p2", "claude", "working", "s2", DROPPED])
         result = self.sync("elsewhere", BASH_ENV=str(failing))
