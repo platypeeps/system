@@ -166,6 +166,8 @@ if args[:2] == ["agent", "list"]:
         sys.exit(1)
     print(json.dumps({"id": "cli:agent:list", "result": {"agents": [agent(r) for r in panes]}}))
 elif args[:2] == ["agent", "get"]:
+    import time
+    time.sleep(float(os.environ.get("FAKE_HERDR_GET_SLOW") or 0))
     print(json.dumps({"id": "cli:agent:get", "result": {"type": "agent_info", "agent": next(
         agent(r) for r in panes if r[0] == args[2])}}))
 elif args[:2] == ["agent", "read"]:
@@ -586,7 +588,7 @@ class RemoteControlReconnects(Machine):
         owed.write_text("".join(f"w1:p{n} s{n} {now}\n" for n in (1, 2, 3)))
         self.publish(THREE)
         self.panes(*(["w1:p%d" % n, "claude", "idle", "s%d" % n, DROPPED] for n in (1, 2, 3)))
-        result = self.sync("elsewhere", FAKE_HERDR_SLOW="1.5", CSWAP_RC_BUDGET="5")
+        result = self.sync("elsewhere", FAKE_HERDR_SLOW="1.5", CSWAP_RC_BUDGET="5", CSWAP_RC_GAP_MS="5000")
         calls = self.calls.read_text().splitlines()
         first_read = next(i for i, c in enumerate(calls) if c.startswith("herdr agent read"))
         self.assertLess(next(i for i, c in enumerate(calls) if c.startswith("cswap switch")), first_read)
@@ -806,6 +808,29 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.owed(), ["w1:p1"])
         self.assertIn("reconnect: w1:p1 changed before the send (w1:p1 s9 idle); still owed",
                       result.stdout)
+
+    def test_a_slow_last_check_sends_no_keys(self):
+        # Class pass (sd:9427 review round 4): each check before the keys
+        # goes stale while a later herdr call runs. Typing during a slow
+        # `agent get` left session and status unchanged, and /rc joined
+        # the draft. No order closes it: the whole recheck, from the
+        # screen read to the end of the get, must fit CSWAP_RC_GAP_MS.
+        # Rows: a slow get (screen stale), a slow read (its snapshot and
+        # the get both late): each call is cut at the gap. Two calls each
+        # under the gap whose sum is over it: the timer refuses.
+        rows = [({"FAKE_HERDR_GET_SLOW": "1.5"}, "1000", "changed before the send"),
+                ({"FAKE_HERDR_SLOW": "1.5"}, "1000", "changed before the send"),
+                ({"FAKE_HERDR_SLOW": "0.4", "FAKE_HERDR_GET_SLOW": "0.4"}, "600",
+                 r"took \d+ ms to check, over 600 ms")]
+        for slow, gap, why in rows:
+            with self.subTest(slow=slow):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                result = self.sync("elsewhere", CSWAP_RC_GAP_MS=gap, **slow)
+                self.assertEqual(self.prompts(), [])
+                self.assertEqual(self.owed(), ["w1:p1"])
+                self.assertRegex(result.stdout, rf"reconnect: w1:p1 {why}.*; still owed")
+                (self.script.parent / "state/rc-owed").unlink()
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
         # Fold-in: a list that failed at the switch owed nothing, and the

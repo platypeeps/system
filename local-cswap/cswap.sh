@@ -62,6 +62,9 @@ RC_OWED_FOR=1800
 # bounded by what is left of it, and a pane not reached stays owed
 # (sd:9282 lane review, sd:9427). Tests set CSWAP_RC_BUDGET.
 RC_BUDGET="${CSWAP_RC_BUDGET:-60}"
+# The most milliseconds the last checks before the keys may take, from
+# the screen read to the end of the session get (sd:9427 class pass).
+RC_GAP_MS="${CSWAP_RC_GAP_MS:-1000}"
 RC_DEADLINE=""
 HERDR_DIRS="${CSWAP_HERDR_DIRS-$HOME/.local/bin /opt/homebrew/bin /usr/local/bin}"
 HERDR=""
@@ -359,24 +362,36 @@ list_owed() {
   fi
 }
 
+# Milliseconds since the epoch; bash 3.2 has no EPOCHREALTIME.
+now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+
 # Right before a send (operator ruling 2026-11-18): the pane ($1) still
 # runs the owed session ($2), is still idle or done, and a fresh read of
 # its screen still says send. Else one line, and it stays owed. A gap of
 # milliseconds remains between this check and the keys: herdr has no
 # check-and-send.
 recheck() {
-  local now screen verdict=""
+  local now screen verdict="" start took bound=$(((RC_GAP_MS + 999) / 1000))
   # The screen first, then the session and status: a read can take 10 s,
   # and a session that took the pane during it shows a drop and an empty
   # box of its own (sd:9427 review). The get is the last word.
-  if ! screen=$(rc_step 10 "$HERDR" agent read "$1" --format ansi) ||
+  # Each check goes stale while the next herdr call runs, and no order
+  # closes that: a draft typed during a slow get kept session and status.
+  # So both calls together must fit RC_GAP_MS, or the pane stays owed.
+  start=$(now_ms)
+  if ! screen=$(rc_step "$bound" "$HERDR" agent read "$1" --format ansi) ||
     ! verdict=$(rc_read screen <<<"$screen") || [[ "$verdict" != send ]]; then
     echo "reconnect: $1 changed before the send (${verdict:-no screen}); still owed"
     return 1
   fi
-  now=$(rc_step 10 "$HERDR" agent get "$1" | rc_read pane) || now=""
+  now=$(rc_step "$bound" "$HERDR" agent get "$1" | rc_read pane) || now=""
   if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
     echo "reconnect: $1 changed before the send (${now:-no answer}); still owed"
+    return 1
+  fi
+  took=$(($(now_ms) - start))
+  if ((took > RC_GAP_MS)); then
+    echo "reconnect: $1 took $took ms to check, over $RC_GAP_MS ms; still owed"
     return 1
   fi
 }
