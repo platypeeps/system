@@ -1346,6 +1346,21 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
 
+    def test_a_switch_during_the_sent_mark_stops_the_send(self):
+        # sd:9427 review: a switch runs outside the reconnect lock, and
+        # one that landed while the sent mark was written still got the
+        # old row's /rc; the newer switch then owes the pane again. The
+        # switch is read again after the mark.
+        during = self.tmp / "switch-at-mark.sh"
+        during.write_text('awk() { local s _; case "${2-}" in row=*)\n'
+                          '  read -r s _ <"$RC_PENDING"; builtin printf "%s 4343\\n" $((s + 1)) >"$RC_PENDING";;\n'
+                          'esac; command awk "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(during))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn("reconnect: w1:p1 changed before the send (a newer switch)", result.stdout)
+
     def test_a_session_herdr_stops_naming_gets_no_keys(self):
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"session": None}])

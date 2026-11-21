@@ -504,12 +504,6 @@ send_rc() {
     echo "reconnect: $1 took $took ms to check, over $RC_GAP_MS ms; still owed"
     return 1
   fi
-  # A switch that landed during the pass makes this row an older
-  # switch's: the newer one lists the pane (sd:9427 review).
-  if [[ "$(current_since)" != "$3" ]]; then
-    echo "reconnect: $1 changed before the send (a newer switch); the current one lists it"
-    return 1
-  fi
   # The send counts too: herdr may take seconds to deliver, and a draft
   # typed meanwhile would take the /rc (sd:9427 review). Its --timeout
   # is the gap's time left. Once the prompt runs, the /rc may have gone
@@ -525,6 +519,15 @@ send_rc() {
   # review). A mark that does not write sends nothing.
   if ! mark_sent "$HERDR_SESSION $1 $2 $3"; then
     echo "reconnect: could not write $RC_OWED before the send; $1 stays owed"
+    return 1
+  fi
+  # A switch that landed during the pass makes this row an older
+  # switch's: the newer one lists the pane (sd:9427 review). A switch
+  # takes no reconnect lock, so this is read after the mark (sd:9427
+  # review). ponytail: a switch in the milliseconds from here to the
+  # launch still races; closing it needs the switch to take RC_LOCK.
+  if [[ "$(current_since)" != "$3" ]]; then
+    echo "reconnect: $1 changed before the send (a newer switch); the current one lists it"
     return 1
   fi
   # The write counts in the gap and the budget: both are read again
