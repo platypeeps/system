@@ -43,6 +43,8 @@ from usage_sources import ReadFailed  # noqa: E402
 
 SCRIPT = HERE / "agent-meter.py"
 NOW = datetime.datetime(2026, 11, 17, 20, 0, tzinfo=datetime.timezone.utc)
+#: The UTC month start after NOW: a month spend's reset (sd:9701).
+NEXT = "2026-12-01T00:00:00Z"
 SECRET = "sk-test-0123456789-secret"
 LOCAL = {"NO_PROXY": "*", "no_proxy": "*"}
 #: urllib reads the lower-case name first; both go.
@@ -89,8 +91,10 @@ PREMIUM = {"product": "Copilot", "sku": "Copilot Premium Request", "model": "m-1
 
 ANSWERS = {
     "openrouter": ("OPENROUTER_API_KEY",
-                   {"data": {"usage_monthly": 12.5, "limit": 50, "limit_remaining": 37.5}},
-                   {"spend": {"amount": 12.5, "unit": "usd", "period": "month"},
+                   {"data": {"usage_monthly": 12.5, "limit": 50, "limit_remaining": 37.5,
+                             "limit_reset": "monthly"}},
+                   {"spend": {"amount": 12.5, "unit": "usd", "period": "month",
+                              "resets_at": NEXT, "limit": 50.0},
                     "balance": {"amount": 37.5, "unit": "usd"}}),
     "moonshot": ("MOONSHOT_API_KEY",
                  {"code": 0, "status": True, "data": {"available_balance": 4.25,
@@ -98,7 +102,8 @@ ANSWERS = {
                  {"balance": {"amount": 4.25, "unit": "usd"}}),
     "deepinfra": ("DEEPINFRA_API_KEY",
                   {"months": [{"period": "2026.11", "total_cost": 1234, "items": []}]},
-                  {"spend": {"amount": 12.34, "unit": "usd", "period": "month"}}),
+                  {"spend": {"amount": 12.34, "unit": "usd", "period": "month",
+                              "resets_at": NEXT}}),
     "minimax": ("MINIMAX_API_KEY",
                 {"base_resp": {"status_code": 0}, "model_remains": [{
                     "model_name": "general", "start_time": 1795000000000,
@@ -125,7 +130,8 @@ ANSWERS = {
     "openai": ("OPENAI_ADMIN_KEY",
                {"data": [{"results": [{"amount": {"value": 1.5, "currency": "usd"}}]},
                          {"results": [{"amount": {"value": 2.25, "currency": "usd"}}]}]},
-               {"spend": {"amount": 3.75, "unit": "usd", "period": "month"}}),
+               {"spend": {"amount": 3.75, "unit": "usd", "period": "month",
+                              "resets_at": NEXT}}),
     # Checked 2026-11-19: Baseten's totals are decimal strings in usd.
     "baseten": ("BASETEN_API_KEY",
                 {"dedicated_usage": {"subtotal": "0.00", "credits_used": "0.00", "total": "0.00",
@@ -133,14 +139,16 @@ ANSWERS = {
                  "model_apis_usage": {"subtotal": "242.95", "credits_used": "0.00",
                                       "total": "242.95", "breakdown": []},
                  "training_usage": {"total": "1.05", "minutes": 3, "breakdown": []}},
-                {"spend": {"amount": 244.0, "unit": "usd", "period": "month"}}),
+                {"spend": {"amount": 244.0, "unit": "usd", "period": "month",
+                              "resets_at": NEXT}}),
     # A metric with no use this month is null, not 0.
     "langsmith": ("LANGSMITH_API_KEY",
                   [{"billable_metric_name": "Base Traces", "value": 0.25,
                     "start_timestamp": "2026-11-01T00:00:00Z", "groups": {}},
                    {"billable_metric_name": "Sandbox", "value": None, "groups": None},
                    {"billable_metric_name": "Fleet", "value": 1.5, "groups": None}],
-                  {"spend": {"amount": 1.75, "unit": "units", "period": "month"}}),
+                  {"spend": {"amount": 1.75, "unit": "units", "period": "month",
+                              "resets_at": NEXT}}),
     # You.com's API reference: the balance is in cents.
     "youcom": ("YDC_API_KEY",
                {"data": {"type": "account", "id": "abc", "attributes": {"balance": 718924.5}}},
@@ -149,7 +157,8 @@ ANSWERS = {
                    {"data": {"words_used": 2500, "words_remaining": 7500, "limit": 10000,
                              "plan": "basic", "is_subscribed": True,
                              "current_period_end": "2026-12-01T00:00:00.000Z"}},
-                   {"spend": {"amount": 2500.0, "unit": "words", "period": "billing period"},
+                   {"spend": {"amount": 2500.0, "unit": "words", "period": "billing period",
+                              "resets_at": "2026-12-01T00:00:00.000Z", "limit": 10000.0},
                     "balance": {"amount": 7500.0, "unit": "words"},
                     "windows": [{"name": "words", "used_percent": 25.0, "window_minutes": None,
                                  "resets_at": "2026-12-01T00:00:00.000Z"}]}),
@@ -163,13 +172,15 @@ ANSWERS = {
                    {"date": "2026-11-03", "product": "copilot", "sku": "copilot_pro",
                     "quantity": 1, "unitType": "UserMonths", "pricePerUnit": 10,
                     "grossAmount": 10, "discountAmount": 0, "netAmount": 10}]},
-               {"spend": {"amount": 10.0, "unit": "usd", "period": "month"}}),
+               {"spend": {"amount": 10.0, "unit": "usd", "period": "month",
+                              "resets_at": NEXT}}),
     # A personal plan on AI credits (checked 2026-11-19): the AI-credit
     # report holds the month; its premium-request report is empty.
     "copilot": ("GH_TOKEN",
                 {"login": "operator", "timePeriod": {"year": 2026, "month": 11},
                  "user": "operator", "usageItems": [AI_CREDITS]},
-                {"spend": {"amount": 3.0, "unit": "usd", "period": "month"},
+                {"spend": {"amount": 3.0, "unit": "usd", "period": "month",
+                              "resets_at": NEXT},
                  "credits": 1800.0}),
     # Daily buckets; each amount a decimal string in cents (checked
     # 2026-11-19, sd:9594).
@@ -181,7 +192,8 @@ ANSWERS = {
                                  "ending_at": "2026-11-03T00:00:00Z",
                                  "results": [{"currency": "USD", "amount": "225.00"}]}],
                        "has_more": False, "next_page": None},
-                      {"spend": {"amount": 3.75, "unit": "usd", "period": "month"}}),
+                      {"spend": {"amount": 3.75, "unit": "usd", "period": "month",
+                              "resets_at": NEXT}}),
 }
 
 #: Values no number in an answer may be taken from.
@@ -563,14 +575,80 @@ class Readers(unittest.TestCase):
     def test_the_starting_list_names_every_reader_once(self):
         names, problems = usage_sources.parse_providers(usage_sources.STARTING)
         self.assertEqual(problems, [])
-        self.assertEqual(sorted(names), sorted(["claude", "codex", *usage_sources.READERS,
+        self.assertEqual(sorted(name for name, _ in names), sorted(["claude", "codex", *usage_sources.READERS,
                                                 *usage_sources.NO_SOURCE, *usage_sources.PASSED]))
 
     def test_the_providers_grammar(self):
         names, problems = usage_sources.parse_providers(
             "# comment\nclaude\n\n codex  # trailing\nclaude\nBad Name\nx/y\n")
-        self.assertEqual(names, ["claude", "codex"])
+        self.assertEqual(names, [("claude", None), ("codex", None)])
         self.assertEqual(problems, ["line 6: not a provider name", "line 7: not a provider name"])
+
+    def test_a_providers_line_may_carry_a_positive_cap(self):
+        # sd:9701: Baseten's budget has no read API; the list holds it.
+        entries, problems = usage_sources.parse_providers(
+            "baseten cap=250\nopenai  cap=12.5 # month\nbaseten cap=9\ndeepinfra cap=0\n"
+            "groq cap=-1\nmoonshot cap=1e3\nyoucom cap=\nheygen cap=5 cap=6\nrunway limit=5\n"
+            "firecrawl cap=inf\nlangsmith cap=1" + "0" * 20 + "\n")
+        self.assertEqual(entries, [("baseten", 250.0), ("openai", 12.5)])
+        self.assertEqual(problems, ["line %d: %s" % (n, "not a provider name" if n == 9 else
+                                                     "cap=N wants N a positive decimal")
+                                    for n in range(4, 12)])
+
+    def test_a_month_spend_resets_at_the_next_utc_month(self):
+        # sd:9701: the cycle end, also from a late local day of the month.
+        late = datetime.datetime(2026, 12, 31, 23, 30, tzinfo=datetime.timezone(
+            datetime.timedelta(hours=-7)))
+        var, answer, _ = ANSWERS["openai"]
+        got = usage_sources.read_provider("openai", {var: SECRET}, answering(answer), late)
+        self.assertEqual(got["spend"]["resets_at"], "2027-02-01T00:00:00Z")
+
+    def test_openwhispr_spend_resets_at_its_period_end_or_not_at_all(self):
+        var, answer, _ = ANSWERS["openwhispr"]
+        for end, expected in ((None, None), ("2026-12-05T00:00:00Z", "2026-12-05T00:00:00Z")):
+            with self.subTest(end=end):
+                bent = put(answer, ("data", "current_period_end"), end)
+                got = usage_sources.read_provider("openwhispr", {var: SECRET}, answering(bent), NOW)
+                self.assertEqual(got["spend"].get("resets_at"), expected, got)
+
+    def test_openwhisprs_own_word_limit_wins_over_the_lists_cap(self):
+        # Review on sd:9701: cap=5000 overrode a 10,000-word plan.
+        var, answer, _ = ANSWERS["openwhispr"]
+        got = usage_sources.read_provider("openwhispr", {var: SECRET}, answering(answer), NOW, cap=5000.0)
+        self.assertEqual(got["spend"]["limit"], 10000.0, got)
+        unlimited = put(answer, ("data", "limit"), -1)
+        got = usage_sources.read_provider("openwhispr", {var: SECRET}, answering(unlimited), NOW, cap=5000.0)
+        self.assertEqual(got["spend"]["limit"], 5000.0, got)
+
+    def test_a_spend_limit_is_openrouters_own_then_the_lists_cap(self):
+        var, answer, _ = ANSWERS["openrouter"]
+        got = usage_sources.read_provider("openrouter", {var: SECRET}, answering(answer), NOW, cap=9.0)
+        self.assertEqual(got["spend"]["limit"], 50.0)
+        unset = put(answer, ("data", "limit"), None)
+        got = usage_sources.read_provider("openrouter", {var: SECRET}, answering(unset), NOW, cap=9.0)
+        self.assertEqual(got["spend"]["limit"], 9.0)
+        got = usage_sources.read_provider("openrouter", {var: SECRET}, answering(unset), NOW)
+        self.assertNotIn("limit", got["spend"])
+        # Review on sd:9701: a key limit that resets daily, weekly or
+        # never is no cap on the month's spend.
+        for reset in ("daily", "weekly", None, "yearly", 5):
+            with self.subTest(reset=reset):
+                other = put(answer, ("data", "limit_reset"), reset)
+                got = usage_sources.read_provider("openrouter", {var: SECRET},
+                                                  answering(other), NOW)
+                self.assertEqual(got["status"], "ok", got)
+                self.assertNotIn("limit", got["spend"])
+                got = usage_sources.read_provider("openrouter", {var: SECRET},
+                                                  answering(other), NOW, cap=9.0)
+                self.assertEqual(got["spend"]["limit"], 9.0)
+        var, answer, _ = ANSWERS["baseten"]
+        got = usage_sources.read_provider("baseten", {var: SECRET}, answering(answer), NOW, cap=250.0)
+        self.assertEqual(got["spend"], {"amount": 244.0, "unit": "usd", "period": "month",
+                                        "resets_at": NEXT, "limit": 250.0})
+        # A cap on a provider with no spend changes nothing.
+        var, answer, _ = ANSWERS["moonshot"]
+        got = usage_sources.read_provider("moonshot", {var: SECRET}, answering(answer), NOW, cap=5.0)
+        self.assertEqual((got["status"], got["spend"]), ("ok", None))
 
     def test_claude_reads_every_account_and_the_active_ones_week(self):
         accounts = [{"number": 1, "active": False, "pct": 10.0, "resetsAt": "a"},
@@ -1197,7 +1275,7 @@ class Live(unittest.TestCase):
         rows = self.rows("usage:")
         names, _ = usage_sources.parse_providers(usage_sources.STARTING)
         # A passed-in provider gets its row from its caller (sd:9586).
-        self.assertEqual(sorted(rows), sorted("usage:" + n for n in names
+        self.assertEqual(sorted(rows), sorted("usage:" + n for n, _ in names
                                               if n not in usage_sources.PASSED))
         self.assertEqual(rows["usage:claude"]["status"], "ok")
         self.assertEqual(rows["usage:claude"]["windows"][0]["used_percent"], 40.0)
@@ -1211,7 +1289,7 @@ class Live(unittest.TestCase):
         self.assertIn("rows", done.stdout)
 
     def test_usage_reads_the_held_list_only_and_names_a_refused_line(self):
-        self.setting("dashboard.usage_providers", "codex\nnot a name\ngroq\n")
+        self.setting("dashboard.usage_providers", "codex\nnot a name\ngroq cap=5\n")
         done = self.run_live("usage")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(sorted(self.rows("usage:")), ["usage:codex", "usage:groq"])

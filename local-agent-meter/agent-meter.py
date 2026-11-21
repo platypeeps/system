@@ -369,7 +369,7 @@ def write_rows(record, a) -> None:
                        **({"seen": seen} if seen else {})}
 
 
-def read_one(provider, accounts, accounts_error, now):
+def read_one(provider, accounts, accounts_error, now, cap=None):
     """One provider's reading: claude from cswap's accounts, codex from its
     app-server (its session logs when that fails), the rest from their own usage APIs."""
     if provider == "claude":
@@ -377,7 +377,7 @@ def read_one(provider, accounts, accounts_error, now):
     if provider == "codex":
         return usage_sources.codex_reading(
             now=now, binary=os.environ.get("CODEX_BIN") or find_bin("codex"))
-    return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now)
+    return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now, cap)
 
 
 def live(a, list_key, starting, parse, read, row_key) -> None:
@@ -477,11 +477,12 @@ def newest_live(connection, row_key):
     return sorted(found)
 
 
-def read_usage(name, now):
+def read_usage(entry, now):
+    name, cap = entry
     if name in usage_sources.PASSED:
         return name, None
     accounts, error = read_accounts(30) if name == "claude" else (None, None)
-    return name, read_one(name, accounts, error, now)
+    return name, read_one(name, accounts, error, now, cap)
 
 
 def record_passed(a, name, body):
