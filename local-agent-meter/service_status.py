@@ -243,6 +243,13 @@ COMPONENT_STATUS = {"operational": "ok", "degraded_performance": "degraded",
                     "partial_outage": "degraded", "under_maintenance": "degraded",
                     "major_outage": "outage"}
 WORST = ("ok", "degraded", "outage")
+#: The page indicator's own scale, finer than WORST: a cause explains an
+#: indicator only at its rank or above (lane review). A component counts
+#: at the least it can mean: Cloudflare showed minor over 40
+#: partial_outage ones on 2026-11-21.
+RANK = {"none": 0, "minor": 1, "maintenance": 1, "major": 2, "critical": 3}
+COMPONENT_RANK = {"operational": 0, "degraded_performance": 1, "partial_outage": 1,
+                  "under_maintenance": 1, "major_outage": 2}
 
 
 def group_key(name):
@@ -259,11 +266,15 @@ def tree_checked(listed):
         raise ReadFailed("component ids of another shape")
     groups = set()
     for c in listed:
-        if c.get("group") not in (None, True, False):
+        # JSON true or false only: 1 == True passed `in` (lane review).
+        if c.get("group") is not None and not isinstance(c.get("group"), bool):
             raise ReadFailed("a component group flag of another shape")
         if c.get("group") is True:
             groups.add(c["id"])
-    if not all(c.get("group_id") is None or c.get("group_id") in groups for c in listed):
+    # A parent is a string first: a list raised TypeError in the lookup.
+    if not all(c.get("group_id") is None
+               or (isinstance(c.get("group_id"), str) and c["group_id"] in groups)
+               for c in listed):
         raise ReadFailed("a component names no group on the page")
 
 
@@ -328,7 +339,7 @@ def read_statuspage(url, fetch, options=None, now=None):
     kept_ids = {c.get("id") for c in kept}
     # Ids the page lists outside the kept ones: proof an incident is elsewhere.
     outside = {c.get("id") for c in listed if isinstance(c.get("id"), str)} - kept_ids
-    incidents, worst, whole = [], "ok", "ok"
+    incidents, worst, whole = [], "ok", 0
     # Some pages (OpenAI, Tailscale, ...) leave `incidents` out when none is
     # open; a key that is there must still be a list of objects.
     for incident in entries(data["incidents"] if "incidents" in data else [], "incidents"):
@@ -337,9 +348,10 @@ def read_statuspage(url, fetch, options=None, now=None):
             continue
         # An open incident is at least degraded, whatever its impact says.
         impact = incident.get("impact")
-        impact = INDICATOR.get(impact, "degraded") if isinstance(impact, str) else "degraded"
+        impact = impact if isinstance(impact, str) and impact in RANK else "minor"
+        whole = max(whole, RANK[impact], 1)
+        impact = INDICATOR[impact]
         impact = "degraded" if impact == "ok" else impact
-        whole = max(whole, impact, key=WORST.index)
         if "groups" in options:
             # Dropped only when every link names a listed component outside
             # the groups; a missing, odd or unlisted id keeps it (review).
@@ -365,8 +377,8 @@ def read_statuspage(url, fetch, options=None, now=None):
         # worse than every listed component and open incident has no
         # proof it sits outside the groups or is stale (review).
         for c in listed:
-            whole = max(whole, COMPONENT_STATUS[c["status"]], key=WORST.index)
-        if WORST.index(INDICATOR[indicator]) > WORST.index(whole):
+            whole = max(whole, COMPONENT_RANK[c["status"]])
+        if RANK[indicator] > whole:
             raise ReadFailed("the page's status has no listed cause to filter")
     return {"status": worst if options else INDICATOR[indicator], "indicator": indicator,
             "incidents": incidents, "components": components}

@@ -1270,7 +1270,7 @@ class ServiceFilters(unittest.TestCase):
     def test_an_incident_with_no_proof_it_is_outside_is_kept(self):
         # Review: components=[{}] or an id the page does not list was
         # read as outside the groups, and a major incident read ok.
-        for links in ([{}], [{"id": None}], [{"id": 5}], [{"id": "gone"}],
+        for links in ([{}], [{"id": None}], [{"id": 5}], [{"id": ["fra"]}], [{"id": "gone"}],
                       [{"id": "fra"}, {}], [{"id": "fra"}, {"id": "gone"}]):
             with self.subTest(links=links):
                 page = dict(REGIONS, components=[dict(c, status="operational")
@@ -1345,6 +1345,47 @@ class ServiceFilters(unittest.TestCase):
                 self.assertEqual(got["status"], "unknown", got)
         self.assertEqual(self.read({"groups": ["north-america"]}, page(lambda cs: None))
                          ["status"], "outage")
+
+    def test_a_group_flag_or_parent_of_another_type_is_unknown(self):
+        # Lane review: `group: 1` passed as a flag (1 == True) but missed
+        # `is True`, so Europe counted as ungrouped, and a list-valued
+        # parent raised TypeError. Each field the filter reads is typed.
+        def page(index, key, value):
+            components = [dict(c, status="operational") for c in REGIONS["components"]]
+            components[index][key] = value
+            components[3]["status"] = "major_outage"
+            return dict(REGIONS, components=components, incidents=[])
+        cases = [(2, "group", 1), (2, "group", 1.0), (2, "group", 0),
+                 (2, "group", "yes"), (0, "group", 1), (3, "group", 0),
+                 (3, "group_id", ["eu"]), (3, "group_id", {"id": "eu"}),
+                 (3, "group_id", 0), (3, "group_id", False)]
+        for index, key, value in cases:
+            with self.subTest(index=index, key=key, value=value):
+                got = self.read({"groups": ["north-america"]}, page(index, key, value))
+                self.assertEqual(got["status"], "unknown", got)
+                self.assertNotIn("another shape: ", got["error"])
+
+    def test_a_major_cause_never_explains_a_critical_page(self):
+        # Lane review: major and critical both became `outage` before
+        # the comparison, so a critical page whose only listed cause
+        # outside the groups was a major_outage component read ok.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        major = [dict(c, status="major_outage") if c["id"] == "fra" else c for c in calm]
+        for options in ({"groups": ["north-america"]}, {"stale": 3}):
+            with self.subTest(options=options):
+                got = self.read(options, dict(REGIONS, status={"indicator": "critical"},
+                                              components=major, incidents=[]))
+                self.assertEqual(got["status"], "unknown", got)
+        # A critical incident outside the groups explains it: ok.
+        fra = dict(REGIONS["incidents"][1], impact="critical")
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, status={"indicator": "critical"},
+                             components=major, incidents=[fra]))
+        self.assertEqual(got["status"], "ok", got)
+        # A major_outage component explains a major page, as before.
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=major, incidents=[]))
+        self.assertEqual(got["status"], "ok", got)
 
     def test_a_group_the_page_lacks_is_unknown_never_ok(self):
         got = self.read({"groups": ["antarctica"]})
