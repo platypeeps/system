@@ -99,7 +99,6 @@ st_shell_env() {
     if [ -f "$_st_env" ]; then
         case $- in *e*) _st_e=1 ;; *) _st_e= ;; esac
         set +e
-        # shellcheck source=/dev/null
         # The chain's stderr goes ahead of the exports marker: bash, POSIX
         # mode too, returns from a file with a syntax error and goes on, so
         # its message is the one sign that only part of the chain ran. It
@@ -111,10 +110,16 @@ st_shell_env() {
         # A relative name is tried from this directory and from each one
         # the ERR trap logged: after a `cd` in the chain, this directory
         # alone found no file and imported the partial settings.
+        # The markers carry this shell's pid, so a tool that prints
+        # `#st_shell_env exports` puts no text of its own into the eval.
+        # ponytail: a pid is no secret; it guards against chance, not a
+        # chain that means to forge it.
+        _st_m="#st_shell_env $$"
+        # shellcheck source=/dev/null
         _st_ok=$(
             # Only what the chain adds, changes or unsets goes back, in
-            # this shell's own quoting, and never a readonly name:
-            # replaying the whole `export -p` assigned an exported
+            # this shell's own quoting, and never a name readonly before
+            # the chain: replaying the whole `export -p` assigned an exported
             # readonly name, bash's SHELLOPTS too, and that ended a POSIX
             # caller. The dumps run in a subshell, so its `set -o posix`
             # binds POSIXLY_CORRECT there alone.
@@ -138,6 +143,11 @@ st_shell_env() {
                     done
             }
             _st_before=$(_st_names export)
+            # Only a name readonly before the chain is skipped: one env.sh
+            # declares readonly is the caller's to take, and skipping it
+            # left a readonly CUSTOM_ token unmapped.
+            _st_ro=' '
+            for _st_n in $(_st_names readonly); do _st_ro="$_st_ro$_st_n "; done
             for _st_n in $_st_before; do
                 eval "_st_b_$_st_n=\${$_st_n-}; _st_h_$_st_n=1"
             done
@@ -150,7 +160,7 @@ st_shell_env() {
             # relative name in a syntax error resolves.
             _st_fail=0
             # shellcheck disable=SC3047,SC3041 # bash only, behind the guard
-            ! (trap : ERR) 2>/dev/null || { set -E; trap '_st_fail=$((_st_fail + 1)); printf "#st_shell_env dir %s\\n" "$PWD" >&2' ERR; }
+            ! (trap : ERR) 2>/dev/null || { set -E; trap '_st_fail=$((_st_fail + 1)); printf "%s dir %s\\n" "$_st_m" "$PWD" >&2' ERR; }
             set -a
             . "$_st_env" 2>&1 >/dev/null </dev/null
             _st_rc=$?
@@ -158,9 +168,7 @@ st_shell_env() {
             [ "$_st_rc" = 0 ] || [ "$_st_fail" = 0 ] || _st_fail=$((_st_fail - 1))
             # shellcheck disable=SC3047
             ! (trap : ERR) 2>/dev/null || trap - ERR
-            echo '#st_shell_env exports'
-            _st_ro=' '
-            for _st_n in $(_st_names readonly); do _st_ro="$_st_ro$_st_n "; done
+            echo "$_st_m exports"
             for _st_n in $_st_before; do
                 eval "[ -z \"\${$_st_n+x}\" ]" && printf 'unset %s\n' "$_st_n"
             done
@@ -178,14 +186,14 @@ st_shell_env() {
                 done
                 printf "export %s='%s'\n" "$_st_n" "$_st_q$_st_s"
             done
-            echo "#st_shell_env ok $_st_fail"
+            echo "$_st_m ok $_st_fail"
         )
         case $_st_ok in
-            (*': line '[0-9]*': syntax error'*'#st_shell_env exports'*)
-                _st_pre=${_st_ok%%'#st_shell_env exports'*}
+            (*': line '[0-9]*': syntax error'*"$_st_m exports"*)
+                _st_pre=${_st_ok%%"$_st_m exports"*}
                 _st_dirs=$(printf '%s\n' "$_st_pre" | while IFS= read -r _st_l; do
                     case $_st_l in
-                        ('#st_shell_env dir '*) printf '%s\n' "${_st_l#'#st_shell_env dir '}" ;;
+                        ("$_st_m dir "*) printf '%s\n' "${_st_l#"$_st_m dir "}" ;;
                     esac
                 done)
                 while IFS= read -r _st_l; do
@@ -211,9 +219,9 @@ EOF
                 ;;
         esac
         case $_st_ok in
-            *'#st_shell_env ok '[0-9]*)
-                eval "${_st_ok#*'#st_shell_env exports'}"
-                _st_rc=${_st_ok##*'#st_shell_env ok '}
+            *"$_st_m exports"*"$_st_m ok "[0-9]*)
+                eval "${_st_ok#*"$_st_m exports"}"
+                _st_rc=${_st_ok##*"$_st_m ok "}
                 [ "$_st_rc" = 0 ] ||
                     echo "st_shell_env: a command in $_st_env failed ($_st_rc in all); a value it sets may be missing" >&2
                 ;;
@@ -221,7 +229,7 @@ EOF
         esac
         [ -z "$_st_e" ] || set -e
     fi
-    unset _st_env _st_e _st_ok _st_rc _st_l _st_f _st_d _st_p _st_pre _st_dirs
+    unset _st_env _st_e _st_ok _st_rc _st_l _st_f _st_d _st_p _st_pre _st_dirs _st_m
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
     [ -z "$_st_x" ] || set -x

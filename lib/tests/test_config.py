@@ -618,6 +618,33 @@ class ShellEnv(unittest.TestCase):
                         env=env, capture_output=True, text=True, check=False)
                     self.assertEqual(result.stdout, "1\n", result.stderr)
 
+    def test_a_diagnostic_with_the_marker_text_drops_nothing(self):
+        """Review of a9240d94: the caller split at the first
+        `#st_shell_env exports` in the chain's stderr too, so a tool
+        that printed it put its text into the eval."""
+        self.env_sh("echo 'tool: #st_shell_env exports (' >&2\n"
+                    "echo 'tool: #st_shell_env ok 0' >&2\nexport OTHER=1\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        for sh in SHELLS:
+            with self.subTest(sh=sh):
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; echo "${{OTHER-unset}}"'],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "1\n", result.stderr)
+                self.assertEqual(result.stderr, "")
+
+    def test_a_readonly_custom_token_is_still_mapped(self):
+        """Review of a9240d94: every readonly name was skipped, so one
+        env.sh declared readonly never crossed: the base mapped it."""
+        self.env_sh("readonly CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        for sh in SHELLS:
+            with self.subTest(sh=sh):
+                env = {"PATH": os.environ["PATH"], "HOME": str(self.home), "WANT": "tok-custom"}
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; sh -c \'{self.SEEN}\''],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "same\n", result.stderr)
+
     def test_set_e_from_env_sh_does_not_reach_the_caller(self):
         """An env.sh that turns set -e on would end a caller that runs
         without it at its next failed command."""
