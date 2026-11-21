@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -629,6 +630,36 @@ class ShellEnv(unittest.TestCase):
                         env=env, capture_output=True, text=True, check=False)
                     self.assertEqual(result.stdout, "unset unset\n", result.stderr)
                     self.assertIn(".config/shell/env.sh", result.stderr)
+
+    def test_a_background_helper_neither_injects_nor_stalls(self):
+        """Review of fac72ef1: a helper env.sh starts in the background
+        held the capture's stderr, so its late line was evaluated in
+        the caller, and the import waited until the helper ended."""
+        self.env_sh("export OTHER=1\n(sleep 3; echo 'echo INJECTED' >&2) &\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        for sh in SHELLS:
+            with self.subTest(sh=sh):
+                start = time.monotonic()
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; echo "$OTHER"'],
+                    env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, check=False)
+                self.assertLess(time.monotonic() - start, 2)
+                self.assertEqual(result.stdout, "1\n")
+
+    def test_no_temp_file_skips_the_import_and_says_so(self):
+        """The chain's output goes through two temp files; without them
+        nothing is imported, and stderr names env.sh."""
+        self.env_sh("export OTHER=1\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home),
+               "TMPDIR": str(self.home / "missing")}
+        for sh in SHELLS:
+            with self.subTest(sh=sh):
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; echo "${{OTHER-unset}}"'],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "unset\n", result.stderr)
+                self.assertIn(".config/shell/env.sh", result.stderr)
 
     def test_a_tool_that_prints_syntax_error_drops_nothing(self):
         """Review of f142c880: any stderr text with "syntax error"

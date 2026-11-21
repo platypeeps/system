@@ -82,7 +82,7 @@ st_shell_env() {
     # and a file edited between runs still ended the runner. The
     # subshell is the same shell, since bash in POSIX mode lives through
     # a syntax error that ends dash, and its output evals back in the
-    # shell that wrote it. The assignment is bare, with the caller's
+    # shell that wrote it. The subshell runs bare, with the caller's
     # set -e off: left of `||`, bash 5 ignored a set -e the chain turns
     # on. An ERR trap, which fires where set -e would, names a failed
     # command, even one a later export hides from `$?`; it only warns.
@@ -115,8 +115,16 @@ st_shell_env() {
         # ponytail: a pid is no secret; it guards against chance, not a
         # chain that means to forge it.
         _st_m="#st_shell_env $$"
+        # The subshell writes to a file, and the chain's stderr to
+        # another, both this shell's: on a `$( )` pipe, a helper env.sh
+        # left in the background held the pipe open, so the import
+        # waited for it, and its late lines came after the marker into
+        # the eval. A forked helper keeps even a saved copy of the pipe.
+        # Without both files the chain still runs, but nothing is used.
+        _st_t=$(mktemp "${TMPDIR:-/tmp}/st_shell_env.XXXXXX") || _st_t=
+        _st_o=$(mktemp "${TMPDIR:-/tmp}/st_shell_env.XXXXXX") || _st_o=
         # shellcheck source=/dev/null
-        _st_ok=$(
+        (
             # Only what the chain adds, changes or unsets goes back, in
             # this shell's own quoting, and never a name readonly before
             # the chain: replaying the whole `export -p` assigned an exported
@@ -175,8 +183,11 @@ st_shell_env() {
                 _st_rc=$?
                 # shellcheck disable=SC3047
                 ! (trap : ERR) 2>/dev/null || trap - DEBUG
-            } 2>&1 >/dev/null </dev/null
+            } >/dev/null 2>"${_st_t:-/dev/null}" </dev/null
             set +a +x +v
+            [ -z "$_st_t" ] || while IFS= read -r _st_l || [ -n "$_st_l" ]; do
+                printf '%s\n' "$_st_l"
+            done <"$_st_t"
             [ "$_st_rc" = 0 ] || [ "$_st_fail" = 0 ] || _st_fail=$((_st_fail - 1))
             # shellcheck disable=SC3047
             ! (trap : ERR) 2>/dev/null || trap - ERR
@@ -199,7 +210,10 @@ st_shell_env() {
                 printf "export %s='%s'\n" "$_st_n" "$_st_q$_st_s"
             done
             echo "$_st_m ok $_st_fail"
-        )
+        ) >"${_st_o:-/dev/null}"
+        _st_ok=
+        [ -z "$_st_t" ] || [ -z "$_st_o" ] || _st_ok=$(cat "$_st_o")
+        rm -f ${_st_t:+"$_st_t"} ${_st_o:+"$_st_o"}
         case $_st_ok in
             (*': line '[0-9]*': syntax error'*"$_st_m exports"*)
                 _st_pre=${_st_ok%%"$_st_m exports"*}
@@ -249,7 +263,7 @@ EOF
         esac
         [ -z "$_st_e" ] || set -e
     fi
-    unset _st_env _st_e _st_ok _st_rc _st_l _st_f _st_d _st_p _st_pre _st_dirs _st_m
+    unset _st_env _st_e _st_t _st_o _st_ok _st_rc _st_l _st_f _st_d _st_p _st_pre _st_dirs _st_m
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
     [ -z "$_st_x" ] || set -x
