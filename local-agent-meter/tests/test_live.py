@@ -1068,6 +1068,33 @@ class ServiceFilters(unittest.TestCase):
                     got = self.read(options, answer)
                     self.assertEqual(got["status"], "unknown", got)
 
+    def test_a_filter_on_a_page_worse_than_its_listed_causes_is_unknown(self):
+        # Review: a critical page with no `incidents` key (or an empty one)
+        # and only operational components read ok under either filter;
+        # nothing showed the outage sat outside the groups or was stale.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        bare = {"status": {"indicator": "critical"}, "components": calm}
+        for options in ({"stale": 3}, {"groups": ["north-america"]}):
+            for answer in (bare, dict(bare, incidents=[])):
+                with self.subTest(options=options, incidents="incidents" in answer):
+                    got = self.read(options, answer)
+                    self.assertEqual(got["status"], "unknown", got)
+        # Review: an operational selected group on a critical page whose
+        # only cause outside it is degraded; the drop explains no outage.
+        mild = [dict(c, status="degraded_performance") if c["id"] == "fra" else c
+                for c in calm]
+        for incidents in ([], [dict(REGIONS["incidents"][0], components=[{"id": "fra"}])]):
+            with self.subTest(mild=True, incidents=len(incidents)):
+                got = self.read({"groups": ["north-america"]},
+                                dict(bare, components=mild, incidents=incidents))
+                self.assertEqual(got["status"], "unknown", got)
+        # A listed cause the filter drops still filters as before.
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=[dict(c, status="operational")
+                                                  if c["id"] != "fra" else c
+                                                  for c in REGIONS["components"]]))
+        self.assertEqual(got["status"], "degraded", got)
+
     def test_the_options_grammar(self):
         services, problems = service_status.parse_services(
             "cf statuspage https://example.test/s.json groups=north-america,europe stale=3\n"
@@ -1181,7 +1208,9 @@ class ServiceFilters(unittest.TestCase):
         self.assertEqual(self.read({"groups": ["north-america"], "stale": 3})["status"],
                          "degraded")
         self.assertEqual(self.read({"groups": ["europe"], "stale": 3})["status"], "outage")
-        quiet = dict(REGIONS, incidents=REGIONS["incidents"][2:])
+        # The page's own indicator matches its one listed cause, a minor
+        # stale incident: worse would have no cause to filter (review).
+        quiet = dict(REGIONS, incidents=REGIONS["incidents"][2:], status={"indicator": "minor"})
         got = self.read({"groups": ["north-america"], "stale": 3},
                         dict(quiet, components=[dict(c, status="operational")
                                                 for c in REGIONS["components"]]))

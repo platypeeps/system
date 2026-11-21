@@ -13,7 +13,8 @@ update for more than that many days (1 to 365); a major or critical
 one stays.
 A page may group its core products (Cloudflare's
 `cloudflare-sites-and-services`), so name that group too. With either, the
-status is the worst kept component or incident, never the page's.
+status is the worst kept component or incident, never the page's; an
+indicator worse than everything the page lists reads unknown.
 
 `kind` is one of KINDS. Each read becomes one reading:
 
@@ -318,13 +319,18 @@ def read_statuspage(url, fetch, options=None, now=None):
     kept_ids = {c.get("id") for c in kept}
     # Ids the page lists outside the kept ones: proof an incident is elsewhere.
     outside = {c.get("id") for c in listed if isinstance(c.get("id"), str)} - kept_ids
-    incidents, worst = [], "ok"
+    incidents, worst, whole = [], "ok", "ok"
     # Some pages (OpenAI, Tailscale, ...) leave `incidents` out when none is
     # open; a key that is there must still be a list of objects.
     for incident in entries(data["incidents"] if "incidents" in data else [], "incidents"):
         if one_of(incident.get("status"), INCIDENT_OPEN + INCIDENT_CLOSED,
                   "an incident status") in INCIDENT_CLOSED:
             continue
+        # An open incident is at least degraded, whatever its impact says.
+        impact = incident.get("impact")
+        impact = INDICATOR.get(impact, "degraded") if isinstance(impact, str) else "degraded"
+        impact = "degraded" if impact == "ok" else impact
+        whole = max(whole, impact, key=WORST.index)
         if "groups" in options:
             # Dropped only when every link names a listed component outside
             # the groups; a missing, odd or unlisted id keeps it (review).
@@ -334,10 +340,7 @@ def read_statuspage(url, fetch, options=None, now=None):
                 continue
         if "stale" in options and stale(incident, options["stale"], now):
             continue
-        # An open incident is at least degraded, whatever its impact says.
-        impact = incident.get("impact")
-        impact = INDICATOR.get(impact, "degraded") if isinstance(impact, str) else "degraded"
-        worst = max(worst, "degraded" if impact == "ok" else impact, key=WORST.index)
+        worst = max(worst, impact, key=WORST.index)
         url = incident.get("shortlink")
         if not isinstance(url, str) and base and isinstance(incident.get("id"), str):
             url = base.rstrip("/") + "/incidents/" + incident["id"]
@@ -349,6 +352,13 @@ def read_statuspage(url, fetch, options=None, now=None):
     if options:
         for c in components:
             worst = max(worst, COMPONENT_STATUS[c["status"]], key=WORST.index)
+        # The filter may hide only a cause the page lists: an indicator
+        # worse than every listed component and open incident has no
+        # proof it sits outside the groups or is stale (review).
+        for c in listed:
+            whole = max(whole, COMPONENT_STATUS[c["status"]], key=WORST.index)
+        if WORST.index(INDICATOR[indicator]) > WORST.index(whole):
+            raise ReadFailed("the page's status has no listed cause to filter")
     return {"status": worst if options else INDICATOR[indicator], "indicator": indicator,
             "incidents": incidents, "components": components}
 
