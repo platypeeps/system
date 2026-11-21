@@ -721,6 +721,22 @@ class RemoteControlReconnects(Machine):
             "space-then-dim": (f"{DROP_LINE}\n" + box(empty + " \x1b[2mhint\x1b[0m"), False),
             # The live shape of a suggestion (read 2026-11-20) still sends.
             "live-suggestion": (f"{DROP_LINE}\n" + box(empty + "\x1b[0m\x1b[2mwalk me\x1b[0m"), True),
+            # Round 5 (sd:9427): an old empty box with a permission dialog
+            # drawn below it. The box must be the last thing on screen:
+            # below its bottom rule only footer lines, no dialog.
+            "dialog-framed-below": (f"{DROP_LINE}\n" + box(empty) + "\n╭──╮\n"
+                                    "│ Bash command │\n╰──╯", False),
+            "dialog-numbered-below": (f"{DROP_LINE}\n" + box(empty) + "\n Do you want to proceed?\n"
+                                      "   1. Yes\n   2. No", False),
+            "dialog-esc-below": (f"{DROP_LINE}\n" + box(empty) + "\n Esc to cancel", False),
+            "dialog-cursor-below": (f"{DROP_LINE}\n" + box(empty) + "\n ❯ 1. Yes\n   2. No", False),
+            "dialog-rule-below": (f"{DROP_LINE}\n" + box(empty) + f"\n{RULE}\n Bash command", False),
+            "dialog-typed-rule-below": (f"{DROP_LINE}\n" + box(empty) + f"\n{TYPED_RULE}\n Bash", False),
+            "dialog-long-below": (f"{DROP_LINE}\n" + box(empty) + "\n line" * 5, False),
+            # Footer lines Claude draws below the box still send.
+            "footer-mode": (f"{DROP_LINE}\n" + box(empty) + "\n  ⏵⏵ auto mode on (shift+tab to cycle)",
+                            True),
+            "footer-bars": (f"{DROP_LINE}\n" + box(empty).replace("|", "│"), True),
             "draft-fake-banner-flush": (f"{DROP_LINE}\n" + box(
                 empty + "first line", "\u23fa Remote Control disconnected \u2014 x",
                 TYPED_RULE, "\u276f\u00a0"), False),

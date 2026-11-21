@@ -284,6 +284,19 @@ else:
     rules = [i for i in below if rule(lines[i]) and coloured(i)]
     prompts = [i for i in below if lines[i].strip().startswith("❯")]
     one_box = len(rules) == 2 and len(prompts) == 1 and rules[0] + 1 == prompts[0] == rules[1] - 1
+    # The box is the last thing on screen (sd:9427 review round 5): an
+    # old empty box with a permission dialog drawn below it waits. Below
+    # the bottom rule only a short footer may follow (status line, mode
+    # line): no box-drawing line, numbered option or dialog hint.
+    # ponytail: footer read by shape and a cap of 3 lines; a longer
+    # custom status line waits, and gets /rc once it fits.
+    def footer(text):
+        t = text.strip()
+        return not ("─" <= t[:1] <= "╿" or re.match(r"(❯|>)?\s*\d+[.)]\s", t)
+                    or re.search(r"Esc to|Enter to|Do you want|Would you like", t))
+    tail = [lines[i] for i in range(rules[1] + 1, len(lines))] if one_box else []
+    tail = [t for t in tail if t.strip()]
+    one_box = one_box and len(tail) <= 3 and all(footer(t) for t in tail)
     # Empty is a match, never what is left after deleting (sd:9427 class
     # pass): the line is exactly ❯ and its NBSP, plus at most dim text (a
     # prompt suggestion). No strip, as a draft can be blanks of any kind,
