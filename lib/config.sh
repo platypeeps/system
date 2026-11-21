@@ -91,6 +91,9 @@ st_shell_env() {
     # the claude they start are what read these values.
     # ponytail: an unset in env.sh does not cross, and env.sh runs twice:
     # one keychain read extra.
+    # Tracing stays off to the end: under `sh -x` the snapshot and the
+    # mapped token went to stderr, which a job log keeps.
+    case $- in *x*) set +x; _st_x=1 ;; *) _st_x= ;; esac
     _st_env="$HOME/.config/shell/env.sh"
     if [ -f "$_st_env" ]; then
         case $- in *e*) _st_e=1 ;; *) _st_e= ;; esac
@@ -118,6 +121,8 @@ st_shell_env() {
     unset _st_env _st_e _st_ok
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
+    [ -z "$_st_x" ] || set -x
+    unset _st_x
     return 0
 }
 

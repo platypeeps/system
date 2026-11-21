@@ -408,6 +408,20 @@ class ShellEnv(unittest.TestCase):
                     env=env, capture_output=True, text=True, check=False)
                 self.assertEqual(result.stdout, "mapped=change-me change-me a b\n", result.stderr)
 
+    def test_xtrace_never_prints_an_env_sh_value(self):
+        """Review of c401e687: under `sh -x` the export snapshot, secrets
+        too, went to stderr when assigned and again when evaluated."""
+        self.env_sh("export REVIEW_SECRET=synthetic-value\nCUSTOM_CLAUDE_CODE_OAUTH_TOKEN=synthetic-value\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
+            with self.subTest(sh=sh):
+                result = subprocess.run(
+                    [sh, "-xc", f'. "{LIB}/config.sh"; st_shell_env; '
+                     'case $- in *x*) echo "x ${#REVIEW_SECRET} ${#CLAUDE_CODE_OAUTH_TOKEN}" ;; esac'],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "x 15 15\n", result.stderr)
+                self.assertNotIn("synthetic-value", result.stderr)
+
     def test_a_chain_edited_after_the_probe_never_reaches_the_caller(self):
         """Review of 918d7467: the runner dotted env.sh again after the
         probes, so a file of the chain edited in between, here to an
