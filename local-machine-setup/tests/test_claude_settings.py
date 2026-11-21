@@ -197,6 +197,22 @@ class ClaudeSettingsBaseline(SyntheticHome):
                                  '[ -n "$SD_BUILD_RUN" ] || ' + bare.strip())
                 self.assertIn("ok      settings.json baseline", self.run_tooling("--apply"))
 
+    def test_a_compound_hook_ending_in_rtk_is_left_alone(self):
+        """Review on sd:9749: shell operators read as path characters,
+        so a compound hook was rewritten and then reported compliant."""
+        for command in ("true&&/opt/homebrew/bin/rtk hook claude",
+                        "x;/usr/local/bin/rtk hook claude", "a|/bin/rtk hook claude",
+                        "$(echo x)/rtk hook claude"):
+            with self.subTest(command=command):
+                self.settings.write_text(json.dumps({"hooks": {"PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}]}}) + "\n")
+
+                self.assertNotIn("(unguarded)", self.run_tooling())
+                self.run_tooling("--apply")
+
+                [rtk] = json.loads(self.settings.read_text())["hooks"]["PreToolUse"][:1]
+                self.assertEqual(rtk["hooks"][0]["command"], command)
+
     def test_the_guarded_rtk_hook_is_left_alone_and_reads_ok(self):
         guarded = '[ -n "$SD_BUILD_RUN" ] || rtk hook claude'
         self.settings.write_text(json.dumps({"hooks": {"PreToolUse": [

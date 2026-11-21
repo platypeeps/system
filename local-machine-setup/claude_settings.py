@@ -81,8 +81,9 @@ GUARD_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit"
 #: verdict and the denial ends a headless build (sd:9714). The pack sets SD_BUILD_RUN in
 #: every builder (pack sd:9715), so builders run without rtk. `rtk init -g` writes the bare
 #: form; the baseline guards it in place and adds none where rtk is not wired.
-#: Any rtk by path or spacing is bare too (sd:9749).
-RTK_BARE = re.compile(r"\s*(?:\S*/)?rtk\s+hook\s+claude\s*")
+#: Any rtk by path or spacing is bare too (sd:9749); a path holds no shell
+#: operator, so a compound hook is not one.
+RTK_BARE = re.compile(r"\s*(?:[\w.~/-]*/)?rtk\s+hook\s+claude\s*")
 RTK_GUARD = '[ -n "$SD_BUILD_RUN" ] || '
 #: Claude Code updates in the weekly upgrade only (sd:3033); this stops its background updater.
 ENV = {"DISABLE_AUTOUPDATER": "1"}
