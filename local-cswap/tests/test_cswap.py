@@ -790,8 +790,11 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere", BASH_ENV=str(env_file))
         self.assertEqual((state / "rc-owed").read_text(), owed_rows, result.stdout)
         self.assertIn("could not write", result.stdout)
-        # rc-owed did not move, so sd stays unlisted; now let it list.
+        self.assertEqual((state / "rc-listed").read_text(), listed, result.stdout)
+        # rc-listed did not move, so sd stays unlisted. With no pane to
+        # owe, only the last write, the listed mark, runs and fails.
         (state / "rc-owed").write_text("")
+        self.panes()
         result = self.sync("elsewhere", BASH_ENV=str(env_file))
         self.assertEqual((state / "rc-listed").read_text(), listed, result.stdout)
         self.assertIn("could not mark sd listed", result.stdout)
@@ -1095,6 +1098,24 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
         self.assertEqual(self.owed(), ["w1:p2"])
+
+    def test_a_retried_listing_owes_no_sent_pane_again(self):
+        # Review on sd:9427: a listing retried for a pane with no session
+        # id rebuilt every row of the switch, and a pane already sent
+        # /rc, its drop banner still on screen, got a second one.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
+                   ["w1:p2", "claude", "working", None, DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
+                   ["w1:p2", "claude", "idle", "s2", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p2 /rc"], result.stdout)
+        self.assertEqual(self.owed(), [])
+        # The listing is complete now: a later sync sends nothing.
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
 
     def test_a_session_herdr_stops_naming_gets_no_keys(self):
         self.publish(THREE)

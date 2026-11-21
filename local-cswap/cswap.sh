@@ -362,10 +362,11 @@ owe_rc() {
     echo "reconnect: could not write $RC_PENDING; no pane owes /rc for this switch"
 }
 
-# The RC_OWED rows of other herdr sessions, unchanged; none if unreadable.
-other_rows() {
+# The RC_OWED rows to keep, unchanged: other herdr sessions' rows, and
+# with $1 = all this session's too; none if unreadable.
+kept_rows() {
   [[ -e "$RC_OWED" ]] || return 0
-  awk -v hs="$HERDR_SESSION" 'NF == 4 && $1 != hs' "$RC_OWED"
+  awk -v hs="$HERDR_SESSION" -v all="${1:-}" 'NF == 4 && ($1 != hs || all)' "$RC_OWED"
 }
 
 # Whether RC_OWED holds a row of this herdr session.
@@ -376,9 +377,11 @@ owes_here() {
 # A pending switch to this herdr session's owed panes, once herdr lists
 # them, once per switch and session: RC_LISTED holds "<mark> <session>"
 # for the mark the list was read for, so a switch that lands during the
-# list is still unlisted at the next sync.
+# list is still unlisted at the next sync. Each listing also records
+# "<mark> <session> <pane>" for each pane it owes; one that meets a pane
+# with no session id is incomplete, and the next sync lists again.
 list_owed() {
-  local mark since now rc=0 others="" listed="" unknown
+  local mark since now rc=0 kept="" listed="" enrolled fresh unknown lines
   mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || mark=""
   since=${mark%% *}
   now=$(date +%s)
@@ -386,38 +389,58 @@ list_owed() {
   grep -Fqx -- "$mark $HERDR_SESSION" "$RC_LISTED" 2>/dev/null && return 0
   herdr_panes || rc=$?
   ((rc == 0)) || return 0
-  # This session's panes replace its old rows; other sessions' rows stay.
+  # A list that does not read is never replaced, and nothing is owed:
+  # which panes this switch already owed is unknown (sd:9427 review).
+  if [[ -e "$RC_LISTED" ]] && ! listed=$(awk -v m="$mark " 'index($0, m) == 1' "$RC_LISTED" 2>/dev/null); then
+    echo "reconnect: could not read $RC_LISTED; the next sync tries again"
+    return 0
+  fi
+  # The first listing for a switch replaces this session's old rows. A
+  # retry after an incomplete one keeps them and owes only panes it did
+  # not owe yet: a pane already sent is not owed again, as a drop banner
+  # it still shows would take a second /rc, which disconnects it
+  # (sd:9427 review).
+  enrolled=$(awk -v hs="$HERDR_SESSION" 'NF == 4 && $3 == hs { print $4 }' <<<"$listed")
   # A file that does not read is never replaced: its rows would go, and
   # this session stays unlisted, so the next sync tries again (sd:9427
   # review).
-  if ! others=$(other_rows 2>/dev/null); then
+  if ! kept=$(kept_rows "$enrolled" 2>/dev/null); then
     echo "reconnect: could not read $RC_OWED; the next sync tries again"
     return 0
   fi
-  # Each write in a group is chained: a group's status is its last
-  # command's, and a failed first write would move a partial file in
-  # (sd:9427 review).
-  if { { { [[ -z "$others" ]] || printf '%s\n' "$others"; } &&
-      awk -v hs="$HERDR_SESSION" -v since="$since" 'NF == 3 && $2 != "?" { print hs, $1, $2, since }' <<<"$PANES"
-    } >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
-    # Lines of older marks go; this mark's lines stay. An unreadable list
-    # is left as is: this session then lists again, and a pane already
-    # sent shows its active banner, so it gets no second /rc.
-    # A pane whose session herdr does not name yet is not owed and not
-    # lost: the session stays unlisted, so the next sync lists again.
-    unknown=$(awk 'NF == 3 && $2 == "?" { printf "%s%s", sep, $1; sep = ", " }' <<<"$PANES")
-    if [[ -n "$unknown" ]]; then
-      echo "reconnect: $unknown names no session yet; $HERDR_SESSION lists again next sync"
-    elif [[ -e "$RC_LISTED" ]] && ! listed=$(awk -v m="$mark " 'index($0, m) == 1' "$RC_LISTED" 2>/dev/null); then
-      echo "reconnect: could not read $RC_LISTED; $HERDR_SESSION lists again next sync"
-    elif ! { { { [[ -z "$listed" ]] || printf '%s\n' "$listed"; } &&
-        echo "$mark $HERDR_SESSION"; } >"$RC_LISTED.new" && mv "$RC_LISTED.new" "$RC_LISTED"; } 2>/dev/null; then
-      echo "reconnect: could not mark $HERDR_SESSION listed in $RC_LISTED"
+  fresh=$(awk -v hs="$HERDR_SESSION" -v since="$since" -v done="$enrolled" '
+    BEGIN { n = split(done, d, "\n"); for (i = 1; i <= n; i++) owed[d[i]] = 1 }
+    NF == 3 && $2 != "?" && !($1 in owed) { print hs, $1, $2, since }' <<<"$PANES")
+  unknown=$(awk 'NF == 3 && $2 == "?" { printf "%s%s", sep, $1; sep = ", " }' <<<"$PANES")
+  # Three writes, each a whole file moved in. The panes about to be owed
+  # are recorded first: a failure after it loses their /rc at worst, and
+  # never owes a sent pane again. Each write in a group is chained: a
+  # group's status is its last command's, and a failed first write
+  # would move a partial file in (sd:9427 review).
+  if [[ -n "$fresh" ]]; then
+    lines=$(awk -v m="$mark" '{ print m, $1, $2 }' <<<"$fresh") || return 0
+    if ! { { { [[ -z "$listed" ]] || printf '%s\n' "$listed"; } && printf '%s\n' "$lines"
+      } >"$RC_LISTED.new" && mv "$RC_LISTED.new" "$RC_LISTED"; } 2>/dev/null; then
+      echo "reconnect: could not write $RC_LISTED; the next sync tries again"
+      return 0
     fi
-    echo "reconnect: $(awk 'NF == 3 && $2 != "?"' <<<"$PANES" | wc -l | tr -d ' ') claude pane(s) owe /rc"
-  else
-    echo "reconnect: could not write $RC_OWED; the next sync tries again"
+    listed=${listed:+$listed$'\n'}$lines
   fi
+  if ! { { { [[ -z "$kept" ]] || printf '%s\n' "$kept"; } &&
+      { [[ -z "$fresh" ]] || printf '%s\n' "$fresh"; }
+    } >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
+    echo "reconnect: could not write $RC_OWED; its panes get no /rc for this switch"
+    return 0
+  fi
+  # Lines of older marks go; this mark's lines stay. A pane with no
+  # session id yet is not owed and not lost: the session stays unlisted.
+  if [[ -n "$unknown" ]]; then
+    echo "reconnect: $unknown names no session yet; $HERDR_SESSION lists again next sync"
+  elif ! { { { [[ -z "$listed" ]] || printf '%s\n' "$listed"; } &&
+      echo "$mark $HERDR_SESSION"; } >"$RC_LISTED.new" && mv "$RC_LISTED.new" "$RC_LISTED"; } 2>/dev/null; then
+    echo "reconnect: could not mark $HERDR_SESSION listed in $RC_LISTED"
+  fi
+  echo "reconnect: $(grep -c . <<<"$fresh") claude pane(s) owe /rc"
 }
 
 # Milliseconds since the epoch; bash 3.2 has no EPOCHREALTIME.
