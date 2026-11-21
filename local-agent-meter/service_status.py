@@ -352,11 +352,13 @@ def read_statuspage(url, fetch, options=None, now=None):
         if one_of(incident.get("status"), INCIDENT_OPEN + INCIDENT_CLOSED,
                   "an incident status") in INCIDENT_CLOSED:
             continue
-        # An open incident is at least degraded, whatever its impact says.
         impact = incident.get("impact")
-        impact = impact if isinstance(impact, str) and impact in RANK else "minor"
-        whole = max(whole, RANK[impact], 1)
-        impact = INDICATOR[impact]
+        impact = impact if isinstance(impact, str) and impact in RANK else None
+        # Only the reported impact explains the page's indicator: none or
+        # an odd one proves no disruption a filter may drop (lane review).
+        whole = max(whole, RANK.get(impact, 0))
+        # A kept open incident is at least degraded, whatever it says.
+        impact = INDICATOR.get(impact, "degraded")
         impact = "degraded" if impact == "ok" else impact
         if "groups" in options:
             # Dropped only when every link names a listed component outside
@@ -368,6 +370,8 @@ def read_statuspage(url, fetch, options=None, now=None):
         if "stale" in options and stale(incident, options["stale"], now):
             continue
         worst = max(worst, impact, key=WORST.index)
+        # A kept incident shows at least degraded, so it explains minor.
+        whole = max(whole, 1)
         url = incident.get("shortlink")
         if not isinstance(url, str) and base and isinstance(incident.get("id"), str):
             url = base.rstrip("/") + "/incidents/" + incident["id"]

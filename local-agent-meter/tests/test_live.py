@@ -1365,6 +1365,27 @@ class ServiceFilters(unittest.TestCase):
                 self.assertEqual(got["status"], "unknown", got)
                 self.assertNotIn("another shape: ", got["error"])
 
+    def test_an_impact_of_none_or_unknown_explains_no_indicator(self):
+        # Lane review: a dropped incident of impact none (or one the
+        # feed does not document) counted as a minor cause, so a minor
+        # page with operational components read ok under either filter.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        for impact in ("none", "severe", None, 3):
+            old = {"id": "s", "name": "Old", "status": "monitoring", "impact": impact,
+                   "created_at": "2026-11-10T10:00:00Z",
+                   "updated_at": "2026-11-10T10:00:00Z", "components": [{"id": "fra"}]}
+            page = dict(REGIONS, status={"indicator": "minor"}, components=calm,
+                        incidents=[old])
+            for options in ({"groups": ["north-america"]}, {"stale": 3}):
+                with self.subTest(impact=impact, options=options):
+                    got = self.read(options, page)
+                    if impact == "none" or "groups" in options:
+                        self.assertEqual(got["status"], "unknown", got)
+                    else:
+                        # stale= keeps an impact it cannot place; it
+                        # still shows as at least degraded.
+                        self.assertEqual(got["status"], "degraded", got)
+
     def test_a_line_without_groups_reads_no_component_id(self):
         # Lane review: the reader hashed every component id to build
         # the outside set, even with no groups= option, so a page in
