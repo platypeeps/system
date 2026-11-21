@@ -614,13 +614,18 @@ def read_twilio(env, fetch, now):
     """The month's spend (usage category totalprice) and the prepaid
     balance, with an API key from the env file TWILIO_ENV_FILE names
     (sd:9718). Twilio's usage months are UTC months."""
-    path = env.get("TWILIO_ENV_FILE")
-    path = Path(path).expanduser() if path else None
-    if path is None or not path.is_file():
+    # Every step on the path stays in this reader: ~user with no such user
+    # raises RuntimeError, a NUL ValueError (sd:9718 review).
+    try:
+        path = Path(env.get("TWILIO_ENV_FILE") or "").expanduser()
+        found = bool(env.get("TWILIO_ENV_FILE")) and path.is_file()
+    except (OSError, RuntimeError, ValueError):
+        found = False
+    if not found:
         raise ReadFailed("not configured: TWILIO_ENV_FILE names no file")
     try:
         values = env_file(path)
-    except (OSError, UnicodeDecodeError) as e:
+    except (OSError, ValueError) as e:
         raise ReadFailed(type(e).__name__) from None
     sid, api_key, secret = (key(values, name) for name in
                             ("TWILIO_ACCOUNT_SID", "TWILIO_API_KEY", "TWILIO_API_SECRET"))

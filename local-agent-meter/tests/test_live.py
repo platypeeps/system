@@ -1901,6 +1901,16 @@ class Twilio(unittest.TestCase):
                 self.assertEqual((got["status"], got["error"]),
                                  ("unknown", "not configured: TWILIO_ENV_FILE names no file"))
 
+    def test_a_path_that_does_not_resolve_is_not_configured(self):
+        # Review on sd:9718: ~missing-user raised RuntimeError past the
+        # reader's handler and stopped the whole usage run.
+        for path in ("~nosuch-operator-example/twilio.env", "bad\x00path", "/dev/null/x"):
+            with self.subTest(path=path):
+                got = usage_sources.read_provider("twilio", {"TWILIO_ENV_FILE": path},
+                                                  failing("unreached"), NOW)
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "not configured: TWILIO_ENV_FILE names no file"))
+
     def test_a_file_missing_a_value_names_it_and_calls_nothing(self):
         calls = []
         got = usage_sources.read_provider("twilio", self.env_file("TWILIO_ACCOUNT_SID=%s\n" % TWILIO_SID),
