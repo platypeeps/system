@@ -423,19 +423,19 @@ list_owed() {
 # Milliseconds since the epoch; bash 3.2 has no EPOCHREALTIME.
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
-# Right before a send (operator ruling 2026-11-18): the pane ($1) still
-# runs the owed session ($2), is still idle or done, and a fresh read of
-# its screen still says send; then /rc. Else one line, and it stays owed.
-# herdr has no check-and-send, so the span from that read to the end of
-# the send is the gap a draft could slip into: it must fit RC_GAP_MS.
+# Right before a send (operator ruling 2026-11-18): a fresh read of the
+# pane's ($1) screen says send, the pane still runs the owed session ($2)
+# and is idle or done, and a last read shows the same screen; then /rc.
+# Else one line, and it stays owed. herdr has no check-and-send, so the
+# span from the first read to the end of the send must fit RC_GAP_MS.
 send_rc() {
-  local now screen verdict="" start took bound=$(((RC_GAP_MS + 999) / 1000))
-  # The screen first, then the session and status: a read can take 10 s,
-  # and a session that took the pane during it shows a drop and an empty
-  # box of its own (sd:9427 review). The get is the last word.
-  # Each check goes stale while the next herdr call runs, and no order
-  # closes that: a draft typed during a slow get kept session and status.
-  # So both calls together must fit RC_GAP_MS, or the pane stays owed.
+  local now screen last verdict="" start took bound=$(((RC_GAP_MS + 999) / 1000))
+  # Screen, get, screen. A session that took the pane during the first
+  # read shows a drop and an empty box of its own, so the get follows it
+  # (sd:9427 review). A draft typed during the get leaves session and
+  # status alone, so the screen is read again and must not have changed
+  # (sd:9427 review); a new session redraws the screen. Each check goes
+  # stale while the next call runs, so all must fit RC_GAP_MS.
   start=$(now_ms)
   if ! screen=$(rc_step "$bound" "$HERDR" agent read "$1" --format ansi) ||
     ! verdict=$(rc_read screen <<<"$screen") || [[ "$verdict" != send ]]; then
@@ -445,6 +445,10 @@ send_rc() {
   now=$(rc_step "$bound" "$HERDR" agent get "$1" | rc_read pane) || now=""
   if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
     echo "reconnect: $1 changed before the send (${now:-no answer}); still owed"
+    return 1
+  fi
+  if ! last=$(rc_step "$bound" "$HERDR" agent read "$1" --format ansi) || [[ "$last" != "$screen" ]]; then
+    echo "reconnect: $1 changed before the send (its screen moved during the check); still owed"
     return 1
   fi
   took=$(($(now_ms) - start))

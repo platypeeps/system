@@ -128,7 +128,7 @@ exit 0
 # pane's state once its screen was read once, as a pane that changes
 # between the read and the send. With "reads": N it is the state from
 # the Nth read on, that read included: a pane that changes during a
-# read. `agent list` fails with FAKE_HERDR_DOWN
+# read; with "gets": N, from the Nth `agent get` on. `agent list` fails with FAKE_HERDR_DOWN
 # (no server); `agent get` answers one pane; `agent read` prints its
 # screen; `agent prompt` is logged and sends nothing.
 HERDR = r"""#!/usr/bin/env python3
@@ -151,6 +151,11 @@ def state(row):
     if "reads" in later:
         reading = args[:2] == ["agent", "read"] and args[2] == p
         later = later if seen.count(p) + reading >= later["reads"] else {}
+    elif "gets" in later:
+        # The state from the Nth `agent get` of the pane on, that get
+        # included: a pane that changes while it is asked.
+        gets = open(os.environ["FAKE_CALLS"]).read().splitlines().count("herdr agent get " + p)
+        later = later if gets >= later["gets"] else {}
     elif p not in seen:
         later = {}
     return p, a, later.get("status", st), later.get("session", se), later.get("screen", sc)
@@ -619,7 +624,7 @@ class RemoteControlReconnects(Machine):
         owed.write_text("".join(f"sd w1:p{n} s{n} {now}\n" for n in (1, 2, 3)))
         self.publish(THREE)
         self.panes(*(["w1:p%d" % n, "claude", "idle", "s%d" % n, DROPPED] for n in (1, 2, 3)))
-        result = self.sync("elsewhere", FAKE_HERDR_SLOW="1.5", CSWAP_RC_BUDGET="5", CSWAP_RC_GAP_MS="5000")
+        result = self.sync("elsewhere", FAKE_HERDR_SLOW="1", CSWAP_RC_BUDGET="5", CSWAP_RC_GAP_MS="5000")
         calls = self.calls.read_text().splitlines()
         first_read = next(i for i, c in enumerate(calls) if c.startswith("herdr agent read"))
         self.assertLess(next(i for i, c in enumerate(calls) if c.startswith("cswap switch")), first_read)
@@ -973,6 +978,18 @@ class RemoteControlReconnects(Machine):
         self.assertIn("reconnect: w1:p1 changed before the send (w1:p1 s9 idle); still owed",
                       result.stdout)
 
+    def test_a_draft_typed_during_the_last_get_gets_no_keys(self):
+        # Review on sd:9427: typing during the final `agent get` left
+        # session and status unchanged; within the gap, /rc joined the
+        # draft. The screen is read again after the get and must match.
+        self.publish(THREE)
+        draft = DROPPED.replace("\u276f\u00a0", "\u276f\u00a0hello")
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"screen": draft, "gets": 1}])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.assertIn("reconnect: w1:p1 changed before the send", result.stdout)
+
     def test_a_slow_last_check_sends_no_keys(self):
         # Class pass (sd:9427 review round 4): each check before the keys
         # goes stale while a later herdr call runs. Typing during a slow
@@ -1002,7 +1019,7 @@ class RemoteControlReconnects(Machine):
         # gets the gap's time left as herdr's --timeout, and the whole
         # span from the last screen read to the send's end must fit it.
         rows = [({"FAKE_HERDR_PROMPT_SLOW": "1.5"}, "1000"),
-                ({"FAKE_HERDR_SLOW": "0.3", "FAKE_HERDR_PROMPT_SLOW": "0.5"}, "600")]
+                ({"FAKE_HERDR_SLOW": "0.2", "FAKE_HERDR_PROMPT_SLOW": "0.5"}, "1000")]
         for slow, gap in rows:
             with self.subTest(slow=slow):
                 self.publish(ONE if self.active() == 3 else THREE)
@@ -1010,7 +1027,7 @@ class RemoteControlReconnects(Machine):
                 result = self.sync("elsewhere", CSWAP_RC_GAP_MS=gap, **slow)
                 self.assertNotIn("sent /rc", result.stdout)
                 self.assertEqual(self.owed(), ["w1:p1"])
-                self.assertRegex(result.stdout, rf"reconnect: /rc to w1:p1 .* over {gap} ms; still owed")
+                self.assertRegex(result.stdout, rf"reconnect: (/rc to )?w1:p1 .*over {gap} ms; still owed")
                 timeout = int(self.called("herdr agent prompt")[-1].rsplit(" ", 1)[1])
                 self.assertLessEqual(timeout, int(gap))
                 (self.script.parent / "state/rc-owed").unlink()
