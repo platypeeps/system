@@ -441,7 +441,8 @@ now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 # Right before a send (operator ruling 2026-11-18): a fresh read of the
 # pane's ($1) screen says send, the pane still runs the owed session ($2)
 # and is idle or done, and a last read shows the same screen; then /rc.
-# Else one line, and it stays owed. herdr has no check-and-send, so the
+# Else one line, and it stays owed (1); a send that failed or ran late
+# returns 2, as it may have landed. herdr has no check-and-send, so the
 # span from the first read to the end of the send must fit RC_GAP_MS.
 send_rc() {
   local now screen last verdict="" start took bound=$(((RC_GAP_MS + 999) / 1000))
@@ -473,16 +474,18 @@ send_rc() {
   fi
   # The send counts too: herdr may take seconds to deliver, and a draft
   # typed meanwhile would take the /rc (sd:9427 review). Its --timeout
-  # is the gap's time left. A late /rc that landed anyway shows on the
-  # next read as connected, so a pane kept owed gets no second one.
+  # is the gap's time left. Once the prompt runs, the /rc may have gone
+  # out: herdr's timeout does not prove no delivery, and a drop banner
+  # not yet redrawn would take a second /rc, which disconnects the pane
+  # (sd:9427 review). So a failed or late send returns 2: sent, not owed.
   if ! rc_step "$bound" "$HERDR" agent prompt "$1" /rc --timeout "$((RC_GAP_MS - took))" >/dev/null; then
-    echo "reconnect: /rc to $1 failed or ran over $RC_GAP_MS ms; still owed"
-    return 1
+    echo "reconnect: /rc to $1 failed or ran over $RC_GAP_MS ms; not sent again"
+    return 2
   fi
   took=$(($(now_ms) - start))
   if ((took > RC_GAP_MS)); then
-    echo "reconnect: /rc to $1 ended $took ms after the check began, over $RC_GAP_MS ms; still owed"
-    return 1
+    echo "reconnect: /rc to $1 ended $took ms after the check began, over $RC_GAP_MS ms; not sent again"
+    return 2
   fi
 }
 
@@ -513,7 +516,7 @@ mark_sent() {
 
 # Send /rc to each owed pane that may have it; keep the rest owed.
 reconnect_pass() {
-  local hs pane session since action screen verdict plan keep="" mine=0
+  local hs pane session since action screen verdict plan keep="" mine=0 rc
   RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
   list_owed
   owes_here || return 0
@@ -551,11 +554,15 @@ reconnect_pass() {
         elif ! mark_sent "$hs $pane $session $since"; then
           echo "reconnect: could not write $RC_OWED before the send; $pane stays owed"
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
-        elif send_rc "$pane" "$session"; then
-          echo "reconnect: sent /rc to $pane"
-          keep+="$hs $pane $session $since sent"$'\n'
         else
-          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
+          rc=0
+          send_rc "$pane" "$session" || rc=$?
+          if ((rc == 1)); then
+            keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
+          else
+            ((rc != 0)) || echo "reconnect: sent /rc to $pane"
+            keep+="$hs $pane $session $since sent"$'\n'
+          fi
         fi ;;
     esac
   done <<<"$plan"

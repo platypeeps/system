@@ -201,6 +201,9 @@ elif args[:2] == ["agent", "prompt"]:
         print("herdr: timeout", file=sys.stderr)
         sys.exit(1)
     time.sleep(slow)
+    # FAKE_HERDR_PROMPT_LATE seconds after the keys: herdr acknowledges
+    # a submission late, past its --timeout.
+    time.sleep(float(os.environ.get("FAKE_HERDR_PROMPT_LATE") or 0))
 else:
     sys.exit(64)
 """
@@ -1021,18 +1024,24 @@ class RemoteControlReconnects(Machine):
         # may take 10 s; a draft typed meanwhile took the /rc. The send
         # gets the gap's time left as herdr's --timeout, and the whole
         # span from the last screen read to the send's end must fit it.
+        # Review on sd:9427, next round: a send that ran over the gap left
+        # the pane owed, and its drop banner, not yet redrawn, took a
+        # second /rc. A /rc that went out, or may have (herdr: a timeout
+        # does not prove no delivery), keeps its sent mark.
+        # Rows: herdr times out; herdr acknowledges past the gap.
         rows = [({"FAKE_HERDR_PROMPT_SLOW": "1.5"}, "1000"),
-                ({"FAKE_HERDR_SLOW": "0.2", "FAKE_HERDR_PROMPT_SLOW": "0.5"}, "1000")]
+                ({"FAKE_HERDR_PROMPT_LATE": "1.2"}, "1000")]
         for slow, gap in rows:
             with self.subTest(slow=slow):
                 self.publish(ONE if self.active() == 3 else THREE)
                 self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
                 result = self.sync("elsewhere", CSWAP_RC_GAP_MS=gap, **slow)
-                self.assertNotIn("sent /rc", result.stdout)
-                self.assertEqual(self.owed(), ["w1:p1"])
-                self.assertRegex(result.stdout, rf"reconnect: (/rc to )?w1:p1 .*over {gap} ms; still owed")
+                self.assertEqual(self.owed(), [], result.stdout)
+                self.assertRegex(result.stdout, rf"reconnect: /rc to w1:p1 .*over {gap} ms; not sent again")
                 timeout = int(self.called("herdr agent prompt")[-1].rsplit(" ", 1)[1])
                 self.assertLessEqual(timeout, int(gap))
+                self.sync("elsewhere")
+                self.assertEqual(self.prompts(), [])
                 (self.script.parent / "state/rc-owed").unlink()
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
