@@ -193,7 +193,7 @@ herdr_bin() {
 }
 
 # Sets HERDR, and PANES to "pane session status" lines, one per claude pane
-# `herdr agent list` names. Else one skip line and exit 1: no herdr (2), no
+# `herdr agent list` names; session "?" when herdr names none. Else one skip line and exit 1: no herdr (2), no
 # herdr server answering, or an answer that is not the agent list (3).
 herdr_panes() {
   [[ -z "$LISTED" ]] || return 0
@@ -231,9 +231,14 @@ if sys.argv[1] in ("panes", "pane"):
                 continue
             # No session id, none sent or a false one, is no pane to owe or
             # send to: a new session in the pane could pass for the old one.
+            # The list names the pane with session "?", which no owed row
+            # holds: the pane is there, its session unknown (sd:9427
+            # review); a get names nothing.
             session = a.get("agent_session") or {}
             if not session.get("value"):
-                continue
+                if sys.argv[1] == "pane":
+                    continue
+                session = {"value": "?"}
             words = [a["pane_id"], session["value"], a.get("agent_status") or "-"]
             if not all(isinstance(w, str) and w and w.split() == [w] for w in words):
                 raise TypeError
@@ -373,7 +378,7 @@ owes_here() {
 # for the mark the list was read for, so a switch that lands during the
 # list is still unlisted at the next sync.
 list_owed() {
-  local mark since now rc=0 others="" listed=""
+  local mark since now rc=0 others="" listed="" unknown
   mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || mark=""
   since=${mark%% *}
   now=$(date +%s)
@@ -393,18 +398,23 @@ list_owed() {
   # command's, and a failed first write would move a partial file in
   # (sd:9427 review).
   if { { { [[ -z "$others" ]] || printf '%s\n' "$others"; } &&
-      awk -v hs="$HERDR_SESSION" -v since="$since" 'NF == 3 { print hs, $1, $2, since }' <<<"$PANES"
+      awk -v hs="$HERDR_SESSION" -v since="$since" 'NF == 3 && $2 != "?" { print hs, $1, $2, since }' <<<"$PANES"
     } >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
     # Lines of older marks go; this mark's lines stay. An unreadable list
     # is left as is: this session then lists again, and a pane already
     # sent shows its active banner, so it gets no second /rc.
-    if [[ -e "$RC_LISTED" ]] && ! listed=$(awk -v m="$mark " 'index($0, m) == 1' "$RC_LISTED" 2>/dev/null); then
+    # A pane whose session herdr does not name yet is not owed and not
+    # lost: the session stays unlisted, so the next sync lists again.
+    unknown=$(awk 'NF == 3 && $2 == "?" { printf "%s%s", sep, $1; sep = ", " }' <<<"$PANES")
+    if [[ -n "$unknown" ]]; then
+      echo "reconnect: $unknown names no session yet; $HERDR_SESSION lists again next sync"
+    elif [[ -e "$RC_LISTED" ]] && ! listed=$(awk -v m="$mark " 'index($0, m) == 1' "$RC_LISTED" 2>/dev/null); then
       echo "reconnect: could not read $RC_LISTED; $HERDR_SESSION lists again next sync"
     elif ! { { { [[ -z "$listed" ]] || printf '%s\n' "$listed"; } &&
         echo "$mark $HERDR_SESSION"; } >"$RC_LISTED.new" && mv "$RC_LISTED.new" "$RC_LISTED"; } 2>/dev/null; then
       echo "reconnect: could not mark $HERDR_SESSION listed in $RC_LISTED"
     fi
-    echo "reconnect: $(awk 'NF == 3' <<<"$PANES" | wc -l | tr -d ' ') claude pane(s) owe /rc"
+    echo "reconnect: $(awk 'NF == 3 && $2 != "?"' <<<"$PANES" | wc -l | tr -d ' ') claude pane(s) owe /rc"
   else
     echo "reconnect: could not write $RC_OWED; the next sync tries again"
   fi
@@ -481,10 +491,10 @@ reconnect_pass() {
   owes_here || return 0
   herdr_panes || return 0
   plan=$(awk -v now="$(date +%s)" -v limit="$RC_OWED_FOR" -v hs="$HERDR_SESSION" '
-    FILENAME == "-" { if (NF == 3) status[$1 " " $2] = $3; next }
+    FILENAME == "-" { if (NF == 3) { status[$1 " " $2] = $3; if ($2 == "?") unknown[$1] = 1 }; next }
     NF != 4 || $4 !~ /^[0-9]+$/ { next }
     $1 != hs { print "other", $0; next }
-    !(($2 " " $3) in status) { print "gone", $0; next }
+    !(($2 " " $3) in status) && !($2 in unknown) { print "gone", $0; next }
     now - $4 > limit { print "old", $0; next }
     status[$2 " " $3] == "idle" || status[$2 " " $3] == "done" { print "try", $0; next }
     { print "keep", $0 }' - "$RC_OWED" <<<"$PANES") ||

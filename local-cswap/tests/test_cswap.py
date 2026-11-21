@@ -1051,6 +1051,34 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.prompts(), [])
         self.assertEqual(self.owed(), [])
 
+    def test_a_pane_whose_session_herdr_misses_once_stays_owed(self):
+        # Review on sd:9427: herdr naming no session for a pane read as
+        # the pane gone; its row went, and rc-listed kept the switch from
+        # listing it again. A pane that exists keeps its row, and an
+        # unknown session at the listing lists again next sync.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.panes(["w1:p1", "claude", "idle", None, DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+
+    def test_a_pane_with_no_session_at_the_listing_is_listed_again(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", None, DROPPED],
+                   ["w1:p2", "claude", "working", "s2", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.owed(), ["w1:p2"])
+        self.assertIn("reconnect: w1:p1 names no session yet; sd lists again next sync", result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
+                   ["w1:p2", "claude", "working", "s2", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.owed(), ["w1:p2"])
+
     def test_a_session_herdr_stops_naming_gets_no_keys(self):
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"session": None}])
