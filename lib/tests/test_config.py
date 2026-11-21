@@ -408,6 +408,24 @@ class ShellEnv(unittest.TestCase):
                     env=env, capture_output=True, text=True, check=False)
                 self.assertEqual(result.stdout, "mapped=change-me change-me a b\n", result.stderr)
 
+    def test_a_syntax_error_imports_no_partial_value(self):
+        """Review of a755475b: bash outside POSIX mode returns from a
+        sourced file with a syntax error and reached the marker, so the
+        caller imported what the chain set before the error."""
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        part = self.home / ".config/shell/part.sh"
+        for text in ("export PARTIAL=1\nif true; then\n", f'. "{part}"\nexport OTHER=1\n'):
+            self.env_sh(text)
+            part.write_text("PARTIAL=1\nif true; then\n")
+            for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
+                with self.subTest(text=text, sh=sh):
+                    result = subprocess.run(
+                        [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; '
+                         'echo "${PARTIAL-unset} ${OTHER-unset}"'],
+                        env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.stdout, "unset unset\n", result.stderr)
+                    self.assertIn(".config/shell/env.sh", result.stderr)
+
     def test_xtrace_never_prints_an_env_sh_value(self):
         """Review of c401e687: under `sh -x` the export snapshot, secrets
         too, went to stderr when assigned and again when evaluated."""

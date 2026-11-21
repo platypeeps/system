@@ -99,9 +99,15 @@ st_shell_env() {
         case $- in *e*) _st_e=1 ;; *) _st_e= ;; esac
         set +e
         # shellcheck source=/dev/null
+        # The chain's stderr goes ahead of the exports marker: bash, POSIX
+        # mode too, returns from a file with a syntax error and goes on, so
+        # its message is the one sign that only part of the chain ran.
+        # ponytail: matches bash's English message; a translated one would
+        # pass, set LC_MESSAGES for the probe if that ever bites.
         _st_ok=$(
             set -a
-            . "$_st_env" >/dev/null 2>&1 </dev/null
+            . "$_st_env" 2>&1 >/dev/null </dev/null
+            echo '#st_shell_env exports'
             # set +a first: under set -a, bash's `set -o posix` exports
             # the POSIXLY_CORRECT it binds, and the caller would eval it.
             set +a
@@ -111,8 +117,11 @@ st_shell_env() {
             echo '#st_shell_env ok'
         )
         case $_st_ok in
+            *[Ss]'yntax error'*'#st_shell_env exports'*) _st_ok= ;;
+        esac
+        case $_st_ok in
             *'#st_shell_env ok')
-                eval "$_st_ok"
+                eval "${_st_ok#*'#st_shell_env exports'}"
                 # shellcheck disable=SC2016 # $1 expands in the child
                 "${BASH:-sh}" -ec '. "$1"' st_shell_env "$_st_env" >/dev/null 2>&1 </dev/null ||
                     echo "st_shell_env: a command in $_st_env failed (exit $?); a value it sets may be missing" >&2
