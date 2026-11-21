@@ -2070,6 +2070,19 @@ class FixedFees(unittest.TestCase):
                 got = usage_sources.read_provider("resend", {var: SECRET}, answering(put(answer, path, value)), NOW)
                 self.assertEqual(got["status"], "unknown", got)
 
+    def test_resend_s_month_that_has_reset_is_no_reading(self):
+        # sd:9719 review: at the reset boundary the old month's record read
+        # ok with zero emails left; its spend and balance outlived its
+        # window. A record whose resets_at is not after now is refused.
+        var, answer, _ = ANSWERS["resend"]
+        for end in ("2026-11-17T20:00:00Z", "2026-11-01T00:00:00.000Z"):
+            with self.subTest(end=end):
+                old = put(put(answer, ("emails", "monthly", "resets_at"), end),
+                          ("emails", "monthly", "used"), 3000)
+                got = usage_sources.read_provider("resend", {var: SECRET}, answering(old), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+                self.assertEqual((got["balance"], got["spend"]), (None, None))
+
     def test_the_live_run_writes_a_fixed_row(self):
         live = Live("test_the_runs_read_a_config_folder_the_test_owns")
         live.setUp()

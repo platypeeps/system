@@ -676,6 +676,10 @@ def read_resend(env, fetch, now):
     if used < 0 or limit <= 0:
         raise ReadFailed("used or limit is not a count")
     end = when(month.get("resets_at"), "resets_at")
+    # A month that has reset is no reading: settled drops its window but
+    # would keep its spend and balance as current (sd:9719 review).
+    if end is not None and event_time(end) <= now:
+        raise ReadFailed("the monthly record reset at %s" % end)
     out = {"spend": {"amount": used, "unit": "emails", "period": "month", "limit": limit},
            "windows": [window("emails", used / limit * 100, None, end)],
            "balance": {"amount": max(0.0, limit - used), "unit": "emails"}}
