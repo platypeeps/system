@@ -81,8 +81,10 @@ GUARD_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit"
 #: verdict and the denial ends a headless build (sd:9714). The pack sets SD_BUILD_RUN in
 #: every builder (pack sd:9715), so builders run without rtk. `rtk init -g` writes the bare
 #: form; the baseline guards it in place and adds none where rtk is not wired.
-RTK_BARE = "rtk hook claude"
-RTK_GUARDED = '[ -n "$SD_BUILD_RUN" ] || rtk hook claude'
+#: Any rtk by path or spacing is bare too (sd:9749); a path holds no shell
+#: operator, so a compound hook is not one.
+RTK_BARE = re.compile(r"\s*(?:[\w.~/-]*/)?rtk\s+hook\s+claude\s*")
+RTK_GUARD = '[ -n "$SD_BUILD_RUN" ] || '
 #: Claude Code updates in the weekly upgrade only (sd:3033); this stops its background updater.
 ENV = {"DISABLE_AUTOUPDATER": "1"}
 #: Env values an older baseline wrote and this one takes back out, where unchanged. The
@@ -150,8 +152,9 @@ def missing(settings, otel=None):
         gaps.append(f"hooks.SessionStart {SESSION_START}")
     if GUARD not in hook_commands(settings, "PreToolUse"):
         gaps.append(f"hooks.PreToolUse {GUARD}")
-    if RTK_BARE in hook_commands(settings, "PreToolUse"):
-        gaps.append(f"STALE hooks.PreToolUse {RTK_BARE} (unguarded)")
+    gaps += [f"STALE hooks.PreToolUse {command.strip()} (unguarded)"
+             for command in hook_commands(settings, "PreToolUse")
+             if isinstance(command, str) and RTK_BARE.fullmatch(command)]
     return gaps
 
 
@@ -178,8 +181,9 @@ def merge(settings, otel=None):
         settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(hook)
     for group in settings.get("hooks", {}).get("PreToolUse", []):
         for hook in group.get("hooks", []):
-            if hook.get("command") == RTK_BARE:
-                hook["command"] = RTK_GUARDED
+            command = hook.get("command")
+            if isinstance(command, str) and RTK_BARE.fullmatch(command):
+                hook["command"] = RTK_GUARD + command.strip()
     return settings
 
 
