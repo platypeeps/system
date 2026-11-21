@@ -9,7 +9,8 @@ each group's own row and its components (the name lower-cased, spaces as
 `-`) and the ungrouped ones, and drops an incident whose components all
 sit outside them; a group the page lacks reads unknown. `stale=<days>`
 drops an open incident of impact none, minor or maintenance with no
-update for more than that many days; a major or critical one stays.
+update for more than that many days (1 to 365); a major or critical
+one stays.
 A page may group its core products (Cloudflare's
 `cloudflare-sites-and-services`), so name that group too. With either, the
 status is the worst kept component or incident, never the page's.
@@ -34,6 +35,7 @@ import urllib.parse
 import urllib.request
 
 import json
+import re
 
 from usage_sources import (NAME, TIMEOUT, USER_AGENT, ReadFailed, event_time, fetch_json, iso,
                            when, within)
@@ -156,8 +158,10 @@ def parse_options(fields):
         if key in options:
             return "option %s given twice" % key
         if key == "stale":
-            if not (value.isascii() and value.isdigit() and int(value) > 0):
-                return "stale is not a whole number of days above 0"
+            # Length first: int() of thousands of digits raises, and a
+            # huge count overflows timedelta at read time (review).
+            if not (re.fullmatch(r"[1-9][0-9]{0,2}", value) and int(value) <= STALE_MAX):
+                return "stale is not a whole number of days from 1 to %d" % STALE_MAX
             options[key] = int(value)
         else:
             groups = value.split(",")
@@ -261,6 +265,8 @@ def tree_checked(listed):
         raise ReadFailed("a component names no group on the page")
 
 
+#: The longest stale= a line may set, in days.
+STALE_MAX = 365
 #: The impacts stale= may hide: never a major or critical one (review).
 STALE_IMPACT = ("none", "minor", "maintenance")
 

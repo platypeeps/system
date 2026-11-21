@@ -1076,13 +1076,29 @@ class ServiceFilters(unittest.TestCase):
             ("cg", "statuspage", "https://example.test/s.json", ["cloudflare"], {"stale": 1})])
         self.assertEqual(problems, [
             "line 3: option colour is not groups or stale",
-            "line 4: stale is not a whole number of days above 0",
-            "line 5: stale is not a whole number of days above 0",
+            "line 4: stale is not a whole number of days from 1 to 365",
+            "line 5: stale is not a whole number of days from 1 to 365",
             "line 6: groups is not lower-case group names",
             "line 7: groups is not lower-case group names",
             "line 8: options need kind statuspage",
             "line 9: want <name> <kind> <url> [provider] [key=value ...]",
             "line 10: option stale given twice"])
+
+    def test_a_stale_value_out_of_range_is_refused_not_raised(self):
+        # Review: 5,000 digits raised ValueError in int() and stopped every
+        # service; stale=1000000000 passed and overflowed timedelta later.
+        for value in ("9" * 5000, "1000000000", "366", "0", "-1", "１"):
+            with self.subTest(value=value[:12]):
+                services, problems = service_status.parse_services(
+                    "a statuspage https://example.test/s.json stale=%s\n"
+                    "b statuspage https://example.test/s.json\n" % value)
+                self.assertEqual(problems,
+                                 ["line 1: stale is not a whole number of days"
+                                  " from 1 to 365"])
+                self.assertEqual([s[0] for s in services], ["b"])
+        services, problems = service_status.parse_services(
+            "a statuspage https://example.test/s.json stale=365\n")
+        self.assertEqual((problems, services[0][4]), ([], {"stale": 365}))
 
     def test_the_starting_list_filters_cloudflare(self):
         services, _ = service_status.parse_services(service_status.STARTING)
