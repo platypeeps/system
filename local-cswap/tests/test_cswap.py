@@ -160,6 +160,10 @@ def agent(row):
             "agent_session": se is not None and {"agent": a, "kind": "id", "value": se}}
 if args[:2] == ["agent", "list"]:
     import time
+    # A switch by another sync that lands while this list runs.
+    if os.environ.get("FAKE_SWITCH_DURING_LIST"):
+        with open(os.environ["FAKE_SWITCH_DURING_LIST"], "w") as f:
+            f.write("%d 424242\n" % time.time())
     time.sleep(float(os.environ.get("FAKE_HERDR_LIST_SLOW") or 0))
     if os.environ.get("FAKE_HERDR_DOWN"):
         print("herdr: server not running", file=sys.stderr)
@@ -688,6 +692,31 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
 
+    def test_no_sync_deletes_a_switch_mark(self):
+        # Review on sd:9427 (cswap.sh:348): the expiry branch deleted
+        # the mark, and a switch could land between its read and the
+        # delete. Only a switch writes the mark; an old one owes nothing.
+        mark = self.script.parent / "state/rc-pending"
+        mark.parent.mkdir(exist_ok=True)
+        mark.write_text("1000 1\n")
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(mark.read_text(), "1000 1\n")
+        self.assertEqual(self.called("herdr"), [])
+
+    def test_a_list_marks_only_the_switch_it_read(self):
+        # Review on sd:9427: a switch during the list must not be marked
+        # listed by that list; the next sync lists again for it.
+        mark = self.script.parent / "state/rc-pending"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("elsewhere", FAKE_SWITCH_DURING_LIST=str(mark))
+        self.sync("elsewhere")
+        self.assertEqual(len(self.called("herdr agent list")), 1)
+        listed = (self.script.parent / "state/rc-listed").read_text().split("\n")
+        self.assertIn(mark.read_text().strip() + " sd", listed)
+
     def test_no_switch_sends_nothing(self):
         self.publish(ONE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
@@ -985,8 +1014,9 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.active(), 3)
         self.assertEqual([l for l in result.stdout.splitlines() if l.startswith("reconnect")],
                          ["reconnect: skipped: no herdr on PATH"])
-        # Nothing to owe on a machine with no herdr: no mark stays behind.
-        self.assertFalse((self.script.parent / "state/rc-pending").exists())
+        # Only a switch writes the mark: a sync with no herdr keeps it,
+        # as a switch may have rewritten it meanwhile (sd:9427 review).
+        self.assertTrue((self.script.parent / "state/rc-pending").exists())
 
     def test_a_herdr_that_does_not_answer_is_one_skip_line(self):
         self.publish(THREE)

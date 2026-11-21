@@ -65,6 +65,7 @@ RC_PENDING="$ROOT/state/rc-pending"
 # lost the other's rows (sd:9427 review). A kernel lock (flock) on fd 9,
 # so a killed sync leaves no stale lock.
 RC_LOCK="$ROOT/state/rc-lock"
+RC_LISTED="$ROOT/state/rc-listed"
 RC_OWED_FOR=1800
 # One reconnect pass may spend this many seconds: each herdr call is
 # bounded by what is left of it, and a pane not reached stays owed
@@ -338,14 +339,16 @@ else:
 ' "$1"
 }
 
-# The account just switched: every claude pane owes /rc. The pending mark
-# (the switch's epoch, then one line per herdr session that listed its
-# panes) is written at once, before a later step can fail. It stays for
-# RC_OWED_FOR seconds, so each herdr session lists once, and a herdr that
-# does not answer now is asked again (sd:9427 review: the first session
-# to list cleared it for every other).
+# The account just switched: every claude pane owes /rc. The mark, one
+# line "<epoch> <pid>" naming this switch, is written at once, before a
+# later step can fail, and replaced whole (a new file moved in place).
+# Only a switch writes it and nothing deletes it, so no sync can lose a
+# newer switch's mark; one older than RC_OWED_FOR owes nothing
+# (sd:9427 review). Which herdr session listed for which switch is
+# RC_LISTED, written only under RC_LOCK.
 owe_rc() {
-  { mkdir -p "${RC_PENDING%/*}" && date +%s >"$RC_PENDING"; } 2>/dev/null ||
+  { mkdir -p "${RC_PENDING%/*}" && printf '%s %s\n' "$(date +%s)" "$$" >"$RC_PENDING.$$" &&
+    mv "$RC_PENDING.$$" "$RC_PENDING"; } 2>/dev/null ||
     echo "reconnect: could not write $RC_PENDING; no pane owes /rc for this switch"
 }
 
@@ -361,35 +364,26 @@ owes_here() {
 }
 
 # A pending switch to this herdr session's owed panes, once herdr lists
-# them; a session already named in the mark has listed for this switch. A
-# machine with no herdr has nothing to owe, so the mark goes.
+# them, once per switch and session: RC_LISTED holds "<mark> <session>"
+# for the mark the list was read for, so a switch that lands during the
+# list is still unlisted at the next sync.
 list_owed() {
-  local since now rc=0 listed
-  [[ -s "$RC_PENDING" ]] || return 0
+  local mark since now rc=0
+  mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || mark=""
+  since=${mark%% *}
   now=$(date +%s)
-  since=$(head -n 1 "$RC_PENDING" 2>/dev/null) || since=""
-  listed=$(tail -n +2 "$RC_PENDING" 2>/dev/null) || listed=""
-  [[ "$since" =~ ^[0-9]+$ ]] || since=$now
-  if ((now - since > RC_OWED_FOR)); then
-    rm -f "$RC_PENDING"
-    [[ -n "$listed" ]] ||
-      echo "reconnect: herdr listed no panes for ${RC_OWED_FOR}s after the switch; none owes /rc"
-    return 0
-  fi
-  grep -Fqx -- "$HERDR_SESSION" <<<"$listed" && return 0
+  [[ "$since" =~ ^[0-9]+$ ]] && ((now - since <= RC_OWED_FOR)) || return 0
+  grep -Fqx -- "$mark $HERDR_SESSION" "$RC_LISTED" 2>/dev/null && return 0
   herdr_panes || rc=$?
-  if ((rc == 2)); then rm -f "$RC_PENDING"; return 0; fi
   ((rc == 0)) || return 0
   # This session's panes replace its old rows; other sessions' rows stay.
   if { { other_rows 2>/dev/null
       awk -v hs="$HERDR_SESSION" -v since="$since" 'NF == 3 { print hs, $1, $2, since }' <<<"$PANES"
     } >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
-    # A switch outside the lock may have written a new mark meanwhile:
-    # this list was for the old one, so the new mark stays unmarked.
-    if [[ "$(head -n 1 "$RC_PENDING" 2>/dev/null)" == "$since" ]]; then
-      echo "$HERDR_SESSION" >>"$RC_PENDING" 2>/dev/null ||
-        echo "reconnect: could not mark $HERDR_SESSION listed in $RC_PENDING"
-    fi
+    # Lines of older marks go; this mark's lines stay.
+    { { awk -v m="$mark " 'index($0, m) == 1' "$RC_LISTED" 2>/dev/null
+        echo "$mark $HERDR_SESSION"; } >"$RC_LISTED.new" && mv "$RC_LISTED.new" "$RC_LISTED"; } 2>/dev/null ||
+      echo "reconnect: could not mark $HERDR_SESSION listed in $RC_LISTED"
     echo "reconnect: $(awk 'NF == 3' <<<"$PANES" | wc -l | tr -d ' ') claude pane(s) owe /rc"
   else
     echo "reconnect: could not write $RC_OWED; the next sync tries again"
