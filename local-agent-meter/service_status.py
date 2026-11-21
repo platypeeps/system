@@ -5,7 +5,7 @@ The 'status services' list holds one service per line:
     <name> <kind> <url> [provider[,provider...]] [key=value ...]
 
 A `statuspage` line takes two options (sd:9722). `groups=<g>[,<g>]` keeps
-the components in those groups (the group name lower-cased, spaces as
+each group's own row and its components (the name lower-cased, spaces as
 `-`) and the ungrouped ones, and drops an incident whose components all
 sit outside them; a group the page lacks reads unknown. `stale=<days>`
 drops an open incident created more than that many days ago. A page may
@@ -251,11 +251,11 @@ def read_statuspage(url, fetch, options=None, now=None):
         if missing:
             raise ReadFailed("no group %s on the page" % ",".join(missing))
         chosen = {named[g] for g in options["groups"]}
-        kept = [c for c in listed if c.get("group_id") in chosen
+        # A kept group's own row counts: its status can be the only
+        # sign of an outage (review round 3).
+        kept = [c for c in listed if c["id"] in chosen or c.get("group_id") in chosen
                 or (not c.get("group_id") and c.get("group") is not True)]
     kept_ids = {c.get("id") for c in kept}
-    if "groups" in options:
-        kept_ids |= chosen  # an incident may name the group itself
     # Ids the page lists outside the kept ones: proof an incident is elsewhere.
     outside = {c.get("id") for c in listed if isinstance(c.get("id"), str)} - kept_ids
     incidents, worst = [], "ok"

@@ -1016,7 +1016,8 @@ class ServiceFilters(unittest.TestCase):
     def test_a_group_filter_keeps_its_components_and_ungrouped_ones(self):
         got = self.read({"groups": ["north-america"]})
         self.assertEqual(got["components"],
-                         [{"name": "Ashburn, VA (IAD)", "status": "degraded_performance"}])
+                         [{"name": "North America", "status": "partial_outage"},
+                          {"name": "Ashburn, VA (IAD)", "status": "degraded_performance"}])
 
     def test_a_group_filter_drops_an_incident_wholly_outside_it(self):
         got = self.read({"groups": ["north-america"]})
@@ -1083,7 +1084,19 @@ class ServiceFilters(unittest.TestCase):
         got = self.read(options, page)
         self.assertEqual((got["status"], [i["title"] for i in got["incidents"]]),
                          ("outage", ["CDN down"]))
-        self.assertEqual(got["components"], [{"name": "CDN/Cache", "status": "major_outage"}])
+        self.assertEqual(got["components"],
+                         [{"name": "Cloudflare Sites and Services", "status": "major_outage"},
+                          {"name": "CDN/Cache", "status": "major_outage"}])
+
+    def test_a_kept_group_row_counts_toward_the_status(self):
+        # Review round 3: the group row was dropped before the status,
+        # so a group in major_outage over operational children read ok.
+        components = [dict(c, status="operational") for c in REGIONS["components"]]
+        components[0]["status"] = "major_outage"
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=components, incidents=[]))
+        self.assertEqual((got["status"], got["components"]),
+                         ("outage", [{"name": "North America", "status": "major_outage"}]))
 
     def test_a_component_tree_the_filter_cannot_trust_is_unknown(self):
         # Review round 2: North America's id was null and Ashburn still
