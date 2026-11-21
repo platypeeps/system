@@ -226,6 +226,10 @@ elif args[:2] == ["agent", "prompt"]:
         print("error: --timeout requires --wait", file=sys.stderr)
         sys.exit(2)
     time.sleep(float(os.environ.get("FAKE_HERDR_PROMPT_SLOW") or 0))
+    # The keys reach the pane once the delivery delay is over.
+    if os.environ.get("FAKE_DELIVERED"):
+        with open(os.environ["FAKE_DELIVERED"], "a") as f:
+            f.write(args[2] + "\n")
     # FAKE_HERDR_PROMPT_LATE seconds after the keys: herdr acknowledges
     # a submission late, past its --timeout.
     time.sleep(float(os.environ.get("FAKE_HERDR_PROMPT_LATE") or 0))
@@ -1189,6 +1193,19 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere", FAKE_HERDR_DOWN="1")
         self.assertEqual(len(self.called("herdr agent list")), 1)
         self.assertEqual(result.stdout.count("reconnect: skipped"), 1, result.stdout)
+
+    def test_the_send_is_cut_at_the_gap_not_the_next_second(self):
+        # sd:9427 review: the send's bound was the gap's time left
+        # rounded up to a whole second, so with 600 ms of a 1000 ms gap
+        # spent, a delivery 500 ms later still reached the pane, past the
+        # gap, into whatever was typed meanwhile. The bound is the time
+        # left to the millisecond.
+        delivered = self.tmp / "delivered"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", CSWAP_RC_GAP_MS="1000", FAKE_HERDR_GET_SLOW="0.6",
+                           FAKE_HERDR_PROMPT_SLOW="0.5", FAKE_DELIVERED=str(delivered))
+        self.assertFalse(delivered.exists(), result.stdout)
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
         # Fold-in: a list that failed at the switch owed nothing, and the
