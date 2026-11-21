@@ -290,6 +290,26 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(record["sd_db"], {"rows": 2, "stale": 1})
         self.assertEqual([row[0] for row in self.meter_rows()], ["codex", "codex"])
 
+    def test_a_cswap_alias_that_is_a_short_name_is_kept(self):
+        """sd:9860: `cswap alias <num> <name>` labels an account; keep a
+        short lower-case name, drop anything else (it may be an email)."""
+        cases = [("work", "work"), ("x" * 65, None), (5, None), (None, None),
+                 ("Operator", None), ("operator@example.test", None)]
+        for alias, kept in cases:
+            with self.subTest(alias=alias):
+                reply = json.loads(json.dumps(CSWAP_LIST))
+                reply["accounts"][0]["alias"] = alias
+                self.cswap_fixture.write_text(json.dumps(reply), encoding="utf-8")
+                self.out.unlink(missing_ok=True)
+                done = self.run_meter("--no-db")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                (record,) = self.lines()
+                first, second = record["accounts"]
+                self.assertEqual(first.get("alias"), kept)
+                self.assertEqual("alias" in first, kept is not None)
+                self.assertNotIn("alias", second)
+                self.assertNotIn("example.test", self.out.read_text(encoding="utf-8"))
+
     def test_no_meter_path_calls_codexbar(self):
         """sd:9256: done when no meter path calls codexbar."""
         for args in (["--db", str(self.db)], ["--no-db"]):
