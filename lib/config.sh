@@ -105,15 +105,43 @@ st_shell_env() {
         # ponytail: matches bash's English message; a translated one would
         # pass, set LC_MESSAGES for the probe if that ever bites.
         _st_ok=$(
+            # Only what the chain adds or changes goes back, in this
+            # shell's own quoting, and never a readonly name: replaying the
+            # whole `export -p` assigned an exported readonly name, bash's
+            # SHELLOPTS too, and that ended a POSIX caller. The dumps run
+            # in a subshell, so its `set -o posix` binds POSIXLY_CORRECT
+            # there alone.
+            # Each pattern opens with `(`: bash 3.2 misparses a bare one
+            # inside `$( )`.
+            # ponytail: a name is read off each dump line; a value with a
+            # line that looks like `export NAME` only adds a name to check.
+            _st_names() {
+                # shellcheck disable=SC3040 # bash only, behind the guard
+                ( [ -z "${BASH_VERSION:-}" ] || set -o posix; "$@" -p ) |
+                    sed -n "s/^$1 \([A-Za-z_][A-Za-z0-9_]*\).*/\1/p"
+            }
+            for _st_n in $(_st_names export); do
+                eval "_st_b_$_st_n=\${$_st_n-}; _st_h_$_st_n=1"
+            done
             set -a
             . "$_st_env" 2>&1 >/dev/null </dev/null
-            echo '#st_shell_env exports'
-            # set +a first: under set -a, bash's `set -o posix` exports
-            # the POSIXLY_CORRECT it binds, and the caller would eval it.
             set +a
-            # shellcheck disable=SC3040 # bash only, behind the guard
-            [ -z "${BASH_VERSION:-}" ] || set -o posix
-            export -p
+            echo '#st_shell_env exports'
+            _st_ro=" $(_st_names readonly | tr '\n' ' ') "
+            for _st_n in $(_st_names export); do
+                case $_st_ro in (*" $_st_n "*) continue ;; esac
+                eval "[ -n \"\${$_st_n+x}\" ]" || continue
+                ! eval "[ -n \"\${_st_h_$_st_n-}\" ] && [ \"\$_st_b_$_st_n\" = \"\$$_st_n\" ]" || continue
+                eval "_st_s=\$$_st_n"
+                _st_q=
+                while :; do
+                    case $_st_s in
+                        (*"'"*) _st_q="$_st_q${_st_s%%"'"*}'\\''"; _st_s=${_st_s#*"'"} ;;
+                        (*) break ;;
+                    esac
+                done
+                printf "export %s='%s'\n" "$_st_n" "$_st_q$_st_s"
+            done
             echo '#st_shell_env ok'
         )
         case $_st_ok in

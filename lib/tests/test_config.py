@@ -426,6 +426,21 @@ class ShellEnv(unittest.TestCase):
                     self.assertEqual(result.stdout, "unset unset\n", result.stderr)
                     self.assertIn(".config/shell/env.sh", result.stderr)
 
+    def test_a_readonly_export_of_the_caller_survives_the_import(self):
+        """Review of b7aef30d: the caller replayed the whole export dump,
+        so an exported readonly name, bash's SHELLOPTS too, failed the
+        eval and ended the caller."""
+        self.env_sh("OTHER='it'\\''s\nnew'\nexport TOUCHED=2\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home), "TOUCHED": "1"}
+        for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
+            for setup in ("readonly RO=1; export RO", "export SHELLOPTS 2>/dev/null || :"):
+                with self.subTest(sh=sh, setup=setup):
+                    result = subprocess.run(
+                        [sh, "-c", f'{setup}; . "{LIB}/config.sh"; set -e; st_shell_env; '
+                         'printf "after %s %s\\n" "$OTHER" "$TOUCHED"'],
+                        env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.stdout, "after it's\nnew 2\n", result.stderr)
+
     def test_xtrace_never_prints_an_env_sh_value(self):
         """Review of c401e687: under `sh -x` the export snapshot, secrets
         too, went to stderr when assigned and again when evaluated."""
