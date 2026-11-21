@@ -180,6 +180,23 @@ class ClaudeSettingsBaseline(SyntheticHome):
                                          "command": '[ -n "$SD_BUILD_RUN" ] || rtk hook claude'}])
         self.assertIn("ok      settings.json baseline", self.run_tooling("--apply"))
 
+    def test_an_rtk_hook_by_path_or_spacing_is_guarded_too(self):
+        """sd:9749: the guard matched only the exact 'rtk hook claude';
+        an rtk by its path or with other spacing ran in builders."""
+        for bare in ("/opt/homebrew/bin/rtk hook claude", " rtk  hook claude "):
+            with self.subTest(bare=bare):
+                self.settings.write_text(json.dumps({"hooks": {"PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": bare}]}]}}) + "\n")
+
+                self.assertIn(f"STALE   settings.json hooks.PreToolUse {bare.strip()} (unguarded)",
+                              self.run_tooling())
+                self.run_tooling("--apply")
+
+                [rtk] = json.loads(self.settings.read_text())["hooks"]["PreToolUse"][:1]
+                self.assertEqual(rtk["hooks"][0]["command"],
+                                 '[ -n "$SD_BUILD_RUN" ] || ' + bare.strip())
+                self.assertIn("ok      settings.json baseline", self.run_tooling("--apply"))
+
     def test_the_guarded_rtk_hook_is_left_alone_and_reads_ok(self):
         guarded = '[ -n "$SD_BUILD_RUN" ] || rtk hook claude'
         self.settings.write_text(json.dumps({"hooks": {"PreToolUse": [
