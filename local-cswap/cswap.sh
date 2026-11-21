@@ -195,8 +195,16 @@ herdr_bin() {
 # Sets HERDR, and PANES to "pane session status" lines, one per claude pane
 # `herdr agent list` names; session "?" when herdr names none. Else one skip line and exit 1: no herdr (2), no
 # herdr server answering, or an answer that is not the agent list (3).
+# The outcome is kept for the sync: a failed list is asked once and
+# skipped once (sd:9427 triage).
 herdr_panes() {
-  [[ -z "$LISTED" ]] || return 0
+  [[ -z "$LISTED" ]] || return "$LISTED"
+  herdr_list || LISTED=$?
+  [[ -n "$LISTED" ]] || LISTED=0
+  return "$LISTED"
+}
+
+herdr_list() {
   if ! HERDR=$(herdr_bin); then
     echo "reconnect: skipped: no herdr on PATH${HERDR_DIRS:+ or in $HERDR_DIRS}"
     return 2
@@ -205,7 +213,6 @@ herdr_panes() {
     { echo "reconnect: skipped: herdr agent list did not answer within the budget; is herdr running?"; return 1; }
   PANES=$(rc_read panes <<<"$AGENTS") ||
     { echo "reconnect: skipped: herdr agent list gave no agent list this can parse"; return 3; }
-  LISTED=1
 }
 
 # herdr's answers, read by python. `panes`: `herdr agent list` JSON on stdin
@@ -442,6 +449,14 @@ list_owed() {
   echo "reconnect: $(grep -c . <<<"$fresh") claude pane(s) owe /rc"
 }
 
+# One line for the herdr call $1 on pane $2 that exited $3: the pane
+# stays owed, and the cause named is the call's, not the pane's.
+rc_failed() {
+  local why="exit $3"
+  (($3 != 124)) || why="exit 124: no answer within the budget or its bound"
+  echo "reconnect: herdr agent $1 $2 failed ($why); still owed"
+}
+
 # Milliseconds since the epoch; bash 3.2 has no EPOCHREALTIME.
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
@@ -453,7 +468,7 @@ now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 # returns 2, as it may have landed. herdr has no check-and-send, so the
 # span from the first read to the end of the send must fit RC_GAP_MS.
 send_rc() {
-  local now screen last verdict="" start took bound=$(((RC_GAP_MS + 999) / 1000))
+  local now got screen last verdict start took left bound=$(((RC_GAP_MS + 999) / 1000))
   # Screen, get, screen. A session that took the pane during the first
   # read shows a drop and an empty box of its own, so the get follows it
   # (sd:9427 review). A draft typed during the get leaves session and
@@ -461,17 +476,26 @@ send_rc() {
   # (sd:9427 review); a new session redraws the screen. Each check goes
   # stale while the next call runs, so all must fit RC_GAP_MS.
   start=$(now_ms)
-  if ! screen=$(rc_step "$bound" "$HERDR" agent read "$1" --format ansi) ||
-    ! verdict=$(rc_read screen <<<"$screen") || [[ "$verdict" != send ]]; then
-    echo "reconnect: $1 changed before the send (${verdict:-no screen}); still owed"
+  screen=$(rc_step "$bound" "$HERDR" agent read "$1" --format ansi) ||
+    { rc_failed read "$1" $?; return 1; }
+  if ! verdict=$(rc_read screen <<<"$screen"); then
+    echo "reconnect: $1's screen did not parse; still owed"
     return 1
   fi
-  now=$(rc_step "$bound" "$HERDR" agent get "$1" | rc_read pane) || now=""
+  if [[ "$verdict" != send ]]; then
+    echo "reconnect: $1 changed before the send ($verdict); still owed"
+    return 1
+  fi
+  got=$(rc_step "$bound" "$HERDR" agent get "$1") ||
+    { rc_failed get "$1" $?; return 1; }
+  now=$(rc_read pane <<<"$got") || now=""
   if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
-    echo "reconnect: $1 changed before the send (${now:-no answer}); still owed"
+    echo "reconnect: $1 changed before the send (${now:-no claude pane in the answer}); still owed"
     return 1
   fi
-  if ! last=$(rc_step "$bound" "$HERDR" agent read "$1" --format ansi) || [[ "$last" != "$screen" ]]; then
+  last=$(rc_step "$bound" "$HERDR" agent read "$1" --format ansi) ||
+    { rc_failed read "$1" $?; return 1; }
+  if [[ "$last" != "$screen" ]]; then
     echo "reconnect: $1 changed before the send (its screen moved during the check); still owed"
     return 1
   fi
@@ -492,7 +516,16 @@ send_rc() {
   # out: herdr's timeout does not prove no delivery, and a drop banner
   # not yet redrawn would take a second /rc, which disconnects the pane
   # (sd:9427 review). So a failed or late send returns 2: sent, not owed.
-  if ! rc_step "$bound" "$HERDR" agent prompt "$1" /rc --timeout "$((RC_GAP_MS - took))" >/dev/null; then
+  # Only a launched send may have gone out: the budget is checked here,
+  # not in rc_step, whose 124 cannot tell an unlaunched call from a
+  # timed-out one (sd:9427 triage).
+  left=$((RC_DEADLINE - $(date +%s)))
+  if ((left <= 0)); then
+    echo "reconnect: the ${RC_BUDGET}s budget is spent before the /rc to $1; still owed"
+    return 1
+  fi
+  ((left < bound)) && bound=$left
+  if ! st_step "$bound" "$HERDR" agent prompt "$1" /rc --timeout "$((RC_GAP_MS - took))" 9>&- >/dev/null; then
     echo "reconnect: /rc to $1 failed or ran over $RC_GAP_MS ms; not sent again"
     return 2
   fi
@@ -575,8 +608,11 @@ reconnect_pass() {
         if (($(date +%s) >= RC_DEADLINE)); then
           echo "reconnect: the ${RC_BUDGET}s budget is spent; $pane stays owed"
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
-        elif ! screen=$(rc_step 10 "$HERDR" agent read "$pane" --format ansi) ||
-          ! verdict=$(rc_read screen <<<"$screen"); then
+        elif rc=0; screen=$(rc_step 10 "$HERDR" agent read "$pane" --format ansi) || rc=$?; ((rc != 0)); then
+          rc_failed read "$pane" "$rc"
+          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
+        elif ! verdict=$(rc_read screen <<<"$screen"); then
+          echo "reconnect: $pane's screen did not parse; still owed"
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         elif [[ "$verdict" != send ]]; then
           echo "reconnect: $pane $verdict"

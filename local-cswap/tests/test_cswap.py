@@ -189,6 +189,9 @@ elif args[:2] == ["agent", "get"]:
     if os.environ.get("FAKE_SWITCH_DURING_GET"):
         switch(os.environ["FAKE_SWITCH_DURING_GET"])
     time.sleep(float(os.environ.get("FAKE_HERDR_GET_SLOW") or 0))
+    if os.environ.get("FAKE_HERDR_GET_FAIL"):
+        print("herdr: no such pane", file=sys.stderr)
+        sys.exit(1)
     print(json.dumps({"id": "cli:agent:get", "result": {"type": "agent_info", "agent": next(
         agent(r) for r in panes if r[0] == args[2])}}))
 elif args[:2] == ["agent", "read"]:
@@ -196,6 +199,15 @@ elif args[:2] == ["agent", "read"]:
     # seconds per read make a slow pane.
     import re, time
     time.sleep(float(os.environ.get("FAKE_HERDR_SLOW") or 0))
+    # FAKE_HERDR_READ_FAIL=N fails the Nth read; FAKE_CLOCK_JUMP_AT=N
+    # moves the stub clock FAKE_CLOCK_JUMP seconds on at the Nth read.
+    nth = len(seen) + 1
+    if os.environ.get("FAKE_HERDR_READ_FAIL") == str(nth):
+        print("herdr: read failed", file=sys.stderr)
+        sys.exit(1)
+    if os.environ.get("FAKE_CLOCK_JUMP_AT") == str(nth):
+        with open(os.environ["FAKE_CLOCK"], "w") as f:
+            f.write(os.environ["FAKE_CLOCK_JUMP"])
     screen = next(state(r)[4] for r in panes if r[0] == args[2])
     with open(read, "a") as f:
         f.write(args[2] + "\n")
@@ -590,6 +602,12 @@ class APinFollow(Machine):
 
 class RemoteControlReconnects(Machine):
     """sd:9427: a switch drops every Remote Control link; /rc restores it."""
+
+    def setUp(self):
+        super().setUp()
+        # The screen-shape tests test no timing: a gap a loaded machine
+        # meets (sd:9427 triage). Timing tests pass their own.
+        self.env["CSWAP_RC_GAP_MS"] = "5000"
 
     def panes(self, *rows, where=None):
         path = self.tmp / "herdr.json"
@@ -1078,10 +1096,10 @@ class RemoteControlReconnects(Machine):
         # Rows: a slow get (screen stale), a slow read (its snapshot and
         # the get both late): each call is cut at the gap. Two calls each
         # under the gap whose sum is over it: the timer refuses.
-        rows = [({"FAKE_HERDR_GET_SLOW": "1.5"}, "1000", "changed before the send"),
-                ({"FAKE_HERDR_SLOW": "1.5"}, "1000", "changed before the send"),
+        rows = [({"FAKE_HERDR_GET_SLOW": "1.5"}, "1000", "herdr agent get w1:p1 failed"),
+                ({"FAKE_HERDR_SLOW": "1.5"}, "1000", "herdr agent read w1:p1 failed"),
                 ({"FAKE_HERDR_SLOW": "0.4", "FAKE_HERDR_GET_SLOW": "0.4"}, "600",
-                 r"took \d+ ms to check, over 600 ms")]
+                 r"w1:p1 took \d+ ms to check, over 600 ms")]
         for slow, gap, why in rows:
             with self.subTest(slow=slow):
                 self.publish(ONE if self.active() == 3 else THREE)
@@ -1089,7 +1107,7 @@ class RemoteControlReconnects(Machine):
                 result = self.sync("elsewhere", CSWAP_RC_GAP_MS=gap, **slow)
                 self.assertEqual(self.prompts(), [])
                 self.assertEqual(self.owed(), ["w1:p1"])
-                self.assertRegex(result.stdout, rf"reconnect: w1:p1 {why}.*; still owed")
+                self.assertRegex(result.stdout, rf"reconnect: {why}.*; still owed")
                 (self.script.parent / "state/rc-owed").unlink()
 
     def test_a_slow_send_counts_in_the_gap(self):
@@ -1116,6 +1134,58 @@ class RemoteControlReconnects(Machine):
                 self.sync("elsewhere")
                 self.assertEqual(self.prompts(), [])
                 (self.script.parent / "state/rc-owed").unlink()
+
+    def test_a_budget_spent_before_the_send_keeps_the_pane_owed(self):
+        # sd:9427 triage, HIGH: the budget ran out after the last screen
+        # read; herdr's prompt never ran, yet the pane was marked sent
+        # and printed "not sent again". The stub clock jumps past the
+        # budget at the third read, the last one before the keys.
+        clock = self.tmp / "clock"
+        executable(self.stubs / "date", '#!/bin/sh\n'
+                   'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
+                   '  echo $(( $(/bin/date +%s) + $(cat "$FAKE_CLOCK") )); exit 0\nfi\n'
+                   'exec /bin/date "$@"\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_AT="3",
+                           FAKE_CLOCK_JUMP="61")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.assertIn("reconnect: the 60s budget is spent before the /rc to w1:p1; still owed",
+                      result.stdout)
+        self.assertNotIn("not sent again", result.stdout)
+        self.sync("elsewhere", FAKE_CLOCK=str(clock))
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+
+    def test_a_failed_herdr_call_is_named_as_the_cause(self):
+        # sd:9427 triage: a read that failed was logged as the pane having
+        # changed, or not at all. Rows: the pass's read, the send's two
+        # reads, the get. Each keeps the pane owed and names the call.
+        rows = [({"FAKE_HERDR_READ_FAIL": "1"}, "read"), ({"FAKE_HERDR_READ_FAIL": "2"}, "read"),
+                ({"FAKE_HERDR_READ_FAIL": "3"}, "read"), ({"FAKE_HERDR_GET_FAIL": "1"}, "get")]
+        for fail, call in rows:
+            with self.subTest(fail=fail):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                pathlib.Path(self.env["FAKE_HERDR"] + ".read").unlink(missing_ok=True)
+                result = self.sync("elsewhere", **fail)
+                self.assertEqual(self.prompts(), [])
+                self.assertEqual(self.owed(), ["w1:p1"])
+                self.assertIn(f"reconnect: herdr agent {call} w1:p1 failed (exit 1); still owed",
+                              result.stdout)
+                self.assertNotIn("changed before the send", result.stdout)
+                (self.script.parent / "state/rc-owed").unlink()
+
+    def test_a_herdr_down_with_panes_owed_is_one_skip_line(self):
+        # sd:9427 triage: a failed list at a new switch was asked again
+        # for the panes already owed: two calls, two skip lines.
+        old = int(time.time()) - 5
+        self.owe(f"sd w1:p1 s1 {old}\n", old)
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_HERDR_DOWN="1")
+        self.assertEqual(len(self.called("herdr agent list")), 1)
+        self.assertEqual(result.stdout.count("reconnect: skipped"), 1, result.stdout)
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
         # Fold-in: a list that failed at the switch owed nothing, and the
@@ -1239,7 +1309,7 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere")
         self.assertEqual(self.prompts(), [])
         self.assertEqual(self.owed(), ["w1:p1"])
-        self.assertIn("w1:p1 changed before the send (no answer)", result.stdout)
+        self.assertIn("w1:p1 changed before the send (no claude pane in the answer)", result.stdout)
 
     def test_a_gone_pane_or_new_session_is_not_owed(self):
         self.publish(THREE)
