@@ -609,6 +609,27 @@ class ShellEnv(unittest.TestCase):
                     env=env, capture_output=True, text=True, check=False)
                 self.assertEqual(result.stdout, "1 /nonexistent\n", result.stderr)
 
+    def test_a_message_with_no_newline_does_not_hide_a_syntax_error(self):
+        """Review of b05e6c9a: a progress message with no trailing
+        newline put its text ahead of bash's `<file>: line <n>`, so the
+        caller looked for a file named by both, found none, and
+        imported what the chain set before the error."""
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        self.env_sh("")
+        part = self.home / ".config/shell/part.sh"
+        part.write_text("PARTIAL=1\nif true; then\n")
+        for text in (f"printf 'loading... ' >&2\n. \"{part}\"\nexport OTHER=1\n",
+                     f"cd \"{part.parent}\"\nprintf 'loading' >&2\n. ./part.sh\nexport OTHER=1\n"):
+            self.env_sh(text)
+            for sh in SHELLS:
+                with self.subTest(text=text, sh=sh):
+                    result = subprocess.run(
+                        [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; '
+                         'echo "${PARTIAL-unset} ${OTHER-unset}"'],
+                        env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.stdout, "unset unset\n", result.stderr)
+                    self.assertIn(".config/shell/env.sh", result.stderr)
+
     def test_a_tool_that_prints_syntax_error_drops_nothing(self):
         """Review of f142c880: any stderr text with "syntax error"
         discarded every export, though env.sh ran to its end."""

@@ -212,17 +212,25 @@ st_shell_env() {
                     case $_st_l in
                         (*': line '[0-9]*': syntax error'*)
                             _st_f=${_st_l%%': line '[0-9]*}
-                            # The first, empty line is this directory.
-                            while IFS= read -r _st_d; do
-                                case $_st_f in
-                                    (/*) _st_p=$_st_f ;;
-                                    (*) _st_p=${_st_d:+$_st_d/}$_st_f ;;
-                                esac
-                                [ ! -f "$_st_p" ] || "${BASH:-sh}" -n "$_st_p" 2>/dev/null || _st_ok=
-                            done <<EOD
+                            # Each tail of the text is tried as the
+                            # name: a message with no newline puts its
+                            # words ahead of bash's own on that line.
+                            # ponytail: one `[ -f ]` per character and
+                            # directory; fine for a line of a message.
+                            while [ -n "$_st_f" ]; do
+                                # The first, empty line is this directory.
+                                while IFS= read -r _st_d; do
+                                    case $_st_f in
+                                        (/*) _st_p=$_st_f ;;
+                                        (*) _st_p=${_st_d:+$_st_d/}$_st_f ;;
+                                    esac
+                                    [ ! -f "$_st_p" ] || "${BASH:-sh}" -n "$_st_p" 2>/dev/null || _st_ok=
+                                done <<EOD
 
 $_st_dirs
 EOD
+                                _st_f=${_st_f#?}
+                            done
                             ;;
                     esac
                 done <<EOF
