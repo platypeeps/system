@@ -1765,7 +1765,8 @@ defer_install() { # job
   local job="$1" label plist err
   label="$(reinstall_label "$job")"
   plist="$LOG_DIR/.$job.reinstall.plist"
-  cat > "$plist" <<EOF
+  # Checked by hand: under `install --all` errexit is off.
+  if ! cat > "$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1793,10 +1794,24 @@ defer_install() { # job
         <string>$(xml_escape "$HOME")</string>
         <key>SYSTEM_TOOLS_CONFIG</key>
         <string>$(xml_escape "$SYSTEM_TOOLS_CONFIG")</string>
+        <!-- The values this install resolved: launchd hands the helper
+             only these, and without them it could install another
+             definition of the job or look for another label. -->
+        <key>CRON_JOBS_EXTRA_DIRS</key>
+        <string>$(xml_escape "$EXTRA_JOB_DIRS")</string>
+        <key>CRON_JOBS_HOST</key>
+        <string>$(xml_escape "$JOB_HOST")</string>
+        <key>SYSTEM_TOOLS_LABEL_PREFIX</key>
+        <string>$(xml_escape "$LABEL_PREFIX")</string>
     </dict>
 </dict>
 </plist>
 EOF
+  then
+    rm -f "$plist"
+    echo "cron-jobs.sh: $job: could not write the reinstall helper $plist; nothing changed" >&2
+    return 1
+  fi
   # A helper a failed run left loaded is replaced, not added to.
   ! launchctl print "$DOMAIN/$label" >/dev/null 2>&1 ||
     launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
@@ -1827,9 +1842,11 @@ cmd_reinstall_after_run() { # job
     echo "$why" >&2
     rc=1
   else
-    # In a subshell: load_job exits on a missing or broken job file, and
-    # that exit skipped the cleanup below, leaving the helper loaded.
-    ( REINSTALL_HELPER=1; cmd_install "$job" ) 2> "$errs" || rc=$?
+    # A child process, not a function call: under `||` errexit is off for
+    # the whole call, so a job file that failed while read still installed
+    # under bash 5. The child keeps errexit; its exit on a missing or
+    # broken job file cannot skip the cleanup below either.
+    REINSTALL_HELPER=1 "${BASH:-/bin/bash}" "$ROOT/cron-jobs.sh" install "$job" 2> "$errs" || rc=$?
     cat "$errs" >&2
     [ "$rc" -eq 0 ] || why="$(tail -n 1 "$errs")"
     rm -f "$errs"
@@ -1846,7 +1863,7 @@ cmd_reinstall_after_run() { # job
 }
 
 cmd_install() {
-  local job="$1" err
+  local job="$1" err plist prev
   load_job "$job"
   ensure_job_launch || return 1
   if [ "${CRON_JOBS_RUN:-}" = "$job" ]; then
@@ -1862,10 +1879,16 @@ cmd_install() {
     echo "cancelled: $job: reinstall cancelled; uninstalled since its run asked for it"
     return 0
   fi
-  # Checked by hand: under `||` (each_or_one, the reinstall helper) errexit
-  # is off, and a failed write went on to unload the working agent.
-  if ! { mkdir -p "$AGENT_DIR" && write_plist "$job"; }; then
-    echo "cron-jobs.sh: $job: could not write $(plist_for "$job"); nothing changed" >&2
+  # Checked by hand: under `||` (each_or_one) errexit is off, and a failed
+  # write went on to unload the working agent. The plist launchd holds is
+  # kept as .prev until the new one loads, so a refused bootstrap can put
+  # it back rather than leave the job unloaded (sd:9826 review).
+  plist="$(plist_for "$job")"
+  prev="$plist.prev"
+  if ! { mkdir -p "$AGENT_DIR" && { [ ! -f "$plist" ] || cp -p "$plist" "$prev"; } &&
+         write_plist "$job"; }; then
+    rm -f "$prev"
+    echo "cron-jobs.sh: $job: could not write $plist; nothing changed" >&2
     exec 8>&-
     return 1
   fi
@@ -1878,12 +1901,28 @@ cmd_install() {
     sleep 1
     wait_unloaded "$job"
     if ! err=$(launchctl bootstrap "$DOMAIN" "$(plist_for "$job")" 2>&1); then
-      echo "failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
+      err="failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
+      if [ -f "$prev" ]; then
+        wait_unloaded "$job"
+        if mv "$prev" "$plist" && launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1; then
+          err="$err; restored the previous plist"
+        else
+          err="$err; the previous plist did not load either: run cron-jobs.sh install $job"
+        fi
+      fi
+      echo "$err" >&2
+      rm -f "$prev"
       exec 8>&-
       return 1
     fi
   fi
-  launchctl enable "$DOMAIN/$(label_for "$job")"
+  rm -f "$prev"
+  # Checked: a refused enable is a failed install, never `installed:`.
+  if ! err=$(launchctl enable "$DOMAIN/$(label_for "$job")" 2>&1); then
+    echo "failed: $job (launchctl enable $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
+    exec 8>&-
+    return 1
+  fi
   # Any install that loads the job repairs what a failed deferred reinstall
   # recorded: the helper's, by hand, or a hand-run update (sd:9826).
   rm -f "$LOG_DIR/.$job.reinstall.failed"

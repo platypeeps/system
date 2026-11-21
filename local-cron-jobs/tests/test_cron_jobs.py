@@ -1450,13 +1450,13 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         launchctl.chmod(launchctl.stat().st_mode | stat.S_IXUSR)
         return folder
 
-    def run_script(self, *args, path=None, env=None):
+    def run_script(self, *args, path=None, env=None, shell="sh"):
         env = {"PATH": path or self.fx.path(self.launchd()),
                "HOME": str(self.fx.home),
                "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
                "CRON_TEST_CALLS": str(self.calls),
                "PROBE_LOCK": PROBE_LOCK, **(env or {})}
-        return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), *args],
+        return subprocess.run([shell, str(self.fx.folder / "cron-jobs.sh"), *args],
                               env=env, capture_output=True, text=True, timeout=60)
 
     def bootouts(self):
@@ -1739,6 +1739,90 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         result = self.run_script("install", "demo")
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(self.failed_marker().exists())
+
+    def launchd_with(self, name, case):
+        """self.launchd()'s stub with one more `case` arm, matched first."""
+        folder = self.launchd(name)
+        stub = folder / "launchctl"
+        text = stub.read_text().replace('case "$1" in\n', 'case "$1" in\n' + case, 1)
+        stub.write_text(text)
+        return folder
+
+    def test_a_replacement_that_fails_to_load_restores_the_previous_agent(self):
+        """Review round 4: a refused bootstrap left the job unloaded, so it
+        could not run its next slot or retry. The previous plist goes back
+        and is loaded again; verify still reads it STALE."""
+        self.plist().write_text("the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("restore-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || { echo refused >&2; exit 5; } ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
+        self.assertNotIn("installed:", result.stdout)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+        self.assertFalse((self.agents / f"{LABEL_PREFIX}.cron.demo.plist.prev").exists())
+        bootstraps = [c for c in self.calls.read_text().splitlines() if c.startswith("launchctl bootstrap")]
+        self.assertEqual(len(bootstraps), 3, bootstraps)
+
+    def test_the_helper_keeps_the_effective_lookup_and_label(self):
+        """Review round 4: launchd hands the helper only the plist's
+        environment, so an exported CRON_JOBS_EXTRA_DIRS, CRON_JOBS_HOST or
+        label prefix was lost, and the helper could install another
+        definition of the job or look for the wrong label."""
+        self.hold()
+        extra = self.fx.tmp / "extra-jobs"
+        extra.mkdir()
+        result = self.run_script("install", "demo", env={
+            "CRON_JOBS_RUN": "demo", "CRON_JOBS_EXTRA_DIRS": str(extra),
+            "CRON_JOBS_HOST": "Host1", "SYSTEM_TOOLS_LABEL_PREFIX": "example.test.override"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        helper = self.helper_plist().read_text()
+        for key, value in (("CRON_JOBS_EXTRA_DIRS", str(extra)), ("CRON_JOBS_HOST", "host1"),
+                           ("SYSTEM_TOOLS_LABEL_PREFIX", "example.test.override")):
+            self.assertIn(f"<key>{key}</key>\n        <string>{value}</string>", helper)
+        self.assertIn("<string>example.test.override.cron-reinstall.demo</string>", helper)
+
+    def test_the_helper_refuses_a_job_file_that_fails_while_read(self):
+        """Review round 4: the helper ran install with errexit off, so a job
+        file whose sourcing failed after setting its fields installed."""
+        # macOS sh (bash 3.2) ends the subshell at the failing line anyway;
+        # bash 5, the Linux gate's and Homebrew's, ran on and installed.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="*/10 * * * *"\nJOB_COMMAND="true"\nfalse\nJOB_COMMAND="partial"\n')
+        for shell in ("sh", shutil.which("bash", path=os.environ.get("PATH")) or "/bin/bash"):
+            with self.subTest(shell=shell):
+                self.helper_plist().write_text("helper\n")
+                result = self.run_script("reinstall-after-run", "demo", shell=shell)
+                out = result.stdout + result.stderr
+                self.assertNotEqual(result.returncode, 0, out)
+                self.assertNotIn("installed:", out)
+                self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+                self.assertTrue(self.failed_marker().exists())
+
+    def test_a_refused_enable_is_a_failed_install(self):
+        """Review round 4: a failed `launchctl enable` fell through, cleared
+        the failure record and reported `installed:`."""
+        self.helper_plist().write_text("helper\n")
+        self.failed_marker().write_text("an earlier failure\n")
+        path = self.fx.path(self.launchd_with("enable-bin", '  enable) echo refused >&2; exit 5 ;;\n'))
+        result = self.run_script("reinstall-after-run", "demo", path=path)
+        out = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, out)
+        self.assertNotIn("installed:", out)
+        self.assertIn("failed: demo (launchctl enable refused)", result.stderr)
+        self.assertIn("launchctl enable refused", self.failed_marker().read_text())
+
+    def test_a_helper_plist_that_cannot_be_written_loads_nothing(self):
+        """Class pass, round 4: defer_install wrote its plist unchecked, so
+        under `install --all` (errexit off) a failed write went on to
+        bootstrap whatever the file held."""
+        self.hold()
+        logs = self.fx.folder / "logs"
+        logs.chmod(0o500)
+        self.addCleanup(logs.chmod, 0o700)
+        result = self.run_script("install", "--all", env={"CRON_JOBS_RUN": "demo"})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("demo: could not write the reinstall helper", result.stderr)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
 
     def test_a_run_tells_its_workload_which_job_it_is(self):
         out = self.fx.tmp / "run-job"
