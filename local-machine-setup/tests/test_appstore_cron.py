@@ -713,6 +713,22 @@ exit 0
         self.assertIn("uninstall dropped-job", log)
 
 
+    def test_a_stale_job_whose_reinstall_helper_waits_is_pending_not_drift(self):
+        """sd:9826. The nightly update's own job cannot reinstall itself under
+        its run; cron-jobs.sh hands that to <prefix>.cron-reinstall.<job>.
+        While that helper is loaded, the plist is PENDING, no drift word, so
+        status --fail-on-drift at the end of the same run passes."""
+        write_exec(self.stubs / "launchctl",
+                   '#!/bin/sh\ncase "$*" in *.cron.busy-unloaded|*.cron-reinstall.busy-job) exit 1 ;; esac\nexit 0\n')
+        logs = self.folder.parent / "local-cron-jobs/logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / ".busy-stale.reinstall.plist").write_text("helper\n")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PENDING busy-stale — reinstalls once its own run ends", result.stdout)
+        self.assertNotIn("STALE   busy-stale", result.stdout)
+        self.assertNotIn("install busy-stale", self.cron_log.read_text().splitlines())
+
 class CronRetiredTest(StageTest):
     """A job in local-cron-jobs/retired-jobs.txt is uninstalled, never reinstalled (sd:3155).
 

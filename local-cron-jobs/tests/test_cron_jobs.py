@@ -1583,6 +1583,68 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
             self.assertIn("launchd names no log", result.stderr)
         self.assertEqual(self.bootouts(), [])
 
+    def helper_plist(self, job="demo"):
+        return self.fx.folder / "logs" / f".{job}.reinstall.plist"
+
+    def test_a_run_that_reinstalls_its_own_job_hands_it_to_a_helper(self):
+        """sd:9826. machine-setup-update-nightly runs the cron stage, which
+        found its own plist stale and asked to reinstall it: refused under its
+        own run's lock every night, so status --fail-on-drift failed the job.
+        Asked from inside that run, install now bootstraps a one-shot helper
+        label that reinstalls the job once the run ends; the run goes on."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.hold()
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo"})
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("deferred: demo", result.stdout)
+        self.assertNotIn(f"{LABEL_PREFIX}.cron.demo", "\n".join(self.bootouts()))
+        self.assertIn(f"launchctl bootstrap gui/{os.getuid()} {self.helper_plist()}",
+                      self.calls.read_text())
+        helper = self.helper_plist().read_text()
+        self.assertIn(f"<string>{LABEL_PREFIX}.cron-reinstall.demo</string>", helper)
+        self.assertIn("<string>reinstall-after-run</string>", helper)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_another_jobs_run_is_still_refused(self):
+        """PIN: only the run's own job is deferred; any other waits as before."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.hold()
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "other"})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("demo: a run is in progress; retry after it ends", result.stderr)
+        self.assertFalse(self.helper_plist().exists())
+
+    def test_the_helper_installs_once_the_run_ends_and_removes_itself(self):
+        self.helper_plist().write_text("helper\n")
+        result = self.run_script("reinstall-after-run", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout)
+        self.assertFalse(self.helper_plist().exists())
+        self.assertEqual(self.bootouts()[-1],
+                         f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo")
+        self.assertTrue(self.lock_is_free())
+
+    def test_the_helper_gives_up_on_a_run_that_outlasts_its_wait(self):
+        self.plist().write_text("the plist launchd holds\n")
+        self.helper_plist().write_text("helper\n")
+        self.hold()
+        result = self.run_script("reinstall-after-run", "demo",
+                                 env={"CRON_JOBS_REINSTALL_WAIT": "1"})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("demo: a run still holds the lock after 1 s", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+        self.assertFalse(self.helper_plist().exists())
+        self.assertEqual(self.bootouts(),
+                         [f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo"])
+
+    def test_a_run_tells_its_workload_which_job_it_is(self):
+        out = self.fx.tmp / "run-job"
+        self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="printf %s \\"\\$CRON_JOBS_RUN\\" > {out}"\n')
+        result = self.fx.exec_job("demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out.read_text(), "demo")
+
     def test_a_label_whose_log_folder_is_gone_is_replaced(self):
         """PIN: a removed worktree's label stays replaceable. launchd cannot
         start a run whose log folder is gone, so this checkout's lock serves."""

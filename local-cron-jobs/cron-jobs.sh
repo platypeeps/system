@@ -1588,6 +1588,9 @@ if attrs:
     "$HOME/.claude/settings.json" "$job" 2>/dev/null)" || otel_settings=""
   OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+$OTEL_RESOURCE_ATTRIBUTES,}sd.job=$job"
   export OTEL_RESOURCE_ATTRIBUTES
+  # The workload knows which job it runs: a reinstall of that job from
+  # inside it is handed to a helper (defer_install, sd:9826).
+  CRON_JOBS_RUN="$job"; export CRON_JOBS_RUN
   echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') starting (cwd: $PWD)"
   local rc=0 claude_bin debug_file="$LOG_DIR/$job.debug.$report_run.log"
   if [ -n "$JOB_COMMAND" ]; then
@@ -1748,10 +1751,90 @@ ensure_job_launch() {
   echo "built: $JOB_LAUNCH; grant it Full Disk Access (System Settings > Privacy & Security)"
 }
 
+# A run cannot reinstall its own job (sd:9826): it holds the job's lock, and
+# the `bootout` would stop the run asking. machine-setup-update-nightly met
+# its own stale plist each night, the install was refused, and its last step,
+# status --fail-on-drift, failed the job. So a run that asks for its own job
+# bootstraps a one-shot helper label, outside the job's, which waits for the
+# run to end and then installs. Its plist sits beside the job's log, not in
+# LaunchAgents, so no login loads it again and no sweep reads it as a job.
+reinstall_label() { echo "$LABEL_PREFIX.cron-reinstall.$1"; }
+defer_install() { # job
+  local job="$1" label plist err
+  label="$(reinstall_label "$job")"
+  plist="$LOG_DIR/.$job.reinstall.plist"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$(xml_escape "$label")</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>$(xml_escape "$ROOT")/cron-jobs.sh</string>
+        <string>reinstall-after-run</string>
+        <string>$(xml_escape "$job")</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$(xml_escape "$LOG_DIR/$job.log")</string>
+    <key>StandardErrorPath</key>
+    <string>$(xml_escape "$LOG_DIR/$job.log")</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>$(xml_escape "$JOB_PATH")</string>
+        <key>HOME</key>
+        <string>$(xml_escape "$HOME")</string>
+        <key>SYSTEM_TOOLS_CONFIG</key>
+        <string>$(xml_escape "$SYSTEM_TOOLS_CONFIG")</string>
+    </dict>
+</dict>
+</plist>
+EOF
+  # A helper a failed run left loaded is replaced, not added to.
+  ! launchctl print "$DOMAIN/$label" >/dev/null 2>&1 ||
+    launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
+  if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
+    rm -f "$plist"
+    echo "failed: $job (helper $label: $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
+    return 1
+  fi
+  echo "deferred: $job  (this run is the job's own; $label reinstalls it once the run ends)"
+}
+
+# The helper's half: wait, bounded, for the run to let the lock go, install,
+# then remove the helper. A run that outlasts the wait keeps the old plist,
+# so verify still reads it STALE and the next update retries.
+cmd_reinstall_after_run() { # job
+  local job="$1" waited=0 rc=0 wait="${CRON_JOBS_REINSTALL_WAIT:-14400}"
+  while lock_is_live "$LOG_DIR/.$job.flock" && [ "$waited" -lt "$wait" ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if lock_is_live "$LOG_DIR/.$job.flock"; then
+    echo "cron-jobs.sh: $job: a run still holds the lock after $wait s; not reinstalled, the next update retries" >&2
+    rc=1
+  else
+    cmd_install "$job" || rc=$?
+  fi
+  rm -f "$LOG_DIR/.$job.reinstall.plist"
+  # Last: the bootout ends this process with its label.
+  launchctl bootout "$DOMAIN/$(reinstall_label "$job")" 2>/dev/null || true
+  return $rc
+}
+
 cmd_install() {
   local job="$1" err
   load_job "$job"
   ensure_job_launch || return 1
+  if [ "${CRON_JOBS_RUN:-}" = "$job" ]; then
+    defer_install "$job"
+    return
+  fi
   # Before the plist is written: a refused install leaves the file launchd
   # holds, so `verify` still reads it STALE and the next install retries.
   hold_job_lock "$job" || return 1
@@ -2096,6 +2179,9 @@ case "${1:-}" in
   verify)    each_or_one cmd_verify "${2:---all}" ;;
   uninstall) [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh uninstall <job>|--all" >&2; exit 1; }
              each_or_one cmd_uninstall "$2" ;;
+  reinstall-after-run)
+             [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh reinstall-after-run <job>" >&2; exit 1; }
+             cmd_reinstall_after_run "$2" ;;
   run|exec)  [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh $1 <job>" >&2; exit 1; }
              cmd_exec "$2" ;;
   status)    cmd_status "${2:-}" ;;
@@ -2120,6 +2206,9 @@ case "${1:-}" in
   uninstall    unload + remove plist (<job> or --all)
                install and uninstall refuse and exit 1 while a run holds
                the job's lock: `bootout` would stop it. Retry after it ends.
+               Asked from inside that job's own run, install instead loads
+               a one-shot helper, <prefix>.cron-reinstall.<job>, and exits 0
+               with `deferred:`; the helper installs once the run ends.
   run          run a job once now, foreground — output goes to the terminal
                and to the job's log, so a hand-run clears an outstanding
                failure the same way a scheduled run does; where launchd
@@ -2172,6 +2261,9 @@ case "${1:-}" in
                (daily/weekly/monthly from the schedule); a stale job prints an
                SD_REPORT_ATTENTION line, so its report reaches Reports and Today
   exec         internal: what the LaunchAgent invokes
+  reinstall-after-run
+               internal: what the reinstall helper invokes; waits up to
+               CRON_JOBS_REINSTALL_WAIT seconds (14400) for the run to end
   test         run the unittest suite in tests/ (extra args go to unittest)
 
 configuration: <config> is ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}

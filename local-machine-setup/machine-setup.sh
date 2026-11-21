@@ -2429,6 +2429,13 @@ stage_cron() {
       cron_jobs install "$j"
     elif [ "$owner" = 1 ]; then
       echo "  FOREIGN $j — in this profile, but another installer's agent holds its label; left in place"
+    elif ! "$ROOT/local-cron-jobs/cron-jobs.sh" verify "$j" >/dev/null 2>&1 &&
+        [ -f "$ROOT/local-cron-jobs/logs/.$j.reinstall.plist" ] &&
+        launchctl print "gui/$(id -u)/$LABEL_PREFIX.cron-reinstall.$j" >/dev/null 2>&1; then
+      # A run cannot reinstall its own job; cron-jobs.sh loaded a helper
+      # that does once the run ends (sd:9826). No drift word: the nightly
+      # update's status --fail-on-drift runs inside that same run.
+      echo "  PENDING $j — reinstalls once its own run ends ($LABEL_PREFIX.cron-reinstall.$j)"
     elif ! "$ROOT/local-cron-jobs/cron-jobs.sh" verify "$j" >/dev/null 2>&1; then
       echo "  STALE   $j — installed plist no longer matches the generator"
       cron_jobs install "$j"
