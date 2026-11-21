@@ -71,35 +71,34 @@ st_obsidian_vault() {
 st_shell_env() {
     # env.sh is never dotted in this shell. A subshell, the same shell as
     # this one, sources it once with set -e off and output on /dev/null,
-    # then prints `export -p`; this shell evals that only when the
+    # then prints what changed; this shell evals that only when the
     # subshell lived to its marker. A bare `.` here ended every cron run
     # with stdout on /dev/null for 10 minutes, and no job log said why
     # (sd:9652); a syntax error in any file of the chain, an `exit`, or a
-    # set -e it turns on ends a POSIX shell whatever set -e says. A probe
-    # followed by a second `.` left a window: a file edited in between
-    # still ended the runner. Such a chain is named and skipped. The
-    # subshell is the same shell, since bash in POSIX mode lives through a
-    # syntax error that ends dash, and its `export -p` evals back in the
-    # shell that wrote it; bash prints it in POSIX form under set -o
-    # posix, so a function's eval does not make the names local. The
-    # assignment is bare, with the caller's set -e off: left of `||`,
-    # bash 5 ignored a set -e the chain turns on. A second child under
-    # set -e, run first in the same environment, names a failed command,
-    # even one a later export hides from `$?`; it only warns.
+    # set -e it turns on ends a POSIX shell whatever set -e says. Such a
+    # chain is named and skipped. The one run decides both the import and
+    # the warning: a second, fresh run to name a failed command missed
+    # what hung on an unexported variable, a function or a load guard,
+    # and a file edited between runs still ended the runner. The
+    # subshell is the same shell, since bash in POSIX mode lives through
+    # a syntax error that ends dash, and its output evals back in the
+    # shell that wrote it. The assignment is bare, with the caller's
+    # set -e off: left of `||`, bash 5 ignored a set -e the chain turns
+    # on. An ERR trap, which fires where set -e would, names a failed
+    # command, even one a later export hides from `$?`; it only warns.
+    # ponytail: dash has no ERR trap, so there a failed command goes
+    # unnamed; macOS /bin/sh, the runner's shell, is bash.
     # shell-env.example assigns without `export`, so the subshell sources
     # under set -a and every assignment crosses, exported: the jobs and
     # the claude they start are what read these values.
-    # ponytail: an unset in env.sh does not cross, and env.sh runs twice:
-    # one keychain read extra.
-    # Tracing stays off to the end: under `sh -x` the snapshot and the
+    # Tracing stays off to the end, in the subshell too after the chain
+    # returns: under `sh -x`, or a set -x in env.sh, the values and the
     # mapped token went to stderr, which a job log keeps.
     case $- in *x*) set +x; _st_x=1 ;; *) _st_x= ;; esac
     _st_env="$HOME/.config/shell/env.sh"
     if [ -f "$_st_env" ]; then
         case $- in *e*) _st_e=1 ;; *) _st_e= ;; esac
         set +e
-        _st_nl='
-'
         # shellcheck source=/dev/null
         # The chain's stderr goes ahead of the exports marker: bash, POSIX
         # mode too, returns from a file with a syntax error and goes on, so
@@ -107,12 +106,12 @@ st_shell_env() {
         # ponytail: matches bash's English message; a translated one would
         # pass, set LC_MESSAGES for the probe if that ever bites.
         _st_ok=$(
-            # Only what the chain adds or changes goes back, in this
-            # shell's own quoting, and never a readonly name: replaying the
-            # whole `export -p` assigned an exported readonly name, bash's
-            # SHELLOPTS too, and that ended a POSIX caller. The dumps run
-            # in a subshell, so its `set -o posix` binds POSIXLY_CORRECT
-            # there alone.
+            # Only what the chain adds, changes or unsets goes back, in
+            # this shell's own quoting, and never a readonly name:
+            # replaying the whole `export -p` assigned an exported
+            # readonly name, bash's SHELLOPTS too, and that ended a POSIX
+            # caller. The dumps run in a subshell, so its `set -o posix`
+            # binds POSIXLY_CORRECT there alone.
             # Each pattern opens with `(`: bash 3.2 misparses a bare one
             # inside `$( )`.
             # ponytail: a name is read off each dump line; a value with a
@@ -122,21 +121,29 @@ st_shell_env() {
                 ( [ -z "${BASH_VERSION:-}" ] || set -o posix; "$@" -p ) |
                     sed -n "s/^$1 \([A-Za-z_][A-Za-z0-9_]*\).*/\1/p"
             }
-            # The set -e probe runs first, in the environment the import
-            # sees: run after the import it inherited a load guard the
-            # chain exports and returned at once, so a failed command
-            # went unnamed. Its exit code is the first output line.
-            # shellcheck disable=SC2016 # $1 expands in the child
-            "${BASH:-sh}" -ec '. "$1"' st_shell_env "$_st_env" >/dev/null 2>&1 </dev/null
-            echo "#st_shell_env probe $?"
-            for _st_n in $(_st_names export); do
+            _st_before=$(_st_names export)
+            for _st_n in $_st_before; do
                 eval "_st_b_$_st_n=\${$_st_n-}; _st_h_$_st_n=1"
             done
+            # The trap counts each failed command; when the chain's last
+            # status is not 0, the `.` itself counts once more, so one
+            # less is the chain's own count: a false `[ ] && x` last
+            # line fails no command.
+            _st_fail=0
+            # shellcheck disable=SC3047 # bash only, behind the guard
+            ! (trap : ERR) 2>/dev/null || trap '_st_fail=$((_st_fail + 1))' ERR
             set -a
             . "$_st_env" 2>&1 >/dev/null </dev/null
-            set +a
+            _st_rc=$?
+            set +a +x +v
+            [ "$_st_rc" = 0 ] || [ "$_st_fail" = 0 ] || _st_fail=$((_st_fail - 1))
+            # shellcheck disable=SC3047
+            ! (trap : ERR) 2>/dev/null || trap - ERR
             echo '#st_shell_env exports'
             _st_ro=" $(_st_names readonly | tr '\n' ' ') "
+            for _st_n in $_st_before; do
+                eval "[ -z \"\${$_st_n+x}\" ]" && printf 'unset %s\n' "$_st_n"
+            done
             for _st_n in $(_st_names export); do
                 case $_st_ro in (*" $_st_n "*) continue ;; esac
                 eval "[ -n \"\${$_st_n+x}\" ]" || continue
@@ -151,24 +158,23 @@ st_shell_env() {
                 done
                 printf "export %s='%s'\n" "$_st_n" "$_st_q$_st_s"
             done
-            echo '#st_shell_env ok'
+            echo "#st_shell_env ok $_st_fail"
         )
         case $_st_ok in
             *[Ss]'yntax error'*'#st_shell_env exports'*) _st_ok= ;;
         esac
         case $_st_ok in
-            *'#st_shell_env ok')
+            *'#st_shell_env ok '[0-9]*)
                 eval "${_st_ok#*'#st_shell_env exports'}"
-                _st_rc=${_st_ok%%"$_st_nl"*}
-                _st_rc=${_st_rc#'#st_shell_env probe '}
+                _st_rc=${_st_ok##*'#st_shell_env ok '}
                 [ "$_st_rc" = 0 ] ||
-                    echo "st_shell_env: a command in $_st_env failed (exit $_st_rc); a value it sets may be missing" >&2
+                    echo "st_shell_env: a command in $_st_env failed ($_st_rc in all); a value it sets may be missing" >&2
                 ;;
             *) echo "st_shell_env: $_st_env or a file it sources ends the shell; skipped, so its exports are missing" >&2 ;;
         esac
         [ -z "$_st_e" ] || set -e
     fi
-    unset _st_env _st_e _st_ok _st_rc _st_nl
+    unset _st_env _st_e _st_ok _st_rc
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
     [ -z "$_st_x" ] || set -x

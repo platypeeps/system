@@ -15,6 +15,15 @@ sys.path.insert(0, str(LIB))
 import system_tools_config as stc  # noqa: E402
 
 
+#: Every shell a runner may be: macOS /bin/sh is bash 3.2 in POSIX mode.
+SHELLS = sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p})
+
+
+def is_bash(sh):
+    return subprocess.run([sh, "-c", 'echo "${BASH_VERSION:-}"'], capture_output=True,
+                          text=True, check=False).stdout.strip() != ""
+
+
 def shell(script, env):
     return subprocess.run(["/bin/sh", "-c", f'. "{LIB}/config.sh"; {script}'],
                           env=env, capture_output=True, text=True, check=False)
@@ -391,7 +400,11 @@ class ShellEnv(unittest.TestCase):
                         [sh, "-c", f'. "{LIB}/config.sh"; set -e; st_shell_env; case $- in *e*) echo after ;; esac'],
                         env=env, capture_output=True, text=True, check=False)
                     self.assertEqual(result.stdout, "after\n", result.stderr)
-                    self.assertIn(".config/shell/env.sh", result.stderr)
+                    # dash has no ERR trap: a failed command that does
+                    # not end the chain goes unnamed there.
+                    if is_bash(sh) or text not in ("export OTHER=1\nfalse\n",
+                                                   "TOKEN=$(false)\nexport OTHER=1\n"):
+                        self.assertIn(".config/shell/env.sh", result.stderr)
 
     def test_a_load_guard_does_not_hide_a_failed_command(self):
         """Review of b670a102: the set -e probe ran after the import, so
@@ -413,7 +426,7 @@ class ShellEnv(unittest.TestCase):
                         [sh, "-c", f'. "{LIB}/config.sh"; set -e; st_shell_env; echo "after $OTHER"'],
                         env=env, capture_output=True, text=True, check=False)
                     self.assertEqual(result.stdout, "after 1\n", result.stderr)
-                    self.assertEqual("a command in" in result.stderr, warns, result.stderr)
+                    self.assertEqual("a command in" in result.stderr, warns and is_bash(sh), result.stderr)
 
     def test_the_committed_template_maps_its_plain_assignment(self):
         """Review of b39ec9c1: shell-env.example assigns without
@@ -510,6 +523,53 @@ class ShellEnv(unittest.TestCase):
                     [sh, "-c", f'. "{LIB}/config.sh"; set -e; st_shell_env; echo "after $OTHER $PART"'],
                     env=env, capture_output=True, text=True, check=False)
                 self.assertEqual(result.stdout, "after 1 a b\n", result.stderr)
+
+    def test_set_x_in_env_sh_never_prints_a_value(self):
+        """Review of f72368e1: an env.sh that turns set -x on kept it on
+        in the import subshell, so the serializer traced each value to
+        stderr, which a job log keeps."""
+        self.env_sh("set -x\nexport REVIEW_SECRET=synthetic-value\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        for sh in SHELLS:
+            with self.subTest(sh=sh):
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; '
+                     'case $- in *x*) echo x ;; esac; echo "${#REVIEW_SECRET}"'],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "15\n", result.stderr)
+                self.assertNotIn("synthetic-value", result.stderr)
+
+    def test_an_unset_in_env_sh_reaches_the_caller(self):
+        """Review of f72368e1: the import dropped unsets, so a stale
+        inherited token stayed and hid the CUSTOM_ one env.sh set."""
+        self.env_sh("unset CLAUDE_CODE_OAUTH_TOKEN\n"
+                    "export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-fresh\n")
+        for sh in SHELLS:
+            with self.subTest(sh=sh):
+                env = {"PATH": os.environ["PATH"], "HOME": str(self.home),
+                       "WANT": "tok-fresh", "CLAUDE_CODE_OAUTH_TOKEN": "tok-stale"}
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; sh -c \'{self.SEEN}\''],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "same\n", result.stderr)
+
+    def test_the_warning_comes_from_the_one_run_that_imports(self):
+        """Review of f72368e1: a second, fresh run decided the warning,
+        so it missed a failure behind an unexported caller flag and
+        warned on a harmless false last line. Only bash, macOS /bin/sh,
+        has the ERR trap that names a failed command."""
+        base = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        cases = (('if [ -n "${FLAG:-}" ]; then TOKEN=$(false); fi\nexport OTHER=1\n', True),
+                 ('export OTHER=1\n[ -n "${NOPE:-}" ] && export NOPE2=1\n', False))
+        for text, warns in cases:
+            self.env_sh(text)
+            for sh in SHELLS:
+                with self.subTest(text=text, sh=sh):
+                    result = subprocess.run(
+                        [sh, "-c", f'FLAG=1; . "{LIB}/config.sh"; set -e; st_shell_env; echo "after $OTHER"'],
+                        env=base, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.stdout, "after 1\n", result.stderr)
+                    self.assertEqual("a command in" in result.stderr, warns and is_bash(sh), result.stderr)
 
     def test_set_e_from_env_sh_does_not_reach_the_caller(self):
         """An env.sh that turns set -e on would end a caller that runs
