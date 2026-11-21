@@ -1058,6 +1058,16 @@ class ServiceFilters(unittest.TestCase):
             ("svc", "statuspage", "https://status.example.test/api", [], options), NOW,
             fetch=answering(answer))
 
+    def test_a_filter_on_a_page_with_no_components_is_unknown(self):
+        # Review: stale=3 on a major page with neither components nor
+        # incidents recomputed ok, a false all-clear.
+        bare = {"status": {"indicator": "major"}}
+        for options in ({"stale": 3}, {"groups": ["north-america"]}):
+            for answer in (bare, dict(bare, components=[]), dict(bare, incidents=[])):
+                with self.subTest(options=options, answer=answer):
+                    got = self.read(options, answer)
+                    self.assertEqual(got["status"], "unknown", got)
+
     def test_the_options_grammar(self):
         services, problems = service_status.parse_services(
             "cf statuspage https://example.test/s.json groups=north-america,europe stale=3\n"
