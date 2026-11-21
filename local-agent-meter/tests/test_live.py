@@ -1365,6 +1365,18 @@ class ServiceFilters(unittest.TestCase):
                 self.assertEqual(got["status"], "unknown", got)
                 self.assertNotIn("another shape: ", got["error"])
 
+    def test_a_line_without_groups_reads_no_component_id(self):
+        # Lane review: the reader hashed every component id to build
+        # the outside set, even with no groups= option, so a page in
+        # major outage with a component id of [] read unknown
+        # (TypeError) where the base read outage.
+        components = [dict(c, id=[]) if c["id"] == "api" else c
+                      for c in REGIONS["components"]]
+        for options in ({}, {"stale": 3}):
+            with self.subTest(options=options):
+                got = self.read(options, dict(REGIONS, components=components))
+                self.assertEqual((got["status"], got.get("error")), ("outage", None))
+
     def test_a_nested_group_is_unknown(self):
         # Lane review: in A -> B -> component, selecting A dropped the
         # component, so its major outage read ok. Statuspage groups are

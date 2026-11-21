@@ -341,9 +341,10 @@ def read_statuspage(url, fetch, options=None, now=None):
         # sign of an outage (review round 3).
         kept = [c for c in listed if c["id"] in chosen or c.get("group_id") in chosen
                 or (not c.get("group_id") and c.get("group") is not True)]
-    kept_ids = {c.get("id") for c in kept}
-    # Ids the page lists outside the kept ones: proof an incident is elsewhere.
-    outside = {c.get("id") for c in listed if isinstance(c.get("id"), str)} - kept_ids
+        # Ids the page lists outside the kept ones: proof an incident is
+        # elsewhere. Built only here, where tree_checked typed every id:
+        # a line without groups= reads no id (lane review).
+        outside = {c["id"] for c in listed} - {c["id"] for c in kept}
     incidents, worst, whole = [], "ok", 0
     # Some pages (OpenAI, Tailscale, ...) leave `incidents` out when none is
     # open; a key that is there must still be a list of objects.
