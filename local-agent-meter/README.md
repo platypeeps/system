@@ -126,8 +126,9 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   `status` (`ok`, `degraded`, `outage`, `unknown`, `removed`), `indicator`, open `incidents`
   (title, url, impact, start), non-operational `components`, `providers`, `read_at`
   and `error`. A failed read is `unknown`, never `ok`.
-  A `statuspage` line may end in `groups=<g>[,<g>]` (each group's row and its components,
-  groups, name lower-cased with `-` for spaces, plus ungrouped ones) and
+  A `statuspage` line may end in `groups=<g>[,<g>]` (each group's row
+  and its components, name lower-cased with `-` for spaces, plus
+  ungrouped ones) and
   `stale=<days>` (drop an open incident older than that); with either,
   `status` is the worst kept component or incident (sd:9722). An incident
   is dropped only when every component it names is listed outside the
