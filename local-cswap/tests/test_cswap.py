@@ -1330,6 +1330,22 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
 
+    def test_a_slow_sent_mark_sends_no_keys(self):
+        # sd:9427 review: the sent mark is written inside the gap, and a
+        # slow write used it up; /rc still went with the earlier
+        # timeout, into whatever the pane drew meanwhile. The gap is
+        # checked again after the mark; past it, the pane stays owed.
+        slow = self.tmp / "slow-mark.sh"
+        slow.write_text('awk() { case "${2-}" in row=*) sleep 1.2;; esac; command awk "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(slow), CSWAP_RC_GAP_MS="1000")
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.assertRegex(result.stdout, r"reconnect: w1:p1 took \d+ ms to check and mark, over 1000 ms; still owed")
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+
     def test_a_session_herdr_stops_naming_gets_no_keys(self):
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"session": None}])

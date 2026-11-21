@@ -519,12 +519,6 @@ send_rc() {
   # Only a launched send may have gone out: the budget is checked here,
   # not in rc_step, whose 124 cannot tell an unlaunched call from a
   # timed-out one (sd:9427 triage).
-  left=$((RC_DEADLINE - $(date +%s)))
-  if ((left <= 0)); then
-    echo "reconnect: the ${RC_BUDGET}s budget is spent before the /rc to $1; still owed"
-    return 1
-  fi
-  ((left < bound)) && bound=$left
   # The sent mark goes in after every check and right before the send:
   # a sync stopped during the checks, or a refusal whose last write
   # failed, left a pane that never had /rc marked sent (sd:9427
@@ -533,6 +527,20 @@ send_rc() {
     echo "reconnect: could not write $RC_OWED before the send; $1 stays owed"
     return 1
   fi
+  # The write counts in the gap and the budget: both are read again
+  # after it, and the send takes only what is left (sd:9427 review).
+  # Past either, the pass's last write keeps the row owed.
+  took=$(($(now_ms) - start))
+  if ((took >= RC_GAP_MS)); then
+    echo "reconnect: $1 took $took ms to check and mark, over $RC_GAP_MS ms; still owed"
+    return 1
+  fi
+  left=$((RC_DEADLINE - $(date +%s)))
+  if ((left <= 0)); then
+    echo "reconnect: the ${RC_BUDGET}s budget is spent before the /rc to $1; still owed"
+    return 1
+  fi
+  ((left < bound)) && bound=$left
   if ! st_step "$bound" "$HERDR" agent prompt "$1" /rc --timeout "$((RC_GAP_MS - took))" 9>&- >/dev/null; then
     echo "reconnect: /rc to $1 failed or ran over $RC_GAP_MS ms; not sent again"
     return 2
