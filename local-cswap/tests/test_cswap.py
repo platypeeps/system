@@ -16,7 +16,6 @@ So no case asks the real launchd, cswap or workflow database anything.
 import json
 import os
 import pathlib
-import re
 import shutil
 import stat
 import subprocess
@@ -220,15 +219,13 @@ elif args[:2] == ["agent", "read"]:
         screen = re.sub(r"\x1b\[[0-9;]*m", "", screen)
     print(screen)
 elif args[:2] == ["agent", "prompt"]:
-    # Like herdr: --timeout MS fails a submission that takes longer.
-    # FAKE_HERDR_PROMPT_SLOW seconds make a slow delivery.
+    # Like herdr 0.9.5: --timeout without --wait is refused before any
+    # key is sent. FAKE_HERDR_PROMPT_SLOW seconds make a slow delivery.
     import time
-    slow = float(os.environ.get("FAKE_HERDR_PROMPT_SLOW") or 0)
-    if "--timeout" in args and slow * 1000 > int(args[args.index("--timeout") + 1]):
-        time.sleep(int(args[args.index("--timeout") + 1]) / 1000)
-        print("herdr: timeout", file=sys.stderr)
-        sys.exit(1)
-    time.sleep(slow)
+    if "--timeout" in args and "--wait" not in args:
+        print("error: --timeout requires --wait", file=sys.stderr)
+        sys.exit(2)
+    time.sleep(float(os.environ.get("FAKE_HERDR_PROMPT_SLOW") or 0))
     # FAKE_HERDR_PROMPT_LATE seconds after the keys: herdr acknowledges
     # a submission late, past its --timeout.
     time.sleep(float(os.environ.get("FAKE_HERDR_PROMPT_LATE") or 0))
@@ -621,8 +618,7 @@ class RemoteControlReconnects(Machine):
         executable((where or self.stubs) / "herdr", HERDR)
 
     def prompts(self):
-        # The send's --timeout varies with the time left in the gap.
-        return [re.sub(r" --timeout \d+$", "", line) for line in self.called("herdr agent prompt")]
+        return self.called("herdr agent prompt")
 
     def owe(self, rows, since):
         """Seed rc-owed with rows of the switch at `since`, that switch's
@@ -651,6 +647,10 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc", "herdr agent prompt w1:p2 /rc"])
         self.assertEqual(self.owed(), ["w1:p3", "w1:p4"])
+        # herdr took each send (sd:9427 review: --timeout without --wait
+        # was refused before any key went out).
+        self.assertIn("reconnect: sent /rc to w1:p1\n", result.stdout)
+        self.assertIn("reconnect: sent /rc to w1:p2\n", result.stdout)
         self.assertIn("2 pane(s) still owe /rc", result.stdout)
 
     def test_a_busy_pane_gets_rc_once_it_is_idle(self):
@@ -1118,7 +1118,7 @@ class RemoteControlReconnects(Machine):
     def test_a_slow_send_counts_in_the_gap(self):
         # Review on sd:9427: the gap ended before `agent prompt`, which
         # may take 10 s; a draft typed meanwhile took the /rc. The send
-        # gets the gap's time left as herdr's --timeout, and the whole
+        # gets the gap's time left as its bound, and the whole
         # span from the last screen read to the send's end must fit it.
         # Review on sd:9427, next round: a send that ran over the gap left
         # the pane owed, and its drop banner, not yet redrawn, took a
@@ -1134,8 +1134,6 @@ class RemoteControlReconnects(Machine):
                 result = self.sync("elsewhere", CSWAP_RC_GAP_MS=gap, **slow)
                 self.assertEqual(self.owed(), [], result.stdout)
                 self.assertRegex(result.stdout, rf"reconnect: /rc to w1:p1 .*over {gap} ms; not sent again")
-                timeout = int(self.called("herdr agent prompt")[-1].rsplit(" ", 1)[1])
-                self.assertLessEqual(timeout, int(gap))
                 self.sync("elsewhere")
                 self.assertEqual(self.prompts(), [])
                 (self.script.parent / "state/rc-owed").unlink()

@@ -505,8 +505,10 @@ send_rc() {
     return 1
   fi
   # The send counts too: herdr may take seconds to deliver, and a draft
-  # typed meanwhile would take the /rc (sd:9427 review). Its --timeout
-  # is the gap's time left. Once the prompt runs, the /rc may have gone
+  # typed meanwhile would take the /rc (sd:9427 review). Its bound is
+  # the gap's time left, in whole seconds: herdr refuses --timeout
+  # without --wait, and --wait waits for a turn /rc never starts
+  # (herdr 0.9.5, sd:9427 review). Once the prompt runs, the /rc may have gone
   # out: herdr's timeout does not prove no delivery, and a drop banner
   # not yet redrawn would take a second /rc, which disconnects the pane
   # (sd:9427 review). So a failed or late send returns 2: sent, not owed.
@@ -543,8 +545,9 @@ send_rc() {
     echo "reconnect: the ${RC_BUDGET}s budget is spent before the /rc to $1; still owed"
     return 1
   fi
+  bound=$(((RC_GAP_MS - took + 999) / 1000))
   ((left < bound)) && bound=$left
-  if ! st_step "$bound" "$HERDR" agent prompt "$1" /rc --timeout "$((RC_GAP_MS - took))" 9>&- >/dev/null; then
+  if ! st_step "$bound" "$HERDR" agent prompt "$1" /rc 9>&- >/dev/null; then
     echo "reconnect: /rc to $1 failed or ran over $RC_GAP_MS ms; not sent again"
     return 2
   fi
