@@ -102,9 +102,13 @@ st_shell_env() {
         # shellcheck source=/dev/null
         # The chain's stderr goes ahead of the exports marker: bash, POSIX
         # mode too, returns from a file with a syntax error and goes on, so
-        # its message is the one sign that only part of the chain ran.
+        # its message is the one sign that only part of the chain ran. It
+        # counts only as `<file>: line <n>: syntax error` naming a file
+        # that fails `sh -n`: a tool that printed the phrase dropped every
+        # export of a chain that ran to its end.
         # ponytail: matches bash's English message; a translated one would
-        # pass, set LC_MESSAGES for the probe if that ever bites.
+        # pass, set LC_MESSAGES for the probe if that ever bites. A relative
+        # name after a `cd` in the chain is not found and passes too.
         _st_ok=$(
             # Only what the chain adds, changes or unsets goes back, in
             # this shell's own quoting, and never a readonly name:
@@ -116,10 +120,20 @@ st_shell_env() {
             # inside `$( )`.
             # ponytail: a name is read off each dump line; a value with a
             # line that looks like `export NAME` only adds a name to check.
+            # Builtins only: the scan runs under the PATH env.sh set, and
+            # one without sed imported nothing and said so nowhere.
             _st_names() {
                 # shellcheck disable=SC3040 # bash only, behind the guard
                 ( [ -z "${BASH_VERSION:-}" ] || set -o posix; "$@" -p ) |
-                    sed -n "s/^$1 \([A-Za-z_][A-Za-z0-9_]*\).*/\1/p"
+                    while IFS= read -r _st_l; do
+                        case $_st_l in ("$1 "*) ;; (*) continue ;; esac
+                        _st_l=${_st_l#"$1 "}
+                        _st_l=${_st_l%%=*}
+                        case $_st_l in
+                            (''|[0-9]*|*[!A-Za-z0-9_]*) ;;
+                            (*) printf '%s\n' "$_st_l" ;;
+                        esac
+                    done
             }
             _st_before=$(_st_names export)
             for _st_n in $_st_before; do
@@ -141,7 +155,8 @@ st_shell_env() {
             # shellcheck disable=SC3047
             ! (trap : ERR) 2>/dev/null || trap - ERR
             echo '#st_shell_env exports'
-            _st_ro=" $(_st_names readonly | tr '\n' ' ') "
+            _st_ro=' '
+            for _st_n in $(_st_names readonly); do _st_ro="$_st_ro$_st_n "; done
             for _st_n in $_st_before; do
                 eval "[ -z \"\${$_st_n+x}\" ]" && printf 'unset %s\n' "$_st_n"
             done
@@ -162,7 +177,17 @@ st_shell_env() {
             echo "#st_shell_env ok $_st_fail"
         )
         case $_st_ok in
-            *[Ss]'yntax error'*'#st_shell_env exports'*) _st_ok= ;;
+            (*': line '[0-9]*': syntax error'*'#st_shell_env exports'*)
+                while IFS= read -r _st_l; do
+                    case $_st_l in
+                        (*': line '[0-9]*': syntax error'*)
+                            _st_f=${_st_l%%': line '[0-9]*}
+                            [ ! -f "$_st_f" ] || "${BASH:-sh}" -n "$_st_f" 2>/dev/null || _st_ok= ;;
+                    esac
+                done <<EOF
+${_st_ok%%'#st_shell_env exports'*}
+EOF
+                ;;
         esac
         case $_st_ok in
             *'#st_shell_env ok '[0-9]*)
@@ -175,7 +200,7 @@ st_shell_env() {
         esac
         [ -z "$_st_e" ] || set -e
     fi
-    unset _st_env _st_e _st_ok _st_rc
+    unset _st_env _st_e _st_ok _st_rc _st_l _st_f
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
     [ -z "$_st_x" ] || set -x

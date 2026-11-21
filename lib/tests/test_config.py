@@ -574,6 +574,32 @@ class ShellEnv(unittest.TestCase):
                     self.assertEqual(result.stdout, "after 1\n", result.stderr)
                     self.assertEqual("a command in" in result.stderr, warns and is_bash(sh), result.stderr)
 
+    def test_a_path_without_sed_still_imports(self):
+        """Review of f142c880: the export scan ran sed and tr under the
+        PATH env.sh set, so a PATH without them imported nothing and
+        reported success."""
+        self.env_sh("export PATH=/nonexistent\nexport OTHER=1\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        for sh in SHELLS:
+            with self.subTest(sh=sh):
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; echo "$OTHER $PATH"'],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "1 /nonexistent\n", result.stderr)
+
+    def test_a_tool_that_prints_syntax_error_drops_nothing(self):
+        """Review of f142c880: any stderr text with "syntax error"
+        discarded every export, though env.sh ran to its end."""
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        for line in ("tool: syntax error in input", "x.sh: line 3: syntax error: unexpected end of file"):
+            self.env_sh(f"echo '{line}' >&2\nexport OTHER=1\n")
+            for sh in SHELLS:
+                with self.subTest(line=line, sh=sh):
+                    result = subprocess.run(
+                        [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; echo "${{OTHER-unset}}"'],
+                        env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.stdout, "1\n", result.stderr)
+
     def test_set_e_from_env_sh_does_not_reach_the_caller(self):
         """An env.sh that turns set -e on would end a caller that runs
         without it at its next failed command."""
