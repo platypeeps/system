@@ -717,6 +717,25 @@ class RemoteControlReconnects(Machine):
         listed = (self.script.parent / "state/rc-listed").read_text().split("\n")
         self.assertIn(mark.read_text().strip() + " sd", listed)
 
+    def test_an_unreadable_owed_list_is_never_replaced(self):
+        # Review on sd:9427 (cswap.sh:380): a failed read of the other
+        # sessions' rows was masked, and the rewrite dropped them.
+        owed = self.script.parent / "state/rc-owed"
+        owed.parent.mkdir(exist_ok=True)
+        rows = "work w9:p9 s9 %d\n" % int(time.time())
+        owed.write_text(rows)
+        owed.chmod(0)
+        self.addCleanup(owed.chmod, 0o600)
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        result = self.sync("elsewhere")
+        owed.chmod(0o600)
+        self.assertEqual(owed.read_text(), rows)
+        self.assertIn("could not read", result.stdout)
+        # Not marked listed: once the list reads, the next sync owes sd's panes.
+        self.sync("elsewhere")
+        self.assertEqual(sorted(self.owed()), ["w1:p1", "w9:p9"])
+
     def test_no_switch_sends_nothing(self):
         self.publish(ONE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])

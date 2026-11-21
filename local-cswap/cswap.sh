@@ -368,7 +368,7 @@ owes_here() {
 # for the mark the list was read for, so a switch that lands during the
 # list is still unlisted at the next sync.
 list_owed() {
-  local mark since now rc=0
+  local mark since now rc=0 others listed
   mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || mark=""
   since=${mark%% *}
   now=$(date +%s)
@@ -377,13 +377,25 @@ list_owed() {
   herdr_panes || rc=$?
   ((rc == 0)) || return 0
   # This session's panes replace its old rows; other sessions' rows stay.
-  if { { other_rows 2>/dev/null
+  # A file that does not read is never replaced: its rows would go, and
+  # this session stays unlisted, so the next sync tries again (sd:9427
+  # review).
+  if ! others=$(other_rows 2>/dev/null); then
+    echo "reconnect: could not read $RC_OWED; the next sync tries again"
+    return 0
+  fi
+  if { { [[ -z "$others" ]] || printf '%s\n' "$others"
       awk -v hs="$HERDR_SESSION" -v since="$since" 'NF == 3 { print hs, $1, $2, since }' <<<"$PANES"
     } >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
-    # Lines of older marks go; this mark's lines stay.
-    { { awk -v m="$mark " 'index($0, m) == 1' "$RC_LISTED" 2>/dev/null
-        echo "$mark $HERDR_SESSION"; } >"$RC_LISTED.new" && mv "$RC_LISTED.new" "$RC_LISTED"; } 2>/dev/null ||
+    # Lines of older marks go; this mark's lines stay. An unreadable list
+    # is left as is: this session then lists again, and a pane already
+    # sent shows its active banner, so it gets no second /rc.
+    if [[ -e "$RC_LISTED" ]] && ! listed=$(awk -v m="$mark " 'index($0, m) == 1' "$RC_LISTED" 2>/dev/null); then
+      echo "reconnect: could not read $RC_LISTED; $HERDR_SESSION lists again next sync"
+    elif ! { { [[ -z "$listed" ]] || printf '%s\n' "$listed"
+        echo "$mark $HERDR_SESSION"; } >"$RC_LISTED.new" && mv "$RC_LISTED.new" "$RC_LISTED"; } 2>/dev/null; then
       echo "reconnect: could not mark $HERDR_SESSION listed in $RC_LISTED"
+    fi
     echo "reconnect: $(awk 'NF == 3' <<<"$PANES" | wc -l | tr -d ' ') claude pane(s) owe /rc"
   else
     echo "reconnect: could not write $RC_OWED; the next sync tries again"
