@@ -2000,3 +2000,25 @@ class FixedFees(unittest.TestCase):
         row = live.rows("usage:")["usage:nabucasa"]
         self.assertEqual((row["status"], row["source"], row["spend"]["amount"], row["spend"]["fixed"]),
                          ("ok", "fixed", 6.5, True))
+
+
+class MeterEnv(unittest.TestCase):
+    """Review on sd:9718: read_one read the tool's .env for every keyed
+    provider outside the per-provider handler, so a .env that does not
+    read stopped the whole usage run."""
+
+    def test_an_unreadable_env_costs_twilio_its_row_only(self):
+        meter = load_meter()
+        config = Path(tempfile.mkdtemp(prefix="meter-config."))
+        self.addCleanup(lambda: __import__("shutil").rmtree(config))
+        (config / "agent-meter").mkdir()
+        (config / "agent-meter/.env").write_bytes(b"TWILIO_ENV_FILE=\xff\xfe\n")
+        answer = ANSWERS["openrouter"][1]
+        with mock.patch.dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config), OPENROUTER_API_KEY=SECRET), \
+                mock.patch.object(meter.usage_sources, "fetch_json", answering(answer)):
+            keyed = meter.read_one("openrouter", None, None, NOW)
+            fixed = meter.read_one("nabucasa", None, None, NOW, fixed=6.5)
+            twilio = meter.read_one("twilio", None, None, NOW)
+        self.assertEqual((keyed["status"], fixed["status"]), ("ok", "ok"))
+        self.assertEqual((twilio["status"], twilio["error"]),
+                         ("unknown", "agent-meter .env does not read: UnicodeDecodeError"))
