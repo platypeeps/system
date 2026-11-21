@@ -86,14 +86,18 @@ st_shell_env() {
     # bash 5 ignored a set -e the chain turns on. A second child under
     # set -e names a failed command, even one a later export hides from
     # `$?`; it only warns.
-    # ponytail: only exports cross; an unset or a plain variable in env.sh
-    # does not, and env.sh runs twice: one keychain read extra.
+    # shell-env.example assigns without `export`, so the subshell sources
+    # under set -a and every assignment crosses, exported: the jobs and
+    # the claude they start are what read these values.
+    # ponytail: an unset in env.sh does not cross, and env.sh runs twice:
+    # one keychain read extra.
     _st_env="$HOME/.config/shell/env.sh"
     if [ -f "$_st_env" ]; then
         case $- in *e*) _st_e=1 ;; *) _st_e= ;; esac
         set +e
         # shellcheck source=/dev/null
         _st_ok=$(
+            set -a
             . "$_st_env" >/dev/null 2>&1 </dev/null
             # shellcheck disable=SC3040 # bash only, behind the guard
             [ -z "${BASH_VERSION:-}" ] || set -o posix

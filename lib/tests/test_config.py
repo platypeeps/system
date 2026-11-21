@@ -393,6 +393,21 @@ class ShellEnv(unittest.TestCase):
                     self.assertEqual(result.stdout, "after\n", result.stderr)
                     self.assertIn(".config/shell/env.sh", result.stderr)
 
+    def test_the_committed_template_maps_its_plain_assignment(self):
+        """Review of b39ec9c1: shell-env.example assigns without
+        `export`, and only exports crossed, so a launchd job lost the
+        token: mapped=change-me at the base, mapped=unset after."""
+        template = LIB.parent / "local-machine-setup/shell-env.example"
+        self.env_sh(template.read_text() + 'PLAIN="a b"\n')
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
+            with self.subTest(sh=sh):
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; '
+                     'echo "mapped=${CLAUDE_CODE_OAUTH_TOKEN-unset} $HA_TOKEN $PLAIN"'],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "mapped=change-me change-me a b\n", result.stderr)
+
     def test_a_chain_edited_after_the_probe_never_reaches_the_caller(self):
         """Review of 918d7467: the runner dotted env.sh again after the
         probes, so a file of the chain edited in between, here to an
