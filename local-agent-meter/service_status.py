@@ -371,8 +371,11 @@ def read_statuspage(url, fetch, options=None, now=None):
         if "groups" in options:
             # Dropped only when every link names a listed component outside
             # the groups; a missing, odd or unlisted id keeps it (review).
-            hit = [c.get("id") for c in entries(incident.get("components") or [],
-                                                "incident components")]
+            # A link list of another shape keeps it too: raising erased a
+            # kept outage (lane review).
+            links = incident.get("components")
+            hit = ([c.get("id") for c in links] if isinstance(links, list)
+                   and all(isinstance(c, dict) for c in links) else [])
             if hit and all(isinstance(i, str) and i.strip() and i in outside for i in hit):
                 continue
         if "stale" in options and stale(incident, options["stale"], now):

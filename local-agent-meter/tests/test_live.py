@@ -1453,6 +1453,22 @@ class ServiceFilters(unittest.TestCase):
                 got = self.read({"stale": 3}, page)
                 self.assertEqual((got["status"], got["incidents"]), (want, []), got)
 
+    def test_malformed_incident_links_keep_a_confirmed_outage(self):
+        # Lane review: an incident whose component links were ["na"]
+        # raised, so a kept major_outage read unknown, not outage.
+        # A link list of another shape is no proof to drop the incident.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        down = [dict(c, status="major_outage") if c["id"] == "iad" else c for c in calm]
+        for links in (["na"], "na", 5, [None], [{"id": "fra"}, "fra"], {"id": "fra"}):
+            with self.subTest(links=links):
+                incident = dict(REGIONS["incidents"][1], components=links)
+                got = self.read({"groups": ["north-america"]},
+                                dict(REGIONS, components=down, incidents=[incident]))
+                self.assertEqual((got["status"], got["components"],
+                                  [i["title"] for i in got["incidents"]]),
+                                 ("outage", [{"name": "Ashburn, VA (IAD)",
+                                              "status": "major_outage"}], ["FRA down"]))
+
     def test_maintenance_explains_no_minor_page(self):
         # Lane review: maintenance ranked with minor, so an excluded
         # under_maintenance component or maintenance incident explained
