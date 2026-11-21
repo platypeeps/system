@@ -369,7 +369,7 @@ def write_rows(record, a) -> None:
                        **({"seen": seen} if seen else {})}
 
 
-def read_one(provider, accounts, accounts_error, now, cap=None):
+def read_one(provider, accounts, accounts_error, now, cap=None, fixed=None):
     """One provider's reading: claude from cswap's accounts, codex from its
     app-server (its session logs when that fails), the rest from their own usage APIs."""
     if provider == "claude":
@@ -379,7 +379,7 @@ def read_one(provider, accounts, accounts_error, now, cap=None):
             now=now, binary=os.environ.get("CODEX_BIN") or find_bin("codex"))
     # The tool's .env under what is exported: it names TWILIO_ENV_FILE.
     env = {**system_tools_config.read_env(TOOL), **os.environ}
-    return usage_sources.read_provider(provider, env, usage_sources.fetch_json, now, cap)
+    return usage_sources.read_provider(provider, env, usage_sources.fetch_json, now, cap, fixed)
 
 
 def live(a, list_key, starting, parse, read, row_key) -> None:
@@ -480,11 +480,11 @@ def newest_live(connection, row_key):
 
 
 def read_usage(entry, now):
-    name, cap = entry
+    name, cap, fixed = entry
     if name in usage_sources.PASSED:
         return name, None
     accounts, error = read_accounts(30) if name == "claude" else (None, None)
-    return name, read_one(name, accounts, error, now, cap)
+    return name, read_one(name, accounts, error, now, cap, fixed)
 
 
 def record_passed(a, name, body):

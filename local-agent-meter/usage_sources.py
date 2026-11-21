@@ -380,8 +380,10 @@ def read_openai(env, fetch, now):
 
 #: A money amount Baseten sends as a decimal string: "242.95".
 DECIMAL = re.compile(r"\d{1,15}(\.\d{1,6})?")
-#: A providers list line's optional cap (sd:9701).
+#: A providers list line's optional cap (sd:9701) or fixed monthly fee
+#: in usd (sd:9719).
 CAP = re.compile(r"cap=(%s)" % DECIMAL.pattern)
+FIXED = re.compile(r"fixed=(%s)" % DECIMAL.pattern)
 
 
 def month_start(now):
@@ -642,6 +644,28 @@ def read_twilio(env, fetch, now):
             "balance": {"amount": twilio_amount(balance.get("balance"), "balance"), "unit": "usd"}}
 
 
+def read_resend(env, fetch, now):
+    """The calendar month's emails, sent and received, against the plan's
+    monthly limit (GET /usage, Resend's API reference, checked 2026-11-20;
+    sd:9719). The daily cap applies to the free tier only."""
+    data = fetch("https://api.resend.com/usage",
+                 {"Authorization": "Bearer " + key(env, "RESEND_API_KEY")})
+    emails = data.get("emails") if isinstance(data, dict) else None
+    month = emails.get("monthly") if isinstance(emails, dict) else None
+    if not isinstance(month, dict):
+        raise ReadFailed("no emails.monthly object")
+    used, limit = number(month.get("used"), "used"), number(month.get("limit"), "limit")
+    if used < 0 or limit <= 0:
+        raise ReadFailed("used or limit is not a count")
+    end = when(month.get("resets_at"), "resets_at")
+    out = {"spend": {"amount": used, "unit": "emails", "period": "month", "limit": limit},
+           "windows": [window("emails", used / limit * 100, None, end)],
+           "balance": {"amount": max(0.0, limit - used), "unit": "emails"}}
+    if end is not None:
+        out["spend"]["resets_at"] = end
+    return out
+
+
 READERS = {
     "openrouter": read_openrouter,
     "moonshot": read_moonshot,
@@ -659,12 +683,15 @@ READERS = {
     "copilot": read_copilot,
     "anthropic-api": read_anthropic_api,
     "twilio": read_twilio,
+    "resend": read_resend,
 }
 
 #: Providers with a key in the environment and no usage API a key can call
 #: (checked 2026-11-17): Gemini and Groq bill in their consoles only,
-#: TypeSafe shows usage in its console only.
-NO_SOURCE = ("gemini", "groq", "typesafe")
+#: TypeSafe shows usage in its console only. Socket Security's one usage
+#: endpoint, GET /v0/quota, is the API token's hourly request quota, not
+#: the plan's (checked 2026-11-20, sd:9719).
+NO_SOURCE = ("gemini", "groq", "typesafe", "socket")
 
 #: Providers whose reading a caller passes in, as `usage --huggingface-error`:
 #: the Hugging Face token has no quota endpoint, so the ZeroGPU error text
@@ -689,9 +716,14 @@ def huggingface_error(text, now):
                    now, read_at=iso(now))
 
 
-def read_provider(name, env, fetch, now, cap=None):
+def read_provider(name, env, fetch, now, cap=None, fixed=None):
     """One keyed provider's reading; claude and codex have their own. cap,
-    the list line's cap=N, is the spend's limit when the answer has none."""
+    the list line's cap=N, is the spend's limit when the answer has none.
+    fixed, the line's fixed=N, is the month's cost in usd, and no call is
+    made: a plan with a flat fee and no usage (sd:9719)."""
+    if fixed is not None:
+        return settled(name, "fixed", {"spend": {"amount": fixed, "unit": "usd", "period": "month",
+                                                 "fixed": True}}, now, read_at=iso(now))
     if name in NO_SOURCE:
         return reading(name, "no-source", "none")
     reader = READERS.get(name)
@@ -956,22 +988,26 @@ def codex_fields(limits):
 
 
 def parse_providers(text):
-    """The list's (name, cap) entries in order, the first of a name only,
-    and one problem per line that is not one. A line is a name and an
-    optional `cap=N`, N a positive decimal: the spend's limit where the
-    provider has no read API for it (sd:9701)."""
+    """The list's (name, cap, fixed) entries in order, the first of a name
+    only, and one problem per line that is not one. A line is a name and
+    an optional `cap=N`, N a positive decimal: the spend's limit where the
+    provider has no read API for it (sd:9701); or `fixed=N`, a flat
+    monthly fee in usd and no usage (sd:9719)."""
     entries, problems = [], []
     for number_, line in enumerate((text or "").splitlines(), 1):
         words = line.split("#", 1)[0].split(None, 1)
         if not words:
             continue
         name, rest = words[0], words[1].strip() if len(words) > 1 else ""
-        cap = CAP.fullmatch(rest)
-        if not NAME.fullmatch(name) or rest and not rest.startswith("cap="):
+        option = rest.split("=", 1)[0]
+        found = (CAP if option == "cap" else FIXED).fullmatch(rest)
+        if not NAME.fullmatch(name) or rest and option not in ("cap", "fixed"):
             problems.append("line %d: not a provider name" % number_)
-        elif rest and not (cap and float(cap.group(1)) > 0):
-            problems.append("line %d: cap=N wants N a positive decimal" % number_)
-        elif name not in [known for known, _ in entries]:
-            entries.append((name, float(cap.group(1)) if rest else None))
+        elif rest and not (found and float(found.group(1)) > 0):
+            problems.append("line %d: %s=N wants N a positive decimal" % (number_, option))
+        elif name not in [entry[0] for entry in entries]:
+            value = float(found.group(1)) if rest else None
+            entries.append((name, value if option == "cap" else None,
+                            value if option == "fixed" else None))
     return entries, problems
 

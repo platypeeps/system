@@ -194,6 +194,21 @@ ANSWERS = {
                        "has_more": False, "next_page": None},
                       {"spend": {"amount": 3.75, "unit": "usd", "period": "month",
                               "resets_at": NEXT}}),
+    # Resend's GET /usage (API reference, retrieve-usage; sd:9719): the
+    # calendar month's emails, sent and received, against the plan.
+    "resend": ("RESEND_API_KEY",
+               {"object": "usage",
+                "emails": {"daily": {"used": 10, "limit": None, "sent": 8, "received": 2,
+                                     "resets_at": "2026-11-18T00:00:00.000Z"},
+                           "monthly": {"used": 750, "limit": 3000, "sent": 700, "received": 50,
+                                       "resets_at": "2026-12-01T00:00:00.000Z"}},
+                "contacts": {"used": 10, "limit": 3000}, "broadcasts": {"used": 2, "limit": None},
+                "rate_limit": {"limit": 1000, "duration": "1000ms"}},
+               {"spend": {"amount": 750.0, "unit": "emails", "period": "month",
+                          "resets_at": "2026-12-01T00:00:00.000Z", "limit": 3000.0},
+                "balance": {"amount": 2250.0, "unit": "emails"},
+                "windows": [{"name": "emails", "used_percent": 25.0, "window_minutes": None,
+                             "resets_at": "2026-12-01T00:00:00.000Z"}]}),
 }
 
 #: Values no number in an answer may be taken from.
@@ -575,13 +590,13 @@ class Readers(unittest.TestCase):
     def test_the_starting_list_names_every_reader_once(self):
         names, problems = usage_sources.parse_providers(usage_sources.STARTING)
         self.assertEqual(problems, [])
-        self.assertEqual(sorted(name for name, _ in names), sorted(["claude", "codex", *usage_sources.READERS,
+        self.assertEqual(sorted(entry[0] for entry in names), sorted(["claude", "codex", *usage_sources.READERS,
                                                 *usage_sources.NO_SOURCE, *usage_sources.PASSED]))
 
     def test_the_providers_grammar(self):
         names, problems = usage_sources.parse_providers(
             "# comment\nclaude\n\n codex  # trailing\nclaude\nBad Name\nx/y\n")
-        self.assertEqual(names, [("claude", None), ("codex", None)])
+        self.assertEqual(names, [("claude", None, None), ("codex", None, None)])
         self.assertEqual(problems, ["line 6: not a provider name", "line 7: not a provider name"])
 
     def test_a_providers_line_may_carry_a_positive_cap(self):
@@ -590,7 +605,7 @@ class Readers(unittest.TestCase):
             "baseten cap=250\nopenai  cap=12.5 # month\nbaseten cap=9\ndeepinfra cap=0\n"
             "groq cap=-1\nmoonshot cap=1e3\nyoucom cap=\nheygen cap=5 cap=6\nrunway limit=5\n"
             "firecrawl cap=inf\nlangsmith cap=1" + "0" * 20 + "\n")
-        self.assertEqual(entries, [("baseten", 250.0), ("openai", 12.5)])
+        self.assertEqual(entries, [("baseten", 250.0, None), ("openai", 12.5, None)])
         self.assertEqual(problems, ["line %d: %s" % (n, "not a provider name" if n == 9 else
                                                      "cap=N wants N a positive decimal")
                                     for n in range(4, 12)])
@@ -1275,8 +1290,8 @@ class Live(unittest.TestCase):
         rows = self.rows("usage:")
         names, _ = usage_sources.parse_providers(usage_sources.STARTING)
         # A passed-in provider gets its row from its caller (sd:9586).
-        self.assertEqual(sorted(rows), sorted("usage:" + n for n, _ in names
-                                              if n not in usage_sources.PASSED))
+        self.assertEqual(sorted(rows), sorted("usage:" + entry[0] for entry in names
+                                              if entry[0] not in usage_sources.PASSED))
         self.assertEqual(rows["usage:claude"]["status"], "ok")
         self.assertEqual(rows["usage:claude"]["windows"][0]["used_percent"], 40.0)
         self.assertEqual(rows["usage:codex"]["status"], "ok")
@@ -1937,3 +1952,51 @@ class Twilio(unittest.TestCase):
             os.environ.pop("TWILIO_ENV_FILE", None)
             meter.read_one("twilio", None, None, NOW)
         self.assertEqual(seen.get("TWILIO_ENV_FILE"), "/elsewhere/twilio.env")
+
+
+class FixedFees(unittest.TestCase):
+    """sd:9719: a providers line 'name fixed=N' is that monthly cost and
+    no usage; nothing is fetched. Socket has no plan usage API."""
+
+    def test_a_fixed_line_parses_beside_cap_lines(self):
+        entries, problems = usage_sources.parse_providers(
+            "nabucasa fixed=6.50\nvoicedub  fixed=12 # month\ncmem fixed=0\nbaseten cap=250\n"
+            "resend fixed=-1\nsocket fixed=x\ntwilio cap=5 fixed=3\nnabucasa fixed=9\n")
+        self.assertEqual(entries, [("nabucasa", None, 6.5), ("voicedub", None, 12.0),
+                                   ("baseten", 250.0, None)])
+        self.assertEqual(problems, ["line 3: fixed=N wants N a positive decimal",
+                                    "line 5: fixed=N wants N a positive decimal",
+                                    "line 6: fixed=N wants N a positive decimal",
+                                    "line 7: cap=N wants N a positive decimal"])
+
+    def test_a_fixed_fee_is_the_months_cost_with_no_call(self):
+        got = usage_sources.read_provider("nabucasa", {}, failing("unreached"), NOW, fixed=6.5)
+        self.assertEqual(got, usage_sources.reading(
+            "nabucasa", "ok", "fixed", read_at="2026-11-17T20:00:00Z",
+            spend={"amount": 6.5, "unit": "usd", "period": "month", "fixed": True,
+                   "resets_at": NEXT}))
+
+    def test_socket_has_no_usage_source(self):
+        got = usage_sources.read_provider("socket", {"SOCKET_SECURITY_API_KEY": SECRET},
+                                          failing("unreached"), NOW)
+        self.assertEqual((got["status"], got["source"]), ("no-source", "none"))
+
+    def test_resend_without_a_monthly_number_is_unknown(self):
+        var, answer, _ = ANSWERS["resend"]
+        for path, value in ((("emails", "monthly", "limit"), None), (("emails", "monthly", "limit"), 0),
+                            (("emails", "monthly", "used"), -1), (("emails", "monthly"), None),
+                            (("emails",), [])):
+            with self.subTest(path=path, value=value):
+                got = usage_sources.read_provider("resend", {var: SECRET}, answering(put(answer, path, value)), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+
+    def test_the_live_run_writes_a_fixed_row(self):
+        live = Live("test_the_runs_read_a_config_folder_the_test_owns")
+        live.setUp()
+        self.addCleanup(live.doCleanups)
+        live.setting("dashboard.usage_providers", "nabucasa fixed=6.50\n")
+        done = live.run_live("usage")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        row = live.rows("usage:")["usage:nabucasa"]
+        self.assertEqual((row["status"], row["source"], row["spend"]["amount"], row["spend"]["fixed"]),
+                         ("ok", "fixed", 6.5, True))
