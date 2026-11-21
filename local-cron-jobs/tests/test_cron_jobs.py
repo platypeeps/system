@@ -25,6 +25,7 @@ import plistlib
 import pty
 import re
 import shutil
+import threading
 import signal
 import stat
 import subprocess
@@ -1823,6 +1824,25 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("demo: could not write the reinstall helper", result.stderr)
         self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+
+    def test_the_helper_waits_on_the_lock_of_the_checkout_launchd_runs(self):
+        """Review round 5: a job loaded from another checkout locks that
+        checkout's logs/. The helper waited on its own checkout's free lock,
+        then install found the real one held and refused, every night.
+        It now waits on the lock install will test, and installs once the
+        run lets go."""
+        other = self.fx.tmp / "other-checkout" / "local-cron-jobs" / "logs"
+        other.mkdir(parents=True)
+        held = open(other / ".demo.flock", "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        threading.Timer(2, held.close).start()
+        self.helper_plist().write_text("helper\n")
+        result = self.run_script("reinstall-after-run", "demo",
+                                 env={"CRON_TEST_STDOUT_DIR": str(other),
+                                      "CRON_JOBS_REINSTALL_WAIT": "20"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout)
 
     def test_a_run_tells_its_workload_which_job_it_is(self):
         out = self.fx.tmp / "run-job"

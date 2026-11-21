@@ -1715,8 +1715,11 @@ wait_unloaded() { # job
 # label without one is not ours to guess about. A label `print` cannot find is
 # not loaded, so `bootout` is skipped and this checkout's lock serves. Nor does
 # a log folder that is gone: launchd cannot start a run there.
-hold_job_lock() { # job
-  local lock="$LOG_DIR/.$1.flock" taken=0 out stdout
+# Prints the lock file a run of the job takes, by the rule above; fails,
+# saying why, when a loaded label names no log. The reinstall helper waits
+# on the same file install then tests (sd:9826 review).
+job_lock_path() { # job
+  local lock="$LOG_DIR/.$1.flock" out stdout
   if out=$(launchctl print "$DOMAIN/$(label_for "$1")" 2>/dev/null); then
     stdout=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*stdout path = //p' | head -1)
     if [ -z "$stdout" ]; then
@@ -1725,6 +1728,11 @@ hold_job_lock() { # job
     fi
     [ ! -d "${stdout%/*}" ] || lock="${stdout%/*}/.$1.flock"
   fi
+  printf '%s\n' "$lock"
+}
+hold_job_lock() { # job
+  local lock taken=0
+  lock="$(job_lock_path "$1")" || return 1
   exec 8>>"$lock" || {
     echo "cron-jobs.sh: $1: could not test the lock on $lock; nothing changed" >&2
     return 1
@@ -1832,12 +1840,15 @@ EOF
 # removes it. An uninstall in between cancels: the helper's plist is gone.
 cmd_reinstall_after_run() { # job
   local job="$1" waited=0 rc=0 wait="${CRON_JOBS_REINSTALL_WAIT:-14400}" why=""
-  local errs="$LOG_DIR/.$job.reinstall.err"
-  while lock_is_live "$LOG_DIR/.$job.flock" && [ "$waited" -lt "$wait" ]; do
+  local errs="$LOG_DIR/.$job.reinstall.err" lock
+  # The lock install will test: a label another checkout loaded locks that
+  # checkout's logs/. Unknown, it falls back here and install refuses.
+  lock="$(job_lock_path "$job" 2>/dev/null)" || lock="$LOG_DIR/.$job.flock"
+  while lock_is_live "$lock" && [ "$waited" -lt "$wait" ]; do
     sleep 1
     waited=$((waited + 1))
   done
-  if lock_is_live "$LOG_DIR/.$job.flock"; then
+  if lock_is_live "$lock"; then
     why="cron-jobs.sh: $job: a run still holds the lock after $wait s; not reinstalled, the next update retries"
     echo "$why" >&2
     rc=1
