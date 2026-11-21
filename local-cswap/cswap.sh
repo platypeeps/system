@@ -65,6 +65,12 @@ RC_BUDGET="${CSWAP_RC_BUDGET:-60}"
 RC_DEADLINE=""
 HERDR_DIRS="${CSWAP_HERDR_DIRS-$HOME/.local/bin /opt/homebrew/bin /usr/local/bin}"
 HERDR=""
+# Every herdr call targets the session local-herdr starts (sd unless
+# HERDR_SESSION says), not herdr's default: cron found no panes there,
+# and its empty list cleared a pending switch. A socket path inherited
+# from another session's pane would override the name, so it goes.
+export HERDR_SESSION="${HERDR_SESSION:-sd}"
+unset HERDR_SOCKET_PATH
 AGENTS=""
 PANES=""
 LISTED=""

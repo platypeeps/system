@@ -134,6 +134,12 @@ with open(os.environ["FAKE_CALLS"], "a") as log:
     log.write("herdr " + " ".join(sys.argv[1:]) + "\n")
 panes = json.load(open(os.environ["FAKE_HERDR"]))
 args = sys.argv[1:]
+# Like herdr: HERDR_SESSION names the session, and an inherited
+# HERDR_SOCKET_PATH overrides it. The panes live in the session
+# FAKE_HERDR_SESSION names (default sd); any other is running and empty.
+if (os.environ.get("HERDR_SESSION") or "default") != os.environ.get("FAKE_HERDR_SESSION", "sd") \
+        or os.environ.get("HERDR_SOCKET_PATH"):
+    panes = []
 read = os.environ["FAKE_HERDR"] + ".read"
 seen = open(read).read().split() if os.path.exists(read) else []
 def state(row):
@@ -600,6 +606,21 @@ class RemoteControlReconnects(Machine):
                 self.assertEqual(self.prompts(), [])
                 self.assertEqual(self.owed(), ["w1:p1"])
         self.assertEqual(len(self.called("herdr agent list")), 1)
+
+    def test_the_managed_herdr_session_is_the_one_asked(self):
+        # Review on sd:9427: cron's herdr calls went to herdr's default
+        # session, not local-herdr's `sd`; an empty default list cleared
+        # the pending switch. A pane inside another session inherits its
+        # socket path, which must not win either. HERDR_SESSION overrides,
+        # as in local-herdr.
+        for extra in ({}, {"HERDR_SOCKET_PATH": "/nowhere.sock"},
+                      {"HERDR_SESSION": "work", "FAKE_HERDR_SESSION": "work"}):
+            with self.subTest(extra=extra):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                self.sync("elsewhere", **extra)
+                self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+                self.assertEqual(self.owed(), [])
 
     def test_no_switch_sends_nothing(self):
         self.publish(ONE)

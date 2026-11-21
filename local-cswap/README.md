@@ -41,6 +41,7 @@ A sync that switches nothing writes no list, so a connected session is never tog
 Cron's PATH may lack herdr, so sync also looks in `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin` (`CSWAP_HERDR_DIRS`).
 No herdr, or no herdr server answering, prints one `reconnect: skipped:` line and leaves the exit code alone.
 Each herdr call runs under `st_step`.
+Each herdr call targets the session `local-herdr` starts: `sd`, or `HERDR_SESSION` when set; an inherited `HERDR_SOCKET_PATH` is dropped.
 
 `sys.cswap_account` is declared in the repository's `sd-plugin.json`, so `sd config get|set` reads and writes it as a database row, over the tailnet on a satellite.
 The `sys` plugin must be registered on every machine: machine-setup's `repos` stage registers it, and `sd plugin list` names it.
