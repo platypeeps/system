@@ -1226,6 +1226,15 @@ class ServiceFilters(unittest.TestCase):
             updated_at="2026-11-17T09:00:00Z"))
         self.assertEqual([i["title"] for i in fresh["incidents"]], ["Old"])
 
+    def test_a_stale_filter_keeps_an_incident_with_no_last_update(self):
+        # Review: with no updated_at, stale= aged an old, still
+        # identified minor incident by created_at alone and hid it.
+        for change in ({}, {"updated_at": None}, {"updated_at": ""}):
+            with self.subTest(change=change):
+                page = self.stale_page(status="identified", **change)
+                got = self.read({"stale": 3}, page)
+                self.assertEqual([i["title"] for i in got["incidents"]], ["Old"])
+
     def test_a_stale_filter_keeps_an_incident_it_cannot_place(self):
         # Class pass: an impact or a time of another shape keeps it.
         for change in ({"impact": None}, {"impact": "severe"}, {"impact": 3},

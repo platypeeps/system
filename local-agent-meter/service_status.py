@@ -10,7 +10,7 @@ each group's own row and its components (the name lower-cased, spaces as
 sit outside them; a group the page lacks reads unknown. `stale=<days>`
 drops an open incident of impact none, minor or maintenance with no
 update for more than that many days (1 to 365); a major or critical
-one stays.
+one, or one with no updated_at, stays.
 A page may group its core products (Cloudflare's
 `cloudflare-sites-and-services`), so name that group too. With either, the
 status is the worst kept component or incident, never the page's; an
@@ -276,12 +276,15 @@ STALE_IMPACT = ("none", "minor", "maintenance")
 def stale(incident, days, now):
     """True when a quiet incident had no update for more than `days`.
     It ages by its last update, not its creation; an impact or a time of
-    another shape keeps it (lane review)."""
+    another shape, or no updated_at, keeps it (lane review)."""
     if incident.get("impact") not in STALE_IMPACT:
+        return False
+    # Without a last update, creation alone proves no quiet (review).
+    if "updated_at" not in incident:
         return False
     times = [incident.get(k) for k in ("created_at", "updated_at") if k in incident]
     moments = [event_time(t) for t in times]
-    if not moments or None in moments:
+    if None in moments:
         return False
     return now - max(moments) > datetime.timedelta(days=days)
 

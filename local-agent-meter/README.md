@@ -132,7 +132,8 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   and its components, name lower-cased with `-` for spaces, plus
   ungrouped ones) and
   `stale=<days>` (1 to 365; drop an open none, minor or maintenance
-  incident with no update for longer; a major or critical one stays);
+  incident with no update for longer; a major or critical one, or one
+  with no `updated_at`, stays);
   with either,
   `status` is the worst kept component or incident (sd:9722). An incident
   is dropped only when every component it names is listed outside the
