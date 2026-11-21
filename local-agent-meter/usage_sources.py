@@ -1026,6 +1026,11 @@ def parse_providers(text):
         if rest and not (found and float(found.group(1)) > 0):
             problems.append("line %d: %s=N wants N a positive decimal" % (number_, option))
             found = None
+        # These never reach read_provider: a fee there would never show
+        # (sd:9719 triage).
+        if found and option == "fixed" and name in ("claude", "codex", *PASSED):
+            problems.append("line %d: fixed=N is not for %s: its usage is read" % (number_, name))
+            found = None
         if name not in [entry[0] for entry in entries]:
             value = float(found.group(1)) if found else None
             entries.append((name, value if option == "cap" else None,

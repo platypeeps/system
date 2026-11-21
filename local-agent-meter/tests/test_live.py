@@ -2039,6 +2039,16 @@ class FixedFees(unittest.TestCase):
                                     "line 6: fixed=N wants N a positive decimal",
                                     "line 7: cap=N wants N a positive decimal"])
 
+    def test_a_fixed_fee_on_a_provider_read_elsewhere_is_refused(self):
+        # sd:9719 triage: claude, codex and huggingface never reach
+        # read_provider, so their fee would parse and never show.
+        entries, problems = usage_sources.parse_providers(
+            "claude fixed=20\ncodex fixed=5\nhuggingface fixed=9\nnabucasa fixed=6.50\n")
+        self.assertEqual(entries, [("claude", None, None), ("codex", None, None),
+                                   ("huggingface", None, None), ("nabucasa", None, 6.5)])
+        self.assertEqual(problems, ["line %d: fixed=N is not for %s: its usage is read" % (n, name)
+                                    for n, name in ((1, "claude"), (2, "codex"), (3, "huggingface"))])
+
     def test_a_fixed_fee_is_the_months_cost_with_no_call(self):
         got = usage_sources.read_provider("nabucasa", {}, failing("unreached"), NOW, fixed=6.5)
         self.assertEqual(got, usage_sources.reading(
