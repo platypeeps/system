@@ -377,7 +377,9 @@ def read_one(provider, accounts, accounts_error, now, cap=None):
     if provider == "codex":
         return usage_sources.codex_reading(
             now=now, binary=os.environ.get("CODEX_BIN") or find_bin("codex"))
-    return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now, cap)
+    # The tool's .env under what is exported: it names TWILIO_ENV_FILE.
+    env = {**system_tools_config.read_env(TOOL), **os.environ}
+    return usage_sources.read_provider(provider, env, usage_sources.fetch_json, now, cap)
 
 
 def live(a, list_key, starting, parse, read, row_key) -> None:
