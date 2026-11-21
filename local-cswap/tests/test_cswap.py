@@ -189,6 +189,11 @@ elif args[:2] == ["agent", "get"]:
     if os.environ.get("FAKE_SWITCH_DURING_GET"):
         switch(os.environ["FAKE_SWITCH_DURING_GET"])
     time.sleep(float(os.environ.get("FAKE_HERDR_GET_SLOW") or 0))
+    # FAKE_OWED_AT_GET: rc-owed as the get finds it, copied there.
+    if os.environ.get("FAKE_OWED_AT_GET"):
+        import shutil
+        shutil.copy(os.path.join(os.environ["FAKE_STATE_DIR"], "rc-owed"),
+                    os.environ["FAKE_OWED_AT_GET"])
     if os.environ.get("FAKE_HERDR_GET_FAIL"):
         print("herdr: no such pane", file=sys.stderr)
         sys.exit(1)
@@ -1302,6 +1307,28 @@ class RemoteControlReconnects(Machine):
         self.assertIn("could not update", result.stdout)
         result = self.sync("elsewhere")
         self.assertEqual(self.prompts(), [], result.stdout)
+
+    def test_a_pane_is_marked_sent_only_after_the_last_checks(self):
+        # sd:9427 review: the sent mark was written before the send's
+        # checks. A sync stopped during them, or a check that refused
+        # and a last write that failed, left a pane that never had /rc
+        # marked sent. The mark is written right before the prompt.
+        snap = self.tmp / "owed-at-get"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"status": "working", "gets": 1}])
+        failing = self.tmp / "failing-printf.sh"
+        # Only the pass's last write ("%s", no newline) fails.
+        failing.write_text('printf() { [ "$1" = %s ] && case "$2" in *w1:p1*) return 1;; esac;'
+                           ' builtin printf "$@"; }\n')
+        result = self.sync("elsewhere", FAKE_OWED_AT_GET=str(snap), BASH_ENV=str(failing),
+                           FAKE_STATE_DIR=str(self.script.parent / "state"))
+        self.assertEqual(self.prompts(), [])
+        self.assertNotIn(" sent", snap.read_text())
+        self.assertIn("could not update", result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
 
     def test_a_session_herdr_stops_naming_gets_no_keys(self):
         self.publish(THREE)

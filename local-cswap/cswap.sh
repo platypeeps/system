@@ -525,6 +525,14 @@ send_rc() {
     return 1
   fi
   ((left < bound)) && bound=$left
+  # The sent mark goes in after every check and right before the send:
+  # a sync stopped during the checks, or a refusal whose last write
+  # failed, left a pane that never had /rc marked sent (sd:9427
+  # review). A mark that does not write sends nothing.
+  if ! mark_sent "$HERDR_SESSION $1 $2 $3"; then
+    echo "reconnect: could not write $RC_OWED before the send; $1 stays owed"
+    return 1
+  fi
   if ! st_step "$bound" "$HERDR" agent prompt "$1" /rc --timeout "$((RC_GAP_MS - took))" 9>&- >/dev/null; then
     echo "reconnect: /rc to $1 failed or ran over $RC_GAP_MS ms; not sent again"
     return 2
@@ -568,7 +576,7 @@ current_since() {
 # Mark the RC_OWED row $1 sent before its /rc goes: a later write that
 # fails then loses a /rc at worst, and never owes a sent pane again
 # (sd:9427 review). A send that does not happen keeps the row owed in
-# the pass's last write.
+# the pass's last write; send_rc calls it after its last check.
 mark_sent() {
   { awk -v row="$1" '$0 == row { print $0, "sent"; next } { print }' "$RC_OWED" >"$RC_OWED.new" &&
     mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null
@@ -616,9 +624,6 @@ reconnect_pass() {
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         elif [[ "$verdict" != send ]]; then
           echo "reconnect: $pane $verdict"
-          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
-        elif ! mark_sent "$hs $pane $session $since"; then
-          echo "reconnect: could not write $RC_OWED before the send; $pane stays owed"
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         else
           rc=0
