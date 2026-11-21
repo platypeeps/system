@@ -78,6 +78,37 @@ moonshot http https://platform.moonshot.ai moonshot
 typesafe http https://status.typesafe.ai typesafe
 """
 
+#: Defaults an earlier release seeded. A held list equal to one of them
+#: was never edited, so the job moves it to STARTING (sd:9722 review);
+#: an edited list stays as the operator left it.
+RETIRED = ("""\
+claude statuspage https://status.claude.com/api/v2/summary.json claude
+openai statuspage https://status.openai.com/api/v2/summary.json codex,openai
+google-cloud google-incidents https://status.cloud.google.com/incidents.json gemini
+github statuspage https://www.githubstatus.com/api/v2/summary.json copilot
+tailscale statuspage https://status.tailscale.com/api/v2/summary.json
+google-workspace google-incidents https://www.google.com/appsstatus/dashboard/incidents.json
+slack slack https://slack-status.com/api/v2.0.0/current
+notion statuspage https://www.notion-status.com/api/v2/summary.json
+atlassian statuspage https://status.atlassian.com/api/v2/summary.json
+docker-hub statuspage https://www.dockerstatus.com/api/v2/summary.json
+cloudflare statuspage https://www.cloudflarestatus.com/api/v2/summary.json
+strongdm statuspage https://status.strongdm.com/api/v2/summary.json
+heygen statuspage https://status.heygen.com/api/v2/summary.json heygen
+groq statuspage https://groqstatus.com/api/v2/summary.json groq
+baseten statuspage https://status.baseten.co/api/v2/summary.json baseten
+runway statuspage https://status.runwayml.com/api/v2/summary.json runway
+langsmith http https://status.smith.langchain.com langsmith
+minimax statuspage https://status.minimax.io/api/v2/summary.json minimax
+youcom statuspage https://status.you.com/api/v2/summary.json youcom
+deepinfra http https://status.deepinfra.com deepinfra
+openrouter http https://status.openrouter.ai openrouter
+huggingface http https://status.huggingface.co huggingface
+firecrawl http https://status.firecrawl.dev firecrawl
+moonshot http https://platform.moonshot.ai moonshot
+typesafe http https://status.typesafe.ai typesafe
+""",)
+
 #: A statuspage indicator as a status; anything else is unknown.
 INDICATOR = {"none": "ok", "minor": "degraded", "maintenance": "degraded",
              "major": "outage", "critical": "outage"}

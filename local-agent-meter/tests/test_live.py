@@ -1092,6 +1092,17 @@ class ServiceFilters(unittest.TestCase):
                           "stale": 3})
         self.assertEqual(options["claude"], {})
 
+    def test_the_old_default_differs_only_in_the_cloudflare_line(self):
+        old = service_status.RETIRED[0].splitlines()
+        new = service_status.STARTING.splitlines()
+        self.assertEqual([(a, b) for a, b in zip(old, new) if a != b],
+                         [("cloudflare statuspage"
+                           " https://www.cloudflarestatus.com/api/v2/summary.json",
+                           "cloudflare statuspage"
+                           " https://www.cloudflarestatus.com/api/v2/summary.json"
+                           " groups=north-america,cloudflare-sites-and-services stale=3")])
+        self.assertEqual(len(old), len(new))
+
     def test_a_group_filter_keeps_its_components_and_ungrouped_ones(self):
         got = self.read({"groups": ["north-america"]})
         self.assertEqual(got["components"],
@@ -1596,6 +1607,29 @@ class Live(unittest.TestCase):
         rows = self.rows("service-status:")
         self.assertEqual(len(rows), len(service_status.STARTING.splitlines()))
         self.assertEqual({row["status"] for row in rows.values()}, {"unknown"})
+
+    def test_an_unedited_old_default_list_moves_to_the_new_one(self):
+        # Review: live() seeded STARTING only on a never-held row, so a
+        # store holding the old default kept reading Cloudflare unfiltered.
+        self.env.update({name: "http://127.0.0.1:%d" % closed_port() for name in PROXIES},
+                        NO_PROXY="", no_proxy="")
+        self.setting("dashboard.status_services", service_status.RETIRED[0])
+        done = self.run_live("services")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        held = writes.read_settings(self.connection(), ["dashboard.status_services"])
+        self.assertEqual(held["dashboard.status_services"], service_status.STARTING)
+        self.assertIn("moved to the new default", done.stdout)
+
+    def test_an_edited_old_default_list_stays_as_the_operator_left_it(self):
+        self.env.update({name: "http://127.0.0.1:%d" % closed_port() for name in PROXIES},
+                        NO_PROXY="", no_proxy="")
+        edited = "".join(line for line in service_status.RETIRED[0].splitlines(True)
+                         if not line.startswith("strongdm "))
+        self.setting("dashboard.status_services", edited)
+        done = self.run_live("services")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        held = writes.read_settings(self.connection(), ["dashboard.status_services"])
+        self.assertEqual(held["dashboard.status_services"], edited)
 
     def test_an_entry_dropped_from_its_list_is_retired_once(self):
         # sd:9256 round 5: a dropped entry's last row stood as its newest

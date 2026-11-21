@@ -137,6 +137,10 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   is dropped only when every component it names is listed outside the
   groups. Cloudflare keeps its core products in a group of their own:
   name `cloudflare-sites-and-services` with the region.
+  A list still equal to the earlier default moves to the new one on the
+  next run. An edited list stays as it is: add
+  `groups=north-america,cloudflare-sites-and-services stale=3` to its
+  `cloudflare` line in Settings.
 
 Run them on the hub only: the rows go to the hub's database.
 
