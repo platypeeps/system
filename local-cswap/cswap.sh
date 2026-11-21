@@ -333,8 +333,11 @@ else:
 }
 
 # The account just switched: every claude pane owes /rc. The pending mark
-# is written at once, before a later step can fail, and stays until herdr
-# lists the panes, so a herdr that does not answer now is asked again.
+# (the switch's epoch, then one line per herdr session that listed its
+# panes) is written at once, before a later step can fail. It stays for
+# RC_OWED_FOR seconds, so each herdr session lists once, and a herdr that
+# does not answer now is asked again (sd:9427 review: the first session
+# to list cleared it for every other).
 owe_rc() {
   { mkdir -p "${RC_PENDING%/*}" && date +%s >"$RC_PENDING"; } 2>/dev/null ||
     echo "reconnect: could not write $RC_PENDING; no pane owes /rc for this switch"
@@ -351,19 +354,23 @@ owes_here() {
   awk -v hs="$HERDR_SESSION" 'NF == 4 && $1 == hs { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null
 }
 
-# A pending switch to owed panes, once herdr lists them. A machine with no
-# herdr has nothing to owe, so the mark goes.
+# A pending switch to this herdr session's owed panes, once herdr lists
+# them; a session already named in the mark has listed for this switch. A
+# machine with no herdr has nothing to owe, so the mark goes.
 list_owed() {
-  local since now rc=0
+  local since now rc=0 listed
   [[ -s "$RC_PENDING" ]] || return 0
   now=$(date +%s)
-  since=$(cat "$RC_PENDING" 2>/dev/null) || since=""
+  since=$(head -n 1 "$RC_PENDING" 2>/dev/null) || since=""
+  listed=$(tail -n +2 "$RC_PENDING" 2>/dev/null) || listed=""
   [[ "$since" =~ ^[0-9]+$ ]] || since=$now
   if ((now - since > RC_OWED_FOR)); then
     rm -f "$RC_PENDING"
-    echo "reconnect: herdr listed no panes for ${RC_OWED_FOR}s after the switch; none owes /rc"
+    [[ -n "$listed" ]] ||
+      echo "reconnect: herdr listed no panes for ${RC_OWED_FOR}s after the switch; none owes /rc"
     return 0
   fi
+  grep -Fqx -- "$HERDR_SESSION" <<<"$listed" && return 0
   herdr_panes || rc=$?
   if ((rc == 2)); then rm -f "$RC_PENDING"; return 0; fi
   ((rc == 0)) || return 0
@@ -371,7 +378,8 @@ list_owed() {
   if { { other_rows 2>/dev/null
       awk -v hs="$HERDR_SESSION" -v since="$since" 'NF == 3 { print hs, $1, $2, since }' <<<"$PANES"
     } >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
-    rm -f "$RC_PENDING"
+    echo "$HERDR_SESSION" >>"$RC_PENDING" 2>/dev/null ||
+      echo "reconnect: could not mark $HERDR_SESSION listed in $RC_PENDING"
     echo "reconnect: $(awk 'NF == 3' <<<"$PANES" | wc -l | tr -d ' ') claude pane(s) owe /rc"
   else
     echo "reconnect: could not write $RC_OWED; the next sync tries again"

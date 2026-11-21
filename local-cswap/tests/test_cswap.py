@@ -652,6 +652,21 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
         self.assertEqual(self.owed(), [])
 
+    def test_each_herdr_session_lists_its_panes_for_a_switch(self):
+        # Review on sd:9427 (cswap.sh:374): the first session to list,
+        # even an empty one, cleared the machine-wide mark, so the panes
+        # of session work were never owed for that switch.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("elsewhere", FAKE_HERDR_SESSION="work")
+        self.assertEqual(self.owed(), [])
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere", HERDR_SESSION="work", FAKE_HERDR_SESSION="work")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        # Once listed, a session lists no second time for one switch.
+        self.sync("elsewhere", HERDR_SESSION="work", FAKE_HERDR_SESSION="work")
+        self.assertEqual(self.prompts(), [])
+
     def test_no_switch_sends_nothing(self):
         self.publish(ONE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
@@ -862,7 +877,10 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.prompts(), [])
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
-        self.assertFalse((self.script.parent / "state/rc-pending").exists())
+        # The mark stays for other herdr sessions, but sd listed once:
+        # a later sync with nothing owed asks herdr nothing.
+        self.sync("elsewhere")
+        self.assertEqual(self.called("herdr"), [])
 
     def test_a_list_that_is_not_the_agent_list_is_a_parse_failure(self):
         self.publish(THREE)
