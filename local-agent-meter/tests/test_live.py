@@ -1085,6 +1085,36 @@ class ServiceFilters(unittest.TestCase):
                          ("outage", ["CDN down"]))
         self.assertEqual(got["components"], [{"name": "CDN/Cache", "status": "major_outage"}])
 
+    def test_a_component_tree_the_filter_cannot_trust_is_unknown(self):
+        # Review round 2: North America's id was null and Ashburn still
+        # named the old id, so Ashburn's outage was dropped and read ok.
+        # Every assumption the filter makes about the tree is checked.
+        def page(change):
+            components = [dict(c) for c in REGIONS["components"]]
+            components[1]["status"] = "major_outage"
+            change(components)
+            return dict(REGIONS, components=components, incidents=[])
+
+        def setter(index, key, value):
+            return lambda cs: cs[index].update({key: value})
+        cases = {
+            "group id null": setter(0, "id", None),
+            "group id number": setter(0, "id", 5),
+            "child names no group": setter(1, "group_id", "gone"),
+            "child parent not a string": setter(1, "group_id", 5),
+            "child parent not a group": setter(1, "group_id", "api"),
+            "component id missing": lambda cs: cs[4].pop("id"),
+            "component id repeated": setter(4, "id", "iad"),
+            "group flag not a bool": setter(2, "group", "yes"),
+            "two groups one name": setter(2, "name", "North  America"),
+        }
+        for label, change in cases.items():
+            with self.subTest(label):
+                got = self.read({"groups": ["north-america"]}, page(change))
+                self.assertEqual(got["status"], "unknown", got)
+        self.assertEqual(self.read({"groups": ["north-america"]}, page(lambda cs: None))
+                         ["status"], "outage")
+
     def test_a_group_the_page_lacks_is_unknown_never_ok(self):
         got = self.read({"groups": ["antarctica"]})
         self.assertEqual(got["status"], "unknown")

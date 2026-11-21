@@ -212,6 +212,23 @@ def group_key(name):
     return "-".join(name.lower().split()) if isinstance(name, str) else None
 
 
+def tree_checked(listed):
+    """ReadFailed unless the component tree is one the group filter can
+    trust: unique string ids, a bool or absent group flag, and every
+    parent link naming a group. A broken link hid an outage (review)."""
+    ids = [c.get("id") for c in listed]
+    if not all(isinstance(i, str) for i in ids) or len(set(ids)) != len(ids):
+        raise ReadFailed("component ids of another shape")
+    groups = set()
+    for c in listed:
+        if c.get("group") not in (None, True, False):
+            raise ReadFailed("a component group flag of another shape")
+        if c.get("group") is True:
+            groups.add(c["id"])
+    if not all(c.get("group_id") is None or c.get("group_id") in groups for c in listed):
+        raise ReadFailed("a component names no group on the page")
+
+
 def read_statuspage(url, fetch, options=None, now=None):
     options = options or {}
     data = fetch(url)
@@ -226,7 +243,10 @@ def read_statuspage(url, fetch, options=None, now=None):
         one_of(c.get("status"), COMPONENT, "a component status")
     kept = listed
     if "groups" in options:
-        named = {group_key(c.get("name")): c.get("id") for c in listed if c.get("group") is True}
+        tree_checked(listed)
+        named = {group_key(c.get("name")): c["id"] for c in listed if c.get("group") is True}
+        if len(named) != sum(c.get("group") is True for c in listed):
+            raise ReadFailed("two groups with one name")
         missing = [g for g in options["groups"] if g not in named]
         if missing:
             raise ReadFailed("no group %s on the page" % ",".join(missing))
