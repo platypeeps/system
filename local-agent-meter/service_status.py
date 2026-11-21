@@ -314,7 +314,9 @@ def read_statuspage(url, fetch, options=None, now=None):
     # Ids the page lists outside the kept ones: proof an incident is elsewhere.
     outside = {c.get("id") for c in listed if isinstance(c.get("id"), str)} - kept_ids
     incidents, worst = [], "ok"
-    for incident in entries(data.get("incidents"), "incidents"):
+    # Some pages (OpenAI, Tailscale, ...) leave `incidents` out when none is
+    # open; a key that is there must still be a list of objects.
+    for incident in entries(data["incidents"] if "incidents" in data else [], "incidents"):
         if one_of(incident.get("status"), INCIDENT_OPEN + INCIDENT_CLOSED,
                   "an incident status") in INCIDENT_CLOSED:
             continue
