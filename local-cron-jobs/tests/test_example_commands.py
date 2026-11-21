@@ -587,6 +587,34 @@ class KoiWaterDailyTest(unittest.TestCase):
         self.assertIn("\\${SD_PACK_ROOT", command)
 
 
+class NeedsSweepNightlyTest(unittest.TestCase):
+    """The nightly Needs you sweep (sd:9764) runs the pack's `sd reports sweep`.
+
+    The verb (pack sd:9759) closes what Today's Attention list holds but no
+    longer needs the operator, each with a note; the job log keeps its lines.
+    """
+
+    JOB = EXAMPLES / "needs-sweep-nightly.job"
+
+    def test_the_job_runs_the_pack_sd_reports_sweep_once_a_night(self):
+        text = self.JOB.read_text()
+        self.assertRegex(text, r'(?m)^JOB_SCHEDULE="\d+ \d+ \* \* \*"$')
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        pack, marker = fx.tmp / "custom pack", fx.tmp / "pack-ran"
+        sd = pack / "bin" / "sd"
+        sd.parent.mkdir(parents=True)
+        sd.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$PACK_MARKER"\n')
+        sd.chmod(0o755)
+        env_sh = fx.home / ".config" / "shell" / "env.sh"
+        env_sh.parent.mkdir(parents=True)
+        env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{marker}"\n')
+        fx.write_job(self.JOB.stem, text)
+        result = fx.exec_job(self.JOB.stem)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(marker.read_text().splitlines(), ["reports", "sweep"])
+
+
 class MailIntakeDailyTest(unittest.TestCase):
     """The mail fetch runs on its own job, since the morning digest no longer fetches mail (sd:4869).
 

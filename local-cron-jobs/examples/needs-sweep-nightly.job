@@ -1,0 +1,17 @@
+# Nightly Needs you sweep (sd:9764): `sd reports sweep` (pack sd:9759)
+# closes what Today's Attention list holds but no longer needs the
+# operator: an alert whose condition cleared, a question already answered,
+# a followup whose item is done. Each close gets a note naming why; a row
+# it cannot prove stays open. Its lines (what closed, what could not) land
+# in logs/needs-sweep-nightly.log and the run's report.
+#
+# Hub only: it writes the hub's database. Add `needs-sweep-nightly` to the
+# hub's profile (<config>/machine-setup/<profile>.cron), then run
+# machine-setup.sh update cron --apply.
+# 07:50 local: after the night's jobs have filed their alerts, before
+# night-triage at 08:40 reads what is left.
+# SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
+# after ~/.config/shell/env.sh; this file is sourced before env.sh is.
+JOB_SCHEDULE="50 7 * * *"
+JOB_TIMEOUT="10m"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd\" reports sweep"
