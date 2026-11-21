@@ -1606,6 +1606,15 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertIn("<string>reinstall-after-run</string>", helper)
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
+    def test_a_helper_launchd_refuses_fails_the_install_and_leaves_no_plist(self):
+        self.hold()
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo"},
+                                 path=self.fx.path(self.launchd("refuse-bin", on_bootstrap="echo refused >&2; exit 5; ")))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"failed: demo (helper {LABEL_PREFIX}.cron-reinstall.demo: refused)", result.stderr)
+        self.assertNotIn("deferred:", result.stdout)
+        self.assertFalse(self.helper_plist().exists())
+
     def test_another_jobs_run_is_still_refused(self):
         """PIN: only the run's own job is deferred; any other waits as before."""
         self.plist().write_text("the plist launchd holds\n")
