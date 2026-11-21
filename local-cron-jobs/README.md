@@ -213,7 +213,8 @@ plist sits in `logs/`; it waits up to `CRON_JOBS_REINSTALL_WAIT` seconds
 (14400) for the run's lock, installs, then removes itself. The cron stage
 reads a job whose helper is running as `PENDING`, not drift. A helper that
 fails writes `logs/.<job>.reinstall.failed`, which the cron stage prints as
-`FAILED` until a later reinstall succeeds. `uninstall` cancels a pending
+`FAILED` until any later `install` of the job succeeds: the helper's, one
+by hand, or a hand-run update. `uninstall` cancels a pending
 reinstall under the job's lock.
 
 Every plist names `PATH`, `HOME` and `SYSTEM_TOOLS_CONFIG`, the root `install`

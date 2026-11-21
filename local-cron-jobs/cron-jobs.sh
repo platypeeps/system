@@ -1884,6 +1884,9 @@ cmd_install() {
     fi
   fi
   launchctl enable "$DOMAIN/$(label_for "$job")"
+  # Any install that loads the job repairs what a failed deferred reinstall
+  # recorded: the helper's, by hand, or a hand-run update (sd:9826).
+  rm -f "$LOG_DIR/.$job.reinstall.failed"
   exec 8>&-
   # No record is written here, and that is the ninth round of the #486 review.
   # `install` bootstraps the label, so launchd is at `runs = 0` and

@@ -1722,6 +1722,24 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertIn("installed: demo", result.stdout)
         self.assertFalse(self.failed_marker().exists())
 
+    def test_a_direct_install_clears_the_failure_record(self):
+        """Review blocker: only the helper's success or uninstall cleared
+        the record, so a job fixed by hand (`install <job>`, or a hand-run
+        update) read FAILED in every status after its plist verified."""
+        self.failed_marker().write_text("an earlier failure\n")
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout)
+        self.assertFalse(self.failed_marker().exists())
+
+    def test_a_refused_install_keeps_the_failure_record(self):
+        """PIN: a failed install is no repair; the record stays."""
+        self.failed_marker().write_text("an earlier failure\n")
+        self.hold()
+        result = self.run_script("install", "demo")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.failed_marker().exists())
+
     def test_a_run_tells_its_workload_which_job_it_is(self):
         out = self.fx.tmp / "run-job"
         self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="printf %s \\"\\$CRON_JOBS_RUN\\" > {out}"\n')
