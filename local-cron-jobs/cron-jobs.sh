@@ -444,11 +444,13 @@ write_plist() { # job name
   x_log="$(xml_escape "$LOG_DIR/$job.log")"; x_path="$(xml_escape "$JOB_PATH")"
   x_home="$(xml_escape "$HOME")"; x_config="$(xml_escape "$SYSTEM_TOOLS_CONFIG")"
   x_launch="$(xml_escape "$JOB_LAUNCH")"
-  # Every value is computed before the plist is opened: a failure while
-  # it is open leaves the installed plist empty.
+  # Every value is computed before the plist is opened, and the plist is
+  # written beside it and moved in whole: each step returns its failure,
+  # since a caller in an `||` list runs this with errexit off, and a half
+  # written plist must not replace the one launchd holds.
   exit_timeout=$((JOB_GRACE + EXIT_REPORT_ROOM))
   {
-    cat <<EOF
+    cat <<EOF || return 1
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -470,7 +472,7 @@ write_plist() { # job name
 
 EOF
     # A manual job has no calendar: only `launchctl kickstart` starts it.
-    [ "$JOB_SCHEDULE" = manual ] || calendar_xml "$JOB_SCHEDULE"
+    [ "$JOB_SCHEDULE" = manual ] || calendar_xml "$JOB_SCHEDULE" || return 1
     cat <<EOF
 
     <key>RunAtLoad</key>
@@ -522,7 +524,7 @@ EOF
 </dict>
 </plist>
 EOF
-  } > "$plist"
+  } > "$plist.tmp" && mv "$plist.tmp" "$plist" || { rm -f "$plist.tmp"; return 1; }
 }
 
 # Records the failure only. The run's report carries it to Reports and Today,
@@ -1819,7 +1821,9 @@ cmd_reinstall_after_run() { # job
     echo "cron-jobs.sh: $job: a run still holds the lock after $wait s; not reinstalled, the next update retries" >&2
     rc=1
   else
-    cmd_install "$job" || rc=$?
+    # In a subshell: load_job exits on a missing or broken job file, and
+    # that exit skipped the cleanup below, leaving the helper loaded.
+    ( cmd_install "$job" ) || rc=$?
   fi
   rm -f "$LOG_DIR/.$job.reinstall.plist"
   # Last: the bootout ends this process with its label.
@@ -1838,8 +1842,13 @@ cmd_install() {
   # Before the plist is written: a refused install leaves the file launchd
   # holds, so `verify` still reads it STALE and the next install retries.
   hold_job_lock "$job" || return 1
-  mkdir -p "$AGENT_DIR"
-  write_plist "$job"
+  # Checked by hand: under `||` (each_or_one, the reinstall helper) errexit
+  # is off, and a failed write went on to unload the working agent.
+  if ! { mkdir -p "$AGENT_DIR" && write_plist "$job"; }; then
+    echo "cron-jobs.sh: $job: could not write $(plist_for "$job"); nothing changed" >&2
+    exec 8>&-
+    return 1
+  fi
   if is_loaded "$job"; then
     launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
     wait_unloaded "$job"

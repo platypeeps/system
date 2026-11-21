@@ -1647,6 +1647,34 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertEqual(self.bootouts(),
                          [f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo"])
 
+    def test_the_helper_removes_itself_when_the_job_file_is_gone(self):
+        """Review blocker: load_job exits on a missing job file, and that
+        exit skipped the helper's cleanup, so launchd kept its label and
+        the cron stage read the job PENDING for ever."""
+        self.helper_plist().write_text("helper\n")
+        (self.fx.jobs / "demo.job").unlink()
+        result = self.run_script("reinstall-after-run", "demo")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.helper_plist().exists())
+        self.assertEqual(self.bootouts(),
+                         [f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo"])
+
+    def test_a_plist_that_cannot_be_written_unloads_nothing(self):
+        """Review blocker: the helper calls install in an `||` list, where
+        errexit is off, so a failed plist write went on to bootout and
+        bootstrap and reported `installed:`."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.agents.chmod(0o500)
+        self.addCleanup(self.agents.chmod, 0o700)
+        result = self.run_script("reinstall-after-run", "demo")
+        out = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, out)
+        self.assertNotIn("installed:", out)
+        self.assertIn("demo: could not write", result.stderr)
+        self.assertNotIn(f"{LABEL_PREFIX}.cron.demo", "\n".join(self.bootouts()))
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
     def test_a_run_tells_its_workload_which_job_it_is(self):
         out = self.fx.tmp / "run-job"
         self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="printf %s \\"\\$CRON_JOBS_RUN\\" > {out}"\n')

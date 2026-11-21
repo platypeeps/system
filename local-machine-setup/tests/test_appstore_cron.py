@@ -719,7 +719,8 @@ exit 0
         While that helper is loaded, the plist is PENDING, no drift word, so
         status --fail-on-drift at the end of the same run passes."""
         write_exec(self.stubs / "launchctl",
-                   '#!/bin/sh\ncase "$*" in *.cron.busy-unloaded|*.cron-reinstall.busy-job) exit 1 ;; esac\nexit 0\n')
+                   '#!/bin/sh\ncase "$*" in *.cron.busy-unloaded|*.cron-reinstall.busy-job) exit 1 ;;\n'
+                   '  *.cron-reinstall.busy-stale) echo "\tstate = running" ;; esac\nexit 0\n')
         logs = self.folder.parent / "local-cron-jobs/logs"
         logs.mkdir(parents=True, exist_ok=True)
         (logs / ".busy-stale.reinstall.plist").write_text("helper\n")
@@ -728,6 +729,23 @@ exit 0
         self.assertIn("PENDING busy-stale — reinstalls once its own run ends", result.stdout)
         self.assertNotIn("STALE   busy-stale", result.stdout)
         self.assertNotIn("install busy-stale", self.cron_log.read_text().splitlines())
+
+    def test_a_helper_launchd_holds_but_that_is_not_running_is_no_pending(self):
+        """Review blocker: a helper that died before its cleanup leaves its
+        label loaded and its plist in logs/. Only a running helper is
+        PENDING; a stopped one leaves the job STALE, and the install that
+        follows replaces the helper."""
+        logs = self.folder.parent / "local-cron-jobs/logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / ".busy-stale.reinstall.plist").write_text("helper\n")
+        write_exec(self.stubs / "launchctl",
+                   '#!/bin/sh\ncase "$*" in *.cron.busy-unloaded) exit 1 ;;\n'
+                   '  *.cron-reinstall.busy-stale) echo "\tstate = not running" ;; esac\nexit 0\n')
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("STALE   busy-stale", result.stdout)
+        self.assertNotIn("PENDING", result.stdout)
+        self.assertIn("install busy-stale", self.cron_log.read_text().splitlines())
 
 class CronRetiredTest(StageTest):
     """A job in local-cron-jobs/retired-jobs.txt is uninstalled, never reinstalled (sd:3155).
