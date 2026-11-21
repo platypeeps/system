@@ -159,6 +159,15 @@ def state(row):
     elif p not in seen:
         later = {}
     return p, a, later.get("status", st), later.get("session", se), later.get("screen", sc)
+def switch(path):
+    # A new switch mark, later than the last, as owe_rc writes it.
+    import time
+    try:
+        last = int(open(path).read().split()[0])
+    except (OSError, ValueError, IndexError):
+        last = 0
+    with open(path, "w") as f:
+        f.write("%d 424242\n" % max(time.time(), last + 1))
 def agent(row):
     p, a, st, se, _ = state(row)
     # A session of None is herdr naming none: agent_session false.
@@ -168,8 +177,7 @@ if args[:2] == ["agent", "list"]:
     import time
     # A switch by another sync that lands while this list runs.
     if os.environ.get("FAKE_SWITCH_DURING_LIST"):
-        with open(os.environ["FAKE_SWITCH_DURING_LIST"], "w") as f:
-            f.write("%d 424242\n" % time.time())
+        switch(os.environ["FAKE_SWITCH_DURING_LIST"])
     time.sleep(float(os.environ.get("FAKE_HERDR_LIST_SLOW") or 0))
     if os.environ.get("FAKE_HERDR_DOWN"):
         print("herdr: server not running", file=sys.stderr)
@@ -177,6 +185,9 @@ if args[:2] == ["agent", "list"]:
     print(json.dumps({"id": "cli:agent:list", "result": {"agents": [agent(r) for r in panes]}}))
 elif args[:2] == ["agent", "get"]:
     import time
+    # A switch by another sync that lands during the pass.
+    if os.environ.get("FAKE_SWITCH_DURING_GET"):
+        switch(os.environ["FAKE_SWITCH_DURING_GET"])
     time.sleep(float(os.environ.get("FAKE_HERDR_GET_SLOW") or 0))
     print(json.dumps({"id": "cli:agent:get", "result": {"type": "agent_info", "agent": next(
         agent(r) for r in panes if r[0] == args[2])}}))
@@ -590,6 +601,17 @@ class RemoteControlReconnects(Machine):
         # The send's --timeout varies with the time left in the gap.
         return [re.sub(r" --timeout \d+$", "", line) for line in self.called("herdr agent prompt")]
 
+    def owe(self, rows, since):
+        """Seed rc-owed with rows of the switch at `since`, that switch's
+        mark, and sd as listed for it: only the current switch's rows
+        take a /rc."""
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        (state / "rc-pending").write_text(f"{since} 42\n")
+        (state / "rc-listed").write_text(f"{since} 42 sd\n")
+        (state / "rc-owed").write_text(rows)
+        return state / "rc-owed"
+
     def owed(self):
         path = self.script.parent / "state/rc-owed"
         # A row with " sent" added is a pane sent /rc: no longer owed.
@@ -643,9 +665,8 @@ class RemoteControlReconnects(Machine):
     def test_the_budget_bounds_each_herdr_call_not_only_pane_entry(self):
         # sd:9427 advisory: a pane entered near the deadline still made
         # herdr calls of 10 s each, and the agent list ran outside it.
-        owed = self.script.parent / "state/rc-owed"
-        owed.parent.mkdir(exist_ok=True)
-        owed.write_text("sd w1:p1 s1 %d\n" % int(time.time()))
+        now = int(time.time())
+        self.owe("sd w1:p1 s1 %d\n" % now, now)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         for slow in ({"FAKE_HERDR_SLOW": "8"}, {"FAKE_HERDR_LIST_SLOW": "8"}):
             with self.subTest(slow=slow):
@@ -726,10 +747,9 @@ class RemoteControlReconnects(Machine):
         # the other's rows. One reconnect pass runs at a time: the other
         # sync skips, and its rows stay for the next.
         import fcntl
-        owed = self.script.parent / "state/rc-owed"
-        owed.parent.mkdir(exist_ok=True)
-        rows = "sd w1:p1 s1 %d\n" % int(time.time())
-        owed.write_text(rows)
+        now = int(time.time())
+        rows = "sd w1:p1 s1 %d\n" % now
+        owed = self.owe(rows, now)
         self.publish(ONE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         with open(self.script.parent / "state/rc-lock", "a") as held:
@@ -765,6 +785,47 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(len(self.called("herdr agent list")), 1)
         listed = (self.script.parent / "state/rc-listed").read_text().split("\n")
         self.assertIn(mark.read_text().strip() + " sd", listed)
+
+    def test_rows_of_an_older_switch_get_no_rc(self):
+        # Class pass, last round on sd:9427: the pass acted on owed rows
+        # that were not the current switch's. Each row below is one way
+        # an older switch's rows reach the pass; each sent /rc then, and
+        # the newer switch's listing sent a second one to a pane whose
+        # drop banner was not yet redrawn.
+        # 1. The newer switch's owed write failed (review finding).
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        now = int(time.time())
+        (state / "rc-pending").write_text(f"{now} 42\n")
+        (state / "rc-owed").write_text(f"sd w1:p1 s1 {now - 60}\n")
+        failing = self.tmp / "failing-printf.sh"
+        failing.write_text(f'printf() {{ case "$*" in *"w1:p1 s1 {now}"*) return 1;; esac; builtin printf "$@"; }}\n')
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(failing))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+
+    def test_a_switch_during_the_listing_leaves_its_rows_unsent(self):
+        # 2. A newer switch landed while this sync listed the older one.
+        mark = self.script.parent / "state/rc-pending"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_SWITCH_DURING_LIST=str(mark))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+
+    def test_a_switch_during_the_pass_stops_the_send(self):
+        # 3. A newer switch landed between the plan and the keys.
+        mark = self.script.parent / "state/rc-pending"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_SWITCH_DURING_GET=str(mark))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
 
     def test_an_unreadable_owed_list_is_never_replaced(self):
         # Review on sd:9427 (cswap.sh:380): a failed read of the other
@@ -1205,8 +1266,7 @@ class RemoteControlReconnects(Machine):
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
         self.sync("elsewhere")
-        owed = self.script.parent / "state/rc-owed"
-        owed.write_text("sd w1:p1 s1 1000\n")
+        self.owe("sd w1:p1 s1 1000\n", 1000)
         self.env["FAKE_HERDR"] = str(self.tmp / "missing.json")
         executable(self.stubs / "herdr", "#!/bin/sh\necho '{not json'\n")
         result = self.sync("elsewhere")
@@ -1214,7 +1274,7 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.owed(), ["w1:p1"])
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         result = self.sync("elsewhere")
-        self.assertIn("reconnect: w1:p1 stayed busy", result.stdout)
+        self.assertIn("reconnect: w1:p1 was owed for a switch that is no longer current", result.stdout)
         self.assertEqual(self.prompts(), [])
         self.assertEqual(self.owed(), [])
 

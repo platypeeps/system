@@ -39,7 +39,7 @@ A pane herdr names no session id for gets no keys: at the listing it is not owed
 An active banner stays owed too: it may be the old account's, printed before the drop.
 Right before the keys, a fresh screen read, `herdr agent get` and a last screen read check the pane again: a session that takes the pane during the first read gets no keys, and a draft typed during the get moves the screen, which must read the same twice; from the first read to the end of the send must take at most 1000 ms (`CSWAP_RC_GAP_MS`), or the pane stays owed, as a draft typed during a slow check or a slow delivery would take the `/rc`; the send gets the time left as herdr's `--timeout`, and a late `/rc` that landed shows as connected on the next read, so it is not sent twice.
 The account sync runs first, then one reconnect pass of at most 60 seconds (`CSWAP_RC_BUDGET`): each herdr call is bounded by what is left of it, and a pane it does not reach stays owed.
-A pane leaves the list once sent, gone, running another session, or owed for 30 minutes.
+A pane leaves the list once sent, gone, running another session, or once its switch is no longer the current one: a newer switch, or 30 minutes after it. Only rows of the current switch take a `/rc`, checked again right before the keys, so a newer switch's listing never sends a pane a second one.
 A sync that switches nothing writes no list, so a connected session is never toggled off.
 Cron's PATH may lack herdr, so sync also looks in `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin` (`CSWAP_HERDR_DIRS`).
 No herdr, or no herdr server answering, prints one `reconnect: skipped:` line and leaves the exit code alone.

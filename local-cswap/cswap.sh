@@ -52,7 +52,7 @@ REFUSAL_LIMIT=30
 # is idle or done, whose latest Remote Control banner is the drop, and
 # whose input box holds no typed text. Any other pane gets no keys, as a
 # key can answer a permission dialog or join a half-typed prompt; it stays
-# owed for the next sync, until sent, gone or RC_OWED_FOR seconds old. An
+# owed for the next sync, until sent, gone or its switch not current. An
 # active banner may be the old account's, printed before the drop, so it
 # waits too. Right before the keys, `herdr agent get` and a fresh screen
 # read check the pane again; a gap of milliseconds remains, as herdr has
@@ -446,7 +446,8 @@ list_owed() {
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
 # Right before a send (operator ruling 2026-11-18): a fresh read of the
-# pane's ($1) screen says send, the pane still runs the owed session ($2)
+# pane's ($1) screen says send, its row's switch ($3) is still current,
+# the pane still runs the owed session ($2)
 # and is idle or done, and a last read shows the same screen; then /rc.
 # Else one line, and it stays owed (1); a send that failed or ran late
 # returns 2, as it may have landed. herdr has no check-and-send, so the
@@ -477,6 +478,12 @@ send_rc() {
   took=$(($(now_ms) - start))
   if ((took > RC_GAP_MS)); then
     echo "reconnect: $1 took $took ms to check, over $RC_GAP_MS ms; still owed"
+    return 1
+  fi
+  # A switch that landed during the pass makes this row an older
+  # switch's: the newer one lists the pane (sd:9427 review).
+  if [[ "$(current_since)" != "$3" ]]; then
+    echo "reconnect: $1 changed before the send (a newer switch); the current one lists it"
     return 1
   fi
   # The send counts too: herdr may take seconds to deliver, and a draft
@@ -512,6 +519,19 @@ reconnect() {
   exec 9>&-
 }
 
+# The epoch of the current switch mark, or nothing when there is none
+# or it is older than RC_OWED_FOR. Only rows of this switch may take a
+# /rc: a newer switch lists its own, and a /rc from an older row before
+# it would be a second one to a pane whose drop banner is not yet
+# redrawn (sd:9427 review).
+current_since() {
+  local mark since
+  mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || return 0
+  since=${mark%% *}
+  [[ "$since" =~ ^[0-9]+$ ]] && (($(date +%s) - since <= RC_OWED_FOR)) && echo "$since"
+  return 0
+}
+
 # Mark the RC_OWED row $1 sent before its /rc goes: a later write that
 # fails then loses a /rc at worst, and never owes a sent pane again
 # (sd:9427 review). A send that does not happen keeps the row owed in
@@ -528,17 +548,20 @@ reconnect_pass() {
   list_owed
   owes_here || return 0
   herdr_panes || return 0
-  plan=$(awk -v now="$(date +%s)" -v limit="$RC_OWED_FOR" -v hs="$HERDR_SESSION" '
+  # Rows of an older switch go unsent: a write of the newer switch's
+  # rows that failed, or a switch during this sync's listing, leaves them.
+  # A mark older than RC_OWED_FOR is no current switch: its rows go too.
+  plan=$(awk -v hs="$HERDR_SESSION" -v cur="$(current_since)" '
     FILENAME == "-" { if (NF == 3) { status[$1 " " $2] = $3; if ($2 == "?") unknown[$1] = 1 }; next }
     NF == 5 && $5 == "sent" && $4 ~ /^[0-9]+$/ {
       if ($1 != hs) print "other", $0
-      else if (now - $4 <= limit) print "sent", $0
+      else if ($4 == cur) print "sent", $0
       next
     }
     NF != 4 || $4 !~ /^[0-9]+$/ { next }
     $1 != hs { print "other", $0; next }
+    $4 != cur { print "stale", $0; next }
     !(($2 " " $3) in status) && !($2 in unknown) { print "gone", $0; next }
-    now - $4 > limit { print "old", $0; next }
     status[$2 " " $3] == "idle" || status[$2 " " $3] == "done" { print "try", $0; next }
     { print "keep", $0 }' - "$RC_OWED" <<<"$PANES") ||
     { echo "reconnect: skipped: $RC_OWED was not readable"; return 0; }
@@ -547,7 +570,7 @@ reconnect_pass() {
       other | sent) keep+="$hs $pane $session $since${sent:+ $sent}"$'\n' ;;
       keep) keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1)) ;;
       gone) echo "reconnect: $pane is gone or runs another session; not owed" ;;
-      old) echo "reconnect: $pane stayed busy or showed no drop for ${RC_OWED_FOR}s; not owed" ;;
+      stale) echo "reconnect: $pane was owed for a switch that is no longer current; not owed" ;;
       try)
         if (($(date +%s) >= RC_DEADLINE)); then
           echo "reconnect: the ${RC_BUDGET}s budget is spent; $pane stays owed"
@@ -563,7 +586,7 @@ reconnect_pass() {
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         else
           rc=0
-          send_rc "$pane" "$session" || rc=$?
+          send_rc "$pane" "$session" "$since" || rc=$?
           if ((rc == 1)); then
             keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
           else
