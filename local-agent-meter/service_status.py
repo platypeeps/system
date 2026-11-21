@@ -15,7 +15,8 @@ one, or one with no updated_at, stays.
 A page may group its core products (Cloudflare's
 `cloudflare-sites-and-services`), so name that group too. With either, the
 status is the worst kept component or incident, never the page's; an
-indicator worse than everything the page lists reads unknown.
+indicator worse than everything the page lists reads unknown, unless
+what is kept already shows that status.
 
 `kind` is one of KINDS. Each read becomes one reading:
 
@@ -388,7 +389,9 @@ def read_statuspage(url, fetch, options=None, now=None):
         # proof it sits outside the groups or is stale (review).
         for c in listed:
             whole = max(whole, COMPONENT_RANK[c["status"]])
-        if RANK[indicator] > whole:
+        # A kept cause as bad as the page's status hides nothing: an
+        # outage stands on a critical page (lane review).
+        if RANK[indicator] > whole and worst != INDICATOR[indicator]:
             raise ReadFailed("the page's status has no listed cause to filter")
     return {"status": worst if options else INDICATOR[indicator], "indicator": indicator,
             "incidents": incidents, "components": components}

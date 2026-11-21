@@ -140,7 +140,8 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   groups. Cloudflare keeps its core products in a group of their own:
   name `cloudflare-sites-and-services` with the region. A page whose
   indicator is worse than every component and incident it lists reads
-  `unknown`: nothing proves the cause is outside the filter.
+  `unknown`: nothing proves the cause is outside the filter. A kept
+  outage still reads `outage` on a critical page.
   A list still equal to the earlier default moves to the new one on the
   next run. An edited list stays as it is: add
   `groups=north-america,cloudflare-sites-and-services stale=3` to its

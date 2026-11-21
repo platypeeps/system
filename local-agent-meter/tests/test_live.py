@@ -1365,6 +1365,26 @@ class ServiceFilters(unittest.TestCase):
                 self.assertEqual(got["status"], "unknown", got)
                 self.assertNotIn("another shape: ", got["error"])
 
+    def test_a_kept_outage_stands_on_a_worse_page(self):
+        # Lane review: a critical page with a kept major_outage component
+        # and no open incident read unknown with no components; the
+        # confirmed outage was erased because critical outranks it.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        down = [dict(c, status="major_outage") if c["id"] == "iad" else c for c in calm]
+        page = dict(REGIONS, status={"indicator": "critical"}, components=down,
+                    incidents=[])
+        for options in ({"groups": ["north-america"]}, {"stale": 3}):
+            with self.subTest(options=options):
+                got = self.read(options, page)
+                self.assertEqual((got["status"], got["components"]),
+                                 ("outage", [{"name": "Ashburn, VA (IAD)",
+                                              "status": "major_outage"}]))
+        # A kept cause milder than the page still reads unknown.
+        mild = [dict(c, status="degraded_performance") if c["id"] == "iad" else c
+                for c in calm]
+        got = self.read({"stale": 3}, dict(page, components=mild))
+        self.assertEqual(got["status"], "unknown", got)
+
     def test_an_impact_of_none_or_unknown_explains_no_indicator(self):
         # Lane review: a dropped incident of impact none (or one the
         # feed does not document) counted as a minor cause, so a minor
@@ -1421,11 +1441,12 @@ class ServiceFilters(unittest.TestCase):
         # outside the groups was a major_outage component read ok.
         calm = [dict(c, status="operational") for c in REGIONS["components"]]
         major = [dict(c, status="major_outage") if c["id"] == "fra" else c for c in calm]
-        for options in ({"groups": ["north-america"]}, {"stale": 3}):
-            with self.subTest(options=options):
-                got = self.read(options, dict(REGIONS, status={"indicator": "critical"},
-                                              components=major, incidents=[]))
-                self.assertEqual(got["status"], "unknown", got)
+        page = dict(REGIONS, status={"indicator": "critical"}, components=major,
+                    incidents=[])
+        self.assertEqual(self.read({"groups": ["north-america"]}, page)["status"],
+                         "unknown")
+        # stale= keeps that component, so its outage stands (lane review).
+        self.assertEqual(self.read({"stale": 3}, page)["status"], "outage")
         # A critical incident outside the groups explains it: ok.
         fra = dict(REGIONS["incidents"][1], impact="critical")
         got = self.read({"groups": ["north-america"]},
