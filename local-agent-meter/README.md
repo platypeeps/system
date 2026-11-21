@@ -117,6 +117,8 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   their cost; a plan still on premium requests reads `requests` instead. Add
   their lines to a list written before sd:9592. `anthropic-api` (the month's API
   cost from the Admin API cost report) reads `ANTHROPIC_ADMIN_KEY` (sd:9594).
+  `langsmith` (the month's billing units) reads `LANGSMITH_ADMIN_KEY`;
+  `LANGSMITH_API_KEY` stays for tracing (sd:9872).
   `huggingface` has no quota API: pass a ZeroGPU quota error,
   `agent-meter.py usage --huggingface-error "<text>"`, and its row holds the
   seconds left (`balance`, unit `seconds`) and `read_at`, `source` `error`.
