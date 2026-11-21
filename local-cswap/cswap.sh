@@ -366,14 +366,17 @@ list_owed() {
 # check-and-send.
 recheck() {
   local now screen verdict=""
-  now=$(rc_step 10 "$HERDR" agent get "$1" | rc_read pane) || now=""
-  if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
-    echo "reconnect: $1 changed before the send (${now:-no answer}); still owed"
-    return 1
-  fi
+  # The screen first, then the session and status: a read can take 10 s,
+  # and a session that took the pane during it shows a drop and an empty
+  # box of its own (sd:9427 review). The get is the last word.
   if ! screen=$(rc_step 10 "$HERDR" agent read "$1" --format ansi) ||
     ! verdict=$(rc_read screen <<<"$screen") || [[ "$verdict" != send ]]; then
     echo "reconnect: $1 changed before the send (${verdict:-no screen}); still owed"
+    return 1
+  fi
+  now=$(rc_step 10 "$HERDR" agent get "$1" | rc_read pane) || now=""
+  if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
+    echo "reconnect: $1 changed before the send (${now:-no answer}); still owed"
     return 1
   fi
 }

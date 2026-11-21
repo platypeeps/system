@@ -125,7 +125,9 @@ exit 0
 # herdr's panes live in FAKE_HERDR as JSON: [pane, agent, status, session,
 # screen] rows, and an optional sixth {"status", "session", "screen"}: the
 # pane's state once its screen was read once, as a pane that changes
-# between the read and the send. `agent list` fails with FAKE_HERDR_DOWN
+# between the read and the send. With "reads": N it is the state from
+# the Nth read on, that read included: a pane that changes during a
+# read. `agent list` fails with FAKE_HERDR_DOWN
 # (no server); `agent get` answers one pane; `agent read` prints its
 # screen; `agent prompt` is logged and sends nothing.
 HERDR = r"""#!/usr/bin/env python3
@@ -144,7 +146,12 @@ read = os.environ["FAKE_HERDR"] + ".read"
 seen = open(read).read().split() if os.path.exists(read) else []
 def state(row):
     p, a, st, se, sc = row[:5]
-    later = row[5] if len(row) > 5 and p in seen else {}
+    later = row[5] if len(row) > 5 else {}
+    if "reads" in later:
+        reading = args[:2] == ["agent", "read"] and args[2] == p
+        later = later if seen.count(p) + reading >= later["reads"] else {}
+    elif p not in seen:
+        later = {}
     return p, a, later.get("status", st), later.get("session", se), later.get("screen", sc)
 def agent(row):
     p, a, st, se, _ = state(row)
@@ -786,6 +793,18 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.owed(), ["w1:p1", "w1:p2", "w1:p3", "w1:p4"])
         self.assertIn("reconnect: w1:p2 changed before the send (w1:p2 s2 working); still owed", result.stdout)
         self.assertIn("reconnect: w1:p1 changed before the send (wait: its input box holds text); still owed",
+                      result.stdout)
+
+    def test_a_session_that_changes_during_the_last_read_gets_no_keys(self):
+        # Review on sd:9427: the last session check ran before a screen
+        # read of up to 10 s. A new session that took the pane during
+        # that read showed its own drop and empty box, and got /rc.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"session": "s9", "reads": 2}])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.assertIn("reconnect: w1:p1 changed before the send (w1:p1 s9 idle); still owed",
                       result.stdout)
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
