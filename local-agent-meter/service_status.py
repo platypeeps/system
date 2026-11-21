@@ -8,7 +8,9 @@ A `statuspage` line takes two options (sd:9722). `groups=<g>[,<g>]` keeps
 the components in those groups (the group name lower-cased, spaces as
 `-`) and the ungrouped ones, and drops an incident whose components all
 sit outside them; a group the page lacks reads unknown. `stale=<days>`
-drops an open incident created more than that many days ago. With either,
+drops an open incident created more than that many days ago. A page may
+group its core products (Cloudflare's `cloudflare-sites-and-services`), so
+name that group too. With either,
 the status is the worst kept component or incident, never the page's.
 
 `kind` is one of KINDS. Each read becomes one reading:
@@ -58,7 +60,7 @@ slack slack https://slack-status.com/api/v2.0.0/current
 notion statuspage https://www.notion-status.com/api/v2/summary.json
 atlassian statuspage https://status.atlassian.com/api/v2/summary.json
 docker-hub statuspage https://www.dockerstatus.com/api/v2/summary.json
-cloudflare statuspage https://www.cloudflarestatus.com/api/v2/summary.json groups=north-america stale=3
+cloudflare statuspage https://www.cloudflarestatus.com/api/v2/summary.json groups=north-america,cloudflare-sites-and-services stale=3
 strongdm statuspage https://status.strongdm.com/api/v2/summary.json
 heygen statuspage https://status.heygen.com/api/v2/summary.json heygen
 groq statuspage https://groqstatus.com/api/v2/summary.json groq
@@ -232,15 +234,21 @@ def read_statuspage(url, fetch, options=None, now=None):
         kept = [c for c in listed if c.get("group_id") in chosen
                 or (not c.get("group_id") and c.get("group") is not True)]
     kept_ids = {c.get("id") for c in kept}
+    if "groups" in options:
+        kept_ids |= chosen  # an incident may name the group itself
+    # Ids the page lists outside the kept ones: proof an incident is elsewhere.
+    outside = {c.get("id") for c in listed if isinstance(c.get("id"), str)} - kept_ids
     incidents, worst = [], "ok"
     for incident in entries(data.get("incidents"), "incidents"):
         if one_of(incident.get("status"), INCIDENT_OPEN + INCIDENT_CLOSED,
                   "an incident status") in INCIDENT_CLOSED:
             continue
         if "groups" in options:
+            # Dropped only when every link names a listed component outside
+            # the groups; a missing, odd or unlisted id keeps it (review).
             hit = [c.get("id") for c in entries(incident.get("components") or [],
                                                 "incident components")]
-            if hit and not kept_ids.intersection(hit):
+            if hit and all(isinstance(i, str) and i in outside for i in hit):
                 continue
         created = event_time(incident.get("created_at"))
         if ("stale" in options and created is not None

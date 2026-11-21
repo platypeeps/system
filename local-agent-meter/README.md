@@ -129,7 +129,10 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   A `statuspage` line may end in `groups=<g>[,<g>]` (components in those
   groups, name lower-cased with `-` for spaces, plus ungrouped ones) and
   `stale=<days>` (drop an open incident older than that); with either,
-  `status` is the worst kept component or incident (sd:9722).
+  `status` is the worst kept component or incident (sd:9722). An incident
+  is dropped only when every component it names is listed outside the
+  groups. Cloudflare keeps its core products in a group of their own:
+  name `cloudflare-sites-and-services` with the region.
 
 Run them on the hub only: the rows go to the hub's database.
 

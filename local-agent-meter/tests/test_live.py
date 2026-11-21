@@ -1008,7 +1008,9 @@ class ServiceFilters(unittest.TestCase):
     def test_the_starting_list_filters_cloudflare(self):
         services, _ = service_status.parse_services(service_status.STARTING)
         options = {s[0]: s[4] for s in services}
-        self.assertEqual(options["cloudflare"], {"groups": ["north-america"], "stale": 3})
+        self.assertEqual(options["cloudflare"],
+                         {"groups": ["north-america", "cloudflare-sites-and-services"],
+                          "stale": 3})
         self.assertEqual(options["claude"], {})
 
     def test_a_group_filter_keeps_its_components_and_ungrouped_ones(self):
@@ -1034,6 +1036,54 @@ class ServiceFilters(unittest.TestCase):
                         dict(quiet, components=[dict(c, status="operational")
                                                 for c in REGIONS["components"]]))
         self.assertEqual((got["status"], got["incidents"], got["components"]), ("ok", [], []))
+
+    def test_an_incident_on_a_kept_group_itself_is_kept(self):
+        # Review: the group's own id was not a kept id, so an incident
+        # linked only to the group was dropped and the reading was ok.
+        page = dict(REGIONS, components=[dict(c, status="operational")
+                                         for c in REGIONS["components"]],
+                    incidents=[dict(REGIONS["incidents"][1], name="NA down",
+                                    components=[{"id": "na"}])])
+        got = self.read({"groups": ["north-america"]}, page)
+        self.assertEqual((got["status"], [i["title"] for i in got["incidents"]]),
+                         ("outage", ["NA down"]))
+
+    def test_an_incident_with_no_proof_it_is_outside_is_kept(self):
+        # Review: components=[{}] or an id the page does not list was
+        # read as outside the groups, and a major incident read ok.
+        for links in ([{}], [{"id": None}], [{"id": 5}], [{"id": "gone"}],
+                      [{"id": "fra"}, {}], [{"id": "fra"}, {"id": "gone"}]):
+            with self.subTest(links=links):
+                page = dict(REGIONS, components=[dict(c, status="operational")
+                                                 for c in REGIONS["components"]],
+                            incidents=[dict(REGIONS["incidents"][1], components=links)])
+                got = self.read({"groups": ["north-america"]}, page)
+                self.assertEqual((got["status"], len(got["incidents"])), ("outage", 1))
+
+    def test_the_shipped_cloudflare_line_sees_a_global_outage(self):
+        # Review: the page puts its core products in a group of their own
+        # and has no ungrouped component (summary.json, 2026-11-20), so
+        # groups=north-america alone read ok through a global outage.
+        page = {"page": {"url": "https://status.example.test"},
+                "status": {"indicator": "critical"},
+                "components": [
+                    {"id": "svc", "name": "Cloudflare Sites and Services", "group": True,
+                     "group_id": None, "status": "major_outage"},
+                    {"id": "cdn", "name": "CDN/Cache", "group": False, "group_id": "svc",
+                     "status": "major_outage"},
+                    {"id": "na", "name": "North America", "group": True, "group_id": None,
+                     "status": "operational"},
+                    {"id": "iad", "name": "Ashburn, VA (IAD)", "group": False,
+                     "group_id": "na", "status": "operational"}],
+                "incidents": [{"id": "g", "name": "CDN down", "status": "investigating",
+                               "impact": "critical", "created_at": "2026-11-17T19:00:00Z",
+                               "components": [{"id": "cdn"}]}]}
+        services, _ = service_status.parse_services(service_status.STARTING)
+        options = {s[0]: s[4] for s in services}["cloudflare"]
+        got = self.read(options, page)
+        self.assertEqual((got["status"], [i["title"] for i in got["incidents"]]),
+                         ("outage", ["CDN down"]))
+        self.assertEqual(got["components"], [{"name": "CDN/Cache", "status": "major_outage"}])
 
     def test_a_group_the_page_lacks_is_unknown_never_ok(self):
         got = self.read({"groups": ["antarctica"]})
