@@ -50,8 +50,9 @@ From `rtk gain` the ledger keeps `summary.total_saved` and `summary.avg_savings_
 
 Since sd:7322 every reading also carries `accounts`, one entry per Claude account
 that `cswap list --json` manages: its slot `number`, `active`, the seven-day `pct`,
-`resetsAt` and `expectedPct`, the `scoped` per-model pcts by name, `status` and
-`fetchedAt`. The script copies those fields only; the email, organization name and
+`resetsAt` and `expectedPct`, the `scoped` per-model pcts by name, `status`,
+`fetchedAt`, and `alias` when `cswap alias` gave the slot a short lower-case
+name. The script copies those fields only; the email, organization name and
 UUID never reach the ledger. A missing or failing cswap is `accounts: null` and
 `errors.cswap`, without cswap's output, and the exit stays 0. `CSWAP_BIN` names the
 binary, as in `local-cswap/cswap-auto.conf`; else PATH, then `~/.local/bin`.
