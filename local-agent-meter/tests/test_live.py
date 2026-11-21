@@ -158,7 +158,7 @@ ANSWERS = {
                              "plan": "basic", "is_subscribed": True,
                              "current_period_end": "2026-12-01T00:00:00.000Z"}},
                    {"spend": {"amount": 2500.0, "unit": "words", "period": "billing period",
-                              "resets_at": "2026-12-01T00:00:00.000Z"},
+                              "resets_at": "2026-12-01T00:00:00.000Z", "limit": 10000.0},
                     "balance": {"amount": 7500.0, "unit": "words"},
                     "windows": [{"name": "words", "used_percent": 25.0, "window_minutes": None,
                                  "resets_at": "2026-12-01T00:00:00.000Z"}]}),
@@ -610,6 +610,15 @@ class Readers(unittest.TestCase):
                 bent = put(answer, ("data", "current_period_end"), end)
                 got = usage_sources.read_provider("openwhispr", {var: SECRET}, answering(bent), NOW)
                 self.assertEqual(got["spend"].get("resets_at"), expected, got)
+
+    def test_openwhisprs_own_word_limit_wins_over_the_lists_cap(self):
+        # Review on sd:9701: cap=5000 overrode a 10,000-word plan.
+        var, answer, _ = ANSWERS["openwhispr"]
+        got = usage_sources.read_provider("openwhispr", {var: SECRET}, answering(answer), NOW, cap=5000.0)
+        self.assertEqual(got["spend"]["limit"], 10000.0, got)
+        unlimited = put(answer, ("data", "limit"), -1)
+        got = usage_sources.read_provider("openwhispr", {var: SECRET}, answering(unlimited), NOW, cap=5000.0)
+        self.assertEqual(got["spend"]["limit"], 5000.0, got)
 
     def test_a_spend_limit_is_openrouters_own_then_the_lists_cap(self):
         var, answer, _ = ANSWERS["openrouter"]

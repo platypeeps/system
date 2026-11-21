@@ -468,6 +468,8 @@ def read_openwhispr(env, fetch, now):
     if end is not None:
         out["spend"]["resets_at"] = end
     if limit > 0:
+        # The plan's own limit; a list cap fills in only when it has none.
+        out["spend"]["limit"] = limit
         out["windows"] = [window("words", min(100.0, used / limit * 100), None, end)]
         out["balance"] = {"amount": max(0.0, limit - used), "unit": "words"}
     return out
