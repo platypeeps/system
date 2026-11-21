@@ -209,6 +209,23 @@ DROPPED = f"{DROP_LINE}\n{INPUT}"
 CONNECTED = f"{ACTIVE_LINE}\n{INPUT}"
 
 
+def newest_bash():
+    """A bash 4 or later when the machine has one, else PATH's bash. macOS
+    /bin/bash 3.2 reads `local x` as set, bash 5 as unset under set -u:
+    a sync passed here and died under cron's Homebrew bash (sd:9427
+    review), so the suite runs the bash that is stricter."""
+    for candidate in ("/opt/homebrew/bin/bash", "/usr/local/bin/bash", shutil.which("bash")):
+        if candidate and os.access(candidate, os.X_OK):
+            done = subprocess.run([candidate, "-c", "echo ${BASH_VERSINFO[0]}"],
+                                  capture_output=True, text=True)
+            if done.stdout.strip().isdigit() and int(done.stdout) >= 4:
+                return candidate
+    return "bash"
+
+
+BASH = newest_bash()
+
+
 def executable(path, text):
     path.write_text(text)
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -266,7 +283,7 @@ class Machine(unittest.TestCase):
 
     def run_verb(self, *args, **extra):
         self.calls.write_text("")
-        return subprocess.run(["bash", str(self.script), *args], env={**self.env, **extra},
+        return subprocess.run([BASH, str(self.script), *args], env={**self.env, **extra},
                               capture_output=True, text=True, timeout=60)
 
     def sync(self, fence, code=0, **extra):

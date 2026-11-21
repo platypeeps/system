@@ -368,7 +368,7 @@ owes_here() {
 # for the mark the list was read for, so a switch that lands during the
 # list is still unlisted at the next sync.
 list_owed() {
-  local mark since now rc=0 others listed
+  local mark since now rc=0 others="" listed=""
   mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || mark=""
   since=${mark%% *}
   now=$(date +%s)
