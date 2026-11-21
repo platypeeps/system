@@ -589,7 +589,9 @@ class RemoteControlReconnects(Machine):
 
     def owed(self):
         path = self.script.parent / "state/rc-owed"
-        return [line.split()[1] for line in path.read_text().splitlines()] if path.exists() else []
+        # A row with " sent" added is a pane sent /rc: no longer owed.
+        return [line.split()[1] for line in path.read_text().splitlines()
+                if not line.endswith(" sent")] if path.exists() else []
 
     def test_a_switch_sends_rc_to_idle_panes_only(self):
         self.publish(THREE)
@@ -791,10 +793,8 @@ class RemoteControlReconnects(Machine):
         self.assertEqual((state / "rc-owed").read_text(), owed_rows, result.stdout)
         self.assertIn("could not write", result.stdout)
         self.assertEqual((state / "rc-listed").read_text(), listed, result.stdout)
-        # rc-listed did not move, so sd stays unlisted. With no pane to
-        # owe, only the last write, the listed mark, runs and fails.
+        # rc-owed did not move, so sd stays unlisted; now let it list.
         (state / "rc-owed").write_text("")
-        self.panes()
         result = self.sync("elsewhere", BASH_ENV=str(env_file))
         self.assertEqual((state / "rc-listed").read_text(), listed, result.stdout)
         self.assertIn("could not mark sd listed", result.stdout)
@@ -1116,6 +1116,40 @@ class RemoteControlReconnects(Machine):
         # The listing is complete now: a later sync sends nothing.
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), [])
+
+    def test_a_failed_owed_write_leaves_its_panes_to_the_next_listing(self):
+        # Review on sd:9427: rc-listed recorded each pane before rc-owed
+        # was written; a failed rc-owed write left the panes recorded,
+        # and the next sync owed none of them.
+        failing = self.tmp / "failing-printf.sh"
+        failing.write_text('printf() { case "$*" in *"w1:p1 s1"*) return 1;; esac; builtin printf "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(failing))
+        self.assertIn("could not write", result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+
+    def test_a_failed_write_after_a_send_owes_the_pane_no_second_rc(self):
+        # Class pass: the pass's last write after a send failed, the
+        # sent row stayed owed, and its drop banner took a second /rc.
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        now = int(time.time())
+        (state / "rc-pending").write_text(f"{now} 42\n")
+        (state / "rc-listed").write_text(f"{now} 42 sd\n")
+        (state / "rc-owed").write_text(f"sd w1:p1 s1 {now}\nsd w1:p2 s2 {now}\n")
+        failing = self.tmp / "failing-printf.sh"
+        failing.write_text('printf() { case "$*" in *w1:p2*) return 1;; esac; builtin printf "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
+                   ["w1:p2", "claude", "working", "s2", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(failing))
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+        self.assertIn("could not update", result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [], result.stdout)
 
     def test_a_session_herdr_stops_naming_gets_no_keys(self):
         self.publish(THREE)

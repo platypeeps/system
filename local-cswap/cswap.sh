@@ -362,11 +362,14 @@ owe_rc() {
     echo "reconnect: could not write $RC_PENDING; no pane owes /rc for this switch"
 }
 
-# The RC_OWED rows to keep, unchanged: other herdr sessions' rows, and
-# with $1 = all this session's too; none if unreadable.
+# RC_OWED rows are "<herdr session> <pane> <session> <since>", and a pane
+# sent /rc for that switch keeps its row with " sent" added, so no
+# listing owes it again (sd:9427 review).
+# The rows to keep, unchanged: other herdr sessions' rows, and this
+# session's rows for the switch at $1; none if unreadable.
 kept_rows() {
   [[ -e "$RC_OWED" ]] || return 0
-  awk -v hs="$HERDR_SESSION" -v all="${1:-}" 'NF == 4 && ($1 != hs || all)' "$RC_OWED"
+  awk -v hs="$HERDR_SESSION" -v since="$1" '(NF == 4 || NF == 5 && $5 == "sent") && ($1 != hs || $4 == since)' "$RC_OWED"
 }
 
 # Whether RC_OWED holds a row of this herdr session.
@@ -377,11 +380,10 @@ owes_here() {
 # A pending switch to this herdr session's owed panes, once herdr lists
 # them, once per switch and session: RC_LISTED holds "<mark> <session>"
 # for the mark the list was read for, so a switch that lands during the
-# list is still unlisted at the next sync. Each listing also records
-# "<mark> <session> <pane>" for each pane it owes; one that meets a pane
+# list is still unlisted at the next sync. A listing that meets a pane
 # with no session id is incomplete, and the next sync lists again.
 list_owed() {
-  local mark since now rc=0 kept="" listed="" enrolled fresh unknown lines
+  local mark since now rc=0 kept="" listed="" fresh unknown
   mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || mark=""
   since=${mark%% *}
   now=$(date +%s)
@@ -395,41 +397,31 @@ list_owed() {
     echo "reconnect: could not read $RC_LISTED; the next sync tries again"
     return 0
   fi
-  # The first listing for a switch replaces this session's old rows. A
-  # retry after an incomplete one keeps them and owes only panes it did
-  # not owe yet: a pane already sent is not owed again, as a drop banner
-  # it still shows would take a second /rc, which disconnects it
+  # This session's rows for an older switch go. Its rows for this one,
+  # owed or sent, stay: a retry after an incomplete listing owes only
+  # panes with no row, so a sent pane, its drop banner maybe still on
+  # screen, gets no second /rc, which would disconnect it. The rows are
+  # the one record of what this switch owed: one write, then the mark
   # (sd:9427 review).
-  enrolled=$(awk -v hs="$HERDR_SESSION" 'NF == 4 && $3 == hs { print $4 }' <<<"$listed")
   # A file that does not read is never replaced: its rows would go, and
   # this session stays unlisted, so the next sync tries again (sd:9427
   # review).
-  if ! kept=$(kept_rows "$enrolled" 2>/dev/null); then
+  if ! kept=$(kept_rows "$since" 2>/dev/null); then
     echo "reconnect: could not read $RC_OWED; the next sync tries again"
     return 0
   fi
-  fresh=$(awk -v hs="$HERDR_SESSION" -v since="$since" -v done="$enrolled" '
-    BEGIN { n = split(done, d, "\n"); for (i = 1; i <= n; i++) owed[d[i]] = 1 }
+  # The rows go by the environment: BSD awk refuses a newline in -v.
+  fresh=$(RC_KEPT="$kept" awk -v hs="$HERDR_SESSION" -v since="$since" '
+    BEGIN { n = split(ENVIRON["RC_KEPT"], r, "\n"); for (i = 1; i <= n; i++) { split(r[i], w, " "); if (w[1] == hs) owed[w[2]] = 1 } }
     NF == 3 && $2 != "?" && !($1 in owed) { print hs, $1, $2, since }' <<<"$PANES")
   unknown=$(awk 'NF == 3 && $2 == "?" { printf "%s%s", sep, $1; sep = ", " }' <<<"$PANES")
-  # Three writes, each a whole file moved in. The panes about to be owed
-  # are recorded first: a failure after it loses their /rc at worst, and
-  # never owes a sent pane again. Each write in a group is chained: a
-  # group's status is its last command's, and a failed first write
-  # would move a partial file in (sd:9427 review).
-  if [[ -n "$fresh" ]]; then
-    lines=$(awk -v m="$mark" '{ print m, $1, $2 }' <<<"$fresh") || return 0
-    if ! { { { [[ -z "$listed" ]] || printf '%s\n' "$listed"; } && printf '%s\n' "$lines"
-      } >"$RC_LISTED.new" && mv "$RC_LISTED.new" "$RC_LISTED"; } 2>/dev/null; then
-      echo "reconnect: could not write $RC_LISTED; the next sync tries again"
-      return 0
-    fi
-    listed=${listed:+$listed$'\n'}$lines
-  fi
+  # Each write in a group is chained: a group's status is its last
+  # command's, and a failed first write would move a partial file in
+  # (sd:9427 review).
   if ! { { { [[ -z "$kept" ]] || printf '%s\n' "$kept"; } &&
       { [[ -z "$fresh" ]] || printf '%s\n' "$fresh"; }
     } >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
-    echo "reconnect: could not write $RC_OWED; its panes get no /rc for this switch"
+    echo "reconnect: could not write $RC_OWED; the next sync tries again"
     return 0
   fi
   # Lines of older marks go; this mark's lines stay. A pane with no
@@ -510,6 +502,15 @@ reconnect() {
   exec 9>&-
 }
 
+# Mark the RC_OWED row $1 sent before its /rc goes: a later write that
+# fails then loses a /rc at worst, and never owes a sent pane again
+# (sd:9427 review). A send that does not happen keeps the row owed in
+# the pass's last write.
+mark_sent() {
+  { awk -v row="$1" '$0 == row { print $0, "sent"; next } { print }' "$RC_OWED" >"$RC_OWED.new" &&
+    mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null
+}
+
 # Send /rc to each owed pane that may have it; keep the rest owed.
 reconnect_pass() {
   local hs pane session since action screen verdict plan keep="" mine=0
@@ -519,6 +520,11 @@ reconnect_pass() {
   herdr_panes || return 0
   plan=$(awk -v now="$(date +%s)" -v limit="$RC_OWED_FOR" -v hs="$HERDR_SESSION" '
     FILENAME == "-" { if (NF == 3) { status[$1 " " $2] = $3; if ($2 == "?") unknown[$1] = 1 }; next }
+    NF == 5 && $5 == "sent" && $4 ~ /^[0-9]+$/ {
+      if ($1 != hs) print "other", $0
+      else if (now - $4 <= limit) print "sent", $0
+      next
+    }
     NF != 4 || $4 !~ /^[0-9]+$/ { next }
     $1 != hs { print "other", $0; next }
     !(($2 " " $3) in status) && !($2 in unknown) { print "gone", $0; next }
@@ -526,9 +532,9 @@ reconnect_pass() {
     status[$2 " " $3] == "idle" || status[$2 " " $3] == "done" { print "try", $0; next }
     { print "keep", $0 }' - "$RC_OWED" <<<"$PANES") ||
     { echo "reconnect: skipped: $RC_OWED was not readable"; return 0; }
-  while read -r action hs pane session since; do
+  while read -r action hs pane session since sent; do
     case "$action" in
-      other) keep+="$hs $pane $session $since"$'\n' ;;
+      other | sent) keep+="$hs $pane $session $since${sent:+ $sent}"$'\n' ;;
       keep) keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1)) ;;
       gone) echo "reconnect: $pane is gone or runs another session; not owed" ;;
       old) echo "reconnect: $pane stayed busy or showed no drop for ${RC_OWED_FOR}s; not owed" ;;
@@ -542,8 +548,12 @@ reconnect_pass() {
         elif [[ "$verdict" != send ]]; then
           echo "reconnect: $pane $verdict"
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
+        elif ! mark_sent "$hs $pane $session $since"; then
+          echo "reconnect: could not write $RC_OWED before the send; $pane stays owed"
+          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         elif send_rc "$pane" "$session"; then
           echo "reconnect: sent /rc to $pane"
+          keep+="$hs $pane $session $since sent"$'\n'
         else
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         fi ;;
