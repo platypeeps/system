@@ -553,7 +553,7 @@ class RemoteControlReconnects(Machine):
 
     def owed(self):
         path = self.script.parent / "state/rc-owed"
-        return [line.split()[0] for line in path.read_text().splitlines()] if path.exists() else []
+        return [line.split()[1] for line in path.read_text().splitlines()] if path.exists() else []
 
     def test_a_switch_sends_rc_to_idle_panes_only(self):
         self.publish(THREE)
@@ -585,7 +585,7 @@ class RemoteControlReconnects(Machine):
         owed = self.script.parent / "state/rc-owed"
         owed.parent.mkdir(exist_ok=True)
         now = int(time.time())
-        owed.write_text("".join(f"w1:p{n} s{n} {now}\n" for n in (1, 2, 3)))
+        owed.write_text("".join(f"sd w1:p{n} s{n} {now}\n" for n in (1, 2, 3)))
         self.publish(THREE)
         self.panes(*(["w1:p%d" % n, "claude", "idle", "s%d" % n, DROPPED] for n in (1, 2, 3)))
         result = self.sync("elsewhere", FAKE_HERDR_SLOW="1.5", CSWAP_RC_BUDGET="5", CSWAP_RC_GAP_MS="5000")
@@ -604,7 +604,7 @@ class RemoteControlReconnects(Machine):
         # herdr calls of 10 s each, and the agent list ran outside it.
         owed = self.script.parent / "state/rc-owed"
         owed.parent.mkdir(exist_ok=True)
-        owed.write_text("w1:p1 s1 %d\n" % int(time.time()))
+        owed.write_text("sd w1:p1 s1 %d\n" % int(time.time()))
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         for slow in ({"FAKE_HERDR_SLOW": "8"}, {"FAKE_HERDR_LIST_SLOW": "8"}):
             with self.subTest(slow=slow):
@@ -630,6 +630,27 @@ class RemoteControlReconnects(Machine):
                 self.sync("elsewhere", **extra)
                 self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
                 self.assertEqual(self.owed(), [])
+
+    def test_a_pane_owed_in_another_herdr_session_outlives_this_sync(self):
+        # sd:9427 blocker (cswap.sh:409): the owed list kept no herdr
+        # session, so a cron sync over sd read a pane owed in session
+        # work as gone and dropped it. Each sync touches its own rows.
+        work = {"HERDR_SESSION": "work", "FAKE_HERDR_SESSION": "work"}
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("elsewhere", **work)
+        self.assertEqual(self.owed(), ["w1:p1"])
+        # A later switch, listed in sd, owes sd's panes beside it.
+        self.publish(ONE)
+        result = self.sync("elsewhere", FAKE_HERDR_SESSION="work")
+        self.assertNotIn("w1:p1 is gone", result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.sync("elsewhere", FAKE_HERDR_SESSION="work")
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere", **work)
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.owed(), [])
 
     def test_no_switch_sends_nothing(self):
         self.publish(ONE)
@@ -899,7 +920,7 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
         self.sync("elsewhere")
         owed = self.script.parent / "state/rc-owed"
-        owed.write_text("w1:p1 s1 1000\n")
+        owed.write_text("sd w1:p1 s1 1000\n")
         self.env["FAKE_HERDR"] = str(self.tmp / "missing.json")
         executable(self.stubs / "herdr", "#!/bin/sh\necho '{not json'\n")
         result = self.sync("elsewhere")

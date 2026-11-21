@@ -28,7 +28,8 @@ Each `cswap`, `sd` and `sd-db` call runs under `lib/bounded.sh`.
 
 A switch drops each session's Remote Control link, and `/rc` in a dropped session reconnects it under the new account (sd:9427).
 So a sync that switches the account, on the hub or a satellite, writes `state/rc-pending` before any later step can fail.
-Once `herdr agent list` answers with a list it can parse, each claude pane it names is owed in `state/rc-owed`.
+Once `herdr agent list` answers with a list it can parse, each claude pane it names is owed in `state/rc-owed`, keyed by herdr session and pane.
+A sync reads and writes only its own herdr session's rows (`HERDR_SESSION`, default `sd`), so a pane owed in another session waits for a sync there.
 Every sync then submits `/rc` (`herdr agent prompt`) to each owed pane that is idle or done, whose latest Remote Control banner, as Claude prints it at line start, is `⏺ Remote Control disconnected — `, not `  /remote-control is active · `, and whose input box (the rules around the last `❯` line) holds no typed text and is the last thing on screen, with no dialog below it; dim text there is a prompt suggestion.
 Empty means the line is exactly `❯` and its no-break space, plus at most dim text: blanks of any kind, or a control sequence other than colour, read as typed text.
 Only a drop banner and box rules in Claude's own colour count: text typed into a draft is plain, so a draft that types a banner or a box is never read as an empty box.

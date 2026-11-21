@@ -45,7 +45,10 @@ REFUSAL_LIMIT=30
 # Remote Control (sd:9427): a switch drops every session's link, and /rc in
 # a dropped session reconnects it under the new account. A switch writes
 # RC_PENDING; once herdr lists the panes, each claude pane is owed in
-# RC_OWED (pane, session, epoch). Every sync sends /rc to an owed pane that
+# RC_OWED (herdr session, pane, session, epoch). A sync reads and writes
+# only the rows of its own herdr session (HERDR_SESSION below): another
+# session's panes are not in its list, so they are neither gone nor sent
+# (sd:9427 review). Every sync sends /rc to an owed pane that
 # is idle or done, whose latest Remote Control banner is the drop, and
 # whose input box holds no typed text. Any other pane gets no keys, as a
 # key can answer a permission dialog or join a half-typed prompt; it stays
@@ -337,6 +340,17 @@ owe_rc() {
     echo "reconnect: could not write $RC_PENDING; no pane owes /rc for this switch"
 }
 
+# The RC_OWED rows of other herdr sessions, unchanged; none if unreadable.
+other_rows() {
+  [[ -e "$RC_OWED" ]] || return 0
+  awk -v hs="$HERDR_SESSION" 'NF == 4 && $1 != hs' "$RC_OWED"
+}
+
+# Whether RC_OWED holds a row of this herdr session.
+owes_here() {
+  awk -v hs="$HERDR_SESSION" 'NF == 4 && $1 == hs { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null
+}
+
 # A pending switch to owed panes, once herdr lists them. A machine with no
 # herdr has nothing to owe, so the mark goes.
 list_owed() {
@@ -353,10 +367,12 @@ list_owed() {
   herdr_panes || rc=$?
   if ((rc == 2)); then rm -f "$RC_PENDING"; return 0; fi
   ((rc == 0)) || return 0
-  if { awk -v since="$since" 'NF == 3 { print $1, $2, since }' <<<"$PANES" >"$RC_OWED.new" &&
-    mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
+  # This session's panes replace its old rows; other sessions' rows stay.
+  if { { other_rows 2>/dev/null
+      awk -v hs="$HERDR_SESSION" -v since="$since" 'NF == 3 { print hs, $1, $2, since }' <<<"$PANES"
+    } >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
     rm -f "$RC_PENDING"
-    echo "reconnect: $(wc -l <"$RC_OWED" | tr -d ' ') claude pane(s) owe /rc"
+    echo "reconnect: $(awk 'NF == 3' <<<"$PANES" | wc -l | tr -d ' ') claude pane(s) owe /rc"
   else
     echo "reconnect: could not write $RC_OWED; the next sync tries again"
   fi
@@ -398,40 +414,42 @@ recheck() {
 
 # Send /rc to each owed pane that may have it; keep the rest owed.
 reconnect() {
-  local pane session since action screen verdict plan keep=""
+  local hs pane session since action screen verdict plan keep="" mine=0
   RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
   list_owed
-  [[ -s "$RC_OWED" ]] || return 0
+  owes_here || return 0
   herdr_panes || return 0
-  plan=$(awk -v now="$(date +%s)" -v limit="$RC_OWED_FOR" '
+  plan=$(awk -v now="$(date +%s)" -v limit="$RC_OWED_FOR" -v hs="$HERDR_SESSION" '
     FILENAME == "-" { if (NF == 3) status[$1 " " $2] = $3; next }
-    NF != 3 || $3 !~ /^[0-9]+$/ { next }
-    !(($1 " " $2) in status) { print "gone", $0; next }
-    now - $3 > limit { print "old", $0; next }
-    status[$1 " " $2] == "idle" || status[$1 " " $2] == "done" { print "try", $0; next }
+    NF != 4 || $4 !~ /^[0-9]+$/ { next }
+    $1 != hs { print "other", $0; next }
+    !(($2 " " $3) in status) { print "gone", $0; next }
+    now - $4 > limit { print "old", $0; next }
+    status[$2 " " $3] == "idle" || status[$2 " " $3] == "done" { print "try", $0; next }
     { print "keep", $0 }' - "$RC_OWED" <<<"$PANES") ||
     { echo "reconnect: skipped: $RC_OWED was not readable"; return 0; }
-  while read -r action pane session since; do
+  while read -r action hs pane session since; do
     case "$action" in
-      keep) keep+="$pane $session $since"$'\n' ;;
+      other) keep+="$hs $pane $session $since"$'\n' ;;
+      keep) keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1)) ;;
       gone) echo "reconnect: $pane is gone or runs another session; not owed" ;;
       old) echo "reconnect: $pane stayed busy or showed no drop for ${RC_OWED_FOR}s; not owed" ;;
       try)
         if (($(date +%s) >= RC_DEADLINE)); then
           echo "reconnect: the ${RC_BUDGET}s budget is spent; $pane stays owed"
-          keep+="$pane $session $since"$'\n'
+          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         elif ! screen=$(rc_step 10 "$HERDR" agent read "$pane" --format ansi) ||
           ! verdict=$(rc_read screen <<<"$screen"); then
-          keep+="$pane $session $since"$'\n'
+          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         elif [[ "$verdict" != send ]]; then
           echo "reconnect: $pane $verdict"
-          keep+="$pane $session $since"$'\n'
+          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         elif ! recheck "$pane" "$session"; then
-          keep+="$pane $session $since"$'\n'
+          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         elif rc_step 10 "$HERDR" agent prompt "$pane" /rc >/dev/null; then
           echo "reconnect: sent /rc to $pane"
         else
-          keep+="$pane $session $since"$'\n'
+          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         fi ;;
     esac
   done <<<"$plan"
@@ -440,7 +458,8 @@ reconnect() {
   else
     { printf '%s' "$keep" >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null ||
       echo "reconnect: could not update $RC_OWED"
-    echo "reconnect: $(printf '%s' "$keep" | wc -l | tr -d ' ') pane(s) still owe /rc; the next sync tries again"
+    ((mine == 0)) ||
+      echo "reconnect: $mine pane(s) still owe /rc; the next sync tries again"
   fi
 }
 
