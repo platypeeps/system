@@ -171,7 +171,9 @@ def read_statuspage(url, fetch):
     page = data.get("page") if isinstance(data.get("page"), dict) else {}
     base = page.get("url") if isinstance(page.get("url"), str) else ""
     incidents = []
-    for incident in entries(data.get("incidents"), "incidents"):
+    # Some pages (OpenAI, Tailscale, ...) leave `incidents` out when none is
+    # open; a key that is there must still be a list of objects.
+    for incident in entries(data["incidents"] if "incidents" in data else [], "incidents"):
         if one_of(incident.get("status"), INCIDENT_OPEN + INCIDENT_CLOSED,
                   "an incident status") in INCIDENT_CLOSED:
             continue
