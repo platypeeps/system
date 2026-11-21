@@ -1207,6 +1207,26 @@ class RemoteControlReconnects(Machine):
                            FAKE_HERDR_PROMPT_SLOW="0.5", FAKE_DELIVERED=str(delivered))
         self.assertFalse(delivered.exists(), result.stdout)
 
+    def test_a_switch_mark_that_does_not_read_keeps_every_row(self):
+        # sd:9427 review: rc-pending that failed to read once read as no
+        # current switch; the owed row went as stale, the sent row was
+        # dropped, and rc-listed kept the switch from being listed again.
+        now = int(time.time())
+        owed = self.owe(f"sd w1:p1 s1 {now}\nsd w1:p2 s2 {now} sent\n", now)
+        pending = owed.parent / "rc-pending"
+        self.publish(ONE)  # no switch: the seeded mark is the one listed
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED], ["w1:p2", "claude", "idle", "s2", DROPPED])
+        pending.chmod(0)
+        try:
+            result = self.sync("elsewhere")
+        finally:
+            pending.chmod(0o644)
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn(f"reconnect: could not read {pending}", result.stdout)
+        self.assertEqual(owed.read_text(), f"sd w1:p1 s1 {now}\nsd w1:p2 s2 {now} sent\n")
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
         # Fold-in: a list that failed at the switch owed nothing, and the
         # next sync (no switch) never asked again.

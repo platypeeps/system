@@ -528,7 +528,11 @@ send_rc() {
   # takes no reconnect lock, so this is read after the mark (sd:9427
   # review). ponytail: a switch in the milliseconds from here to the
   # launch still races; closing it needs the switch to take RC_LOCK.
-  if [[ "$(current_since)" != "$3" ]]; then
+  if ! now=$(current_since); then
+    echo "reconnect: could not read $RC_PENDING before the /rc to $1; still owed"
+    return 1
+  fi
+  if [[ "$now" != "$3" ]]; then
     echo "reconnect: $1 changed before the send (a newer switch); the current one lists it"
     return 1
   fi
@@ -581,12 +585,16 @@ reconnect() {
 # or it is older than RC_OWED_FOR. Only rows of this switch may take a
 # /rc: a newer switch lists its own, and a /rc from an older row before
 # it would be a second one to a pane whose drop banner is not yet
-# redrawn (sd:9427 review).
+# redrawn (sd:9427 review). A mark that is there and does not read
+# exits 1: it says nothing of which switch is current, and reading it
+# as none dropped every row of the current one (sd:9427 review).
 current_since() {
   local mark since
-  mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || return 0
+  [[ -e "$RC_PENDING" ]] || return 0
+  mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || return 1
   since=${mark%% *}
-  [[ "$since" =~ ^[0-9]+$ ]] && (($(date +%s) - since <= RC_OWED_FOR)) && echo "$since"
+  [[ "$since" =~ ^[0-9]+$ ]] || return 1
+  (($(date +%s) - since <= RC_OWED_FOR)) && echo "$since"
   return 0
 }
 
@@ -601,7 +609,7 @@ mark_sent() {
 
 # Send /rc to each owed pane that may have it; keep the rest owed.
 reconnect_pass() {
-  local hs pane session since action screen verdict plan keep="" mine=0 rc
+  local hs pane session since action screen verdict plan cur keep="" mine=0 rc
   RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
   list_owed
   owes_here || return 0
@@ -609,7 +617,11 @@ reconnect_pass() {
   # Rows of an older switch go unsent: a write of the newer switch's
   # rows that failed, or a switch during this sync's listing, leaves them.
   # A mark older than RC_OWED_FOR is no current switch: its rows go too.
-  plan=$(awk -v hs="$HERDR_SESSION" -v cur="$(current_since)" '
+  if ! cur=$(current_since); then
+    echo "reconnect: could not read $RC_PENDING; every row stays for the next sync"
+    return 0
+  fi
+  plan=$(awk -v hs="$HERDR_SESSION" -v cur="$cur" '
     FILENAME == "-" { if (NF == 3) { status[$1 " " $2] = $3; if ($2 == "?") unknown[$1] = 1 }; next }
     NF == 5 && $5 == "sent" && $4 ~ /^[0-9]+$/ {
       if ($1 != hs) print "other", $0
