@@ -156,14 +156,26 @@ st_shell_env() {
             # less is the chain's own count: a false `[ ] && x` last
             # line fails no command. errtrace carries the trap into a
             # function: without it a failed read inside one went unseen.
-            # The trap logs its directory ahead of the marker, where a
-            # relative name in a syntax error resolves.
+            # A DEBUG trap logs each directory the chain enters ahead of
+            # the marker, where a relative name in a syntax error
+            # resolves: the ERR trap did, but bash fires none for a
+            # tested command, so `if . ./bad.sh` after a `cd` went
+            # unlogged. functrace carries it into the sourced files.
             _st_fail=0
+            _st_d=$PWD
             # shellcheck disable=SC3047,SC3041 # bash only, behind the guard
-            ! (trap : ERR) 2>/dev/null || { set -E; trap '_st_fail=$((_st_fail + 1)); printf "%s dir %s\\n" "$_st_m" "$PWD" >&2' ERR; }
+            ! (trap : ERR) 2>/dev/null || {
+                set -E -T
+                trap '_st_fail=$((_st_fail + 1))' ERR
+                trap '[ "$PWD" = "$_st_d" ] || { _st_d=$PWD; printf "%s dir %s\\n" "$_st_m" "$PWD" >&2; }' DEBUG
+            }
             set -a
-            . "$_st_env" 2>&1 >/dev/null </dev/null
-            _st_rc=$?
+            {
+                . "$_st_env"
+                _st_rc=$?
+                # shellcheck disable=SC3047
+                ! (trap : ERR) 2>/dev/null || trap - DEBUG
+            } 2>&1 >/dev/null </dev/null
             set +a +x +v
             [ "$_st_rc" = 0 ] || [ "$_st_fail" = 0 ] || _st_fail=$((_st_fail - 1))
             # shellcheck disable=SC3047

@@ -469,15 +469,19 @@ class ShellEnv(unittest.TestCase):
         sub = self.home / ".config/shell/sub"
         sub.mkdir(parents=True)
         (sub / "bad.sh").write_text("PARTIAL=1\nif true; then\n")
-        self.env_sh(f'cd "{sub}"\n. ./bad.sh\ncd /\nexport OTHER=1\n')
-        for sh in SHELLS:
-            with self.subTest(sh=sh):
-                result = subprocess.run(
-                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; '
-                     'echo "${PARTIAL-unset} ${OTHER-unset}"'],
-                    env=env, capture_output=True, text=True, check=False)
-                self.assertEqual(result.stdout, "unset unset\n", result.stderr)
-                self.assertIn(".config/shell/env.sh", result.stderr)
+        # Review of 02d60f46: bash fires no ERR trap for a tested
+        # command, so the `cd` under `if . ./bad.sh` went unlogged.
+        for text in (f'cd "{sub}"\n. ./bad.sh\ncd /\nexport OTHER=1\n',
+                     f'cd "{sub}"\nif . ./bad.sh; then :; fi\ncd /\nexport OTHER=1\n'):
+            self.env_sh(text)
+            for sh in SHELLS:
+                with self.subTest(text=text, sh=sh):
+                    result = subprocess.run(
+                        [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; '
+                         'echo "${PARTIAL-unset} ${OTHER-unset}"'],
+                        env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.stdout, "unset unset\n", result.stderr)
+                    self.assertIn(".config/shell/env.sh", result.stderr)
 
     def test_a_readonly_export_of_the_caller_survives_the_import(self):
         """Review of b7aef30d: the caller replayed the whole export dump,
