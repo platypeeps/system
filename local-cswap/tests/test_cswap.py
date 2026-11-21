@@ -753,6 +753,34 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(sorted(self.owed()), ["w1:p1", "w9:p9"])
 
+    def test_a_failed_write_publishes_no_partial_state_file(self):
+        # Round-8 blocker on sd:9427 (cswap.sh:387): a grouped write
+        # checked only its last command, so a failed write of the other
+        # session's rows still moved a partial rc-owed or rc-listed in.
+        # A printf that fails on the work session's rows stands in.
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        now = int(time.time())
+        mark = f"{now} 42"
+        (state / "rc-pending").write_text(mark + "\n")
+        owed_rows = f"work w9:p9 s9 {now}\n"
+        (state / "rc-owed").write_text(owed_rows)
+        listed = f"{mark} work\n"
+        (state / "rc-listed").write_text(listed)
+        env_file = self.tmp / "failing-printf.sh"
+        env_file.write_text('printf() { case "$*" in *w9:p9*|*" work"*) return 1;; esac; '
+                            'builtin printf "$@"; }\n')
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(env_file))
+        self.assertEqual((state / "rc-owed").read_text(), owed_rows, result.stdout)
+        self.assertIn("could not write", result.stdout)
+        # rc-owed did not move, so sd stays unlisted; now let it list.
+        (state / "rc-owed").write_text("")
+        result = self.sync("elsewhere", BASH_ENV=str(env_file))
+        self.assertEqual((state / "rc-listed").read_text(), listed, result.stdout)
+        self.assertIn("could not mark sd listed", result.stdout)
+
     def test_no_switch_sends_nothing(self):
         self.publish(ONE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])

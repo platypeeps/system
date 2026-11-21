@@ -384,7 +384,10 @@ list_owed() {
     echo "reconnect: could not read $RC_OWED; the next sync tries again"
     return 0
   fi
-  if { { [[ -z "$others" ]] || printf '%s\n' "$others"
+  # Each write in a group is chained: a group's status is its last
+  # command's, and a failed first write would move a partial file in
+  # (sd:9427 review).
+  if { { { [[ -z "$others" ]] || printf '%s\n' "$others"; } &&
       awk -v hs="$HERDR_SESSION" -v since="$since" 'NF == 3 { print hs, $1, $2, since }' <<<"$PANES"
     } >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
     # Lines of older marks go; this mark's lines stay. An unreadable list
@@ -392,7 +395,7 @@ list_owed() {
     # sent shows its active banner, so it gets no second /rc.
     if [[ -e "$RC_LISTED" ]] && ! listed=$(awk -v m="$mark " 'index($0, m) == 1' "$RC_LISTED" 2>/dev/null); then
       echo "reconnect: could not read $RC_LISTED; $HERDR_SESSION lists again next sync"
-    elif ! { { [[ -z "$listed" ]] || printf '%s\n' "$listed"
+    elif ! { { { [[ -z "$listed" ]] || printf '%s\n' "$listed"; } &&
         echo "$mark $HERDR_SESSION"; } >"$RC_LISTED.new" && mv "$RC_LISTED.new" "$RC_LISTED"; } 2>/dev/null; then
       echo "reconnect: could not mark $HERDR_SESSION listed in $RC_LISTED"
     fi
