@@ -1089,6 +1089,17 @@ class Services(unittest.TestCase):
                 answer = dict(SUMMARY, status={"indicator": indicator})
                 self.assertEqual(self.read("statuspage", answer)["status"], status)
 
+    def test_a_summary_with_no_incidents_key_has_no_incidents(self):
+        # 2026-11-20: OpenAI, Tailscale, Notion, Docker Hub, Groq and HeyGen
+        # leave `incidents` out when none is open; they read unknown.
+        answer = {k: v for k, v in SUMMARY.items() if k != "incidents"}
+        for indicator, status in (("none", "ok"), ("minor", "degraded")):
+            with self.subTest(indicator=indicator):
+                got = self.read("statuspage", dict(answer, status={"indicator": indicator}))
+                self.assertEqual((got["status"], got["incidents"]), (status, []), got)
+        # Present but not a list is still another shape.
+        self.assertEqual(self.read("statuspage", dict(SUMMARY, incidents=None))["status"], "unknown")
+
     def test_slack_and_google(self):
         self.assertEqual(self.read("slack", {"status": "ok", "active_incidents": []})["status"], "ok")
         got = self.read("slack", {"status": "active", "active_incidents": [
