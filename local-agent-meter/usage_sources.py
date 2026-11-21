@@ -469,15 +469,15 @@ def read_openwhispr(env, fetch, now):
         raise ReadFailed("words_used or limit is not a count")
     out = {"spend": {"amount": used, "unit": "words", "period": "billing period"}}
     end = data.get("current_period_end")
+    # An ended period's words are no reading on any plan: the list's cap
+    # would set a current budget on them. A bad end fails only a capped
+    # plan, whose share needs it (sd:9749).
     if limit > 0:
-        # A capped plan's share needs its period: a bad or ended one is no
-        # reading. An unlimited plan shows only the words, so its end is
-        # kept only when it is a time still ahead (sd:9749).
         end = when(end, "current_period_end")
-        if end is not None and event_time(end) <= now:
-            raise ReadFailed("the billing period ended before the reading")
-    elif not (isinstance(end, str) and (event_time(end) or now) > now):
+    elif not isinstance(end, str) or event_time(end) is None:
         end = None
+    if end is not None and event_time(end) <= now:
+        raise ReadFailed("the billing period ended before the reading")
     if end is not None:
         out["spend"]["resets_at"] = end
     if limit > 0:

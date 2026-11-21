@@ -615,21 +615,24 @@ class Readers(unittest.TestCase):
                 got = usage_sources.read_provider("openwhispr", {var: SECRET}, answering(bent), NOW)
                 self.assertEqual(got["spend"].get("resets_at"), expected, got)
 
-    def test_an_ended_openwhispr_period_on_a_capped_plan_is_no_reading(self):
-        # sd:9749: the limit and resets_at of an ended period read ok.
+    def test_an_ended_openwhispr_period_is_no_reading(self):
+        # sd:9749: the limit and resets_at of an ended period read ok; on
+        # an unlimited plan the list's cap set a current-looking budget.
         var, answer, _ = ANSWERS["openwhispr"]
-        for end in ("2026-11-17T20:00:00Z", "2026-11-01T00:00:00Z"):
-            with self.subTest(end=end):
-                ended = put(answer, ("data", "current_period_end"), end)
-                got = usage_sources.read_provider("openwhispr", {var: SECRET},
-                                                  answering(ended), NOW)
-                self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
+        for limit in (10000, -1):
+            for end in ("2026-11-17T20:00:00Z", "2026-11-01T00:00:00Z"):
+                with self.subTest(limit=limit, end=end):
+                    ended = put(put(answer, ("data", "current_period_end"), end),
+                                ("data", "limit"), limit)
+                    got = usage_sources.read_provider("openwhispr", {var: SECRET},
+                                                      answering(ended), NOW, cap=5000.0)
+                    self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
 
-    def test_an_unlimited_openwhispr_plan_reads_past_a_bad_or_ended_period_end(self):
-        # sd:9749: the end changes nothing an unlimited plan shows.
+    def test_an_unlimited_openwhispr_plan_reads_past_a_bad_period_end(self):
+        # sd:9749: a bad end fails only a capped plan's reading.
         var, answer, _ = ANSWERS["openwhispr"]
         unlimited = put(answer, ("data", "limit"), -1)
-        for end in ("not a time", 5, "2026-11-01T00:00:00Z"):
+        for end in ("not a time", 5):
             with self.subTest(end=end):
                 bent = put(unlimited, ("data", "current_period_end"), end)
                 got = usage_sources.read_provider("openwhispr", {var: SECRET},

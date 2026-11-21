@@ -107,7 +107,7 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   spend's limit when the provider's answer has none (Baseten's budget has no read API); a malformed cap is refused and the row reads without it. Row `usage:<provider>`: `status` (`ok`, `unknown`, `no-source`, `removed`), `source`,
   `read_at`, `windows` (name, used percent, minutes, reset), `balance` and `spend`
   (amount and unit; `resets_at`, the cycle end: the next UTC month start for a
-  month, OpenWhispr's period end; `limit`, OpenRouter's key limit when it resets monthly, its BYOK use then in the amount when the key counts it, else the cap; a capped OpenWhispr period that ended is `unknown`), `accounts` for claude, `error` when unknown. Keys come from the
+  month, OpenWhispr's period end; `limit`, OpenRouter's key limit when it resets monthly, its BYOK use then in the amount when the key counts it, else the cap; an OpenWhispr period that ended is `unknown`), `accounts` for claude, `error` when unknown. Keys come from the
   environment by name (`usage_sources.py` names each); no key, answer body or
   account field reaches a row. A failed read is `unknown`, never 0; a provider with
   no usage API is `no-source`.
