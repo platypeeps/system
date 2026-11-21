@@ -69,40 +69,46 @@ st_obsidian_vault() {
 # same mapping in sd_dashboard/claude_env.py, since its package may run outside
 # this checkout.
 st_shell_env() {
-    # The file is dotted here only after a subshell has sourced it, and
-    # all it sources, and lived: a bare `.` under set -e ended the caller
-    # with stdout on /dev/null, so every cron run failed for 10 minutes and
-    # no job log said why (sd:9652). A syntax error in any file of the
-    # chain, or an `exit`, ends a POSIX shell whatever set -e says; such a
-    # file is named and skipped. A second child under set -e names any
-    # failed command, even one a later export hides from `$?`. set -e is
-    # off for the real `.`, as bash 3.2 exits on a failure inside it even
-    # in an `if` test, so the exports that work still load. The set -e
-    # child is its own process, not a subshell: left of `||` or in an
-    # `if`, a subshell runs with set -e off in bash 4+ and dash. For the
-    # same reason the probe is a bare assignment, with the caller's set -e
-    # off: left of `||`, bash 5 ignored a `set -e` env.sh turns on, so the
-    # probe passed a file whose failure then ended the caller. The caller's
-    # own -e state comes back after the `.`, whatever env.sh left set.
-    # ponytail: env.sh runs three times; two keychain reads extra.
+    # env.sh is never dotted in this shell. A subshell, the same shell as
+    # this one, sources it once with set -e off and output on /dev/null,
+    # then prints `export -p`; this shell evals that only when the
+    # subshell lived to its marker. A bare `.` here ended every cron run
+    # with stdout on /dev/null for 10 minutes, and no job log said why
+    # (sd:9652); a syntax error in any file of the chain, an `exit`, or a
+    # set -e it turns on ends a POSIX shell whatever set -e says. A probe
+    # followed by a second `.` left a window: a file edited in between
+    # still ended the runner. Such a chain is named and skipped. The
+    # subshell is the same shell, since bash in POSIX mode lives through a
+    # syntax error that ends dash, and its `export -p` evals back in the
+    # shell that wrote it; bash prints it in POSIX form under set -o
+    # posix, so a function's eval does not make the names local. The
+    # assignment is bare, with the caller's set -e off: left of `||`,
+    # bash 5 ignored a set -e the chain turns on. A second child under
+    # set -e names a failed command, even one a later export hides from
+    # `$?`; it only warns.
+    # ponytail: only exports cross; an unset or a plain variable in env.sh
+    # does not, and env.sh runs twice: one keychain read extra.
     _st_env="$HOME/.config/shell/env.sh"
     if [ -f "$_st_env" ]; then
         case $- in *e*) _st_e=1 ;; *) _st_e= ;; esac
         set +e
-        # A subshell, so the probe runs in this same shell: bash in POSIX
-        # mode lives through a syntax error that ends dash.
         # shellcheck source=/dev/null
-        _st_ok=$(. "$_st_env" >/dev/null 2>&1 </dev/null; echo ok)
-        if [ "$_st_ok" != ok ]; then
-            echo "st_shell_env: $_st_env or a file it sources ends the shell; skipped, so its exports are missing" >&2
-        else
-            # shellcheck disable=SC2016 # $1 expands in the child
-            "${BASH:-sh}" -ec '. "$1"' st_shell_env "$_st_env" >/dev/null 2>&1 </dev/null ||
-                echo "st_shell_env: a command in $_st_env failed (exit $?); a value it sets may be missing" >&2
-            # shellcheck source=/dev/null
-            . "$_st_env" >/dev/null 2>&1
-            set +e
-        fi
+        _st_ok=$(
+            . "$_st_env" >/dev/null 2>&1 </dev/null
+            # shellcheck disable=SC3040 # bash only, behind the guard
+            [ -z "${BASH_VERSION:-}" ] || set -o posix
+            export -p
+            echo '#st_shell_env ok'
+        )
+        case $_st_ok in
+            *'#st_shell_env ok')
+                eval "$_st_ok"
+                # shellcheck disable=SC2016 # $1 expands in the child
+                "${BASH:-sh}" -ec '. "$1"' st_shell_env "$_st_env" >/dev/null 2>&1 </dev/null ||
+                    echo "st_shell_env: a command in $_st_env failed (exit $?); a value it sets may be missing" >&2
+                ;;
+            *) echo "st_shell_env: $_st_env or a file it sources ends the shell; skipped, so its exports are missing" >&2 ;;
+        esac
         [ -z "$_st_e" ] || set -e
     fi
     unset _st_env _st_e _st_ok

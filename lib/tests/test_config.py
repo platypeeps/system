@@ -393,6 +393,22 @@ class ShellEnv(unittest.TestCase):
                     self.assertEqual(result.stdout, "after\n", result.stderr)
                     self.assertIn(".config/shell/env.sh", result.stderr)
 
+    def test_a_chain_edited_after_the_probe_never_reaches_the_caller(self):
+        """Review of 918d7467: the runner dotted env.sh again after the
+        probes, so a file of the chain edited in between, here to an
+        `exit`, ended the runner with its stderr on /dev/null."""
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        part = self.home / ".config/shell/part.sh"
+        for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
+            with self.subTest(sh=sh):
+                # The first read of the chain passes, then breaks part.sh.
+                self.env_sh(f'. "{part}"\nprintf \'exit 0\\n\' > "{part}"\nexport OTHER=1\n')
+                part.write_text("export PART='a b'\n")
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; set -e; st_shell_env; echo "after $OTHER $PART"'],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "after 1 a b\n", result.stderr)
+
     def test_set_e_from_env_sh_does_not_reach_the_caller(self):
         """An env.sh that turns set -e on would end a caller that runs
         without it at its next failed command."""
