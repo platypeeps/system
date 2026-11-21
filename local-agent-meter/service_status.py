@@ -2,7 +2,14 @@
 
 The 'status services' list holds one service per line:
 
-    <name> <kind> <url> [provider[,provider...]]
+    <name> <kind> <url> [provider[,provider...]] [key=value ...]
+
+A `statuspage` line takes two options (sd:9722). `groups=<g>[,<g>]` keeps
+the components in those groups (the group name lower-cased, spaces as
+`-`) and the ungrouped ones, and drops an incident whose components all
+sit outside them; a group the page lacks reads unknown. `stale=<days>`
+drops an open incident created more than that many days ago. With either,
+the status is the worst kept component or incident, never the page's.
 
 `kind` is one of KINDS. Each read becomes one reading:
 
@@ -18,6 +25,7 @@ characters, or None; an incident url is a whole http(s) URL of at most
 URL characters, or None.
 """
 
+import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -50,7 +58,7 @@ slack slack https://slack-status.com/api/v2.0.0/current
 notion statuspage https://www.notion-status.com/api/v2/summary.json
 atlassian statuspage https://status.atlassian.com/api/v2/summary.json
 docker-hub statuspage https://www.dockerstatus.com/api/v2/summary.json
-cloudflare statuspage https://www.cloudflarestatus.com/api/v2/summary.json
+cloudflare statuspage https://www.cloudflarestatus.com/api/v2/summary.json groups=north-america stale=3
 strongdm statuspage https://status.strongdm.com/api/v2/summary.json
 heygen statuspage https://status.heygen.com/api/v2/summary.json heygen
 groq statuspage https://groqstatus.com/api/v2/summary.json groq
@@ -104,19 +112,48 @@ def web_url(url):
     return parts.scheme in ("http", "https") and bool(parts.hostname)
 
 
+def parse_options(fields):
+    """{key: value} from key=value fields, or the problem as a string."""
+    options = {}
+    for field in fields:
+        key, _, value = field.partition("=")
+        if key not in ("groups", "stale"):
+            return "option %s is not groups or stale" % key
+        if key in options:
+            return "option %s given twice" % key
+        if key == "stale":
+            if not (value.isascii() and value.isdigit() and int(value) > 0):
+                return "stale is not a whole number of days above 0"
+            options[key] = int(value)
+        else:
+            groups = value.split(",")
+            if not all(NAME.fullmatch(g) for g in groups):
+                return "groups is not lower-case group names"
+            options[key] = groups
+    return options
+
+
 def parse_services(text):
-    """[(name, kind, url, providers)] in order, and one problem per refused line."""
+    """[(name, kind, url, providers, options)] in order, and one problem
+    per refused line."""
     services, problems, seen = [], [], set()
     for number, line in enumerate((text or "").splitlines(), 1):
         fields = line.split("#", 1)[0].split()
         if not fields:
             continue
-        if len(fields) not in (3, 4):
-            problems.append("line %d: want <name> <kind> <url> [provider]" % number)
+        rest = fields[3:]
+        providers = rest.pop(0).split(",") if rest and "=" not in rest[0] else []
+        if len(fields) < 3 or not all("=" in f for f in rest):
+            problems.append("line %d: want <name> <kind> <url> [provider] [key=value ...]"
+                            % number)
             continue
         name, kind, url = fields[:3]
-        providers = fields[3].split(",") if len(fields) == 4 else []
-        if not NAME.fullmatch(name) or name in seen:
+        options = parse_options(rest)
+        if isinstance(options, str):
+            problems.append("line %d: %s" % (number, options))
+        elif options and kind != "statuspage":
+            problems.append("line %d: options need kind statuspage" % number)
+        elif not NAME.fullmatch(name) or name in seen:
             problems.append("line %d: name is not a new lower-case name" % number)
         elif kind not in KINDS:
             problems.append("line %d: kind is not one of %s" % (number, ", ".join(KINDS)))
@@ -126,7 +163,7 @@ def parse_services(text):
             problems.append("line %d: a provider is not a lower-case name" % number)
         else:
             seen.add(name)
-            services.append((name, kind, url, providers))
+            services.append((name, kind, url, providers, options))
     return services, problems
 
 
@@ -162,7 +199,19 @@ def entries(value, what):
     return value
 
 
-def read_statuspage(url, fetch):
+#: A component status as a reading status, for a filtered page (sd:9722).
+COMPONENT_STATUS = {"operational": "ok", "degraded_performance": "degraded",
+                    "partial_outage": "degraded", "under_maintenance": "degraded",
+                    "major_outage": "outage"}
+WORST = ("ok", "degraded", "outage")
+
+
+def group_key(name):
+    return "-".join(name.lower().split()) if isinstance(name, str) else None
+
+
+def read_statuspage(url, fetch, options=None, now=None):
+    options = options or {}
     data = fetch(url)
     status = data.get("status") if isinstance(data, dict) else None
     indicator = status.get("indicator") if isinstance(status, dict) else None
@@ -170,11 +219,37 @@ def read_statuspage(url, fetch):
         raise ReadFailed("no status indicator")
     page = data.get("page") if isinstance(data.get("page"), dict) else {}
     base = page.get("url") if isinstance(page.get("url"), str) else ""
-    incidents = []
+    listed = entries(data.get("components"), "components")
+    for c in listed:
+        one_of(c.get("status"), COMPONENT, "a component status")
+    kept = listed
+    if "groups" in options:
+        named = {group_key(c.get("name")): c.get("id") for c in listed if c.get("group") is True}
+        missing = [g for g in options["groups"] if g not in named]
+        if missing:
+            raise ReadFailed("no group %s on the page" % ",".join(missing))
+        chosen = {named[g] for g in options["groups"]}
+        kept = [c for c in listed if c.get("group_id") in chosen
+                or (not c.get("group_id") and c.get("group") is not True)]
+    kept_ids = {c.get("id") for c in kept}
+    incidents, worst = [], "ok"
     for incident in entries(data.get("incidents"), "incidents"):
         if one_of(incident.get("status"), INCIDENT_OPEN + INCIDENT_CLOSED,
                   "an incident status") in INCIDENT_CLOSED:
             continue
+        if "groups" in options:
+            hit = [c.get("id") for c in entries(incident.get("components") or [],
+                                                "incident components")]
+            if hit and not kept_ids.intersection(hit):
+                continue
+        created = event_time(incident.get("created_at"))
+        if ("stale" in options and created is not None
+                and now - created > datetime.timedelta(days=options["stale"])):
+            continue
+        # An open incident is at least degraded, whatever its impact says.
+        impact = incident.get("impact")
+        impact = INDICATOR.get(impact, "degraded") if isinstance(impact, str) else "degraded"
+        worst = max(worst, "degraded" if impact == "ok" else impact, key=WORST.index)
         url = incident.get("shortlink")
         if not isinstance(url, str) and base and isinstance(incident.get("id"), str):
             url = base.rstrip("/") + "/incidents/" + incident["id"]
@@ -182,9 +257,11 @@ def read_statuspage(url, fetch):
                           "impact": short(incident.get("impact")),
                           "started_at": shown_time(incident.get("created_at"))})
     components = [{"name": title(c.get("name")), "status": c["status"]}
-                  for c in entries(data.get("components"), "components")
-                  if one_of(c.get("status"), COMPONENT, "a component status") != "operational"]
-    return {"status": INDICATOR[indicator], "indicator": indicator,
+                  for c in kept if c["status"] != "operational"]
+    if options:
+        for c in components:
+            worst = max(worst, COMPONENT_STATUS[c["status"]], key=WORST.index)
+    return {"status": worst if options else INDICATOR[indicator], "indicator": indicator,
             "incidents": incidents, "components": components}
 
 
@@ -262,12 +339,18 @@ READERS = {"statuspage": read_statuspage, "slack": read_slack,
 
 
 def read_service(service, now, fetch=fetch_json, http=read_http):
-    name, kind, url, providers = service
+    name, kind, url, providers = service[:4]
+    options = service[4] if len(service) > 4 else {}
     out = {"name": name, "kind": kind, "url": url, "providers": providers,
            "status": "unknown", "indicator": None, "incidents": [], "components": [],
            "read_at": iso(now)}
     try:
-        got = http(url) if kind == "http" else READERS[kind](url, fetch)
+        if kind == "http":
+            got = http(url)
+        elif kind == "statuspage":
+            got = read_statuspage(url, fetch, options, now)
+        else:
+            got = READERS[kind](url, fetch)
         # The one rule for a status: one of the three, in finite JSON.
         if got.get("status") not in ("ok", "degraded", "outage"):
             raise ReadFailed("no status in the answer")

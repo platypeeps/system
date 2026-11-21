@@ -946,6 +946,110 @@ SUMMARY = {"page": {"url": "https://status.example.test"},
                          {"id": "old", "name": "Done", "status": "resolved"}]}
 
 
+#: A Cloudflare-like page (sd:9722): a North America group, a Europe group,
+#: an ungrouped component, an incident per region and an old one.
+REGIONS = {
+    "page": {"url": "https://status.example.test"},
+    "status": {"indicator": "major"},
+    "components": [
+        {"id": "na", "name": "North America", "group": True, "group_id": None,
+         "status": "partial_outage"},
+        {"id": "iad", "name": "Ashburn, VA (IAD)", "group": False, "group_id": "na",
+         "status": "degraded_performance"},
+        {"id": "eu", "name": "Europe", "group": True, "group_id": None,
+         "status": "major_outage"},
+        {"id": "fra", "name": "Frankfurt (FRA)", "group": False, "group_id": "eu",
+         "status": "major_outage"},
+        {"id": "api", "name": "API", "group": False, "group_id": None,
+         "status": "operational"}],
+    "incidents": [
+        {"id": "i1", "name": "IAD slow", "status": "investigating", "impact": "minor",
+         "created_at": "2026-11-17T10:00:00Z", "components": [{"id": "iad"}]},
+        {"id": "i2", "name": "FRA down", "status": "identified", "impact": "major",
+         "created_at": "2026-11-17T10:00:00Z", "components": [{"id": "fra"}]},
+        {"id": "i3", "name": "Workers errors", "status": "monitoring", "impact": "major",
+         "created_at": "2026-11-10T10:00:00Z", "components": []}]}
+
+
+class ServiceFilters(unittest.TestCase):
+    """groups= and stale= on a services line (sd:9722)."""
+
+    def read(self, options, answer=REGIONS):
+        return service_status.read_service(
+            ("svc", "statuspage", "https://status.example.test/api", [], options), NOW,
+            fetch=answering(answer))
+
+    def test_the_options_grammar(self):
+        services, problems = service_status.parse_services(
+            "cf statuspage https://example.test/s.json groups=north-america,europe stale=3\n"
+            "cg statuspage https://example.test/s.json cloudflare stale=1\n"
+            "a statuspage https://example.test/s.json colour=red\n"
+            "b statuspage https://example.test/s.json stale=0\n"
+            "c statuspage https://example.test/s.json stale=x\n"
+            "d statuspage https://example.test/s.json groups=\n"
+            "e statuspage https://example.test/s.json groups=North\n"
+            "f slack https://example.test/s.json stale=3\n"
+            "g statuspage https://example.test/s.json stale=3 cloudflare\n"
+            "h statuspage https://example.test/s.json stale=3 stale=4\n")
+        self.assertEqual(services, [
+            ("cf", "statuspage", "https://example.test/s.json", [],
+             {"groups": ["north-america", "europe"], "stale": 3}),
+            ("cg", "statuspage", "https://example.test/s.json", ["cloudflare"], {"stale": 1})])
+        self.assertEqual(problems, [
+            "line 3: option colour is not groups or stale",
+            "line 4: stale is not a whole number of days above 0",
+            "line 5: stale is not a whole number of days above 0",
+            "line 6: groups is not lower-case group names",
+            "line 7: groups is not lower-case group names",
+            "line 8: options need kind statuspage",
+            "line 9: want <name> <kind> <url> [provider] [key=value ...]",
+            "line 10: option stale given twice"])
+
+    def test_the_starting_list_filters_cloudflare(self):
+        services, _ = service_status.parse_services(service_status.STARTING)
+        options = {s[0]: s[4] for s in services}
+        self.assertEqual(options["cloudflare"], {"groups": ["north-america"], "stale": 3})
+        self.assertEqual(options["claude"], {})
+
+    def test_a_group_filter_keeps_its_components_and_ungrouped_ones(self):
+        got = self.read({"groups": ["north-america"]})
+        self.assertEqual(got["components"],
+                         [{"name": "Ashburn, VA (IAD)", "status": "degraded_performance"}])
+
+    def test_a_group_filter_drops_an_incident_wholly_outside_it(self):
+        got = self.read({"groups": ["north-america"]})
+        self.assertEqual([i["title"] for i in got["incidents"]],
+                         ["IAD slow", "Workers errors"])
+
+    def test_a_stale_filter_drops_an_old_open_incident(self):
+        got = self.read({"stale": 3})
+        self.assertEqual([i["title"] for i in got["incidents"]], ["IAD slow", "FRA down"])
+
+    def test_the_status_is_recomputed_from_what_is_kept(self):
+        self.assertEqual(self.read({"groups": ["north-america"], "stale": 3})["status"],
+                         "degraded")
+        self.assertEqual(self.read({"groups": ["europe"], "stale": 3})["status"], "outage")
+        quiet = dict(REGIONS, incidents=REGIONS["incidents"][2:])
+        got = self.read({"groups": ["north-america"], "stale": 3},
+                        dict(quiet, components=[dict(c, status="operational")
+                                                for c in REGIONS["components"]]))
+        self.assertEqual((got["status"], got["incidents"], got["components"]), ("ok", [], []))
+
+    def test_a_group_the_page_lacks_is_unknown_never_ok(self):
+        got = self.read({"groups": ["antarctica"]})
+        self.assertEqual(got["status"], "unknown")
+        self.assertIn("antarctica", got["error"])
+
+    def test_an_unfiltered_line_reads_as_before(self):
+        plain = service_status.read_service(
+            ("svc", "statuspage", "https://status.example.test/api", []), NOW,
+            fetch=answering(REGIONS))
+        self.assertEqual(self.read({}), plain)
+        self.assertEqual(plain["status"], "outage")
+        self.assertEqual(len(plain["incidents"]), 3)
+        self.assertEqual(len(plain["components"]), 4)
+
+
 class Services(unittest.TestCase):
     def read(self, kind, answer, url="https://status.example.test/api"):
         return service_status.read_service(("svc", kind, url, ["claude"]), NOW,
@@ -972,7 +1076,7 @@ class Services(unittest.TestCase):
             "line 6: kind is not one of statuspage, slack, google-incidents, http",
             "line 7: url is not http(s)",
             "line 8: a provider is not a lower-case name",
-            "line 9: want <name> <kind> <url> [provider]",
+            "line 9: want <name> <kind> <url> [provider] [key=value ...]",
             "line 10: url is not http(s)",
             "line 11: url is not http(s)"])
 
