@@ -1490,6 +1490,26 @@ class ServiceFilters(unittest.TestCase):
                                 dict(page, status={"indicator": "maintenance"}))
                 self.assertEqual(got["status"], "degraded", got)
 
+    def test_rulings_on_scoped_causes_and_quiet_incidents(self):
+        # Rebutted lane findings at 82d35179, pinned (operator rulings).
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        # An excluded major_outage alone explains a major page: ok.
+        out = [dict(c, status="major_outage") if c["id"] == "fra" else c
+               for c in calm]
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=out, incidents=[]))
+        self.assertEqual(got["status"], "ok", got)
+        # A quiet minor incident in a kept region, in monitoring with no
+        # update for five days, is the long-running kind stale=3 hides.
+        quiet = {"id": "q", "name": "IAD slow", "status": "monitoring",
+                 "impact": "minor", "created_at": "2026-11-10T10:00:00Z",
+                 "updated_at": "2026-11-12T10:00:00Z",
+                 "components": [{"id": "iad"}]}
+        page = dict(REGIONS, status={"indicator": "minor"},
+                    components=calm, incidents=[quiet])
+        got = self.read({"groups": ["north-america"], "stale": 3}, page)
+        self.assertEqual((got["status"], got["incidents"]), ("ok", []))
+
     def test_maintenance_explains_no_minor_page(self):
         # Lane review: maintenance ranked with minor, so an excluded
         # under_maintenance component or maintenance incident explained
