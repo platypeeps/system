@@ -415,10 +415,10 @@ now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
 # Right before a send (operator ruling 2026-11-18): the pane ($1) still
 # runs the owed session ($2), is still idle or done, and a fresh read of
-# its screen still says send. Else one line, and it stays owed. A gap of
-# milliseconds remains between this check and the keys: herdr has no
-# check-and-send.
-recheck() {
+# its screen still says send; then /rc. Else one line, and it stays owed.
+# herdr has no check-and-send, so the span from that read to the end of
+# the send is the gap a draft could slip into: it must fit RC_GAP_MS.
+send_rc() {
   local now screen verdict="" start took bound=$(((RC_GAP_MS + 999) / 1000))
   # The screen first, then the session and status: a read can take 10 s,
   # and a session that took the pane during it shows a drop and an empty
@@ -440,6 +440,19 @@ recheck() {
   took=$(($(now_ms) - start))
   if ((took > RC_GAP_MS)); then
     echo "reconnect: $1 took $took ms to check, over $RC_GAP_MS ms; still owed"
+    return 1
+  fi
+  # The send counts too: herdr may take seconds to deliver, and a draft
+  # typed meanwhile would take the /rc (sd:9427 review). Its --timeout
+  # is the gap's time left. A late /rc that landed anyway shows on the
+  # next read as connected, so a pane kept owed gets no second one.
+  if ! rc_step "$bound" "$HERDR" agent prompt "$1" /rc --timeout "$((RC_GAP_MS - took))" >/dev/null; then
+    echo "reconnect: /rc to $1 failed or ran over $RC_GAP_MS ms; still owed"
+    return 1
+  fi
+  took=$(($(now_ms) - start))
+  if ((took > RC_GAP_MS)); then
+    echo "reconnect: /rc to $1 ended $took ms after the check began, over $RC_GAP_MS ms; still owed"
     return 1
   fi
 }
@@ -492,9 +505,7 @@ reconnect_pass() {
         elif [[ "$verdict" != send ]]; then
           echo "reconnect: $pane $verdict"
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
-        elif ! recheck "$pane" "$session"; then
-          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
-        elif rc_step 10 "$HERDR" agent prompt "$pane" /rc >/dev/null; then
+        elif send_rc "$pane" "$session"; then
           echo "reconnect: sent /rc to $pane"
         else
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))

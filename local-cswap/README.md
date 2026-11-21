@@ -37,7 +37,7 @@ Empty means the line is exactly `❯` and its no-break space, plus at most dim t
 Only a drop banner and box rules in Claude's own colour count: text typed into a draft is plain, so a draft that types a banner or a box is never read as an empty box.
 A pane herdr names no session id for is not owed. Any other pane gets no keys, as a key can answer a permission dialog or join a half-typed prompt; it stays owed, and the next sync tries again.
 An active banner stays owed too: it may be the old account's, printed before the drop.
-Right before the keys, a fresh screen read and then `herdr agent get` check the pane again, so a session that takes the pane during the read gets no keys; both checks together must take at most 1000 ms (`CSWAP_RC_GAP_MS`), or the pane stays owed, as a draft typed during a slow check would take the `/rc`; a gap of milliseconds remains, as herdr has no check-and-send.
+Right before the keys, a fresh screen read and then `herdr agent get` check the pane again, so a session that takes the pane during the read gets no keys; from that read to the end of the send must take at most 1000 ms (`CSWAP_RC_GAP_MS`), or the pane stays owed, as a draft typed during a slow check or a slow delivery would take the `/rc`; the send gets the time left as herdr's `--timeout`, and a late `/rc` that landed shows as connected on the next read, so it is not sent twice.
 The account sync runs first, then one reconnect pass of at most 60 seconds (`CSWAP_RC_BUDGET`): each herdr call is bounded by what is left of it, and a pane it does not reach stays owed.
 A pane leaves the list once sent, gone, running another session, or owed for 30 minutes.
 A sync that switches nothing writes no list, so a connected session is never toggled off.

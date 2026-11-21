@@ -16,6 +16,7 @@ So no case asks the real launchd, cswap or workflow database anything.
 import json
 import os
 import pathlib
+import re
 import shutil
 import stat
 import subprocess
@@ -186,7 +187,15 @@ elif args[:2] == ["agent", "read"]:
         screen = re.sub(r"\x1b\[[0-9;]*m", "", screen)
     print(screen)
 elif args[:2] == ["agent", "prompt"]:
-    pass
+    # Like herdr: --timeout MS fails a submission that takes longer.
+    # FAKE_HERDR_PROMPT_SLOW seconds make a slow delivery.
+    import time
+    slow = float(os.environ.get("FAKE_HERDR_PROMPT_SLOW") or 0)
+    if "--timeout" in args and slow * 1000 > int(args[args.index("--timeout") + 1]):
+        time.sleep(int(args[args.index("--timeout") + 1]) / 1000)
+        print("herdr: timeout", file=sys.stderr)
+        sys.exit(1)
+    time.sleep(slow)
 else:
     sys.exit(64)
 """
@@ -570,7 +579,8 @@ class RemoteControlReconnects(Machine):
         executable((where or self.stubs) / "herdr", HERDR)
 
     def prompts(self):
-        return self.called("herdr agent prompt")
+        # The send's --timeout varies with the time left in the gap.
+        return [re.sub(r" --timeout \d+$", "", line) for line in self.called("herdr agent prompt")]
 
     def owed(self):
         path = self.script.parent / "state/rc-owed"
@@ -984,6 +994,25 @@ class RemoteControlReconnects(Machine):
                 self.assertEqual(self.prompts(), [])
                 self.assertEqual(self.owed(), ["w1:p1"])
                 self.assertRegex(result.stdout, rf"reconnect: w1:p1 {why}.*; still owed")
+                (self.script.parent / "state/rc-owed").unlink()
+
+    def test_a_slow_send_counts_in_the_gap(self):
+        # Review on sd:9427: the gap ended before `agent prompt`, which
+        # may take 10 s; a draft typed meanwhile took the /rc. The send
+        # gets the gap's time left as herdr's --timeout, and the whole
+        # span from the last screen read to the send's end must fit it.
+        rows = [({"FAKE_HERDR_PROMPT_SLOW": "1.5"}, "1000"),
+                ({"FAKE_HERDR_SLOW": "0.3", "FAKE_HERDR_PROMPT_SLOW": "0.5"}, "600")]
+        for slow, gap in rows:
+            with self.subTest(slow=slow):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                result = self.sync("elsewhere", CSWAP_RC_GAP_MS=gap, **slow)
+                self.assertNotIn("sent /rc", result.stdout)
+                self.assertEqual(self.owed(), ["w1:p1"])
+                self.assertRegex(result.stdout, rf"reconnect: /rc to w1:p1 .* over {gap} ms; still owed")
+                timeout = int(self.called("herdr agent prompt")[-1].rsplit(" ", 1)[1])
+                self.assertLessEqual(timeout, int(gap))
                 (self.script.parent / "state/rc-owed").unlink()
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
