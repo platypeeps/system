@@ -293,7 +293,9 @@ def read_statuspage(url, fetch, options=None, now=None):
         raise ReadFailed("no status indicator")
     page = data.get("page") if isinstance(data.get("page"), dict) else {}
     base = page.get("url") if isinstance(page.get("url"), str) else ""
-    listed = entries(data.get("components"), "components")
+    # A missing key is none, as for incidents below; a filter then finds
+    # no group and refuses.
+    listed = entries(data["components"] if "components" in data else [], "components")
     for c in listed:
         one_of(c.get("status"), COMPONENT, "a component status")
     kept = listed
