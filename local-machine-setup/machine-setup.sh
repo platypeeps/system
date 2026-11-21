@@ -8548,11 +8548,15 @@ for d in stc.cron_job_dirs():
   # one: stripped, the name points at another folder. It prints `reached:`
   # only past that check: a job that exits 0 early prints nothing, which
   # must not read as a job that names no root.
+  # The name is written into the child's script, not read from its $2
+  # after the source: a `set --` in the job reset $2, and the reader
+  # printed `reached:$` for a job that named its root.
+  case $2 in ''|[0-9]*|*[!A-Za-z0-9_]*) echo "job_destination: bad name $2" >&2; return 1 ;; esac
   jd_rc=0
   # shellcheck disable=SC2016 # the child expands its own arguments
-  jd_value=$(ROOT="$ROOT/local-cron-jobs" sh -ec 'eval "$2=\"\""; . "$1" >/dev/null 2>&1 </dev/null
-    eval "v=\$$2"; case "$v" in *"
-"*) exit 3 ;; esac; printf "reached:%s" "$v"' sh "$jd_file" "$2") || jd_rc=$?
+  jd_value=$(ROOT="$ROOT/local-cron-jobs" sh -ec "$2=''"'; . "$1" >/dev/null 2>&1 </dev/null
+    case "${'"$2"'}" in *"
+"*) exit 3 ;; esac; printf "reached:%s" "${'"$2"'}"' sh "$jd_file") || jd_rc=$?
   case $jd_rc:$jd_value in
     0:reached:*) printf '%s\n' "${jd_value#reached:}" ;;
     3:*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; return 1 ;;
