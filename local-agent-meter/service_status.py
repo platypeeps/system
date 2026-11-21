@@ -307,6 +307,10 @@ def read_statuspage(url, fetch, options=None, now=None):
     if "groups" in options:
         tree_checked(listed)
         named = {group_key(c.get("name")): c["id"] for c in listed if c.get("group") is True}
+        # A group with no usable name cannot be chosen, so it would sit
+        # outside the scope and hide its outage (review).
+        if None in named or "" in named:
+            raise ReadFailed("a group name of another shape")
         if len(named) != sum(c.get("group") is True for c in listed):
             raise ReadFailed("two groups with one name")
         missing = [g for g in options["groups"] if g not in named]

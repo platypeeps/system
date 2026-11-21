@@ -1058,6 +1058,17 @@ class ServiceFilters(unittest.TestCase):
             ("svc", "statuspage", "https://status.example.test/api", [], options), NOW,
             fetch=answering(answer))
 
+    def test_a_group_with_a_malformed_name_is_unknown(self):
+        # Review: a group in major_outage named [] had no key, so it
+        # sat outside the chosen groups and its outage read ok.
+        for name in ([], None, "", "   ", 7):
+            with self.subTest(name=name):
+                bad = [dict(c, name=name, status="major_outage") if c["id"] == "eu" else c
+                       for c in REGIONS["components"]]
+                got = self.read({"groups": ["north-america"]},
+                                dict(REGIONS, components=bad, incidents=[]))
+                self.assertEqual(got["status"], "unknown", got)
+
     def test_a_filter_on_a_page_with_no_components_is_unknown(self):
         # Review: stale=3 on a major page with neither components nor
         # incidents recomputed ok, a false all-clear.
