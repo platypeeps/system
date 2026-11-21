@@ -60,6 +60,11 @@ REFUSAL_LIMIT=30
 # after it.
 RC_OWED="$ROOT/state/rc-owed"
 RC_PENDING="$ROOT/state/rc-pending"
+# One reconnect pass at a time on the machine, every herdr session's: a
+# cron sync and a manual one each rewrote RC_OWED, and the last writer
+# lost the other's rows (sd:9427 review). A kernel lock (flock) on fd 9,
+# so a killed sync leaves no stale lock.
+RC_LOCK="$ROOT/state/rc-lock"
 RC_OWED_FOR=1800
 # One reconnect pass may spend this many seconds: each herdr call is
 # bounded by what is left of it, and a pane not reached stays owed
@@ -172,7 +177,8 @@ rc_step() {
   shift
   ((left > 0)) || return 124
   ((left < bound)) && bound=$left
-  st_step "$bound" "$@"
+  # No herdr process may inherit the pass's lock.
+  st_step "$bound" "$@" 9>&-
 }
 
 # The herdr binary on stdout: PATH first, then HERDR_DIRS.
@@ -378,8 +384,12 @@ list_owed() {
   if { { other_rows 2>/dev/null
       awk -v hs="$HERDR_SESSION" -v since="$since" 'NF == 3 { print hs, $1, $2, since }' <<<"$PANES"
     } >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
-    echo "$HERDR_SESSION" >>"$RC_PENDING" 2>/dev/null ||
-      echo "reconnect: could not mark $HERDR_SESSION listed in $RC_PENDING"
+    # A switch outside the lock may have written a new mark meanwhile:
+    # this list was for the old one, so the new mark stays unmarked.
+    if [[ "$(head -n 1 "$RC_PENDING" 2>/dev/null)" == "$since" ]]; then
+      echo "$HERDR_SESSION" >>"$RC_PENDING" 2>/dev/null ||
+        echo "reconnect: could not mark $HERDR_SESSION listed in $RC_PENDING"
+    fi
     echo "reconnect: $(awk 'NF == 3' <<<"$PANES" | wc -l | tr -d ' ') claude pane(s) owe /rc"
   else
     echo "reconnect: could not write $RC_OWED; the next sync tries again"
@@ -420,8 +430,24 @@ recheck() {
   fi
 }
 
-# Send /rc to each owed pane that may have it; keep the rest owed.
+# One reconnect pass under RC_LOCK; a sync that finds it held skips,
+# and every owed row and pending mark stays for the next sync.
 reconnect() {
+  if ! { mkdir -p "${RC_LOCK%/*}" && exec 9>>"$RC_LOCK"; } 2>/dev/null; then
+    echo "reconnect: skipped: could not open $RC_LOCK; the next sync tries again"
+    return 0
+  fi
+  if ! python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null; then
+    exec 9>&-
+    echo "reconnect: skipped: another sync is reconnecting; the next sync tries again"
+    return 0
+  fi
+  reconnect_pass
+  exec 9>&-
+}
+
+# Send /rc to each owed pane that may have it; keep the rest owed.
+reconnect_pass() {
   local hs pane session since action screen verdict plan keep="" mine=0
   RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
   list_owed

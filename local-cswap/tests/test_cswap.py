@@ -667,6 +667,27 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere", HERDR_SESSION="work", FAKE_HERDR_SESSION="work")
         self.assertEqual(self.prompts(), [])
 
+    def test_a_sync_while_another_reconnects_leaves_the_state_alone(self):
+        # Review on sd:9427 (cswap.sh:467): a cron sync and a manual one
+        # each rewrote rc-owed through rc-owed.new; the last writer lost
+        # the other's rows. One reconnect pass runs at a time: the other
+        # sync skips, and its rows stay for the next.
+        import fcntl
+        owed = self.script.parent / "state/rc-owed"
+        owed.parent.mkdir(exist_ok=True)
+        rows = "sd w1:p1 s1 %d\n" % int(time.time())
+        owed.write_text(rows)
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        with open(self.script.parent / "state/rc-lock", "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(owed.read_text(), rows)
+        self.assertIn("reconnect: skipped: another sync is reconnecting", result.stdout)
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+
     def test_no_switch_sends_nothing(self):
         self.publish(ONE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
