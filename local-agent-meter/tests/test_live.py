@@ -589,11 +589,15 @@ class Readers(unittest.TestCase):
         entries, problems = usage_sources.parse_providers(
             "baseten cap=250\nopenai  cap=12.5 # month\nbaseten cap=9\ndeepinfra cap=0\n"
             "groq cap=-1\nmoonshot cap=1e3\nyoucom cap=\nheygen cap=5 cap=6\nrunway limit=5\n"
-            "firecrawl cap=inf\nlangsmith cap=1" + "0" * 20 + "\n")
-        self.assertEqual(entries, [("baseten", 250.0), ("openai", 12.5)])
+            "firecrawl cap=inf\nlangsmith cap=1" + "0" * 20 + "\nhf cap 5\n")
+        # sd:9749: a malformed cap keeps the row, with no cap; another
+        # trailer is still no provider line.
+        self.assertEqual(entries, [("baseten", 250.0), ("openai", 12.5), *[
+            (name, None) for name in ("deepinfra", "groq", "moonshot", "youcom", "heygen",
+                                      "firecrawl", "langsmith", "hf")]])
         self.assertEqual(problems, ["line %d: %s" % (n, "not a provider name" if n == 9 else
                                                      "cap=N wants N a positive decimal")
-                                    for n in range(4, 12)])
+                                    for n in range(4, 13)])
 
     def test_a_month_spend_resets_at_the_next_utc_month(self):
         # sd:9701: the cycle end, also from a late local day of the month.
@@ -610,6 +614,49 @@ class Readers(unittest.TestCase):
                 bent = put(answer, ("data", "current_period_end"), end)
                 got = usage_sources.read_provider("openwhispr", {var: SECRET}, answering(bent), NOW)
                 self.assertEqual(got["spend"].get("resets_at"), expected, got)
+
+    def test_an_ended_openwhispr_period_is_no_reading(self):
+        # sd:9749: the limit and resets_at of an ended period read ok; on
+        # an unlimited plan the list's cap set a current-looking budget.
+        var, answer, _ = ANSWERS["openwhispr"]
+        for limit in (10000, -1):
+            for end in ("2026-11-17T20:00:00Z", "2026-11-01T00:00:00Z"):
+                with self.subTest(limit=limit, end=end):
+                    ended = put(put(answer, ("data", "current_period_end"), end),
+                                ("data", "limit"), limit)
+                    got = usage_sources.read_provider("openwhispr", {var: SECRET},
+                                                      answering(ended), NOW, cap=5000.0)
+                    self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
+
+    def test_an_unlimited_openwhispr_plan_reads_past_a_bad_period_end(self):
+        # sd:9749: a bad end fails only a capped plan's reading.
+        var, answer, _ = ANSWERS["openwhispr"]
+        unlimited = put(answer, ("data", "limit"), -1)
+        for end in ("not a time", 5):
+            with self.subTest(end=end):
+                bent = put(unlimited, ("data", "current_period_end"), end)
+                got = usage_sources.read_provider("openwhispr", {var: SECRET},
+                                                  answering(bent), NOW)
+                self.assertEqual(got["status"], "ok", got)
+                self.assertEqual(got["spend"], {"amount": 2500.0, "unit": "words",
+                                                "period": "billing period"})
+        capped = put(answer, ("data", "current_period_end"), "not a time")
+        got = usage_sources.read_provider("openwhispr", {var: SECRET}, answering(capped), NOW)
+        self.assertEqual(got["status"], "unknown", got)
+
+    def test_openrouters_monthly_limit_counts_byok_when_the_key_says_so(self):
+        # sd:9749: BYOK use counts toward the cap with include_byok_in_limit.
+        var, answer, _ = ANSWERS["openrouter"]
+        byok = {"data": {**answer["data"], "byok_usage_monthly": 7.5,
+                         "include_byok_in_limit": True}}
+        got = usage_sources.read_provider("openrouter", {var: SECRET}, answering(byok), NOW)
+        self.assertEqual((got["spend"]["amount"], got["spend"]["limit"]), (20.0, 50.0), got)
+        apart = put(byok, ("data", "include_byok_in_limit"), False)
+        got = usage_sources.read_provider("openrouter", {var: SECRET}, answering(apart), NOW)
+        self.assertEqual(got["spend"]["amount"], 12.5, got)
+        unknown = put(byok, ("data", "byok_usage_monthly"), None)
+        got = usage_sources.read_provider("openrouter", {var: SECRET}, answering(unknown), NOW)
+        self.assertEqual(got["status"], "unknown", got)
 
     def test_openwhisprs_own_word_limit_wins_over_the_lists_cap(self):
         # Review on sd:9701: cap=5000 overrode a 10,000-word plan.
