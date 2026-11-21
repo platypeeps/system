@@ -1365,6 +1365,23 @@ class ServiceFilters(unittest.TestCase):
                 self.assertEqual(got["status"], "unknown", got)
                 self.assertNotIn("another shape: ", got["error"])
 
+    def test_a_nested_group_is_unknown(self):
+        # Lane review: in A -> B -> component, selecting A dropped the
+        # component, so its major outage read ok. Statuspage groups are
+        # one level deep; a group with a parent is a tree the filter
+        # cannot place.
+        components = [dict(c, status="operational") for c in REGIONS["components"]]
+        components[2]["group_id"] = "na"       # Europe nested in North America
+        components[3]["status"] = "major_outage"
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=components, incidents=[]))
+        self.assertEqual(got["status"], "unknown", got)
+        # A group that names itself as parent is nested too.
+        components[2]["group_id"] = "eu"
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=components, incidents=[]))
+        self.assertEqual(got["status"], "unknown", got)
+
     def test_a_major_cause_never_explains_a_critical_page(self):
         # Lane review: major and critical both became `outage` before
         # the comparison, so a critical page whose only listed cause

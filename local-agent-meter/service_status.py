@@ -7,7 +7,8 @@ The 'status services' list holds one service per line:
 A `statuspage` line takes two options (sd:9722). `groups=<g>[,<g>]` keeps
 each group's own row and its components (the name lower-cased, spaces as
 `-`) and the ungrouped ones, and drops an incident whose components all
-sit outside them; a group the page lacks reads unknown. `stale=<days>`
+sit outside them; a group the page lacks, or a nested one, reads
+unknown. `stale=<days>`
 drops an open incident of impact none, minor or maintenance with no
 update for more than that many days (1 to 365); a major or critical
 one, or one with no updated_at, stays.
@@ -258,8 +259,8 @@ def group_key(name):
 
 def tree_checked(listed):
     """ReadFailed unless the component tree is one the group filter can
-    trust: unique nonempty string ids, a bool or absent group flag, and every
-    parent link naming a group. A broken link hid an outage (review)."""
+    trust: unique nonempty string ids, a bool or absent group flag, every
+    parent link naming a group, and no group inside a group. A broken link hid an outage (review)."""
     ids = [c.get("id") for c in listed]
     # An empty or blank id names nothing: it is no proof (review).
     if not all(isinstance(i, str) and i.strip() for i in ids) or len(set(ids)) != len(ids):
@@ -276,6 +277,10 @@ def tree_checked(listed):
                or (isinstance(c.get("group_id"), str) and c["group_id"] in groups)
                for c in listed):
         raise ReadFailed("a component names no group on the page")
+    # Statuspage groups are one level deep; the filter follows one
+    # parent link, so a nested group hid its children (lane review).
+    if any(c.get("group") is True and c.get("group_id") is not None for c in listed):
+        raise ReadFailed("a group nested in a group")
 
 
 #: The longest stale= a line may set, in days.
