@@ -1382,12 +1382,15 @@ class Services(unittest.TestCase):
         # Present but not a list is still another shape.
         self.assertEqual(self.read("statuspage", dict(SUMMARY, incidents=None))["status"], "unknown")
 
-    def test_a_summary_with_no_components_key_reads_its_indicator(self):
-        # The same class as a missing `incidents` key: an unfiltered line
-        # never needed components, so their absence is no fault there.
-        answer = {k: v for k, v in SUMMARY.items() if k not in ("incidents", "components")}
-        got = self.read("statuspage", dict(answer, status={"indicator": "minor"}))
-        self.assertEqual((got["status"], got["incidents"]), ("degraded", []), got)
+    def test_a_summary_with_no_components_key_is_unknown(self):
+        # Review: unlike `incidents`, every statuspage summary lists its
+        # components; a body without the key is truncated, not healthy.
+        answer = {k: v for k, v in SUMMARY.items() if k != "components"}
+        for indicator in ("none", "minor"):
+            got = self.read("statuspage", dict(answer, status={"indicator": indicator}))
+            self.assertEqual(got["status"], "unknown", got)
+        self.assertEqual(self.read("statuspage", {"status": {"indicator": "none"}})["status"],
+                         "unknown")
         # Present but not a list is still another shape.
         self.assertEqual(self.read("statuspage", dict(SUMMARY, components=None))["status"], "unknown")
 
