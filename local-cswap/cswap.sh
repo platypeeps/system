@@ -297,11 +297,16 @@ else:
              if banner(line) == "active" or (banner(line) == "drop" and coloured(i))]
     # Hold on doubt (sd:9282 bundle review): below the last banner, the
     # screen must show one empty input box and nothing like a second one:
-    # exactly two rules and one ❯ line, adjacent, rule ❯ rule. A draft
-    # can hold rule or ❯ lines of its own, so any other shape waits.
+    # exactly two rules and, from the top rule down, one ❯ line, adjacent,
+    # rule ❯ rule. A draft can hold rule or ❯ lines of its own, so any
+    # other shape waits.
     below = range(marks[-1][0] + 1 if marks else 0, len(lines))
     rules = [i for i in below if rule(lines[i]) and coloured(i)]
-    prompts = [i for i in below if lines[i].strip().startswith("❯")]
+    # A ❯ line above the top rule is history, the prompt of a finished
+    # turn, not input (sd:9427 lane review); from the top rule down is
+    # the live box and what is drawn below it.
+    prompts = [i for i in below if (not rules or i > rules[0])
+               and lines[i].strip().startswith("❯")]
     one_box = len(rules) == 2 and len(prompts) == 1 and rules[0] + 1 == prompts[0] == rules[1] - 1
     # The box is the last thing on screen (sd:9427 review round 5): an
     # old empty box with a permission dialog drawn below it waits. Below

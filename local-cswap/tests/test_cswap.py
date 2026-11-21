@@ -869,6 +869,10 @@ class RemoteControlReconnects(Machine):
             "bare-reset": (f"{DROP_LINE}\n" + box(empty + "\x1b[2mhint\x1b[mtyped"), False),
             # The box: a past prompt above it, or no rule below the ❯ line.
             "past-prompt": (f"\u276f an old prompt\n{DROP_LINE}\n" + box(empty), True),
+            # Lane review (sd:9427): a turn finished after the drop; its
+            # old prompt is history above the live box, not input.
+            "finished-turn": (f"{DROP_LINE}\n\u276f\u00a0fix the tests\n"
+                              "\u23fa Done.\n" + box(empty), True),
             "no-bottom-rule": (f"{DROP_LINE}\n{RULE}\n{empty}", False),
             "labelled-rule": (f"{DROP_LINE}\n" + box(empty).replace(RULE, RULE + " control \u2500", 1), True),
             # Bundle review: a draft that holds a rule line and a bare ❯
