@@ -102,6 +102,9 @@ st_shell_env() {
         _st_ok=$(
             set -a
             . "$_st_env" >/dev/null 2>&1 </dev/null
+            # set +a first: under set -a, bash's `set -o posix` exports
+            # the POSIXLY_CORRECT it binds, and the caller would eval it.
+            set +a
             # shellcheck disable=SC3040 # bash only, behind the guard
             [ -z "${BASH_VERSION:-}" ] || set -o posix
             export -p

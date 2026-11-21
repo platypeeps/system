@@ -422,6 +422,20 @@ class ShellEnv(unittest.TestCase):
                 self.assertEqual(result.stdout, "x 15 15\n", result.stderr)
                 self.assertNotIn("synthetic-value", result.stderr)
 
+    def test_posix_mode_of_the_probe_never_reaches_the_caller(self):
+        """Review of c401e687: `set -o posix` under set -a binds and
+        exports POSIXLY_CORRECT, and the caller evals it. macOS /bin/sh
+        binds it unexported itself, so only what a child sees counts."""
+        self.env_sh("OTHER=1\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        for sh in sorted({"/bin/sh", "/bin/bash"} | {p for p in map(shutil.which, ("bash", "dash")) if p}):
+            with self.subTest(sh=sh):
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; '
+                     'echo "$OTHER"; env | grep -c POSIXLY_CORRECT'],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "1\n0\n", result.stderr)
+
     def test_a_chain_edited_after_the_probe_never_reaches_the_caller(self):
         """Review of 918d7467: the runner dotted env.sh again after the
         probes, so a file of the chain edited in between, here to an
