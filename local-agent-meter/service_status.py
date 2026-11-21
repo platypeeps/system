@@ -353,7 +353,8 @@ def read_statuspage(url, fetch, options=None, now=None):
         # elsewhere. Built only here, where tree_checked typed every id:
         # a line without groups= reads no id (lane review).
         outside = {c["id"] for c in listed} - {c["id"] for c in kept}
-    incidents, worst, whole = [], "ok", 0
+    # kept: the worst kept cause on the indicator's scale (lane review).
+    incidents, worst, whole, kept_rank = [], "ok", 0, 0
     # Some pages (OpenAI, Tailscale, ...) leave `incidents` out when none is
     # open; a key that is there must still be a list of objects.
     for incident in entries(data["incidents"] if "incidents" in data else [], "incidents"):
@@ -381,8 +382,11 @@ def read_statuspage(url, fetch, options=None, now=None):
         if "stale" in options and stale(incident, options["stale"], now):
             continue
         worst = max(worst, impact, key=WORST.index)
-        # A kept incident shows at least degraded, so it explains minor.
-        whole = max(whole, 1)
+        # A kept incident shows at least degraded, so it explains minor;
+        # kept maintenance explains only maintenance (lane review).
+        raw = incident.get("impact")
+        kept_rank = max(kept_rank, RANK["maintenance"] if raw == "maintenance"
+                        else max(RANK.get(raw, 0) if isinstance(raw, str) else 0, 1))
         url = incident.get("shortlink")
         if not isinstance(url, str) and base and isinstance(incident.get("id"), str):
             url = base.rstrip("/") + "/incidents/" + incident["id"]
@@ -394,6 +398,7 @@ def read_statuspage(url, fetch, options=None, now=None):
     if scoped:
         for c in components:
             worst = max(worst, COMPONENT_STATUS[c["status"]], key=WORST.index)
+            kept_rank = max(kept_rank, COMPONENT_RANK[c["status"]])
         # The filter may hide only a cause the page lists: an indicator
         # worse than every listed component and open incident has no
         # proof it sits outside the groups or is stale (review).
@@ -401,7 +406,8 @@ def read_statuspage(url, fetch, options=None, now=None):
             whole = max(whole, COMPONENT_RANK[c["status"]])
         # A kept cause as bad as the page's status hides nothing: an
         # outage stands on a critical page (lane review).
-        if RANK[indicator] > whole and worst != INDICATOR[indicator]:
+        # Ranks, not statuses: maintenance and minor both read degraded.
+        if RANK[indicator] > whole and kept_rank < min(RANK[indicator], 2):
             raise ReadFailed("the page's status has no listed cause to filter")
     return {"status": worst if scoped else INDICATOR[indicator], "indicator": indicator,
             "incidents": incidents, "components": components}

@@ -1469,6 +1469,27 @@ class ServiceFilters(unittest.TestCase):
                                  ("outage", [{"name": "Ashburn, VA (IAD)",
                                               "status": "major_outage"}], ["FRA down"]))
 
+    def test_kept_maintenance_explains_no_minor_page(self):
+        # Lane review: a minor page whose only cause was maintenance the
+        # filter kept read degraded: the incident path raised it to
+        # minor, the component path matched on degraded alone.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        held = [dict(c, status="under_maintenance") if c["id"] == "iad" else c
+                for c in calm]
+        work = {"id": "m", "name": "IAD work", "status": "identified",
+                "impact": "maintenance", "created_at": "2026-11-17T10:00:00Z",
+                "components": [{"id": "iad"}]}
+        for label, components, incidents in (("component", held, []),
+                                             ("incident", calm, [work])):
+            with self.subTest(label):
+                page = dict(REGIONS, status={"indicator": "minor"},
+                            components=components, incidents=incidents)
+                got = self.read({"groups": ["north-america"]}, page)
+                self.assertEqual(got["status"], "unknown", got)
+                got = self.read({"groups": ["north-america"]},
+                                dict(page, status={"indicator": "maintenance"}))
+                self.assertEqual(got["status"], "degraded", got)
+
     def test_maintenance_explains_no_minor_page(self):
         # Lane review: maintenance ranked with minor, so an excluded
         # under_maintenance component or maintenance incident explained
