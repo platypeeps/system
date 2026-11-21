@@ -461,6 +461,24 @@ class ShellEnv(unittest.TestCase):
                     self.assertEqual(result.stdout, "unset unset\n", result.stderr)
                     self.assertIn(".config/shell/env.sh", result.stderr)
 
+    def test_a_relative_broken_file_after_a_cd_imports_nothing(self):
+        """Review of c2812c42: the caller resolved the file a syntax
+        error names from its own directory, so after a `cd` in env.sh
+        it found no file and imported the partial settings."""
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        sub = self.home / ".config/shell/sub"
+        sub.mkdir(parents=True)
+        (sub / "bad.sh").write_text("PARTIAL=1\nif true; then\n")
+        self.env_sh(f'cd "{sub}"\n. ./bad.sh\ncd /\nexport OTHER=1\n')
+        for sh in SHELLS:
+            with self.subTest(sh=sh):
+                result = subprocess.run(
+                    [sh, "-c", f'. "{LIB}/config.sh"; st_shell_env; '
+                     'echo "${PARTIAL-unset} ${OTHER-unset}"'],
+                    env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.stdout, "unset unset\n", result.stderr)
+                self.assertIn(".config/shell/env.sh", result.stderr)
+
     def test_a_readonly_export_of_the_caller_survives_the_import(self):
         """Review of b7aef30d: the caller replayed the whole export dump,
         so an exported readonly name, bash's SHELLOPTS too, failed the

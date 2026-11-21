@@ -107,8 +107,10 @@ st_shell_env() {
         # that fails `sh -n`: a tool that printed the phrase dropped every
         # export of a chain that ran to its end.
         # ponytail: matches bash's English message; a translated one would
-        # pass, set LC_MESSAGES for the probe if that ever bites. A relative
-        # name after a `cd` in the chain is not found and passes too.
+        # pass, set LC_MESSAGES for the probe if that ever bites.
+        # A relative name is tried from this directory and from each one
+        # the ERR trap logged: after a `cd` in the chain, this directory
+        # alone found no file and imported the partial settings.
         _st_ok=$(
             # Only what the chain adds, changes or unsets goes back, in
             # this shell's own quoting, and never a readonly name:
@@ -144,9 +146,11 @@ st_shell_env() {
             # less is the chain's own count: a false `[ ] && x` last
             # line fails no command. errtrace carries the trap into a
             # function: without it a failed read inside one went unseen.
+            # The trap logs its directory ahead of the marker, where a
+            # relative name in a syntax error resolves.
             _st_fail=0
             # shellcheck disable=SC3047,SC3041 # bash only, behind the guard
-            ! (trap : ERR) 2>/dev/null || { set -E; trap '_st_fail=$((_st_fail + 1))' ERR; }
+            ! (trap : ERR) 2>/dev/null || { set -E; trap '_st_fail=$((_st_fail + 1)); printf "#st_shell_env dir %s\\n" "$PWD" >&2' ERR; }
             set -a
             . "$_st_env" 2>&1 >/dev/null </dev/null
             _st_rc=$?
@@ -178,14 +182,31 @@ st_shell_env() {
         )
         case $_st_ok in
             (*': line '[0-9]*': syntax error'*'#st_shell_env exports'*)
+                _st_pre=${_st_ok%%'#st_shell_env exports'*}
+                _st_dirs=$(printf '%s\n' "$_st_pre" | while IFS= read -r _st_l; do
+                    case $_st_l in
+                        ('#st_shell_env dir '*) printf '%s\n' "${_st_l#'#st_shell_env dir '}" ;;
+                    esac
+                done)
                 while IFS= read -r _st_l; do
                     case $_st_l in
                         (*': line '[0-9]*': syntax error'*)
                             _st_f=${_st_l%%': line '[0-9]*}
-                            [ ! -f "$_st_f" ] || "${BASH:-sh}" -n "$_st_f" 2>/dev/null || _st_ok= ;;
+                            # The first, empty line is this directory.
+                            while IFS= read -r _st_d; do
+                                case $_st_f in
+                                    (/*) _st_p=$_st_f ;;
+                                    (*) _st_p=${_st_d:+$_st_d/}$_st_f ;;
+                                esac
+                                [ ! -f "$_st_p" ] || "${BASH:-sh}" -n "$_st_p" 2>/dev/null || _st_ok=
+                            done <<EOD
+
+$_st_dirs
+EOD
+                            ;;
                     esac
                 done <<EOF
-${_st_ok%%'#st_shell_env exports'*}
+$_st_pre
 EOF
                 ;;
         esac
@@ -200,7 +221,7 @@ EOF
         esac
         [ -z "$_st_e" ] || set -e
     fi
-    unset _st_env _st_e _st_ok _st_rc _st_l _st_f
+    unset _st_env _st_e _st_ok _st_rc _st_l _st_f _st_d _st_p _st_pre _st_dirs
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
     [ -z "$_st_x" ] || set -x
