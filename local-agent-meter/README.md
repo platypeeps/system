@@ -104,10 +104,10 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
 
 - `usage` (sd:9256): setting `dashboard.usage_providers`, one provider per line, `#`
   comments; a line may add `cap=N`, N a positive decimal in the spend's unit: the
-  spend's limit when the provider's answer has none (Baseten's budget has no read API). Or `fixed=N`, a flat monthly fee in usd (Nabu Casa, VoiceDub, cmem.ai): the row is that `spend` (`source` `fixed`, `fixed` true) and no API call (sd:9719). Row `usage:<provider>`: `status` (`ok`, `unknown`, `no-source`, `removed`), `source`,
+  spend's limit when the provider's answer has none (Baseten's budget has no read API). Or `fixed=N`, a flat monthly fee in usd (Nabu Casa, VoiceDub, cmem.ai): the row is that `spend` (`source` `fixed`, `fixed` true) and no API call (sd:9719). A malformed cap or fee is refused and the row reads without it. Row `usage:<provider>`: `status` (`ok`, `unknown`, `no-source`, `removed`), `source`,
   `read_at`, `windows` (name, used percent, minutes, reset), `balance` and `spend`
   (amount and unit; `resets_at`, the cycle end: the next UTC month start for a
-  month, OpenWhispr's period end; `limit`, OpenRouter's key limit when it resets monthly, else the cap), `accounts` for claude, `error` when unknown. Keys come from the
+  month, OpenWhispr's period end; `limit`, OpenRouter's key limit when it resets monthly, its BYOK use then in the amount when the key counts it, else the cap; an OpenWhispr period that ended is `unknown`), `accounts` for claude, `error` when unknown. Keys come from the
   environment by name (`usage_sources.py` names each); no key, answer body or
   account field reaches a row. A failed read is `unknown`, never 0; a provider with
   no usage API is `no-source`.

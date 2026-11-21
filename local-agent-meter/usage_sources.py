@@ -256,6 +256,10 @@ def read_openrouter(env, fetch, now):
     # a daily, weekly or lifetime limit is another counter (sd:9701 review).
     if data.get("limit") is not None and data.get("limit_reset") == "monthly":
         out["spend"]["limit"] = number(data["limit"], "limit")
+        # BYOK use counts toward the cap when the key says so (sd:9749).
+        if data.get("include_byok_in_limit") is True:
+            out["spend"]["amount"] += number(data.get("byok_usage_monthly"),
+                                             "byok_usage_monthly")
     if data.get("limit_remaining") is not None:
         out["balance"] = {"amount": number(data["limit_remaining"], "limit_remaining"),
                           "unit": "usd"}
@@ -466,8 +470,17 @@ def read_openwhispr(env, fetch, now):
     limit = number(data.get("limit"), "limit")
     if used < 0 or (limit < 0 and limit != -1):
         raise ReadFailed("words_used or limit is not a count")
-    end = when(data.get("current_period_end"), "current_period_end")
     out = {"spend": {"amount": used, "unit": "words", "period": "billing period"}}
+    end = data.get("current_period_end")
+    # An ended period's words are no reading on any plan: the list's cap
+    # would set a current budget on them. A bad end fails only a capped
+    # plan, whose share needs it (sd:9749).
+    if limit > 0:
+        end = when(end, "current_period_end")
+    elif not isinstance(end, str) or event_time(end) is None:
+        end = None
+    if end is not None and event_time(end) <= now:
+        raise ReadFailed("the billing period ended before the reading")
     if end is not None:
         out["spend"]["resets_at"] = end
     if limit > 0:
@@ -1004,14 +1017,17 @@ def parse_providers(text):
         if not words:
             continue
         name, rest = words[0], words[1].strip() if len(words) > 1 else ""
-        option = rest.split("=", 1)[0]
+        option = "cap" if rest.startswith("cap") else "fixed"
         found = (CAP if option == "cap" else FIXED).fullmatch(rest)
-        if not NAME.fullmatch(name) or rest and option not in ("cap", "fixed"):
+        if not NAME.fullmatch(name) or rest and not rest.startswith(("cap", "fixed")):
             problems.append("line %d: not a provider name" % number_)
-        elif rest and not (found and float(found.group(1)) > 0):
+            continue
+        # A malformed cap or fee drops it, not the row (sd:9749).
+        if rest and not (found and float(found.group(1)) > 0):
             problems.append("line %d: %s=N wants N a positive decimal" % (number_, option))
-        elif name not in [entry[0] for entry in entries]:
-            value = float(found.group(1)) if rest else None
+            found = None
+        if name not in [entry[0] for entry in entries]:
+            value = float(found.group(1)) if found else None
             entries.append((name, value if option == "cap" else None,
                             value if option == "fixed" else None))
     return entries, problems
