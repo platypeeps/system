@@ -1045,8 +1045,9 @@ REGIONS = {
          "created_at": "2026-11-17T10:00:00Z", "components": [{"id": "iad"}]},
         {"id": "i2", "name": "FRA down", "status": "identified", "impact": "major",
          "created_at": "2026-11-17T10:00:00Z", "components": [{"id": "fra"}]},
-        {"id": "i3", "name": "Workers errors", "status": "monitoring", "impact": "major",
-         "created_at": "2026-11-10T10:00:00Z", "components": []}]}
+        {"id": "i3", "name": "Workers errors", "status": "monitoring", "impact": "minor",
+         "created_at": "2026-11-10T10:00:00Z", "updated_at": "2026-11-12T10:00:00Z",
+         "components": []}]}
 
 
 class ServiceFilters(unittest.TestCase):
@@ -1105,6 +1106,39 @@ class ServiceFilters(unittest.TestCase):
     def test_a_stale_filter_drops_an_old_open_incident(self):
         got = self.read({"stale": 3})
         self.assertEqual([i["title"] for i in got["incidents"]], ["IAD slow", "FRA down"])
+
+    def stale_page(self, **incident):
+        base = {"id": "s", "name": "Old", "status": "monitoring", "impact": "minor",
+                "created_at": "2026-11-13T10:00:00Z", "components": []}
+        return dict(REGIONS, incidents=[dict(base, **incident)])
+
+    def test_a_stale_filter_never_hides_a_major_or_critical_incident(self):
+        # Lane review: a four-day-old critical incident updated today
+        # disappeared, because stale= aged it by creation alone.
+        for impact in ("major", "critical"):
+            for updated in ("2026-11-17T09:00:00Z", "2026-11-13T10:00:00Z"):
+                with self.subTest(impact=impact, updated=updated):
+                    got = self.read({"stale": 3}, self.stale_page(
+                        impact=impact, updated_at=updated))
+                    self.assertEqual(([i["title"] for i in got["incidents"]],
+                                      got["status"]), (["Old"], "outage"))
+
+    def test_a_stale_filter_ages_an_incident_by_its_last_update(self):
+        hidden = self.read({"stale": 3}, self.stale_page(
+            updated_at="2026-11-14T10:00:00Z"))
+        self.assertEqual(hidden["incidents"], [])
+        fresh = self.read({"stale": 3}, self.stale_page(
+            updated_at="2026-11-17T09:00:00Z"))
+        self.assertEqual([i["title"] for i in fresh["incidents"]], ["Old"])
+
+    def test_a_stale_filter_keeps_an_incident_it_cannot_place(self):
+        # Class pass: an impact or a time of another shape keeps it.
+        for change in ({"impact": None}, {"impact": "severe"}, {"impact": 3},
+                       {"created_at": None}, {"created_at": "soon"},
+                       {"updated_at": "soon"}, {"updated_at": 5}):
+            with self.subTest(change=change):
+                got = self.read({"stale": 3}, self.stale_page(**change))
+                self.assertEqual(len(got["incidents"]), 1)
 
     def test_the_status_is_recomputed_from_what_is_kept(self):
         self.assertEqual(self.read({"groups": ["north-america"], "stale": 3})["status"],

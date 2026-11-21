@@ -8,10 +8,11 @@ A `statuspage` line takes two options (sd:9722). `groups=<g>[,<g>]` keeps
 each group's own row and its components (the name lower-cased, spaces as
 `-`) and the ungrouped ones, and drops an incident whose components all
 sit outside them; a group the page lacks reads unknown. `stale=<days>`
-drops an open incident created more than that many days ago. A page may
-group its core products (Cloudflare's `cloudflare-sites-and-services`), so
-name that group too. With either,
-the status is the worst kept component or incident, never the page's.
+drops an open incident of impact none, minor or maintenance with no
+update for more than that many days; a major or critical one stays.
+A page may group its core products (Cloudflare's
+`cloudflare-sites-and-services`), so name that group too. With either, the
+status is the worst kept component or incident, never the page's.
 
 `kind` is one of KINDS. Each read becomes one reading:
 
@@ -229,6 +230,23 @@ def tree_checked(listed):
         raise ReadFailed("a component names no group on the page")
 
 
+#: The impacts stale= may hide: never a major or critical one (review).
+STALE_IMPACT = ("none", "minor", "maintenance")
+
+
+def stale(incident, days, now):
+    """True when a quiet incident had no update for more than `days`.
+    It ages by its last update, not its creation; an impact or a time of
+    another shape keeps it (lane review)."""
+    if incident.get("impact") not in STALE_IMPACT:
+        return False
+    times = [incident.get(k) for k in ("created_at", "updated_at") if k in incident]
+    moments = [event_time(t) for t in times]
+    if not moments or None in moments:
+        return False
+    return now - max(moments) > datetime.timedelta(days=days)
+
+
 def read_statuspage(url, fetch, options=None, now=None):
     options = options or {}
     data = fetch(url)
@@ -270,9 +288,7 @@ def read_statuspage(url, fetch, options=None, now=None):
                                                 "incident components")]
             if hit and all(isinstance(i, str) and i in outside for i in hit):
                 continue
-        created = event_time(incident.get("created_at"))
-        if ("stale" in options and created is not None
-                and now - created > datetime.timedelta(days=options["stale"])):
+        if "stale" in options and stale(incident, options["stale"], now):
             continue
         # An open incident is at least degraded, whatever its impact says.
         impact = incident.get("impact")
