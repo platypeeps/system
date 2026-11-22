@@ -80,6 +80,31 @@ class GateVenv(unittest.TestCase):
         self.assertTrue((self.venv / "theirs").exists())
         self.assertEqual(["venv-abc"], [p.name for p in self.venv.parent.iterdir()])
 
+    def test_the_venv_is_built_by_the_real_python_not_a_link_to_it(self):
+        # sd:9926 review: check.sh puts python3 on PATH as a link in the
+        # gate's own worktree, and venv points bin/python at the path it
+        # ran as: once that worktree went, the cached venv's python
+        # dangled. The venv is built by the link's real target.
+        real = self.base / "real"
+        real.mkdir()
+        (self.base / "bin/python3").rename(real / "python3")
+        (self.base / "bin/python3").symlink_to(real / "python3")
+        (real / "python3").write_text(FAKE_PYTHON3.replace('echo "venv $3"', 'echo "venv $3 by $0"'))
+        self.run_it()
+        self.assertEqual([f"venv {self.venv}.build.", f"by {os.path.realpath(real / 'python3')}"],
+                         [self.builds()[0][:len(f"venv {self.venv}.build.")], self.builds()[0].split(" ", 2)[2]])
+
+    def test_a_venv_whose_python_dangles_is_built_again(self):
+        # sd:9926 review: a venv whose python link dangled read as a
+        # miss, the new one could not be renamed onto the old directory,
+        # and every gate with that key failed until a hand cleanup.
+        (self.venv / "bin").mkdir(parents=True)
+        (self.venv / "bin/python").symlink_to(self.base / "gone/python3")
+        done = self.run_it()
+        self.assertIn(f"gate venv: built {self.venv}, in place of a broken one", done.stdout)
+        self.assertTrue(os.access(self.venv / "bin/python", os.X_OK))
+        self.assertEqual(["venv-abc"], [p.name for p in self.venv.parent.iterdir()])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
