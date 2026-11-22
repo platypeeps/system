@@ -1860,12 +1860,13 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
         self.assertEqual(self.bootouts(), [])
 
-    def test_a_failed_promote_keeps_the_last_rollback_plist(self):
-        """Lane review: a failed copy after bootstrap removed the accepted
-        plist, the last usable rollback point. It is kept, the failure is
-        reported, and verify reads STALE so the next update retries."""
-        self.plist().write_text("the plist launchd holds\n")
-        self.accepted().write_text("the plist launchd holds\n")
+    def test_a_failed_promote_fails_the_install_and_drops_the_old_copy(self):
+        """Lane review: after B loaded, a failed copy kept A as the rollback
+        plist and reported `installed:`, so a later refused C restored A,
+        an obsolete schedule. The install now fails, the stale copy goes,
+        and the next install saves the plist launchd holds, B, first."""
+        self.plist().write_text("plist A\n")
+        self.accepted().write_text("plist A\n")
         stubs = self.fx.tmp / "failing-cp-bin"
         stubs.mkdir()
         cp = stubs / "cp"
@@ -1873,9 +1874,18 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
                       'case "$last" in *.accepted.tmp) exit 1 ;; esac\nexec /bin/cp "$@"\n')
         cp.chmod(0o755)
         result = self.run_script("install", "demo", path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
-        self.assertIn("could not record the loaded plist", result.stderr, result.stdout + result.stderr)
-        self.assertEqual(self.accepted().read_text(), "the plist launchd holds\n")
-        self.assertNotEqual(self.run_script("verify", "demo").returncode, 0)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn("failed: demo (could not record the loaded plist", result.stderr)
+        self.assertNotIn("installed:", out)
+        from_b = self.plist().read_text()
+        other = self.second_checkout()
+        path = self.fx.path(self.launchd_with("refuse-c-bin",
+            f'  bootstrap) ! grep -q "{other.parent}" "$3" || {{ echo refused >&2; exit 5; }} ;;\n'))
+        result = self.run_from(other, "install", "demo", path=path)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr,
+                      result.stdout + result.stderr)
+        self.assertEqual(self.plist().read_text(), from_b)
 
     def test_a_successful_install_promotes_its_plist(self):
         result = self.run_script("install", "demo")

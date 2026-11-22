@@ -1896,7 +1896,7 @@ cmd_reinstall_after_run() { # job
 }
 
 cmd_install() {
-  local job="$1" err plist new accepted
+  local job="$1" err plist new accepted unrecorded
   load_job "$job"
   ensure_job_launch || return 1
   if [ "${CRON_JOBS_RUN:-}" = "$job" ]; then
@@ -1961,10 +1961,17 @@ cmd_install() {
       return 1
     fi
   fi
-  # A failed promote keeps the older accepted plist, still a plist launchd
-  # loaded; verify reads STALE until an install records the new one.
-  copy_whole "$plist" "$accepted" ||
-    echo "cron-jobs.sh: $job: could not record the loaded plist in $accepted; verify reads STALE until the next install" >&2
+  # A failed promote drops the older copy: kept, a later refused install
+  # would restore that obsolete plist. The next install saves the plist
+  # launchd now holds before it replaces anything, or refuses.
+  unrecorded=""
+  if ! copy_whole "$plist" "$accepted"; then
+    if rm -f "$accepted"; then
+      unrecorded="could not record the loaded plist in $accepted; the next install saves it first"
+    else
+      unrecorded="could not record the loaded plist in $accepted, nor remove the older copy; remove it, then run cron-jobs.sh install $job"
+    fi
+  fi
   # Checked: a refused enable is a failed install, never `installed:`.
   if ! err=$(launchctl enable "$DOMAIN/$(label_for "$job")" 2>&1); then
     echo "failed: $job (launchctl enable $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
@@ -1975,6 +1982,10 @@ cmd_install() {
   # recorded: the helper's, by hand, or a hand-run update (sd:9826).
   rm -f "$LOG_DIR/.$job.reinstall.failed"
   exec 8>&-
+  if [ -n "$unrecorded" ]; then
+    echo "failed: $job ($unrecorded)" >&2
+    return 1
+  fi
   # No record is written here, and that is the ninth round of the #486 review.
   # `install` bootstraps the label, so launchd is at `runs = 0` and
   # `last exit code = (never exited)`: it holds no verdict, the stale record
