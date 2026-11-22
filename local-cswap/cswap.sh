@@ -554,7 +554,17 @@ send_rc() {
   bound=$((RC_GAP_MS - took))
   ((left * 1000 < bound)) && bound=$((left * 1000))
   bound=$(printf '%d.%03d' $((bound / 1000)) $((bound % 1000)))
-  if ! st_step "$bound" "$HERDR" agent prompt "$1" /rc 9>&- >/dev/null; then
+  # Exit 125 with the bound's refusal line means herdr never ran: a
+  # denied process group (lib/bounded.sh), so nothing went out and the
+  # pane stays owed (sd:9427 review). herdr's own 125 has no such line.
+  local rc=0 err
+  err=$(st_step "$bound" "$HERDR" agent prompt "$1" /rc 9>&- 2>&1 >/dev/null) || rc=$?
+  [[ -z "$err" ]] || printf '%s\n' "$err" >&2
+  if ((rc == 125)) && [[ "$err" == *"st_bounded: process group denied"* ]]; then
+    echo "reconnect: /rc to $1 never started (exit 125); still owed"
+    return 1
+  fi
+  if ((rc != 0)); then
     echo "reconnect: /rc to $1 failed or ran over $RC_GAP_MS ms; not sent again"
     return 2
   fi

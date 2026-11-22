@@ -1381,6 +1381,22 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
 
+    def test_a_send_the_bound_refused_to_launch_stays_owed(self):
+        # sd:9427 review: st_bounded exits 125 when a denied process
+        # group kept herdr from running. That /rc never went out, so
+        # the pane stays owed; it was kept as sent and never retried.
+        deny = self.tmp / "deny-group.sh"
+        deny.write_text('perl() { case " $* " in *" agent prompt "*)\n'
+                        '  set -- "$1" "${2/setpgrp(0, 0)/0}" "${@:3}";; esac; command perl "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(deny), CSWAP_RC_GAP_MS="5000")
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn("reconnect: /rc to w1:p1 never started (exit 125); still owed", result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+
     def test_a_switch_during_the_sent_mark_stops_the_send(self):
         # sd:9427 review: a switch runs outside the reconnect lock, and
         # one that landed while the sent mark was written still got the
