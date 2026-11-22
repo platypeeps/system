@@ -129,7 +129,7 @@ exit 0
 # the Nth read on, that read included: a pane that changes during a
 # read; with "gets": N, from the Nth `agent get` on. `agent list` fails with FAKE_HERDR_DOWN
 # (no server); `agent get` answers one pane; `agent read` prints its
-# screen; `agent prompt` is logged and sends nothing.
+# screen; `agent send-keys` types into the pane's box and enters it.
 HERDR = r"""#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["FAKE_CALLS"], "a") as log:
@@ -217,26 +217,46 @@ elif args[:2] == ["agent", "read"]:
         with open(os.environ["FAKE_CLOCK"], "w") as f:
             f.write(os.environ["FAKE_CLOCK_JUMP"])
     screen = next(state(r)[4] for r in panes if r[0] == args[2])
+    # A /rc typed and not yet entered shows in the box.
+    typed = os.environ["FAKE_HERDR"] + ".typed"
+    if os.path.exists(typed) and args[2] in open(typed).read().split():
+        # Its last ❯ line, the box's, holds the /rc; a suggestion goes.
+        lines = screen.split("\n")
+        last = max(i for i, l in enumerate(lines) if l.startswith("\u276f"))
+        lines[last] = "\u276f\u00a0/rc"
+        screen = os.environ.get("FAKE_TYPED_SCREEN") or "\n".join(lines)
     with open(read, "a") as f:
         f.write(args[2] + "\n")
     if args[3:5] != ["--format", "ansi"]:
         screen = re.sub(r"\x1b\[[0-9;]*m", "", screen)
     print(screen)
-elif args[:2] == ["agent", "prompt"]:
-    # Like herdr 0.9.5: --timeout without --wait is refused before any
-    # key is sent. FAKE_HERDR_PROMPT_SLOW seconds make a slow delivery.
+elif args[:2] == ["agent", "send-keys"]:
+    # Like herdr 0.9.5: one key or character per argument, written at
+    # once (sd:9427 ruling). Typed "/ r c" shows in the pane's input box
+    # (FAKE_TYPED_SCREEN: the screen it shows instead, as a draft typed
+    # meanwhile); "enter" submits it. FAKE_HERDR_KEYS_SLOW seconds make a
+    # slow delivery: the keys reach the pane after it.
     import time
-    if "--timeout" in args and "--wait" not in args:
-        print("error: --timeout requires --wait", file=sys.stderr)
-        sys.exit(2)
-    time.sleep(float(os.environ.get("FAKE_HERDR_PROMPT_SLOW") or 0))
-    # The keys reach the pane once the delivery delay is over.
-    if os.environ.get("FAKE_DELIVERED"):
-        with open(os.environ["FAKE_DELIVERED"], "a") as f:
-            f.write(args[2] + "\n")
-    # FAKE_HERDR_PROMPT_LATE seconds after the keys: herdr acknowledges
-    # a submission late, past its --timeout.
-    time.sleep(float(os.environ.get("FAKE_HERDR_PROMPT_LATE") or 0))
+    p, keys = args[2], args[3:]
+    time.sleep(float(os.environ.get("FAKE_HERDR_KEYS_SLOW") or 0))
+    typed = os.environ["FAKE_HERDR"] + ".typed"
+    if keys == ["/", "r", "c"]:
+        with open(typed, "a") as f:
+            f.write(p + "\n")
+    elif keys == ["enter"]:
+        if os.environ.get("FAKE_HERDR_ENTER_FAIL"):
+            print("herdr: send-keys failed", file=sys.stderr)
+            sys.exit(1)
+        if os.environ.get("FAKE_DELIVERED"):
+            with open(os.environ["FAKE_DELIVERED"], "a") as f:
+                f.write(p + "\n")
+        if os.path.exists(typed):
+            rest = [t for t in open(typed).read().split() if t != p]
+            open(typed, "w").write("".join(t + "\n" for t in rest))
+    else:
+        sys.exit(65)
+    # FAKE_HERDR_KEYS_LATE seconds after the keys: herdr answers late.
+    time.sleep(float(os.environ.get("FAKE_HERDR_KEYS_LATE") or 0))
 else:
     sys.exit(64)
 """
@@ -626,7 +646,9 @@ class RemoteControlReconnects(Machine):
         executable((where or self.stubs) / "herdr", HERDR)
 
     def prompts(self):
-        return self.called("herdr agent prompt")
+        """Each /rc submitted: the enter after it was typed (sd:9427
+        ruling: two send-keys calls, not agent prompt)."""
+        return [call for call in self.called("herdr agent send-keys") if call.endswith(" enter")]
 
     def owe(self, rows, since):
         """Seed rc-owed with rows of the switch at `since`, that switch's
@@ -645,6 +667,71 @@ class RemoteControlReconnects(Machine):
         return [line.split()[1] for line in path.read_text().splitlines()
                 if not line.endswith(" sent")] if path.exists() else []
 
+    def test_rc_is_typed_then_entered_once_the_box_shows_it(self):
+        # sd:9427 ruling #70122: herdr's agent prompt queues the Enter
+        # 300 ms on with no deadline, so a killed client still delivers.
+        # The keys go as two send-keys calls: "/ r c", a read that shows
+        # exactly /rc in the box, then "enter".
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere")
+        calls = [c for c in self.called("herdr agent") if " w1:p1" in c]
+        self.assertEqual(calls[-3:], ["herdr agent send-keys w1:p1 / r c",
+                                      "herdr agent read w1:p1 --format ansi",
+                                      "herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertEqual(self.called("herdr agent prompt"), [])
+        self.assertIn("reconnect: sent /rc to w1:p1\n", result.stdout)
+        self.assertEqual(self.owed(), [])
+
+    def test_a_box_that_does_not_show_exactly_rc_gets_no_enter(self):
+        # A draft typed in the gap mixes with the /rc: no Enter submits
+        # it. The /rc may sit in the box, so the pane is not sent again.
+        # A slash-command menu below the box is no reason to wait; a
+        # dialog there is.
+        menu = DROPPED.replace("\u276f\u00a0\n", "\u276f\u00a0/rc\n") + \
+            "\n  /remote-control (rc)   Continue this session from another device"
+        rows = [(DROPPED.replace("\u276f\u00a0\n", "\u276f\u00a0half a draft/rc\n"), False),
+                (DROPPED, False),
+                (DROPPED.replace("\u276f\u00a0\n", "\u276f\u00a0/rc\n") + "\n Do you want to proceed?\n 1. Yes",
+                 False),
+                (menu, True)]
+        for typed, entered in rows:
+            with self.subTest(typed=typed[-60:]):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                pathlib.Path(self.env["FAKE_HERDR"] + ".typed").unlink(missing_ok=True)
+                result = self.sync("elsewhere", FAKE_TYPED_SCREEN=typed)
+                self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+                self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"] if entered else [],
+                                 result.stdout)
+                self.assertEqual(self.owed(), [], result.stdout)
+                if not entered:
+                    self.assertRegex(result.stdout, r"reconnect: typed /rc into w1:p1, but its box then "
+                                                    r"showed \(.*\); no enter, not sent again")
+                (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
+
+    def test_a_failed_read_or_enter_after_the_typing_is_not_sent_again(self):
+        # Once "/ r c" went, the /rc may sit in the box: a read that
+        # fails gets no enter, and neither way is the pane owed again,
+        # as a second /rc would join the first.
+        rows = [({"FAKE_HERDR_READ_FAIL": "4"}, r"typed /rc into w1:p1, but its box then showed "
+                                                r"\(no read, exit 1\); no enter, not sent again", False),
+                ({"FAKE_HERDR_ENTER_FAIL": "1"}, r"the enter for /rc in w1:p1 failed or ran over "
+                                                 r"5000 ms \(exit 1\); not sent again", True)]
+        for fail, why, entered in rows:
+            with self.subTest(fail=fail):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                for suffix in (".read", ".typed"):
+                    pathlib.Path(self.env["FAKE_HERDR"] + suffix).unlink(missing_ok=True)
+                result = self.sync("elsewhere", **fail)
+                self.assertRegex(result.stdout, why)
+                self.assertEqual(len(self.called("herdr agent send-keys w1:p1 enter")), int(entered))
+                self.assertEqual(self.owed(), [], result.stdout)
+                self.sync("elsewhere")
+                self.assertEqual(self.called("herdr agent send-keys"), [])
+                (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
+
     def test_a_switch_sends_rc_to_idle_panes_only(self):
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
@@ -653,7 +740,7 @@ class RemoteControlReconnects(Machine):
                    ["w1:p4", "claude", "blocked", "s4", DROPPED],
                    ["w1:p5", "codex", "idle", "s5", DROPPED])
         result = self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc", "herdr agent prompt w1:p2 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter", "herdr agent send-keys w1:p2 enter"])
         self.assertEqual(self.owed(), ["w1:p3", "w1:p4"])
         # herdr took each send (sd:9427 review: --timeout without --wait
         # was refused before any key went out).
@@ -668,7 +755,7 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.prompts(), [])
         self.panes(["w1:p3", "claude", "idle", "s3", DROPPED])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p3 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p3 enter"])
         self.assertEqual(self.owed(), [])
 
     def test_slow_panes_neither_delay_the_switch_nor_outrun_the_budget(self):
@@ -682,15 +769,17 @@ class RemoteControlReconnects(Machine):
         owed.write_text("".join(f"sd w1:p{n} s{n} {now}\n" for n in (1, 2, 3)))
         self.publish(THREE)
         self.panes(*(["w1:p%d" % n, "claude", "idle", "s%d" % n, DROPPED] for n in (1, 2, 3)))
-        result = self.sync("elsewhere", FAKE_HERDR_SLOW="1", CSWAP_RC_BUDGET="5", CSWAP_RC_GAP_MS="5000")
+        # w1:p1 takes four 1 s reads: the pass's, the send's two and
+        # the one between "/ r c" and "enter" (sd:9427 ruling #70122).
+        result = self.sync("elsewhere", FAKE_HERDR_SLOW="1", CSWAP_RC_BUDGET="6", CSWAP_RC_GAP_MS="5000")
         calls = self.calls.read_text().splitlines()
         first_read = next(i for i, c in enumerate(calls) if c.startswith("herdr agent read"))
         self.assertLess(next(i for i, c in enumerate(calls) if c.startswith("cswap switch")), first_read)
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         self.assertEqual(self.owed(), ["w1:p2", "w1:p3"])
-        self.assertIn("reconnect: the 5s budget is spent; w1:p3 stays owed", result.stdout)
+        self.assertIn("reconnect: the 6s budget is spent; w1:p3 stays owed", result.stdout)
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p2 /rc", "herdr agent prompt w1:p3 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p2 enter", "herdr agent send-keys w1:p3 enter"])
         self.assertEqual(self.owed(), [])
 
     def test_the_budget_bounds_each_herdr_call_not_only_pane_entry(self):
@@ -719,7 +808,7 @@ class RemoteControlReconnects(Machine):
             self.publish(account)
             self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
             result = self.sync("elsewhere")
-            self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+            self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
 
     def test_the_managed_herdr_session_is_the_one_asked(self):
         # Review on sd:9427: cron's herdr calls went to herdr's default
@@ -733,7 +822,7 @@ class RemoteControlReconnects(Machine):
                 self.publish(ONE if self.active() == 3 else THREE)
                 self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
                 self.sync("elsewhere", **extra)
-                self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+                self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
                 self.assertEqual(self.owed(), [])
 
     def test_a_pane_owed_in_another_herdr_session_outlives_this_sync(self):
@@ -754,7 +843,7 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.owed(), ["w1:p1"])
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("elsewhere", **work)
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         self.assertEqual(self.owed(), [])
 
     def test_each_herdr_session_lists_its_panes_for_a_switch(self):
@@ -767,7 +856,7 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.owed(), [])
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("elsewhere", HERDR_SESSION="work", FAKE_HERDR_SESSION="work")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         # Once listed, a session lists no second time for one switch.
         self.sync("elsewhere", HERDR_SESSION="work", FAKE_HERDR_SESSION="work")
         self.assertEqual(self.prompts(), [])
@@ -790,7 +879,7 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(owed.read_text(), rows)
         self.assertIn("reconnect: skipped: another sync is reconnecting", result.stdout)
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_no_sync_deletes_a_switch_mark(self):
         # Review on sd:9427 (cswap.sh:348): the expiry branch deleted
@@ -836,7 +925,7 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere", BASH_ENV=str(failing))
         self.assertEqual(self.prompts(), [], result.stdout)
         result = self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
 
     def test_a_switch_during_the_listing_leaves_its_rows_unsent(self):
         # 2. A newer switch landed while this sync listed the older one.
@@ -846,7 +935,7 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere", FAKE_SWITCH_DURING_LIST=str(mark))
         self.assertEqual(self.prompts(), [], result.stdout)
         result = self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
 
     def test_a_switch_during_the_pass_stops_the_send(self):
         # 3. A newer switch landed between the plan and the keys.
@@ -856,7 +945,7 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere", FAKE_SWITCH_DURING_GET=str(mark))
         self.assertEqual(self.prompts(), [], result.stdout)
         result = self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
 
     def test_an_unreadable_owed_list_is_never_replaced(self):
         # Review on sd:9427 (cswap.sh:380): a failed read of the other
@@ -920,7 +1009,7 @@ class RemoteControlReconnects(Machine):
                    ["w1:p2", "claude", "idle", "s2", DROPPED + "\n" + CONNECTED],
                    ["w1:p3", "claude", "idle", "s3", "  nothing yet\n" + INPUT])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         # Not dropped yet: it stays owed, and is sent once it drops. An
         # active banner may be the old account's (sd:9427): it stays too.
         self.assertEqual(self.owed(), ["w1:p2", "w1:p3"])
@@ -937,7 +1026,7 @@ class RemoteControlReconnects(Machine):
         self.assertNotIn("is connected; not owed", result.stdout)
         self.panes(["w1:p1", "claude", "idle", "s1", CONNECTED + "\n" + DROPPED])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         self.assertEqual(self.owed(), [])
 
     def test_a_pane_with_typed_input_or_no_input_line_gets_no_keys(self):
@@ -951,7 +1040,7 @@ class RemoteControlReconnects(Machine):
         self.assertIn("reconnect: w1:p1 wait: its input box holds text", result.stdout)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_a_dim_suggestion_on_the_input_line_is_no_typed_text(self):
         # Lead live check: an idle pane showed `❯ what next here`, a dim
@@ -965,7 +1054,7 @@ class RemoteControlReconnects(Machine):
                    ["w1:p2", "claude", "idle", "s2", typed],
                    ["w1:p3", "claude", "idle", "s3", mixed])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         self.assertEqual(self.owed(), ["w1:p2", "w1:p3"])
 
     def test_each_way_a_screen_can_mislead(self):
@@ -1070,7 +1159,7 @@ class RemoteControlReconnects(Machine):
                    ["w1:p5", "claude", "idle", "s5", DROPPED])
         result = self.sync("elsewhere")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p5 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p5 enter"])
         self.assertEqual(self.owed(), ["w1:p1", "w1:p2", "w1:p3", "w1:p4"])
         self.assertIn("reconnect: w1:p2 changed before the send (w1:p2 s2 working); still owed", result.stdout)
         self.assertIn("reconnect: w1:p1 changed before the send (wait: its input box holds text); still owed",
@@ -1145,8 +1234,8 @@ class RemoteControlReconnects(Machine):
         # second /rc. A /rc that went out, or may have (herdr: a timeout
         # does not prove no delivery), keeps its sent mark.
         # Rows: herdr times out; herdr acknowledges past the gap.
-        rows = [({"FAKE_HERDR_PROMPT_SLOW": "1.5"}, "1000"),
-                ({"FAKE_HERDR_PROMPT_LATE": "1.2"}, "1000")]
+        rows = [({"FAKE_HERDR_KEYS_SLOW": "1.5"}, "1000"),
+                ({"FAKE_HERDR_KEYS_LATE": "1.2"}, "1000")]
         for slow, gap in rows:
             with self.subTest(slow=slow):
                 self.publish(ONE if self.active() == 3 else THREE)
@@ -1178,7 +1267,7 @@ class RemoteControlReconnects(Machine):
                       result.stdout)
         self.assertNotIn("not sent again", result.stdout)
         self.sync("elsewhere", FAKE_CLOCK=str(clock))
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_a_failed_herdr_call_is_named_as_the_cause(self):
         # sd:9427 triage: a read that failed was logged as the pane having
@@ -1220,7 +1309,7 @@ class RemoteControlReconnects(Machine):
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         result = self.sync("elsewhere", CSWAP_RC_GAP_MS="1000", FAKE_HERDR_GET_SLOW="0.6",
-                           FAKE_HERDR_PROMPT_SLOW="0.5", FAKE_DELIVERED=str(delivered))
+                           FAKE_HERDR_KEYS_SLOW="0.5", FAKE_DELIVERED=str(delivered))
         self.assertFalse(delivered.exists(), result.stdout)
 
     def test_a_switch_mark_that_does_not_read_keeps_every_row(self):
@@ -1241,7 +1330,7 @@ class RemoteControlReconnects(Machine):
         self.assertIn(f"reconnect: could not read {pending}", result.stdout)
         self.assertEqual(owed.read_text(), f"sd w1:p1 s1 {now}\nsd w1:p2 s2 {now} sent\n")
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
         # Fold-in: a list that failed at the switch owed nothing, and the
@@ -1251,7 +1340,7 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere", FAKE_HERDR_DOWN="1")
         self.assertEqual(self.prompts(), [])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         # The mark stays for other herdr sessions, but sd listed once:
         # a later sync with nothing owed asks herdr nothing.
         self.sync("elsewhere")
@@ -1292,7 +1381,7 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_a_pane_with_no_session_at_the_listing_is_listed_again(self):
         self.publish(THREE)
@@ -1304,7 +1393,7 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
                    ["w1:p2", "claude", "working", "s2", DROPPED])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         self.assertEqual(self.owed(), ["w1:p2"])
 
     def test_a_retried_listing_owes_no_sent_pane_again(self):
@@ -1315,11 +1404,11 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
                    ["w1:p2", "claude", "working", None, DROPPED])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
                    ["w1:p2", "claude", "idle", "s2", DROPPED])
         result = self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p2 /rc"], result.stdout)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p2 enter"], result.stdout)
         self.assertEqual(self.owed(), [])
         # The listing is complete now: a later sync sends nothing.
         self.sync("elsewhere")
@@ -1337,7 +1426,7 @@ class RemoteControlReconnects(Machine):
         self.assertIn("could not write", result.stdout)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         result = self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
 
     def test_a_failed_write_after_a_send_owes_the_pane_no_second_rc(self):
         # Class pass: the pass's last write after a send failed, the
@@ -1354,7 +1443,7 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
                    ["w1:p2", "claude", "working", "s2", DROPPED])
         result = self.sync("elsewhere", BASH_ENV=str(failing))
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"], result.stdout)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
         self.assertIn("could not update", result.stdout)
         result = self.sync("elsewhere")
         self.assertEqual(self.prompts(), [], result.stdout)
@@ -1379,7 +1468,7 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_a_slow_sent_mark_sends_no_keys(self):
         # sd:9427 review: the sent mark is written inside the gap, and a
@@ -1395,14 +1484,14 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
         self.assertRegex(result.stdout, r"reconnect: w1:p1 took \d+ ms to check and mark, over 1000 ms; still owed")
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_a_send_the_bound_refused_to_launch_stays_owed(self):
         # sd:9427 review: st_bounded exits 125 when a denied process
         # group kept herdr from running. That /rc never went out, so
         # the pane stays owed; it was kept as sent and never retried.
         deny = self.tmp / "deny-group.sh"
-        deny.write_text('perl() { case " $* " in *" agent prompt "*)\n'
+        deny.write_text('perl() { case " $* " in *" send-keys "*)\n'
                         '  set -- "$1" "${2/setpgrp(0, 0)/0}" "${@:3}";; esac; command perl "$@"; }\n')
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
@@ -1411,7 +1500,7 @@ class RemoteControlReconnects(Machine):
         self.assertIn("reconnect: /rc to w1:p1 never started (exit 125); still owed", result.stdout)
         self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
         self.sync("elsewhere")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_a_switch_during_the_sent_mark_stops_the_send(self):
         # sd:9427 review: a switch runs outside the reconnect lock, and
@@ -1455,7 +1544,7 @@ class RemoteControlReconnects(Machine):
         self.assertTrue((self.script.parent / "state/rc-pending").exists())
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("holder")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_a_long_owed_pane_is_dropped_and_an_unreadable_list_keeps_it(self):
         self.publish(THREE)
@@ -1479,7 +1568,7 @@ class RemoteControlReconnects(Machine):
         brew.mkdir()
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED], where=brew)
         self.sync("elsewhere", CSWAP_HERDR_DIRS=f"{self.tmp}/none {brew}")
-        self.assertEqual(self.prompts(), ["herdr agent prompt w1:p1 /rc"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_no_herdr_is_one_skip_line_and_the_switch_stands(self):
         self.publish(THREE)

@@ -332,15 +332,21 @@ else:
                     or re.search(r"Esc to|Enter to|Do you want|Would you like", t))
     tail = [lines[i] for i in range(rules[1] + 1, len(lines))] if one_box else []
     tail = [t for t in tail if t.strip()]
-    one_box = one_box and len(tail) <= 3 and all(footer(t) for t in tail)
+    # `typed`, the read between "/ r c" and "enter" (sd:9427 ruling
+    # #70122): Claude lists matching slash commands below the box, so
+    # no cap on the footer there; a dialog line still waits.
+    typed = sys.argv[1] == "typed"
+    one_box = one_box and (typed or len(tail) <= 3) and all(footer(t) for t in tail)
     # Empty is a match, never what is left after deleting (sd:9427 class
     # pass): the line is exactly ❯ and its NBSP, plus at most dim text (a
     # prompt suggestion). No strip, as a draft can be blanks of any kind,
     # and no control sequence but colour, as a cursor move can stand for
     # typed blanks.
     line = raw[prompts[0]] if one_box else ""
-    empty = (one_box and other.search(sgr.sub("", line)) is None
-             and undimmed(line, False)[0] == "❯\u00a0")
+    text = (undimmed(line, False)[0]
+            if one_box and other.search(sgr.sub("", line)) is None else None)
+    empty = text == "❯\u00a0"
+    shows_rc = text is not None and re.fullmatch("❯[\u00a0 ]/rc[\u00a0 ]*", text) is not None
     if marks and marks[-1][1] == "active":
         print("wait: its latest Remote Control banner is active, maybe from the old account")
     elif not marks:
@@ -349,6 +355,8 @@ else:
         print("wait: no input box on its screen")
     elif not one_box:
         print("wait: its input box is not one empty line")
+    elif typed:
+        print("send" if shows_rc else "wait: its input box does not show exactly /rc")
     elif not empty:
         print("wait: its input box holds text")
     else:
@@ -518,7 +526,7 @@ send_rc() {
   # typed meanwhile would take the /rc (sd:9427 review). Its bound is
   # the gap's time left, in milliseconds: herdr refuses --timeout
   # without --wait, and --wait waits for a turn /rc never starts
-  # (herdr 0.9.5, sd:9427 review). Once the prompt runs, the /rc may have gone
+  # (herdr 0.9.5, sd:9427 review). Once the keys run, the /rc may have gone
   # out: herdr's timeout does not prove no delivery, and a drop banner
   # not yet redrawn would take a second /rc, which disconnects the pane
   # (sd:9427 review). So a failed or late send returns 2: sent, not owed.
@@ -564,11 +572,15 @@ send_rc() {
   bound=$((RC_GAP_MS - took))
   ((left * 1000 < bound)) && bound=$((left * 1000))
   bound=$(printf '%d.%03d' $((bound / 1000)) $((bound % 1000)))
+  # The keys go as two herdr send-keys calls, each written at once:
+  # "/ r c", then, once a read shows exactly /rc in the box, "enter"
+  # (operator ruling #70122 on sd:9427). agent prompt queued its Enter
+  # 300 ms on with no deadline, so a killed client still delivered.
   # Exit 125 with the bound's refusal line means herdr never ran: a
   # denied process group (lib/bounded.sh), so nothing went out and the
   # pane stays owed (sd:9427 review). herdr's own 125 has no such line.
   local rc=0 err
-  err=$(st_step "$bound" "$HERDR" agent prompt "$1" /rc 9>&- 2>&1 >/dev/null) || rc=$?
+  err=$(st_step "$bound" "$HERDR" agent send-keys "$1" / r c 9>&- 2>&1 >/dev/null) || rc=$?
   [[ -z "$err" ]] || printf '%s\n' "$err" >&2
   if ((rc == 125)) && [[ "$err" == *"st_bounded: process group denied"* ]]; then
     echo "reconnect: /rc to $1 never started (exit 125); still owed"
@@ -578,9 +590,31 @@ send_rc() {
     echo "reconnect: /rc to $1 failed or ran over $RC_GAP_MS ms; not sent again"
     return 2
   fi
+  # From here the /rc may sit in the box: every way out is "not sent
+  # again" (2), and only an Enter after a read that shows exactly /rc
+  # submits it. A draft typed meanwhile shows there, and gets no Enter.
+  # The read and the Enter fit a gap of their own, from the read on.
+  start=$(now_ms)
+  last=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent read "$1" --format ansi) ||
+    { echo "reconnect: typed /rc into $1, but its box then showed (no read, exit $?); no enter, not sent again"; return 2; }
+  verdict=$(rc_read typed <<<"$last") || verdict="a screen that did not parse"
+  if [[ "$verdict" != send ]]; then
+    echo "reconnect: typed /rc into $1, but its box then showed ($verdict); no enter, not sent again"
+    return 2
+  fi
   took=$(($(now_ms) - start))
-  if ((took > RC_GAP_MS)); then
-    echo "reconnect: /rc to $1 ended $took ms after the check began, over $RC_GAP_MS ms; not sent again"
+  left=$((RC_DEADLINE - $(date +%s)))
+  bound=$((RC_GAP_MS - took))
+  ((left * 1000 < bound)) && bound=$((left * 1000))
+  if ((bound <= 0)); then
+    echo "reconnect: typed /rc into $1, but the gap or budget ran out before the enter; not sent again"
+    return 2
+  fi
+  bound=$(printf '%d.%03d' $((bound / 1000)) $((bound % 1000)))
+  rc=0
+  st_step "$bound" "$HERDR" agent send-keys "$1" enter 9>&- >/dev/null || rc=$?
+  if ((rc != 0)); then
+    echo "reconnect: the enter for /rc in $1 failed or ran over $RC_GAP_MS ms (exit $rc); not sent again"
     return 2
   fi
 }
