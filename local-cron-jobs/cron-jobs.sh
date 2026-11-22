@@ -1815,9 +1815,17 @@ helper_plist_for() { echo "$STATE_DIR/$(reinstall_label "$1").plist"; }
 accepted_plist_for() { echo "$STATE_DIR/$(label_for "$1").accepted"; }
 failed_record_for() { echo "$STATE_DIR/$(label_for "$1").reinstall.failed"; }
 defer_install() { # job
-  local job="$1" label plist err
+  local job="$1" label plist err d dirs="" old_ifs="$IFS"
   label="$(reinstall_label "$job")"
   plist="$(helper_plist_for "$job")"
+  # launchd starts the helper in another folder: a relative extra job
+  # directory would name another one there (sd:9826 review).
+  IFS=':'
+  for d in $EXTRA_JOB_DIRS; do
+    case $d in ''|/*) ;; *) d="$PWD/$d" ;; esac
+    dirs="$dirs${dirs:+:}$d"
+  done
+  IFS="$old_ifs"
   # Checked by hand: under `install --all` errexit is off.
   if ! mkdir -p "$STATE_DIR" || ! cat > "$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1854,7 +1862,7 @@ defer_install() { # job
              only these, and without them it could install another
              definition of the job or look for another label. -->
         <key>CRON_JOBS_EXTRA_DIRS</key>
-        <string>$(xml_escape "$EXTRA_JOB_DIRS")</string>
+        <string>$(xml_escape "$dirs")</string>
         <key>CRON_JOBS_HOST</key>
         <string>$(xml_escape "$JOB_HOST")</string>
         <key>SYSTEM_TOOLS_LABEL_PREFIX</key>

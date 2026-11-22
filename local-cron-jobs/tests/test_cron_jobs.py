@@ -2419,6 +2419,21 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
             "SYSTEM_TOOLS_CONFIG": str(self.fx.config)})
         self.assertNotIn("CRON_JOBS_RUN", given)
 
+    def test_the_helper_gets_relative_extra_dirs_resolved(self):
+        """Lane review: launchd starts the helper in another folder, so a
+        relative CRON_JOBS_EXTRA_DIRS entry named another directory there
+        and the helper could install the shared job, not the override.
+        Each relative entry is resolved against the caller's folder."""
+        extra = self.fx.tmp / "extra-jobs"
+        extra.mkdir()
+        result = self.run_script("install", "demo", cwd=str(self.fx.tmp), env={
+            "CRON_JOBS_RUN": "demo", "CRON_JOBS_EXTRA_DIRS": "./extra-jobs:/abs/jobs"})
+        self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
+        first, second = self.helper_env()["CRON_JOBS_EXTRA_DIRS"].split(":")
+        self.assertEqual(pathlib.Path(first).resolve(), extra.resolve())
+        self.assertTrue(first.startswith("/"), first)
+        self.assertEqual(second, "/abs/jobs")
+
     def test_the_helper_keeps_the_effective_lookup_and_label(self):
         """Review round 4: launchd hands the helper only the plist's
         environment, so an exported CRON_JOBS_EXTRA_DIRS, CRON_JOBS_HOST or
