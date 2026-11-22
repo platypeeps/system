@@ -9,6 +9,7 @@
 # Usage:
 #   cswap.sh sync     lead or follow, by this machine's role
 #   cswap.sh status   same account as the hub? (exit 0 yes, 1 no, 3 nothing to check)
+#   cswap.sh keys     store one `claude setup-token` key per account (a terminal)
 #
 # The role is the fence's: the machine whose `sd-db fence` reads holder (exit
 # 0) leads, so a promoted satellite leads by itself. Any other answer follows.
@@ -71,7 +72,9 @@ accounts() {
   st_bounded 60 "$CSWAP_BIN" list --json
 }
 
-# Reads `cswap list --json` on stdin. `active` prints "<number> <uuid>" of
+# Reads `cswap list --json` on stdin. `orgs` prints one
+# `<email> <organizationUuid> <accounts in it>` line per account with an email;
+# `active` prints "<number> <uuid>" of
 # the active account; `number UUID` prints the number of the one account
 # with that organizationUuid, exit 4 when none has it, 5 (and the count)
 # when several do.
@@ -80,7 +83,12 @@ pick() { # active | number UUID
 import json, sys
 data = json.load(sys.stdin)
 accounts = data.get("accounts") or []
-if sys.argv[1] == "active":
+if sys.argv[1] == "orgs":
+    # Counted over every account, one with no email too: it still shares.
+    orgs = [a.get("organizationUuid") or "-" for a in accounts]
+    print("\n".join(a["email"] + " " + o + " " + str(orgs.count(o))
+                    for a, o in zip(accounts, orgs) if a.get("email")))
+elif sys.argv[1] == "active":
     found = [a for a in accounts if a.get("number") == data.get("activeAccountNumber")]
     if len(found) != 1:
         sys.exit(3)
@@ -228,6 +236,118 @@ cmd_sync() {
   if leads; then lead; else follow; fi
 }
 
+# The Keychain service of an account's headless claude key, which
+# ~/.config/shell/env.sh reads for the account cswap made active (sd:9905).
+# An account is its email and its organization, so every item is also
+# named by its account field, the organizationUuid: two cswap accounts
+# with one email keep two items, and no lookup takes the other's.
+key_item() { # email
+  printf 'claude-code-oauth-token-%s\n' "$1"
+}
+
+# The organization a key belongs to, from the `anthropic-organization-id`
+# header of one 1-token API call, or nothing when the key does not work.
+# cswap names each account's organizationUuid, so this is how a key is
+# matched to its account. The key reaches curl on stdin, never argv; -q,
+# first, keeps ~/.curlrc out, since a trace option there would write the
+# Authorization header to a file.
+key_org() { # key
+  printf 'header = "Authorization: Bearer %s"\n' "$1" |
+    curl -q -sS --max-time 60 --config - -o /dev/null -D - \
+      -H "anthropic-version: 2023-06-01" -H "anthropic-beta: oauth-2025-04-20" \
+      -H "content-type: application/json" -d "$KEY_PROBE" \
+      https://api.anthropic.com/v1/messages 2>/dev/null |
+    tr -d '\r' | awk 'NR == 1 && $2 != 200 { exit }
+      tolower($1) == "anthropic-organization-id:" { print $2; exit }'
+}
+KEY_PROBE='{"model":"claude-haiku-4-5","max_tokens":1,"system":"You are Claude Code, Anthropic'"'"'s official CLI for Claude.","messages":[{"role":"user","content":"OK"}]}'
+
+# One `claude setup-token` key per cswap account: read hidden from the
+# terminal, the first copy of a repeated paste kept, and stored only when
+# one API call works and names that account's organization, so a key
+# pasted at the wrong prompt overwrites no other account's item. A setup
+# token names no user (the profile API refuses it), so accounts that share
+# an organization get no key here. The key
+# goes in no argv, file or output: curl and `security -i` read it on
+# stdin. CSWAP_KEYS_TTY is for tests only.
+cmd_keys() {
+  local json pairs e want raw rest tok held got shared
+  # A caller's `bash -x` would trace each key; nothing after this needs it.
+  set +x
+  [[ -x "$CSWAP_BIN" ]] || { echo "cswap not executable at $CSWAP_BIN" >&2; exit 1; }
+  json=$(accounts) || { echo "cswap list --json failed" >&2; exit 1; }
+  pairs=$(pick orgs <<<"$json") || { echo "cswap list --json was not readable" >&2; exit 1; }
+  exec 3<"${CSWAP_KEYS_TTY:-/dev/tty}" 4<<<"$pairs"
+  while read -r -u 4 e want shared; do
+    if [[ ! "$e" =~ ^[^\"[:space:]]+$ ]]; then
+      echo "$e: an email this script cannot quote; skipped"
+      continue
+    fi
+    if [[ ! "$want" =~ $UUID_RE ]]; then
+      echo "$e: cswap names no organizationUuid for it; skipped"
+      continue
+    fi
+    # A key names its organization, not its member: in an organization two
+    # accounts share, either could own it, so neither is asked for one.
+    if ((shared > 1)); then
+      echo "$e: $shared accounts share its organization, so a key cannot be matched to one; nothing stored"
+      continue
+    fi
+    printf 'Key for %s (Enter to skip): ' "$e" >&2
+    raw=""
+    IFS= read -r -s -u 3 raw || :
+    echo >&2
+    raw="${raw//[[:space:]]/}"
+    rest="${raw#*sk-ant-}"
+    tok=""
+    [[ "$rest" == "$raw" ]] || tok="sk-ant-${rest%%sk-ant-*}"
+    unset raw rest
+    if [[ -z "$tok" ]]; then
+      echo "$e: skipped"
+      continue
+    fi
+    if [[ ! "$tok" =~ ^sk-ant-[A-Za-z0-9_-]+$ ]]; then
+      echo "$e: the paste is no key; nothing stored"
+      continue
+    fi
+    got=$(key_org "$tok") || got=""
+    if [[ -z "$got" ]]; then
+      echo "$e: the key did not work; nothing stored"
+    elif [[ "$got" != "$want" ]]; then
+      echo "$e: the key belongs to another account; nothing stored"
+    else
+      # Stored means the item now holds this key: an old item kept by a
+      # failed update must not pass, and `security -i` may exit 0 then.
+      held=""
+      if printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' "$want" "$(key_item "$e")" "$tok" |
+          security -i >/dev/null 2>&1; then
+        held=$(security find-generic-password -s "$(key_item "$e")" -a "$want" -w 2>/dev/null) || held=""
+      fi
+      if [[ -n "$held" && "$held" == "$tok" ]]; then
+        echo "$e: works; stored as $(key_item "$e")"
+      else
+        echo "$e: works, but the Keychain did not store it"
+      fi
+      unset held
+    fi
+    unset tok
+  done
+  exec 3<&- 4<&-
+}
+
+# A WARN line per account with no headless key, the email only. It changes
+# no exit code: a missing key leaves that account's headless runs on the
+# plain item.
+warn_keys() { # cswap list --json
+  local e org shared
+  command -v security >/dev/null 2>&1 || return 0
+  while read -r e org shared; do
+    [[ -n "$e" ]] || continue
+    security find-generic-password -s "$(key_item "$e")" -a "$org" >/dev/null 2>&1 ||
+      echo "WARN no headless claude key for $e; run cswap.sh keys in a terminal"
+  done <<<"$(pick orgs <<<"$1" 2>/dev/null)"
+}
+
 cmd_status() {
   local json active want number uuid err
   if launchctl print "$RETIRED_SERVICE" >/dev/null 2>&1 || [[ -e "$RETIRED_PLIST" ]]; then
@@ -239,6 +359,7 @@ cmd_status() {
     exit 3
   fi
   json=$(accounts) || { echo "cswap list --json failed"; exit 1; }
+  warn_keys "$json"
   active=$(pick active <<<"$json") || { echo "cswap names no single active account"; exit 1; }
   read -r number uuid <<<"$active"
   set -- "$number" "$uuid"
@@ -275,9 +396,10 @@ cmd_status() {
 case "${1:-}" in
   sync)   cmd_sync ;;
   status) cmd_status ;;
+  keys)   cmd_keys ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: cswap.sh sync|status
+usage: cswap.sh sync|status|keys
 
   sync     the hub (sd-db fence reads holder) runs one
            `cswap auto --once --strategy consume-first` tick and publishes
@@ -292,7 +414,15 @@ usage: cswap.sh sync|status
   status   whether this machine uses the hub's account; exits 0 same
            account / 1 another account, hub unreadable or the retired
            agent still installed / 3 nothing to check (no cswap, nothing
-           published) — local-health-check reads these codes
+           published) — local-health-check reads these codes. It also
+           prints a WARN line per account with no headless claude key.
+  keys     in a terminal: for each cswap account, read its
+           `claude setup-token` key hidden, keep the first copy of a
+           repeated paste, and store it as Keychain item
+           claude-code-oauth-token-<email>, account <organizationUuid>,
+           only when one API call works
+           and names that account's organization (accounts that share
+           one get none); ~/.config/shell/env.sh loads the active account's key
 
 environment: CSWAP_BIN, CSWAP_AUTO_ARGS (see cswap-auto.conf),
              SD_PACK_ROOT (default ~/repos/platypeeps/sd-workflow)
@@ -300,7 +430,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") sync|status" >&2
+    echo "usage: $(basename "$0") sync|status|keys" >&2
     exit 1
     ;;
 esac

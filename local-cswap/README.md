@@ -34,10 +34,19 @@ The `sys` plugin must be registered on every machine: machine-setup's `repos` st
 ```bash
 ./cswap.sh sync     # what the job runs; safe to run by hand
 ./cswap.sh status   # same account as the hub?
+./cswap.sh keys     # in a terminal: one headless claude key per account
 sd config get sys.cswap_account   # the account the hub published
 ```
 
 `status` exits `0` on the hub's account, `1` on another account, with the hub unreadable, or with the retired agent still installed, and `3` with nothing to check (no `cswap`, or nothing published yet).
+It also prints a `WARN` line for each account with no headless key.
+
+## Headless keys
+
+Headless claude runs (builders, reviews, cron jobs) take their key from `~/.config/shell/env.sh`, which reads the Keychain item of the account cswap made active (service `claude-code-oauth-token-<email>`, account `<organizationUuid>`, so two accounts with one email keep two items), or the plain `claude-code-oauth-token` item when that account has none.
+machine-setup's `tooling` stage writes that block into env.sh.
+`keys` stores the items: for each account it reads a `claude setup-token` key hidden from the terminal, keeps the first copy of a repeated paste, and stores it only when one API call works and its `anthropic-organization-id` header is that account's `organizationUuid`, so a key pasted at the wrong prompt overwrites no other account's item. A setup token names its organization but not its user, so accounts that share an organization get no key from `keys`.
+No key reaches an argument list, a file or the output.
 
 ## Changing flags
 
