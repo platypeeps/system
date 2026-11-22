@@ -1542,6 +1542,34 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
+    def test_a_pass_stopped_between_the_mark_and_the_keys_owes_the_pane(self):
+        # sd:9427 review: the pass marked the row sent before the
+        # switch check that follows the mark. A job stopped during that
+        # check sent no keys, and the next sync skipped the row. The
+        # stub date stops the sync at its first call once the marked
+        # file is written: the switch check's.
+        # The sync runs in a session of its own, and the stub kills
+        # only that session's process group: nothing outside the test.
+        killed = self.tmp / "killed"
+        executable(self.stubs / "date", '#!/bin/sh\n'
+                   'if [ ! -e "$FAKE_KILLED" ] && awk \'NF == 5 { f = 1 } END { exit !f }\' "$FAKE_OWED" 2>/dev/null; then\n'
+                   '  : >"$FAKE_KILLED"\n'
+                   '  kill -9 -- "-$(ps -o pgid= -p $$ | tr -d " ")"\n'
+                   'fi\n'
+                   'exec /bin/date "$@"\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.calls.write_text("")
+        result = subprocess.run([BASH, str(self.script), "sync"], capture_output=True, text=True,
+                                timeout=60, start_new_session=True,
+                                env={**self.env, "FAKE_FENCE": "elsewhere", "FAKE_KILLED": str(killed),
+                                     "FAKE_OWED": str(self.script.parent / "state/rc-owed.sent")})
+        self.assertEqual(result.returncode, -9, result.stdout + result.stderr)
+        self.assertTrue(killed.exists(), result.stdout + result.stderr)
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
     def test_a_slow_sent_mark_sends_no_keys(self):
         # sd:9427 review: the sent mark is written inside the gap, and a
         # slow write used it up; /rc still went with the earlier

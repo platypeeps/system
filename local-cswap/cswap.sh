@@ -572,6 +572,10 @@ send_rc() {
   bound=$((RC_GAP_MS - took))
   ((left * 1000 < bound)) && bound=$((left * 1000))
   bound=$(printf '%d.%03d' $((bound / 1000)) $((bound % 1000)))
+  if ! commit_sent; then
+    echo "reconnect: could not write $RC_OWED before the send; $1 stays owed"
+    return 1
+  fi
   # The keys go as two herdr send-keys calls, each written at once:
   # "/ r c", then, once a read shows exactly /rc in the box, "enter"
   # (operator ruling #70122 on sd:9427). agent prompt queued its Enter
@@ -681,12 +685,16 @@ current_since() {
 
 # Mark the RC_OWED row $1 sent before its /rc goes: a later write that
 # fails then loses a /rc at worst, and never owes a sent pane again
-# (sd:9427 review). A send that does not happen keeps the row owed in
-# the pass's last write; send_rc calls it after its last check.
+# (sd:9427 review). The mark is two steps: mark_sent writes the marked
+# file beside RC_OWED, before the switch, gap and budget checks, and
+# commit_sent moves it in after them, right before the keys. A pass
+# stopped during those checks leaves RC_OWED owing the pane (sd:9427
+# review). A send that does not happen keeps the row owed in the
+# pass's last write.
 mark_sent() {
-  { awk -v row="$1" '$0 == row { print $0, "sent"; next } { print }' "$RC_OWED" >"$RC_OWED.new" &&
-    mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null
+  awk -v row="$1" '$0 == row { print $0, "sent"; next } { print }' "$RC_OWED" >"$RC_OWED.sent" 2>/dev/null
 }
+commit_sent() { mv "$RC_OWED.sent" "$RC_OWED" 2>/dev/null; }
 
 # Send /rc to each owed pane that may have it; keep the rest owed.
 reconnect_pass() {
