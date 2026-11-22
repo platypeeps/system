@@ -124,3 +124,16 @@ class TokenBlock(base.SyntheticHome):
         self.assertTrue(text.startswith(START + "\n"), text)
         self.assertTrue(text.endswith(END + "\n" + AFTER), text)
         self.assertNotIn(OLD, text)
+
+    def test_a_symlinked_env_sh_is_migrated_in_its_target(self):
+        target = self.home / "dotfiles/env.sh"
+        target.parent.mkdir()
+        target.write_text(BEFORE + OLD + AFTER)
+        target.chmod(0o600)
+        self.env_sh.symlink_to("../../dotfiles/env.sh")
+        self.run_tooling("--apply")
+        self.assertTrue(self.env_sh.is_symlink())
+        text = target.read_text()
+        self.assertIn(START, text)
+        self.assertNotIn(OLD, text)
+        self.assertEqual(sorted(p.name for p in target.parent.iterdir()), ["env.sh"])

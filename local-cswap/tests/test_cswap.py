@@ -52,6 +52,8 @@ if args[:2] == ["list", "--json"]:
     for a in accounts:  # FAKE_NO_EMAIL: an account cswap names no email for
         if str(a["number"]) == os.environ.get("FAKE_NO_EMAIL"):
             del a["email"]
+        if str(a["number"]) == os.environ.get("FAKE_SAME_EMAIL"):  # as account 1's
+            a["email"] = "user1@example.test"
     print(json.dumps({"schemaVersion": 1, "activeAccountNumber": data["active"],
                       "accounts": accounts}))
 elif args[:1] == ["auto"]:
@@ -705,6 +707,15 @@ class HeadlessKeys(Machine):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.called("curl without -q"), [])
         self.assertEqual(self.held(), {"claude-code-oauth-token-user1@example.test": self.GOOD})
+
+    def test_two_accounts_with_one_email_store_no_key(self):
+        # The Keychain item and env.sh's lookup key on the email alone, so
+        # two accounts with one email would share, and overwrite, one item.
+        self.keychain.write_text("claude-code-oauth-token-user1@example.test sk-ant-kept\n")
+        result = self.keys(f"{self.GOOD}\n\n\n", FAKE_SAME_EMAIL="2")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {"claude-code-oauth-token-user1@example.test": "sk-ant-kept"})
+        self.assertIn("user1@example.test: 2 accounts share this email", result.stdout)
 
     def test_status_warns_per_account_with_no_key_and_names_the_email_only(self):
         self.publish(ONE)

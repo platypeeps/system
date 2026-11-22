@@ -73,7 +73,8 @@ accounts() {
 }
 
 # Reads `cswap list --json` on stdin. `emails` prints one email per account,
-# `orgs` one `<email> <organizationUuid> <accounts in it>` line;
+# `orgs` one `<email> <organizationUuid> <accounts in it> <accounts with
+# that email>` line;
 # `active` prints "<number> <uuid>" of
 # the active account; `number UUID` prints the number of the one account
 # with that organizationUuid, exit 4 when none has it, 5 (and the count)
@@ -87,8 +88,10 @@ if sys.argv[1] == "emails":
     print("\n".join(a["email"] for a in accounts if a.get("email")))
 elif sys.argv[1] == "orgs":
     # Counted over every account, one with no email too: it still shares.
+    # The Keychain item keys on the email, so a shared email counts too.
     orgs = [a.get("organizationUuid") or "-" for a in accounts]
-    print("\n".join(a["email"] + " " + o + " " + str(orgs.count(o))
+    emails = [a.get("email") for a in accounts]
+    print("\n".join(a["email"] + " " + o + " " + str(orgs.count(o)) + " " + str(emails.count(a["email"]))
                     for a, o in zip(accounts, orgs) if a.get("email")))
 elif sys.argv[1] == "active":
     found = [a for a in accounts if a.get("number") == data.get("activeAccountNumber")]
@@ -270,14 +273,14 @@ KEY_PROBE='{"model":"claude-haiku-4-5","max_tokens":1,"system":"You are Claude C
 # goes in no argv, file or output: curl and `security -i` read it on
 # stdin. CSWAP_KEYS_TTY is for tests only.
 cmd_keys() {
-  local json pairs e want raw rest tok held got shared
+  local json pairs e want raw rest tok held got shared same
   # A caller's `bash -x` would trace each key; nothing after this needs it.
   set +x
   [[ -x "$CSWAP_BIN" ]] || { echo "cswap not executable at $CSWAP_BIN" >&2; exit 1; }
   json=$(accounts) || { echo "cswap list --json failed" >&2; exit 1; }
   pairs=$(pick orgs <<<"$json") || { echo "cswap list --json was not readable" >&2; exit 1; }
   exec 3<"${CSWAP_KEYS_TTY:-/dev/tty}" 4<<<"$pairs"
-  while read -r -u 4 e want shared; do
+  while read -r -u 4 e want shared same; do
     if [[ ! "$e" =~ ^[^\"[:space:]]+$ ]]; then
       echo "$e: an email this script cannot quote; skipped"
       continue
@@ -288,6 +291,12 @@ cmd_keys() {
     fi
     # A key names its organization, not its member: in an organization two
     # accounts share, either could own it, so neither is asked for one.
+    # One Keychain item per email: two accounts with it would overwrite
+    # each other's key, and env.sh could not tell which to load.
+    if ((same > 1)); then
+      echo "$e: $same accounts share this email, and its Keychain item would hold one key for both; nothing stored"
+      continue
+    fi
     if ((shared > 1)); then
       echo "$e: $shared accounts share its organization, so a key cannot be matched to one; nothing stored"
       continue
