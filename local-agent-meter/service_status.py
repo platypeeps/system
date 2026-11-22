@@ -39,6 +39,7 @@ URL = 2048
 #: The 'status services' list a database that never held the row starts
 #: with (operator 2026-11-17, notes #59922 and #59926; feeds checked then).
 #: LangSmith's summary.json answers with every field null, so it is `http`.
+#: Suno has no status feed, so `http` checks suno.com (sd:9903).
 STARTING = """\
 claude statuspage https://status.claude.com/api/v2/summary.json claude
 openai statuspage https://status.openai.com/api/v2/summary.json codex,openai
@@ -65,6 +66,7 @@ huggingface http https://status.huggingface.co huggingface
 firecrawl http https://status.firecrawl.dev firecrawl
 moonshot http https://platform.moonshot.ai moonshot
 typesafe http https://status.typesafe.ai typesafe
+suno http https://suno.com
 """
 
 #: A statuspage indicator as a status; anything else is unknown.

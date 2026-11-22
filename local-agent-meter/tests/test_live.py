@@ -1120,6 +1120,12 @@ class Services(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertEqual(len(services), len(service_status.STARTING.splitlines()))
 
+    def test_suno_is_an_http_reachability_check(self):
+        # sd:9903: Suno has no status feed and no credits row; the
+        # operator wants http reachability of suno.com only.
+        services, _ = service_status.parse_services(service_status.STARTING)
+        self.assertIn(("suno", "http", "https://suno.com", []), services)
+
     def test_a_statuspage_summary(self):
         got = self.read("statuspage", SUMMARY)
         self.assertEqual((got["status"], got["indicator"]), ("degraded", "minor"))
