@@ -362,6 +362,31 @@ class ShellEnv(unittest.TestCase):
         env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
         self.assertEqual(shell("set -e; st_shell_env; echo after", env).stdout, "after\n")
 
+    def test_a_syntax_error_in_env_sh_is_named_and_skipped(self):
+        # sd:9652: a half-written env.sh ended the cron run inside the dot,
+        # so the FAILED line went nowhere. It must be skipped and named.
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\nif then fi (\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        result = shell("set -e; st_shell_env; echo after rc=$?", env)
+        self.assertEqual(result.stdout, "after rc=0\n")
+        self.assertIn(".config/shell/env.sh", result.stderr)
+        self.assertNotIn("tok-custom", result.stderr)
+        self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+
+    def test_xtrace_never_prints_a_value(self):
+        # sd:9652: a caller's set -x, or one env.sh turns on, must not
+        # trace the token; the caller's own xtrace comes back after.
+        for text in ("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n",
+                     "set -x\nexport CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n"):
+            self.env_sh(text)
+            env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+            result = shell('set -x; st_shell_env; case $- in *x*) echo on ;; esac', env)
+            self.assertNotIn("tok-custom", result.stderr)
+            self.assertEqual(result.stdout, "on\n")
+            result = shell('st_shell_env; case $- in *x*) echo on ;; esac', env)
+            self.assertEqual(result.stdout, "")
+            self.assertNotIn("tok-custom", result.stderr)
+
 
 #: `<environ>.get(X) or <file values>.get(X)`, the same name on both sides: an
 #: exported empty value is falsy, so the file wins where the shell keeps it.
