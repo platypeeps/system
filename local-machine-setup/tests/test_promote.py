@@ -469,6 +469,18 @@ class Promote(PromoteCase):
         (self.config / f"machine-setup/launchagents/{PREFIX}.google-workspace-mcp.plist").unlink()
         self.assertIn(f"NOT-READY no plist for {PREFIX}.google-workspace-mcp", self.run_promote().stdout)
 
+    def test_a_standby_from_before_the_sweep_job_is_ready_and_promotes(self):
+        """Review: needs-sweep-nightly joined the role after standbys were
+        set up, so a standby without its job file read NOT-READY, though
+        the cron stage seeds the bundled example. It reads ready, and
+        promote installs the seeded job."""
+        (self.config / "cron-jobs/jobs/needs-sweep-nightly.job").unlink()
+        out = self.run_promote().stdout
+        self.assertNotIn("NOT-READY no job file needs-sweep-nightly", out)
+        self.assertIn("ok      job file needs-sweep-nightly (seeded from", out)
+        self.run_promote("--apply")
+        self.assertIn(f"{PREFIX}.cron.needs-sweep-nightly", self.installed())
+
     def test_a_standby_without_a_builder_job_file_is_not_ready(self):
         (self.config / "cron-jobs/jobs/night-build.job").unlink()
         self.assertIn("NOT-READY no job file night-build.job", self.run_promote().stdout)

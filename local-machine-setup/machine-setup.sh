@@ -3380,6 +3380,11 @@ SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # off the list: they pause until the hub returns (#31095). build-dispatch is off it too: each lane host
 # runs its own tick for its own lanes (sd:7932); the role still moves it.
 SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build cron.needs-sweep-nightly"
+# Role jobs whose bundled example runs as it is: a standby set up before
+# one joined the role has no job file, and step 8's cron stage seeds it
+# from local-cron-jobs/examples, so readiness counts the example. The
+# other role jobs need the machine's own file (sd:9764 review).
+SD_HUB_ROLE_SEEDED="needs-sweep-nightly"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
@@ -8940,6 +8945,9 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
     for hr_job in $(hub_role_labels cron); do
       if printf '%s\n' "$hr_jobs" | grep -qxF "$hr_job"; then
         echo "  ok      job file $hr_job"
+      elif printf '%s\n' $SD_HUB_ROLE_SEEDED | grep -qxF "$hr_job" &&
+          [ -f "$ROOT/local-cron-jobs/examples/$hr_job.job" ]; then
+        echo "  ok      job file $hr_job (seeded from local-cron-jobs/examples at promote)"
       else
         echo "  NOT-READY no job file $hr_job.job in $(st_config_dir cron-jobs)/jobs"
       fi
