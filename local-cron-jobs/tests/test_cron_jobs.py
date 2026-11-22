@@ -1585,7 +1585,9 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertEqual(self.bootouts(), [])
 
     def helper_plist(self, job="demo"):
-        return self.fx.folder / "logs" / f".{job}.reinstall.plist"
+        state = self.fx.home / ".local" / "state" / "cron-jobs"
+        state.mkdir(parents=True, exist_ok=True)
+        return state / f"{LABEL_PREFIX}.cron-reinstall.{job}.plist"
 
     def test_a_run_that_reinstalls_its_own_job_hands_it_to_a_helper(self):
         """sd:9826. machine-setup-update-nightly runs the cron stage, which
@@ -1789,10 +1791,57 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
     def test_a_successful_install_promotes_its_plist(self):
         result = self.run_script("install", "demo")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        accepted = self.fx.folder / "logs" / ".demo.plist.accepted"
+        accepted = self.fx.home / ".local" / "state" / "cron-jobs" / f"{LABEL_PREFIX}.cron.demo.accepted"
         self.assertEqual(accepted.read_text(), self.plist().read_text())
         self.assertEqual(self.run_script("uninstall", "demo").returncode, 0)
         self.assertFalse(accepted.exists())
+
+    def second_checkout(self):
+        """Another checkout of the tool for the same user, HOME and config."""
+        other = self.fx.tmp / "b"
+        (other / "local-cron-jobs" / "logs").mkdir(parents=True)
+        shutil.copytree(self.fx.tmp / "lib", other / "lib")
+        shutil.copy(self.fx.folder / "cron-jobs.sh", other / "local-cron-jobs" / "cron-jobs.sh")
+        return other / "local-cron-jobs" / "cron-jobs.sh"
+
+    def run_from(self, script, *args, path=None, env=None):
+        env = {"PATH": path or self.fx.path(self.launchd()), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+               "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK, **(env or {})}
+        return subprocess.run(["sh", str(script), *args], env=env,
+                              capture_output=True, text=True, timeout=60)
+
+    def test_an_uninstall_from_another_checkout_cancels_the_helper(self):
+        """Lane review: uninstall looked for a pending helper only in its
+        own checkout, so a helper another checkout queued reinstalled the
+        job the user had just removed."""
+        self.plist().write_text("the plist launchd holds\n")
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo"})
+        self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
+        other = self.second_checkout()
+        result = self.run_from(other, "uninstall", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.calls.write_text("")
+        result = self.run_script("reinstall-after-run", "demo")
+        self.assertIn("demo: reinstall cancelled", result.stdout, result.stdout + result.stderr)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertFalse(self.plist().exists())
+
+    def test_a_refused_bootstrap_restores_what_another_checkout_installed(self):
+        """Lane review: the rollback copy sat in each checkout, so after
+        checkout B updated the job, a refused install from A restored A's
+        older plist, not the one launchd last accepted."""
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        other = self.second_checkout()
+        self.assertEqual(self.run_from(other, "install", "demo").returncode, 0)
+        from_b = self.plist().read_text()
+        self.assertIn(str(other.parent), from_b)
+        path = self.fx.path(self.launchd_with("only-b-bin",
+            f'  bootstrap) grep -q "{other.parent}" "$3" || {{ echo refused >&2; exit 5; }} ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
+        self.assertEqual(self.plist().read_text(), from_b)
 
     def test_the_helper_keeps_the_effective_lookup_and_label(self):
         """Review round 4: launchd hands the helper only the plist's
@@ -1806,7 +1855,8 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
             "CRON_JOBS_RUN": "demo", "CRON_JOBS_EXTRA_DIRS": str(extra),
             "CRON_JOBS_HOST": "Host1", "SYSTEM_TOOLS_LABEL_PREFIX": "example.test.override"})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        helper = self.helper_plist().read_text()
+        helper = self.helper_plist().with_name(
+            "example.test.override.cron-reinstall.demo.plist").read_text()
         for key, value in (("CRON_JOBS_EXTRA_DIRS", str(extra)), ("CRON_JOBS_HOST", "host1"),
                            ("SYSTEM_TOOLS_LABEL_PREFIX", "example.test.override")):
             self.assertIn(f"<key>{key}</key>\n        <string>{value}</string>", helper)
@@ -1846,9 +1896,9 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         under `install --all` (errexit off) a failed write went on to
         bootstrap whatever the file held."""
         self.hold()
-        logs = self.fx.folder / "logs"
-        logs.chmod(0o500)
-        self.addCleanup(logs.chmod, 0o700)
+        state = self.helper_plist().parent
+        state.chmod(0o500)
+        self.addCleanup(state.chmod, 0o700)
         result = self.run_script("install", "--all", env={"CRON_JOBS_RUN": "demo"})
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("demo: could not write the reinstall helper", result.stderr)

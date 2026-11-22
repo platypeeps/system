@@ -97,6 +97,10 @@ EXTRA_JOB_DIRS="${CRON_JOBS_EXTRA_DIRS:-}"
 LOG_DIR="$ROOT/logs"
 FAIL_LOG="$LOG_DIR/failures.log"
 AGENT_DIR="$HOME/Library/LaunchAgents"
+# Per-label state: a LaunchAgent belongs to the user, not to a checkout, so
+# the reinstall helper's plist and the plist launchd last accepted live
+# here, where every checkout's install and uninstall see them (sd:9826).
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cron-jobs"
 DOMAIN="gui/$(id -u)"
 # The program launchd starts for every job (sd:6456); see job-launch.c.
 JOB_LAUNCH="$HOME/.local/libexec/system-tools/job-launch"
@@ -1766,15 +1770,17 @@ ensure_job_launch() {
 # its own stale plist each night, the install was refused, and its last step,
 # status --fail-on-drift, failed the job. So a run that asks for its own job
 # bootstraps a one-shot helper label, outside the job's, which waits for the
-# run to end and then installs. Its plist sits beside the job's log, not in
+# run to end and then installs. Its plist sits in STATE_DIR, not in
 # LaunchAgents, so no login loads it again and no sweep reads it as a job.
 reinstall_label() { echo "$LABEL_PREFIX.cron-reinstall.$1"; }
+helper_plist_for() { echo "$STATE_DIR/$(reinstall_label "$1").plist"; }
+accepted_plist_for() { echo "$STATE_DIR/$(label_for "$1").accepted"; }
 defer_install() { # job
   local job="$1" label plist err
   label="$(reinstall_label "$job")"
-  plist="$LOG_DIR/.$job.reinstall.plist"
+  plist="$(helper_plist_for "$job")"
   # Checked by hand: under `install --all` errexit is off.
-  if ! cat > "$plist" <<EOF
+  if ! mkdir -p "$STATE_DIR" || ! cat > "$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1867,7 +1873,7 @@ cmd_reinstall_after_run() { # job
   else
     rm -f "$LOG_DIR/.$job.reinstall.failed"
   fi
-  rm -f "$LOG_DIR/.$job.reinstall.plist"
+  rm -f "$(helper_plist_for "$job")"
   # Last: the bootout ends this process with its label.
   launchctl bootout "$DOMAIN/$(reinstall_label "$job")" 2>/dev/null || true
   return $rc
@@ -1885,25 +1891,25 @@ cmd_install() {
   # holds, so `verify` still reads it STALE and the next install retries.
   hold_job_lock "$job" || return 1
   # The helper's cancellation, read under the lock uninstall takes too.
-  if [ -n "${REINSTALL_HELPER:-}" ] && [ ! -f "$LOG_DIR/.$job.reinstall.plist" ]; then
+  if [ -n "${REINSTALL_HELPER:-}" ] && [ ! -f "$(helper_plist_for "$job")" ]; then
     exec 8>&-
     echo "cancelled: $job: reinstall cancelled; uninstalled since its run asked for it"
     return 0
   fi
   # Checked by hand: under `||` (each_or_one) errexit is off, and a failed
   # write went on to unload the working agent. The new plist is rendered
-  # and linted beside the installed one first. logs/.<job>.plist.accepted
+  # and linted beside the installed one first. <state>/<label>.accepted
   # is the last plist launchd loaded, promoted only after a bootstrap
   # succeeds, so a refused bootstrap puts it back even when an earlier
   # install died between replace and bootstrap (sd:9826 review).
   plist="$(plist_for "$job")"
   new="$plist.new"
-  accepted="$LOG_DIR/.$job.plist.accepted"
+  accepted="$(accepted_plist_for "$job")"
   # Seeds the rollback point on the first install that keeps one: a loaded
   # job's plist is the one launchd accepted.
   [ -f "$accepted" ] || ! is_loaded "$job" || [ ! -f "$plist" ] ||
-    cp -p "$plist" "$accepted" || rm -f "$accepted"
-  if ! { mkdir -p "$AGENT_DIR" && write_plist "$job" "$new" &&
+    { mkdir -p "$STATE_DIR" && cp -p "$plist" "$accepted"; } || rm -f "$accepted"
+  if ! { mkdir -p "$AGENT_DIR" "$STATE_DIR" && write_plist "$job" "$new" &&
          { ! command -v plutil >/dev/null 2>&1 || plutil -lint -s "$new"; } &&
          mv "$new" "$plist"; }; then
     rm -f "$new"
@@ -1962,7 +1968,8 @@ cmd_install() {
 # The lock only where there is a label to boot out: a job never loaded here
 # has no run to kill, and `uninstall --all` leaves it no lock file.
 cmd_uninstall() {
-  local job="$1" helper="$LOG_DIR/.$1.reinstall.plist"
+  local job="$1" helper
+  helper="$(helper_plist_for "$job")"
   if is_loaded "$job" || [ -f "$helper" ]; then
     hold_job_lock "$job" || return 1
     # A pending reinstall is cancelled under the lock the helper's install
@@ -1974,7 +1981,7 @@ cmd_uninstall() {
     ! is_loaded "$job" || launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
     exec 8>&-
   fi
-  rm -f "$(plist_for "$job")" "$LOG_DIR/.$job.reinstall.failed" "$LOG_DIR/.$job.plist.accepted"
+  rm -f "$(plist_for "$job")" "$LOG_DIR/.$job.reinstall.failed" "$(accepted_plist_for "$job")"
   echo "uninstalled: $job"
 }
 
