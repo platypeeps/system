@@ -761,10 +761,11 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         result = self.sync("elsewhere")
         calls = [c for c in self.called("herdr agent") if " w1:p1" in c]
-        self.assertEqual(calls[-5:], ["herdr agent send-keys w1:p1 / r c",
+        self.assertEqual(calls[-6:], ["herdr agent send-keys w1:p1 / r c",
                                       "herdr agent read w1:p1 --format ansi",
                                       "herdr agent get w1:p1",
                                       "herdr agent read w1:p1 --format ansi",
+                                      "herdr agent get w1:p1",
                                       "herdr agent send-keys w1:p1 enter"], result.stdout)
         self.assertEqual(self.called("herdr agent prompt"), [])
         self.assertIn("reconnect: sent /rc to w1:p1\n", result.stdout)
@@ -851,6 +852,19 @@ class RemoteControlReconnects(Machine):
                 self.assertIn("; no enter\n", result.stdout)
                 (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
 
+    def test_a_new_session_during_the_last_read_gets_no_enter(self):
+        # sd:9427 review: the session was asked before the last screen
+        # read only. A pane that changed session during that read, and
+        # drew the same /rc box, took the Enter in its new session. The
+        # fourth get, after the last read, finds the change.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"gets": 4, "session": "s9"}])
+        result = self.sync("elsewhere")
+        self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter "
+                      "(w1:p1 s9 idle); no enter\n", result.stdout)
+
     def test_a_draft_typed_during_the_last_get_gets_no_enter(self):
         # sd:9427 review: the operator replaced /rc with a draft while
         # the get after the typed read ran; the session still said idle,
@@ -869,7 +883,8 @@ class RemoteControlReconnects(Machine):
         # The enter gets what is left of the gap and the budget; none
         # left, no enter, and the pane stays owed. The stub
         # clock jumps past the budget at the last read before the enter,
-        # the fifth: the pass's, the send's two, and two after the typing.
+        # the fifth: the pass's, the send's two, and two after the typing;
+        # the get after it is refused, out of budget.
         clock = self.tmp / "clock"
         executable(self.stubs / "date", '#!/bin/sh\n'
                    'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
@@ -880,8 +895,8 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_AT="5", FAKE_CLOCK_JUMP="61")
         self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
         self.assertEqual(self.prompts(), [], result.stdout)
-        self.assertIn("reconnect: typed /rc into w1:p1, but the gap or budget ran out before the enter\n",
-                      result.stdout)
+        self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter "
+                      "(no get, exit 124); no enter\n", result.stdout)
         self.assertEqual(self.owed(), ["w1:p1"])
 
     def test_a_switch_sends_rc_to_idle_panes_only(self):

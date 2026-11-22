@@ -641,6 +641,16 @@ send_enter() {
     echo "reconnect: typed /rc into $1, but it changed before the enter (its screen moved during the check); no enter"
     return $out
   fi
+  # A new session can draw the same /rc box, so the last read proves
+  # no session: it is asked once more after it, as before the typing
+  # (sd:9427 review).
+  got=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent get "$1") ||
+    { echo "reconnect: typed /rc into $1, but it changed before the enter (no get, exit $?); no enter"; return $out; }
+  now=$(rc_read pane <<<"$got") || now=""
+  if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
+    echo "reconnect: typed /rc into $1, but it changed before the enter (${now:-no claude pane in the answer}); no enter"
+    return $out
+  fi
   if ! now=$(current_since) || [[ "$now" != "$3" ]]; then
     echo "reconnect: typed /rc into $1, but it changed before the enter (a newer switch, or $RC_PENDING did not read); no enter"
     return $out
