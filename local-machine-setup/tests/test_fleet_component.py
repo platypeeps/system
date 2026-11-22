@@ -366,7 +366,8 @@ class RepoCommonCron(Case):
         out = result.stdout
         self.assertEqual(result.returncode, 0, out + result.stderr)
         self.assertNotIn(FLEET_JOB, out)
-        self.assertEqual(self.cron_calls(), [])
+        # Other jobs the roster names still install (sd:9855).
+        self.assertNotIn(f"install {FLEET_JOB}", self.cron_calls())
 
     def test_a_repo_job_already_installed_is_not_swept(self):
         self.jobs.mkdir(parents=True)
@@ -413,6 +414,19 @@ class RepoCommonCron(Case):
         cron = (self.profiles / "personal.cron").read_text()
         self.assertIn("own-job", cron)
         self.assertNotIn(FLEET_JOB, cron)
+
+
+class MachineHealthJob(unittest.TestCase):
+    """sd:9855: every machine stores its disk and services for Health
+    hourly, so the repo roster names the job and the example runs it."""
+
+    def test_every_machine_records_its_health_each_hour(self):
+        roster = (FOLDER / "examples/profiles/common.cron").read_text().split("\n")
+        self.assertIn("machine-health-hourly", roster)
+        job = (ROOT / "local-cron-jobs/examples/machine-health-hourly.job").read_text()
+        self.assertRegex(job, r'(?m)^JOB_SCHEDULE="[0-5]?[0-9] \* \* \* \*"$')
+        # --record names the job's interval; a reading older is stale.
+        self.assertRegex(job, r'(?m)^JOB_COMMAND=".*/bin/sd\\?" services list --record 3600"$')
 
 
 if __name__ == "__main__":

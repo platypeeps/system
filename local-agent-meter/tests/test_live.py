@@ -1251,7 +1251,8 @@ class ServiceFilters(unittest.TestCase):
                            "cloudflare statuspage"
                            " https://www.cloudflarestatus.com/api/v2/summary.json"
                            " groups=north-america,cloudflare-sites-and-services stale=3")])
-        self.assertEqual(len(old), len(new))
+        # Suno came after that default (sd:9903).
+        self.assertEqual(new[len(old):], ["suno http https://suno.com"])
 
     def test_a_group_filter_keeps_its_components_and_ungrouped_ones(self):
         got = self.read({"groups": ["north-america"]})
@@ -1725,6 +1726,12 @@ class Services(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertEqual(len(services), len(service_status.STARTING.splitlines()))
 
+    def test_suno_is_an_http_reachability_check(self):
+        # sd:9903: Suno has no status feed and no credits row; the
+        # operator wants http reachability of suno.com only.
+        services, _ = service_status.parse_services(service_status.STARTING)
+        self.assertIn(("suno", "http", "https://suno.com", [], {}), services)
+
     def test_a_statuspage_summary(self):
         got = self.read("statuspage", SUMMARY)
         self.assertEqual((got["status"], got["indicator"]), ("degraded", "minor"))
@@ -2066,6 +2073,19 @@ class Live(unittest.TestCase):
         held = writes.read_settings(self.connection(), ["dashboard.status_services"])
         self.assertEqual(held["dashboard.status_services"], service_status.STARTING)
         self.assertIn("moved to the new default", done.stdout)
+
+    def test_an_unedited_seed_from_before_suno_moves_to_the_new_one(self):
+        # sd:9903 review: a list seeded before Suno was added never held
+        # it, since only a never-held list got STARTING.
+        self.env.update({name: "http://127.0.0.1:%d" % closed_port() for name in PROXIES},
+                        NO_PROXY="", no_proxy="")
+        earlier = service_status.STARTING.replace("suno http https://suno.com\n", "")
+        self.setting("dashboard.status_services", earlier)
+        done = self.run_live("services")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        held = writes.read_settings(self.connection(), ["dashboard.status_services"])
+        self.assertEqual(held["dashboard.status_services"], service_status.STARTING)
+        self.assertIn("service-status:suno", self.rows("service-status:"))
 
     def test_an_edited_old_default_list_stays_as_the_operator_left_it(self):
         self.env.update({name: "http://127.0.0.1:%d" % closed_port() for name in PROXIES},

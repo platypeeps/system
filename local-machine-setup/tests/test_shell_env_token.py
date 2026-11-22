@@ -225,20 +225,35 @@ class TokenBlock(base.SyntheticHome):
                         '  "find-generic-password -s claude-code-oauth-token -w") echo tok-plain ;;\n'
                         '  *) exit 44 ;;\n'
                         'esac\n')
+        # A slow cat holds the FIFO open past A's close, as a loaded
+        # machine does; the writer must still give it A alone.
+        base.write_exec(security / "cat",
+                        '#!/bin/sh\n[ $# -eq 1 ] || exec /bin/cat "$@"\n'
+                        'exec 3<"$1"; sleep 0.3; exec /bin/cat <&3\n')
         fifo = self.home / ".claude.json"
         os.mkfifo(fifo)
         done = threading.Event()
 
         def serve():
+            # A second open must be a new reader: B waits until the first
+            # reader is gone (ENXIO), or B lands in A's read and the pair
+            # is no JSON (sd:9652 gate flake under load).
+            reader_gone = True
             for who in ("a", "b"):
                 while not done.is_set():
                     try:
                         fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
-                        break
                     except OSError:
+                        reader_gone = True
                         done.wait(0.01)
+                        continue
+                    if reader_gone:
+                        break
+                    os.close(fd)
+                    done.wait(0.01)
                 else:
                     return
+                reader_gone = False
                 os.set_blocking(fd, True)
                 os.write(fd, ('{"oauthAccount": {"emailAddress": "%s@example.test", '
                               '"organizationUuid": "org-%s"}}' % (who, who)).encode())
