@@ -1455,8 +1455,42 @@ class RemoteControlReconnects(Machine):
         self.assertIn("reconnect: the 60s budget is spent before the /rc to w1:p1; still owed",
                       result.stdout)
         self.assertNotIn("not sent again", result.stdout)
+        # sd:9427 review: the row was marked typed before this budget
+        # check, though nothing was typed; an operator's own /rc there
+        # later took the enter. The mark goes only with the keys.
+        self.assertNotIn(" typed", (self.script.parent / "state/rc-owed").read_text())
         self.sync("elsewhere", FAKE_CLOCK=str(clock))
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_a_stale_typed_mark_goes_before_the_keys(self):
+        # sd:9427 review: a typed row whose box reads empty holds no
+        # typing of cswap's; a pass refused before its keys left the
+        # mark, and the operator's own /rc there later took the enter.
+        # A failed gap check here keeps the pane owed, mark gone.
+        now = int(time.time())
+        owed = self.owe(f"sd w1:p1 s1 {now} typed\n", now)
+        self.publish(ONE)  # no switch: the seeded mark is the one listed
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_HERDR_GET_SLOW="0.6", CSWAP_RC_GAP_MS="500")
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+        self.assertEqual(owed.read_text(), f"sd w1:p1 s1 {now}\n", result.stdout)
+
+    def test_an_entered_rc_is_done_before_the_pass_s_last_write(self):
+        # sd:9427 review: after a good enter the row stayed sent until
+        # the pass's last write; that write failed, the operator typed
+        # /rc under a banner /rc had not redrawn, and the next sync's
+        # resume entered it. The row is marked done right after the enter.
+        failing = self.tmp / "failing-printf.sh"
+        failing.write_text('printf() { [ "$1" = %s ] && case "$2" in *w1:p1*) return 1;; esac;'
+                           ' builtin printf "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(failing))
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertIn("could not update", result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED.replace("\u276f\u00a0\n", "\u276f\u00a0/rc\n")])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
 
     def test_a_failed_herdr_call_is_named_as_the_cause(self):
         # sd:9427 triage: a read that failed was logged as the pane having

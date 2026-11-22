@@ -560,13 +560,6 @@ send_rc() {
     echo "reconnect: $1 changed before the send (a newer switch); the current one lists it"
     return 1
   fi
-  # The row is marked typed before the keys go, so a later pass knows
-  # a /rc in this box is cswap's (sd:9427 review). It counts in the gap.
-  if ! mark_typed "$HERDR_SESSION $1 $2 $3"; then
-    echo "reconnect: could not write $RC_OWED before typing /rc into $1; still owed"
-    return 1
-  fi
-  RC_TYPED=1
   # The gap and the budget are read again after the switch read, and
   # the typing takes only what is left (sd:9427 review).
   took=$(($(now_ms) - start))
@@ -577,6 +570,24 @@ send_rc() {
   left=$((RC_DEADLINE - $(date +%s)))
   if ((left <= 0)); then
     echo "reconnect: the ${RC_BUDGET}s budget is spent before the /rc to $1; still owed"
+    return 1
+  fi
+  # The row is marked typed after every check, right before the keys,
+  # so a later pass knows a /rc in this box is cswap's; a mark with no
+  # keys after it would let an operator's own /rc take the enter
+  # (sd:9427 review). The mark counts in the gap, read once more after
+  # it; past it, the mark goes. ponytail: a pass killed between the
+  # mark and the keys still leaves one; herdr has no check-and-send.
+  if ! mark_typed "$HERDR_SESSION $1 $2 $3"; then
+    echo "reconnect: could not write $RC_OWED before typing /rc into $1; still owed"
+    return 1
+  fi
+  RC_TYPED=1
+  took=$(($(now_ms) - start))
+  left=$((RC_DEADLINE - $(date +%s)))
+  if ((took >= RC_GAP_MS || left <= 0)); then
+    unmark_typed "$HERDR_SESSION $1 $2 $3"
+    echo "reconnect: the gap or budget ran out before typing /rc into $1; still owed"
     return 1
   fi
   # To the millisecond: rounded up to a second, a send could deliver
@@ -595,7 +606,7 @@ send_rc() {
   err=$(st_step "$bound" "$HERDR" agent send-keys "$1" / r c 9>&- 2>&1 >/dev/null) || rc=$?
   [[ -z "$err" ]] || printf '%s\n' "$err" >&2
   if ((rc == 125)) && [[ "$err" == *"st_bounded: process group denied"* ]]; then
-    RC_TYPED=0
+    unmark_typed "$HERDR_SESSION $1 $2 $3"
     echo "reconnect: /rc to $1 never started (exit 125); still owed"
     return 1
   fi
@@ -698,6 +709,7 @@ send_enter() {
     echo "reconnect: the enter for /rc in $1 failed or ran over $RC_GAP_MS ms (exit $rc); a box that still shows /rc takes it next sync"
     return 2
   fi
+  mark_done "$HERDR_SESSION $1 $2 $3" || echo "reconnect: could not mark $1 done in $RC_OWED"
 }
 
 # One reconnect pass under RC_LOCK; a sync that finds it held skips,
@@ -744,10 +756,23 @@ current_since() {
 mark_sent() {
   awk -v row="$1" '$0 == row || $0 == row " typed" { print row, "sent"; next } { print }' "$RC_OWED" >"$RC_OWED.sent" 2>/dev/null
 }
-# Mark the owed RC_OWED row $1 typed, in one rename.
+# Mark the owed RC_OWED row $1 typed, in one rename; unmark_typed
+# takes the mark off, and RC_TYPED says which one ran last.
 mark_typed() {
   { awk -v typing="$1" '$0 == typing { print $0, "typed"; next } { print }' "$RC_OWED" >"$RC_OWED.typed" &&
     mv "$RC_OWED.typed" "$RC_OWED"; } 2>/dev/null
+}
+unmark_typed() {
+  RC_TYPED=0
+  { awk -v typing="$1" '$0 == typing " typed" { print typing; next } { print }' "$RC_OWED" >"$RC_OWED.typed" &&
+    mv "$RC_OWED.typed" "$RC_OWED"; } 2>/dev/null
+}
+# Mark the sent RC_OWED row $1 done right after its enter went: kept
+# sent until the pass's last write, a write that failed let a later
+# resume enter an operator's own /rc (sd:9427 review).
+mark_done() {
+  { awk -v entered="$1" '$0 == entered " sent" { print entered, "done"; next } { print }' "$RC_OWED" >"$RC_OWED.done" &&
+    mv "$RC_OWED.done" "$RC_OWED"; } 2>/dev/null
 }
 commit_sent() { mv "$RC_OWED.sent" "$RC_OWED" 2>/dev/null; }
 
@@ -826,6 +851,12 @@ reconnect_pass() {
           # only the enter. RC_TYPED says send_rc marked the row typed.
           rc=0 RC_TYPED=0
           if [[ "$verdict" == send ]]; then
+            # An empty box holds no typing of cswap's: a typed mark
+            # goes before anything else (sd:9427 review).
+            if [[ "$sent" == typed ]]; then
+              unmark_typed "$hs $pane $session $since"
+              sent="" row="$hs $pane $session $since"
+            fi
             send_rc "$pane" "$session" "$since" || rc=$?
           else
             send_enter "$pane" "$session" "$since" mark || rc=$?
