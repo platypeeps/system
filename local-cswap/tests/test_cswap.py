@@ -865,6 +865,20 @@ class RemoteControlReconnects(Machine):
         self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter "
                       "(w1:p1 s9 idle); no enter\n", result.stdout)
 
+    def test_an_operator_s_own_rc_in_an_owed_pane_gets_no_enter(self):
+        # sd:9427 review: a box showing exactly /rc took the enter as
+        # the typing of a stopped pass, though cswap typed nothing
+        # there: the operator's own unsubmitted /rc was submitted. Only
+        # a row cswap marked typed before it typed takes that enter.
+        now = int(time.time())
+        self.owe(f"sd w1:p1 s1 {now}\n", now)
+        self.publish(ONE)  # no switch: the seeded mark is the one listed
+        self.panes(["w1:p1", "claude", "idle", "s1",
+                    DROPPED.replace("❯ \n", "❯ /rc\n")])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+
     def test_a_draft_typed_during_the_last_get_gets_no_enter(self):
         # sd:9427 review: the operator replaced /rc with a draft while
         # the get after the typed read ran; the session still said idle,

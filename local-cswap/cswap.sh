@@ -397,17 +397,20 @@ owe_rc() {
 # listing owes it again (sd:9427 review). "sent" is marked before the
 # enter; "done" once the enter went, or a box no longer shows the /rc,
 # so a sent row's box is read only until then (sd:9427 review).
+# "typed" is marked before cswap types /rc into the pane: only such a
+# row's box showing exactly /rc is cswap's typing and takes the enter;
+# an operator's own /rc in an owed pane is theirs (sd:9427 review).
 # The rows to keep, unchanged: other herdr sessions' rows, and this
 # session's rows for the switch at $1; none if unreadable.
 kept_rows() {
   [[ -e "$RC_OWED" ]] || return 0
-  awk -v hs="$HERDR_SESSION" -v since="$1" '(NF == 4 || NF == 5 && ($5 == "sent" || $5 == "done")) && ($1 != hs || $4 == since)' "$RC_OWED"
+  awk -v hs="$HERDR_SESSION" -v since="$1" '(NF == 4 || NF == 5 && ($5 == "typed" || $5 == "sent" || $5 == "done")) && ($1 != hs || $4 == since)' "$RC_OWED"
 }
 
 # Whether RC_OWED holds a row of this herdr session: an owed one, or a
 # sent one whose /rc may still wait in the box for its enter.
 owes_here() {
-  awk -v hs="$HERDR_SESSION" '(NF == 4 || NF == 5 && $5 == "sent") && $1 == hs { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null
+  awk -v hs="$HERDR_SESSION" '(NF == 4 || NF == 5 && ($5 == "typed" || $5 == "sent")) && $1 == hs { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null
 }
 
 # A pending switch to this herdr session's owed panes, once herdr lists
@@ -557,6 +560,13 @@ send_rc() {
     echo "reconnect: $1 changed before the send (a newer switch); the current one lists it"
     return 1
   fi
+  # The row is marked typed before the keys go, so a later pass knows
+  # a /rc in this box is cswap's (sd:9427 review). It counts in the gap.
+  if ! mark_typed "$HERDR_SESSION $1 $2 $3"; then
+    echo "reconnect: could not write $RC_OWED before typing /rc into $1; still owed"
+    return 1
+  fi
+  RC_TYPED=1
   # The gap and the budget are read again after the switch read, and
   # the typing takes only what is left (sd:9427 review).
   took=$(($(now_ms) - start))
@@ -585,6 +595,7 @@ send_rc() {
   err=$(st_step "$bound" "$HERDR" agent send-keys "$1" / r c 9>&- 2>&1 >/dev/null) || rc=$?
   [[ -z "$err" ]] || printf '%s\n' "$err" >&2
   if ((rc == 125)) && [[ "$err" == *"st_bounded: process group denied"* ]]; then
+    RC_TYPED=0
     echo "reconnect: /rc to $1 never started (exit 125); still owed"
     return 1
   fi
@@ -731,7 +742,12 @@ current_since() {
 # review). A send that does not happen keeps the row owed in the
 # pass's last write.
 mark_sent() {
-  awk -v row="$1" '$0 == row { print $0, "sent"; next } { print }' "$RC_OWED" >"$RC_OWED.sent" 2>/dev/null
+  awk -v row="$1" '$0 == row || $0 == row " typed" { print row, "sent"; next } { print }' "$RC_OWED" >"$RC_OWED.sent" 2>/dev/null
+}
+# Mark the owed RC_OWED row $1 typed, in one rename.
+mark_typed() {
+  { awk -v typing="$1" '$0 == typing { print $0, "typed"; next } { print }' "$RC_OWED" >"$RC_OWED.typed" &&
+    mv "$RC_OWED.typed" "$RC_OWED"; } 2>/dev/null
 }
 commit_sent() { mv "$RC_OWED.sent" "$RC_OWED" 2>/dev/null; }
 
@@ -760,14 +776,17 @@ reconnect_pass() {
       else print "sent", $0
       next
     }
-    NF != 4 || $4 !~ /^[0-9]+$/ { next }
+    !(NF == 4 || NF == 5 && $5 == "typed") || $4 !~ /^[0-9]+$/ { next }
     $1 != hs { print "other", $0; next }
     $4 != cur { print "stale", $0; next }
     !(($2 " " $3) in status) && !($2 in unknown) { print "gone", $0; next }
     status[$2 " " $3] == "idle" || status[$2 " " $3] == "done" { print "try", $0; next }
     { print "keep", $0 }' - "$RC_OWED" <<<"$PANES") ||
     { echo "reconnect: skipped: $RC_OWED was not readable"; return 0; }
+  local row
   while read -r action hs pane session since sent; do
+    # An owed row as read, its typed mark kept.
+    row="$hs $pane $session $since${sent:+ $sent}"
     case "$action" in
       other | sent) keep+="$hs $pane $session $since${sent:+ $sent}"$'\n' ;;
       resume)
@@ -784,33 +803,36 @@ reconnect_pass() {
           fi
         fi
         keep+="$hs $pane $session $since $sent"$'\n' ;;
-      keep) keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1)) ;;
+      keep) keep+="$row"$'\n'; mine=$((mine + 1)) ;;
       gone) echo "reconnect: $pane is gone or runs another session; not owed" ;;
       stale) echo "reconnect: $pane was owed for a switch that is no longer current; not owed" ;;
       try)
         if (($(date +%s) >= RC_DEADLINE)); then
           echo "reconnect: the ${RC_BUDGET}s budget is spent; $pane stays owed"
-          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
+          keep+="$row"$'\n'; mine=$((mine + 1))
         elif rc=0; screen=$(rc_step 10 "$HERDR" agent read "$pane" --format ansi) || rc=$?; ((rc != 0)); then
           rc_failed read "$pane" "$rc"
-          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
+          keep+="$row"$'\n'; mine=$((mine + 1))
         elif ! verdict=$(rc_read screen <<<"$screen"); then
           echo "reconnect: $pane's screen did not parse; still owed"
-          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
-        elif [[ "$verdict" != send && "$(rc_read typed <<<"$screen" 2>/dev/null)" != send ]]; then
+          keep+="$row"$'\n'; mine=$((mine + 1))
+        elif [[ "$verdict" != send && ( "$sent" != typed ||
+          "$(rc_read typed <<<"$screen" 2>/dev/null)" != send ) ]]; then
           echo "reconnect: $pane $verdict"
-          keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
+          keep+="$row"$'\n'; mine=$((mine + 1))
         else
-          # A box that shows exactly /rc holds the typing of a pass
-          # that stopped before the enter: it takes only the enter.
-          rc=0
+          # A box that shows exactly /rc, in a row marked typed, holds
+          # the typing of a pass that stopped before the enter: it takes
+          # only the enter. RC_TYPED says send_rc marked the row typed.
+          rc=0 RC_TYPED=0
           if [[ "$verdict" == send ]]; then
             send_rc "$pane" "$session" "$since" || rc=$?
           else
             send_enter "$pane" "$session" "$since" mark || rc=$?
           fi
           if ((rc == 1)); then
-            keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
+            ((RC_TYPED == 0)) || [[ "$sent" == typed ]] || row+=" typed"
+            keep+="$row"$'\n'; mine=$((mine + 1))
           else
             sent=sent
             ((rc != 0)) || { echo "reconnect: sent /rc to $pane"; sent="done"; }
