@@ -69,34 +69,45 @@ st_obsidian_vault() {
 # same mapping in sd_dashboard/claude_env.py, since its package may run outside
 # this checkout.
 # A dot syntax error ends a POSIX shell whatever set -e says, so a half-written
-# env.sh ended cron runs with no FAILED line (sd:9652). The file is read
-# once; `sh -n` checks that text and _st_text_run runs it, so a save in
-# between cannot hand it a broken file. A file that fails is skipped and
-# named on one stderr line. Xtrace stays off for the read and the mapping,
-# so no value reaches a trace (sd:9910); a caller's own xtrace comes back
-# after.
-# The threat model is one operator: a file env.sh sources is not checked.
-# _st_text_run: run the env.sh text st_shell_env read. A `return` in the
-# text ends this function only, as it ended the file under a dot.
-_st_text_run() {
-    eval "$_st_text"
-}
-
+# env.sh ended cron runs with no FAILED line (sd:9652). env.sh is copied once
+# to a private file beside it; `sh -n` checks the copy and the dot reads the
+# same copy, so a save in between cannot hand it a broken file. A dot keeps
+# `return`, BASH_SOURCE's folder and $0 as they were. Errexit and nounset
+# are off for the dot and the caller's come back after: macOS sh ends a
+# `set -e` shell on a failing line in a dot even under `||`. A file
+# that fails the check is skipped and named on one stderr line. With no copy
+# (a read-only folder), the file itself is checked and read. Xtrace stays off
+# for the read and the mapping, so no value reaches a trace (sd:9910); a
+# caller's own xtrace comes back after. The threat model is one operator: a
+# file env.sh sources is not checked.
+# ponytail: a kill between copy and rm leaves the 0600 copy beside env.sh.
 st_shell_env() {
     case $- in *x*) _st_x=1 ;; *) _st_x= ;; esac
-    set +x
+    _st_eu=
+    case $- in *e*) _st_eu=e ;; esac
+    case $- in *u*) _st_eu=${_st_eu}u ;; esac
+    set +xeu
     _st_shenv="$HOME/.config/shell/env.sh"
-    if [ -f "$_st_shenv" ] && _st_text=$(cat "$_st_shenv" 2>/dev/null); then
-        if printf '%s\n' "$_st_text" | sh -n >/dev/null 2>&1; then
-            _st_text_run >/dev/null 2>&1
-            set +x
+    if [ -f "$_st_shenv" ]; then
+        if _st_env_copy=$(mktemp "$_st_shenv.XXXXXX" 2>/dev/null); then
+            cat "$_st_shenv" >"$_st_env_copy" 2>/dev/null || :
+        else
+            _st_env_copy=$_st_shenv
+        fi
+        if sh -n "$_st_env_copy" >/dev/null 2>&1 </dev/null; then
+            # shellcheck source=/dev/null
+            . "$_st_env_copy" >/dev/null 2>&1
+            set +xeu
         else
             printf 'st_shell_env: %s has a syntax error; skipped\n' "$_st_shenv" >&2
         fi
+        [ "$_st_env_copy" = "$_st_shenv" ] || rm -f "$_st_env_copy"
     fi
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
-    unset _st_shenv _st_text
+    unset _st_shenv _st_env_copy
+    [ -z "$_st_eu" ] || set "-$_st_eu"
+    unset _st_eu
     [ -z "$_st_x" ] || { unset _st_x; set -x; return 0; }
     unset _st_x
     return 0

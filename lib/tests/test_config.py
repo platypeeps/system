@@ -411,6 +411,33 @@ class ShellEnv(unittest.TestCase):
             self.assertIn("+ set +x", result.stderr)
             self.assertNotIn("never", result.stdout)
 
+    def test_a_failing_line_in_env_sh_cannot_end_a_set_e_caller(self):
+        # sd:9652 review: a failing command or a false last test in
+        # env.sh ended a `set -e` cron runner with nothing said; so did
+        # an unset name under `set -u`. The caller's flags come back.
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\nfalse\n"
+                    'echo "$ST_TEST_UNSET_NAME"\n'
+                    '[ -d "$HOME/missing" ] && export PATH="$HOME/missing:$PATH"\n')
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        result = shell('set -eu; st_shell_env; echo "after $CLAUDE_CODE_OAUTH_TOKEN $-"', env)
+        self.assertRegex(result.stdout, r"^after tok-custom \S*e\S*\n$", result.stderr)
+        self.assertIn("u", result.stdout.split()[-1])
+
+    def test_env_sh_finds_its_own_folder_through_bash_source(self):
+        # sd:9652 review: under eval, BASH_SOURCE named the loader, so
+        # env.sh could not dot a file beside itself. bash sets it; dash
+        # has none, so this runs under bash.
+        self.env_sh('. "${BASH_SOURCE%/*}/extra.sh"\n')
+        (self.home / ".config/shell/extra.sh").write_text(
+            "export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB}/config.sh"; set -e; st_shell_env; '
+                           'echo "after $CLAUDE_CODE_OAUTH_TOKEN"; ls -A "$HOME/.config/shell"'],
+            env=env, capture_output=True, text=True, check=False)
+        # The private copy is gone after the read.
+        self.assertEqual(result.stdout, "after tok-custom\nenv.sh\nextra.sh\n", result.stderr)
+
     def test_xtrace_never_prints_a_value(self):
         # sd:9652: a caller's set -x, or one env.sh turns on, must not
         # trace the token; the caller's own xtrace comes back after.
