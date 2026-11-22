@@ -3001,9 +3001,63 @@ for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS)):
   rm -f "$ss_err"
 }
 
+# The env.sh block that gives headless claude the setup token of the account
+# cswap made active (sd:9905): one Keychain item per account
+# (claude-code-oauth-token-<email>), the plain item its fallback. Quoted
+# heredoc: the block expands when env.sh is sourced, never here.
+claude_token_block_text() {
+  cat <<'TOKENEOF'
+# >>> machine-setup: claude token per cswap account (sd:9905)
+# One `claude setup-token` key per account in the Keychain, stored by
+# `cswap.sh keys`; headless runs follow the account in ~/.claude.json.
+_cc_acct="$(/usr/bin/plutil -extract oauthAccount.emailAddress raw -o - "$HOME/.claude.json" 2>/dev/null)"
+export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN="$( { [ -n "$_cc_acct" ] && security find-generic-password -s "claude-code-oauth-token-$_cc_acct" -w 2>/dev/null; } || security find-generic-password -s claude-code-oauth-token -w 2>/dev/null)"
+unset _cc_acct
+# <<< machine-setup: claude token per cswap account
+TOKENEOF
+}
+
+# Replace line <n> of env.sh with the block, through a 600 temp file in the
+# same folder and one rename, so a crash leaves the old file whole.
+claude_token_block_write() { # env.sh, line
+  ctw_tmp="$1.sd9905.$$"
+  if (umask 077
+      { head -n "$(($2 - 1))" "$1"; claude_token_block_text; tail -n "+$(($2 + 1))" "$1"; } > "$ctw_tmp") &&
+      mv "$ctw_tmp" "$1"; then
+    return 0
+  fi
+  rm -f "$ctw_tmp"
+  return 1
+}
+
+# Turns the old one-line export, which read one item for every account, into
+# the block, and changes no other line. The block's marker or a hand-written
+# per-account read is ok. Any other CUSTOM_CLAUDE_CODE_OAUTH_TOKEN line is
+# named by number only: it may hold a key, which no output shows.
+claude_token_block() {
+  ctb_env="$HOME/.config/shell/env.sh"
+  [ -f "$ctb_env" ] || return 0
+  # shellcheck disable=SC2016 # the literal text of a hand-written block
+  if grep -qF '# >>> machine-setup: claude token per cswap account' "$ctb_env" ||
+      grep -qF 'claude-code-oauth-token-$_cc_acct' "$ctb_env"; then
+    echo "  ok      ~/.config/shell/env.sh reads the claude token per account"
+    return 0
+  fi
+  ctb_old=$(grep -nE '^[[:space:]]*export[[:space:]]+CUSTOM_CLAUDE_CODE_OAUTH_TOKEN="\$\(security find-generic-password -s claude-code-oauth-token -w( 2>/dev/null)?\)"[[:space:]]*$' "$ctb_env" | cut -d: -f1)
+  ctb_any=$(grep -nE '^[[:space:]]*(export[[:space:]]+)?CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=' "$ctb_env" | cut -d: -f1 | tr '\n' ' ')
+  if [ -n "$ctb_old" ] && [ "$ctb_any" = "$ctb_old " ]; then
+    echo "  DIFFERS ~/.config/shell/env.sh line $ctb_old reads one claude token for every account"
+    run claude_token_block_write "$ctb_env" "$ctb_old"
+  elif [ -n "$ctb_any" ]; then
+    echo "  WARN    ~/.config/shell/env.sh line ${ctb_any% } sets CUSTOM_CLAUDE_CODE_OAUTH_TOKEN its own way — store the key with cswap.sh keys and replace the line with the block in local-machine-setup/machine-setup.sh (edit by hand)"
+  fi
+  unset ctb_env ctb_old ctb_any
+}
+
 stage_tooling() {
   echo "== tooling"
   sd_settings
+  claude_token_block
   if command -v fnm >/dev/null 2>&1; then
     have=$(fnm ls 2>/dev/null || :)
     for v in $(node_versions); do

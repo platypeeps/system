@@ -122,6 +122,37 @@ exit 0
 """
 
 
+# The Keychain: FAKE_KEYCHAIN holds one `<service> <key>` line per item.
+# `find-generic-password -s S` (never -w here) exits 0 when S is held;
+# `-i` reads add-generic-password commands on stdin, as cswap.sh sends them,
+# so no key is in argv. Every argv is logged; stdin is not.
+SECURITY = r"""#!/bin/sh
+echo "security $*" >> "$FAKE_CALLS"
+case "$1" in
+  find-generic-password)
+    grep -q "^$3 " "$FAKE_KEYCHAIN" 2>/dev/null ;;
+  -i)
+    while read -r verb rest; do
+      [ "$verb" = add-generic-password ] || continue
+      service=$(printf '%s\n' "$rest" | sed -n 's/.*-s "\([^"]*\)".*/\1/p')
+      key=$(printf '%s\n' "$rest" | sed -n 's/.*-w "\([^"]*\)".*/\1/p')
+      grep -v "^$service " "$FAKE_KEYCHAIN" > "$FAKE_KEYCHAIN.new" 2>/dev/null || :
+      echo "$service $key" >> "$FAKE_KEYCHAIN.new"
+      mv "$FAKE_KEYCHAIN.new" "$FAKE_KEYCHAIN"
+    done ;;
+  *) exit 64 ;;
+esac
+"""
+
+# A key works when it is FAKE_GOOD_KEY; a call logs no key, only that it ran.
+CLAUDE = r"""#!/bin/sh
+echo "claude $*" >> "$FAKE_CALLS"
+[ -z "${ANTHROPIC_API_KEY:-}" ] || { echo "api key leaked in"; exit 1; }
+[ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = "$FAKE_GOOD_KEY" ] && echo OK && exit 0
+echo "Invalid API key"; exit 1
+"""
+
+
 def executable(path, text):
     path.write_text(text)
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -151,6 +182,9 @@ class Machine(unittest.TestCase):
         stubs = self.tmp / "stub-bin"
         stubs.mkdir()
         executable(stubs / "launchctl", LAUNCHCTL)
+        executable(stubs / "security", SECURITY)
+        executable(stubs / "claude", CLAUDE)
+        self.keychain = self.tmp / "keychain"
         self.calls = self.tmp / "calls.txt"
         self.calls.touch()
         self.state = self.tmp / "cswap.json"
@@ -159,7 +193,8 @@ class Machine(unittest.TestCase):
         self.env = {"PATH": f"{stubs}:/usr/bin:/bin", "HOME": str(self.home),
                     "SYSTEM_TOOLS_CONFIG": str(self.tmp / "config"),
                     "SD_PACK_ROOT": str(self.tmp / "pack"), "FAKE_CALLS": str(self.calls),
-                    "FAKE_CSWAP_STATE": str(self.state), "FAKE_ROW": str(self.row)}
+                    "FAKE_CSWAP_STATE": str(self.state), "FAKE_ROW": str(self.row),
+                    "FAKE_KEYCHAIN": str(self.keychain)}
         self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=1)
 
     def accounts(self, pairs, active):
@@ -559,6 +594,52 @@ class Verbs(Machine):
             self.assertEqual(result.returncode, 1, verb)
             self.assertIn("usage:", result.stderr)
         self.assertFalse((FOLDER / "cswap-auto.plist.template").exists())
+
+
+class HeadlessKeys(Machine):
+    """One `claude setup-token` key per cswap account in the Keychain (sd:9905)."""
+
+    GOOD = "sk-ant-oat01-good_Key-1"
+
+    def keys(self, pasted, **extra):
+        tty = self.tmp / "tty"
+        tty.write_text(pasted)
+        return self.run_verb("keys", CSWAP_KEYS_TTY=str(tty), FAKE_GOOD_KEY=self.GOOD,
+                             ANTHROPIC_API_KEY="sk-ant-api-other", **extra)
+
+    def held(self):
+        if not self.keychain.exists():
+            return {}
+        return dict(line.split(" ", 1) for line in self.keychain.read_text().splitlines())
+
+    def test_a_tripled_paste_keeps_one_copy_and_stores_a_working_key(self):
+        result = self.keys(f"{self.GOOD}{self.GOOD} {self.GOOD}\n\n\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {"claude-code-oauth-token-user1@example.test": self.GOOD})
+        self.assertIn("stored as claude-code-oauth-token-user1@example.test", result.stdout)
+        self.assertIn("user2@example.test: skipped", result.stdout)
+
+    def test_a_key_that_does_not_work_is_not_stored(self):
+        result = self.keys("sk-ant-oat01-bad\n\n\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {})
+        self.assertIn("did not work; nothing stored", result.stdout)
+
+    def test_no_key_reaches_argv_stdout_or_stderr(self):
+        result = self.keys(f"{self.GOOD}\nsk-ant-oat01-bad\n\n")
+        self.assertNotIn("sk-ant-", result.stdout + result.stderr)
+        self.assertNotIn("sk-ant-", self.calls.read_text())
+        self.assertEqual(len(self.called("claude -p")), 2)
+
+    def test_status_warns_per_account_with_no_key_and_names_the_email_only(self):
+        self.publish(ONE)
+        self.keychain.write_text("claude-code-oauth-token-user2@example.test sk-ant-x\n")
+        result = self.run_verb("status", FAKE_FENCE="elsewhere")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("WARN no headless claude key for user1@example.test", result.stdout)
+        self.assertIn("WARN no headless claude key for user3@example.test", result.stdout)
+        self.assertNotIn("user2@example.test", result.stdout)
+        self.assertNotIn("sk-ant-", result.stdout)
 
 
 class TheJob(unittest.TestCase):
