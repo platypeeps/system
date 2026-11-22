@@ -2035,7 +2035,7 @@ cmd_install() {
   # The helper's cancellation, read under the lock uninstall takes too.
   if [ -n "${REINSTALL_HELPER:-}" ] && [ ! -f "$(helper_plist_for "$job")" ]; then
     exec 8>&- 7>&-
-    echo "cancelled: $job: reinstall cancelled; uninstalled since its run asked for it"
+    echo "cancelled: $job: reinstall cancelled; uninstalled or installed since its run asked for it"
     return 0
   fi
   # Checked by hand: under `||` (each_or_one) errexit is off, and a failed
@@ -2125,7 +2125,9 @@ cmd_install() {
   fi
   # Any install that loads the job repairs what a failed deferred reinstall
   # recorded: the helper's, by hand, or a hand-run update (sd:9826).
-  rm -f "$(failed_record_for "$job")"
+  # It supersedes a queued helper too, under the install lock: that one
+  # would put its older request back once its run ends (review).
+  rm -f "$(failed_record_for "$job")" "$(helper_plist_for "$job")"
   exec 8>&- 7>&-
   if [ -n "$unrecorded" ]; then
     echo "failed: $job ($unrecorded)" >&2

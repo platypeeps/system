@@ -1451,14 +1451,14 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         launchctl.chmod(launchctl.stat().st_mode | stat.S_IXUSR)
         return folder
 
-    def run_script(self, *args, path=None, env=None, shell="sh"):
+    def run_script(self, *args, path=None, env=None, shell="sh", cwd=None):
         env = {"PATH": path or self.fx.path(self.launchd()),
                "HOME": str(self.fx.home),
                "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
                "CRON_TEST_CALLS": str(self.calls),
                "PROBE_LOCK": PROBE_LOCK, **(env or {})}
         return subprocess.run([shell, str(self.fx.folder / "cron-jobs.sh"), *args],
-                              env=env, capture_output=True, text=True, timeout=60)
+                              env=env, cwd=cwd, capture_output=True, text=True, timeout=60)
 
     def bootouts(self):
         return [line for line in self.calls.read_text().splitlines() if line.startswith("launchctl bootout")]
@@ -1728,6 +1728,22 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertFalse(self.failed_marker().exists())
         self.assertIn(f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo",
                       self.bootouts())
+
+    def test_a_direct_install_supersedes_a_queued_helper(self):
+        """Lane review: a run from checkout A queued a helper while launchd
+        ran checkout B's plist; an install from B then succeeded. When A's
+        run ended its helper put A's plist back over B's newer install. A
+        successful direct install now drops the queued request, so the
+        helper cancels."""
+        self.helper_plist().write_text("helper\n")
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.helper_plist().exists())
+        before = len(self.calls.read_text().splitlines())
+        result = self.run_script("reinstall-after-run", "demo")
+        self.assertIn("demo: reinstall cancelled", result.stdout, result.stdout + result.stderr)
+        after = self.calls.read_text().splitlines()[before:]
+        self.assertFalse([c for c in after if c.startswith("launchctl bootstrap")], after)
 
     def test_a_cancelled_helper_installs_nothing(self):
         result = self.run_script("reinstall-after-run", "demo")
