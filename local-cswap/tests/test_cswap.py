@@ -187,6 +187,10 @@ elif args[:2] == ["agent", "get"]:
     # A switch by another sync that lands during the pass.
     if os.environ.get("FAKE_SWITCH_DURING_GET"):
         switch(os.environ["FAKE_SWITCH_DURING_GET"])
+    # FAKE_SWITCH_AT_GET=N: a switch that lands at the Nth get only.
+    gets_so_far = open(os.environ["FAKE_CALLS"]).read().splitlines().count("herdr agent get " + args[2])
+    if os.environ.get("FAKE_SWITCH_AT_GET") == str(gets_so_far):
+        switch(os.environ["FAKE_SWITCH_AT_MARK"])
     time.sleep(float(os.environ.get("FAKE_HERDR_GET_SLOW") or 0))
     # FAKE_OWED_AT_GET: rc-owed as the get finds it, copied there.
     if os.environ.get("FAKE_OWED_AT_GET"):
@@ -676,8 +680,9 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         result = self.sync("elsewhere")
         calls = [c for c in self.called("herdr agent") if " w1:p1" in c]
-        self.assertEqual(calls[-3:], ["herdr agent send-keys w1:p1 / r c",
+        self.assertEqual(calls[-4:], ["herdr agent send-keys w1:p1 / r c",
                                       "herdr agent read w1:p1 --format ansi",
+                                      "herdr agent get w1:p1",
                                       "herdr agent send-keys w1:p1 enter"], result.stdout)
         self.assertEqual(self.called("herdr agent prompt"), [])
         self.assertIn("reconnect: sent /rc to w1:p1\n", result.stdout)
@@ -732,10 +737,36 @@ class RemoteControlReconnects(Machine):
                 self.assertEqual(self.called("herdr agent send-keys"), [])
                 (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
 
+    def test_the_target_is_asked_again_before_the_enter(self):
+        # sd:9427 review: the enter skipped the session, status and
+        # switch checks. A pane that restarted, or turned busy, after
+        # the typed read got the Enter in its new session, where it
+        # could submit input or accept a dialog. The third get, the one
+        # after the typing, finds the change; the enter does not go.
+        mark = self.script.parent / "state/rc-pending"
+        rows = [({}, {"gets": 3, "session": "s9"}, "s9"),
+                ({}, {"gets": 3, "status": "blocked"}, "blocked"),
+                ({"FAKE_SWITCH_AT_GET": "3", "FAKE_SWITCH_AT_MARK": str(mark)}, None, "a newer switch")]
+        for env, later, why in rows:
+            with self.subTest(why=why):
+                self.publish(ONE if self.active() == 3 else THREE)
+                row = ["w1:p1", "claude", "idle", "s1", DROPPED] + ([later] if later else [])
+                self.panes(row)
+                for suffix in (".read", ".typed"):
+                    pathlib.Path(self.env["FAKE_HERDR"] + suffix).unlink(missing_ok=True)
+                result = self.sync("elsewhere", **env)
+                self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+                self.assertEqual(self.prompts(), [], result.stdout)
+                self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter", result.stdout)
+                self.assertIn(why, result.stdout)
+                self.assertIn("no enter, not sent again", result.stdout)
+                (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
+
     def test_a_budget_spent_after_the_typing_sends_no_enter(self):
         # The enter gets what is left of the gap and the budget; none
         # left, no enter, and the typed /rc is not sent again. The stub
-        # clock jumps past the budget at the read after the typing.
+        # clock jumps past the budget at the get after the typing, the
+        # last check before the enter.
         clock = self.tmp / "clock"
         executable(self.stubs / "date", '#!/bin/sh\n'
                    'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
@@ -743,7 +774,7 @@ class RemoteControlReconnects(Machine):
                    'exec /bin/date "$@"\n')
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
-        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_AT="4", FAKE_CLOCK_JUMP="61")
+        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_GET="3", FAKE_CLOCK_JUMP="61")
         self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
         self.assertEqual(self.prompts(), [], result.stdout)
         self.assertIn("reconnect: typed /rc into w1:p1, but the gap or budget ran out before the enter; "
@@ -788,14 +819,15 @@ class RemoteControlReconnects(Machine):
         self.publish(THREE)
         self.panes(*(["w1:p%d" % n, "claude", "idle", "s%d" % n, DROPPED] for n in (1, 2, 3)))
         # w1:p1 takes four 1 s reads: the pass's, the send's two and
-        # the one between "/ r c" and "enter" (sd:9427 ruling #70122).
-        result = self.sync("elsewhere", FAKE_HERDR_SLOW="1", CSWAP_RC_BUDGET="6", CSWAP_RC_GAP_MS="5000")
+        # the one between "/ r c" and "enter" (sd:9427 ruling #70122),
+        # and three gets.
+        result = self.sync("elsewhere", FAKE_HERDR_SLOW="1", CSWAP_RC_BUDGET="7", CSWAP_RC_GAP_MS="5000")
         calls = self.calls.read_text().splitlines()
         first_read = next(i for i, c in enumerate(calls) if c.startswith("herdr agent read"))
         self.assertLess(next(i for i, c in enumerate(calls) if c.startswith("cswap switch")), first_read)
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         self.assertEqual(self.owed(), ["w1:p2", "w1:p3"])
-        self.assertIn("reconnect: the 6s budget is spent; w1:p3 stays owed", result.stdout)
+        self.assertIn("reconnect: the 7s budget is spent; w1:p3 stays owed", result.stdout)
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p2 enter", "herdr agent send-keys w1:p3 enter"])
         self.assertEqual(self.owed(), [])
@@ -1252,8 +1284,10 @@ class RemoteControlReconnects(Machine):
         # second /rc. A /rc that went out, or may have (herdr: a timeout
         # does not prove no delivery), keeps its sent mark.
         # Rows: herdr times out; herdr acknowledges past the gap.
-        rows = [({"FAKE_HERDR_KEYS_SLOW": "1.5"}, "1000"),
-                ({"FAKE_HERDR_KEYS_LATE": "1.2"}, "1000")]
+        # A 2000 ms gap: the checks fit it on a loaded gate, where four
+        # took 1057 ms of a 1000 ms gap; the keys run past it.
+        rows = [({"FAKE_HERDR_KEYS_SLOW": "3"}, "2000"),
+                ({"FAKE_HERDR_KEYS_LATE": "2.5"}, "2000")]
         for slow, gap in rows:
             with self.subTest(slow=slow):
                 self.publish(ONE if self.active() == 3 else THREE)

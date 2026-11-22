@@ -593,13 +593,31 @@ send_rc() {
   # From here the /rc may sit in the box: every way out is "not sent
   # again" (2), and only an Enter after a read that shows exactly /rc
   # submits it. A draft typed meanwhile shows there, and gets no Enter.
-  # The read and the Enter fit a gap of their own, from the read on.
+  # The read, the checks after it and the Enter fit a gap of their
+  # own, from the read on.
   start=$(now_ms)
   last=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent read "$1" --format ansi) ||
     { echo "reconnect: typed /rc into $1, but its box then showed (no read, exit $?); no enter, not sent again"; return 2; }
   verdict=$(rc_read typed <<<"$last") || verdict="a screen that did not parse"
   if [[ "$verdict" != send ]]; then
     echo "reconnect: typed /rc into $1, but its box then showed ($verdict); no enter, not sent again"
+    return 2
+  fi
+  # The read proves no target: a new session in the pane, or a pane
+  # turned busy, would take the Enter, which can submit its input or
+  # accept a dialog (sd:9427 review). So the session and status are
+  # asked again after it, and the switch read again, as before the
+  # typing. ponytail: a restart in the milliseconds from here to the
+  # Enter still races; herdr has no check-and-send.
+  got=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent get "$1") ||
+    { echo "reconnect: typed /rc into $1, but it changed before the enter (no get, exit $?); no enter, not sent again"; return 2; }
+  now=$(rc_read pane <<<"$got") || now=""
+  if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
+    echo "reconnect: typed /rc into $1, but it changed before the enter (${now:-no claude pane in the answer}); no enter, not sent again"
+    return 2
+  fi
+  if ! now=$(current_since) || [[ "$now" != "$3" ]]; then
+    echo "reconnect: typed /rc into $1, but it changed before the enter (a newer switch, or $RC_PENDING did not read); no enter, not sent again"
     return 2
   fi
   took=$(($(now_ms) - start))
