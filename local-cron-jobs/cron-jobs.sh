@@ -1948,11 +1948,21 @@ cmd_install() {
   # is written after the old label is out and before the new plist goes
   # in, so a loaded label whose plist matches it is launchd holding it:
   # the bootstrap, or a login, accepted it. Anything else never loaded.
+  # Unloaded, the earlier install died after its bootout: the accepted
+  # plist goes back in and loads before this candidate is even rendered,
+  # so a candidate that fails below leaves the job loaded (round 10).
   if [ -f "$pending" ]; then
     if is_loaded "$job" && cmp -s "$pending" "$plist"; then
       mv "$pending" "$accepted"
     else
       rm -f "$pending"
+      if ! is_loaded "$job" && [ -f "$accepted" ]; then
+        err="$(restore_accepted "$job" "$plist" "$accepted")"
+        case "$err" in
+          *"did not load"*) echo "failed: $job (interrupted install)$err" >&2 ;;
+          *) echo "recovered: $job (an interrupted install)$err" ;;
+        esac
+      fi
     fi
   fi
   # Seeds the rollback point on the first install that keeps one: a loaded

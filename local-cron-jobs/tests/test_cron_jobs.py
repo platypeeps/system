@@ -1788,6 +1788,31 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
+    def test_an_interrupted_install_then_a_lint_failing_candidate_reloads_the_job(self):
+        """Round 10: an install killed after bootout and before bootstrap
+        left the job unloaded. The next install, its candidate refused by
+        plutil, dropped the pending record and returned with the job still
+        down every night. It now reloads the accepted plist first."""
+        self.plist().write_text("the plist launchd holds\n")
+        killed = self.fx.path(self.launchd("kill-bin", on_bootstrap="kill -9 0; "))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        gone = self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+        self.assertTrue(gone.exists(), "the killed install left the job loaded")
+        stubs = self.fx.tmp / "refusing-plutil-bin"
+        stubs.mkdir()
+        (stubs / "plutil").write_text("#!/bin/sh\nexit 1\n")
+        (stubs / "plutil").chmod(0o755)
+        result = self.run_script("install", "demo",
+                                 path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("demo: could not write", result.stderr)
+        self.assertFalse(gone.exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
     def test_a_failed_replace_after_an_interrupted_install_restores_the_accepted_plist(self):
         """Round 9: after an install died between replace and bootstrap,
         the plist on disk was never loaded. A later install whose replace
