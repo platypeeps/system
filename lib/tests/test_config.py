@@ -373,6 +373,22 @@ class ShellEnv(unittest.TestCase):
         self.assertNotIn("tok-custom", result.stderr)
         self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
 
+    def test_a_save_between_the_check_and_the_read_cannot_end_the_shell(self):
+        # sd:9652 review: the check and the dot read env.sh apart, so a
+        # save in between handed the dot a broken file. A fake sh runs
+        # the real check, then rewrites env.sh as an in-place save does.
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        bin_dir = self.home / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "sh"
+        fake.write_text('#!/bin/sh\n/bin/sh "$@"; rc=$?\n'
+                        'printf "if then fi (\\n" > "$HOME/.config/shell/env.sh"\n'
+                        'exit $rc\n')
+        fake.chmod(0o755)
+        env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(self.home)}
+        result = shell('set -e; st_shell_env; echo "after $CLAUDE_CODE_OAUTH_TOKEN"', env)
+        self.assertEqual(result.stdout, "after tok-custom\n", result.stderr)
+
     def test_xtrace_never_prints_a_value(self):
         # sd:9652: a caller's set -x, or one env.sh turns on, must not
         # trace the token; the caller's own xtrace comes back after.

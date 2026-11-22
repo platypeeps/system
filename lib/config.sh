@@ -69,19 +69,20 @@ st_obsidian_vault() {
 # same mapping in sd_dashboard/claude_env.py, since its package may run outside
 # this checkout.
 # A dot syntax error ends a POSIX shell whatever set -e says, so a half-written
-# env.sh ended cron runs with no FAILED line (sd:9652): `sh -n` checks it
-# first (the parser that dots it), and a file that fails is skipped and named
-# on one stderr line. Xtrace stays off for the read and the mapping, so no
-# value reaches a trace (sd:9910); a caller's own xtrace comes back after.
+# env.sh ended cron runs with no FAILED line (sd:9652). The file is read
+# once; `sh -n` checks that text and eval runs the same text, so a save in
+# between cannot hand it a broken file. A file that fails is skipped and
+# named on one stderr line. Xtrace stays off for the read and the mapping,
+# so no value reaches a trace (sd:9910); a caller's own xtrace comes back
+# after.
 # The threat model is one operator: a file env.sh sources is not checked.
 st_shell_env() {
     case $- in *x*) _st_x=1 ;; *) _st_x= ;; esac
     set +x
     _st_shenv="$HOME/.config/shell/env.sh"
-    if [ -f "$_st_shenv" ]; then
-        if sh -n "$_st_shenv" >/dev/null 2>&1 </dev/null; then
-            # shellcheck source=/dev/null
-            . "$_st_shenv" >/dev/null 2>&1
+    if [ -f "$_st_shenv" ] && _st_text=$(cat "$_st_shenv" 2>/dev/null); then
+        if printf '%s\n' "$_st_text" | sh -n >/dev/null 2>&1; then
+            eval "$_st_text" >/dev/null 2>&1
             set +x
         else
             printf 'st_shell_env: %s has a syntax error; skipped\n' "$_st_shenv" >&2
@@ -89,7 +90,7 @@ st_shell_env() {
     fi
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
-    unset _st_shenv
+    unset _st_shenv _st_text
     [ -z "$_st_x" ] || { unset _st_x; set -x; return 0; }
     unset _st_x
     return 0
