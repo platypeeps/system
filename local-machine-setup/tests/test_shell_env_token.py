@@ -67,6 +67,24 @@ class TokenBlock(base.SyntheticHome):
                              capture_output=True, text=True, check=False)
         self.assertEqual(run.stdout, "tok-plain\n", run.stderr)
 
+    def test_the_block_falls_back_under_set_e_with_no_account(self):
+        import subprocess
+        self.write(BEFORE + OLD + AFTER)
+        self.run_tooling("--apply")
+        security = self.stubs / "security-fake"
+        base.write_exec(security / "security",
+                        '#!/bin/sh\n[ "$3" = claude-code-oauth-token ] && echo tok-plain && exit 0\nexit 44\n')
+        for claude_json in (None, '{"other": 1}'):
+            if claude_json is not None:
+                (self.home / ".claude.json").write_text(claude_json)
+            for shell in ("/bin/sh", "/bin/bash"):
+                run = subprocess.run([shell, "-e", "-c",
+                                      f'. "{self.env_sh}"; echo "$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"'],
+                                     env={"HOME": str(self.home), "PATH": f"{security}:/usr/bin:/bin"},
+                                     capture_output=True, text=True, check=False)
+                self.assertEqual((run.returncode, run.stdout), (0, "tok-plain\n"),
+                                 f"{shell} {claude_json}: {run.stderr}")
+
     def test_a_hub_style_block_is_ok_and_untouched(self):
         hub = ('_cc_acct="$(/usr/bin/plutil -extract oauthAccount.emailAddress raw -o - '
                '"$HOME/.claude.json" 2>/dev/null)"\n'

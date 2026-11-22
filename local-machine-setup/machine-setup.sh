@@ -3004,13 +3004,14 @@ for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS)):
 # The env.sh block that gives headless claude the setup token of the account
 # cswap made active (sd:9905): one Keychain item per account
 # (claude-code-oauth-token-<email>), the plain item its fallback. Quoted
-# heredoc: the block expands when env.sh is sourced, never here.
+# heredoc: the block expands when env.sh is sourced, never here. No line may
+# fail: a `set -e` shell that sources env.sh (cron jobs) would stop there.
 claude_token_block_text() {
   cat <<'TOKENEOF'
 # >>> machine-setup: claude token per cswap account (sd:9905)
 # One `claude setup-token` key per account in the Keychain, stored by
 # `cswap.sh keys`; headless runs follow the account in ~/.claude.json.
-_cc_acct="$(/usr/bin/plutil -extract oauthAccount.emailAddress raw -o - "$HOME/.claude.json" 2>/dev/null)"
+_cc_acct="$(/usr/bin/plutil -extract oauthAccount.emailAddress raw -o - "$HOME/.claude.json" 2>/dev/null)" || _cc_acct=
 export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN="$( { [ -n "$_cc_acct" ] && security find-generic-password -s "claude-code-oauth-token-$_cc_acct" -w 2>/dev/null; } || security find-generic-password -s claude-code-oauth-token -w 2>/dev/null)"
 unset _cc_acct
 # <<< machine-setup: claude token per cswap account

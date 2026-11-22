@@ -651,6 +651,14 @@ class HeadlessKeys(Machine):
         self.assertNotIn("stored as", result.stdout)
         self.assertIn("user1@example.test: works, but the Keychain did not store it", result.stdout)
 
+    def test_one_key_pasted_on_two_lines_is_not_stored_for_the_next_account(self):
+        result = self.keys(f"{self.GOOD}\n{self.GOOD}\n\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {"claude-code-oauth-token-user1@example.test": self.GOOD})
+        self.assertIn("user2@example.test: the key entered for user1@example.test; nothing stored",
+                      result.stdout)
+        self.assertEqual(len(self.called("claude -p")), 1)
+
     def test_status_warns_per_account_with_no_key_and_names_the_email_only(self):
         self.publish(ONE)
         self.keychain.write_text("claude-code-oauth-token-user2@example.test sk-ant-x\n")

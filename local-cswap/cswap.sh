@@ -244,7 +244,10 @@ key_item() { # email
 # file or output: claude reads it from its environment, and `security -i`
 # from stdin. CSWAP_KEYS_TTY is for tests only.
 cmd_keys() {
-  local json emails e raw rest tok held
+  local json emails e raw rest tok held i
+  # Each key entered, with its account: a key entered for one account is no key
+  # for the next, as when one paste spans two prompts.
+  local -a took_email=() took_key=()
   # A caller's `bash -x` would trace each key; nothing after this needs it.
   set +x
   [[ -x "$CSWAP_BIN" ]] || { echo "cswap not executable at $CSWAP_BIN" >&2; exit 1; }
@@ -273,6 +276,13 @@ cmd_keys() {
       echo "$e: the paste is no key; nothing stored"
       continue
     fi
+    for i in "${!took_key[@]}"; do
+      [[ "${took_key[$i]}" != "$tok" ]] && continue
+      echo "$e: the key entered for ${took_email[$i]}; nothing stored"
+      continue 2
+    done
+    took_email+=("$e")
+    took_key+=("$tok")
     if (unset ANTHROPIC_API_KEY; export CLAUDE_CODE_OAUTH_TOKEN="$tok"
         st_bounded 90 claude -p "Reply with the single word OK." </dev/null 2>&1) | grep -q '^OK'; then
       # Stored means the item now holds this key: an old item kept by a
@@ -293,6 +303,7 @@ cmd_keys() {
     fi
     unset tok
   done
+  unset took_key
   exec 3<&-
 }
 
