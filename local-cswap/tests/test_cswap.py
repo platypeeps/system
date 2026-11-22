@@ -169,7 +169,8 @@ esac
 """
 
 # The API: a key works when it is FAKE_GOOD_KEY (user1's organization) or
-# FAKE_OTHER_KEY (user2's). The key arrives in the --config on stdin; argv
+# FAKE_OTHER_KEY (user2's); FAKE_LIMITED_KEY is user1's at its usage limit,
+# a 429 that still names the organization. The key arrives in the --config on stdin; argv
 # is logged, so a key in argv shows in the calls.
 CURL = r"""#!/bin/sh
 echo "curl $*" >> "$FAKE_CALLS"
@@ -180,6 +181,10 @@ key=$(sed -n 's/.*Bearer \([^"]*\)".*/\1/p')
 case "$key" in
   "$FAKE_GOOD_KEY") org=11111111-1111-4111-8111-111111111111 ;;
   "${FAKE_OTHER_KEY:-unset}") org=22222222-2222-4222-8222-222222222222 ;;
+  "${FAKE_LIMITED_KEY:-unset}")
+    printf 'HTTP/2 429 \r\nAnthropic-Organization-Id: %s\r\n\r\n' \
+      11111111-1111-4111-8111-111111111111
+    exit 0 ;;
   *) printf 'HTTP/2 401 \r\n\r\n'; exit 0 ;;
 esac
 printf 'HTTP/2 200 \r\nAnthropic-Organization-Id: %s\r\n\r\n' "$org"
@@ -656,6 +661,15 @@ class HeadlessKeys(Machine):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.held(), {})
         self.assertIn("did not work; nothing stored", result.stdout)
+
+    def test_a_key_at_its_usage_limit_works_and_is_stored(self):
+        # A 429 with the organization header means the key authenticated.
+        limited = "sk-ant-oat01-limited"
+        result = self.keys(f"{limited}\n\n\n", FAKE_LIMITED_KEY=limited)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: limited})
+        self.assertIn("user1@example.test: works (account at its usage limit); stored as",
+                      result.stdout)
 
     def test_no_key_reaches_argv_stdout_or_stderr(self):
         result = self.keys(f"{self.GOOD}\nsk-ant-oat01-bad\n\n")
