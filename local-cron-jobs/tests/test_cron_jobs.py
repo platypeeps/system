@@ -1618,6 +1618,20 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertNotIn("deferred:", result.stdout)
         self.assertFalse(self.helper_plist().exists())
 
+    def test_the_helper_starts_under_the_job_launcher(self):
+        """Lane review: the helper started bare /bin/bash, so in a checkout
+        under ~/Documents TCC could refuse it the reinstall script; the
+        bootstrap still passed, install said deferred, and nothing
+        reinstalled the job or left a failure record. It starts under
+        job-launch, as every job does (sd:6456)."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.hold()
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = plistlib.loads(self.helper_plist().read_bytes())["ProgramArguments"]
+        launcher = self.fx.home / ".local/libexec/system-tools/job-launch"
+        self.assertEqual(args[:2], [str(launcher), "/bin/bash"])
+
     def test_a_helper_replaced_while_launchd_tears_the_old_one_down(self):
         """Lane review: a failed run left its helper loaded. `bootout`
         returns before launchd lets the label go, and a bootstrap of the

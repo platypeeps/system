@@ -1826,8 +1826,11 @@ defer_install() { # job
 <dict>
     <key>Label</key>
     <string>$(xml_escape "$label")</string>
+    <!-- Under job-launch, as every job: bare /bin/bash may not read a
+         checkout under ~/Documents (sd:6456). -->
     <key>ProgramArguments</key>
     <array>
+        <string>$(xml_escape "$JOB_LAUNCH")</string>
         <string>/bin/bash</string>
         <string>$(xml_escape "$ROOT")/cron-jobs.sh</string>
         <string>reinstall-after-run</string>
