@@ -203,6 +203,17 @@ class CheckScript(CheckFixture):
         [other] = {line.split()[-1] for line in (self.root / "venvs").read_text().splitlines()}
         self.assertNotEqual(venv, other)
 
+    def test_the_venv_key_names_the_publication_protocol(self):
+        # 0bf86d00 and older publish without the cache lock; their key is
+        # the same pack lib tree and python without a protocol. This one
+        # must never share their cache path.
+        import hashlib
+        unlocked = hashlib.sha256(" ".join(
+            [self.pin, os.path.realpath(sys.executable), sys.version]).encode()).hexdigest()[:16]
+        self.check()
+        [venv] = {line.split()[-1] for line in (self.root / "venvs").read_text().splitlines()}
+        self.assertNotEqual(Path(venv).name, f"venv-{unlocked}")
+
     def test_a_venv_unused_for_two_weeks_goes(self):
         cache = self.base / "cache/system-check"
         old, recent = cache / "venv-0000000000000000", cache / "venv-1111111111111111"

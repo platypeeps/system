@@ -146,10 +146,12 @@ echo "check.sh: pack $pin, $("$python" --version)"
 # sd:9926: one venv per pack lib/ tree and python, kept across gates;
 # tests/gate-venv.sh builds it on a miss. A gate's worktree is new each
 # time, so the cache sits outside it. One unused for 14 days goes.
+# lock1 names the publication protocol: 0bf86d00 and older publish
+# without the cache lock, so they must not share a path with this one.
 venv_cache="${XDG_CACHE_HOME:-$HOME/.cache}/system-check"
 lib_tree="$(git -C "$pack" rev-parse -q --verify HEAD:lib 2>/dev/null || echo "$pin")"
 venv_key="$("$python" -I -c 'import hashlib, os, sys
-print(hashlib.sha256(" ".join([sys.argv[1], os.path.realpath(sys.executable), sys.version]).encode()).hexdigest()[:16])' "$lib_tree")"
+print(hashlib.sha256(" ".join(["lock1", sys.argv[1], os.path.realpath(sys.executable), sys.version]).encode()).hexdigest()[:16])' "$lib_tree")"
 venv="$venv_cache/venv-$venv_key"
 mkdir -p "$venv_cache"
 find "$venv_cache" -mindepth 1 -maxdepth 1 -name 'venv-*' ! -name "venv-$venv_key" -mtime +14 -exec rm -rf {} + 2>/dev/null || :
