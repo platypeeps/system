@@ -434,10 +434,10 @@ xml_escape() { # text: the text with &, < and > as XML entities
   printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-write_plist() { # job name
+write_plist() { # job name [path, default the installed plist]
   local job="$1" label plist x_label x_root x_job x_log x_path x_home x_config x_launch exit_timeout
   label="$(label_for "$job")"
-  plist="$(plist_for "$job")"
+  plist="${2:-$(plist_for "$job")}"
   # Every value below is XML text: a path holding `&` or `<` made a plist
   # launchd cannot parse (sd:2562).
   x_label="$(xml_escape "$label")"; x_root="$(xml_escape "$ROOT")"; x_job="$(xml_escape "$job")"
@@ -1874,7 +1874,7 @@ cmd_reinstall_after_run() { # job
 }
 
 cmd_install() {
-  local job="$1" err plist prev
+  local job="$1" err plist new accepted
   load_job "$job"
   ensure_job_launch || return 1
   if [ "${CRON_JOBS_RUN:-}" = "$job" ]; then
@@ -1891,14 +1891,22 @@ cmd_install() {
     return 0
   fi
   # Checked by hand: under `||` (each_or_one) errexit is off, and a failed
-  # write went on to unload the working agent. The plist launchd holds is
-  # kept as .prev until the new one loads, so a refused bootstrap can put
-  # it back rather than leave the job unloaded (sd:9826 review).
+  # write went on to unload the working agent. The new plist is rendered
+  # and linted beside the installed one first. logs/.<job>.plist.accepted
+  # is the last plist launchd loaded, promoted only after a bootstrap
+  # succeeds, so a refused bootstrap puts it back even when an earlier
+  # install died between replace and bootstrap (sd:9826 review).
   plist="$(plist_for "$job")"
-  prev="$plist.prev"
-  if ! { mkdir -p "$AGENT_DIR" && { [ ! -f "$plist" ] || cp -p "$plist" "$prev"; } &&
-         write_plist "$job"; }; then
-    rm -f "$prev"
+  new="$plist.new"
+  accepted="$LOG_DIR/.$job.plist.accepted"
+  # Seeds the rollback point on the first install that keeps one: a loaded
+  # job's plist is the one launchd accepted.
+  [ -f "$accepted" ] || ! is_loaded "$job" || [ ! -f "$plist" ] ||
+    cp -p "$plist" "$accepted" || rm -f "$accepted"
+  if ! { mkdir -p "$AGENT_DIR" && write_plist "$job" "$new" &&
+         { ! command -v plutil >/dev/null 2>&1 || plutil -lint -s "$new"; } &&
+         mv "$new" "$plist"; }; then
+    rm -f "$new"
     echo "cron-jobs.sh: $job: could not write $plist; nothing changed" >&2
     exec 8>&-
     return 1
@@ -1908,26 +1916,25 @@ cmd_install() {
     wait_unloaded "$job"
   fi
   # One retry: a refused bootstrap is reported, never followed by `installed:`.
-  if ! err=$(launchctl bootstrap "$DOMAIN" "$(plist_for "$job")" 2>&1); then
+  if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
     sleep 1
     wait_unloaded "$job"
-    if ! err=$(launchctl bootstrap "$DOMAIN" "$(plist_for "$job")" 2>&1); then
+    if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
       err="failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
-      if [ -f "$prev" ]; then
+      if [ -f "$accepted" ]; then
         wait_unloaded "$job"
-        if mv "$prev" "$plist" && launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1; then
+        if cp -p "$accepted" "$plist" && launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1; then
           err="$err; restored the previous plist"
         else
           err="$err; the previous plist did not load either: run cron-jobs.sh install $job"
         fi
       fi
       echo "$err" >&2
-      rm -f "$prev"
       exec 8>&-
       return 1
     fi
   fi
-  rm -f "$prev"
+  cp -p "$plist" "$accepted" || rm -f "$accepted"
   # Checked: a refused enable is a failed install, never `installed:`.
   if ! err=$(launchctl enable "$DOMAIN/$(label_for "$job")" 2>&1); then
     echo "failed: $job (launchctl enable $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
@@ -1967,7 +1974,7 @@ cmd_uninstall() {
     ! is_loaded "$job" || launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
     exec 8>&-
   fi
-  rm -f "$(plist_for "$job")" "$LOG_DIR/.$job.reinstall.failed"
+  rm -f "$(plist_for "$job")" "$LOG_DIR/.$job.reinstall.failed" "$LOG_DIR/.$job.plist.accepted"
   echo "uninstalled: $job"
 }
 

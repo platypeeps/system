@@ -1765,6 +1765,35 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         bootstraps = [c for c in self.calls.read_text().splitlines() if c.startswith("launchctl bootstrap")]
         self.assertEqual(len(bootstraps), 3, bootstraps)
 
+    def test_an_install_killed_before_bootstrap_keeps_the_accepted_plist(self):
+        """Lane review: an install killed between replacing the plist and
+        bootstrap left an unproven plist; the next install copied it over
+        .prev, so a refused bootstrap rolled back to the broken plist and
+        left the job unloaded. The rollback point is the plist launchd
+        last accepted, promoted only after a bootstrap succeeds."""
+        self.plist().write_text("the plist launchd holds\n")
+        killed = self.fx.path(self.launchd("kill-bin", on_bootstrap="kill -9 0; "))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        self.assertNotEqual(self.plist().read_text(), "the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("refuse-new-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || { echo refused >&2; exit 5; } ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_a_successful_install_promotes_its_plist(self):
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        accepted = self.fx.folder / "logs" / ".demo.plist.accepted"
+        self.assertEqual(accepted.read_text(), self.plist().read_text())
+        self.assertEqual(self.run_script("uninstall", "demo").returncode, 0)
+        self.assertFalse(accepted.exists())
+
     def test_the_helper_keeps_the_effective_lookup_and_label(self):
         """Review round 4: launchd hands the helper only the plist's
         environment, so an exported CRON_JOBS_EXTRA_DIRS, CRON_JOBS_HOST or
