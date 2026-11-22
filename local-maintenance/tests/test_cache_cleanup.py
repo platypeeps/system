@@ -110,6 +110,10 @@ class CacheCleanupTest(Harness):
         # Not loaded: no agent is paused, so the real launchd is never asked.
         _stub(self.bin / "launchctl", 'echo "launchctl $*" >> "$CALLS"\nexit 1\n')
         _stub(self.bin / "pgrep", "exit 0\n" if foreign else "exit 1\n")
+        # The real process list may hold a uvx: list none for uv-prune's
+        # holder scan. A test that wants holders stubs ps again.
+        _stub(self.bin / "ps", 'case "$*" in "-A -o pid= -o comm=") exit 0 ;; '
+              'esac\nexec /bin/ps "$@"\n')
 
     def test_run_prunes_the_uv_cache(self):
         self.uv(foreign=False)
@@ -159,6 +163,21 @@ class CacheCleanupTest(Harness):
             self.assertIn(f"- uv cache prune skipped {night} nights running: another uv process holds the cache "
                           f"{holders}", run.stdout)
             self.assertNotIn("s3cret", run.stdout)
+
+    def test_long_lived_uvx_runs_skip_quietly(self):
+        # sd:9998: uvx MCP proxies in open sessions hold the cache lock
+        # for days; that skip is expected, so it never raises attention
+        # and never counts toward the streak.
+        self.uv(foreign=True)
+        _stub(self.bin / "ps", 'printf "%s\\n" "  101 uvx" "  102 uvx" "  4 /bin/zsh"\n')
+        skips = self.tmp / "home/.local/state/maintenance/uv-prune-skips"
+        for night in (1, 2, 3, 4):
+            run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+            self.assertEqual(self.attention(run), [], night)
+            self.assertIn("- uv-prune: only uvx tool runs hold the cache; "
+                          "skipped (uvx pid 101 102)", run.stdout)
+        self.assertNotIn("uv cache prune", self.logged())
+        self.assertFalse(skips.exists())
 
     def test_a_third_night_that_dies_before_its_report_alerts_next_night(self):
         # Lead re-review: the count was written before the report, so a
