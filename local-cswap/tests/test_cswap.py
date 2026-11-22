@@ -46,10 +46,14 @@ args = sys.argv[1:]
 if args[:2] == ["list", "--json"]:
     if os.environ.get("FAKE_LIST_FAIL"):
         sys.exit(1)
+    accounts = [{"number": n, "email": f"user{n}@example.test",
+                 "organizationUuid": u, "active": n == data["active"]}
+                for n, u in data["accounts"]]
+    for a in accounts:  # FAKE_NO_EMAIL: an account cswap names no email for
+        if str(a["number"]) == os.environ.get("FAKE_NO_EMAIL"):
+            del a["email"]
     print(json.dumps({"schemaVersion": 1, "activeAccountNumber": data["active"],
-                      "accounts": [{"number": n, "email": f"user{n}@example.test",
-                                    "organizationUuid": u, "active": n == data["active"]}
-                                   for n, u in data["accounts"]]}))
+                      "accounts": accounts}))
 elif args[:1] == ["auto"]:
     to = os.environ.get("FAKE_AUTO_TO")
     if to:
@@ -152,6 +156,9 @@ esac
 # is logged, so a key in argv shows in the calls.
 CURL = r"""#!/bin/sh
 echo "curl $*" >> "$FAKE_CALLS"
+# curl reads ~/.curlrc unless -q comes first; a trace option there would
+# write the Authorization header to a file.
+[ "$1" = -q ] || { echo "curl without -q first" >> "$FAKE_CALLS"; exit 2; }
 key=$(sed -n 's/.*Bearer \([^"]*\)".*/\1/p')
 case "$key" in
   "$FAKE_GOOD_KEY") org=11111111-1111-4111-8111-111111111111 ;;
@@ -684,6 +691,20 @@ class HeadlessKeys(Machine):
             self.assertIn(f"{e}: 2 accounts share its organization", result.stdout)
         # Neither is asked, so the first line goes to user3, whose org differs.
         self.assertIn("user3@example.test: the key belongs to another account", result.stdout)
+
+    def test_an_account_with_no_email_still_counts_in_its_organization(self):
+        self.accounts([(1, ONE), (2, ONE), (3, THREE)], active=1)
+        self.keychain.write_text("claude-code-oauth-token-user1@example.test sk-ant-kept\n")
+        result = self.keys(f"{self.GOOD}\n\n", FAKE_NO_EMAIL="2")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {"claude-code-oauth-token-user1@example.test": "sk-ant-kept"})
+        self.assertIn("user1@example.test: 2 accounts share its organization", result.stdout)
+
+    def test_curl_reads_no_default_config(self):
+        result = self.keys(f"{self.GOOD}\n\n\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.called("curl without -q"), [])
+        self.assertEqual(self.held(), {"claude-code-oauth-token-user1@example.test": self.GOOD})
 
     def test_status_warns_per_account_with_no_key_and_names_the_email_only(self):
         self.publish(ONE)

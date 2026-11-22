@@ -73,7 +73,7 @@ accounts() {
 }
 
 # Reads `cswap list --json` on stdin. `emails` prints one email per account,
-# `orgs` one `<email> <organizationUuid>` line;
+# `orgs` one `<email> <organizationUuid> <accounts in it>` line;
 # `active` prints "<number> <uuid>" of
 # the active account; `number UUID` prints the number of the one account
 # with that organizationUuid, exit 4 when none has it, 5 (and the count)
@@ -86,8 +86,10 @@ accounts = data.get("accounts") or []
 if sys.argv[1] == "emails":
     print("\n".join(a["email"] for a in accounts if a.get("email")))
 elif sys.argv[1] == "orgs":
-    print("\n".join(a["email"] + " " + (a.get("organizationUuid") or "-")
-                    for a in accounts if a.get("email")))
+    # Counted over every account, one with no email too: it still shares.
+    orgs = [a.get("organizationUuid") or "-" for a in accounts]
+    print("\n".join(a["email"] + " " + o + " " + str(orgs.count(o))
+                    for a, o in zip(accounts, orgs) if a.get("email")))
 elif sys.argv[1] == "active":
     found = [a for a in accounts if a.get("number") == data.get("activeAccountNumber")]
     if len(found) != 1:
@@ -245,10 +247,12 @@ key_item() { # email
 # The organization a key belongs to, from the `anthropic-organization-id`
 # header of one 1-token API call, or nothing when the key does not work.
 # cswap names each account's organizationUuid, so this is how a key is
-# matched to its account. The key reaches curl on stdin, never argv.
+# matched to its account. The key reaches curl on stdin, never argv; -q,
+# first, keeps ~/.curlrc out, since a trace option there would write the
+# Authorization header to a file.
 key_org() { # key
   printf 'header = "Authorization: Bearer %s"\n' "$1" |
-    curl -sS --max-time 60 --config - -o /dev/null -D - \
+    curl -q -sS --max-time 60 --config - -o /dev/null -D - \
       -H "anthropic-version: 2023-06-01" -H "anthropic-beta: oauth-2025-04-20" \
       -H "content-type: application/json" -d "$KEY_PROBE" \
       https://api.anthropic.com/v1/messages 2>/dev/null |
@@ -273,7 +277,7 @@ cmd_keys() {
   json=$(accounts) || { echo "cswap list --json failed" >&2; exit 1; }
   pairs=$(pick orgs <<<"$json") || { echo "cswap list --json was not readable" >&2; exit 1; }
   exec 3<"${CSWAP_KEYS_TTY:-/dev/tty}" 4<<<"$pairs"
-  while read -r -u 4 e want; do
+  while read -r -u 4 e want shared; do
     if [[ ! "$e" =~ ^[^\"[:space:]]+$ ]]; then
       echo "$e: an email this script cannot quote; skipped"
       continue
@@ -284,7 +288,6 @@ cmd_keys() {
     fi
     # A key names its organization, not its member: in an organization two
     # accounts share, either could own it, so neither is asked for one.
-    shared=$(grep -c " $want\$" <<<"$pairs")
     if ((shared > 1)); then
       echo "$e: $shared accounts share its organization, so a key cannot be matched to one; nothing stored"
       continue
