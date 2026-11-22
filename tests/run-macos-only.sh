@@ -58,15 +58,17 @@ if [ ! -f "$SD_ACCEPTANCE_PACK/lib/pyproject.toml" ]; then
   echo "run-macos-only.sh: no pack with lib/ at $SD_ACCEPTANCE_PACK; set SD_ACCEPTANCE_PACK" >&2
   exit 1
 fi
-echo "== installing sd_db from $SD_ACCEPTANCE_PACK/lib at $(git -C "$SD_ACCEPTANCE_PACK" rev-parse HEAD) into a throwaway venv"
-python3 -m venv "$logs/venv"  # no --copies: see tests/ci-native.sh
-"$logs/venv/bin/python" -m pip install -q --no-index "$SD_ACCEPTANCE_PACK/lib" > "$logs/pip.log" 2>&1 || {
+# tests/check.sh names CI_VENV, cached by key (sd:9926); a hand run builds
+# a throwaway one.
+venv="${CI_VENV:-$logs/venv}"
+echo "== installing sd_db from $SD_ACCEPTANCE_PACK/lib at $(git -C "$SD_ACCEPTANCE_PACK" rev-parse HEAD) into $venv"
+sh "$ROOT/tests/gate-venv.sh" "$venv" "$SD_ACCEPTANCE_PACK" > "$logs/pip.log" 2>&1 || {
   cat "$logs/pip.log" >&2
   echo "run-macos-only.sh: could not install the pack's lib/" >&2
   exit 1
 }
-PYTHON="$logs/venv/bin/python"; export PYTHON
-PATH="$logs/venv/bin:$PATH"; export PATH
+PYTHON="$venv/bin/python"; export PYTHON
+PATH="$venv/bin:$PATH"; export PATH
 wanted=" $* "
 failed=""
 ran=0

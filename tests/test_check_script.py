@@ -1,8 +1,8 @@
 """`tests/check.sh` against stub suites: its lanes and its pack source.
 
-sd:2719: a slot holder exports its cap as `SD_GATE_POOL_SIZE`, and four gates
-each running every job at once ran 32 and drove the load past 200. Above a cap
-of 1, at most CPUs / cap jobs may run together. sd:2720: the pinned pack came
+sd:9926: the lanes are 8, fixed; CPUs / gate cap (sd:2719) gave the hub 2
+and a 38-minute gate. The tools leg runs as 8 shards, and the venv is named
+by a key of the pack's lib/ and the python, so gates share it. sd:2720: the pinned pack came
 from GitHub in every gate; the machine's clone answers when it holds the pin.
 
 A copy of `check.sh` runs in a temporary root beside a `ci-native.sh` and a
@@ -45,6 +45,7 @@ ls "$running" | wc -l >> "$CI_SYSTEM_ROOT/counts"
 sleep 0.5
 rm "$running/$$"
 echo "$1 ${2:-} ${SUITE_SHARD:-} ${SUITE_ONLY:-}" >> "$CI_SYSTEM_ROOT/ran"
+echo "$1 ${2:-} $CI_VENV" >> "$CI_SYSTEM_ROOT/venvs"
 # A failing suite may first wait, at most 20 seconds, for the slow ones to start.
 if [ -f "$CI_SYSTEM_ROOT/fail-${2:-}" ] && [ -f "$CI_SYSTEM_ROOT/fail-waits-for" ]; then
   n=0
@@ -109,7 +110,7 @@ MACOS = """#!/bin/sh
 if [ "$1" = list ]; then echo 'one sh one.sh'; echo 'two sh two.sh'; exit 0; fi
 exec /bin/sh "$(dirname "$0")/ci-native.sh" macos "$1"
 """
-JOBS = 7 + (2 if platform.system() == "Darwin" else 0)
+JOBS = 11 + (2 if platform.system() == "Darwin" else 0)
 
 
 def git(*args, cwd):
@@ -140,12 +141,13 @@ class CheckFixture(unittest.TestCase):
         self.bin = self.base / "bin"
         self.bin.mkdir()
         (self.bin / "python3.15").symlink_to(sys.executable)
-        self.cores = os.cpu_count() or 4
+        self.lanes = {}
 
     def check(self, *args, expect=0, **extra):
-        environment = {key: value for key, value in os.environ.items() if key != "SD_GATE_POOL_SIZE"}
+        environment = {key: value for key, value in os.environ.items() if key != "CHECK_LANES"}
         environment.update({"PATH": f"{self.bin}:{os.environ['PATH']}", "SD_PACK_ROOT": str(self.clone),
-                            "CI_PACK_URL": str(self.base / "no-such-remote"), **extra})
+                            "CI_PACK_URL": str(self.base / "no-such-remote"),
+                            "XDG_CACHE_HOME": str(self.base / "cache"), **self.lanes, **extra})
         done = subprocess.run(["sh", str(self.root / "tests/check.sh"), *(args or ("run",))], capture_output=True,
                               text=True, env=environment, stdin=subprocess.DEVNULL, timeout=120)
         self.assertEqual(done.returncode, expect, done.stdout + done.stderr)
@@ -160,26 +162,63 @@ class CheckFixture(unittest.TestCase):
 
 
 class CheckScript(CheckFixture):
-    def test_a_pool_above_one_runs_cpus_over_the_pool_at_once(self):
-        pool = max(2, self.cores // 2)
-        lanes = max(1, self.cores // pool)
-        self.assertLess(lanes, JOBS)
-        done = self.check(SD_GATE_POOL_SIZE=str(pool))
-        self.assertIn(f"check.sh: {JOBS} jobs, {lanes} at a time", done.stdout)
-        self.assertEqual(len((self.root / "ran").read_text().splitlines()), JOBS)
-        self.assertLessEqual(max(self.counts()), lanes, self.counts())
-
-    def test_no_pool_and_a_pool_of_one_run_every_job_at_once(self):
-        for extra in ({}, {"SD_GATE_POOL_SIZE": "1"}, {"SD_GATE_POOL_SIZE": "nope"}):
+    def test_eight_jobs_run_at_once_whatever_the_cores_or_the_pool(self):
+        for extra in ({}, {"SD_GATE_POOL_SIZE": "4"}, {"CHECK_LANES": "nope"}):
             with self.subTest(extra=extra):
+                (self.root / "ran").unlink(missing_ok=True)
+                (self.root / "counts").unlink(missing_ok=True)
                 done = self.check(**extra)
-                self.assertIn(f"check.sh: {JOBS} jobs, {JOBS} at a time", done.stdout)
+                self.assertIn(f"check.sh: {JOBS} jobs, 8 at a time\n", done.stdout)
+                self.assertEqual(len((self.root / "ran").read_text().splitlines()), JOBS)
+                self.assertLessEqual(max(self.counts()), 8, self.counts())
+
+    def test_the_tools_leg_runs_as_eight_shards(self):
+        self.check()
+        shards = sorted(line[2] for line in self.ran() if line[1] == "tools")
+        self.assertEqual([f"{n}/8" for n in range(1, 9)], shards)
+
+    def test_check_lanes_sets_the_lanes(self):
+        done = self.check(CHECK_LANES="3")
+        self.assertIn(f"check.sh: {JOBS} jobs, 3 at a time\n", done.stdout)
+        self.assertLessEqual(max(self.counts()), 3, self.counts())
+
+    def test_every_job_gets_one_venv_named_by_the_pack_lib_and_python(self):
+        self.check()
+        venvs = {line.split()[-1] for line in (self.root / "venvs").read_text().splitlines()}
+        self.assertEqual(1, len(venvs), venvs)
+        [venv] = venvs
+        self.assertRegex(venv, "^" + re.escape(str(self.base / "cache/system-check/venv-")) + "[0-9a-f]{16}$")
+        # The same pack and python: the same venv, so a later gate reuses it.
+        (self.root / "venvs").unlink()
+        self.check()
+        self.assertEqual({venv}, {line.split()[-1] for line in (self.root / "venvs").read_text().splitlines()})
+        # A new lib/ tree: a new venv.
+        (self.clone / "lib").mkdir()
+        (self.clone / "lib/pyproject.toml").write_text("[project]\nname = 'x'\n")
+        git("add", "lib", cwd=self.clone)
+        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "lib", cwd=self.clone)
+        (self.root / ".sd-pack-rev").write_text(git("rev-parse", "HEAD", cwd=self.clone) + "\n")
+        (self.root / "venvs").unlink()
+        self.check()
+        [other] = {line.split()[-1] for line in (self.root / "venvs").read_text().splitlines()}
+        self.assertNotEqual(venv, other)
+
+    def test_a_venv_unused_for_two_weeks_goes(self):
+        cache = self.base / "cache/system-check"
+        old, recent = cache / "venv-0000000000000000", cache / "venv-1111111111111111"
+        for path in (old, recent):
+            path.mkdir(parents=True)
+        stale = time.time() - 15 * 86400
+        os.utime(old, (stale, stale))
+        self.check()
+        self.assertFalse(old.exists())
+        self.assertTrue(recent.exists())
 
     def test_a_failing_job_in_a_lane_fails_the_check_and_is_named(self):
         # An early leg, so jobs stay queued behind it. Both its shards fail;
         # either may end first and stop the other.
         (self.root / "fail-repo-sync").touch()
-        done = self.check(expect=1, SD_GATE_POOL_SIZE=str(max(2, self.cores // 2)))
+        done = self.check(expect=1, CHECK_LANES="4")
         self.assertRegex(done.stderr, r"check.sh: repo-sync-[12] exited 3")
         self.assertRegex(done.stderr, r"check.sh: failed: repo-sync-[12]( repo-sync-[12])?\n")
         # sd:3749: the jobs queued behind it never ran.
@@ -222,7 +261,9 @@ class FailFast(CheckFixture):
     def setUp(self):
         super().setUp()
         self.jobs = (["macos-one", "macos-two"] if platform.system() == "Darwin" else []) + [
-            "repo-sync-1", "repo-sync-2", "tools-1", "tools-2", "tools-3", "tools-4", "leg-shared"]
+            "repo-sync-1", "repo-sync-2", *[f"tools-{n}" for n in range(1, 9)], "leg-shared"]
+        # Every job at once: a failing leg-shared waits for the slow ones.
+        self.lanes = {"CHECK_LANES": str(len(self.jobs))}
 
     def slow(self, *legs, ends_ok=(), ignores_term=()):
         for leg in legs:
@@ -270,7 +311,7 @@ class FailFast(CheckFixture):
     def test_after_a_failure_no_lane_claims_a_job(self):
         first = self.jobs[0]
         (self.root / f"fail-{leg_of(first)}").touch()
-        done = self.check(expect=1, SD_GATE_POOL_SIZE=str(self.cores))
+        done = self.check(expect=1, CHECK_LANES="1")
         self.assertIn(f"check.sh: {self.jobs.__len__()} jobs, 1 at a time", done.stdout)
         self.assertEqual(1, len(self.ran()), self.ran())
         self.assertIn(f"check.sh: failed: {first}\n", done.stderr)
@@ -362,16 +403,17 @@ class FailFast(CheckFixture):
             with self.subTest(whom=whom):
                 for name in ("pids", "made"):
                     (self.base / name if name == "made" else self.root / name).unlink(missing_ok=True)
-                environment = {key: value for key, value in os.environ.items() if key != "SD_GATE_POOL_SIZE"}
-                environment.update({"PATH": f"{self.bin}:{os.environ['PATH']}", "SD_PACK_ROOT": str(self.clone)})
+                environment = dict(os.environ)
+                environment.update({"PATH": f"{self.bin}:{os.environ['PATH']}", "SD_PACK_ROOT": str(self.clone),
+                                    "XDG_CACHE_HOME": str(self.base / "cache"), **self.lanes})
                 process = subprocess.Popen(["sh", str(self.root / "tests/check.sh"), "run"], env=environment,
                                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                            stderr=subprocess.DEVNULL, start_new_session=True)
                 try:
                     deadline = time.monotonic() + 30
-                    while len(self.pids()) < 14 and time.monotonic() < deadline:
+                    while len(self.pids()) < 22 and time.monotonic() < deadline:
                         time.sleep(0.1)
-                    self.assertEqual(14, len(self.pids()), "the slow jobs did not start")
+                    self.assertEqual(22, len(self.pids()), "the slow jobs did not start")
                     if whom == "group":
                         os.killpg(process.pid, signal.SIGTERM)
                     else:
