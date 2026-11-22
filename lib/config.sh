@@ -67,12 +67,16 @@ st_obsidian_vault() {
 # CLAUDE_CODE_OAUTH_TOKEN when that is unset or empty (sd:5791). The token
 # goes in no argv, file or log. Returns 0. The pack's dashboard keeps the
 # same mapping in sd_dashboard/claude_env.py, since its package may run outside
-# this checkout.
+# this checkout. A caller's `set -x` is off while it runs and back on after,
+# so no trace line shows the token (sd:9910).
 st_shell_env() {
+    case $- in *x*) _st_x=1; set +x ;; *) _st_x= ;; esac
     # shellcheck source=/dev/null
     [ ! -f "$HOME/.config/shell/env.sh" ] || . "$HOME/.config/shell/env.sh" >/dev/null 2>&1
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
+    [ -z "$_st_x" ] || { unset _st_x; set -x; return 0; }
+    unset _st_x
     return 0
 }
 
