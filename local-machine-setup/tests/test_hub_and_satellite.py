@@ -261,6 +261,11 @@ class TheSatellite(Case):
         text = self.launchctl_log.read_text() if self.launchctl_log.exists() else ""
         return {line.split()[0] for line in text.splitlines()}
 
+    def test_the_needs_sweep_writes_the_database_so_it_is_hub_only(self):
+        """Review: needs-sweep-nightly closes rows in the hub's database;
+        off the list, a demoted hub or a satellite on shared config ran it."""
+        self.assertIn(f"{fixture_config.LABEL_PREFIX}.cron.needs-sweep-nightly", HUB_ONLY)
+
     def test_a_hub_only_plist_on_a_satellite_is_extra_and_stays(self):
         self.name_hub_by_hand()
         self.agents.mkdir(parents=True)

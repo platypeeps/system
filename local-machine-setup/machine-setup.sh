@@ -3285,10 +3285,10 @@ SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # stages skip each one on a satellite.
 # The full role (sd:5986) adds the account agent that holds the mail and
 # Drive logins, its watch job, and the nightly builder, which writes the
-# database. The hub's other host jobs stay off the list: they pause until
-# the hub returns (#31095). build-dispatch is off it too: each lane host
+# database, as needs-sweep-nightly does. The hub's other host jobs stay
+# off the list: they pause until the hub returns (#31095). build-dispatch is off it too: each lane host
 # runs its own tick for its own lanes (sd:7932); the role still moves it.
-SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build"
+SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build cron.needs-sweep-nightly"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1

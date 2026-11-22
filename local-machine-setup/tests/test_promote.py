@@ -27,7 +27,7 @@ def utc_today():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 ROLE_AGENTS = [f"{PREFIX}.sd-dashboard", f"{PREFIX}.sd-serve", f"{PREFIX}.google-workspace-mcp"]
 ROLE_JOBS = ["sd-db-backup", "sd-db-backup-hourly", "offsite-verify", "shadow-sync-nightly",
-             "night-build", "build-dispatch", "workspace-mcp-watch"]
+             "night-build", "build-dispatch", "workspace-mcp-watch", "needs-sweep-nightly"]
 # The logins the role needs and no machine copies (sd:5986, #31094): promote
 # lists each login, the hand-back each sign-out.
 ACCOUNTS = ("work Google account", "personal Google account", "Slack", "Notion")

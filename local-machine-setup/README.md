@@ -449,7 +449,7 @@ Get the standby ready, once:
    The hourly job sets `SD_DB_BACKUP_HOURLY_DESTINATION` to a folder on this machine; the nightly job sets `SD_DB_BACKUP_DESTINATION` the same way.
    Both keep their NAS copy, one folder to one folder, run additive (`MIRROR_SYNC_ADDITIVE=1`), as the hub's hourly copy is: `mirrors-nas-hourly.conf` pairs the hourly folder with the NAS's `sd-backups-hourly`, and `mirrors-nas.conf` pairs the nightly `sd-backups` folder with the NAS's `sd-backups`; without the nightly copy, offsite-verify fails the promoted hub's nightly check after 36 h.
    Never pair a parent folder with the NAS share: a pass with `--delete` trims the share to the source and deletes its other folders. `hub-ready` reads `NOT-READY` for a NAS pair whose destination holds a folder its source lacks.
-   Write the rest of the role's job files too: `workspace-mcp-watch`, `night-build` and `build-dispatch`.
+   Write the rest of the role's job files too: `workspace-mcp-watch`, `night-build`, `needs-sweep-nightly` and `build-dispatch`.
    Put the `<prefix>.google-workspace-mcp` plist in the config folder's `launchagents/`, and clone the server it runs.
    Copy no login or secret from the hub: the logins wait for a promotion, and `hub-ready` does not test them.
 3. Set `OFFSITE_VERIFY_ROOT` in `<config>/mirror-sync/.env`: promote restores from its `sd-backups-hourly` and `sd-backups` folders.
