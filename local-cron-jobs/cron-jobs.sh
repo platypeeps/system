@@ -100,7 +100,9 @@ AGENT_DIR="$HOME/Library/LaunchAgents"
 # Per-label state: a LaunchAgent belongs to the user, not to a checkout, so
 # the reinstall helper's plist and the plist launchd last accepted live
 # here, where every checkout's install and uninstall see them (sd:9826).
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cron-jobs"
+# Under HOME, never XDG_STATE_HOME: a shell's own value split one user's
+# state in two, and an uninstall missed a helper the run had queued.
+STATE_DIR="$HOME/.local/state/cron-jobs"
 DOMAIN="gui/$(id -u)"
 # The program launchd starts for every job (sd:6456); see job-launch.c.
 JOB_LAUNCH="$HOME/.local/libexec/system-tools/job-launch"
@@ -1829,10 +1831,6 @@ defer_install() { # job
         <string>$(xml_escape "$JOB_HOST")</string>
         <key>SYSTEM_TOOLS_LABEL_PREFIX</key>
         <string>$(xml_escape "$LABEL_PREFIX")</string>
-        <!-- STATE_DIR's root: the helper finds its own plist there, and
-             reads a missing one as an uninstall. Empty means the default. -->
-        <key>XDG_STATE_HOME</key>
-        <string>$(xml_escape "${XDG_STATE_HOME:-}")</string>
     </dict>
 </dict>
 </plist>

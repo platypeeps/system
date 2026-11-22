@@ -1788,20 +1788,23 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
-    def test_the_helper_finds_its_plist_under_a_custom_state_home(self):
-        """Lane review: launchd hands the helper only the plist's
-        environment, so an exported XDG_STATE_HOME was lost; the helper
-        looked in the default folder and cancelled its own reinstall."""
-        state = self.fx.tmp / "xdg-state"
-        result = self.run_script("install", "demo", env={
-            "CRON_JOBS_RUN": "demo", "XDG_STATE_HOME": str(state)})
+    def test_an_uninstall_cancels_a_helper_whatever_either_state_home(self):
+        """Lane review: the state folder followed each caller's
+        XDG_STATE_HOME. A run under a custom one queued its helper there;
+        an uninstall from a shell on the default missed it, and the
+        helper reinstalled the removed job. Every caller now uses one
+        folder under HOME, the one value launchd hands the helper."""
+        self.plist().write_text("the plist launchd holds\n")
+        custom = {"XDG_STATE_HOME": str(self.fx.tmp / "xdg-state")}
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo", **custom})
         self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
-        helper = state / "cron-jobs" / f"{LABEL_PREFIX}.cron-reinstall.demo.plist"
-        given = plistlib.loads(helper.read_bytes())["EnvironmentVariables"]
-        env = {k: given[k] for k in ("XDG_STATE_HOME",) if k in given}
-        result = self.run_script("reinstall-after-run", "demo", env=env)
-        self.assertNotIn("reinstall cancelled", result.stdout, result.stdout + result.stderr)
-        self.assertIn("installed: demo", result.stdout, result.stdout + result.stderr)
+        result = self.run_script("uninstall", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.calls.write_text("")
+        result = self.run_script("reinstall-after-run", "demo", env=custom)
+        self.assertIn("demo: reinstall cancelled", result.stdout, result.stdout + result.stderr)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertFalse(self.plist().exists())
 
     def test_a_copy_killed_midway_leaves_no_partial_rollback_plist(self):
         """Lane review: a copy into the accepted plist, interrupted, left a

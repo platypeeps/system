@@ -2434,7 +2434,7 @@ stage_cron() {
     elif [ "$owner" = 1 ]; then
       echo "  FOREIGN $j — in this profile, but another installer's agent holds its label; left in place"
     elif ! "$ROOT/local-cron-jobs/cron-jobs.sh" verify "$j" >/dev/null 2>&1 &&
-        [ -f "${XDG_STATE_HOME:-$HOME/.local/state}/cron-jobs/$LABEL_PREFIX.cron-reinstall.$j.plist" ] &&
+        [ -f "$HOME/.local/state/cron-jobs/$LABEL_PREFIX.cron-reinstall.$j.plist" ] &&
         launchctl print "gui/$(id -u)/$LABEL_PREFIX.cron-reinstall.$j" 2>/dev/null |
           grep -q 'state = running'; then
       # A run cannot reinstall its own job; cron-jobs.sh loaded a helper
