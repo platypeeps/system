@@ -376,7 +376,7 @@ def write_rows(record, a) -> None:
                        **({"seen": seen} if seen else {})}
 
 
-def read_one(provider, accounts, accounts_error, now, cap=None):
+def read_one(provider, accounts, accounts_error, now, cap=None, fixed=None):
     """One provider's reading: claude from cswap's accounts, codex from its
     app-server (its session logs when that fails), the rest from their own usage APIs."""
     if provider == "claude":
@@ -384,7 +384,17 @@ def read_one(provider, accounts, accounts_error, now, cap=None):
     if provider == "codex":
         return usage_sources.codex_reading(
             now=now, binary=os.environ.get("CODEX_BIN") or find_bin("codex"))
-    return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now, cap)
+    env = os.environ
+    if provider == "twilio" and fixed is None:
+        # The tool's .env under what is exported: it names TWILIO_ENV_FILE.
+        # Only twilio reads it, and a .env that does not read costs this
+        # row alone (sd:9718 review).
+        try:
+            env = {**system_tools_config.read_env(TOOL), **os.environ}
+        except (OSError, ValueError) as e:
+            return usage_sources.reading(provider, "unknown", "none",
+                                         error="agent-meter .env does not read: %s" % type(e).__name__)
+    return usage_sources.read_provider(provider, env, usage_sources.fetch_json, now, cap, fixed)
 
 
 def live(a, list_key, starting, parse, read, row_key, retired=()) -> None:
@@ -493,11 +503,11 @@ def newest_live(connection, row_key):
 
 
 def read_usage(entry, now):
-    name, cap = entry
+    name, cap, fixed = entry
     if name in usage_sources.PASSED:
         return name, None
     accounts, error = read_accounts(30) if name == "claude" else (None, None)
-    return name, read_one(name, accounts, error, now, cap)
+    return name, read_one(name, accounts, error, now, cap, fixed)
 
 
 def record_passed(a, name, body):

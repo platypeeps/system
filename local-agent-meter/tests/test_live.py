@@ -194,6 +194,21 @@ ANSWERS = {
                        "has_more": False, "next_page": None},
                       {"spend": {"amount": 3.75, "unit": "usd", "period": "month",
                               "resets_at": NEXT}}),
+    # Resend's GET /usage (API reference, retrieve-usage; sd:9719): the
+    # calendar month's emails, sent and received, against the plan.
+    "resend": ("RESEND_API_KEY",
+               {"object": "usage",
+                "emails": {"daily": {"used": 10, "limit": None, "sent": 8, "received": 2,
+                                     "resets_at": "2026-11-18T00:00:00.000Z"},
+                           "monthly": {"used": 750, "limit": 3000, "sent": 700, "received": 50,
+                                       "resets_at": "2026-12-01T00:00:00.000Z"}},
+                "contacts": {"used": 10, "limit": 3000}, "broadcasts": {"used": 2, "limit": None},
+                "rate_limit": {"limit": 1000, "duration": "1000ms"}},
+               {"spend": {"amount": 750.0, "unit": "emails", "period": "month",
+                          "resets_at": "2026-12-01T00:00:00.000Z", "limit": 3000.0},
+                "balance": {"amount": 2250.0, "unit": "emails"},
+                "windows": [{"name": "emails", "used_percent": 25.0, "window_minutes": None,
+                             "resets_at": "2026-12-01T00:00:00.000Z"}]}),
 }
 
 #: Values no number in an answer may be taken from.
@@ -589,13 +604,13 @@ class Readers(unittest.TestCase):
     def test_the_starting_list_names_every_reader_once(self):
         names, problems = usage_sources.parse_providers(usage_sources.STARTING)
         self.assertEqual(problems, [])
-        self.assertEqual(sorted(name for name, _ in names), sorted(["claude", "codex", *usage_sources.READERS,
+        self.assertEqual(sorted(entry[0] for entry in names), sorted(["claude", "codex", *usage_sources.READERS,
                                                 *usage_sources.NO_SOURCE, *usage_sources.PASSED]))
 
     def test_the_providers_grammar(self):
         names, problems = usage_sources.parse_providers(
             "# comment\nclaude\n\n codex  # trailing\nclaude\nBad Name\nx/y\n")
-        self.assertEqual(names, [("claude", None), ("codex", None)])
+        self.assertEqual(names, [("claude", None, None), ("codex", None, None)])
         self.assertEqual(problems, ["line 6: not a provider name", "line 7: not a provider name"])
 
     def test_a_providers_line_may_carry_a_positive_cap(self):
@@ -606,8 +621,8 @@ class Readers(unittest.TestCase):
             "firecrawl cap=inf\nlangsmith cap=1" + "0" * 20 + "\nhf cap 5\n")
         # sd:9749: a malformed cap keeps the row, with no cap; another
         # trailer is still no provider line.
-        self.assertEqual(entries, [("baseten", 250.0), ("openai", 12.5), *[
-            (name, None) for name in ("deepinfra", "groq", "moonshot", "youcom", "heygen",
+        self.assertEqual(entries, [("baseten", 250.0, None), ("openai", 12.5, None), *[
+            (name, None, None) for name in ("deepinfra", "groq", "moonshot", "youcom", "heygen",
                                       "firecrawl", "langsmith", "hf")]])
         self.assertEqual(problems, ["line %d: %s" % (n, "not a provider name" if n == 9 else
                                                      "cap=N wants N a positive decimal")
@@ -1964,8 +1979,8 @@ class Live(unittest.TestCase):
         rows = self.rows("usage:")
         names, _ = usage_sources.parse_providers(usage_sources.STARTING)
         # A passed-in provider gets its row from its caller (sd:9586).
-        self.assertEqual(sorted(rows), sorted("usage:" + n for n, _ in names
-                                              if n not in usage_sources.PASSED))
+        self.assertEqual(sorted(rows), sorted("usage:" + entry[0] for entry in names
+                                              if entry[0] not in usage_sources.PASSED))
         self.assertEqual(rows["usage:claude"]["status"], "ok")
         self.assertEqual(rows["usage:claude"]["windows"][0]["used_percent"], 40.0)
         self.assertEqual(rows["usage:codex"]["status"], "ok")
@@ -2543,3 +2558,214 @@ class Hostile(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+#: A synthetic Twilio account SID and the two answers in the live shape
+#: (Twilio's API reference: Usage Records, Balance); amounts are strings.
+TWILIO_SID = "AC" + "0" * 32
+TWILIO_USAGE = {"usage_records": [{"category": "totalprice", "description": "Total Price",
+                                   "price": "12.3456", "price_unit": "usd",
+                                   "usage": "12.3456", "usage_unit": "usd"}]}
+TWILIO_BALANCE = {"account_sid": TWILIO_SID, "balance": "20.50", "currency": "USD"}
+
+
+class Twilio(unittest.TestCase):
+    """sd:9718: the month's spend and the prepaid balance, with an API key
+    read from the env file TWILIO_ENV_FILE names."""
+
+    def env_file(self, text=None):
+        folder = Path(tempfile.mkdtemp(prefix="twilio-test."))
+        self.addCleanup(lambda: [p.unlink() for p in folder.iterdir()] and None or folder.rmdir())
+        path = folder / "twilio.env"
+        if text is None:
+            text = ("# synthetic\nexport TWILIO_ACCOUNT_SID=%s\nTWILIO_API_KEY='SK0123'\n"
+                    'TWILIO_API_SECRET="%s"\n' % (TWILIO_SID, SECRET))
+        path.write_text(text)
+        return {"TWILIO_ENV_FILE": str(path)}
+
+    def fetch(self, usage=TWILIO_USAGE, balance=TWILIO_BALANCE, calls=None):
+        def fetch(url, headers=None, **_):
+            if calls is not None:
+                calls.append((url, headers))
+            return json.loads(json.dumps(usage if "/Usage/" in url else balance))
+        return fetch
+
+    def test_spend_and_balance_parse(self):
+        calls = []
+        got = usage_sources.read_provider("twilio", self.env_file(), self.fetch(calls=calls), NOW, cap=50.0)
+        self.assertEqual(got["status"], "ok", got)
+        self.assertEqual(got["spend"], {"amount": 12.3456, "unit": "usd", "period": "month",
+                                        "limit": 50.0, "resets_at": NEXT})
+        self.assertEqual(got["balance"], {"amount": 20.5, "unit": "usd"})
+        base = "https://api.twilio.com/2010-04-01/Accounts/%s/" % TWILIO_SID
+        self.assertEqual([url for url, _ in calls],
+                         [base + "Usage/Records/ThisMonth.json?Category=totalprice",
+                          base + "Balance.json"])
+        import base64
+        auth = "Basic " + base64.b64encode(("SK0123:" + SECRET).encode()).decode()
+        self.assertTrue(all(headers == {"Authorization": auth} for _, headers in calls))
+        self.assertNotIn(SECRET, json.dumps(got))
+
+    def test_a_missing_file_reads_as_not_configured(self):
+        for env in ({}, {"TWILIO_ENV_FILE": ""}, {"TWILIO_ENV_FILE": "/nonexistent/twilio.env"}):
+            with self.subTest(env=env):
+                got = usage_sources.read_provider("twilio", env, failing("unreached"), NOW)
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "not configured: TWILIO_ENV_FILE names no file"))
+
+    def test_a_path_that_does_not_resolve_is_not_configured(self):
+        # Review on sd:9718: ~missing-user raised RuntimeError past the
+        # reader's handler and stopped the whole usage run.
+        for path in ("~nosuch-operator-example/twilio.env", "bad\x00path", "/dev/null/x"):
+            with self.subTest(path=path):
+                got = usage_sources.read_provider("twilio", {"TWILIO_ENV_FILE": path},
+                                                  failing("unreached"), NOW)
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "not configured: TWILIO_ENV_FILE names no file"))
+
+    def test_a_file_missing_a_value_names_it_and_calls_nothing(self):
+        calls = []
+        got = usage_sources.read_provider("twilio", self.env_file("TWILIO_ACCOUNT_SID=%s\n" % TWILIO_SID),
+                                          self.fetch(calls=calls), NOW)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "TWILIO_API_KEY not set"))
+        got = usage_sources.read_provider("twilio", self.env_file(
+            "TWILIO_ACCOUNT_SID=../x\nTWILIO_API_KEY=k\nTWILIO_API_SECRET=s\n"), self.fetch(calls=calls), NOW)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "TWILIO_ACCOUNT_SID is not an account SID"))
+        self.assertEqual(calls, [])
+
+    def test_a_401_reads_as_an_error_row(self):
+        got = usage_sources.read_provider("twilio", self.env_file(), failing("HTTP 401"), NOW)
+        self.assertEqual((got["status"], got["error"], got["read_at"]), ("unknown", "HTTP 401", None))
+        self.assertNotIn(SECRET, json.dumps(got))
+
+    def test_another_currency_or_no_totalprice_row_is_unknown(self):
+        env = self.env_file()
+        for usage, balance in ((put(TWILIO_USAGE, ("usage_records", 0, "price_unit"), "eur"), TWILIO_BALANCE),
+                               ({"usage_records": []}, TWILIO_BALANCE),
+                               (TWILIO_USAGE, put(TWILIO_BALANCE, ("currency",), "EUR"))):
+            with self.subTest(usage=usage, balance=balance):
+                got = usage_sources.read_provider("twilio", env, self.fetch(usage, balance), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+
+    def test_every_hostile_answer_is_ok_or_unknown(self):
+        env, failures = self.env_file(), []
+        for which, answer in (("usage", TWILIO_USAGE), ("balance", TWILIO_BALANCE)):
+            for label, bent in hostile(answer):
+                fetch = self.fetch(**{which: bent})
+                failures += Hostile.check(self, "%s %s" % (which, label), lambda: usage_sources.read_provider(
+                    "twilio", env, fetch, NOW), ("ok",))
+        for amount in ("1e999", "nan", "-inf", "1" * 40, "0x10", " 1", "1.5.5"):
+            got = usage_sources.read_provider("twilio", env, self.fetch(
+                usage=put(TWILIO_USAGE, ("usage_records", 0, "price"), amount)), NOW)
+            if got["status"] != "unknown":
+                failures.append("price %r: %s" % (amount, got["status"]))
+        self.assertEqual(failures, [])
+
+    def test_agent_meter_reads_twilio_env_file_from_its_own_env(self):
+        meter = load_meter()
+        config = Path(tempfile.mkdtemp(prefix="meter-config."))
+        self.addCleanup(lambda: __import__("shutil").rmtree(config))
+        (config / "agent-meter").mkdir()
+        (config / "agent-meter/.env").write_text("TWILIO_ENV_FILE=/elsewhere/twilio.env\n")
+        seen = {}
+        with mock.patch.dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config)), \
+                mock.patch.object(meter.usage_sources, "read_provider",
+                                  side_effect=lambda name, env, *rest: seen.update(env) or {}):
+            os.environ.pop("TWILIO_ENV_FILE", None)
+            meter.read_one("twilio", None, None, NOW)
+        self.assertEqual(seen.get("TWILIO_ENV_FILE"), "/elsewhere/twilio.env")
+
+
+class FixedFees(unittest.TestCase):
+    """sd:9719: a providers line 'name fixed=N' is that monthly cost and
+    no usage; nothing is fetched. Socket has no plan usage API."""
+
+    def test_a_fixed_line_parses_beside_cap_lines(self):
+        entries, problems = usage_sources.parse_providers(
+            "nabucasa fixed=6.50\nvoicedub  fixed=12 # month\ncmem fixed=0\nbaseten cap=250\n"
+            "resend fixed=-1\nsocket fixed=x\ntwilio cap=5 fixed=3\nnabucasa fixed=9\n")
+        # sd:9749: a malformed fee keeps the row, with no fee.
+        self.assertEqual(entries, [("nabucasa", None, 6.5), ("voicedub", None, 12.0),
+                                   ("cmem", None, None), ("baseten", 250.0, None),
+                                   *[(name, None, None) for name in ("resend", "socket", "twilio")]])
+        self.assertEqual(problems, ["line 3: fixed=N wants N a positive decimal",
+                                    "line 5: fixed=N wants N a positive decimal",
+                                    "line 6: fixed=N wants N a positive decimal",
+                                    "line 7: cap=N wants N a positive decimal"])
+
+    def test_a_fixed_fee_on_a_provider_read_elsewhere_is_refused(self):
+        # sd:9719 triage: claude, codex and huggingface never reach
+        # read_provider, so their fee would parse and never show.
+        entries, problems = usage_sources.parse_providers(
+            "claude fixed=20\ncodex fixed=5\nhuggingface fixed=9\nnabucasa fixed=6.50\n")
+        self.assertEqual(entries, [("claude", None, None), ("codex", None, None),
+                                   ("huggingface", None, None), ("nabucasa", None, 6.5)])
+        self.assertEqual(problems, ["line %d: fixed=N is not for %s: its usage is read" % (n, name)
+                                    for n, name in ((1, "claude"), (2, "codex"), (3, "huggingface"))])
+
+    def test_a_fixed_fee_is_the_months_cost_with_no_call(self):
+        got = usage_sources.read_provider("nabucasa", {}, failing("unreached"), NOW, fixed=6.5)
+        self.assertEqual(got, usage_sources.reading(
+            "nabucasa", "ok", "fixed", read_at="2026-11-17T20:00:00Z",
+            spend={"amount": 6.5, "unit": "usd", "period": "month", "fixed": True,
+                   "resets_at": NEXT}))
+
+    def test_socket_has_no_usage_source(self):
+        got = usage_sources.read_provider("socket", {"SOCKET_SECURITY_API_KEY": SECRET},
+                                          failing("unreached"), NOW)
+        self.assertEqual((got["status"], got["source"]), ("no-source", "none"))
+
+    def test_resend_without_a_monthly_number_is_unknown(self):
+        var, answer, _ = ANSWERS["resend"]
+        for path, value in ((("emails", "monthly", "limit"), None), (("emails", "monthly", "limit"), 0),
+                            (("emails", "monthly", "used"), -1), (("emails", "monthly"), None),
+                            (("emails",), [])):
+            with self.subTest(path=path, value=value):
+                got = usage_sources.read_provider("resend", {var: SECRET}, answering(put(answer, path, value)), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+
+    def test_resend_s_month_that_has_reset_is_no_reading(self):
+        # sd:9719 review: at the reset boundary the old month's record read
+        # ok with zero emails left; its spend and balance outlived its
+        # window. A record whose resets_at is not after now is refused.
+        var, answer, _ = ANSWERS["resend"]
+        for end in ("2026-11-17T20:00:00Z", "2026-11-01T00:00:00.000Z"):
+            with self.subTest(end=end):
+                old = put(put(answer, ("emails", "monthly", "resets_at"), end),
+                          ("emails", "monthly", "used"), 3000)
+                got = usage_sources.read_provider("resend", {var: SECRET}, answering(old), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+                self.assertEqual((got["balance"], got["spend"]), (None, None))
+
+    def test_the_live_run_writes_a_fixed_row(self):
+        live = Live("test_the_runs_read_a_config_folder_the_test_owns")
+        live.setUp()
+        self.addCleanup(live.doCleanups)
+        live.setting("dashboard.usage_providers", "nabucasa fixed=6.50\n")
+        done = live.run_live("usage")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        row = live.rows("usage:")["usage:nabucasa"]
+        self.assertEqual((row["status"], row["source"], row["spend"]["amount"], row["spend"]["fixed"]),
+                         ("ok", "fixed", 6.5, True))
+
+
+class MeterEnv(unittest.TestCase):
+    """Review on sd:9718: read_one read the tool's .env for every keyed
+    provider outside the per-provider handler, so a .env that does not
+    read stopped the whole usage run."""
+
+    def test_an_unreadable_env_costs_twilio_its_row_only(self):
+        meter = load_meter()
+        config = Path(tempfile.mkdtemp(prefix="meter-config."))
+        self.addCleanup(lambda: __import__("shutil").rmtree(config))
+        (config / "agent-meter").mkdir()
+        (config / "agent-meter/.env").write_bytes(b"TWILIO_ENV_FILE=\xff\xfe\n")
+        answer = ANSWERS["openrouter"][1]
+        with mock.patch.dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config), OPENROUTER_API_KEY=SECRET), \
+                mock.patch.object(meter.usage_sources, "fetch_json", answering(answer)):
+            keyed = meter.read_one("openrouter", None, None, NOW)
+            fixed = meter.read_one("nabucasa", None, None, NOW, fixed=6.5)
+            twilio = meter.read_one("twilio", None, None, NOW)
+        self.assertEqual((keyed["status"], fixed["status"]), ("ok", "ok"))
+        self.assertEqual((twilio["status"], twilio["error"]),
+                         ("unknown", "agent-meter .env does not read: UnicodeDecodeError"))

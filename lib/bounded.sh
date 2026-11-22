@@ -61,7 +61,9 @@ eval {
     my $sig = $_;
     sub { $caught = $sig; hit($sig); die "signal\n" }
   } keys %number;
-  alarm $limit;
+  # Time::HiRes: a bound under a second holds; core alarm truncated it
+  # to 0, no alarm at all (sd:9427 review).
+  Time::HiRes::alarm($limit);
   $status = $? if reap(0) == $pid;
   alarm 0;
 };
@@ -81,7 +83,8 @@ while (alive()) {
 reap(0);
 exit(defined $caught ? 128 + $number{$caught} : 124);'
 
-# st_bounded SECONDS COMMAND...: run COMMAND; stop it after SECONDS.
+# st_bounded SECONDS COMMAND...: run COMMAND; stop it after SECONDS,
+# which may hold a fraction (0.25).
 # Exits with COMMAND's code, 124 when the bound expired, or 125 when a
 # denied process group kept COMMAND from running.
 st_bounded() {
