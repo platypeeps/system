@@ -1875,6 +1875,28 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.killed_install("kill-on-restore-bin", self.KILL_ON_RESTORE)
         self.assert_a_lint_failing_install_reloads_the_accepted_job()
 
+    def test_a_failed_promote_of_a_loaded_pending_plist_changes_nothing(self):
+        """Review: recovery promoted a pending plist launchd holds with an
+        unchecked mv. Failed, the install went on: its candidate overwrote
+        the pending record and the rollback copy stayed an obsolete plist.
+        It now refuses before anything is unloaded, record kept."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.accepted().write_text("an obsolete plist\n")
+        pending = self.accepted().with_name(self.accepted().name + ".pending")
+        pending.write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "failing-promote-bin"
+        stubs.mkdir()
+        mv = stubs / "mv"
+        mv.write_text('#!/bin/sh\ncase "$1" in *.pending) exit 1 ;; esac\nexec /bin/mv "$@"\n')
+        mv.chmod(0o755)
+        result = self.run_script("install", "demo",
+                                 path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("demo: could not save the loaded plist", result.stderr)
+        self.assertEqual(self.bootouts(), [])
+        self.assertEqual(pending.read_text(), "the plist launchd holds\n")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
     def test_a_failed_replace_after_an_interrupted_install_restores_the_accepted_plist(self):
         """Round 9: after an install died between replace and bootstrap,
         the plist on disk was never loaded. A later install whose replace

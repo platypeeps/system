@@ -1956,7 +1956,13 @@ cmd_install() {
   # so a candidate that fails below leaves the job loaded (round 10).
   if [ -f "$pending" ]; then
     if is_loaded "$job" && cmp -s "$pending" "$plist"; then
-      mv "$pending" "$accepted"
+      # Checked: failed, the candidate below overwrote the pending record
+      # and the rollback copy stayed obsolete. Refused, both are kept.
+      if ! mv "$pending" "$accepted"; then
+        echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
+        exec 8>&-
+        return 1
+      fi
     elif is_loaded "$job" || [ ! -f "$accepted" ]; then
       rm -f "$pending"
     else
