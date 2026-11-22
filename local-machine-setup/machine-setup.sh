@@ -3054,24 +3054,20 @@ claude_token_block() {
     echo "  DIFFERS ~/.config/shell/env.sh line $ctb_old reads one claude token for every account"
     # A symlinked env.sh is changed in its target: a rename over the link
     # would leave a copy here and the managed file unchanged.
-    ctb_real=$ctb_env ctb_hops=0
-    while [ -L "$ctb_real" ] && [ "$ctb_hops" -lt 40 ]; do
-      ctb_hops=$((ctb_hops + 1))
+    # The [ -f ] above already failed for a dangling or looping link.
+    ctb_real=$ctb_env
+    while [ -L "$ctb_real" ]; do
       ctb_link=$(readlink "$ctb_real")
       case "$ctb_link" in
         /*) ctb_real=$ctb_link ;;
         *) ctb_real=$(dirname "$ctb_real")/$ctb_link ;;
       esac
     done
-    if [ -L "$ctb_real" ]; then
-      echo "  WARN    ~/.config/shell/env.sh is a symlink loop — nothing written"
-    else
-      run claude_token_block_write "$ctb_real" "$ctb_old"
-    fi
+    run claude_token_block_write "$ctb_real" "$ctb_old"
   elif [ -n "$ctb_any" ]; then
     echo "  WARN    ~/.config/shell/env.sh line ${ctb_any% } sets CUSTOM_CLAUDE_CODE_OAUTH_TOKEN its own way — store the key with cswap.sh keys and replace the line with the block in local-machine-setup/machine-setup.sh (edit by hand)"
   fi
-  unset ctb_env ctb_old ctb_any ctb_real ctb_link ctb_hops
+  unset ctb_env ctb_old ctb_any ctb_real ctb_link
 }
 
 stage_tooling() {
