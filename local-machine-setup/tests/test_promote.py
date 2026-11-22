@@ -1326,6 +1326,116 @@ class StalledShareInSteps(PromoteCase):
         self.assertIsNotNone(self.marker_step())
 
 
+class StandbyStatus(PromoteCase):
+    """sd:9638: status skips hub-ready on a satellite that is no standby.
+
+    The shared jobs folder is the config clone every machine holds, so the
+    hub's own role jobs sit there on a satellite that is no standby. A
+    standby is told apart by what promote reads as its own: a role job file
+    in a folder other than the shared one, or an hourly job that names a
+    local root. Every other case shows the full block.
+    """
+
+    HOST = "standby-host"
+    JOB = 'JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n'
+
+    def setUp(self):
+        super().setUp()
+        # status's macos stage reads preferences; none bear on hub-ready.
+        write_stub(self.fixture.stubs, "defaults", "exit 1\n")
+        self.jobs = self.config / "cron-jobs" / "jobs"
+
+    def no_standby(self):
+        """As a satellite that is no standby: the shared folder holds the
+        hub's role jobs, its hourly job names no local root, and the
+        builder jobs are missing."""
+        (self.jobs / "sd-db-backup-hourly.job").write_text(self.JOB)
+        for job in ("night-build", "build-dispatch"):
+            (self.jobs / f"{job}.job").unlink()
+
+    def run_status(self, **extra):
+        return self.fixture.run("status", **self.promote_env(CRON_JOBS_HOST=self.HOST, **extra)).stdout
+
+    def assert_full_block(self, out):
+        self.assertNotIn("not a standby", out)
+        self.assertIn("names hub.example.test", out)
+
+    def test_a_host_with_no_hub_role_job_file_reports_one_line(self):
+        self.no_standby()
+        out = self.run_status()
+        block = out.split("== hub-ready", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("skip    not a standby", block, out)
+        self.assertNotIn("NOT-READY", out)
+
+    def test_a_host_with_a_hub_role_job_file_checks_the_full_block(self):
+        self.no_standby()
+        host = self.jobs / self.HOST
+        host.mkdir()
+        (host / "offsite-verify.job").write_text(self.JOB)
+        self.assert_full_block(self.run_status())
+
+    def test_a_role_job_in_an_extra_dir_checks_the_full_block(self):
+        self.no_standby()
+        extra = self.tmp / "extra-jobs"
+        extra.mkdir()
+        (extra / "shadow-sync-nightly.job").write_text(self.JOB)
+        self.assert_full_block(self.run_status(CRON_JOBS_EXTRA_DIRS=str(extra)))
+
+    def test_shared_role_jobs_with_a_local_hourly_root_check_the_full_block(self):
+        """The review's case: a standby set up with its role jobs in the
+        shared folder, its hourly job naming a local root (the fixture's)."""
+        for job in ("night-build", "build-dispatch"):
+            (self.jobs / f"{job}.job").unlink()
+        out = self.run_status()
+        self.assert_full_block(out)
+        self.assertIn("NOT-READY no job file night-build.job", out)
+
+    def test_an_unreadable_host_folder_checks_the_full_block(self):
+        self.no_standby()
+        host = self.jobs / self.HOST
+        host.mkdir()
+        host.chmod(0)
+        self.addCleanup(host.chmod, 0o755)
+        self.assert_full_block(self.run_status())
+
+    def test_an_hourly_job_that_cannot_be_read_checks_the_full_block(self):
+        """An hourly job file that does not source to its end, or exits 0
+        before the reader's check, may name a local root;
+        an empty value read from it is no proof that it does not. bash 5
+        goes on after a failed `.` where set -e is off, so the script runs
+        under it too, not only under /bin/sh."""
+        hourly = self.jobs / "sd-db-backup-hourly.job"
+        root = 'SD_DB_BACKUP_HOURLY_DESTINATION="$HOME/sd-backups-hourly"\n'
+        shells = sorted({"/bin/sh"} | {p for p in map(shutil.which, ("bash", "dash")) if p})
+        for case in ("unreadable", "failed command", "early exit 0"):
+            for sh in shells:
+                with self.subTest(case=case, sh=sh):
+                    if hourly.exists():
+                        hourly.chmod(0o644)
+                    for job in ("night-build", "build-dispatch"):
+                        (self.jobs / f"{job}.job").write_text(self.JOB)
+                    self.no_standby()
+                    if case == "failed command":
+                        hourly.write_text(self.JOB + 'SD_DB_BACKUP_HOURLY_DESTINATION="$(false)"\n')
+                    elif case == "early exit 0":
+                        # Ends the reader's child with 0 before its check:
+                        # no proof the file names no root.
+                        hourly.write_text(self.JOB + "exit 0\n" + root)
+                    else:
+                        hourly.write_text(self.JOB + root)
+                        hourly.chmod(0)
+                        self.addCleanup(hourly.chmod, 0o644)
+                    env = self.fixture.env(**self.promote_env(CRON_JOBS_HOST=self.HOST))
+                    out = subprocess.run([sh, str(SCRIPT), "status"], env=env, capture_output=True,
+                                         text=True, check=False).stdout
+                    self.assert_full_block(out)
+
+    def test_promote_still_checks_a_host_that_is_no_standby(self):
+        self.no_standby()
+        out = self.run_promote(CRON_JOBS_HOST=self.HOST).stdout
+        self.assert_full_block(out)
+
+
 class HubRole(unittest.TestCase):
     """The agents and cron stages add the hub-role labels only for the holder."""
 

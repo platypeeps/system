@@ -98,7 +98,7 @@ Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged a
 One open bundle branch per repo: every ready item, filed item and builder for that repo goes onto it, one commit per item; each PR costs a review, a rebase and a serial gate.
 A second PR needs one of two reasons: a change that moves state in steps, or the bundle is already in the lane; area, wave and size are not reasons (operator 2026-10-25, 2026-11-04, 2026-11-05).
 `sd assignments beat --start` refuses a second open branch for a repo unless `--reason` names one of those two (pack sd:7737).
-Fix only blocking findings before merge; file the rest as sd items for the repo's next PR or a follow-up PR, not another review round: each round costs a full re-review.
+A review finding blocks only when it names a concrete failing input, command or interruption (a crash between two writes) that the change causes, in code it touched or any unchanged caller or consumer it breaks (a reader, job or file parser); fix only those before merge, file every other one as an sd item for the repo's next PR, not another review round, and after round 3 the lead decides fix, file or reject: each round costs a full re-review, and 46 builds ran out of 8 rounds at about 4 new highs a round (operator 2026-11-21, pack sd:9867).
 Rebuttals need no approval: reject a review finding with a reason a reader can check, in the document's Status or the PR thread.
 
 # CI runs locally
@@ -152,7 +152,8 @@ A change that moves state in steps, or changes a parser, a journal or event matc
 New proof or validation code carries a property test over extreme magnitudes (overflow, inf, subnormal, zero, nested input) before round 1: that class cost 6 rounds on sd:2406 alone.
 Trigger: the first blocking round: 34 of 82 blocking rounds in 14 days repeated a prior blocker.
 After a review pass, only add commits; never amend, rebase or squash: a moved head forces a full re-review (26 of 32 kept passes).
-Then stop single-finding fixes and do one class pass: name the class and enumerate every instance from the code, not the findings. Keep it inside the change's own scope; a new reader, audit or entry kind becomes its own item: each one MWS build 1226 added drew a new blocker (operator 2026-11-19).
+Then stop single-finding fixes and do one class pass: name the class and enumerate every instance from the code, not the findings.
+Keep a class pass inside the change's own scope; a new reader, audit or entry kind becomes its own item: each one MWS build 1226 added drew a new blocker (operator 2026-11-19).
 Add each instance to the failure table; fix each row lacking a recovery or a test, fail-first.
 Send the next round with the table; as integrator, name the class in the round brief and record the trigger in `sd task note`.
 Split the PR if the table shows it does too much; a deferred advisory filed as its own item does not count, so cite it in later rounds.
@@ -196,5 +197,4 @@ Run a one-off step on a satellite as a machine-setup stage or job that `refresh.
 
 # Time
 
-Report every time in the machine's local zone with its label, for example `09:36 MDT`; convert UTC (`Z`) first.
-Keep raw timestamps unchanged inside quoted tool output and code blocks.
+Report every time in the machine's local zone with its label, for example `09:36 MDT`; convert UTC (`Z`) first, but keep raw timestamps unchanged inside quoted tool output and code blocks.

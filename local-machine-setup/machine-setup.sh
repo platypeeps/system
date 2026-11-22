@@ -3020,9 +3020,95 @@ for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS)):
   rm -f "$ss_err"
 }
 
+# The env.sh block that gives headless claude the setup token of the account
+# cswap made active (sd:9905): one Keychain item per account
+# (service claude-code-oauth-token-<email>, account <organizationUuid>: an
+# account is its email and its organization), the plain item its fallback. Quoted
+# heredoc: the block expands when env.sh is sourced, never here. No line may
+# fail: a `set -e` shell that sources env.sh (cron jobs) would stop there.
+# The block turns xtrace off around the key and back on after: the Bash
+# profile and zsh source env.sh directly, past st_shell_env.
+claude_token_block_text() {
+  cat <<'TOKENEOF'
+# >>> machine-setup: claude token per cswap account (sd:9905)
+# One `claude setup-token` key per account in the Keychain, stored by
+# `cswap.sh keys` under its email and organization; headless runs follow
+# the account in ~/.claude.json. No xtrace while the key is read.
+case $- in *x*) __st_x=1; set +x;; esac
+# One read of ~/.claude.json: cswap may swap it between two reads.
+_cc_json="$(cat "$HOME/.claude.json" 2>/dev/null)" || _cc_json=
+_cc_acct="$(printf '%s' "$_cc_json" | /usr/bin/plutil -extract oauthAccount.emailAddress raw -o - - 2>/dev/null)" || _cc_acct=
+_cc_org="$(printf '%s' "$_cc_json" | /usr/bin/plutil -extract oauthAccount.organizationUuid raw -o - - 2>/dev/null)" || _cc_org=
+export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN="$( { [ -n "$_cc_acct" ] && [ -n "$_cc_org" ] && security find-generic-password -s "claude-code-oauth-token-$_cc_acct" -a "$_cc_org" -w 2>/dev/null; } || security find-generic-password -s claude-code-oauth-token -w 2>/dev/null)"
+unset _cc_json _cc_acct _cc_org
+[ -n "${__st_x-}" ] && set -x; unset __st_x
+# <<< machine-setup: claude token per cswap account
+TOKENEOF
+}
+
+# Replace line <n> of env.sh with the block, through a 600 temp file in the
+# same folder and one rename, so a crash leaves the old file whole.
+claude_token_block_write() { # env.sh, line
+  ctw_tmp="$1.sd9905.$$"
+  # Each part must succeed: a failed head under a good tail would rename a
+  # file missing its first lines over env.sh. macOS head refuses -n 0, so
+  # line 1 has no head.
+  if (umask 077
+      { { [ "$2" -eq 1 ] || head -n "$(($2 - 1))" "$1"; } && claude_token_block_text &&
+        tail -n "+$(($2 + 1))" "$1"; } > "$ctw_tmp") &&
+      mv "$ctw_tmp" "$1"; then
+    return 0
+  fi
+  rm -f "$ctw_tmp"
+  return 1
+}
+
+# Turns the old one-line export, which read one item for every account, into
+# the block, and changes no other line. The block's marker or a hand-written
+# per-account read is ok. Any other CUSTOM_CLAUDE_CODE_OAUTH_TOKEN line is
+# named by number only: it may hold a key, which no output shows.
+claude_token_block() {
+  ctb_env="$HOME/.config/shell/env.sh"
+  [ -f "$ctb_env" ] || return 0
+  # A hand-written block is left as it is. One that reads by email alone
+  # is named: two accounts with one email would load one item.
+  # shellcheck disable=SC2016 # the literal text of a hand-written block
+  if grep -qF '# >>> machine-setup: claude token per cswap account' "$ctb_env" ||
+      grep -qF -- '-s "claude-code-oauth-token-$_cc_acct" -a "$_cc_org"' "$ctb_env"; then
+    echo "  ok      ~/.config/shell/env.sh reads the claude token per account"
+    return 0
+  fi
+  # shellcheck disable=SC2016 # the literal text of a hand-written block
+  if grep -qF 'claude-code-oauth-token-$_cc_acct' "$ctb_env"; then
+    echo "  WARN    ~/.config/shell/env.sh reads the claude token by email alone — two accounts with one email load one key; replace it with the block in local-machine-setup/machine-setup.sh (edit by hand)"
+    return 0
+  fi
+  ctb_old=$(grep -nE '^[[:space:]]*export[[:space:]]+CUSTOM_CLAUDE_CODE_OAUTH_TOKEN="\$\(security find-generic-password -s claude-code-oauth-token -w( 2>/dev/null)?\)"[[:space:]]*$' "$ctb_env" | cut -d: -f1)
+  ctb_any=$(grep -nE '^[[:space:]]*(export[[:space:]]+)?CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=' "$ctb_env" | cut -d: -f1 | tr '\n' ' ')
+  if [ -n "$ctb_old" ] && [ "$ctb_any" = "$ctb_old " ]; then
+    echo "  DIFFERS ~/.config/shell/env.sh line $ctb_old reads one claude token for every account"
+    # A symlinked env.sh is changed in its target: a rename over the link
+    # would leave a copy here and the managed file unchanged.
+    # The [ -f ] above already failed for a dangling or looping link.
+    ctb_real=$ctb_env
+    while [ -L "$ctb_real" ]; do
+      ctb_link=$(readlink "$ctb_real")
+      case "$ctb_link" in
+        /*) ctb_real=$ctb_link ;;
+        *) ctb_real=$(dirname "$ctb_real")/$ctb_link ;;
+      esac
+    done
+    run claude_token_block_write "$ctb_real" "$ctb_old"
+  elif [ -n "$ctb_any" ]; then
+    echo "  WARN    ~/.config/shell/env.sh line ${ctb_any% } sets CUSTOM_CLAUDE_CODE_OAUTH_TOKEN its own way — store the key with cswap.sh keys and replace the line with the block in local-machine-setup/machine-setup.sh (edit by hand)"
+  fi
+  unset ctb_env ctb_old ctb_any ctb_real ctb_link
+}
+
 stage_tooling() {
   echo "== tooling"
   sd_settings
+  claude_token_block
   if command -v fnm >/dev/null 2>&1; then
     have=$(fnm ls 2>/dev/null || :)
     for v in $(node_versions); do
@@ -8376,7 +8462,12 @@ cmd_status() {
   done
   # Read-only and outside the drift count: see hub_ready.
   if [ -e "$SD_HUB_CONFIG" ] || [ -f "$PROMOTE_MARKER" ] || [ -f "$UNDO_MARKER" ] || [ -e "$DRILL_HOME" ] || hub_role; then
-    hub_ready
+    if no_standby; then
+      echo "== hub-ready"
+      echo "  skip    not a standby: no $STANDBY_JOBS job file outside the shared cron-jobs/jobs, and no hourly backup root; nothing checked"
+    else
+      hub_ready
+    fi
     echo
   fi
   # A 02:xx cron job runs only on a repeating wake (.claude/rules/cron-wake.md).
@@ -8542,25 +8633,41 @@ rm_target() { # path allowed-root
 }
 
 # The local root a hub-role backup job writes, from that job's own file: the
-# job is sourced as cron-jobs.sh sources it, in a subshell. Prints nothing
-# when no file defines the job or the file names no destination. Fails on
-# a destination with a newline: a reader would split it into other paths.
+# job is sourced as cron-jobs.sh sources it, under set -e. Prints nothing
+# when no file defines the job or the file names no destination. Fails when
+# the lookup fails, when the file does not source to its end, or on a
+# destination with a newline: a reader would split it into other paths. An
+# empty value from a file that did not source is no proof of no root, so a
+# caller must see the failure. The source runs in its own process: in a
+# subshell where set -e is off (an `if`, left of `||`), bash 5 goes on
+# after a failed `.` or command and prints what it read so far.
 job_destination() { # job, variable
   jd_file=$(PYTHONPATH="$ROOT/lib" python3 -c 'import sys, system_tools_config as stc
 for d in stc.cron_job_dirs():
     f = d / (sys.argv[1] + ".job")
     if f.is_file():
         print(f)
-        break' "$1")
+        break' "$1") || { echo "job $1: its job folders could not be read" >&2; return 1; }
   [ -n "$jd_file" ] || return 0
   # The job's ROOT is local-cron-jobs, as cron-jobs.sh sets it.
-  # shellcheck disable=SC1090,SC2030,SC2154 # eval sets jd_value
-  (ROOT="$ROOT/local-cron-jobs"; eval "$2=''"; . "$jd_file" >/dev/null 2>&1; eval "jd_value=\$$2"
-   case "$jd_value" in
-     *'
-'*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; exit 1 ;;
-     *) printf '%s\n' "$jd_value" ;;
-   esac)
+  # The child checks for a newline, exit 3, before `$()` strips a trailing
+  # one: stripped, the name points at another folder. It prints `reached:`
+  # only past that check: a job that exits 0 early prints nothing, which
+  # must not read as a job that names no root.
+  # The name is written into the child's script, not read from its $2
+  # after the source: a `set --` in the job reset $2, and the reader
+  # printed `reached:$` for a job that named its root.
+  case $2 in ''|[0-9]*|*[!A-Za-z0-9_]*) echo "job_destination: bad name $2" >&2; return 1 ;; esac
+  jd_rc=0
+  # shellcheck disable=SC2016 # the child expands its own arguments
+  jd_value=$(ROOT="$ROOT/local-cron-jobs" sh -ec "$2=''"'; . "$1" >/dev/null 2>&1 </dev/null
+    case "${'"$2"'}" in *"
+"*) exit 3 ;; esac; printf "reached:%s" "${'"$2"'}"' sh "$jd_file") || jd_rc=$?
+  case $jd_rc:$jd_value in
+    0:reached:*) printf '%s\n' "${jd_value#reached:}" ;;
+    3:*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; return 1 ;;
+    *) echo "$jd_file: does not source to its end; $2 is not known" >&2; return 1 ;;
+  esac
 }
 hourly_destination() { job_destination sd-db-backup-hourly SD_DB_BACKUP_HOURLY_DESTINATION; }
 
@@ -8601,6 +8708,36 @@ hub_name_matches() {
     *.*/*.*) [ "$hm_a" = "$hm_b" ] ;;
     *) [ "${hm_a%%.*}" = "${hm_b%%.*}" ] ;;
   esac
+}
+
+# A satellite that is no standby (sd:9638): no marker, no drill, not the
+# holder, no role job file in a folder of its own, and an hourly job that
+# names no local root. Its own folders are every one cron-jobs.sh reads but
+# the shared jobs/, which the config clone gives every machine, the hub's
+# role jobs with it. The hourly root is what README step 2 has a standby
+# set wherever its job files sit, so one set up in the shared folder still
+# reads as a standby. Read from disk, so no setting says it. Status skips
+# hub-ready there; promote and the drill still run it, so they refuse such a
+# machine as before. A folder or job file that cannot be read counts as a
+# standby, which checks everything.
+STANDBY_JOBS="sd-db-backup sd-db-backup-hourly offsite-verify shadow-sync-nightly"
+no_standby() {
+  [ ! -f "$PROMOTE_MARKER" ] && [ ! -f "$UNDO_MARKER" ] && [ ! -e "$DRILL_HOME" ] || return 1
+  ! hub_holder || return 1
+  ns_jobs=$(PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
+for d in stc.cron_job_dirs()[:-1]:
+    try:
+        listed = os.listdir(d)
+    except FileNotFoundError:
+        continue
+    for n in listed:
+        if n.endswith(".job"):
+            print(n[:-4])') || return 1
+  for ns_job in $STANDBY_JOBS; do
+    ! printf '%s\n' "$ns_jobs" | grep -qxF "$ns_job" || return 1
+  done
+  ns_dest=$(hourly_destination) || return 1
+  [ -z "$ns_dest" ]
 }
 
 # The hub-ready block (design, "Satellite readiness"): read-only, one line per

@@ -36,6 +36,9 @@ HF_TOKEN=change-me
 ANTHROPIC_API_KEY=change-me
 # From `claude setup-token`. Not CLAUDE_CODE_OAUTH_TOKEN, which would replace
 # every claude's own login: a headless run sets that name from this one.
+# env.sh loads it per account: the Keychain item of the email and
+# organization of the account cswap made active (`cswap.sh keys` stores them), the plain item the fallback; the
+# tooling stage writes that block (sd:9905).
 CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=change-me
 OPENAI_API_KEY=change-me
 GEMINI_API_KEY=change-me
@@ -61,6 +64,11 @@ JIRA_API_TOKEN=change-me
 OPENWHISPR_API_KEY=change-me
 YDC_API_KEY=change-me
 SOCKET_SECURITY_API_KEY=change-me
+# Admin keys the local-agent-meter usage readers send.
+ANTHROPIC_ADMIN_KEY=change-me
+OPENAI_ADMIN_KEY=change-me
+LANGSMITH_ADMIN_KEY=change-me
+HEYGEN_API_KEY=change-me
 SYSTEM_TOOLS_LABEL_PREFIX=local.system-tools
 TYPESAFE_API_KEY=change-me
 # The pack's Health > Machine reads these AWS resources: space-separated
