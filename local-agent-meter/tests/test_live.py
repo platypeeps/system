@@ -492,6 +492,13 @@ class Readers(unittest.TestCase):
                       {"product": "copilot", "unitType": "Minutes", "quantity": 99, "netAmount": 1}])
         self.assertEqual((got["status"], got["minutes"], got["spend"]["amount"]), ("ok", 10.0, 1.0), got)
         self.assertEqual(github([])["minutes"], 0.0)
+        # GitHub's documented user report names the product "Actions"
+        # and the unit "minutes" (sd:9928 review): case does not count.
+        documented = {"date": "2023-08-01", "product": "Actions", "sku": "Actions Linux",
+                      "quantity": 100, "unitType": "minutes", "pricePerUnit": 0.008,
+                      "grossAmount": 0.8, "discountAmount": 0, "netAmount": 0.8,
+                      "repositoryName": "user/example"}
+        self.assertEqual(github([documented])["minutes"], 100.0)
         for bad in (None, "7", True, float("nan"), -1):
             with self.subTest(quantity=bad):
                 self.assertEqual(github([{**minutes, "quantity": bad}])["status"], "unknown")

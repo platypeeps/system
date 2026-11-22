@@ -571,7 +571,7 @@ def read_github(env, fetch, now):
     items = github_report(env, fetch, now)("usage")
     minutes = 0.0
     for item in items:
-        if item.get("product") == "actions" and str(item.get("unitType")).lower() == "minutes":
+        if str(item.get("product")).lower() == "actions" and str(item.get("unitType")).lower() == "minutes":
             used = number(item.get("quantity", item.get("grossQuantity")), "quantity")
             if used < 0:
                 raise ReadFailed("quantity is below 0")
