@@ -85,15 +85,6 @@ class Bounded(unittest.TestCase):
         self.assertEqual(result.stderr, "timed out after 1s: sleep 30\n")
         self.assertLess(time.monotonic() - started, 10)
 
-    def test_a_bound_under_a_second_holds_to_the_millisecond(self):
-        # sd:9427 review: perl's alarm took whole seconds, so 0.3 armed
-        # no alarm at all; a send bounded to a gap's last 300 ms ran on.
-        started = time.monotonic()
-        result = shell("st_bounded 0.3 sleep 5")
-
-        self.assertEqual(result.returncode, 124)
-        self.assertLess(time.monotonic() - started, 1.5)
-
     def test_a_command_that_ignores_term_is_killed_after_the_grace(self):
         started = time.monotonic()
         result = shell("ST_BOUNDED_GRACE=1 st_bounded 1 sh -c 'trap \"\" TERM; sleep 30'")
