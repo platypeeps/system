@@ -127,7 +127,13 @@ uv_prune_cache() {
         if (!(c in p)) o[++m] = c; p[c] = p[c] (p[c] == "" ? "" : " ") pid }
       END { for (i = 1; i <= m; i++) printf "%s%s pid %s", (i > 1 ? "; " : ""), o[i], p[o[i]] }')
     echo "uv-prune: holders: ${holders:-pid $(echo $pids)}"
-    echo "uv-prune: another uv process holds the cache; skipped"
+    # Only uvx left: a session's long-lived tool run, such as an MCP
+    # proxy, holds the lock for days; run skips that quietly (sd:9998).
+    case $holders in
+      *\;*) echo "uv-prune: another uv process holds the cache; skipped" ;;
+      "uvx pid "*) echo "uv-prune: only uvx tool runs hold the cache; skipped" ;;
+      *) echo "uv-prune: another uv process holds the cache; skipped" ;;
+    esac
     return 0
   fi
   before=$(du -sk "$1" | cut -f1)
@@ -660,7 +666,11 @@ else
   uv_rc=0
   # The main cache only: sessions hold theirs all night (sd:9848).
   ( UV_PRUNE_SESSION_CACHE=""; uv_prune ) > "$TMPD/uv" 2>&1 || uv_rc=$?
-  if grep -q '; skipped$' "$TMPD/uv"; then
+  if grep -q '^uv-prune: only uvx tool runs hold the cache; skipped$' "$TMPD/uv"; then
+    # Expected while a session runs: no finding, and the streak stays.
+    holders=$(sed -n 's/^uv-prune: holders: //p' "$TMPD/uv" | tail -1)
+    action "uv-prune: only uvx tool runs hold the cache; skipped ($holders)"
+  elif grep -q '; skipped$' "$TMPD/uv"; then
     skips=$(cat "$UV_SKIPS" 2>/dev/null) || skips=0
     case $skips in ''|*[!0-9]*) skips=0 ;; esac
     skips=$((skips + 1))

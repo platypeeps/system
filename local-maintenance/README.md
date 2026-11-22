@@ -175,6 +175,8 @@ agent. `uv-prune` does these steps:
    cache's lock to exit. `lsof -t <cache>/.lock` lists them, so a uv
    on another cache does not count.
 3. Skip the prune, exit 0, when a holder is still left.
+   In `run`, a skip held by `uvx` alone is an action, never a finding,
+   and does not count toward the three-night streak.
 4. Run `uv cache prune` with `UV_LOCK_TIMEOUT` of `UV_PRUNE_LOCK_TIMEOUT` (60).
    At login it then prunes the Claude sessions' cache,
    `UV_PRUNE_SESSION_CACHE` (`~/.cache/uv-claude`), the same way.
