@@ -1835,6 +1835,36 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         bootstraps = [c for c in self.calls.read_text().splitlines() if c.startswith("launchctl bootstrap")]
         self.assertEqual(len(bootstraps), 3, bootstraps)
 
+    def test_the_first_rollback_copy_is_one_launchd_loaded(self):
+        """Lane review: the installer before this one wrote the plist
+        before its bootout. Killed between them, it left launchd on the
+        old definition and the disk on an untested one, and the first
+        install here saved that file as the plist launchd accepted. A
+        refused bootstrap then rolled back to it, and every later failure
+        would too. The loaded plist is proven by loading it before it is
+        kept; one launchd refuses is never the rollback copy."""
+        self.plist().write_text("untested by launchd\n")
+        path = self.fx.path(self.launchd_with("unproven-bin",
+            '  bootstrap) echo refused >&2; exit 5 ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertNotIn("restored the previous plist", out)
+        state = self.fx.home / ".local/state/cron-jobs"
+        self.assertFalse((state / f"{LABEL_PREFIX}.cron.demo.accepted").exists(), out)
+
+    def test_a_first_rollback_copy_launchd_loads_is_restored(self):
+        """PIN for the fix above: a loaded plist launchd takes again is
+        kept, and a refused replacement goes back to it."""
+        self.plist().write_text("the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("prove-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || { echo refused >&2; exit 5; } ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertIn("restored the previous plist", result.stderr, result.stdout + result.stderr)
+        state = self.fx.home / ".local/state/cron-jobs"
+        self.assertEqual((state / f"{LABEL_PREFIX}.cron.demo.accepted").read_text(),
+                         "the plist launchd holds\n")
+
     def test_an_install_killed_before_bootstrap_keeps_the_accepted_plist(self):
         """Lane review: an install killed between replacing the plist and
         bootstrap left an unproven plist; the next install copied it over
