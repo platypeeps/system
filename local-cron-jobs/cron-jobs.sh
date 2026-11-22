@@ -1996,6 +1996,13 @@ cmd_install() {
         *"did not load"*) echo "failed: $job (interrupted install)$err" >&2 ;;
         *) echo "recovered: $job (an interrupted install)$err" ;;
       esac
+      # The lock held so far was this checkout's logs/: no label was
+      # loaded. The restored one may log to another checkout, whose run
+      # the bootout below would kill, so its lock is taken now.
+      if is_loaded "$job"; then
+        exec 8>&-
+        hold_job_lock "$job" || { exec 7>&-; return 1; }
+      fi
     fi
   fi
   # Seeds the rollback point on the first install that keeps one: a loaded

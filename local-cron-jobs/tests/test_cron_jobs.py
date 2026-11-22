@@ -1903,6 +1903,27 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertIn("demo: reinstall cancelled", out, out + err)
         self.assertNotIn("launchctl bootstrap", self.calls.read_text())
 
+    def test_recovery_refuses_while_the_restored_labels_run_holds_its_lock(self):
+        """Review: recovery locked this checkout's logs/ (no label loaded),
+        then loaded an accepted plist whose logs are another checkout's.
+        A run that started there was booted out unchecked. Recovery now
+        takes the lock the restored label names before going on."""
+        self.plist().write_text("an untested plist\n")
+        self.accepted().write_text("the plist launchd holds\n")
+        self.accepted().with_name(self.accepted().name + ".pending").write_text("an untested plist\n")
+        gone = self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+        gone.touch()
+        other = self.fx.tmp / "other" / "logs"
+        other.mkdir(parents=True)
+        held = open(other / ".demo.flock", "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = self.run_script("install", "demo", env={"CRON_TEST_STDOUT_DIR": str(other)})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("demo: a run is in progress", result.stderr)
+        self.assertEqual(self.bootouts(), [])
+        self.assertFalse(gone.exists(), "the accepted job is not loaded")
+
     def test_a_failed_promote_of_a_loaded_pending_plist_changes_nothing(self):
         """Review: recovery promoted a pending plist launchd holds with an
         unchecked mv. Failed, the install went on: its candidate overwrote
