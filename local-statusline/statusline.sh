@@ -49,21 +49,51 @@ except Exception:
     case "$pair" in "$email="*) email=${pair#*=}; break ;; esac
   done
 
-  # CPU use: the summed ps %cpu over the logical CPU count, capped at 100.
-  # Load counts runnable threads, so a booted iOS simulator read 400 at
-  # 37% busy (pack sd:9946). Yellow at 70%, red at 90%. Empty where
-  # sysctl has no hw.logicalcpu, so the segment is left out.
-  cpu=$(ncpu=$(sysctl -n hw.logicalcpu 2>/dev/null) && ps -A -o %cpu= 2>/dev/null \
-    | awk -v n="$ncpu" '
-    { t += $1 }
-    END {
-      if (n + 0 <= 0) exit
-      p = int(t / n + 0.5); if (p > 100) p = 100
-      s = sprintf("cpu %d%%", p)
-      if (p >= 90) s = "\033[1;38;5;196m" s "\033[0m"
-      else if (p >= 70) s = "\033[38;5;214m" s "\033[0m"
-      print s
-    }' || true)
+  # CPU use: busy share of the host's CPU ticks since the previous render,
+  # kept in one state file. Host counters include processes that already
+  # exited, which a ps snapshot misses (a clang burst). Load counts runnable
+  # threads, so a booted iOS simulator read 400 at 37% busy (pack sd:9946).
+  # Yellow at 70%, red at 90%. Empty on the first render and where the
+  # counters cannot be read (Linux). STATUSLINE_CPU_TICKS ("user system idle
+  # nice") stands in for the counters in tests.
+  cpu=$(python3 - "${TMPDIR:-/tmp}/statusline-cpu.$(id -u)" 2>/dev/null <<'EOF' || true
+import ctypes, ctypes.util, os, sys
+fake = os.environ.get("STATUSLINE_CPU_TICKS")
+if fake:
+    ticks = [int(v) for v in fake.split()]
+else:
+    lib = ctypes.CDLL(ctypes.util.find_library("System"))
+    lib.mach_host_self.restype = ctypes.c_uint
+    arr, cnt = (ctypes.c_uint * 4)(), ctypes.c_uint(4)
+    if lib.host_statistics(lib.mach_host_self(), 3, arr, ctypes.byref(cnt)):
+        sys.exit(0)
+    ticks = list(arr)  # user, system, idle, nice
+path = sys.argv[1]
+try:
+    old = [int(v) for v in open(path).read().split()]
+except (OSError, ValueError):
+    old = None
+pct = None
+if old and len(old) == 5:
+    d = [(a - b) % 2**32 for a, b in zip(ticks, old[:4])]
+    if sum(d) >= 100:  # under about 1 s of one core: keep the last value
+        pct = round(100 * (d[0] + d[1] + d[3]) / sum(d))
+    else:
+        ticks, pct = old[:4], (old[4] if old[4] >= 0 else None)
+tmp = "%s.%d" % (path, os.getpid())
+with open(tmp, "w") as fh:
+    fh.write(" ".join(map(str, ticks + [-1 if pct is None else pct])))
+os.replace(tmp, path)
+if pct is None:
+    sys.exit(0)
+s = "cpu %d%%" % pct
+if pct >= 90:
+    s = "\033[1;38;5;196m" + s + "\033[0m"
+elif pct >= 70:
+    s = "\033[38;5;214m" + s + "\033[0m"
+print(s)
+EOF
+)
 
   # Model-scoped weekly allowance (e.g. Fable) from the statusline JSON on
   # stdin: warn in red once remaining drops below FABLE_WARN_PCT (default 35).

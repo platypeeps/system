@@ -7,8 +7,9 @@ plugin cannot render on its own:
   tokens) — claude-hud's `auth.ts` strips the domain and only ever prints the
   local part. A login named in `STATUSLINE_ACCOUNT_LABELS` shows as its short
   label instead of the email;
-- the **CPU use** on line 1 — the summed `ps` %cpu over the logical CPU count,
-  yellow at 70% and red at 90% (load counts runnable threads, not CPU);
+- the **CPU use** on line 1 — the busy share of the host's CPU ticks since
+  the previous render, yellow at 70% and red at 90% (load counts runnable
+  threads, not CPU); the first render shows none;
 - an **allowance warning** on line 2 — red, once a plan or model-scoped window
   has less than `FABLE_WARN_PCT` percent (default 35) remaining;
 - the **compactions line folded** onto the line above it — claude-hud appends

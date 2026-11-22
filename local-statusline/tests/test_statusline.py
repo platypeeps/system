@@ -2,8 +2,8 @@
 
 Each case builds a throwaway config folder holding a claude-hud version
 folder, a stub `bun` (named by BUN_BIN) that ignores its arguments and prints
-two fixed HUD lines, and stubs `sysctl` and `ps` first on PATH that answer
-`sysctl -n hw.logicalcpu` and `ps -A -o %cpu=` from the environment. HOME points into
+two fixed HUD lines. STATUSLINE_CPU_TICKS stands in for the host CPU
+counters, and TMPDIR keeps the CPU state file in the temporary folder. HOME points into
 the same temporary folder, so the `~/.claude.json` fallback finds nothing.
 The suite therefore runs the same on Linux as on a Mac.
 """
@@ -32,14 +32,6 @@ printf '%%s\\n' '%s'
 [ -z "${FAKE_HUD_LINE3:-}" ] || printf '%%s\\n' "$FAKE_HUD_LINE3"
 """ % (HUD_LINE_1, HUD_LINE_2)
 
-# hw.logicalcpu prints a count; ps prints one %cpu value per process.
-SYSCTL_STUB = """#!/bin/sh
-[ "${FAKE_SYSCTL_FAIL:-0}" = 1 ] && exit 1
-printf '%s\\n' "$FAKE_NCPU"
-"""
-PS_STUB = """#!/bin/sh
-for v in $FAKE_PCPU; do printf '%s\\n' "$v"; done
-"""
 
 
 def write_exec(path, body):
@@ -61,8 +53,6 @@ class StatuslineTest(unittest.TestCase):
         self.bin.mkdir()
         self.bun = self.bin / "bun"
         write_exec(self.bun, BUN_STUB)
-        write_exec(self.bin / "sysctl", SYSCTL_STUB)
-        write_exec(self.bin / "ps", PS_STUB)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -74,13 +64,18 @@ class StatuslineTest(unittest.TestCase):
             "CLAUDE_CONFIG_DIR": str(self.config),
             "BUN_BIN": str(self.bun),
             "COLUMNS": "100",
-            "FAKE_PCPU": "100.0 60.0",
-            "FAKE_NCPU": "8",
+            "TMPDIR": str(self.root),
+            "STATUSLINE_CPU_TICKS": "1000 1000 8000 0",
         }
         env.update(extra)
         return env
 
-    def run_script(self, *args, stdin="{}", **extra):
+    def run_script(self, *args, stdin="{}", prior="0 0 0 0 -1", **extra):
+        # The state file holds the previous render's counters; the default
+        # prior sample makes the next one read 20% busy. None means none.
+        state = self.root / ("statusline-cpu.%d" % os.getuid())
+        if prior is not None:
+            state.write_text(prior)
         return subprocess.run(
             ["sh", str(SCRIPT), *args],
             input=stdin,
@@ -98,25 +93,41 @@ class StatuslineTest(unittest.TestCase):
         return lines
 
     def test_cpu_below_70_is_uncoloured(self):
-        line1, line2 = self.render(FAKE_PCPU="100.0 60.0", FAKE_NCPU="8")
+        line1, line2 = self.render()
         self.assertEqual(line1, HUD_LINE_1 + SEP + "cpu 20%")
         self.assertEqual(line2, HUD_LINE_2)
 
     def test_cpu_at_70_is_yellow(self):
-        line1, _ = self.render(FAKE_PCPU="400 160", FAKE_NCPU="8")
+        line1, _ = self.render(STATUSLINE_CPU_TICKS="500 100 300 100")
         self.assertTrue(line1.endswith(SEP + YELLOW + "cpu 70%[0m"), repr(line1))
 
     def test_cpu_at_90_is_red(self):
-        line1, _ = self.render(FAKE_PCPU="700 20", FAKE_NCPU="8")
+        line1, _ = self.render(STATUSLINE_CPU_TICKS="800 100 100 0")
         self.assertTrue(line1.endswith(SEP + RED + "cpu 90%[0m"), repr(line1))
 
-    def test_cpu_caps_at_100(self):
-        # ps %cpu is a decaying average and can sum past the core count.
-        line1, _ = self.render(FAKE_PCPU="900", FAKE_NCPU="8")
-        self.assertTrue(line1.endswith(SEP + RED + "cpu 100%[0m"), repr(line1))
+    def test_cpu_counts_ticks_since_the_previous_render(self):
+        # Busy ticks between samples count even when the process that used
+        # them has exited; only the delta matters, not the totals.
+        line1, _ = self.render(
+            prior="5000 5000 90000 0 12", STATUSLINE_CPU_TICKS="5900 5000 90100 0"
+        )
+        self.assertTrue(line1.endswith(SEP + RED + "cpu 90%[0m"), repr(line1))
 
-    def test_failing_sysctl_leaves_cpu_out(self):
-        proc = self.run_script("render", FAKE_SYSCTL_FAIL="1")
+    def test_a_short_interval_keeps_the_last_value(self):
+        line1, _ = self.render(
+            prior="1000 1000 8000 0 42", STATUSLINE_CPU_TICKS="1010 1000 8010 0"
+        )
+        self.assertEqual(line1, HUD_LINE_1 + SEP + "cpu 42%")
+
+    def test_first_render_shows_no_cpu(self):
+        state = self.root / ("statusline-cpu.%d" % os.getuid())
+        proc = self.run_script("render", prior=None)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.splitlines(), [HUD_LINE_1, HUD_LINE_2])
+        self.assertTrue(state.exists())
+
+    def test_unreadable_counters_leave_cpu_out(self):
+        proc = self.run_script("render", STATUSLINE_CPU_TICKS="not numbers")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("cpu", proc.stdout)
         self.assertEqual(proc.stdout.splitlines(), [HUD_LINE_1, HUD_LINE_2])
