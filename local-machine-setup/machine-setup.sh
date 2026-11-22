@@ -3016,10 +3016,12 @@ claude_token_block_text() {
 # `cswap.sh keys` under its email and organization; headless runs follow
 # the account in ~/.claude.json. No xtrace while the key is read.
 case $- in *x*) __st_x=1; set +x;; esac
-_cc_acct="$(/usr/bin/plutil -extract oauthAccount.emailAddress raw -o - "$HOME/.claude.json" 2>/dev/null)" || _cc_acct=
-_cc_org="$(/usr/bin/plutil -extract oauthAccount.organizationUuid raw -o - "$HOME/.claude.json" 2>/dev/null)" || _cc_org=
+# One read of ~/.claude.json: cswap may swap it between two reads.
+_cc_json="$(cat "$HOME/.claude.json" 2>/dev/null)" || _cc_json=
+_cc_acct="$(printf '%s' "$_cc_json" | /usr/bin/plutil -extract oauthAccount.emailAddress raw -o - - 2>/dev/null)" || _cc_acct=
+_cc_org="$(printf '%s' "$_cc_json" | /usr/bin/plutil -extract oauthAccount.organizationUuid raw -o - - 2>/dev/null)" || _cc_org=
 export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN="$( { [ -n "$_cc_acct" ] && [ -n "$_cc_org" ] && security find-generic-password -s "claude-code-oauth-token-$_cc_acct" -a "$_cc_org" -w 2>/dev/null; } || security find-generic-password -s claude-code-oauth-token -w 2>/dev/null)"
-unset _cc_acct _cc_org
+unset _cc_json _cc_acct _cc_org
 [ -n "${__st_x-}" ] && set -x; unset __st_x
 # <<< machine-setup: claude token per cswap account
 TOKENEOF

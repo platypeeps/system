@@ -206,3 +206,51 @@ class TokenBlock(base.SyntheticHome):
                     capture_output=True, text=True, check=False)
                 self.assertEqual(run.stdout, f"on {want}\n", f"{shell}: {run.stderr}")
                 self.assertNotIn("synthetic", run.stderr, f"{shell} traced the key")
+
+    def test_the_block_reads_email_and_organization_from_one_snapshot(self):
+        # cswap may swap ~/.claude.json between two reads; a mixed pair
+        # names no item and falls back to the plain key. A FIFO serves
+        # account A to the first open and account B to any second one.
+        import os
+        import subprocess
+        import threading
+        self.write(BEFORE + OLD + AFTER)
+        self.run_tooling("--apply")
+        security = self.stubs / "security-fake"
+        base.write_exec(security / "security",
+                        '#!/bin/sh\n'
+                        'case "$*" in\n'
+                        '  "find-generic-password -s claude-code-oauth-token-a@example.test -a org-a -w") echo tok-a ;;\n'
+                        '  "find-generic-password -s claude-code-oauth-token-b@example.test -a org-b -w") echo tok-b ;;\n'
+                        '  "find-generic-password -s claude-code-oauth-token -w") echo tok-plain ;;\n'
+                        '  *) exit 44 ;;\n'
+                        'esac\n')
+        fifo = self.home / ".claude.json"
+        os.mkfifo(fifo)
+        done = threading.Event()
+
+        def serve():
+            for who in ("a", "b"):
+                while not done.is_set():
+                    try:
+                        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+                        break
+                    except OSError:
+                        done.wait(0.01)
+                else:
+                    return
+                os.set_blocking(fd, True)
+                os.write(fd, ('{"oauthAccount": {"emailAddress": "%s@example.test", '
+                              '"organizationUuid": "org-%s"}}' % (who, who)).encode())
+                os.close(fd)
+
+        writer = threading.Thread(target=serve, daemon=True)
+        writer.start()
+        try:
+            run = subprocess.run(["/bin/sh", "-e", "-c", f'. "{self.env_sh}"; echo "$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"'],
+                                 env={"HOME": str(self.home), "PATH": f"{security}:/usr/bin:/bin"},
+                                 capture_output=True, text=True, check=False, timeout=30)
+        finally:
+            done.set()
+            writer.join(5)
+        self.assertEqual((run.returncode, run.stdout), (0, "tok-a\n"), run.stderr)
