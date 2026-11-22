@@ -1813,6 +1813,68 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertFalse(gone.exists(), "the accepted job is not loaded")
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
+    def killed_install(self, name, case, extra=""):
+        """An install whose launchctl runs `case` first, in its own session
+        so `kill -9 0` ends only it; `extra` goes before PATH."""
+        path = self.fx.path(self.launchd_with(name, case))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": f"{extra}{path}", "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+
+    def assert_a_lint_failing_install_reloads_the_accepted_job(self):
+        gone = self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+        self.assertTrue(gone.exists(), "the killed install left the job loaded")
+        stubs = self.fx.tmp / "refusing-plutil-bin"
+        stubs.mkdir()
+        (stubs / "plutil").write_text("#!/bin/sh\nexit 1\n")
+        (stubs / "plutil").chmod(0o755)
+        result = self.run_script("install", "demo",
+                                 path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse(gone.exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    # The bootstrap of the accepted plist is the one killed: the old code
+    # had removed the pending record before it, so nothing recovered.
+    KILL_ON_RESTORE = ('  bootstrap) grep -q "the plist launchd holds" "$3" && kill -9 0\n'
+                       '    echo refused >&2; exit 5 ;;\n')
+
+    def test_a_rollback_killed_after_a_refused_bootstrap_still_recovers(self):
+        """Review: the refused-bootstrap rollback removed the pending
+        record before it reloaded the accepted plist. Killed in between,
+        the job stayed unloaded and the next install had no trigger."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.killed_install("kill-on-restore-bin", self.KILL_ON_RESTORE)
+        self.assert_a_lint_failing_install_reloads_the_accepted_job()
+
+    def test_a_rollback_killed_after_a_failed_replace_still_recovers(self):
+        """Review: the failed-replace rollback removed the pending record
+        before it reloaded the accepted plist, as the bootstrap one did."""
+        self.plist().write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "failing-replace-bin"
+        stubs.mkdir()
+        mv = stubs / "mv"
+        mv.write_text('#!/bin/sh\ncase "$1" in *.plist.new) exit 1 ;; esac\nexec /bin/mv "$@"\n')
+        mv.chmod(0o755)
+        self.killed_install("kill-on-restore-bin", self.KILL_ON_RESTORE, extra=f"{stubs}{os.pathsep}")
+        self.assert_a_lint_failing_install_reloads_the_accepted_job()
+
+    def test_a_recovery_killed_before_its_bootstrap_still_recovers(self):
+        """Review: the interrupted-install recovery removed the pending
+        record before it reloaded the accepted plist."""
+        self.plist().write_text("the plist launchd holds\n")
+        killed = self.fx.path(self.launchd("kill-bin", on_bootstrap="kill -9 0; "))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        # The second install recovers first; its restore is killed.
+        self.killed_install("kill-on-restore-bin", self.KILL_ON_RESTORE)
+        self.assert_a_lint_failing_install_reloads_the_accepted_job()
+
     def test_a_failed_replace_after_an_interrupted_install_restores_the_accepted_plist(self):
         """Round 9: after an install died between replace and bootstrap,
         the plist on disk was never loaded. A later install whose replace

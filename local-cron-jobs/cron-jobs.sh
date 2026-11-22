@@ -1907,10 +1907,13 @@ cmd_reinstall_after_run() { # job
 # accepted, never the file on disk: an install that died between replace
 # and bootstrap left an untested one there (sd:9826 review). Prints the
 # clause the caller appends to its failed: line; none when nothing is saved.
+# The pending record goes only once the accepted plist loads: it is the
+# next install's trigger to restore, so a kill before that keeps it.
 restore_accepted() { # job plist accepted
   [ -f "$3" ] || return 0
   wait_unloaded "$1"
   if copy_whole "$3" "$2" && launchctl bootstrap "$DOMAIN" "$2" >/dev/null 2>&1; then
+    rm -f "$3.pending"
     printf '; restored the previous plist'
   else
     printf '; the previous plist did not load either: run cron-jobs.sh install %s' "$1"
@@ -1954,15 +1957,14 @@ cmd_install() {
   if [ -f "$pending" ]; then
     if is_loaded "$job" && cmp -s "$pending" "$plist"; then
       mv "$pending" "$accepted"
-    else
+    elif is_loaded "$job" || [ ! -f "$accepted" ]; then
       rm -f "$pending"
-      if ! is_loaded "$job" && [ -f "$accepted" ]; then
-        err="$(restore_accepted "$job" "$plist" "$accepted")"
-        case "$err" in
-          *"did not load"*) echo "failed: $job (interrupted install)$err" >&2 ;;
-          *) echo "recovered: $job (an interrupted install)$err" ;;
-        esac
-      fi
+    else
+      err="$(restore_accepted "$job" "$plist" "$accepted")"
+      case "$err" in
+        *"did not load"*) echo "failed: $job (interrupted install)$err" >&2 ;;
+        *) echo "recovered: $job (an interrupted install)$err" ;;
+      esac
     fi
   fi
   # Seeds the rollback point on the first install that keeps one: a loaded
@@ -1977,7 +1979,9 @@ cmd_install() {
   if ! { mkdir -p "$AGENT_DIR" "$STATE_DIR" && write_plist "$job" "$new" &&
          { ! command -v plutil >/dev/null 2>&1 || plutil -lint -s "$new"; } &&
          copy_whole "$new" "$pending"; }; then
-    rm -f "$new" "$pending"
+    # Not the pending record: a recovery that failed above left it as
+    # the next install's trigger, and this run wrote none.
+    rm -f "$new"
     echo "cron-jobs.sh: $job: could not write $plist; nothing changed" >&2
     exec 8>&-
     return 1
@@ -1997,7 +2001,7 @@ cmd_install() {
     return 1
   fi
   if ! mv "$new" "$plist"; then
-    rm -f "$new" "$pending"
+    rm -f "$new"
     err="failed: $job (could not replace $plist)$(restore_accepted "$job" "$plist" "$accepted")"
     echo "$err" >&2
     exec 8>&-
@@ -2009,7 +2013,6 @@ cmd_install() {
     wait_unloaded "$job"
     if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
       err="failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
-      rm -f "$pending"
       err="$err$(restore_accepted "$job" "$plist" "$accepted")"
       echo "$err" >&2
       exec 8>&-
