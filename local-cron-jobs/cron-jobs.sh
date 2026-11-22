@@ -1922,9 +1922,14 @@ cmd_install() {
   new="$plist.new"
   accepted="$(accepted_plist_for "$job")"
   # Seeds the rollback point on the first install that keeps one: a loaded
-  # job's plist is the one launchd accepted.
-  [ -f "$accepted" ] || ! is_loaded "$job" || [ ! -f "$plist" ] ||
-    { mkdir -p "$STATE_DIR" && copy_whole "$plist" "$accepted"; } || rm -f "$accepted"
+  # job's plist is the one launchd accepted. Without it a refused bootstrap
+  # has nothing to restore, so a failed copy changes nothing.
+  if [ ! -f "$accepted" ] && is_loaded "$job" && [ -f "$plist" ] &&
+     ! { mkdir -p "$STATE_DIR" && copy_whole "$plist" "$accepted"; }; then
+    echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
+    exec 8>&-
+    return 1
+  fi
   if ! { mkdir -p "$AGENT_DIR" "$STATE_DIR" && write_plist "$job" "$new" &&
          { ! command -v plutil >/dev/null 2>&1 || plutil -lint -s "$new"; } &&
          mv "$new" "$plist"; }; then
@@ -1956,7 +1961,10 @@ cmd_install() {
       return 1
     fi
   fi
-  copy_whole "$plist" "$accepted" || rm -f "$accepted"
+  # A failed promote keeps the older accepted plist, still a plist launchd
+  # loaded; verify reads STALE until an install records the new one.
+  copy_whole "$plist" "$accepted" ||
+    echo "cron-jobs.sh: $job: could not record the loaded plist in $accepted; verify reads STALE until the next install" >&2
   # Checked: a refused enable is a failed install, never `installed:`.
   if ! err=$(launchctl enable "$DOMAIN/$(label_for "$job")" 2>&1); then
     echo "failed: $job (launchctl enable $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2

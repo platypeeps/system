@@ -1844,6 +1844,39 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertEqual(self.run_script("install", "demo").returncode, 0)
         self.assertEqual(self.run_script("verify", "demo").returncode, 0)
 
+    def accepted(self):
+        return self.helper_plist().parent / f"{LABEL_PREFIX}.cron.demo.accepted"
+
+    def test_an_install_that_cannot_save_the_rollback_plist_changes_nothing(self):
+        """Lane review: a failed first copy of the loaded plist was ignored;
+        install replaced and unloaded the working job with no rollback."""
+        self.plist().write_text("the plist launchd holds\n")
+        state = self.helper_plist().parent
+        state.chmod(0o500)
+        self.addCleanup(state.chmod, 0o700)
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not save the loaded plist", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+        self.assertEqual(self.bootouts(), [])
+
+    def test_a_failed_promote_keeps_the_last_rollback_plist(self):
+        """Lane review: a failed copy after bootstrap removed the accepted
+        plist, the last usable rollback point. It is kept, the failure is
+        reported, and verify reads STALE so the next update retries."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.accepted().write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "failing-cp-bin"
+        stubs.mkdir()
+        cp = stubs / "cp"
+        cp.write_text('#!/bin/sh\nfor a; do last="$a"; done\n'
+                      'case "$last" in *.accepted.tmp) exit 1 ;; esac\nexec /bin/cp "$@"\n')
+        cp.chmod(0o755)
+        result = self.run_script("install", "demo", path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
+        self.assertIn("could not record the loaded plist", result.stderr, result.stdout + result.stderr)
+        self.assertEqual(self.accepted().read_text(), "the plist launchd holds\n")
+        self.assertNotEqual(self.run_script("verify", "demo").returncode, 0)
+
     def test_a_successful_install_promotes_its_plist(self):
         result = self.run_script("install", "demo")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
