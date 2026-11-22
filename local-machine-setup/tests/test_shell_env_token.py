@@ -5,7 +5,7 @@ one-line export read one Keychain item for every account; the block reads the
 item of the account cswap made active, the plain item its fallback. The stage
 turns the old line into the block between marker comments, once, and changes
 no other line. A block written by hand is left alone; one that reads by
-email alone is named, since two accounts with one email load one item. A line with a
+email alone is drift, and the stage prints the block to paste. A line with a
 value of its own is named by number only and never touched.
 """
 
@@ -97,10 +97,18 @@ class TokenBlock(base.SyntheticHome):
                'unset _cc_acct\n')
         self.write(BEFORE + hub + AFTER)
         out = self.run_tooling("--apply")
-        # By email alone, two accounts with one email load one item.
-        self.assertIn("WARN    ~/.config/shell/env.sh reads the claude token by email alone", out)
+        # By email alone, cswap's org-keyed items are shadowed by an older
+        # same-name item (sd:9940): drift, with the block to paste.
+        self.assertIn("DIFFERS ~/.config/shell/env.sh line 4 reads the claude token by email alone", out)
+        self.assertIn(START, out)
+        self.assertIn('-a "$_cc_org" -w', out)
         self.assertNotIn("reads the claude token per account", out)
         self.assertEqual(self.env_sh.read_text(), BEFORE + hub + AFTER)
+        # The marker comment alone does not make an email-only read ok.
+        self.write(BEFORE + START + "\n" + hub + END + "\n" + AFTER)
+        out = self.run_tooling("--apply")
+        self.assertIn("DIFFERS ~/.config/shell/env.sh line 5 reads the claude token by email alone", out)
+        self.assertNotIn("reads the claude token per account", out)
         org = hub.replace('-s "claude-code-oauth-token-$_cc_acct" -w',
                           '-s "claude-code-oauth-token-$_cc_acct" -a "$_cc_org" -w')
         self.write(BEFORE + org + AFTER)
