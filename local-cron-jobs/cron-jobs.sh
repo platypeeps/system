@@ -1832,6 +1832,15 @@ defer_install() { # job
         <string>$(xml_escape "$JOB_HOST")</string>
         <key>SYSTEM_TOOLS_LABEL_PREFIX</key>
         <string>$(xml_escape "$LABEL_PREFIX")</string>
+        <!-- The grace sets the plist's ExitTimeOut: without the run's
+             value the helper rendered another plist than verify expects,
+             and every update queued the reinstall again. The wait is the
+             helper's own bound. Empty means the default, as unset does.
+             CRON_JOBS_RUN stays out: the helper would defer to itself. -->
+        <key>CRON_JOBS_TIMEOUT_GRACE</key>
+        <string>$(xml_escape "$BASE_TIMEOUT_GRACE")</string>
+        <key>CRON_JOBS_REINSTALL_WAIT</key>
+        <string>$(xml_escape "${CRON_JOBS_REINSTALL_WAIT:-}")</string>
     </dict>
 </dict>
 </plist>

@@ -1979,6 +1979,45 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
         self.assertEqual(self.plist().read_text(), from_b)
 
+    def helper_env(self):
+        return plistlib.loads(self.helper_plist().read_bytes())["EnvironmentVariables"]
+
+    def test_the_helper_installs_the_plist_the_run_would_verify(self):
+        """Lane review, class pass: the helper ran under only its plist's
+        environment and dropped the run's CRON_JOBS_TIMEOUT_GRACE, so it
+        installed another ExitTimeOut, verify under the run read STALE,
+        and the next update queued the same reinstall again."""
+        run_env = {"CRON_JOBS_TIMEOUT_GRACE": "90"}
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo", **run_env})
+        self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
+        given = self.helper_env()
+        launchd_env = {k: given[k] for k in given if k not in ("PATH", "HOME", "SYSTEM_TOOLS_CONFIG")}
+        result = self.run_script("reinstall-after-run", "demo", env=launchd_env)
+        self.assertIn("installed: demo", result.stdout, result.stdout + result.stderr)
+        result = self.run_script("verify", "demo", env=run_env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_the_helper_carries_every_install_input_the_run_resolved(self):
+        """Class pass: every environment value install or the helper reads,
+        as the run resolved it. CRON_JOBS_RUN stays out: with it the
+        helper would defer to itself."""
+        extra = self.fx.tmp / "extra-jobs"
+        extra.mkdir()
+        result = self.run_script("install", "demo", env={
+            "CRON_JOBS_RUN": "demo", "CRON_JOBS_TIMEOUT_GRACE": "90",
+            "CRON_JOBS_REINSTALL_WAIT": "60", "CRON_JOBS_EXTRA_DIRS": str(extra),
+            "CRON_JOBS_HOST": "host1", "SYSTEM_TOOLS_LABEL_PREFIX": LABEL_PREFIX})
+        self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
+        given = self.helper_env()
+        self.assertEqual({k: given.get(k) for k in (
+            "CRON_JOBS_TIMEOUT_GRACE", "CRON_JOBS_REINSTALL_WAIT", "CRON_JOBS_EXTRA_DIRS",
+            "CRON_JOBS_HOST", "SYSTEM_TOOLS_LABEL_PREFIX", "HOME", "SYSTEM_TOOLS_CONFIG")}, {
+            "CRON_JOBS_TIMEOUT_GRACE": "90", "CRON_JOBS_REINSTALL_WAIT": "60",
+            "CRON_JOBS_EXTRA_DIRS": str(extra), "CRON_JOBS_HOST": "host1",
+            "SYSTEM_TOOLS_LABEL_PREFIX": LABEL_PREFIX, "HOME": str(self.fx.home),
+            "SYSTEM_TOOLS_CONFIG": str(self.fx.config)})
+        self.assertNotIn("CRON_JOBS_RUN", given)
+
     def test_the_helper_keeps_the_effective_lookup_and_label(self):
         """Review round 4: launchd hands the helper only the plist's
         environment, so an exported CRON_JOBS_EXTRA_DIRS, CRON_JOBS_HOST or
