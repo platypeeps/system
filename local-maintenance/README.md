@@ -170,6 +170,8 @@ agent. `uv-prune` does these steps:
    lock the prune skips; the login prune after a reboot cleans the cache.
 2. Wait up to `UV_PRUNE_WAIT` seconds (20) for its uv processes to exit.
 3. Skip the prune, exit 0, when any `uv` or `uvx` process is still left.
+   In `run`, a skip held by `uvx` alone is an action, never a finding,
+   and does not count toward the three-night streak.
 4. Run `uv cache prune` with `UV_LOCK_TIMEOUT` of `UV_PRUNE_LOCK_TIMEOUT` (60).
    It never passes `--force`: the lock is what keeps a concurrent uv safe.
 5. Start the paused agents again with `launchctl bootstrap`, also on failure.
