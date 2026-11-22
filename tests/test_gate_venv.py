@@ -137,5 +137,48 @@ class GateVenv(unittest.TestCase):
         self.assertTrue((self.venv / "theirs").exists())
         self.assertEqual(["venv-abc"], [p.name for p in self.venv.parent.iterdir()])
 
+    def test_a_miss_publishes_under_the_lock_too(self):
+        # sd:9926 lane review: a miss renamed its venv in without the
+        # lock. A repair killed after it moved the broken venv aside left
+        # the path missing; a fresh gate published there while a queued
+        # repair went on, and that repair moved the healthy venv away.
+        # Here the test is the other publisher: it holds the lock, so the
+        # gate must wait for it, then keep the venv it put in place.
+        self.venv.parent.mkdir(parents=True)
+        lock = os.open(self.venv.parent, os.O_RDONLY)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        environment = {**os.environ, "PATH": f"{self.base / 'bin'}:{os.environ['PATH']}", "LOG": str(self.log)}
+        gate = subprocess.Popen(["sh", str(ROOT / "tests/gate-venv.sh"), str(self.venv), str(self.base / "pack")],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=environment)
+        try:
+            gate.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        self.assertIsNone(gate.poll(), "the gate published while another held the lock")
+        self.assertFalse(self.venv.exists())
+        (self.venv / "bin").mkdir(parents=True)
+        (self.venv / "bin/python").write_text(f"#!/bin/sh\nexec {sys.executable} \"$@\"\n")
+        (self.venv / "bin/python").chmod(0o755)
+        (self.venv / "theirs").touch()
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        output, _ = gate.communicate(timeout=60)
+        self.assertEqual(0, gate.returncode, output)
+        self.assertIn("another gate built", output)
+        self.assertTrue((self.venv / "theirs").exists())
+        self.assertEqual(["venv-abc"], [p.name for p in self.venv.parent.iterdir()])
+
+    def test_a_venv_a_killed_repair_moved_aside_is_removed(self):
+        # A repair killed between moving the broken venv aside and
+        # removing it leaves VENV.broken.PID; the next publisher, under
+        # the lock, removes it and builds VENV.
+        aside = self.venv.parent / "venv-abc.broken.12345"
+        (aside / "bin").mkdir(parents=True)
+        (aside / "bin/python").symlink_to(self.base / "gone/python3")
+        done = self.run_it()
+        self.assertIn(f"gate venv: built {self.venv}", done.stdout)
+        self.assertTrue(os.access(self.venv / "bin/python", os.X_OK))
+        self.assertEqual(["venv-abc"], [p.name for p in self.venv.parent.iterdir()])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
