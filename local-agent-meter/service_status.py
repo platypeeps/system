@@ -69,6 +69,12 @@ typesafe http https://status.typesafe.ai typesafe
 suno http https://suno.com
 """
 
+#: Earlier STARTING lists: a database that still holds one unedited moves to
+#: STARTING, so an added service reaches it; an edited list stays as the
+#: operator wrote it (sd:9903 review). Add the old text here when STARTING
+#: changes.
+EARLIER = (STARTING.replace("suno http https://suno.com\n", ""),)
+
 #: A statuspage indicator as a status; anything else is unknown.
 INDICATOR = {"none": "ok", "minor": "degraded", "maintenance": "degraded",
              "major": "outage", "critical": "outage"}

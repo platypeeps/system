@@ -1444,6 +1444,25 @@ class Live(unittest.TestCase):
         self.assertEqual(len(rows), len(service_status.STARTING.splitlines()))
         self.assertEqual({row["status"] for row in rows.values()}, {"unknown"})
 
+    def test_an_unedited_earlier_seed_moves_to_the_new_one(self):
+        # sd:9903 review: a list seeded before Suno was added never held
+        # it, since only a never-held list got STARTING.
+        self.env.update({name: "http://127.0.0.1:%d" % closed_port() for name in PROXIES},
+                        NO_PROXY="", no_proxy="")
+        earlier = service_status.STARTING.replace("suno http https://suno.com\n", "")
+        self.setting("dashboard.status_services", earlier)
+        done = self.run_live("services")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        held = writes.read_settings(self.connection(), ["dashboard.status_services"])
+        self.assertEqual(held["dashboard.status_services"], service_status.STARTING)
+        self.assertIn("service-status:suno", self.rows("service-status:"))
+        # An edited list is the operator's: it stays as written.
+        edited = earlier.replace("typesafe http https://status.typesafe.ai typesafe\n", "")
+        self.setting("dashboard.status_services", edited)
+        self.assertEqual(self.run_live("services").returncode, 0)
+        held = writes.read_settings(self.connection(), ["dashboard.status_services"])
+        self.assertEqual(held["dashboard.status_services"], edited)
+
     def test_an_entry_dropped_from_its_list_is_retired_once(self):
         # sd:9256 round 5: a dropped entry's last row stood as its newest
         # row forever, an old outage flag with it.
