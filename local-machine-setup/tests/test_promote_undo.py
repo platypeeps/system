@@ -490,6 +490,56 @@ class Undo(PromoteCase):
         self.assertTrue(hourly.exists())
         self.assertTrue(self.nightly.exists())
 
+    def test_a_root_ending_in_a_newline_stops_the_run_before_any_delete(self):
+        """$() strips a trailing newline, so the check saw `hourly` and
+        the run would delete that other folder: both readers."""
+        for name, at in (("SD_DB_BACKUP_HOURLY_DESTINATION", self.hourly_at),
+                         ("SD_DB_BACKUP_DESTINATION", self.nightly_at)):
+            with self.subTest(name=name):
+                self.setUp()
+                root = self.fixture.home / f"hub-role/{name}\n"
+                snapshot(root / PROMOTED)
+                other = self.fixture.home / f"hub-role/{name}"
+                snapshot(other / PROMOTED)
+                at(root)
+                self.handed_back()
+                result = self.run_undo("--apply", expect=1)
+                self.assertIn(f"{name} holds a newline", result.stderr)
+                self.assertTrue(other.exists(), "the stripped newline deleted another folder")
+                self.assertTrue(root.exists())
+
+    def test_a_job_that_exits_before_its_root_stops_the_run_before_any_delete(self):
+        """An `exit 0` before the root reads as a job with no root, so the
+        undo would leave that root out of its proof: both readers."""
+        for name, job in (("SD_DB_BACKUP_HOURLY_DESTINATION", "sd-db-backup-hourly"),
+                          ("SD_DB_BACKUP_DESTINATION", "sd-db-backup")):
+            with self.subTest(name=name):
+                self.setUp()
+                root = self.fixture.home / f"hub-role/{job}"
+                snapshot(root / PROMOTED)
+                (self.config / f"cron-jobs/jobs/{job}.job").write_text(
+                    f'JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\nexit 0\n{name}="{root}"\n')
+                self.handed_back()
+                result = self.run_undo("--apply", expect=1)
+                self.assertIn(f"{name} is not known", result.stderr)
+                self.assertTrue(root.exists())
+
+    def test_a_job_that_resets_its_arguments_still_names_its_root(self):
+        """Review of 271a5a2b: the reader took the variable name from $2
+        after sourcing the job, so a `set --` in the job made it read
+        `$` and the undo left a valid root out: both readers."""
+        for name, job in (("SD_DB_BACKUP_HOURLY_DESTINATION", "sd-db-backup-hourly"),
+                          ("SD_DB_BACKUP_DESTINATION", "sd-db-backup")):
+            with self.subTest(name=name):
+                self.setUp()
+                root = self.fixture.home / f"hub-role/{job}"
+                snapshot(root / PROMOTED)
+                (self.config / f"cron-jobs/jobs/{job}.job").write_text(
+                    f'{name}="{root}"\nset -- a b\nJOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n')
+                self.handed_back()
+                result = self.run_undo("--apply")
+                self.assertFalse(root.exists(), result.stderr)
+
     def test_a_root_that_leads_to_a_folder_ending_in_a_newline_is_left(self):
         """codex: $() strips a trailing newline from pwd -P, which then names another folder."""
         real = self.fixture.home / "records\n"
