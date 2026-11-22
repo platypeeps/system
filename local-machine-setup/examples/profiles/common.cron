@@ -16,3 +16,7 @@
 # nothing to check, which the job passes as 0. The envs stage installs that
 # .env from local-fseventsd/.env.example.
 fseventsd-hourly
+#
+# machine-health-hourly stores this machine's disk and services for the
+# Health page (sd:9855), so the hub shows every satellite's readings.
+machine-health-hourly

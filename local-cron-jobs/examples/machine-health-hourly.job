@@ -1,0 +1,16 @@
+# Hourly: this machine's disk and services for the Health page's Machine
+# view (system sd:9855, pack sd:9757). `sd services list --record 3600`
+# stores the heartbeat row machine-health:<host> in the workflow database,
+# so a satellite's readings reach the hub through the database, with no
+# SSH. 3600 is this job's interval: Health marks a reading older than that
+# as stale, so keep it equal to the schedule's period.
+# Every machine runs it: local-machine-setup/examples/profiles/common.cron
+# names it. SD_PACK_ROOT is escaped so the `bash -c` that runs the command
+# reads it, after ~/.config/shell/env.sh; this file is sourced before
+# env.sh is.
+JOB_SCHEDULE="15 * * * *"
+JOB_TIMEOUT="5m"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-workflow}/bin/sd\" services list --record 3600"
+JOB_PROMPT=""
+JOB_MODEL=""
+JOB_CLAUDE_ARGS=""
