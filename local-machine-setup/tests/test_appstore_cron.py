@@ -753,9 +753,8 @@ exit 0
         """Review blocker: a helper that failed after the night's report
         left the job stale with no alert. Its record is a FAILED line, a
         drift word, so the next status --fail-on-drift fails the job."""
-        logs = self.folder.parent / "local-cron-jobs/logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        (logs / ".busy-stale.reinstall.failed").write_text(
+        self.helper_plist("busy-stale").with_name(
+            f"{fixture_config.LABEL_PREFIX}.cron.busy-stale.reinstall.failed").write_text(
             "cron-jobs.sh: busy-stale: a run still holds the lock after 14400 s\n")
         result = self.run_stage("cron")
         self.assertIn("FAILED  busy-stale — its deferred reinstall failed: "

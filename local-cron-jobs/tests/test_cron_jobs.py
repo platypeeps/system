@@ -1680,7 +1680,7 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
     def failed_marker(self, job="demo"):
-        return self.fx.folder / "logs" / f".{job}.reinstall.failed"
+        return self.helper_plist(job).with_name(f"{LABEL_PREFIX}.cron.{job}.reinstall.failed")
 
     def test_uninstall_cancels_a_pending_reinstall(self):
         """Review blocker: an uninstall between the run's end and the
@@ -1870,12 +1870,12 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         and the next install saves the plist launchd holds, B, first."""
         self.plist().write_text("plist A\n")
         self.accepted().write_text("plist A\n")
-        stubs = self.fx.tmp / "failing-cp-bin"
+        stubs = self.fx.tmp / "failing-mv-bin"
         stubs.mkdir()
-        cp = stubs / "cp"
-        cp.write_text('#!/bin/sh\nfor a; do last="$a"; done\n'
-                      'case "$last" in *.accepted.tmp) exit 1 ;; esac\nexec /bin/cp "$@"\n')
-        cp.chmod(0o755)
+        mv = stubs / "mv"
+        mv.write_text('#!/bin/sh\nfor a; do last="$a"; done\n'
+                      'case "$last" in *.accepted) exit 1 ;; esac\nexec /bin/mv "$@"\n')
+        mv.chmod(0o755)
         result = self.run_script("install", "demo", path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
         out = result.stdout + result.stderr
         self.assertEqual(result.returncode, 1, out)
@@ -1889,6 +1889,40 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertIn("failed: demo (refused); restored the previous plist", result.stderr,
                       result.stdout + result.stderr)
         self.assertEqual(self.plist().read_text(), from_b)
+
+    def test_a_kill_after_bootstrap_keeps_no_obsolete_rollback_plist(self):
+        """Lane review: an install killed after its bootstrap succeeded,
+        before the copy, kept A as the rollback plist while launchd held
+        B; a later refused install restored A. The pending copy written
+        before the swap is promoted once launchd is seen holding it."""
+        self.plist().write_text("plist A\n")
+        self.accepted().write_text("plist A\n")
+        killed = self.fx.path(self.launchd_with("kill-after-bootstrap-bin",
+            '  bootstrap) rm -f "$gone"; kill -9 0 ;;\n'))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        from_b = self.plist().read_text()
+        self.assertNotEqual(from_b, "plist A\n")
+        other = self.second_checkout()
+        path = self.fx.path(self.launchd_with("refuse-c-after-kill-bin",
+            f'  bootstrap) ! grep -q "{other.parent}" "$3" || {{ echo refused >&2; exit 5; }} ;;\n'))
+        result = self.run_from(other, "install", "demo", path=path)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr,
+                      result.stdout + result.stderr)
+        self.assertEqual(self.plist().read_text(), from_b)
+
+    def test_an_install_from_another_checkout_clears_a_failed_reinstall(self):
+        """Lane review: the failed-reinstall record sat in the helper's
+        checkout, and only an install from that checkout cleared it, so
+        the cron stage read FAILED after another checkout's install had
+        loaded the job."""
+        self.failed_marker().write_text("an earlier failure\n")
+        result = self.run_from(self.second_checkout(), "install", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.failed_marker().exists())
 
     def test_a_successful_install_promotes_its_plist(self):
         result = self.run_script("install", "demo")

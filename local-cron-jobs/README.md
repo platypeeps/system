@@ -209,10 +209,10 @@ A run cannot reinstall its own job: `machine-setup-update-nightly` met its own
 stale plist each night and failed (sd:9826). A run exports `CRON_JOBS_RUN`,
 and `install` of that job from inside it loads a one-shot helper,
 `<prefix>.cron-reinstall.<job>`, prints `deferred:` and exits 0. The helper's
-plist sits in `logs/`; it waits up to `CRON_JOBS_REINSTALL_WAIT` seconds
+plist sits in `~/.local/state/cron-jobs/`; it waits up to `CRON_JOBS_REINSTALL_WAIT` seconds
 (14400) for the run's lock, installs, then removes itself. The cron stage
 reads a job whose helper is running as `PENDING`, not drift. A helper that
-fails writes `logs/.<job>.reinstall.failed`, which the cron stage prints as
+fails writes `<label>.reinstall.failed` there, which the cron stage prints as
 `FAILED` until any later `install` of the job succeeds: the helper's, one
 by hand, or a hand-run update. `uninstall` cancels a pending
 reinstall under the job's lock.

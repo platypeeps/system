@@ -2423,7 +2423,7 @@ stage_cron() {
     fi
     # A deferred reinstall (sd:9826) fails after the night's report; its
     # record is a FAILED line, so the next status --fail-on-drift alerts.
-    jf="$ROOT/local-cron-jobs/logs/.$j.reinstall.failed"
+    jf="$HOME/.local/state/cron-jobs/$LABEL_PREFIX.cron.$j.reinstall.failed"
     [ ! -f "$jf" ] || echo "  FAILED  $j — its deferred reinstall failed: $(tail -n 1 "$jf")"
     jp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$j.plist"
     owner=0

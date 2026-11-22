@@ -1789,6 +1789,7 @@ copy_whole() { # src dst
 }
 helper_plist_for() { echo "$STATE_DIR/$(reinstall_label "$1").plist"; }
 accepted_plist_for() { echo "$STATE_DIR/$(label_for "$1").accepted"; }
+failed_record_for() { echo "$STATE_DIR/$(label_for "$1").reinstall.failed"; }
 defer_install() { # job
   local job="$1" label plist err
   label="$(reinstall_label "$job")"
@@ -1855,7 +1856,7 @@ EOF
 # then remove the helper. A run that outlasts the wait keeps the old plist,
 # so verify still reads it STALE and the next update retries.
 # A failure lands after the night's report, so it is also written to
-# logs/.<job>.reinstall.failed; machine-setup's cron stage prints it as a
+# <state>/<label>.reinstall.failed; machine-setup's cron stage prints it as a
 # FAILED line, which status --fail-on-drift counts, and a later success
 # removes it. An uninstall in between cancels: the helper's plist is gone.
 cmd_reinstall_after_run() { # job
@@ -1883,9 +1884,9 @@ cmd_reinstall_after_run() { # job
     rm -f "$errs"
   fi
   if [ "$rc" -ne 0 ]; then
-    printf '%s\n' "${why:-cron-jobs.sh: $job: install exited $rc}" > "$LOG_DIR/.$job.reinstall.failed"
+    printf '%s\n' "${why:-cron-jobs.sh: $job: install exited $rc}" > "$(failed_record_for "$job")"
   else
-    rm -f "$LOG_DIR/.$job.reinstall.failed"
+    rm -f "$(failed_record_for "$job")"
   fi
   rm -f "$(helper_plist_for "$job")"
   # Last: the bootout ends this process with its label.
@@ -1894,7 +1895,7 @@ cmd_reinstall_after_run() { # job
 }
 
 cmd_install() {
-  local job="$1" err plist new accepted unrecorded
+  local job="$1" err plist new accepted pending unrecorded
   load_job "$job"
   ensure_job_launch || return 1
   if [ "${CRON_JOBS_RUN:-}" = "$job" ]; then
@@ -1919,6 +1920,18 @@ cmd_install() {
   plist="$(plist_for "$job")"
   new="$plist.new"
   accepted="$(accepted_plist_for "$job")"
+  pending="$accepted.pending"
+  # A pending copy is a bootstrap an earlier install did not see end. It
+  # is written after the old label is out and before the new plist goes
+  # in, so a loaded label whose plist matches it is launchd holding it:
+  # the bootstrap, or a login, accepted it. Anything else never loaded.
+  if [ -f "$pending" ]; then
+    if is_loaded "$job" && cmp -s "$pending" "$plist"; then
+      mv "$pending" "$accepted"
+    else
+      rm -f "$pending"
+    fi
+  fi
   # Seeds the rollback point on the first install that keeps one: a loaded
   # job's plist is the one launchd accepted. Without it a refused bootstrap
   # has nothing to restore, so a failed copy changes nothing.
@@ -1930,15 +1943,27 @@ cmd_install() {
   fi
   if ! { mkdir -p "$AGENT_DIR" "$STATE_DIR" && write_plist "$job" "$new" &&
          { ! command -v plutil >/dev/null 2>&1 || plutil -lint -s "$new"; } &&
-         mv "$new" "$plist"; }; then
-    rm -f "$new"
+         copy_whole "$new" "$pending"; }; then
+    rm -f "$new" "$pending"
     echo "cron-jobs.sh: $job: could not write $plist; nothing changed" >&2
     exec 8>&-
     return 1
   fi
+  # The pending copy goes in before the old label goes out: a pending copy
+  # that does not match the plist on disk is then one that never loaded.
   if is_loaded "$job"; then
     launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
     wait_unloaded "$job"
+  fi
+  if ! mv "$new" "$plist"; then
+    rm -f "$new" "$pending"
+    err="failed: $job (could not replace $plist)"
+    if [ -f "$plist" ] && launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1; then
+      err="$err; reloaded the previous plist"
+    fi
+    echo "$err" >&2
+    exec 8>&-
+    return 1
   fi
   # One retry: a refused bootstrap is reported, never followed by `installed:`.
   if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
@@ -1946,6 +1971,7 @@ cmd_install() {
     wait_unloaded "$job"
     if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
       err="failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
+      rm -f "$pending"
       if [ -f "$accepted" ]; then
         wait_unloaded "$job"
         if copy_whole "$accepted" "$plist" && launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1; then
@@ -1963,7 +1989,7 @@ cmd_install() {
   # would restore that obsolete plist. The next install saves the plist
   # launchd now holds before it replaces anything, or refuses.
   unrecorded=""
-  if ! copy_whole "$plist" "$accepted"; then
+  if ! mv "$pending" "$accepted"; then
     if rm -f "$accepted"; then
       unrecorded="could not record the loaded plist in $accepted; the next install saves it first"
     else
@@ -1978,7 +2004,7 @@ cmd_install() {
   fi
   # Any install that loads the job repairs what a failed deferred reinstall
   # recorded: the helper's, by hand, or a hand-run update (sd:9826).
-  rm -f "$LOG_DIR/.$job.reinstall.failed"
+  rm -f "$(failed_record_for "$job")"
   exec 8>&-
   if [ -n "$unrecorded" ]; then
     echo "failed: $job ($unrecorded)" >&2
@@ -2014,7 +2040,8 @@ cmd_uninstall() {
     ! is_loaded "$job" || launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
     exec 8>&-
   fi
-  rm -f "$(plist_for "$job")" "$LOG_DIR/.$job.reinstall.failed" "$(accepted_plist_for "$job")"
+  rm -f "$(plist_for "$job")" "$(failed_record_for "$job")" "$(accepted_plist_for "$job")" \
+    "$(accepted_plist_for "$job").pending"
   echo "uninstalled: $job"
 }
 
