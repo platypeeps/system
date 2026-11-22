@@ -1618,6 +1618,25 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertNotIn("deferred:", result.stdout)
         self.assertFalse(self.helper_plist().exists())
 
+    def test_a_helper_replaced_while_launchd_tears_the_old_one_down(self):
+        """Lane review: a failed run left its helper loaded. `bootout`
+        returns before launchd lets the label go, and a bootstrap of the
+        occupied label is refused; the request plist was then removed and
+        no helper was left to reinstall the job. The replacement now waits
+        for the old helper to leave launchd first."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.hold()
+        slow = self.launchd("slow-helper-bin",
+            on_bootout='(sleep 1; touch "$gone") >/dev/null 2>&1 & exit 0; ',
+            on_bootstrap='[ -e "$gone" ] || { echo "Bootstrap failed: 5: '
+                         'Input/output error" >&2; exit 5; }; ')
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo"},
+                                 path=self.fx.path(slow))
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("deferred: demo", result.stdout)
+        self.assertTrue(self.helper_plist().exists())
+
     def test_another_jobs_run_is_still_refused(self):
         """PIN: only the run's own job is deferred; any other waits as before."""
         self.plist().write_text("the plist launchd holds\n")

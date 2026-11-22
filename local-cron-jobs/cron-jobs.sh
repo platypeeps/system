@@ -1874,9 +1874,17 @@ EOF
     echo "cron-jobs.sh: $job: could not write the reinstall helper $plist; nothing changed" >&2
     return 1
   fi
-  # A helper a failed run left loaded is replaced, not added to.
-  ! launchctl print "$DOMAIN/$label" >/dev/null 2>&1 ||
+  # A helper a failed run left loaded is replaced, not added to. bootout
+  # returns before launchd lets the label go, and a bootstrap of the
+  # occupied label is refused: wait, as wait_unloaded does for a job.
+  if launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
     launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
+    local tries=0
+    while launchctl print "$DOMAIN/$label" >/dev/null 2>&1 && [ "$tries" -lt 20 ]; do
+      sleep 0.5
+      tries=$((tries + 1))
+    done
+  fi
   if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
     rm -f "$plist"
     echo "failed: $job (helper $label: $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
