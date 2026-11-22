@@ -430,7 +430,7 @@ def read_langsmith(env, fetch, now):
     a metric with no use this month has a null value and no groups."""
     data = fetch("https://api.smith.langchain.com/api/v1/orgs/current/billing/usage"
                  "?starting_on=%s&ending_before=%s" % (iso(month_start(now)), iso(next_month(now))),
-                 {"x-api-key": key(env, "LANGSMITH_API_KEY")})
+                 {"x-api-key": key(env, "LANGSMITH_ADMIN_KEY")})
     if not isinstance(data, list) or not data:
         raise ReadFailed("no metrics list")
     total = 0.0

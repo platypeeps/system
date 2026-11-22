@@ -142,7 +142,7 @@ ANSWERS = {
                 {"spend": {"amount": 244.0, "unit": "usd", "period": "month",
                               "resets_at": NEXT}}),
     # A metric with no use this month is null, not 0.
-    "langsmith": ("LANGSMITH_API_KEY",
+    "langsmith": ("LANGSMITH_ADMIN_KEY",
                   [{"billable_metric_name": "Base Traces", "value": 0.25,
                     "start_timestamp": "2026-11-01T00:00:00Z", "groups": {}},
                    {"billable_metric_name": "Sandbox", "value": None, "groups": None},
@@ -379,7 +379,7 @@ class Readers(unittest.TestCase):
         usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
                                     answering(ANSWERS["baseten"][1], calls), late)
         self.assertIn("start_date=2026-12-01&end_date=2026-12-02", calls[1][0])
-        usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+        usage_sources.read_provider("langsmith", {"LANGSMITH_ADMIN_KEY": SECRET},
                                     answering(ANSWERS["langsmith"][1], calls), late)
         self.assertIn("starting_on=2026-12-01T00:00:00Z&ending_before=2027-01-01T00:00:00Z",
                       calls[2][0])
@@ -402,19 +402,33 @@ class Readers(unittest.TestCase):
                                           answering(answer), NOW)
         self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 5.0), got)
 
+    def test_langsmith_reads_the_admin_key_not_the_tracing_key(self):
+        # sd:9872: billing answers the admin key; the API key is tracing's.
+        calls = []
+        got = usage_sources.read_provider("langsmith", {"LANGSMITH_ADMIN_KEY": SECRET},
+                                          answering(ANSWERS["langsmith"][1], calls), NOW)
+        self.assertEqual(got["status"], "ok", got)
+        self.assertEqual(calls[0][1]["x-api-key"], SECRET)
+        calls = []
+        got = usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                                          answering(ANSWERS["langsmith"][1], calls), NOW)
+        self.assertEqual((got["status"], got["error"]),
+                         ("unknown", "LANGSMITH_ADMIN_KEY not set"))
+        self.assertEqual(calls, [])
+
     def test_a_langsmith_null_value_with_groups_is_unknown_not_zero(self):
         # A null value reads 0 only with no groups: groups would hold use.
         for groups in ({"traces": 4}, [1]):
             with self.subTest(groups=groups):
                 answer = [{"billable_metric_name": "Base Traces", "value": None,
                            "groups": groups}]
-                got = usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                got = usage_sources.read_provider("langsmith", {"LANGSMITH_ADMIN_KEY": SECRET},
                                                   answering(answer), NOW)
                 self.assertEqual((got["status"], got["spend"]), ("unknown", None), got)
         for groups in (None, {}, []):
             with self.subTest(groups=groups):
                 answer = [{"billable_metric_name": "Fleet", "value": None, "groups": groups}]
-                got = usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+                got = usage_sources.read_provider("langsmith", {"LANGSMITH_ADMIN_KEY": SECRET},
                                                   answering(answer), NOW)
                 self.assertEqual((got["status"], got["spend"]["amount"]), ("ok", 0.0), got)
 
@@ -430,7 +444,7 @@ class Readers(unittest.TestCase):
         calls = []
         usage_sources.read_provider("baseten", {"BASETEN_API_KEY": SECRET},
                                     answering(ANSWERS["baseten"][1], calls), NOW)
-        usage_sources.read_provider("langsmith", {"LANGSMITH_API_KEY": SECRET},
+        usage_sources.read_provider("langsmith", {"LANGSMITH_ADMIN_KEY": SECRET},
                                     answering(ANSWERS["langsmith"][1], calls), NOW)
         # Baseten's end date is exclusive: the next UTC day takes in today.
         self.assertIn("start_date=2026-11-01&end_date=2026-11-18", calls[0][0])

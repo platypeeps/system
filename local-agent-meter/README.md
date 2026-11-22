@@ -124,6 +124,8 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   `resend` reads the calendar month's emails against the plan from `GET /usage`
   (`RESEND_API_KEY`, a full-access key); `socket` is `no-source`: its one usage
   endpoint is the API token's hourly quota, not the plan's (sd:9719).
+  `langsmith` (the month's billing units) reads `LANGSMITH_ADMIN_KEY`;
+  `LANGSMITH_API_KEY` stays for tracing (sd:9872).
   `huggingface` has no quota API: pass a ZeroGPU quota error,
   `agent-meter.py usage --huggingface-error "<text>"`, and its row holds the
   seconds left (`balance`, unit `seconds`) and `read_at`, `source` `error`.
