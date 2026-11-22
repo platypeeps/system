@@ -879,6 +879,27 @@ class RemoteControlReconnects(Machine):
         self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
         self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
 
+    def test_the_enter_reads_the_gap_and_switch_after_the_sent_mark_moves_in(self):
+        # sd:9427 review: the gap, budget and switch were read before
+        # the sent mark moved in; a slow rename used up the gap, or a
+        # switch landed during it, and the enter still went on the old
+        # checks. They are read after the rename.
+        hooks = {"slow": 'mv() { case "${1-}" in *rc-owed.sent) sleep 1.2;; esac; command mv "$@"; }\n',
+                 "switch": 'mv() { local s _; case "${1-}" in *rc-owed.sent)\n'
+                           '  read -r s _ <"$RC_PENDING"; builtin printf "%s 4343\\n" $((s + 1)) >"$RC_PENDING";;\n'
+                           'esac; command mv "$@"; }\n'}
+        for why, hook in hooks.items():
+            with self.subTest(why=why):
+                env = self.tmp / f"mv-{why}.sh"
+                env.write_text(hook)
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                pathlib.Path(self.env["FAKE_HERDR"] + ".typed").unlink(missing_ok=True)
+                result = self.sync("elsewhere", BASH_ENV=str(env), CSWAP_RC_GAP_MS="1000")
+                self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+                self.assertEqual(self.prompts(), [], result.stdout)
+                (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
+
     def test_a_draft_typed_during_the_last_get_gets_no_enter(self):
         # sd:9427 review: the operator replaced /rc with a draft while
         # the get after the typed read ran; the session still said idle,
@@ -1697,14 +1718,14 @@ class RemoteControlReconnects(Machine):
         # sd:9427 review: the pass marked the row sent before the
         # switch check that follows the mark. A job stopped during that
         # check sent no keys, and the next sync skipped the row. The
-        # stub date stops the sync at its first call once the marked
-        # file is written: the switch check's, after the typing. The
+        # stub date stops the sync at its first call once the row is
+        # marked sent: the switch check's, after the typing. The
         # next sync finds /rc in the box and sends only the enter.
         # The sync runs in a session of its own, and the stub kills
         # only that session's process group: nothing outside the test.
         killed = self.tmp / "killed"
         executable(self.stubs / "date", '#!/bin/sh\n'
-                   'if [ ! -e "$FAKE_KILLED" ] && awk \'NF == 5 { f = 1 } END { exit !f }\' "$FAKE_OWED" 2>/dev/null; then\n'
+                   'if [ ! -e "$FAKE_KILLED" ] && awk \'$5 == "sent" { f = 1 } END { exit !f }\' "$FAKE_OWED" 2>/dev/null; then\n'
                    '  : >"$FAKE_KILLED"\n'
                    '  kill -9 -- "-$(ps -o pgid= -p $$ | tr -d " ")"\n'
                    'fi\n'
@@ -1715,7 +1736,7 @@ class RemoteControlReconnects(Machine):
         result = subprocess.run([BASH, str(self.script), "sync"], capture_output=True, text=True,
                                 timeout=60, start_new_session=True,
                                 env={**self.env, "FAKE_FENCE": "elsewhere", "FAKE_KILLED": str(killed),
-                                     "FAKE_OWED": str(self.script.parent / "state/rc-owed.sent")})
+                                     "FAKE_OWED": str(self.script.parent / "state/rc-owed")})
         self.assertEqual(result.returncode, -9, result.stdout + result.stderr)
         self.assertTrue(killed.exists(), result.stdout + result.stderr)
         self.assertEqual(self.prompts(), [], result.stdout)

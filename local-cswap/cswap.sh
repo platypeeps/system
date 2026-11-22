@@ -678,12 +678,15 @@ send_enter() {
     return $out
   fi
   if [[ "${4-}" == mark ]]; then
-    if ! mark_sent "$HERDR_SESSION $1 $2 $3"; then
+    if ! { mark_sent "$HERDR_SESSION $1 $2 $3" && commit_sent; }; then
       echo "reconnect: could not write $RC_OWED before the enter; $1 stays owed"
       return 1
     fi
     # A switch takes no reconnect lock: one that landed during the
-    # mark makes this row an older switch's (sd:9427 review).
+    # mark makes this row an older switch's (sd:9427 review). The
+    # switch, gap and budget are read after the mark is in: a slow
+    # rename used them up, and the enter went on older checks
+    # (sd:9427 review).
     if ! now=$(current_since) || [[ "$now" != "$3" ]]; then
       echo "reconnect: typed /rc into $1, but it changed before the enter (a newer switch, or $RC_PENDING did not read); no enter"
       return 1
@@ -698,12 +701,6 @@ send_enter() {
     return $out
   fi
   bound=$(printf '%d.%03d' $((bound / 1000)) $((bound % 1000)))
-  # A pass stopped from here to the enter leaves a sent row and /rc
-  # in the box: a later pass's resume sends the enter.
-  if [[ "${4-}" == mark ]] && ! commit_sent; then
-    echo "reconnect: could not write $RC_OWED before the enter; $1 stays owed"
-    return 1
-  fi
   st_step "$bound" "$HERDR" agent send-keys "$1" enter 9>&- >/dev/null || rc=$?
   if ((rc != 0)); then
     echo "reconnect: the enter for /rc in $1 failed or ran over $RC_GAP_MS ms (exit $rc); a box that still shows /rc takes it next sync"
@@ -747,11 +744,9 @@ current_since() {
 
 # Mark the RC_OWED row $1 sent before its /rc goes: a later write that
 # fails then loses a /rc at worst, and never owes a sent pane again
-# (sd:9427 review). The mark is two steps: mark_sent writes the marked
-# file beside RC_OWED, before the switch, gap and budget checks, and
-# commit_sent moves it in after them, right before the keys. A pass
-# stopped during those checks leaves RC_OWED owing the pane (sd:9427
-# review). A send that does not happen keeps the row owed in the
+# (sd:9427 review). mark_sent writes the marked file beside RC_OWED
+# and commit_sent moves it in, before the last switch, gap and budget
+# checks. A send that does not happen keeps the row owed in the
 # pass's last write.
 mark_sent() {
   awk -v row="$1" '$0 == row || $0 == row " typed" { print row, "sent"; next } { print }' "$RC_OWED" >"$RC_OWED.sent" 2>/dev/null
