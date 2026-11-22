@@ -1788,6 +1788,26 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
+    def test_a_failed_replace_after_an_interrupted_install_restores_the_accepted_plist(self):
+        """Round 9: after an install died between replace and bootstrap,
+        the plist on disk was never loaded. A later install whose replace
+        failed bootstrapped that untested file; it now restores the plist
+        launchd last accepted, as a refused bootstrap does."""
+        self.plist().write_text("an untested plist\n")
+        self.accepted().write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "failing-replace-bin"
+        stubs.mkdir()
+        mv = stubs / "mv"
+        mv.write_text('#!/bin/sh\ncase "$1" in *.plist.new) exit 1 ;; esac\nexec /bin/mv "$@"\n')
+        mv.chmod(0o755)
+        path = self.fx.path(self.launchd_with("refuse-untested-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || { echo refused >&2; exit 5; } ;;\n'))
+        result = self.run_script("install", "demo", path=f"{stubs}{os.pathsep}{path}")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not replace", result.stderr)
+        self.assertIn("restored the previous plist", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
     def test_an_uninstall_cancels_a_helper_whatever_either_state_home(self):
         """Lane review: the state folder followed each caller's
         XDG_STATE_HOME. A run under a custom one queued its helper there;
@@ -2065,6 +2085,41 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertNotIn("installed:", out)
         self.assertIn("failed: demo (launchctl enable refused)", result.stderr)
         self.assertIn("launchctl enable refused", self.failed_marker().read_text())
+
+    def test_a_refused_enable_on_a_direct_install_leaves_the_record(self):
+        """Round 9 class pass: a direct install whose `launchctl enable`
+        failed left verify and launchd reading fine and wrote no record,
+        so no update ran the install again. The record makes it retry."""
+        self.plist().write_text("the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("enable-direct-bin", '  enable) echo refused >&2; exit 5 ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("launchctl enable refused", self.failed_marker().read_text())
+
+    def test_a_plist_the_linter_refuses_unloads_nothing(self):
+        """Round 9 class pass, validate step: a rendered plist plutil
+        refuses never replaces the loaded one."""
+        self.plist().write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "refusing-plutil-bin"
+        stubs.mkdir()
+        (stubs / "plutil").write_text("#!/bin/sh\nexit 1\n")
+        (stubs / "plutil").chmod(0o755)
+        result = self.run_script("install", "demo", path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("demo: could not write", result.stderr)
+        self.assertEqual(self.bootouts(), [])
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_a_rollback_launchd_refuses_too_names_the_repair(self):
+        """Round 9 class pass, restore step: when the accepted plist does
+        not load either, the failed: line names the install to run."""
+        self.plist().write_text("the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("refuse-all-bin", '  bootstrap) echo refused >&2; exit 5 ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("the previous plist did not load either: run cron-jobs.sh install demo",
+                      result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
     def test_a_helper_plist_that_cannot_be_written_loads_nothing(self):
         """Class pass, round 4: defer_install wrote its plist unchecked, so

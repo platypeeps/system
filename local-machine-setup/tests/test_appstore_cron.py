@@ -760,6 +760,21 @@ exit 0
         self.assertIn("FAILED  busy-stale — its deferred reinstall failed: "
                       "cron-jobs.sh: busy-stale: a run still holds the lock after 14400 s", result.stdout)
 
+    def test_a_failed_reinstall_record_makes_update_install_again(self):
+        """Round 9: a deferred install bootstrapped and recorded the plist,
+        then `launchctl enable` failed. verify matched and the label was
+        loaded, so update read ok and skipped the install that clears the
+        record: every status failed for good. The record now reinstalls."""
+        self.install_plist("shared-job")
+        self.assertIn("ok      shared-job", self.run_stage("cron").stdout)
+        self.helper_plist("shared-job").with_name(
+            f"{fixture_config.LABEL_PREFIX}.cron.shared-job.reinstall.failed").write_text(
+            "failed: shared-job (launchctl enable refused)\n")
+        result = self.run_stage("cron", "--apply")
+        self.assertIn("FAILED  shared-job — its deferred reinstall failed", result.stdout)
+        self.assertIn("install shared-job", self.cron_log.read_text().splitlines())
+        self.assertNotIn("ok      shared-job", result.stdout)
+
 class CronRetiredTest(StageTest):
     """A job in local-cron-jobs/retired-jobs.txt is uninstalled, never reinstalled (sd:3155).
 

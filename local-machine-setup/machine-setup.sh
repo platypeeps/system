@@ -2453,6 +2453,11 @@ stage_cron() {
     elif ! launchctl print "gui/$(id -u)/$LABEL_PREFIX.cron.$j" >/dev/null 2>&1; then
       echo "  UNLOADED $j — plist current but launchd is not running it"
       cron_jobs install "$j"
+    # Its FAILED line is above. A deferred install can load and record the
+    # plist, then fail at `launchctl enable`: verify and launchd then read
+    # fine, and only an install clears the record (sd:9826 review).
+    elif [ -f "$jf" ]; then
+      cron_jobs install "$j"
     else
       echo "  ok      $j"
     fi

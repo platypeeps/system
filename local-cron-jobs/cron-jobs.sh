@@ -1903,6 +1903,20 @@ cmd_reinstall_after_run() { # job
   return $rc
 }
 
+# Every failure after the old label went out loads the plist launchd last
+# accepted, never the file on disk: an install that died between replace
+# and bootstrap left an untested one there (sd:9826 review). Prints the
+# clause the caller appends to its failed: line; none when nothing is saved.
+restore_accepted() { # job plist accepted
+  [ -f "$3" ] || return 0
+  wait_unloaded "$1"
+  if copy_whole "$3" "$2" && launchctl bootstrap "$DOMAIN" "$2" >/dev/null 2>&1; then
+    printf '; restored the previous plist'
+  else
+    printf '; the previous plist did not load either: run cron-jobs.sh install %s' "$1"
+  fi
+}
+
 cmd_install() {
   local job="$1" err plist new accepted pending unrecorded
   load_job "$job"
@@ -1966,10 +1980,7 @@ cmd_install() {
   fi
   if ! mv "$new" "$plist"; then
     rm -f "$new" "$pending"
-    err="failed: $job (could not replace $plist)"
-    if [ -f "$plist" ] && launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1; then
-      err="$err; reloaded the previous plist"
-    fi
+    err="failed: $job (could not replace $plist)$(restore_accepted "$job" "$plist" "$accepted")"
     echo "$err" >&2
     exec 8>&-
     return 1
@@ -1981,14 +1992,7 @@ cmd_install() {
     if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
       err="failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
       rm -f "$pending"
-      if [ -f "$accepted" ]; then
-        wait_unloaded "$job"
-        if copy_whole "$accepted" "$plist" && launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1; then
-          err="$err; restored the previous plist"
-        else
-          err="$err; the previous plist did not load either: run cron-jobs.sh install $job"
-        fi
-      fi
+      err="$err$(restore_accepted "$job" "$plist" "$accepted")"
       echo "$err" >&2
       exec 8>&-
       return 1
@@ -2006,8 +2010,12 @@ cmd_install() {
     fi
   fi
   # Checked: a refused enable is a failed install, never `installed:`.
+  # The plist is loaded and matches, so only the record makes the next
+  # update install again (sd:9826 review).
   if ! err=$(launchctl enable "$DOMAIN/$(label_for "$job")" 2>&1); then
-    echo "failed: $job (launchctl enable $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
+    err="failed: $job (launchctl enable $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
+    printf '%s\n' "$err" > "$(failed_record_for "$job")" || true
+    echo "$err" >&2
     exec 8>&-
     return 1
   fi
