@@ -1975,7 +1975,9 @@ recover_interrupted() { # job
   # Loaded and matching, the record is a plist launchd accepted: the
   # bootstrap ran, or the candidate equals the plist it replaced. Saved
   # first, checked: refused, nothing is unloaded and the record stays.
-  if is_loaded "$job" && cmp -s "$pending" "$plist" && ! mv "$pending" "$accepted"; then
+  # Copied, not moved: the record goes only once the reload below loads,
+  # so a recovery killed after its bootout leaves the next one a trigger.
+  if is_loaded "$job" && cmp -s "$pending" "$plist" && ! copy_whole "$pending" "$accepted"; then
     exec 8>&-
     echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
     return 1

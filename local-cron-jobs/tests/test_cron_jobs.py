@@ -1935,9 +1935,11 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         pending.write_text("the plist launchd holds\n")
         stubs = self.fx.tmp / "failing-promote-bin"
         stubs.mkdir()
-        mv = stubs / "mv"
-        mv.write_text('#!/bin/sh\ncase "$1" in *.pending) exit 1 ;; esac\nexec /bin/mv "$@"\n')
-        mv.chmod(0o755)
+        # Recovery copies the record (copy_whole: cp then mv); either fails.
+        for tool in ("cp", "mv"):
+            stub = stubs / tool
+            stub.write_text(f'#!/bin/sh\ncase "$*" in *.pending*) exit 1 ;; esac\nexec /bin/{tool} "$@"\n')
+            stub.chmod(0o755)
         result = self.run_script("install", "demo",
                                  path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
@@ -2050,6 +2052,23 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertFalse(self.gone().exists(), "the loaded job is not loaded")
         self.assertEqual(self.accepted().read_text(), loaded)
         self.assertFalse(self.accepted().with_name(self.accepted().name + ".pending").exists())
+
+    def test_a_recovery_killed_after_its_bootout_still_recovers(self):
+        """Review: recovery moved a loaded matching pending record into the
+        accepted copy, then booted the label out. Killed there, no record
+        was left, so the next install skipped recovery; its job file
+        (JOB_TIMEOUT=invalid) exited and left the job unloaded."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.killed_install("kill-after-bootstrap-bin",
+                            '  bootstrap) rm -f "$gone"; kill -9 0 ;;\n')
+        self.assertFalse(self.gone().exists())
+        self.killed_install("kill-after-bootout-bin", '  bootout) touch "$gone"; kill -9 0 ;;\n')
+        self.assertTrue(self.gone().exists(), "the killed recovery left the job loaded")
+        self.break_job_file()
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("JOB_TIMEOUT", result.stderr)
+        self.assertFalse(self.gone().exists(), "the accepted job is not loaded")
 
     def test_an_install_waiting_on_the_lock_recovers_one_killed_meanwhile(self):
         """Lane prepare round 2: an update probed for an interrupted install
