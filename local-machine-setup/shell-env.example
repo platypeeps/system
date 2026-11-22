@@ -61,6 +61,11 @@ JIRA_API_TOKEN=change-me
 OPENWHISPR_API_KEY=change-me
 YDC_API_KEY=change-me
 SOCKET_SECURITY_API_KEY=change-me
+# Admin keys the local-agent-meter usage readers send.
+ANTHROPIC_ADMIN_KEY=change-me
+OPENAI_ADMIN_KEY=change-me
+LANGSMITH_ADMIN_KEY=change-me
+HEYGEN_API_KEY=change-me
 SYSTEM_TOOLS_LABEL_PREFIX=local.system-tools
 TYPESAFE_API_KEY=change-me
 # The pack's Health > Machine reads these AWS resources: space-separated
