@@ -452,12 +452,16 @@ class ShellEnv(unittest.TestCase):
         self.assertIn(".config/shell/env.sh", result.stderr)
         self.assertEqual(sorted(os.listdir(path.parent)), ["env.sh"])
 
-    def test_a_folder_with_no_room_for_the_copy_skips_env_sh(self):
-        # sd:9652 review: with no copy, the live env.sh was checked and
-        # read apart, so a save in between could still end the shell.
-        # A fake sh runs the real check, then rewrites env.sh.
+    def test_a_read_only_folder_still_loads_env_sh_from_a_copy(self):
+        # sd:9652 review: a readable env.sh in a read-only folder loaded
+        # before the copy step; skipping it lost every export. The copy
+        # goes to TMPDIR instead, so a save after the check (a fake sh
+        # runs the real check, then rewrites env.sh) still cannot reach
+        # the shell, and no copy is left behind.
         self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
         folder = self.home / ".config/shell"
+        tmp = self.home / "tmp"
+        tmp.mkdir()
         bin_dir = self.home / "bin"
         bin_dir.mkdir()
         fake = bin_dir / "sh"
@@ -467,11 +471,12 @@ class ShellEnv(unittest.TestCase):
         fake.chmod(0o755)
         folder.chmod(0o500)
         self.addCleanup(folder.chmod, 0o700)
-        env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(self.home)}
+        env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(self.home),
+               "TMPDIR": str(tmp)}
         result = shell('set -e; st_shell_env; echo "after ${CLAUDE_CODE_OAUTH_TOKEN-unset}"', env)
-        self.assertEqual(result.stdout, "after unset\n", result.stderr)
-        self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
-        self.assertIn(".config/shell/env.sh", result.stderr)
+        self.assertEqual(result.stdout, "after tok-custom\n", result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(os.listdir(tmp), [])
 
     def test_xtrace_never_prints_a_value(self):
         # sd:9652: a caller's set -x, or one env.sh turns on, must not

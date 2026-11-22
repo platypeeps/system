@@ -75,12 +75,13 @@ st_obsidian_vault() {
 # `return`, BASH_SOURCE's folder and $0 as they were. Errexit and nounset
 # are off for the dot and the caller's come back after: macOS sh ends a
 # `set -e` shell on a failing line in a dot even under `||`. A file
-# that fails the check, or that cannot be copied (an unreadable file, a
-# read-only folder), is skipped and named on one stderr line. Xtrace stays off
-# for the read and the mapping, so no value reaches a trace (sd:9910); a
-# caller's own xtrace comes back after. The threat model is one operator: a
-# file env.sh sources is not checked.
-# ponytail: a kill between copy and rm leaves the 0600 copy beside env.sh.
+# that fails the check, or that cannot be copied (an unreadable file, no
+# room for a copy), is skipped and named on one stderr line. A read-only
+# folder puts the copy in TMPDIR, so only there BASH_SOURCE names another
+# folder. Xtrace stays off for the read and the mapping, so no value reaches
+# a trace (sd:9910); a caller's own xtrace comes back after. The threat model
+# is one operator: a file env.sh sources is not checked.
+# ponytail: a kill between copy and rm leaves the 0600 copy behind.
 st_shell_env() {
     case $- in *x*) _st_x=1 ;; *) _st_x= ;; esac
     _st_eu=
@@ -89,7 +90,8 @@ st_shell_env() {
     set +xeu
     _st_shenv="$HOME/.config/shell/env.sh"
     if [ -f "$_st_shenv" ]; then
-        if ! _st_env_copy=$(mktemp "$_st_shenv.XXXXXX" 2>/dev/null); then
+        if ! _st_env_copy=$(mktemp "$_st_shenv.XXXXXX" 2>/dev/null) &&
+            ! _st_env_copy=$(mktemp "${TMPDIR:-/tmp}/st-env.sh.XXXXXX" 2>/dev/null); then
             _st_env_copy=
             printf 'st_shell_env: %s cannot be copied; skipped\n' "$_st_shenv" >&2
         elif ! cat "$_st_shenv" >"$_st_env_copy" 2>/dev/null; then
