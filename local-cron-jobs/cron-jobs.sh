@@ -1978,6 +1978,14 @@ cmd_install() {
     launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
     wait_unloaded "$job"
   fi
+  # Replaced under a label still loaded, the plist on disk would match the
+  # pending copy, and a crash then had the next install promote it untested.
+  if is_loaded "$job"; then
+    rm -f "$new" "$pending"
+    echo "cron-jobs.sh: $job: launchd still holds the old label after bootout; nothing changed" >&2
+    exec 8>&-
+    return 1
+  fi
   if ! mv "$new" "$plist"; then
     rm -f "$new" "$pending"
     err="failed: $job (could not replace $plist)$(restore_accepted "$job" "$plist" "$accepted")"

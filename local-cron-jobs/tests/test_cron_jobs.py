@@ -2096,6 +2096,21 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("launchctl enable refused", self.failed_marker().read_text())
 
+    def test_a_bootout_that_leaves_the_label_loaded_replaces_nothing(self):
+        """Review: install replaced the plist though bootout failed and
+        launchd still held the old label. Killed then, the next install
+        saw a loaded label matching the pending copy and promoted the
+        untested plist over the rollback copy. It now refuses first."""
+        self.plist().write_text("the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("stuck-bootout-bin", '  bootout) echo busy >&2; exit 5 ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("demo: launchd still holds the old label", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+        self.assertFalse(self.accepted().with_name(self.accepted().name + ".pending").exists())
+        self.assertEqual(self.accepted().read_text(), "the plist launchd holds\n")
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+
     def test_a_plist_the_linter_refuses_unloads_nothing(self):
         """Round 9 class pass, validate step: a rendered plist plutil
         refuses never replaces the loaded one."""
