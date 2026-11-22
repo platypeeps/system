@@ -188,6 +188,8 @@ case "$key" in
   *) printf 'HTTP/2 401 \r\n\r\n'; exit 0 ;;
 esac
 printf 'HTTP/2 200 \r\nAnthropic-Organization-Id: %s\r\n\r\n' "$org"
+# FAKE_CURL_EXIT: the headers came, then curl failed (28 is a timeout).
+exit "${FAKE_CURL_EXIT:-0}"
 """
 
 
@@ -669,6 +671,15 @@ class HeadlessKeys(Machine):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.held(), {ITEM1: limited})
         self.assertIn("user1@example.test: works (account at its usage limit); stored as",
+                      result.stdout)
+
+    def test_a_probe_that_fails_after_its_headers_keeps_the_old_key(self):
+        # curl exiting non-zero is a failed probe, whatever headers it wrote.
+        self.keychain.write_text(f"{ITEM1} sk-ant-kept\n")
+        result = self.keys(f"{self.GOOD}\n\n\n", FAKE_CURL_EXIT="28")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: "sk-ant-kept"})
+        self.assertIn("user1@example.test: the key did not work; nothing stored",
                       result.stdout)
 
     def test_no_key_reaches_argv_stdout_or_stderr(self):

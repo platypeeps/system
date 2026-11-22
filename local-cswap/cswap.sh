@@ -273,7 +273,7 @@ KEY_PROBE='{"model":"claude-haiku-4-5","max_tokens":1,"system":"You are Claude C
 # goes in no argv, file or output: curl and `security -i` read it on
 # stdin. CSWAP_KEYS_TTY is for tests only.
 cmd_keys() {
-  local json pairs e want raw rest tok held got code works shared
+  local json pairs e want raw rest tok held got code probe works shared
   # A caller's `bash -x` would trace each key; nothing after this needs it.
   set +x
   [[ -x "$CSWAP_BIN" ]] || { echo "cswap not executable at $CSWAP_BIN" >&2; exit 1; }
@@ -312,8 +312,11 @@ cmd_keys() {
       echo "$e: the paste is no key; nothing stored"
       continue
     fi
-    got="" code=""
-    read -r got code <<<"$(key_org "$tok")" || :
+    # A failed curl is a failed probe, whatever headers it wrote first:
+    # the status is checked before a here-string can drop it.
+    got="" code="" probe=""
+    probe=$(key_org "$tok") || probe=""
+    read -r got code <<<"$probe" || :
     works="works"
     [[ "$code" != 429 ]] || works="works (account at its usage limit)"
     if [[ -z "$got" ]]; then
