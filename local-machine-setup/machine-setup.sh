@@ -8356,7 +8356,12 @@ cmd_status() {
   done
   # Read-only and outside the drift count: see hub_ready.
   if [ -e "$SD_HUB_CONFIG" ] || [ -f "$PROMOTE_MARKER" ] || [ -f "$UNDO_MARKER" ] || [ -e "$DRILL_HOME" ] || hub_role; then
-    hub_ready
+    if no_standby; then
+      echo "== hub-ready"
+      echo "  skip    not a standby: no $STANDBY_JOBS job file outside the shared cron-jobs/jobs, and no hourly backup root; nothing checked"
+    else
+      hub_ready
+    fi
     echo
   fi
   # A 02:xx cron job runs only on a repeating wake (.claude/rules/cron-wake.md).
@@ -8522,25 +8527,41 @@ rm_target() { # path allowed-root
 }
 
 # The local root a hub-role backup job writes, from that job's own file: the
-# job is sourced as cron-jobs.sh sources it, in a subshell. Prints nothing
-# when no file defines the job or the file names no destination. Fails on
-# a destination with a newline: a reader would split it into other paths.
+# job is sourced as cron-jobs.sh sources it, under set -e. Prints nothing
+# when no file defines the job or the file names no destination. Fails when
+# the lookup fails, when the file does not source to its end, or on a
+# destination with a newline: a reader would split it into other paths. An
+# empty value from a file that did not source is no proof of no root, so a
+# caller must see the failure. The source runs in its own process: in a
+# subshell where set -e is off (an `if`, left of `||`), bash 5 goes on
+# after a failed `.` or command and prints what it read so far.
 job_destination() { # job, variable
   jd_file=$(PYTHONPATH="$ROOT/lib" python3 -c 'import sys, system_tools_config as stc
 for d in stc.cron_job_dirs():
     f = d / (sys.argv[1] + ".job")
     if f.is_file():
         print(f)
-        break' "$1")
+        break' "$1") || { echo "job $1: its job folders could not be read" >&2; return 1; }
   [ -n "$jd_file" ] || return 0
   # The job's ROOT is local-cron-jobs, as cron-jobs.sh sets it.
-  # shellcheck disable=SC1090,SC2030,SC2154 # eval sets jd_value
-  (ROOT="$ROOT/local-cron-jobs"; eval "$2=''"; . "$jd_file" >/dev/null 2>&1; eval "jd_value=\$$2"
-   case "$jd_value" in
-     *'
-'*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; exit 1 ;;
-     *) printf '%s\n' "$jd_value" ;;
-   esac)
+  # The child checks for a newline, exit 3, before `$()` strips a trailing
+  # one: stripped, the name points at another folder. It prints `reached:`
+  # only past that check: a job that exits 0 early prints nothing, which
+  # must not read as a job that names no root.
+  # The name is written into the child's script, not read from its $2
+  # after the source: a `set --` in the job reset $2, and the reader
+  # printed `reached:$` for a job that named its root.
+  case $2 in ''|[0-9]*|*[!A-Za-z0-9_]*) echo "job_destination: bad name $2" >&2; return 1 ;; esac
+  jd_rc=0
+  # shellcheck disable=SC2016 # the child expands its own arguments
+  jd_value=$(ROOT="$ROOT/local-cron-jobs" sh -ec "$2=''"'; . "$1" >/dev/null 2>&1 </dev/null
+    case "${'"$2"'}" in *"
+"*) exit 3 ;; esac; printf "reached:%s" "${'"$2"'}"' sh "$jd_file") || jd_rc=$?
+  case $jd_rc:$jd_value in
+    0:reached:*) printf '%s\n' "${jd_value#reached:}" ;;
+    3:*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; return 1 ;;
+    *) echo "$jd_file: does not source to its end; $2 is not known" >&2; return 1 ;;
+  esac
 }
 hourly_destination() { job_destination sd-db-backup-hourly SD_DB_BACKUP_HOURLY_DESTINATION; }
 
@@ -8581,6 +8602,36 @@ hub_name_matches() {
     *.*/*.*) [ "$hm_a" = "$hm_b" ] ;;
     *) [ "${hm_a%%.*}" = "${hm_b%%.*}" ] ;;
   esac
+}
+
+# A satellite that is no standby (sd:9638): no marker, no drill, not the
+# holder, no role job file in a folder of its own, and an hourly job that
+# names no local root. Its own folders are every one cron-jobs.sh reads but
+# the shared jobs/, which the config clone gives every machine, the hub's
+# role jobs with it. The hourly root is what README step 2 has a standby
+# set wherever its job files sit, so one set up in the shared folder still
+# reads as a standby. Read from disk, so no setting says it. Status skips
+# hub-ready there; promote and the drill still run it, so they refuse such a
+# machine as before. A folder or job file that cannot be read counts as a
+# standby, which checks everything.
+STANDBY_JOBS="sd-db-backup sd-db-backup-hourly offsite-verify shadow-sync-nightly"
+no_standby() {
+  [ ! -f "$PROMOTE_MARKER" ] && [ ! -f "$UNDO_MARKER" ] && [ ! -e "$DRILL_HOME" ] || return 1
+  ! hub_holder || return 1
+  ns_jobs=$(PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
+for d in stc.cron_job_dirs()[:-1]:
+    try:
+        listed = os.listdir(d)
+    except FileNotFoundError:
+        continue
+    for n in listed:
+        if n.endswith(".job"):
+            print(n[:-4])') || return 1
+  for ns_job in $STANDBY_JOBS; do
+    ! printf '%s\n' "$ns_jobs" | grep -qxF "$ns_job" || return 1
+  done
+  ns_dest=$(hourly_destination) || return 1
+  [ -z "$ns_dest" ]
 }
 
 # The hub-ready block (design, "Satellite readiness"): read-only, one line per
