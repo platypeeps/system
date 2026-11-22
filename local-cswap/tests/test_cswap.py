@@ -2074,6 +2074,20 @@ class HeadlessKeys(Machine):
         self.assertEqual(self.held(), {})
         self.assertIn("did not work; nothing stored", result.stdout)
 
+    def test_a_console_api_key_is_named_and_not_probed(self):
+        # sd:9941: a Console key read "did not work" or "belongs to another
+        # account"; it is no setup token, so it is named and never sent.
+        for console in ("sk-ant-api03-console_Key-1", "sk-ant-usr-console-2"):
+            self.calls.write_text("")
+            result = self.keys(f"{console}\n\n\n", FAKE_OTHER_KEY=console)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(self.held(), {})
+            self.assertIn("user1@example.test: a Console API key, not a claude setup-token key; "
+                          "nothing stored", result.stdout)
+            self.assertNotIn("did not work", result.stdout)
+            self.assertNotIn("another account", result.stdout)
+            self.assertEqual(self.called("curl"), [])
+
     def test_a_key_at_its_usage_limit_works_and_is_stored(self):
         # A 429 with the organization header means the key authenticated.
         limited = "sk-ant-oat01-limited"

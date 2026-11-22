@@ -988,6 +988,12 @@ cmd_keys() {
       echo "$e: the paste is no key; nothing stored"
       continue
     fi
+    # A Console API key is no setup token: it is named, never sent (sd:9941).
+    if [[ "$tok" == sk-ant-api* || "$tok" == sk-ant-usr-* ]]; then
+      echo "$e: a Console API key, not a claude setup-token key; nothing stored"
+      unset tok
+      continue
+    fi
     # A failed curl is a failed probe, whatever headers it wrote first:
     # the status is checked before a here-string can drop it.
     got="" code="" probe=""
