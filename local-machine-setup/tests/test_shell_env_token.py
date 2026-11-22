@@ -116,3 +116,11 @@ class TokenBlock(base.SyntheticHome):
         self.assertIn("FAILED  claude_token_block_write", str(failed.exception))
         self.assertEqual(self.env_sh.read_text(), BEFORE + OLD + AFTER)
         self.assertEqual(sorted(p.name for p in self.env_sh.parent.iterdir()), ["env.sh"])
+
+    def test_the_old_line_first_in_env_sh_is_migrated(self):
+        self.write(OLD + AFTER)
+        self.run_tooling("--apply")
+        text = self.env_sh.read_text()
+        self.assertTrue(text.startswith(START + "\n"), text)
+        self.assertTrue(text.endswith(END + "\n" + AFTER), text)
+        self.assertNotIn(OLD, text)

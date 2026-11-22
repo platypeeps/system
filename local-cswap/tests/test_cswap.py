@@ -147,12 +147,18 @@ case "$1" in
 esac
 """
 
-# A key works when it is FAKE_GOOD_KEY; a call logs no key, only that it ran.
-CLAUDE = r"""#!/bin/sh
-echo "claude $*" >> "$FAKE_CALLS"
-[ -z "${ANTHROPIC_API_KEY:-}" ] || { echo "api key leaked in"; exit 1; }
-[ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = "$FAKE_GOOD_KEY" ] && echo OK && exit 0
-echo "Invalid API key"; exit 1
+# The API: a key works when it is FAKE_GOOD_KEY (user1's organization) or
+# FAKE_OTHER_KEY (user2's). The key arrives in the --config on stdin; argv
+# is logged, so a key in argv shows in the calls.
+CURL = r"""#!/bin/sh
+echo "curl $*" >> "$FAKE_CALLS"
+key=$(sed -n 's/.*Bearer \([^"]*\)".*/\1/p')
+case "$key" in
+  "$FAKE_GOOD_KEY") org=11111111-1111-4111-8111-111111111111 ;;
+  "${FAKE_OTHER_KEY:-unset}") org=22222222-2222-4222-8222-222222222222 ;;
+  *) printf 'HTTP/2 401 \r\n\r\n'; exit 0 ;;
+esac
+printf 'HTTP/2 200 \r\nAnthropic-Organization-Id: %s\r\n\r\n' "$org"
 """
 
 
@@ -186,7 +192,7 @@ class Machine(unittest.TestCase):
         stubs.mkdir()
         executable(stubs / "launchctl", LAUNCHCTL)
         executable(stubs / "security", SECURITY)
-        executable(stubs / "claude", CLAUDE)
+        executable(stubs / "curl", CURL)
         self.keychain = self.tmp / "keychain"
         self.calls = self.tmp / "calls.txt"
         self.calls.touch()
@@ -607,8 +613,7 @@ class HeadlessKeys(Machine):
     def keys(self, pasted, **extra):
         tty = self.tmp / "tty"
         tty.write_text(pasted)
-        return self.run_verb("keys", CSWAP_KEYS_TTY=str(tty), FAKE_GOOD_KEY=self.GOOD,
-                             ANTHROPIC_API_KEY="sk-ant-api-other", **extra)
+        return self.run_verb("keys", CSWAP_KEYS_TTY=str(tty), FAKE_GOOD_KEY=self.GOOD, **extra)
 
     def held(self):
         if not self.keychain.exists():
@@ -632,7 +637,7 @@ class HeadlessKeys(Machine):
         result = self.keys(f"{self.GOOD}\nsk-ant-oat01-bad\n\n")
         self.assertNotIn("sk-ant-", result.stdout + result.stderr)
         self.assertNotIn("sk-ant-", self.calls.read_text())
-        self.assertEqual(len(self.called("claude -p")), 2)
+        self.assertEqual(len(self.called("curl")), 2)
 
     def test_bash_x_traces_no_key(self):
         tty = self.tmp / "tty"
@@ -655,9 +660,17 @@ class HeadlessKeys(Machine):
         result = self.keys(f"{self.GOOD}\n{self.GOOD}\n\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.held(), {"claude-code-oauth-token-user1@example.test": self.GOOD})
-        self.assertIn("user2@example.test: the key entered for user1@example.test; nothing stored",
+        self.assertIn("user2@example.test: the key belongs to another account; nothing stored",
                       result.stdout)
-        self.assertEqual(len(self.called("claude -p")), 1)
+
+    def test_a_working_key_at_the_wrong_prompt_keeps_the_other_item(self):
+        other = "sk-ant-oat01-user2-key"
+        self.keychain.write_text("claude-code-oauth-token-user1@example.test sk-ant-kept\n")
+        result = self.keys(f"{other}\n\n\n", FAKE_OTHER_KEY=other)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {"claude-code-oauth-token-user1@example.test": "sk-ant-kept"})
+        self.assertIn("user1@example.test: the key belongs to another account; nothing stored",
+                      result.stdout)
 
     def test_status_warns_per_account_with_no_key_and_names_the_email_only(self):
         self.publish(ONE)

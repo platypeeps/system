@@ -72,7 +72,8 @@ accounts() {
   st_bounded 60 "$CSWAP_BIN" list --json
 }
 
-# Reads `cswap list --json` on stdin. `emails` prints one email per account;
+# Reads `cswap list --json` on stdin. `emails` prints one email per account,
+# `orgs` one `<email> <organizationUuid>` line;
 # `active` prints "<number> <uuid>" of
 # the active account; `number UUID` prints the number of the one account
 # with that organizationUuid, exit 4 when none has it, 5 (and the count)
@@ -84,6 +85,9 @@ data = json.load(sys.stdin)
 accounts = data.get("accounts") or []
 if sys.argv[1] == "emails":
     print("\n".join(a["email"] for a in accounts if a.get("email")))
+elif sys.argv[1] == "orgs":
+    print("\n".join(a["email"] + " " + (a.get("organizationUuid") or "-")
+                    for a in accounts if a.get("email")))
 elif sys.argv[1] == "active":
     found = [a for a in accounts if a.get("number") == data.get("activeAccountNumber")]
     if len(found) != 1:
@@ -238,25 +242,42 @@ key_item() { # email
   printf 'claude-code-oauth-token-%s\n' "$1"
 }
 
+# The organization a key belongs to, from the `anthropic-organization-id`
+# header of one 1-token API call, or nothing when the key does not work.
+# cswap names each account's organizationUuid, so this is how a key is
+# matched to its account. The key reaches curl on stdin, never argv.
+key_org() { # key
+  printf 'header = "Authorization: Bearer %s"\n' "$1" |
+    curl -sS --max-time 60 --config - -o /dev/null -D - \
+      -H "anthropic-version: 2023-06-01" -H "anthropic-beta: oauth-2025-04-20" \
+      -H "content-type: application/json" -d "$KEY_PROBE" \
+      https://api.anthropic.com/v1/messages 2>/dev/null |
+    tr -d '\r' | awk 'NR == 1 && $2 != 200 { exit }
+      tolower($1) == "anthropic-organization-id:" { print $2; exit }'
+}
+KEY_PROBE='{"model":"claude-haiku-4-5","max_tokens":1,"system":"You are Claude Code, Anthropic'"'"'s official CLI for Claude.","messages":[{"role":"user","content":"OK"}]}'
+
 # One `claude setup-token` key per cswap account: read hidden from the
-# terminal, the first copy of a repeated paste kept, tested with one
-# `claude -p` call and stored only when it works. The key goes in no argv,
-# file or output: claude reads it from its environment, and `security -i`
-# from stdin. CSWAP_KEYS_TTY is for tests only.
+# terminal, the first copy of a repeated paste kept, and stored only when
+# one API call works and names that account's organization, so a key
+# pasted at the wrong prompt overwrites no other account's item. The key
+# goes in no argv, file or output: curl and `security -i` read it on
+# stdin. CSWAP_KEYS_TTY is for tests only.
 cmd_keys() {
-  local json emails e raw rest tok held i
-  # Each key entered, with its account: a key entered for one account is no key
-  # for the next, as when one paste spans two prompts.
-  local -a took_email=() took_key=()
+  local json pairs e want raw rest tok held got
   # A caller's `bash -x` would trace each key; nothing after this needs it.
   set +x
   [[ -x "$CSWAP_BIN" ]] || { echo "cswap not executable at $CSWAP_BIN" >&2; exit 1; }
   json=$(accounts) || { echo "cswap list --json failed" >&2; exit 1; }
-  emails=$(pick emails <<<"$json") || { echo "cswap list --json was not readable" >&2; exit 1; }
-  exec 3<"${CSWAP_KEYS_TTY:-/dev/tty}"
-  for e in $emails; do
+  pairs=$(pick orgs <<<"$json") || { echo "cswap list --json was not readable" >&2; exit 1; }
+  exec 3<"${CSWAP_KEYS_TTY:-/dev/tty}" 4<<<"$pairs"
+  while read -r -u 4 e want; do
     if [[ ! "$e" =~ ^[^\"[:space:]]+$ ]]; then
       echo "$e: an email this script cannot quote; skipped"
+      continue
+    fi
+    if [[ ! "$want" =~ $UUID_RE ]]; then
+      echo "$e: cswap names no organizationUuid for it; skipped"
       continue
     fi
     printf 'Key for %s (Enter to skip): ' "$e" >&2
@@ -276,15 +297,12 @@ cmd_keys() {
       echo "$e: the paste is no key; nothing stored"
       continue
     fi
-    for i in "${!took_key[@]}"; do
-      [[ "${took_key[$i]}" != "$tok" ]] && continue
-      echo "$e: the key entered for ${took_email[$i]}; nothing stored"
-      continue 2
-    done
-    took_email+=("$e")
-    took_key+=("$tok")
-    if (unset ANTHROPIC_API_KEY; export CLAUDE_CODE_OAUTH_TOKEN="$tok"
-        st_bounded 90 claude -p "Reply with the single word OK." </dev/null 2>&1) | grep -q '^OK'; then
+    got=$(key_org "$tok") || got=""
+    if [[ -z "$got" ]]; then
+      echo "$e: the key did not work; nothing stored"
+    elif [[ "$got" != "$want" ]]; then
+      echo "$e: the key belongs to another account; nothing stored"
+    else
       # Stored means the item now holds this key: an old item kept by a
       # failed update must not pass, and `security -i` may exit 0 then.
       held=""
@@ -298,13 +316,10 @@ cmd_keys() {
         echo "$e: works, but the Keychain did not store it"
       fi
       unset held
-    else
-      echo "$e: the key did not work; nothing stored"
     fi
     unset tok
   done
-  unset took_key
-  exec 3<&-
+  exec 3<&- 4<&-
 }
 
 # A WARN line per account with no headless key, the email only. It changes
@@ -389,9 +404,9 @@ usage: cswap.sh sync|status|keys
            prints a WARN line per account with no headless claude key.
   keys     in a terminal: for each cswap account, read its
            `claude setup-token` key hidden, keep the first copy of a
-           repeated paste, test it with one `claude -p` call and store it
-           as Keychain item claude-code-oauth-token-<email> only when it
-           works; ~/.config/shell/env.sh loads the active account's key
+           repeated paste, and store it as Keychain item
+           claude-code-oauth-token-<email> only when one API call works
+           and names that account's organization; ~/.config/shell/env.sh loads the active account's key
 
 environment: CSWAP_BIN, CSWAP_AUTO_ARGS (see cswap-auto.conf),
              SD_PACK_ROOT (default ~/repos/platypeeps/sd-workflow)

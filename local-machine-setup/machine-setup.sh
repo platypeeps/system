@@ -3023,9 +3023,11 @@ TOKENEOF
 claude_token_block_write() { # env.sh, line
   ctw_tmp="$1.sd9905.$$"
   # Each part must succeed: a failed head under a good tail would rename a
-  # file missing its first lines over env.sh.
+  # file missing its first lines over env.sh. macOS head refuses -n 0, so
+  # line 1 has no head.
   if (umask 077
-      { head -n "$(($2 - 1))" "$1" && claude_token_block_text && tail -n "+$(($2 + 1))" "$1"; } > "$ctw_tmp") &&
+      { { [ "$2" -eq 1 ] || head -n "$(($2 - 1))" "$1"; } && claude_token_block_text &&
+        tail -n "+$(($2 + 1))" "$1"; } > "$ctw_tmp") &&
       mv "$ctw_tmp" "$1"; then
     return 0
   fi
