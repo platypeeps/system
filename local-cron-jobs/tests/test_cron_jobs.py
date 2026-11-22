@@ -1788,6 +1788,62 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
+    def test_the_helper_finds_its_plist_under_a_custom_state_home(self):
+        """Lane review: launchd hands the helper only the plist's
+        environment, so an exported XDG_STATE_HOME was lost; the helper
+        looked in the default folder and cancelled its own reinstall."""
+        state = self.fx.tmp / "xdg-state"
+        result = self.run_script("install", "demo", env={
+            "CRON_JOBS_RUN": "demo", "XDG_STATE_HOME": str(state)})
+        self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
+        helper = state / "cron-jobs" / f"{LABEL_PREFIX}.cron-reinstall.demo.plist"
+        given = plistlib.loads(helper.read_bytes())["EnvironmentVariables"]
+        env = {k: given[k] for k in ("XDG_STATE_HOME",) if k in given}
+        result = self.run_script("reinstall-after-run", "demo", env=env)
+        self.assertNotIn("reinstall cancelled", result.stdout, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout, result.stdout + result.stderr)
+
+    def test_a_copy_killed_midway_leaves_no_partial_rollback_plist(self):
+        """Lane review: a copy into the accepted plist, interrupted, left a
+        partial file that a later refused bootstrap restored."""
+        self.plist().write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "partial-cp-bin"
+        stubs.mkdir()
+        cp = stubs / "cp"
+        cp.write_text('#!/bin/sh\nfor a; do last="$a"; done\n'
+                      'case "$last" in *.accepted*) printf partial > "$last"; kill -9 0 ;; esac\n'
+                      'exec /bin/cp "$@"\n')
+        cp.chmod(0o755)
+        killed = f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}"
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        path = self.fx.path(self.launchd_with("refuse-partial-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || { echo refused >&2; exit 5; } ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_verify_reads_stale_a_plist_launchd_did_not_load(self):
+        """Lane review: an install killed after replacing the plist left
+        launchd on the old one; the disk matched the generator and the
+        label was loaded, so setup read ok for good. verify now also
+        compares the plist with the one launchd last accepted."""
+        self.plist().write_text("the plist launchd holds\n")
+        killed = self.fx.path(self.launchd("kill-bootout-bin", on_bootout="kill -9 0; "))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        result = self.run_script("verify", "demo")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("STALE", result.stdout)
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        self.assertEqual(self.run_script("verify", "demo").returncode, 0)
+
     def test_a_successful_install_promotes_its_plist(self):
         result = self.run_script("install", "demo")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

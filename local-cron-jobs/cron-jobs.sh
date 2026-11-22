@@ -319,7 +319,7 @@ load_job() {
 # jobs here read healthy while carrying a PATH that #109 had already fixed.
 # Renders to a scratch AGENT_DIR and compares; never touches launchd.
 cmd_verify() {
-  local job="$1" tmp installed rc=0
+  local job="$1" tmp installed accepted rc=0
   installed="$(plist_for "$job")"
   if [ ! -f "$installed" ]; then
     echo "  missing $job"
@@ -327,11 +327,18 @@ cmd_verify() {
   fi
   tmp="$(mktemp -d)"
   ( AGENT_DIR="$tmp"; load_job "$job"; write_plist "$job" )
-  if cmp -s "$tmp/$(label_for "$job").plist" "$installed"; then
-    echo "  ok      $job"
-  else
+  accepted="$(accepted_plist_for "$job")"
+  if ! cmp -s "$tmp/$(label_for "$job").plist" "$installed"; then
     echo "  STALE   $job — installed plist differs from the generator"
     rc=1
+  # An install killed after replacing the plist leaves launchd on the old
+  # one: the disk matches, the label is loaded, and only the accepted copy
+  # shows the new plist never loaded (sd:9826 review).
+  elif [ -f "$accepted" ] && ! cmp -s "$accepted" "$installed"; then
+    echo "  STALE   $job — installed plist is not the one launchd last loaded"
+    rc=1
+  else
+    echo "  ok      $job"
   fi
   rm -rf "$tmp"
   return $rc
@@ -1773,6 +1780,11 @@ ensure_job_launch() {
 # run to end and then installs. Its plist sits in STATE_DIR, not in
 # LaunchAgents, so no login loads it again and no sweep reads it as a job.
 reinstall_label() { echo "$LABEL_PREFIX.cron-reinstall.$1"; }
+# Copies whole or not at all: a killed cp leaves only <dst>.tmp, never a
+# partial file a later rollback would load.
+copy_whole() { # src dst
+  cp -p "$1" "$2.tmp" && mv "$2.tmp" "$2" || { rm -f "$2.tmp"; return 1; }
+}
 helper_plist_for() { echo "$STATE_DIR/$(reinstall_label "$1").plist"; }
 accepted_plist_for() { echo "$STATE_DIR/$(label_for "$1").accepted"; }
 defer_install() { # job
@@ -1817,6 +1829,10 @@ defer_install() { # job
         <string>$(xml_escape "$JOB_HOST")</string>
         <key>SYSTEM_TOOLS_LABEL_PREFIX</key>
         <string>$(xml_escape "$LABEL_PREFIX")</string>
+        <!-- STATE_DIR's root: the helper finds its own plist there, and
+             reads a missing one as an uninstall. Empty means the default. -->
+        <key>XDG_STATE_HOME</key>
+        <string>$(xml_escape "${XDG_STATE_HOME:-}")</string>
     </dict>
 </dict>
 </plist>
@@ -1908,7 +1924,7 @@ cmd_install() {
   # Seeds the rollback point on the first install that keeps one: a loaded
   # job's plist is the one launchd accepted.
   [ -f "$accepted" ] || ! is_loaded "$job" || [ ! -f "$plist" ] ||
-    { mkdir -p "$STATE_DIR" && cp -p "$plist" "$accepted"; } || rm -f "$accepted"
+    { mkdir -p "$STATE_DIR" && copy_whole "$plist" "$accepted"; } || rm -f "$accepted"
   if ! { mkdir -p "$AGENT_DIR" "$STATE_DIR" && write_plist "$job" "$new" &&
          { ! command -v plutil >/dev/null 2>&1 || plutil -lint -s "$new"; } &&
          mv "$new" "$plist"; }; then
@@ -1929,7 +1945,7 @@ cmd_install() {
       err="failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
       if [ -f "$accepted" ]; then
         wait_unloaded "$job"
-        if cp -p "$accepted" "$plist" && launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1; then
+        if copy_whole "$accepted" "$plist" && launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1; then
           err="$err; restored the previous plist"
         else
           err="$err; the previous plist did not load either: run cron-jobs.sh install $job"
@@ -1940,7 +1956,7 @@ cmd_install() {
       return 1
     fi
   fi
-  cp -p "$plist" "$accepted" || rm -f "$accepted"
+  copy_whole "$plist" "$accepted" || rm -f "$accepted"
   # Checked: a refused enable is a failed install, never `installed:`.
   if ! err=$(launchctl enable "$DOMAIN/$(label_for "$job")" 2>&1); then
     echo "failed: $job (launchctl enable $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
