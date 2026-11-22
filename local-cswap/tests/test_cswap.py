@@ -228,6 +228,11 @@ elif args[:2] == ["agent", "read"]:
         lines = screen.split("\n")
         last = max(i for i, l in enumerate(lines) if l.startswith("\u276f"))
         lines[last] = "\u276f\u00a0/rc"
+        # FAKE_DRAFT_AT_GET=N: from the Nth get of the pane on, the
+        # operator has replaced the /rc with a draft of their own.
+        gets = open(os.environ["FAKE_CALLS"]).read().splitlines().count("herdr agent get " + args[2])
+        if os.environ.get("FAKE_DRAFT_AT_GET") and gets >= int(os.environ["FAKE_DRAFT_AT_GET"]):
+            lines[last] = "\u276f\u00a0my own draft"
         screen = os.environ.get("FAKE_TYPED_SCREEN") or "\n".join(lines)
     with open(read, "a") as f:
         f.write(args[2] + "\n")
@@ -680,9 +685,10 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         result = self.sync("elsewhere")
         calls = [c for c in self.called("herdr agent") if " w1:p1" in c]
-        self.assertEqual(calls[-4:], ["herdr agent send-keys w1:p1 / r c",
+        self.assertEqual(calls[-5:], ["herdr agent send-keys w1:p1 / r c",
                                       "herdr agent read w1:p1 --format ansi",
                                       "herdr agent get w1:p1",
+                                      "herdr agent read w1:p1 --format ansi",
                                       "herdr agent send-keys w1:p1 enter"], result.stdout)
         self.assertEqual(self.called("herdr agent prompt"), [])
         self.assertIn("reconnect: sent /rc to w1:p1\n", result.stdout)
@@ -762,11 +768,25 @@ class RemoteControlReconnects(Machine):
                 self.assertIn("no enter, not sent again", result.stdout)
                 (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
 
+    def test_a_draft_typed_during_the_last_get_gets_no_enter(self):
+        # sd:9427 review: the operator replaced /rc with a draft while
+        # the get after the typed read ran; the session still said idle,
+        # and the Enter submitted the draft. The screen is read again
+        # after that get and must match the typed read.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_DRAFT_AT_GET="3")
+        self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter "
+                      "(its screen moved during the check); no enter, not sent again", result.stdout)
+        self.assertEqual(self.owed(), [])
+
     def test_a_budget_spent_after_the_typing_sends_no_enter(self):
         # The enter gets what is left of the gap and the budget; none
         # left, no enter, and the typed /rc is not sent again. The stub
-        # clock jumps past the budget at the get after the typing, the
-        # last check before the enter.
+        # clock jumps past the budget at the last read before the enter,
+        # the fifth: the pass's, the send's two, and two after the typing.
         clock = self.tmp / "clock"
         executable(self.stubs / "date", '#!/bin/sh\n'
                    'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
@@ -774,7 +794,7 @@ class RemoteControlReconnects(Machine):
                    'exec /bin/date "$@"\n')
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
-        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_GET="3", FAKE_CLOCK_JUMP="61")
+        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_AT="5", FAKE_CLOCK_JUMP="61")
         self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
         self.assertEqual(self.prompts(), [], result.stdout)
         self.assertIn("reconnect: typed /rc into w1:p1, but the gap or budget ran out before the enter; "

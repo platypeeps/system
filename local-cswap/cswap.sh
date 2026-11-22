@@ -607,13 +607,22 @@ send_rc() {
   # turned busy, would take the Enter, which can submit its input or
   # accept a dialog (sd:9427 review). So the session and status are
   # asked again after it, and the switch read again, as before the
-  # typing. ponytail: a restart in the milliseconds from here to the
-  # Enter still races; herdr has no check-and-send.
+  # typing. ponytail: a restart or a keystroke in the milliseconds from
+  # the last read to the Enter still races; herdr has no check-and-send.
   got=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent get "$1") ||
     { echo "reconnect: typed /rc into $1, but it changed before the enter (no get, exit $?); no enter, not sent again"; return 2; }
   now=$(rc_read pane <<<"$got") || now=""
   if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
     echo "reconnect: typed /rc into $1, but it changed before the enter (${now:-no claude pane in the answer}); no enter, not sent again"
+    return 2
+  fi
+  # A draft typed during that get leaves session and status alone, so
+  # the screen is read again and must match the typed read, as before
+  # the typing (sd:9427 review).
+  screen=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent read "$1" --format ansi) ||
+    { echo "reconnect: typed /rc into $1, but it changed before the enter (no read, exit $?); no enter, not sent again"; return 2; }
+  if [[ "$screen" != "$last" ]]; then
+    echo "reconnect: typed /rc into $1, but it changed before the enter (its screen moved during the check); no enter, not sent again"
     return 2
   fi
   if ! now=$(current_since) || [[ "$now" != "$3" ]]; then
