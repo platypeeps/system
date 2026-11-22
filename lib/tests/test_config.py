@@ -362,6 +362,136 @@ class ShellEnv(unittest.TestCase):
         env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
         self.assertEqual(shell("set -e; st_shell_env; echo after", env).stdout, "after\n")
 
+    def test_a_syntax_error_in_env_sh_is_named_and_skipped(self):
+        # sd:9652: a half-written env.sh ended the cron run inside the dot,
+        # so the FAILED line went nowhere. It must be skipped and named.
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\nif then fi (\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        result = shell("set -e; st_shell_env; echo after rc=$?", env)
+        self.assertEqual(result.stdout, "after rc=0\n")
+        self.assertIn(".config/shell/env.sh", result.stderr)
+        self.assertNotIn("tok-custom", result.stderr)
+        self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+
+    def test_a_save_between_the_check_and_the_read_cannot_end_the_shell(self):
+        # sd:9652 review: the check and the dot read env.sh apart, so a
+        # save in between handed the dot a broken file. A fake sh runs
+        # the real check, then rewrites env.sh as an in-place save does.
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        bin_dir = self.home / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "sh"
+        fake.write_text('#!/bin/sh\n/bin/sh "$@"; rc=$?\n'
+                        'printf "if then fi (\\n" > "$HOME/.config/shell/env.sh"\n'
+                        'exit $rc\n')
+        fake.chmod(0o755)
+        env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(self.home)}
+        result = shell('set -e; st_shell_env; echo "after $CLAUDE_CODE_OAUTH_TOKEN"', env)
+        self.assertEqual(result.stdout, "after tok-custom\n", result.stderr)
+
+    def test_a_return_in_env_sh_ends_only_env_sh(self):
+        # sd:9652 review: under eval, a `return` in env.sh returned from
+        # st_shell_env itself and skipped the mapping, the cleanup and
+        # the xtrace restore. A load-once guard returns early too.
+        script = ('set -x; st_shell_env; set +x; echo "tok=$CLAUDE_CODE_OAUTH_TOKEN"; '
+                  'echo "text=${_st_text-unset}"; echo "path=${_st_shenv-unset}"')
+        cases = (
+            ("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\nreturn 0\necho never\n", {}),
+            ('[ -n "${__SHELL_ENV_LOADED:-}" ] && return\n'
+             "export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-other\n",
+             {"__SHELL_ENV_LOADED": "1", "CUSTOM_CLAUDE_CODE_OAUTH_TOKEN": "tok-custom"}),
+        )
+        for text, extra in cases:
+            self.env_sh(text)
+            env = {"PATH": os.environ["PATH"], "HOME": str(self.home), **extra}
+            result = shell(f"{script}; echo rc=$?", env)
+            self.assertEqual(result.stdout,
+                             "tok=tok-custom\ntext=unset\npath=unset\nrc=0\n", result.stderr)
+            # xtrace came back on: the caller's `set +x` shows in the trace.
+            self.assertIn("+ set +x", result.stderr)
+            self.assertNotIn("never", result.stdout)
+
+    def test_a_failing_line_in_env_sh_cannot_end_a_set_e_caller(self):
+        # sd:9652 review: a failing command or a false last test in
+        # env.sh ended a `set -e` cron runner with nothing said; so did
+        # an unset name under `set -u`. The caller's flags come back.
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\nfalse\n"
+                    'echo "$ST_TEST_UNSET_NAME"\n'
+                    '[ -d "$HOME/missing" ] && export PATH="$HOME/missing:$PATH"\n')
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        result = shell('set -eu; st_shell_env; echo "after $CLAUDE_CODE_OAUTH_TOKEN $-"', env)
+        self.assertRegex(result.stdout, r"^after tok-custom \S*e\S*\n$", result.stderr)
+        self.assertIn("u", result.stdout.split()[-1])
+
+    def test_env_sh_finds_its_own_folder_through_bash_source(self):
+        # sd:9652 review: under eval, BASH_SOURCE named the loader, so
+        # env.sh could not dot a file beside itself. bash sets it; dash
+        # has none, so this runs under bash.
+        self.env_sh('. "${BASH_SOURCE%/*}/extra.sh"\n')
+        (self.home / ".config/shell/extra.sh").write_text(
+            "export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB}/config.sh"; set -e; st_shell_env; '
+                           'echo "after $CLAUDE_CODE_OAUTH_TOKEN"; ls -A "$HOME/.config/shell"'],
+            env=env, capture_output=True, text=True, check=False)
+        # The private copy is gone after the read.
+        self.assertEqual(result.stdout, "after tok-custom\nenv.sh\nextra.sh\n", result.stderr)
+
+    def test_an_env_sh_that_cannot_be_copied_is_named_and_skipped(self):
+        # sd:9652 review: a failed copy left an empty copy that passed
+        # sh -n, so the run went on with no settings and no word why.
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        path = self.home / ".config/shell/env.sh"
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o600)
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        result = shell('set -e; st_shell_env; echo "after ${CLAUDE_CODE_OAUTH_TOKEN-unset}"', env)
+        self.assertEqual(result.stdout, "after unset\n", result.stderr)
+        self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+        self.assertIn(".config/shell/env.sh", result.stderr)
+        self.assertEqual(sorted(os.listdir(path.parent)), ["env.sh"])
+
+    def test_a_read_only_folder_still_loads_env_sh_from_a_copy(self):
+        # sd:9652 review: a readable env.sh in a read-only folder loaded
+        # before the copy step; skipping it lost every export. The copy
+        # goes to TMPDIR instead, so a save after the check (a fake sh
+        # runs the real check, then rewrites env.sh) still cannot reach
+        # the shell, and no copy is left behind.
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        folder = self.home / ".config/shell"
+        tmp = self.home / "tmp"
+        tmp.mkdir()
+        bin_dir = self.home / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "sh"
+        fake.write_text('#!/bin/sh\n/bin/sh "$@"; rc=$?\n'
+                        'printf "if then fi (\\n" > "$HOME/.config/shell/env.sh"\n'
+                        'exit $rc\n')
+        fake.chmod(0o755)
+        folder.chmod(0o500)
+        self.addCleanup(folder.chmod, 0o700)
+        env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(self.home),
+               "TMPDIR": str(tmp)}
+        result = shell('set -e; st_shell_env; echo "after ${CLAUDE_CODE_OAUTH_TOKEN-unset}"', env)
+        self.assertEqual(result.stdout, "after tok-custom\n", result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(os.listdir(tmp), [])
+
+    def test_xtrace_never_prints_a_value(self):
+        # sd:9652: a caller's set -x, or one env.sh turns on, must not
+        # trace the token; the caller's own xtrace comes back after.
+        for text in ("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n",
+                     "set -x\nexport CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n"):
+            self.env_sh(text)
+            env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+            result = shell('set -x; st_shell_env; case $- in *x*) echo on ;; esac', env)
+            self.assertNotIn("tok-custom", result.stderr)
+            self.assertEqual(result.stdout, "on\n")
+            result = shell('st_shell_env; case $- in *x*) echo on ;; esac', env)
+            self.assertEqual(result.stdout, "")
+            self.assertNotIn("tok-custom", result.stderr)
+
     def test_a_caller_set_x_traces_no_token_and_stays_on(self):
         self.env_sh("CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-secret\nexport CUSTOM_CLAUDE_CODE_OAUTH_TOKEN\n")
         env = {"PATH": os.environ["PATH"], "HOME": str(self.home), "WANT": "tok-secret"}
