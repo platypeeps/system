@@ -98,7 +98,7 @@ Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged a
 One open bundle branch per repo: every ready item, filed item and builder for that repo goes onto it, one commit per item; each PR costs a review, a rebase and a serial gate.
 A second PR needs one of two reasons: a change that moves state in steps, or the bundle is already in the lane; area, wave and size are not reasons (operator 2026-10-25, 2026-11-04, 2026-11-05).
 `sd assignments beat --start` refuses a second open branch for a repo unless `--reason` names one of those two (pack sd:7737).
-A review finding blocks only when it names a concrete failing input, command or interruption (a crash between two writes) in code the change touched; fix only those before merge, file every other one as an sd item for the repo's next PR, not another review round, and after round 3 the lead decides fix, file or reject: each round costs a full re-review, and 46 builds ran out of 8 rounds at about 4 new highs a round (operator 2026-11-21, pack sd:9867).
+A review finding blocks only when it names a concrete failing input, command or interruption (a crash between two writes) that the change causes, in code it touched or an unchanged caller it breaks; fix only those before merge, file every other one as an sd item for the repo's next PR, not another review round, and after round 3 the lead decides fix, file or reject: each round costs a full re-review, and 46 builds ran out of 8 rounds at about 4 new highs a round (operator 2026-11-21, pack sd:9867).
 Rebuttals need no approval: reject a review finding with a reason a reader can check, in the document's Status or the PR thread.
 
 # CI runs locally
