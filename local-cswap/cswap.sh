@@ -386,17 +386,20 @@ owe_rc() {
 
 # RC_OWED rows are "<herdr session> <pane> <session> <since>", and a pane
 # sent /rc for that switch keeps its row with " sent" added, so no
-# listing owes it again (sd:9427 review).
+# listing owes it again (sd:9427 review). "sent" is marked before the
+# enter; "done" once the enter went, or a box no longer shows the /rc,
+# so a sent row's box is read only until then (sd:9427 review).
 # The rows to keep, unchanged: other herdr sessions' rows, and this
 # session's rows for the switch at $1; none if unreadable.
 kept_rows() {
   [[ -e "$RC_OWED" ]] || return 0
-  awk -v hs="$HERDR_SESSION" -v since="$1" '(NF == 4 || NF == 5 && $5 == "sent") && ($1 != hs || $4 == since)' "$RC_OWED"
+  awk -v hs="$HERDR_SESSION" -v since="$1" '(NF == 4 || NF == 5 && ($5 == "sent" || $5 == "done")) && ($1 != hs || $4 == since)' "$RC_OWED"
 }
 
-# Whether RC_OWED holds a row of this herdr session.
+# Whether RC_OWED holds a row of this herdr session: an owed one, or a
+# sent one whose /rc may still wait in the box for its enter.
 owes_here() {
-  awk -v hs="$HERDR_SESSION" 'NF == 4 && $1 == hs { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null
+  awk -v hs="$HERDR_SESSION" '(NF == 4 || NF == 5 && $5 == "sent") && $1 == hs { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null
 }
 
 # A pending switch to this herdr session's owed panes, once herdr lists
@@ -473,9 +476,10 @@ now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 # the pane still runs the owed session ($2)
 # and is idle or done, a last read shows the same screen, and the
 # session is asked once more after it; then /rc.
-# Else one line, and it stays owed (1); a send that failed or ran late
-# returns 2, as it may have landed. herdr has no check-and-send, so the
-# span from the first read to the end of the send must fit RC_GAP_MS.
+# Else one line, and it stays owed (1); an enter that failed or ran
+# late returns 2, as it may have landed. herdr has no check-and-send, so
+# the span from the first read to the end of the typing must fit
+# RC_GAP_MS. The enter is send_enter's.
 send_rc() {
   local now got screen last verdict start took left bound=$(((RC_GAP_MS + 999) / 1000))
   # Screen, get, screen, get. A session that took the pane during a
@@ -533,19 +537,10 @@ send_rc() {
   # Only a launched send may have gone out: the budget is checked here,
   # not in rc_step, whose 124 cannot tell an unlaunched call from a
   # timed-out one (sd:9427 triage).
-  # The sent mark goes in after every check and right before the send:
-  # a sync stopped during the checks, or a refusal whose last write
-  # failed, left a pane that never had /rc marked sent (sd:9427
-  # review). A mark that does not write sends nothing.
-  if ! mark_sent "$HERDR_SESSION $1 $2 $3"; then
-    echo "reconnect: could not write $RC_OWED before the send; $1 stays owed"
-    return 1
-  fi
   # A switch that landed during the pass makes this row an older
-  # switch's: the newer one lists the pane (sd:9427 review). A switch
-  # takes no reconnect lock, so this is read after the mark (sd:9427
-  # review). ponytail: a switch in the milliseconds from here to the
-  # launch still races; closing it needs the switch to take RC_LOCK.
+  # switch's: the newer one lists the pane (sd:9427 review). Typing
+  # submits nothing, so a switch that lands after this read is caught
+  # before the enter, which reads the switch again.
   if ! now=$(current_since); then
     echo "reconnect: could not read $RC_PENDING before the /rc to $1; still owed"
     return 1
@@ -554,12 +549,11 @@ send_rc() {
     echo "reconnect: $1 changed before the send (a newer switch); the current one lists it"
     return 1
   fi
-  # The write counts in the gap and the budget: both are read again
-  # after it, and the send takes only what is left (sd:9427 review).
-  # Past either, the pass's last write keeps the row owed.
+  # The gap and the budget are read again after the switch read, and
+  # the typing takes only what is left (sd:9427 review).
   took=$(($(now_ms) - start))
   if ((took >= RC_GAP_MS)); then
-    echo "reconnect: $1 took $took ms to check and mark, over $RC_GAP_MS ms; still owed"
+    echo "reconnect: $1 took $took ms to check, over $RC_GAP_MS ms; still owed"
     return 1
   fi
   left=$((RC_DEADLINE - $(date +%s)))
@@ -572,10 +566,6 @@ send_rc() {
   bound=$((RC_GAP_MS - took))
   ((left * 1000 < bound)) && bound=$((left * 1000))
   bound=$(printf '%d.%03d' $((bound / 1000)) $((bound % 1000)))
-  if ! commit_sent; then
-    echo "reconnect: could not write $RC_OWED before the send; $1 stays owed"
-    return 1
-  fi
   # The keys go as two herdr send-keys calls, each written at once:
   # "/ r c", then, once a read shows exactly /rc in the box, "enter"
   # (operator ruling #70122 on sd:9427). agent prompt queued its Enter
@@ -590,22 +580,36 @@ send_rc() {
     echo "reconnect: /rc to $1 never started (exit 125); still owed"
     return 1
   fi
+  # Typed keys submit nothing: a typing that failed leaves the row
+  # owed, and a box that shows exactly /rc on a later pass takes only
+  # the enter (send_enter).
   if ((rc != 0)); then
-    echo "reconnect: /rc to $1 failed or ran over $RC_GAP_MS ms; not sent again"
-    return 2
+    echo "reconnect: typing /rc into $1 failed or ran over $RC_GAP_MS ms (exit $rc); still owed"
+    return 1
   fi
-  # From here the /rc may sit in the box: every way out is "not sent
-  # again" (2), and only an Enter after a read that shows exactly /rc
-  # submits it. A draft typed meanwhile shows there, and gets no Enter.
-  # The read, the checks after it and the Enter fit a gap of their
-  # own, from the read on.
+  send_enter "$1" "$2" "$3" mark
+}
+
+# The enter for a /rc typed into pane $1 (session $2, switch $3): only
+# after a read that shows exactly /rc in the box under a drop banner,
+# with session, status, screen and switch unchanged. A draft typed
+# meanwhile shows there, and gets no enter. With $4 = mark, the row
+# is marked sent first: written beside RC_OWED, the switch read
+# again, then moved in right before the enter. A pass stopped before
+# the enter leaves a row owed, or sent with /rc in the box; either
+# way a later pass sees exactly /rc and sends the enter (sd:9427
+# review). Before the mark: 1, still owed; after it: 2, sent.
+# The read, the checks after it and the enter fit a gap of their own.
+send_enter() {
+  local now got screen last verdict start took left bound rc=0 out=1
+  [[ "${4-}" == mark ]] || out=2
   start=$(now_ms)
   last=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent read "$1" --format ansi) ||
-    { echo "reconnect: typed /rc into $1, but its box then showed (no read, exit $?); no enter, not sent again"; return 2; }
+    { echo "reconnect: typed /rc into $1, but its box then showed (no read, exit $?); no enter"; return $out; }
   verdict=$(rc_read typed <<<"$last") || verdict="a screen that did not parse"
   if [[ "$verdict" != send ]]; then
-    echo "reconnect: typed /rc into $1, but its box then showed ($verdict); no enter, not sent again"
-    return 2
+    echo "reconnect: typed /rc into $1, but its box then showed ($verdict); no enter"
+    return $out
   fi
   # The read proves no target: a new session in the pane, or a pane
   # turned busy, would take the Enter, which can submit its input or
@@ -614,38 +618,55 @@ send_rc() {
   # typing. ponytail: a restart or a keystroke in the milliseconds from
   # the last read to the Enter still races; herdr has no check-and-send.
   got=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent get "$1") ||
-    { echo "reconnect: typed /rc into $1, but it changed before the enter (no get, exit $?); no enter, not sent again"; return 2; }
+    { echo "reconnect: typed /rc into $1, but it changed before the enter (no get, exit $?); no enter"; return $out; }
   now=$(rc_read pane <<<"$got") || now=""
   if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
-    echo "reconnect: typed /rc into $1, but it changed before the enter (${now:-no claude pane in the answer}); no enter, not sent again"
-    return 2
+    echo "reconnect: typed /rc into $1, but it changed before the enter (${now:-no claude pane in the answer}); no enter"
+    return $out
   fi
   # A draft typed during that get leaves session and status alone, so
   # the screen is read again and must match the typed read, as before
   # the typing (sd:9427 review).
   screen=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent read "$1" --format ansi) ||
-    { echo "reconnect: typed /rc into $1, but it changed before the enter (no read, exit $?); no enter, not sent again"; return 2; }
+    { echo "reconnect: typed /rc into $1, but it changed before the enter (no read, exit $?); no enter"; return $out; }
   if [[ "$screen" != "$last" ]]; then
-    echo "reconnect: typed /rc into $1, but it changed before the enter (its screen moved during the check); no enter, not sent again"
-    return 2
+    echo "reconnect: typed /rc into $1, but it changed before the enter (its screen moved during the check); no enter"
+    return $out
   fi
   if ! now=$(current_since) || [[ "$now" != "$3" ]]; then
-    echo "reconnect: typed /rc into $1, but it changed before the enter (a newer switch, or $RC_PENDING did not read); no enter, not sent again"
-    return 2
+    echo "reconnect: typed /rc into $1, but it changed before the enter (a newer switch, or $RC_PENDING did not read); no enter"
+    return $out
+  fi
+  if [[ "${4-}" == mark ]]; then
+    if ! mark_sent "$HERDR_SESSION $1 $2 $3"; then
+      echo "reconnect: could not write $RC_OWED before the enter; $1 stays owed"
+      return 1
+    fi
+    # A switch takes no reconnect lock: one that landed during the
+    # mark makes this row an older switch's (sd:9427 review).
+    if ! now=$(current_since) || [[ "$now" != "$3" ]]; then
+      echo "reconnect: typed /rc into $1, but it changed before the enter (a newer switch, or $RC_PENDING did not read); no enter"
+      return 1
+    fi
   fi
   took=$(($(now_ms) - start))
   left=$((RC_DEADLINE - $(date +%s)))
   bound=$((RC_GAP_MS - took))
   ((left * 1000 < bound)) && bound=$((left * 1000))
   if ((bound <= 0)); then
-    echo "reconnect: typed /rc into $1, but the gap or budget ran out before the enter; not sent again"
-    return 2
+    echo "reconnect: typed /rc into $1, but the gap or budget ran out before the enter"
+    return $out
   fi
   bound=$(printf '%d.%03d' $((bound / 1000)) $((bound % 1000)))
-  rc=0
+  # A pass stopped from here to the enter leaves a sent row and /rc
+  # in the box: a later pass's resume sends the enter.
+  if [[ "${4-}" == mark ]] && ! commit_sent; then
+    echo "reconnect: could not write $RC_OWED before the enter; $1 stays owed"
+    return 1
+  fi
   st_step "$bound" "$HERDR" agent send-keys "$1" enter 9>&- >/dev/null || rc=$?
   if ((rc != 0)); then
-    echo "reconnect: the enter for /rc in $1 failed or ran over $RC_GAP_MS ms (exit $rc); not sent again"
+    echo "reconnect: the enter for /rc in $1 failed or ran over $RC_GAP_MS ms (exit $rc); a box that still shows /rc takes it next sync"
     return 2
   fi
 }
@@ -712,9 +733,13 @@ reconnect_pass() {
   fi
   plan=$(awk -v hs="$HERDR_SESSION" -v cur="$cur" '
     FILENAME == "-" { if (NF == 3) { status[$1 " " $2] = $3; if ($2 == "?") unknown[$1] = 1 }; next }
-    NF == 5 && $5 == "sent" && $4 ~ /^[0-9]+$/ {
+    NF == 5 && ($5 == "sent" || $5 == "done") && $4 ~ /^[0-9]+$/ {
       if ($1 != hs) print "other", $0
-      else if ($4 == cur) print "sent", $0
+      else if ($4 != cur) next
+      # A sent pane whose box may still hold the /rc a stopped pass
+      # typed gets its enter (sd:9427 review); send_enter checks it.
+      else if ($5 == "sent" && (status[$2 " " $3] == "idle" || status[$2 " " $3] == "done")) print "resume", $0
+      else print "sent", $0
       next
     }
     NF != 4 || $4 !~ /^[0-9]+$/ { next }
@@ -727,6 +752,20 @@ reconnect_pass() {
   while read -r action hs pane session since sent; do
     case "$action" in
       other | sent) keep+="$hs $pane $session $since${sent:+ $sent}"$'\n' ;;
+      resume)
+        # ponytail: a box hidden by a dialog at this read counts as
+        # done; reading the cause apart needs a verdict of its own.
+        sent=sent
+        if (($(date +%s) < RC_DEADLINE)) &&
+          screen=$(rc_step 10 "$HERDR" agent read "$pane" --format ansi 2>/dev/null); then
+          if [[ "$(rc_read typed <<<"$screen" 2>/dev/null)" != send ]]; then
+            sent="done"
+          elif send_enter "$pane" "$session" "$since"; then
+            echo "reconnect: sent the enter for the /rc in $pane"
+            sent="done"
+          fi
+        fi
+        keep+="$hs $pane $session $since $sent"$'\n' ;;
       keep) keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1)) ;;
       gone) echo "reconnect: $pane is gone or runs another session; not owed" ;;
       stale) echo "reconnect: $pane was owed for a switch that is no longer current; not owed" ;;
@@ -740,17 +779,24 @@ reconnect_pass() {
         elif ! verdict=$(rc_read screen <<<"$screen"); then
           echo "reconnect: $pane's screen did not parse; still owed"
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
-        elif [[ "$verdict" != send ]]; then
+        elif [[ "$verdict" != send && "$(rc_read typed <<<"$screen" 2>/dev/null)" != send ]]; then
           echo "reconnect: $pane $verdict"
           keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
         else
+          # A box that shows exactly /rc holds the typing of a pass
+          # that stopped before the enter: it takes only the enter.
           rc=0
-          send_rc "$pane" "$session" "$since" || rc=$?
+          if [[ "$verdict" == send ]]; then
+            send_rc "$pane" "$session" "$since" || rc=$?
+          else
+            send_enter "$pane" "$session" "$since" mark || rc=$?
+          fi
           if ((rc == 1)); then
             keep+="$hs $pane $session $since"$'\n'; mine=$((mine + 1))
           else
-            ((rc != 0)) || echo "reconnect: sent /rc to $pane"
-            keep+="$hs $pane $session $since sent"$'\n'
+            sent=sent
+            ((rc != 0)) || { echo "reconnect: sent /rc to $pane"; sent="done"; }
+            keep+="$hs $pane $session $since $sent"$'\n'
           fi
         fi ;;
     esac

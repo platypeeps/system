@@ -672,9 +672,10 @@ class RemoteControlReconnects(Machine):
 
     def owed(self):
         path = self.script.parent / "state/rc-owed"
-        # A row with " sent" added is a pane sent /rc: no longer owed.
+        # A row with " sent" or " done" added is a pane sent /rc: no
+        # longer owed.
         return [line.split()[1] for line in path.read_text().splitlines()
-                if not line.endswith(" sent")] if path.exists() else []
+                if not line.endswith((" sent", " done"))] if path.exists() else []
 
     def test_rc_is_typed_then_entered_once_the_box_shows_it(self):
         # sd:9427 ruling #70122: herdr's agent prompt queues the Enter
@@ -696,7 +697,8 @@ class RemoteControlReconnects(Machine):
 
     def test_a_box_that_does_not_show_exactly_rc_gets_no_enter(self):
         # A draft typed in the gap mixes with the /rc: no Enter submits
-        # it. The /rc may sit in the box, so the pane is not sent again.
+        # it. No enter went, so the pane stays owed; its box no longer
+        # shows exactly /rc, so no later pass types or enters into it.
         # A slash-command menu below the box is no reason to wait; a
         # dialog there is.
         menu = DROPPED.replace("\u276f\u00a0\n", "\u276f\u00a0/rc\n") + \
@@ -715,20 +717,22 @@ class RemoteControlReconnects(Machine):
                 self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
                 self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"] if entered else [],
                                  result.stdout)
-                self.assertEqual(self.owed(), [], result.stdout)
+                self.assertEqual(self.owed(), [] if entered else ["w1:p1"], result.stdout)
                 if not entered:
                     self.assertRegex(result.stdout, r"reconnect: typed /rc into w1:p1, but its box then "
-                                                    r"showed \(.*\); no enter, not sent again")
+                                                    r"showed \(.*\); no enter\n")
                 (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
 
-    def test_a_failed_read_or_enter_after_the_typing_is_not_sent_again(self):
+    def test_a_failed_read_or_enter_after_the_typing_takes_the_enter_next_sync(self):
         # Once "/ r c" went, the /rc may sit in the box: a read that
-        # fails gets no enter, and neither way is the pane owed again,
-        # as a second /rc would join the first.
+        # fails gets no enter, and the pane stays owed; an enter that
+        # fails leaves it sent. Neither is typed into again, as a
+        # second /rc would join the first: the next sync finds exactly
+        # /rc in the box and sends only the enter (sd:9427 review).
         rows = [({"FAKE_HERDR_READ_FAIL": "4"}, r"typed /rc into w1:p1, but its box then showed "
-                                                r"\(no read, exit 1\); no enter, not sent again", False),
+                                                r"\(no read, exit 1\); no enter\n", False),
                 ({"FAKE_HERDR_ENTER_FAIL": "1"}, r"the enter for /rc in w1:p1 failed or ran over "
-                                                 r"5000 ms \(exit 1\); not sent again", True)]
+                                                 r"5000 ms \(exit 1\); a box that still shows /rc", True)]
         for fail, why, entered in rows:
             with self.subTest(fail=fail):
                 self.publish(ONE if self.active() == 3 else THREE)
@@ -738,6 +742,10 @@ class RemoteControlReconnects(Machine):
                 result = self.sync("elsewhere", **fail)
                 self.assertRegex(result.stdout, why)
                 self.assertEqual(len(self.called("herdr agent send-keys w1:p1 enter")), int(entered))
+                self.assertEqual(self.owed(), [] if entered else ["w1:p1"], result.stdout)
+                result = self.sync("elsewhere")
+                self.assertEqual(self.called("herdr agent send-keys"), ["herdr agent send-keys w1:p1 enter"],
+                                 result.stdout)
                 self.assertEqual(self.owed(), [], result.stdout)
                 self.sync("elsewhere")
                 self.assertEqual(self.called("herdr agent send-keys"), [])
@@ -765,7 +773,7 @@ class RemoteControlReconnects(Machine):
                 self.assertEqual(self.prompts(), [], result.stdout)
                 self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter", result.stdout)
                 self.assertIn(why, result.stdout)
-                self.assertIn("no enter, not sent again", result.stdout)
+                self.assertIn("; no enter\n", result.stdout)
                 (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
 
     def test_a_draft_typed_during_the_last_get_gets_no_enter(self):
@@ -779,12 +787,12 @@ class RemoteControlReconnects(Machine):
         self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
         self.assertEqual(self.prompts(), [], result.stdout)
         self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter "
-                      "(its screen moved during the check); no enter, not sent again", result.stdout)
-        self.assertEqual(self.owed(), [])
+                      "(its screen moved during the check); no enter\n", result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"])
 
     def test_a_budget_spent_after_the_typing_sends_no_enter(self):
         # The enter gets what is left of the gap and the budget; none
-        # left, no enter, and the typed /rc is not sent again. The stub
+        # left, no enter, and the pane stays owed. The stub
         # clock jumps past the budget at the last read before the enter,
         # the fifth: the pass's, the send's two, and two after the typing.
         clock = self.tmp / "clock"
@@ -797,9 +805,9 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_AT="5", FAKE_CLOCK_JUMP="61")
         self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
         self.assertEqual(self.prompts(), [], result.stdout)
-        self.assertIn("reconnect: typed /rc into w1:p1, but the gap or budget ran out before the enter; "
-                      "not sent again", result.stdout)
-        self.assertEqual(self.owed(), [])
+        self.assertIn("reconnect: typed /rc into w1:p1, but the gap or budget ran out before the enter\n",
+                      result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"])
 
     def test_a_switch_sends_rc_to_idle_panes_only(self):
         self.publish(THREE)
@@ -1301,8 +1309,9 @@ class RemoteControlReconnects(Machine):
         # span from the last screen read to the send's end must fit it.
         # Review on sd:9427, next round: a send that ran over the gap left
         # the pane owed, and its drop banner, not yet redrawn, took a
-        # second /rc. A /rc that went out, or may have (herdr: a timeout
-        # does not prove no delivery), keeps its sent mark.
+        # second /rc. Since the two send-keys calls (ruling #70122) only
+        # the enter submits: a typing that ran over stays owed, and the
+        # enter goes only to a box that shows exactly /rc.
         # Rows: herdr times out; herdr acknowledges past the gap.
         # A 2000 ms gap: the checks fit it on a loaded gate, where four
         # took 1057 ms of a 1000 ms gap; the keys run past it.
@@ -1313,10 +1322,14 @@ class RemoteControlReconnects(Machine):
                 self.publish(ONE if self.active() == 3 else THREE)
                 self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
                 result = self.sync("elsewhere", CSWAP_RC_GAP_MS=gap, **slow)
-                self.assertEqual(self.owed(), [], result.stdout)
-                self.assertRegex(result.stdout, rf"reconnect: /rc to w1:p1 .*over {gap} ms; not sent again")
+                self.assertEqual(self.prompts(), [], result.stdout)
+                self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+                self.assertRegex(result.stdout, rf"reconnect: typing /rc into w1:p1 .*over {gap} ms "
+                                                r"\(exit \d+\); still owed")
+                # Typed keys submit nothing (sd:9427 review): the next
+                # sync types into the empty box and enters, once.
                 self.sync("elsewhere")
-                self.assertEqual(self.prompts(), [])
+                self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
                 (self.script.parent / "state/rc-owed").unlink()
 
     def test_a_budget_spent_before_the_send_keeps_the_pane_owed(self):
@@ -1547,7 +1560,8 @@ class RemoteControlReconnects(Machine):
         # switch check that follows the mark. A job stopped during that
         # check sent no keys, and the next sync skipped the row. The
         # stub date stops the sync at its first call once the marked
-        # file is written: the switch check's.
+        # file is written: the switch check's, after the typing. The
+        # next sync finds /rc in the box and sends only the enter.
         # The sync runs in a session of its own, and the stub kills
         # only that session's process group: nothing outside the test.
         killed = self.tmp / "killed"
@@ -1566,9 +1580,58 @@ class RemoteControlReconnects(Machine):
                                      "FAKE_OWED": str(self.script.parent / "state/rc-owed.sent")})
         self.assertEqual(result.returncode, -9, result.stdout + result.stderr)
         self.assertTrue(killed.exists(), result.stdout + result.stderr)
-        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+        self.assertEqual(self.prompts(), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), ["herdr agent send-keys w1:p1 enter"],
+                         result.stdout)
+
+    def run_in_own_group(self, **extra):
+        """One sync in a session of its own, so a stub may kill its
+        process group and nothing outside the test."""
+        self.calls.write_text("")
+        return subprocess.run([BASH, str(self.script), "sync"], capture_output=True, text=True,
+                              timeout=60, start_new_session=True,
+                              env={**self.env, "FAKE_FENCE": "elsewhere", **extra})
+
+    def test_a_pass_stopped_after_the_sent_mark_enters_the_rc_later(self):
+        # sd:9427 review: a sync stopped after the sent mark moved in
+        # and before the keys left a row marked sent and no /rc; later
+        # syncs skipped it. The mark now follows the typing, and a box
+        # that still shows exactly /rc takes the enter next sync. The
+        # stub mv stops the sync right after the mark moves in.
+        killed = self.tmp / "killed"
+        executable(self.stubs / "mv", '#!/bin/sh\n'
+                   '/bin/mv "$@" || exit\n'
+                   'case "$1" in *rc-owed.sent) [ -e "$FAKE_KILLED" ] && exit 0\n'
+                   '  : >"$FAKE_KILLED"; kill -9 -- "-$(ps -o pgid= -p $$ | tr -d " ")";; esac\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.run_in_own_group(FAKE_KILLED=str(killed))
+        self.assertEqual(result.returncode, -9, result.stdout + result.stderr)
+        self.assertEqual(self.prompts(), [], result.stdout)
         result = self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertEqual(self.called("herdr agent send-keys w1:p1 /"), [], result.stdout)
+        self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), [])
+
+    def test_a_refused_typing_never_marks_the_row_sent(self):
+        # sd:9427 review: a refused launch (exit 125) left the row
+        # marked sent until the pass's last write restored it; a sync
+        # stopped before that write, here a last write that fails,
+        # skipped the pane for good.
+        env = self.tmp / "deny-and-fail.sh"
+        env.write_text('perl() { case " $* " in *" send-keys "*)\n'
+                       '  set -- "$1" "${2/setpgrp(0, 0)/0}" "${@:3}";; esac; command perl "$@"; }\n'
+                       'printf() { [ "$1" = %s ] && case "$2" in *w1:p1*) return 1;; esac;'
+                       ' builtin printf "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(env), CSWAP_RC_GAP_MS="5000")
+        self.assertIn("never started (exit 125)", result.stdout)
+        self.assertIn("could not update", result.stdout)
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
     def test_a_slow_sent_mark_sends_no_keys(self):
         # sd:9427 review: the sent mark is written inside the gap, and a
@@ -1582,7 +1645,8 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere", BASH_ENV=str(slow), CSWAP_RC_GAP_MS="1000")
         self.assertEqual(self.prompts(), [], result.stdout)
         self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
-        self.assertRegex(result.stdout, r"reconnect: w1:p1 took \d+ ms to check and mark, over 1000 ms; still owed")
+        self.assertIn("reconnect: typed /rc into w1:p1, but the gap or budget ran out before the enter\n",
+                      result.stdout)
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
@@ -1615,7 +1679,8 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         result = self.sync("elsewhere", BASH_ENV=str(during))
         self.assertEqual(self.prompts(), [], result.stdout)
-        self.assertIn("reconnect: w1:p1 changed before the send (a newer switch)", result.stdout)
+        self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter (a newer switch",
+                      result.stdout)
 
     def test_a_session_herdr_stops_naming_gets_no_keys(self):
         self.publish(THREE)
