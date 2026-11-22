@@ -4,7 +4,8 @@ Headless claude reads CUSTOM_CLAUDE_CODE_OAUTH_TOKEN from env.sh. The old
 one-line export read one Keychain item for every account; the block reads the
 item of the account cswap made active, the plain item its fallback. The stage
 turns the old line into the block between marker comments, once, and changes
-no other line. A hub-style block written by hand is left alone. A line with a
+no other line. A block written by hand is left alone; one that reads by
+email alone is named, since two accounts with one email load one item. A line with a
 value of its own is named by number only and never touched.
 """
 
@@ -52,16 +53,18 @@ class TokenBlock(base.SyntheticHome):
         import subprocess
         self.write(BEFORE + OLD + AFTER)
         self.run_tooling("--apply")
-        (self.home / ".claude.json").write_text('{"oauthAccount": {"emailAddress": "a@example.test"}}')
+        (self.home / ".claude.json").write_text(
+            '{"oauthAccount": {"emailAddress": "a@example.test", "organizationUuid": "org-a"}}')
         security = self.stubs / "security-fake"
         base.write_exec(security / "security",
-                        '#!/bin/sh\n[ "$3" = claude-code-oauth-token-a@example.test ] && echo tok-a && exit 0\n'
+                        '#!/bin/sh\n[ "$3 $5" = "claude-code-oauth-token-a@example.test org-a" ] && echo tok-a && exit 0\n'
                         '[ "$3" = claude-code-oauth-token ] && echo tok-plain && exit 0\nexit 44\n')
         run = subprocess.run(["/bin/sh", "-c", f'. "{self.env_sh}"; echo "$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"'],
                              env={"HOME": str(self.home), "PATH": f"{security}:/usr/bin:/bin"},
                              capture_output=True, text=True, check=False)
         self.assertEqual(run.stdout, "tok-a\n", run.stderr)
-        (self.home / ".claude.json").write_text('{"oauthAccount": {"emailAddress": "b@example.test"}}')
+        (self.home / ".claude.json").write_text(
+            '{"oauthAccount": {"emailAddress": "b@example.test", "organizationUuid": "org-b"}}')
         run = subprocess.run(["/bin/sh", "-c", f'. "{self.env_sh}"; echo "$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"'],
                              env={"HOME": str(self.home), "PATH": f"{security}:/usr/bin:/bin"},
                              capture_output=True, text=True, check=False)
@@ -85,7 +88,7 @@ class TokenBlock(base.SyntheticHome):
                 self.assertEqual((run.returncode, run.stdout), (0, "tok-plain\n"),
                                  f"{shell} {claude_json}: {run.stderr}")
 
-    def test_a_hub_style_block_is_ok_and_untouched(self):
+    def test_a_hand_written_email_only_block_is_named_and_untouched(self):
         hub = ('_cc_acct="$(/usr/bin/plutil -extract oauthAccount.emailAddress raw -o - '
                '"$HOME/.claude.json" 2>/dev/null)"\n'
                'export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN="$( { [ -n "$_cc_acct" ] && security '
@@ -94,8 +97,16 @@ class TokenBlock(base.SyntheticHome):
                'unset _cc_acct\n')
         self.write(BEFORE + hub + AFTER)
         out = self.run_tooling("--apply")
-        self.assertIn("ok      ~/.config/shell/env.sh reads the claude token per account", out)
+        # By email alone, two accounts with one email load one item.
+        self.assertIn("WARN    ~/.config/shell/env.sh reads the claude token by email alone", out)
+        self.assertNotIn("reads the claude token per account", out)
         self.assertEqual(self.env_sh.read_text(), BEFORE + hub + AFTER)
+        org = hub.replace('-s "claude-code-oauth-token-$_cc_acct" -w',
+                          '-s "claude-code-oauth-token-$_cc_acct" -a "$_cc_org" -w')
+        self.write(BEFORE + org + AFTER)
+        out = self.run_tooling("--apply")
+        self.assertIn("ok      ~/.config/shell/env.sh reads the claude token per account", out)
+        self.assertEqual(self.env_sh.read_text(), BEFORE + org + AFTER)
 
     def test_a_line_with_its_own_value_is_named_by_number_and_kept(self):
         own = "export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-literal-value\n"
@@ -137,3 +148,27 @@ class TokenBlock(base.SyntheticHome):
         self.assertIn(START, text)
         self.assertNotIn(OLD, text)
         self.assertEqual(sorted(p.name for p in target.parent.iterdir()), ["env.sh"])
+
+    def test_the_block_loads_the_item_of_the_email_and_organization(self):
+        # Two accounts with one email in two organizations hold two items,
+        # told apart by the account field; each loads its own.
+        import subprocess
+        self.write(BEFORE + OLD + AFTER)
+        self.run_tooling("--apply")
+        security = self.stubs / "security-fake"
+        base.write_exec(security / "security",
+                        '#!/bin/sh\n'
+                        'case "$*" in\n'
+                        '  "find-generic-password -s claude-code-oauth-token-a@example.test -a org-1 -w") echo tok-1 ;;\n'
+                        '  "find-generic-password -s claude-code-oauth-token-a@example.test -a org-2 -w") echo tok-2 ;;\n'
+                        '  "find-generic-password -s claude-code-oauth-token-a@example.test -w") echo tok-first ;;\n'
+                        '  "find-generic-password -s claude-code-oauth-token -w") echo tok-plain ;;\n'
+                        '  *) exit 44 ;;\n'
+                        'esac\n')
+        for org, want in (("org-1", "tok-1"), ("org-2", "tok-2"), ("org-3", "tok-plain")):
+            (self.home / ".claude.json").write_text(
+                '{"oauthAccount": {"emailAddress": "a@example.test", "organizationUuid": "%s"}}' % org)
+            run = subprocess.run(["/bin/sh", "-e", "-c", f'. "{self.env_sh}"; echo "$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"'],
+                                 env={"HOME": str(self.home), "PATH": f"{security}:/usr/bin:/bin"},
+                                 capture_output=True, text=True, check=False)
+            self.assertEqual((run.returncode, run.stdout), (0, want + "\n"), f"{org}: {run.stderr}")

@@ -72,9 +72,8 @@ accounts() {
   st_bounded 60 "$CSWAP_BIN" list --json
 }
 
-# Reads `cswap list --json` on stdin. `emails` prints one email per account,
-# `orgs` one `<email> <organizationUuid> <accounts in it> <accounts with
-# that email>` line;
+# Reads `cswap list --json` on stdin. `orgs` prints one
+# `<email> <organizationUuid> <accounts in it>` line per account with an email;
 # `active` prints "<number> <uuid>" of
 # the active account; `number UUID` prints the number of the one account
 # with that organizationUuid, exit 4 when none has it, 5 (and the count)
@@ -84,14 +83,10 @@ pick() { # active | number UUID
 import json, sys
 data = json.load(sys.stdin)
 accounts = data.get("accounts") or []
-if sys.argv[1] == "emails":
-    print("\n".join(a["email"] for a in accounts if a.get("email")))
-elif sys.argv[1] == "orgs":
+if sys.argv[1] == "orgs":
     # Counted over every account, one with no email too: it still shares.
-    # The Keychain item keys on the email, so a shared email counts too.
     orgs = [a.get("organizationUuid") or "-" for a in accounts]
-    emails = [a.get("email") for a in accounts]
-    print("\n".join(a["email"] + " " + o + " " + str(orgs.count(o)) + " " + str(emails.count(a["email"]))
+    print("\n".join(a["email"] + " " + o + " " + str(orgs.count(o))
                     for a, o in zip(accounts, orgs) if a.get("email")))
 elif sys.argv[1] == "active":
     found = [a for a in accounts if a.get("number") == data.get("activeAccountNumber")]
@@ -243,6 +238,9 @@ cmd_sync() {
 
 # The Keychain service of an account's headless claude key, which
 # ~/.config/shell/env.sh reads for the account cswap made active (sd:9905).
+# An account is its email and its organization, so every item is also
+# named by its account field, the organizationUuid: two cswap accounts
+# with one email keep two items, and no lookup takes the other's.
 key_item() { # email
   printf 'claude-code-oauth-token-%s\n' "$1"
 }
@@ -273,14 +271,14 @@ KEY_PROBE='{"model":"claude-haiku-4-5","max_tokens":1,"system":"You are Claude C
 # goes in no argv, file or output: curl and `security -i` read it on
 # stdin. CSWAP_KEYS_TTY is for tests only.
 cmd_keys() {
-  local json pairs e want raw rest tok held got shared same
+  local json pairs e want raw rest tok held got shared
   # A caller's `bash -x` would trace each key; nothing after this needs it.
   set +x
   [[ -x "$CSWAP_BIN" ]] || { echo "cswap not executable at $CSWAP_BIN" >&2; exit 1; }
   json=$(accounts) || { echo "cswap list --json failed" >&2; exit 1; }
   pairs=$(pick orgs <<<"$json") || { echo "cswap list --json was not readable" >&2; exit 1; }
   exec 3<"${CSWAP_KEYS_TTY:-/dev/tty}" 4<<<"$pairs"
-  while read -r -u 4 e want shared same; do
+  while read -r -u 4 e want shared; do
     if [[ ! "$e" =~ ^[^\"[:space:]]+$ ]]; then
       echo "$e: an email this script cannot quote; skipped"
       continue
@@ -291,12 +289,6 @@ cmd_keys() {
     fi
     # A key names its organization, not its member: in an organization two
     # accounts share, either could own it, so neither is asked for one.
-    # One Keychain item per email: two accounts with it would overwrite
-    # each other's key, and env.sh could not tell which to load.
-    if ((same > 1)); then
-      echo "$e: $same accounts share this email, and its Keychain item would hold one key for both; nothing stored"
-      continue
-    fi
     if ((shared > 1)); then
       echo "$e: $shared accounts share its organization, so a key cannot be matched to one; nothing stored"
       continue
@@ -327,9 +319,9 @@ cmd_keys() {
       # Stored means the item now holds this key: an old item kept by a
       # failed update must not pass, and `security -i` may exit 0 then.
       held=""
-      if printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' "$(id -un)" "$(key_item "$e")" "$tok" |
+      if printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' "$want" "$(key_item "$e")" "$tok" |
           security -i >/dev/null 2>&1; then
-        held=$(security find-generic-password -s "$(key_item "$e")" -w 2>/dev/null) || held=""
+        held=$(security find-generic-password -s "$(key_item "$e")" -a "$want" -w 2>/dev/null) || held=""
       fi
       if [[ -n "$held" && "$held" == "$tok" ]]; then
         echo "$e: works; stored as $(key_item "$e")"
@@ -347,12 +339,13 @@ cmd_keys() {
 # no exit code: a missing key leaves that account's headless runs on the
 # plain item.
 warn_keys() { # cswap list --json
-  local e
+  local e org shared
   command -v security >/dev/null 2>&1 || return 0
-  for e in $(pick emails <<<"$1" 2>/dev/null); do
-    security find-generic-password -s "$(key_item "$e")" >/dev/null 2>&1 ||
+  while read -r e org shared; do
+    [[ -n "$e" ]] || continue
+    security find-generic-password -s "$(key_item "$e")" -a "$org" >/dev/null 2>&1 ||
       echo "WARN no headless claude key for $e; run cswap.sh keys in a terminal"
-  done
+  done <<<"$(pick orgs <<<"$1" 2>/dev/null)"
 }
 
 cmd_status() {
@@ -426,7 +419,8 @@ usage: cswap.sh sync|status|keys
   keys     in a terminal: for each cswap account, read its
            `claude setup-token` key hidden, keep the first copy of a
            repeated paste, and store it as Keychain item
-           claude-code-oauth-token-<email> only when one API call works
+           claude-code-oauth-token-<email>, account <organizationUuid>,
+           only when one API call works
            and names that account's organization (accounts that share
            one get none); ~/.config/shell/env.sh loads the active account's key
 
