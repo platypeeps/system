@@ -31,6 +31,11 @@ TWO = "22222222-2222-4222-8222-222222222222"
 THREE = "33333333-3333-4333-8333-333333333333"
 STRANGER = "99999999-9999-4999-8999-999999999999"
 
+# Keychain items as the fake names them: `<service>#<account>`, the account
+# being the organizationUuid of the cswap account the key belongs to.
+ITEM1 = "claude-code-oauth-token-user1@example.test#" + ONE
+ITEM2 = "claude-code-oauth-token-user2@example.test#" + TWO
+
 # The accounts as `cswap list --json` names them. `auto --once` switches to
 # FAKE_AUTO_TO when it is set and exits FAKE_AUTO_RC (default 2, no action).
 CSWAP = r"""#!/usr/bin/env python3
@@ -47,10 +52,16 @@ args = sys.argv[1:]
 if args[:2] == ["list", "--json"]:
     if os.environ.get("FAKE_LIST_FAIL"):
         sys.exit(1)
+    accounts = [{"number": n, "email": f"user{n}@example.test",
+                 "organizationUuid": u, "active": n == data["active"]}
+                for n, u in data["accounts"]]
+    for a in accounts:  # FAKE_NO_EMAIL: an account cswap names no email for
+        if str(a["number"]) == os.environ.get("FAKE_NO_EMAIL"):
+            del a["email"]
+        if str(a["number"]) == os.environ.get("FAKE_SAME_EMAIL"):  # as account 1's
+            a["email"] = "user1@example.test"
     print(json.dumps({"schemaVersion": 1, "activeAccountNumber": data["active"],
-                      "accounts": [{"number": n, "email": f"user{n}@example.test",
-                                    "organizationUuid": u, "active": n == data["active"]}
-                                   for n, u in data["accounts"]]}))
+                      "accounts": accounts}))
 elif args[:1] == ["auto"]:
     to = os.environ.get("FAKE_AUTO_TO")
     if to:
@@ -305,6 +316,66 @@ def newest_bash():
 BASH = newest_bash()
 
 
+# The Keychain: FAKE_KEYCHAIN holds one `<service>#<account> <key>` line per
+# item; as in the real Keychain, service and account together name it.
+# `find-generic-password -s S [-a A] [-w]` exits 0 when such an item is
+# held (the first with service S when no -a), -w prints its key;
+# FAKE_STORE_FAIL makes `-i` store nothing and still exit 0;
+# `-i` reads add-generic-password commands on stdin, as cswap.sh sends them,
+# so no key is in argv. Every argv is logged; stdin is not.
+SECURITY = r"""#!/bin/sh
+echo "security $*" >> "$FAKE_CALLS"
+case "$1" in
+  find-generic-password)
+    shift; s=; a=; w=
+    while [ $# -gt 0 ]; do
+      case "$1" in -s) s=$2; shift ;; -a) a=$2; shift ;; -w) w=1 ;; esac
+      shift
+    done
+    if [ -n "$a" ]; then line=$(grep -F "$s#$a " "$FAKE_KEYCHAIN" 2>/dev/null | head -1)
+    else line=$(grep -F "$s#" "$FAKE_KEYCHAIN" 2>/dev/null | head -1); fi
+    [ -n "$line" ] || exit 44
+    [ -z "$w" ] || printf '%s\n' "${line#* }" ;;
+  -i)
+    [ -z "${FAKE_STORE_FAIL:-}" ] || exit 0
+    while read -r verb rest; do
+      [ "$verb" = add-generic-password ] || continue
+      service=$(printf '%s\n' "$rest" | sed -n 's/.*-s "\([^"]*\)".*/\1/p')
+      account=$(printf '%s\n' "$rest" | sed -n 's/.*-a "\([^"]*\)".*/\1/p')
+      key=$(printf '%s\n' "$rest" | sed -n 's/.*-w "\([^"]*\)".*/\1/p')
+      grep -vF "$service#$account " "$FAKE_KEYCHAIN" > "$FAKE_KEYCHAIN.new" 2>/dev/null || :
+      echo "$service#$account $key" >> "$FAKE_KEYCHAIN.new"
+      mv "$FAKE_KEYCHAIN.new" "$FAKE_KEYCHAIN"
+    done ;;
+  *) exit 64 ;;
+esac
+"""
+
+# The API: a key works when it is FAKE_GOOD_KEY (user1's organization) or
+# FAKE_OTHER_KEY (user2's); FAKE_LIMITED_KEY is user1's at its usage limit,
+# a 429 that still names the organization. The key arrives in the --config on stdin; argv
+# is logged, so a key in argv shows in the calls.
+CURL = r"""#!/bin/sh
+echo "curl $*" >> "$FAKE_CALLS"
+# curl reads ~/.curlrc unless -q comes first; a trace option there would
+# write the Authorization header to a file.
+[ "$1" = -q ] || { echo "curl without -q first" >> "$FAKE_CALLS"; exit 2; }
+key=$(sed -n 's/.*Bearer \([^"]*\)".*/\1/p')
+case "$key" in
+  "$FAKE_GOOD_KEY") org=11111111-1111-4111-8111-111111111111 ;;
+  "${FAKE_OTHER_KEY:-unset}") org=22222222-2222-4222-8222-222222222222 ;;
+  "${FAKE_LIMITED_KEY:-unset}")
+    printf 'HTTP/2 429 \r\nAnthropic-Organization-Id: %s\r\n\r\n' \
+      11111111-1111-4111-8111-111111111111
+    exit 0 ;;
+  *) printf 'HTTP/2 401 \r\n\r\n'; exit 0 ;;
+esac
+printf 'HTTP/2 200 \r\nAnthropic-Organization-Id: %s\r\n\r\n' "$org"
+# FAKE_CURL_EXIT: the headers came, then curl failed (28 is a timeout).
+exit "${FAKE_CURL_EXIT:-0}"
+"""
+
+
 def executable(path, text):
     path.write_text(text)
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -334,6 +405,9 @@ class Machine(unittest.TestCase):
         stubs = self.tmp / "stub-bin"
         stubs.mkdir()
         executable(stubs / "launchctl", LAUNCHCTL)
+        executable(stubs / "security", SECURITY)
+        executable(stubs / "curl", CURL)
+        self.keychain = self.tmp / "keychain"
         self.calls = self.tmp / "calls.txt"
         self.calls.touch()
         self.state = self.tmp / "cswap.json"
@@ -343,6 +417,7 @@ class Machine(unittest.TestCase):
                     "SYSTEM_TOOLS_CONFIG": str(self.tmp / "config"),
                     "SD_PACK_ROOT": str(self.tmp / "pack"), "FAKE_CALLS": str(self.calls),
                     "FAKE_CSWAP_STATE": str(self.state), "FAKE_ROW": str(self.row),
+                    "FAKE_KEYCHAIN": str(self.keychain),
                     # Never the machine's own herdr: a test must not send /rc.
                     "CSWAP_HERDR_DIRS": ""}
         self.stubs = stubs
@@ -1860,6 +1935,150 @@ class Verbs(Machine):
             self.assertEqual(result.returncode, 1, verb)
             self.assertIn("usage:", result.stderr)
         self.assertFalse((FOLDER / "cswap-auto.plist.template").exists())
+
+
+class HeadlessKeys(Machine):
+    """One `claude setup-token` key per cswap account in the Keychain (sd:9905)."""
+
+    GOOD = "sk-ant-oat01-good_Key-1"
+
+    def keys(self, pasted, **extra):
+        tty = self.tmp / "tty"
+        tty.write_text(pasted)
+        return self.run_verb("keys", CSWAP_KEYS_TTY=str(tty), FAKE_GOOD_KEY=self.GOOD, **extra)
+
+    def held(self):
+        if not self.keychain.exists():
+            return {}
+        return dict(line.split(" ", 1) for line in self.keychain.read_text().splitlines())
+
+    def test_a_tripled_paste_keeps_one_copy_and_stores_a_working_key(self):
+        result = self.keys(f"{self.GOOD}{self.GOOD} {self.GOOD}\n\n\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: self.GOOD})
+        self.assertIn("stored as claude-code-oauth-token-user1@example.test", result.stdout)
+        self.assertIn("user2@example.test: skipped", result.stdout)
+
+    def test_a_key_that_does_not_work_is_not_stored(self):
+        result = self.keys("sk-ant-oat01-bad\n\n\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {})
+        self.assertIn("did not work; nothing stored", result.stdout)
+
+    def test_a_key_at_its_usage_limit_works_and_is_stored(self):
+        # A 429 with the organization header means the key authenticated.
+        limited = "sk-ant-oat01-limited"
+        result = self.keys(f"{limited}\n\n\n", FAKE_LIMITED_KEY=limited)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: limited})
+        self.assertIn("user1@example.test: works (account at its usage limit); stored as",
+                      result.stdout)
+
+    def test_a_probe_that_fails_after_its_headers_keeps_the_old_key(self):
+        # curl exiting non-zero is a failed probe, whatever headers it wrote.
+        self.keychain.write_text(f"{ITEM1} sk-ant-kept\n")
+        result = self.keys(f"{self.GOOD}\n\n\n", FAKE_CURL_EXIT="28")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: "sk-ant-kept"})
+        self.assertIn("user1@example.test: the key did not work; nothing stored",
+                      result.stdout)
+
+    def test_no_key_reaches_argv_stdout_or_stderr(self):
+        result = self.keys(f"{self.GOOD}\nsk-ant-oat01-bad\n\n")
+        self.assertNotIn("sk-ant-", result.stdout + result.stderr)
+        self.assertNotIn("sk-ant-", self.calls.read_text())
+        self.assertEqual(len(self.called("curl")), 2)
+
+    def test_bash_x_traces_no_key(self):
+        tty = self.tmp / "tty"
+        tty.write_text(f"{self.GOOD}\nsk-ant-oat01-bad\n\n")
+        self.calls.write_text("")
+        result = subprocess.run(["bash", "-x", str(self.script), "keys"],
+                                env={**self.env, "CSWAP_KEYS_TTY": str(tty), "FAKE_GOOD_KEY": self.GOOD},
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertNotIn("sk-ant-", result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: self.GOOD})
+
+    def test_a_failed_rotation_over_an_old_key_is_not_called_stored(self):
+        self.keychain.write_text(f"{ITEM1} sk-ant-old\n")
+        result = self.keys(f"{self.GOOD}\n\n\n", FAKE_STORE_FAIL="1")
+        self.assertNotIn("stored as", result.stdout)
+        self.assertIn("user1@example.test: works, but the Keychain did not store it", result.stdout)
+
+    def test_one_key_pasted_on_two_lines_is_not_stored_for_the_next_account(self):
+        result = self.keys(f"{self.GOOD}\n{self.GOOD}\n\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: self.GOOD})
+        self.assertIn("user2@example.test: the key belongs to another account; nothing stored",
+                      result.stdout)
+
+    def test_a_working_key_at_the_wrong_prompt_keeps_the_other_item(self):
+        other = "sk-ant-oat01-user2-key"
+        self.keychain.write_text(f"{ITEM1} sk-ant-kept\n")
+        result = self.keys(f"{other}\n\n\n", FAKE_OTHER_KEY=other)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: "sk-ant-kept"})
+        self.assertIn("user1@example.test: the key belongs to another account; nothing stored",
+                      result.stdout)
+
+    def test_accounts_that_share_an_organization_store_no_key(self):
+        # A key names its organization only, so it cannot tell two members
+        # of one organization apart: either could be the owner.
+        self.accounts([(1, ONE), (2, ONE), (3, THREE)], active=1)
+        self.keychain.write_text(f"{ITEM1} sk-ant-kept\n")
+        result = self.keys(f"{self.GOOD}\n{self.GOOD}\n\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: "sk-ant-kept"})
+        for e in ("user1@example.test", "user2@example.test"):
+            self.assertIn(f"{e}: 2 accounts share its organization", result.stdout)
+        # Neither is asked, so the first line goes to user3, whose org differs.
+        self.assertIn("user3@example.test: the key belongs to another account", result.stdout)
+
+    def test_an_account_with_no_email_still_counts_in_its_organization(self):
+        self.accounts([(1, ONE), (2, ONE), (3, THREE)], active=1)
+        self.keychain.write_text(f"{ITEM1} sk-ant-kept\n")
+        result = self.keys(f"{self.GOOD}\n\n", FAKE_NO_EMAIL="2")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: "sk-ant-kept"})
+        self.assertIn("user1@example.test: 2 accounts share its organization", result.stdout)
+
+    def test_curl_reads_no_default_config(self):
+        result = self.keys(f"{self.GOOD}\n\n\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.called("curl without -q"), [])
+        self.assertEqual(self.held(), {ITEM1: self.GOOD})
+
+    def test_two_accounts_with_one_email_each_keep_their_own_key(self):
+        # An account is its email and its organization: the item names both,
+        # so the second account's key neither overwrites nor reads the first's.
+        other = "sk-ant-oat01-user2-key"
+        result = self.keys(f"{self.GOOD}\n{other}\n\n", FAKE_SAME_EMAIL="2", FAKE_OTHER_KEY=other)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: self.GOOD,
+                                       "claude-code-oauth-token-user1@example.test#" + TWO: other})
+
+    def test_a_failed_store_is_not_read_back_from_the_other_organization(self):
+        self.keychain.write_text(f"claude-code-oauth-token-user1@example.test#{TWO} {self.GOOD}\n")
+        result = self.keys(f"{self.GOOD}\n\n\n", FAKE_SAME_EMAIL="2", FAKE_STORE_FAIL="1")
+        self.assertNotIn("stored as", result.stdout)
+        self.assertIn("user1@example.test: works, but the Keychain did not store it", result.stdout)
+
+    def test_status_does_not_take_the_other_organizations_item(self):
+        self.publish(ONE)
+        self.keychain.write_text(f"claude-code-oauth-token-user1@example.test#{TWO} sk-ant-x\n")
+        result = self.run_verb("status", FAKE_FENCE="elsewhere")
+        self.assertIn("WARN no headless claude key for user1@example.test", result.stdout)
+
+    def test_status_warns_per_account_with_no_key_and_names_the_email_only(self):
+        self.publish(ONE)
+        self.keychain.write_text(f"{ITEM2} sk-ant-x\n")
+        result = self.run_verb("status", FAKE_FENCE="elsewhere")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("WARN no headless claude key for user1@example.test", result.stdout)
+        self.assertIn("WARN no headless claude key for user3@example.test", result.stdout)
+        self.assertNotIn("user2@example.test", result.stdout)
+        self.assertNotIn("sk-ant-", result.stdout)
 
 
 class TheJob(unittest.TestCase):
