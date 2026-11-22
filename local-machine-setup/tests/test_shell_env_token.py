@@ -172,3 +172,37 @@ class TokenBlock(base.SyntheticHome):
                                  env={"HOME": str(self.home), "PATH": f"{security}:/usr/bin:/bin"},
                                  capture_output=True, text=True, check=False)
             self.assertEqual((run.returncode, run.stdout), (0, want + "\n"), f"{org}: {run.stderr}")
+
+    def test_a_traced_shell_sourcing_the_block_prints_no_key(self):
+        # The Bash profile and zsh source env.sh directly, past
+        # st_shell_env: the block itself turns xtrace off and back on.
+        import shutil
+        import subprocess
+        import sys
+        # zsh is the macOS login shell; a Linux runner may lack it.
+        zsh = shutil.which("zsh")
+        if sys.platform == "darwin":
+            self.assertIsNotNone(zsh, "macOS ships zsh")
+        shells = ["/bin/bash", "/bin/sh"] + ([zsh] if zsh else [])
+        self.write(BEFORE + OLD + AFTER)
+        self.run_tooling("--apply")
+        security = self.stubs / "security-fake"
+        base.write_exec(security / "security",
+                        '#!/bin/sh\n[ "$5" = org-a ] && echo synthetic-key && exit 0\n'
+                        '[ "$3" = claude-code-oauth-token ] && echo synthetic-plain && exit 0\nexit 44\n')
+        accounts = (
+            ('{"oauthAccount": {"emailAddress": "a@example.test", "organizationUuid": "org-a"}}',
+             "synthetic-key"),
+            ('{"other": 1}', "synthetic-plain"))
+        for claude_json, want in accounts:
+            (self.home / ".claude.json").write_text(claude_json)
+            for shell in shells:
+                run = subprocess.run(
+                    [shell, "-x", "-c",
+                     f'. "{self.env_sh}"; t=$-; set +x; '
+                     'case $t in *x*) t=on;; *) t=off;; esac; '
+                     'echo "$t $CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"'],
+                    env={"HOME": str(self.home), "PATH": f"{security}:/usr/bin:/bin"},
+                    capture_output=True, text=True, check=False)
+                self.assertEqual(run.stdout, f"on {want}\n", f"{shell}: {run.stderr}")
+                self.assertNotIn("synthetic", run.stderr, f"{shell} traced the key")

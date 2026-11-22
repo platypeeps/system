@@ -3007,16 +3007,20 @@ for k in sorted(set(sd_lib.CORE_CONFIG) - set(sd_lib.FLEET_KEYS)):
 # account is its email and its organization), the plain item its fallback. Quoted
 # heredoc: the block expands when env.sh is sourced, never here. No line may
 # fail: a `set -e` shell that sources env.sh (cron jobs) would stop there.
+# The block turns xtrace off around the key and back on after: the Bash
+# profile and zsh source env.sh directly, past st_shell_env.
 claude_token_block_text() {
   cat <<'TOKENEOF'
 # >>> machine-setup: claude token per cswap account (sd:9905)
 # One `claude setup-token` key per account in the Keychain, stored by
 # `cswap.sh keys` under its email and organization; headless runs follow
-# the account in ~/.claude.json.
+# the account in ~/.claude.json. No xtrace while the key is read.
+case $- in *x*) __st_x=1; set +x;; esac
 _cc_acct="$(/usr/bin/plutil -extract oauthAccount.emailAddress raw -o - "$HOME/.claude.json" 2>/dev/null)" || _cc_acct=
 _cc_org="$(/usr/bin/plutil -extract oauthAccount.organizationUuid raw -o - "$HOME/.claude.json" 2>/dev/null)" || _cc_org=
 export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN="$( { [ -n "$_cc_acct" ] && [ -n "$_cc_org" ] && security find-generic-password -s "claude-code-oauth-token-$_cc_acct" -a "$_cc_org" -w 2>/dev/null; } || security find-generic-password -s claude-code-oauth-token -w 2>/dev/null)"
 unset _cc_acct _cc_org
+[ -n "${__st_x-}" ] && set -x; unset __st_x
 # <<< machine-setup: claude token per cswap account
 TOKENEOF
 }
