@@ -169,11 +169,19 @@ ANSWERS = {
                    {"date": "2026-11-02", "product": "actions", "sku": "actions_linux",
                     "quantity": 120, "unitType": "Minutes", "pricePerUnit": 0.008,
                     "grossAmount": 0.96, "discountAmount": 0.96, "netAmount": 0},
+                   {"date": "2026-11-04", "product": "actions", "sku": "actions_macos",
+                    "quantity": 30, "unitType": "Minutes", "pricePerUnit": 0.08,
+                    "grossAmount": 2.4, "discountAmount": 2.4, "netAmount": 0},
+                   # Actions storage is no minutes (sd:9928).
+                   {"date": "2026-11-04", "product": "actions", "sku": "actions_storage",
+                    "quantity": 5, "unitType": "GigabyteHours", "pricePerUnit": 0.0003,
+                    "grossAmount": 0.0015, "discountAmount": 0.0015, "netAmount": 0},
                    {"date": "2026-11-03", "product": "copilot", "sku": "copilot_pro",
                     "quantity": 1, "unitType": "UserMonths", "pricePerUnit": 10,
                     "grossAmount": 10, "discountAmount": 0, "netAmount": 10}]},
                {"spend": {"amount": 10.0, "unit": "usd", "period": "month",
-                              "resets_at": NEXT}}),
+                              "resets_at": NEXT},
+                "minutes": 150.0}),
     # A personal plan on AI credits (checked 2026-11-19): the AI-credit
     # report holds the month; its premium-request report is empty.
     "copilot": ("GH_TOKEN",
@@ -472,6 +480,21 @@ class Readers(unittest.TestCase):
                         name, {var: SECRET}, answering(put(answer, ("login",), login), calls), NOW)
                     self.assertEqual((got["status"], got["error"]), ("unknown", "no login"))
                     self.assertEqual(len(calls), 1)
+
+    def test_the_github_row_counts_the_months_actions_minutes(self):
+        """sd:9928: Actions minutes beside the spend, so free-plan use shows;
+        a quantity that is not a number is unknown, never 0."""
+        def github(items):
+            return usage_sources.read_provider("github", {"GH_TOKEN": SECRET},
+                                               answering({"login": "operator", "usageItems": items}), NOW)
+        minutes = {"product": "actions", "unitType": "Minutes", "netAmount": 0}
+        got = github([{**minutes, "quantity": 7}, {**minutes, "grossQuantity": 3},
+                      {"product": "copilot", "unitType": "Minutes", "quantity": 99, "netAmount": 1}])
+        self.assertEqual((got["status"], got["minutes"], got["spend"]["amount"]), ("ok", 10.0, 1.0), got)
+        self.assertEqual(github([])["minutes"], 0.0)
+        for bad in (None, "7", True, float("nan"), -1):
+            with self.subTest(quantity=bad):
+                self.assertEqual(github([{**minutes, "quantity": bad}])["status"], "unknown")
 
     def test_an_empty_github_month_is_zero_and_a_missing_list_is_unknown(self):
         for name in ("github", "copilot"):
