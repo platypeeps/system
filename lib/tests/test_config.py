@@ -389,6 +389,28 @@ class ShellEnv(unittest.TestCase):
         result = shell('set -e; st_shell_env; echo "after $CLAUDE_CODE_OAUTH_TOKEN"', env)
         self.assertEqual(result.stdout, "after tok-custom\n", result.stderr)
 
+    def test_a_return_in_env_sh_ends_only_env_sh(self):
+        # sd:9652 review: under eval, a `return` in env.sh returned from
+        # st_shell_env itself and skipped the mapping, the cleanup and
+        # the xtrace restore. A load-once guard returns early too.
+        script = ('set -x; st_shell_env; set +x; echo "tok=$CLAUDE_CODE_OAUTH_TOKEN"; '
+                  'echo "text=${_st_text-unset}"; echo "path=${_st_shenv-unset}"')
+        cases = (
+            ("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\nreturn 0\necho never\n", {}),
+            ('[ -n "${__SHELL_ENV_LOADED:-}" ] && return\n'
+             "export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-other\n",
+             {"__SHELL_ENV_LOADED": "1", "CUSTOM_CLAUDE_CODE_OAUTH_TOKEN": "tok-custom"}),
+        )
+        for text, extra in cases:
+            self.env_sh(text)
+            env = {"PATH": os.environ["PATH"], "HOME": str(self.home), **extra}
+            result = shell(f"{script}; echo rc=$?", env)
+            self.assertEqual(result.stdout,
+                             "tok=tok-custom\ntext=unset\npath=unset\nrc=0\n", result.stderr)
+            # xtrace came back on: the caller's `set +x` shows in the trace.
+            self.assertIn("+ set +x", result.stderr)
+            self.assertNotIn("never", result.stdout)
+
     def test_xtrace_never_prints_a_value(self):
         # sd:9652: a caller's set -x, or one env.sh turns on, must not
         # trace the token; the caller's own xtrace comes back after.

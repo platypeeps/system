@@ -70,19 +70,25 @@ st_obsidian_vault() {
 # this checkout.
 # A dot syntax error ends a POSIX shell whatever set -e says, so a half-written
 # env.sh ended cron runs with no FAILED line (sd:9652). The file is read
-# once; `sh -n` checks that text and eval runs the same text, so a save in
+# once; `sh -n` checks that text and _st_text_run runs it, so a save in
 # between cannot hand it a broken file. A file that fails is skipped and
 # named on one stderr line. Xtrace stays off for the read and the mapping,
 # so no value reaches a trace (sd:9910); a caller's own xtrace comes back
 # after.
 # The threat model is one operator: a file env.sh sources is not checked.
+# _st_text_run: run the env.sh text st_shell_env read. A `return` in the
+# text ends this function only, as it ended the file under a dot.
+_st_text_run() {
+    eval "$_st_text"
+}
+
 st_shell_env() {
     case $- in *x*) _st_x=1 ;; *) _st_x= ;; esac
     set +x
     _st_shenv="$HOME/.config/shell/env.sh"
     if [ -f "$_st_shenv" ] && _st_text=$(cat "$_st_shenv" 2>/dev/null); then
         if printf '%s\n' "$_st_text" | sh -n >/dev/null 2>&1; then
-            eval "$_st_text" >/dev/null 2>&1
+            _st_text_run >/dev/null 2>&1
             set +x
         else
             printf 'st_shell_env: %s has a syntax error; skipped\n' "$_st_shenv" >&2
