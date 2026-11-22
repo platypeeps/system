@@ -438,6 +438,41 @@ class ShellEnv(unittest.TestCase):
         # The private copy is gone after the read.
         self.assertEqual(result.stdout, "after tok-custom\nenv.sh\nextra.sh\n", result.stderr)
 
+    def test_an_env_sh_that_cannot_be_copied_is_named_and_skipped(self):
+        # sd:9652 review: a failed copy left an empty copy that passed
+        # sh -n, so the run went on with no settings and no word why.
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        path = self.home / ".config/shell/env.sh"
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o600)
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home)}
+        result = shell('set -e; st_shell_env; echo "after ${CLAUDE_CODE_OAUTH_TOKEN-unset}"', env)
+        self.assertEqual(result.stdout, "after unset\n", result.stderr)
+        self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+        self.assertIn(".config/shell/env.sh", result.stderr)
+        self.assertEqual(sorted(os.listdir(path.parent)), ["env.sh"])
+
+    def test_a_folder_with_no_room_for_the_copy_skips_env_sh(self):
+        # sd:9652 review: with no copy, the live env.sh was checked and
+        # read apart, so a save in between could still end the shell.
+        # A fake sh runs the real check, then rewrites env.sh.
+        self.env_sh("export CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-custom\n")
+        folder = self.home / ".config/shell"
+        bin_dir = self.home / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "sh"
+        fake.write_text('#!/bin/sh\n/bin/sh "$@"; rc=$?\n'
+                        'printf "if then fi (\\n" > "$HOME/.config/shell/env.sh"\n'
+                        'exit $rc\n')
+        fake.chmod(0o755)
+        folder.chmod(0o500)
+        self.addCleanup(folder.chmod, 0o700)
+        env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(self.home)}
+        result = shell('set -e; st_shell_env; echo "after ${CLAUDE_CODE_OAUTH_TOKEN-unset}"', env)
+        self.assertEqual(result.stdout, "after unset\n", result.stderr)
+        self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+        self.assertIn(".config/shell/env.sh", result.stderr)
+
     def test_xtrace_never_prints_a_value(self):
         # sd:9652: a caller's set -x, or one env.sh turns on, must not
         # trace the token; the caller's own xtrace comes back after.

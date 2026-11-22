@@ -75,8 +75,8 @@ st_obsidian_vault() {
 # `return`, BASH_SOURCE's folder and $0 as they were. Errexit and nounset
 # are off for the dot and the caller's come back after: macOS sh ends a
 # `set -e` shell on a failing line in a dot even under `||`. A file
-# that fails the check is skipped and named on one stderr line. With no copy
-# (a read-only folder), the file itself is checked and read. Xtrace stays off
+# that fails the check, or that cannot be copied (an unreadable file, a
+# read-only folder), is skipped and named on one stderr line. Xtrace stays off
 # for the read and the mapping, so no value reaches a trace (sd:9910); a
 # caller's own xtrace comes back after. The threat model is one operator: a
 # file env.sh sources is not checked.
@@ -89,19 +89,19 @@ st_shell_env() {
     set +xeu
     _st_shenv="$HOME/.config/shell/env.sh"
     if [ -f "$_st_shenv" ]; then
-        if _st_env_copy=$(mktemp "$_st_shenv.XXXXXX" 2>/dev/null); then
-            cat "$_st_shenv" >"$_st_env_copy" 2>/dev/null || :
-        else
-            _st_env_copy=$_st_shenv
-        fi
-        if sh -n "$_st_env_copy" >/dev/null 2>&1 </dev/null; then
+        if ! _st_env_copy=$(mktemp "$_st_shenv.XXXXXX" 2>/dev/null); then
+            _st_env_copy=
+            printf 'st_shell_env: %s cannot be copied; skipped\n' "$_st_shenv" >&2
+        elif ! cat "$_st_shenv" >"$_st_env_copy" 2>/dev/null; then
+            printf 'st_shell_env: %s cannot be copied; skipped\n' "$_st_shenv" >&2
+        elif sh -n "$_st_env_copy" >/dev/null 2>&1 </dev/null; then
             # shellcheck source=/dev/null
             . "$_st_env_copy" >/dev/null 2>&1
             set +xeu
         else
             printf 'st_shell_env: %s has a syntax error; skipped\n' "$_st_shenv" >&2
         fi
-        [ "$_st_env_copy" = "$_st_shenv" ] || rm -f "$_st_env_copy"
+        [ -z "$_st_env_copy" ] || rm -f "$_st_env_copy"
     fi
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -z "${CUSTOM_CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
         export CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN"
