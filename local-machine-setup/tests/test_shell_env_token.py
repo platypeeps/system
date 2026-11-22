@@ -86,3 +86,15 @@ class TokenBlock(base.SyntheticHome):
         self.assertIn("WARN    ~/.config/shell/env.sh line 3", out)
         self.assertNotIn("tok-literal-value", out)
         self.assertEqual(self.env_sh.read_text(), BEFORE + own + AFTER)
+
+    def test_a_failed_splice_keeps_env_sh_whole(self):
+        # A head that fails on env.sh alone: tail still succeeds after it.
+        base.write_exec(self.stubs / "head",
+                        '#!/bin/sh\ncase "$*" in *.config/shell/env.sh) exit 1 ;; esac\n'
+                        'exec /usr/bin/head "$@"\n')
+        self.write(BEFORE + OLD + AFTER)
+        with self.assertRaises(AssertionError) as failed:   # the run exits 1
+            self.run_tooling("--apply")
+        self.assertIn("FAILED  claude_token_block_write", str(failed.exception))
+        self.assertEqual(self.env_sh.read_text(), BEFORE + OLD + AFTER)
+        self.assertEqual(sorted(p.name for p in self.env_sh.parent.iterdir()), ["env.sh"])

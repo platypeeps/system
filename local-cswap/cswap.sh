@@ -244,7 +244,9 @@ key_item() { # email
 # file or output: claude reads it from its environment, and `security -i`
 # from stdin. CSWAP_KEYS_TTY is for tests only.
 cmd_keys() {
-  local json emails e raw rest tok
+  local json emails e raw rest tok held
+  # A caller's `bash -x` would trace each key; nothing after this needs it.
+  set +x
   [[ -x "$CSWAP_BIN" ]] || { echo "cswap not executable at $CSWAP_BIN" >&2; exit 1; }
   json=$(accounts) || { echo "cswap list --json failed" >&2; exit 1; }
   emails=$(pick emails <<<"$json") || { echo "cswap list --json was not readable" >&2; exit 1; }
@@ -273,13 +275,19 @@ cmd_keys() {
     fi
     if (unset ANTHROPIC_API_KEY; export CLAUDE_CODE_OAUTH_TOKEN="$tok"
         st_bounded 90 claude -p "Reply with the single word OK." </dev/null 2>&1) | grep -q '^OK'; then
-      printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' "$(id -un)" "$(key_item "$e")" "$tok" |
-        security -i >/dev/null 2>&1 || :
-      if security find-generic-password -s "$(key_item "$e")" >/dev/null 2>&1; then
+      # Stored means the item now holds this key: an old item kept by a
+      # failed update must not pass, and `security -i` may exit 0 then.
+      held=""
+      if printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' "$(id -un)" "$(key_item "$e")" "$tok" |
+          security -i >/dev/null 2>&1; then
+        held=$(security find-generic-password -s "$(key_item "$e")" -w 2>/dev/null) || held=""
+      fi
+      if [[ -n "$held" && "$held" == "$tok" ]]; then
         echo "$e: works; stored as $(key_item "$e")"
       else
         echo "$e: works, but the Keychain did not store it"
       fi
+      unset held
     else
       echo "$e: the key did not work; nothing stored"
     fi

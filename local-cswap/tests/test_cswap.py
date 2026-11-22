@@ -123,15 +123,18 @@ exit 0
 
 
 # The Keychain: FAKE_KEYCHAIN holds one `<service> <key>` line per item.
-# `find-generic-password -s S` (never -w here) exits 0 when S is held;
+# `find-generic-password -s S [-w]` exits 0 when S is held, -w prints it;
+# FAKE_STORE_FAIL makes `-i` store nothing and still exit 0;
 # `-i` reads add-generic-password commands on stdin, as cswap.sh sends them,
 # so no key is in argv. Every argv is logged; stdin is not.
 SECURITY = r"""#!/bin/sh
 echo "security $*" >> "$FAKE_CALLS"
 case "$1" in
   find-generic-password)
-    grep -q "^$3 " "$FAKE_KEYCHAIN" 2>/dev/null ;;
+    line=$(grep "^$3 " "$FAKE_KEYCHAIN" 2>/dev/null) || exit 44
+    [ "${4:-}" != -w ] || printf '%s\n' "${line#* }" ;;
   -i)
+    [ -z "${FAKE_STORE_FAIL:-}" ] || exit 0
     while read -r verb rest; do
       [ "$verb" = add-generic-password ] || continue
       service=$(printf '%s\n' "$rest" | sed -n 's/.*-s "\([^"]*\)".*/\1/p')
@@ -630,6 +633,23 @@ class HeadlessKeys(Machine):
         self.assertNotIn("sk-ant-", result.stdout + result.stderr)
         self.assertNotIn("sk-ant-", self.calls.read_text())
         self.assertEqual(len(self.called("claude -p")), 2)
+
+    def test_bash_x_traces_no_key(self):
+        tty = self.tmp / "tty"
+        tty.write_text(f"{self.GOOD}\nsk-ant-oat01-bad\n\n")
+        self.calls.write_text("")
+        result = subprocess.run(["bash", "-x", str(self.script), "keys"],
+                                env={**self.env, "CSWAP_KEYS_TTY": str(tty), "FAKE_GOOD_KEY": self.GOOD},
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertNotIn("sk-ant-", result.stdout + result.stderr)
+        self.assertEqual(self.held(), {"claude-code-oauth-token-user1@example.test": self.GOOD})
+
+    def test_a_failed_rotation_over_an_old_key_is_not_called_stored(self):
+        self.keychain.write_text("claude-code-oauth-token-user1@example.test sk-ant-old\n")
+        result = self.keys(f"{self.GOOD}\n\n\n", FAKE_STORE_FAIL="1")
+        self.assertNotIn("stored as", result.stdout)
+        self.assertIn("user1@example.test: works, but the Keychain did not store it", result.stdout)
 
     def test_status_warns_per_account_with_no_key_and_names_the_email_only(self):
         self.publish(ONE)
