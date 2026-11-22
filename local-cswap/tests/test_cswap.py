@@ -732,6 +732,24 @@ class RemoteControlReconnects(Machine):
                 self.assertEqual(self.called("herdr agent send-keys"), [])
                 (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
 
+    def test_a_budget_spent_after_the_typing_sends_no_enter(self):
+        # The enter gets what is left of the gap and the budget; none
+        # left, no enter, and the typed /rc is not sent again. The stub
+        # clock jumps past the budget at the read after the typing.
+        clock = self.tmp / "clock"
+        executable(self.stubs / "date", '#!/bin/sh\n'
+                   'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
+                   '  echo $(( $(/bin/date +%s) + $(cat "$FAKE_CLOCK") )); exit 0\nfi\n'
+                   'exec /bin/date "$@"\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_AT="4", FAKE_CLOCK_JUMP="61")
+        self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn("reconnect: typed /rc into w1:p1, but the gap or budget ran out before the enter; "
+                      "not sent again", result.stdout)
+        self.assertEqual(self.owed(), [])
+
     def test_a_switch_sends_rc_to_idle_panes_only(self):
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
