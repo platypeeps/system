@@ -1520,6 +1520,25 @@ class ServiceFilters(unittest.TestCase):
                                 dict(page, status={"indicator": "maintenance"}))
                 self.assertEqual(got["status"], "degraded", got)
 
+    def test_a_new_incident_with_lagging_links_still_counts(self):
+        # Review at f2f500f2: a new North America incident whose
+        # component links lag the feed must not read ok beside an
+        # excluded European cause of the same severity.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        eu = [dict(c, status="partial_outage") if c["id"] in ("eu", "fra") else c
+              for c in calm]
+        new = {"id": "n1", "name": "New", "status": "investigating",
+               "impact": "minor", "created_at": "2026-11-21T00:00:00Z",
+               "updated_at": "2026-11-21T00:00:00Z"}
+        for links in ([], None, [{"id": "iad"}]):
+            with self.subTest(links=links):
+                incident = dict(new) if links is None else dict(new, components=links)
+                got = self.read({"groups": ["north-america"], "stale": 3},
+                                dict(REGIONS, status={"indicator": "minor"},
+                                     components=eu, incidents=[incident]))
+                self.assertEqual((got["status"], [i["title"] for i in got["incidents"]]),
+                                 ("degraded", ["New"]), got)
+
     def test_rulings_on_scoped_causes_and_quiet_incidents(self):
         # Rebutted lane findings at 82d35179, pinned (operator rulings).
         calm = [dict(c, status="operational") for c in REGIONS["components"]]
