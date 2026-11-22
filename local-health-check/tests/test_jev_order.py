@@ -586,6 +586,27 @@ esac
         self.assertIn("Real-App(1) ", out)
         self.assertIn("Real-Crash(1) ", out)
 
+    def test_a_macos_system_daemon_crash_is_no_app_crash(self):
+        """sd:10016: a daemon under /System/, /usr/libexec/ or a cryptex
+        (redacted to /Volumes/VOLUME/*/) is Apple's to fix and buries a real
+        crash. /bin/bash and an app still count."""
+        reports = self.tmp / "reports-system-daemon"
+        reports.mkdir()
+        head = '{"bug_type":"309","is_first_party":1}\n'
+        for name, path in (("Cryptex-Daemon", r"\/Volumes\/VOLUME\/*\/X.framework\/Support\/Cryptex-Daemon"),
+                           ("System-Daemon", r"\/System\/Library\/PrivateFrameworks\/X\/System-Daemon"),
+                           ("Libexec-Daemon", "/usr/libexec/Libexec-Daemon"),
+                           ("bash", r"\/bin\/bash"),
+                           ("Some-App", r"\/Applications\/Some-App.app\/Contents\/MacOS\/Some-App")):
+            (reports / (name + stamped(hours=1) + ".ips")).write_text(
+                head + '{\n  "procPath" : "' + path + '",\n  "parentProc" : "launchd"\n}\n')
+        out = self.run_check("system-daemon", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                             verb="run")["out"]
+        for name in ("Cryptex-Daemon", "System-Daemon", "Libexec-Daemon"):
+            self.assertNotIn(name, out)
+        self.assertIn("bash(1) ", out)
+        self.assertIn("Some-App(1) ", out)
+
     def test_codex_sandbox_library_block_is_its_own_finding(self):
         """sd:6729: a codex child that dyld aborts at launch because the codex
         sandbox blocked its library is that defect, not an app crash. The same
