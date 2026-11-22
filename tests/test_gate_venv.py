@@ -9,7 +9,9 @@ Stdlib only. It runs in the tests/ci-native.sh preflight as
 `python3 tests/test_gate_venv.py`.
 """
 
+import fcntl
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -105,6 +107,35 @@ class GateVenv(unittest.TestCase):
         self.assertTrue(os.access(self.venv / "bin/python", os.X_OK))
         self.assertEqual(["venv-abc"], [p.name for p in self.venv.parent.iterdir()])
 
+    def test_a_repair_keeps_the_venv_another_gate_repaired_meanwhile(self):
+        # sd:9926 review: two gates found the same broken venv; the
+        # second removed the one the first had just put in place, and
+        # the first gate's suites lost their python. Here the test is
+        # the other gate: it holds the cache folder's lock, repairs the
+        # venv, then lets go; the gate must keep that venv.
+        (self.venv / "bin").mkdir(parents=True)
+        (self.venv / "bin/python").symlink_to(self.base / "gone/python3")
+        lock = os.open(self.venv.parent, os.O_RDONLY)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        environment = {**os.environ, "PATH": f"{self.base / 'bin'}:{os.environ['PATH']}", "LOG": str(self.log)}
+        gate = subprocess.Popen(["sh", str(ROOT / "tests/gate-venv.sh"), str(self.venv), str(self.base / "pack")],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=environment)
+        try:
+            gate.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        shutil.rmtree(self.venv)
+        (self.venv / "bin").mkdir(parents=True)
+        (self.venv / "bin/python").write_text(f"#!/bin/sh\nexec {sys.executable} \"$@\"\n")
+        (self.venv / "bin/python").chmod(0o755)
+        (self.venv / "theirs").touch()
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        output, _ = gate.communicate(timeout=60)
+        self.assertEqual(0, gate.returncode, output)
+        self.assertIn("another gate built", output)
+        self.assertTrue((self.venv / "theirs").exists())
+        self.assertEqual(["venv-abc"], [p.name for p in self.venv.parent.iterdir()])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

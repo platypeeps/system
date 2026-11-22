@@ -31,16 +31,44 @@ py="$(realpath "$(command -v python3)")"
 "$py" -m venv "$build"
 "$build/bin/python" -m pip install -q --no-index "$pack/lib"
 # rename(2) refuses a VENV another gate made meanwhile; that one stands.
-# A VENV there whose python does not run (a link that dangles) is broken:
-# it goes, and the rename is tried once more (sd:9926 review).
-# ponytail: a good VENV another gate renames in between the check and
-# the rm still goes; a lock on the key closes that.
+# A VENV whose python does not run (a link that dangles) is broken. Its
+# repair holds a lock on the cache folder and reads VENV again under it,
+# so a gate never removes the VENV another gate just put in place; the
+# broken one is moved aside before the rename and removed after it
+# (sd:9926 review). The lock goes with the process, so a killed gate
+# leaves none behind.
 move() { "$build/bin/python" -I -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' "$build" "$venv" 2>/dev/null; }
+repair() {
+  "$build/bin/python" -I -c 'import fcntl, os, shutil, sys
+build, venv = sys.argv[1:]
+good = lambda: os.access(os.path.join(venv, "bin", "python"), os.X_OK)
+lock = os.open(os.path.dirname(venv), os.O_RDONLY)
+fcntl.flock(lock, fcntl.LOCK_EX)
+if good():
+    sys.exit(3)
+aside = f"{venv}.broken.{os.getpid()}"
+try:
+    os.rename(venv, aside)
+except FileNotFoundError:
+    aside = None
+try:
+    os.rename(build, venv)
+except OSError:
+    sys.exit(3 if good() else 1)
+finally:
+    if aside:
+        shutil.rmtree(aside, ignore_errors=True)' "$build" "$venv"
+}
 if move; then
   echo "gate venv: built $venv"
-elif [ ! -x "$venv/bin/python" ] && rm -rf "$venv" && move; then
-  echo "gate venv: built $venv, in place of a broken one"
-else
-  [ -x "$venv/bin/python" ] || { echo "gate-venv.sh: could not move $build to $venv" >&2; exit 1; }
+elif [ -x "$venv/bin/python" ]; then
   echo "gate venv: reusing $venv, which another gate built"
+else
+  status=0
+  repair || status=$?
+  case "$status" in
+    0) echo "gate venv: built $venv, in place of a broken one" ;;
+    3) echo "gate venv: reusing $venv, which another gate built" ;;
+    *) echo "gate-venv.sh: could not move $build to $venv" >&2; exit 1 ;;
+  esac
 fi
