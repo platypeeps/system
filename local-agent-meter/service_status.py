@@ -360,6 +360,9 @@ def read_statuspage(url, fetch, options=None, now=None):
         outside = {c["id"] for c in listed} - {c["id"] for c in kept}
     # kept: the worst kept cause on the indicator's scale (lane review).
     incidents, worst, whole, kept_rank = [], "ok", 0, 0
+    # Maintenance is its own kind: only a listed maintenance cause
+    # explains a maintenance page, never an outage (lane review).
+    held = False
     # Some pages (OpenAI, Tailscale, ...) leave `incidents` out when none is
     # open; a key that is there must still be a list of objects.
     for incident in entries(data["incidents"] if "incidents" in data else [], "incidents"):
@@ -371,6 +374,7 @@ def read_statuspage(url, fetch, options=None, now=None):
         # Only the reported impact explains the page's indicator: none or
         # an odd one proves no disruption a filter may drop (lane review).
         whole = max(whole, RANK.get(impact, 0))
+        held = held or impact == "maintenance"
         # A kept open incident is at least degraded, whatever it says.
         impact = INDICATOR.get(impact, "degraded")
         impact = "degraded" if impact == "ok" else impact
@@ -409,10 +413,13 @@ def read_statuspage(url, fetch, options=None, now=None):
         # proof it sits outside the groups or is stale (review).
         for c in listed:
             whole = max(whole, COMPONENT_RANK[c["status"]])
+        held = held or any(c["status"] == "under_maintenance" for c in listed)
+        unexplained = RANK[indicator] > whole or (indicator == "maintenance"
+                                                  and not held)
         # A kept cause as bad as the page's status hides nothing: an
         # outage stands on a critical page (lane review).
         # Ranks, not statuses: maintenance and minor both read degraded.
-        if RANK[indicator] > whole and kept_rank < min(RANK[indicator], 2):
+        if unexplained and kept_rank < min(RANK[indicator], 2):
             raise ReadFailed("the page's status has no listed cause to filter")
     return {"status": worst if scoped else INDICATOR[indicator], "indicator": indicator,
             "incidents": incidents, "components": components}

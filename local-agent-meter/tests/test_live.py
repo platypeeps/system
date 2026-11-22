@@ -1561,6 +1561,29 @@ class ServiceFilters(unittest.TestCase):
                                 dict(page, status={"indicator": "maintenance"}))
                 self.assertEqual(got["status"], "ok", got)
 
+    def test_only_maintenance_explains_a_maintenance_page(self):
+        # Lane review at 128a9737: a maintenance page with an operational
+        # North America and a European partial_outage read ok under
+        # groups=: the excluded outage outranked maintenance, so it
+        # counted as the cause. An outage is another kind of cause.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        for status in ("partial_outage", "degraded_performance", "major_outage"):
+            with self.subTest(status=status):
+                out = [dict(c, status=status) if c["id"] in ("eu", "fra") else c
+                       for c in calm]
+                page = dict(REGIONS, status={"indicator": "maintenance"},
+                            components=out, incidents=[])
+                got = self.read({"groups": ["north-america"]}, page)
+                self.assertEqual(got["status"], "unknown", got)
+        # A listed maintenance cause, kept or not, still explains it.
+        held = [dict(c, status="under_maintenance") if c["id"] == "fra"
+                else dict(c, status="partial_outage") if c["id"] == "eu" else c
+                for c in calm]
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, status={"indicator": "maintenance"},
+                             components=held, incidents=[]))
+        self.assertEqual(got["status"], "ok", got)
+
     def test_an_impact_of_none_or_unknown_explains_no_indicator(self):
         # Lane review: a dropped incident of impact none (or one the
         # feed does not document) counted as a minor cause, so a minor
