@@ -1085,6 +1085,611 @@ SUMMARY = {"page": {"url": "https://status.example.test"},
                          {"id": "old", "name": "Done", "status": "resolved"}]}
 
 
+#: A Cloudflare-like page (sd:9722): a North America group, a Europe group,
+#: an ungrouped component, an incident per region and an old one.
+REGIONS = {
+    "page": {"url": "https://status.example.test"},
+    "status": {"indicator": "major"},
+    "components": [
+        {"id": "na", "name": "North America", "group": True, "group_id": None,
+         "status": "partial_outage"},
+        {"id": "iad", "name": "Ashburn, VA (IAD)", "group": False, "group_id": "na",
+         "status": "degraded_performance"},
+        {"id": "eu", "name": "Europe", "group": True, "group_id": None,
+         "status": "major_outage"},
+        {"id": "fra", "name": "Frankfurt (FRA)", "group": False, "group_id": "eu",
+         "status": "major_outage"},
+        {"id": "api", "name": "API", "group": False, "group_id": None,
+         "status": "operational"}],
+    "incidents": [
+        {"id": "i1", "name": "IAD slow", "status": "investigating", "impact": "minor",
+         "created_at": "2026-11-17T10:00:00Z", "components": [{"id": "iad"}]},
+        {"id": "i2", "name": "FRA down", "status": "identified", "impact": "major",
+         "created_at": "2026-11-17T10:00:00Z", "components": [{"id": "fra"}]},
+        {"id": "i3", "name": "Workers errors", "status": "monitoring", "impact": "minor",
+         "created_at": "2026-11-10T10:00:00Z", "updated_at": "2026-11-12T10:00:00Z",
+         "components": []}]}
+
+
+class ServiceFilters(unittest.TestCase):
+    """groups= and stale= on a services line (sd:9722)."""
+
+    def read(self, options, answer=REGIONS):
+        return service_status.read_service(
+            ("svc", "statuspage", "https://status.example.test/api", [], options), NOW,
+            fetch=answering(answer))
+
+    def test_an_empty_component_id_is_no_proof_an_incident_is_outside(self):
+        # Review: an excluded component with id "" and a critical
+        # incident linked only to "" read ok: the empty id counted as
+        # proof the incident sat outside the groups.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        for empty in ("", "   "):
+            with self.subTest(empty=empty):
+                comps = [dict(c, id=empty) if c["id"] == "fra" else c for c in calm]
+                incident = dict(REGIONS["incidents"][0], impact="critical",
+                                components=[{"id": empty}])
+                got = self.read({"groups": ["north-america"]},
+                                dict(REGIONS, components=comps, incidents=[incident]))
+                self.assertEqual(got["status"], "unknown", got)
+        # A well-formed page with an empty incident link keeps the incident.
+        incident = dict(REGIONS["incidents"][0], impact="critical",
+                        components=[{"id": ""}])
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=calm, incidents=[incident]))
+        self.assertEqual(got["status"], "outage", got)
+
+    def test_a_group_with_a_malformed_name_is_unknown(self):
+        # Review: a group in major_outage named [] had no key, so it
+        # sat outside the chosen groups and its outage read ok.
+        for name in ([], None, "", "   ", 7):
+            with self.subTest(name=name):
+                bad = [dict(c, name=name, status="major_outage") if c["id"] == "eu" else c
+                       for c in REGIONS["components"]]
+                got = self.read({"groups": ["north-america"]},
+                                dict(REGIONS, components=bad, incidents=[]))
+                self.assertEqual(got["status"], "unknown", got)
+
+    def test_a_filter_on_a_page_with_no_components_is_unknown(self):
+        # Review: stale=3 on a major page with neither components nor
+        # incidents recomputed ok, a false all-clear.
+        # stale= alone keeps the page's status (lane review).
+        bare = {"status": {"indicator": "major"}}
+        for options, want in (({"stale": 3}, "outage"),
+                              ({"groups": ["north-america"]}, "unknown")):
+            for answer in (bare, dict(bare, components=[]), dict(bare, incidents=[])):
+                with self.subTest(options=options, answer=answer):
+                    got = self.read(options, answer)
+                    # No components key is a truncated answer: unknown.
+                    self.assertEqual(got["status"],
+                                     want if "components" in answer else "unknown", got)
+
+    def test_a_filter_on_a_page_worse_than_its_listed_causes_is_unknown(self):
+        # Review: a critical page with no `incidents` key (or an empty one)
+        # and only operational components read ok under either filter;
+        # nothing showed the outage sat outside the groups or was stale.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        bare = {"status": {"indicator": "critical"}, "components": calm}
+        for options, want in (({"stale": 3}, "outage"),
+                              ({"groups": ["north-america"]}, "unknown")):
+            for answer in (bare, dict(bare, incidents=[])):
+                with self.subTest(options=options, incidents="incidents" in answer):
+                    got = self.read(options, answer)
+                    self.assertEqual(got["status"], want, got)
+        # Review: an operational selected group on a critical page whose
+        # only cause outside it is degraded; the drop explains no outage.
+        mild = [dict(c, status="degraded_performance") if c["id"] == "fra" else c
+                for c in calm]
+        for incidents in ([], [dict(REGIONS["incidents"][0], components=[{"id": "fra"}])]):
+            with self.subTest(mild=True, incidents=len(incidents)):
+                got = self.read({"groups": ["north-america"]},
+                                dict(bare, components=mild, incidents=incidents))
+                self.assertEqual(got["status"], "unknown", got)
+        # A listed cause the filter drops still filters as before.
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=[dict(c, status="operational")
+                                                  if c["id"] != "fra" else c
+                                                  for c in REGIONS["components"]]))
+        self.assertEqual(got["status"], "degraded", got)
+
+    def test_the_options_grammar(self):
+        services, problems = service_status.parse_services(
+            "cf statuspage https://example.test/s.json groups=north-america,europe stale=3\n"
+            "cg statuspage https://example.test/s.json cloudflare stale=1\n"
+            "a statuspage https://example.test/s.json colour=red\n"
+            "b statuspage https://example.test/s.json stale=0\n"
+            "c statuspage https://example.test/s.json stale=x\n"
+            "d statuspage https://example.test/s.json groups=\n"
+            "e statuspage https://example.test/s.json groups=North\n"
+            "f slack https://example.test/s.json stale=3\n"
+            "g statuspage https://example.test/s.json stale=3 cloudflare\n"
+            "h statuspage https://example.test/s.json stale=3 stale=4\n")
+        self.assertEqual(services, [
+            ("cf", "statuspage", "https://example.test/s.json", [],
+             {"groups": ["north-america", "europe"], "stale": 3}),
+            ("cg", "statuspage", "https://example.test/s.json", ["cloudflare"], {"stale": 1})])
+        self.assertEqual(problems, [
+            "line 3: option colour is not groups or stale",
+            "line 4: stale is not a whole number of days from 1 to 365",
+            "line 5: stale is not a whole number of days from 1 to 365",
+            "line 6: groups is not lower-case group names",
+            "line 7: groups is not lower-case group names",
+            "line 8: options need kind statuspage",
+            "line 9: want <name> <kind> <url> [provider] [key=value ...]",
+            "line 10: option stale given twice"])
+
+    def test_a_stale_value_out_of_range_is_refused_not_raised(self):
+        # Review: 5,000 digits raised ValueError in int() and stopped every
+        # service; stale=1000000000 passed and overflowed timedelta later.
+        for value in ("9" * 5000, "1000000000", "366", "0", "-1", "１"):
+            with self.subTest(value=value[:12]):
+                services, problems = service_status.parse_services(
+                    "a statuspage https://example.test/s.json stale=%s\n"
+                    "b statuspage https://example.test/s.json\n" % value)
+                self.assertEqual(problems,
+                                 ["line 1: stale is not a whole number of days"
+                                  " from 1 to 365"])
+                self.assertEqual([s[0] for s in services], ["b"])
+        services, problems = service_status.parse_services(
+            "a statuspage https://example.test/s.json stale=365\n")
+        self.assertEqual((problems, services[0][4]), ([], {"stale": 365}))
+
+    def test_the_starting_list_filters_cloudflare(self):
+        services, _ = service_status.parse_services(service_status.STARTING)
+        options = {s[0]: s[4] for s in services}
+        self.assertEqual(options["cloudflare"],
+                         {"groups": ["north-america", "cloudflare-sites-and-services"],
+                          "stale": 3})
+        self.assertEqual(options["claude"], {})
+
+    def test_the_old_default_differs_only_in_the_cloudflare_line(self):
+        old = service_status.RETIRED[0].splitlines()
+        new = service_status.STARTING.splitlines()
+        self.assertEqual([(a, b) for a, b in zip(old, new) if a != b],
+                         [("cloudflare statuspage"
+                           " https://www.cloudflarestatus.com/api/v2/summary.json",
+                           "cloudflare statuspage"
+                           " https://www.cloudflarestatus.com/api/v2/summary.json"
+                           " groups=north-america,cloudflare-sites-and-services stale=3")])
+        self.assertEqual(len(old), len(new))
+
+    def test_a_group_filter_keeps_its_components_and_ungrouped_ones(self):
+        got = self.read({"groups": ["north-america"]})
+        self.assertEqual(got["components"],
+                         [{"name": "North America", "status": "partial_outage"},
+                          {"name": "Ashburn, VA (IAD)", "status": "degraded_performance"}])
+
+    def test_a_group_filter_drops_an_incident_wholly_outside_it(self):
+        got = self.read({"groups": ["north-america"]})
+        self.assertEqual([i["title"] for i in got["incidents"]],
+                         ["IAD slow", "Workers errors"])
+
+    def test_a_stale_filter_drops_an_old_open_incident(self):
+        got = self.read({"stale": 3})
+        self.assertEqual([i["title"] for i in got["incidents"]], ["IAD slow", "FRA down"])
+
+    def stale_page(self, **incident):
+        base = {"id": "s", "name": "Old", "status": "monitoring", "impact": "minor",
+                "created_at": "2026-11-13T10:00:00Z", "components": []}
+        return dict(REGIONS, incidents=[dict(base, **incident)])
+
+    def test_a_stale_filter_never_hides_a_major_or_critical_incident(self):
+        # Lane review: a four-day-old critical incident updated today
+        # disappeared, because stale= aged it by creation alone.
+        for impact in ("major", "critical"):
+            for updated in ("2026-11-17T09:00:00Z", "2026-11-13T10:00:00Z"):
+                with self.subTest(impact=impact, updated=updated):
+                    got = self.read({"stale": 3}, self.stale_page(
+                        impact=impact, updated_at=updated))
+                    self.assertEqual(([i["title"] for i in got["incidents"]],
+                                      got["status"]), (["Old"], "outage"))
+
+    def test_a_stale_filter_ages_an_incident_by_its_last_update(self):
+        hidden = self.read({"stale": 3}, self.stale_page(
+            updated_at="2026-11-14T10:00:00Z"))
+        self.assertEqual(hidden["incidents"], [])
+        fresh = self.read({"stale": 3}, self.stale_page(
+            updated_at="2026-11-17T09:00:00Z"))
+        self.assertEqual([i["title"] for i in fresh["incidents"]], ["Old"])
+
+    def test_a_stale_filter_keeps_an_incident_with_no_last_update(self):
+        # Review: with no updated_at, stale= aged an old, still
+        # identified minor incident by created_at alone and hid it.
+        for change in ({}, {"updated_at": None}, {"updated_at": ""}):
+            with self.subTest(change=change):
+                page = self.stale_page(**change)
+                got = self.read({"stale": 3}, page)
+                self.assertEqual([i["title"] for i in got["incidents"]], ["Old"])
+
+    def test_a_stale_filter_keeps_an_incident_still_being_worked(self):
+        # Lane review at 34ced33b: with groups= and stale=3, an open
+        # in-scope incident with no update for four days stopped
+        # counting, so a live outage read ok. Only monitoring ages.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        for status in ("investigating", "identified"):
+            for options in ({"groups": ["north-america"], "stale": 3}, {"stale": 3}):
+                with self.subTest(status=status, options=options):
+                    page = dict(self.stale_page(
+                        status=status, updated_at="2026-11-13T09:00:00Z",
+                        components=[{"id": "iad"}]),
+                        components=calm, status={"indicator": "minor"})
+                    got = self.read(options, page)
+                    self.assertEqual(([i["title"] for i in got["incidents"]],
+                                      got["status"]), (["Old"], "degraded"))
+
+    def test_a_stale_filter_keeps_an_incident_it_cannot_place(self):
+        # Class pass: an impact or a time of another shape keeps it.
+        for change in ({"impact": None}, {"impact": "severe"}, {"impact": 3},
+                       {"created_at": None}, {"created_at": "soon"},
+                       {"updated_at": "soon"}, {"updated_at": 5}):
+            with self.subTest(change=change):
+                got = self.read({"stale": 3}, self.stale_page(**change))
+                self.assertEqual(len(got["incidents"]), 1)
+
+    def test_the_status_is_recomputed_from_what_is_kept(self):
+        self.assertEqual(self.read({"groups": ["north-america"], "stale": 3})["status"],
+                         "degraded")
+        self.assertEqual(self.read({"groups": ["europe"], "stale": 3})["status"], "outage")
+        # The page's own indicator matches its one listed cause, a minor
+        # stale incident: worse would have no cause to filter (review).
+        quiet = dict(REGIONS, incidents=REGIONS["incidents"][2:], status={"indicator": "minor"})
+        got = self.read({"groups": ["north-america"], "stale": 3},
+                        dict(quiet, components=[dict(c, status="operational")
+                                                for c in REGIONS["components"]]))
+        self.assertEqual((got["status"], got["incidents"], got["components"]), ("ok", [], []))
+
+    def test_an_incident_on_a_kept_group_itself_is_kept(self):
+        # Review: the group's own id was not a kept id, so an incident
+        # linked only to the group was dropped and the reading was ok.
+        page = dict(REGIONS, components=[dict(c, status="operational")
+                                         for c in REGIONS["components"]],
+                    incidents=[dict(REGIONS["incidents"][1], name="NA down",
+                                    components=[{"id": "na"}])])
+        got = self.read({"groups": ["north-america"]}, page)
+        self.assertEqual((got["status"], [i["title"] for i in got["incidents"]]),
+                         ("outage", ["NA down"]))
+
+    def test_an_incident_with_no_proof_it_is_outside_is_kept(self):
+        # Review: components=[{}] or an id the page does not list was
+        # read as outside the groups, and a major incident read ok.
+        for links in ([{}], [{"id": None}], [{"id": 5}], [{"id": ["fra"]}], [{"id": "gone"}],
+                      [{"id": "fra"}, {}], [{"id": "fra"}, {"id": "gone"}]):
+            with self.subTest(links=links):
+                page = dict(REGIONS, components=[dict(c, status="operational")
+                                                 for c in REGIONS["components"]],
+                            incidents=[dict(REGIONS["incidents"][1], components=links)])
+                got = self.read({"groups": ["north-america"]}, page)
+                self.assertEqual((got["status"], len(got["incidents"])), ("outage", 1))
+
+    def test_the_shipped_cloudflare_line_sees_a_global_outage(self):
+        # Review: the page puts its core products in a group of their own
+        # and has no ungrouped component (summary.json, 2026-11-20), so
+        # groups=north-america alone read ok through a global outage.
+        page = {"page": {"url": "https://status.example.test"},
+                "status": {"indicator": "critical"},
+                "components": [
+                    {"id": "svc", "name": "Cloudflare Sites and Services", "group": True,
+                     "group_id": None, "status": "major_outage"},
+                    {"id": "cdn", "name": "CDN/Cache", "group": False, "group_id": "svc",
+                     "status": "major_outage"},
+                    {"id": "na", "name": "North America", "group": True, "group_id": None,
+                     "status": "operational"},
+                    {"id": "iad", "name": "Ashburn, VA (IAD)", "group": False,
+                     "group_id": "na", "status": "operational"}],
+                "incidents": [{"id": "g", "name": "CDN down", "status": "investigating",
+                               "impact": "critical", "created_at": "2026-11-17T19:00:00Z",
+                               "components": [{"id": "cdn"}]}]}
+        services, _ = service_status.parse_services(service_status.STARTING)
+        options = {s[0]: s[4] for s in services}["cloudflare"]
+        got = self.read(options, page)
+        self.assertEqual((got["status"], [i["title"] for i in got["incidents"]]),
+                         ("outage", ["CDN down"]))
+        self.assertEqual(got["components"],
+                         [{"name": "Cloudflare Sites and Services", "status": "major_outage"},
+                          {"name": "CDN/Cache", "status": "major_outage"}])
+
+    def test_a_kept_group_row_counts_toward_the_status(self):
+        # Review round 3: the group row was dropped before the status,
+        # so a group in major_outage over operational children read ok.
+        components = [dict(c, status="operational") for c in REGIONS["components"]]
+        components[0]["status"] = "major_outage"
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=components, incidents=[]))
+        self.assertEqual((got["status"], got["components"]),
+                         ("outage", [{"name": "North America", "status": "major_outage"}]))
+
+    def test_a_component_tree_the_filter_cannot_trust_is_unknown(self):
+        # Review round 2: North America's id was null and Ashburn still
+        # named the old id, so Ashburn's outage was dropped and read ok.
+        # Every assumption the filter makes about the tree is checked.
+        def page(change):
+            components = [dict(c) for c in REGIONS["components"]]
+            components[1]["status"] = "major_outage"
+            change(components)
+            return dict(REGIONS, components=components, incidents=[])
+
+        def setter(index, key, value):
+            return lambda cs: cs[index].update({key: value})
+        cases = {
+            "group id null": setter(0, "id", None),
+            "group id number": setter(0, "id", 5),
+            "child names no group": setter(1, "group_id", "gone"),
+            "child parent not a string": setter(1, "group_id", 5),
+            "child parent not a group": setter(1, "group_id", "api"),
+            "component id missing": lambda cs: cs[4].pop("id"),
+            "component id repeated": setter(4, "id", "iad"),
+            "group flag not a bool": setter(2, "group", "yes"),
+            "two groups one name": setter(2, "name", "North  America"),
+        }
+        for label, change in cases.items():
+            with self.subTest(label):
+                got = self.read({"groups": ["north-america"]}, page(change))
+                self.assertEqual(got["status"], "unknown", got)
+        self.assertEqual(self.read({"groups": ["north-america"]}, page(lambda cs: None))
+                         ["status"], "outage")
+
+    def test_a_group_flag_or_parent_of_another_type_is_unknown(self):
+        # Lane review: `group: 1` passed as a flag (1 == True) but missed
+        # `is True`, so Europe counted as ungrouped, and a list-valued
+        # parent raised TypeError. Each field the filter reads is typed.
+        def page(index, key, value):
+            components = [dict(c, status="operational") for c in REGIONS["components"]]
+            components[index][key] = value
+            components[3]["status"] = "major_outage"
+            return dict(REGIONS, components=components, incidents=[])
+        cases = [(2, "group", 1), (2, "group", 1.0), (2, "group", 0),
+                 (2, "group", "yes"), (0, "group", 1), (3, "group", 0),
+                 (3, "group_id", ["eu"]), (3, "group_id", {"id": "eu"}),
+                 (3, "group_id", 0), (3, "group_id", False)]
+        for index, key, value in cases:
+            with self.subTest(index=index, key=key, value=value):
+                got = self.read({"groups": ["north-america"]}, page(index, key, value))
+                self.assertEqual(got["status"], "unknown", got)
+                self.assertNotIn("another shape: ", got["error"])
+
+    def test_a_kept_outage_stands_on_a_worse_page(self):
+        # Lane review: a critical page with a kept major_outage component
+        # and no open incident read unknown with no components; the
+        # confirmed outage was erased because critical outranks it.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        down = [dict(c, status="major_outage") if c["id"] == "iad" else c for c in calm]
+        page = dict(REGIONS, status={"indicator": "critical"}, components=down,
+                    incidents=[])
+        for options in ({"groups": ["north-america"]}, {"stale": 3}):
+            with self.subTest(options=options):
+                got = self.read(options, page)
+                self.assertEqual((got["status"], got["components"]),
+                                 ("outage", [{"name": "Ashburn, VA (IAD)",
+                                              "status": "major_outage"}]))
+        # A kept cause milder than the page still reads unknown.
+        mild = [dict(c, status="degraded_performance") if c["id"] == "iad" else c
+                for c in calm]
+        got = self.read({"groups": ["north-america"]}, dict(page, components=mild))
+        self.assertEqual(got["status"], "unknown", got)
+
+    def test_stale_alone_keeps_the_page_status(self):
+        # Lane review: stale= alone read ok for a minor page whose only
+        # cause was an old incident still in monitoring, and unknown for
+        # a major page with no listed cause. Age filters the list only;
+        # without groups= the status is the page's.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        old = dict(REGIONS["incidents"][2], components=[{"id": "fra"}])
+        cases = [("minor", [old], "degraded"), ("major", [], "outage"),
+                 ("none", [old], "ok")]
+        for indicator, incidents, want in cases:
+            with self.subTest(indicator=indicator):
+                page = dict(REGIONS, status={"indicator": indicator},
+                            components=calm, incidents=incidents)
+                got = self.read({"stale": 3}, page)
+                self.assertEqual((got["status"], got["incidents"]), (want, []), got)
+
+    def test_malformed_incident_links_keep_a_confirmed_outage(self):
+        # Lane review: an incident whose component links were ["na"]
+        # raised, so a kept major_outage read unknown, not outage.
+        # A link list of another shape is no proof to drop the incident.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        down = [dict(c, status="major_outage") if c["id"] == "iad" else c for c in calm]
+        for links in (["na"], "na", 5, [None], [{"id": "fra"}, "fra"], {"id": "fra"}):
+            with self.subTest(links=links):
+                incident = dict(REGIONS["incidents"][1], components=links)
+                got = self.read({"groups": ["north-america"]},
+                                dict(REGIONS, components=down, incidents=[incident]))
+                self.assertEqual((got["status"], got["components"],
+                                  [i["title"] for i in got["incidents"]]),
+                                 ("outage", [{"name": "Ashburn, VA (IAD)",
+                                              "status": "major_outage"}], ["FRA down"]))
+
+    def test_kept_maintenance_explains_no_minor_page(self):
+        # Lane review: a minor page whose only cause was maintenance the
+        # filter kept read degraded: the incident path raised it to
+        # minor, the component path matched on degraded alone.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        held = [dict(c, status="under_maintenance") if c["id"] == "iad" else c
+                for c in calm]
+        work = {"id": "m", "name": "IAD work", "status": "identified",
+                "impact": "maintenance", "created_at": "2026-11-17T10:00:00Z",
+                "components": [{"id": "iad"}]}
+        for label, components, incidents in (("component", held, []),
+                                             ("incident", calm, [work])):
+            with self.subTest(label):
+                page = dict(REGIONS, status={"indicator": "minor"},
+                            components=components, incidents=incidents)
+                got = self.read({"groups": ["north-america"]}, page)
+                self.assertEqual(got["status"], "unknown", got)
+                got = self.read({"groups": ["north-america"]},
+                                dict(page, status={"indicator": "maintenance"}))
+                self.assertEqual(got["status"], "degraded", got)
+
+    def test_a_new_incident_with_lagging_links_still_counts(self):
+        # Review at f2f500f2: a new North America incident whose
+        # component links lag the feed must not read ok beside an
+        # excluded European cause of the same severity.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        eu = [dict(c, status="partial_outage") if c["id"] in ("eu", "fra") else c
+              for c in calm]
+        new = {"id": "n1", "name": "New", "status": "investigating",
+               "impact": "minor", "created_at": "2026-11-21T00:00:00Z",
+               "updated_at": "2026-11-21T00:00:00Z"}
+        for links in ([], None, [{"id": "iad"}]):
+            with self.subTest(links=links):
+                incident = dict(new) if links is None else dict(new, components=links)
+                got = self.read({"groups": ["north-america"], "stale": 3},
+                                dict(REGIONS, status={"indicator": "minor"},
+                                     components=eu, incidents=[incident]))
+                self.assertEqual((got["status"], [i["title"] for i in got["incidents"]]),
+                                 ("degraded", ["New"]), got)
+
+    def test_rulings_on_scoped_causes_and_quiet_incidents(self):
+        # Rebutted lane findings at 82d35179, pinned (operator rulings).
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        # An excluded major_outage alone explains a major page: ok.
+        out = [dict(c, status="major_outage") if c["id"] == "fra" else c
+               for c in calm]
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=out, incidents=[]))
+        self.assertEqual(got["status"], "ok", got)
+        # A quiet minor incident in a kept region, in monitoring with no
+        # update for five days, is the long-running kind stale=3 hides.
+        quiet = {"id": "q", "name": "IAD slow", "status": "monitoring",
+                 "impact": "minor", "created_at": "2026-11-10T10:00:00Z",
+                 "updated_at": "2026-11-12T10:00:00Z",
+                 "components": [{"id": "iad"}]}
+        page = dict(REGIONS, status={"indicator": "minor"},
+                    components=calm, incidents=[quiet])
+        got = self.read({"groups": ["north-america"], "stale": 3}, page)
+        self.assertEqual((got["status"], got["incidents"]), ("ok", []))
+
+    def test_maintenance_explains_no_minor_page(self):
+        # Lane review: maintenance ranked with minor, so an excluded
+        # under_maintenance component or maintenance incident explained
+        # a minor page, and groups= read ok.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        held = [dict(c, status="under_maintenance") if c["id"] == "fra" else c
+                for c in calm]
+        work = {"id": "m", "name": "FRA work", "status": "identified",
+                "impact": "maintenance", "created_at": "2026-11-17T10:00:00Z",
+                "components": [{"id": "fra"}]}
+        for label, components, incidents in (("component", held, []),
+                                             ("incident", calm, [work])):
+            with self.subTest(label):
+                page = dict(REGIONS, status={"indicator": "minor"},
+                            components=components, incidents=incidents)
+                got = self.read({"groups": ["north-america"]}, page)
+                self.assertEqual(got["status"], "unknown", got)
+                got = self.read({"groups": ["north-america"]},
+                                dict(page, status={"indicator": "maintenance"}))
+                self.assertEqual(got["status"], "ok", got)
+
+    def test_only_maintenance_explains_a_maintenance_page(self):
+        # Lane review at 128a9737: a maintenance page with an operational
+        # North America and a European partial_outage read ok under
+        # groups=: the excluded outage outranked maintenance, so it
+        # counted as the cause. An outage is another kind of cause.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        for status in ("partial_outage", "degraded_performance", "major_outage"):
+            with self.subTest(status=status):
+                out = [dict(c, status=status) if c["id"] in ("eu", "fra") else c
+                       for c in calm]
+                page = dict(REGIONS, status={"indicator": "maintenance"},
+                            components=out, incidents=[])
+                got = self.read({"groups": ["north-america"]}, page)
+                self.assertEqual(got["status"], "unknown", got)
+        # A listed maintenance cause, kept or not, still explains it.
+        held = [dict(c, status="under_maintenance") if c["id"] == "fra"
+                else dict(c, status="partial_outage") if c["id"] == "eu" else c
+                for c in calm]
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, status={"indicator": "maintenance"},
+                             components=held, incidents=[]))
+        self.assertEqual(got["status"], "ok", got)
+
+    def test_an_impact_of_none_or_unknown_explains_no_indicator(self):
+        # Lane review: a dropped incident of impact none (or one the
+        # feed does not document) counted as a minor cause, so a minor
+        # page with operational components read ok under either filter.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        for impact in ("none", "severe", None, 3):
+            old = {"id": "s", "name": "Old", "status": "monitoring", "impact": impact,
+                   "created_at": "2026-11-10T10:00:00Z",
+                   "updated_at": "2026-11-10T10:00:00Z", "components": [{"id": "fra"}]}
+            page = dict(REGIONS, status={"indicator": "minor"}, components=calm,
+                        incidents=[old])
+            for options in ({"groups": ["north-america"]}, {"stale": 3}):
+                with self.subTest(impact=impact, options=options):
+                    got = self.read(options, page)
+                    if "groups" in options:
+                        self.assertEqual(got["status"], "unknown", got)
+                    else:
+                        # stale= alone keeps the page's minor status.
+                        self.assertEqual(got["status"], "degraded", got)
+
+    def test_a_line_without_groups_reads_no_component_id(self):
+        # Lane review: the reader hashed every component id to build
+        # the outside set, even with no groups= option, so a page in
+        # major outage with a component id of [] read unknown
+        # (TypeError) where the base read outage.
+        components = [dict(c, id=[]) if c["id"] == "api" else c
+                      for c in REGIONS["components"]]
+        for options in ({}, {"stale": 3}):
+            with self.subTest(options=options):
+                got = self.read(options, dict(REGIONS, components=components))
+                self.assertEqual((got["status"], got.get("error")), ("outage", None))
+
+    def test_a_nested_group_is_unknown(self):
+        # Lane review: in A -> B -> component, selecting A dropped the
+        # component, so its major outage read ok. Statuspage groups are
+        # one level deep; a group with a parent is a tree the filter
+        # cannot place.
+        components = [dict(c, status="operational") for c in REGIONS["components"]]
+        components[2]["group_id"] = "na"       # Europe nested in North America
+        components[3]["status"] = "major_outage"
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=components, incidents=[]))
+        self.assertEqual(got["status"], "unknown", got)
+        # A group that names itself as parent is nested too.
+        components[2]["group_id"] = "eu"
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=components, incidents=[]))
+        self.assertEqual(got["status"], "unknown", got)
+
+    def test_a_major_cause_never_explains_a_critical_page(self):
+        # Lane review: major and critical both became `outage` before
+        # the comparison, so a critical page whose only listed cause
+        # outside the groups was a major_outage component read ok.
+        calm = [dict(c, status="operational") for c in REGIONS["components"]]
+        major = [dict(c, status="major_outage") if c["id"] == "fra" else c for c in calm]
+        page = dict(REGIONS, status={"indicator": "critical"}, components=major,
+                    incidents=[])
+        self.assertEqual(self.read({"groups": ["north-america"]}, page)["status"],
+                         "unknown")
+        # stale= keeps that component, so its outage stands (lane review).
+        self.assertEqual(self.read({"stale": 3}, page)["status"], "outage")
+        # A critical incident outside the groups explains it: ok.
+        fra = dict(REGIONS["incidents"][1], impact="critical")
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, status={"indicator": "critical"},
+                             components=major, incidents=[fra]))
+        self.assertEqual(got["status"], "ok", got)
+        # A major_outage component explains a major page, as before.
+        got = self.read({"groups": ["north-america"]},
+                        dict(REGIONS, components=major, incidents=[]))
+        self.assertEqual(got["status"], "ok", got)
+
+    def test_a_group_the_page_lacks_is_unknown_never_ok(self):
+        got = self.read({"groups": ["antarctica"]})
+        self.assertEqual(got["status"], "unknown")
+        self.assertIn("antarctica", got["error"])
+
+    def test_an_unfiltered_line_reads_as_before(self):
+        plain = service_status.read_service(
+            ("svc", "statuspage", "https://status.example.test/api", []), NOW,
+            fetch=answering(REGIONS))
+        self.assertEqual(self.read({}), plain)
+        self.assertEqual(plain["status"], "outage")
+        self.assertEqual(len(plain["incidents"]), 3)
+        self.assertEqual(len(plain["components"]), 4)
+
+
 class Services(unittest.TestCase):
     def read(self, kind, answer, url="https://status.example.test/api"):
         return service_status.read_service(("svc", kind, url, ["claude"]), NOW,
@@ -1111,7 +1716,7 @@ class Services(unittest.TestCase):
             "line 6: kind is not one of statuspage, slack, google-incidents, http",
             "line 7: url is not http(s)",
             "line 8: a provider is not a lower-case name",
-            "line 9: want <name> <kind> <url> [provider]",
+            "line 9: want <name> <kind> <url> [provider] [key=value ...]",
             "line 10: url is not http(s)",
             "line 11: url is not http(s)"])
 
@@ -1145,6 +1750,18 @@ class Services(unittest.TestCase):
                 self.assertEqual((got["status"], got["incidents"]), (status, []), got)
         # Present but not a list is still another shape.
         self.assertEqual(self.read("statuspage", dict(SUMMARY, incidents=None))["status"], "unknown")
+
+    def test_a_summary_with_no_components_key_is_unknown(self):
+        # Review: unlike `incidents`, every statuspage summary lists its
+        # components; a body without the key is truncated, not healthy.
+        answer = {k: v for k, v in SUMMARY.items() if k != "components"}
+        for indicator in ("none", "minor"):
+            got = self.read("statuspage", dict(answer, status={"indicator": indicator}))
+            self.assertEqual(got["status"], "unknown", got)
+        self.assertEqual(self.read("statuspage", {"status": {"indicator": "none"}})["status"],
+                         "unknown")
+        # Present but not a list is still another shape.
+        self.assertEqual(self.read("statuspage", dict(SUMMARY, components=None))["status"], "unknown")
 
     def test_slack_and_google(self):
         self.assertEqual(self.read("slack", {"status": "ok", "active_incidents": []})["status"], "ok")
@@ -1437,6 +2054,29 @@ class Live(unittest.TestCase):
         rows = self.rows("service-status:")
         self.assertEqual(len(rows), len(service_status.STARTING.splitlines()))
         self.assertEqual({row["status"] for row in rows.values()}, {"unknown"})
+
+    def test_an_unedited_old_default_list_moves_to_the_new_one(self):
+        # Review: live() seeded STARTING only on a never-held row, so a
+        # store holding the old default kept reading Cloudflare unfiltered.
+        self.env.update({name: "http://127.0.0.1:%d" % closed_port() for name in PROXIES},
+                        NO_PROXY="", no_proxy="")
+        self.setting("dashboard.status_services", service_status.RETIRED[0])
+        done = self.run_live("services")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        held = writes.read_settings(self.connection(), ["dashboard.status_services"])
+        self.assertEqual(held["dashboard.status_services"], service_status.STARTING)
+        self.assertIn("moved to the new default", done.stdout)
+
+    def test_an_edited_old_default_list_stays_as_the_operator_left_it(self):
+        self.env.update({name: "http://127.0.0.1:%d" % closed_port() for name in PROXIES},
+                        NO_PROXY="", no_proxy="")
+        edited = "".join(line for line in service_status.RETIRED[0].splitlines(True)
+                         if not line.startswith("strongdm "))
+        self.setting("dashboard.status_services", edited)
+        done = self.run_live("services")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        held = writes.read_settings(self.connection(), ["dashboard.status_services"])
+        self.assertEqual(held["dashboard.status_services"], edited)
 
     def test_an_entry_dropped_from_its_list_is_retired_once(self):
         # sd:9256 round 5: a dropped entry's last row stood as its newest
