@@ -941,6 +941,8 @@ EXEC_OWN_OFFSET=0
 # shell's own open file, so the lock outlives the perl that took it.
 # shellcheck disable=SC2016 # perl source, expanded by perl
 LOCK_TAKE='use Fcntl ":flock"; open(my $fh, ">&=", 8) or exit 2; flock($fh, LOCK_EX|LOCK_NB) or exit 1; exit 0'
+# The install lock on fd 7 waits, bounded: installs and uninstalls are short.
+INSTALL_LOCK_TAKE='use Fcntl ":flock"; open(my $fh, ">&=", 7) or exit 2; $SIG{ALRM} = sub { exit 1 }; alarm 120; flock($fh, LOCK_EX) or exit 1; exit 0'
 
 # Is a run holding this job's lock? Asked by taking it on a fresh open in a
 # subshell, which releases it again on exit. Only perl's own "held" (1) is a
@@ -1743,6 +1745,28 @@ job_lock_path() { # job
   fi
   printf '%s\n' "$lock"
 }
+# One per user and label, in STATE_DIR, taken by every install and
+# uninstall before the run lock: with no label loaded each checkout's
+# run lock is its own logs/, so a helper read its marker and bootstrapped
+# after another checkout's uninstall returned (sd:9826 review).
+hold_install_lock() { # job
+  local lock taken=0
+  lock="$STATE_DIR/$(label_for "$1").install.flock"
+  if ! mkdir -p "$STATE_DIR" || ! exec 7>>"$lock"; then
+    echo "cron-jobs.sh: $1: could not open the install lock $lock; nothing changed" >&2
+    return 1
+  fi
+  perl -e "$INSTALL_LOCK_TAKE" || taken=$?
+  [ "$taken" -ne 0 ] || return 0
+  exec 7>&-
+  if [ "$taken" -eq 1 ]; then
+    echo "cron-jobs.sh: $1: another install or uninstall holds $lock; nothing changed" >&2
+  else
+    echo "cron-jobs.sh: $1: could not test the lock on $lock (perl exit $taken); nothing changed" >&2
+  fi
+  return 1
+}
+
 hold_job_lock() { # job
   local lock taken=0
   lock="$(job_lock_path "$1")" || return 1
@@ -1930,10 +1954,11 @@ cmd_install() {
   fi
   # Before the plist is written: a refused install leaves the file launchd
   # holds, so `verify` still reads it STALE and the next install retries.
-  hold_job_lock "$job" || return 1
+  hold_install_lock "$job" || return 1
+  hold_job_lock "$job" || { exec 7>&-; return 1; }
   # The helper's cancellation, read under the lock uninstall takes too.
   if [ -n "${REINSTALL_HELPER:-}" ] && [ ! -f "$(helper_plist_for "$job")" ]; then
-    exec 8>&-
+    exec 8>&- 7>&-
     echo "cancelled: $job: reinstall cancelled; uninstalled since its run asked for it"
     return 0
   fi
@@ -1960,7 +1985,7 @@ cmd_install() {
       # and the rollback copy stayed obsolete. Refused, both are kept.
       if ! mv "$pending" "$accepted"; then
         echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
-        exec 8>&-
+        exec 8>&- 7>&-
         return 1
       fi
     elif is_loaded "$job" || [ ! -f "$accepted" ]; then
@@ -1979,7 +2004,7 @@ cmd_install() {
   if [ ! -f "$accepted" ] && is_loaded "$job" && [ -f "$plist" ] &&
      ! { mkdir -p "$STATE_DIR" && copy_whole "$plist" "$accepted"; }; then
     echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
-    exec 8>&-
+    exec 8>&- 7>&-
     return 1
   fi
   if ! { mkdir -p "$AGENT_DIR" "$STATE_DIR" && write_plist "$job" "$new" &&
@@ -1989,7 +2014,7 @@ cmd_install() {
     # the next install's trigger, and this run wrote none.
     rm -f "$new"
     echo "cron-jobs.sh: $job: could not write $plist; nothing changed" >&2
-    exec 8>&-
+    exec 8>&- 7>&-
     return 1
   fi
   # The pending copy goes in before the old label goes out: a pending copy
@@ -2003,14 +2028,14 @@ cmd_install() {
   if is_loaded "$job"; then
     rm -f "$new" "$pending"
     echo "cron-jobs.sh: $job: launchd still holds the old label after bootout; nothing changed" >&2
-    exec 8>&-
+    exec 8>&- 7>&-
     return 1
   fi
   if ! mv "$new" "$plist"; then
     rm -f "$new"
     err="failed: $job (could not replace $plist)$(restore_accepted "$job" "$plist" "$accepted")"
     echo "$err" >&2
-    exec 8>&-
+    exec 8>&- 7>&-
     return 1
   fi
   # One retry: a refused bootstrap is reported, never followed by `installed:`.
@@ -2021,7 +2046,7 @@ cmd_install() {
       err="failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
       err="$err$(restore_accepted "$job" "$plist" "$accepted")"
       echo "$err" >&2
-      exec 8>&-
+      exec 8>&- 7>&-
       return 1
     fi
   fi
@@ -2043,13 +2068,13 @@ cmd_install() {
     err="failed: $job (launchctl enable $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
     printf '%s\n' "$err" > "$(failed_record_for "$job")" || true
     echo "$err" >&2
-    exec 8>&-
+    exec 8>&- 7>&-
     return 1
   fi
   # Any install that loads the job repairs what a failed deferred reinstall
   # recorded: the helper's, by hand, or a hand-run update (sd:9826).
   rm -f "$(failed_record_for "$job")"
-  exec 8>&-
+  exec 8>&- 7>&-
   if [ -n "$unrecorded" ]; then
     echo "failed: $job ($unrecorded)" >&2
     return 1
@@ -2068,13 +2093,15 @@ cmd_install() {
   fi
 }
 
-# The lock only where there is a label to boot out: a job never loaded here
-# has no run to kill, and `uninstall --all` leaves it no lock file.
+# The run lock only where there is a label to boot out: a job never loaded
+# here has no run to kill, and `uninstall --all` leaves it no run lock file.
+# The install lock always: it orders this against a helper's install.
 cmd_uninstall() {
   local job="$1" helper
   helper="$(helper_plist_for "$job")"
+  hold_install_lock "$job" || return 1
   if is_loaded "$job" || [ -f "$helper" ]; then
-    hold_job_lock "$job" || return 1
+    hold_job_lock "$job" || { exec 7>&-; return 1; }
     # A pending reinstall is cancelled under the lock the helper's install
     # takes, so it cannot load the job again after this.
     if [ -f "$helper" ]; then
@@ -2084,8 +2111,10 @@ cmd_uninstall() {
     ! is_loaded "$job" || launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
     exec 8>&-
   fi
+  # Still under the install lock: an install waiting on it sees no state.
   rm -f "$(plist_for "$job")" "$(failed_record_for "$job")" "$(accepted_plist_for "$job")" \
     "$(accepted_plist_for "$job").pending"
+  exec 7>&-
   echo "uninstalled: $job"
 }
 

@@ -1875,6 +1875,34 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.killed_install("kill-on-restore-bin", self.KILL_ON_RESTORE)
         self.assert_a_lint_failing_install_reloads_the_accepted_job()
 
+    def test_a_helper_waits_for_an_uninstall_from_another_checkout(self):
+        """Review: with no label loaded each checkout locked its own logs/,
+        so a helper could read its marker, then bootstrap the job after
+        another checkout's uninstall returned. Install and uninstall now
+        share one per-user lock; the helper sees the cancellation."""
+        self.helper_plist().write_text("helper\n")
+        gone = self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+        gone.touch()
+        state = self.fx.home / ".local" / "state" / "cron-jobs"
+        state.mkdir(parents=True, exist_ok=True)
+        held = open(state / f"{LABEL_PREFIX}.cron.demo.install.flock", "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        env = {"PATH": self.fx.path(self.launchd()), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+               "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK,
+               "REINSTALL_HELPER": "1"}
+        helper = subprocess.Popen(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: helper.poll() is None and helper.kill())
+        time.sleep(1.5)
+        # The other checkout's uninstall, done under the shared lock.
+        self.helper_plist().unlink()
+        held.close()
+        out, err = helper.communicate(timeout=60)
+        self.assertIn("demo: reinstall cancelled", out, out + err)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+
     def test_a_failed_promote_of_a_loaded_pending_plist_changes_nothing(self):
         """Review: recovery promoted a pending plist launchd holds with an
         unchecked mv. Failed, the install went on: its candidate overwrote
@@ -1984,6 +2012,8 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         install replaced and unloaded the working job with no rollback."""
         self.plist().write_text("the plist launchd holds\n")
         state = self.helper_plist().parent
+        # The install lock any earlier install left: only the copy fails.
+        (state / f"{LABEL_PREFIX}.cron.demo.install.flock").touch()
         state.chmod(0o500)
         self.addCleanup(state.chmod, 0o700)
         result = self.run_script("install", "demo")
