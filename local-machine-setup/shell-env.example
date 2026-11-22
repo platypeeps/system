@@ -66,8 +66,6 @@ ANTHROPIC_ADMIN_KEY=change-me
 OPENAI_ADMIN_KEY=change-me
 LANGSMITH_ADMIN_KEY=change-me
 HEYGEN_API_KEY=change-me
-# local-trellis takes HF_TOKEN from this one when HF_TOKEN is empty.
-HUGGING_FACE_API_KEY=change-me
 SYSTEM_TOOLS_LABEL_PREFIX=local.system-tools
 TYPESAFE_API_KEY=change-me
 # The pack's Health > Machine reads these AWS resources: space-separated
