@@ -2,8 +2,8 @@
 
 Each case builds a throwaway config folder holding a claude-hud version
 folder, a stub `bun` (named by BUN_BIN) that ignores its arguments and prints
-two fixed HUD lines, and a stub `sysctl` first on PATH that answers
-`sysctl -n vm.loadavg hw.logicalcpu` from the environment. HOME points into
+two fixed HUD lines. STATUSLINE_CPU_TICKS stands in for the host CPU
+counters, and TMPDIR keeps the CPU state file in the temporary folder. HOME points into
 the same temporary folder, so the `~/.claude.json` fallback finds nothing.
 The suite therefore runs the same on Linux as on a Mac.
 """
@@ -32,12 +32,6 @@ printf '%%s\\n' '%s'
 [ -z "${FAKE_HUD_LINE3:-}" ] || printf '%%s\\n' "$FAKE_HUD_LINE3"
 """ % (HUD_LINE_1, HUD_LINE_2)
 
-# vm.loadavg prints "{ A B C }" and hw.logicalcpu a count, one per line.
-SYSCTL_STUB = """#!/bin/sh
-[ "${FAKE_SYSCTL_FAIL:-0}" = 1 ] && exit 1
-printf '{ %s }\\n' "$FAKE_LOADAVG"
-printf '%s\\n' "$FAKE_NCPU"
-"""
 
 
 def write_exec(path, body):
@@ -59,7 +53,6 @@ class StatuslineTest(unittest.TestCase):
         self.bin.mkdir()
         self.bun = self.bin / "bun"
         write_exec(self.bun, BUN_STUB)
-        write_exec(self.bin / "sysctl", SYSCTL_STUB)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -71,13 +64,18 @@ class StatuslineTest(unittest.TestCase):
             "CLAUDE_CONFIG_DIR": str(self.config),
             "BUN_BIN": str(self.bun),
             "COLUMNS": "100",
-            "FAKE_LOADAVG": "5.0 4.0 3.0",
-            "FAKE_NCPU": "8",
+            "TMPDIR": str(self.root),
+            "STATUSLINE_CPU_TICKS": "1000 1000 8000 0",
         }
         env.update(extra)
         return env
 
-    def run_script(self, *args, stdin="{}", **extra):
+    def run_script(self, *args, stdin="{}", prior="0 0 0 0 -1", **extra):
+        # The state file holds the previous render's counters; the default
+        # prior sample makes the next one read 20% busy. None means none.
+        state = self.root / ("statusline-cpu.%d" % os.getuid())
+        if prior is not None:
+            state.write_text(prior)
         return subprocess.run(
             ["sh", str(SCRIPT), *args],
             input=stdin,
@@ -94,40 +92,54 @@ class StatuslineTest(unittest.TestCase):
         self.assertEqual(len(lines), 2, proc.stdout)
         return lines
 
-    def test_load_below_cpu_count_is_uncoloured(self):
-        line1, line2 = self.render(FAKE_LOADAVG="5.0 4.0 3.0", FAKE_NCPU="8")
-        self.assertEqual(line1, HUD_LINE_1 + SEP + "load 5.0 4.0 3.0")
-        self.assertNotIn("\033", line1)
+    def test_cpu_below_70_is_uncoloured(self):
+        line1, line2 = self.render()
+        self.assertEqual(line1, HUD_LINE_1 + SEP + "cpu 20%")
         self.assertEqual(line2, HUD_LINE_2)
 
-    def test_load_at_cpu_count_is_yellow(self):
-        line1, _ = self.render(FAKE_LOADAVG="8.0 4.0 3.0", FAKE_NCPU="8")
-        self.assertTrue(
-            line1.endswith(SEP + YELLOW + "load 8.0 4.0 3.0\033[0m"), repr(line1)
-        )
-        self.assertNotIn(RED, line1)
+    def test_cpu_at_70_is_yellow(self):
+        line1, _ = self.render(STATUSLINE_CPU_TICKS="500 100 300 100")
+        self.assertTrue(line1.endswith(SEP + YELLOW + "cpu 70%[0m"), repr(line1))
 
-    def test_load_at_twice_cpu_count_is_red(self):
-        line1, _ = self.render(FAKE_LOADAVG="16.0 4.0 3.0", FAKE_NCPU="8")
-        self.assertTrue(
-            line1.endswith(SEP + RED + "load 16.0 4.0 3.0\033[0m"), repr(line1)
-        )
-        self.assertNotIn(YELLOW, line1)
+    def test_cpu_at_90_is_red(self):
+        line1, _ = self.render(STATUSLINE_CPU_TICKS="800 100 100 0")
+        self.assertTrue(line1.endswith(SEP + RED + "cpu 90%[0m"), repr(line1))
 
-    def test_failing_sysctl_leaves_load_out(self):
-        proc = self.run_script("render", FAKE_SYSCTL_FAIL="1")
+    def test_cpu_counts_ticks_since_the_previous_render(self):
+        # Busy ticks between samples count even when the process that used
+        # them has exited; only the delta matters, not the totals.
+        line1, _ = self.render(
+            prior="5000 5000 90000 0 12", STATUSLINE_CPU_TICKS="5900 5000 90100 0"
+        )
+        self.assertTrue(line1.endswith(SEP + RED + "cpu 90%[0m"), repr(line1))
+
+    def test_a_short_interval_keeps_the_last_value(self):
+        line1, _ = self.render(
+            prior="1000 1000 8000 0 42", STATUSLINE_CPU_TICKS="1010 1000 8010 0"
+        )
+        self.assertEqual(line1, HUD_LINE_1 + SEP + "cpu 42%")
+
+    def test_first_render_shows_no_cpu(self):
+        state = self.root / ("statusline-cpu.%d" % os.getuid())
+        proc = self.run_script("render", prior=None)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertNotIn("load", proc.stdout)
+        self.assertEqual(proc.stdout.splitlines(), [HUD_LINE_1, HUD_LINE_2])
+        self.assertTrue(state.exists())
+
+    def test_unreadable_counters_leave_cpu_out(self):
+        proc = self.run_script("render", STATUSLINE_CPU_TICKS="not numbers")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("cpu", proc.stdout)
         self.assertEqual(proc.stdout.splitlines(), [HUD_LINE_1, HUD_LINE_2])
 
-    def test_email_joins_line_one_before_load(self):
+    def test_email_joins_line_one_before_cpu(self):
         (self.root / "claude.json").write_text(
             json.dumps({"oauthAccount": {"emailAddress": "someone@example.test"}})
         )
         line1, line2 = self.render()
         self.assertEqual(
             line1,
-            HUD_LINE_1 + SEP + "someone@example.test" + SEP + "load 5.0 4.0 3.0",
+            HUD_LINE_1 + SEP + "someone@example.test" + SEP + "cpu 20%",
         )
         self.assertEqual(line2, HUD_LINE_2)
 
@@ -141,7 +153,7 @@ class StatuslineTest(unittest.TestCase):
             'STATUSLINE_ACCOUNT_LABELS="a@example.test=one b@example.test=two"\n'
         )
         line1, _ = self.render()
-        self.assertEqual(line1, HUD_LINE_1 + SEP + "two" + SEP + "load 5.0 4.0 3.0")
+        self.assertEqual(line1, HUD_LINE_1 + SEP + "two" + SEP + "cpu 20%")
         # An unmapped login keeps its full email.
         line1, _ = self.render(STATUSLINE_ACCOUNT_LABELS="a@example.test=one")
         self.assertIn(SEP + "b@example.test" + SEP, line1)
@@ -158,7 +170,7 @@ class StatuslineTest(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         lines = proc.stdout.splitlines()
-        self.assertEqual(lines[0], HUD_LINE_1 + SEP + "load 5.0 4.0 3.0")
+        self.assertEqual(lines[0], HUD_LINE_1 + SEP + "cpu 20%")
         self.assertEqual(lines[2], tokens + SEP + "two")
 
     def test_missing_claude_hud_exits_1(self):

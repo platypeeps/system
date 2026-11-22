@@ -246,7 +246,9 @@ key_item() { # email
 }
 
 # The organization a key belongs to, from the `anthropic-organization-id`
-# header of one 1-token API call, or nothing when the key does not work.
+# header of one 1-token API call, then that call's HTTP status; nothing
+# when the key does not work. A 429 that names the organization is a key
+# that authenticated on an account at its usage limit (sd:9937).
 # cswap names each account's organizationUuid, so this is how a key is
 # matched to its account. The key reaches curl on stdin, never argv; -q,
 # first, keeps ~/.curlrc out, since a trace option there would write the
@@ -257,8 +259,8 @@ key_org() { # key
       -H "anthropic-version: 2023-06-01" -H "anthropic-beta: oauth-2025-04-20" \
       -H "content-type: application/json" -d "$KEY_PROBE" \
       https://api.anthropic.com/v1/messages 2>/dev/null |
-    tr -d '\r' | awk 'NR == 1 && $2 != 200 { exit }
-      tolower($1) == "anthropic-organization-id:" { print $2; exit }'
+    tr -d '\r' | awk 'NR == 1 { code = $2; if (code != 200 && code != 429) exit }
+      tolower($1) == "anthropic-organization-id:" { print $2, code; exit }'
 }
 KEY_PROBE='{"model":"claude-haiku-4-5","max_tokens":1,"system":"You are Claude Code, Anthropic'"'"'s official CLI for Claude.","messages":[{"role":"user","content":"OK"}]}'
 
@@ -271,7 +273,7 @@ KEY_PROBE='{"model":"claude-haiku-4-5","max_tokens":1,"system":"You are Claude C
 # goes in no argv, file or output: curl and `security -i` read it on
 # stdin. CSWAP_KEYS_TTY is for tests only.
 cmd_keys() {
-  local json pairs e want raw rest tok held got shared
+  local json pairs e want raw rest tok held got code probe works shared
   # A caller's `bash -x` would trace each key; nothing after this needs it.
   set +x
   [[ -x "$CSWAP_BIN" ]] || { echo "cswap not executable at $CSWAP_BIN" >&2; exit 1; }
@@ -310,7 +312,19 @@ cmd_keys() {
       echo "$e: the paste is no key; nothing stored"
       continue
     fi
-    got=$(key_org "$tok") || got=""
+    # A Console API key is no setup token: it is named, never sent (sd:9941).
+    if [[ "$tok" == sk-ant-api* || "$tok" == sk-ant-usr-* ]]; then
+      echo "$e: a Console API key, not a claude setup-token key; nothing stored"
+      unset tok
+      continue
+    fi
+    # A failed curl is a failed probe, whatever headers it wrote first:
+    # the status is checked before a here-string can drop it.
+    got="" code="" probe=""
+    probe=$(key_org "$tok") || probe=""
+    read -r got code <<<"$probe" || :
+    works="works"
+    [[ "$code" != 429 ]] || works="works (account at its usage limit)"
     if [[ -z "$got" ]]; then
       echo "$e: the key did not work; nothing stored"
     elif [[ "$got" != "$want" ]]; then
@@ -324,9 +338,9 @@ cmd_keys() {
         held=$(security find-generic-password -s "$(key_item "$e")" -a "$want" -w 2>/dev/null) || held=""
       fi
       if [[ -n "$held" && "$held" == "$tok" ]]; then
-        echo "$e: works; stored as $(key_item "$e")"
+        echo "$e: $works; stored as $(key_item "$e")"
       else
-        echo "$e: works, but the Keychain did not store it"
+        echo "$e: $works, but the Keychain did not store it"
       fi
       unset held
     fi

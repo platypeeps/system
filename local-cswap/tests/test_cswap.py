@@ -169,7 +169,8 @@ esac
 """
 
 # The API: a key works when it is FAKE_GOOD_KEY (user1's organization) or
-# FAKE_OTHER_KEY (user2's). The key arrives in the --config on stdin; argv
+# FAKE_OTHER_KEY (user2's); FAKE_LIMITED_KEY is user1's at its usage limit,
+# a 429 that still names the organization. The key arrives in the --config on stdin; argv
 # is logged, so a key in argv shows in the calls.
 CURL = r"""#!/bin/sh
 echo "curl $*" >> "$FAKE_CALLS"
@@ -180,9 +181,15 @@ key=$(sed -n 's/.*Bearer \([^"]*\)".*/\1/p')
 case "$key" in
   "$FAKE_GOOD_KEY") org=11111111-1111-4111-8111-111111111111 ;;
   "${FAKE_OTHER_KEY:-unset}") org=22222222-2222-4222-8222-222222222222 ;;
+  "${FAKE_LIMITED_KEY:-unset}")
+    printf 'HTTP/2 429 \r\nAnthropic-Organization-Id: %s\r\n\r\n' \
+      11111111-1111-4111-8111-111111111111
+    exit 0 ;;
   *) printf 'HTTP/2 401 \r\n\r\n'; exit 0 ;;
 esac
 printf 'HTTP/2 200 \r\nAnthropic-Organization-Id: %s\r\n\r\n' "$org"
+# FAKE_CURL_EXIT: the headers came, then curl failed (28 is a timeout).
+exit "${FAKE_CURL_EXIT:-0}"
 """
 
 
@@ -656,6 +663,38 @@ class HeadlessKeys(Machine):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.held(), {})
         self.assertIn("did not work; nothing stored", result.stdout)
+
+    def test_a_console_api_key_is_named_and_not_probed(self):
+        # sd:9941: a Console key read "did not work" or "belongs to another
+        # account"; it is no setup token, so it is named and never sent.
+        for console in ("sk-ant-api03-console_Key-1", "sk-ant-usr-console-2"):
+            self.calls.write_text("")
+            result = self.keys(f"{console}\n\n\n", FAKE_OTHER_KEY=console)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(self.held(), {})
+            self.assertIn("user1@example.test: a Console API key, not a claude setup-token key; "
+                          "nothing stored", result.stdout)
+            self.assertNotIn("did not work", result.stdout)
+            self.assertNotIn("another account", result.stdout)
+            self.assertEqual(self.called("curl"), [])
+
+    def test_a_key_at_its_usage_limit_works_and_is_stored(self):
+        # A 429 with the organization header means the key authenticated.
+        limited = "sk-ant-oat01-limited"
+        result = self.keys(f"{limited}\n\n\n", FAKE_LIMITED_KEY=limited)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: limited})
+        self.assertIn("user1@example.test: works (account at its usage limit); stored as",
+                      result.stdout)
+
+    def test_a_probe_that_fails_after_its_headers_keeps_the_old_key(self):
+        # curl exiting non-zero is a failed probe, whatever headers it wrote.
+        self.keychain.write_text(f"{ITEM1} sk-ant-kept\n")
+        result = self.keys(f"{self.GOOD}\n\n\n", FAKE_CURL_EXIT="28")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {ITEM1: "sk-ant-kept"})
+        self.assertIn("user1@example.test: the key did not work; nothing stored",
+                      result.stdout)
 
     def test_no_key_reaches_argv_stdout_or_stderr(self):
         result = self.keys(f"{self.GOOD}\nsk-ant-oat01-bad\n\n")

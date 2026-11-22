@@ -3070,17 +3070,22 @@ claude_token_block_write() { # env.sh, line
 claude_token_block() {
   ctb_env="$HOME/.config/shell/env.sh"
   [ -f "$ctb_env" ] || return 0
-  # A hand-written block is left as it is. One that reads by email alone
-  # is named: two accounts with one email would load one item.
+  # A hand-written block is left as it is. A read by email alone, with no
+  # -a, is drift even under the marker: cswap.sh keys stores one item per
+  # email and organization, and an older same-name item shadows it
+  # (sd:9940). The stage prints the block to paste in its place.
+  # shellcheck disable=SC2016 # the literal text of a hand-written read
+  ctb_email=$(grep -nF 'claude-code-oauth-token-$' "$ctb_env" | grep -vE '[[:space:]]-a[[:space:]]' | cut -d: -f1 | tr '\n' ' ')
+  if [ -n "$ctb_email" ]; then
+    echo "  DIFFERS ~/.config/shell/env.sh line ${ctb_email% } reads the claude token by email alone — an older item of that name shadows the key cswap.sh keys stored for the organization; replace the block by hand with:"
+    claude_token_block_text | sed 's/^/            /'
+    unset ctb_env ctb_email
+    return 0
+  fi
   # shellcheck disable=SC2016 # the literal text of a hand-written block
   if grep -qF '# >>> machine-setup: claude token per cswap account' "$ctb_env" ||
       grep -qF -- '-s "claude-code-oauth-token-$_cc_acct" -a "$_cc_org"' "$ctb_env"; then
     echo "  ok      ~/.config/shell/env.sh reads the claude token per account"
-    return 0
-  fi
-  # shellcheck disable=SC2016 # the literal text of a hand-written block
-  if grep -qF 'claude-code-oauth-token-$_cc_acct' "$ctb_env"; then
-    echo "  WARN    ~/.config/shell/env.sh reads the claude token by email alone — two accounts with one email load one key; replace it with the block in local-machine-setup/machine-setup.sh (edit by hand)"
     return 0
   fi
   ctb_old=$(grep -nE '^[[:space:]]*export[[:space:]]+CUSTOM_CLAUDE_CODE_OAUTH_TOKEN="\$\(security find-generic-password -s claude-code-oauth-token -w( 2>/dev/null)?\)"[[:space:]]*$' "$ctb_env" | cut -d: -f1)
@@ -3102,7 +3107,7 @@ claude_token_block() {
   elif [ -n "$ctb_any" ]; then
     echo "  WARN    ~/.config/shell/env.sh line ${ctb_any% } sets CUSTOM_CLAUDE_CODE_OAUTH_TOKEN its own way — store the key with cswap.sh keys and replace the line with the block in local-machine-setup/machine-setup.sh (edit by hand)"
   fi
-  unset ctb_env ctb_old ctb_any ctb_real ctb_link
+  unset ctb_env ctb_email ctb_old ctb_any ctb_real ctb_link
 }
 
 stage_tooling() {
