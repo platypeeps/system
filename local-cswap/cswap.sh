@@ -260,11 +260,13 @@ KEY_PROBE='{"model":"claude-haiku-4-5","max_tokens":1,"system":"You are Claude C
 # One `claude setup-token` key per cswap account: read hidden from the
 # terminal, the first copy of a repeated paste kept, and stored only when
 # one API call works and names that account's organization, so a key
-# pasted at the wrong prompt overwrites no other account's item. The key
+# pasted at the wrong prompt overwrites no other account's item. A setup
+# token names no user (the profile API refuses it), so accounts that share
+# an organization get no key here. The key
 # goes in no argv, file or output: curl and `security -i` read it on
 # stdin. CSWAP_KEYS_TTY is for tests only.
 cmd_keys() {
-  local json pairs e want raw rest tok held got
+  local json pairs e want raw rest tok held got shared
   # A caller's `bash -x` would trace each key; nothing after this needs it.
   set +x
   [[ -x "$CSWAP_BIN" ]] || { echo "cswap not executable at $CSWAP_BIN" >&2; exit 1; }
@@ -278,6 +280,13 @@ cmd_keys() {
     fi
     if [[ ! "$want" =~ $UUID_RE ]]; then
       echo "$e: cswap names no organizationUuid for it; skipped"
+      continue
+    fi
+    # A key names its organization, not its member: in an organization two
+    # accounts share, either could own it, so neither is asked for one.
+    shared=$(grep -c " $want\$" <<<"$pairs")
+    if ((shared > 1)); then
+      echo "$e: $shared accounts share its organization, so a key cannot be matched to one; nothing stored"
       continue
     fi
     printf 'Key for %s (Enter to skip): ' "$e" >&2
@@ -406,7 +415,8 @@ usage: cswap.sh sync|status|keys
            `claude setup-token` key hidden, keep the first copy of a
            repeated paste, and store it as Keychain item
            claude-code-oauth-token-<email> only when one API call works
-           and names that account's organization; ~/.config/shell/env.sh loads the active account's key
+           and names that account's organization (accounts that share
+           one get none); ~/.config/shell/env.sh loads the active account's key
 
 environment: CSWAP_BIN, CSWAP_AUTO_ARGS (see cswap-auto.conf),
              SD_PACK_ROOT (default ~/repos/platypeeps/sd-workflow)

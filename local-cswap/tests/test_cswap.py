@@ -672,6 +672,19 @@ class HeadlessKeys(Machine):
         self.assertIn("user1@example.test: the key belongs to another account; nothing stored",
                       result.stdout)
 
+    def test_accounts_that_share_an_organization_store_no_key(self):
+        # A key names its organization only, so it cannot tell two members
+        # of one organization apart: either could be the owner.
+        self.accounts([(1, ONE), (2, ONE), (3, THREE)], active=1)
+        self.keychain.write_text("claude-code-oauth-token-user1@example.test sk-ant-kept\n")
+        result = self.keys(f"{self.GOOD}\n{self.GOOD}\n\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.held(), {"claude-code-oauth-token-user1@example.test": "sk-ant-kept"})
+        for e in ("user1@example.test", "user2@example.test"):
+            self.assertIn(f"{e}: 2 accounts share its organization", result.stdout)
+        # Neither is asked, so the first line goes to user3, whose org differs.
+        self.assertIn("user3@example.test: the key belongs to another account", result.stdout)
+
     def test_status_warns_per_account_with_no_key_and_names_the_email_only(self):
         self.publish(ONE)
         self.keychain.write_text("claude-code-oauth-token-user2@example.test sk-ant-x\n")

@@ -45,7 +45,7 @@ It also prints a `WARN` line for each account with no headless key.
 
 Headless claude runs (builders, reviews, cron jobs) take their key from `~/.config/shell/env.sh`, which reads the Keychain item `claude-code-oauth-token-<email>` of the account cswap made active, or the plain `claude-code-oauth-token` item when that account has none.
 machine-setup's `tooling` stage writes that block into env.sh.
-`keys` stores the items: for each account it reads a `claude setup-token` key hidden from the terminal, keeps the first copy of a repeated paste, and stores it only when one API call works and its `anthropic-organization-id` header is that account's `organizationUuid`, so a key pasted at the wrong prompt overwrites no other account's item.
+`keys` stores the items: for each account it reads a `claude setup-token` key hidden from the terminal, keeps the first copy of a repeated paste, and stores it only when one API call works and its `anthropic-organization-id` header is that account's `organizationUuid`, so a key pasted at the wrong prompt overwrites no other account's item. A setup token names its organization but not its user, so accounts that share an organization get no key from `keys`.
 No key reaches an argument list, a file or the output.
 
 ## Changing flags
