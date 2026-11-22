@@ -1944,43 +1944,77 @@ restore_accepted() { # job plist accepted
   fi
 }
 
-# An install killed after its bootout left the job unloaded with a pending
-# record. The accepted plist goes back in and loads first, before the job
-# file is even read: a definition broken since (JOB_TIMEOUT=invalid) or a
-# candidate that fails lint then still leaves the job loaded (round 10,
-# lane prepare note #71413). Its own locks, released after: the restored
-# label may log to another checkout, whose lock the install then takes.
+# A pending record is an install that did not end: it is written before
+# the bootout and goes only once a plist launchd accepted is loaded. The
+# caller holds the install lock (fd 7), so the install that wrote it is
+# dead, and this runs before the job file is read: a definition broken
+# since (JOB_TIMEOUT=invalid) or a candidate that fails lint still leaves
+# the job loaded (round 10, lane prepare notes #71413, #72617).
+# `print` right after a bootout can still find a label launchd is tearing
+# down, so a loaded label proves nothing: it is booted out and the
+# accepted plist loaded again. With no accepted copy no label was booted out (the seed needs a
+# loaded one), so `print` is read as it is. The run lock is released
+# after: the restored label may log to another checkout, whose lock the
+# install then takes.
 recover_interrupted() { # job
-  local job="$1" plist accepted err
+  local job="$1" plist accepted pending err
   plist="$(plist_for "$job")"
   accepted="$(accepted_plist_for "$job")"
-  [ "${CRON_JOBS_RUN:-}" != "$job" ] && [ -f "$accepted.pending" ] &&
-    [ -f "$accepted" ] && ! is_loaded "$job" || return 0
-  hold_install_lock "$job" || return 1
-  hold_job_lock "$job" || { exec 7>&-; return 1; }
-  # Read again under the lock: another install may have recovered it.
-  if [ -f "$accepted.pending" ] && [ -f "$accepted" ] && ! is_loaded "$job"; then
-    err="$(restore_accepted "$job" "$plist" "$accepted")"
-    case "$err" in
-      *"did not load"*) echo "failed: $job (interrupted install)$err" >&2 ;;
-      *) echo "recovered: $job (an interrupted install)$err" ;;
-    esac
+  pending="$accepted.pending"
+  [ -f "$pending" ] || return 0
+  if [ ! -f "$accepted" ]; then
+    if ! is_loaded "$job" || ! cmp -s "$pending" "$plist"; then
+      rm -f "$pending"
+    elif ! mv "$pending" "$accepted"; then
+      echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
+      return 1
+    fi
+    return 0
   fi
-  exec 8>&- 7>&-
+  hold_job_lock "$job" || return 1
+  # Loaded and matching, the record is a plist launchd accepted: the
+  # bootstrap ran, or the candidate equals the plist it replaced. Saved
+  # first, checked: refused, nothing is unloaded and the record stays.
+  if is_loaded "$job" && cmp -s "$pending" "$plist" && ! mv "$pending" "$accepted"; then
+    exec 8>&-
+    echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
+    return 1
+  fi
+  if is_loaded "$job"; then
+    launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
+    wait_unloaded "$job"
+    if is_loaded "$job"; then
+      exec 8>&-
+      echo "cron-jobs.sh: $job: launchd still holds the label after bootout; an interrupted install is not recovered yet, retry" >&2
+      return 1
+    fi
+  fi
+  err="$(restore_accepted "$job" "$plist" "$accepted")"
+  case "$err" in
+    # A record kept stays the trigger; the install below may still load
+    # its candidate, and a refused one tries the accepted plist again.
+    *"did not load"*) echo "failed: $job (interrupted install)$err" >&2 ;;
+    *) echo "recovered: $job (an interrupted install)$err" ;;
+  esac
+  exec 8>&-
 }
 
 cmd_install() {
   local job="$1" err plist new accepted pending unrecorded
-  recover_interrupted "$job" || return 1
-  load_job "$job"
-  ensure_job_launch || return 1
   if [ "${CRON_JOBS_RUN:-}" = "$job" ]; then
+    load_job "$job"
+    ensure_job_launch || return 1
     defer_install "$job"
     return
   fi
+  # One install lock from recovery to activation: an install that died
+  # while this one waited is recovered under it (note #72617).
+  hold_install_lock "$job" || return 1
+  recover_interrupted "$job" || { exec 7>&-; return 1; }
+  load_job "$job"
+  ensure_job_launch || { exec 7>&-; return 1; }
   # Before the plist is written: a refused install leaves the file launchd
   # holds, so `verify` still reads it STALE and the next install retries.
-  hold_install_lock "$job" || return 1
   hold_job_lock "$job" || { exec 7>&-; return 1; }
   # The helper's cancellation, read under the lock uninstall takes too.
   if [ -n "${REINSTALL_HELPER:-}" ] && [ ! -f "$(helper_plist_for "$job")" ]; then
@@ -1998,27 +2032,6 @@ cmd_install() {
   new="$plist.new"
   accepted="$(accepted_plist_for "$job")"
   pending="$accepted.pending"
-  # A pending copy is a bootstrap an earlier install did not see end. It
-  # is written after the old label is out and before the new plist goes
-  # in, so a loaded label whose plist matches it is launchd holding it:
-  # the bootstrap, or a login, accepted it. Anything else never loaded.
-  # Unloaded, the earlier install died after its bootout, and
-  # recover_interrupted already loaded the accepted plist, or failed to.
-  if [ -f "$pending" ]; then
-    if is_loaded "$job" && cmp -s "$pending" "$plist"; then
-      # Checked: failed, the candidate below overwrote the pending record
-      # and the rollback copy stayed obsolete. Refused, both are kept.
-      if ! mv "$pending" "$accepted"; then
-        echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
-        exec 8>&- 7>&-
-        return 1
-      fi
-    elif is_loaded "$job" || [ ! -f "$accepted" ]; then
-      rm -f "$pending"
-    fi
-    # Unloaded with an accepted copy: recover_interrupted could not load
-    # it, and the record stays the next install's trigger.
-  fi
   # Seeds the rollback point on the first install that keeps one: a loaded
   # job's plist is the one launchd accepted. Without it a refused bootstrap
   # has nothing to restore, so a failed copy changes nothing.
@@ -2046,8 +2059,10 @@ cmd_install() {
   fi
   # Replaced under a label still loaded, the plist on disk would match the
   # pending copy, and a crash then had the next install promote it untested.
+  # The pending record stays: the teardown may still end, and then it is
+  # the next install's trigger to reload the accepted plist (#72617).
   if is_loaded "$job"; then
-    rm -f "$new" "$pending"
+    rm -f "$new"
     echo "cron-jobs.sh: $job: launchd still holds the old label after bootout; nothing changed" >&2
     exec 8>&- 7>&-
     return 1

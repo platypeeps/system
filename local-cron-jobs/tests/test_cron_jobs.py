@@ -1969,6 +1969,117 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertFalse(gone.exists(), "the accepted job is not loaded")
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
+    # Lane prepare round 2 (note #72617), one test per step an install can
+    # be killed at. `gone.` marks a label launchd no longer holds.
+    def gone(self):
+        return self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+
+    def break_job_file(self):
+        job = self.fx.jobs / "demo.job"
+        job.write_text(job.read_text() + 'JOB_TIMEOUT="invalid"\n')
+
+    def lint_failing_path(self, launchd):
+        stubs = self.fx.tmp / "refusing-plutil-bin"
+        stubs.mkdir(exist_ok=True)
+        (stubs / "plutil").write_text("#!/bin/sh\nexit 1\n")
+        (stubs / "plutil").chmod(0o755)
+        return f"{stubs}{os.pathsep}{self.fx.path(launchd)}"
+
+    def test_an_install_killed_before_its_bootout_keeps_the_job_loaded(self):
+        """Row: killed with the pending copy written, before bootout."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.killed_install("kill-at-bootout-bin", "  bootout) kill -9 0 ;;\n")
+        self.assertFalse(self.gone().exists())
+        self.break_job_file()
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("JOB_TIMEOUT", result.stderr)
+        self.assertFalse(self.gone().exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_an_install_killed_while_launchd_tears_the_label_down_recovers(self):
+        """Row: killed after bootout returned, before launchd ended the
+        teardown, so `print` still finds the label. Recovery trusted that
+        print, skipped, and the job file (JOB_TIMEOUT=invalid) then
+        exited; the teardown ended and left the job unloaded."""
+        self.plist().write_text("the plist launchd holds\n")
+        tearing = self.fx.tmp / "tearing"
+        self.killed_install("kill-in-teardown-bin",
+                            f'  bootout) touch "{tearing}"; kill -9 0 ;;\n')
+        self.assertTrue(tearing.exists())
+        self.assertFalse(self.gone().exists())
+        self.break_job_file()
+        path = self.fx.path(self.launchd_with("teardown-bin",
+            f'  bootout) rm -f "{tearing}"; touch "$gone"; exit 0 ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("JOB_TIMEOUT", result.stderr)
+        # The dead installer's teardown ends now, if nothing replaced it.
+        if tearing.exists():
+            self.gone().touch()
+        self.assertFalse(self.gone().exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_an_install_refused_on_a_label_still_loaded_keeps_its_trigger(self):
+        """Row: bootout returned, the bounded wait ran out with the label
+        still found, and the install refused and dropped its pending
+        record. The teardown ended later; the next install, its
+        candidate refused by plutil, had no trigger and left the job
+        unloaded."""
+        self.plist().write_text("the plist launchd holds\n")
+        slow = self.fx.path(self.launchd_with("slow-teardown-bin", "  bootout) exit 0 ;;\n"))
+        result = self.run_script("install", "demo", path=slow)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("still holds the old label", result.stderr)
+        self.gone().touch()  # the teardown ends
+        result = self.run_script("install", "demo", path=self.lint_failing_path(self.launchd()))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse(self.gone().exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_an_install_killed_after_its_bootstrap_promotes_the_loaded_plist(self):
+        """Row: killed after bootstrap, before the promote."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.killed_install("kill-after-bootstrap-bin",
+                            '  bootstrap) rm -f "$gone"; kill -9 0 ;;\n')
+        self.assertFalse(self.gone().exists())
+        loaded = self.plist().read_text()
+        self.assertNotEqual(loaded, "the plist launchd holds\n")
+        result = self.run_script("install", "demo", path=self.lint_failing_path(self.launchd()))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse(self.gone().exists(), "the loaded job is not loaded")
+        self.assertEqual(self.accepted().read_text(), loaded)
+        self.assertFalse(self.accepted().with_name(self.accepted().name + ".pending").exists())
+
+    def test_an_install_waiting_on_the_lock_recovers_one_killed_meanwhile(self):
+        """Lane prepare round 2: an update probed for an interrupted install
+        before taking the install lock, found the label loaded, then
+        waited on a manual install that died after its bootout. With the
+        lock it saw the pending record and the job unloaded, and its
+        lint-failing candidate left it so. Recovery now runs under the
+        lock the activation holds."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.accepted().parent.mkdir(parents=True, exist_ok=True)
+        self.accepted().write_text("the plist launchd holds\n")
+        held = open(self.accepted().with_name(f"{LABEL_PREFIX}.cron.demo.install.flock"), "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        env = {"PATH": self.lint_failing_path(self.launchd()), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+               "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK}
+        update = subprocess.Popen(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: update.poll() is None and update.kill())
+        time.sleep(1.5)
+        # The manual install, killed after its bootout.
+        self.accepted().with_name(self.accepted().name + ".pending").write_text("a candidate\n")
+        self.gone().touch()
+        held.close()
+        out, err = update.communicate(timeout=60)
+        self.assertEqual(update.returncode, 1, out + err)
+        self.assertFalse(self.gone().exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
     def test_a_failed_replace_after_an_interrupted_install_restores_the_accepted_plist(self):
         """Round 9: after an install died between replace and bootstrap,
         the plist on disk was never loaded. A later install whose replace
@@ -2290,7 +2401,10 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("demo: launchd still holds the old label", result.stderr)
         self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
-        self.assertFalse(self.accepted().with_name(self.accepted().name + ".pending").exists())
+        # Kept as the trigger (note #72617); it never matches the plist
+        # on disk, so no install promotes it.
+        pending = self.accepted().with_name(self.accepted().name + ".pending")
+        self.assertNotEqual(pending.read_text(), self.plist().read_text())
         self.assertEqual(self.accepted().read_text(), "the plist launchd holds\n")
         self.assertNotIn("launchctl bootstrap", self.calls.read_text())
 
