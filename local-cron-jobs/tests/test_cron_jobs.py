@@ -1706,6 +1706,25 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertFalse(self.plist().exists())
         self.assertFalse(self.failed_marker().exists())
 
+    def test_a_helper_waits_on_the_requesting_runs_lock_too(self):
+        """Review: the helper waited only on the lock the loaded label
+        names. Checkout A installed the job; a manual run from this
+        checkout asked for its own reinstall, and the helper, finding
+        A's lock free, loaded this checkout's plist while the run still
+        held this checkout's lock, so the next slot skipped."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.helper_plist().write_text("helper\n")
+        other = self.fx.tmp / "checkout-a" / "logs"
+        other.mkdir(parents=True)
+        self.hold()
+        result = self.run_script("reinstall-after-run", "demo",
+                                 env={"CRON_JOBS_REINSTALL_WAIT": "1",
+                                      "CRON_TEST_STDOUT_DIR": str(other)})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("a run still holds the lock after 1 s", result.stderr)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertEqual(self.bootouts(), [f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo"])
+
     def test_a_failed_helper_leaves_a_record_and_a_success_clears_it(self):
         """Review blocker: a helper failure reached only the job log, after
         the night's report. It now leaves logs/.<job>.reinstall.failed,

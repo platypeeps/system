@@ -1894,15 +1894,18 @@ EOF
 # removes it. An uninstall in between cancels: the helper's plist is gone.
 cmd_reinstall_after_run() { # job
   local job="$1" waited=0 rc=0 wait="${CRON_JOBS_REINSTALL_WAIT:-14400}" why=""
-  local errs="$LOG_DIR/.$job.reinstall.err" lock
-  # The lock install will test: a label another checkout loaded locks that
-  # checkout's logs/. Unknown, it falls back here and install refuses.
-  lock="$(job_lock_path "$job" 2>/dev/null)" || lock="$LOG_DIR/.$job.flock"
-  while lock_is_live "$lock" && [ "$waited" -lt "$wait" ]; do
+  local errs="$LOG_DIR/.$job.reinstall.err" lock own="$LOG_DIR/.$job.flock"
+  # Two locks. The requesting run's, in this checkout's logs/: the helper
+  # runs the cron-jobs.sh of the run that asked, and a manual run there
+  # under a label another checkout loaded holds only this one (sd:9826
+  # review). And the lock install will test: a label another checkout
+  # loaded locks that checkout's logs/; unknown, install refuses.
+  lock="$(job_lock_path "$job" 2>/dev/null)" || lock="$own"
+  while { lock_is_live "$own" || lock_is_live "$lock"; } && [ "$waited" -lt "$wait" ]; do
     sleep 1
     waited=$((waited + 1))
   done
-  if lock_is_live "$lock"; then
+  if lock_is_live "$own" || lock_is_live "$lock"; then
     why="cron-jobs.sh: $job: a run still holds the lock after $wait s; not reinstalled, the next update retries"
     echo "$why" >&2
     rc=1
