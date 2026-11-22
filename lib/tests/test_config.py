@@ -387,6 +387,13 @@ class ShellEnv(unittest.TestCase):
             self.assertEqual(result.stdout, "")
             self.assertNotIn("tok-custom", result.stderr)
 
+    def test_a_caller_set_x_traces_no_token_and_stays_on(self):
+        self.env_sh("CUSTOM_CLAUDE_CODE_OAUTH_TOKEN=tok-secret\nexport CUSTOM_CLAUDE_CODE_OAUTH_TOKEN\n")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.home), "WANT": "tok-secret"}
+        result = shell(f"set -x; st_shell_env; case $- in *x*) echo on ;; esac; sh -c '{self.SEEN}'", env)
+        self.assertNotIn("tok-secret", result.stderr)
+        self.assertEqual(result.stdout, "on\nsame\n", result.stderr)
+
 
 #: `<environ>.get(X) or <file values>.get(X)`, the same name on both sides: an
 #: exported empty value is falsy, so the file wins where the shell keeps it.

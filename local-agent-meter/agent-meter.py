@@ -387,13 +387,13 @@ def read_one(provider, accounts, accounts_error, now, cap=None):
     return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now, cap)
 
 
-def live(a, list_key, starting, parse, read, row_key, earlier=()) -> None:
+def live(a, list_key, starting, parse, read, row_key, retired=()) -> None:
     """Read one Settings list, read each entry, write one `heartbeat` row each.
 
     The list is the setting row `list_key`. A database that never held it
     gets `starting`, written once, so Settings shows what the job reads; a
-    list that still holds one of `earlier`, unedited, moves to `starting`; a
-    cleared row is "not configured" and nothing is read. A refused line is
+    row equal to a `retired` default was never edited and moves to
+    `starting` (sd:9722 review); a cleared row is "not configured" and nothing is read. A refused line is
     an SD_REPORT_ATTENTION line and the rest still run. The rows land in one
     transaction: all of a run's readings, or none and the old ones stand.
     A store that does not open, read or take the rows exits 1.
@@ -427,12 +427,11 @@ def live(a, list_key, starting, parse, read, row_key, earlier=()) -> None:
                       % (a.command, list_key, len(starting.splitlines())))
             except writes.SettingStale:
                 held = writes.read_settings(connection, [list_key])
-        elif held[list_key] in earlier:
+        elif held[list_key] in retired:
             try:
                 writes.set_setting(connection, list_key, starting, before=held[list_key])
                 held = {list_key: starting}
-                print("agent-meter %s: %s moved to the new starting list"
-                      % (a.command, list_key))
+                print("agent-meter %s: %s moved to the new default" % (a.command, list_key))
             except writes.SettingStale:
                 held = writes.read_settings(connection, [list_key])
         text = held.get(list_key)
@@ -751,7 +750,7 @@ def main() -> None:
     elif a.command == "services":
         live(a, SERVICES_LIST, service_status.STARTING,
              service_status.parse_services, read_service, SERVICES_KEY,
-             service_status.EARLIER)
+             service_status.RETIRED)
     else:
         collect(a)
 

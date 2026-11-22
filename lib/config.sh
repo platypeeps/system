@@ -72,8 +72,8 @@ st_obsidian_vault() {
 # env.sh ended cron runs with no FAILED line (sd:9652): `sh -n` checks it
 # first (the parser that dots it), and a file that fails is skipped and named
 # on one stderr line. Xtrace stays off for the read and the mapping, so no
-# value reaches a trace; a caller's own xtrace comes back after. The threat
-# model is one operator: a file env.sh sources is not checked.
+# value reaches a trace (sd:9910); a caller's own xtrace comes back after.
+# The threat model is one operator: a file env.sh sources is not checked.
 st_shell_env() {
     case $- in *x*) _st_x=1 ;; *) _st_x= ;; esac
     set +x
