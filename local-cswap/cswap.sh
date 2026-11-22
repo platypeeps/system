@@ -463,18 +463,19 @@ now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 # Right before a send (operator ruling 2026-11-18): a fresh read of the
 # pane's ($1) screen says send, its row's switch ($3) is still current,
 # the pane still runs the owed session ($2)
-# and is idle or done, and a last read shows the same screen; then /rc.
+# and is idle or done, a last read shows the same screen, and the
+# session is asked once more after it; then /rc.
 # Else one line, and it stays owed (1); a send that failed or ran late
 # returns 2, as it may have landed. herdr has no check-and-send, so the
 # span from the first read to the end of the send must fit RC_GAP_MS.
 send_rc() {
   local now got screen last verdict start took left bound=$(((RC_GAP_MS + 999) / 1000))
-  # Screen, get, screen. A session that took the pane during the first
-  # read shows a drop and an empty box of its own, so the get follows it
-  # (sd:9427 review). A draft typed during the get leaves session and
-  # status alone, so the screen is read again and must not have changed
-  # (sd:9427 review); a new session redraws the screen. Each check goes
-  # stale while the next call runs, so all must fit RC_GAP_MS.
+  # Screen, get, screen, get. A session that took the pane during a
+  # read shows a drop and an empty box of its own, so a get follows
+  # each read (sd:9427 review). A draft typed during the get leaves
+  # session and status alone, so the screen is read again and must not
+  # have changed (sd:9427 review). Each check goes stale while the next
+  # call runs, so all must fit RC_GAP_MS.
   start=$(now_ms)
   screen=$(rc_step "$bound" "$HERDR" agent read "$1" --format ansi) ||
     { rc_failed read "$1" $?; return 1; }
@@ -497,6 +498,15 @@ send_rc() {
     { rc_failed read "$1" $?; return 1; }
   if [[ "$last" != "$screen" ]]; then
     echo "reconnect: $1 changed before the send (its screen moved during the check); still owed"
+    return 1
+  fi
+  # A new session can draw the same bytes, so the last read proves no
+  # session: the session is asked once more after it (sd:9427 review).
+  got=$(rc_step "$bound" "$HERDR" agent get "$1") ||
+    { rc_failed get "$1" $?; return 1; }
+  now=$(rc_read pane <<<"$got") || now=""
+  if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
+    echo "reconnect: $1 changed before the send (${now:-no claude pane in the answer}); still owed"
     return 1
   fi
   took=$(($(now_ms) - start))

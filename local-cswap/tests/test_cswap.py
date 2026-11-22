@@ -193,6 +193,10 @@ elif args[:2] == ["agent", "get"]:
         import shutil
         shutil.copy(os.path.join(os.environ["FAKE_STATE_DIR"], "rc-owed"),
                     os.environ["FAKE_OWED_AT_GET"])
+    # FAKE_CLOCK_JUMP_GET=N moves the stub clock on at the Nth get.
+    if os.environ.get("FAKE_CLOCK_JUMP_GET") == str(open(os.environ["FAKE_CALLS"]).read().count("herdr agent get ")):
+        with open(os.environ["FAKE_CLOCK"], "w") as f:
+            f.write(os.environ["FAKE_CLOCK_JUMP"])
     if os.environ.get("FAKE_HERDR_GET_FAIL"):
         print("herdr: no such pane", file=sys.stderr)
         sys.exit(1)
@@ -1084,6 +1088,18 @@ class RemoteControlReconnects(Machine):
         self.assertIn("reconnect: w1:p1 changed before the send (w1:p1 s9 idle); still owed",
                       result.stdout)
 
+    def test_a_session_that_changes_during_the_final_read_gets_no_keys(self):
+        # sd:9427 review: the final screen read matched byte for byte
+        # after a new session took the pane, as its screen can look the
+        # same. The session is asked again after that read.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"session": "s9", "reads": 3}])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.assertIn("reconnect: w1:p1 changed before the send (w1:p1 s9 idle); still owed",
+                      result.stdout)
+
     def test_a_draft_typed_during_the_last_get_gets_no_keys(self):
         # Review on sd:9427: typing during the final `agent get` left
         # session and status unchanged; within the gap, /rc joined the
@@ -1146,7 +1162,7 @@ class RemoteControlReconnects(Machine):
         # sd:9427 triage, HIGH: the budget ran out after the last screen
         # read; herdr's prompt never ran, yet the pane was marked sent
         # and printed "not sent again". The stub clock jumps past the
-        # budget at the third read, the last one before the keys.
+        # budget at the second get, the last check before the keys.
         clock = self.tmp / "clock"
         executable(self.stubs / "date", '#!/bin/sh\n'
                    'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
@@ -1154,7 +1170,7 @@ class RemoteControlReconnects(Machine):
                    'exec /bin/date "$@"\n')
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
-        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_AT="3",
+        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_GET="2",
                            FAKE_CLOCK_JUMP="61")
         self.assertEqual(self.prompts(), [])
         self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
