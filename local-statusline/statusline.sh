@@ -49,17 +49,19 @@ except Exception:
     case "$pair" in "$email="*) email=${pair#*=}; break ;; esac
   done
 
-  # System load: the 1, 5 and 15 minute averages. The 1 minute value is
-  # yellow at or above the logical CPU count and red at twice that. Empty
-  # where sysctl has no vm.loadavg (Linux), so the segment is left out.
-  load=$(sysctl -n vm.loadavg hw.logicalcpu 2>/dev/null | tr -d '{}' | awk '
-    NR == 1 { a = $1; b = $2; c = $3 }
-    NR == 2 { n = $1 + 0 }
+  # CPU use: the summed ps %cpu over the logical CPU count, capped at 100.
+  # Load counts runnable threads, so a booted iOS simulator read 400 at
+  # 37% busy (pack sd:9946). Yellow at 70%, red at 90%. Empty where
+  # sysctl has no hw.logicalcpu, so the segment is left out.
+  cpu=$(ncpu=$(sysctl -n hw.logicalcpu 2>/dev/null) && ps -A -o %cpu= 2>/dev/null \
+    | awk -v n="$ncpu" '
+    { t += $1 }
     END {
-      if (a == "") exit
-      s = sprintf("load %.1f %.1f %.1f", a, b, c)
-      if (n > 0 && a + 0 >= 2 * n) s = "\033[1;38;5;196m" s "\033[0m"
-      else if (n > 0 && a + 0 >= n) s = "\033[38;5;214m" s "\033[0m"
+      if (n + 0 <= 0) exit
+      p = int(t / n + 0.5); if (p > 100) p = 100
+      s = sprintf("cpu %d%%", p)
+      if (p >= 90) s = "\033[1;38;5;196m" s "\033[0m"
+      else if (p >= 70) s = "\033[38;5;214m" s "\033[0m"
       print s
     }' || true)
 
@@ -128,7 +130,7 @@ except Exception: pass' "$stdin_file" 2>/dev/null || true)
   #      way the Cache line can. It is folded onto the preceding line here.
   #      It only exists once a session has compacted at least once.
   #   2. The login (label or email) joins the end of the Tokens line, or
-  #      line 1 when the HUD shows no Tokens line yet; the load joins line 1.
+  #      line 1 when the HUD shows no Tokens line yet; the CPU use joins line 1.
   #   3. The allowance warning joins line 2 (the context bar), just left of
   #      the Cache segment that mergeGroups moved onto that line. Line 1 is
   #      already the widest line in the HUD, hence not there.
@@ -137,7 +139,7 @@ except Exception: pass' "$stdin_file" 2>/dev/null || true)
   # Falling back to line 1 keeps the warning visible if the HUD renders a
   # single line.
   "$bun_bin" --env-file /dev/null "${plugin_dir}src/index.ts" < "$stdin_file" \
-    | awk -v e="$email" -v l="$load" -v w="$warn" -v sep="$SEP" -v clabel="$COMPACTIONS_LABEL" -v tlabel="$TOKENS_LABEL" '
+    | awk -v e="$email" -v l="$cpu" -v w="$warn" -v sep="$SEP" -v clabel="$COMPACTIONS_LABEL" -v tlabel="$TOKENS_LABEL" '
         # claude-hud hardcodes the "Weekly" usage label (i18n has no user
         # override); shorten it, and the "Fable weekly" window name, to W.
         { gsub(/[Ww]eekly/, "W"); line[NR] = $0 }
@@ -228,7 +230,7 @@ usage: statusline.sh render|install
 
   render     print the status line: claude-hud output, with the login
              (its STATUSLINE_ACCOUNT_LABELS label, else the email) at the
-             end of the Tokens line, the system load on line 1, the allowance
+             end of the Tokens line, the CPU use on line 1, the allowance
              warning to line 2, and the compactions line folded onto the
              line above it
   install    point statusLine in ~/.claude/settings.json at this script

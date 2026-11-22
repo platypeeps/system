@@ -2,8 +2,8 @@
 
 Each case builds a throwaway config folder holding a claude-hud version
 folder, a stub `bun` (named by BUN_BIN) that ignores its arguments and prints
-two fixed HUD lines, and a stub `sysctl` first on PATH that answers
-`sysctl -n vm.loadavg hw.logicalcpu` from the environment. HOME points into
+two fixed HUD lines, and stubs `sysctl` and `ps` first on PATH that answer
+`sysctl -n hw.logicalcpu` and `ps -A -o %cpu=` from the environment. HOME points into
 the same temporary folder, so the `~/.claude.json` fallback finds nothing.
 The suite therefore runs the same on Linux as on a Mac.
 """
@@ -32,11 +32,13 @@ printf '%%s\\n' '%s'
 [ -z "${FAKE_HUD_LINE3:-}" ] || printf '%%s\\n' "$FAKE_HUD_LINE3"
 """ % (HUD_LINE_1, HUD_LINE_2)
 
-# vm.loadavg prints "{ A B C }" and hw.logicalcpu a count, one per line.
+# hw.logicalcpu prints a count; ps prints one %cpu value per process.
 SYSCTL_STUB = """#!/bin/sh
 [ "${FAKE_SYSCTL_FAIL:-0}" = 1 ] && exit 1
-printf '{ %s }\\n' "$FAKE_LOADAVG"
 printf '%s\\n' "$FAKE_NCPU"
+"""
+PS_STUB = """#!/bin/sh
+for v in $FAKE_PCPU; do printf '%s\\n' "$v"; done
 """
 
 
@@ -60,6 +62,7 @@ class StatuslineTest(unittest.TestCase):
         self.bun = self.bin / "bun"
         write_exec(self.bun, BUN_STUB)
         write_exec(self.bin / "sysctl", SYSCTL_STUB)
+        write_exec(self.bin / "ps", PS_STUB)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -71,7 +74,7 @@ class StatuslineTest(unittest.TestCase):
             "CLAUDE_CONFIG_DIR": str(self.config),
             "BUN_BIN": str(self.bun),
             "COLUMNS": "100",
-            "FAKE_LOADAVG": "5.0 4.0 3.0",
+            "FAKE_PCPU": "100.0 60.0",
             "FAKE_NCPU": "8",
         }
         env.update(extra)
@@ -94,40 +97,38 @@ class StatuslineTest(unittest.TestCase):
         self.assertEqual(len(lines), 2, proc.stdout)
         return lines
 
-    def test_load_below_cpu_count_is_uncoloured(self):
-        line1, line2 = self.render(FAKE_LOADAVG="5.0 4.0 3.0", FAKE_NCPU="8")
-        self.assertEqual(line1, HUD_LINE_1 + SEP + "load 5.0 4.0 3.0")
-        self.assertNotIn("\033", line1)
+    def test_cpu_below_70_is_uncoloured(self):
+        line1, line2 = self.render(FAKE_PCPU="100.0 60.0", FAKE_NCPU="8")
+        self.assertEqual(line1, HUD_LINE_1 + SEP + "cpu 20%")
         self.assertEqual(line2, HUD_LINE_2)
 
-    def test_load_at_cpu_count_is_yellow(self):
-        line1, _ = self.render(FAKE_LOADAVG="8.0 4.0 3.0", FAKE_NCPU="8")
-        self.assertTrue(
-            line1.endswith(SEP + YELLOW + "load 8.0 4.0 3.0\033[0m"), repr(line1)
-        )
-        self.assertNotIn(RED, line1)
+    def test_cpu_at_70_is_yellow(self):
+        line1, _ = self.render(FAKE_PCPU="400 160", FAKE_NCPU="8")
+        self.assertTrue(line1.endswith(SEP + YELLOW + "cpu 70%[0m"), repr(line1))
 
-    def test_load_at_twice_cpu_count_is_red(self):
-        line1, _ = self.render(FAKE_LOADAVG="16.0 4.0 3.0", FAKE_NCPU="8")
-        self.assertTrue(
-            line1.endswith(SEP + RED + "load 16.0 4.0 3.0\033[0m"), repr(line1)
-        )
-        self.assertNotIn(YELLOW, line1)
+    def test_cpu_at_90_is_red(self):
+        line1, _ = self.render(FAKE_PCPU="700 20", FAKE_NCPU="8")
+        self.assertTrue(line1.endswith(SEP + RED + "cpu 90%[0m"), repr(line1))
 
-    def test_failing_sysctl_leaves_load_out(self):
+    def test_cpu_caps_at_100(self):
+        # ps %cpu is a decaying average and can sum past the core count.
+        line1, _ = self.render(FAKE_PCPU="900", FAKE_NCPU="8")
+        self.assertTrue(line1.endswith(SEP + RED + "cpu 100%[0m"), repr(line1))
+
+    def test_failing_sysctl_leaves_cpu_out(self):
         proc = self.run_script("render", FAKE_SYSCTL_FAIL="1")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertNotIn("load", proc.stdout)
+        self.assertNotIn("cpu", proc.stdout)
         self.assertEqual(proc.stdout.splitlines(), [HUD_LINE_1, HUD_LINE_2])
 
-    def test_email_joins_line_one_before_load(self):
+    def test_email_joins_line_one_before_cpu(self):
         (self.root / "claude.json").write_text(
             json.dumps({"oauthAccount": {"emailAddress": "someone@example.test"}})
         )
         line1, line2 = self.render()
         self.assertEqual(
             line1,
-            HUD_LINE_1 + SEP + "someone@example.test" + SEP + "load 5.0 4.0 3.0",
+            HUD_LINE_1 + SEP + "someone@example.test" + SEP + "cpu 20%",
         )
         self.assertEqual(line2, HUD_LINE_2)
 
@@ -141,7 +142,7 @@ class StatuslineTest(unittest.TestCase):
             'STATUSLINE_ACCOUNT_LABELS="a@example.test=one b@example.test=two"\n'
         )
         line1, _ = self.render()
-        self.assertEqual(line1, HUD_LINE_1 + SEP + "two" + SEP + "load 5.0 4.0 3.0")
+        self.assertEqual(line1, HUD_LINE_1 + SEP + "two" + SEP + "cpu 20%")
         # An unmapped login keeps its full email.
         line1, _ = self.render(STATUSLINE_ACCOUNT_LABELS="a@example.test=one")
         self.assertIn(SEP + "b@example.test" + SEP, line1)
@@ -158,7 +159,7 @@ class StatuslineTest(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         lines = proc.stdout.splitlines()
-        self.assertEqual(lines[0], HUD_LINE_1 + SEP + "load 5.0 4.0 3.0")
+        self.assertEqual(lines[0], HUD_LINE_1 + SEP + "cpu 20%")
         self.assertEqual(lines[2], tokens + SEP + "two")
 
     def test_missing_claude_hud_exits_1(self):
