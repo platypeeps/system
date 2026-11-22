@@ -3151,6 +3151,7 @@ open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$hud_config"
     # deny rules (secret reads, GitHub issues, claude-mem work state), no
     # attribution lines, the `sd today` hook, the checkout_guard.py hook
     # (sd:6001), the rtk hook guarded off in builders (sd:9714),
+    # UV_CACHE_DIR, the sessions' own uv cache (sd:9848),
     # and DISABLE_AUTOUPDATER (the
     # weekly `brew upgrade --cask --greedy` moves the claude-code@latest
     # cask). It adds missing entries after a

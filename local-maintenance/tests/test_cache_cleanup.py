@@ -109,7 +109,8 @@ class CacheCleanupTest(Harness):
               f'  "cache prune") exit {prune_rc} ;; esac\n')
         # Not loaded: no agent is paused, so the real launchd is never asked.
         _stub(self.bin / "launchctl", 'echo "launchctl $*" >> "$CALLS"\nexit 1\n')
-        _stub(self.bin / "pgrep", "exit 0\n" if foreign else "exit 1\n")
+        # `lsof -t <cache>/.lock`: the pids that hold this cache's lock.
+        _stub(self.bin / "lsof", 'printf "%s\\n" 101 102 3\n' if foreign else "exit 1\n")
 
     def test_run_prunes_the_uv_cache(self):
         self.uv(foreign=False)

@@ -54,6 +54,18 @@ UV_PRUNE_LABEL="$LABEL_PREFIX.uv-cache-prune"
 # process, so pausing it only made it reload its model (sd:9556).
 UV_PRUNE_PAUSE="${UV_PRUNE_PAUSE-$LABEL_PREFIX.google-workspace-mcp}"
 UV_PRUNE_STATE="${UV_PRUNE_STATE:-$HOME/.local/state/uv-prune/paused}"
+# Claude sessions use their own uv cache (UV_CACHE_DIR in the
+# claude_settings.py baseline, sd:9848): each session's uvx MCP proxy holds
+# its cache's lock while the session lives, and is never signalled. So the
+# nightly run prunes the main cache only, and the login run, when no session
+# is up yet, prunes this one too. Empty: no session cache.
+UV_PRUNE_SESSION_CACHE="${UV_PRUNE_SESSION_CACHE-$HOME/.cache/uv-claude}"
+# Print the pids of the processes that hold a cache's lock file open. A
+# holder of another cache, such as a session's, does not count.
+uv_holders() {
+  lsof=$(command -v lsof 2>/dev/null) || lsof=/usr/sbin/lsof
+  "$lsof" -t "$1/.lock" 2>/dev/null
+}
 uv_prune() {
   uid=$(id -u)
   paused=""
@@ -66,7 +78,8 @@ uv_prune() {
   if ! command -v uv >/dev/null 2>&1; then
     echo "uv-prune: uv is not installed; nothing to prune"; return 0
   fi
-  cache=$(uv cache dir 2>/dev/null) || cache="$HOME/.cache/uv"
+  # The main cache, even when the caller runs inside a session's cache.
+  cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null) || cache="$HOME/.cache/uv"
   if [ ! -d "$cache" ]; then
     echo "uv-prune: no cache at $cache; nothing to prune"; return 0
   fi
@@ -90,33 +103,44 @@ uv_prune() {
   # nothing here proves its client is gone, and a launcher can hand its
   # pipes on (operator ruling, sd:9460). The prune skips while one holds
   # the lock; the login prune after a reboot cleans the cache.
-  # Give the paused agents' uv and uvx processes time to exit.
-  waited=0
-  while { pgrep -x uv || pgrep -x uvx; } >/dev/null 2>&1 && [ "$waited" -lt "${UV_PRUNE_WAIT:-20}" ]; do
-    sleep 1; waited=$((waited + 1))
-  done
-  if pgrep -x uv >/dev/null 2>&1 || pgrep -x uvx >/dev/null 2>&1; then
-    # Name them by executable and pid, so a finding says which process to
-    # stop (sd:9377). Never the arguments: they can carry a token or path.
-    holders=$(ps -A -o pid= -o comm= 2>/dev/null | awk '
-      { pid = $1; sub(/^ *[0-9]+ +/, ""); n = split($0, w, "/"); c = w[n]
-        if (c != "uv" && c != "uvx") next
-        if (!(c in p)) o[++m] = c; p[c] = p[c] (p[c] == "" ? "" : " ") pid }
-      END { for (i = 1; i <= m; i++) printf "%s%s pid %s", (i > 1 ? "; " : ""), o[i], p[o[i]] }')
-    echo "uv-prune: holders: ${holders:-unknown, ps listed none}"
-    echo "uv-prune: another uv process holds the cache; skipped"
-    uv_prune_resume || return 1
-    return 0
+  uv_prune_cache "$cache" "${UV_PRUNE_WAIT:-20}"
+  if [ -n "$UV_PRUNE_SESSION_CACHE" ] && [ -d "$UV_PRUNE_SESSION_CACHE" ]; then
+    uv_prune_cache "$UV_PRUNE_SESSION_CACHE" 0
   fi
-  before=$(du -sk "$cache" | cut -f1)
-  prune_rc=0
-  UV_LOCK_TIMEOUT="${UV_PRUNE_LOCK_TIMEOUT:-60}" uv cache prune || prune_rc=$?
-  after=$(du -sk "$cache" | cut -f1)
-  # A failed prune is logged, not returned: a nonzero exit makes launchd run
-  # this again, which would pause the MCP again in a loop.
-  echo "uv-prune: $cache $((before / 1024)) MB -> $((after / 1024)) MB (prune exit $prune_rc)"
   uv_prune_resume || return 1
   return 0
+}
+# Prune one cache, waiting up to $2 seconds for its lock holders (the
+# paused agents' uv and uvx) to exit; skip it while one is left.
+uv_prune_cache() {
+  waited=0
+  while [ -n "$(uv_holders "$1")" ] && [ "$waited" -lt "$2" ]; do
+    sleep 1; waited=$((waited + 1))
+  done
+  pids=$(uv_holders "$1")
+  if [ -n "$pids" ]; then
+    # Name them by executable and pid, so a finding says which process to
+    # stop (sd:9377). Never the arguments: they can carry a token or path.
+    holders=$(ps -A -o pid= -o comm= 2>/dev/null | awk -v pids=" $(echo $pids) " '
+      { pid = $1; if (index(pids, " " pid " ") == 0) next
+        sub(/^ *[0-9]+ +/, ""); n = split($0, w, "/"); c = w[n]
+        if (!(c in p)) o[++m] = c; p[c] = p[c] (p[c] == "" ? "" : " ") pid }
+      END { for (i = 1; i <= m; i++) printf "%s%s pid %s", (i > 1 ? "; " : ""), o[i], p[o[i]] }')
+    echo "uv-prune: holders: ${holders:-pid $(echo $pids)}"
+    echo "uv-prune: another uv process holds the cache; skipped"
+    return 0
+  fi
+  before=$(du -sk "$1" | cut -f1)
+  prune_rc=0
+  if [ "$1" = "$cache" ]; then
+    env -u UV_CACHE_DIR UV_LOCK_TIMEOUT="${UV_PRUNE_LOCK_TIMEOUT:-60}" uv cache prune || prune_rc=$?
+  else
+    UV_CACHE_DIR="$1" UV_LOCK_TIMEOUT="${UV_PRUNE_LOCK_TIMEOUT:-60}" uv cache prune || prune_rc=$?
+  fi
+  after=$(du -sk "$1" | cut -f1)
+  # A failed prune is logged, not returned: a nonzero exit makes launchd run
+  # this again, which would pause the MCP again in a loop.
+  echo "uv-prune: $1 $((before / 1024)) MB -> $((after / 1024)) MB (prune exit $prune_rc)"
 }
 # Start every paused agent again, retrying a failed bootstrap. An agent
 # already loaded counts as restored. What stays down stays in the record and
@@ -634,7 +658,8 @@ if [ "$APPLY" -eq 0 ]; then
   fi
 else
   uv_rc=0
-  ( uv_prune ) > "$TMPD/uv" 2>&1 || uv_rc=$?
+  # The main cache only: sessions hold theirs all night (sd:9848).
+  ( UV_PRUNE_SESSION_CACHE=""; uv_prune ) > "$TMPD/uv" 2>&1 || uv_rc=$?
   if grep -q '; skipped$' "$TMPD/uv"; then
     skips=$(cat "$UV_SKIPS" 2>/dev/null) || skips=0
     case $skips in ''|*[!0-9]*) skips=0 ;; esac
