@@ -154,7 +154,7 @@ class ConfigClone(base.SyntheticHome):
 
         out = self.run_repos("--apply")
         self.assertIn(f"STALE   config root {copy} is identical to origin/main's;"
-                      " remove it by hand, then --apply", out)
+                      " move it out of the root, then --apply", out)
         self.assertIn(f"DIFFERS config root {self.config_root} has 1 uncommitted", out)
         self.assertNotIn("notes.txt", out)
         self.assertNotIn("PULLED", out)
@@ -205,3 +205,58 @@ class ConfigClone(base.SyntheticHome):
         out = self.run_repos()
         self.assertIn(f"STALE   config root {self.config_root}/dir/café.env", out)
         self.assertNotIn("DIFFERS", out)
+
+    def a_copy(self):
+        self.committed_root()
+        self.push_from_elsewhere("other")
+        self.git(self.config_root, "fetch", "-q", "origin")
+        copy = self.config_root / "new.txt"
+        copy.write_text("other\n")
+        return copy
+
+    def assert_no_copy(self, out):
+        self.assertNotIn("STALE   config root", out)
+        self.assertIn("1 uncommitted change(s)", out)
+
+    def test_a_private_copy_is_no_copy(self):
+        self.a_copy().chmod(0o600)
+
+        self.assert_no_copy(self.run_repos())
+
+    def test_a_copy_with_an_xattr_is_no_copy(self):
+        self.a_copy()
+        base.write_exec(self.stubs / "xattr",
+                        "#!/bin/sh\necho com.apple.provenance\necho com.example.tag\n")
+
+        self.assert_no_copy(self.run_repos())
+
+    def test_a_copy_with_an_acl_is_no_copy(self):
+        self.a_copy()
+        base.write_exec(self.stubs / "ls", "#!/bin/sh\n/bin/ls \"$@\"\n"
+                        'case "$1" in -lde) echo " 0: user:operator allow read" ;; esac\n')
+
+        self.assert_no_copy(self.run_repos())
+
+    def test_only_the_provenance_xattr_is_ignored(self):
+        copy = self.a_copy()
+        base.write_exec(self.stubs / "xattr", "#!/bin/sh\necho com.apple.provenance\n")
+
+        self.assertIn(f"STALE   config root {copy}", self.run_repos())
+
+    def test_a_cached_origin_main_behind_the_remote_names_no_copy(self):
+        self.a_copy()
+        other = self.home.parent / "other"
+        self.git(other, "rm", "-q", "new.txt")
+        self.git(other, "commit", "-q", "-m", "drop new.txt")
+        self.git(other, "push", "-q", "origin", "main")
+
+        self.assert_no_copy(self.run_repos())
+
+    def test_apply_fetches_before_it_names_a_copy(self):
+        self.committed_root()
+        self.push_from_elsewhere("other")
+        copy = self.config_root / "new.txt"
+        copy.write_text("other\n")
+
+        self.assertNotIn("STALE   config root", self.run_repos())
+        self.assertIn(f"STALE   config root {copy}", self.run_repos("--apply"))

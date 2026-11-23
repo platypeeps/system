@@ -2109,16 +2109,44 @@ leak_guards() {
 # Uncommitted or unpushed config is DIFFERS, an attention line in status, so
 # an edit lands in git. repo-sync never lists the clone: it is no ~/repos path.
 # --apply also pulls a clean root on main that is only behind origin/main.
-# cc_copy ROOT PATH: PATH is a regular file whose raw bytes and execute bit
-# match origin/main's blob at PATH. Any git failure means no copy.
+# cc_rwx BITS: the ls mode string of a regular file with those bits.
+cc_rwx() {
+  cr_s=-
+  for cr_d in $(($1 >> 6 & 7)) $(($1 >> 3 & 7)) $(($1 & 7)); do
+    case $cr_d in
+      0) cr_s=$cr_s--- ;; 1) cr_s=$cr_s--x ;; 2) cr_s=$cr_s-w- ;; 3) cr_s=$cr_s-wx ;;
+      4) cr_s=${cr_s}r-- ;; 5) cr_s=${cr_s}r-x ;; 6) cr_s=${cr_s}rw- ;; *) cr_s=${cr_s}rwx ;;
+    esac
+  done
+  printf '%s' "$cr_s"
+}
+
+# cc_copy ROOT PATH: moving PATH out and pulling would write back the same
+# file: a regular file this user owns, with origin/main's raw bytes and
+# exactly the mode checkout writes under this umask, no ACL, and no xattr
+# but com.apple.provenance, which macOS adds to every file a process
+# writes, checkout's too. Any failed probe means no copy.
 cc_copy() {
-  [ -f "$1/$2" ] && [ ! -L "$1/$2" ] || return 1
+  cc_f=$1/$2
+  [ -f "$cc_f" ] && [ ! -L "$cc_f" ] || return 1
   cc_entry=$(GIT_LITERAL_PATHSPECS=1 git -C "$1" ls-tree --format='%(objectmode) %(objectname)' origin/main -- "$2" 2>/dev/null) || return 1
   case $cc_entry in
-    "100644 "*) [ ! -x "$1/$2" ] || return 1 ;;
-    "100755 "*) [ -x "$1/$2" ] || return 1 ;;
+    "100644 "*) cc_bits=$((0666 & ~0$(umask))) ;;
+    "100755 "*) cc_bits=$((0777 & ~0$(umask))) ;;
     *) return 1 ;;
   esac
+  # ls marks an xattr with @ (checked below) and, on Linux, an ACL with +.
+  cc_ls=$(ls -ld "$cc_f" 2>/dev/null) || return 1
+  [ "$(printf '%s\n' "$cc_ls" | awk '{print $3}')" = "$(id -un)" ] || return 1
+  cc_mode=${cc_ls%% *}
+  [ "${cc_mode%@}" = "$(cc_rwx "$cc_bits")" ] || return 1
+  # macOS ls -e prints one more line per ACL entry; GNU ls has no -e.
+  # shellcheck disable=SC2010 # counts the lines of one named file's listing
+  [ "$(ls -lde "$cc_f" 2>/dev/null | grep -c .)" -le 1 ] || return 1
+  if command -v xattr >/dev/null 2>&1; then
+    cc_x=$(xattr "$cc_f" 2>/dev/null) || return 1
+    [ -z "$(printf '%s\n' "$cc_x" | grep -vx -e '' -e com.apple.provenance)" ] || return 1
+  fi
   cc_blob=$(git -C "$1" hash-object --no-filters -- "$2" 2>/dev/null) || return 1
   [ "$cc_blob" = "${cc_entry#* }" ]
 }
@@ -2152,20 +2180,29 @@ config_clone() {
     return 0
   fi
   cc_n=$(printf '%s' "$cc_dirty" | grep -c . || :)
-  # An untracked file identical to origin/main's, as last fetched, still
-  # blocks the pull, but committing it is the wrong advice, so it is named
-  # STALE instead (sd:10014). Nothing here removes or replaces it: each
-  # automated removal tried lost a mode, an xattr or an ACL. A name git
-  # quotes (it starts with ") never counts as a copy.
+  # An untracked file identical to origin/main's still blocks the pull,
+  # but committing it is the wrong advice, so it is named STALE instead
+  # (sd:10014). Nothing here moves or replaces it: each automated removal
+  # tried lost a mode, an xattr or an ACL. The advice is to move it out,
+  # not delete it, so a remote change after this run loses nothing. A copy
+  # is named only while the cached origin/main is the remote's tip, and
+  # --apply fetches first. A name git quotes (") never counts as a copy.
+  cc_new=$(printf '%s\n' "$cc_dirty" | sed -n 's/^?? //p')
   cc_copies=0
+  if [ -n "$cc_new" ]; then
+    [ "$APPLY" -ne 1 ] || run_ok bound_step 120 git -C "$cc_root" fetch -q origin || :
+    cc_tip=$(bound_step 120 git -C "$cc_root" ls-remote origin refs/heads/main 2>/dev/null) || cc_tip=
+    cc_tip=$(printf '%s' "$cc_tip" | cut -f1)
+    [ -n "$cc_tip" ] && [ "$cc_tip" = "$(git -C "$cc_root" rev-parse -q --verify origin/main 2>/dev/null)" ] || cc_new=
+  fi
   while IFS= read -r cc_p; do
     case $cc_p in '' | \"*) continue ;; esac
     if cc_copy "$cc_root" "$cc_p"; then
-      echo "  STALE   config root $cc_root/$cc_p is identical to origin/main's; remove it by hand, then --apply"
+      echo "  STALE   config root $cc_root/$cc_p is identical to origin/main's; move it out of the root, then --apply"
       cc_copies=$((cc_copies + 1))
     fi
   done <<CC_EOF
-$(printf '%s\n' "$cc_dirty" | sed -n 's/^?? //p')
+$cc_new
 CC_EOF
   cc_ahead=$(git -C "$cc_root" rev-list --count '@{u}..HEAD' 2>/dev/null) || cc_ahead=0
   # --apply fast-forwards a clean root on main that is only behind (sd:9125);
