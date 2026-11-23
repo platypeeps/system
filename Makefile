@@ -4,9 +4,10 @@
 check:
 	sh tests/check.sh run
 
-# `make test SUITE=<name>` runs one suite the way the gate runs it: the
-# preflight, then that run_suite or macOS-only line, against the pack pin in
-# .ci/pack, never the live checkout (sd:3534).
+# `make test SUITE=<name>` runs one suite the way the gate runs it: that
+# run_suite or macOS-only line, against the pack pin in .ci/pack, never
+# the live checkout (sd:3534); the repository-wide checks stay in
+# `make check` (sd:10177).
 .PHONY: test
 test:
 	sh tests/check.sh suite "$(SUITE)"
