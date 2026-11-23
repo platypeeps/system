@@ -1,0 +1,19 @@
+# Monthly backup of sensitive files to the 1Password vault Backups
+# (sd:10098), on the hub only: its profile's .cron names it. The files
+# come from <config>/sensitive-backup/targets; local-sensitive-backup has
+# the example and the rules.
+#
+# op signs in as a service account that can write only to Backups. Its
+# token is OP_BACKUP_SERVICE_ACCOUNT_TOKEN in ~/.config/shell/env.sh, which
+# the runner loads before this command; the command maps it to
+# OP_SERVICE_ACCOUNT_TOKEN for this run alone, so no other op call in a
+# shell acts as the service account. An empty token fails the run before
+# op starts: with app integration op waits for Touch ID, and an unattended
+# run timed out. The variable is escaped so the `bash -c` reads it.
+#
+# 03:40 on the 1st, past the 02:xx slot, since op needs the network.
+# Dashboard Management's Run now runs it by hand; a second run in a month
+# replaces that month's item.
+JOB_SCHEDULE="40 3 1 * *"
+JOB_TIMEOUT="30m"
+JOB_COMMAND="OP_SERVICE_ACCOUNT_TOKEN=\"\${OP_BACKUP_SERVICE_ACCOUNT_TOKEN:-}\" sh \"$ROOT/../local-sensitive-backup/sensitive-backup.sh\" run"

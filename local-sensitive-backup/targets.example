@@ -1,0 +1,12 @@
+# Copy to $SYSTEM_TOOLS_CONFIG/sensitive-backup/targets and edit.
+# One glob per line, relative to $HOME. A folder brings every file in it.
+# `!<pattern>` drops files whose name matches, in every folder.
+.ssh
+!known_hosts*
+!.DS_Store
+!*.bak*
+.aws/config
+.aws/credentials
+.kube/config
+.docker/config.json
+.config/change-me/*.env
