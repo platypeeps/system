@@ -569,14 +569,20 @@ def read_github(env, fetch, now):
     beside a spend of 0 (sd:9928). The usage report names an item's
     amount `quantity`; `grossQuantity`, the summary's name, reads too."""
     items = github_report(env, fetch, now)("usage")
+    return {"spend": month_spend(items), "minutes": actions_minutes(items)}
+
+
+def actions_minutes(items):
+    """The Actions minutes the items count, or None when one quantity is
+    not a count: unknown minutes never cost the bill (sd:9928 review)."""
     minutes = 0.0
     for item in items:
         if str(item.get("product")).lower() == "actions" and str(item.get("unitType")).lower() == "minutes":
-            used = number(item.get("quantity", item.get("grossQuantity")), "quantity")
-            if used < 0:
-                raise ReadFailed("quantity is below 0")
+            used = item.get("quantity", item.get("grossQuantity"))
+            if not is_number(used) or used < 0:
+                return None
             minutes += used
-    return {"spend": month_spend(items), "minutes": minutes}
+    return minutes
 
 
 def read_copilot(env, fetch, now):

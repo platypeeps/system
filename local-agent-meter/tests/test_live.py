@@ -499,9 +499,14 @@ class Readers(unittest.TestCase):
                       "grossAmount": 0.8, "discountAmount": 0, "netAmount": 0.8,
                       "repositoryName": "user/example"}
         self.assertEqual(github([documented])["minutes"], 100.0)
-        for bad in (None, "7", True, float("nan"), -1):
+        # A quantity that is not a count makes the minutes unknown and
+        # keeps the bill (sd:9928 lane review): never 0, never no row.
+        bill = {"product": "copilot", "unitType": "Minutes", "quantity": 1, "netAmount": 4}
+        for bad in (None, "7", True, float("nan"), float("inf"), -1):
             with self.subTest(quantity=bad):
-                self.assertEqual(github([{**minutes, "quantity": bad}])["status"], "unknown")
+                got = github([{**minutes, "quantity": bad}, bill])
+                self.assertEqual((got["status"], got["minutes"], got["spend"]["amount"]),
+                                 ("ok", None, 4.0), got)
 
     def test_an_empty_github_month_is_zero_and_a_missing_list_is_unknown(self):
         for name in ("github", "copilot"):
