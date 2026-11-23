@@ -1865,6 +1865,28 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         self.assertEqual((state / f"{LABEL_PREFIX}.cron.demo.accepted").read_text(),
                          "the plist launchd holds\n")
 
+    def test_a_failed_copy_back_keeps_the_first_rollback_copy(self):
+        """Lane review cc29d7a3: a refused replacement, then a transient
+        failure copying the unproven seed back, dropped the seed as if
+        launchd had refused it. Only a refused load proves it bad; a
+        failed copy keeps the only rollback copy for the next install."""
+        self.plist().write_text("the plist launchd holds\n")
+        folder = self.launchd_with("copy-fail-bin",
+            '  bootstrap) echo refused >&2; exit 5 ;;\n')
+        shim = folder / "cp"
+        shim.write_text('#!/bin/sh\n'
+                        'for a; do last=$a; done\n'
+                        'case $last in *.cron.demo.plist.tmp) exit 1 ;; esac\n'
+                        'exec /bin/cp "$@"\n')
+        shim.chmod(0o755)
+        result = self.run_script("install", "demo", path=self.fx.path(folder))
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertNotIn("no rollback copy is kept", out)
+        state = self.fx.home / ".local/state/cron-jobs"
+        self.assertEqual((state / f"{LABEL_PREFIX}.cron.demo.accepted").read_text(),
+                         "the plist launchd holds\n", out)
+
     def test_an_install_killed_before_bootstrap_keeps_the_accepted_plist(self):
         """Lane review: an install killed between replacing the plist and
         bootstrap left an unproven plist; the next install copied it over

@@ -1958,12 +1958,16 @@ cmd_reinstall_after_run() { # job
 restore_accepted() { # job plist accepted
   [ -f "$3" ] || return 0
   wait_unloaded "$1"
-  if copy_whole "$3" "$2" && launchctl bootstrap "$DOMAIN" "$2" >/dev/null 2>&1; then
+  if ! copy_whole "$3" "$2"; then
+    # Not a refusal: the copy stays the next install's rollback copy.
+    printf '; could not copy the previous plist back: run cron-jobs.sh install %s' "$1"
+  elif launchctl bootstrap "$DOMAIN" "$2" >/dev/null 2>&1; then
     rm -f "$3.pending" "$3.unproven"
     printf '; restored the previous plist'
   elif [ -f "$3.unproven" ]; then
     # A seed launchd never loaded from disk, refused now: not a plist it
     # accepted, so it is no rollback copy for a later failure (review).
+    # Only a refused load drops it; a failed copy above keeps it.
     rm -f "$3" "$3.unproven"
     printf '; the previous plist did not load either: run cron-jobs.sh install %s; it was never loaded here, so no rollback copy is kept' "$1"
   else
