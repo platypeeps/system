@@ -33,9 +33,10 @@ Usage: check.sh run
   run    the preflight, then the legs and (on macOS) each suite of
          tests/macos-only-suites.txt in parallel; the first failure stops
          the rest, and the run exits 1
-  suite  the preflight, then the one suite named by a run_suite line in
-         tests/ci-native.sh or a line of tests/macos-only-suites.txt, in the
-         same environment; `make test SUITE=<name>` runs this
+  suite  the one suite named by a run_suite line in tests/ci-native.sh
+         or a line of tests/macos-only-suites.txt, in the same environment
+         and venv, without the preflight's repository-wide checks;
+         `make test SUITE=<name>` runs this
   legs   print the leg names
 
 Environment:
@@ -235,26 +236,28 @@ isolated() {
     "$@" < /dev/null
 }
 
-echo "== preflight"
-job=preflight
-isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" preflight
-
 # `suite` (sd:3534): one suite the way the gate runs it, against the pinned
 # pack, where a hand run against SD_PACK_ROOT tested the live pack instead.
 # A leg with SUITE_ONLY runs only the run_suite line of that name, so each
-# leg is asked and the suite's log is the proof that one ran it.
+# leg is asked until one ran it; the suite's log is the proof.
+# sd:10177: it skips the preflight's repository-wide checks, 150 of 187 s
+# for one suite, and builds only the venv; `make check` runs them. The
+# macOS runner builds its venv itself.
 if [ "$1" = suite ]; then
   job=suite
   if sh "$DIR/run-macos-only.sh" list | awk '{ print $1 }' | grep -qxF "$2"; then
     isolated sh "$DIR/run-macos-only.sh" "$2"
   else
+    echo "== venv"
+    isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" venv
+    ran=""
     for leg in $LEGS; do
       isolated SUITE_ONLY="$2" /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg "$leg"
-    done
-    # A suite in parts (repo-sync-1, repo-sync-2) leaves a log per part.
-    ran=""
-    for log in "$work/$2.log" "$work/$2"-[1-9].log; do
-      [ ! -f "$log" ] || ran=1
+      # A suite in parts (repo-sync-1, repo-sync-2) leaves a log per part.
+      for log in "$work/$2.log" "$work/$2"-[1-9].log; do
+        [ ! -f "$log" ] || ran=1
+      done
+      [ -z "$ran" ] || break
     done
     if [ -z "$ran" ]; then
       echo "check.sh: no suite named $2; the run_suite lines in tests/ci-native.sh and the lines of tests/macos-only-suites.txt name them" >&2
@@ -269,6 +272,10 @@ if [ "$1" = suite ]; then
   echo "check.sh: suite $2 passed"
   exit 0
 fi
+
+echo "== preflight"
+job=preflight
+isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" preflight
 
 # Every leg and, on a Mac, every macOS-only suite run at once, unless a gate
 # cap below lowers that. Run one after another they took 24 minutes here,

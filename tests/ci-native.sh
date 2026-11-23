@@ -12,11 +12,14 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: ci-native.sh preflight
+       ci-native.sh venv
        ci-native.sh leg repo-sync|tools|shared
 
   preflight  sd-docs-lint, the citation, Jev contract,
              product-name, ports, entrypoint-mode and lint gates, the unwired-suite guard, and the venv at
              $CI_WORK_ROOT/venv with the pack's lib/ (sd_db) installed
+  venv       only that venv, without the repository-wide checks: what
+             `check.sh suite` (`make test SUITE=<name>`) runs (sd:10177)
   leg NAME   every run_suite line of one leg, under the preflight's venv
 
 Run it through tests/check.sh (or `make check`) on a workstation; it expects
@@ -26,7 +29,7 @@ USAGE
 
 case "${1:-}" in
   -h|--help|help) usage; exit 0 ;;
-  preflight) [ "$#" -eq 1 ] || { usage >&2; exit 1; } ;;
+  preflight|venv) [ "$#" -eq 1 ] || { usage >&2; exit 1; } ;;
   leg) [ "$#" -eq 2 ] || { usage >&2; exit 1; }; SUITE_LEG="$2" ;;
   *) usage >&2; exit 1 ;;
 esac
@@ -41,8 +44,9 @@ if [ "$1" = leg ]; then
   export PYTHON="${CI_VENV:-$CI_WORK_ROOT/venv}/bin/python"
   test -x "$PYTHON"
 else
-# The preflight runs to the `fi` above
-# run_suite.
+# The preflight runs to the `fi` above run_suite; `venv` skips to the
+# venv build below (sd:10177).
+if [ "$1" = preflight ]; then
 
 # The docs/work gate, which nothing ran before #238. After #230 main
 # carried 165 rule 6 failures for five days with every check green;
@@ -237,6 +241,7 @@ if [ -n "$unwired" ]; then
     esac
   done
   exit 1
+fi
 fi
 
 # The pack owns sd_db (sd:2997): install the pinned pack's lib/, the one copy

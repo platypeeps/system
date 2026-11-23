@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # place for a moment so that a job started next to it is counted.
 SUITE = """#!/bin/sh
 if [ "$1" = preflight ]; then : > "$CI_SYSTEM_ROOT/preflight-ran"; exit 0; fi
+if [ "$1" = venv ]; then : > "$CI_SYSTEM_ROOT/venv-ran"; exit 0; fi
 running="$CI_SYSTEM_ROOT/running"
 mkdir -p "$running"
 : > "$running/$$"
@@ -455,11 +456,15 @@ def alive_pid(pid):
 class OneSuite(CheckFixture):
     """sd:3534: `check.sh suite <name>`, which `make test SUITE=<name>` runs."""
 
-    def test_a_suite_runs_the_preflight_then_only_that_suite_against_the_pin(self):
+    def test_a_suite_builds_the_venv_then_runs_only_that_suite_against_the_pin(self):
+        """sd:10177: a suite run skips the preflight's repository-wide
+        checks (150 of 187 s for one suite) and the legs after the one that
+        ran it; `make check` keeps both."""
         (self.root / "holds-repo-sync-repo-sync").touch()
         done = self.check("suite", "repo-sync")
-        self.assertTrue((self.root / "preflight-ran").exists())
-        self.assertEqual([["leg", leg, "repo-sync"] for leg in ("repo-sync", "tools", "shared")], self.ran())
+        self.assertFalse((self.root / "preflight-ran").exists(), "a suite run ran the preflight")
+        self.assertTrue((self.root / "venv-ran").exists())
+        self.assertEqual([["leg", "repo-sync", "repo-sync"]], self.ran())
         self.assertIn("check.sh: suite repo-sync passed", done.stdout)
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.root / ".ci/pack"), self.pin)
 
@@ -473,6 +478,19 @@ class OneSuite(CheckFixture):
     def test_a_macos_only_suite_runs_through_its_runner(self):
         self.check("suite", "two")
         self.assertEqual([["macos", "two"]], self.ran())
+        # The runner builds its own venv (sd:10177).
+        self.assertFalse((self.root / "preflight-ran").exists(), "a macOS suite ran the preflight")
+        self.assertFalse((self.root / "venv-ran").exists(), "a macOS suite built the venv twice")
+
+    def test_a_suite_in_a_later_leg_runs_after_the_earlier_legs_find_nothing(self):
+        (self.root / "holds-shared-example").touch()
+        self.check("suite", "example")
+        self.assertEqual([["leg", leg, "example"] for leg in ("repo-sync", "tools", "shared")], self.ran())
+
+    def test_a_full_run_still_runs_the_preflight(self):
+        self.check("run")
+        self.assertTrue((self.root / "preflight-ran").exists())
+        self.assertFalse((self.root / "venv-ran").exists())
 
     def test_a_name_no_suite_has_fails_and_says_where_the_names_are(self):
         done = self.check("suite", "nope", expect=1)
@@ -609,6 +627,51 @@ class LegWithSuiteOnly(unittest.TestCase):
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 self.assertFalse((self.work / "entrypoints").exists())
                 self.assertFalse((self.work / "repo-sync-1.log").exists())
+
+
+# A python3 that records each call, and a gate-venv.sh that records its
+# own; the venv's python passes every check.
+RECORDER = "#!/bin/sh\necho \"$0 $*\" >> \"$CI_WORK_ROOT/calls\"\n"
+
+
+class VenvOnly(unittest.TestCase):
+    """sd:10177: `ci-native.sh venv` builds the venv and runs none of the
+    preflight's repository-wide checks; `preflight` still runs them."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="ci-native-venv-")
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name)
+        self.root, self.work, pack, bin_dir = base / "root", base / "work", base / "pack", base / "bin"
+        for folder in (self.root / "tests", self.work / "venv/bin", pack / "bin", pack / "lib/sd_db", bin_dir):
+            folder.mkdir(parents=True)
+        shutil.copy(ROOT / "tests/ci-native.sh", self.root / "tests/ci-native.sh")
+        for name in ("sd-ship", "sd-docs-lint"):
+            (pack / "bin" / name).write_text(RECORDER)
+            (pack / "bin" / name).chmod(0o755)
+        for path in (bin_dir / "python3", self.work / "venv/bin/python", self.root / "tests/gate-venv.sh"):
+            path.write_text(RECORDER)
+            path.chmod(0o755)
+        self.environment = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(base), "CI_SYSTEM_ROOT": str(self.root),
+                            "CI_WORK_ROOT": str(self.work), "SD_ACCEPTANCE_PACK": str(pack)}
+
+    def run_mode(self, mode):
+        done = subprocess.run(["bash", str(self.root / "tests/ci-native.sh"), mode], cwd=self.root,
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
+                              env=self.environment)
+        calls = (self.work / "calls").read_text() if (self.work / "calls").exists() else ""
+        (self.work / "calls").unlink(missing_ok=True)
+        return done, calls
+
+    def test_venv_builds_the_venv_and_runs_no_repository_check(self):
+        done, calls = self.run_mode("venv")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("gate-venv.sh", calls)
+        self.assertNotIn("tests/test_", calls)
+
+    def test_preflight_still_runs_the_repository_checks(self):
+        _done, calls = self.run_mode("preflight")
+        self.assertIn("tests/test_jev_contract.py", calls)
 
 
 # Stand-ins for run-macos-only.sh: uname says Darwin, and python3 stops the
