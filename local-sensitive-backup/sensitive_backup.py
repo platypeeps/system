@@ -90,8 +90,9 @@ def collect(home, globs, excludes):
     cannot be read, fails the run, since a smaller archive would replace
     the month's complete one. A symlinked folder on the way to a match, or
     as the match itself, fails too: it would pull in a tree outside home.
-    Each line must add at least one file, and a file it names directly must
-    be a regular file. A symlinked file is stored as its contents; inside a
+    Each line, and each folder it matches, must add at least one file; a
+    file it names directly must be a regular file, and a line ending in /
+    must match folders only. A symlinked file is stored as its contents; inside a
     target folder, a symlinked folder is not entered, and a broken link or a
     socket is skipped, since it holds no contents to restore.
     """
@@ -128,13 +129,22 @@ def collect(home, globs, excludes):
                 if step.is_symlink() and (depth < len(parts) or step.is_dir()):
                     raise Failure(f"{step.relative_to(home)} is a symlink to a folder; "
                                   f"name the real folder instead")
+            if pattern.endswith("/") and not match.is_dir():
+                raise Failure(f"{match.relative_to(home)} is not a folder, and "
+                              f"{pattern} names one")
             if match.is_dir():
+                before = len(found)
                 for top, dirs, names in os.walk(match, onerror=unreadable):
                     dirs.sort()
                     for name in sorted(names):
                         path = Path(top) / name
                         if wanted(path):
                             found[path.relative_to(home).as_posix()] = path
+                # Per folder, not per line: one full match must not hide an
+                # emptied sibling that the same wildcard matched.
+                if len(found) == before:
+                    raise Failure(f"{match.relative_to(home)} adds no file; "
+                                  f"refusing a partial backup")
             elif any(fnmatch.fnmatchcase(match.name, x) for x in excludes):
                 continue
             elif not match.is_file():

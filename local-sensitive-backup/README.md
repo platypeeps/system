@@ -13,8 +13,9 @@ The files come from `$SYSTEM_TOOLS_CONFIG/sensitive-backup/targets` (copy
 `targets.example`): one glob per line, relative to `$HOME`, and
 `!<pattern>` lines that drop files by name. A wildcard may stand only in
 a line's last part (`.config/tool/*.env`, not `*/credentials`). A run
-fails, and stores nothing, when a line adds no file, a folder cannot be
-read, a directly named path is not a regular file, or a symlinked folder
+fails, and stores nothing, when a line or any folder it matches adds no
+file, a line ending in `/` matches something other than a folder, a folder
+cannot be read, a directly named path is not a regular file, or a symlinked folder
 leads to a match: a smaller archive would replace the month's complete
 one. A symlinked file is stored as its contents; inside a folder, broken
 links and sockets are skipped.

@@ -234,7 +234,7 @@ class SensitiveBackupTest(unittest.TestCase):
                 self.targets(".ssh", line, "!known_hosts*")
                 done = self.run_script("plan")
                 self.assertEqual(done.returncode, 1, done.stdout)
-                self.assertIn(f"no file matches {line}", done.stderr)
+                self.assertIn(f"{line} adds no file", done.stderr)
 
     def test_a_matched_broken_link_fails(self):
         (self.home / ".aws/config").symlink_to(self.home / "gone")
@@ -248,6 +248,26 @@ class SensitiveBackupTest(unittest.TestCase):
         import sensitive_backup
         with self.assertRaises(sensitive_backup.Failure):
             sensitive_backup.pack({"gone": self.home / "gone"}, self.root)
+
+    def test_each_folder_a_wildcard_matches_must_add_a_file(self):
+        (self.home / ".tool-a").mkdir()
+        (self.home / ".tool-b").mkdir()
+        (self.home / ".tool-b/key").write_text("k\n")
+        self.targets(".tool-*")
+        done = self.run_script("plan")
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn(".tool-a adds no file", done.stderr)
+
+    def test_a_trailing_slash_requires_a_folder(self):
+        (self.home / ".tool").write_text("now a file\n")
+        (self.home / ".dirs").mkdir()
+        (self.home / ".dirs/plain").write_text("f\n")
+        for line in (".tool/", ".dirs/p*/"):
+            with self.subTest(line=line):
+                self.targets(line)
+                done = self.run_script("plan")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("is not a folder", done.stderr)
 
     def test_targets_that_match_nothing_store_nothing(self):
         self.targets(".absent")
