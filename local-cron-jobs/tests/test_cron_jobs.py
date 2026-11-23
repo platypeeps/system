@@ -1835,14 +1835,10 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         bootstraps = [c for c in self.calls.read_text().splitlines() if c.startswith("launchctl bootstrap")]
         self.assertEqual(len(bootstraps), 3, bootstraps)
 
-    def test_the_first_rollback_copy_is_one_launchd_loaded(self):
-        """Lane review: the installer before this one wrote the plist
-        before its bootout. Killed between them, it left launchd on the
-        old definition and the disk on an untested one, and the first
-        install here saved that file as the plist launchd accepted. A
-        refused bootstrap then rolled back to it, and every later failure
-        would too. The loaded plist is proven by loading it before it is
-        kept; one launchd refuses is never the rollback copy."""
+    def test_a_first_rollback_copy_launchd_refuses_is_kept(self):
+        """A seed launchd refuses on restore is never reported restored,
+        and stays: a refusal and a transient fault look the same, and it
+        is the only rollback copy (review, supersedes 84a6a856)."""
         self.plist().write_text("untested by launchd\n")
         path = self.fx.path(self.launchd_with("unproven-bin",
             '  bootstrap) echo refused >&2; exit 5 ;;\n'))
@@ -1850,11 +1846,34 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         out = result.stdout + result.stderr
         self.assertEqual(result.returncode, 1, out)
         self.assertNotIn("restored the previous plist", out)
+        self.assertIn("the previous plist did not load either", out)
         state = self.fx.home / ".local/state/cron-jobs"
-        self.assertFalse((state / f"{LABEL_PREFIX}.cron.demo.accepted").exists(), out)
+        self.assertEqual((state / f"{LABEL_PREFIX}.cron.demo.accepted").read_text(),
+                         "untested by launchd\n", out)
+
+    def test_a_transient_refusal_keeps_the_first_rollback_copy(self):
+        """Review: a transient launchd error on the seed's first restore
+        deleted the only rollback copy, as if launchd had refused it for
+        good. bootstrap's error cannot tell the two apart, so the seed
+        stays, and the next install restores it."""
+        self.plist().write_text("the plist launchd holds\n")
+        once = self.fx.tmp / "seed-refused-once"
+        path = self.fx.path(self.launchd_with("transient-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || '
+            '{ echo refused >&2; exit 5; }\n'
+            f'    [ -f "{once}" ] || {{ : > "{once}"; echo busy >&2; exit 5; }} ;;\n'))
+        first = self.run_script("install", "demo", path=path)
+        self.assertNotIn("restored the previous plist", first.stderr, first.stderr)
+        state = self.fx.home / ".local/state/cron-jobs"
+        self.assertEqual((state / f"{LABEL_PREFIX}.cron.demo.accepted").read_text(),
+                         "the plist launchd holds\n", first.stderr)
+        second = self.run_script("install", "demo", path=path)
+        self.assertIn("restored the previous plist", second.stderr,
+                      second.stdout + second.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
     def test_a_first_rollback_copy_launchd_loads_is_restored(self):
-        """PIN for the fix above: a loaded plist launchd takes again is
+        """PIN: a loaded plist launchd takes again is
         kept, and a refused replacement goes back to it."""
         self.plist().write_text("the plist launchd holds\n")
         path = self.fx.path(self.launchd_with("prove-bin",

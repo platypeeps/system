@@ -1962,15 +1962,12 @@ restore_accepted() { # job plist accepted
     # Not a refusal: the copy stays the next install's rollback copy.
     printf '; could not copy the previous plist back: run cron-jobs.sh install %s' "$1"
   elif launchctl bootstrap "$DOMAIN" "$2" >/dev/null 2>&1; then
-    rm -f "$3.pending" "$3.unproven"
+    rm -f "$3.pending"
     printf '; restored the previous plist'
-  elif [ -f "$3.unproven" ]; then
-    # A seed launchd never loaded from disk, refused now: not a plist it
-    # accepted, so it is no rollback copy for a later failure (review).
-    # Only a refused load drops it; a failed copy above keeps it.
-    rm -f "$3" "$3.unproven"
-    printf '; the previous plist did not load either: run cron-jobs.sh install %s; it was never loaded here, so no rollback copy is kept' "$1"
   else
+    # Kept even when it is the first seed: bootstrap's error cannot tell
+    # a transient launchd fault from a refusal, and it is the only
+    # rollback copy (review). A later install's load replaces it.
     printf '; the previous plist did not load either: run cron-jobs.sh install %s' "$1"
   fi
 }
@@ -1996,7 +1993,7 @@ recover_interrupted() { # job
   if [ ! -f "$accepted" ]; then
     if ! is_loaded "$job" || ! cmp -s "$pending" "$plist"; then
       rm -f "$pending"
-    elif ! { mv "$pending" "$accepted" && rm -f "$accepted.unproven"; }; then
+    elif ! mv "$pending" "$accepted"; then
       echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
       return 1
     fi
@@ -2008,8 +2005,7 @@ recover_interrupted() { # job
   # first, checked: refused, nothing is unloaded and the record stays.
   # Copied, not moved: the record goes only once the reload below loads,
   # so a recovery killed after its bootout leaves the next one a trigger.
-  if is_loaded "$job" && cmp -s "$pending" "$plist" &&
-     ! { copy_whole "$pending" "$accepted" && rm -f "$accepted.unproven"; }; then
+  if is_loaded "$job" && cmp -s "$pending" "$plist" && ! copy_whole "$pending" "$accepted"; then
     exec 8>&-
     echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
     return 1
@@ -2066,14 +2062,13 @@ cmd_install() {
   new="$plist.new"
   accepted="$(accepted_plist_for "$job")"
   pending="$accepted.pending"
-  # Seeds the rollback point on the first install that keeps one. Marked
-  # unproven: the installer before this one wrote the plist before its
-  # bootout, so a loaded label does not show launchd took the file on
-  # disk (review). A load proves it; a refused one drops it. Without it a
-  # refused bootstrap has nothing to restore, so a failed copy changes
-  # nothing.
+  # Seeds the rollback point on the first install that keeps one. The
+  # installer before this one wrote the plist before its bootout, so the
+  # seed may be a plist launchd never loaded; it is still the best copy
+  # there is, and a refused restore keeps it. Without it a refused
+  # bootstrap has nothing to restore, so a failed copy changes nothing.
   if [ ! -f "$accepted" ] && is_loaded "$job" && [ -f "$plist" ] &&
-     ! { mkdir -p "$STATE_DIR" && : > "$accepted.unproven" && copy_whole "$plist" "$accepted"; }; then
+     ! { mkdir -p "$STATE_DIR" && copy_whole "$plist" "$accepted"; }; then
     echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
     exec 8>&- 7>&-
     return 1
@@ -2127,9 +2122,7 @@ cmd_install() {
   # would restore that obsolete plist. The next install saves the plist
   # launchd now holds before it replaces anything, or refuses.
   unrecorded=""
-  if mv "$pending" "$accepted"; then
-    rm -f "$accepted.unproven"
-  else
+  if ! mv "$pending" "$accepted"; then
     if rm -f "$accepted"; then
       unrecorded="could not record the loaded plist in $accepted; the next install saves it first"
     else
@@ -2190,7 +2183,7 @@ cmd_uninstall() {
   fi
   # Still under the install lock: an install waiting on it sees no state.
   rm -f "$(plist_for "$job")" "$(failed_record_for "$job")" "$(accepted_plist_for "$job")" \
-    "$(accepted_plist_for "$job").pending" "$(accepted_plist_for "$job").unproven"
+    "$(accepted_plist_for "$job").pending"
   exec 7>&-
   echo "uninstalled: $job"
 }
