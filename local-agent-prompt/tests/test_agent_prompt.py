@@ -398,6 +398,8 @@ class SharedPolicy(unittest.TestCase):
         rules = [line for line in source.splitlines() if "sd reports" in line]
         start = next((line for line in rules if "sd reports list" in line), "")
         self.assertIn("On the hub", start)
+        # sd:10206: the bare list printed 4,000,461 bytes on 2026-11-23; --open printed 2,021.
+        self.assertIn("`sd reports list --open`", start)
         self.assertIn("builders", start)
         # sd:9240: report items refuse in_progress, so a session claims an alert with a
         # comment note; two hub sessions triaged the same alerts at once (2026-11-17).
