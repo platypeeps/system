@@ -681,11 +681,14 @@ send_rc() {
 # pass sends the enter: one stopped before it leaves /rc in the box,
 # which no later pass enters, as the operator may have typed it
 # (sd:9427 review). Before the mark: 1, still owed; after it: 2, sent.
-# The read, the checks after it and the enter fit a gap of their own.
+# The read, the checks after it and the enter fit a gap of their own,
+# and only that gap bounds them: send_rc types only with a gap of
+# budget left, and a budget cut here, read in whole seconds, stranded
+# the /rc in an idle box (sd:9427 review).
 send_enter() {
-  local now got screen last verdict start took left bound rc=0
+  local now got screen last verdict start took bound rc=0
   start=$(now_ms)
-  last=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent read "$1" --format ansi) ||
+  last=$(st_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent read "$1" --format ansi 9>&-) ||
     { echo "reconnect: typed /rc into $1, but its box then showed (no read, exit $?); no enter"; return 1; }
   verdict=$(rc_read typed <<<"$last") || verdict="a screen that did not parse"
   if [[ "$verdict" != send ]]; then
@@ -698,7 +701,7 @@ send_enter() {
   # asked again after it, and the switch read again, as before the
   # typing. ponytail: a restart or a keystroke in the milliseconds from
   # the last read to the Enter still races; herdr has no check-and-send.
-  got=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent get "$1") ||
+  got=$(st_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent get "$1" 9>&-) ||
     { echo "reconnect: typed /rc into $1, but it changed before the enter (no get, exit $?); no enter"; return 1; }
   now=$(rc_read pane <<<"$got") || now=""
   if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
@@ -708,7 +711,7 @@ send_enter() {
   # A draft typed during that get leaves session and status alone, so
   # the screen is read again and must match the typed read, as before
   # the typing (sd:9427 review).
-  screen=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent read "$1" --format ansi) ||
+  screen=$(st_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent read "$1" --format ansi 9>&-) ||
     { echo "reconnect: typed /rc into $1, but it changed before the enter (no read, exit $?); no enter"; return 1; }
   if [[ "$screen" != "$last" ]]; then
     echo "reconnect: typed /rc into $1, but it changed before the enter (its screen moved during the check); no enter"
@@ -717,7 +720,7 @@ send_enter() {
   # A new session can draw the same /rc box, so the last read proves
   # no session: it is asked once more after it, as before the typing
   # (sd:9427 review).
-  got=$(rc_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent get "$1") ||
+  got=$(st_step $(((RC_GAP_MS + 999) / 1000)) "$HERDR" agent get "$1" 9>&-) ||
     { echo "reconnect: typed /rc into $1, but it changed before the enter (no get, exit $?); no enter"; return 1; }
   now=$(rc_read pane <<<"$got") || now=""
   if [[ "$now" != "$1 $2 idle" && "$now" != "$1 $2 done" ]]; then
@@ -742,11 +745,9 @@ send_enter() {
     return 1
   fi
   took=$(($(now_ms) - start))
-  left=$((RC_DEADLINE - $(date +%s)))
   bound=$((RC_GAP_MS - took))
-  ((left * 1000 < bound)) && bound=$((left * 1000))
   if ((bound <= 0)); then
-    echo "reconnect: typed /rc into $1, but the gap or budget ran out before the enter"
+    echo "reconnect: typed /rc into $1, but the gap ran out before the enter"
     return 1
   fi
   bound=$(printf '%d.%03d' $((bound / 1000)) $((bound % 1000)))

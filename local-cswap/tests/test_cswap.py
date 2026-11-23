@@ -934,12 +934,14 @@ class RemoteControlReconnects(Machine):
                       "(its screen moved during the check); no enter\n", result.stdout)
         self.assertEqual(self.owed(), ["w1:p1"])
 
-    def test_a_budget_spent_after_the_typing_sends_no_enter(self):
-        # The enter gets what is left of the gap and the budget; none
-        # left, no enter, and the pane stays owed. The stub
-        # clock jumps past the budget at the last read before the enter,
-        # the fifth: the pass's, the send's two, and two after the typing;
-        # the get after it is refused, out of budget.
+    def test_a_budget_spent_after_the_typing_still_sends_the_enter(self):
+        # sd:9427 review (cswap.sh:640, :744, :185): the enter's calls
+        # were cut by the pass budget, read in whole seconds, so a
+        # typing let through with under a second left stranded /rc in
+        # an idle box, where no later pass enters it. The typing waits
+        # for a gap of budget; once typed, only the gap bounds the
+        # enter. The stub clock jumps past the budget at the fifth
+        # read, between the typing and the enter.
         clock = self.tmp / "clock"
         executable(self.stubs / "date", '#!/bin/sh\n'
                    'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
@@ -949,10 +951,8 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_AT="5", FAKE_CLOCK_JUMP="61")
         self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
-        self.assertEqual(self.prompts(), [], result.stdout)
-        self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter "
-                      "(no get, exit 124); no enter\n", result.stdout)
-        self.assertEqual(self.owed(), ["w1:p1"])
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertEqual(self.owed(), [])
 
     def test_the_shipped_gap_fits_the_checks_on_a_loaded_machine(self):
         # sd:9427 review (cswap.sh:77): the 1000 ms default was under
