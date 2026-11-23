@@ -119,6 +119,10 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   cost from the Admin API cost report) reads `ANTHROPIC_ADMIN_KEY` (sd:9594).
   `langsmith` (the month's billing units) reads `LANGSMITH_ADMIN_KEY`;
   `LANGSMITH_API_KEY` stays for tracing (sd:9872).
+  `twilio` (the month's spend and the prepaid balance, sd:9718) reads an API key
+  (`TWILIO_ACCOUNT_SID`, `TWILIO_API_KEY`, `TWILIO_API_SECRET`) from the env file
+  that `TWILIO_ENV_FILE` names, exported or in this tool's `.env`; no file reads
+  `unknown`, "not configured".
   `huggingface` has no quota API: pass a ZeroGPU quota error,
   `agent-meter.py usage --huggingface-error "<text>"`, and its row holds the
   seconds left (`balance`, unit `seconds`) and `read_at`, `source` `error`.
