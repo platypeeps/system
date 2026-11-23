@@ -1970,7 +1970,8 @@ class Live(unittest.TestCase):
         day = root / "codex/sessions/2026/11/17"
         day.mkdir(parents=True)
         (day / "rollout-x.jsonl").write_text(json.dumps(Codex.event()) + "\n", encoding="utf-8")
-        keys = {var for var, _, _ in ANSWERS.values()}
+        # TWILIO_ENV_FILE names twilio's credentials file (sd:9718 review).
+        keys = {var for var, _, _ in ANSWERS.values()} | {"TWILIO_ENV_FILE"}
         self.env = {k: v for k, v in os.environ.items() if k not in keys and k not in PROXIES}
         self.env.update(LOCAL, CSWAP_BIN=str(self.cswap), CSWAP_FIXTURE=str(root / "cswap.json"),
                         CODEX_HOME=str(root / "codex"), SYSTEM_TOOLS_CONFIG=str(root / "config"))
@@ -2745,6 +2746,32 @@ class MeterEnv(unittest.TestCase):
         self.assertEqual(keyed["status"], "ok")
         self.assertEqual((twilio["status"], twilio["error"]),
                          ("unknown", "agent-meter .env does not read: UnicodeDecodeError"))
+
+    def test_an_unreadable_env_costs_the_usage_run_only_twilios_row(self):
+        # Review on sd:9718: the parser's --out default read the same
+        # .env before dispatch, so the run wrote no row at all.
+        live = Live("test_the_runs_read_a_config_folder_the_test_owns")
+        live.setUp()
+        self.addCleanup(live.doCleanups)
+        config = Path(live.env["SYSTEM_TOOLS_CONFIG"]) / "agent-meter"
+        config.mkdir(parents=True, exist_ok=True)
+        (config / ".env").write_bytes(b"TWILIO_ENV_FILE=\xff\xfe\n")
+        live.setting("dashboard.usage_providers", "nabucasa fixed=6.50\ntwilio\n")
+        done = live.run_live("usage")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        rows = live.rows("usage:")
+        self.assertEqual(rows["usage:nabucasa"]["status"], "ok")
+        self.assertEqual((rows["usage:twilio"]["status"], rows["usage:twilio"]["error"]),
+                         ("unknown", "agent-meter .env does not read: UnicodeDecodeError"))
+
+    def test_the_live_runs_never_read_the_operators_twilio_file(self):
+        # Review on sd:9718: twilio is on the starting list and its file
+        # is named by TWILIO_ENV_FILE, not a key ANSWERS holds.
+        with mock.patch.dict(os.environ, TWILIO_ENV_FILE="/nowhere/twilio.env"):
+            live = Live("test_the_runs_read_a_config_folder_the_test_owns")
+            live.setUp()
+        self.addCleanup(live.doCleanups)
+        self.assertNotIn("TWILIO_ENV_FILE", live.env)
 
 
 class FixedFees(unittest.TestCase):
