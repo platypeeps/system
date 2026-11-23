@@ -379,9 +379,9 @@ else:
 # line "<epoch> <pid> <uuid>" naming this switch, is written at once, before a
 # later step can fail, and replaced whole (a new file moved in place).
 # Only a switch gives it a new epoch and nothing deletes it; a sync
-# without one may add the account (owe_missed), and one that writes
-# over a newer switch's mark names the old account, so the next sync
-# owes again. A mark older than RC_OWED_FOR owes nothing
+# without one may add the account (owe_missed). Every mark write runs
+# under RC_LOCK with the account read there (lead, follow), so no sync
+# writes over a newer switch's mark. A mark older than RC_OWED_FOR owes nothing
 # (sd:9427 review). Which herdr session listed for which switch is
 # RC_LISTED, written only under RC_LOCK. Owed rows carry the mark's
 # epoch, so each mark is later than the last: a second switch within
@@ -901,15 +901,20 @@ reconnect_pass() {
 # is written only when it differs (one database row per write), and is
 # compared on every run, so a failed write is retried by the next one.
 lead() {
-  local rc=0 json active row number uuid
-  # Before auto can switch, a mark that names no account gains the
-  # active one: only then does a lost mark show (owe_missed). A list
-  # that fails here fails below too.
-  if ! mark_named && json=$(accounts) && active=$(pick active <<<"$json"); then
-    read -r number uuid <<<"$active"
-    [[ ! "$uuid" =~ $UUID_RE ]] || owe_missed "$uuid"
-  fi
+  local rc=0 json active row number uuid locked=""
+  # Every mark write goes under the reconnect lock, with the account
+  # read there: a sync that read it before another's switch wrote its
+  # mark over the new one, and each pane got a second /rc (sd:9427
+  # review). Held, this sync writes no mark; the next one does.
   if switch_lock; then
+    locked=1
+    # Before auto can switch, a mark that names no account gains the
+    # active one: only then does a lost mark show (owe_missed). A list
+    # that fails here fails below too.
+    if ! mark_named && json=$(accounts) && active=$(pick active <<<"$json"); then
+      read -r number uuid <<<"$active"
+      [[ ! "$uuid" =~ $UUID_RE ]] || owe_missed "$uuid"
+    fi
     # shellcheck disable=SC2086 # deliberate word splitting of the configured flags
     st_bounded 120 "$CSWAP_BIN" auto --once $CSWAP_AUTO_ARGS --strategy consume-first 9>&- || rc=$?
   else
@@ -921,7 +926,9 @@ lead() {
   read -r number uuid <<<"$active"
   set -- "$number" "$uuid"
   [[ "$2" =~ $UUID_RE ]] || fail list "account $1 has no organizationUuid"
-  if [[ "$rc" == 0 ]]; then owe_rc "$2"; else owe_missed "$2"; fi
+  if [[ -n "$locked" ]]; then
+    if [[ "$rc" == 0 ]]; then owe_rc "$2"; else owe_missed "$2"; fi
+  fi
   exec 9>&-
   row=$(published 2>/dev/null) || row=""
   if [[ "$row" != "$2" ]]; then
@@ -989,6 +996,12 @@ follow() {
   rm -f "$err"
   # A count left behind only makes the next refusal fail sooner.
   rm -f "$REFUSALS" 2>/dev/null || :
+  # The account is read and the mark written under the reconnect lock
+  # (see lead).
+  if ! switch_lock; then
+    echo "following the hub: another sync is reconnecting; the next run checks the account"
+    return 0
+  fi
   json=$(accounts) || fail list "cswap list --json failed; nothing switched"
   active=$(pick active <<<"$json") || fail list "cswap names no single active account; nothing switched"
   number=$(pick number "$want" <<<"$json") || rc=$?
@@ -1002,10 +1015,7 @@ follow() {
   [[ ! "${active#* }" =~ $UUID_RE ]] || owe_missed "${active#* }"
   if [[ "${active%% *}" == "$number" ]]; then
     echo "following the hub: account $number already active"
-    return 0
-  fi
-  if ! switch_lock; then
-    echo "following the hub: account $number waits: another sync is reconnecting; the next run switches"
+    exec 9>&-
     return 0
   fi
   st_bounded 60 "$CSWAP_BIN" switch "$number" >/dev/null 9>&- ||

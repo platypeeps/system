@@ -1143,6 +1143,27 @@ class RemoteControlReconnects(Machine):
                 self.sync(fence, **extra)
                 self.assertEqual(self.active(), 3)
 
+    def test_no_mark_write_while_another_sync_holds_the_lock(self):
+        # sd:9427 review (cswap.sh:1002, :910, :924): a manual sync read
+        # the active account before a scheduled sync's switch, then
+        # wrote its mark over the new one; a fresh epoch listed every
+        # pane again, and each got a second /rc. Every mark write now
+        # goes under the reconnect lock, with the account read there.
+        import fcntl
+        now = int(time.time())
+        for fence in ("elsewhere", "holder"):
+            for mark_text in (f"{now} 1 {TWO}\n", "1000 1\n"):
+                with self.subTest(fence=fence, mark=mark_text):
+                    self.accounts([(1, ONE), (2, TWO)], active=1)
+                    self.publish(ONE)
+                    mark = self.script.parent / "state/rc-pending"
+                    mark.parent.mkdir(exist_ok=True)
+                    mark.write_text(mark_text)
+                    with open(self.script.parent / "state/rc-lock", "a") as held:
+                        fcntl.flock(held, fcntl.LOCK_EX)
+                        self.sync(fence)
+                    self.assertEqual(mark.read_text(), mark_text)
+
     def test_no_sync_deletes_a_switch_mark(self):
         # Review on sd:9427 (cswap.sh:348): the expiry branch deleted
         # the mark, and a switch could land between its read and the
