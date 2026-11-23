@@ -598,7 +598,8 @@ esac
                            ("Libexec-Daemon", "/usr/libexec/Libexec-Daemon"),
                            ("bash", r"\/bin\/bash"),
                            ("Some-App", r"\/Applications\/Some-App.app\/Contents\/MacOS\/Some-App"),
-                           ("Finder", r"\/System\/Library\/CoreServices\/Finder.app\/Contents\/MacOS\/Finder")):
+                           ("Finder", r"\/System\/Library\/CoreServices\/Finder.app\/Contents\/MacOS\/Finder"),
+                           ("my-cli", r"\/Volumes\/VOLUME\/*\/bin\/my-cli")):
             (reports / (name + stamped(hours=1) + ".ips")).write_text(
                 head + '{\n  "procPath" : "' + path + '",\n  "parentProc" : "launchd"\n}\n')
         out = self.run_check("system-daemon", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
@@ -608,6 +609,7 @@ esac
         self.assertIn("bash(1) ", out)
         self.assertIn("Some-App(1) ", out)
         self.assertIn("Finder(1) ", out, "an app under /System/ still counts (lane review)")
+        self.assertIn("my-cli(1) ", out, "a tool on a redacted volume still counts (lane review)")
 
     def test_codex_sandbox_library_block_is_its_own_finding(self):
         """sd:6729: a codex child that dyld aborts at launch because the codex

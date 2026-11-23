@@ -251,10 +251,11 @@ recent_report() { # <file> <cutoff or empty> <mtime days>
 # A simulated fault (ExcUserFault_, "is_simulated":1) left its process running (sd:6647).
 # A macOS daemon is Apple's to fix and buries a real crash (sd:10016): its
 # procPath is under /System/, /usr/libexec/ or a cryptex, which the report
-# redacts to /Volumes/VOLUME/*/; JSON may escape each slash. /bin/bash stays,
+# redacts to /Volumes/VOLUME/*/<name>.framework/ (any other path on a
+# redacted volume is the operator's); JSON may escape each slash. /bin/bash stays,
 # and so does an app bundle there (Finder, under /System/): only a
 # path with no .app/ in it is a daemon.
-SYSTEM_PROC_RE='"procPath"[[:space:]]*:[[:space:]]*"\\?/(System|usr\\?/libexec|Volumes\\?/VOLUME\\?/\*)\\?/'
+SYSTEM_PROC_RE='"procPath"[[:space:]]*:[[:space:]]*"\\?/(System|usr\\?/libexec|Volumes\\?/VOLUME\\?/\*\\?/[^"/\\]+\.framework)\\?/'
 SYSTEM_APP_RE='"procPath"[[:space:]]*:[[:space:]]*"[^"]*\.app\\?/'
 crash_report() { # <file>
   _h=$(head -n 1 "$1" 2>/dev/null)
