@@ -157,6 +157,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/$label.plist
 
 `uv cache prune` needs uv's cache lock, and a long-lived uv server holds the
 lock while it runs. A prune later in the day therefore waits and gives up.
+Claude sessions use a cache of their own: machine-setup's settings
+baseline sets `UV_CACHE_DIR` to `~/.cache/uv-claude`. Each session's
+`uvx` MCP proxy then holds that cache's lock, not the main one.
 
 At login only one such server runs: the Google Workspace MCP, a KeepAlive
 agent. `uv-prune` does these steps:
@@ -168,11 +171,16 @@ agent. `uv-prune` does these steps:
    A `uvx` run, such as a Claude session's MCP proxy, is never
    signalled: nothing proves its client is gone. While one holds the
    lock the prune skips; the login prune after a reboot cleans the cache.
-2. Wait up to `UV_PRUNE_WAIT` seconds (20) for its uv processes to exit.
-3. Skip the prune, exit 0, when any `uv` or `uvx` process is still left.
+2. Wait up to `UV_PRUNE_WAIT` seconds (20) for the holders of the
+   cache's lock to exit. `lsof -t <cache>/.lock` lists them, so a uv
+   on another cache does not count.
+3. Skip the prune, exit 0, when a holder is still left.
    In `run`, a skip held by `uvx` alone is an action, never a finding,
    and does not count toward the three-night streak.
 4. Run `uv cache prune` with `UV_LOCK_TIMEOUT` of `UV_PRUNE_LOCK_TIMEOUT` (60).
+   At login it then prunes the Claude sessions' cache,
+   `UV_PRUNE_SESSION_CACHE` (`~/.cache/uv-claude`), the same way.
+   The nightly `run` prunes the main cache only.
    It never passes `--force`: the lock is what keeps a concurrent uv safe.
 5. Start the paused agents again with `launchctl bootstrap`, also on failure.
    It retries three times, and an agent already loaded counts as started.

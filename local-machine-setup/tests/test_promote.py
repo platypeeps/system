@@ -27,7 +27,7 @@ def utc_today():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 ROLE_AGENTS = [f"{PREFIX}.sd-dashboard", f"{PREFIX}.sd-serve", f"{PREFIX}.google-workspace-mcp"]
 ROLE_JOBS = ["sd-db-backup", "sd-db-backup-hourly", "offsite-verify", "shadow-sync-nightly",
-             "night-build", "build-dispatch", "workspace-mcp-watch"]
+             "night-build", "build-dispatch", "workspace-mcp-watch", "needs-sweep-nightly"]
 # The logins the role needs and no machine copies (sd:5986, #31094): promote
 # lists each login, the hand-back each sign-out.
 ACCOUNTS = ("work Google account", "personal Google account", "Slack", "Notion")
@@ -468,6 +468,18 @@ class Promote(PromoteCase):
     def test_a_standby_without_the_account_agents_plist_is_not_ready(self):
         (self.config / f"machine-setup/launchagents/{PREFIX}.google-workspace-mcp.plist").unlink()
         self.assertIn(f"NOT-READY no plist for {PREFIX}.google-workspace-mcp", self.run_promote().stdout)
+
+    def test_a_standby_from_before_the_sweep_job_is_ready_and_promotes(self):
+        """Review: needs-sweep-nightly joined the role after standbys were
+        set up, so a standby without its job file read NOT-READY, though
+        the cron stage seeds the bundled example. It reads ready, and
+        promote installs the seeded job."""
+        (self.config / "cron-jobs/jobs/needs-sweep-nightly.job").unlink()
+        out = self.run_promote().stdout
+        self.assertNotIn("NOT-READY no job file needs-sweep-nightly", out)
+        self.assertIn("ok      job file needs-sweep-nightly (seeded from", out)
+        self.run_promote("--apply")
+        self.assertIn(f"{PREFIX}.cron.needs-sweep-nightly", self.installed())
 
     def test_a_standby_without_a_builder_job_file_is_not_ready(self):
         (self.config / "cron-jobs/jobs/night-build.job").unlink()
