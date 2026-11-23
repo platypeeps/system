@@ -727,7 +727,7 @@ def main() -> None:
     # tool's .env, which must not stop a usage run (sd:9718 review).
     p.add_argument("--out", default=None,
                    help="JSONL ledger to append to (default: AGENT_METER_FILE, "
-                        "else %s)" % DEFAULT_OUT)
+                        "else %s)" % DEFAULT_OUT.replace("%", "%%"))
     p.add_argument("--providers", default=",".join(PROVIDERS),
                    help="comma-separated providers the ledger reading holds "
                         "(default: %(default)s)")
