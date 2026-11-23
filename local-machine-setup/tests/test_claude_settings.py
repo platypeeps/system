@@ -256,13 +256,23 @@ class ClaudeSettingsBaseline(SyntheticHome):
         self.run_tooling("--apply")
         self.assertEqual(json.loads(self.settings.read_text())["env"]["CLAUDE_CODE_SHELL"], "/bin/zsh")
 
+    def test_a_fresh_baseline_gives_sessions_their_own_uv_cache(self):
+        """sd:9848: a session's uvx MCP proxy holds uv's cache lock for the
+        session's life, so the nightly prune of the main cache skipped
+        every night. Sessions get their own cache; the login prune cleans it."""
+        self.settings.write_text("{}\n")
+        self.run_tooling("--apply")
+
+        self.assertEqual(json.loads(self.settings.read_text())["env"].get("UV_CACHE_DIR"),
+                         str(self.home / ".cache" / "uv-claude"))
+
     def test_an_operators_updater_setting_is_left_alone(self):
         self.settings.write_text(json.dumps({"env": {"DISABLE_AUTOUPDATER": "0", "OTHER": "x"}}) + "\n")
         out = self.run_tooling("--apply")
 
         self.assertNotIn("env.DISABLE_AUTOUPDATER", out)
-        self.assertEqual(json.loads(self.settings.read_text())["env"],
-                         {"DISABLE_AUTOUPDATER": "0", "OTHER": "x"})
+        env = json.loads(self.settings.read_text())["env"]
+        self.assertEqual((env["DISABLE_AUTOUPDATER"], env["OTHER"]), ("0", "x"))
 
     def test_a_second_apply_changes_nothing(self):
         self.run_tooling("--apply")

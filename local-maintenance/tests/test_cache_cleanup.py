@@ -109,7 +109,8 @@ class CacheCleanupTest(Harness):
               f'  "cache prune") exit {prune_rc} ;; esac\n')
         # Not loaded: no agent is paused, so the real launchd is never asked.
         _stub(self.bin / "launchctl", 'echo "launchctl $*" >> "$CALLS"\nexit 1\n')
-        _stub(self.bin / "pgrep", "exit 0\n" if foreign else "exit 1\n")
+        # `lsof -t <cache>/.lock`: the pids that hold this cache's lock.
+        _stub(self.bin / "lsof", 'printf "%s\\n" 101 102 3\n' if foreign else "exit 1\n")
         # The real process list may hold a uvx: list none for uv-prune's
         # holder scan. A test that wants holders stubs ps again.
         _stub(self.bin / "ps", 'case "$*" in "-A -o pid= -o comm=") exit 0 ;; '
