@@ -1584,6 +1584,20 @@ class RemoteControlReconnects(Machine):
                            FAKE_HERDR_KEYS_SLOW="0.5", FAKE_DELIVERED=str(delivered))
         self.assertFalse(delivered.exists(), result.stdout)
 
+    def test_a_subsecond_send_bound_cuts_a_slow_send(self):
+        # sd:9427 review: with the default 1000 ms gap each send's bound
+        # is under a second, and perl's alarm read it as 0, no timer, so
+        # a send-keys that took 1.5 s still typed and entered /rc.
+        delivered = self.tmp / "delivered"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        started = time.monotonic()
+        result = self.sync("elsewhere", CSWAP_RC_GAP_MS="1000", FAKE_HERDR_KEYS_SLOW="1.5",
+                           FAKE_DELIVERED=str(delivered))
+        self.assertFalse(delivered.exists(), result.stdout)
+        self.assertNotIn("sent /rc", result.stdout)
+        self.assertLess(time.monotonic() - started, 8, result.stdout)
+
     def test_a_switch_mark_that_does_not_read_keeps_every_row(self):
         # sd:9427 review: rc-pending that failed to read once read as no
         # current switch; the owed row went as stale, the sent row was

@@ -61,11 +61,13 @@ eval {
     my $sig = $_;
     sub { $caught = $sig; hit($sig); die "signal\n" }
   } keys %number;
-  alarm $limit;
+  # Time::HiRes: the core alarm takes whole seconds, and alarm(0.6)
+  # arms no timer at all (sd:9427 review).
+  Time::HiRes::alarm($limit);
   $status = $? if reap(0) == $pid;
-  alarm 0;
+  Time::HiRes::alarm(0);
 };
-alarm 0;
+Time::HiRes::alarm(0);
 if (defined $status) { exit($status & 127 ? 128 + ($status & 127) : $status >> 8) }
 # Ending the group is not interrupted: a second TERM must not leave it half done.
 $SIG{$_} = "IGNORE" for keys %number;
