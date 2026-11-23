@@ -723,8 +723,11 @@ def main() -> None:
                         "past 7-day reset and the current pace; usage: one "
                         "row per 'usage providers' line; services: one row "
                         "per 'status services' line; omit to append one reading")
-    p.add_argument("--out", default=default_out(),
-                   help="JSONL ledger to append to (default: %(default)s)")
+    # Resolved after parsing, for the commands that use it: it reads the
+    # tool's .env, which must not stop a usage run (sd:9718 review).
+    p.add_argument("--out", default=None,
+                   help="JSONL ledger to append to (default: AGENT_METER_FILE, "
+                        "else %s)" % DEFAULT_OUT)
     p.add_argument("--providers", default=",".join(PROVIDERS),
                    help="comma-separated providers the ledger reading holds "
                         "(default: %(default)s)")
@@ -740,6 +743,8 @@ def main() -> None:
                    help="usage: write the huggingface row from a ZeroGPU quota "
                         "error, '(60s requested vs. 0s left)', and read nothing else")
     a = p.parse_args()
+    if a.out is None and a.command in (None, "accounts"):
+        a.out = default_out()
     if a.huggingface_error is not None and a.command != "usage":
         p.error("--huggingface-error goes with usage")
     if a.no_db and a.command in ("usage", "services"):
