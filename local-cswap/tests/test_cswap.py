@@ -730,12 +730,6 @@ class APinFollow(Machine):
 class RemoteControlReconnects(Machine):
     """sd:9427: a switch drops every Remote Control link; /rc restores it."""
 
-    def setUp(self):
-        super().setUp()
-        # The screen-shape tests test no timing: a gap a loaded machine
-        # meets (sd:9427 triage). Timing tests pass their own.
-        self.env["CSWAP_RC_GAP_MS"] = "5000"
-
     def panes(self, *rows, where=None):
         path = self.tmp / "herdr.json"
         path.write_text(json.dumps(rows))
@@ -959,6 +953,17 @@ class RemoteControlReconnects(Machine):
         self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter "
                       "(no get, exit 124); no enter\n", result.stdout)
         self.assertEqual(self.owed(), ["w1:p1"])
+
+    def test_the_shipped_gap_fits_the_checks_on_a_loaded_machine(self):
+        # sd:9427 review (cswap.sh:77): the 1000 ms default was under
+        # what the checks cost on a loaded machine, and every test here
+        # raised the gap, so none ran the shipped value. herdr calls of
+        # 250 ms each, as under load: the default gap sends /rc.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_HERDR_SLOW="0.25", FAKE_HERDR_GET_SLOW="0.25")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertEqual(self.owed(), [])
 
     def test_a_switch_sends_rc_to_idle_panes_only(self):
         self.publish(THREE)

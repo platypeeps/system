@@ -74,7 +74,10 @@ RC_OWED_FOR=1800
 RC_BUDGET="${CSWAP_RC_BUDGET:-60}"
 # The most milliseconds the last checks before the keys may take, from
 # the screen read to the end of the session get (sd:9427 class pass).
-RC_GAP_MS="${CSWAP_RC_GAP_MS:-1000}"
+# Four herdr calls and a python clock read each: 1000 ms sent nothing
+# on a loaded machine, where four calls took over 1000 ms (sd:9427
+# review). The screen reads catch a draft; the gap bounds staleness.
+RC_GAP_MS="${CSWAP_RC_GAP_MS:-5000}"
 RC_DEADLINE=""
 HERDR_DIRS="${CSWAP_HERDR_DIRS-$HOME/.local/bin /opt/homebrew/bin /usr/local/bin}"
 HERDR=""
