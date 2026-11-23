@@ -97,6 +97,12 @@ EXTRA_JOB_DIRS="${CRON_JOBS_EXTRA_DIRS:-}"
 LOG_DIR="$ROOT/logs"
 FAIL_LOG="$LOG_DIR/failures.log"
 AGENT_DIR="$HOME/Library/LaunchAgents"
+# Per-label state: a LaunchAgent belongs to the user, not to a checkout, so
+# the reinstall helper's plist and the plist launchd last accepted live
+# here, where every checkout's install and uninstall see them (sd:9826).
+# Under HOME, never XDG_STATE_HOME: a shell's own value split one user's
+# state in two, and an uninstall missed a helper the run had queued.
+STATE_DIR="$HOME/.local/state/cron-jobs"
 DOMAIN="gui/$(id -u)"
 # The program launchd starts for every job (sd:6456); see job-launch.c.
 JOB_LAUNCH="$HOME/.local/libexec/system-tools/job-launch"
@@ -315,7 +321,7 @@ load_job() {
 # jobs here read healthy while carrying a PATH that #109 had already fixed.
 # Renders to a scratch AGENT_DIR and compares; never touches launchd.
 cmd_verify() {
-  local job="$1" tmp installed rc=0
+  local job="$1" tmp installed accepted rc=0
   installed="$(plist_for "$job")"
   if [ ! -f "$installed" ]; then
     echo "  missing $job"
@@ -323,11 +329,18 @@ cmd_verify() {
   fi
   tmp="$(mktemp -d)"
   ( AGENT_DIR="$tmp"; load_job "$job"; write_plist "$job" )
-  if cmp -s "$tmp/$(label_for "$job").plist" "$installed"; then
-    echo "  ok      $job"
-  else
+  accepted="$(accepted_plist_for "$job")"
+  if ! cmp -s "$tmp/$(label_for "$job").plist" "$installed"; then
     echo "  STALE   $job — installed plist differs from the generator"
     rc=1
+  # An install killed after replacing the plist leaves launchd on the old
+  # one: the disk matches, the label is loaded, and only the accepted copy
+  # shows the new plist never loaded (sd:9826 review).
+  elif [ -f "$accepted" ] && ! cmp -s "$accepted" "$installed"; then
+    echo "  STALE   $job — installed plist is not the one launchd last loaded"
+    rc=1
+  else
+    echo "  ok      $job"
   fi
   rm -rf "$tmp"
   return $rc
@@ -434,21 +447,23 @@ xml_escape() { # text: the text with &, < and > as XML entities
   printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-write_plist() { # job name
+write_plist() { # job name [path, default the installed plist]
   local job="$1" label plist x_label x_root x_job x_log x_path x_home x_config x_launch exit_timeout
   label="$(label_for "$job")"
-  plist="$(plist_for "$job")"
+  plist="${2:-$(plist_for "$job")}"
   # Every value below is XML text: a path holding `&` or `<` made a plist
   # launchd cannot parse (sd:2562).
   x_label="$(xml_escape "$label")"; x_root="$(xml_escape "$ROOT")"; x_job="$(xml_escape "$job")"
   x_log="$(xml_escape "$LOG_DIR/$job.log")"; x_path="$(xml_escape "$JOB_PATH")"
   x_home="$(xml_escape "$HOME")"; x_config="$(xml_escape "$SYSTEM_TOOLS_CONFIG")"
   x_launch="$(xml_escape "$JOB_LAUNCH")"
-  # Every value is computed before the plist is opened: a failure while
-  # it is open leaves the installed plist empty.
+  # Every value is computed before the plist is opened, and the plist is
+  # written beside it and moved in whole: each step returns its failure,
+  # since a caller in an `||` list runs this with errexit off, and a half
+  # written plist must not replace the one launchd holds.
   exit_timeout=$((JOB_GRACE + EXIT_REPORT_ROOM))
   {
-    cat <<EOF
+    cat <<EOF || return 1
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -470,7 +485,7 @@ write_plist() { # job name
 
 EOF
     # A manual job has no calendar: only `launchctl kickstart` starts it.
-    [ "$JOB_SCHEDULE" = manual ] || calendar_xml "$JOB_SCHEDULE"
+    [ "$JOB_SCHEDULE" = manual ] || calendar_xml "$JOB_SCHEDULE" || return 1
     cat <<EOF
 
     <key>RunAtLoad</key>
@@ -522,7 +537,7 @@ EOF
 </dict>
 </plist>
 EOF
-  } > "$plist"
+  } > "$plist.tmp" && mv "$plist.tmp" "$plist" || { rm -f "$plist.tmp"; return 1; }
 }
 
 # Records the failure only. The run's report carries it to Reports and Today,
@@ -926,6 +941,8 @@ EXEC_OWN_OFFSET=0
 # shell's own open file, so the lock outlives the perl that took it.
 # shellcheck disable=SC2016 # perl source, expanded by perl
 LOCK_TAKE='use Fcntl ":flock"; open(my $fh, ">&=", 8) or exit 2; flock($fh, LOCK_EX|LOCK_NB) or exit 1; exit 0'
+# The install lock on fd 7 waits, bounded: installs and uninstalls are short.
+INSTALL_LOCK_TAKE='use Fcntl ":flock"; open(my $fh, ">&=", 7) or exit 2; $SIG{ALRM} = sub { exit 1 }; alarm 120; flock($fh, LOCK_EX) or exit 1; exit 0'
 
 # Is a run holding this job's lock? Asked by taking it on a fresh open in a
 # subshell, which releases it again on exit. Only perl's own "held" (1) is a
@@ -1588,6 +1605,9 @@ if attrs:
     "$HOME/.claude/settings.json" "$job" 2>/dev/null)" || otel_settings=""
   OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+$OTEL_RESOURCE_ATTRIBUTES,}sd.job=$job"
   export OTEL_RESOURCE_ATTRIBUTES
+  # The workload knows which job it runs: a reinstall of that job from
+  # inside it is handed to a helper (defer_install, sd:9826).
+  CRON_JOBS_RUN="$job"; export CRON_JOBS_RUN
   echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') starting (cwd: $PWD)"
   local rc=0 claude_bin debug_file="$LOG_DIR/$job.debug.$report_run.log"
   if [ -n "$JOB_COMMAND" ]; then
@@ -1710,8 +1730,11 @@ wait_unloaded() { # job
 # label without one is not ours to guess about. A label `print` cannot find is
 # not loaded, so `bootout` is skipped and this checkout's lock serves. Nor does
 # a log folder that is gone: launchd cannot start a run there.
-hold_job_lock() { # job
-  local lock="$LOG_DIR/.$1.flock" taken=0 out stdout
+# Prints the lock file a run of the job takes, by the rule above; fails,
+# saying why, when a loaded label names no log. The reinstall helper waits
+# on the same file install then tests (sd:9826 review).
+job_lock_path() { # job
+  local lock="$LOG_DIR/.$1.flock" out stdout
   if out=$(launchctl print "$DOMAIN/$(label_for "$1")" 2>/dev/null); then
     stdout=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*stdout path = //p' | head -1)
     if [ -z "$stdout" ]; then
@@ -1720,6 +1743,33 @@ hold_job_lock() { # job
     fi
     [ ! -d "${stdout%/*}" ] || lock="${stdout%/*}/.$1.flock"
   fi
+  printf '%s\n' "$lock"
+}
+# One per user and label, in STATE_DIR, taken by every install and
+# uninstall before the run lock: with no label loaded each checkout's
+# run lock is its own logs/, so a helper read its marker and bootstrapped
+# after another checkout's uninstall returned (sd:9826 review).
+hold_install_lock() { # job
+  local lock taken=0
+  lock="$STATE_DIR/$(label_for "$1").install.flock"
+  if ! mkdir -p "$STATE_DIR" || ! exec 7>>"$lock"; then
+    echo "cron-jobs.sh: $1: could not open the install lock $lock; nothing changed" >&2
+    return 1
+  fi
+  perl -e "$INSTALL_LOCK_TAKE" || taken=$?
+  [ "$taken" -ne 0 ] || return 0
+  exec 7>&-
+  if [ "$taken" -eq 1 ]; then
+    echo "cron-jobs.sh: $1: another install or uninstall holds $lock; nothing changed" >&2
+  else
+    echo "cron-jobs.sh: $1: could not test the lock on $lock (perl exit $taken); nothing changed" >&2
+  fi
+  return 1
+}
+
+hold_job_lock() { # job
+  local lock taken=0
+  lock="$(job_lock_path "$1")" || return 1
   exec 8>>"$lock" || {
     echo "cron-jobs.sh: $1: could not test the lock on $lock; nothing changed" >&2
     return 1
@@ -1748,31 +1798,357 @@ ensure_job_launch() {
   echo "built: $JOB_LAUNCH; grant it Full Disk Access (System Settings > Privacy & Security)"
 }
 
+# A run cannot reinstall its own job (sd:9826): it holds the job's lock, and
+# the `bootout` would stop the run asking. machine-setup-update-nightly met
+# its own stale plist each night, the install was refused, and its last step,
+# status --fail-on-drift, failed the job. So a run that asks for its own job
+# bootstraps a one-shot helper label, outside the job's, which waits for the
+# run to end and then installs. Its plist sits in STATE_DIR, not in
+# LaunchAgents, so no login loads it again and no sweep reads it as a job.
+reinstall_label() { echo "$LABEL_PREFIX.cron-reinstall.$1"; }
+# Copies whole or not at all: a killed cp leaves only <dst>.tmp, never a
+# partial file a later rollback would load.
+copy_whole() { # src dst
+  cp -p "$1" "$2.tmp" && mv "$2.tmp" "$2" || { rm -f "$2.tmp"; return 1; }
+}
+helper_plist_for() { echo "$STATE_DIR/$(reinstall_label "$1").plist"; }
+accepted_plist_for() { echo "$STATE_DIR/$(label_for "$1").accepted"; }
+failed_record_for() { echo "$STATE_DIR/$(label_for "$1").reinstall.failed"; }
+defer_install() { # job
+  local job="$1" label plist err d dirs="" old_ifs="$IFS"
+  label="$(reinstall_label "$job")"
+  plist="$(helper_plist_for "$job")"
+  # launchd starts the helper in another folder: a relative extra job
+  # directory would name another one there (sd:9826 review).
+  IFS=':'
+  for d in $EXTRA_JOB_DIRS; do
+    case $d in ''|/*) ;; *) d="$PWD/$d" ;; esac
+    dirs="$dirs${dirs:+:}$d"
+  done
+  IFS="$old_ifs"
+  # Checked by hand: under `install --all` errexit is off.
+  if ! mkdir -p "$STATE_DIR" || ! cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$(xml_escape "$label")</string>
+    <!-- Under job-launch, as every job: bare /bin/bash may not read a
+         checkout under ~/Documents (sd:6456). -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>$(xml_escape "$JOB_LAUNCH")</string>
+        <string>/bin/bash</string>
+        <string>$(xml_escape "$ROOT")/cron-jobs.sh</string>
+        <string>reinstall-after-run</string>
+        <string>$(xml_escape "$job")</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$(xml_escape "$LOG_DIR/$job.log")</string>
+    <key>StandardErrorPath</key>
+    <string>$(xml_escape "$LOG_DIR/$job.log")</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>$(xml_escape "$JOB_PATH")</string>
+        <key>HOME</key>
+        <string>$(xml_escape "$HOME")</string>
+        <key>SYSTEM_TOOLS_CONFIG</key>
+        <string>$(xml_escape "$SYSTEM_TOOLS_CONFIG")</string>
+        <!-- The values this install resolved: launchd hands the helper
+             only these, and without them it could install another
+             definition of the job or look for another label. -->
+        <key>CRON_JOBS_EXTRA_DIRS</key>
+        <string>$(xml_escape "$dirs")</string>
+        <key>CRON_JOBS_HOST</key>
+        <string>$(xml_escape "$JOB_HOST")</string>
+        <key>SYSTEM_TOOLS_LABEL_PREFIX</key>
+        <string>$(xml_escape "$LABEL_PREFIX")</string>
+        <!-- The grace sets the plist's ExitTimeOut: without the run's
+             value the helper rendered another plist than verify expects,
+             and every update queued the reinstall again. The wait is the
+             helper's own bound. Empty means the default, as unset does.
+             CRON_JOBS_RUN stays out: the helper would defer to itself. -->
+        <key>CRON_JOBS_TIMEOUT_GRACE</key>
+        <string>$(xml_escape "$BASE_TIMEOUT_GRACE")</string>
+        <key>CRON_JOBS_REINSTALL_WAIT</key>
+        <string>$(xml_escape "${CRON_JOBS_REINSTALL_WAIT:-}")</string>
+    </dict>
+</dict>
+</plist>
+EOF
+  then
+    rm -f "$plist"
+    echo "cron-jobs.sh: $job: could not write the reinstall helper $plist; nothing changed" >&2
+    return 1
+  fi
+  # A helper a failed run left loaded is replaced, not added to. bootout
+  # returns before launchd lets the label go, and a bootstrap of the
+  # occupied label is refused: wait, as wait_unloaded does for a job.
+  if launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
+    launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
+    local tries=0
+    while launchctl print "$DOMAIN/$label" >/dev/null 2>&1 && [ "$tries" -lt 20 ]; do
+      sleep 0.5
+      tries=$((tries + 1))
+    done
+  fi
+  if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
+    rm -f "$plist"
+    echo "failed: $job (helper $label: $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
+    return 1
+  fi
+  echo "deferred: $job  (this run is the job's own; $label reinstalls it once the run ends)"
+}
+
+# The helper's half: wait, bounded, for the run to let the lock go, install,
+# then remove the helper. A run that outlasts the wait keeps the old plist,
+# so verify still reads it STALE and the next update retries.
+# A failure lands after the night's report, so it is also written to
+# <state>/<label>.reinstall.failed; machine-setup's cron stage prints it as a
+# FAILED line, which status --fail-on-drift counts, and a later success
+# removes it. An uninstall in between cancels: the helper's plist is gone.
+cmd_reinstall_after_run() { # job
+  local job="$1" waited=0 rc=0 wait="${CRON_JOBS_REINSTALL_WAIT:-14400}" why=""
+  local errs="$LOG_DIR/.$job.reinstall.err" lock own="$LOG_DIR/.$job.flock"
+  # Two locks. The requesting run's, in this checkout's logs/: the helper
+  # runs the cron-jobs.sh of the run that asked, and a manual run there
+  # under a label another checkout loaded holds only this one (sd:9826
+  # review). And the lock install will test: a label another checkout
+  # loaded locks that checkout's logs/; unknown, install refuses.
+  lock="$(job_lock_path "$job" 2>/dev/null)" || lock="$own"
+  while { lock_is_live "$own" || lock_is_live "$lock"; } && [ "$waited" -lt "$wait" ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if lock_is_live "$own" || lock_is_live "$lock"; then
+    why="cron-jobs.sh: $job: a run still holds the lock after $wait s; not reinstalled, the next update retries"
+    echo "$why" >&2
+    rc=1
+  else
+    # A child process, not a function call: under `||` errexit is off for
+    # the whole call, so a job file that failed while read still installed
+    # under bash 5. The child keeps errexit; its exit on a missing or
+    # broken job file cannot skip the cleanup below either.
+    REINSTALL_HELPER=1 "${BASH:-/bin/bash}" "$ROOT/cron-jobs.sh" install "$job" 2> "$errs" || rc=$?
+    cat "$errs" >&2
+    [ "$rc" -eq 0 ] || why="$(tail -n 1 "$errs")"
+    rm -f "$errs"
+  fi
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "${why:-cron-jobs.sh: $job: install exited $rc}" > "$(failed_record_for "$job")"
+  else
+    rm -f "$(failed_record_for "$job")"
+  fi
+  rm -f "$(helper_plist_for "$job")"
+  # Last: the bootout ends this process with its label.
+  launchctl bootout "$DOMAIN/$(reinstall_label "$job")" 2>/dev/null || true
+  return $rc
+}
+
+# Every failure after the old label went out loads the plist launchd last
+# accepted, never the file on disk: an install that died between replace
+# and bootstrap left an untested one there (sd:9826 review). Prints the
+# clause the caller appends to its failed: line; none when nothing is saved.
+# The pending record goes only once the accepted plist loads: it is the
+# next install's trigger to restore, so a kill before that keeps it.
+restore_accepted() { # job plist accepted
+  [ -f "$3" ] || return 0
+  wait_unloaded "$1"
+  if ! copy_whole "$3" "$2"; then
+    # Not a refusal: the copy stays the next install's rollback copy.
+    printf '; could not copy the previous plist back: run cron-jobs.sh install %s' "$1"
+  elif launchctl bootstrap "$DOMAIN" "$2" >/dev/null 2>&1; then
+    rm -f "$3.pending"
+    printf '; restored the previous plist'
+  else
+    # Kept even when it is the first seed: bootstrap's error cannot tell
+    # a transient launchd fault from a refusal, and it is the only
+    # rollback copy (review). A later install's load replaces it.
+    printf '; the previous plist did not load either: run cron-jobs.sh install %s' "$1"
+  fi
+}
+
+# A pending record is an install that did not end: it is written before
+# the bootout and goes only once a plist launchd accepted is loaded. The
+# caller holds the install lock (fd 7), so the install that wrote it is
+# dead, and this runs before the job file is read: a definition broken
+# since (JOB_TIMEOUT=invalid) or a candidate that fails lint still leaves
+# the job loaded (round 10, lane prepare notes #71413, #72617).
+# `print` right after a bootout can still find a label launchd is tearing
+# down, so a loaded label proves nothing: it is booted out and the
+# accepted plist loaded again. With no accepted copy no label was booted out (the seed needs a
+# loaded one), so `print` is read as it is. The run lock is released
+# after: the restored label may log to another checkout, whose lock the
+# install then takes.
+recover_interrupted() { # job
+  local job="$1" plist accepted pending err
+  plist="$(plist_for "$job")"
+  accepted="$(accepted_plist_for "$job")"
+  pending="$accepted.pending"
+  [ -f "$pending" ] || return 0
+  if [ ! -f "$accepted" ]; then
+    if ! is_loaded "$job" || ! cmp -s "$pending" "$plist"; then
+      rm -f "$pending"
+    elif ! mv "$pending" "$accepted"; then
+      echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
+      return 1
+    fi
+    return 0
+  fi
+  hold_job_lock "$job" || return 1
+  # Loaded and matching, the record is a plist launchd accepted: the
+  # bootstrap ran, or the candidate equals the plist it replaced. Saved
+  # first, checked: refused, nothing is unloaded and the record stays.
+  # Copied, not moved: the record goes only once the reload below loads,
+  # so a recovery killed after its bootout leaves the next one a trigger.
+  if is_loaded "$job" && cmp -s "$pending" "$plist" && ! copy_whole "$pending" "$accepted"; then
+    exec 8>&-
+    echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
+    return 1
+  fi
+  if is_loaded "$job"; then
+    launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
+    wait_unloaded "$job"
+    if is_loaded "$job"; then
+      exec 8>&-
+      echo "cron-jobs.sh: $job: launchd still holds the label after bootout; an interrupted install is not recovered yet, retry" >&2
+      return 1
+    fi
+  fi
+  err="$(restore_accepted "$job" "$plist" "$accepted")"
+  case "$err" in
+    # A record kept stays the trigger; the install below may still load
+    # its candidate, and a refused one tries the accepted plist again.
+    *"did not load"*) echo "failed: $job (interrupted install)$err" >&2 ;;
+    *) echo "recovered: $job (an interrupted install)$err" ;;
+  esac
+  exec 8>&-
+}
+
 cmd_install() {
-  local job="$1" err
+  local job="$1" err plist new accepted pending unrecorded
+  if [ "${CRON_JOBS_RUN:-}" = "$job" ]; then
+    load_job "$job"
+    ensure_job_launch || return 1
+    defer_install "$job"
+    return
+  fi
+  # One install lock from recovery to activation: an install that died
+  # while this one waited is recovered under it (note #72617).
+  hold_install_lock "$job" || return 1
+  recover_interrupted "$job" || { exec 7>&-; return 1; }
   load_job "$job"
-  ensure_job_launch || return 1
+  ensure_job_launch || { exec 7>&-; return 1; }
   # Before the plist is written: a refused install leaves the file launchd
   # holds, so `verify` still reads it STALE and the next install retries.
-  hold_job_lock "$job" || return 1
-  mkdir -p "$AGENT_DIR"
-  write_plist "$job"
+  hold_job_lock "$job" || { exec 7>&-; return 1; }
+  # The helper's cancellation, read under the lock uninstall takes too.
+  if [ -n "${REINSTALL_HELPER:-}" ] && [ ! -f "$(helper_plist_for "$job")" ]; then
+    exec 8>&- 7>&-
+    echo "cancelled: $job: reinstall cancelled; uninstalled or installed since its run asked for it"
+    return 0
+  fi
+  # Checked by hand: under `||` (each_or_one) errexit is off, and a failed
+  # write went on to unload the working agent. The new plist is rendered
+  # and linted beside the installed one first. <state>/<label>.accepted
+  # is the last plist launchd loaded, promoted only after a bootstrap
+  # succeeds, so a refused bootstrap puts it back even when an earlier
+  # install died between replace and bootstrap (sd:9826 review).
+  plist="$(plist_for "$job")"
+  new="$plist.new"
+  accepted="$(accepted_plist_for "$job")"
+  pending="$accepted.pending"
+  # Seeds the rollback point on the first install that keeps one. The
+  # installer before this one wrote the plist before its bootout, so the
+  # seed may be a plist launchd never loaded; it is still the best copy
+  # there is, and a refused restore keeps it. Without it a refused
+  # bootstrap has nothing to restore, so a failed copy changes nothing.
+  if [ ! -f "$accepted" ] && is_loaded "$job" && [ -f "$plist" ] &&
+     ! { mkdir -p "$STATE_DIR" && copy_whole "$plist" "$accepted"; }; then
+    echo "cron-jobs.sh: $job: could not save the loaded plist to $accepted; nothing changed" >&2
+    exec 8>&- 7>&-
+    return 1
+  fi
+  if ! { mkdir -p "$AGENT_DIR" "$STATE_DIR" && write_plist "$job" "$new" &&
+         { ! command -v plutil >/dev/null 2>&1 || plutil -lint -s "$new"; } &&
+         copy_whole "$new" "$pending"; }; then
+    # Not the pending record: a recovery that failed above left it as
+    # the next install's trigger, and this run wrote none.
+    rm -f "$new"
+    echo "cron-jobs.sh: $job: could not write $plist; nothing changed" >&2
+    exec 8>&- 7>&-
+    return 1
+  fi
+  # The pending copy goes in before the old label goes out: a pending copy
+  # that does not match the plist on disk is then one that never loaded.
   if is_loaded "$job"; then
     launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
     wait_unloaded "$job"
   fi
+  # Replaced under a label still loaded, the plist on disk would match the
+  # pending copy, and a crash then had the next install promote it untested.
+  # The pending record stays: the teardown may still end, and then it is
+  # the next install's trigger to reload the accepted plist (#72617).
+  if is_loaded "$job"; then
+    rm -f "$new"
+    echo "cron-jobs.sh: $job: launchd still holds the old label after bootout; nothing changed" >&2
+    exec 8>&- 7>&-
+    return 1
+  fi
+  if ! mv "$new" "$plist"; then
+    rm -f "$new"
+    err="failed: $job (could not replace $plist)$(restore_accepted "$job" "$plist" "$accepted")"
+    echo "$err" >&2
+    exec 8>&- 7>&-
+    return 1
+  fi
   # One retry: a refused bootstrap is reported, never followed by `installed:`.
-  if ! err=$(launchctl bootstrap "$DOMAIN" "$(plist_for "$job")" 2>&1); then
+  if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
     sleep 1
     wait_unloaded "$job"
-    if ! err=$(launchctl bootstrap "$DOMAIN" "$(plist_for "$job")" 2>&1); then
-      echo "failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
-      exec 8>&-
+    if ! err=$(launchctl bootstrap "$DOMAIN" "$plist" 2>&1); then
+      err="failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
+      err="$err$(restore_accepted "$job" "$plist" "$accepted")"
+      echo "$err" >&2
+      exec 8>&- 7>&-
       return 1
     fi
   fi
-  launchctl enable "$DOMAIN/$(label_for "$job")"
-  exec 8>&-
+  # A failed promote drops the older copy: kept, a later refused install
+  # would restore that obsolete plist. The next install saves the plist
+  # launchd now holds before it replaces anything, or refuses.
+  unrecorded=""
+  if ! mv "$pending" "$accepted"; then
+    if rm -f "$accepted"; then
+      unrecorded="could not record the loaded plist in $accepted; the next install saves it first"
+    else
+      unrecorded="could not record the loaded plist in $accepted, nor remove the older copy; remove it, then run cron-jobs.sh install $job"
+    fi
+  fi
+  # Checked: a refused enable is a failed install, never `installed:`.
+  # The plist is loaded and matches, so only the record makes the next
+  # update install again (sd:9826 review).
+  if ! err=$(launchctl enable "$DOMAIN/$(label_for "$job")" 2>&1); then
+    err="failed: $job (launchctl enable $(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))"
+    printf '%s\n' "$err" > "$(failed_record_for "$job")" || true
+    echo "$err" >&2
+    exec 8>&- 7>&-
+    return 1
+  fi
+  # Any install that loads the job repairs what a failed deferred reinstall
+  # recorded: the helper's, by hand, or a hand-run update (sd:9826).
+  # It supersedes a queued helper too, under the install lock: that one
+  # would put its older request back once its run ends (review).
+  rm -f "$(failed_record_for "$job")" "$(helper_plist_for "$job")"
+  exec 8>&- 7>&-
+  if [ -n "$unrecorded" ]; then
+    echo "failed: $job ($unrecorded)" >&2
+    return 1
+  fi
   # No record is written here, and that is the ninth round of the #486 review.
   # `install` bootstraps the label, so launchd is at `runs = 0` and
   # `last exit code = (never exited)`: it holds no verdict, the stale record
@@ -1787,16 +2163,28 @@ cmd_install() {
   fi
 }
 
-# The lock only where there is a label to boot out: a job never loaded here
-# has no run to kill, and `uninstall --all` leaves it no lock file.
+# The run lock only where there is a label to boot out: a job never loaded
+# here has no run to kill, and `uninstall --all` leaves it no run lock file.
+# The install lock always: it orders this against a helper's install.
 cmd_uninstall() {
-  local job="$1"
-  if is_loaded "$job"; then
-    hold_job_lock "$job" || return 1
-    launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
+  local job="$1" helper
+  helper="$(helper_plist_for "$job")"
+  hold_install_lock "$job" || return 1
+  if is_loaded "$job" || [ -f "$helper" ]; then
+    hold_job_lock "$job" || { exec 7>&-; return 1; }
+    # A pending reinstall is cancelled under the lock the helper's install
+    # takes, so it cannot load the job again after this.
+    if [ -f "$helper" ]; then
+      rm -f "$helper"
+      launchctl bootout "$DOMAIN/$(reinstall_label "$job")" 2>/dev/null || true
+    fi
+    ! is_loaded "$job" || launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
     exec 8>&-
   fi
-  rm -f "$(plist_for "$job")"
+  # Still under the install lock: an install waiting on it sees no state.
+  rm -f "$(plist_for "$job")" "$(failed_record_for "$job")" "$(accepted_plist_for "$job")" \
+    "$(accepted_plist_for "$job").pending"
+  exec 7>&-
   echo "uninstalled: $job"
 }
 
@@ -2096,6 +2484,9 @@ case "${1:-}" in
   verify)    each_or_one cmd_verify "${2:---all}" ;;
   uninstall) [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh uninstall <job>|--all" >&2; exit 1; }
              each_or_one cmd_uninstall "$2" ;;
+  reinstall-after-run)
+             [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh reinstall-after-run <job>" >&2; exit 1; }
+             cmd_reinstall_after_run "$2" ;;
   run|exec)  [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh $1 <job>" >&2; exit 1; }
              cmd_exec "$2" ;;
   status)    cmd_status "${2:-}" ;;
@@ -2120,6 +2511,9 @@ case "${1:-}" in
   uninstall    unload + remove plist (<job> or --all)
                install and uninstall refuse and exit 1 while a run holds
                the job's lock: `bootout` would stop it. Retry after it ends.
+               Asked from inside that job's own run, install instead loads
+               a one-shot helper, <prefix>.cron-reinstall.<job>, and exits 0
+               with `deferred:`; the helper installs once the run ends.
   run          run a job once now, foreground — output goes to the terminal
                and to the job's log, so a hand-run clears an outstanding
                failure the same way a scheduled run does; where launchd
@@ -2172,6 +2566,9 @@ case "${1:-}" in
                (daily/weekly/monthly from the schedule); a stale job prints an
                SD_REPORT_ATTENTION line, so its report reaches Reports and Today
   exec         internal: what the LaunchAgent invokes
+  reinstall-after-run
+               internal: what the reinstall helper invokes; waits up to
+               CRON_JOBS_REINSTALL_WAIT seconds (14400) for the run to end
   test         run the unittest suite in tests/ (extra args go to unittest)
 
 configuration: <config> is ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}

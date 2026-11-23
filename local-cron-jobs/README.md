@@ -205,6 +205,18 @@ is back, so a slot that fires mid-install logs `skipped`. `--all` goes on to the
 next job. The `machine-setup` cron stage prints `FAILED` for that job and goes
 on; its next update retries (sd:3317).
 
+A run cannot reinstall its own job: `machine-setup-update-nightly` met its own
+stale plist each night and failed (sd:9826). A run exports `CRON_JOBS_RUN`,
+and `install` of that job from inside it loads a one-shot helper,
+`<prefix>.cron-reinstall.<job>`, prints `deferred:` and exits 0. The helper's
+plist sits in `~/.local/state/cron-jobs/`; it waits up to `CRON_JOBS_REINSTALL_WAIT` seconds
+(14400) for the run's lock, installs, then removes itself. The cron stage
+reads a job whose helper is running as `PENDING`, not drift. A helper that
+fails writes `<label>.reinstall.failed` there, which the cron stage prints as
+`FAILED` until any later `install` of the job succeeds: the helper's, one
+by hand, or a hand-run update. `uninstall` cancels a pending
+reinstall under the job's lock.
+
 Every plist names `PATH`, `HOME` and `SYSTEM_TOOLS_CONFIG`, the root `install`
 ran under: launchd gives a job only the environment its plist names, so `exec`
 finds the job file under a non-default root too (sd:2519). A plist installed

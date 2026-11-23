@@ -713,6 +713,68 @@ exit 0
         self.assertIn("uninstall dropped-job", log)
 
 
+    def helper_plist(self, job):
+        """The helper's plist, in cron-jobs.sh's per-user state folder."""
+        state = self.home / ".local/state/cron-jobs"
+        state.mkdir(parents=True, exist_ok=True)
+        return state / f"{fixture_config.LABEL_PREFIX}.cron-reinstall.{job}.plist"
+
+    def test_a_stale_job_whose_reinstall_helper_waits_is_pending_not_drift(self):
+        """sd:9826. The nightly update's own job cannot reinstall itself under
+        its run; cron-jobs.sh hands that to <prefix>.cron-reinstall.<job>.
+        While that helper is loaded, the plist is PENDING, no drift word, so
+        status --fail-on-drift at the end of the same run passes."""
+        write_exec(self.stubs / "launchctl",
+                   '#!/bin/sh\ncase "$*" in *.cron.busy-unloaded|*.cron-reinstall.busy-job) exit 1 ;;\n'
+                   '  *.cron-reinstall.busy-stale) echo "\tstate = running" ;; esac\nexit 0\n')
+        self.helper_plist("busy-stale").write_text("helper\n")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PENDING busy-stale — reinstalls once its own run ends", result.stdout)
+        self.assertNotIn("STALE   busy-stale", result.stdout)
+        self.assertNotIn("install busy-stale", self.cron_log.read_text().splitlines())
+
+    def test_a_helper_launchd_holds_but_that_is_not_running_is_no_pending(self):
+        """Review blocker: a helper that died before its cleanup leaves its
+        label loaded and its plist in the state folder. Only a running helper is
+        PENDING; a stopped one leaves the job STALE, and the install that
+        follows replaces the helper."""
+        self.helper_plist("busy-stale").write_text("helper\n")
+        write_exec(self.stubs / "launchctl",
+                   '#!/bin/sh\ncase "$*" in *.cron.busy-unloaded) exit 1 ;;\n'
+                   '  *.cron-reinstall.busy-stale) echo "\tstate = not running" ;; esac\nexit 0\n')
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("STALE   busy-stale", result.stdout)
+        self.assertNotIn("PENDING", result.stdout)
+        self.assertIn("install busy-stale", self.cron_log.read_text().splitlines())
+
+    def test_a_failed_deferred_reinstall_is_drift(self):
+        """Review blocker: a helper that failed after the night's report
+        left the job stale with no alert. Its record is a FAILED line, a
+        drift word, so the next status --fail-on-drift fails the job."""
+        self.helper_plist("busy-stale").with_name(
+            f"{fixture_config.LABEL_PREFIX}.cron.busy-stale.reinstall.failed").write_text(
+            "cron-jobs.sh: busy-stale: a run still holds the lock after 14400 s\n")
+        result = self.run_stage("cron")
+        self.assertIn("FAILED  busy-stale — its deferred reinstall failed: "
+                      "cron-jobs.sh: busy-stale: a run still holds the lock after 14400 s", result.stdout)
+
+    def test_a_failed_reinstall_record_makes_update_install_again(self):
+        """Round 9: a deferred install bootstrapped and recorded the plist,
+        then `launchctl enable` failed. verify matched and the label was
+        loaded, so update read ok and skipped the install that clears the
+        record: every status failed for good. The record now reinstalls."""
+        self.install_plist("shared-job")
+        self.assertIn("ok      shared-job", self.run_stage("cron").stdout)
+        self.helper_plist("shared-job").with_name(
+            f"{fixture_config.LABEL_PREFIX}.cron.shared-job.reinstall.failed").write_text(
+            "failed: shared-job (launchctl enable refused)\n")
+        result = self.run_stage("cron", "--apply")
+        self.assertIn("FAILED  shared-job — its deferred reinstall failed", result.stdout)
+        self.assertIn("install shared-job", self.cron_log.read_text().splitlines())
+        self.assertNotIn("ok      shared-job", result.stdout)
+
 class CronRetiredTest(StageTest):
     """A job in local-cron-jobs/retired-jobs.txt is uninstalled, never reinstalled (sd:3155).
 

@@ -8,9 +8,11 @@ and starts the agent again whatever the prune did. It never passes --force:
 uv's own lock is what keeps a concurrent uv safe.
 
 Every outside command is a stub on PATH that appends its argv to one log, so
-the order of pause, prune and resume is read from that log. `pgrep` answers
-"a uv is running" while the paused agent is loaded or while a second, foreign
-uv is declared. Nothing here touches the real launchd or the real cache.
+the order of pause, prune and resume is read from that log. `lsof` answers
+"a uv holds this cache's lock" while the paused agent is loaded or while a
+second, foreign uv is declared; `pgrep` answers "a uv runs" for those and
+for a Claude session's uvx on its own cache (STUB_SESSION_UV, sd:9848).
+Nothing here touches the real launchd or the real cache.
 """
 
 import os
@@ -29,7 +31,7 @@ KEV = "local.system-tools.kev"
 STUBS = {
     "uv": """\
 #!/bin/sh
-echo "uv $*" >> "$STUB_LOG"
+echo "uv $*${UV_CACHE_DIR:+ [$UV_CACHE_DIR]}" >> "$STUB_LOG"
 case "$1 $2" in
   "cache dir") echo "$STUB_CACHE" ;;
   "cache prune") exit "${STUB_PRUNE_RC:-0}" ;;
@@ -50,16 +52,28 @@ case "$1" in
   bootstrap) [ -z "$STUB_BOOTSTRAP_FAILS" ] || exit 5; : > "$f" ;;
 esac
 """,
-    "pgrep": """\
+    "lsof": """\
 #!/bin/sh
+# Called as `lsof -t <cache>/.lock`: print the pids that hold that lock.
+# Only the main cache (STUB_CACHE) has holders; a session cache has none.
+[ "$2" = "$STUB_CACHE/.lock" ] || exit 1
 # STUB_UVX_POLLS: a paused agent's `uvx` answers that many polls, then exits.
-if [ "$2" = uvx ] && [ -n "$STUB_UVX_POLLS" ]; then
+if [ -n "$STUB_UVX_POLLS" ]; then
   n=$(cat "$STUB_UVX_COUNT" 2>/dev/null || echo "$STUB_UVX_POLLS")
   [ "$n" -gt 0 ] || exit 1
   echo $((n - 1)) > "$STUB_UVX_COUNT"
-  exit 0
+  echo 4242; exit 0
 fi
-[ -n "$(ls -A "$STUB_LOADED_DIR")" ] || [ -n "$STUB_FOREIGN_UV" ]
+if [ -n "$(ls -A "$STUB_LOADED_DIR")" ] || [ -n "$STUB_FOREIGN_UV" ]; then
+  echo 4242; exit 0
+fi
+exit 1
+""",
+    "pgrep": """\
+#!/bin/sh
+# Any uv process at all, whatever cache it uses.
+[ -n "$(ls -A "$STUB_LOADED_DIR")" ] || [ -n "$STUB_FOREIGN_UV" ] \
+  || [ -n "$STUB_SESSION_UV" ] || [ -n "$STUB_UVX_POLLS" ]
 """,
 }
 
@@ -132,6 +146,34 @@ class UvPrune(unittest.TestCase):
         self.assertNotIn("uv cache prune", self.calls())
         self.assertTrue(any(c.startswith("launchctl bootstrap") for c in self.calls()))
         self.assertIn("skipped", result.stdout)
+
+    def test_a_session_uvx_on_its_own_cache_does_not_block_the_prune(self):
+        """REGRESSION (sd:9848). Each Claude session's uvx MCP proxy ran
+        all night, so the prune skipped seven nights running. Sessions now
+        use their own uv cache; only a holder of this cache's lock counts."""
+        result = self.run_prune(STUB_SESSION_UV="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("uv cache prune", self.calls())
+        self.assertNotIn("skipped", result.stdout)
+
+    def test_the_login_prune_cleans_the_session_cache_too(self):
+        """sd:9848: no session runs at login, so the session cache prunes
+        then, after the main cache."""
+        session = self.root / ".cache" / "uv-claude"
+        session.mkdir(parents=True)
+        result = self.run_prune()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prunes = [c for c in self.calls() if c.startswith("uv cache prune")]
+        self.assertEqual(prunes, ["uv cache prune", f"uv cache prune [{session}]"])
+        self.assertIn(f"{session} ", result.stdout)
+
+    def test_a_session_cache_dir_set_in_the_caller_is_not_the_main_cache(self):
+        """A Claude session that runs uv-prune by hand carries UV_CACHE_DIR;
+        the main prune still targets uv's default cache."""
+        result = self.run_prune(UV_CACHE_DIR=str(self.root / "session"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("uv cache prune", self.calls())
+        self.assertIn("uv cache dir", self.calls())
 
     def test_the_kev_agent_is_not_paused_by_default(self):
         """REGRESSION (sd:9556). kev serves from its venv's python and
