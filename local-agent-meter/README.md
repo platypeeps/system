@@ -105,7 +105,7 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
 
 - `usage` (sd:9256): setting `dashboard.usage_providers`, one provider per line, `#`
   comments; a line may add `cap=N`, N a positive decimal in the spend's unit: the
-  spend's limit when the provider's answer has none (Baseten's budget has no read API); a malformed cap is refused and the row reads without it. Row `usage:<provider>`: `status` (`ok`, `unknown`, `no-source`, `removed`), `source`,
+  spend's limit when the provider's answer has none (Baseten's budget has no read API). Or `fixed=N`, a flat monthly fee in usd (Nabu Casa, VoiceDub): the row is that `spend` (`source` `fixed`, `fixed` true) and no API call (sd:9719). A malformed value is refused and the row reads without it. Row `usage:<provider>`: `status` (`ok`, `unknown`, `no-source`, `removed`), `source`,
   `read_at`, `windows` (name, used percent, minutes, reset), `balance` and `spend`
   (amount and unit; `resets_at`, the cycle end: the next UTC month start for a
   month, OpenWhispr's period end; `limit`, OpenRouter's key limit when it resets monthly, its BYOK use then in the amount when the key counts it, else the cap; an OpenWhispr period that ended is `unknown`), `accounts` for claude, `error` when unknown. Keys come from the
@@ -123,6 +123,9 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   (`TWILIO_ACCOUNT_SID`, `TWILIO_API_KEY`, `TWILIO_API_SECRET`) from the env file
   that `TWILIO_ENV_FILE` names, exported or in this tool's `.env`; no file reads
   `unknown`, "not configured".
+  `resend` reads the calendar month's emails against the plan from `GET /usage`
+  (`RESEND_API_KEY`, a full-access key); `socket` is `no-source`: its one usage
+  endpoint is the API token's hourly quota, not the plan's (sd:9719).
   `huggingface` has no quota API: pass a ZeroGPU quota error,
   `agent-meter.py usage --huggingface-error "<text>"`, and its row holds the
   seconds left (`balance`, unit `seconds`) and `read_at`, `source` `error`.
