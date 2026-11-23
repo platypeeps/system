@@ -384,7 +384,17 @@ def read_one(provider, accounts, accounts_error, now, cap=None):
     if provider == "codex":
         return usage_sources.codex_reading(
             now=now, binary=os.environ.get("CODEX_BIN") or find_bin("codex"))
-    return usage_sources.read_provider(provider, os.environ, usage_sources.fetch_json, now, cap)
+    env = os.environ
+    if provider == "twilio":
+        # The tool's .env under what is exported: it names TWILIO_ENV_FILE.
+        # Only twilio reads it, and a .env that does not read costs this
+        # row alone (sd:9718 review).
+        try:
+            env = {**system_tools_config.read_env(TOOL), **os.environ}
+        except (OSError, ValueError) as e:
+            return usage_sources.reading(provider, "unknown", "none",
+                                         error="agent-meter .env does not read: %s" % type(e).__name__)
+    return usage_sources.read_provider(provider, env, usage_sources.fetch_json, now, cap)
 
 
 def live(a, list_key, starting, parse, read, row_key, retired=()) -> None:

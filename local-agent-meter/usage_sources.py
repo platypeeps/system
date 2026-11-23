@@ -15,6 +15,7 @@ account field reaches a reading or an error: an error is the HTTP status,
 the exception's class or the missing variable's name.
 """
 
+import base64
 import datetime
 import json
 import math
@@ -590,6 +591,75 @@ def read_copilot(env, fetch, now):
     return {"spend": month_spend([]), "credits": 0.0}
 
 
+#: A Twilio account SID: what goes into the path.
+TWILIO_SID = re.compile(r"AC[0-9a-f]{32}")
+#: A Twilio amount: a decimal string, signed (a balance can be negative).
+TWILIO_AMOUNT = re.compile(r"-?\d{1,15}(\.\d{1,12})?")
+
+
+def env_file(path):
+    """KEY=value lines of an env file: comments, `export ` and one layer
+    of matching quotes allowed; nothing expands."""
+    values = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        name, sep, value = line.partition("=")
+        if not sep or line.startswith("#"):
+            continue
+        value = value.strip()
+        if len(value) > 1 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        values[name.strip()] = value
+    return values
+
+
+def twilio_amount(value, what):
+    if not isinstance(value, str) or not TWILIO_AMOUNT.fullmatch(value):
+        raise ReadFailed("%s is not a decimal string" % what)
+    return float(value)
+
+
+def read_twilio(env, fetch, now):
+    """The month's spend (usage category totalprice) and the prepaid
+    balance, with an API key from the env file TWILIO_ENV_FILE names
+    (sd:9718). Twilio's usage months are UTC months."""
+    # Every step on the path stays in this reader: ~user with no such user
+    # raises RuntimeError, a NUL ValueError (sd:9718 review).
+    try:
+        path = Path(env.get("TWILIO_ENV_FILE") or "").expanduser()
+        found = bool(env.get("TWILIO_ENV_FILE")) and path.is_file()
+    except (OSError, RuntimeError, ValueError):
+        found = False
+    if not found:
+        raise ReadFailed("not configured: TWILIO_ENV_FILE names no file")
+    try:
+        values = env_file(path)
+    except (OSError, ValueError) as e:
+        raise ReadFailed(type(e).__name__) from None
+    sid, api_key, secret = (key(values, name) for name in
+                            ("TWILIO_ACCOUNT_SID", "TWILIO_API_KEY", "TWILIO_API_SECRET"))
+    if not TWILIO_SID.fullmatch(sid):
+        raise ReadFailed("TWILIO_ACCOUNT_SID is not an account SID")
+    headers = {"Authorization": "Basic " + base64.b64encode(
+        ("%s:%s" % (api_key, secret)).encode()).decode()}
+    base = "https://api.twilio.com/2010-04-01/Accounts/%s/" % sid
+    usage = fetch(base + "Usage/Records/ThisMonth.json?Category=totalprice", headers)
+    records = usage.get("usage_records") if isinstance(usage, dict) else None
+    if not isinstance(records, list):
+        raise ReadFailed("no usage_records list")
+    found = [r for r in records if isinstance(r, dict) and r.get("category") == "totalprice"]
+    if len(found) != 1 or found[0].get("price_unit") != "usd":
+        raise ReadFailed("no one totalprice record in usd")
+    balance = fetch(base + "Balance.json", headers)
+    if not isinstance(balance, dict) or balance.get("currency") != "USD":
+        raise ReadFailed("no balance in USD")
+    return {"spend": {"amount": twilio_amount(found[0].get("price"), "price"),
+                      "unit": "usd", "period": "month"},
+            "balance": {"amount": twilio_amount(balance.get("balance"), "balance"), "unit": "usd"}}
+
+
 READERS = {
     "openrouter": read_openrouter,
     "moonshot": read_moonshot,
@@ -606,6 +676,7 @@ READERS = {
     "github": read_github,
     "copilot": read_copilot,
     "anthropic-api": read_anthropic_api,
+    "twilio": read_twilio,
 }
 
 #: Providers with a key in the environment and no usage API a key can call

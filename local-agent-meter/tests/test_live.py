@@ -2563,3 +2563,140 @@ class Hostile(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+#: A synthetic Twilio account SID and the two answers in the live shape
+#: (Twilio's API reference: Usage Records, Balance); amounts are strings.
+TWILIO_SID = "AC" + "0" * 32
+TWILIO_USAGE = {"usage_records": [{"category": "totalprice", "description": "Total Price",
+                                   "price": "12.3456", "price_unit": "usd",
+                                   "usage": "12.3456", "usage_unit": "usd"}]}
+TWILIO_BALANCE = {"account_sid": TWILIO_SID, "balance": "20.50", "currency": "USD"}
+
+
+class Twilio(unittest.TestCase):
+    """sd:9718: the month's spend and the prepaid balance, with an API key
+    read from the env file TWILIO_ENV_FILE names."""
+
+    def env_file(self, text=None):
+        folder = Path(tempfile.mkdtemp(prefix="twilio-test."))
+        self.addCleanup(lambda: [p.unlink() for p in folder.iterdir()] and None or folder.rmdir())
+        path = folder / "twilio.env"
+        if text is None:
+            text = ("# synthetic\nexport TWILIO_ACCOUNT_SID=%s\nTWILIO_API_KEY='SK0123'\n"
+                    'TWILIO_API_SECRET="%s"\n' % (TWILIO_SID, SECRET))
+        path.write_text(text)
+        return {"TWILIO_ENV_FILE": str(path)}
+
+    def fetch(self, usage=TWILIO_USAGE, balance=TWILIO_BALANCE, calls=None):
+        def fetch(url, headers=None, **_):
+            if calls is not None:
+                calls.append((url, headers))
+            return json.loads(json.dumps(usage if "/Usage/" in url else balance))
+        return fetch
+
+    def test_spend_and_balance_parse(self):
+        calls = []
+        got = usage_sources.read_provider("twilio", self.env_file(), self.fetch(calls=calls), NOW, cap=50.0)
+        self.assertEqual(got["status"], "ok", got)
+        self.assertEqual(got["spend"], {"amount": 12.3456, "unit": "usd", "period": "month",
+                                        "limit": 50.0, "resets_at": NEXT})
+        self.assertEqual(got["balance"], {"amount": 20.5, "unit": "usd"})
+        base = "https://api.twilio.com/2010-04-01/Accounts/%s/" % TWILIO_SID
+        self.assertEqual([url for url, _ in calls],
+                         [base + "Usage/Records/ThisMonth.json?Category=totalprice",
+                          base + "Balance.json"])
+        import base64
+        auth = "Basic " + base64.b64encode(("SK0123:" + SECRET).encode()).decode()
+        self.assertTrue(all(headers == {"Authorization": auth} for _, headers in calls))
+        self.assertNotIn(SECRET, json.dumps(got))
+
+    def test_a_missing_file_reads_as_not_configured(self):
+        for env in ({}, {"TWILIO_ENV_FILE": ""}, {"TWILIO_ENV_FILE": "/nonexistent/twilio.env"}):
+            with self.subTest(env=env):
+                got = usage_sources.read_provider("twilio", env, failing("unreached"), NOW)
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "not configured: TWILIO_ENV_FILE names no file"))
+
+    def test_a_path_that_does_not_resolve_is_not_configured(self):
+        # Review on sd:9718: ~missing-user raised RuntimeError past the
+        # reader's handler and stopped the whole usage run.
+        for path in ("~nosuch-operator-example/twilio.env", "bad\x00path", "/dev/null/x"):
+            with self.subTest(path=path):
+                got = usage_sources.read_provider("twilio", {"TWILIO_ENV_FILE": path},
+                                                  failing("unreached"), NOW)
+                self.assertEqual((got["status"], got["error"]),
+                                 ("unknown", "not configured: TWILIO_ENV_FILE names no file"))
+
+    def test_a_file_missing_a_value_names_it_and_calls_nothing(self):
+        calls = []
+        got = usage_sources.read_provider("twilio", self.env_file("TWILIO_ACCOUNT_SID=%s\n" % TWILIO_SID),
+                                          self.fetch(calls=calls), NOW)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "TWILIO_API_KEY not set"))
+        got = usage_sources.read_provider("twilio", self.env_file(
+            "TWILIO_ACCOUNT_SID=../x\nTWILIO_API_KEY=k\nTWILIO_API_SECRET=s\n"), self.fetch(calls=calls), NOW)
+        self.assertEqual((got["status"], got["error"]), ("unknown", "TWILIO_ACCOUNT_SID is not an account SID"))
+        self.assertEqual(calls, [])
+
+    def test_a_401_reads_as_an_error_row(self):
+        got = usage_sources.read_provider("twilio", self.env_file(), failing("HTTP 401"), NOW)
+        self.assertEqual((got["status"], got["error"], got["read_at"]), ("unknown", "HTTP 401", None))
+        self.assertNotIn(SECRET, json.dumps(got))
+
+    def test_another_currency_or_no_totalprice_row_is_unknown(self):
+        env = self.env_file()
+        for usage, balance in ((put(TWILIO_USAGE, ("usage_records", 0, "price_unit"), "eur"), TWILIO_BALANCE),
+                               ({"usage_records": []}, TWILIO_BALANCE),
+                               (TWILIO_USAGE, put(TWILIO_BALANCE, ("currency",), "EUR"))):
+            with self.subTest(usage=usage, balance=balance):
+                got = usage_sources.read_provider("twilio", env, self.fetch(usage, balance), NOW)
+                self.assertEqual(got["status"], "unknown", got)
+
+    def test_every_hostile_answer_is_ok_or_unknown(self):
+        env, failures = self.env_file(), []
+        for which, answer in (("usage", TWILIO_USAGE), ("balance", TWILIO_BALANCE)):
+            for label, bent in hostile(answer):
+                fetch = self.fetch(**{which: bent})
+                failures += Hostile.check(self, "%s %s" % (which, label), lambda: usage_sources.read_provider(
+                    "twilio", env, fetch, NOW), ("ok",))
+        for amount in ("1e999", "nan", "-inf", "1" * 40, "0x10", " 1", "1.5.5"):
+            got = usage_sources.read_provider("twilio", env, self.fetch(
+                usage=put(TWILIO_USAGE, ("usage_records", 0, "price"), amount)), NOW)
+            if got["status"] != "unknown":
+                failures.append("price %r: %s" % (amount, got["status"]))
+        self.assertEqual(failures, [])
+
+    def test_agent_meter_reads_twilio_env_file_from_its_own_env(self):
+        meter = load_meter()
+        config = Path(tempfile.mkdtemp(prefix="meter-config."))
+        self.addCleanup(lambda: __import__("shutil").rmtree(config))
+        (config / "agent-meter").mkdir()
+        (config / "agent-meter/.env").write_text("TWILIO_ENV_FILE=/elsewhere/twilio.env\n")
+        seen = {}
+        with mock.patch.dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config)), \
+                mock.patch.object(meter.usage_sources, "read_provider",
+                                  side_effect=lambda name, env, *rest: seen.update(env) or {}):
+            os.environ.pop("TWILIO_ENV_FILE", None)
+            meter.read_one("twilio", None, None, NOW)
+        self.assertEqual(seen.get("TWILIO_ENV_FILE"), "/elsewhere/twilio.env")
+
+
+class MeterEnv(unittest.TestCase):
+    """Review on sd:9718: read_one read the tool's .env for every keyed
+    provider outside the per-provider handler, so a .env that does not
+    read stopped the whole usage run."""
+
+    def test_an_unreadable_env_costs_twilio_its_row_only(self):
+        meter = load_meter()
+        config = Path(tempfile.mkdtemp(prefix="meter-config."))
+        self.addCleanup(lambda: __import__("shutil").rmtree(config))
+        (config / "agent-meter").mkdir()
+        (config / "agent-meter/.env").write_bytes(b"TWILIO_ENV_FILE=\xff\xfe\n")
+        answer = ANSWERS["openrouter"][1]
+        with mock.patch.dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config), OPENROUTER_API_KEY=SECRET), \
+                mock.patch.object(meter.usage_sources, "fetch_json", answering(answer)):
+            keyed = meter.read_one("openrouter", None, None, NOW)
+            twilio = meter.read_one("twilio", None, None, NOW)
+        self.assertEqual(keyed["status"], "ok")
+        self.assertEqual((twilio["status"], twilio["error"]),
+                         ("unknown", "agent-meter .env does not read: UnicodeDecodeError"))
