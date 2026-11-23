@@ -2109,6 +2109,20 @@ leak_guards() {
 # Uncommitted or unpushed config is DIFFERS, an attention line in status, so
 # an edit lands in git. repo-sync never lists the clone: it is no ~/repos path.
 # --apply also pulls a clean root on main that is only behind origin/main.
+# cc_copy ROOT PATH: PATH is a regular file whose raw bytes and execute bit
+# match origin/main's blob at PATH. Any git failure means no copy.
+cc_copy() {
+  [ -f "$1/$2" ] && [ ! -L "$1/$2" ] || return 1
+  cc_entry=$(GIT_LITERAL_PATHSPECS=1 git -C "$1" ls-tree --format='%(objectmode) %(objectname)' origin/main -- "$2" 2>/dev/null) || return 1
+  case $cc_entry in
+    "100644 "*) [ ! -x "$1/$2" ] || return 1 ;;
+    "100755 "*) [ -x "$1/$2" ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  cc_blob=$(git -C "$1" hash-object --no-filters -- "$2" 2>/dev/null) || return 1
+  [ "$cc_blob" = "${cc_entry#* }" ]
+}
+
 config_clone() {
   cc_root=$SYSTEM_TOOLS_CONFIG
   cc_remote=${MACHINE_SETUP_CONFIG_REMOTE:-}
@@ -2132,11 +2146,27 @@ config_clone() {
       return 0
     fi
   fi
-  if ! cc_dirty=$(git -C "$cc_root" status --porcelain 2>/dev/null); then
+  # -uall lists each untracked file, so a copy inside a new folder counts.
+  if ! cc_dirty=$(git -c core.quotepath=off -C "$cc_root" status --porcelain -uall 2>/dev/null); then
     echo "  FAILED  git status in config root $cc_root"
     return 0
   fi
   cc_n=$(printf '%s' "$cc_dirty" | grep -c . || :)
+  # An untracked file identical to origin/main's, as last fetched, still
+  # blocks the pull, but committing it is the wrong advice, so it is named
+  # STALE instead (sd:10014). Nothing here removes or replaces it: each
+  # automated removal tried lost a mode, an xattr or an ACL. A name git
+  # quotes (it starts with ") never counts as a copy.
+  cc_copies=0
+  while IFS= read -r cc_p; do
+    case $cc_p in '' | \"*) continue ;; esac
+    if cc_copy "$cc_root" "$cc_p"; then
+      echo "  STALE   config root $cc_root/$cc_p is identical to origin/main's; remove it by hand, then --apply"
+      cc_copies=$((cc_copies + 1))
+    fi
+  done <<CC_EOF
+$(printf '%s\n' "$cc_dirty" | sed -n 's/^?? //p')
+CC_EOF
   cc_ahead=$(git -C "$cc_root" rev-list --count '@{u}..HEAD' 2>/dev/null) || cc_ahead=0
   # --apply fast-forwards a clean root on main that is only behind (sd:9125);
   # anything else stays as it is. Pushing stays by hand: the scan comes first.
@@ -2150,7 +2180,7 @@ config_clone() {
       echo "  PULLED  config root $cc_root to $(git -C "$cc_root" rev-parse --short HEAD)"
     fi
   fi
-  [ "$cc_n" -eq 0 ] || echo "  DIFFERS config root $cc_root has $cc_n uncommitted change(s); commit them there"
+  [ "$cc_n" -eq "$cc_copies" ] || echo "  DIFFERS config root $cc_root has $((cc_n - cc_copies)) uncommitted change(s); commit them there"
   [ "$cc_ahead" -eq 0 ] || echo "  DIFFERS config root $cc_root has $cc_ahead unpushed commit(s); push them"
   [ "$cc_n$cc_ahead" != 00 ] || echo "  ok      config root $cc_root committed"
 }

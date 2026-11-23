@@ -142,3 +142,66 @@ class ConfigClone(base.SyntheticHome):
         out = self.run_repos("--apply")
         self.assertIn("is on join/host, not main", out)
         self.assertEqual(self.head(self.config_root), before)
+
+    def test_an_untracked_copy_of_an_origin_file_is_named_and_kept(self):
+        self.committed_root()
+        self.push_from_elsewhere("other")
+        self.git(self.config_root, "fetch", "-q", "origin")
+        copy = self.config_root / "new.txt"
+        copy.write_text("other\n")
+        (self.config_root / "notes.txt").write_text("mine\n")
+        before = self.head(self.config_root)
+
+        out = self.run_repos("--apply")
+        self.assertIn(f"STALE   config root {copy} is identical to origin/main's;"
+                      " remove it by hand, then --apply", out)
+        self.assertIn(f"DIFFERS config root {self.config_root} has 1 uncommitted", out)
+        self.assertNotIn("notes.txt", out)
+        self.assertNotIn("PULLED", out)
+        self.assertEqual(copy.read_text(), "other\n")
+        self.assertEqual(self.head(self.config_root), before)
+
+        (self.config_root / "notes.txt").unlink()
+        out = self.run_repos()
+        self.assertIn(f"STALE   config root {copy}", out)
+        self.assertNotIn("DIFFERS", out)
+        self.assertNotIn("ok      config root", out)
+
+    def test_an_untracked_file_unlike_origin_main_is_no_copy(self):
+        self.committed_root()
+        self.push_from_elsewhere("other")
+        self.git(self.config_root, "fetch", "-q", "origin")
+        cases = {"bytes": ("other\r\n", 0o644), "mode": ("other\n", 0o755)}
+        for name, (text, mode) in cases.items():
+            with self.subTest(name):
+                copy = self.config_root / "new.txt"
+                copy.write_text(text, newline="")
+                copy.chmod(mode)
+                out = self.run_repos()
+                self.assertNotIn("STALE   config root", out)
+                self.assertIn("1 uncommitted change(s)", out)
+                copy.unlink()
+        link = self.config_root / "new.txt"
+        target = self.config_root.parent / "target.txt"
+        target.write_text("other\n")
+        link.symlink_to(target)
+        out = self.run_repos()
+        self.assertNotIn("STALE   config root", out)
+        self.assertIn("1 uncommitted change(s)", out)
+
+    def test_a_copy_in_a_new_folder_with_a_non_ascii_name_is_named(self):
+        self.committed_root()
+        other = self.home.parent / "nested"
+        self.git(None, "clone", "-q", str(self.remote), str(other))
+        (other / "dir").mkdir()
+        (other / "dir" / "café.env").write_text("B=1\n")
+        self.git(other, "add", "-A")
+        self.git(other, "commit", "-q", "-m", "nested")
+        self.git(other, "push", "-q", "origin", "main")
+        self.git(self.config_root, "fetch", "-q", "origin")
+        (self.config_root / "dir").mkdir()
+        (self.config_root / "dir" / "café.env").write_text("B=1\n")
+
+        out = self.run_repos()
+        self.assertIn(f"STALE   config root {self.config_root}/dir/café.env", out)
+        self.assertNotIn("DIFFERS", out)
