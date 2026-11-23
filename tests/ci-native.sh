@@ -407,6 +407,7 @@ case "$SUITE_LEG" in
     run_suite opentelemetry-demo sh local-opentelemetry-demo/opentelemetry-demo.sh test -v
     run_suite worldmonitor sh local-worldmonitor/worldmonitor.sh test -v
     run_suite ai-songs-backup sh local-ai-songs-backup/ai-songs-backup.sh test -v
+    run_suite sensitive-backup sh local-sensitive-backup/sensitive-backup.sh test -v
     run_suite config-check sh local-config-check/config-check.sh test -v
     run_suite volume-probe sh local-volume-probe/volume-probe.sh test -v
     run_suite fseventsd sh local-fseventsd/fseventsd.sh test -v

@@ -152,8 +152,7 @@ A change that moves state in steps, or changes a parser, a journal or event matc
 New proof or validation code carries a property test over extreme magnitudes (overflow, inf, subnormal, zero, nested input) before round 1: that class cost 6 rounds on sd:2406 alone.
 Trigger: the first blocking round: 34 of 82 blocking rounds in 14 days repeated a prior blocker.
 After a review pass, only add commits; never amend, rebase or squash: a moved head forces a full re-review (26 of 32 kept passes).
-Then stop single-finding fixes and do one class pass: name the class and enumerate every instance from the code, not the findings.
-Keep a class pass inside the change's own scope; a new reader, audit or entry kind becomes its own item: each one MWS build 1226 added drew a new blocker (operator 2026-11-19).
+Then stop single-finding fixes and do one class pass: name the class and enumerate every instance from the code, not the findings. Keep it inside the change's own scope; a new reader, audit or entry kind becomes its own item: each one MWS build 1226 added drew a new blocker (operator 2026-11-19).
 Add each instance to the failure table; fix each row lacking a recovery or a test, fail-first.
 Send the next round with the table; as integrator, name the class in the round brief and record the trigger in `sd task note`.
 Split the PR if the table shows it does too much; a deferred advisory filed as its own item does not count, so cite it in later rounds.
@@ -164,7 +163,7 @@ Run `codex exec` as `timeout N codex exec -s read-only -o <out> "<prompt>" < /de
 No new `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` within a minute means it hung: stop it and fix stdin.
 Claude Code strips `CLAUDE_CODE_OAUTH_TOKEN` from Bash, and env.sh exports it as `CUSTOM_CLAUDE_CODE_OAUTH_TOKEN` so day-to-day claude keeps its own login: set it on the line that starts `claude`: `. "$HOME/.config/shell/env.sh" >/dev/null 2>&1; CLAUDE_CODE_OAUTH_TOKEN="$CUSTOM_CLAUDE_CODE_OAUTH_TOKEN" <cmd>`.
 Never copy that token into `settings.json`, a script or a log.
-Rotate no key or token exposed only in local files; rotate one exposed where others can read it (public GitHub, a shared cloud drive): local exposure stays on the operator's machines.
+Rotate no key or token exposed only in local files; rotate one exposed where others can read it (public GitHub, a shared cloud drive): local exposure stays on the operator's machines. Back up sensitive files only to the 1Password vault Backups, never Private: one place to restore from (operator 2026-11-22).
 Set up every recurring job through the `system` framework: a `.job` file for `local-cron-jobs` plus a line in the machine-setup profile (`machine-setup.sh status` shows no cron drift); never a claude.ai cloud routine (`RemoteTrigger`) or `CronCreate`: one framework keeps every machine's setup consistent.
 Before moving a Jira ticket, read its assignee and, when empty, assign your own account; never replace an assignee: Jira refuses Done on an unassigned ticket (LOG-25097).
 
@@ -197,4 +196,5 @@ Run a one-off step on a satellite as a machine-setup stage or job that `refresh.
 
 # Time
 
-Report every time in the machine's local zone with its label, for example `09:36 MDT`; convert UTC (`Z`) first, but keep raw timestamps unchanged inside quoted tool output and code blocks.
+Report every time in the machine's local zone with its label, for example `09:36 MDT`; convert UTC (`Z`) first.
+Keep raw timestamps unchanged inside quoted tool output and code blocks.
