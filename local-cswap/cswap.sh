@@ -762,20 +762,40 @@ send_enter() {
   fi
 }
 
+# RC_LOCK on fd 9: 0 taken, 1 held by another sync, 2 not openable.
+rc_lock() {
+  { mkdir -p "${RC_LOCK%/*}" && exec 9>>"$RC_LOCK"; } 2>/dev/null || return 2
+  python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null && return 0
+  exec 9>&-
+  return 1
+}
+
 # One reconnect pass under RC_LOCK; a sync that finds it held skips,
 # and every owed row and pending mark stays for the next sync.
 reconnect() {
-  if ! { mkdir -p "${RC_LOCK%/*}" && exec 9>>"$RC_LOCK"; } 2>/dev/null; then
+  local rc=0
+  rc_lock || rc=$?
+  if ((rc == 2)); then
     echo "reconnect: skipped: could not open $RC_LOCK; the next sync tries again"
     return 0
   fi
-  if ! python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null; then
-    exec 9>&-
+  if ((rc == 1)); then
     echo "reconnect: skipped: another sync is reconnecting; the next sync tries again"
     return 0
   fi
   reconnect_pass
   exec 9>&-
+}
+
+# A switch and its mark go under RC_LOCK: a pass that ran between them
+# sent /rc for the older mark under the new account (sd:9427 review).
+# 0: go on, locked, or unlocked when RC_LOCK does not open, as then the
+# mark fails too and the next sync owes; 1: another sync's pass holds
+# it, so no switch this run.
+switch_lock() {
+  local rc=0
+  rc_lock || rc=$?
+  ((rc != 1))
 }
 
 # The epoch of the current switch mark, or nothing when there is none
@@ -889,14 +909,20 @@ lead() {
     read -r number uuid <<<"$active"
     [[ ! "$uuid" =~ $UUID_RE ]] || owe_missed "$uuid"
   fi
-  # shellcheck disable=SC2086 # deliberate word splitting of the configured flags
-  st_bounded 120 "$CSWAP_BIN" auto --once $CSWAP_AUTO_ARGS --strategy consume-first || rc=$?
+  if switch_lock; then
+    # shellcheck disable=SC2086 # deliberate word splitting of the configured flags
+    st_bounded 120 "$CSWAP_BIN" auto --once $CSWAP_AUTO_ARGS --strategy consume-first 9>&- || rc=$?
+  else
+    echo "leads: auto waits: another sync is reconnecting; the next run tries again"
+    rc=2
+  fi
   json=$(accounts) || fail list "cswap list --json failed"
   active=$(pick active <<<"$json") || fail list "cswap names no single active account"
   read -r number uuid <<<"$active"
   set -- "$number" "$uuid"
   [[ "$2" =~ $UUID_RE ]] || fail list "account $1 has no organizationUuid"
   if [[ "$rc" == 0 ]]; then owe_rc "$2"; else owe_missed "$2"; fi
+  exec 9>&-
   row=$(published 2>/dev/null) || row=""
   if [[ "$row" != "$2" ]]; then
     st_bounded 60 "$PACK/bin/sd" config set "$SETTING" "$2" >/dev/null ||
@@ -978,10 +1004,15 @@ follow() {
     echo "following the hub: account $number already active"
     return 0
   fi
-  st_bounded 60 "$CSWAP_BIN" switch "$number" >/dev/null ||
+  if ! switch_lock; then
+    echo "following the hub: account $number waits: another sync is reconnecting; the next run switches"
+    return 0
+  fi
+  st_bounded 60 "$CSWAP_BIN" switch "$number" >/dev/null 9>&- ||
     fail switch "cswap switch $number failed; the next run tries again"
   echo "following the hub: switched to account $number"
   owe_rc "$want"
+  exec 9>&-
 }
 
 cmd_sync() {

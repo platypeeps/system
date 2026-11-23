@@ -1119,6 +1119,30 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
 
+    def test_no_switch_lands_while_a_reconnect_pass_runs(self):
+        # sd:9427 review (cswap.sh:889, :977): a sync switched while
+        # another sync's pass ran, and before its new mark was in, that
+        # pass sent /rc for the older mark under the new account. A
+        # switch now takes the reconnect lock; held, the switch waits
+        # for the next sync, and the account stays.
+        import fcntl
+        for fence, extra in (("elsewhere", {}),
+                             ("holder", {"FAKE_AUTO_TO": "3", "FAKE_AUTO_RC": "0"})):
+            with self.subTest(fence=fence):
+                self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=1)
+                self.publish(THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                (self.script.parent / "state").mkdir(exist_ok=True)
+                with open(self.script.parent / "state/rc-lock", "a") as held:
+                    fcntl.flock(held, fcntl.LOCK_EX)
+                    result = self.sync(fence, **extra)
+                self.assertEqual(self.called("cswap switch") + self.called("cswap auto"), [],
+                                 result.stdout)
+                self.assertEqual(self.active(), 1)
+                self.assertIn("another sync is reconnecting", result.stdout)
+                self.sync(fence, **extra)
+                self.assertEqual(self.active(), 3)
+
     def test_no_sync_deletes_a_switch_mark(self):
         # Review on sd:9427 (cswap.sh:348): the expiry branch deleted
         # the mark, and a switch could land between its read and the
@@ -1865,7 +1889,7 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere", BASH_ENV=str(slow), CSWAP_RC_GAP_MS="1000")
         self.assertEqual(self.prompts(), [], result.stdout)
         self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
-        self.assertIn("reconnect: typed /rc into w1:p1, but the gap or budget ran out before the enter\n",
+        self.assertIn("reconnect: typed /rc into w1:p1, but the gap ran out before the enter\n",
                       result.stdout)
         # The /rc stays in the box for the operator (sd:9427 review).
         self.sync("elsewhere")
