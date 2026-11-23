@@ -373,7 +373,7 @@ else:
 }
 
 # The account just switched: every claude pane owes /rc. The mark, one
-# line "<epoch> <pid>" naming this switch, is written at once, before a
+# line "<epoch> <pid> <uuid>" naming this switch, is written at once, before a
 # later step can fail, and replaced whole (a new file moved in place).
 # Only a switch writes it and nothing deletes it, so no sync can lose a
 # newer switch's mark; one older than RC_OWED_FOR owes nothing
@@ -381,15 +381,39 @@ else:
 # RC_LISTED, written only under RC_LOCK. Owed rows carry the mark's
 # epoch, so each mark is later than the last: a second switch within
 # one second would keep the first one's sent rows and owe nothing.
+# The mark's third field is the organizationUuid switched to ($1). A
+# write that fails sets RC_MARK_FAILED: the sync then sends nothing, as
+# an older mark's rows would read as current, and exits 1; the next
+# sync finds the mark naming another account and owes again (sd:9427
+# review). The file left behind may be stale, never partial.
+RC_MARK_FAILED=""
 owe_rc() {
   local since prev
   since=$(date +%s)
   prev=$(head -n 1 "$RC_PENDING" 2>/dev/null) || prev=""
   prev=${prev%% *}
   [[ "$prev" =~ ^[0-9]+$ ]] && ((prev >= since)) && since=$((prev + 1))
-  { mkdir -p "${RC_PENDING%/*}" && printf '%s %s\n' "$since" "$$" >"$RC_PENDING.$$" &&
-    mv "$RC_PENDING.$$" "$RC_PENDING"; } 2>/dev/null ||
-    echo "reconnect: could not write $RC_PENDING; no pane owes /rc for this switch"
+  if ! { mkdir -p "${RC_PENDING%/*}" && printf '%s %s %s\n' "$since" "$$" "$1" >"$RC_PENDING.$$" &&
+    mv "$RC_PENDING.$$" "$RC_PENDING"; } 2>/dev/null; then
+    rm -f "$RC_PENDING.$$" 2>/dev/null || :
+    echo "reconnect: could not write $RC_PENDING; no /rc this sync, the next one owes it again"
+    RC_MARK_FAILED=1
+  fi
+}
+
+# A switch the mark missed: its write failed, or a step between the
+# switch and the mark exited. A mark naming another account than the
+# active one ($1) owes /rc now. A mark with no account, or none at
+# all, says nothing, so it owes nothing: /rc toggles a connected
+# session off.
+owe_missed() {
+  local mark acct
+  [[ -e "$RC_PENDING" ]] || return 0
+  mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || return 0
+  read -r _ _ acct _ <<<"$mark"
+  [[ "$acct" =~ $UUID_RE && "$acct" != "$1" ]] || return 0
+  echo "reconnect: the last switch mark names another account; owing /rc for this one"
+  owe_rc "$1"
 }
 
 # RC_OWED rows are "<herdr session> <pane> <session> <since>", and a pane
@@ -814,12 +838,12 @@ lead() {
   local rc=0 json active row number uuid
   # shellcheck disable=SC2086 # deliberate word splitting of the configured flags
   st_bounded 120 "$CSWAP_BIN" auto --once $CSWAP_AUTO_ARGS --strategy consume-first || rc=$?
-  [[ "$rc" != 0 ]] || owe_rc
   json=$(accounts) || fail list "cswap list --json failed"
   active=$(pick active <<<"$json") || fail list "cswap names no single active account"
   read -r number uuid <<<"$active"
   set -- "$number" "$uuid"
   [[ "$2" =~ $UUID_RE ]] || fail list "account $1 has no organizationUuid"
+  if [[ "$rc" == 0 ]]; then owe_rc "$2"; else owe_missed "$2"; fi
   row=$(published 2>/dev/null) || row=""
   if [[ "$row" != "$2" ]]; then
     st_bounded 60 "$PACK/bin/sd" config set "$SETTING" "$2" >/dev/null ||
@@ -897,12 +921,13 @@ follow() {
   esac
   if [[ "${active%% *}" == "$number" ]]; then
     echo "following the hub: account $number already active"
+    owe_missed "$want"
     return 0
   fi
   st_bounded 60 "$CSWAP_BIN" switch "$number" >/dev/null ||
     fail switch "cswap switch $number failed; the next run tries again"
   echo "following the hub: switched to account $number"
-  owe_rc
+  owe_rc "$want"
 }
 
 cmd_sync() {
@@ -913,6 +938,7 @@ cmd_sync() {
   # lane review). A sync that fails exits before the pass, and its panes
   # stay owed for the next run.
   if leads; then lead; else follow; fi
+  [[ -z "$RC_MARK_FAILED" ]] || fail mark "could not write $RC_PENDING after the switch; no /rc sent"
   reconnect
 }
 

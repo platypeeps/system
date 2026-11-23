@@ -660,9 +660,12 @@ class APinFollow(Machine):
         self.assertIn("SD_REPORT_ATTENTION: data safe, one step failed: cswap sync read",
                       result.stdout)
         self.assertEqual(self.called("cswap switch"), [])
-        # A good read still switches: a count it cannot clear only fails sooner.
-        self.sync("elsewhere")
+        # A good read still switches: a count it cannot clear only fails
+        # sooner. The switch's /rc mark cannot be written either, so that
+        # run fails too (sd:9427 review).
+        result = self.sync("elsewhere", code=1)
         self.assertEqual(self.active(), 3)
+        self.assertIn("one step failed: cswap sync mark", result.stdout)
 
     def test_another_read_failure_still_fails_at_once(self):
         self.publish(THREE)
@@ -1908,6 +1911,54 @@ class RemoteControlReconnects(Machine):
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("holder")
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_a_failed_switch_mark_fails_the_sync_and_is_retried(self):
+        # sd:9427 review: a write of rc-pending that failed after a switch
+        # was a warning with exit 0, the next sync saw no switch, and the
+        # same pass sent the older mark's rows. Now the sync fails, sends
+        # nothing, and a later sync whose mark names another account than
+        # the active one owes /rc for the switch it missed.
+        old = int(time.time()) - 100
+        state = self.script.parent / "state"
+        self.owe(f"sd w1:p1 s1 {old}\n", old)
+        (state / "rc-pending").write_text(f"{old} 42 {TWO}\n")
+        (state / "rc-lock").touch()
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        state.chmod(0o500)
+        try:
+            result = self.sync("elsewhere", code=1)
+        finally:
+            state.chmod(0o755)
+        self.assertIn("could not write", result.stdout + result.stderr)
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertIn("already active", result.stdout)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_a_mark_naming_the_active_account_owes_nothing(self):
+        # The retry above owes only on a mismatch: a sync with no switch
+        # and a mark for the active account sends no /rc.
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        (state / "rc-pending").write_text(f"1000 42 {ONE}\n")
+        self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), [])
+        self.assertEqual((state / "rc-pending").read_text(), f"1000 42 {ONE}\n")
+
+    def test_the_hub_owes_rc_for_a_switch_its_mark_missed(self):
+        # Same retry on the hub: auto made no switch this tick, but the
+        # mark names account 1 and account 2 is active.
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        (state / "rc-pending").write_text(f"1000 42 {ONE}\n")
+        self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=2)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("holder")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+        self.assertIn(TWO, (state / "rc-pending").read_text())
 
     def test_a_long_owed_pane_is_dropped_and_an_unreadable_list_keeps_it(self):
         self.publish(THREE)

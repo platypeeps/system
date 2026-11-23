@@ -27,7 +27,7 @@ It reads the row with the pack's `SD_FOLLOWED` marker set, so `sd` starts no fol
 Each `cswap`, `sd` and `sd-db` call runs under `lib/bounded.sh`.
 
 A switch drops each session's Remote Control link, and `/rc` in a dropped session reconnects it under the new account (sd:9427).
-So a sync that switches the account, on the hub or a satellite, writes `state/rc-pending` before any later step can fail.
+So a sync that switches the account, on the hub or a satellite, writes `state/rc-pending` before any later step can fail. The mark names the account switched to. If it cannot be written, the sync sends no `/rc` and exits 1; the next sync finds a mark naming another account than the active one and owes `/rc` again.
 Once `herdr agent list` answers with a list it can parse, each claude pane it names is owed in `state/rc-owed`, keyed by herdr session and pane.
 A sync reads and writes only its own herdr session's rows (`HERDR_SESSION`, default `sd`), so a pane owed in another session waits for a sync there.
 Each herdr session lists its panes once per switch, within 30 minutes of it: `state/rc-listed` names the switch and each session that listed for it, written only under the reconnect lock. A pane keeps its `state/rc-owed` row for the switch, marked `sent` before the enter and `done` once it went; only the pass that typed a `/rc` sends its enter, and a typing starts only with budget left for that enter's gap. A `/rc` a stopped pass left in a box waits for the operator: no later pass can tell it from one the operator typed; a listing retried for a pane with no session id owes only panes with no row, so a sent pane gets no second `/rc`, and a failed write loses one `/rc` at worst. Only a switch writes `state/rc-pending`, and no sync deletes it.
