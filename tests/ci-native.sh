@@ -38,7 +38,7 @@ test -f "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"
 
 if [ "$1" = leg ]; then
   # The preflight built it; a leg never builds its own.
-  export PYTHON="$CI_WORK_ROOT/venv/bin/python"
+  export PYTHON="${CI_VENV:-$CI_WORK_ROOT/venv}/bin/python"
   test -x "$PYTHON"
 else
 # The preflight runs to the `fi` above
@@ -79,6 +79,10 @@ fi
 # what `--unsure-below` itself prints. Stdlib and git only, so it
 # runs here before the venv, and the guard below demands this line.
 python3 tests/test_jev_contract.py
+
+# The gate venv, built once per key and reused (sd:9926). Stdlib only,
+# so it runs here before the venv, and the guard below demands this line.
+python3 tests/test_gate_venv.py
 
 # The system's protection gap ids against the pack's, which owns them
 # (sd:1372): sd_db's GAP_IDS compared with ACKNOWLEDGEABLE_GAPS read
@@ -235,14 +239,12 @@ if [ -n "$unwired" ]; then
   exit 1
 fi
 
-# No --copies: a copied uv-managed python cannot find its libpython, and
-# check.sh takes the first python3.15 on the caller's PATH.
-python3 -m venv "$CI_WORK_ROOT/venv"
-export PYTHON="$CI_WORK_ROOT/venv/bin/python"
 # The pack owns sd_db (sd:2997): install the pinned pack's lib/, the one copy
-# its sd-ship imports too, and name the commit tested against.
+# its sd-ship imports too, and name the commit tested against. check.sh
+# names CI_VENV by key, so a gate before this one may have built it.
 echo "sd_db: pack lib/ at $(git -C "$SD_ACCEPTANCE_PACK" rev-parse HEAD)"
-"$PYTHON" -m pip install --no-index "$SD_ACCEPTANCE_PACK/lib"
+sh tests/gate-venv.sh "${CI_VENV:-$CI_WORK_ROOT/venv}" "$SD_ACCEPTANCE_PACK"
+export PYTHON="${CI_VENV:-$CI_WORK_ROOT/venv}/bin/python"
 # Ship acceptance needs an installed copy, not source on PYTHONPATH.
 "$PYTHON" -I -c 'import pathlib, sd_db, sys; assert pathlib.Path(sd_db.__file__).is_relative_to(pathlib.Path(sys.prefix))'
 # And it is that lib/, file for file: a pin older than the pack's step 1 has none.
