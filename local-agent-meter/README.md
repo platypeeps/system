@@ -112,7 +112,8 @@ an `SD_REPORT_ATTENTION` line and the rest still run; a store that does not open
   environment by name (`usage_sources.py` names each); no key, answer body or
   account field reaches a row. A failed read is `unknown`, never 0; a provider with
   no usage API is `no-source`.
-  `github` (the month's bill after discounts) and `copilot` read `GH_TOKEN`, which
+  `github` (the month's bill after discounts, and its Actions minutes in `minutes`,
+  so free-plan use shows) and `copilot` read `GH_TOKEN`, which
   needs the `user` scope. `copilot` holds the month's AI credits, in `credits`, and
   their cost; a plan still on premium requests reads `requests` instead. Add
   their lines to a list written before sd:9592. `anthropic-api` (the month's API
