@@ -381,6 +381,16 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("same head", rule)
         self.assertIn("fix commit", rule)
 
+    def test_the_round_three_rule_asks_for_a_recorded_ruling_per_item(self):
+        # sd:10204: rounds counted per build run let one item pass 20 review rounds; a
+        # lane blocker was retried with no ruling, and a parked one came back twice.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        rule = next(line for line in source.splitlines() if "after round 3" in line)
+        self.assertIn("builder and lane rounds together", rule)
+        self.assertIn("--kind decision", rule)
+        self.assertIn("repro or test", rule)
+        self.assertIn("fix or reject a lane blocker", rule)
+
     def test_the_token_rule_reads_the_name_env_sh_exports(self):
         # sd:5786: env.sh exports the token under another name, so a rule that only sourced it left
         # CLAUDE_CODE_OAUTH_TOKEN unset, and a headless judge run failed 'not logged in'.
@@ -398,6 +408,8 @@ class SharedPolicy(unittest.TestCase):
         rules = [line for line in source.splitlines() if "sd reports" in line]
         start = next((line for line in rules if "sd reports list" in line), "")
         self.assertIn("On the hub", start)
+        # sd:10206: the bare list printed 4,000,461 bytes on 2026-11-23; --open printed 2,021.
+        self.assertIn("`sd reports list --open`", start)
         self.assertIn("builders", start)
         # sd:9240: report items refuse in_progress, so a session claims an alert with a
         # comment note; two hub sessions triaged the same alerts at once (2026-11-17).
