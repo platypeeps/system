@@ -38,6 +38,8 @@ ITEM2 = "claude-code-oauth-token-user2@example.test#" + TWO
 
 # The accounts as `cswap list --json` names them. `auto --once` switches to
 # FAKE_AUTO_TO when it is set and exits FAKE_AUTO_RC (default 2, no action).
+# FAKE_SWITCH_LOCKS names a folder a switch leaves read-only: the write
+# after it fails. FAKE_LIST_FAIL_AFTER_SWITCH fails each list after one.
 CSWAP = r"""#!/usr/bin/env python3
 import json, os, sys
 state = os.environ["FAKE_CSWAP_STATE"]
@@ -48,9 +50,19 @@ with open(state) as f:
 def save():
     with open(state, "w") as f:
         json.dump(data, f)
+def switched(to):
+    data["active"] = int(to)
+    data["switched"] = True
+    save()
+    locks = os.environ.get("FAKE_SWITCH_LOCKS")
+    if locks:
+        os.makedirs(locks, exist_ok=True)
+        os.chmod(locks, 0o500)
 args = sys.argv[1:]
 if args[:2] == ["list", "--json"]:
     if os.environ.get("FAKE_LIST_FAIL"):
+        sys.exit(1)
+    if os.environ.get("FAKE_LIST_FAIL_AFTER_SWITCH") and data.get("switched"):
         sys.exit(1)
     accounts = [{"number": n, "email": f"user{n}@example.test",
                  "organizationUuid": u, "active": n == data["active"]}
@@ -65,14 +77,12 @@ if args[:2] == ["list", "--json"]:
 elif args[:1] == ["auto"]:
     to = os.environ.get("FAKE_AUTO_TO")
     if to:
-        data["active"] = int(to)
-        save()
+        switched(to)
     sys.exit(int(os.environ.get("FAKE_AUTO_RC", "2")))
 elif args[:1] == ["switch"]:
     if os.environ.get("FAKE_SWITCH_FAIL"):
         sys.exit(1)
-    data["active"] = int(args[1])
-    save()
+    switched(args[1])
 else:
     sys.exit(64)
 """
@@ -1107,14 +1117,18 @@ class RemoteControlReconnects(Machine):
     def test_no_sync_deletes_a_switch_mark(self):
         # Review on sd:9427 (cswap.sh:348): the expiry branch deleted
         # the mark, and a switch could land between its read and the
-        # delete. Only a switch writes the mark; an old one owes nothing.
+        # delete. An old mark owes nothing and keeps its epoch and pid;
+        # a sync with no switch only adds the active account to one
+        # that names none (sd:9427 class pass).
         mark = self.script.parent / "state/rc-pending"
         mark.parent.mkdir(exist_ok=True)
         mark.write_text("1000 1\n")
         self.publish(ONE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("elsewhere")
-        self.assertEqual(mark.read_text(), "1000 1\n")
+        self.assertEqual(mark.read_text(), f"1000 1 {ONE}\n")
+        self.sync("elsewhere")
+        self.assertEqual(mark.read_text(), f"1000 1 {ONE}\n")
         self.assertEqual(self.called("herdr"), [])
 
     def test_a_list_marks_only_the_switch_it_read(self):
@@ -1127,7 +1141,8 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(len(self.called("herdr agent list")), 1)
         listed = (self.script.parent / "state/rc-listed").read_text().split("\n")
-        self.assertIn(mark.read_text().strip() + " sd", listed)
+        # The listed line names the switch by epoch and pid, not account.
+        self.assertIn(" ".join(mark.read_text().split()[:2]) + " sd", listed)
 
     def test_rows_of_an_older_switch_get_no_rc(self):
         # Class pass, last round on sd:9427: the pass acted on owed rows
@@ -1959,6 +1974,113 @@ class RemoteControlReconnects(Machine):
         self.sync("holder")
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         self.assertIn(TWO, (state / "rc-pending").read_text())
+
+    # sd:9427 class pass: the retry above read one form of the mark, one
+    # that names an account. Each other form a sync can meet follows.
+
+    def mark(self):
+        path = self.script.parent / "state/rc-pending"
+        return path.read_text() if path.exists() else None
+
+    def test_a_sync_with_no_mark_names_the_active_account_and_owes_nothing(self):
+        # No mark yet: a first switch whose mark failed left nothing to
+        # compare. Every sync now leaves a mark naming the active
+        # account; this one, at epoch 0, is no switch and owes nothing.
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertRegex(self.mark() or "", rf"^0 \d+ {ONE}\n$")
+        self.assertEqual(self.called("herdr"), [])
+        self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=2)
+        (self.script.parent / "state/rc-pending").unlink()
+        self.sync("holder")
+        self.assertRegex(self.mark() or "", rf"^0 \d+ {TWO}\n$")
+        self.assertEqual(self.called("herdr"), [])
+
+    def test_a_first_switch_whose_mark_fails_is_owed_by_the_next_sync(self):
+        # No mark, a switch, and the mark's write fails: the mark written
+        # before the switch names the old account, so the next sync owes.
+        state = self.script.parent / "state"
+        for fence, extra in (("elsewhere", {}), ("holder", {"FAKE_AUTO_TO": "3", "FAKE_AUTO_RC": "0"})):
+            with self.subTest(fence=fence):
+                shutil.rmtree(state, ignore_errors=True)
+                self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=1)
+                self.publish(THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                try:
+                    result = self.sync(fence, code=1, FAKE_SWITCH_LOCKS=str(state), **extra)
+                finally:
+                    state.chmod(0o755)
+                self.assertEqual(self.active(), 3)
+                self.assertIn("one step failed: cswap sync mark", result.stdout)
+                self.assertEqual(self.called("herdr"), [], result.stdout)
+                self.assertRegex(self.mark() or "", rf"^0 \d+ {ONE}\n$")
+                result = self.sync(fence)
+                self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+                self.assertIn(THREE, self.mark())
+
+    def test_a_two_field_mark_gains_the_account_and_lists_no_pane_again(self):
+        # A mark an earlier build wrote names no account. It gains the
+        # active one in place: same epoch and pid, so the switch it marks
+        # is listed already and no pane is owed a second time.
+        now = int(time.time())
+        owed = self.owe(f"sd w1:p1 s1 {now} sent\n", now)
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED], ["w1:p2", "claude", "idle", "s2", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.mark(), f"{now} 42 {ONE}\n")
+        self.assertEqual(self.called("herdr"), [])
+        self.assertEqual(owed.read_text(), f"sd w1:p1 s1 {now} sent\n")
+
+    def test_a_switch_after_a_two_field_mark_is_owed_when_its_mark_fails(self):
+        old = int(time.time()) - 100
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        (state / "rc-pending").write_text(f"{old} 42\n")
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        try:
+            self.sync("elsewhere", code=1, FAKE_SWITCH_LOCKS=str(state))
+        finally:
+            state.chmod(0o755)
+        self.assertEqual(self.mark(), f"{old} 42 {ONE}\n")
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_a_mark_that_is_no_mark_is_replaced_and_owes_nothing(self):
+        # Empty, one field, or words: none names a switch or an account.
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        for text, since in (("", "0"), ("12\n", "12"), ("x y z\n", "0"), (f"x 7 {ONE} more\n", "x")):
+            with self.subTest(text=text):
+                (state / "rc-pending").write_text(text)
+                self.sync("elsewhere")
+                if since == "x":  # it names the active account: left alone
+                    self.assertEqual(self.mark(), text)
+                else:
+                    self.assertRegex(self.mark(), rf"^{since} \d+ {ONE}\n$")
+                self.assertEqual(self.called("herdr"), [])
+
+    def test_the_hub_owes_rc_when_a_step_after_auto_s_switch_fails(self):
+        # Step: auto switched, then `cswap list` failed and the run exited
+        # before the mark. Recovery: the mark from before auto names the
+        # old account; the next sync owes.
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("holder", code=1, FAKE_AUTO_TO="2", FAKE_AUTO_RC="0", FAKE_LIST_FAIL_AFTER_SWITCH="1")
+        self.assertRegex(self.mark() or "", rf"^0 \d+ {ONE}\n$")
+        self.assertEqual(self.called("herdr"), [])
+        result = self.sync("holder")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_a_mark_that_cannot_be_written_fails_a_sync_with_no_switch(self):
+        # No switch, and the mark cannot name the active account: said
+        # now, exit 1, not at the switch that would find no mark.
+        self.publish(ONE)
+        (self.tmp / "local-cswap/state").write_text("a file where the folder goes\n")
+        result = self.sync("elsewhere", code=1)
+        self.assertIn("one step failed: cswap sync mark", result.stdout)
 
     def test_a_long_owed_pane_is_dropped_and_an_unreadable_list_keeps_it(self):
         self.publish(THREE)

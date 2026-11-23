@@ -375,45 +375,85 @@ else:
 # The account just switched: every claude pane owes /rc. The mark, one
 # line "<epoch> <pid> <uuid>" naming this switch, is written at once, before a
 # later step can fail, and replaced whole (a new file moved in place).
-# Only a switch writes it and nothing deletes it, so no sync can lose a
-# newer switch's mark; one older than RC_OWED_FOR owes nothing
+# Only a switch gives it a new epoch and nothing deletes it; a sync
+# without one may add the account (owe_missed), and one that writes
+# over a newer switch's mark names the old account, so the next sync
+# owes again. A mark older than RC_OWED_FOR owes nothing
 # (sd:9427 review). Which herdr session listed for which switch is
 # RC_LISTED, written only under RC_LOCK. Owed rows carry the mark's
 # epoch, so each mark is later than the last: a second switch within
 # one second would keep the first one's sent rows and owe nothing.
-# The mark's third field is the organizationUuid switched to ($1). A
-# write that fails sets RC_MARK_FAILED: the sync then sends nothing, as
-# an older mark's rows would read as current, and exits 1; the next
-# sync finds the mark naming another account and owes again (sd:9427
-# review). The file left behind may be stale, never partial.
+# The mark's third field is the organizationUuid of the account it was
+# written for. A write that fails sets RC_MARK_FAILED: the sync then
+# sends nothing, as an older mark's rows would read as current, and
+# exits 1 (sd:9427 review). The file left behind may be stale, never
+# partial. A later write that succeeds clears it: the mark is right.
 RC_MARK_FAILED=""
-owe_rc() {
+write_mark() { # since, pid, uuid
+  if { mkdir -p "${RC_PENDING%/*}" && printf '%s %s %s\n' "$1" "$2" "$3" >"$RC_PENDING.$$" &&
+    mv "$RC_PENDING.$$" "$RC_PENDING"; } 2>/dev/null; then
+    RC_MARK_FAILED=""
+    return 0
+  fi
+  rm -f "$RC_PENDING.$$" 2>/dev/null || :
+  RC_MARK_FAILED=1
+  return 1
+}
+owe_rc() { # uuid switched to
   local since prev
   since=$(date +%s)
   prev=$(head -n 1 "$RC_PENDING" 2>/dev/null) || prev=""
   prev=${prev%% *}
   [[ "$prev" =~ ^[0-9]+$ ]] && ((prev >= since)) && since=$((prev + 1))
-  if ! { mkdir -p "${RC_PENDING%/*}" && printf '%s %s %s\n' "$since" "$$" "$1" >"$RC_PENDING.$$" &&
-    mv "$RC_PENDING.$$" "$RC_PENDING"; } 2>/dev/null; then
-    rm -f "$RC_PENDING.$$" 2>/dev/null || :
+  write_mark "$since" "$$" "$1" ||
     echo "reconnect: could not write $RC_PENDING; no /rc this sync, the next one owes it again"
-    RC_MARK_FAILED=1
-  fi
 }
 
-# A switch the mark missed: its write failed, or a step between the
-# switch and the mark exited. A mark naming another account than the
-# active one ($1) owes /rc now. A mark with no account, or none at
-# all, says nothing, so it owes nothing: /rc toggles a connected
-# session off.
-owe_missed() {
+# Whether the mark names an account.
+mark_named() {
   local mark acct
-  [[ -e "$RC_PENDING" ]] || return 0
-  mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || return 0
-  read -r _ _ acct _ <<<"$mark"
-  [[ "$acct" =~ $UUID_RE && "$acct" != "$1" ]] || return 0
-  echo "reconnect: the last switch mark names another account; owing /rc for this one"
-  owe_rc "$1"
+  mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || return 1
+  read -r _ _ acct _ <<<"$mark" || :
+  [[ "${acct:-}" =~ $UUID_RE ]]
+}
+
+# The mark names the active account ($1) before a switch and after a
+# sync without one, so a switch whose own mark is lost (its write
+# failed, or a step between the switch and the mark exited) shows at
+# the next sync as a mark naming another account, and owes /rc then.
+# Each form a mark takes has one answer (sd:9427 class pass):
+#   names the active account: nothing to do.
+#   names another account: a missed switch, owed now.
+#   none, or one naming no account (empty, words, or the two fields
+#   an earlier build wrote): it gains the active account and owes
+#   nothing, as /rc toggles a connected session off. A numeric epoch
+#   and pid stay, so RC_LISTED still names that switch as listed;
+#   else the epoch is 0, older than any switch.
+#   does not read: left alone; current_since keeps every row.
+# ponytail: a two-field mark is read as the active account's; a switch
+# after it that the earlier build failed to mark is not seen. No such
+# build shipped.
+owe_missed() {
+  local mark="" since="" pid="" acct=""
+  if [[ -e "$RC_PENDING" ]]; then
+    mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || return 0
+    read -r since pid acct _ <<<"$mark" || :
+  fi
+  if [[ "$acct" =~ $UUID_RE ]]; then
+    [[ "$acct" != "$1" ]] || return 0
+    echo "reconnect: the last switch mark names another account; owing /rc for this one"
+    owe_rc "$1"
+    return 0
+  fi
+  [[ "$since" =~ ^[0-9]+$ ]] || since=0
+  [[ "$pid" =~ ^[0-9]+$ ]] || pid=$$
+  # Another sync's switch may have written its mark since the read: it
+  # stays. One that lands after this check is written over by a mark
+  # naming the old account, which the next sync reads as a missed
+  # switch and owes again.
+  [[ "$(head -n 1 "$RC_PENDING" 2>/dev/null)" == "$mark" ]] || return 0
+  write_mark "$since" "$pid" "$1" ||
+    echo "reconnect: could not write $RC_PENDING; a switch before it is written gets no /rc"
 }
 
 # RC_OWED rows are "<herdr session> <pane> <session> <since>", and a pane
@@ -435,14 +475,16 @@ owes_here() {
 }
 
 # A pending switch to this herdr session's owed panes, once herdr lists
-# them, once per switch and session: RC_LISTED holds "<mark> <session>"
-# for the mark the list was read for, so a switch that lands during the
+# them, once per switch and session: RC_LISTED holds "<epoch> <pid>
+# <session>" for the mark the list was read for (not its account, which
+# a mark can gain later), so a switch that lands during the
 # list is still unlisted at the next sync. A listing that meets a pane
 # with no session id is incomplete, and the next sync lists again.
 list_owed() {
-  local mark since now rc=0 kept="" listed="" fresh unknown
+  local mark since pid now rc=0 kept="" listed="" fresh unknown
   mark=$(head -n 1 "$RC_PENDING" 2>/dev/null) || mark=""
-  since=${mark%% *}
+  read -r since pid _ <<<"$mark" || :
+  mark="$since${pid:+ $pid}"
   now=$(date +%s)
   [[ "$since" =~ ^[0-9]+$ ]] && ((now - since <= RC_OWED_FOR)) || return 0
   grep -Fqx -- "$mark $HERDR_SESSION" "$RC_LISTED" 2>/dev/null && return 0
@@ -836,6 +878,13 @@ reconnect_pass() {
 # compared on every run, so a failed write is retried by the next one.
 lead() {
   local rc=0 json active row number uuid
+  # Before auto can switch, a mark that names no account gains the
+  # active one: only then does a lost mark show (owe_missed). A list
+  # that fails here fails below too.
+  if ! mark_named && json=$(accounts) && active=$(pick active <<<"$json"); then
+    read -r number uuid <<<"$active"
+    [[ ! "$uuid" =~ $UUID_RE ]] || owe_missed "$uuid"
+  fi
   # shellcheck disable=SC2086 # deliberate word splitting of the configured flags
   st_bounded 120 "$CSWAP_BIN" auto --once $CSWAP_AUTO_ARGS --strategy consume-first || rc=$?
   json=$(accounts) || fail list "cswap list --json failed"
@@ -919,9 +968,10 @@ follow() {
     5) fail map "$number accounts here have organizationUuid $want; nothing switched" ;;
     *) fail map "cswap list --json was not readable; nothing switched" ;;
   esac
+  # The mark names the active account before any switch (owe_missed).
+  [[ ! "${active#* }" =~ $UUID_RE ]] || owe_missed "${active#* }"
   if [[ "${active%% *}" == "$number" ]]; then
     echo "following the hub: account $number already active"
-    owe_missed "$want"
     return 0
   fi
   st_bounded 60 "$CSWAP_BIN" switch "$number" >/dev/null ||
@@ -938,7 +988,7 @@ cmd_sync() {
   # lane review). A sync that fails exits before the pass, and its panes
   # stay owed for the next run.
   if leads; then lead; else follow; fi
-  [[ -z "$RC_MARK_FAILED" ]] || fail mark "could not write $RC_PENDING after the switch; no /rc sent"
+  [[ -z "$RC_MARK_FAILED" ]] || fail mark "could not write $RC_PENDING; no /rc sent"
   reconnect
 }
 
