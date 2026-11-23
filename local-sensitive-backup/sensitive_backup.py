@@ -81,24 +81,36 @@ def read_targets(path):
 
 
 def collect(home, globs, excludes):
-    """(files, missing): regular files under home, by path relative to it.
+    """Regular files under home, by path relative to it.
 
-    A symlink is followed only when its real path is a regular file; a
-    symlinked folder inside a target is not entered, so a link cannot pull a
-    whole tree outside the named targets into the backup.
+    Every target must match: a line that matches nothing, or a folder that
+    cannot be read, fails the run, since a smaller archive would replace
+    the month's complete one. A symlinked folder on the way to a match, or
+    as the match itself, fails too: it would pull in a tree outside home.
+    A symlinked file is stored as its contents; a symlinked folder inside a
+    target is not entered.
     """
     def wanted(path):
         return (not any(fnmatch.fnmatchcase(path.name, x) for x in excludes)
                 and path.is_file())
 
-    files, missing = {}, []
+    def unreadable(error):
+        raise Failure(f"cannot read {error.filename}: {error.strerror}")
+
+    files = {}
     for pattern in globs:
         matches = sorted(home.glob(pattern))
         if not matches:
-            missing.append(pattern)
+            raise Failure(f"no file matches {pattern}; refusing a partial backup")
         for match in matches:
+            parts = match.relative_to(home).parts
+            for depth in range(1, len(parts) + 1):
+                step = home.joinpath(*parts[:depth])
+                if step.is_symlink() and (depth < len(parts) or step.is_dir()):
+                    raise Failure(f"{step.relative_to(home)} is a symlink to a folder; "
+                                  f"name the real folder instead")
             if match.is_dir():
-                for top, dirs, names in os.walk(match):
+                for top, dirs, names in os.walk(match, onerror=unreadable):
                     dirs.sort()
                     for name in sorted(names):
                         path = Path(top) / name
@@ -106,7 +118,7 @@ def collect(home, globs, excludes):
                             files[path.relative_to(home).as_posix()] = path
             elif wanted(match):
                 files[match.relative_to(home).as_posix()] = match
-    return files, missing
+    return files
 
 
 def pack(files, folder):
@@ -155,11 +167,15 @@ def prune(title_re, new_id, new_title):
         created = item.get("created_at") if isinstance(item.get("created_at"), str) else ""
         by_title.setdefault(title, []).append((0, created, ident))
     doomed = []
-    # The month in the title orders the backups, not created_at: a clock
-    # that was wrong once cannot make an old backup look new.
-    for rank, title in enumerate(sorted(by_title, reverse=True)):
+    # The month in the title orders the backups, not created_at. This run's
+    # title is always kept, first, so later-dated titles (a clock that was
+    # once ahead) can never push the document just stored out of the window.
+    order = [new_title] + sorted((t for t in by_title if t != new_title), reverse=True)
+    for rank, title in enumerate(order):
         entries = sorted(by_title[title], reverse=True)
         doomed += [ident for _, _, ident in (entries if rank >= KEEP else entries[1:])]
+    if new_id in doomed:
+        raise Failure("retention chose the new document; deleted nothing")
     for ident in doomed:
         op(["document", "delete", ident, "--vault", VAULT], OP_SECS, parse=False)
     return min(len(by_title), KEEP), len(doomed)
@@ -168,9 +184,7 @@ def prune(title_re, new_id, new_title):
 def run(mode, environ):
     home = Path(environ.get("HOME") or os.path.expanduser("~"))
     globs, excludes = read_targets(targets_file(environ))
-    files, missing = collect(home, globs, excludes)
-    for pattern in missing:
-        print(f"warning: no file matches {pattern}")
+    files = collect(home, globs, excludes)
     if not files:
         raise Failure("the targets match no file; refusing to store an empty backup")
     if mode == "plan":

@@ -65,7 +65,7 @@ class SensitiveBackupTest(unittest.TestCase):
         (self.home / ".aws/cache").write_text("skip\n")
         (self.home / "naïve name.env").write_text("ü\n")
         self.targets(".ssh", "!known_hosts*", "!*.bak*", ".aws/credentials",
-                     "naïve*", ".absent")
+                     "naïve*")
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
         (bin_dir / "fake_op.py").write_text(FAKE_OP)
@@ -107,7 +107,6 @@ class SensitiveBackupTest(unittest.TestCase):
             names = sorted(tar.getnames())
         self.assertEqual(names, [".aws/credentials", ".ssh/id_example", "naïve name.env"])
         self.assertIn(f"stored {item['id']}: 3 files,", done.stdout)
-        self.assertIn("warning: no file matches .absent", done.stdout)
         self.assertNotIn("secret-value", done.stdout + done.stderr)
         self.assertNotIn("token-for-test", done.stdout + done.stderr)
         self.assertEqual([p for p in self.root.iterdir() if p.name.startswith("sensitive-backup.")], [])
@@ -163,11 +162,55 @@ class SensitiveBackupTest(unittest.TestCase):
                 self.assertEqual(done.returncode, 1)
                 self.assertIn("targets:1:", done.stderr)
 
+    def test_a_target_that_vanished_fails_and_keeps_the_month(self):
+        self.assertEqual(self.run_script("run").returncode, 0)
+        [first] = self.vault()
+        (self.home / ".aws/credentials").unlink()
+        done = self.run_script("run")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("no file matches .aws/credentials", done.stderr)
+        self.assertEqual(self.vault(), [first])
+        self.assertNotIn("document delete", self.calls())
+
+    def test_an_unreadable_folder_fails_the_run(self):
+        locked = self.home / ".ssh/locked"
+        locked.mkdir()
+        (locked / "key").write_text("k\n")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        done = self.run_script("run")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("cannot read", done.stderr)
+        self.assertEqual(self.vault(), [])
+
+    def test_a_symlinked_target_folder_is_refused(self):
+        shared = self.root / "shared"
+        shared.mkdir()
+        (shared / "other").write_text("x\n")
+        (self.home / ".kube").symlink_to(shared)
+        for line in (".kube", ".kube/*"):
+            with self.subTest(line=line):
+                self.targets(line)
+                done = self.run_script("plan")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("is a symlink", done.stderr)
+
+    def test_retention_never_deletes_the_new_document(self):
+        future = [{"id": f"f{m:02d}", "title": f"{HOST} sensitive files 2999-{m:02d}",
+                   "category": "DOCUMENT"} for m in range(1, 13)]
+        self.vault(future)
+        done = self.run_script("run")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        titles = {i["title"] for i in self.vault()}
+        self.assertIn(f"{HOST} sensitive files {MONTH}", titles)
+        self.assertEqual(len(titles), 12)
+        self.assertNotIn(f"{HOST} sensitive files 2999-01", titles)
+
     def test_targets_that_match_nothing_store_nothing(self):
         self.targets(".absent")
         done = self.run_script("run")
         self.assertEqual(done.returncode, 1)
-        self.assertIn("refusing to store an empty backup", done.stderr)
+        self.assertIn("no file matches .absent", done.stderr)
         self.assertEqual(self.calls(), [])
 
     def test_a_missing_targets_file_names_the_example(self):
