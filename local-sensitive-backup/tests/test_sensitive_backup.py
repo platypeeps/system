@@ -206,6 +206,49 @@ class SensitiveBackupTest(unittest.TestCase):
         self.assertEqual(len(titles), 12)
         self.assertNotIn(f"{HOST} sensitive files 2999-01", titles)
 
+    def test_a_wildcard_before_the_last_part_is_refused(self):
+        for line in (".ssh/**/*", "*/credentials", ".a*/credentials"):
+            with self.subTest(line=line):
+                self.targets(line)
+                done = self.run_script("plan")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("targets:1:", done.stderr)
+
+    def test_an_unreadable_folder_a_glob_lists_fails(self):
+        locked = self.home / ".locked"
+        locked.mkdir()
+        (locked / "a.env").write_text("x\n")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        self.targets(".ssh", ".locked/*.env")
+        done = self.run_script("plan")
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("cannot read", done.stderr)
+
+    def test_a_target_that_adds_no_file_fails(self):
+        (self.home / ".empty").mkdir()
+        (self.home / ".only-excluded").mkdir()
+        (self.home / ".only-excluded/known_hosts").write_text("h\n")
+        for line in (".empty", ".only-excluded"):
+            with self.subTest(line=line):
+                self.targets(".ssh", line, "!known_hosts*")
+                done = self.run_script("plan")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn(f"no file matches {line}", done.stderr)
+
+    def test_a_matched_broken_link_fails(self):
+        (self.home / ".aws/config").symlink_to(self.home / "gone")
+        self.targets(".aws/c*")
+        done = self.run_script("plan")
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn(".aws/config is not a file", done.stderr)
+
+    def test_a_file_gone_before_packing_fails(self):
+        sys.path.insert(0, str(FOLDER))
+        import sensitive_backup
+        with self.assertRaises(sensitive_backup.Failure):
+            sensitive_backup.pack({"gone": self.home / "gone"}, self.root)
+
     def test_targets_that_match_nothing_store_nothing(self):
         self.targets(".absent")
         done = self.run_script("run")

@@ -11,10 +11,13 @@ Monthly backup of sensitive files (keys, tokens, cloud configs) to the
 
 The files come from `$SYSTEM_TOOLS_CONFIG/sensitive-backup/targets` (copy
 `targets.example`): one glob per line, relative to `$HOME`, and
-`!<pattern>` lines that drop files by name. A run fails, and stores
-nothing, when a line matches nothing, a folder cannot be read, or a
-symlinked folder leads to a match: a smaller archive would replace the
-month's complete one. A symlinked file is stored as its contents.
+`!<pattern>` lines that drop files by name. A wildcard may stand only in
+a line's last part (`.config/tool/*.env`, not `*/credentials`). A run
+fails, and stores nothing, when a line adds no file, a folder cannot be
+read, a directly named path is not a regular file, or a symlinked folder
+leads to a match: a smaller archive would replace the month's complete
+one. A symlinked file is stored as its contents; inside a folder, broken
+links and sockets are skipped.
 
 `run` packs the files into a gzip tarball in a private temp folder
 (umask 077), stores it with `op document create` titled

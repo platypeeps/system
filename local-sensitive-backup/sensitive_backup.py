@@ -71,6 +71,9 @@ def read_targets(path):
             excludes.append(line[1:])
             continue
         parts = PurePosixPath(line).parts
+        if any(c in part for part in parts[:-1] for c in "*?["):
+            raise Failure(f"{path}:{number}: a wildcard may stand only in the last "
+                          f"part: {line!r}")
         if line.startswith(("/", "~")) or ".." in parts:
             raise Failure(f"{path}:{number}: a target is relative to $HOME, "
                           f"with no '..': {line!r}")
@@ -87,8 +90,10 @@ def collect(home, globs, excludes):
     cannot be read, fails the run, since a smaller archive would replace
     the month's complete one. A symlinked folder on the way to a match, or
     as the match itself, fails too: it would pull in a tree outside home.
-    A symlinked file is stored as its contents; a symlinked folder inside a
-    target is not entered.
+    Each line must add at least one file, and a file it names directly must
+    be a regular file. A symlinked file is stored as its contents; inside a
+    target folder, a symlinked folder is not entered, and a broken link or a
+    socket is skipped, since it holds no contents to restore.
     """
     def wanted(path):
         return (not any(fnmatch.fnmatchcase(path.name, x) for x in excludes)
@@ -97,12 +102,26 @@ def collect(home, globs, excludes):
     def unreadable(error):
         raise Failure(f"cannot read {error.filename}: {error.strerror}")
 
+    def matching(pattern):
+        # The folder is listed with os.listdir, not Path.glob: glob skips a
+        # folder it cannot read and reports no error.
+        parts = PurePosixPath(pattern).parts
+        parent = home.joinpath(*parts[:-1])
+        if not any(c in parts[-1] for c in "*?["):
+            target = parent / parts[-1]
+            return [target] if os.path.lexists(target) else []
+        if not parent.is_dir():
+            return []
+        try:
+            names = os.listdir(parent)
+        except OSError as error:
+            unreadable(error)
+        return [parent / n for n in sorted(names) if fnmatch.fnmatchcase(n, parts[-1])]
+
     files = {}
     for pattern in globs:
-        matches = sorted(home.glob(pattern))
-        if not matches:
-            raise Failure(f"no file matches {pattern}; refusing a partial backup")
-        for match in matches:
+        found = {}
+        for match in matching(pattern):
             parts = match.relative_to(home).parts
             for depth in range(1, len(parts) + 1):
                 step = home.joinpath(*parts[:depth])
@@ -115,9 +134,19 @@ def collect(home, globs, excludes):
                     for name in sorted(names):
                         path = Path(top) / name
                         if wanted(path):
-                            files[path.relative_to(home).as_posix()] = path
-            elif wanted(match):
-                files[match.relative_to(home).as_posix()] = match
+                            found[path.relative_to(home).as_posix()] = path
+            elif any(fnmatch.fnmatchcase(match.name, x) for x in excludes):
+                continue
+            elif not match.is_file():
+                raise Failure(f"{match.relative_to(home)} is not a file "
+                              f"(a broken link or a special file)")
+            else:
+                found[match.relative_to(home).as_posix()] = match
+        # Each line must add a file: an emptied folder, or one whose files
+        # are all excluded, would shrink the month's backup unseen.
+        if not found:
+            raise Failure(f"no file matches {pattern}; refusing a partial backup")
+        files.update(found)
     return files
 
 
@@ -125,7 +154,10 @@ def pack(files, folder):
     archive = Path(folder) / "sensitive-files.tar.gz"
     with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT, dereference=True) as tar:
         for name, path in sorted(files.items()):
-            tar.add(path, arcname=name, recursive=False)
+            try:
+                tar.add(path, arcname=name, recursive=False)
+            except OSError as error:
+                raise Failure(f"cannot read {name}: {error.strerror}") from None
     return archive
 
 
