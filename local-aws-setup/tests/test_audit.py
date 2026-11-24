@@ -899,6 +899,22 @@ class EventsCase(Case):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("0 events, 0 flagged, 2 instance heartbeats skipped", done.stdout)
 
+    def test_a_failed_heartbeat_is_a_flagged_row(self):
+        # Only a heartbeat that went through is routine; a refused one
+        # means the instance lost a permission, or someone probed with
+        # its credentials.
+        made = self.report("UpdateInstanceInformation")
+        record = json.loads(made["CloudTrailEvent"])
+        record["errorCode"] = "AccessDenied"
+        made["CloudTrailEvent"] = json.dumps(record)
+        _, done = self.review([made])
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        (row,) = [line for line in done.stdout.splitlines()
+                  if "UpdateInstanceInformation" in line]
+        self.assertIn("UNREVIEWED", row)
+        self.assertIn("error=AccessDenied", row)
+        self.assertIn("1 events, 1 flagged, 0 instance", done.stdout)
+
     def test_a_write_of_recorded_data_is_never_skipped(self):
         # Compliance, inventory and association status are data the
         # account keeps. A person holding the instance's credentials can

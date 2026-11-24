@@ -263,10 +263,11 @@ def review(args, items):
         if name not in NAMES:
             # A known call is reviewed whatever readOnly says; any other is
             # skipped only when CloudTrail marks it a read, or it is an
-            # instance's heartbeat, which the summary counts.
+            # instance's heartbeat that went through, which the summary
+            # counts; a refused heartbeat is a row.
             if record.get("readOnly") is True:
                 continue
-            if heartbeat(args, name, who, params):
+            if not record.get("errorCode") and heartbeat(args, name, who, params):
                 heartbeats += 1
                 continue
             flags.append("UNREVIEWED")
