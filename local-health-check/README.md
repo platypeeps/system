@@ -37,9 +37,12 @@ nothing is mailed (sd:3454). A clean run prints no such line.
     library (`parentProc` codex, `blocked by sandbox`) is its own finding,
     not an app crash
   - a `gtimeout` or `timeout` report whose signal came from its own pid
-    is left out when a report from the same day names that pid as its
-    parent: GNU timeout raises its crashed child's signal on itself, and
-    the child's report counts; with no such child report it counts
+    is left out only beside the report that carries the finding: one
+    from the same day that names that pid as its parent and is itself an
+    app crash or codex sandbox finding (GNU timeout raises its crashed
+    child's signal on itself); beside no child report, or one this check
+    leaves out, counts in the cargo note, or that is a timeout's own, the
+    timeout report counts
 - every `$SYSTEM_TOOLS_LABEL_PREFIX.*` (default `local.system-tools.*`)
   LaunchAgent: loaded, and last exit code clean
 - disk0 SMART status

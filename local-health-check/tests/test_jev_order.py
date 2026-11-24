@@ -653,6 +653,42 @@ esac
                      "Killed-Timeout", "Self-Raiser"):
             self.assertIn(name + "(1) ", crashes[0])
 
+    def test_a_timeout_counts_when_its_childs_report_is_no_finding(self):
+        """sd:10335 review round 3: the timeout's echo is dropped only
+        beside a child report that is itself a crash finding. A child
+        report the check leaves out (simulated, a system daemon, no crash
+        bug_type, a JetsamEvent), sends to the cargo note, or that is a
+        timeout's own, carries no finding, so the timeout's counts."""
+        reports = self.tmp / "reports-timeout-child"
+        reports.mkdir()
+        dispatch = "local.system-tools.cron.build-dispatch"
+        def write(name, pid, parent, path, head='{"bug_type":"309"}', by=None):
+            (reports / (name + stamped(hours=1) + ".ips")).write_text(
+                head + '\n{\n  "pid" : ' + str(pid) + ',\n  "procPath" : "' + path + '",\n'
+                '  "parentPid" : ' + str(parent) + ',\n  "coalitionName" : "' + dispatch + '",\n'
+                '  "termination" : {"code":5,"byProc":"x","byPid":' + str(by or pid) + '}\n}\n')
+        gtimeout, child = r"\/opt\/homebrew\/*\/gtimeout", r"\/Users\/USER\/*\/child"
+        for n, (label, kwargs) in enumerate((
+                ("Sim", {"head": '{"bug_type":"309","is_simulated":1}'}),
+                ("Daemon", {"path": r"\/usr\/libexec\/child"}),
+                ("Analytics", {"head": '{"bug_type":"58"}'}),
+                ("Jetsam", {"name": "JetsamEvent-x"}),
+                ("Cargo", {"name": "crate-64ac2bb2c9a0c249"}),
+                ("Nested", {"path": gtimeout, "by": 1}),
+                ("Real", {}))):
+            pid = 1000 + 10 * n
+            write(label + "-Timeout", pid, 1, gtimeout)
+            write(kwargs.pop("name", label + "-Child"), pid + 1, pid,
+                  kwargs.pop("path", child), by=kwargs.pop("by", pid + 2), **kwargs)
+        out = self.run_check("timeout-child", {"JEV_HEALTH_CHECK": "0",
+                                               "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)}, verb="run")["out"]
+        crashes = [l for l in out.splitlines() if l.startswith("- app crash report(s)")]
+        self.assertEqual(len(crashes), 1, out)
+        for label in ("Sim", "Daemon", "Analytics", "Jetsam", "Cargo", "Nested"):
+            self.assertIn(label + "-Timeout(1) ", crashes[0])
+        self.assertNotIn("Real-Timeout", crashes[0])
+        self.assertIn("Real-Child(1) ", crashes[0])
+
     def test_codex_sandbox_library_block_is_its_own_finding(self):
         """sd:6729: a codex child that dyld aborts at launch because the codex
         sandbox blocked its library is that defect, not an app crash. The same
