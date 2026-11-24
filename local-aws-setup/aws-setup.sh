@@ -728,6 +728,17 @@ admin_mutate() {
   admin "$@"
 }
 
+# True when an AWS CLI error ($3) is exactly service error $1 from
+# operation $2: the CLI's own line must come first, so a refusal whose
+# message quotes the code (a trail named after it, say) does not match.
+aws_error_is() {
+  trimmed=${3#"${3%%[![:space:]]*}"}
+  case "$trimmed" in
+    "An error occurred ($1) when calling the $2 operation"*) return 0 ;;
+  esac
+  return 1
+}
+
 # Refuse to touch an account through a profile that belongs to another one.
 # It used to return early under DRY_RUN, which reads as "a dry run makes no
 # calls" -- true of `apply` and of nothing else. `keys` and `rotate` create a
@@ -1474,16 +1485,13 @@ cmd_audit() {
       expiring=$(printf '%s' "$rules" | "${PYTHON:-python3}" -c "$EXPIRING_LIFECYCLE") ||
         die "bucket $AUDIT_BUCKET $expiring; remove the expiry by hand"
     else
-      case "$rules" in
-        *NoSuchLifecycleConfiguration*) ;;
-        *) die "could not read the lifecycle rules of bucket $AUDIT_BUCKET: $rules" ;;
-      esac
+      aws_error_is NoSuchLifecycleConfiguration GetBucketLifecycleConfiguration "$rules" ||
+        die "could not read the lifecycle rules of bucket $AUDIT_BUCKET: $rules"
     fi
   else
-    case "$found" in
-      *"(404)"*) bucket_missing=1 ;;
-      *) die "cannot use bucket $AUDIT_BUCKET: $found" ;;
-    esac
+    aws_error_is 404 HeadBucket "$found" ||
+      die "cannot use bucket $AUDIT_BUCKET: $found"
+    bucket_missing=1
   fi
   trail_missing=0
   if current=$(admin cloudtrail get-trail --name "$AUDIT_TRAIL" \
@@ -1497,10 +1505,9 @@ cmd_audit() {
       die "trail $AUDIT_TRAIL does not record management write events from SSM; give it a basic selector with IncludeManagementEvents=true and ReadWriteType All or WriteOnly"
     echo "trail $AUDIT_TRAIL matches what audit creates: $AUDIT_BUCKET, multi-region, validated, management writes"
   else
-    case "$current" in
-      *TrailNotFoundException*) trail_missing=1 ;;
-      *) die "could not read trail $AUDIT_TRAIL: $current" ;;
-    esac
+    aws_error_is TrailNotFoundException GetTrail "$current" ||
+      die "could not read trail $AUDIT_TRAIL: $current"
+    trail_missing=1
   fi
   if [ "$bucket_missing" = 1 ]; then
     if [ "$AGENT_REGION" = us-east-1 ]; then

@@ -383,6 +383,30 @@ class AuditCase(Case):
         self.assertIn("AUDIT_BUCKET is not set", done.stderr)
         self.assertEqual(box.calls(), [])
 
+    def test_a_trail_read_refused_naming_the_error_is_not_a_missing_trail(self):
+        # The trail name, and so the refusal's resource ARN, may spell it.
+        box = self.box(AUDIT_TRAIL="TrailNotFoundException")
+        box.rule("get-trail", exit=254, stderr=(
+            "\nAn error occurred (AccessDeniedException) when calling the GetTrail "
+            "operation: not authorized on arn:aws:cloudtrail:eu-west-1:%s:trail/"
+            "TrailNotFoundException" % ACCOUNT_ID))
+        done = box.run("audit", "x")
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("could not read trail", done.stderr)
+        writes = {r[1] for r in self.rests(box) if len(r) > 1} & {
+            "create-bucket", "put-public-access-block", "put-bucket-versioning",
+            "put-bucket-policy", "create-trail", "start-logging"}
+        self.assertEqual(writes, set())
+
+    def test_a_bucket_read_refused_naming_404_is_not_a_missing_bucket(self):
+        box = self.box()
+        box.rule("head-bucket", exit=254, stderr=(
+            "\nAn error occurred (403) when calling the HeadBucket operation: "
+            "Forbidden (404)"))
+        done = box.run("audit", "x")
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("cannot use bucket", done.stderr)
+
     def test_the_trail_status_is_read_after_logging_starts(self):
         box = self.fresh()
         done = box.run("audit", "x")
