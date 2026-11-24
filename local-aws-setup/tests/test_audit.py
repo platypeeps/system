@@ -843,10 +843,102 @@ class EventsCase(Case):
         looked = [r for r in self.rests(box) if r[1:2] == ["lookup-events"]]
         names = sorted(r[r.index("--lookup-attributes") + 1] for r in looked)
         self.assertEqual(names, ["AttributeKey=EventName,AttributeValue=%s" % n for n in
-                                 ("ResumeSession", "SendCommand", "StartSession", "TerminateSession")])
+                                 ("CreateAssociation", "CreateAssociationBatch",
+                                  "RegisterTargetWithMaintenanceWindow",
+                                  "RegisterTaskWithMaintenanceWindow", "ResumeSession",
+                                  "SendAutomationSignal", "SendCommand",
+                                  "StartAssociationsOnce", "StartAutomationExecution",
+                                  "StartChangeRequestExecution", "StartSession",
+                                  "TerminateSession", "UpdateAssociation", "UpdateDocument",
+                                  "UpdateDocumentDefaultVersion", "UpdateMaintenanceWindow",
+                                  "UpdateMaintenanceWindowTarget",
+                                  "UpdateMaintenanceWindowTask")])
         for rest in looked:
             self.assertRegex(rest[rest.index("--start-time") + 1], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_association_and_automation_routes_are_always_unlogged(self):
+        # The deployer may not use these routes, and no saved output proves
+        # what they ran: each call is UNLOGGED, by anyone, even a failed one.
+        tag = [{"Key": "InstanceIds", "Values": ["i-1"]}]
+        routes = {
+            "CreateAssociation": {"documentVersion": "1", "targets": tag},
+            "UpdateAssociation": {"associationId": "a-1", "targets": tag},
+            "StartAssociationsOnce": {"associationIds": ["a-1"]},
+            "StartAutomationExecution": {"documentName": "AWS-RunShellScript",
+                                         "targets": tag},
+            "CreateAssociationBatch": {"entries": [{"name": "AWS-RunShellScript",
+                                                    "instanceId": "i-1"}]},
+            "StartChangeRequestExecution": {"runbooks": [{"documentName": "x"}]},
+            "SendAutomationSignal": {"automationExecutionId": "e-1",
+                                     "signalType": "Resume"},
+            "RegisterTaskWithMaintenanceWindow": {"windowId": "mw-1", "targets": tag,
+                                                  "taskType": "RUN_COMMAND"},
+            "UpdateMaintenanceWindowTask": {"windowId": "mw-1", "windowTaskId": "t-1"},
+            # Each makes an existing task or association run, or run
+            # something else: an enabled window, a new target, a new
+            # document version.
+            "UpdateMaintenanceWindow": {"windowId": "mw-1", "enabled": True},
+            "RegisterTargetWithMaintenanceWindow": {"windowId": "mw-1", "targets": tag},
+            "UpdateMaintenanceWindowTarget": {"windowId": "mw-1", "windowTargetId": "g-1"},
+            "UpdateDocument": {"documentVersion": "$LATEST"},
+            "UpdateDocumentDefaultVersion": {"documentVersion": "2"},
+        }
+        for name, params in routes.items():
+            for user in ("deployer", "intruder"):
+                with self.subTest(name=name, user=user):
+                    box, done = self.review([event(name, user=user, **params)])
+                    self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                    (row,) = [line for line in done.stdout.splitlines() if name in line]
+                    self.assertIn("UNLOGGED", row)
+                    self.assertEqual("UNEXPECTED" in row, user == "intruder")
+                    self.assertIn("1 events, 1 flagged", done.stdout)
+                    self.assertEqual(self.listed(box), [])
+
+    def test_a_route_names_what_it_reaches(self):
+        for name, params, shown in (
+                ("StartAssociationsOnce", {"associationIds": ["a-1"]}, "a-1"),
+                ("UpdateAssociation", {"associationId": "a-2"}, "a-2"),
+                ("CreateAssociation", {"instanceId": "i-3"}, "i-3"),
+                ("CreateAssociationBatch", {"entries": [{"instanceId": "i-4"}]}, "i-4"),
+                ("SendAutomationSignal", {"automationExecutionId": "e-5"}, "e-5"),
+                ("UpdateMaintenanceWindowTask", {"windowId": "mw-6"}, "mw-6"),
+                ("UpdateMaintenanceWindow", {"windowId": "mw-7"}, "mw-7"),
+                ("StartChangeRequestExecution",
+                 {"runbooks": [{"documentName": "doc-8"}]}, "doc-8"),
+                ("StartAutomationExecution", {"documentName": "doc-9"}, "doc-9"),
+                ("SendCommand", {"targets": [{"key": "tag:role", "values": ["web-10"]}]},
+                 "web-10")):
+            with self.subTest(name=name):
+                _, done = self.review([event(name, **params)])
+                (row,) = [line for line in done.stdout.splitlines() if name in line]
+                self.assertIn(shown, row)
+
+    def test_a_row_prints_identifiers_never_document_parameters(self):
+        # A row is an allow-list of identifiers: whatever else a request
+        # carries, a document's parameters above all, stays off the terminal.
+        secret = {"commands": ["export TOKEN=hunter2-secret"]}
+        for name, params in (
+                ("CreateAssociationBatch",
+                 {"entries": [{"instanceId": "i-1", "parameters": secret}]}),
+                ("CreateAssociationBatch", {"entries": [{"parameters": secret}]}),
+                ("CreateAssociationBatch", {"entries": "hunter2-secret"}),
+                ("StartChangeRequestExecution",
+                 {"runbooks": [{"documentName": "doc-1", "parameters": secret}]}),
+                ("StartChangeRequestExecution", {"runbooks": [secret]}),
+                ("CreateAssociation", {"targets": [{"key": "tag:role", "values": ["web"],
+                                                    "parameters": secret}]}),
+                ("CreateAssociation", {"targets": {"parameters": secret}}),
+                ("CreateAssociation", {"instanceId": secret}),
+                ("StartAssociationsOnce", {"associationIds": [secret, ["hunter2-secret"]]}),
+                ("StartAutomationExecution", {"target": secret, "parameters": secret}),
+                ("StartSession", {"target": secret}),
+                ("SendCommand", {"instanceIds": [secret], "parameters": secret})):
+            with self.subTest(name=name, params=params):
+                _, done = self.review([event(name, **params)])
+                (row,) = [line for line in done.stdout.splitlines() if name in line]
+                self.assertNotIn("hunter2", done.stdout + done.stderr)
+                self.assertNotIn("commands", row)
 
     def test_a_session_somebody_else_started_is_flagged(self):
         _, done = self.review([event("StartSession", user="intruder", target="i-0123456789abcdef0")])
