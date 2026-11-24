@@ -24,3 +24,18 @@ st_unlinked_kegs() {
 st_drop_platform_warning() {
     awk '/^Warning:/ { skip = /^Warning: You are using macOS on Intel x86_64\./ } !skip' "$@"
 }
+
+# st_drop_unlinked_keg KEG [FILE]: print doctor output FILE, or stdin, less
+# KEG's line in the unlinked kegs warning, and less the warning when it lists
+# no other keg. KEG matches a whole line, never a part of one.
+st_drop_unlinked_keg() {
+    st_keg_line="  $1"; shift
+    awk -v k="$st_keg_line" '
+      function flush() { if (keep) printf "%s", buf; buf = ""; inblk = 0 }
+      /^Warning:/ { flush(); inblk = /^Warning: You have unlinked kegs/; keep = 0 }
+      !inblk { print; next }
+      $0 == k { next }
+      /^  [^ ]/ { keep = 1 }
+      { buf = buf $0 "\n" }
+      END { flush() }' "$@"
+}
