@@ -222,7 +222,8 @@ It also marks one with no object under `ssm-output/<command id>/<instance id>/` 
 A command sent to tag targets, or to both ids and targets, is always `UNLOGGED`: the event does not name whose output to look for.
 A command still running, or one that printed nothing, shows as `UNLOGGED` too; review it by hand.
 CloudTrail delivers an event up to 15 minutes late, so a clean review does not cover the last 15 minutes.
-It also reads `CreateAssociation`, `UpdateAssociation`, `StartAssociationsOnce` and `StartAutomationExecution`.
+It also reads every other call that runs a document on an instance: `CreateAssociation`, `CreateAssociationBatch`, `UpdateAssociation`, `StartAssociationsOnce`,
+`StartAutomationExecution`, `SendAutomationSignal`, `StartChangeRequestExecution`, `RegisterTaskWithMaintenanceWindow` and `UpdateMaintenanceWindowTask`.
 Each is `UNLOGGED`, by anyone, a refused call too: the deployer may not use them, and no saved output shows what they ran.
 Either exits 1. `TUNNEL` marks a port-forwarding session: CloudTrail shows who and when, no log shows what ran inside.
 

@@ -843,9 +843,13 @@ class EventsCase(Case):
         looked = [r for r in self.rests(box) if r[1:2] == ["lookup-events"]]
         names = sorted(r[r.index("--lookup-attributes") + 1] for r in looked)
         self.assertEqual(names, ["AttributeKey=EventName,AttributeValue=%s" % n for n in
-                                 ("CreateAssociation", "ResumeSession", "SendCommand",
+                                 ("CreateAssociation", "CreateAssociationBatch",
+                                  "RegisterTaskWithMaintenanceWindow", "ResumeSession",
+                                  "SendAutomationSignal", "SendCommand",
                                   "StartAssociationsOnce", "StartAutomationExecution",
-                                  "StartSession", "TerminateSession", "UpdateAssociation")])
+                                  "StartChangeRequestExecution", "StartSession",
+                                  "TerminateSession", "UpdateAssociation",
+                                  "UpdateMaintenanceWindowTask")])
         for rest in looked:
             self.assertRegex(rest[rest.index("--start-time") + 1], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -860,6 +864,14 @@ class EventsCase(Case):
             "StartAssociationsOnce": {"associationIds": ["a-1"]},
             "StartAutomationExecution": {"documentName": "AWS-RunShellScript",
                                          "targets": tag},
+            "CreateAssociationBatch": {"entries": [{"name": "AWS-RunShellScript",
+                                                    "instanceId": "i-1"}]},
+            "StartChangeRequestExecution": {"runbooks": [{"documentName": "x"}]},
+            "SendAutomationSignal": {"automationExecutionId": "e-1",
+                                     "signalType": "Resume"},
+            "RegisterTaskWithMaintenanceWindow": {"windowId": "mw-1", "targets": tag,
+                                                  "taskType": "RUN_COMMAND"},
+            "UpdateMaintenanceWindowTask": {"windowId": "mw-1", "windowTaskId": "t-1"},
         }
         for name, params in routes.items():
             for user in ("deployer", "intruder"):
@@ -876,7 +888,10 @@ class EventsCase(Case):
         for name, params, shown in (
                 ("StartAssociationsOnce", {"associationIds": ["a-1"]}, "a-1"),
                 ("UpdateAssociation", {"associationId": "a-2"}, "a-2"),
-                ("CreateAssociation", {"instanceId": "i-3"}, "i-3")):
+                ("CreateAssociation", {"instanceId": "i-3"}, "i-3"),
+                ("CreateAssociationBatch", {"entries": [{"instanceId": "i-4"}]}, "i-4"),
+                ("SendAutomationSignal", {"automationExecutionId": "e-5"}, "e-5"),
+                ("UpdateMaintenanceWindowTask", {"windowId": "mw-6"}, "mw-6")):
             with self.subTest(name=name):
                 _, done = self.review([event(name, **params)])
                 (row,) = [line for line in done.stdout.splitlines() if name in line]

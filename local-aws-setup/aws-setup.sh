@@ -91,9 +91,10 @@ usage: aws-setup.sh accounts | test
             key prefix, home region, multi-region, log file validation,
             management write events). DRY_RUN=1 prints the writes.
   events    review SSM SendCommand, StartSession, ResumeSession,
-            TerminateSession, association and automation events (each
-            association or automation call is UNLOGGED) of the last
-            [hours] (default 24, at most 2160) in every enabled region, as ADMIN_PROFILE. Run it
+            TerminateSession, association (one or a batch), automation,
+            change request and maintenance window task events (each of
+            these last is UNLOGGED) of the last [hours] (default 24, at
+            most 2160) in every enabled region, as ADMIN_PROFILE. Run it
             with the deployer's account file. Flags UNEXPECTED (a principal
             other than AGENT_USER) and UNLOGGED (output outside
             AUDIT_BUCKET/ssm-output/, or not found there), and exits
