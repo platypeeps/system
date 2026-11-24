@@ -52,6 +52,7 @@ case "$1" in
   --pkg-info) [ -f "$RECEIPTS/$2" ] || exit 1
               printf 'package-id: %s\nvolume: /\nlocation: %s\n' "$2" "${LOCATION#/}" ;;
   --only-files) [ -f "$RECEIPTS/$3" ] || exit 1
+                [ -z "$FILES_RC" ] || exit "$FILES_RC"
                 cat "$RECEIPTS/$3" ;;
   --check-signature) printf '%s' "$SIG"; exit "${SIG_RC:-0}" ;;
 esac
@@ -84,9 +85,12 @@ esac
 [ "$1 $2" = "installer -pkg" ] && [ -f "$3" ] || exit 2
 [ -z "$INSTALL_RC" ] || exit "$INSTALL_RC"
 [ -n "$INSTALL_NO_RECEIPT" ] && exit 0
-mkdir -p "$RECEIPTS" "$LOCATION/Variations/il2cpp"
-echo "Variations/il2cpp/UnityPlayer.dylib" > "$RECEIPTS/$RECEIPT"
-touch "$LOCATION/Variations/il2cpp/UnityPlayer.dylib"
+mkdir -p "$RECEIPTS" "$LOCATION/Variations/il2cpp/Data"
+printf '%s\n' Variations/il2cpp/UnityPlayer.dylib "Variations/il2cpp/Data/unity default resources" \
+  Variations/il2cpp/Data/libil2cpp.a > "$RECEIPTS/$RECEIPT"
+touch "$LOCATION/Variations/il2cpp/UnityPlayer.dylib" "$LOCATION/Variations/il2cpp/Data/unity default resources" \
+  "$LOCATION/Variations/il2cpp/Data/libil2cpp.a"
+[ -z "$INSTALL_LEAVES_OUT" ] || rm -f "$LOCATION/Variations/il2cpp/$INSTALL_LEAVES_OUT"
 """
 
 
@@ -192,6 +196,36 @@ class UnityModules(unittest.TestCase):
 
         self.assertIn("  MISSING unity MacStandaloneSupportIL2CPP", result.stdout)
         self.assertEqual(len(self.installs()), 1)
+
+    def test_any_listed_file_gone_is_installed_again(self):
+        """A partial install, or one a cleanup thinned, keeps the receipt
+        and its first file; every file the receipt lists must be there."""
+        for gone in ("Data/libil2cpp.a", "Data/unity default resources"):
+            with self.subTest(gone=gone):
+                self.run_brew("--apply")
+                (self.location / "Variations/il2cpp" / gone).unlink()
+                self.log.unlink()
+
+                result = self.run_brew("--apply")
+
+                self.assertIn("  MISSING unity MacStandaloneSupportIL2CPP", result.stdout)
+                self.assertEqual(len(self.installs()), 1, result.stdout)
+                self.assertIn(f"  installed unity {RECEIPT}", result.stdout)
+
+    def test_an_install_that_leaves_a_listed_file_out_is_a_failure(self):
+        """The check after the installer reads every file, not the first."""
+        result = self.run_brew("--apply", INSTALL_LEAVES_OUT="Data/libil2cpp.a")
+
+        self.assertIn(f"the installer finished, but {RECEIPT} is not installed", result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_a_file_list_pkgutil_cannot_give_is_not_ok(self):
+        self.run_brew("--apply")
+        self.log.unlink()
+
+        result = self.run_brew(FILES_RC="1")
+
+        self.assertIn("  MISSING unity MacStandaloneSupportIL2CPP", result.stdout)
 
     def test_a_new_cask_version_needs_its_own_module(self):
         self.run_brew("--apply")

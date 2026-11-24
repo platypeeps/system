@@ -1035,8 +1035,8 @@ stage_brew() {
 
 # The .unity kind: editor modules Homebrew has no cask for, such as Mac
 # IL2CPP (sd:10302). A line is `<receipt> <installer>`: the module is ok
-# when the receipt com.unity3d.<receipt>-<version> is there and its first
-# file is too; else --apply installs UnitySetup-<installer>-Support-for-
+# when the receipt com.unity3d.<receipt>-<version> is there and every
+# file it lists; else --apply installs UnitySetup-<installer>-Support-for-
 # Editor-<version>.pkg for the unity cask's version and changeset. The
 # weekly upgrade moves the cask; the next run installs the modules of the
 # new version. Pass the installed casks, one per line.
@@ -1096,13 +1096,21 @@ $um_mods
 EOF
 }
 
-# 0 when the receipt is there and the first file it lists is on disk: a
-# reinstall of the editor at one version deletes the files, not the receipt.
+# 0 when the receipt is there and every file it lists is on disk: a
+# reinstall of the editor at one version deletes the files, not the
+# receipt, and an install cut short or a cleanup can keep the first file
+# and lose a later one, which a check of the first alone called ok for
+# good (sd:10302 review). A file list pkgutil cannot give is not ok.
 unity_module_present() { # package id
   up_info=$(pkgutil --pkg-info "$1" 2>/dev/null) || return 1
   up_loc=$(printf '%s\n' "$up_info" | sed -n 's/^location: //p')
-  up_file=$(pkgutil --only-files --files "$1" 2>/dev/null | sed -n 1p)
-  [ -n "$up_file" ] && [ -e "/${up_loc%/}/$up_file" ]
+  up_files=$(pkgutil --only-files --files "$1" 2>/dev/null) || return 1
+  [ -n "$up_files" ] || return 1
+  while IFS= read -r up_file; do
+    [ -e "/${up_loc%/}/$up_file" ] || return 1
+  done <<EOF
+$up_files
+EOF
 }
 
 # Downloads the pkg, checks it carries Unity's Developer ID Installer
