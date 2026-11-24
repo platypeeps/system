@@ -22,11 +22,15 @@ import math
 import os
 import re
 import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import system_tools_config  # noqa: E402
 
 #: Seconds one HTTP read may take.
 TIMEOUT = 20
@@ -616,24 +620,6 @@ TWILIO_SID = re.compile(r"AC[0-9a-f]{32}")
 TWILIO_AMOUNT = re.compile(r"-?\d{1,15}(\.\d{1,12})?")
 
 
-def env_file(path):
-    """KEY=value lines of an env file: comments, `export ` and one layer
-    of matching quotes allowed; nothing expands."""
-    values = {}
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.startswith("export "):
-            line = line[len("export "):].lstrip()
-        name, sep, value = line.partition("=")
-        if not sep or line.startswith("#"):
-            continue
-        value = value.strip()
-        if len(value) > 1 and value[0] == value[-1] and value[0] in "'\"":
-            value = value[1:-1]
-        values[name.strip()] = value
-    return values
-
-
 def twilio_amount(value, what):
     if not isinstance(value, str) or not TWILIO_AMOUNT.fullmatch(value):
         raise ReadFailed("%s is not a decimal string" % what)
@@ -654,7 +640,7 @@ def read_twilio(env, fetch, now):
     if not found:
         raise ReadFailed("not configured: TWILIO_ENV_FILE names no file")
     try:
-        values = env_file(path)
+        values = system_tools_config.read_env_file(path, env)
     except (OSError, ValueError) as e:
         raise ReadFailed(type(e).__name__) from None
     sid, api_key, secret = (key(values, name) for name in
