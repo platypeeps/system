@@ -9,7 +9,10 @@ reaches an instance prints one row, oldest first, in local time:
               audit bucket, the one prefix the instance role may write, or
               whose output is not there: no object under
               <prefix>/<command id>/<instance id>/ for each instance named;
-              a command sent to tag targets names none, so it is UNLOGGED
+              a command sent to tag targets names none, so it is UNLOGGED;
+              every association and automation call is UNLOGGED: the
+              deployer may not make one, and no saved output proves what
+              it ran
   TUNNEL      a port-forwarding session: CloudTrail has who and when, no log
               has what ran inside it
 
@@ -23,8 +26,13 @@ import re
 import subprocess
 import sys
 
-NAMES = ("SendCommand", "StartSession", "ResumeSession", "TerminateSession")
-REACHING = {"SendCommand", "StartSession", "ResumeSession"}
+# The other routes that run a document on an instance. The deployer's policy
+# grants none, and their output never reaches the audit bucket's proof, so
+# each call is UNLOGGED whoever made it, a refused one too.
+ROUTES = ("CreateAssociation", "UpdateAssociation", "StartAssociationsOnce",
+          "StartAutomationExecution")
+NAMES = ("SendCommand", "StartSession", "ResumeSession", "TerminateSession") + ROUTES
+REACHING = {"SendCommand", "StartSession", "ResumeSession"} | set(ROUTES)
 TUNNEL = "AWS-StartPortForwardingSession"
 # The instance role may write only <bucket>/ssm-output/*; output under any
 # other key is never written, so it counts as unlogged.
@@ -165,10 +173,13 @@ def review(args, items):
         if name == "SendCommand" and not (args.bucket and output == args.bucket and under
                                           and saved(args, record, params, prefix)):
             flags.append("UNLOGGED")
+        if name in ROUTES:
+            flags.append("UNLOGGED")
         if params.get("documentName") == TUNNEL:
             flags.append("TUNNEL")
-        target = params.get("target") or params.get("instanceIds") or params.get("targets") \
-            or params.get("sessionId")
+        target = next((params[k] for k in (
+            "target", "instanceId", "instanceIds", "targets", "associationId",
+            "associationIds", "sessionId") if params.get(k)), None)
         if record.get("errorCode"):
             flags.append("error=" + clean(record["errorCode"]))
         rows.append((moment, region, name,
