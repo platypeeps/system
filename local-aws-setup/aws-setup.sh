@@ -449,19 +449,6 @@ $role_lines
 EOF
 }
 
-# These denies survive broader supplemental policies at every access level.
-stmt_deny_untagged_lifecycle() {
-  cat <<EOF
-    {
-      "Sid": "DenyCleanupWithoutManagedTag",
-      "Effect": "Deny",
-      "Action": ["ec2:DisassociateAddress", "ec2:ReleaseAddress", "ec2:DeleteSecurityGroup", "ec2:DeleteKeyPair", "ec2:DeleteVolume", "ec2:DeleteNetworkInterface", "ec2:DeleteSnapshot"],
-      "Resource": "*",
-      "Condition": { "StringNotEqualsIfExists": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
-    },
-EOF
-}
-
 # A snapshot, an image, a moved volume or a guest key turns a deployment's
 # disk into one the agent can read, so every level denies DISK_ROUTES
 # (sd:2870). Neither the agent nor the deployer needs one, and an untagged
@@ -508,6 +495,8 @@ EOF
 # the user carries. A second policy granting ec2:* would reach every instance
 # in the account, and a conditional Allow says nothing about that. These two
 # Deny statements are what survives it, so they render at every level.
+# The first also holds the cleanup actions under the same tag condition,
+# on every resource: one statement is shorter than two (6144 limit).
 #
 # A negated operator inside a Deny takes the IfExists form. The IAM condition
 # operator reference is explicit that a Deny with a negated operator "is still
@@ -524,9 +513,16 @@ stmt_deny_untagged_ec2() {
         "ec2:StopInstances",
         "ec2:RebootInstances",
         "ec2:GetConsoleOutput",
-        "ec2:TerminateInstances"
+        "ec2:TerminateInstances",
+        "ec2:DisassociateAddress",
+        "ec2:ReleaseAddress",
+        "ec2:DeleteSecurityGroup",
+        "ec2:DeleteKeyPair",
+        "ec2:DeleteVolume",
+        "ec2:DeleteNetworkInterface",
+        "ec2:DeleteSnapshot"
       ],
-      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Resource": "*",
       "Condition": {
         "StringNotEqualsIfExists": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" }
       }
@@ -608,22 +604,17 @@ EOF
 # record of who reached a deployment. CloudTrail and the instance role write
 # it; no IAM user this tool renders for may write, delete a version, expire
 # it, or switch versioning off. A plain delete only adds a delete marker.
+# s3:Put* and s3:Delete* name all of that in few characters: the sandbox
+# policy with a pass role sits close to IAM's 6144-character limit. They
+# also cover the retention and lock calls, so governance bypass needs no
+# entry of its own.
 stmt_deny_audit_tampering() {
   [ -n "$AUDIT_BUCKET" ] || return 0
   cat <<EOF
     {
       "Sid": "DenyAuditTampering",
       "Effect": "Deny",
-      "Action": [
-        "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:DeleteObjectVersion",
-        "s3:PutLifecycleConfiguration",
-        "s3:PutBucketVersioning",
-        "s3:PutBucketObjectLockConfiguration",
-        "s3:PutObjectRetention",
-        "s3:BypassGovernanceRetention"
-      ],
+      "Action": ["s3:Put*", "s3:Delete*"],
       "Resource": ["arn:aws:s3:::$AUDIT_BUCKET", "arn:aws:s3:::$AUDIT_BUCKET/*"]
     },
 EOF
@@ -692,7 +683,6 @@ render_policy() {
   stmt_pass_role
   stmt_s3
   stmt_deny_untagged_ec2
-  stmt_deny_untagged_lifecycle
   stmt_deny_disk_reads
   stmt_deny_tag_changes
   stmt_deny_audit_tampering

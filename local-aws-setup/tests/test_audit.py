@@ -6,6 +6,7 @@ deployer cannot clean, `AWS-RunShellScript` output kept in that bucket, and a
 review of those events. These cases watch the calls against the fake `aws`.
 """
 
+import fnmatch
 import json
 import unittest
 
@@ -100,9 +101,23 @@ class TamperDenyCase(Case):
                 self.assertIsNotNone(item)
                 self.assertEqual(item["Effect"], "Deny")
                 for action in TAMPER:
-                    self.assertIn(action, item["Action"])
+                    self.assertTrue(any(fnmatch.fnmatchcase(action, pattern)
+                                        for pattern in item["Action"]), action)
                 self.assertEqual(sorted(item["Resource"]),
                                  ["arn:aws:s3:::%s" % BUCKET, "arn:aws:s3:::%s/*" % BUCKET])
+
+    def test_the_example_sandbox_with_audit_fits_the_size_limit(self):
+        # IAM counts every character but whitespace, at most 6144 for a
+        # managed policy. The example account file at sandbox, with its
+        # pass role and audit bucket lines turned on, plus room for a
+        # longer audit bucket name than the example's.
+        box = self.box(level="sandbox",
+                       buckets="change-me-bucket-one change-me-bucket-two",
+                       PASS_ROLE_ARNS="arn:aws:iam::%s:role/change-me-instance-role"
+                                      % ACCOUNT_ID,
+                       AUDIT_BUCKET="change-me-audit-bucket")
+        size = len(json.dumps(self.render(box), separators=(",", ":")))
+        self.assertLessEqual(size + 2 * 40, 6144)
 
     def test_no_audit_bucket_renders_no_statement(self):
         document = self.render(self.box(AUDIT_BUCKET=""))
