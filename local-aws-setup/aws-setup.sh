@@ -50,8 +50,10 @@ usage() {
   echo "usage: $(basename "$0") accounts | test | render|simulate|apply|keys|rotate|check|audit <account> | events <account> [hours]" >&2
 }
 
+# printf, not echo: sh's echo turns a quoted "\n" from a reply into a
+# real line break.
 die() {
-  echo "aws-setup.sh: $*" >&2
+  printf 'aws-setup.sh: %s\n' "$*" >&2
   exit 1
 }
 
@@ -1423,6 +1425,31 @@ for rule in rules:
                            % (name, key)) or 1)
 '
 
+# Why get-trail-status output (stdin) shows a trail that cannot deliver:
+# prints it and exits 1, or exits 0. A trail is fit when IsLogging is true
+# and neither delivery error is a non-empty string; anything else, or
+# output that is not an object, exits 1. The error is JSON-quoted, so
+# markup and newlines from the reply stay on one line.
+TRAIL_CANNOT_DELIVER='
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except ValueError:
+    doc = None
+if not isinstance(doc, dict):
+    sys.exit(print("gave a status that could not be read") or 1)
+if doc.get("IsLogging") is not True:
+    sys.exit(print("is not logging") or 1)
+for key in ("LatestDeliveryError", "LatestDigestDeliveryError"):
+    error = doc.get(key, "")
+    if error is None:
+        continue
+    if not isinstance(error, str):
+        sys.exit(print("gave a %s that is not text" % key) or 1)
+    if error:
+        sys.exit(print("reports %s %s" % (key, json.dumps(error)[:200])) or 1)
+'
+
 # Each step is a create-if-missing or a put that sets the same value again,
 # so a run cut short anywhere is finished by running it again.
 cmd_audit() {
@@ -1506,6 +1533,15 @@ cmd_audit() {
   fi
   admin_mutate cloudtrail start-logging --name "$AUDIT_TRAIL" ||
     die "could not start trail $AUDIT_TRAIL"
+  # A started trail can still fail every write, for one: a bucket policy
+  # it may not use. Only the status shows it. A dry run started nothing.
+  if [ "$DRY_RUN" != 1 ]; then
+    status=$(admin cloudtrail get-trail-status --name "$AUDIT_TRAIL" \
+      --output json 2>&1) ||
+      die "could not read the status of trail $AUDIT_TRAIL: $status"
+    broken=$(printf '%s' "$status" | "${PYTHON:-python3}" -c "$TRAIL_CANNOT_DELIVER") ||
+      die "trail $AUDIT_TRAIL $broken; fix its bucket or policy and run audit again"
+  fi
   echo "trail $AUDIT_TRAIL is logging to $AUDIT_BUCKET"
 }
 

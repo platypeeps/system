@@ -32,6 +32,10 @@ COMMAND_ID = "0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e"
 SAVED = json.dumps({"Contents": [{"Key": "ssm-output/x/i-1/awsrunShellScript/0/stdout"}]})
 
 
+HEALTHY = json.dumps({"IsLogging": True,
+                      "LatestDeliveryTime": "2026-11-23T10:00:00Z"})
+
+
 TAMPER = ("s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
           "s3:PutLifecycleConfiguration", "s3:PutBucketVersioning")
 
@@ -64,7 +68,13 @@ class Case(unittest.TestCase):
         box.rule("get-bucket-lifecycle-configuration", exit=254,
                  stderr="An error occurred (NoSuchLifecycleConfiguration) when calling "
                         "the GetBucketLifecycleConfiguration operation")
+        # A started trail delivers until a case says otherwise.
+        box.rule("get-trail-status", stdout=HEALTHY)
         return box
+
+    def status(self, box, **answer):
+        """Answer the trail status read ahead of the default above."""
+        box.scenario["rules"].insert(0, {"match": ["get-trail-status"], **answer})
 
     def lifecycle(self, box, **answer):
         """Answer the lifecycle read ahead of the default above."""
@@ -142,7 +152,8 @@ class AuditCase(Case):
         names = [r[1] for r in rests if r[:1] in (["s3api"], ["cloudtrail"])]
         self.assertEqual(names, ["head-bucket", "get-trail", "create-bucket",
                                  "put-public-access-block", "put-bucket-versioning",
-                                 "put-bucket-policy", "create-trail", "start-logging"])
+                                 "put-bucket-policy", "create-trail", "start-logging",
+                                 "get-trail-status"])
         create = next(r for r in rests if r[1:2] == ["create-bucket"])
         self.assertIn("LocationConstraint=eu-west-1", create)
         policy = next(r for r in rests if r[1:2] == ["put-bucket-policy"])
@@ -172,7 +183,7 @@ class AuditCase(Case):
         names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
         self.assertNotIn("create-bucket", names)
         self.assertNotIn("create-trail", names)
-        self.assertEqual(names[-1], "start-logging")
+        self.assertEqual(names[-2:], ["start-logging", "get-trail-status"])
 
     def test_an_existing_bucket_is_read_for_lifecycle_rules_first(self):
         box = self.box()
@@ -231,6 +242,7 @@ class AuditCase(Case):
                 self.assertEqual(done.returncode, 1, done.stdout)
                 self.assertIn("bucket %s" % BUCKET, done.stderr)
                 self.assertNotIn("\x1b", done.stderr)
+                self.assertEqual(done.stderr.count("\n"), 1, done.stderr)
                 names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
                 self.assertEqual(names, ["head-bucket", "get-bucket-lifecycle-configuration"])
 
@@ -370,6 +382,55 @@ class AuditCase(Case):
         self.assertEqual(done.returncode, 1)
         self.assertIn("AUDIT_BUCKET is not set", done.stderr)
         self.assertEqual(box.calls(), [])
+
+    def test_the_trail_status_is_read_after_logging_starts(self):
+        box = self.fresh()
+        done = box.run("audit", "x")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        names = [r[1] for r in self.rests(box) if r[:1] == ["cloudtrail"]]
+        self.assertEqual(names[-2:], ["start-logging", "get-trail-status"])
+
+    def test_a_trail_that_cannot_deliver_is_refused(self):
+        bad = {
+            "log delivery": {"IsLogging": True,
+                             "LatestDeliveryError": "AccessDenied"},
+            "digest delivery": {"IsLogging": True,
+                                "LatestDigestDeliveryError": "NoSuchBucket"},
+            "error with markup": {"IsLogging": True,
+                                  "LatestDeliveryError": "<b>x</b>\nfake ok"},
+            "not logging": {"IsLogging": False},
+            "logging as a string": {"IsLogging": "true"},
+            "error not a string": {"IsLogging": True, "LatestDeliveryError": 5},
+            "not an object": [],
+        }
+        for why, answer in bad.items():
+            with self.subTest(why=why):
+                box = self.fresh()
+                self.status(box, stdout=json.dumps(answer))
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("trail deployment-audit", done.stderr)
+                self.assertNotIn("is logging to", done.stdout)
+                self.assertNotIn("\nfake ok", done.stderr)
+        for why, answer in (("empty", ""), ("not json", "{")):
+            with self.subTest(why=why):
+                box = self.fresh()
+                self.status(box, stdout=answer)
+                self.assertEqual(box.run("audit", "x").returncode, 1)
+
+    def test_a_failed_status_read_is_refused(self):
+        box = self.fresh()
+        self.status(box, exit=254, stderr="An error occurred (AccessDenied)")
+        done = box.run("audit", "x")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("could not read the status of trail deployment-audit",
+                      done.stderr)
+
+    def test_an_empty_error_is_no_error(self):
+        box = self.fresh()
+        self.status(box, stdout=json.dumps({"IsLogging": True,
+                                            "LatestDeliveryError": ""}))
+        self.assertEqual(box.run("audit", "x").returncode, 0)
 
     def test_a_dry_run_prints_every_write(self):
         box = self.fresh()
