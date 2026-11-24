@@ -200,7 +200,8 @@ After `start-logging`, `audit` reads the trail status and fails unless it is log
 The trail records management events, so `SendCommand`, `StartSession` and `TerminateSession` land there.
 One management-event trail per account is free; the bucket costs its storage.
 
-CloudTrail hides `SendCommand` parameters. To keep what ran, the deployment wrapper passes
+CloudTrail hides `SendCommand` parameters. Command output is not saved yet: the deployment
+wrapper starts saving it only when its own item, sd:10253, lands. From then on it passes
 `--output-s3-bucket-name <AUDIT_BUCKET> --output-s3-key-prefix ssm-output`.
 The instance role, not the deployer, writes that output: grant it `s3:PutObject` on `arn:aws:s3:::<AUDIT_BUCKET>/ssm-output/*`.
 
