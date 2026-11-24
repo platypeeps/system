@@ -222,9 +222,17 @@ It also marks one with no object under `ssm-output/<command id>/<instance id>/` 
 A command sent to tag targets, or to both ids and targets, is always `UNLOGGED`: the event does not name whose output to look for.
 A command still running, or one that printed nothing, shows as `UNLOGGED` too; review it by hand.
 CloudTrail delivers an event up to 15 minutes late, so a clean review does not cover the last 15 minutes.
-It also reads every other call that runs a document on an instance: `CreateAssociation`, `CreateAssociationBatch`, `UpdateAssociation`, `StartAssociationsOnce`,
-`StartAutomationExecution`, `SendAutomationSignal`, `StartChangeRequestExecution`, `RegisterTaskWithMaintenanceWindow` and `UpdateMaintenanceWindowTask`.
+It also reads the other calls that run a document on an instance, or change what an existing association, automation or window task runs or reaches:
+
+- associations: `CreateAssociation`, `CreateAssociationBatch`, `UpdateAssociation`, `StartAssociationsOnce`
+- automations: `StartAutomationExecution`, `SendAutomationSignal`, `StartChangeRequestExecution`
+- maintenance windows: `UpdateMaintenanceWindow` (its schedule and enabled switch), `RegisterTargetWithMaintenanceWindow`, `UpdateMaintenanceWindowTarget`, `RegisterTaskWithMaintenanceWindow`, `UpdateMaintenanceWindowTask`
+- documents: `UpdateDocument`, `UpdateDocumentDefaultVersion`
+
 Each is `UNLOGGED`, by anyone, a refused call too: the deployer may not use them, and no saved output shows what they ran.
+A row prints identifiers only (an instance, a target tag, an association, a window, a document name), never a document's parameters.
+This is a list of names, not every SSM write. It does not show a run that a schedule fires: an association or window set up before the reviewed hours runs with no call of its own.
+It does not show a change outside SSM that widens a target, such as tagging an instance into a tag target.
 Either exits 1. `TUNNEL` marks a port-forwarding session: CloudTrail shows who and when, no log shows what ran inside.
 
 ### Deploying with an existing instance role

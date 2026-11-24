@@ -10,12 +10,16 @@ reaches an instance prints one row, oldest first, in local time:
               whose output is not there: no object under
               <prefix>/<command id>/<instance id>/ for each instance named;
               a command sent to tag targets names none, so it is UNLOGGED;
-              every association, automation, change request and
-              maintenance window task call is UNLOGGED: the
+              every association, automation, change request,
+              maintenance window and document version call read (ROUTES
+              below) is UNLOGGED: the
               deployer may not make one, and no saved output proves what
               it ran
   TUNNEL      a port-forwarding session: CloudTrail has who and when, no log
               has what ran inside it
+
+A row prints identifiers only (an instance, a target tag, an association, a
+window, a document name), never a document's parameters.
 
 Exit 0 when nothing is UNEXPECTED or UNLOGGED, 1 otherwise, and 1 when the
 history cannot be read or is not the shape CloudTrail documents.
@@ -27,15 +31,21 @@ import re
 import subprocess
 import sys
 
-# The other calls that run a document on an instance, now or later: an
-# association (one or a batch), an automation or its resume signal, a change
-# request's runbook, and a maintenance window task. The deployer's policy
-# grants none, and their output never reaches the audit bucket's proof, so
-# each call is UNLOGGED whoever made it, a refused one too.
+# The other calls this review reads: each makes a document run on an
+# instance, now or later, or changes what an existing association, automation
+# or window task runs or reaches. Per kind: an association (create, one or a
+# batch; update; run once), an automation (start, resume signal, change
+# request), a maintenance window (its schedule or enabled switch, a target,
+# a task) and the document itself (a new version, the default version). The
+# deployer's policy grants none, and their output never reaches the audit
+# bucket's proof, so each call is UNLOGGED whoever made it, a refused one too.
+# This is a list of names, not every SSM write: README.md says what it leaves.
 ROUTES = ("CreateAssociation", "CreateAssociationBatch", "UpdateAssociation",
           "StartAssociationsOnce", "StartAutomationExecution", "SendAutomationSignal",
-          "StartChangeRequestExecution", "RegisterTaskWithMaintenanceWindow",
-          "UpdateMaintenanceWindowTask")
+          "StartChangeRequestExecution", "UpdateMaintenanceWindow",
+          "RegisterTargetWithMaintenanceWindow", "UpdateMaintenanceWindowTarget",
+          "RegisterTaskWithMaintenanceWindow", "UpdateMaintenanceWindowTask",
+          "UpdateDocument", "UpdateDocumentDefaultVersion")
 NAMES = ("SendCommand", "StartSession", "ResumeSession", "TerminateSession") + ROUTES
 REACHING = {"SendCommand", "StartSession", "ResumeSession"} | set(ROUTES)
 TUNNEL = "AWS-StartPortForwardingSession"
@@ -55,6 +65,50 @@ def clean(value):
     """One printable line: a field may carry newlines or escapes."""
     text = value if isinstance(value, str) else json.dumps(value)
     return "".join(c if c.isprintable() else "?" for c in text)[:120] or "-"
+
+
+def text(value):
+    return value if isinstance(value, str) else None
+
+
+def strings(value):
+    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
+def picked(value, shapes):
+    """The named fields of each object in a list, each read by its shape."""
+    found = []
+    for one in value if isinstance(value, list) else []:
+        if isinstance(one, dict):
+            kept = {key: shape(one.get(key)) for key, shape in shapes}
+            kept = {key: got for key, got in kept.items() if got}
+            if kept:
+                found.append(kept)
+    return found
+
+
+def tags(value):
+    return picked(value, (("key", text), ("values", strings),
+                          ("Key", text), ("Values", strings)))
+
+
+# What a row may print of a request: these fields, each only in the shape
+# named, first one found. A request also carries document parameters (the
+# commands, a token in them); a field not listed, or of another shape, is
+# never printed.
+SHOWN = (
+    ("target", text), ("instanceId", text), ("instanceIds", strings), ("targets", tags),
+    ("entries", lambda v: picked(v, (("instanceId", text), ("targets", tags),
+                                     ("name", text)))),
+    ("associationId", text), ("associationIds", strings),
+    ("automationExecutionId", text), ("windowId", text),
+    ("runbooks", lambda v: picked(v, (("documentName", text),))),
+    ("sessionId", text), ("name", text), ("documentName", text),
+)
+
+
+def shown(params):
+    return next((got for got in (shape(params.get(key)) for key, shape in SHOWN) if got), "")
 
 
 def aws(args, region, what, *argv):
@@ -182,10 +236,7 @@ def review(args, items):
             flags.append("UNLOGGED")
         if params.get("documentName") == TUNNEL:
             flags.append("TUNNEL")
-        target = next((params[k] for k in (
-            "target", "instanceId", "instanceIds", "targets", "entries", "associationId",
-            "associationIds", "automationExecutionId", "windowId", "runbooks",
-            "sessionId") if params.get(k)), None)
+        target = shown(params)
         if record.get("errorCode"):
             flags.append("error=" + clean(record["errorCode"]))
         rows.append((moment, region, name,
