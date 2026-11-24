@@ -307,6 +307,18 @@ class CronJobFromRepoExample(Case):
         self.assertNotIn("install needs-sweep-nightly", self.cron_calls(), out)
         self.assertFalse(self.seeded("needs-sweep-nightly").exists(), out)
 
+    def test_a_dropped_needs_sweep_already_installed_is_drift_to_report(self):
+        """Review round 2: an opt-out after the seed leaves the job, as for any
+        job with a job file (sd:7335); the stage names it and the remedy."""
+        job = "needs-sweep-nightly"
+        self.run_script("update", "cron", "--apply")
+        self.install_plist(job)
+        (self.profiles / "personal.cron").write_text(f"{OTHER_JOB}\n!{job}\n")
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertIn(f"  DIFFERS {job} — has a job file", out, out + result.stderr)
+        self.assertIn(f"cron-jobs.sh uninstall {job}", out)
+
     def test_a_satellite_profile_gets_no_needs_sweep(self):
         (self.profiles / "personal.satellite").write_text("hub.example.test\n")
         result = self.run_script("update", "cron", "--apply")
