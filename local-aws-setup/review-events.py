@@ -4,7 +4,8 @@ aws-setup.sh `events` runs this with the admin profile. Each call that reaches
 an instance prints one row, oldest first, in local time:
 
   UNEXPECTED  made by anyone but the deployer user of this account
-  UNLOGGED    a SendCommand whose output does not go to the audit bucket
+  UNLOGGED    a SendCommand whose output does not go to ssm-output/ in the
+              audit bucket, the one prefix the instance role may write
   TUNNEL      a port-forwarding session: CloudTrail has who and when, no log
               has what ran inside it
 
@@ -20,6 +21,9 @@ import sys
 NAMES = ("SendCommand", "StartSession", "ResumeSession", "TerminateSession")
 REACHING = {"SendCommand", "StartSession", "ResumeSession"}
 TUNNEL = "AWS-StartPortForwardingSession"
+# The instance role may write only <bucket>/ssm-output/*; output under any
+# other key is never written, so it counts as unlogged.
+OUTPUT_PREFIX = "ssm-output"
 
 
 class Malformed(Exception):
@@ -87,7 +91,10 @@ def review(args, items):
         if name in REACHING and not own:
             flags.append("UNEXPECTED")
         output = params.get("outputS3BucketName")
-        if name == "SendCommand" and not (args.bucket and output == args.bucket):
+        prefix = params.get("outputS3KeyPrefix")
+        under = isinstance(prefix, str) and (
+            prefix == OUTPUT_PREFIX or prefix.startswith(OUTPUT_PREFIX + "/"))
+        if name == "SendCommand" and not (args.bucket and output == args.bucket and under):
             flags.append("UNLOGGED")
         if params.get("documentName") == TUNNEL:
             flags.append("TUNNEL")

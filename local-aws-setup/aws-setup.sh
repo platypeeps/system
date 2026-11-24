@@ -84,13 +84,14 @@ usage: aws-setup.sh accounts | test
             policies. Exits 1 on any mismatch.
   audit     as ADMIN_PROFILE, keep AUDIT_BUCKET (versioned, private) and
             the multi-region CloudTrail trail AUDIT_TRAIL writing to it, and
-            start the trail. Safe to rerun; refuses a trail that writes to
-            another bucket. DRY_RUN=1 prints the writes.
+            start the trail. Safe to rerun; refuses, before any write, a
+            trail that writes to another bucket or drops management write
+            events. DRY_RUN=1 prints the writes.
   events    review SSM SendCommand, StartSession, ResumeSession and
             TerminateSession events of the last [hours] (default 24, at
             most 2160) as ADMIN_PROFILE. Run it with the deployer's account
             file. Flags UNEXPECTED (a principal other than AGENT_USER) and
-            UNLOGGED (a command whose output skips AUDIT_BUCKET), and exits
+            UNLOGGED (output outside AUDIT_BUCKET/ssm-output/), and exits
             1 on either; TUNNEL marks a port-forwarding session, whose
             content no log records.
 
@@ -1346,6 +1347,27 @@ audit_bucket_policy() {
 EOF
 }
 
+# Exit 0 when get-event-selectors output (stdin) records SSM's management
+# write events: a basic selector with IncludeManagementEvents true, ReadWrite
+# All or WriteOnly, not excluding ssm. Advanced selectors are refused rather
+# than interpreted; anything malformed exits 1.
+RECORDS_SSM_WRITES='
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+selectors = doc.get("EventSelectors") if isinstance(doc, dict) else None
+if not isinstance(selectors, list) or doc.get("AdvancedEventSelectors"):
+    sys.exit(1)
+def records(item):
+    excluded = item.get("ExcludeManagementEventSources") or []
+    return (item.get("IncludeManagementEvents") is True
+            and item.get("ReadWriteType") in ("All", "WriteOnly")
+            and isinstance(excluded, list) and "ssm.amazonaws.com" not in excluded)
+sys.exit(0 if any(isinstance(i, dict) and records(i) for i in selectors) else 1)
+'
+
 # Each step is a create-if-missing or a put that sets the same value again,
 # so a run cut short anywhere is finished by running it again.
 cmd_audit() {
@@ -1355,16 +1377,37 @@ cmd_audit() {
   require_aws
   [ "$DRY_RUN" = 1 ] || require_admin_account
   trail_arn="arn:aws:cloudtrail:$AGENT_REGION:$ACCOUNT_ID:trail/$AUDIT_TRAIL"
+  # Every read and every refusal comes before the first write, so a refused
+  # run leaves the bucket and the trail as it found them.
   # --expected-bucket-owner: a bucket of that name in another account answers
   # 403, never 404, and is never written.
+  bucket_missing=0
   if found=$(admin s3api head-bucket --bucket "$AUDIT_BUCKET" \
       --expected-bucket-owner "$ACCOUNT_ID" 2>&1); then
     echo "bucket $AUDIT_BUCKET exists in $ACCOUNT_ID"
   else
     case "$found" in
-      *"(404)"*) ;;
+      *"(404)"*) bucket_missing=1 ;;
       *) die "cannot use bucket $AUDIT_BUCKET: $found" ;;
     esac
+  fi
+  trail_missing=0
+  if current=$(admin cloudtrail get-trail --name "$AUDIT_TRAIL" \
+      --query Trail.S3BucketName --output text 2>&1); then
+    [ "$current" = "$AUDIT_BUCKET" ] ||
+      die "trail $AUDIT_TRAIL writes to $current, not $AUDIT_BUCKET; rename AUDIT_TRAIL or repoint the trail by hand"
+    selectors=$(admin cloudtrail get-event-selectors --trail-name "$AUDIT_TRAIL" --output json) ||
+      die "could not read the event selectors of trail $AUDIT_TRAIL"
+    printf '%s' "$selectors" | "${PYTHON:-python3}" -c "$RECORDS_SSM_WRITES" ||
+      die "trail $AUDIT_TRAIL does not record management write events from SSM; give it a basic selector with IncludeManagementEvents=true and ReadWriteType All or WriteOnly"
+    echo "trail $AUDIT_TRAIL writes to $AUDIT_BUCKET and records management writes"
+  else
+    case "$current" in
+      *TrailNotFoundException*) trail_missing=1 ;;
+      *) die "could not read trail $AUDIT_TRAIL: $current" ;;
+    esac
+  fi
+  if [ "$bucket_missing" = 1 ]; then
     if [ "$AGENT_REGION" = us-east-1 ]; then
       admin_mutate s3api create-bucket --bucket "$AUDIT_BUCKET" >/dev/null ||
         die "could not create bucket $AUDIT_BUCKET"
@@ -1385,16 +1428,8 @@ cmd_audit() {
   admin_mutate s3api put-bucket-policy --bucket "$AUDIT_BUCKET" \
     --policy "$(audit_bucket_policy "$trail_arn")" ||
     die "could not set the policy of $AUDIT_BUCKET"
-  if current=$(admin cloudtrail get-trail --name "$AUDIT_TRAIL" \
-      --query Trail.S3BucketName --output text 2>&1); then
-    [ "$current" = "$AUDIT_BUCKET" ] ||
-      die "trail $AUDIT_TRAIL writes to $current, not $AUDIT_BUCKET; rename AUDIT_TRAIL or repoint the trail by hand"
-    echo "trail $AUDIT_TRAIL writes to $AUDIT_BUCKET"
-  else
-    case "$current" in
-      *TrailNotFoundException*) ;;
-      *) die "could not read trail $AUDIT_TRAIL: $current" ;;
-    esac
+  if [ "$trail_missing" = 1 ]; then
+    # A new trail's default selector records every management event.
     admin_mutate cloudtrail create-trail --name "$AUDIT_TRAIL" \
       --s3-bucket-name "$AUDIT_BUCKET" --is-multi-region-trail \
       --enable-log-file-validation >/dev/null ||

@@ -191,12 +191,13 @@ DRY_RUN=1 ./aws-setup.sh audit sandbox-deployer
 
 `audit` creates the bucket if missing, versions it and blocks public access.
 It keeps a multi-region trail, `AUDIT_TRAIL` (default `deployment-audit`), with log file validation.
-It refuses a trail of that name that writes to another bucket. A rerun finishes a run cut short.
+It refuses, before any write, a trail of that name that writes to another bucket or drops management write events.
+It refuses advanced event selectors rather than read them. A rerun finishes a run cut short.
 The trail records management events, so `SendCommand`, `StartSession` and `TerminateSession` land there.
 One management-event trail per account is free; the bucket costs its storage.
 
 CloudTrail hides `SendCommand` parameters. To keep what ran, the deployment wrapper passes
-`--output-s3-bucket-name <AUDIT_BUCKET> --output-s3-key-prefix ssm-output/`.
+`--output-s3-bucket-name <AUDIT_BUCKET> --output-s3-key-prefix ssm-output`.
 The instance role, not the deployer, writes that output: grant it `s3:PutObject` on `arn:aws:s3:::<AUDIT_BUCKET>/ssm-output/*`.
 
 Review the calls with the deployer's account file:
@@ -207,7 +208,7 @@ Review the calls with the deployer's account file:
 ```
 
 It reads CloudTrail's 90-day event history as the admin profile and prints one row per call, in local time.
-`UNEXPECTED` marks a call by anyone but `AGENT_USER`; `UNLOGGED` marks a command whose output skips `AUDIT_BUCKET`.
+`UNEXPECTED` marks a call by anyone but `AGENT_USER`; `UNLOGGED` marks a command whose output skips `ssm-output/` in `AUDIT_BUCKET`, the one prefix the instance role may write.
 Either exits 1. `TUNNEL` marks a port-forwarding session: CloudTrail shows who and when, no log shows what ran inside.
 
 ### Deploying with an existing instance role

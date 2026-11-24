@@ -13,6 +13,9 @@ from tests.test_aws_setup import ACCOUNT_ID, ADMIN_ARN, Sandbox, statement
 
 BUCKET = "example-audit-bucket"
 TRAIL_ARN = "arn:aws:cloudtrail:eu-west-1:%s:trail/deployment-audit" % ACCOUNT_ID
+GOOD_SELECTORS = json.dumps({"EventSelectors": [
+    {"ReadWriteType": "All", "IncludeManagementEvents": True, "DataResources": [],
+     "ExcludeManagementEventSources": []}]})
 TAMPER = ("s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
           "s3:PutLifecycleConfiguration", "s3:PutBucketVersioning")
 
@@ -108,9 +111,9 @@ class AuditCase(Case):
         self.assertEqual(done.returncode, 0, done.stderr)
         rests = self.rests(box)
         names = [r[1] for r in rests if r[:1] in (["s3api"], ["cloudtrail"])]
-        self.assertEqual(names, ["head-bucket", "create-bucket", "put-public-access-block",
-                                 "put-bucket-versioning", "put-bucket-policy",
-                                 "get-trail", "create-trail", "start-logging"])
+        self.assertEqual(names, ["head-bucket", "get-trail", "create-bucket",
+                                 "put-public-access-block", "put-bucket-versioning",
+                                 "put-bucket-policy", "create-trail", "start-logging"])
         create = next(r for r in rests if r[1:2] == ["create-bucket"])
         self.assertIn("LocationConstraint=eu-west-1", create)
         policy = next(r for r in rests if r[1:2] == ["put-bucket-policy"])
@@ -134,6 +137,7 @@ class AuditCase(Case):
     def test_a_second_run_creates_nothing_and_keeps_the_trail_running(self):
         box = self.box()
         box.rule("get-trail", stdout=BUCKET)
+        box.rule("get-event-selectors", stdout=GOOD_SELECTORS)
         done = box.run("audit", "x")
         self.assertEqual(done.returncode, 0, done.stderr)
         names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
@@ -147,8 +151,44 @@ class AuditCase(Case):
         done = box.run("audit", "x")
         self.assertEqual(done.returncode, 1)
         self.assertIn("writes to somebody-elses-bucket", done.stderr)
-        names = [r[1] for r in self.rests(box) if r[:1] == ["cloudtrail"]]
-        self.assertEqual(names, ["get-trail"])
+        names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
+        # No bucket write either: a refused run leaves the bucket as it was.
+        self.assertEqual(names, ["head-bucket", "get-trail"])
+
+    def test_a_trail_that_drops_management_writes_is_refused_before_any_write(self):
+        bad = (
+            {"EventSelectors": [{"ReadWriteType": "All", "IncludeManagementEvents": False}]},
+            {"EventSelectors": [{"ReadWriteType": "ReadOnly", "IncludeManagementEvents": True}]},
+            {"EventSelectors": [{"ReadWriteType": "All", "IncludeManagementEvents": True,
+                                 "ExcludeManagementEventSources": ["ssm.amazonaws.com"]}]},
+            {"EventSelectors": []},
+            {"AdvancedEventSelectors": [{"Name": "data only", "FieldSelectors": []}]},
+            {"EventSelectors": "All"},
+            "not json",
+        )
+        for selectors in bad:
+            with self.subTest(selectors=selectors):
+                box = self.box()
+                box.rule("get-trail", stdout=BUCKET)
+                box.rule("get-event-selectors",
+                         stdout=selectors if isinstance(selectors, str) else json.dumps(selectors))
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("management", done.stderr)
+                names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
+                self.assertEqual(names, ["head-bucket", "get-trail", "get-event-selectors"])
+
+    def test_a_trail_recording_management_writes_is_kept(self):
+        for kind in ("All", "WriteOnly"):
+            with self.subTest(kind=kind):
+                box = self.box()
+                box.rule("get-trail", stdout=BUCKET)
+                box.rule("get-event-selectors", stdout=json.dumps({"EventSelectors": [
+                    {"ReadWriteType": "ReadOnly", "IncludeManagementEvents": True},
+                    {"ReadWriteType": kind, "IncludeManagementEvents": True,
+                     "ExcludeManagementEventSources": ["kms.amazonaws.com"]}]}))
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_a_bucket_in_another_account_is_never_written(self):
         box = self.box()
@@ -173,7 +213,9 @@ class AuditCase(Case):
                    "--create-bucket-configuration", "LocationConstraint=eu-west-1")
         done = box.run("audit", "x")
         self.assertEqual(done.returncode, 1)
-        self.assertNotIn("get-trail", [r[1] for r in self.rests(box) if len(r) > 1])
+        made = [r[1] for r in self.rests(box) if len(r) > 1]
+        self.assertNotIn("put-bucket-policy", made)
+        self.assertNotIn("create-trail", made)
 
     def test_no_audit_bucket_makes_no_call(self):
         box = self.box(AUDIT_BUCKET="")
@@ -201,7 +243,8 @@ class EventsCase(Case):
     def test_logged_commands_and_own_sessions_pass(self):
         box, done = self.review([
             event("SendCommand", documentName="AWS-RunShellScript",
-                  instanceIds=["i-0123456789abcdef0"], outputS3BucketName=BUCKET),
+                  instanceIds=["i-0123456789abcdef0"], outputS3BucketName=BUCKET,
+                  outputS3KeyPrefix="ssm-output"),
             event("StartSession", target="i-0123456789abcdef0", documentName="AWS-StartPortForwardingSession"),
             event("TerminateSession", sessionId="deployer-0123"),
         ])
@@ -236,6 +279,22 @@ class EventsCase(Case):
                 _, done = self.review([event("SendCommand", instanceIds=["i-1"], **params)])
                 self.assertEqual(done.returncode, 1)
                 self.assertIn("UNLOGGED", done.stdout)
+
+    def test_output_outside_the_instance_role_prefix_is_unlogged(self):
+        # The instance role may write only ssm-output/*; any other key is lost.
+        for prefix in (None, "", "other", "ssm-output-x", "x/ssm-output/", "ssm-outputs/"):
+            with self.subTest(prefix=prefix):
+                _, done = self.review([event("SendCommand", instanceIds=["i-1"],
+                                             outputS3BucketName=BUCKET, outputS3KeyPrefix=prefix)])
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("UNLOGGED", done.stdout)
+
+    def test_output_under_the_instance_role_prefix_is_logged(self):
+        for prefix in ("ssm-output", "ssm-output/", "ssm-output/deploy-1"):
+            with self.subTest(prefix=prefix):
+                _, done = self.review([event("SendCommand", instanceIds=["i-1"],
+                                             outputS3BucketName=BUCKET, outputS3KeyPrefix=prefix)])
+                self.assertEqual(done.returncode, 0, done.stdout)
 
     def test_without_an_audit_bucket_every_command_is_unlogged(self):
         _, done = self.review([event("SendCommand", outputS3BucketName="")], AUDIT_BUCKET="")
