@@ -41,6 +41,7 @@ LIB = FOLDER.parent / "lib"
 # replaces its answer.
 # $LEAVES is what `leaves --installed-on-request` prints. With
 # INSTALLS_STICK, `list --formula` also lists each formula installed.
+# `uses --installed rust` prints $RUST_USERS; USES_RC fails it.
 # INSTALL_RC fails an install after logging it, UNINSTALL_RC an uninstall; with INFO_RC_AFTER_INSTALL,
 # brew info fails once an install was tried.
 # `install --dry-run NAME` would install NAME and $DEPS, or fails with
@@ -99,6 +100,9 @@ case "$*" in
       esac
     done ;;
   "install --cask "*|"upgrade --formula") echo "$*" >> "$PINS" ;;
+  "uses --installed rust") [ -z "$USES_RC" ] || exit "$USES_RC"
+                          printf '%s\n' $RUST_USERS ;;
+  "unlink "*) echo "$*" >> "$PINS" ;;
   "uninstall "*) echo "$*" >> "$PINS"
                  [ -z "$UNINSTALL_RC" ] || exit "$UNINSTALL_RC" ;;
   "install "*) echo "$*" >> "$PINS"
@@ -316,6 +320,46 @@ class BrewStageTest(unittest.TestCase):
                                UNINSTALL_RC="1")
         self.assertIn("FAILED  brew uninstall rust (exit 1)", result.stdout)
         self.assertNotEqual(result.returncode, 0)
+
+    def rust_prefix(self, linked):
+        prefix = pathlib.Path(self.tmp.name) / "brew"
+        marker = prefix / "var/homebrew/linked"
+        marker.mkdir(parents=True, exist_ok=True)
+        if linked:
+            (marker / "rust").symlink_to("../../../Cellar/rust/1.100.0")
+        return str(prefix)
+
+    def rust_calls(self):
+        text = self.pins.read_text() if self.pins.exists() else ""
+        return [line for line in text.splitlines()
+                if line.startswith(("uninstall ", "unlink "))]
+
+    def test_a_rust_another_formula_needs_is_unlinked_not_uninstalled(self):
+        """sd:10274: omlx needs rust, so `brew uninstall rust` refused and
+        every run exited 1. Unlinked, rust's cargo leaves $BREW_PREFIX/bin
+        and the keg stays for its dependents."""
+        env = {"RUST_USERS": "omlx", "BREW_PREFIX": self.rust_prefix(linked=True)}
+        dry = self.run_verb("update", "brew", formulae="rustup rust omlx", **env)
+        self.assertIn("DIFFERS formula rust shadows rustup's cargo and rustc; omlx needs it, unlink", dry.stdout)
+        self.assertEqual(self.rust_calls(), [])
+        done = self.run_verb("update", "brew", "--apply", formulae="rustup rust omlx", **env)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.rust_calls(), ["unlink rust"])
+
+    def test_an_unlinked_rust_another_formula_needs_is_left_alone(self):
+        env = {"RUST_USERS": "omlx", "BREW_PREFIX": self.rust_prefix(linked=False)}
+        done = self.run_verb("update", "brew", "--apply", formulae="rustup rust omlx", **env)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("ok      formula rust unlinked; omlx needs it", done.stdout)
+        self.assertNotIn("shadows rustup", done.stdout)
+        self.assertEqual(self.rust_calls(), [])
+
+    def test_rust_stays_when_brew_cannot_list_its_dependents(self):
+        done = self.run_verb("update", "brew", "--apply", formulae="rustup rust", USES_RC="1",
+                             BREW_PREFIX=self.rust_prefix(linked=True))
+        self.assertIn("brew could not list the formulae that need rust", done.stdout + done.stderr)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertEqual(self.rust_calls(), [])
 
     def tailscale_profile(self, brew="", cask="tailscale-app\n"):
         profiles = self.config_root / "machine-setup/profiles"
