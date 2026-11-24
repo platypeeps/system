@@ -991,11 +991,12 @@ stage_brew() {
   # $BREW_PREFIX/bin shadows the keg-only rustup proxies in a login PATH,
   # so cargo ignored rust-toolchain.toml and a gate ran the wrong clippy
   # (sd:9058). A formula that needs rust (omlx) refuses the uninstall, so
-  # rust is unlinked instead: its keg stays, its cargo leaves the PATH
+  # rust is unlinked instead: its keg stays, its cargo leaves the PATH.
+  # --include-build: omlx needs rust to build, and brew refuses then too
   # (sd:10274). A brew upgrade of rust relinks it; the next run unlinks.
   if printf '%s\n' "$formulae" | grep -qx rustup &&
      printf '%s\n' "$formulae" | grep -qx rust; then
-    if ! rust_users=$(bound_step 120 brew uses --installed rust); then
+    if ! rust_users=$(bound_step 120 brew uses --installed --include-build rust); then
       note_failure "brew stage: brew could not list the formulae that need rust; rust kept" 1
     elif [ -z "$rust_users" ]; then
       echo "  EXTRA   formula rust shadows rustup's cargo and rustc"

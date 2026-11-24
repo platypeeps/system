@@ -41,7 +41,8 @@ LIB = FOLDER.parent / "lib"
 # replaces its answer.
 # $LEAVES is what `leaves --installed-on-request` prints. With
 # INSTALLS_STICK, `list --formula` also lists each formula installed.
-# `uses --installed rust` prints $RUST_USERS; USES_RC fails it.
+# `uses --installed rust` prints $RUST_USERS, with --include-build also
+# $RUST_BUILD_USERS; USES_RC fails both.
 # INSTALL_RC fails an install after logging it, UNINSTALL_RC an uninstall; with INFO_RC_AFTER_INSTALL,
 # brew info fails once an install was tried.
 # `install --dry-run NAME` would install NAME and $DEPS, or fails with
@@ -102,6 +103,8 @@ case "$*" in
   "install --cask "*|"upgrade --formula") echo "$*" >> "$PINS" ;;
   "uses --installed rust") [ -z "$USES_RC" ] || exit "$USES_RC"
                           printf '%s\n' $RUST_USERS ;;
+  "uses --installed --include-build rust") [ -z "$USES_RC" ] || exit "$USES_RC"
+                                          printf '%s\n' $RUST_USERS $RUST_BUILD_USERS ;;
   "unlink "*) echo "$*" >> "$PINS" ;;
   "uninstall "*) echo "$*" >> "$PINS"
                  [ -z "$UNINSTALL_RC" ] || exit "$UNINSTALL_RC" ;;
@@ -342,6 +345,15 @@ class BrewStageTest(unittest.TestCase):
         dry = self.run_verb("update", "brew", formulae="rustup rust omlx", **env)
         self.assertIn("DIFFERS formula rust shadows rustup's cargo and rustc; omlx needs it, unlink", dry.stdout)
         self.assertEqual(self.rust_calls(), [])
+        done = self.run_verb("update", "brew", "--apply", formulae="rustup rust omlx", **env)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.rust_calls(), ["unlink rust"])
+
+    def test_a_rust_a_formula_needs_to_build_is_unlinked_too(self):
+        """sd:10274 review: omlx needs rust to build, and `brew uses
+        --installed rust` lists runtime dependents only, so the stage
+        still ran the uninstall brew refuses."""
+        env = {"RUST_BUILD_USERS": "omlx", "BREW_PREFIX": self.rust_prefix(linked=True)}
         done = self.run_verb("update", "brew", "--apply", formulae="rustup rust omlx", **env)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual(self.rust_calls(), ["unlink rust"])
