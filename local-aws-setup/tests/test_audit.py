@@ -41,8 +41,8 @@ TAMPER = ("s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
           "s3:PutLifecycleConfiguration", "s3:PutBucketVersioning")
 
 
-def event(name, user="deployer", account=ACCOUNT_ID, kind="IAMUser",
-          when="2026-11-23T10:00:00Z", response=..., **params):
+def event(name, /, user="deployer", account=ACCOUNT_ID, kind="IAMUser",
+          when="2026-11-23T10:00:00Z", response=..., read_only=..., arn=..., **params):
     record = {
         "eventSource": "ssm.amazonaws.com",
         "eventName": name,
@@ -55,6 +55,10 @@ def event(name, user="deployer", account=ACCOUNT_ID, kind="IAMUser",
         response = {"command": {"commandId": COMMAND_ID}}
     if response is not ...:
         record["responseElements"] = response
+    if read_only is not ...:
+        record["readOnly"] = read_only
+    if arn is not ...:
+        record["userIdentity"]["arn"] = arn
     return {"EventName": name, "CloudTrailEvent": json.dumps(record)}
 
 
@@ -669,7 +673,7 @@ class EventsCase(Case):
     def test_every_enabled_region_is_reviewed(self):
         intruder = event("StartSession", user="intruder", target="i-0123456789abcdef0")
         box, done = self.review([], regions=("eu-west-1", "us-west-2"), first=[
-            {"match": ["lookup-events", "StartSession"], "region": "us-west-2",
+            {"match": ["lookup-events"], "region": "us-west-2",
              "stdout": json.dumps({"Events": [intruder]})}])
         self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
         rows = [line for line in done.stdout.splitlines() if "StartSession" in line]
@@ -758,7 +762,7 @@ class EventsCase(Case):
         for token in ("abc", "", None):
             with self.subTest(token=token):
                 _, done = self.review([], first=[
-                    {"match": ["lookup-events", "StartSession"],
+                    {"match": ["lookup-events"],
                      "stdout": json.dumps({"Events": [], "NextToken": token})}])
                 self.assertEqual(done.returncode, 1, done.stdout)
                 self.assertNotIn("flagged", done.stdout)
@@ -838,24 +842,164 @@ class EventsCase(Case):
         self.assertIn("2026-11-23 03:00 MST", done.stdout)
         self.assertIn("3 events, 0 flagged", done.stdout)
 
-    def test_each_reaching_call_is_looked_up_with_a_start_time(self):
-        box, done = self.review([], "6")
-        looked = [r for r in self.rests(box) if r[1:2] == ["lookup-events"]]
-        names = sorted(r[r.index("--lookup-attributes") + 1] for r in looked)
-        self.assertEqual(names, ["AttributeKey=EventName,AttributeValue=%s" % n for n in
-                                 ("CreateAssociation", "CreateAssociationBatch",
-                                  "RegisterTargetWithMaintenanceWindow",
-                                  "RegisterTaskWithMaintenanceWindow", "ResumeSession",
-                                  "SendAutomationSignal", "SendCommand",
-                                  "StartAssociationsOnce", "StartAutomationExecution",
-                                  "StartChangeRequestExecution", "StartSession",
-                                  "TerminateSession", "UpdateAssociation", "UpdateDocument",
-                                  "UpdateDocumentDefaultVersion", "UpdateMaintenanceWindow",
-                                  "UpdateMaintenanceWindowTarget",
-                                  "UpdateMaintenanceWindowTask")])
-        for rest in looked:
+    def test_each_region_is_read_once_by_event_source_with_a_start_time(self):
+        # One lookup by source reads every SSM call, so a write no list
+        # names is still read; a lookup per name missed each one it lacked.
+        box, done = self.review([], "6", regions=("eu-west-1", "us-west-2"))
+        looked = [c for c in box.calls() if c["rest"][1:2] == ["lookup-events"]]
+        self.assertEqual(sorted(c["region"] for c in looked), ["eu-west-1", "us-west-2"])
+        for call in looked:
+            rest = call["rest"]
+            self.assertEqual(rest[rest.index("--lookup-attributes") + 1],
+                             "AttributeKey=EventSource,AttributeValue=ssm.amazonaws.com")
             self.assertRegex(rest[rest.index("--start-time") + 1], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_a_write_no_rule_names_is_unreviewed(self):
+        # A write is reviewed by hand unless a rule covers it: readOnly
+        # false, absent or of another shape all count as a write.
+        for name, params, read_only in (
+                ("PutParameter", {"name": "/app/x", "value": "hunter2-secret"}, False),
+                ("CreateDocument", {"name": "doc-1", "content": "hunter2-secret"}, ...),
+                ("DeleteAssociation", {"associationId": "a-1"}, "false"),
+                ("SomeCallAddedLater", {}, None)):
+            for user in ("deployer", "intruder"):
+                with self.subTest(name=name, user=user):
+                    _, done = self.review([event(name, user=user, read_only=read_only,
+                                                 **params)])
+                    self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                    (row,) = [line for line in done.stdout.splitlines() if name in line]
+                    self.assertIn("UNREVIEWED", row)
+                    self.assertIn("1 events, 1 flagged", done.stdout)
+                    self.assertNotIn("hunter2", done.stdout + done.stderr)
+
+    def report(self, name, instance="i-0123456789abcdef0", account=ACCOUNT_ID,
+               session=None, delivery="2.0", **params):
+        """An SSM agent's report, sent with credentials EC2 gave its instance."""
+        field = "resourceId" if name == "PutComplianceItems" else "instanceId"
+        params.setdefault(field, instance)
+        made = event(name, kind="AssumedRole", account=account, read_only=False,
+                     arn="arn:aws:sts::%s:assumed-role/instance-role/%s"
+                     % (account, session or instance), **params)
+        record = json.loads(made["CloudTrailEvent"])
+        if delivery is not ...:
+            record["userIdentity"]["sessionContext"] = {"ec2RoleDelivery": delivery}
+        made["CloudTrailEvent"] = json.dumps(record)
+        return made
+
+    def test_reads_and_heartbeats_are_skipped_and_counted(self):
+        # Every managed instance sends a heartbeat every few minutes; it
+        # runs nothing. A read changes nothing. Neither is a row, and the
+        # summary says how many heartbeats it left out.
+        quiet = [event("GetDocument", name="doc-1", read_only=True),
+                 event("DescribeInstanceInformation", read_only=True),
+                 self.report("UpdateInstanceInformation"),
+                 self.report("UpdateInstanceInformation", delivery="1.0")]
+        _, done = self.review(quiet)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("0 events, 0 flagged, 2 instance heartbeats skipped", done.stdout)
+
+    def test_a_failed_heartbeat_is_a_flagged_row(self):
+        # Only a heartbeat that went through is routine; a refused one
+        # means the instance lost a permission, or someone probed with
+        # its credentials.
+        made = self.report("UpdateInstanceInformation")
+        record = json.loads(made["CloudTrailEvent"])
+        record["errorCode"] = "AccessDenied"
+        made["CloudTrailEvent"] = json.dumps(record)
+        _, done = self.review([made])
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        (row,) = [line for line in done.stdout.splitlines()
+                  if "UpdateInstanceInformation" in line]
+        self.assertIn("UNREVIEWED", row)
+        self.assertIn("error=AccessDenied", row)
+        self.assertIn("1 events, 1 flagged, 0 instance", done.stdout)
+
+    def test_a_write_of_recorded_data_is_never_skipped(self):
+        # Compliance, inventory and association status are data the
+        # account keeps. A person holding the instance's credentials can
+        # write them as the agent does, so no caller makes one skippable.
+        for name in ("PutComplianceItems", "PutInventory",
+                     "UpdateInstanceAssociationStatus"):
+            with self.subTest(name=name):
+                _, done = self.review([self.report(name)])
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                (row,) = [line for line in done.stdout.splitlines() if name in line]
+                self.assertIn("UNREVIEWED", row)
+                self.assertIn("1 events, 1 flagged, 0 instance", done.stdout)
+
+    def test_a_session_name_alone_makes_no_heartbeat(self):
+        # Whoever assumes a role picks its session name; only CloudTrail
+        # sets ec2RoleDelivery, on credentials EC2 handed an instance.
+        for delivery in (..., None, "", True, 2.0, "3.0", ["2.0"], {"x": "2.0"}):
+            with self.subTest(delivery=delivery):
+                _, done = self.review([self.report("UpdateInstanceInformation",
+                                                   delivery=delivery)])
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("UNREVIEWED", done.stdout)
+        # A managed node outside EC2 has no such proof.
+        _, done = self.review([self.report("UpdateInstanceInformation",
+                                           instance="mi-0123456789abcdef0")])
+        self.assertEqual(done.returncode, 1, done.stdout)
+        # sessionContext of another shape is no proof either.
+        made = self.report("UpdateInstanceInformation")
+        record = json.loads(made["CloudTrailEvent"])
+        record["userIdentity"]["sessionContext"] = "2.0"
+        made["CloudTrailEvent"] = json.dumps(record)
+        _, done = self.review([made])
+        self.assertEqual(done.returncode, 1, done.stdout)
+
+    def test_a_report_not_sent_by_the_instance_itself_is_unreviewed(self):
+        # The report names are writes anyone may make: compliance data
+        # written by hand, or one instance reporting for another, changes
+        # what the account records, and the review must show it.
+        for label, bad in (
+                ("by hand", event("PutComplianceItems", read_only=False,
+                                  resourceId="i-0123456789abcdef0")),
+                ("by hand, no readOnly", event("PutInventory",
+                                               instanceId="i-0123456789abcdef0")),
+                ("for another instance", self.report(
+                    "PutComplianceItems", session="i-0fedcba987654321f")),
+                ("names no instance", self.report("UpdateInstanceInformation",
+                                                  instanceId=None)),
+                ("another account", self.report("PutInventory", account="999988887777")),
+                ("a session not an instance", self.report(
+                    "UpdateInstanceAssociationStatus", session="operator")),
+                ("an instance-shaped prefix", self.report(
+                    "UpdateInstanceInformation", session="i-0123456789abcdef0x")),
+                ("a user, not a role", event(
+                    "UpdateInstanceInformation", read_only=False,
+                    instanceId="i-0123456789abcdef0",
+                    arn="arn:aws:iam::%s:user/i-0123456789abcdef0" % ACCOUNT_ID))):
+            with self.subTest(label=label):
+                _, done = self.review([bad])
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("UNREVIEWED", done.stdout)
+                self.assertIn("1 events, 1 flagged", done.stdout)
+
+    def test_a_reviewed_call_marked_read_only_is_still_reviewed(self):
+        for name in ("StartSession", "StartAssociationsOnce"):
+            with self.subTest(name=name):
+                _, done = self.review([event(name, user="intruder", read_only=True)])
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("UNEXPECTED", done.stdout)
+
+    def test_a_name_differing_only_in_case_is_no_known_call(self):
+        # Rules match names exactly; a near miss is an unknown write.
+        for name in ("sendcommand", "updateinstanceinformation", "StartSession "):
+            with self.subTest(name=name):
+                _, done = self.review([event(name, read_only=False)])
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("UNREVIEWED", done.stdout)
+
+    def test_an_event_from_another_source_is_not_counted(self):
+        other = event("RunInstances", read_only=False)
+        record = json.loads(other["CloudTrailEvent"])
+        record["eventSource"] = "ec2.amazonaws.com"
+        other["CloudTrailEvent"] = json.dumps(record)
+        _, done = self.review([other])
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertIn("0 events, 0 flagged", done.stdout)
 
     def test_association_and_automation_routes_are_always_unlogged(self):
         # The deployer may not use these routes, and no saved output proves
@@ -990,7 +1134,9 @@ class EventsCase(Case):
     def test_malformed_events_fail_instead_of_passing(self):
         for bad in ({"Events": "nope"}, {"Events": [{"CloudTrailEvent": "{"}]},
                     {"Events": [{"CloudTrailEvent": json.dumps({"eventName": "StartSession"})}]},
-                    {"Events": [{"CloudTrailEvent": json.dumps(["list"])}]}, ["top"]):
+                    {"Events": [{"CloudTrailEvent": json.dumps(["list"])}]}, ["top"],
+                    {"Events": [event(None)]}, {"Events": [event("")]},
+                    {"Events": [event(["SendCommand"])]}):
             with self.subTest(bad=bad):
                 box = self.box(AGENT_USER="deployer")
                 box.rule("describe-regions", stdout=json.dumps(["eu-west-1"]))

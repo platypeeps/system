@@ -215,6 +215,10 @@ Review the calls with the deployer's account file:
 ```
 
 It reads CloudTrail's 90-day event history in every region the account has enabled, as the admin profile.
+It reads every event from `ssm.amazonaws.com`, one lookup per region, and skips reads.
+It also skips, and counts in its last line, the heartbeat (`UpdateInstanceInformation`) an EC2 instance sends about itself with credentials EC2 delivered to it; CloudTrail marks those, and a session name alone does not count.
+Each managed instance sends one about every 5 minutes, so a long window takes longer: event history answers 50 events a page, about 2 pages a second.
+The agent's other writes (`PutInventory`, `PutComplianceItems`, `UpdateInstanceAssociationStatus`) are `UNREVIEWED` like any write: a person holding the instance's credentials makes the same calls. So is a heartbeat from a managed node outside EC2, and a refused heartbeat, with its error code.
 It prints one row per call, with its region, in local time.
 `UNEXPECTED` marks a call by anyone but `AGENT_USER`.
 `UNLOGGED` marks a command whose output skips `ssm-output/` in `AUDIT_BUCKET`, the one prefix the instance role may write.
@@ -231,9 +235,10 @@ It also reads the other calls that run a document on an instance, or change what
 
 Each is `UNLOGGED`, by anyone, a refused call too: the deployer may not use them, and no saved output shows what they ran.
 A row prints identifiers only (an instance, a target tag, an association, a window, a document name), never a document's parameters.
-This is a list of names, not every SSM write. It does not show a run that a schedule fires: an association or window set up before the reviewed hours runs with no call of its own.
+`UNREVIEWED` marks any other SSM write, by any name, such as `PutParameter` or `DeleteAssociation`: no rule reviews it, so review it by hand.
+It does not show a run that a schedule fires: an association or window set up before the reviewed hours runs with no call of its own.
 It does not show a change outside SSM that widens a target, such as tagging an instance into a tag target.
-Either exits 1. `TUNNEL` marks a port-forwarding session: CloudTrail shows who and when, no log shows what ran inside.
+Each of the three flags exits 1. `TUNNEL` marks a port-forwarding session: CloudTrail shows who and when, no log shows what ran inside.
 
 ### Deploying with an existing instance role
 

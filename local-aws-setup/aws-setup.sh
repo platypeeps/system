@@ -95,10 +95,12 @@ usage: aws-setup.sh accounts | test
             request, maintenance window and document version calls the
             README lists (each of these is UNLOGGED), of the last
             [hours] (default 24, at most 2160) in every enabled region,
-            as ADMIN_PROFILE. Run it with the deployer's account file. Flags UNEXPECTED (a principal
-            other than AGENT_USER) and UNLOGGED (output outside
-            AUDIT_BUCKET/ssm-output/, or not found there), and exits
-            1 on either; TUNNEL marks a port-forwarding session, whose
+            as ADMIN_PROFILE. Run it with the deployer's account file.
+            Flags UNEXPECTED (a principal other than AGENT_USER),
+            UNLOGGED (output outside AUDIT_BUCKET/ssm-output/, or not
+            found there) and UNREVIEWED (any other SSM write; reads and
+            an EC2 instance's own heartbeats are skipped), and exits 1 on
+            any; TUNNEL marks a port-forwarding session, whose
             content no log records.
 
 Levels:
