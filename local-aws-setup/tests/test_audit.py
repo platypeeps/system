@@ -52,7 +52,16 @@ class Case(unittest.TestCase):
         self.addCleanup(box.cleanup)
         box.profile("admin-x", aws_access_key_id="AKIAADMIN")
         box.identity("AKIAADMIN", ADMIN_ARN)
+        # An existing bucket has no lifecycle rules unless a case says so.
+        box.rule("get-bucket-lifecycle-configuration", exit=254,
+                 stderr="An error occurred (NoSuchLifecycleConfiguration) when calling "
+                        "the GetBucketLifecycleConfiguration operation")
         return box
+
+    def lifecycle(self, box, **answer):
+        """Answer the lifecycle read ahead of the default above."""
+        box.scenario["rules"].insert(
+            0, {"match": ["get-bucket-lifecycle-configuration"], **answer})
 
     def rests(self, box):
         return [c["rest"] for c in box.calls()]
@@ -157,6 +166,92 @@ class AuditCase(Case):
         self.assertNotIn("create-trail", names)
         self.assertEqual(names[-1], "start-logging")
 
+    def test_an_existing_bucket_is_read_for_lifecycle_rules_first(self):
+        box = self.box()
+        box.rule("get-trail", stdout=trail())
+        box.rule("get-event-selectors", stdout=GOOD_SELECTORS)
+        done = box.run("audit", "x")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        rests = self.rests(box)
+        names = [r[1] for r in rests if r[:1] in (["s3api"], ["cloudtrail"])]
+        self.assertEqual(names[:3], ["head-bucket", "get-bucket-lifecycle-configuration",
+                                     "get-trail"])
+        read = rests[[r[1:2] for r in rests].index(["get-bucket-lifecycle-configuration"])]
+        self.assertEqual(read[read.index("--expected-bucket-owner") + 1], ACCOUNT_ID)
+
+    def test_a_missing_bucket_has_no_lifecycle_to_read(self):
+        box = self.fresh()
+        self.assertEqual(box.run("audit", "x").returncode, 0)
+        names = [r[1] for r in self.rests(box) if len(r) > 1]
+        self.assertNotIn("get-bucket-lifecycle-configuration", names)
+
+    def test_a_lifecycle_that_expires_objects_is_refused_before_any_write(self):
+        def rules(*items):
+            return json.dumps({"Rules": list(items)})
+        bad = {
+            "expires current objects": rules(
+                {"ID": "tidy", "Status": "Enabled", "Filter": {}, "Expiration": {"Days": 30}}),
+            "expires on a date": rules(
+                {"ID": "tidy", "Status": "Enabled", "Expiration": {"Date": "2027-01-01T00:00:00Z"}}),
+            "expires noncurrent versions": rules(
+                {"ID": "old", "Status": "Enabled",
+                 "NoncurrentVersionExpiration": {"NoncurrentDays": 1}}),
+            "expires under one prefix only": rules(
+                {"ID": "logs", "Status": "Enabled", "Filter": {"Prefix": "AWSLogs/"},
+                 "Expiration": {"Days": 90}}),
+            "status not Disabled": rules(
+                {"ID": "odd", "Status": "enabled", "Expiration": {"Days": 1}}),
+            "status missing": rules({"ID": "odd", "Expiration": {"Days": 1}}),
+            "second rule expires": rules(
+                {"ID": "move", "Status": "Enabled",
+                 "Transitions": [{"Days": 30, "StorageClass": "GLACIER"}]},
+                {"ID": "x\n\x1b[0m\u00e9", "Status": "Enabled", "Expiration": {"Days": 9}}),
+            "rules not a list": json.dumps({"Rules": "Expiration"}),
+            "rule not an object": rules("Expiration"),
+            "no rules key": json.dumps({}),
+            "not an object": json.dumps(["Rules"]),
+            "not json": "Rules",
+            "empty": "",
+        }
+        for why, answer in bad.items():
+            with self.subTest(why=why):
+                box = self.box()
+                self.lifecycle(box, stdout=answer)
+                box.rule("get-trail", stdout=trail())
+                box.rule("get-event-selectors", stdout=GOOD_SELECTORS)
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("bucket %s" % BUCKET, done.stderr)
+                self.assertNotIn("\x1b", done.stderr)
+                names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
+                self.assertEqual(names, ["head-bucket", "get-bucket-lifecycle-configuration"])
+
+    def test_a_lifecycle_that_keeps_every_object_is_kept(self):
+        keeps = {
+            "transition only": [{"ID": "cold", "Status": "Enabled", "Filter": {},
+                                 "Transitions": [{"Days": 30, "StorageClass": "GLACIER"}]}],
+            "multipart cleanup": [{"ID": "mpu", "Status": "Enabled", "Filter": {},
+                                   "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}}],
+            "disabled expiry": [{"ID": "off", "Status": "Disabled", "Expiration": {"Days": 1}}],
+        }
+        for why, items in keeps.items():
+            with self.subTest(why=why):
+                box = self.box()
+                self.lifecycle(box, stdout=json.dumps({"Rules": items}))
+                box.rule("get-trail", stdout=trail())
+                box.rule("get-event-selectors", stdout=GOOD_SELECTORS)
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_a_lifecycle_read_that_fails_otherwise_is_refused(self):
+        box = self.box()
+        self.lifecycle(box, exit=254, stderr="An error occurred (AccessDenied)")
+        done = box.run("audit", "x")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("AccessDenied", done.stderr)
+        names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
+        self.assertEqual(names, ["head-bucket", "get-bucket-lifecycle-configuration"])
+
     def test_a_trail_that_writes_elsewhere_is_refused(self):
         box = self.box()
         box.rule("get-trail", stdout=trail(S3BucketName="somebody-elses-bucket"))
@@ -165,7 +260,8 @@ class AuditCase(Case):
         self.assertIn("writes to somebody-elses-bucket", done.stderr)
         names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
         # No bucket write either: a refused run leaves the bucket as it was.
-        self.assertEqual(names, ["head-bucket", "get-trail"])
+        self.assertEqual(names, ["head-bucket", "get-bucket-lifecycle-configuration",
+                                 "get-trail"])
 
     def test_a_trail_that_drops_management_writes_is_refused_before_any_write(self):
         bad = (
@@ -188,7 +284,8 @@ class AuditCase(Case):
                 self.assertEqual(done.returncode, 1)
                 self.assertIn("management", done.stderr)
                 names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
-                self.assertEqual(names, ["head-bucket", "get-trail", "get-event-selectors"])
+                self.assertEqual(names, ["head-bucket", "get-bucket-lifecycle-configuration",
+                                         "get-trail", "get-event-selectors"])
 
     def test_a_trail_unlike_the_one_audit_creates_is_refused_before_any_write(self):
         # Every property a new trail gets is demanded of an existing one.
@@ -217,7 +314,8 @@ class AuditCase(Case):
                 self.assertEqual(done.returncode, 1, done.stdout)
                 self.assertIn("trail deployment-audit", done.stderr)
                 names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
-                self.assertEqual(names, ["head-bucket", "get-trail"])
+                self.assertEqual(names, ["head-bucket", "get-bucket-lifecycle-configuration",
+                                         "get-trail"])
 
     def test_a_trail_recording_management_writes_is_kept(self):
         for kind in ("All", "WriteOnly"):

@@ -194,7 +194,8 @@ It keeps a multi-region trail, `AUDIT_TRAIL` (default `deployment-audit`), with 
 An existing trail of that name must match the one `audit` creates, or `audit` refuses before any write.
 It checks the bucket, no key prefix, the home region and account, multi-region, log file validation, and management write events.
 It refuses advanced event selectors rather than read them. A rerun finishes a run cut short.
-An existing bucket gets its public access block, versioning and policy set again on every run; `audit` does not read its lifecycle rules.
+An existing bucket gets its public access block, versioning and policy set again on every run.
+It must have no enabled lifecycle rule that expires objects or old versions, or `audit` refuses before any write.
 The trail records management events, so `SendCommand`, `StartSession` and `TerminateSession` land there.
 One management-event trail per account is free; the bucket costs its storage.
 

@@ -1399,6 +1399,29 @@ def records(item):
 sys.exit(0 if any(isinstance(i, dict) and records(i) for i in selectors) else 1)
 '
 
+# The first enabled lifecycle rule of an existing bucket that deletes
+# objects (get-bucket-lifecycle-configuration output on stdin): prints it and
+# exits 1, or exits 0. Any filter counts: the bucket holds only the trail.
+# A status other than Disabled counts as enabled; malformed output exits 1.
+EXPIRING_LIFECYCLE='
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except ValueError:
+    doc = None
+rules = doc.get("Rules") if isinstance(doc, dict) else None
+if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
+    sys.exit(print("has lifecycle rules that could not be read") or 1)
+for rule in rules:
+    if rule.get("Status") == "Disabled":
+        continue
+    for key in ("Expiration", "NoncurrentVersionExpiration"):
+        if key in rule:
+            name = json.dumps(str(rule.get("ID", "")))[:80]
+            sys.exit(print("has lifecycle rule %s with %s, which deletes trail objects"
+                           % (name, key)) or 1)
+'
+
 # Each step is a create-if-missing or a put that sets the same value again,
 # so a run cut short anywhere is finished by running it again.
 cmd_audit() {
@@ -1416,6 +1439,18 @@ cmd_audit() {
   if found=$(admin s3api head-bucket --bucket "$AUDIT_BUCKET" \
       --expected-bucket-owner "$ACCOUNT_ID" 2>&1); then
     echo "bucket $AUDIT_BUCKET exists in $ACCOUNT_ID"
+    # The deployer may not change lifecycle rules, but one set before
+    # would still expire the trail's objects and their old versions.
+    if rules=$(admin s3api get-bucket-lifecycle-configuration --bucket "$AUDIT_BUCKET" \
+        --expected-bucket-owner "$ACCOUNT_ID" --output json 2>&1); then
+      expiring=$(printf '%s' "$rules" | "${PYTHON:-python3}" -c "$EXPIRING_LIFECYCLE") ||
+        die "bucket $AUDIT_BUCKET $expiring; remove the expiry by hand"
+    else
+      case "$rules" in
+        *NoSuchLifecycleConfiguration*) ;;
+        *) die "could not read the lifecycle rules of bucket $AUDIT_BUCKET: $rules" ;;
+      esac
+    fi
   else
     case "$found" in
       *"(404)"*) bucket_missing=1 ;;
