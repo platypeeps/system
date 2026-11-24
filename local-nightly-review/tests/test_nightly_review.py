@@ -223,16 +223,29 @@ class NightlyReview(unittest.TestCase):
         self.assertTrue(step[0].endswith("(bound 300s)"), step[0])
         self.assertNotIn("nightly review", result.stdout + result.stderr)
 
-    def test_a_model_run_that_hangs_gets_one_more_try(self):
+    def test_a_model_run_that_hangs_gets_two_more_tries(self):
         # sd:7269: three runs hung before any tool call until the 1200 s bound; a rerun passed each time.
-        result = self.run_job(rc="124 0")
+        # sd:10387: on 2026-11-23 two tries in a row hung before any transcript; a third fits the 30 m job bound.
+        result = self.run_job(rc="124 124 0")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.model_runs(), 2)
+        self.assertEqual(self.model_runs(), 3)
         self.assertIn("trying once more", result.stderr)
         self.assertEqual(len(self.batches()[0]["questions"]), 2)
 
-    def test_a_second_hang_or_any_other_failure_fails_with_no_retry_after(self):
-        for rc, runs in (("124", 2), ("1", 1)):
+    def test_the_model_reads_the_lane_folders_not_the_whole_bulk_root(self):
+        # sd:10387: a grep -r over the whole bulk root ran past the 300 s bound and lost a finished reply.
+        (self.bulk / "repo-a" / "lane").mkdir(parents=True)
+        (self.bulk / "repo-b").mkdir()
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = self.args.read_text().splitlines()
+        self.assertNotIn(str(self.bulk), args)
+        self.assertIn(str(self.bulk / "repo-a" / "lane"), args)
+        self.assertNotIn(str(self.bulk / "repo-b"), args)
+        self.assertIn(str(self.home / ".claude" / "projects"), args)
+
+    def test_a_third_hang_or_any_other_failure_fails_with_no_retry_after(self):
+        for rc, runs in (("124", 3), ("1", 1)):
             with self.subTest(rc=rc):
                 self.calls.unlink(missing_ok=True)
                 result = self.run_job(rc=rc)

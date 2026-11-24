@@ -176,7 +176,9 @@ agent. `uv-prune` does these steps:
    on another cache does not count.
 3. Skip the prune, exit 0, when a holder is still left.
    In `run`, a skip held by `uvx` alone is an action, never a finding,
-   and does not count toward the three-night streak.
+   and does not count toward the three-night streak. Homebrew's `uvx`
+   runs as `uv tool uvx`, so a `uv` whose arguments start `uv tool uvx`
+   or `uv tool run` counts as `uvx`; the arguments are never printed.
 4. Run `uv cache prune` with `UV_LOCK_TIMEOUT` of `UV_PRUNE_LOCK_TIMEOUT` (60).
    At login it then prunes the Claude sessions' cache,
    `UV_PRUNE_SESSION_CACHE` (`~/.cache/uv-claude`), the same way.

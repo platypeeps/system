@@ -121,9 +121,16 @@ uv_prune_cache() {
   if [ -n "$pids" ]; then
     # Name them by executable and pid, so a finding says which process to
     # stop (sd:9377). Never the arguments: they can carry a token or path.
+    # Homebrew's uvx execs `uv tool uvx`, so its comm is `uv`: read the
+    # first three words of a `uv`'s arguments to name it uvx (sd:10385).
     holders=$(ps -A -o pid= -o comm= 2>/dev/null | awk -v pids=" $(echo $pids) " '
       { pid = $1; if (index(pids, " " pid " ") == 0) next
         sub(/^ *[0-9]+ +/, ""); n = split($0, w, "/"); c = w[n]
+        if (c == "uv") {
+          a = ""; cmd = "ps -o args= -p " pid; cmd | getline a; close(cmd)
+          split(a, x, " "); k = split(x[1], y, "/")
+          if (y[k] == "uv" && x[2] == "tool" && (x[3] == "uvx" || x[3] == "run")) c = "uvx"
+        }
         if (!(c in p)) o[++m] = c; p[c] = p[c] (p[c] == "" ? "" : " ") pid }
       END { for (i = 1; i <= m; i++) printf "%s%s pid %s", (i > 1 ? "; " : ""), o[i], p[o[i]] }')
     echo "uv-prune: holders: ${holders:-pid $(echo $pids)}"
