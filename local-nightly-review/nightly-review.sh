@@ -32,7 +32,8 @@ Usage: nightly-review.sh <command>
          2. review: unless today's batch file exists, `claude -p` on Sonnet with
             read-only tools reads the past day and replies with suggestions; the
             reply becomes <bulk root>/system/nightly-review/<date>.json.
-            Each try has 300 s; one that hits the bound gets one more try.
+            It reads only the bulk root's <repo>/lane folders. Each try has
+            300 s; a try that hits the bound gets another, three in all.
          3. file: `sd-db review file` files that batch, at most 5 suggestions,
             dropping a subject rejected in the last 90 days.
          Exits 0 when the batch is filed, already filed, or empty; non-zero
@@ -84,12 +85,17 @@ run() {
     # The prompt goes in on stdin, a file at EOF, so st_step logs the flags and not the prompt.
     # A good run took 14-53 s; the three that hit the old 1200 s bound hung before any tool
     # call, and a rerun passed each time. So 300 s a try, and one more try after a hang (sd:7269).
-    for try in 1 2; do
+    # 2026-11-23 hung twice in a row, so three tries: 15 m fits the 30 m job bound (sd:10387).
+    # Only the bulk root's lane folders: a grep -r over all of it (285 GB) outlived a try's
+    # bound and lost a finished reply on 2026-11-22 (sd:10387).
+    set -- "$HOME/.claude/projects"
+    for lane in "$bulk"/*/lane; do [ -d "$lane" ] && set -- "$@" "$lane"; done
+    for try in 1 2 3; do
       rc=0
       (cd "$ROOT" && st_step 300 "${CLAUDE_BIN:-claude}" -p --model sonnet \
-        --restricted --strict-mcp-config --tools 'Read,Grep,Glob,Bash' --add-dir "$bulk" "$HOME/.claude/projects" \
+        --restricted --strict-mcp-config --tools 'Read,Grep,Glob,Bash' --add-dir "$@" \
         --allowedTools "$TOOLS" --disallowedTools 'Write Edit NotebookEdit' < "$tmp/prompt" > "$tmp/reply") || rc=$?
-      [ "$rc" -eq 124 ] && [ "$try" -eq 1 ] || break
+      [ "$rc" -eq 124 ] && [ "$try" -lt 3 ] || break
       echo "nightly-review: the model hung; trying once more" >&2
     done
     [ "$rc" -eq 0 ] || return "$rc"
