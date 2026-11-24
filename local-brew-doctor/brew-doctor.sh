@@ -21,6 +21,7 @@ usage: brew-doctor.sh run
           auto-fix (never touches trust or installs):
             - broken symlinks / stale files  -> brew cleanup --prune=all
             - unlinked kegs with a formula   -> brew link (never --overwrite)
+              but rust beside rustup, which machine-setup unlinks
           report-only, printed as a summary when present, with an
           SD_REPORT_ATTENTION line so the run's report reaches Reports and
           Today:
@@ -68,6 +69,18 @@ if ! doctor_answered "$d_rc" "$tmp/doctor1"; then
 fi
 st_drop_platform_warning "$tmp/doctor1" > "$tmp/kept1"
 mv "$tmp/kept1" "$tmp/doctor1"
+# machine-setup unlinks a rust formula another formula needs, so rustup's
+# cargo wins the PATH (sd:10274): beside rustup, an unlinked rust is on
+# purpose, neither linked nor reported (sd:10334). A list that did not
+# answer is no rustup.
+on_purpose=""
+if st_unlinked_kegs "$tmp/doctor1" | grep -qx rust &&
+   st_step 60 brew list --formula rustup < /dev/null >/dev/null 2>&1; then
+  on_purpose=rust
+  echo "skip: rust is unlinked on purpose; rustup owns cargo"
+  st_drop_unlinked_keg rust "$tmp/doctor1" > "$tmp/kept1"
+  mv "$tmp/kept1" "$tmp/doctor1"
+fi
 if ! grep -q '^Warning:' "$tmp/doctor1"; then
   echo "brew doctor: clean"
   exit 0
@@ -121,6 +134,10 @@ if ! doctor_answered "$d_rc" "$tmp/doctor2"; then
 fi
 st_drop_platform_warning "$tmp/doctor2" > "$tmp/kept2"
 mv "$tmp/kept2" "$tmp/doctor2"
+if [ -n "$on_purpose" ]; then
+  st_drop_unlinked_keg "$on_purpose" "$tmp/doctor2" > "$tmp/kept2"
+  mv "$tmp/kept2" "$tmp/doctor2"
+fi
 
 # Deprecations: doctor lists a deprecated formula or cask every night from the
 # day brew deprecates it, often a year before its disable date (sd:6795).

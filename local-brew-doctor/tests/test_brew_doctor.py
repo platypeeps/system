@@ -17,14 +17,16 @@ FOLDER = pathlib.Path(__file__).resolve().parent.parent
 LIB = FOLDER.parent / "lib"
 
 # The first doctor run warns of an unlinked keg and exits BREW_FIRST_RC; the
-# second prints BREW_RECHECK and exits BREW_RECHECK_RC. `info` exits BREW_INFO_RC, or ends
+# second prints BREW_RECHECK and exits BREW_RECHECK_RC. The unlinked keg is
+# BREW_UNLINKED, example-keg by default; `list` exits BREW_LIST_RC. `info` exits BREW_INFO_RC, or ends
 # itself with a TERM when that is "term"; `info --json=v2` prints BREW_INFO_JSON.
 BREW_STUB = r"""#!/bin/sh
 case "$1" in
   doctor)
     n=$(cat "$COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$COUNT"
     if [ "$n" -eq 1 ]; then
-      printf 'Warning: You have unlinked kegs in your Cellar.\n  example-keg\n\n' >&2
+      printf 'Warning: You have unlinked kegs in your Cellar.\nRun `brew link` on these:\n  %b\n\n' \
+        "${BREW_UNLINKED:-example-keg}" >&2
       exit "${BREW_FIRST_RC:-1}"
     fi
     printf '%b' "$BREW_RECHECK" >&2
@@ -33,6 +35,7 @@ case "$1" in
         [ "$BREW_INFO_RC" != term ] || kill -TERM $$
         exit "${BREW_INFO_RC:-0}" ;;
   link) echo "link $2" >> "$LINKS" ;;
+  list) echo "list $*" >> "$LINKS"; exit "${BREW_LIST_RC:-1}" ;;
 esac
 exit 0
 """
@@ -144,6 +147,32 @@ class BrewDoctorTest(unittest.TestCase):
                    "You should find replacements for the following formulae:\n  far-formula\n")
         run = self.run_doctor(BREW_RECHECK=recheck, BREW_RECHECK_RC="1", BREW_INFO_JSON="not json")
         self.assertIn("formulae are deprecated or disabled.: far-formula", run.stdout)
+
+    def test_rust_unlinked_beside_rustup_is_on_purpose(self):
+        """machine-setup unlinks a rust omlx needs; the nightly relinked
+        and reported it (sd:10334)."""
+        run = self.run_doctor(BREW_UNLINKED="rust", BREW_LIST_RC="0")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("brew doctor: clean", run.stdout)
+        self.assertNotIn("SD_REPORT_ATTENTION", run.stdout)
+        self.assertNotIn("link rust", self.links.read_text())
+
+    def test_rust_on_purpose_leaves_other_unlinked_kegs_reported(self):
+        recheck = ("Warning: You have unlinked kegs in your Cellar.\n"
+                   "Run `brew link` on these:\n  rust\n  other-keg\n\n")
+        run = self.run_doctor(BREW_UNLINKED="rust\n  other-keg", BREW_LIST_RC="0",
+                              BREW_RECHECK=recheck, BREW_RECHECK_RC="1")
+        self.assertIn("unlinked kegs in your Cellar.: other-keg", run.stdout)
+        self.assertNotIn("Cellar.: rust", run.stdout)
+        self.assertNotIn("link rust", self.links.read_text())
+
+    def test_rust_unlinked_without_rustup_is_linked(self):
+        for rc in ("1", "124"):
+            with self.subTest(list_rc=rc):
+                pathlib.Path(self.env["COUNT"]).unlink(missing_ok=True)
+                self.links.unlink(missing_ok=True)
+                run = self.run_doctor(BREW_UNLINKED="rust", BREW_LIST_RC=rc)
+                self.assertIn("autofix: brew link rust", run.stdout)
 
 
 if __name__ == "__main__":

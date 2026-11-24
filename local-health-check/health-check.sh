@@ -257,12 +257,51 @@ recent_report() { # <file> <cutoff or empty> <mtime days>
 # path with no .app/ in it is a daemon.
 SYSTEM_PROC_RE='"procPath"[[:space:]]*:[[:space:]]*"\\?/(System|usr\\?/libexec|Volumes\\?/VOLUME\\?/\*\\?/[^"/\\]+\.framework)\\?/'
 SYSTEM_APP_RE='"procPath"[[:space:]]*:[[:space:]]*"[^"]*\.app\\?/'
+# GNU timeout raises its child's death signal on itself, so a crashed child
+# leaves a second report from (g)timeout (sd:10335). That signal, sent by its
+# own pid, is the echo only beside a child's report that carries the finding:
+# one from the same day (an older one names a reused pid) that names that pid
+# as its parent and is itself an app crash or codex sandbox finding. A child
+# report this check leaves out, or counts in the cargo note, or that is a
+# timeout's own (it may be dropped in turn), carries none: the timeout's counts.
+TIMEOUT_PROC_RE='"procPath"[[:space:]]*:[[:space:]]*"[^"]*\\?/g?timeout"'
+echoed_child() { # <file>: byPid is the report's pid, and a child's finding names it
+  _p=$(sed -En 's/^[[:space:]]*"pid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$1" 2>/dev/null | head -n 1)
+  _b=$(sed -En 's/.*"byPid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$1" 2>/dev/null | head -n 1)
+  [ -n "$_p" ] && [ "$_p" = "$_b" ] || return 1
+  for _d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
+    [ -d "$_d" ] || continue
+    _c=$(find "$_d" -maxdepth 1 -name '*.ips' ! -name 'JetsamEvent*' -exec grep -El \
+      "\"parentPid\"[[:space:]]*:[[:space:]]*$_p([^0-9]|\$)" {} + 2>/dev/null) || :
+    while IFS= read -r _f; do
+      [ -n "$_f" ] && recent_report "$_f" "$CUT_DAY" 1 || continue
+      ! grep -Eq "$TIMEOUT_PROC_RE" "$_f" 2>/dev/null || continue
+      crash_report "$_f" && [ "$(report_bucket "$_f")" != cargo-tests ] && return 0
+    done <<EOF
+$_c
+EOF
+  done
+  return 1
+}
 crash_report() { # <file>
   _h=$(head -n 1 "$1" 2>/dev/null)
   ! printf '%s\n' "$_h" | grep -Eq '"is_simulated"[[:space:]]*:[[:space:]]*1([^0-9]|$)' || return 1
   ! grep -Eq "$SYSTEM_PROC_RE" "$1" 2>/dev/null || grep -Eq "$SYSTEM_APP_RE" "$1" 2>/dev/null || return 1
   _t=$(printf '%s\n' "$_h" | sed -En 's/.*"bug_type"[[:space:]]*:[[:space:]]*"?([0-9]+).*/\1/p')
-  [ -z "$_t" ] || [ "$_t" = 309 ] || [ "$_t" = 109 ]
+  [ -z "$_t" ] || [ "$_t" = 309 ] || [ "$_t" = 109 ] || return 1
+  # Last, on a report that would count: echoed_child reuses _h and _t.
+  ! grep -Eq "$TIMEOUT_PROC_RE" "$1" 2>/dev/null || ! echoed_child "$1"
+}
+report_name() { # <file>: the process name its file name carries
+  basename "$1" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//; s/-[0-9][0-9]*\(\.[A-Za-z0-9_]*\)$/\1/'
+}
+report_bucket() { # <file>: crashes, codex-sandbox or cargo-tests
+  _to=crashes
+  ! grep -Eq '"parentProc"[[:space:]]*:[[:space:]]*"codex"' "$1" || ! grep -q '(blocked by sandbox)' "$1" || _to=codex-sandbox
+  ! grep -Eq '"parentProc"[[:space:]]*:[[:space:]]*"cargo(-nextest)?"' "$1" || _to=cargo-tests
+  ! report_name "$1" | grep -Eq -- '-[0-9a-f]{16}$' ||
+    ! grep -Eq "\"coalitionName\"[[:space:]]*:[[:space:]]*\"$DISPATCH_RE\"" "$1" || _to=cargo-tests
+  printf '%s\n' "$_to"
 }
 DISPATCH_RE=$(printf '%s' "$LABEL_PREFIX.cron.build-dispatch" | sed 's/[][\\.*^$+?(){}|]/\\&/g')
 for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
@@ -281,12 +320,8 @@ for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   # binary in the build-dispatch job's coalition is one too (sd:9088).
   find "$d" -maxdepth 1 -name '*.ips' ! -name 'JetsamEvent*' 2>/dev/null | while read -r p; do
     recent_report "$p" "$CUT_DAY" 1 && crash_report "$p" || continue
-    _to=crashes
-    ! grep -Eq '"parentProc"[[:space:]]*:[[:space:]]*"codex"' "$p" || ! grep -q '(blocked by sandbox)' "$p" || _to=codex-sandbox
-    ! grep -Eq '"parentProc"[[:space:]]*:[[:space:]]*"cargo(-nextest)?"' "$p" || _to=cargo-tests
-    _n=$(basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//; s/-[0-9][0-9]*\(\.[A-Za-z0-9_]*\)$/\1/')
-    ! printf '%s\n' "$_n" | grep -Eq -- '-[0-9a-f]{16}$' ||
-      ! grep -Eq "\"coalitionName\"[[:space:]]*:[[:space:]]*\"$DISPATCH_RE\"" "$p" || _to=cargo-tests
+    _to=$(report_bucket "$p")
+    _n=$(report_name "$p")
     printf '%s\n' "$_n" >> "$TMPD/$_to"
   done
 done

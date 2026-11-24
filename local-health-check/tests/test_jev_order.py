@@ -611,6 +611,84 @@ esac
         self.assertIn("Finder(1) ", out, "an app under /System/ still counts (lane review)")
         self.assertIn("my-cli(1) ", out, "a tool on a redacted volume still counts (lane review)")
 
+    def test_a_timeout_re_raising_its_childs_signal_is_no_crash(self):
+        """sd:10335: GNU timeout raises its child's death signal on itself,
+        so a crashed child left a second report from gtimeout. Its own
+        signal (byPid is its pid), with a child report naming it as
+        parentPid, is that echo; the child still counts. A timeout with no
+        child report, one another process signalled, or a crash of one
+        still counts (review: the echo filter hid the only report)."""
+        reports = self.tmp / "reports-timeout"
+        reports.mkdir()
+        head = '{"app_name":"gtimeout","bug_type":"309"}\n'
+        def body(path, pid, by_pid, by_proc, parent="1"):
+            return (head + '{\n  "pid" : ' + pid + ',\n  "procPath" : "' + path + '",\n'
+                    '  "parentPid" : ' + parent + ',\n'
+                    '  "termination" : {"flags":0,"code":5,"namespace":"SIGNAL",'
+                    '"indicator":"Trace\\/BPT trap: 5","byProc":"' + by_proc
+                    + '","byPid":' + by_pid + '}\n}\n')
+        for name, text in (
+                ("gtimeout", body(r"\/opt\/homebrew\/*\/gtimeout", "41577", "41577", "gtimeout")),
+                ("timeout", body(r"\/usr\/local\/*\/timeout", "512", "512", "timeout")),
+                ("example-child", body(r"\/Users\/USER\/*\/example-child", "41579", "41580",
+                                       "exc handler", parent="41577")),
+                ("other-child", body(r"\/Users\/USER\/*\/other-child", "513", "514",
+                                     "exc handler", parent="512")),
+                ("Lone-Timeout", body(r"\/opt\/homebrew\/*\/gtimeout", "900", "900", "gtimeout")),
+                ("Pid-Prefix", body(r"\/opt\/homebrew\/*\/gtimeout", "4157", "4157", "gtimeout")),
+                ("Killed-Timeout", body(r"\/opt\/homebrew\/*\/gtimeout", "700", "701", "kill")),
+                ("Self-Raiser", body(r"\/opt\/homebrew\/*\/gtimeout-like", "800", "800",
+                                     "gtimeout-like"))):
+            (reports / (name + stamped(hours=1) + ".ips")).write_text(text)
+        # A child report days old names a reused pid: no echo of today's crash.
+        (reports / ("old-child" + stamped(days=3) + ".ips")).write_text(
+            body(r"\/Users\/USER\/*\/old-child", "901", "902", "exc handler", parent="900"))
+        out = self.run_check("timeout", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                             verb="run")["out"]
+        crashes = [l for l in out.splitlines() if l.startswith("- app crash report(s)")]
+        self.assertEqual(len(crashes), 1, out)
+        self.assertNotIn("gtimeout(", crashes[0])
+        self.assertNotIn(" timeout(", crashes[0])
+        for name in ("example-child", "other-child", "Lone-Timeout", "Pid-Prefix",
+                     "Killed-Timeout", "Self-Raiser"):
+            self.assertIn(name + "(1) ", crashes[0])
+
+    def test_a_timeout_counts_when_its_childs_report_is_no_finding(self):
+        """sd:10335 review round 3: the timeout's echo is dropped only
+        beside a child report that is itself a crash finding. A child
+        report the check leaves out (simulated, a system daemon, no crash
+        bug_type, a JetsamEvent), sends to the cargo note, or that is a
+        timeout's own, carries no finding, so the timeout's counts."""
+        reports = self.tmp / "reports-timeout-child"
+        reports.mkdir()
+        dispatch = "local.system-tools.cron.build-dispatch"
+        def write(name, pid, parent, path, head='{"bug_type":"309"}', by=None):
+            (reports / (name + stamped(hours=1) + ".ips")).write_text(
+                head + '\n{\n  "pid" : ' + str(pid) + ',\n  "procPath" : "' + path + '",\n'
+                '  "parentPid" : ' + str(parent) + ',\n  "coalitionName" : "' + dispatch + '",\n'
+                '  "termination" : {"code":5,"byProc":"x","byPid":' + str(by or pid) + '}\n}\n')
+        gtimeout, child = r"\/opt\/homebrew\/*\/gtimeout", r"\/Users\/USER\/*\/child"
+        for n, (label, kwargs) in enumerate((
+                ("Sim", {"head": '{"bug_type":"309","is_simulated":1}'}),
+                ("Daemon", {"path": r"\/usr\/libexec\/child"}),
+                ("Analytics", {"head": '{"bug_type":"58"}'}),
+                ("Jetsam", {"name": "JetsamEvent-x"}),
+                ("Cargo", {"name": "crate-64ac2bb2c9a0c249"}),
+                ("Nested", {"path": gtimeout, "by": 1}),
+                ("Real", {}))):
+            pid = 1000 + 10 * n
+            write(label + "-Timeout", pid, 1, gtimeout)
+            write(kwargs.pop("name", label + "-Child"), pid + 1, pid,
+                  kwargs.pop("path", child), by=kwargs.pop("by", pid + 2), **kwargs)
+        out = self.run_check("timeout-child", {"JEV_HEALTH_CHECK": "0",
+                                               "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)}, verb="run")["out"]
+        crashes = [l for l in out.splitlines() if l.startswith("- app crash report(s)")]
+        self.assertEqual(len(crashes), 1, out)
+        for label in ("Sim", "Daemon", "Analytics", "Jetsam", "Cargo", "Nested"):
+            self.assertIn(label + "-Timeout(1) ", crashes[0])
+        self.assertNotIn("Real-Timeout", crashes[0])
+        self.assertIn("Real-Child(1) ", crashes[0])
+
     def test_codex_sandbox_library_block_is_its_own_finding(self):
         """sd:6729: a codex child that dyld aborts at launch because the codex
         sandbox blocked its library is that defect, not an app crash. The same
