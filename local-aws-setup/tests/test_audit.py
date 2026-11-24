@@ -512,7 +512,7 @@ class EventsCase(Case):
                                  ["ssm-output/%s/i-1/" % COMMAND_ID, missing])
                 for rest in listed:
                     self.assertEqual(rest[rest.index("--bucket") + 1], BUCKET)
-                    self.assertEqual(rest[rest.index("--max-items") + 1], "1")
+                    self.assertEqual(rest[rest.index("--max-items") + 1], "100")
 
     def test_a_command_whose_targets_cannot_be_named_is_unlogged(self):
         # Only explicit instance ids say whose output to look for; one object
@@ -565,6 +565,31 @@ class EventsCase(Case):
                 self.assertEqual(done.returncode, 1, done.stdout)
                 self.assertIn("UNLOGGED", done.stdout)
                 self.assertEqual(self.listed(box), [])
+
+    def test_a_folder_marker_is_no_saved_output(self):
+        marker = "ssm-output/%s/i-1/" % COMMAND_ID
+        for answer in ({"Contents": [{"Key": marker, "Size": 0}]},
+                       {"Contents": [{"Key": marker + "awsrunShellScript/"}]},
+                       {"Contents": [{"Size": 5}]}, {"Contents": ["x"]}):
+            with self.subTest(answer=answer):
+                _, done = self.review([event("SendCommand", instanceIds=["i-1"],
+                                             outputS3BucketName=BUCKET,
+                                             outputS3KeyPrefix="ssm-output")],
+                                      first=[{"match": ["list-objects-v2"],
+                                              "stdout": json.dumps(answer)}])
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("UNLOGGED", done.stdout)
+
+    def test_output_behind_a_folder_marker_is_saved(self):
+        marker = "ssm-output/%s/i-1/" % COMMAND_ID
+        answer = {"Contents": [{"Key": marker},
+                               {"Key": marker + "awsrunShellScript/0/stdout"}]}
+        _, done = self.review([event("SendCommand", instanceIds=["i-1"],
+                                     outputS3BucketName=BUCKET,
+                                     outputS3KeyPrefix="ssm-output")],
+                              first=[{"match": ["list-objects-v2"],
+                                      "stdout": json.dumps(answer)}])
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
     def test_a_failed_output_listing_is_an_error_not_a_clean_review(self):
         for answer in ({"exit": 254, "stderr": "AccessDenied"}, {"stdout": "not json"}):

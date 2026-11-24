@@ -107,10 +107,15 @@ def saved(args, record, params, prefix):
         # is no evidence; its refusal ends the review.
         page = aws(args, args.region, "the output under %s" % key, "s3api", "list-objects-v2",
                    "--bucket", args.bucket, "--expected-bucket-owner", args.account,
-                   "--prefix", key, "--max-items", "1")
+                   "--prefix", key, "--max-items", "100")
         if not isinstance(page, dict):
             raise Malformed("list-objects-v2 output is not an object")
-        if not (isinstance(page.get("Contents"), list) and page["Contents"]):
+        # A key ending in "/" is a folder marker, not output; it sorts
+        # first, so the listing reads past it. 100 keys fail closed.
+        contents = page.get("Contents")
+        if not (isinstance(contents, list) and any(
+                isinstance(o, dict) and isinstance(o.get("Key"), str)
+                and not o["Key"].endswith("/") for o in contents)):
             return False
     return True
 

@@ -216,7 +216,7 @@ It reads CloudTrail's 90-day event history in every region the account has enabl
 It prints one row per call, with its region, in local time.
 `UNEXPECTED` marks a call by anyone but `AGENT_USER`.
 `UNLOGGED` marks a command whose output skips `ssm-output/` in `AUDIT_BUCKET`, the one prefix the instance role may write.
-It also marks one with no object under `ssm-output/<command id>/<instance id>/` for each instance it names.
+It also marks one with no object under `ssm-output/<command id>/<instance id>/` for each instance it names; a folder marker (a key ending in `/`) does not count.
 A command sent to tag targets, or to both ids and targets, is always `UNLOGGED`: the event does not name whose output to look for.
 A command still running, or one that printed nothing, shows as `UNLOGGED` too; review it by hand.
 CloudTrail delivers an event up to 15 minutes late, so a clean review does not cover the last 15 minutes.
