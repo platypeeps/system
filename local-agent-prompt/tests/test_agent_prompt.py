@@ -391,6 +391,15 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("repro or test", rule)
         self.assertIn("fix or reject a lane blocker", rule)
 
+    def test_a_blocker_needs_a_reachable_trigger_or_a_trust_boundary(self):
+        # sd:10322: pack sd:10288 made a repro on input no caller or data carries
+        # advisory, except across a trust boundary or on a data-loss or leak path.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        rule = next(line for line in source.splitlines() if line.startswith("A review finding blocks only"))
+        self.assertIn("interruption (a crash between two writes) reachable by a real caller or recorded data", rule)
+        self.assertIn("crossing a trust boundary", rule)
+        self.assertIn("data-loss or secret-leak path (pack sd:10288)", rule)
+
     def test_the_token_rule_reads_the_name_env_sh_exports(self):
         # sd:5786: env.sh exports the token under another name, so a rule that only sourced it left
         # CLAUDE_CODE_OAUTH_TOKEN unset, and a headless judge run failed 'not logged in'.
