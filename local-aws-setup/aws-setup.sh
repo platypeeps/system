@@ -4,7 +4,8 @@
 # level (readonly, operator, sandbox); the level decides the policy rendered
 # for that account's agent user. The IAM policy simulator checks every policy
 # before it is applied and again against the user it was attached to.
-# Usage: aws-setup.sh accounts | render|simulate|apply|keys|rotate|check <account>
+# Usage: aws-setup.sh accounts | render|simulate|apply|keys|rotate|check|audit <account>
+#        aws-setup.sh events <account> [hours]
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
@@ -17,6 +18,8 @@ st_source_env aws-setup
 POLICY_NAME="${POLICY_NAME:-agent-base}"
 MANAGED_TAG_KEY="${MANAGED_TAG_KEY:-claude-managed}"
 SIMULATE_PROFILE="${SIMULATE_PROFILE:-default}"
+# The trail `audit` keeps; one per AWS account, shared by its account files.
+AUDIT_TRAIL="${AUDIT_TRAIL:-deployment-audit}"
 DRY_RUN="${DRY_RUN:-0}"
 
 # IAM keeps at most five versions of a managed policy.
@@ -44,7 +47,7 @@ DISK_ROUTES="ec2:RunInstances ec2:CreateFleet ec2:RequestSpotInstances ec2:Reque
   ec2-instance-connect:OpenTunnel ec2:GetConsoleScreenshot"
 
 usage() {
-  echo "usage: $(basename "$0") accounts | test | render|simulate|apply|keys|rotate|check <account>" >&2
+  echo "usage: $(basename "$0") accounts | test | render|simulate|apply|keys|rotate|check|audit <account> | events <account> [hours]" >&2
 }
 
 die() {
@@ -55,7 +58,8 @@ die() {
 show_help() {
   cat <<'HELPEOF'
 usage: aws-setup.sh accounts | test
-       aws-setup.sh render|simulate|apply|keys|rotate|check <account>
+       aws-setup.sh render|simulate|apply|keys|rotate|check|audit <account>
+       aws-setup.sh events <account> [hours]
 
   accounts  list the account files in ./accounts.
   test      run the unittest suite in ./tests (extra args go to unittest).
@@ -78,6 +82,19 @@ usage: aws-setup.sh accounts | test
   check     confirm AGENT_PROFILE is AGENT_USER in ACCOUNT_ID, then simulate the
             level's allowed and denied actions against the user's attached
             policies. Exits 1 on any mismatch.
+  audit     as ADMIN_PROFILE, keep AUDIT_BUCKET (versioned, private) and
+            the multi-region CloudTrail trail AUDIT_TRAIL writing to it, and
+            start the trail. Safe to rerun; refuses, before any write, an
+            existing trail that differs from the one it creates (bucket,
+            key prefix, home region, multi-region, log file validation,
+            management write events). DRY_RUN=1 prints the writes.
+  events    review SSM SendCommand, StartSession, ResumeSession and
+            TerminateSession events of the last [hours] (default 24, at
+            most 2160) as ADMIN_PROFILE. Run it with the deployer's account
+            file. Flags UNEXPECTED (a principal other than AGENT_USER) and
+            UNLOGGED (output outside AUDIT_BUCKET/ssm-output/), and exits
+            1 on either; TUNNEL marks a port-forwarding session, whose
+            content no log records.
 
 Levels:
   readonly  describe/list/metrics; get on listed buckets.
@@ -112,12 +129,15 @@ names another folder. Start from local-aws-setup/accounts/example.env.example:
                  JSON in <accounts>/<name>.policies/<policy-name>.json
   PASS_ROLE_ARNS exact same-account role ARNs passed only to EC2 (default: none)
                  sandbox only; audit role privileges and consumers before use
+  AUDIT_BUCKET   bucket for the CloudTrail trail and SSM command output
+                 (default: none); every level denies cleaning it
 
 Shared settings (environment, or <config>/aws-setup/.env — see .env.example):
   POLICY_NAME       managed policy name            (default: agent-base;
                     an account file may set its own)
   MANAGED_TAG_KEY   tag marking agent-managed EC2  (default: claude-managed)
   SIMULATE_PROFILE  profile used by simulate       (default: default)
+  AUDIT_TRAIL       trail name audit keeps         (default: deployment-audit)
 HELPEOF
 }
 
@@ -132,6 +152,7 @@ load_account() {
   [ -f "$file" ] || die "no account file $file (copy local-aws-setup/accounts/example.env.example to $file)"
   ACCOUNT_ID="" LEVEL="" ADMIN_PROFILE="" AGENT_USER="" AGENT_PROFILE=""
   AGENT_REGION="" S3_BUCKETS="" AGENT_USER_ARN="" EXTRA_POLICIES="" PASS_ROLE_ARNS=""
+  AUDIT_BUCKET=""
   # shellcheck disable=SC1090
   . "$file"
   AGENT_USER="${AGENT_USER:-agent}"
@@ -172,7 +193,17 @@ validate_account() {
     if [ "${#b}" -lt 3 ] || [ "${#b}" -gt 63 ]; then
       die "$ACCOUNT: bucket name must be 3-63 characters: '$b'"
     fi
+    [ "$b" != "$AUDIT_BUCKET" ] ||
+      die "$ACCOUNT: AUDIT_BUCKET may not be listed in S3_BUCKETS: a working bucket grants delete"
   done
+  if [ -n "$AUDIT_BUCKET" ]; then
+    printf '%s' "$AUDIT_BUCKET" | LC_ALL=C grep -Eqx '[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]' &&
+      [ "$(printf '%s' "$AUDIT_BUCKET" | wc -l)" -eq 0 ] ||
+      die "$ACCOUNT: AUDIT_BUCKET must be a 3-63 character bucket name: '$AUDIT_BUCKET'"
+  fi
+  case "$AUDIT_TRAIL" in
+    ""|*[!A-Za-z0-9._-]*) die "invalid AUDIT_TRAIL: '$AUDIT_TRAIL'" ;;
+  esac
 }
 
 # Validate every supplemental document before any AWS call or mutation.
@@ -570,6 +601,31 @@ stmt_deny_tag_changes() {
 EOF
 }
 
+# The audit bucket holds the CloudTrail trail and SSM command output, the
+# record of who reached a deployment. CloudTrail and the instance role write
+# it; no IAM user this tool renders for may write, delete a version, expire
+# it, or switch versioning off. A plain delete only adds a delete marker.
+stmt_deny_audit_tampering() {
+  [ -n "$AUDIT_BUCKET" ] || return 0
+  cat <<EOF
+    {
+      "Sid": "DenyAuditTampering",
+      "Effect": "Deny",
+      "Action": [
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:PutLifecycleConfiguration",
+        "s3:PutBucketVersioning",
+        "s3:PutBucketObjectLockConfiguration",
+        "s3:PutObjectRetention",
+        "s3:BypassGovernanceRetention"
+      ],
+      "Resource": ["arn:aws:s3:::$AUDIT_BUCKET", "arn:aws:s3:::$AUDIT_BUCKET/*"]
+    },
+EOF
+}
+
 # The actions no convenience is worth, denied at every level so they stay
 # denied under whatever else is attached later.
 #
@@ -636,6 +692,7 @@ render_policy() {
   stmt_deny_untagged_lifecycle
   stmt_deny_disk_reads
   stmt_deny_tag_changes
+  stmt_deny_audit_tampering
   stmt_hard_denies
   printf '  ]\n}\n'
 }
@@ -1203,6 +1260,13 @@ expect_s3() {
     die "$ACCOUNT: S3_BUCKETS is set but names no bucket to check: '$S3_BUCKETS'"
   fi
   expect implicitDeny s3:GetObject "arn:aws:s3:::not-a-configured-bucket/probe.txt"
+  [ -n "$AUDIT_BUCKET" ] || return 0
+  for tamper in PutObject DeleteObject DeleteObjectVersion; do
+    expect explicitDeny "s3:$tamper" "arn:aws:s3:::$AUDIT_BUCKET/probe.txt"
+  done
+  for tamper in PutLifecycleConfiguration PutBucketVersioning; do
+    expect explicitDeny "s3:$tamper" "arn:aws:s3:::$AUDIT_BUCKET"
+  done
 }
 
 run_expectations() {
@@ -1260,6 +1324,173 @@ cmd_check() {
   run_expectations "$ACCOUNT_ID"
 }
 
+# --- audit trail -------------------------------------------------------------
+
+# The bucket policy lets only this account's trail write, over TLS. It is
+# rewritten whole on every run, so AUDIT_BUCKET must serve nothing else.
+audit_bucket_policy() {
+  trail_arn=$1
+  cat <<EOF
+{"Version": "2012-10-17", "Statement": [
+  {"Sid": "CloudTrailAclCheck", "Effect": "Allow",
+   "Principal": {"Service": "cloudtrail.amazonaws.com"},
+   "Action": "s3:GetBucketAcl", "Resource": "arn:aws:s3:::$AUDIT_BUCKET",
+   "Condition": {"StringEquals": {"aws:SourceArn": "$trail_arn"}}},
+  {"Sid": "CloudTrailWrite", "Effect": "Allow",
+   "Principal": {"Service": "cloudtrail.amazonaws.com"},
+   "Action": "s3:PutObject", "Resource": "arn:aws:s3:::$AUDIT_BUCKET/AWSLogs/$ACCOUNT_ID/*",
+   "Condition": {"StringEquals": {"aws:SourceArn": "$trail_arn",
+                                  "s3:x-amz-acl": "bucket-owner-full-control"}}},
+  {"Sid": "DenyInsecureTransport", "Effect": "Deny", "Principal": "*", "Action": "s3:*",
+   "Resource": ["arn:aws:s3:::$AUDIT_BUCKET", "arn:aws:s3:::$AUDIT_BUCKET/*"],
+   "Condition": {"Bool": {"aws:SecureTransport": "false"}}}
+]}
+EOF
+}
+
+# What an existing trail (get-trail's Trail object on stdin) lacks of the one
+# `audit` creates; prints the first difference and exits 1, or exits 0.
+# argv: the audit bucket, the trail ARN `audit` would create.
+TRAIL_UNLIKE_OURS='
+import json, sys
+bucket, arn = sys.argv[1:3]
+try:
+    trail = json.load(sys.stdin)
+except ValueError:
+    trail = None
+if not isinstance(trail, dict) or not isinstance(trail.get("S3BucketName"), str):
+    sys.exit(print("could not be read: get-trail gave no trail object") or 1)
+if trail["S3BucketName"] != bucket:
+    sys.exit(print("writes to %s, not %s" % (trail["S3BucketName"], bucket)) or 1)
+# is True: a missing flag or a string is not the property.
+checks = (
+    # The bucket policy names this ARN as aws:SourceArn; a trail homed in
+    # another region or account has another one, and its writes are denied.
+    (trail.get("TrailARN") == arn, "is not %s (homed in another region or account)" % arn),
+    (trail.get("IsMultiRegionTrail") is True, "is not a multi-region trail"),
+    (trail.get("LogFileValidationEnabled") is True, "has log file validation off"),
+    # The bucket policy allows AWSLogs/<account>/ only.
+    (not trail.get("S3KeyPrefix"), "writes under a key prefix the bucket policy does not allow"),
+    (trail.get("IsOrganizationTrail") in (None, False), "is an organization trail"),
+)
+for holds, why in checks:
+    if not holds:
+        sys.exit(print(why) or 1)
+'
+
+# Exit 0 when get-event-selectors output (stdin) records SSM's management
+# write events: a basic selector with IncludeManagementEvents true, ReadWrite
+# All or WriteOnly, not excluding ssm. Advanced selectors are refused rather
+# than interpreted; anything malformed exits 1.
+RECORDS_SSM_WRITES='
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+selectors = doc.get("EventSelectors") if isinstance(doc, dict) else None
+if not isinstance(selectors, list) or doc.get("AdvancedEventSelectors"):
+    sys.exit(1)
+def records(item):
+    excluded = item.get("ExcludeManagementEventSources") or []
+    return (item.get("IncludeManagementEvents") is True
+            and item.get("ReadWriteType") in ("All", "WriteOnly")
+            and isinstance(excluded, list) and "ssm.amazonaws.com" not in excluded)
+sys.exit(0 if any(isinstance(i, dict) and records(i) for i in selectors) else 1)
+'
+
+# Each step is a create-if-missing or a put that sets the same value again,
+# so a run cut short anywhere is finished by running it again.
+cmd_audit() {
+  load_account "$1"
+  require_admin_profile
+  [ -n "$AUDIT_BUCKET" ] || die "$ACCOUNT: AUDIT_BUCKET is not set; name the audit bucket in the account file"
+  require_aws
+  [ "$DRY_RUN" = 1 ] || require_admin_account
+  trail_arn="arn:aws:cloudtrail:$AGENT_REGION:$ACCOUNT_ID:trail/$AUDIT_TRAIL"
+  # Every read and every refusal comes before the first write, so a refused
+  # run leaves the bucket and the trail as it found them.
+  # --expected-bucket-owner: a bucket of that name in another account answers
+  # 403, never 404, and is never written.
+  bucket_missing=0
+  if found=$(admin s3api head-bucket --bucket "$AUDIT_BUCKET" \
+      --expected-bucket-owner "$ACCOUNT_ID" 2>&1); then
+    echo "bucket $AUDIT_BUCKET exists in $ACCOUNT_ID"
+  else
+    case "$found" in
+      *"(404)"*) bucket_missing=1 ;;
+      *) die "cannot use bucket $AUDIT_BUCKET: $found" ;;
+    esac
+  fi
+  trail_missing=0
+  if current=$(admin cloudtrail get-trail --name "$AUDIT_TRAIL" \
+      --query Trail --output json 2>&1); then
+    unlike=$(printf '%s' "$current" |
+      "${PYTHON:-python3}" -c "$TRAIL_UNLIKE_OURS" "$AUDIT_BUCKET" "$trail_arn") ||
+      die "trail $AUDIT_TRAIL $unlike; rename AUDIT_TRAIL or change the trail by hand"
+    selectors=$(admin cloudtrail get-event-selectors --trail-name "$AUDIT_TRAIL" --output json) ||
+      die "could not read the event selectors of trail $AUDIT_TRAIL"
+    printf '%s' "$selectors" | "${PYTHON:-python3}" -c "$RECORDS_SSM_WRITES" ||
+      die "trail $AUDIT_TRAIL does not record management write events from SSM; give it a basic selector with IncludeManagementEvents=true and ReadWriteType All or WriteOnly"
+    echo "trail $AUDIT_TRAIL matches what audit creates: $AUDIT_BUCKET, multi-region, validated, management writes"
+  else
+    case "$current" in
+      *TrailNotFoundException*) trail_missing=1 ;;
+      *) die "could not read trail $AUDIT_TRAIL: $current" ;;
+    esac
+  fi
+  if [ "$bucket_missing" = 1 ]; then
+    if [ "$AGENT_REGION" = us-east-1 ]; then
+      admin_mutate s3api create-bucket --bucket "$AUDIT_BUCKET" >/dev/null ||
+        die "could not create bucket $AUDIT_BUCKET"
+    else
+      admin_mutate s3api create-bucket --bucket "$AUDIT_BUCKET" \
+        --create-bucket-configuration "LocationConstraint=$AGENT_REGION" >/dev/null ||
+        die "could not create bucket $AUDIT_BUCKET"
+    fi
+    echo "created bucket $AUDIT_BUCKET"
+  fi
+  admin_mutate s3api put-public-access-block --bucket "$AUDIT_BUCKET" \
+    --public-access-block-configuration \
+    BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true ||
+    die "could not block public access to $AUDIT_BUCKET"
+  admin_mutate s3api put-bucket-versioning --bucket "$AUDIT_BUCKET" \
+    --versioning-configuration Status=Enabled ||
+    die "could not enable versioning on $AUDIT_BUCKET"
+  admin_mutate s3api put-bucket-policy --bucket "$AUDIT_BUCKET" \
+    --policy "$(audit_bucket_policy "$trail_arn")" ||
+    die "could not set the policy of $AUDIT_BUCKET"
+  if [ "$trail_missing" = 1 ]; then
+    # A new trail's default selector records every management event.
+    admin_mutate cloudtrail create-trail --name "$AUDIT_TRAIL" \
+      --s3-bucket-name "$AUDIT_BUCKET" --is-multi-region-trail \
+      --enable-log-file-validation >/dev/null ||
+      die "could not create trail $AUDIT_TRAIL"
+    echo "created trail $AUDIT_TRAIL"
+  fi
+  admin_mutate cloudtrail start-logging --name "$AUDIT_TRAIL" ||
+    die "could not start trail $AUDIT_TRAIL"
+  echo "trail $AUDIT_TRAIL is logging to $AUDIT_BUCKET"
+}
+
+cmd_events() {
+  load_account "$1"
+  hours=$2
+  # Digits only and at most four of them, before any arithmetic: a longer
+  # number overflows test(1). 2160 hours is CloudTrail's 90-day history.
+  case "$hours" in
+    ""|*[!0-9]*|?????*) die "hours must be a whole number from 1 to 2160: '$hours'" ;;
+  esac
+  [ "$hours" -ge 1 ] && [ "$hours" -le 2160 ] ||
+    die "hours must be a whole number from 1 to 2160: '$hours'"
+  require_admin_profile
+  require_aws
+  require_admin_account
+  "${PYTHON:-python3}" "$DIR/review-events.py" --profile "$ADMIN_PROFILE" \
+    --region "$AGENT_REGION" --account "$ACCOUNT_ID" --user "$AGENT_USER" \
+    --bucket "$AUDIT_BUCKET" --hours "$hours"
+}
+
 # --- entrypoint --------------------------------------------------------------
 
 need_account() {
@@ -1274,6 +1505,8 @@ case "${1:-}" in
   keys)     need_account "$1" "${2:-}"; cmd_keys "$2" ;;
   rotate)   need_account "$1" "${2:-}"; cmd_rotate "$2" ;;
   check)    need_account "$1" "${2:-}"; cmd_check "$2" ;;
+  audit)    need_account "$1" "${2:-}"; cmd_audit "$2" ;;
+  events)   need_account "$1" "${2:-}"; cmd_events "$2" "${3-24}" ;;
   test)     shift
             exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@" ;;
   -h|--help|help) show_help ;;
