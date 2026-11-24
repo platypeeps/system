@@ -196,7 +196,7 @@ It checks the bucket, no key prefix, the home region and account, multi-region, 
 It refuses advanced event selectors rather than read them. A rerun finishes a run cut short.
 An existing bucket gets its public access block, versioning and policy set again on every run.
 It must have no enabled lifecycle rule that expires objects or old versions, or `audit` refuses before any write.
-No other trail in the home region may write to the bucket: the policy `audit` sets would cut it off, so `audit` refuses before any write.
+No other trail in any enabled region may write to the bucket: the policy `audit` sets would cut it off, so `audit` refuses before any write.
 After `start-logging`, `audit` reads the trail status and fails unless it is logging with no log or digest delivery error.
 The trail records management events, so `SendCommand`, `StartSession` and `TerminateSession` land there.
 One management-event trail per account is free; the bucket costs its storage.
@@ -217,7 +217,7 @@ It reads CloudTrail's 90-day event history in every region the account has enabl
 It prints one row per call, with its region, in local time.
 `UNEXPECTED` marks a call by anyone but `AGENT_USER`.
 `UNLOGGED` marks a command whose output skips `ssm-output/` in `AUDIT_BUCKET`, the one prefix the instance role may write.
-It also marks one with no object under `ssm-output/<command id>/<instance id>/` for each instance it names; a folder marker (a key ending in `/`) does not count.
+It also marks one with no object under `ssm-output/<command id>/<instance id>/` for each instance it names; a folder marker (a key ending in `/`) or a key outside that prefix does not count.
 A command sent to tag targets, or to both ids and targets, is always `UNLOGGED`: the event does not name whose output to look for.
 A command still running, or one that printed nothing, shows as `UNLOGGED` too; review it by hand.
 CloudTrail delivers an event up to 15 minutes late, so a clean review does not cover the last 15 minutes.

@@ -111,11 +111,14 @@ def saved(args, record, params, prefix):
         if not isinstance(page, dict):
             raise Malformed("list-objects-v2 output is not an object")
         # A key ending in "/" is a folder marker, not output; it sorts
-        # first, so the listing reads past it. 100 keys fail closed.
+        # first, so the listing reads past it. 100 keys fail closed. A key
+        # the answer holds outside the prefix asked for is another
+        # command's or instance's, and no evidence for this one.
         contents = page.get("Contents")
         if not (isinstance(contents, list) and any(
                 isinstance(o, dict) and isinstance(o.get("Key"), str)
-                and not o["Key"].endswith("/") for o in contents)):
+                and o["Key"].startswith(key) and not o["Key"].endswith("/")
+                for o in contents)):
             return False
     return True
 

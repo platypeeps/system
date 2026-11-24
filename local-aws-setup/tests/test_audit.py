@@ -13,7 +13,7 @@ from tests.test_aws_setup import ACCOUNT_ID, ADMIN_ARN, Sandbox, statement
 
 BUCKET = "example-audit-bucket"
 TRAIL_ARN = "arn:aws:cloudtrail:eu-west-1:%s:trail/deployment-audit" % ACCOUNT_ID
-GOOD_SELECTORS = json.dumps({"EventSelectors": [
+GOOD_SELECTORS = json.dumps({"TrailARN": TRAIL_ARN, "EventSelectors": [
     {"ReadWriteType": "All", "IncludeManagementEvents": True, "DataResources": [],
      "ExcludeManagementEventSources": []}]})
 
@@ -29,7 +29,7 @@ def trail(**changed):
 
 
 COMMAND_ID = "0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e"
-SAVED = json.dumps({"Contents": [{"Key": "ssm-output/x/i-1/awsrunShellScript/0/stdout"}]})
+SAVED = json.dumps({"Contents": [{"Key": "@PREFIX@awsrunShellScript/0/stdout"}]})
 
 
 HEALTHY = json.dumps({"IsLogging": True,
@@ -138,6 +138,72 @@ class TamperDenyCase(Case):
 
 
 class AuditCase(Case):
+    def box(self, **account):
+        box = super().box(**account)
+        box.rule("describe-regions", stdout=json.dumps(["eu-west-1", "us-east-1"]))
+        return box
+
+    def first(self, box, *match, **answer):
+        box.scenario["rules"].insert(0, {"match": list(match), **answer})
+
+    def test_another_regions_trail_writing_to_the_bucket_is_refused(self):
+        old = {"trailList": [{"Name": "old-audit", "S3BucketName": BUCKET, "TrailARN":
+                              "arn:aws:cloudtrail:us-west-2:%s:trail/old-audit" % ACCOUNT_ID}]}
+        box = self.fresh()
+        self.first(box, "describe-regions", stdout=json.dumps(["eu-west-1", "us-west-2"]))
+        self.first(box, "describe-trails", region="us-west-2", stdout=json.dumps(old))
+        done = box.run("audit", "x")
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("old-audit", done.stderr)
+        names = [r[1] for r in self.rests(box) if len(r) > 1]
+        self.assertNotIn("put-bucket-policy", names)
+        self.assertNotIn("create-bucket", names)
+
+    def test_selectors_of_another_trail_are_refused_before_any_write(self):
+        good = json.loads(GOOD_SELECTORS)
+        for arn in (TRAIL_ARN.replace("deployment-audit", "other"), None, 5):
+            with self.subTest(arn=arn):
+                box = self.box()
+                box.rule("get-trail", stdout=trail())
+                box.rule("get-event-selectors", stdout=json.dumps(dict(good, TrailARN=arn)))
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("event selectors", done.stderr)
+                self.assertNotIn("put-bucket-policy",
+                                 [r[1] for r in self.rests(box) if len(r) > 1])
+
+    def test_every_enabled_region_is_asked_for_its_trails(self):
+        box = self.fresh()
+        self.first(box, "describe-regions",
+                   stdout=json.dumps(["us-west-2", "eu-west-1", "ap-south-1"]))
+        self.assertEqual(box.run("audit", "x").returncode, 0)
+        asked = sorted(c["region"] for c in box.calls()
+                       if c["rest"][1:2] == ["describe-trails"])
+        self.assertEqual(asked, ["ap-south-1", "eu-west-1", "us-west-2"])
+
+    def test_a_region_list_that_cannot_be_trusted_is_refused_before_any_write(self):
+        bad = [{"stdout": json.dumps(b)} for b in
+               ([], "eu-west-1", [1], ["eu-west-1", "x; rm"], ["us-west-2"], {"Regions": []})]
+        bad += [{"stdout": "not json"}, {"stdout": ""},
+                {"exit": 254, "stderr": "AccessDenied"}]
+        for answer in bad:
+            with self.subTest(answer=answer):
+                box = self.fresh()
+                self.first(box, "describe-regions", **answer)
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("regions", done.stderr)
+                names = [r[1] for r in self.rests(box) if len(r) > 1]
+                self.assertNotIn("put-bucket-policy", names)
+
+    def test_one_regions_failed_trail_list_is_refused(self):
+        box = self.fresh()
+        self.first(box, "describe-trails", region="us-east-1", exit=254, stderr="AccessDenied")
+        done = box.run("audit", "x")
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("us-east-1", done.stderr)
+        self.assertNotIn("put-bucket-policy", [r[1] for r in self.rests(box) if len(r) > 1])
+
     def fresh(self, **account):
         box = self.box(**account)
         box.rule("head-bucket", exit=254,
@@ -153,7 +219,7 @@ class AuditCase(Case):
         rests = self.rests(box)
         names = [r[1] for r in rests if r[:1] in (["s3api"], ["cloudtrail"])]
         self.assertEqual(names, ["head-bucket", "get-trail", "describe-trails",
-                                 "create-bucket",
+                                 "describe-trails", "create-bucket",
                                  "put-public-access-block", "put-bucket-versioning",
                                  "put-bucket-policy", "create-trail", "start-logging",
                                  "get-trail-status"])
@@ -345,7 +411,7 @@ class AuditCase(Case):
             with self.subTest(kind=kind):
                 box = self.box()
                 box.rule("get-trail", stdout=trail())
-                box.rule("get-event-selectors", stdout=json.dumps({"EventSelectors": [
+                box.rule("get-event-selectors", stdout=json.dumps({"TrailARN": TRAIL_ARN, "EventSelectors": [
                     {"ReadWriteType": "ReadOnly", "IncludeManagementEvents": True},
                     {"ReadWriteType": kind, "IncludeManagementEvents": True,
                      "ExcludeManagementEventSources": ["kms.amazonaws.com"]}]}))
@@ -633,6 +699,20 @@ class EventsCase(Case):
                                              outputS3KeyPrefix="ssm-output")],
                                       first=[{"match": ["list-objects-v2"],
                                               "stdout": json.dumps(answer)}])
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("UNLOGGED", done.stdout)
+
+    def test_a_key_outside_the_asked_prefix_is_no_saved_output(self):
+        asked = "ssm-output/%s/i-1/" % COMMAND_ID
+        other = "ssm-output/%s/i-1/" % COMMAND_ID.replace("0b6f", "ffff")
+        for key in (other + "stdout", "ssm-output/%s/i-10/stdout" % COMMAND_ID,
+                    "other/stdout", asked[:-1], "x" + asked + "stdout"):
+            with self.subTest(key=key):
+                _, done = self.review([event("SendCommand", instanceIds=["i-1"],
+                                             outputS3BucketName=BUCKET,
+                                             outputS3KeyPrefix="ssm-output")],
+                                      first=[{"match": ["list-objects-v2"], "stdout":
+                                              json.dumps({"Contents": [{"Key": key}]})}])
                 self.assertEqual(done.returncode, 1, done.stdout)
                 self.assertIn("UNLOGGED", done.stdout)
 

@@ -209,7 +209,10 @@ def main():
         if rule.get("region") not in (None, options.get("region")):
             continue
         if all(token in joined for token in rule["match"]):
-            done(rule.get("stdout", ""), rule.get("exit", 0), rule.get("stderr", ""))
+            # @PREFIX@ in an answer is the --prefix the call asked for.
+            asked = rest[rest.index("--prefix") + 1] if "--prefix" in rest[:-1] else ""
+            done(rule.get("stdout", "").replace("@PREFIX@", asked),
+                 rule.get("exit", 0), rule.get("stderr", ""))
     done()
 
 

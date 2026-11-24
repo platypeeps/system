@@ -1395,7 +1395,8 @@ for holds, why in checks:
 # Exit 0 when get-event-selectors output (stdin) records SSM's management
 # write events: a basic selector with IncludeManagementEvents true, ReadWrite
 # All or WriteOnly, not excluding ssm. Advanced selectors are refused rather
-# than interpreted; anything malformed exits 1.
+# than interpreted; anything malformed exits 1, as does an answer whose
+# TrailARN is not argv[1].
 RECORDS_SSM_WRITES='
 import json, sys
 try:
@@ -1404,6 +1405,9 @@ except ValueError:
     sys.exit(1)
 selectors = doc.get("EventSelectors") if isinstance(doc, dict) else None
 if not isinstance(selectors, list) or doc.get("AdvancedEventSelectors"):
+    sys.exit(1)
+# The answer names its trail; selectors of any other say nothing of ours.
+if doc.get("TrailARN") != sys.argv[1]:
     sys.exit(1)
 def records(item):
     excluded = item.get("ExcludeManagementEventSources") or []
@@ -1459,6 +1463,22 @@ for key in ("LatestDeliveryError", "LatestDigestDeliveryError"):
         sys.exit(print("gave a %s that is not text" % key) or 1)
     if error:
         sys.exit(print("reports %s %s" % (key, json.dumps(error)[:200])) or 1)
+'
+
+# The enabled regions (describe-regions names on stdin), one per line; exits
+# 1 unless they are a list of region names with argv[1] among them. The
+# pattern keeps anything else out of the loop that asks each region.
+ENABLED_REGIONS='
+import json, re, sys
+try:
+    names = json.load(sys.stdin)
+except ValueError:
+    names = None
+if (not isinstance(names, list) or not all(
+        isinstance(n, str) and re.fullmatch(r"[a-z]{2}(-[a-z]+)+-[0-9]{1,2}", n)
+        for n in names) or sys.argv[1] not in names):
+    sys.exit(1)
+print("\n".join(sorted(set(names))))
 '
 
 # Another trail that writes to the audit bucket (describe-trails output on
@@ -1520,8 +1540,8 @@ cmd_audit() {
       die "trail $AUDIT_TRAIL $unlike; rename AUDIT_TRAIL or change the trail by hand"
     selectors=$(admin cloudtrail get-event-selectors --trail-name "$AUDIT_TRAIL" --output json) ||
       die "could not read the event selectors of trail $AUDIT_TRAIL"
-    printf '%s' "$selectors" | "${PYTHON:-python3}" -c "$RECORDS_SSM_WRITES" ||
-      die "trail $AUDIT_TRAIL does not record management write events from SSM; give it a basic selector with IncludeManagementEvents=true and ReadWriteType All or WriteOnly"
+    printf '%s' "$selectors" | "${PYTHON:-python3}" -c "$RECORDS_SSM_WRITES" "$trail_arn" ||
+      die "trail $AUDIT_TRAIL does not record management write events from SSM, or its event selectors answer names another trail; give it a basic selector with IncludeManagementEvents=true and ReadWriteType All or WriteOnly"
     echo "trail $AUDIT_TRAIL matches what audit creates: $AUDIT_BUCKET, multi-region, validated, management writes"
   else
     aws_error_is TrailNotFoundException GetTrail "$current" ||
@@ -1529,12 +1549,20 @@ cmd_audit() {
     trail_missing=1
   fi
   # The bucket policy below lets only $trail_arn write, so another trail
-  # writing here (an old AUDIT_TRAIL, say) would stop delivering.
-  trails=$(admin cloudtrail describe-trails --output json 2>&1) ||
-    die "could not list the trails of $ACCOUNT_ID: $trails"
-  other=$(printf '%s' "$trails" |
-    "${PYTHON:-python3}" -c "$OTHER_TRAIL_WRITES" "$AUDIT_BUCKET" "$trail_arn") ||
-    die "bucket $AUDIT_BUCKET $other; the new policy would cut it off, so stop or move it by hand"
+  # writing here (an old AUDIT_TRAIL, say) would stop delivering. A region
+  # lists only its own trails and the multi-region ones, so ask each.
+  regions=$(admin ec2 describe-regions --query 'Regions[].RegionName' --output json 2>&1) ||
+    die "could not list the enabled regions of $ACCOUNT_ID: $regions"
+  regions=$(printf '%s' "$regions" | "${PYTHON:-python3}" -c "$ENABLED_REGIONS" "$AGENT_REGION") ||
+    die "could not list the enabled regions of $ACCOUNT_ID: describe-regions gave no region list with $AGENT_REGION in it"
+  for region in $regions; do
+    trails=$(aws --profile "$ADMIN_PROFILE" --region "$region" \
+      cloudtrail describe-trails --output json 2>&1) ||
+      die "could not list the trails of $ACCOUNT_ID in $region: $trails"
+    other=$(printf '%s' "$trails" |
+      "${PYTHON:-python3}" -c "$OTHER_TRAIL_WRITES" "$AUDIT_BUCKET" "$trail_arn") ||
+      die "bucket $AUDIT_BUCKET $other (seen in $region); the new policy would cut it off, so stop or move it by hand"
+  done
   if [ "$bucket_missing" = 1 ]; then
     if [ "$AGENT_REGION" = us-east-1 ]; then
       admin_mutate s3api create-bucket --bucket "$AUDIT_BUCKET" >/dev/null ||
