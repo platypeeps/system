@@ -215,9 +215,10 @@ Review the calls with the deployer's account file:
 ```
 
 It reads CloudTrail's 90-day event history in every region the account has enabled, as the admin profile.
-It reads every event from `ssm.amazonaws.com`, one lookup per region, and skips reads and the SSM agent's reports of itself (`UpdateInstanceInformation`, `PutInventory`, `PutComplianceItems`, `UpdateInstanceAssociationStatus`).
-A report is skipped only when an instance's own role session in this account sends it about that same instance; one written by hand, or for another instance, is `UNREVIEWED`.
-Each managed instance sends such a report about every 5 minutes, so a long window takes longer: event history answers 50 events a page, about 2 pages a second.
+It reads every event from `ssm.amazonaws.com`, one lookup per region, and skips reads.
+It also skips, and counts in its last line, the heartbeat (`UpdateInstanceInformation`) an EC2 instance sends about itself with credentials EC2 delivered to it; CloudTrail marks those, and a session name alone does not count.
+Each managed instance sends one about every 5 minutes, so a long window takes longer: event history answers 50 events a page, about 2 pages a second.
+The agent's other writes (`PutInventory`, `PutComplianceItems`, `UpdateInstanceAssociationStatus`) are `UNREVIEWED` like any write: a person holding the instance's credentials makes the same calls. So is a heartbeat from a managed node outside EC2.
 It prints one row per call, with its region, in local time.
 `UNEXPECTED` marks a call by anyone but `AGENT_USER`.
 `UNLOGGED` marks a command whose output skips `ssm-output/` in `AUDIT_BUCKET`, the one prefix the instance role may write.

@@ -874,26 +874,64 @@ class EventsCase(Case):
                     self.assertNotIn("hunter2", done.stdout + done.stderr)
 
     def report(self, name, instance="i-0123456789abcdef0", account=ACCOUNT_ID,
-               session=None, **params):
-        """An SSM agent's report, sent with its instance's role session."""
+               session=None, delivery="2.0", **params):
+        """An SSM agent's report, sent with credentials EC2 gave its instance."""
         field = "resourceId" if name == "PutComplianceItems" else "instanceId"
         params.setdefault(field, instance)
-        return event(name, kind="AssumedRole", account=account, read_only=False,
+        made = event(name, kind="AssumedRole", account=account, read_only=False,
                      arn="arn:aws:sts::%s:assumed-role/instance-role/%s"
                      % (account, session or instance), **params)
+        record = json.loads(made["CloudTrailEvent"])
+        if delivery is not ...:
+            record["userIdentity"]["sessionContext"] = {"ec2RoleDelivery": delivery}
+        made["CloudTrailEvent"] = json.dumps(record)
+        return made
 
-    def test_reads_and_agent_reports_are_skipped(self):
-        # Every managed instance reports itself every few minutes; those
-        # writes run nothing, and a read changes nothing.
+    def test_reads_and_heartbeats_are_skipped_and_counted(self):
+        # Every managed instance sends a heartbeat every few minutes; it
+        # runs nothing. A read changes nothing. Neither is a row, and the
+        # summary says how many heartbeats it left out.
         quiet = [event("GetDocument", name="doc-1", read_only=True),
                  event("DescribeInstanceInformation", read_only=True),
                  self.report("UpdateInstanceInformation"),
-                 self.report("PutInventory", instance="mi-0123456789abcdef0"),
-                 self.report("PutComplianceItems", resourceType="ManagedInstance"),
-                 self.report("UpdateInstanceAssociationStatus")]
+                 self.report("UpdateInstanceInformation", delivery="1.0")]
         _, done = self.review(quiet)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertIn("0 events, 0 flagged", done.stdout)
+        self.assertIn("0 events, 0 flagged, 2 instance heartbeats skipped", done.stdout)
+
+    def test_a_write_of_recorded_data_is_never_skipped(self):
+        # Compliance, inventory and association status are data the
+        # account keeps. A person holding the instance's credentials can
+        # write them as the agent does, so no caller makes one skippable.
+        for name in ("PutComplianceItems", "PutInventory",
+                     "UpdateInstanceAssociationStatus"):
+            with self.subTest(name=name):
+                _, done = self.review([self.report(name)])
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                (row,) = [line for line in done.stdout.splitlines() if name in line]
+                self.assertIn("UNREVIEWED", row)
+                self.assertIn("1 events, 1 flagged, 0 instance", done.stdout)
+
+    def test_a_session_name_alone_makes_no_heartbeat(self):
+        # Whoever assumes a role picks its session name; only CloudTrail
+        # sets ec2RoleDelivery, on credentials EC2 handed an instance.
+        for delivery in (..., None, "", True, 2.0, "3.0", ["2.0"], {"x": "2.0"}):
+            with self.subTest(delivery=delivery):
+                _, done = self.review([self.report("UpdateInstanceInformation",
+                                                   delivery=delivery)])
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("UNREVIEWED", done.stdout)
+        # A managed node outside EC2 has no such proof.
+        _, done = self.review([self.report("UpdateInstanceInformation",
+                                           instance="mi-0123456789abcdef0")])
+        self.assertEqual(done.returncode, 1, done.stdout)
+        # sessionContext of another shape is no proof either.
+        made = self.report("UpdateInstanceInformation")
+        record = json.loads(made["CloudTrailEvent"])
+        record["userIdentity"]["sessionContext"] = "2.0"
+        made["CloudTrailEvent"] = json.dumps(record)
+        _, done = self.review([made])
+        self.assertEqual(done.returncode, 1, done.stdout)
 
     def test_a_report_not_sent_by_the_instance_itself_is_unreviewed(self):
         # The report names are writes anyone may make: compliance data

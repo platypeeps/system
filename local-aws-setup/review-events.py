@@ -2,8 +2,8 @@
 
 aws-setup.sh `events` runs this with the admin profile. Event history is kept
 per region, so it reads every region the account has enabled, one lookup per
-region of every event from ssm.amazonaws.com. It skips reads and the SSM
-agent's reports of itself, sent by the instance's own role session (REPORTS
+region of every event from ssm.amazonaws.com. It skips reads, and counts
+without a row the heartbeat an EC2 instance sends about itself (HEARTBEAT
 below); every other call prints one row,
 oldest first, in local time:
 
@@ -54,16 +54,16 @@ ROUTES = ("CreateAssociation", "CreateAssociationBatch", "UpdateAssociation",
 NAMES = ("SendCommand", "StartSession", "ResumeSession", "TerminateSession") + ROUTES
 REACHING = {"SendCommand", "StartSession", "ResumeSession"} | set(ROUTES)
 SOURCE = "ssm.amazonaws.com"
-# Writes the SSM agent makes to report its own state, every few minutes on
-# every managed instance; none runs a document or changes what one reaches.
-# A read is skipped too. Every other SSM write, by any name, is UNREVIEWED.
-# Anyone may make these calls, so one is skipped only when an instance's own
-# role session in this account sends it about that same instance
-# (agent_report below); written by hand, or for another instance, it is
-# UNREVIEWED. Each name maps to the request field that names the instance.
-REPORTS = {"UpdateInstanceInformation": "instanceId", "PutInventory": "instanceId",
-           "PutComplianceItems": "resourceId", "UpdateInstanceAssociationStatus": "instanceId"}
-SESSION = re.compile(r"arn:aws[a-z-]*:sts::([0-9]{12}):assumed-role/[^/]+/((?:i|mi)-[0-9a-f]{1,17})")
+# The one write skipped: the heartbeat the SSM agent sends every few minutes
+# from every managed instance. It runs nothing and changes no document,
+# target, schedule, compliance or inventory record. It is skipped only on
+# evidence the caller cannot set (heartbeat below), and the summary counts
+# it. Every other SSM write, by any name and any caller, is a row: the
+# agent's inventory, compliance and association status writes too, since a
+# person holding the instance's credentials makes the same calls. A read
+# (readOnly true, set by CloudTrail) is skipped.
+HEARTBEAT = "UpdateInstanceInformation"
+SESSION = re.compile(r"arn:aws[a-z-]*:sts::([0-9]{12}):assumed-role/[^/]+/(i-[0-9a-f]{1,17})")
 TUNNEL = "AWS-StartPortForwardingSession"
 # The instance role may write only <bucket>/ssm-output/*; output under any
 # other key is never written, so it counts as unlogged.
@@ -208,14 +208,22 @@ def saved(args, record, params, prefix):
     return True
 
 
-def agent_report(args, name, who, params):
-    """True when an instance's own role session reports that instance."""
-    field = REPORTS.get(name)
+def heartbeat(args, name, who, params):
+    """True when EC2-delivered credentials of an instance report that instance.
+
+    A session name proves nothing: whoever assumes the role picks it.
+    CloudTrail sets sessionContext.ec2RoleDelivery only on credentials the
+    instance metadata service handed out, so a call without it is a row. A
+    managed node outside EC2 carries no such proof; its heartbeat is a row.
+    """
     arn = who.get("arn")
     found = SESSION.fullmatch(arn) if isinstance(arn, str) else None
-    return bool(field and found and who.get("type") == "AssumedRole"
+    context = who.get("sessionContext")
+    delivery = context.get("ec2RoleDelivery") if isinstance(context, dict) else None
+    return bool(name == HEARTBEAT and found and who.get("type") == "AssumedRole"
+                and isinstance(delivery, str) and delivery in ("1.0", "2.0")
                 and found.group(1) == args.account
-                and params.get(field) == found.group(2))
+                and params.get("instanceId") == found.group(2))
 
 
 def record_of(item):
@@ -242,6 +250,7 @@ def record_of(item):
 
 def review(args, items):
     rows = []
+    heartbeats = 0
     for region, item in items:
         record, who, moment, params = record_of(item)
         # The lookup asks for one source; an event of another is not SSM's.
@@ -254,8 +263,11 @@ def review(args, items):
         if name not in NAMES:
             # A known call is reviewed whatever readOnly says; any other is
             # skipped only when CloudTrail marks it a read, or it is an
-            # agent's report of itself.
-            if record.get("readOnly") is True or agent_report(args, name, who, params):
+            # instance's heartbeat, which the summary counts.
+            if record.get("readOnly") is True:
+                continue
+            if heartbeat(args, name, who, params):
+                heartbeats += 1
                 continue
             flags.append("UNREVIEWED")
         own = (who.get("type") == "IAMUser" and who.get("accountId") == args.account
@@ -286,7 +298,8 @@ def review(args, items):
         print("%s  %-14s %-16s %-34s %s %s" % (
             moment.astimezone().strftime("%Y-%m-%d %H:%M %Z"), region, clean(name),
             clean(actor), clean(target), " ".join(flags)))
-    print("%d events, %d flagged" % (len(rows), flagged))
+    print("%d events, %d flagged, %d instance heartbeats skipped"
+          % (len(rows), flagged, heartbeats))
     return 1 if flagged else 0
 
 
