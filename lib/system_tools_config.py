@@ -40,7 +40,7 @@ def shared(name: str, environ: dict[str, str] | None = None) -> str:
     env = os.environ if environ is None else environ
     if name in env:
         return env[name]
-    return _read_env_file(root(env) / "shared.env", env).get(name, "")
+    return read_env_file(root(env) / "shared.env", env).get(name, "")
 
 
 def label_prefix(environ: dict[str, str] | None = None) -> str:
@@ -73,10 +73,12 @@ def read_env(tool: str, environ: dict[str, str] | None = None) -> dict[str, str]
     quotes; no other variable expands (sd:1868).
     """
     env = os.environ if environ is None else environ
-    return _read_env_file(config_dir(tool, environ) / ".env", env)
+    return read_env_file(config_dir(tool, environ) / ".env", env)
 
 
-def _read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
+def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
+    """`read_env`'s parser for any env file; `{}` when it is absent.
+    `env` supplies the HOME the file's `$HOME` and `~/` expand to."""
     home = env.get("HOME") or os.path.expanduser("~")
     values: dict[str, str] = {}
     if not path.is_file():
