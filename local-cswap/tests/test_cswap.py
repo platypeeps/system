@@ -904,7 +904,8 @@ class RemoteControlReconnects(Machine):
         # the sent mark moved in; a slow rename used up the gap, or a
         # switch landed during it, and the enter still went on the old
         # checks. They are read after the rename.
-        hooks = {"slow": 'mv() { case "${1-}" in *rc-owed.sent) sleep 1.2;; esac; command mv "$@"; }\n',
+        # The gap leaves the checks room on a loaded gate (sd:10057).
+        hooks = {"slow": 'mv() { case "${1-}" in *rc-owed.sent) sleep 6;; esac; command mv "$@"; }\n',
                  "switch": 'mv() { local s _; case "${1-}" in *rc-owed.sent)\n'
                            '  read -r s _ <"$RC_PENDING"; builtin printf "%s 4343\\n" $((s + 1)) >"$RC_PENDING";;\n'
                            'esac; command mv "$@"; }\n'}
@@ -915,7 +916,7 @@ class RemoteControlReconnects(Machine):
                 self.publish(ONE if self.active() == 3 else THREE)
                 self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
                 pathlib.Path(self.env["FAKE_HERDR"] + ".typed").unlink(missing_ok=True)
-                result = self.sync("elsewhere", BASH_ENV=str(env), CSWAP_RC_GAP_MS="1000")
+                result = self.sync("elsewhere", BASH_ENV=str(env), CSWAP_RC_GAP_MS="5000")
                 self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
                 self.assertEqual(self.prompts(), [], result.stdout)
                 (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
@@ -1556,13 +1557,13 @@ class RemoteControlReconnects(Machine):
         # the enter submits: a typing that ran over stays owed, and the
         # enter goes only to a box that shows exactly /rc.
         # Rows: herdr times out; herdr acknowledges past the gap.
-        # A 2000 ms gap: the checks fit it on a loaded gate, where four
-        # took 1057 ms of a 1000 ms gap; the keys run past it.
+        # A 5000 ms gap: the checks fit it on a loaded gate, where they
+        # took 2130 ms of a 2000 ms gap; the keys run past it.
         # A typing killed before it reached the pane leaves the box
         # empty: the next sync types and enters. One acknowledged late
         # left /rc in the box: no sync enters it (sd:9427 review).
-        rows = [({"FAKE_HERDR_KEYS_SLOW": "3"}, "2000", ["herdr agent send-keys w1:p1 enter"]),
-                ({"FAKE_HERDR_KEYS_LATE": "2.5"}, "2000", [])]
+        rows = [({"FAKE_HERDR_KEYS_SLOW": "7"}, "5000", ["herdr agent send-keys w1:p1 enter"]),
+                ({"FAKE_HERDR_KEYS_LATE": "6"}, "5000", [])]
         for slow, gap, later in rows:
             with self.subTest(slow=slow):
                 self.publish(ONE if self.active() == 3 else THREE)
@@ -1937,10 +1938,12 @@ class RemoteControlReconnects(Machine):
         # timeout, into whatever the pane drew meanwhile. The gap is
         # checked again after the mark; past it, the pane stays owed.
         slow = self.tmp / "slow-mark.sh"
-        slow.write_text('awk() { case "${2-}" in row=*) sleep 1.2;; esac; command awk "$@"; }\n')
+        # A 5000 ms gap: the checks took 1542 ms of a 1000 ms one on a
+        # loaded gate (sd:10057); the 6 s mark write still runs past it.
+        slow.write_text('awk() { case "${2-}" in row=*) sleep 6;; esac; command awk "$@"; }\n')
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
-        result = self.sync("elsewhere", BASH_ENV=str(slow), CSWAP_RC_GAP_MS="1000")
+        result = self.sync("elsewhere", BASH_ENV=str(slow), CSWAP_RC_GAP_MS="5000")
         self.assertEqual(self.prompts(), [], result.stdout)
         self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
         self.assertIn("reconnect: typed /rc into w1:p1, but the gap ran out before the enter\n",
