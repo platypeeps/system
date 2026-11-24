@@ -42,7 +42,7 @@ TAMPER = ("s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
 
 
 def event(name, /, user="deployer", account=ACCOUNT_ID, kind="IAMUser",
-          when="2026-11-23T10:00:00Z", response=..., read_only=..., **params):
+          when="2026-11-23T10:00:00Z", response=..., read_only=..., arn=..., **params):
     record = {
         "eventSource": "ssm.amazonaws.com",
         "eventName": name,
@@ -57,6 +57,8 @@ def event(name, /, user="deployer", account=ACCOUNT_ID, kind="IAMUser",
         record["responseElements"] = response
     if read_only is not ...:
         record["readOnly"] = read_only
+    if arn is not ...:
+        record["userIdentity"]["arn"] = arn
     return {"EventName": name, "CloudTrailEvent": json.dumps(record)}
 
 
@@ -871,20 +873,55 @@ class EventsCase(Case):
                     self.assertIn("1 events, 1 flagged", done.stdout)
                     self.assertNotIn("hunter2", done.stdout + done.stderr)
 
+    def report(self, name, instance="i-0123456789abcdef0", account=ACCOUNT_ID,
+               session=None, **params):
+        """An SSM agent's report, sent with its instance's role session."""
+        field = "resourceId" if name == "PutComplianceItems" else "instanceId"
+        params.setdefault(field, instance)
+        return event(name, kind="AssumedRole", account=account, read_only=False,
+                     arn="arn:aws:sts::%s:assumed-role/instance-role/%s"
+                     % (account, session or instance), **params)
+
     def test_reads_and_agent_reports_are_skipped(self):
         # Every managed instance reports itself every few minutes; those
         # writes run nothing, and a read changes nothing.
         quiet = [event("GetDocument", name="doc-1", read_only=True),
                  event("DescribeInstanceInformation", read_only=True),
-                 event("UpdateInstanceInformation", kind="AssumedRole", read_only=False,
-                       instanceId="i-1"),
-                 event("PutInventory", kind="AssumedRole", read_only=False, instanceId="i-1"),
-                 event("PutComplianceItems", kind="AssumedRole", read_only=False),
-                 event("UpdateInstanceAssociationStatus", kind="AssumedRole",
-                       read_only=False)]
+                 self.report("UpdateInstanceInformation"),
+                 self.report("PutInventory", instance="mi-0123456789abcdef0"),
+                 self.report("PutComplianceItems", resourceType="ManagedInstance"),
+                 self.report("UpdateInstanceAssociationStatus")]
         _, done = self.review(quiet)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("0 events, 0 flagged", done.stdout)
+
+    def test_a_report_not_sent_by_the_instance_itself_is_unreviewed(self):
+        # The report names are writes anyone may make: compliance data
+        # written by hand, or one instance reporting for another, changes
+        # what the account records, and the review must show it.
+        for label, bad in (
+                ("by hand", event("PutComplianceItems", read_only=False,
+                                  resourceId="i-0123456789abcdef0")),
+                ("by hand, no readOnly", event("PutInventory",
+                                               instanceId="i-0123456789abcdef0")),
+                ("for another instance", self.report(
+                    "PutComplianceItems", session="i-0fedcba987654321f")),
+                ("names no instance", self.report("UpdateInstanceInformation",
+                                                  instanceId=None)),
+                ("another account", self.report("PutInventory", account="999988887777")),
+                ("a session not an instance", self.report(
+                    "UpdateInstanceAssociationStatus", session="operator")),
+                ("an instance-shaped prefix", self.report(
+                    "UpdateInstanceInformation", session="i-0123456789abcdef0x")),
+                ("a user, not a role", event(
+                    "UpdateInstanceInformation", read_only=False,
+                    instanceId="i-0123456789abcdef0",
+                    arn="arn:aws:iam::%s:user/i-0123456789abcdef0" % ACCOUNT_ID))):
+            with self.subTest(label=label):
+                _, done = self.review([bad])
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("UNREVIEWED", done.stdout)
+                self.assertIn("1 events, 1 flagged", done.stdout)
 
     def test_a_reviewed_call_marked_read_only_is_still_reviewed(self):
         for name in ("StartSession", "StartAssociationsOnce"):

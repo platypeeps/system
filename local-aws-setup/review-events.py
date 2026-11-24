@@ -3,7 +3,8 @@
 aws-setup.sh `events` runs this with the admin profile. Event history is kept
 per region, so it reads every region the account has enabled, one lookup per
 region of every event from ssm.amazonaws.com. It skips reads and the SSM
-agent's reports of itself (REPORTS below); every other call prints one row,
+agent's reports of itself, sent by the instance's own role session (REPORTS
+below); every other call prints one row,
 oldest first, in local time:
 
   UNEXPECTED  made by anyone but the deployer user of this account
@@ -56,8 +57,13 @@ SOURCE = "ssm.amazonaws.com"
 # Writes the SSM agent makes to report its own state, every few minutes on
 # every managed instance; none runs a document or changes what one reaches.
 # A read is skipped too. Every other SSM write, by any name, is UNREVIEWED.
-REPORTS = {"UpdateInstanceInformation", "PutInventory", "PutComplianceItems",
-           "UpdateInstanceAssociationStatus"}
+# Anyone may make these calls, so one is skipped only when an instance's own
+# role session in this account sends it about that same instance
+# (agent_report below); written by hand, or for another instance, it is
+# UNREVIEWED. Each name maps to the request field that names the instance.
+REPORTS = {"UpdateInstanceInformation": "instanceId", "PutInventory": "instanceId",
+           "PutComplianceItems": "resourceId", "UpdateInstanceAssociationStatus": "instanceId"}
+SESSION = re.compile(r"arn:aws[a-z-]*:sts::([0-9]{12}):assumed-role/[^/]+/((?:i|mi)-[0-9a-f]{1,17})")
 TUNNEL = "AWS-StartPortForwardingSession"
 # The instance role may write only <bucket>/ssm-output/*; output under any
 # other key is never written, so it counts as unlogged.
@@ -202,6 +208,16 @@ def saved(args, record, params, prefix):
     return True
 
 
+def agent_report(args, name, who, params):
+    """True when an instance's own role session reports that instance."""
+    field = REPORTS.get(name)
+    arn = who.get("arn")
+    found = SESSION.fullmatch(arn) if isinstance(arn, str) else None
+    return bool(field and found and who.get("type") == "AssumedRole"
+                and found.group(1) == args.account
+                and params.get(field) == found.group(2))
+
+
 def record_of(item):
     if not isinstance(item, dict) or not isinstance(item.get("CloudTrailEvent"), str):
         raise Malformed("an event carries no CloudTrailEvent text")
@@ -239,7 +255,7 @@ def review(args, items):
             # A known call is reviewed whatever readOnly says; any other is
             # skipped only when CloudTrail marks it a read, or it is an
             # agent's report of itself.
-            if record.get("readOnly") is True or name in REPORTS:
+            if record.get("readOnly") is True or agent_report(args, name, who, params):
                 continue
             flags.append("UNREVIEWED")
         own = (who.get("type") == "IAMUser" and who.get("accountId") == args.account

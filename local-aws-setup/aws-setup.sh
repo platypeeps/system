@@ -99,7 +99,7 @@ usage: aws-setup.sh accounts | test
             Flags UNEXPECTED (a principal other than AGENT_USER),
             UNLOGGED (output outside AUDIT_BUCKET/ssm-output/, or not
             found there) and UNREVIEWED (any other SSM write; reads and
-            the SSM agent's own reports are skipped), and exits 1 on
+            an instance's own reports of itself are skipped), and exits 1 on
             any; TUNNEL marks a port-forwarding session, whose
             content no log records.
 
