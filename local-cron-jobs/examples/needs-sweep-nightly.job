@@ -5,9 +5,8 @@
 # it cannot prove stays open. Its lines (what closed, what could not) land
 # in logs/needs-sweep-nightly.log and the run's report.
 #
-# Hub only: it writes the hub's database. Add `needs-sweep-nightly` to the
-# hub's profile (<config>/machine-setup/<profile>.cron), then run
-# machine-setup.sh update cron --apply.
+# Hub only: it writes the hub's database. machine-setup's cron stage
+# installs it on the hub with no profile line (SD_HUB_ROLE_SEEDED).
 # 07:50 local: after the night's jobs have filed their alerts, before
 # night-triage at 08:40 reads what is left.
 # SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,

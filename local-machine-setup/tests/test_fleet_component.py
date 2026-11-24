@@ -287,6 +287,24 @@ class CronJobFromRepoExample(Case):
                          (self.examples / f"{OTHER_JOB}.job").read_text())
         self.assertIn(f"install {OTHER_JOB}", self.cron_calls())
 
+    def test_a_hub_profile_installs_the_needs_sweep_with_no_profile_line(self):
+        """sd:10411: no hub profile named needs-sweep-nightly, so the hub ran
+        no sweep. The fixture profile names sd-dashboard: a plain hub."""
+        job = "needs-sweep-nightly"
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertIn(f"install {job}", self.cron_calls(), out)
+        self.assertEqual(self.seeded(job).read_text(),
+                         (self.examples / f"{job}.job").read_text())
+
+    def test_a_satellite_profile_gets_no_needs_sweep(self):
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertNotIn("install needs-sweep-nightly", self.cron_calls(), out)
+
     def test_a_copy_in_the_config_folder_keeps_winning(self):
         self.jobs.mkdir(parents=True)
         own = 'JOB_SCHEDULE="7 4 * * *"\n# this machine\n'
