@@ -180,6 +180,32 @@ class CacheCleanupTest(Harness):
         self.assertNotIn("uv cache prune", self.logged())
         self.assertFalse(skips.exists())
 
+    def test_a_uvx_that_runs_as_uv_tool_uvx_skips_quietly(self):
+        # sd:10385: Homebrew's uvx execs `uv tool uvx`, so ps names the
+        # proxy `uv`; the skip counted ten nights and raised attention.
+        # The arguments name the run; they never reach the output.
+        self.uv(foreign=True)
+        _stub(self.bin / "ps", 'case "$*" in\n'
+              '  "-o args= -p 101") echo "/opt/example/bin/uv tool uvx proxy@latest --token s3cret" ;;\n'
+              '  "-o args= -p 102") echo "uv tool run proxy --token s3cret" ;;\n'
+              '  "-o args= -p "*) echo "/opt/example/bin/uv run --token s3cret" ;;\n'
+              '  *) printf "%s\\n" "  101 /opt/example/bin/uv" "  102 uv" "  3 /opt/example/bin/uv" ;;\n'
+              'esac\n')
+        run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+        self.assertIn("- uv-prune: another uv process holds the cache; skipped (uvx pid 101 102; uv pid 3)",
+                      run.stdout)
+        self.assertNotIn("s3cret", run.stdout)
+        # With the `uv run` gone, only the uvx runs hold the lock.
+        _stub(self.bin / "lsof", 'printf "%s\\n" 101 102\n')
+        skips = self.tmp / "home/.local/state/maintenance/uv-prune-skips"
+        skips.unlink(missing_ok=True)
+        for night in (1, 2, 3):
+            run = self.maintenance("# nothing to check\n", UV_PRUNE_WAIT="0")
+            self.assertEqual(self.attention(run), [], night)
+            self.assertIn("- uv-prune: only uvx tool runs hold the cache; skipped (uvx pid 101 102)", run.stdout)
+            self.assertNotIn("s3cret", run.stdout)
+        self.assertFalse(skips.exists())
+
     def test_a_third_night_that_dies_before_its_report_alerts_next_night(self):
         # Lead re-review: the count was written before the report, so a
         # run that died between them made night 4 an action, never alerted.
