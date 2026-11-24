@@ -793,6 +793,17 @@ class MeterRun(unittest.TestCase):
         self.assertIn("usage providers", done.stdout)
         self.assertIn("status services", done.stdout)
 
+    def test_a_percent_sign_in_the_config_path_still_parses(self):
+        """sd:9718 lane review: the --out help names the default path; a
+        `%` in it must not break argparse before any command runs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "SYSTEM_TOOLS_CONFIG": str(Path(tmp) / "a%b")}
+            env.pop("AGENT_METER_FILE", None)
+            done = subprocess.run([sys.executable, str(SCRIPT), "--help"], env=env,
+                                  capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("a%b", done.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

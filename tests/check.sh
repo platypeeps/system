@@ -20,7 +20,8 @@ PACK_CLONE="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-workflow}"
 # tools shard it held that shard to 13 minutes. Its two suites run as two
 # shards (sd:3962): whole, the leg took 450 s, the longest job of the gate.
 LEGS="repo-sync tools shared"
-TOOLS_SHARDS=4
+# sd:9926: 8 shards, as 8 lanes run at once; 4 left a lane idle.
+TOOLS_SHARDS=8
 REPO_SYNC_SHARDS=2
 
 usage() {
@@ -32,9 +33,10 @@ Usage: check.sh run
   run    the preflight, then the legs and (on macOS) each suite of
          tests/macos-only-suites.txt in parallel; the first failure stops
          the rest, and the run exits 1
-  suite  the preflight, then the one suite named by a run_suite line in
-         tests/ci-native.sh or a line of tests/macos-only-suites.txt, in the
-         same environment; `make test SUITE=<name>` runs this
+  suite  the one suite named by a run_suite line in tests/ci-native.sh
+         or a line of tests/macos-only-suites.txt, in the same environment
+         and venv, without the preflight's repository-wide checks;
+         `make test SUITE=<name>` runs this
   legs   print the leg names
 
 Environment:
@@ -43,8 +45,9 @@ Environment:
                      (default: ~/repos/platypeeps/sd-workflow)
   CI_PACK_URL        where to fetch the pinned command pack from otherwise
                      (default: https://github.com/platypeeps/sd-workflow.git)
-  SD_GATE_POOL_SIZE  the gate cap a slot holder exports; above 1, at most
-                     CPUs / cap jobs run at once
+  CHECK_LANES        how many jobs run at once (default 8)
+  XDG_CACHE_HOME     where the gate venv is cached, under system-check/,
+                     one per pack lib/ and python (default: ~/.cache)
 
 `make check` runs `check.sh run`. Each needs python3.15, git, sqlite3, lsof,
 ps, rsync, shellcheck and ruff on PATH, and network access when no local
@@ -141,6 +144,19 @@ if [ "$(git -C "$pack" rev-parse -q --verify HEAD 2>/dev/null)" != "$pin" ]; the
 fi
 echo "check.sh: pack $pin, $("$python" --version)"
 
+# sd:9926: one venv per pack lib/ tree and python, kept across gates;
+# tests/gate-venv.sh builds it on a miss. A gate's worktree is new each
+# time, so the cache sits outside it. One unused for 14 days goes.
+# lock1 names the publication protocol: 0bf86d00 and older publish
+# without the cache lock, so they must not share a path with this one.
+venv_cache="${XDG_CACHE_HOME:-$HOME/.cache}/system-check"
+lib_tree="$(git -C "$pack" rev-parse -q --verify HEAD:lib 2>/dev/null || echo "$pin")"
+venv_key="$("$python" -I -c 'import hashlib, os, sys
+print(hashlib.sha256(" ".join(["lock1", sys.argv[1], os.path.realpath(sys.executable), sys.version]).encode()).hexdigest()[:16])' "$lib_tree")"
+venv="$venv_cache/venv-$venv_key"
+mkdir -p "$venv_cache"
+find "$venv_cache" -mindepth 1 -maxdepth 1 -name 'venv-*' ! -name "venv-$venv_key" -mtime +14 -exec rm -rf {} + 2>/dev/null || :
+
 # HOME and TMPDIR sit outside the tree: a fixture
 # repository made under the checkout would find the checkout's own .git.
 # /tmp and not $TMPDIR: macOS caps a socket path at 104 bytes, and a fixture
@@ -212,7 +228,7 @@ tool_path="$tool_path:/usr/bin:/bin:/usr/sbin:/sbin"
 isolated() {
   mkdir -p "$work/$job/home" "$work/$job/tmp.noindex"
   ${lead:-} env -i PATH="$tool_path" HOME="$work/$job/home" TMPDIR="$work/$job/tmp.noindex" \
-    CI_WORK_ROOT="$work" CI_SYSTEM_ROOT="$ROOT" \
+    CI_WORK_ROOT="$work" CI_SYSTEM_ROOT="$ROOT" CI_VENV="$venv" \
     SD_ACCEPTANCE_PACK="$pack" SD_PACK_ROOT="$pack" \
     SD_PR_BODY="" \
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 \
@@ -220,26 +236,28 @@ isolated() {
     "$@" < /dev/null
 }
 
-echo "== preflight"
-job=preflight
-isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" preflight
-
 # `suite` (sd:3534): one suite the way the gate runs it, against the pinned
 # pack, where a hand run against SD_PACK_ROOT tested the live pack instead.
 # A leg with SUITE_ONLY runs only the run_suite line of that name, so each
-# leg is asked and the suite's log is the proof that one ran it.
+# leg is asked until one ran it; the suite's log is the proof.
+# sd:10177: it skips the preflight's repository-wide checks, 150 of 187 s
+# for one suite, and builds only the venv; `make check` runs them. The
+# macOS runner builds its venv itself.
 if [ "$1" = suite ]; then
   job=suite
   if sh "$DIR/run-macos-only.sh" list | awk '{ print $1 }' | grep -qxF "$2"; then
     isolated sh "$DIR/run-macos-only.sh" "$2"
   else
+    echo "== venv"
+    isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" venv
+    ran=""
     for leg in $LEGS; do
       isolated SUITE_ONLY="$2" /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg "$leg"
-    done
-    # A suite in parts (repo-sync-1, repo-sync-2) leaves a log per part.
-    ran=""
-    for log in "$work/$2.log" "$work/$2"-[1-9].log; do
-      [ ! -f "$log" ] || ran=1
+      # A suite in parts (repo-sync-1, repo-sync-2) leaves a log per part.
+      for log in "$work/$2.log" "$work/$2"-[1-9].log; do
+        [ ! -f "$log" ] || ran=1
+      done
+      [ -z "$ran" ] || break
     done
     if [ -z "$ran" ]; then
       echo "check.sh: no suite named $2; the run_suite lines in tests/ci-native.sh and the lines of tests/macos-only-suites.txt name them" >&2
@@ -254,6 +272,10 @@ if [ "$1" = suite ]; then
   echo "check.sh: suite $2 passed"
   exit 0
 fi
+
+echo "== preflight"
+job=preflight
+isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" preflight
 
 # Every leg and, on a Mac, every macOS-only suite run at once, unless a gate
 # cap below lowers that. Run one after another they took 24 minutes here,
@@ -284,22 +306,15 @@ for leg in $LEGS; do
   done
 done
 
-# sd:2719: each job keeps about one CPU busy, and a slot holder such as
-# `sd gate` runs up to SD_GATE_POOL_SIZE checks at once: 4 gates ran 32
-# jobs and the load passed 200. Under a cap above 1 the jobs run in
-# CPUs / cap lanes, so the pool's gates together keep one job per CPU.
+# sd:9926: 8 lanes, fixed. CPUs / gate cap (sd:2719) gave the hub 2
+# lanes and made the gate 38 minutes; each job keeps about one CPU busy,
+# and 8 suit the hub. CHECK_LANES overrides it, for the tests.
 # Each lane takes the next job no lane has claimed; mkdir is the claim.
 set -- $jobs
-lanes=$#
-cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
-case "$cores" in ''|*[!0-9]*) cores=4 ;; esac
-pool="${SD_GATE_POOL_SIZE:-0}"
-case "$pool" in ''|*[!0-9]*) pool=0 ;; esac
-if [ "$pool" -gt 1 ] && [ $((cores / pool)) -lt "$lanes" ]; then
-  lanes=$((cores / pool))
-  [ "$lanes" -ge 1 ] || lanes=1
-fi
-echo "check.sh: $# jobs, $lanes at a time (SD_GATE_POOL_SIZE=${SD_GATE_POOL_SIZE:-unset}, $cores CPUs)"
+lanes="${CHECK_LANES:-8}"
+case "$lanes" in ''|*[!0-9]*|0) lanes=8 ;; esac
+[ "$lanes" -le "$#" ] || lanes=$#
+echo "check.sh: $# jobs, $lanes at a time"
 lead=own_group
 lane=0
 while [ "$lane" -lt "$lanes" ]; do

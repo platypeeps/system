@@ -2488,6 +2488,10 @@ stage_cron() {
         run_ok install -m 644 "$ROOT/local-cron-jobs/examples/$j.job" "$seed_dir/$j.job" ||
         continue
     fi
+    # A deferred reinstall (sd:9826) fails after the night's report; its
+    # record is a FAILED line, so the next status --fail-on-drift alerts.
+    jf="$HOME/.local/state/cron-jobs/$LABEL_PREFIX.cron.$j.reinstall.failed"
+    [ ! -f "$jf" ] || echo "  FAILED  $j — its deferred reinstall failed: $(tail -n 1 "$jf")"
     jp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$j.plist"
     owner=0
     [ ! -f "$jp" ] || cron_plist_ours "$jp" "$j" 2>/dev/null || owner=$?
@@ -2496,6 +2500,16 @@ stage_cron() {
       cron_jobs install "$j"
     elif [ "$owner" = 1 ]; then
       echo "  FOREIGN $j — in this profile, but another installer's agent holds its label; left in place"
+    elif ! "$ROOT/local-cron-jobs/cron-jobs.sh" verify "$j" >/dev/null 2>&1 &&
+        [ -f "$HOME/.local/state/cron-jobs/$LABEL_PREFIX.cron-reinstall.$j.plist" ] &&
+        launchctl print "gui/$(id -u)/$LABEL_PREFIX.cron-reinstall.$j" 2>/dev/null |
+          grep -q 'state = running'; then
+      # A run cannot reinstall its own job; cron-jobs.sh loaded a helper
+      # that does once the run ends (sd:9826). No drift word: the nightly
+      # update's status --fail-on-drift runs inside that same run. Only a
+      # running helper counts: one that died before its cleanup stays
+      # loaded, and the install below replaces it.
+      echo "  PENDING $j — reinstalls once its own run ends ($LABEL_PREFIX.cron-reinstall.$j)"
     elif ! "$ROOT/local-cron-jobs/cron-jobs.sh" verify "$j" >/dev/null 2>&1; then
       echo "  STALE   $j — installed plist no longer matches the generator"
       cron_jobs install "$j"
@@ -2505,6 +2519,11 @@ stage_cron() {
     # bootstraps, so re-running it is the repair as well as the install.
     elif ! launchctl print "gui/$(id -u)/$LABEL_PREFIX.cron.$j" >/dev/null 2>&1; then
       echo "  UNLOADED $j — plist current but launchd is not running it"
+      cron_jobs install "$j"
+    # Its FAILED line is above. A deferred install can load and record the
+    # plist, then fail at `launchctl enable`: verify and launchd then read
+    # fine, and only an install clears the record (sd:9826 review).
+    elif [ -f "$jf" ]; then
       cron_jobs install "$j"
     else
       echo "  ok      $j"
@@ -3295,6 +3314,7 @@ open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$hud_config"
     # deny rules (secret reads, GitHub issues, claude-mem work state), no
     # attribution lines, the `sd today` hook, the checkout_guard.py hook
     # (sd:6001), the rtk hook guarded off in builders (sd:9714),
+    # UV_CACHE_DIR, the sessions' own uv cache (sd:9848),
     # and DISABLE_AUTOUPDATER (the
     # weekly `brew upgrade --cask --greedy` moves the claude-code@latest
     # cask). It adds missing entries after a
@@ -3423,10 +3443,15 @@ SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # stages skip each one on a satellite.
 # The full role (sd:5986) adds the account agent that holds the mail and
 # Drive logins, its watch job, and the nightly builder, which writes the
-# database. The hub's other host jobs stay off the list: they pause until
-# the hub returns (#31095). build-dispatch is off it too: each lane host
+# database, as needs-sweep-nightly does. The hub's other host jobs stay
+# off the list: they pause until the hub returns (#31095). build-dispatch is off it too: each lane host
 # runs its own tick for its own lanes (sd:7932); the role still moves it.
-SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build"
+SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build cron.needs-sweep-nightly"
+# Role jobs whose bundled example runs as it is: a standby set up before
+# one joined the role has no job file, and step 8's cron stage seeds it
+# from local-cron-jobs/examples, so readiness counts the example. The
+# other role jobs need the machine's own file (sd:9764 review).
+SD_HUB_ROLE_SEEDED="needs-sweep-nightly"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
@@ -8987,6 +9012,9 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
     for hr_job in $(hub_role_labels cron); do
       if printf '%s\n' "$hr_jobs" | grep -qxF "$hr_job"; then
         echo "  ok      job file $hr_job"
+      elif printf '%s\n' $SD_HUB_ROLE_SEEDED | grep -qxF "$hr_job" &&
+          [ -f "$ROOT/local-cron-jobs/examples/$hr_job.job" ]; then
+        echo "  ok      job file $hr_job (seeded from local-cron-jobs/examples at promote)"
       else
         echo "  NOT-READY no job file $hr_job.job in $(st_config_dir cron-jobs)/jobs"
       fi

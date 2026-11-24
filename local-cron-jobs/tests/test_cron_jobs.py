@@ -25,6 +25,7 @@ import plistlib
 import pty
 import re
 import shutil
+import threading
 import signal
 import stat
 import subprocess
@@ -1450,14 +1451,14 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
         launchctl.chmod(launchctl.stat().st_mode | stat.S_IXUSR)
         return folder
 
-    def run_script(self, *args, path=None, env=None):
+    def run_script(self, *args, path=None, env=None, shell="sh", cwd=None):
         env = {"PATH": path or self.fx.path(self.launchd()),
                "HOME": str(self.fx.home),
                "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
                "CRON_TEST_CALLS": str(self.calls),
                "PROBE_LOCK": PROBE_LOCK, **(env or {})}
-        return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), *args],
-                              env=env, capture_output=True, text=True, timeout=60)
+        return subprocess.run([shell, str(self.fx.folder / "cron-jobs.sh"), *args],
+                              env=env, cwd=cwd, capture_output=True, text=True, timeout=60)
 
     def bootouts(self):
         return [line for line in self.calls.read_text().splitlines() if line.startswith("launchctl bootout")]
@@ -1582,6 +1583,1067 @@ class InstallRespectsTheJobLockTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("launchd names no log", result.stderr)
         self.assertEqual(self.bootouts(), [])
+
+    def helper_plist(self, job="demo"):
+        state = self.fx.home / ".local" / "state" / "cron-jobs"
+        state.mkdir(parents=True, exist_ok=True)
+        return state / f"{LABEL_PREFIX}.cron-reinstall.{job}.plist"
+
+    def test_a_run_that_reinstalls_its_own_job_hands_it_to_a_helper(self):
+        """sd:9826. machine-setup-update-nightly runs the cron stage, which
+        found its own plist stale and asked to reinstall it: refused under its
+        own run's lock every night, so status --fail-on-drift failed the job.
+        Asked from inside that run, install now bootstraps a one-shot helper
+        label that reinstalls the job once the run ends; the run goes on."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.hold()
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo"})
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("deferred: demo", result.stdout)
+        self.assertNotIn(f"{LABEL_PREFIX}.cron.demo", "\n".join(self.bootouts()))
+        self.assertIn(f"launchctl bootstrap gui/{os.getuid()} {self.helper_plist()}",
+                      self.calls.read_text())
+        helper = self.helper_plist().read_text()
+        self.assertIn(f"<string>{LABEL_PREFIX}.cron-reinstall.demo</string>", helper)
+        self.assertIn("<string>reinstall-after-run</string>", helper)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_a_helper_launchd_refuses_fails_the_install_and_leaves_no_plist(self):
+        self.hold()
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo"},
+                                 path=self.fx.path(self.launchd("refuse-bin", on_bootstrap="echo refused >&2; exit 5; ")))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"failed: demo (helper {LABEL_PREFIX}.cron-reinstall.demo: refused)", result.stderr)
+        self.assertNotIn("deferred:", result.stdout)
+        self.assertFalse(self.helper_plist().exists())
+
+    def test_the_helper_starts_under_the_job_launcher(self):
+        """Lane review: the helper started bare /bin/bash, so in a checkout
+        under ~/Documents TCC could refuse it the reinstall script; the
+        bootstrap still passed, install said deferred, and nothing
+        reinstalled the job or left a failure record. It starts under
+        job-launch, as every job does (sd:6456)."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.hold()
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = plistlib.loads(self.helper_plist().read_bytes())["ProgramArguments"]
+        launcher = self.fx.home / ".local/libexec/system-tools/job-launch"
+        self.assertEqual(args[:2], [str(launcher), "/bin/bash"])
+
+    def test_a_helper_replaced_while_launchd_tears_the_old_one_down(self):
+        """Lane review: a failed run left its helper loaded. `bootout`
+        returns before launchd lets the label go, and a bootstrap of the
+        occupied label is refused; the request plist was then removed and
+        no helper was left to reinstall the job. The replacement now waits
+        for the old helper to leave launchd first."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.hold()
+        slow = self.launchd("slow-helper-bin",
+            on_bootout='(sleep 1; touch "$gone") >/dev/null 2>&1 & exit 0; ',
+            on_bootstrap='[ -e "$gone" ] || { echo "Bootstrap failed: 5: '
+                         'Input/output error" >&2; exit 5; }; ')
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo"},
+                                 path=self.fx.path(slow))
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("deferred: demo", result.stdout)
+        self.assertTrue(self.helper_plist().exists())
+
+    def test_another_jobs_run_is_still_refused(self):
+        """PIN: only the run's own job is deferred; any other waits as before."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.hold()
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "other"})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("demo: a run is in progress; retry after it ends", result.stderr)
+        self.assertFalse(self.helper_plist().exists())
+
+    def test_the_helper_installs_once_the_run_ends_and_removes_itself(self):
+        self.helper_plist().write_text("helper\n")
+        result = self.run_script("reinstall-after-run", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout)
+        self.assertFalse(self.helper_plist().exists())
+        self.assertEqual(self.bootouts()[-1],
+                         f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo")
+        self.assertTrue(self.lock_is_free())
+
+    def test_the_helper_gives_up_on_a_run_that_outlasts_its_wait(self):
+        self.plist().write_text("the plist launchd holds\n")
+        self.helper_plist().write_text("helper\n")
+        self.hold()
+        result = self.run_script("reinstall-after-run", "demo",
+                                 env={"CRON_JOBS_REINSTALL_WAIT": "1"})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("demo: a run still holds the lock after 1 s", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+        self.assertFalse(self.helper_plist().exists())
+        self.assertEqual(self.bootouts(),
+                         [f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo"])
+
+    def test_the_helper_removes_itself_when_the_job_file_is_gone(self):
+        """Review blocker: load_job exits on a missing job file, and that
+        exit skipped the helper's cleanup, so launchd kept its label and
+        the cron stage read the job PENDING for ever."""
+        self.helper_plist().write_text("helper\n")
+        (self.fx.jobs / "demo.job").unlink()
+        result = self.run_script("reinstall-after-run", "demo")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.helper_plist().exists())
+        self.assertEqual(self.bootouts(),
+                         [f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo"])
+
+    def test_a_plist_that_cannot_be_written_unloads_nothing(self):
+        """Review blocker: the helper calls install in an `||` list, where
+        errexit is off, so a failed plist write went on to bootout and
+        bootstrap and reported `installed:`."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.helper_plist().write_text("helper\n")
+        self.agents.chmod(0o500)
+        self.addCleanup(self.agents.chmod, 0o700)
+        result = self.run_script("reinstall-after-run", "demo")
+        out = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, out)
+        self.assertNotIn("installed:", out)
+        self.assertIn("demo: could not write", result.stderr)
+        self.assertNotIn(f"{LABEL_PREFIX}.cron.demo", "\n".join(self.bootouts()))
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def failed_marker(self, job="demo"):
+        return self.helper_plist(job).with_name(f"{LABEL_PREFIX}.cron.{job}.reinstall.failed")
+
+    def test_uninstall_cancels_a_pending_reinstall(self):
+        """Review blocker: an uninstall between the run's end and the
+        helper's install was undone by the helper. uninstall removes the
+        helper's plist under the job's lock; the helper, holding that lock,
+        installs only while its plist is still there."""
+        self.helper_plist().write_text("helper\n")
+        self.failed_marker().write_text("old\n")
+        result = self.run_script("uninstall", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.helper_plist().exists())
+        self.assertFalse(self.failed_marker().exists())
+        self.assertIn(f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo",
+                      self.bootouts())
+
+    def test_a_direct_install_supersedes_a_queued_helper(self):
+        """Lane review: a run from checkout A queued a helper while launchd
+        ran checkout B's plist; an install from B then succeeded. When A's
+        run ended its helper put A's plist back over B's newer install. A
+        successful direct install now drops the queued request, so the
+        helper cancels."""
+        self.helper_plist().write_text("helper\n")
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.helper_plist().exists())
+        before = len(self.calls.read_text().splitlines())
+        result = self.run_script("reinstall-after-run", "demo")
+        self.assertIn("demo: reinstall cancelled", result.stdout, result.stdout + result.stderr)
+        after = self.calls.read_text().splitlines()[before:]
+        self.assertFalse([c for c in after if c.startswith("launchctl bootstrap")], after)
+
+    def test_a_cancelled_helper_installs_nothing(self):
+        result = self.run_script("reinstall-after-run", "demo")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("demo: reinstall cancelled", result.stdout)
+        self.assertNotIn("installed:", out)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertFalse(self.plist().exists())
+        self.assertFalse(self.failed_marker().exists())
+
+    def test_a_helper_waits_on_the_requesting_runs_lock_too(self):
+        """Review: the helper waited only on the lock the loaded label
+        names. Checkout A installed the job; a manual run from this
+        checkout asked for its own reinstall, and the helper, finding
+        A's lock free, loaded this checkout's plist while the run still
+        held this checkout's lock, so the next slot skipped."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.helper_plist().write_text("helper\n")
+        other = self.fx.tmp / "checkout-a" / "logs"
+        other.mkdir(parents=True)
+        self.hold()
+        result = self.run_script("reinstall-after-run", "demo",
+                                 env={"CRON_JOBS_REINSTALL_WAIT": "1",
+                                      "CRON_TEST_STDOUT_DIR": str(other)})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("a run still holds the lock after 1 s", result.stderr)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertEqual(self.bootouts(), [f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron-reinstall.demo"])
+
+    def test_a_failed_helper_leaves_a_record_and_a_success_clears_it(self):
+        """Review blocker: a helper failure reached only the job log, after
+        the night's report. It now leaves logs/.<job>.reinstall.failed,
+        which the cron stage reports as FAILED, a drift word."""
+        self.helper_plist().write_text("helper\n")
+        self.hold()
+        result = self.run_script("reinstall-after-run", "demo",
+                                 env={"CRON_JOBS_REINSTALL_WAIT": "1"})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("a run still holds the lock after 1 s", self.failed_marker().read_text())
+
+    def test_a_helper_success_clears_the_failure_record(self):
+        self.helper_plist().write_text("helper\n")
+        self.failed_marker().write_text("an earlier failure\n")
+        result = self.run_script("reinstall-after-run", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout)
+        self.assertFalse(self.failed_marker().exists())
+
+    def test_a_direct_install_clears_the_failure_record(self):
+        """Review blocker: only the helper's success or uninstall cleared
+        the record, so a job fixed by hand (`install <job>`, or a hand-run
+        update) read FAILED in every status after its plist verified."""
+        self.failed_marker().write_text("an earlier failure\n")
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout)
+        self.assertFalse(self.failed_marker().exists())
+
+    def test_a_refused_install_keeps_the_failure_record(self):
+        """PIN: a failed install is no repair; the record stays."""
+        self.failed_marker().write_text("an earlier failure\n")
+        self.hold()
+        result = self.run_script("install", "demo")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.failed_marker().exists())
+
+    def launchd_with(self, name, case):
+        """self.launchd()'s stub with one more `case` arm, matched first."""
+        folder = self.launchd(name)
+        stub = folder / "launchctl"
+        text = stub.read_text().replace('case "$1" in\n', 'case "$1" in\n' + case, 1)
+        stub.write_text(text)
+        return folder
+
+    def test_a_replacement_that_fails_to_load_restores_the_previous_agent(self):
+        """Review round 4: a refused bootstrap left the job unloaded, so it
+        could not run its next slot or retry. The previous plist goes back
+        and is loaded again; verify still reads it STALE."""
+        self.plist().write_text("the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("restore-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || { echo refused >&2; exit 5; } ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
+        self.assertNotIn("installed:", result.stdout)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+        self.assertFalse((self.agents / f"{LABEL_PREFIX}.cron.demo.plist.prev").exists())
+        bootstraps = [c for c in self.calls.read_text().splitlines() if c.startswith("launchctl bootstrap")]
+        self.assertEqual(len(bootstraps), 3, bootstraps)
+
+    def test_a_first_rollback_copy_launchd_refuses_is_kept(self):
+        """A seed launchd refuses on restore is never reported restored,
+        and stays: a refusal and a transient fault look the same, and it
+        is the only rollback copy (review, supersedes 84a6a856)."""
+        self.plist().write_text("untested by launchd\n")
+        path = self.fx.path(self.launchd_with("unproven-bin",
+            '  bootstrap) echo refused >&2; exit 5 ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertNotIn("restored the previous plist", out)
+        self.assertIn("the previous plist did not load either", out)
+        state = self.fx.home / ".local/state/cron-jobs"
+        self.assertEqual((state / f"{LABEL_PREFIX}.cron.demo.accepted").read_text(),
+                         "untested by launchd\n", out)
+
+    def test_a_transient_refusal_keeps_the_first_rollback_copy(self):
+        """Review: a transient launchd error on the seed's first restore
+        deleted the only rollback copy, as if launchd had refused it for
+        good. bootstrap's error cannot tell the two apart, so the seed
+        stays, and the next install restores it."""
+        self.plist().write_text("the plist launchd holds\n")
+        once = self.fx.tmp / "seed-refused-once"
+        path = self.fx.path(self.launchd_with("transient-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || '
+            '{ echo refused >&2; exit 5; }\n'
+            f'    [ -f "{once}" ] || {{ : > "{once}"; echo busy >&2; exit 5; }} ;;\n'))
+        first = self.run_script("install", "demo", path=path)
+        self.assertNotIn("restored the previous plist", first.stderr, first.stderr)
+        state = self.fx.home / ".local/state/cron-jobs"
+        self.assertEqual((state / f"{LABEL_PREFIX}.cron.demo.accepted").read_text(),
+                         "the plist launchd holds\n", first.stderr)
+        second = self.run_script("install", "demo", path=path)
+        self.assertIn("restored the previous plist", second.stderr,
+                      second.stdout + second.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_a_first_rollback_copy_launchd_loads_is_restored(self):
+        """PIN: a loaded plist launchd takes again is
+        kept, and a refused replacement goes back to it."""
+        self.plist().write_text("the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("prove-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || { echo refused >&2; exit 5; } ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertIn("restored the previous plist", result.stderr, result.stdout + result.stderr)
+        state = self.fx.home / ".local/state/cron-jobs"
+        self.assertEqual((state / f"{LABEL_PREFIX}.cron.demo.accepted").read_text(),
+                         "the plist launchd holds\n")
+
+    def test_a_failed_copy_back_keeps_the_first_rollback_copy(self):
+        """Lane review cc29d7a3: a refused replacement, then a transient
+        failure copying the unproven seed back, dropped the seed as if
+        launchd had refused it. Only a refused load proves it bad; a
+        failed copy keeps the only rollback copy for the next install."""
+        self.plist().write_text("the plist launchd holds\n")
+        folder = self.launchd_with("copy-fail-bin",
+            '  bootstrap) echo refused >&2; exit 5 ;;\n')
+        shim = folder / "cp"
+        shim.write_text('#!/bin/sh\n'
+                        'for a; do last=$a; done\n'
+                        'case $last in *.cron.demo.plist.tmp) exit 1 ;; esac\n'
+                        'exec /bin/cp "$@"\n')
+        shim.chmod(0o755)
+        result = self.run_script("install", "demo", path=self.fx.path(folder))
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertNotIn("no rollback copy is kept", out)
+        state = self.fx.home / ".local/state/cron-jobs"
+        self.assertEqual((state / f"{LABEL_PREFIX}.cron.demo.accepted").read_text(),
+                         "the plist launchd holds\n", out)
+
+    def test_an_install_killed_before_bootstrap_keeps_the_accepted_plist(self):
+        """Lane review: an install killed between replacing the plist and
+        bootstrap left an unproven plist; the next install copied it over
+        .prev, so a refused bootstrap rolled back to the broken plist and
+        left the job unloaded. The rollback point is the plist launchd
+        last accepted, promoted only after a bootstrap succeeds."""
+        self.plist().write_text("the plist launchd holds\n")
+        killed = self.fx.path(self.launchd("kill-bin", on_bootstrap="kill -9 0; "))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        self.assertNotEqual(self.plist().read_text(), "the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("refuse-new-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || { echo refused >&2; exit 5; } ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_an_interrupted_install_then_a_lint_failing_candidate_reloads_the_job(self):
+        """Round 10: an install killed after bootout and before bootstrap
+        left the job unloaded. The next install, its candidate refused by
+        plutil, dropped the pending record and returned with the job still
+        down every night. It now reloads the accepted plist first."""
+        self.plist().write_text("the plist launchd holds\n")
+        killed = self.fx.path(self.launchd("kill-bin", on_bootstrap="kill -9 0; "))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        gone = self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+        self.assertTrue(gone.exists(), "the killed install left the job loaded")
+        stubs = self.fx.tmp / "refusing-plutil-bin"
+        stubs.mkdir()
+        (stubs / "plutil").write_text("#!/bin/sh\nexit 1\n")
+        (stubs / "plutil").chmod(0o755)
+        result = self.run_script("install", "demo",
+                                 path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("demo: could not write", result.stderr)
+        self.assertFalse(gone.exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def killed_install(self, name, case, extra=""):
+        """An install whose launchctl runs `case` first, in its own session
+        so `kill -9 0` ends only it; `extra` goes before PATH."""
+        path = self.fx.path(self.launchd_with(name, case))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": f"{extra}{path}", "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+
+    def assert_a_lint_failing_install_reloads_the_accepted_job(self):
+        gone = self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+        self.assertTrue(gone.exists(), "the killed install left the job loaded")
+        stubs = self.fx.tmp / "refusing-plutil-bin"
+        stubs.mkdir()
+        (stubs / "plutil").write_text("#!/bin/sh\nexit 1\n")
+        (stubs / "plutil").chmod(0o755)
+        result = self.run_script("install", "demo",
+                                 path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse(gone.exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    # The bootstrap of the accepted plist is the one killed: the old code
+    # had removed the pending record before it, so nothing recovered.
+    KILL_ON_RESTORE = ('  bootstrap) grep -q "the plist launchd holds" "$3" && kill -9 0\n'
+                       '    echo refused >&2; exit 5 ;;\n')
+
+    def test_a_rollback_killed_after_a_refused_bootstrap_still_recovers(self):
+        """Review: the refused-bootstrap rollback removed the pending
+        record before it reloaded the accepted plist. Killed in between,
+        the job stayed unloaded and the next install had no trigger."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.killed_install("kill-on-restore-bin", self.KILL_ON_RESTORE)
+        self.assert_a_lint_failing_install_reloads_the_accepted_job()
+
+    def test_a_rollback_killed_after_a_failed_replace_still_recovers(self):
+        """Review: the failed-replace rollback removed the pending record
+        before it reloaded the accepted plist, as the bootstrap one did."""
+        self.plist().write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "failing-replace-bin"
+        stubs.mkdir()
+        mv = stubs / "mv"
+        mv.write_text('#!/bin/sh\ncase "$1" in *.plist.new) exit 1 ;; esac\nexec /bin/mv "$@"\n')
+        mv.chmod(0o755)
+        self.killed_install("kill-on-restore-bin", self.KILL_ON_RESTORE, extra=f"{stubs}{os.pathsep}")
+        self.assert_a_lint_failing_install_reloads_the_accepted_job()
+
+    def test_a_recovery_killed_before_its_bootstrap_still_recovers(self):
+        """Review: the interrupted-install recovery removed the pending
+        record before it reloaded the accepted plist."""
+        self.plist().write_text("the plist launchd holds\n")
+        killed = self.fx.path(self.launchd("kill-bin", on_bootstrap="kill -9 0; "))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        # The second install recovers first; its restore is killed.
+        self.killed_install("kill-on-restore-bin", self.KILL_ON_RESTORE)
+        self.assert_a_lint_failing_install_reloads_the_accepted_job()
+
+    def test_a_helper_waits_for_an_uninstall_from_another_checkout(self):
+        """Review: with no label loaded each checkout locked its own logs/,
+        so a helper could read its marker, then bootstrap the job after
+        another checkout's uninstall returned. Install and uninstall now
+        share one per-user lock; the helper sees the cancellation."""
+        self.helper_plist().write_text("helper\n")
+        gone = self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+        gone.touch()
+        state = self.fx.home / ".local" / "state" / "cron-jobs"
+        state.mkdir(parents=True, exist_ok=True)
+        held = open(state / f"{LABEL_PREFIX}.cron.demo.install.flock", "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        env = {"PATH": self.fx.path(self.launchd()), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+               "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK,
+               "REINSTALL_HELPER": "1"}
+        helper = subprocess.Popen(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: helper.poll() is None and helper.kill())
+        time.sleep(1.5)
+        # The other checkout's uninstall, done under the shared lock.
+        self.helper_plist().unlink()
+        held.close()
+        out, err = helper.communicate(timeout=60)
+        self.assertIn("demo: reinstall cancelled", out, out + err)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+
+    def test_recovery_refuses_while_the_restored_labels_run_holds_its_lock(self):
+        """Review: recovery locked this checkout's logs/ (no label loaded),
+        then loaded an accepted plist whose logs are another checkout's.
+        A run that started there was booted out unchecked. Recovery now
+        takes the lock the restored label names before going on."""
+        self.plist().write_text("an untested plist\n")
+        self.accepted().write_text("the plist launchd holds\n")
+        self.accepted().with_name(self.accepted().name + ".pending").write_text("an untested plist\n")
+        gone = self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+        gone.touch()
+        other = self.fx.tmp / "other" / "logs"
+        other.mkdir(parents=True)
+        held = open(other / ".demo.flock", "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = self.run_script("install", "demo", env={"CRON_TEST_STDOUT_DIR": str(other)})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("demo: a run is in progress", result.stderr)
+        self.assertEqual(self.bootouts(), [])
+        self.assertFalse(gone.exists(), "the accepted job is not loaded")
+
+    def test_a_failed_promote_of_a_loaded_pending_plist_changes_nothing(self):
+        """Review: recovery promoted a pending plist launchd holds with an
+        unchecked mv. Failed, the install went on: its candidate overwrote
+        the pending record and the rollback copy stayed an obsolete plist.
+        It now refuses before anything is unloaded, record kept."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.accepted().write_text("an obsolete plist\n")
+        pending = self.accepted().with_name(self.accepted().name + ".pending")
+        pending.write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "failing-promote-bin"
+        stubs.mkdir()
+        # Recovery copies the record (copy_whole: cp then mv); either fails.
+        for tool in ("cp", "mv"):
+            stub = stubs / tool
+            stub.write_text(f'#!/bin/sh\ncase "$*" in *.pending*) exit 1 ;; esac\nexec /bin/{tool} "$@"\n')
+            stub.chmod(0o755)
+        result = self.run_script("install", "demo",
+                                 path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("demo: could not save the loaded plist", result.stderr)
+        self.assertEqual(self.bootouts(), [])
+        self.assertEqual(pending.read_text(), "the plist launchd holds\n")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_an_interrupted_install_recovers_though_the_job_file_is_invalid(self):
+        """Lane prepare (note #71413): recovery after an install killed past
+        bootout ran only after load_job, so a job file the operator broke in
+        between (JOB_TIMEOUT=invalid) exited first and left the job unloaded.
+        The accepted plist now loads before the job file is read."""
+        self.plist().write_text("the plist launchd holds\n")
+        killed = self.fx.path(self.launchd("kill-bin", on_bootstrap="kill -9 0; "))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        gone = self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+        self.assertTrue(gone.exists(), "the killed install left the job loaded")
+        job = self.fx.jobs / "demo.job"
+        job.write_text(job.read_text() + 'JOB_TIMEOUT="invalid"\n')
+        result = self.run_script("install", "demo", path=self.fx.path(self.launchd()))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("JOB_TIMEOUT", result.stderr)
+        self.assertIn("recovered: demo (an interrupted install)", result.stdout)
+        self.assertFalse(gone.exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    # Lane prepare round 2 (note #72617), one test per step an install can
+    # be killed at. `gone.` marks a label launchd no longer holds.
+    def gone(self):
+        return self.fx.tmp / f"gone.{LABEL_PREFIX}.cron.demo"
+
+    def break_job_file(self):
+        job = self.fx.jobs / "demo.job"
+        job.write_text(job.read_text() + 'JOB_TIMEOUT="invalid"\n')
+
+    def lint_failing_path(self, launchd):
+        stubs = self.fx.tmp / "refusing-plutil-bin"
+        stubs.mkdir(exist_ok=True)
+        (stubs / "plutil").write_text("#!/bin/sh\nexit 1\n")
+        (stubs / "plutil").chmod(0o755)
+        return f"{stubs}{os.pathsep}{self.fx.path(launchd)}"
+
+    def test_an_install_killed_before_its_bootout_keeps_the_job_loaded(self):
+        """Row: killed with the pending copy written, before bootout."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.killed_install("kill-at-bootout-bin", "  bootout) kill -9 0 ;;\n")
+        self.assertFalse(self.gone().exists())
+        self.break_job_file()
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("JOB_TIMEOUT", result.stderr)
+        self.assertFalse(self.gone().exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_an_install_killed_while_launchd_tears_the_label_down_recovers(self):
+        """Row: killed after bootout returned, before launchd ended the
+        teardown, so `print` still finds the label. Recovery trusted that
+        print, skipped, and the job file (JOB_TIMEOUT=invalid) then
+        exited; the teardown ended and left the job unloaded."""
+        self.plist().write_text("the plist launchd holds\n")
+        tearing = self.fx.tmp / "tearing"
+        self.killed_install("kill-in-teardown-bin",
+                            f'  bootout) touch "{tearing}"; kill -9 0 ;;\n')
+        self.assertTrue(tearing.exists())
+        self.assertFalse(self.gone().exists())
+        self.break_job_file()
+        path = self.fx.path(self.launchd_with("teardown-bin",
+            f'  bootout) rm -f "{tearing}"; touch "$gone"; exit 0 ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("JOB_TIMEOUT", result.stderr)
+        # The dead installer's teardown ends now, if nothing replaced it.
+        if tearing.exists():
+            self.gone().touch()
+        self.assertFalse(self.gone().exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_an_install_refused_on_a_label_still_loaded_keeps_its_trigger(self):
+        """Row: bootout returned, the bounded wait ran out with the label
+        still found, and the install refused and dropped its pending
+        record. The teardown ended later; the next install, its
+        candidate refused by plutil, had no trigger and left the job
+        unloaded."""
+        self.plist().write_text("the plist launchd holds\n")
+        slow = self.fx.path(self.launchd_with("slow-teardown-bin", "  bootout) exit 0 ;;\n"))
+        result = self.run_script("install", "demo", path=slow)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("still holds the old label", result.stderr)
+        self.gone().touch()  # the teardown ends
+        result = self.run_script("install", "demo", path=self.lint_failing_path(self.launchd()))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse(self.gone().exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_an_install_killed_after_its_bootstrap_promotes_the_loaded_plist(self):
+        """Row: killed after bootstrap, before the promote."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.killed_install("kill-after-bootstrap-bin",
+                            '  bootstrap) rm -f "$gone"; kill -9 0 ;;\n')
+        self.assertFalse(self.gone().exists())
+        loaded = self.plist().read_text()
+        self.assertNotEqual(loaded, "the plist launchd holds\n")
+        result = self.run_script("install", "demo", path=self.lint_failing_path(self.launchd()))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse(self.gone().exists(), "the loaded job is not loaded")
+        self.assertEqual(self.accepted().read_text(), loaded)
+        self.assertFalse(self.accepted().with_name(self.accepted().name + ".pending").exists())
+
+    def test_a_recovery_killed_after_its_bootout_still_recovers(self):
+        """Review: recovery moved a loaded matching pending record into the
+        accepted copy, then booted the label out. Killed there, no record
+        was left, so the next install skipped recovery; its job file
+        (JOB_TIMEOUT=invalid) exited and left the job unloaded."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.killed_install("kill-after-bootstrap-bin",
+                            '  bootstrap) rm -f "$gone"; kill -9 0 ;;\n')
+        self.assertFalse(self.gone().exists())
+        self.killed_install("kill-after-bootout-bin", '  bootout) touch "$gone"; kill -9 0 ;;\n')
+        self.assertTrue(self.gone().exists(), "the killed recovery left the job loaded")
+        self.break_job_file()
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("JOB_TIMEOUT", result.stderr)
+        self.assertFalse(self.gone().exists(), "the accepted job is not loaded")
+
+    def test_an_install_waiting_on_the_lock_recovers_one_killed_meanwhile(self):
+        """Lane prepare round 2: an update probed for an interrupted install
+        before taking the install lock, found the label loaded, then
+        waited on a manual install that died after its bootout. With the
+        lock it saw the pending record and the job unloaded, and its
+        lint-failing candidate left it so. Recovery now runs under the
+        lock the activation holds."""
+        self.plist().write_text("the plist launchd holds\n")
+        self.accepted().parent.mkdir(parents=True, exist_ok=True)
+        self.accepted().write_text("the plist launchd holds\n")
+        held = open(self.accepted().with_name(f"{LABEL_PREFIX}.cron.demo.install.flock"), "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        env = {"PATH": self.lint_failing_path(self.launchd()), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+               "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK}
+        update = subprocess.Popen(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: update.poll() is None and update.kill())
+        time.sleep(1.5)
+        # The manual install, killed after its bootout.
+        self.accepted().with_name(self.accepted().name + ".pending").write_text("a candidate\n")
+        self.gone().touch()
+        held.close()
+        out, err = update.communicate(timeout=60)
+        self.assertEqual(update.returncode, 1, out + err)
+        self.assertFalse(self.gone().exists(), "the accepted job is not loaded")
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_a_failed_replace_after_an_interrupted_install_restores_the_accepted_plist(self):
+        """Round 9: after an install died between replace and bootstrap,
+        the plist on disk was never loaded. A later install whose replace
+        failed bootstrapped that untested file; it now restores the plist
+        launchd last accepted, as a refused bootstrap does."""
+        self.plist().write_text("an untested plist\n")
+        self.accepted().write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "failing-replace-bin"
+        stubs.mkdir()
+        mv = stubs / "mv"
+        mv.write_text('#!/bin/sh\ncase "$1" in *.plist.new) exit 1 ;; esac\nexec /bin/mv "$@"\n')
+        mv.chmod(0o755)
+        path = self.fx.path(self.launchd_with("refuse-untested-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || { echo refused >&2; exit 5; } ;;\n'))
+        result = self.run_script("install", "demo", path=f"{stubs}{os.pathsep}{path}")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not replace", result.stderr)
+        self.assertIn("restored the previous plist", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_an_uninstall_cancels_a_helper_whatever_either_state_home(self):
+        """Lane review: the state folder followed each caller's
+        XDG_STATE_HOME. A run under a custom one queued its helper there;
+        an uninstall from a shell on the default missed it, and the
+        helper reinstalled the removed job. Every caller now uses one
+        folder under HOME, the one value launchd hands the helper."""
+        self.plist().write_text("the plist launchd holds\n")
+        custom = {"XDG_STATE_HOME": str(self.fx.tmp / "xdg-state")}
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo", **custom})
+        self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
+        result = self.run_script("uninstall", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.calls.write_text("")
+        result = self.run_script("reinstall-after-run", "demo", env=custom)
+        self.assertIn("demo: reinstall cancelled", result.stdout, result.stdout + result.stderr)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertFalse(self.plist().exists())
+
+    def test_a_copy_killed_midway_leaves_no_partial_rollback_plist(self):
+        """Lane review: a copy into the accepted plist, interrupted, left a
+        partial file that a later refused bootstrap restored."""
+        self.plist().write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "partial-cp-bin"
+        stubs.mkdir()
+        cp = stubs / "cp"
+        cp.write_text('#!/bin/sh\nfor a; do last="$a"; done\n'
+                      'case "$last" in *.accepted*) printf partial > "$last"; kill -9 0 ;; esac\n'
+                      'exec /bin/cp "$@"\n')
+        cp.chmod(0o755)
+        killed = f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}"
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        path = self.fx.path(self.launchd_with("refuse-partial-bin",
+            '  bootstrap) grep -q "the plist launchd holds" "$3" || { echo refused >&2; exit 5; } ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_verify_reads_stale_a_plist_launchd_did_not_load(self):
+        """Lane review: an install killed after replacing the plist left
+        launchd on the old one; the disk matched the generator and the
+        label was loaded, so setup read ok for good. verify now also
+        compares the plist with the one launchd last accepted."""
+        self.plist().write_text("the plist launchd holds\n")
+        killed = self.fx.path(self.launchd("kill-bootout-bin", on_bootout="kill -9 0; "))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        result = self.run_script("verify", "demo")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("STALE", result.stdout)
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        self.assertEqual(self.run_script("verify", "demo").returncode, 0)
+
+    def accepted(self):
+        return self.helper_plist().parent / f"{LABEL_PREFIX}.cron.demo.accepted"
+
+    def test_an_install_that_cannot_save_the_rollback_plist_changes_nothing(self):
+        """Lane review: a failed first copy of the loaded plist was ignored;
+        install replaced and unloaded the working job with no rollback."""
+        self.plist().write_text("the plist launchd holds\n")
+        state = self.helper_plist().parent
+        # The install lock any earlier install left: only the copy fails.
+        (state / f"{LABEL_PREFIX}.cron.demo.install.flock").touch()
+        state.chmod(0o500)
+        self.addCleanup(state.chmod, 0o700)
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not save the loaded plist", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+        self.assertEqual(self.bootouts(), [])
+
+    def test_a_failed_promote_fails_the_install_and_drops_the_old_copy(self):
+        """Lane review: after B loaded, a failed copy kept A as the rollback
+        plist and reported `installed:`, so a later refused C restored A,
+        an obsolete schedule. The install now fails, the stale copy goes,
+        and the next install saves the plist launchd holds, B, first."""
+        self.plist().write_text("plist A\n")
+        self.accepted().write_text("plist A\n")
+        stubs = self.fx.tmp / "failing-mv-bin"
+        stubs.mkdir()
+        mv = stubs / "mv"
+        mv.write_text('#!/bin/sh\nfor a; do last="$a"; done\n'
+                      'case "$last" in *.accepted) exit 1 ;; esac\nexec /bin/mv "$@"\n')
+        mv.chmod(0o755)
+        result = self.run_script("install", "demo", path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn("failed: demo (could not record the loaded plist", result.stderr)
+        self.assertNotIn("installed:", out)
+        from_b = self.plist().read_text()
+        other = self.second_checkout()
+        path = self.fx.path(self.launchd_with("refuse-c-bin",
+            f'  bootstrap) ! grep -q "{other.parent}" "$3" || {{ echo refused >&2; exit 5; }} ;;\n'))
+        result = self.run_from(other, "install", "demo", path=path)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr,
+                      result.stdout + result.stderr)
+        self.assertEqual(self.plist().read_text(), from_b)
+
+    def test_a_kill_after_bootstrap_keeps_no_obsolete_rollback_plist(self):
+        """Lane review: an install killed after its bootstrap succeeded,
+        before the copy, kept A as the rollback plist while launchd held
+        B; a later refused install restored A. The pending copy written
+        before the swap is promoted once launchd is seen holding it."""
+        self.plist().write_text("plist A\n")
+        self.accepted().write_text("plist A\n")
+        killed = self.fx.path(self.launchd_with("kill-after-bootstrap-bin",
+            '  bootstrap) rm -f "$gone"; kill -9 0 ;;\n'))
+        subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                       env={"PATH": killed, "HOME": str(self.fx.home),
+                            "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                            "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK},
+                       capture_output=True, text=True, timeout=60, start_new_session=True)
+        from_b = self.plist().read_text()
+        self.assertNotEqual(from_b, "plist A\n")
+        other = self.second_checkout()
+        path = self.fx.path(self.launchd_with("refuse-c-after-kill-bin",
+            f'  bootstrap) ! grep -q "{other.parent}" "$3" || {{ echo refused >&2; exit 5; }} ;;\n'))
+        result = self.run_from(other, "install", "demo", path=path)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr,
+                      result.stdout + result.stderr)
+        self.assertEqual(self.plist().read_text(), from_b)
+
+    def test_an_install_from_another_checkout_clears_a_failed_reinstall(self):
+        """Lane review: the failed-reinstall record sat in the helper's
+        checkout, and only an install from that checkout cleared it, so
+        the cron stage read FAILED after another checkout's install had
+        loaded the job."""
+        self.failed_marker().write_text("an earlier failure\n")
+        result = self.run_from(self.second_checkout(), "install", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.failed_marker().exists())
+
+    def test_a_successful_install_promotes_its_plist(self):
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        accepted = self.fx.home / ".local" / "state" / "cron-jobs" / f"{LABEL_PREFIX}.cron.demo.accepted"
+        self.assertEqual(accepted.read_text(), self.plist().read_text())
+        self.assertEqual(self.run_script("uninstall", "demo").returncode, 0)
+        self.assertFalse(accepted.exists())
+
+    def second_checkout(self):
+        """Another checkout of the tool for the same user, HOME and config."""
+        other = self.fx.tmp / "b"
+        (other / "local-cron-jobs" / "logs").mkdir(parents=True)
+        shutil.copytree(self.fx.tmp / "lib", other / "lib")
+        shutil.copy(self.fx.folder / "cron-jobs.sh", other / "local-cron-jobs" / "cron-jobs.sh")
+        return other / "local-cron-jobs" / "cron-jobs.sh"
+
+    def run_from(self, script, *args, path=None, env=None):
+        env = {"PATH": path or self.fx.path(self.launchd()), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+               "CRON_TEST_CALLS": str(self.calls), "PROBE_LOCK": PROBE_LOCK, **(env or {})}
+        return subprocess.run(["sh", str(script), *args], env=env,
+                              capture_output=True, text=True, timeout=60)
+
+    def test_an_uninstall_from_another_checkout_cancels_the_helper(self):
+        """Lane review: uninstall looked for a pending helper only in its
+        own checkout, so a helper another checkout queued reinstalled the
+        job the user had just removed."""
+        self.plist().write_text("the plist launchd holds\n")
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo"})
+        self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
+        other = self.second_checkout()
+        result = self.run_from(other, "uninstall", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.calls.write_text("")
+        result = self.run_script("reinstall-after-run", "demo")
+        self.assertIn("demo: reinstall cancelled", result.stdout, result.stdout + result.stderr)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertFalse(self.plist().exists())
+
+    def test_a_refused_bootstrap_restores_what_another_checkout_installed(self):
+        """Lane review: the rollback copy sat in each checkout, so after
+        checkout B updated the job, a refused install from A restored A's
+        older plist, not the one launchd last accepted."""
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        other = self.second_checkout()
+        self.assertEqual(self.run_from(other, "install", "demo").returncode, 0)
+        from_b = self.plist().read_text()
+        self.assertIn(str(other.parent), from_b)
+        path = self.fx.path(self.launchd_with("only-b-bin",
+            f'  bootstrap) grep -q "{other.parent}" "$3" || {{ echo refused >&2; exit 5; }} ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed: demo (refused); restored the previous plist", result.stderr)
+        self.assertEqual(self.plist().read_text(), from_b)
+
+    def helper_env(self):
+        return plistlib.loads(self.helper_plist().read_bytes())["EnvironmentVariables"]
+
+    def test_the_helper_installs_the_plist_the_run_would_verify(self):
+        """Lane review, class pass: the helper ran under only its plist's
+        environment and dropped the run's CRON_JOBS_TIMEOUT_GRACE, so it
+        installed another ExitTimeOut, verify under the run read STALE,
+        and the next update queued the same reinstall again."""
+        run_env = {"CRON_JOBS_TIMEOUT_GRACE": "90"}
+        result = self.run_script("install", "demo", env={"CRON_JOBS_RUN": "demo", **run_env})
+        self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
+        given = self.helper_env()
+        launchd_env = {k: given[k] for k in given if k not in ("PATH", "HOME", "SYSTEM_TOOLS_CONFIG")}
+        result = self.run_script("reinstall-after-run", "demo", env=launchd_env)
+        self.assertIn("installed: demo", result.stdout, result.stdout + result.stderr)
+        result = self.run_script("verify", "demo", env=run_env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_the_helper_carries_every_install_input_the_run_resolved(self):
+        """Class pass: every environment value install or the helper reads,
+        as the run resolved it. CRON_JOBS_RUN stays out: with it the
+        helper would defer to itself."""
+        extra = self.fx.tmp / "extra-jobs"
+        extra.mkdir()
+        result = self.run_script("install", "demo", env={
+            "CRON_JOBS_RUN": "demo", "CRON_JOBS_TIMEOUT_GRACE": "90",
+            "CRON_JOBS_REINSTALL_WAIT": "60", "CRON_JOBS_EXTRA_DIRS": str(extra),
+            "CRON_JOBS_HOST": "host1", "SYSTEM_TOOLS_LABEL_PREFIX": LABEL_PREFIX})
+        self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
+        given = self.helper_env()
+        self.assertEqual({k: given.get(k) for k in (
+            "CRON_JOBS_TIMEOUT_GRACE", "CRON_JOBS_REINSTALL_WAIT", "CRON_JOBS_EXTRA_DIRS",
+            "CRON_JOBS_HOST", "SYSTEM_TOOLS_LABEL_PREFIX", "HOME", "SYSTEM_TOOLS_CONFIG")}, {
+            "CRON_JOBS_TIMEOUT_GRACE": "90", "CRON_JOBS_REINSTALL_WAIT": "60",
+            "CRON_JOBS_EXTRA_DIRS": str(extra), "CRON_JOBS_HOST": "host1",
+            "SYSTEM_TOOLS_LABEL_PREFIX": LABEL_PREFIX, "HOME": str(self.fx.home),
+            "SYSTEM_TOOLS_CONFIG": str(self.fx.config)})
+        self.assertNotIn("CRON_JOBS_RUN", given)
+
+    def test_the_helper_gets_relative_extra_dirs_resolved(self):
+        """Lane review: launchd starts the helper in another folder, so a
+        relative CRON_JOBS_EXTRA_DIRS entry named another directory there
+        and the helper could install the shared job, not the override.
+        Each relative entry is resolved against the caller's folder."""
+        extra = self.fx.tmp / "extra-jobs"
+        extra.mkdir()
+        result = self.run_script("install", "demo", cwd=str(self.fx.tmp), env={
+            "CRON_JOBS_RUN": "demo", "CRON_JOBS_EXTRA_DIRS": "./extra-jobs:/abs/jobs"})
+        self.assertIn("deferred: demo", result.stdout, result.stdout + result.stderr)
+        first, second = self.helper_env()["CRON_JOBS_EXTRA_DIRS"].split(":")
+        self.assertEqual(pathlib.Path(first).resolve(), extra.resolve())
+        self.assertTrue(first.startswith("/"), first)
+        self.assertEqual(second, "/abs/jobs")
+
+    def test_the_helper_keeps_the_effective_lookup_and_label(self):
+        """Review round 4: launchd hands the helper only the plist's
+        environment, so an exported CRON_JOBS_EXTRA_DIRS, CRON_JOBS_HOST or
+        label prefix was lost, and the helper could install another
+        definition of the job or look for the wrong label."""
+        self.hold()
+        extra = self.fx.tmp / "extra-jobs"
+        extra.mkdir()
+        result = self.run_script("install", "demo", env={
+            "CRON_JOBS_RUN": "demo", "CRON_JOBS_EXTRA_DIRS": str(extra),
+            "CRON_JOBS_HOST": "Host1", "SYSTEM_TOOLS_LABEL_PREFIX": "example.test.override"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        helper = self.helper_plist().with_name(
+            "example.test.override.cron-reinstall.demo.plist").read_text()
+        for key, value in (("CRON_JOBS_EXTRA_DIRS", str(extra)), ("CRON_JOBS_HOST", "host1"),
+                           ("SYSTEM_TOOLS_LABEL_PREFIX", "example.test.override")):
+            self.assertIn(f"<key>{key}</key>\n        <string>{value}</string>", helper)
+        self.assertIn("<string>example.test.override.cron-reinstall.demo</string>", helper)
+
+    def test_the_helper_refuses_a_job_file_that_fails_while_read(self):
+        """Review round 4: the helper ran install with errexit off, so a job
+        file whose sourcing failed after setting its fields installed."""
+        # macOS sh (bash 3.2) ends the subshell at the failing line anyway;
+        # bash 5, the Linux gate's and Homebrew's, ran on and installed.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="*/10 * * * *"\nJOB_COMMAND="true"\nfalse\nJOB_COMMAND="partial"\n')
+        for shell in ("sh", shutil.which("bash", path=os.environ.get("PATH")) or "/bin/bash"):
+            with self.subTest(shell=shell):
+                self.helper_plist().write_text("helper\n")
+                result = self.run_script("reinstall-after-run", "demo", shell=shell)
+                out = result.stdout + result.stderr
+                self.assertNotEqual(result.returncode, 0, out)
+                self.assertNotIn("installed:", out)
+                self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+                self.assertTrue(self.failed_marker().exists())
+
+    def test_a_refused_enable_is_a_failed_install(self):
+        """Review round 4: a failed `launchctl enable` fell through, cleared
+        the failure record and reported `installed:`."""
+        self.helper_plist().write_text("helper\n")
+        self.failed_marker().write_text("an earlier failure\n")
+        path = self.fx.path(self.launchd_with("enable-bin", '  enable) echo refused >&2; exit 5 ;;\n'))
+        result = self.run_script("reinstall-after-run", "demo", path=path)
+        out = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, out)
+        self.assertNotIn("installed:", out)
+        self.assertIn("failed: demo (launchctl enable refused)", result.stderr)
+        self.assertIn("launchctl enable refused", self.failed_marker().read_text())
+
+    def test_a_refused_enable_on_a_direct_install_leaves_the_record(self):
+        """Round 9 class pass: a direct install whose `launchctl enable`
+        failed left verify and launchd reading fine and wrote no record,
+        so no update ran the install again. The record makes it retry."""
+        self.plist().write_text("the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("enable-direct-bin", '  enable) echo refused >&2; exit 5 ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("launchctl enable refused", self.failed_marker().read_text())
+
+    def test_a_bootout_that_leaves_the_label_loaded_replaces_nothing(self):
+        """Review: install replaced the plist though bootout failed and
+        launchd still held the old label. Killed then, the next install
+        saw a loaded label matching the pending copy and promoted the
+        untested plist over the rollback copy. It now refuses first."""
+        self.plist().write_text("the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("stuck-bootout-bin", '  bootout) echo busy >&2; exit 5 ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("demo: launchd still holds the old label", result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+        # Kept as the trigger (note #72617); it never matches the plist
+        # on disk, so no install promotes it.
+        pending = self.accepted().with_name(self.accepted().name + ".pending")
+        self.assertNotEqual(pending.read_text(), self.plist().read_text())
+        self.assertEqual(self.accepted().read_text(), "the plist launchd holds\n")
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+
+    def test_a_plist_the_linter_refuses_unloads_nothing(self):
+        """Round 9 class pass, validate step: a rendered plist plutil
+        refuses never replaces the loaded one."""
+        self.plist().write_text("the plist launchd holds\n")
+        stubs = self.fx.tmp / "refusing-plutil-bin"
+        stubs.mkdir()
+        (stubs / "plutil").write_text("#!/bin/sh\nexit 1\n")
+        (stubs / "plutil").chmod(0o755)
+        result = self.run_script("install", "demo", path=f"{stubs}{os.pathsep}{self.fx.path(self.launchd())}")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("demo: could not write", result.stderr)
+        self.assertEqual(self.bootouts(), [])
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_a_rollback_launchd_refuses_too_names_the_repair(self):
+        """Round 9 class pass, restore step: when the accepted plist does
+        not load either, the failed: line names the install to run."""
+        self.plist().write_text("the plist launchd holds\n")
+        path = self.fx.path(self.launchd_with("refuse-all-bin", '  bootstrap) echo refused >&2; exit 5 ;;\n'))
+        result = self.run_script("install", "demo", path=path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("the previous plist did not load either: run cron-jobs.sh install demo",
+                      result.stderr)
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_a_helper_plist_that_cannot_be_written_loads_nothing(self):
+        """Class pass, round 4: defer_install wrote its plist unchecked, so
+        under `install --all` (errexit off) a failed write went on to
+        bootstrap whatever the file held."""
+        self.hold()
+        state = self.helper_plist().parent
+        state.chmod(0o500)
+        self.addCleanup(state.chmod, 0o700)
+        result = self.run_script("install", "--all", env={"CRON_JOBS_RUN": "demo"})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("demo: could not write the reinstall helper", result.stderr)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+
+    def test_the_helper_waits_on_the_lock_of_the_checkout_launchd_runs(self):
+        """Review round 5: a job loaded from another checkout locks that
+        checkout's logs/. The helper waited on its own checkout's free lock,
+        then install found the real one held and refused, every night.
+        It now waits on the lock install will test, and installs once the
+        run lets go."""
+        other = self.fx.tmp / "other-checkout" / "local-cron-jobs" / "logs"
+        other.mkdir(parents=True)
+        held = open(other / ".demo.flock", "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        threading.Timer(2, held.close).start()
+        self.helper_plist().write_text("helper\n")
+        result = self.run_script("reinstall-after-run", "demo",
+                                 env={"CRON_TEST_STDOUT_DIR": str(other),
+                                      "CRON_JOBS_REINSTALL_WAIT": "20"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout)
+
+    def test_a_run_tells_its_workload_which_job_it_is(self):
+        out = self.fx.tmp / "run-job"
+        self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="printf %s \\"\\$CRON_JOBS_RUN\\" > {out}"\n')
+        result = self.fx.exec_job("demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out.read_text(), "demo")
 
     def test_a_label_whose_log_folder_is_gone_is_replaced(self):
         """PIN: a removed worktree's label stays replaceable. launchd cannot

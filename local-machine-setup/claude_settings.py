@@ -86,7 +86,12 @@ GUARD_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit"
 RTK_BARE = re.compile(r"\s*(?:[\w.~/-]*/)?rtk\s+hook\s+claude\s*")
 RTK_GUARD = '[ -n "$SD_BUILD_RUN" ] || '
 #: Claude Code updates in the weekly upgrade only (sd:3033); this stops its background updater.
-ENV = {"DISABLE_AUTOUPDATER": "1"}
+#: A session's uvx MCP proxy holds its uv cache's lock while the session lives, and
+#: nothing signals it (sd:9460), so sessions get their own cache: the nightly prune frees
+#: the main one, and the login prune cleans this one (sd:9848). An absolute path, as
+#: settings.json expands no `~`; maintenance.sh's UV_PRUNE_SESSION_CACHE names the same.
+ENV = {"DISABLE_AUTOUPDATER": "1",
+       "UV_CACHE_DIR": os.path.join(os.path.expanduser("~"), ".cache", "uv-claude")}
 #: Env values an older baseline wrote and this one takes back out, where unchanged. The
 #: tool shell was Apple's bash for its file grant (sd:6427), but macOS charges the process
 #: launchd or the terminal started, not the shell (sd:6466); it cost bash 5.

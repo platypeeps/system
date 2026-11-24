@@ -12,11 +12,14 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: ci-native.sh preflight
+       ci-native.sh venv
        ci-native.sh leg repo-sync|tools|shared
 
   preflight  sd-docs-lint, the citation, Jev contract,
              product-name, ports, entrypoint-mode and lint gates, the unwired-suite guard, and the venv at
              $CI_WORK_ROOT/venv with the pack's lib/ (sd_db) installed
+  venv       only that venv, without the repository-wide checks: what
+             `check.sh suite` (`make test SUITE=<name>`) runs (sd:10177)
   leg NAME   every run_suite line of one leg, under the preflight's venv
 
 Run it through tests/check.sh (or `make check`) on a workstation; it expects
@@ -26,7 +29,7 @@ USAGE
 
 case "${1:-}" in
   -h|--help|help) usage; exit 0 ;;
-  preflight) [ "$#" -eq 1 ] || { usage >&2; exit 1; } ;;
+  preflight|venv) [ "$#" -eq 1 ] || { usage >&2; exit 1; } ;;
   leg) [ "$#" -eq 2 ] || { usage >&2; exit 1; }; SUITE_LEG="$2" ;;
   *) usage >&2; exit 1 ;;
 esac
@@ -38,11 +41,12 @@ test -f "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"
 
 if [ "$1" = leg ]; then
   # The preflight built it; a leg never builds its own.
-  export PYTHON="$CI_WORK_ROOT/venv/bin/python"
+  export PYTHON="${CI_VENV:-$CI_WORK_ROOT/venv}/bin/python"
   test -x "$PYTHON"
 else
-# The preflight runs to the `fi` above
-# run_suite.
+# The preflight runs to the `fi` above run_suite; `venv` skips to the
+# venv build below (sd:10177).
+if [ "$1" = preflight ]; then
 
 # The docs/work gate, which nothing ran before #238. After #230 main
 # carried 165 rule 6 failures for five days with every check green;
@@ -79,6 +83,10 @@ fi
 # what `--unsure-below` itself prints. Stdlib and git only, so it
 # runs here before the venv, and the guard below demands this line.
 python3 tests/test_jev_contract.py
+
+# The gate venv, built once per key and reused (sd:9926). Stdlib only,
+# so it runs here before the venv, and the guard below demands this line.
+python3 tests/test_gate_venv.py
 
 # The system's protection gap ids against the pack's, which owns them
 # (sd:1372): sd_db's GAP_IDS compared with ACKNOWLEDGEABLE_GAPS read
@@ -234,15 +242,14 @@ if [ -n "$unwired" ]; then
   done
   exit 1
 fi
+fi
 
-# No --copies: a copied uv-managed python cannot find its libpython, and
-# check.sh takes the first python3.15 on the caller's PATH.
-python3 -m venv "$CI_WORK_ROOT/venv"
-export PYTHON="$CI_WORK_ROOT/venv/bin/python"
 # The pack owns sd_db (sd:2997): install the pinned pack's lib/, the one copy
-# its sd-ship imports too, and name the commit tested against.
+# its sd-ship imports too, and name the commit tested against. check.sh
+# names CI_VENV by key, so a gate before this one may have built it.
 echo "sd_db: pack lib/ at $(git -C "$SD_ACCEPTANCE_PACK" rev-parse HEAD)"
-"$PYTHON" -m pip install --no-index "$SD_ACCEPTANCE_PACK/lib"
+sh tests/gate-venv.sh "${CI_VENV:-$CI_WORK_ROOT/venv}" "$SD_ACCEPTANCE_PACK"
+export PYTHON="${CI_VENV:-$CI_WORK_ROOT/venv}/bin/python"
 # Ship acceptance needs an installed copy, not source on PYTHONPATH.
 "$PYTHON" -I -c 'import pathlib, sd_db, sys; assert pathlib.Path(sd_db.__file__).is_relative_to(pathlib.Path(sys.prefix))'
 # And it is that lib/, file for file: a pin older than the pack's step 1 has none.
