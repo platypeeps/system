@@ -1,8 +1,10 @@
 """Review the SSM calls that reach a deployment, from CloudTrail's event history.
 
 aws-setup.sh `events` runs this with the admin profile. Event history is kept
-per region, so it reads every region the account has enabled. Each call that
-reaches an instance prints one row, oldest first, in local time:
+per region, so it reads every region the account has enabled, one lookup per
+region of every event from ssm.amazonaws.com. It skips reads and the SSM
+agent's reports of itself (REPORTS below); every other call prints one row,
+oldest first, in local time:
 
   UNEXPECTED  made by anyone but the deployer user of this account
   UNLOGGED    a SendCommand whose output does not go to ssm-output/ in the
@@ -15,13 +17,15 @@ reaches an instance prints one row, oldest first, in local time:
               below) is UNLOGGED: the
               deployer may not make one, and no saved output proves what
               it ran
+  UNREVIEWED  any other SSM write, by any name: no rule here reviews it,
+              so review it by hand
   TUNNEL      a port-forwarding session: CloudTrail has who and when, no log
               has what ran inside it
 
 A row prints identifiers only (an instance, a target tag, an association, a
 window, a document name), never a document's parameters.
 
-Exit 0 when nothing is UNEXPECTED or UNLOGGED, 1 otherwise, and 1 when the
+Exit 0 when nothing is UNEXPECTED, UNLOGGED or UNREVIEWED, 1 otherwise, and 1 when the
 history cannot be read or is not the shape CloudTrail documents.
 """
 import argparse
@@ -39,7 +43,7 @@ import sys
 # a task) and the document itself (a new version, the default version). The
 # deployer's policy grants none, and their output never reaches the audit
 # bucket's proof, so each call is UNLOGGED whoever made it, a refused one too.
-# This is a list of names, not every SSM write: README.md says what it leaves.
+# A write not named here is still read, and flagged UNREVIEWED.
 ROUTES = ("CreateAssociation", "CreateAssociationBatch", "UpdateAssociation",
           "StartAssociationsOnce", "StartAutomationExecution", "SendAutomationSignal",
           "StartChangeRequestExecution", "UpdateMaintenanceWindow",
@@ -48,6 +52,12 @@ ROUTES = ("CreateAssociation", "CreateAssociationBatch", "UpdateAssociation",
           "UpdateDocument", "UpdateDocumentDefaultVersion")
 NAMES = ("SendCommand", "StartSession", "ResumeSession", "TerminateSession") + ROUTES
 REACHING = {"SendCommand", "StartSession", "ResumeSession"} | set(ROUTES)
+SOURCE = "ssm.amazonaws.com"
+# Writes the SSM agent makes to report its own state, every few minutes on
+# every managed instance; none runs a document or changes what one reaches.
+# A read is skipped too. Every other SSM write, by any name, is UNREVIEWED.
+REPORTS = {"UpdateInstanceInformation", "PutInventory", "PutComplianceItems",
+           "UpdateInstanceAssociationStatus"}
 TUNNEL = "AWS-StartPortForwardingSession"
 # The instance role may write only <bucket>/ssm-output/*; output under any
 # other key is never written, so it counts as unlogged.
@@ -135,9 +145,11 @@ def regions(args):
     return sorted(set(names))
 
 
-def lookup(args, region, name, start):
-    page = aws(args, region, "%s events in %s" % (name, region), "cloudtrail", "lookup-events",
-               "--lookup-attributes", "AttributeKey=EventName,AttributeValue=" + name,
+def lookup(args, region, start):
+    """Every SSM event in the region since start: one lookup by source, so
+    a call no list names is read too."""
+    page = aws(args, region, "SSM events in %s" % region, "cloudtrail", "lookup-events",
+               "--lookup-attributes", "AttributeKey=EventSource,AttributeValue=" + SOURCE,
                "--start-time", start)
     if not isinstance(page, dict) or not isinstance(page.get("Events"), list):
         raise Malformed("lookup-events output has no Events list")
@@ -214,13 +226,22 @@ def record_of(item):
 
 def review(args, items):
     rows = []
-    for region, name, item in items:
+    for region, item in items:
         record, who, moment, params = record_of(item)
-        # Each lookup asks for one name; anything else in its answer is not
-        # what was asked for, and would count an event twice.
-        if record.get("eventSource") != "ssm.amazonaws.com" or record.get("eventName") != name:
+        # The lookup asks for one source; an event of another is not SSM's.
+        if record.get("eventSource") != SOURCE:
             continue
+        name = record.get("eventName")
+        if not isinstance(name, str) or not name:
+            raise Malformed("an SSM event has no eventName")
         flags = []
+        if name not in NAMES:
+            # A known call is reviewed whatever readOnly says; any other is
+            # skipped only when CloudTrail marks it a read, or it is an
+            # agent's report of itself.
+            if record.get("readOnly") is True or name in REPORTS:
+                continue
+            flags.append("UNREVIEWED")
         own = (who.get("type") == "IAMUser" and who.get("accountId") == args.account
                and who.get("userName") == args.user)
         if name in REACHING and not own:
@@ -244,7 +265,7 @@ def review(args, items):
     rows.sort(key=lambda row: row[0])
     flagged = 0
     for moment, region, name, actor, target, flags in rows:
-        if {"UNEXPECTED", "UNLOGGED"} & set(flags):
+        if {"UNEXPECTED", "UNLOGGED", "UNREVIEWED"} & set(flags):
             flagged += 1
         print("%s  %-14s %-16s %-34s %s %s" % (
             moment.astimezone().strftime("%Y-%m-%d %H:%M %Z"), region, clean(name),
@@ -262,8 +283,8 @@ def main():
     start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=args.hours)
     start = start.strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        items = [(region, name, item) for region in regions(args) for name in NAMES
-                 for item in lookup(args, region, name, start)]
+        items = [(region, item) for region in regions(args)
+                 for item in lookup(args, region, start)]
         return review(args, items)
     except Malformed as error:
         sys.stderr.write("review-events: malformed CloudTrail history: %s\n" % error)
