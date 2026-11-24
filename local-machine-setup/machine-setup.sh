@@ -990,11 +990,32 @@ stage_brew() {
   # Rust comes from rustup alone (sd:7230). The rust formula's cargo in
   # $BREW_PREFIX/bin shadows the keg-only rustup proxies in a login PATH,
   # so cargo ignored rust-toolchain.toml and a gate ran the wrong clippy
-  # (sd:9058). A formula that depends on rust fails the uninstall: a step.
+  # (sd:9058). A formula that needs rust (omlx) refuses the uninstall, so
+  # rust is unlinked instead: its keg stays, its cargo leaves the PATH.
+  # Brew refuses for a dependent an installed keg records and for one a
+  # formula declares, build-only too (omlx); `brew uses --installed`
+  # lists the first, with --include-build only the second: both are read
+  # (sd:10274). A brew upgrade of rust relinks it; the next run unlinks.
   if printf '%s\n' "$formulae" | grep -qx rustup &&
      printf '%s\n' "$formulae" | grep -qx rust; then
-    echo "  EXTRA   formula rust shadows rustup's cargo and rustc"
-    run bound_step 600 brew uninstall rust
+    if ! rust_users=$(bound_step 120 brew uses --installed rust) ||
+       ! rust_build=$(bound_step 120 brew uses --installed --include-build rust); then
+      note_failure "brew stage: brew could not list the formulae that need rust; rust kept" 1
+    elif rust_users=$(printf '%s\n' "$rust_users" "$rust_build" | sed '/^$/d')
+         [ -z "$rust_users" ]; then
+      echo "  EXTRA   formula rust shadows rustup's cargo and rustc"
+      run bound_step 600 brew uninstall rust
+    else
+      rust_users=$(printf '%s\n' "$rust_users" | sort -u | tr '\n' ' ' | sed 's/ *$//')
+      rust_prefix=$(bound_step 60 brew --prefix 2>/dev/null) || rust_prefix=
+      if [ -n "$rust_prefix" ] && [ ! -e "$rust_prefix/var/homebrew/linked/rust" ] &&
+         [ ! -L "$rust_prefix/var/homebrew/linked/rust" ]; then
+        echo "  ok      formula rust unlinked; $rust_users needs it"
+      else
+        echo "  DIFFERS formula rust shadows rustup's cargo and rustc; $rust_users needs it, unlink"
+        run bound_step 300 brew unlink rust
+      fi
+    fi
   fi
   python_firewall || :
   mosh_firewall

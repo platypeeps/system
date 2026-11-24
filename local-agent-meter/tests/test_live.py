@@ -2717,6 +2717,17 @@ class Twilio(unittest.TestCase):
                 failures.append("price %r: %s" % (amount, got["status"]))
         self.assertEqual(failures, [])
 
+    def test_the_env_file_goes_through_the_shared_parser(self):
+        # sd:9864: one .env parser, lib/system_tools_config's, not a copy.
+        self.assertFalse(hasattr(usage_sources, "env_file"))
+        env = self.env_file()
+        shared = usage_sources.system_tools_config.read_env_file
+        with mock.patch.object(usage_sources.system_tools_config, "read_env_file",
+                               side_effect=shared) as parse:
+            got = usage_sources.read_provider("twilio", env, self.fetch(), NOW)
+        self.assertEqual(got["status"], "ok", got)
+        self.assertEqual(parse.call_args.args[0], Path(env["TWILIO_ENV_FILE"]))
+
     def test_agent_meter_reads_twilio_env_file_from_its_own_env(self):
         meter = load_meter()
         config = Path(tempfile.mkdtemp(prefix="meter-config."))
