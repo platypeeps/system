@@ -61,11 +61,18 @@ eval {
     my $sig = $_;
     sub { $caught = $sig; hit($sig); die "signal\n" }
   } keys %number;
-  alarm $limit;
+  # Whole seconds keep the core alarm, of any size. It drops a
+  # fraction, and alarm(0.6) arms no timer at all, so a fractional
+  # bound takes Time::HiRes, which arms none past 100000000 s on
+  # macOS: from 1000 s up a fraction is dropped (sd:9427 review).
+  if ($limit != int($limit) && $limit < 1000) { Time::HiRes::alarm($limit) }
+  else { alarm $limit }
   $status = $? if reap(0) == $pid;
   alarm 0;
+  Time::HiRes::alarm(0);
 };
 alarm 0;
+Time::HiRes::alarm(0);
 if (defined $status) { exit($status & 127 ? 128 + ($status & 127) : $status >> 8) }
 # Ending the group is not interrupted: a second TERM must not leave it half done.
 $SIG{$_} = "IGNORE" for keys %number;

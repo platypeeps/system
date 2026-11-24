@@ -20,6 +20,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
@@ -37,6 +38,8 @@ ITEM2 = "claude-code-oauth-token-user2@example.test#" + TWO
 
 # The accounts as `cswap list --json` names them. `auto --once` switches to
 # FAKE_AUTO_TO when it is set and exits FAKE_AUTO_RC (default 2, no action).
+# FAKE_SWITCH_LOCKS names a folder a switch leaves read-only: the write
+# after it fails. FAKE_LIST_FAIL_AFTER_SWITCH fails each list after one.
 CSWAP = r"""#!/usr/bin/env python3
 import json, os, sys
 state = os.environ["FAKE_CSWAP_STATE"]
@@ -47,9 +50,19 @@ with open(state) as f:
 def save():
     with open(state, "w") as f:
         json.dump(data, f)
+def switched(to):
+    data["active"] = int(to)
+    data["switched"] = True
+    save()
+    locks = os.environ.get("FAKE_SWITCH_LOCKS")
+    if locks:
+        os.makedirs(locks, exist_ok=True)
+        os.chmod(locks, 0o500)
 args = sys.argv[1:]
 if args[:2] == ["list", "--json"]:
     if os.environ.get("FAKE_LIST_FAIL"):
+        sys.exit(1)
+    if os.environ.get("FAKE_LIST_FAIL_AFTER_SWITCH") and data.get("switched"):
         sys.exit(1)
     accounts = [{"number": n, "email": f"user{n}@example.test",
                  "organizationUuid": u, "active": n == data["active"]}
@@ -64,14 +77,12 @@ if args[:2] == ["list", "--json"]:
 elif args[:1] == ["auto"]:
     to = os.environ.get("FAKE_AUTO_TO")
     if to:
-        data["active"] = int(to)
-        save()
+        switched(to)
     sys.exit(int(os.environ.get("FAKE_AUTO_RC", "2")))
 elif args[:1] == ["switch"]:
     if os.environ.get("FAKE_SWITCH_FAIL"):
         sys.exit(1)
-    data["active"] = int(args[1])
-    save()
+    switched(args[1])
 else:
     sys.exit(64)
 """
@@ -131,6 +142,188 @@ case "$1" in
 esac
 exit 0
 """
+
+# herdr's panes live in FAKE_HERDR as JSON: [pane, agent, status, session,
+# screen] rows, and an optional sixth {"status", "session", "screen"}: the
+# pane's state once its screen was read once, as a pane that changes
+# between the read and the send. With "reads": N it is the state from
+# the Nth read on, that read included: a pane that changes during a
+# read; with "gets": N, from the Nth `agent get` on. `agent list` fails with FAKE_HERDR_DOWN
+# (no server); `agent get` answers one pane; `agent read` prints its
+# screen; `agent send-keys` types into the pane's box and enters it.
+HERDR = r"""#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["FAKE_CALLS"], "a") as log:
+    log.write("herdr " + " ".join(sys.argv[1:]) + "\n")
+panes = json.load(open(os.environ["FAKE_HERDR"]))
+args = sys.argv[1:]
+# Like herdr: HERDR_SESSION names the session, and an inherited
+# HERDR_SOCKET_PATH overrides it. The panes live in the session
+# FAKE_HERDR_SESSION names (default sd); any other is running and empty.
+if (os.environ.get("HERDR_SESSION") or "default") != os.environ.get("FAKE_HERDR_SESSION", "sd") \
+        or os.environ.get("HERDR_SOCKET_PATH"):
+    panes = []
+read = os.environ["FAKE_HERDR"] + ".read"
+seen = open(read).read().split() if os.path.exists(read) else []
+def state(row):
+    p, a, st, se, sc = row[:5]
+    later = row[5] if len(row) > 5 else {}
+    if "reads" in later:
+        reading = args[:2] == ["agent", "read"] and args[2] == p
+        later = later if seen.count(p) + reading >= later["reads"] else {}
+    elif "gets" in later:
+        # The state from the Nth `agent get` of the pane on, that get
+        # included: a pane that changes while it is asked.
+        gets = open(os.environ["FAKE_CALLS"]).read().splitlines().count("herdr agent get " + p)
+        later = later if gets >= later["gets"] else {}
+    elif p not in seen:
+        later = {}
+    return p, a, later.get("status", st), later.get("session", se), later.get("screen", sc)
+def switch(path):
+    # A new switch mark, later than the last, as owe_rc writes it.
+    import time
+    try:
+        last = int(open(path).read().split()[0])
+    except (OSError, ValueError, IndexError):
+        last = 0
+    with open(path, "w") as f:
+        f.write("%d 424242\n" % max(time.time(), last + 1))
+def agent(row):
+    p, a, st, se, _ = state(row)
+    # A session of None is herdr naming none: agent_session false.
+    return {"agent": a, "agent_status": st, "pane_id": p,
+            "agent_session": se is not None and {"agent": a, "kind": "id", "value": se}}
+if args[:2] == ["agent", "list"]:
+    import time
+    # A switch by another sync that lands while this list runs.
+    if os.environ.get("FAKE_SWITCH_DURING_LIST"):
+        switch(os.environ["FAKE_SWITCH_DURING_LIST"])
+    time.sleep(float(os.environ.get("FAKE_HERDR_LIST_SLOW") or 0))
+    if os.environ.get("FAKE_HERDR_DOWN"):
+        print("herdr: server not running", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({"id": "cli:agent:list", "result": {"agents": [agent(r) for r in panes]}}))
+elif args[:2] == ["agent", "get"]:
+    import time
+    # A switch by another sync that lands during the pass.
+    if os.environ.get("FAKE_SWITCH_DURING_GET"):
+        switch(os.environ["FAKE_SWITCH_DURING_GET"])
+    # FAKE_SWITCH_AT_GET=N: a switch that lands at the Nth get only.
+    gets_so_far = open(os.environ["FAKE_CALLS"]).read().splitlines().count("herdr agent get " + args[2])
+    if os.environ.get("FAKE_SWITCH_AT_GET") == str(gets_so_far):
+        switch(os.environ["FAKE_SWITCH_AT_MARK"])
+    time.sleep(float(os.environ.get("FAKE_HERDR_GET_SLOW") or 0))
+    # FAKE_OWED_AT_GET: rc-owed as the get finds it, copied there.
+    if os.environ.get("FAKE_OWED_AT_GET"):
+        import shutil
+        shutil.copy(os.path.join(os.environ["FAKE_STATE_DIR"], "rc-owed"),
+                    os.environ["FAKE_OWED_AT_GET"])
+    # FAKE_CLOCK_JUMP_GET=N moves the stub clock on at the Nth get.
+    if os.environ.get("FAKE_CLOCK_JUMP_GET") == str(open(os.environ["FAKE_CALLS"]).read().count("herdr agent get ")):
+        with open(os.environ["FAKE_CLOCK"], "w") as f:
+            f.write(os.environ["FAKE_CLOCK_JUMP"])
+    if os.environ.get("FAKE_HERDR_GET_FAIL"):
+        print("herdr: no such pane", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({"id": "cli:agent:get", "result": {"type": "agent_info", "agent": next(
+        agent(r) for r in panes if r[0] == args[2])}}))
+elif args[:2] == ["agent", "read"]:
+    # Like herdr: the ANSI codes only with --format ansi. FAKE_HERDR_SLOW
+    # seconds per read make a slow pane.
+    import re, time
+    time.sleep(float(os.environ.get("FAKE_HERDR_SLOW") or 0))
+    # FAKE_HERDR_READ_FAIL=N fails the Nth read; FAKE_CLOCK_JUMP_AT=N
+    # moves the stub clock FAKE_CLOCK_JUMP seconds on at the Nth read.
+    nth = len(seen) + 1
+    if os.environ.get("FAKE_HERDR_READ_FAIL") == str(nth):
+        print("herdr: read failed", file=sys.stderr)
+        sys.exit(1)
+    if os.environ.get("FAKE_CLOCK_JUMP_AT") == str(nth):
+        with open(os.environ["FAKE_CLOCK"], "w") as f:
+            f.write(os.environ["FAKE_CLOCK_JUMP"])
+    screen = next(state(r)[4] for r in panes if r[0] == args[2])
+    # A /rc typed and not yet entered shows in the box.
+    typed = os.environ["FAKE_HERDR"] + ".typed"
+    if os.path.exists(typed) and args[2] in open(typed).read().split():
+        # Its last ❯ line, the box's, holds the /rc; a suggestion goes.
+        lines = screen.split("\n")
+        last = max(i for i, l in enumerate(lines) if l.startswith("\u276f"))
+        lines[last] = "\u276f\u00a0/rc"
+        # FAKE_DRAFT_AT_GET=N: from the Nth get of the pane on, the
+        # operator has replaced the /rc with a draft of their own.
+        gets = open(os.environ["FAKE_CALLS"]).read().splitlines().count("herdr agent get " + args[2])
+        if os.environ.get("FAKE_DRAFT_AT_GET") and gets >= int(os.environ["FAKE_DRAFT_AT_GET"]):
+            lines[last] = "\u276f\u00a0my own draft"
+        screen = os.environ.get("FAKE_TYPED_SCREEN") or "\n".join(lines)
+    with open(read, "a") as f:
+        f.write(args[2] + "\n")
+    if args[3:5] != ["--format", "ansi"]:
+        screen = re.sub(r"\x1b\[[0-9;]*m", "", screen)
+    print(screen)
+elif args[:2] == ["agent", "send-keys"]:
+    # Like herdr 0.9.5: one key or character per argument, written at
+    # once (sd:9427 ruling). Typed "/ r c" shows in the pane's input box
+    # (FAKE_TYPED_SCREEN: the screen it shows instead, as a draft typed
+    # meanwhile); "enter" submits it. FAKE_HERDR_KEYS_SLOW seconds make a
+    # slow delivery: the keys reach the pane after it.
+    import time
+    p, keys = args[2], args[3:]
+    time.sleep(float(os.environ.get("FAKE_HERDR_KEYS_SLOW") or 0))
+    typed = os.environ["FAKE_HERDR"] + ".typed"
+    if keys == ["/", "r", "c"]:
+        with open(typed, "a") as f:
+            f.write(p + "\n")
+    elif keys == ["enter"]:
+        if os.environ.get("FAKE_HERDR_ENTER_FAIL"):
+            print("herdr: send-keys failed", file=sys.stderr)
+            sys.exit(1)
+        if os.environ.get("FAKE_DELIVERED"):
+            with open(os.environ["FAKE_DELIVERED"], "a") as f:
+                f.write(p + "\n")
+        if os.path.exists(typed):
+            rest = [t for t in open(typed).read().split() if t != p]
+            open(typed, "w").write("".join(t + "\n" for t in rest))
+    else:
+        sys.exit(65)
+    # FAKE_HERDR_KEYS_LATE seconds after the keys: herdr answers late.
+    time.sleep(float(os.environ.get("FAKE_HERDR_KEYS_LATE") or 0))
+else:
+    sys.exit(64)
+"""
+
+# A pane's screen: a Remote Control line, then the input box. INPUT is the
+# empty input line; the screen keeps older lines above the newest.
+# The box rules as Claude draws them, in their own colour (read from a
+# hub pane, 2026-11-20); a rule typed into a draft is plain text.
+RULE = "\x1b[0m\x1b[38;2;136;136;136m" + "\u2500" * 20 + "\x1b[0m"
+TYPED_RULE = "\u2500" * 20
+INPUT = f"{RULE}\n\u276f\u00a0\n{RULE}\n  [model] | git:(main)"
+# The banners as Claude prints them, colours and all (a hub pane, read
+# with --format ansi). Prose that quotes their text is no banner.
+YELLOW = "\x1b[0m\x1b[38;2;255;193;7m"
+DROP_LINE = (f"{YELLOW}\u23fa\x1b[0m \x1b[0m{YELLOW}Remote Control disconnected \u2014 signed-in "
+             "claude.ai account or organization changed on this machine \u2014 run\x1b[0m")
+ACTIVE_LINE = ("  /remote-control is active\x1b[0m\x1b[38;2;153;153;153m \u00b7 Continue here, "
+               "on your phone, or at \x1b[0m")
+DROPPED = f"{DROP_LINE}\n{INPUT}"
+CONNECTED = f"{ACTIVE_LINE}\n{INPUT}"
+
+
+def newest_bash():
+    """A bash 4 or later when the machine has one, else PATH's bash. macOS
+    /bin/bash 3.2 reads `local x` as set, bash 5 as unset under set -u:
+    a sync passed here and died under cron's Homebrew bash (sd:9427
+    review), so the suite runs the bash that is stricter."""
+    for candidate in ("/opt/homebrew/bin/bash", "/usr/local/bin/bash", shutil.which("bash")):
+        if candidate and os.access(candidate, os.X_OK):
+            done = subprocess.run([candidate, "-c", "echo ${BASH_VERSINFO[0]}"],
+                                  capture_output=True, text=True)
+            if done.stdout.strip().isdigit() and int(done.stdout) >= 4:
+                return candidate
+    return "bash"
+
+
+BASH = newest_bash()
 
 
 # The Keychain: FAKE_KEYCHAIN holds one `<service>#<account> <key>` line per
@@ -234,7 +427,10 @@ class Machine(unittest.TestCase):
                     "SYSTEM_TOOLS_CONFIG": str(self.tmp / "config"),
                     "SD_PACK_ROOT": str(self.tmp / "pack"), "FAKE_CALLS": str(self.calls),
                     "FAKE_CSWAP_STATE": str(self.state), "FAKE_ROW": str(self.row),
-                    "FAKE_KEYCHAIN": str(self.keychain)}
+                    "FAKE_KEYCHAIN": str(self.keychain),
+                    # Never the machine's own herdr: a test must not send /rc.
+                    "CSWAP_HERDR_DIRS": ""}
+        self.stubs = stubs
         self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=1)
 
     def accounts(self, pairs, active):
@@ -251,7 +447,7 @@ class Machine(unittest.TestCase):
 
     def run_verb(self, *args, **extra):
         self.calls.write_text("")
-        return subprocess.run(["bash", str(self.script), *args], env={**self.env, **extra},
+        return subprocess.run([BASH, str(self.script), *args], env={**self.env, **extra},
                               capture_output=True, text=True, timeout=60)
 
     def sync(self, fence, code=0, **extra):
@@ -474,9 +670,12 @@ class APinFollow(Machine):
         self.assertIn("SD_REPORT_ATTENTION: data safe, one step failed: cswap sync read",
                       result.stdout)
         self.assertEqual(self.called("cswap switch"), [])
-        # A good read still switches: a count it cannot clear only fails sooner.
-        self.sync("elsewhere")
-        self.assertEqual(self.active(), 3)
+        # A good read does not switch here: with no state folder the
+        # reconnect lock does not open, and no lock means no switch
+        # (sd:9427 class pass). The run fails, so it shows.
+        result = self.sync("elsewhere", code=1)
+        self.assertEqual(self.active(), 1)
+        self.assertIn("one step failed: cswap sync lock", result.stdout)
 
     def test_another_read_failure_still_fails_at_once(self):
         self.publish(THREE)
@@ -526,6 +725,1500 @@ class APinFollow(Machine):
         result = self.run_verb("status", FAKE_FENCE="elsewhere", FAKE_SD_MISMATCH="1")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(self.called("follow"), [])
+
+
+class RemoteControlReconnects(Machine):
+    """sd:9427: a switch drops every Remote Control link; /rc restores it."""
+
+    def panes(self, *rows, where=None):
+        path = self.tmp / "herdr.json"
+        path.write_text(json.dumps(rows))
+        self.env["FAKE_HERDR"] = str(path)
+        executable((where or self.stubs) / "herdr", HERDR)
+
+    def prompts(self):
+        """Each /rc submitted: the enter after it was typed (sd:9427
+        ruling: two send-keys calls, not agent prompt)."""
+        return [call for call in self.called("herdr agent send-keys") if call.endswith(" enter")]
+
+    def owe(self, rows, since):
+        """Seed rc-owed with rows of the switch at `since`, that switch's
+        mark, and sd as listed for it: only the current switch's rows
+        take a /rc."""
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        (state / "rc-pending").write_text(f"{since} 42\n")
+        (state / "rc-listed").write_text(f"{since} 42 sd\n")
+        (state / "rc-owed").write_text(rows)
+        return state / "rc-owed"
+
+    def owed(self):
+        path = self.script.parent / "state/rc-owed"
+        # A row with " sent" or " done" added is a pane sent /rc: no
+        # longer owed.
+        return [line.split()[1] for line in path.read_text().splitlines()
+                if not line.endswith((" sent", " done"))] if path.exists() else []
+
+    def test_rc_is_typed_then_entered_once_the_box_shows_it(self):
+        # sd:9427 ruling #70122: herdr's agent prompt queues the Enter
+        # 300 ms on with no deadline, so a killed client still delivers.
+        # The keys go as two send-keys calls: "/ r c", a read that shows
+        # exactly /rc in the box, then "enter".
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere")
+        calls = [c for c in self.called("herdr agent") if " w1:p1" in c]
+        self.assertEqual(calls[-6:], ["herdr agent send-keys w1:p1 / r c",
+                                      "herdr agent read w1:p1 --format ansi",
+                                      "herdr agent get w1:p1",
+                                      "herdr agent read w1:p1 --format ansi",
+                                      "herdr agent get w1:p1",
+                                      "herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertEqual(self.called("herdr agent prompt"), [])
+        self.assertIn("reconnect: sent /rc to w1:p1\n", result.stdout)
+        self.assertEqual(self.owed(), [])
+
+    def test_a_box_that_does_not_show_exactly_rc_gets_no_enter(self):
+        # A draft typed in the gap mixes with the /rc: no Enter submits
+        # it. No enter went, so the pane stays owed; its box no longer
+        # shows exactly /rc, so no later pass types or enters into it.
+        # A slash-command menu below the box is no reason to wait; a
+        # dialog there is.
+        menu = DROPPED.replace("\u276f\u00a0\n", "\u276f\u00a0/rc\n") + \
+            "\n  /remote-control (rc)   Continue this session from another device"
+        rows = [(DROPPED.replace("\u276f\u00a0\n", "\u276f\u00a0half a draft/rc\n"), False),
+                (DROPPED, False),
+                (DROPPED.replace("\u276f\u00a0\n", "\u276f\u00a0/rc\n") + "\n Do you want to proceed?\n 1. Yes",
+                 False),
+                (menu, True)]
+        for typed, entered in rows:
+            with self.subTest(typed=typed[-60:]):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                pathlib.Path(self.env["FAKE_HERDR"] + ".typed").unlink(missing_ok=True)
+                result = self.sync("elsewhere", FAKE_TYPED_SCREEN=typed)
+                self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+                self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"] if entered else [],
+                                 result.stdout)
+                self.assertEqual(self.owed(), [] if entered else ["w1:p1"], result.stdout)
+                if not entered:
+                    self.assertRegex(result.stdout, r"reconnect: typed /rc into w1:p1, but its box then "
+                                                    r"showed \(.*\); no enter\n")
+                (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
+
+    def test_a_failed_read_or_enter_after_the_typing_leaves_the_rc_to_the_operator(self):
+        # Once "/ r c" went, the /rc may sit in the box: a read that
+        # fails gets no enter, and the pane stays owed; an enter that
+        # fails leaves it sent. Neither is typed into again, as a
+        # second /rc would join the first, and no later sync enters
+        # it: the operator may have typed that /rc (sd:9427 review).
+        rows = [({"FAKE_HERDR_READ_FAIL": "4"}, r"typed /rc into w1:p1, but its box then showed "
+                                                r"\(no read, exit 1\); no enter\n", False),
+                ({"FAKE_HERDR_ENTER_FAIL": "1"}, r"the enter for /rc in w1:p1 failed or ran over "
+                                                 r"5000 ms \(exit 1\); not sent again", True)]
+        for fail, why, entered in rows:
+            with self.subTest(fail=fail):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                for suffix in (".read", ".typed"):
+                    pathlib.Path(self.env["FAKE_HERDR"] + suffix).unlink(missing_ok=True)
+                result = self.sync("elsewhere", **fail)
+                self.assertRegex(result.stdout, why)
+                self.assertEqual(len(self.called("herdr agent send-keys w1:p1 enter")), int(entered))
+                self.assertEqual(self.owed(), [] if entered else ["w1:p1"], result.stdout)
+                result = self.sync("elsewhere")
+                self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+                self.assertEqual(self.owed(), [] if entered else ["w1:p1"], result.stdout)
+                (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
+
+    def test_the_target_is_asked_again_before_the_enter(self):
+        # sd:9427 review: the enter skipped the session, status and
+        # switch checks. A pane that restarted, or turned busy, after
+        # the typed read got the Enter in its new session, where it
+        # could submit input or accept a dialog. The third get, the one
+        # after the typing, finds the change; the enter does not go.
+        mark = self.script.parent / "state/rc-pending"
+        rows = [({}, {"gets": 3, "session": "s9"}, "s9"),
+                ({}, {"gets": 3, "status": "blocked"}, "blocked"),
+                ({"FAKE_SWITCH_AT_GET": "3", "FAKE_SWITCH_AT_MARK": str(mark)}, None, "a newer switch")]
+        for env, later, why in rows:
+            with self.subTest(why=why):
+                self.publish(ONE if self.active() == 3 else THREE)
+                row = ["w1:p1", "claude", "idle", "s1", DROPPED] + ([later] if later else [])
+                self.panes(row)
+                for suffix in (".read", ".typed"):
+                    pathlib.Path(self.env["FAKE_HERDR"] + suffix).unlink(missing_ok=True)
+                result = self.sync("elsewhere", **env)
+                self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+                self.assertEqual(self.prompts(), [], result.stdout)
+                self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter", result.stdout)
+                self.assertIn(why, result.stdout)
+                self.assertIn("; no enter\n", result.stdout)
+                (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
+
+    def test_a_new_session_during_the_last_read_gets_no_enter(self):
+        # sd:9427 review: the session was asked before the last screen
+        # read only. A pane that changed session during that read, and
+        # drew the same /rc box, took the Enter in its new session. The
+        # fourth get, after the last read, finds the change.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"gets": 4, "session": "s9"}])
+        result = self.sync("elsewhere")
+        self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter "
+                      "(w1:p1 s9 idle); no enter\n", result.stdout)
+
+    def test_an_operator_s_own_rc_in_an_owed_pane_gets_no_enter(self):
+        # sd:9427 review: a box showing exactly /rc took the enter as
+        # the typing of a stopped pass, though cswap typed nothing
+        # there: the operator's own unsubmitted /rc was submitted. Only
+        # a row cswap marked typed before it typed takes that enter.
+        now = int(time.time())
+        self.owe(f"sd w1:p1 s1 {now}\n", now)
+        self.publish(ONE)  # no switch: the seeded mark is the one listed
+        self.panes(["w1:p1", "claude", "idle", "s1",
+                    DROPPED.replace("❯ \n", "❯ /rc\n")])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+
+    def test_no_later_pass_enters_a_rc_it_did_not_type(self):
+        # sd:9427 review, class pass: a pass that found /rc in a sent or
+        # typed row's box sent the enter as a stopped pass's recovery.
+        # The operator may have cleared that /rc and typed their own:
+        # the box reads the same. Only the pass that typed sends the
+        # enter; a /rc left in a box waits for the operator.
+        for mark in ("sent", "typed"):
+            with self.subTest(mark=mark):
+                now = int(time.time())
+                self.owe(f"sd w1:p1 s1 {now} {mark}\n", now)
+                self.publish(ONE)  # no switch: the seeded mark is the one listed
+                self.panes(["w1:p1", "claude", "idle", "s1",
+                            DROPPED.replace("\u276f\u00a0\n", "\u276f\u00a0/rc\n")])
+                result = self.sync("elsewhere")
+                self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+
+    def test_the_enter_reads_the_gap_and_switch_after_the_sent_mark_moves_in(self):
+        # sd:9427 review: the gap, budget and switch were read before
+        # the sent mark moved in; a slow rename used up the gap, or a
+        # switch landed during it, and the enter still went on the old
+        # checks. They are read after the rename.
+        hooks = {"slow": 'mv() { case "${1-}" in *rc-owed.sent) sleep 1.2;; esac; command mv "$@"; }\n',
+                 "switch": 'mv() { local s _; case "${1-}" in *rc-owed.sent)\n'
+                           '  read -r s _ <"$RC_PENDING"; builtin printf "%s 4343\\n" $((s + 1)) >"$RC_PENDING";;\n'
+                           'esac; command mv "$@"; }\n'}
+        for why, hook in hooks.items():
+            with self.subTest(why=why):
+                env = self.tmp / f"mv-{why}.sh"
+                env.write_text(hook)
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                pathlib.Path(self.env["FAKE_HERDR"] + ".typed").unlink(missing_ok=True)
+                result = self.sync("elsewhere", BASH_ENV=str(env), CSWAP_RC_GAP_MS="1000")
+                self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+                self.assertEqual(self.prompts(), [], result.stdout)
+                (self.script.parent / "state/rc-owed").unlink(missing_ok=True)
+
+    def test_a_draft_typed_during_the_last_get_gets_no_enter(self):
+        # sd:9427 review: the operator replaced /rc with a draft while
+        # the get after the typed read ran; the session still said idle,
+        # and the Enter submitted the draft. The screen is read again
+        # after that get and must match the typed read.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_DRAFT_AT_GET="3")
+        self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter "
+                      "(its screen moved during the check); no enter\n", result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"])
+
+    def test_a_budget_spent_after_the_typing_still_sends_the_enter(self):
+        # sd:9427 review (cswap.sh:640, :744, :185): the enter's calls
+        # were cut by the pass budget, read in whole seconds, so a
+        # typing let through with under a second left stranded /rc in
+        # an idle box, where no later pass enters it. The typing waits
+        # for a gap of budget; once typed, only the gap bounds the
+        # enter. The stub clock jumps past the budget at the fifth
+        # read, between the typing and the enter.
+        clock = self.tmp / "clock"
+        executable(self.stubs / "date", '#!/bin/sh\n'
+                   'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
+                   '  echo $(( $(/bin/date +%s) + $(cat "$FAKE_CLOCK") )); exit 0\nfi\n'
+                   'exec /bin/date "$@"\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_AT="5", FAKE_CLOCK_JUMP="61")
+        self.assertIn("herdr agent send-keys w1:p1 / r c", self.called("herdr agent send-keys"))
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertEqual(self.owed(), [])
+
+    def test_the_shipped_gap_fits_the_checks_on_a_loaded_machine(self):
+        # sd:9427 review (cswap.sh:77): the 1000 ms default was under
+        # what the checks cost on a loaded machine, and every test here
+        # raised the gap, so none ran the shipped value. herdr calls of
+        # 250 ms each, as under load: the default gap sends /rc.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_HERDR_SLOW="0.25", FAKE_HERDR_GET_SLOW="0.25")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertEqual(self.owed(), [])
+
+    def test_a_switch_sends_rc_to_idle_panes_only(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
+                   ["w1:p2", "claude", "done", "s2", DROPPED],
+                   ["w1:p3", "claude", "working", "s3", DROPPED],
+                   ["w1:p4", "claude", "blocked", "s4", DROPPED],
+                   ["w1:p5", "codex", "idle", "s5", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter", "herdr agent send-keys w1:p2 enter"])
+        self.assertEqual(self.owed(), ["w1:p3", "w1:p4"])
+        # herdr took each send (sd:9427 review: --timeout without --wait
+        # was refused before any key went out).
+        self.assertIn("reconnect: sent /rc to w1:p1\n", result.stdout)
+        self.assertIn("reconnect: sent /rc to w1:p2\n", result.stdout)
+        self.assertIn("2 pane(s) still owe /rc", result.stdout)
+
+    def test_a_busy_pane_gets_rc_once_it_is_idle(self):
+        self.publish(THREE)
+        self.panes(["w1:p3", "claude", "working", "s3", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.panes(["w1:p3", "claude", "idle", "s3", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p3 enter"])
+        self.assertEqual(self.owed(), [])
+
+    def test_slow_panes_neither_delay_the_switch_nor_outrun_the_budget(self):
+        # sd:9282 lane review: owed panes were read before the account
+        # sync, with no shared deadline. Now the switch comes first, and
+        # the pass stops at its budget; the panes it did not reach stay
+        # owed, and a later sync sends them.
+        owed = self.script.parent / "state/rc-owed"
+        owed.parent.mkdir(exist_ok=True)
+        now = int(time.time())
+        owed.write_text("".join(f"sd w1:p{n} s{n} {now}\n" for n in (1, 2, 3)))
+        self.publish(THREE)
+        self.panes(*(["w1:p%d" % n, "claude", "idle", "s%d" % n, DROPPED] for n in (1, 2, 3)))
+        # w1:p1 takes five 1 s reads: the pass's, the send's two and
+        # two between "/ r c" and "enter" (sd:9427 ruling #70122), and
+        # four gets. A typing needs a gap of budget left for its enter
+        # (sd:9427 review): w1:p2 is reached with less, and waits.
+        result = self.sync("elsewhere", FAKE_HERDR_SLOW="1", CSWAP_RC_BUDGET="12", CSWAP_RC_GAP_MS="4000")
+        calls = self.calls.read_text().splitlines()
+        first_read = next(i for i, c in enumerate(calls) if c.startswith("herdr agent read"))
+        self.assertLess(next(i for i, c in enumerate(calls) if c.startswith("cswap switch")), first_read)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertEqual(self.owed(), ["w1:p2", "w1:p3"], result.stdout)
+        self.assertIn("reconnect: the 12s budget ", result.stdout)
+        self.assertEqual(self.called("herdr agent send-keys w1:p2"), [], result.stdout)
+        self.assertEqual(self.called("herdr agent send-keys w1:p3"), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p2 enter", "herdr agent send-keys w1:p3 enter"],
+                         result.stdout)
+        self.assertEqual(self.owed(), [])
+
+    def test_the_budget_bounds_each_herdr_call_not_only_pane_entry(self):
+        # sd:9427 advisory: a pane entered near the deadline still made
+        # herdr calls of 10 s each, and the agent list ran outside it.
+        now = int(time.time())
+        self.owe("sd w1:p1 s1 %d\n" % now, now)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        for slow in ({"FAKE_HERDR_SLOW": "8"}, {"FAKE_HERDR_LIST_SLOW": "8"}):
+            with self.subTest(slow=slow):
+                self.publish(ONE)
+                start = time.monotonic()
+                self.sync("elsewhere", CSWAP_RC_BUDGET="2", **slow)
+                self.assertLess(time.monotonic() - start, 6)
+                self.assertEqual(self.prompts(), [])
+                self.assertEqual(self.owed(), ["w1:p1"])
+        self.assertEqual(len(self.called("herdr agent list")), 1)
+
+    def test_two_switches_in_one_second_each_owe_their_panes(self):
+        # Owed rows carry their switch's second: a second switch within
+        # it kept the first one's sent row, and its pane got no /rc. A
+        # `date` stub holds the clock; each mark is later than the last.
+        executable(self.stubs / "date", '#!/bin/sh\n[ "$1" = +%s ] && { echo 1795000000; exit 0; }\n'
+                                        'exec /bin/date "$@"\n')
+        for account in (THREE, ONE):
+            self.publish(account)
+            self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+            result = self.sync("elsewhere")
+            self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_the_managed_herdr_session_is_the_one_asked(self):
+        # Review on sd:9427: cron's herdr calls went to herdr's default
+        # session, not local-herdr's `sd`; an empty default list cleared
+        # the pending switch. A pane inside another session inherits its
+        # socket path, which must not win either. HERDR_SESSION overrides,
+        # as in local-herdr.
+        for extra in ({}, {"HERDR_SOCKET_PATH": "/nowhere.sock"},
+                      {"HERDR_SESSION": "work", "FAKE_HERDR_SESSION": "work"}):
+            with self.subTest(extra=extra):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                self.sync("elsewhere", **extra)
+                self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+                self.assertEqual(self.owed(), [])
+
+    def test_a_pane_owed_in_another_herdr_session_outlives_this_sync(self):
+        # sd:9427 blocker (cswap.sh:409): the owed list kept no herdr
+        # session, so a cron sync over sd read a pane owed in session
+        # work as gone and dropped it. Each sync touches its own rows.
+        work = {"HERDR_SESSION": "work", "FAKE_HERDR_SESSION": "work"}
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("elsewhere", **work)
+        self.assertEqual(self.owed(), ["w1:p1"])
+        # A later switch, listed in sd, owes sd's panes beside it.
+        self.publish(ONE)
+        result = self.sync("elsewhere", FAKE_HERDR_SESSION="work")
+        self.assertNotIn("w1:p1 is gone", result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.sync("elsewhere", FAKE_HERDR_SESSION="work")
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere", **work)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+        self.assertEqual(self.owed(), [])
+
+    def test_each_herdr_session_lists_its_panes_for_a_switch(self):
+        # Review on sd:9427 (cswap.sh:374): the first session to list,
+        # even an empty one, cleared the machine-wide mark, so the panes
+        # of session work were never owed for that switch.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("elsewhere", FAKE_HERDR_SESSION="work")
+        self.assertEqual(self.owed(), [])
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere", HERDR_SESSION="work", FAKE_HERDR_SESSION="work")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+        # Once listed, a session lists no second time for one switch.
+        self.sync("elsewhere", HERDR_SESSION="work", FAKE_HERDR_SESSION="work")
+        self.assertEqual(self.prompts(), [])
+
+    def test_a_sync_while_another_reconnects_leaves_the_state_alone(self):
+        # Review on sd:9427 (cswap.sh:467): a cron sync and a manual one
+        # each rewrote rc-owed through rc-owed.new; the last writer lost
+        # the other's rows. One reconnect pass runs at a time: the other
+        # sync skips, and its rows stay for the next.
+        import fcntl
+        now = int(time.time())
+        rows = "sd w1:p1 s1 %d\n" % now
+        owed = self.owe(rows, now)
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        with open(self.script.parent / "state/rc-lock", "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(owed.read_text(), rows)
+        self.assertIn("reconnect: skipped: another sync is reconnecting", result.stdout)
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_no_switch_lands_while_a_reconnect_pass_runs(self):
+        # sd:9427 review (cswap.sh:889, :977): a sync switched while
+        # another sync's pass ran, and before its new mark was in, that
+        # pass sent /rc for the older mark under the new account. A
+        # switch now takes the reconnect lock; held, the switch waits
+        # for the next sync, and the account stays.
+        import fcntl
+        for fence, extra in (("elsewhere", {}),
+                             ("holder", {"FAKE_AUTO_TO": "3", "FAKE_AUTO_RC": "0"})):
+            with self.subTest(fence=fence):
+                self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=1)
+                self.publish(THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                (self.script.parent / "state").mkdir(exist_ok=True)
+                with open(self.script.parent / "state/rc-lock", "a") as held:
+                    fcntl.flock(held, fcntl.LOCK_EX)
+                    result = self.sync(fence, **extra)
+                self.assertEqual(self.called("cswap switch") + self.called("cswap auto"), [],
+                                 result.stdout)
+                self.assertEqual(self.active(), 1)
+                self.assertIn("another sync is reconnecting", result.stdout)
+                self.sync(fence, **extra)
+                self.assertEqual(self.active(), 3)
+
+    def test_no_mark_write_while_another_sync_holds_the_lock(self):
+        # sd:9427 review (cswap.sh:1002, :910, :924): a manual sync read
+        # the active account before a scheduled sync's switch, then
+        # wrote its mark over the new one; a fresh epoch listed every
+        # pane again, and each got a second /rc. Every mark write now
+        # goes under the reconnect lock, with the account read there.
+        import fcntl
+        now = int(time.time())
+        for fence in ("elsewhere", "holder"):
+            for mark_text in (f"{now} 1 {TWO}\n", "1000 1\n"):
+                with self.subTest(fence=fence, mark=mark_text):
+                    self.accounts([(1, ONE), (2, TWO)], active=1)
+                    self.publish(ONE)
+                    mark = self.script.parent / "state/rc-pending"
+                    mark.parent.mkdir(exist_ok=True)
+                    mark.write_text(mark_text)
+                    with open(self.script.parent / "state/rc-lock", "a") as held:
+                        fcntl.flock(held, fcntl.LOCK_EX)
+                        self.sync(fence)
+                    self.assertEqual(mark.read_text(), mark_text)
+
+    def test_a_lock_that_does_not_open_switches_and_marks_nothing(self):
+        # sd:9427 class pass (cswap.sh:1015, :916, :930): a lock that
+        # did not open let the sync go on unlocked, so two such syncs
+        # could still write over a newer switch mark and send /rc
+        # twice. No lock now means no switch and no mark write: the
+        # sync fails, and the next one that opens the lock does both.
+        now = int(time.time())
+        state = self.script.parent / "state"
+        cases = [("elsewhere", {}, f"{now} 1 {TWO}\n"),
+                 ("elsewhere", {}, "1000 1\n"),
+                 ("holder", {"FAKE_AUTO_TO": "3", "FAKE_AUTO_RC": "0"}, f"{now} 1 {TWO}\n"),
+                 ("holder", {"FAKE_AUTO_TO": "3", "FAKE_AUTO_RC": "0"}, "1000 1\n"),
+                 ("holder", {}, f"{now} 1 {TWO}\n")]
+        for fence, extra, mark_text in cases:
+            with self.subTest(fence=fence, extra=extra, mark=mark_text):
+                shutil.rmtree(state, ignore_errors=True)
+                (state / "rc-lock").mkdir(parents=True)  # opens for no write
+                (state / "rc-pending").write_text(mark_text)
+                self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=1)
+                self.publish(THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                result = self.sync(fence, code=1, **extra)
+                self.assertEqual(self.called("cswap switch") + self.called("cswap auto"), [],
+                                 result.stdout)
+                self.assertEqual(self.active(), 1)
+                self.assertEqual((state / "rc-pending").read_text(), mark_text)
+                self.assertEqual(self.called("herdr"), [], result.stdout)
+                self.assertIn("one step failed: cswap sync lock", result.stdout)
+        shutil.rmtree(state)
+        self.publish(THREE)
+        self.sync("elsewhere")
+        self.assertEqual(self.active(), 3)
+
+    def test_no_sync_deletes_a_switch_mark(self):
+        # Review on sd:9427 (cswap.sh:348): the expiry branch deleted
+        # the mark, and a switch could land between its read and the
+        # delete. An old mark owes nothing and keeps its epoch and pid;
+        # a sync with no switch only adds the active account to one
+        # that names none (sd:9427 class pass).
+        mark = self.script.parent / "state/rc-pending"
+        mark.parent.mkdir(exist_ok=True)
+        mark.write_text("1000 1\n")
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(mark.read_text(), f"1000 1 {ONE}\n")
+        self.sync("elsewhere")
+        self.assertEqual(mark.read_text(), f"1000 1 {ONE}\n")
+        self.assertEqual(self.called("herdr"), [])
+
+    def test_a_list_marks_only_the_switch_it_read(self):
+        # Review on sd:9427: a switch during the list must not be marked
+        # listed by that list; the next sync lists again for it.
+        mark = self.script.parent / "state/rc-pending"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("elsewhere", FAKE_SWITCH_DURING_LIST=str(mark))
+        self.sync("elsewhere")
+        self.assertEqual(len(self.called("herdr agent list")), 1)
+        listed = (self.script.parent / "state/rc-listed").read_text().split("\n")
+        # The listed line names the switch by epoch and pid, not account.
+        self.assertIn(" ".join(mark.read_text().split()[:2]) + " sd", listed)
+
+    def test_rows_of_an_older_switch_get_no_rc(self):
+        # Class pass, last round on sd:9427: the pass acted on owed rows
+        # that were not the current switch's. Each row below is one way
+        # an older switch's rows reach the pass; each sent /rc then, and
+        # the newer switch's listing sent a second one to a pane whose
+        # drop banner was not yet redrawn.
+        # 1. The newer switch's owed write failed (review finding).
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        now = int(time.time())
+        (state / "rc-pending").write_text(f"{now} 42\n")
+        (state / "rc-owed").write_text(f"sd w1:p1 s1 {now - 60}\n")
+        failing = self.tmp / "failing-printf.sh"
+        failing.write_text(f'printf() {{ case "$*" in *"w1:p1 s1 {now}"*) return 1;; esac; builtin printf "$@"; }}\n')
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(failing))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_a_switch_during_the_listing_leaves_its_rows_unsent(self):
+        # 2. A newer switch landed while this sync listed the older one.
+        mark = self.script.parent / "state/rc-pending"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_SWITCH_DURING_LIST=str(mark))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_a_switch_during_the_pass_stops_the_send(self):
+        # 3. A newer switch landed between the plan and the keys.
+        mark = self.script.parent / "state/rc-pending"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_SWITCH_DURING_GET=str(mark))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_an_unreadable_owed_list_is_never_replaced(self):
+        # Review on sd:9427 (cswap.sh:380): a failed read of the other
+        # sessions' rows was masked, and the rewrite dropped them.
+        owed = self.script.parent / "state/rc-owed"
+        owed.parent.mkdir(exist_ok=True)
+        rows = "work w9:p9 s9 %d\n" % int(time.time())
+        owed.write_text(rows)
+        owed.chmod(0)
+        self.addCleanup(owed.chmod, 0o600)
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        result = self.sync("elsewhere")
+        owed.chmod(0o600)
+        self.assertEqual(owed.read_text(), rows)
+        self.assertIn("could not read", result.stdout)
+        # Not marked listed: once the list reads, the next sync owes sd's panes.
+        self.sync("elsewhere")
+        self.assertEqual(sorted(self.owed()), ["w1:p1", "w9:p9"])
+
+    def test_a_failed_write_publishes_no_partial_state_file(self):
+        # Round-8 blocker on sd:9427 (cswap.sh:387): a grouped write
+        # checked only its last command, so a failed write of the other
+        # session's rows still moved a partial rc-owed or rc-listed in.
+        # A printf that fails on the work session's rows stands in.
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        now = int(time.time())
+        mark = f"{now} 42"
+        (state / "rc-pending").write_text(mark + "\n")
+        owed_rows = f"work w9:p9 s9 {now}\n"
+        (state / "rc-owed").write_text(owed_rows)
+        listed = f"{mark} work\n"
+        (state / "rc-listed").write_text(listed)
+        env_file = self.tmp / "failing-printf.sh"
+        env_file.write_text('printf() { case "$*" in *w9:p9*|*" work"*) return 1;; esac; '
+                            'builtin printf "$@"; }\n')
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(env_file))
+        self.assertEqual((state / "rc-owed").read_text(), owed_rows, result.stdout)
+        self.assertIn("could not write", result.stdout)
+        self.assertEqual((state / "rc-listed").read_text(), listed, result.stdout)
+        # rc-owed did not move, so sd stays unlisted; now let it list.
+        (state / "rc-owed").write_text("")
+        result = self.sync("elsewhere", BASH_ENV=str(env_file))
+        self.assertEqual((state / "rc-listed").read_text(), listed, result.stdout)
+        self.assertIn("could not mark sd listed", result.stdout)
+
+    def test_no_switch_sends_nothing(self):
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.called("herdr"), [])
+
+    def test_the_latest_remote_control_line_decides(self):
+        # Lead review: an old "is active" line above a newer drop kept the
+        # pane from its /rc; a newer "is active" means connected.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", CONNECTED + "\n" + DROPPED],
+                   ["w1:p2", "claude", "idle", "s2", DROPPED + "\n" + CONNECTED],
+                   ["w1:p3", "claude", "idle", "s3", "  nothing yet\n" + INPUT])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+        # Not dropped yet: it stays owed, and is sent once it drops. An
+        # active banner may be the old account's (sd:9427): it stays too.
+        self.assertEqual(self.owed(), ["w1:p2", "w1:p3"])
+
+    def test_an_old_active_banner_keeps_the_pane_owed_until_it_drops(self):
+        # sd:9427 blocker: the first pass dropped a pane that still showed
+        # the old account's active banner; its drop, printed later, was
+        # never sent /rc.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", CONNECTED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.assertNotIn("is connected; not owed", result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", CONNECTED + "\n" + DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+        self.assertEqual(self.owed(), [])
+
+    def test_a_pane_with_typed_input_or_no_input_line_gets_no_keys(self):
+        self.publish(THREE)
+        typed = DROPPED.replace("\u276f\u00a0", "\u276f half a prompt")
+        self.panes(["w1:p1", "claude", "idle", "s1", typed],
+                   ["w1:p2", "claude", "idle", "s2", DROP_LINE])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1", "w1:p2"])
+        self.assertIn("reconnect: w1:p1 wait: its input box holds text", result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_a_dim_suggestion_on_the_input_line_is_no_typed_text(self):
+        # Lead live check: an idle pane showed `❯ what next here`, a dim
+        # (SGR 2) prompt suggestion, and never got its /rc. Typed text,
+        # even in a truecolor run whose parameters hold a 2, still blocks.
+        self.publish(THREE)
+        dim = DROPPED.replace("\u276f\u00a0", "\u276f\u00a0\x1b[0m\x1b[2mwhat next here\x1b[0m")
+        typed = DROPPED.replace("\u276f\u00a0", "\u276f\u00a0\x1b[38;2;200;200;200mfix the\x1b[0m")
+        mixed = DROPPED.replace("\u276f\u00a0", "\u276f\u00a0x\x1b[2m suggestion\x1b[22m")
+        self.panes(["w1:p1", "claude", "idle", "s1", dim],
+                   ["w1:p2", "claude", "idle", "s2", typed],
+                   ["w1:p3", "claude", "idle", "s3", mixed])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+        self.assertEqual(self.owed(), ["w1:p2", "w1:p3"])
+
+    def test_each_way_a_screen_can_mislead(self):
+        # Class pass on the screen read (lead re-review): each pane is one
+        # row of the PR's failure table; True means it gets /rc.
+        box = lambda *rows: "\n".join([RULE, *rows, RULE, "  [model] | git:(main)"])
+        empty = "\u276f\u00a0"
+        cases = {
+            # Banner text quoted in prose, or both texts on one line.
+            "quoted-drop": (f"{ACTIVE_LINE}\n  the job waits for Remote Control disconnected \u2014 x\n"
+                            + box(empty), False),
+            "quoted-active": (f"{DROP_LINE}\n> quote:   /remote-control is active \u00b7 here\n"
+                              + box(empty), True),
+            "both-one-line": (f"{ACTIVE_LINE}\n\u23fa Remote Control disconnected \u2014 then "
+                              "/remote-control is active \u00b7 x\n" + box(empty), False),
+            # A draft whose text is on a continuation line, typed or dim.
+            "draft-line-2": (f"{DROP_LINE}\n" + box(empty, "  second line"), False),
+            "dim-then-typed": (f"{DROP_LINE}\n" + box(empty + "\x1b[2mtry this\x1b[0m", "  typed"), False),
+            # A box of two lines is doubt, even when both are dim.
+            "dim-two-lines": (f"{DROP_LINE}\n" + box(empty + "\x1b[2mone", "  two\x1b[22m"), False),
+            # SGR forms: colon truecolour and 256 colour hold a 2 that is no
+            # dim; 0;2 is dim; a bare reset ends it.
+            "colon-truecolour": (f"{DROP_LINE}\n" + box(empty + "\x1b[38:2::9:2:2mtyped\x1b[0m"), False),
+            "256-colour": (f"{DROP_LINE}\n" + box(empty + "\x1b[38;5;2mtyped\x1b[0m"), False),
+            "dim-combined": (f"{DROP_LINE}\n" + box(empty + "\x1b[0;2msuggestion\x1b[0m"), True),
+            "bare-reset": (f"{DROP_LINE}\n" + box(empty + "\x1b[2mhint\x1b[mtyped"), False),
+            # The box: a past prompt above it, or no rule below the ❯ line.
+            "past-prompt": (f"\u276f an old prompt\n{DROP_LINE}\n" + box(empty), True),
+            # Lane review (sd:9427): a turn finished after the drop; its
+            # old prompt is history above the live box, not input.
+            "finished-turn": (f"{DROP_LINE}\n\u276f\u00a0fix the tests\n"
+                              "\u23fa Done.\n" + box(empty), True),
+            "no-bottom-rule": (f"{DROP_LINE}\n{RULE}\n{empty}", False),
+            "labelled-rule": (f"{DROP_LINE}\n" + box(empty).replace(RULE, RULE + " control \u2500", 1), True),
+            # Bundle review: a draft that holds a rule line and a bare ❯
+            # line looks like a box of its own; the screen waits.
+            "draft-fake-box": (f"{DROP_LINE}\n" + box(empty, RULE, "\u276f"), False),
+            "draft-text-fake-box": (f"{DROP_LINE}\n" + box(empty + "a", "  b", RULE, "\u276f\u00a0"), False),
+            "two-boxes": (f"{DROP_LINE}\n" + box(empty) + "\n" + box(empty), False),
+            # Review on sd:9427: a draft that types a drop banner, a rule
+            # and a bare ❯ hid the real prompt above its fake banner, and
+            # the real bottom rule closed the fake box. Typed text is
+            # plain; Claude's own banner and rules carry colour.
+            "draft-fake-banner": (f"{DROP_LINE}\n" + box(
+                empty + "first line", "\u23fa Remote Control disconnected \u2014 x",
+                TYPED_RULE, "\u276f"), False),
+            # Class pass (sd:9427 review round 4): the check proved the
+            # box empty by deleting what it read and finding nothing left.
+            # Each deletion that can hide a draft is one row; the box is
+            # empty only when the line is exactly ❯ and its NBSP, plus at
+            # most a dim suggestion.
+            # 1. strip(): a whitespace-only draft, ASCII or Unicode.
+            "nbsp-draft": (f"{DROP_LINE}\n" + box(empty + "\u00a0"), False),
+            "space-draft": (f"{DROP_LINE}\n" + box(empty + " "), False),
+            "tab-draft": (f"{DROP_LINE}\n" + box(empty + "\t"), False),
+            "ideographic-space-draft": (f"{DROP_LINE}\n" + box(empty + "\u3000"), False),
+            # 2. plain(): a control sequence that is no colour, such as a
+            #    cursor move that stands for typed blanks.
+            "cursor-forward-draft": (f"{DROP_LINE}\n" + box(empty + "\x1b[3C"), False),
+            "erase-after-separator": (f"{DROP_LINE}\n" + box(empty + "x\x1b[1D\x1b[K"), False),
+            # 3. undimmed(): typed blanks before the dim suggestion.
+            "space-then-dim": (f"{DROP_LINE}\n" + box(empty + " \x1b[2mhint\x1b[0m"), False),
+            # The live shape of a suggestion (read 2026-11-20) still sends.
+            "live-suggestion": (f"{DROP_LINE}\n" + box(empty + "\x1b[0m\x1b[2mwalk me\x1b[0m"), True),
+            # Round 5 (sd:9427): an old empty box with a permission dialog
+            # drawn below it. The box must be the last thing on screen:
+            # below its bottom rule only footer lines, no dialog.
+            "dialog-framed-below": (f"{DROP_LINE}\n" + box(empty) + "\n╭──╮\n"
+                                    "│ Bash command │\n╰──╯", False),
+            "dialog-numbered-below": (f"{DROP_LINE}\n" + box(empty) + "\n Do you want to proceed?\n"
+                                      "   1. Yes\n   2. No", False),
+            "dialog-esc-below": (f"{DROP_LINE}\n" + box(empty) + "\n Esc to cancel", False),
+            "dialog-cursor-below": (f"{DROP_LINE}\n" + box(empty) + "\n ❯ 1. Yes\n   2. No", False),
+            "dialog-rule-below": (f"{DROP_LINE}\n" + box(empty) + f"\n{RULE}\n Bash command", False),
+            "dialog-typed-rule-below": (f"{DROP_LINE}\n" + box(empty) + f"\n{TYPED_RULE}\n Bash", False),
+            "dialog-long-below": (f"{DROP_LINE}\n" + box(empty) + "\n line" * 5, False),
+            # Footer lines Claude draws below the box still send.
+            "footer-mode": (f"{DROP_LINE}\n" + box(empty) + "\n  ⏵⏵ auto mode on (shift+tab to cycle)",
+                            True),
+            "footer-bars": (f"{DROP_LINE}\n" + box(empty).replace("|", "│"), True),
+            "draft-fake-banner-flush": (f"{DROP_LINE}\n" + box(
+                empty + "first line", "\u23fa Remote Control disconnected \u2014 x",
+                TYPED_RULE, "\u276f\u00a0"), False),
+        }
+        self.publish(THREE)
+        self.panes(*[[f"w1:{name}", "claude", "idle", name, screen]
+                     for name, (screen, _) in cases.items()])
+        self.sync("elsewhere")
+        sent = {line.split()[3][3:] for line in self.prompts()}
+        self.assertEqual(sent, {name for name, (_, gets) in cases.items() if gets})
+
+    def test_a_pane_that_changes_before_the_send_gets_no_keys(self):
+        # Operator ruling 2026-11-18: re-read right before the send. Each
+        # pane says send on its first read, then changes: text typed, a
+        # turn started, another session, a reconnect. None gets keys; each
+        # stays owed. The unchanged pane gets /rc.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"screen": DROPPED.replace("\u276f\u00a0", "\u276f\u00a0\u00a0")}],
+                   ["w1:p2", "claude", "idle", "s2", DROPPED, {"status": "working"}],
+                   ["w1:p3", "claude", "idle", "s3", DROPPED, {"session": "s9"}],
+                   ["w1:p4", "claude", "idle", "s4", DROPPED, {"screen": CONNECTED}],
+                   ["w1:p5", "claude", "idle", "s5", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p5 enter"])
+        self.assertEqual(self.owed(), ["w1:p1", "w1:p2", "w1:p3", "w1:p4"])
+        self.assertIn("reconnect: w1:p2 changed before the send (w1:p2 s2 working); still owed", result.stdout)
+        self.assertIn("reconnect: w1:p1 changed before the send (wait: its input box holds text); still owed",
+                      result.stdout)
+
+    def test_a_session_that_changes_during_the_last_read_gets_no_keys(self):
+        # Review on sd:9427: the last session check ran before a screen
+        # read of up to 10 s. A new session that took the pane during
+        # that read showed its own drop and empty box, and got /rc.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"session": "s9", "reads": 2}])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.assertIn("reconnect: w1:p1 changed before the send (w1:p1 s9 idle); still owed",
+                      result.stdout)
+
+    def test_a_session_that_changes_during_the_final_read_gets_no_keys(self):
+        # sd:9427 review: the final screen read matched byte for byte
+        # after a new session took the pane, as its screen can look the
+        # same. The session is asked again after that read.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"session": "s9", "reads": 3}])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.assertIn("reconnect: w1:p1 changed before the send (w1:p1 s9 idle); still owed",
+                      result.stdout)
+
+    def test_a_draft_typed_during_the_last_get_gets_no_keys(self):
+        # Review on sd:9427: typing during the final `agent get` left
+        # session and status unchanged; within the gap, /rc joined the
+        # draft. The screen is read again after the get and must match.
+        self.publish(THREE)
+        draft = DROPPED.replace("\u276f\u00a0", "\u276f\u00a0hello")
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"screen": draft, "gets": 1}])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.assertIn("reconnect: w1:p1 changed before the send", result.stdout)
+
+    def test_a_slow_last_check_sends_no_keys(self):
+        # Class pass (sd:9427 review round 4): each check before the keys
+        # goes stale while a later herdr call runs. Typing during a slow
+        # `agent get` left session and status unchanged, and /rc joined
+        # the draft. No order closes it: the whole recheck, from the
+        # screen read to the end of the get, must fit CSWAP_RC_GAP_MS.
+        # Rows: a slow get (screen stale), a slow read (its snapshot and
+        # the get both late): each call is cut at the gap. Two calls each
+        # under the gap whose sum is over it: the timer refuses.
+        rows = [({"FAKE_HERDR_GET_SLOW": "1.5"}, "1000", "herdr agent get w1:p1 failed"),
+                ({"FAKE_HERDR_SLOW": "1.5"}, "1000", "herdr agent read w1:p1 failed"),
+                ({"FAKE_HERDR_SLOW": "0.4", "FAKE_HERDR_GET_SLOW": "0.4"}, "600",
+                 r"w1:p1 took \d+ ms to check, over 600 ms")]
+        for slow, gap, why in rows:
+            with self.subTest(slow=slow):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                result = self.sync("elsewhere", CSWAP_RC_GAP_MS=gap, **slow)
+                self.assertEqual(self.prompts(), [])
+                self.assertEqual(self.owed(), ["w1:p1"])
+                self.assertRegex(result.stdout, rf"reconnect: {why}.*; still owed")
+                (self.script.parent / "state/rc-owed").unlink()
+
+    def test_a_slow_send_counts_in_the_gap(self):
+        # Review on sd:9427: the gap ended before `agent prompt`, which
+        # may take 10 s; a draft typed meanwhile took the /rc. The send
+        # gets the gap's time left as its bound, and the whole
+        # span from the last screen read to the send's end must fit it.
+        # Review on sd:9427, next round: a send that ran over the gap left
+        # the pane owed, and its drop banner, not yet redrawn, took a
+        # second /rc. Since the two send-keys calls (ruling #70122) only
+        # the enter submits: a typing that ran over stays owed, and the
+        # enter goes only to a box that shows exactly /rc.
+        # Rows: herdr times out; herdr acknowledges past the gap.
+        # A 2000 ms gap: the checks fit it on a loaded gate, where four
+        # took 1057 ms of a 1000 ms gap; the keys run past it.
+        # A typing killed before it reached the pane leaves the box
+        # empty: the next sync types and enters. One acknowledged late
+        # left /rc in the box: no sync enters it (sd:9427 review).
+        rows = [({"FAKE_HERDR_KEYS_SLOW": "3"}, "2000", ["herdr agent send-keys w1:p1 enter"]),
+                ({"FAKE_HERDR_KEYS_LATE": "2.5"}, "2000", [])]
+        for slow, gap, later in rows:
+            with self.subTest(slow=slow):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                result = self.sync("elsewhere", CSWAP_RC_GAP_MS=gap, **slow)
+                self.assertEqual(self.prompts(), [], result.stdout)
+                self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+                self.assertRegex(result.stdout, rf"reconnect: typing /rc into w1:p1 .*over {gap} ms "
+                                                r"\(exit \d+\); still owed")
+                # Typed keys submit nothing (sd:9427 review).
+                pathlib.Path(self.env["FAKE_HERDR"] + ".read").unlink(missing_ok=True)
+                self.sync("elsewhere")
+                self.assertEqual(self.prompts(), later)
+                (self.script.parent / "state/rc-owed").unlink()
+                pathlib.Path(self.env["FAKE_HERDR"] + ".typed").unlink(missing_ok=True)
+
+    def test_a_budget_spent_before_the_send_keeps_the_pane_owed(self):
+        # sd:9427 triage, HIGH: the budget ran out after the last screen
+        # read; herdr's prompt never ran, yet the pane was marked sent
+        # and printed "not sent again". The stub clock jumps past the
+        # budget at the second get, the last check before the keys.
+        clock = self.tmp / "clock"
+        executable(self.stubs / "date", '#!/bin/sh\n'
+                   'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
+                   '  echo $(( $(/bin/date +%s) + $(cat "$FAKE_CLOCK") )); exit 0\nfi\n'
+                   'exec /bin/date "$@"\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_GET="2",
+                           FAKE_CLOCK_JUMP="61")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.assertIn("reconnect: the 60s budget is spent before the /rc to w1:p1; still owed",
+                      result.stdout)
+        self.assertNotIn("not sent again", result.stdout)
+        # sd:9427 review: the row was marked typed before this budget
+        # check, though nothing was typed; an operator's own /rc there
+        # later took the enter. The mark goes only with the keys.
+        self.assertNotIn(" typed", (self.script.parent / "state/rc-owed").read_text())
+        self.sync("elsewhere", FAKE_CLOCK=str(clock))
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_an_entered_rc_is_done_before_the_pass_s_last_write(self):
+        # sd:9427 review: after a good enter the row stayed sent until
+        # the pass's last write; that write failed, the operator typed
+        # /rc under a banner /rc had not redrawn, and the next sync's
+        # resume entered it. The row is marked done right after the enter.
+        failing = self.tmp / "failing-printf.sh"
+        failing.write_text('printf() { [ "$1" = %s ] && case "$2" in *w1:p1*) return 1;; esac;'
+                           ' builtin printf "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(failing))
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertIn("could not update", result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED.replace("\u276f\u00a0\n", "\u276f\u00a0/rc\n")])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+
+    def test_no_typing_without_budget_left_for_its_enter(self):
+        # sd:9427 review, class pass: no later pass enters a /rc left in
+        # a box, so a pass whose budget ran out between the typing and
+        # the enter stranded it there. The typing waits unless the
+        # budget left covers the enter's gap. The stub clock leaves 2 s
+        # at the get before the typing, under the 5 s gap.
+        clock = self.tmp / "clock"
+        executable(self.stubs / "date", '#!/bin/sh\n'
+                   'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
+                   '  echo $(( $(/bin/date +%s) + $(cat "$FAKE_CLOCK") )); exit 0\nfi\n'
+                   'exec /bin/date "$@"\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_GET="2",
+                           FAKE_CLOCK_JUMP="58", CSWAP_RC_GAP_MS="5000")
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.assertIn("reconnect: the 60s budget leaves no 5000 ms for the enter after /rc to w1:p1; "
+                      "still owed", result.stdout)
+
+    def test_a_failed_herdr_call_is_named_as_the_cause(self):
+        # sd:9427 triage: a read that failed was logged as the pane having
+        # changed, or not at all. Rows: the pass's read, the send's two
+        # reads, the get. Each keeps the pane owed and names the call.
+        rows = [({"FAKE_HERDR_READ_FAIL": "1"}, "read"), ({"FAKE_HERDR_READ_FAIL": "2"}, "read"),
+                ({"FAKE_HERDR_READ_FAIL": "3"}, "read"), ({"FAKE_HERDR_GET_FAIL": "1"}, "get")]
+        for fail, call in rows:
+            with self.subTest(fail=fail):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                pathlib.Path(self.env["FAKE_HERDR"] + ".read").unlink(missing_ok=True)
+                result = self.sync("elsewhere", **fail)
+                self.assertEqual(self.prompts(), [])
+                self.assertEqual(self.owed(), ["w1:p1"])
+                self.assertIn(f"reconnect: herdr agent {call} w1:p1 failed (exit 1); still owed",
+                              result.stdout)
+                self.assertNotIn("changed before the send", result.stdout)
+                (self.script.parent / "state/rc-owed").unlink()
+
+    def test_a_herdr_down_with_panes_owed_is_one_skip_line(self):
+        # sd:9427 triage: a failed list at a new switch was asked again
+        # for the panes already owed: two calls, two skip lines.
+        old = int(time.time()) - 5
+        self.owe(f"sd w1:p1 s1 {old}\n", old)
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_HERDR_DOWN="1")
+        self.assertEqual(len(self.called("herdr agent list")), 1)
+        self.assertEqual(result.stdout.count("reconnect: skipped"), 1, result.stdout)
+
+    def test_the_send_is_cut_at_the_gap_not_the_next_second(self):
+        # sd:9427 review: the send's bound was the gap's time left
+        # rounded up to a whole second, so with 600 ms of a 1000 ms gap
+        # spent, a delivery 500 ms later still reached the pane, past the
+        # gap, into whatever was typed meanwhile. The bound is the time
+        # left to the millisecond.
+        delivered = self.tmp / "delivered"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", CSWAP_RC_GAP_MS="1000", FAKE_HERDR_GET_SLOW="0.6",
+                           FAKE_HERDR_KEYS_SLOW="0.5", FAKE_DELIVERED=str(delivered))
+        self.assertFalse(delivered.exists(), result.stdout)
+
+    def test_a_subsecond_send_bound_cuts_a_slow_send(self):
+        # sd:9427 review: with the default 1000 ms gap each send's bound
+        # is under a second, and perl's alarm read it as 0, no timer, so
+        # a send-keys that took 1.5 s still typed and entered /rc.
+        delivered = self.tmp / "delivered"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        started = time.monotonic()
+        result = self.sync("elsewhere", CSWAP_RC_GAP_MS="1000", FAKE_HERDR_KEYS_SLOW="1.5",
+                           FAKE_DELIVERED=str(delivered))
+        self.assertFalse(delivered.exists(), result.stdout)
+        self.assertNotIn("sent /rc", result.stdout)
+        self.assertLess(time.monotonic() - started, 8, result.stdout)
+
+    def test_a_switch_mark_that_does_not_read_keeps_every_row(self):
+        # sd:9427 review: rc-pending that failed to read once read as no
+        # current switch; the owed row went as stale, the sent row was
+        # dropped, and rc-listed kept the switch from being listed again.
+        now = int(time.time())
+        owed = self.owe(f"sd w1:p1 s1 {now}\nsd w1:p2 s2 {now} sent\n", now)
+        pending = owed.parent / "rc-pending"
+        self.publish(ONE)  # no switch: the seeded mark is the one listed
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED], ["w1:p2", "claude", "idle", "s2", DROPPED])
+        pending.chmod(0)
+        try:
+            result = self.sync("elsewhere")
+        finally:
+            pending.chmod(0o644)
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn(f"reconnect: could not read {pending}", result.stdout)
+        self.assertEqual(owed.read_text(), f"sd w1:p1 s1 {now}\nsd w1:p2 s2 {now} sent\n")
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_a_herdr_down_at_the_switch_is_asked_again(self):
+        # Fold-in: a list that failed at the switch owed nothing, and the
+        # next sync (no switch) never asked again.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere", FAKE_HERDR_DOWN="1")
+        self.assertEqual(self.prompts(), [])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+        # The mark stays for other herdr sessions, but sd listed once:
+        # a later sync with nothing owed asks herdr nothing.
+        self.sync("elsewhere")
+        self.assertEqual(self.called("herdr"), [])
+
+    def test_a_list_that_is_not_the_agent_list_is_a_parse_failure(self):
+        self.publish(THREE)
+        for answer in ("null", '{"result": null}', '{"result": {"agents": [null]}}',
+                       '{"result": {"agents": [{"agent": "claude", "pane_id": "w1:p1", "agent_session": 7}]}}'):
+            executable(self.stubs / "herdr", f"#!/bin/sh\necho '{answer}'\n")
+            result = self.run_verb("sync", FAKE_FENCE="elsewhere")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("gave no agent list this can parse", result.stdout, answer)
+            self.assertNotIn("could not write", result.stdout, answer)
+            self.assertTrue((self.script.parent / "state/rc-pending").exists(), answer)
+
+    def test_a_pane_with_no_session_id_is_never_owed_or_sent(self):
+        # Review on sd:9427: a missing or false session read as "-" in
+        # both list and get, so a new session in the same pane passed
+        # the recheck and got /rc.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", None, DROPPED],
+                   ["w1:p2", "claude", "idle", "", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), [])
+
+    def test_a_pane_whose_session_herdr_misses_once_stays_owed(self):
+        # Review on sd:9427: herdr naming no session for a pane read as
+        # the pane gone; its row went, and rc-listed kept the switch from
+        # listing it again. A pane that exists keeps its row, and an
+        # unknown session at the listing lists again next sync.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.panes(["w1:p1", "claude", "idle", None, DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_a_pane_with_no_session_at_the_listing_is_listed_again(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", None, DROPPED],
+                   ["w1:p2", "claude", "working", "s2", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.owed(), ["w1:p2"])
+        self.assertIn("reconnect: w1:p1 names no session yet; sd lists again next sync", result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
+                   ["w1:p2", "claude", "working", "s2", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+        self.assertEqual(self.owed(), ["w1:p2"])
+
+    def test_a_retried_listing_owes_no_sent_pane_again(self):
+        # Review on sd:9427: a listing retried for a pane with no session
+        # id rebuilt every row of the switch, and a pane already sent
+        # /rc, its drop banner still on screen, got a second one.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
+                   ["w1:p2", "claude", "working", None, DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
+                   ["w1:p2", "claude", "idle", "s2", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p2 enter"], result.stdout)
+        self.assertEqual(self.owed(), [])
+        # The listing is complete now: a later sync sends nothing.
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+
+    def test_a_failed_owed_write_leaves_its_panes_to_the_next_listing(self):
+        # Review on sd:9427: rc-listed recorded each pane before rc-owed
+        # was written; a failed rc-owed write left the panes recorded,
+        # and the next sync owed none of them.
+        failing = self.tmp / "failing-printf.sh"
+        failing.write_text('printf() { case "$*" in *"w1:p1 s1"*) return 1;; esac; builtin printf "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(failing))
+        self.assertIn("could not write", result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_a_failed_write_after_a_send_owes_the_pane_no_second_rc(self):
+        # Class pass: the pass's last write after a send failed, the
+        # sent row stayed owed, and its drop banner took a second /rc.
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        now = int(time.time())
+        (state / "rc-pending").write_text(f"{now} 42\n")
+        (state / "rc-listed").write_text(f"{now} 42 sd\n")
+        (state / "rc-owed").write_text(f"sd w1:p1 s1 {now}\nsd w1:p2 s2 {now}\n")
+        failing = self.tmp / "failing-printf.sh"
+        failing.write_text('printf() { case "$*" in *w1:p2*) return 1;; esac; builtin printf "$@"; }\n')
+        self.publish(ONE)  # no switch: the seeded mark is the one listed
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED],
+                   ["w1:p2", "claude", "working", "s2", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(failing))
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+        self.assertIn("could not update", result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [], result.stdout)
+
+    def test_a_pane_is_marked_sent_only_after_the_last_checks(self):
+        # sd:9427 review: the sent mark was written before the send's
+        # checks. A sync stopped during them, or a check that refused
+        # and a last write that failed, left a pane that never had /rc
+        # marked sent. The mark is written right before the prompt.
+        snap = self.tmp / "owed-at-get"
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"status": "working", "gets": 1}])
+        failing = self.tmp / "failing-printf.sh"
+        # Only the pass's last write ("%s", no newline) fails.
+        failing.write_text('printf() { [ "$1" = %s ] && case "$2" in *w1:p1*) return 1;; esac;'
+                           ' builtin printf "$@"; }\n')
+        result = self.sync("elsewhere", FAKE_OWED_AT_GET=str(snap), BASH_ENV=str(failing),
+                           FAKE_STATE_DIR=str(self.script.parent / "state"))
+        self.assertEqual(self.prompts(), [])
+        self.assertNotIn(" sent", snap.read_text())
+        self.assertIn("could not update", result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_a_pass_stopped_between_the_mark_and_the_keys_sends_nothing_later(self):
+        # sd:9427 review: the pass marked the row sent before the
+        # switch check that follows the mark. A job stopped during that
+        # check sent no keys, and the next sync skipped the row. The
+        # stub date stops the sync at its first call once the row is
+        # marked sent: the switch check's, after the typing. The
+        # next sync finds /rc in the box and leaves it to the operator.
+        # The sync runs in a session of its own, and the stub kills
+        # only that session's process group: nothing outside the test.
+        killed = self.tmp / "killed"
+        executable(self.stubs / "date", '#!/bin/sh\n'
+                   'if [ ! -e "$FAKE_KILLED" ] && awk \'$5 == "sent" { f = 1 } END { exit !f }\' "$FAKE_OWED" 2>/dev/null; then\n'
+                   '  : >"$FAKE_KILLED"\n'
+                   '  kill -9 -- "-$(ps -o pgid= -p $$ | tr -d " ")"\n'
+                   'fi\n'
+                   'exec /bin/date "$@"\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.calls.write_text("")
+        result = subprocess.run([BASH, str(self.script), "sync"], capture_output=True, text=True,
+                                timeout=60, start_new_session=True,
+                                env={**self.env, "FAKE_FENCE": "elsewhere", "FAKE_KILLED": str(killed),
+                                     "FAKE_OWED": str(self.script.parent / "state/rc-owed")})
+        self.assertEqual(result.returncode, -9, result.stdout + result.stderr)
+        self.assertTrue(killed.exists(), result.stdout + result.stderr)
+        self.assertEqual(self.prompts(), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+
+    def run_in_own_group(self, **extra):
+        """One sync in a session of its own, so a stub may kill its
+        process group and nothing outside the test."""
+        self.calls.write_text("")
+        return subprocess.run([BASH, str(self.script), "sync"], capture_output=True, text=True,
+                              timeout=60, start_new_session=True,
+                              env={**self.env, "FAKE_FENCE": "elsewhere", **extra})
+
+    def test_a_pass_stopped_after_the_sent_mark_leaves_the_rc_to_the_operator(self):
+        # sd:9427 review: a sync stopped after the sent mark moved in
+        # and before the enter leaves /rc in the box. No later sync
+        # enters it: the operator may have cleared it and typed their
+        # own, which reads the same (sd:9427 review). The stub mv stops
+        # the sync right after the mark moves in.
+        killed = self.tmp / "killed"
+        executable(self.stubs / "mv", '#!/bin/sh\n'
+                   '/bin/mv "$@" || exit\n'
+                   'case "$1" in *rc-owed.sent) [ -e "$FAKE_KILLED" ] && exit 0\n'
+                   '  : >"$FAKE_KILLED"; kill -9 -- "-$(ps -o pgid= -p $$ | tr -d " ")";; esac\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.run_in_own_group(FAKE_KILLED=str(killed))
+        self.assertEqual(result.returncode, -9, result.stdout + result.stderr)
+        self.assertEqual(self.prompts(), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+
+    def test_a_refused_typing_never_marks_the_row_sent(self):
+        # sd:9427 review: a refused launch (exit 125) left the row
+        # marked sent until the pass's last write restored it; a sync
+        # stopped before that write, here a last write that fails,
+        # skipped the pane for good.
+        env = self.tmp / "deny-and-fail.sh"
+        env.write_text('perl() { case " $* " in *" send-keys "*)\n'
+                       '  set -- "$1" "${2/setpgrp(0, 0)/0}" "${@:3}";; esac; command perl "$@"; }\n'
+                       'printf() { [ "$1" = %s ] && case "$2" in *w1:p1*) return 1;; esac;'
+                       ' builtin printf "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(env), CSWAP_RC_GAP_MS="5000")
+        self.assertIn("never started (exit 125)", result.stdout)
+        self.assertIn("could not update", result.stdout)
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_a_slow_sent_mark_sends_no_keys(self):
+        # sd:9427 review: the sent mark is written inside the gap, and a
+        # slow write used it up; /rc still went with the earlier
+        # timeout, into whatever the pane drew meanwhile. The gap is
+        # checked again after the mark; past it, the pane stays owed.
+        slow = self.tmp / "slow-mark.sh"
+        slow.write_text('awk() { case "${2-}" in row=*) sleep 1.2;; esac; command awk "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(slow), CSWAP_RC_GAP_MS="1000")
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.assertIn("reconnect: typed /rc into w1:p1, but the gap ran out before the enter\n",
+                      result.stdout)
+        # The /rc stays in the box for the operator (sd:9427 review).
+        self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), [])
+
+    def test_a_send_the_bound_refused_to_launch_stays_owed(self):
+        # sd:9427 review: st_bounded exits 125 when a denied process
+        # group kept herdr from running. That /rc never went out, so
+        # the pane stays owed; it was kept as sent and never retried.
+        deny = self.tmp / "deny-group.sh"
+        deny.write_text('perl() { case " $* " in *" send-keys "*)\n'
+                        '  set -- "$1" "${2/setpgrp(0, 0)/0}" "${@:3}";; esac; command perl "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(deny), CSWAP_RC_GAP_MS="5000")
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn("reconnect: /rc to w1:p1 never started (exit 125); still owed", result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_a_switch_during_the_sent_mark_stops_the_send(self):
+        # sd:9427 review: a switch runs outside the reconnect lock, and
+        # one that landed while the sent mark was written still got the
+        # old row's /rc; the newer switch then owes the pane again. The
+        # switch is read again after the mark.
+        during = self.tmp / "switch-at-mark.sh"
+        during.write_text('awk() { local s _; case "${2-}" in row=*)\n'
+                          '  read -r s _ <"$RC_PENDING"; builtin printf "%s 4343\\n" $((s + 1)) >"$RC_PENDING";;\n'
+                          'esac; command awk "$@"; }\n')
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", BASH_ENV=str(during))
+        self.assertEqual(self.prompts(), [], result.stdout)
+        self.assertIn("reconnect: typed /rc into w1:p1, but it changed before the enter (a newer switch",
+                      result.stdout)
+
+    def test_a_session_herdr_stops_naming_gets_no_keys(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED, {"session": None}])
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.assertIn("w1:p1 changed before the send (no claude pane in the answer)", result.stdout)
+
+    def test_a_gone_pane_or_new_session_is_not_owed(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED],
+                   ["w1:p2", "claude", "working", "s2", DROPPED])
+        self.sync("elsewhere")
+        self.panes(["w1:p2", "claude", "idle", "s9", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), [])
+
+    def test_the_hub_s_auto_switch_sends_rc_even_when_its_publish_fails(self):
+        # Step: auto switched, then the publish failed and the run exited 1.
+        # Recovery: the owed list was written first; the next run sends.
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("holder", code=1, FAKE_AUTO_TO="2", FAKE_AUTO_RC="0", FAKE_SET_FAIL="1")
+        self.assertTrue((self.script.parent / "state/rc-pending").exists())
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("holder")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_a_failed_switch_mark_fails_the_sync_and_is_retried(self):
+        # sd:9427 review: a write of rc-pending that failed after a switch
+        # was a warning with exit 0, the next sync saw no switch, and the
+        # same pass sent the older mark's rows. Now the sync fails, sends
+        # nothing, and a later sync whose mark names another account than
+        # the active one owes /rc for the switch it missed.
+        old = int(time.time()) - 100
+        state = self.script.parent / "state"
+        self.owe(f"sd w1:p1 s1 {old}\n", old)
+        (state / "rc-pending").write_text(f"{old} 42 {TWO}\n")
+        (state / "rc-lock").touch()
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        state.chmod(0o500)
+        try:
+            result = self.sync("elsewhere", code=1)
+        finally:
+            state.chmod(0o755)
+        self.assertIn("could not write", result.stdout + result.stderr)
+        self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
+        result = self.sync("elsewhere")
+        self.assertIn("already active", result.stdout)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_a_mark_naming_the_active_account_owes_nothing(self):
+        # The retry above owes only on a mismatch: a sync with no switch
+        # and a mark for the active account sends no /rc.
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        (state / "rc-pending").write_text(f"1000 42 {ONE}\n")
+        self.sync("elsewhere")
+        self.assertEqual(self.called("herdr agent send-keys"), [])
+        self.assertEqual((state / "rc-pending").read_text(), f"1000 42 {ONE}\n")
+
+    def test_the_hub_owes_rc_for_a_switch_its_mark_missed(self):
+        # Same retry on the hub: auto made no switch this tick, but the
+        # mark names account 1 and account 2 is active.
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        (state / "rc-pending").write_text(f"1000 42 {ONE}\n")
+        self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=2)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("holder")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+        self.assertIn(TWO, (state / "rc-pending").read_text())
+
+    # sd:9427 class pass: the retry above read one form of the mark, one
+    # that names an account. Each other form a sync can meet follows.
+
+    def mark(self):
+        path = self.script.parent / "state/rc-pending"
+        return path.read_text() if path.exists() else None
+
+    def test_a_sync_with_no_mark_names_the_active_account_and_owes_nothing(self):
+        # No mark yet: a first switch whose mark failed left nothing to
+        # compare. Every sync now leaves a mark naming the active
+        # account; this one, at epoch 0, is no switch and owes nothing.
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.assertRegex(self.mark() or "", rf"^0 \d+ {ONE}\n$")
+        self.assertEqual(self.called("herdr"), [])
+        self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=2)
+        (self.script.parent / "state/rc-pending").unlink()
+        self.sync("holder")
+        self.assertRegex(self.mark() or "", rf"^0 \d+ {TWO}\n$")
+        self.assertEqual(self.called("herdr"), [])
+
+    def test_a_first_switch_whose_mark_fails_is_owed_by_the_next_sync(self):
+        # No mark, a switch, and the mark's write fails: the mark written
+        # before the switch names the old account, so the next sync owes.
+        state = self.script.parent / "state"
+        for fence, extra in (("elsewhere", {}), ("holder", {"FAKE_AUTO_TO": "3", "FAKE_AUTO_RC": "0"})):
+            with self.subTest(fence=fence):
+                shutil.rmtree(state, ignore_errors=True)
+                self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=1)
+                self.publish(THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                try:
+                    result = self.sync(fence, code=1, FAKE_SWITCH_LOCKS=str(state), **extra)
+                finally:
+                    state.chmod(0o755)
+                self.assertEqual(self.active(), 3)
+                self.assertIn("one step failed: cswap sync mark", result.stdout)
+                self.assertEqual(self.called("herdr"), [], result.stdout)
+                self.assertRegex(self.mark() or "", rf"^0 \d+ {ONE}\n$")
+                result = self.sync(fence)
+                self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+                self.assertIn(THREE, self.mark())
+
+    def test_a_two_field_mark_gains_the_account_and_lists_no_pane_again(self):
+        # A mark an earlier build wrote names no account. It gains the
+        # active one in place: same epoch and pid, so the switch it marks
+        # is listed already and no pane is owed a second time.
+        now = int(time.time())
+        owed = self.owe(f"sd w1:p1 s1 {now} sent\n", now)
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED], ["w1:p2", "claude", "idle", "s2", DROPPED])
+        self.sync("elsewhere")
+        self.assertEqual(self.mark(), f"{now} 42 {ONE}\n")
+        self.assertEqual(self.called("herdr"), [])
+        self.assertEqual(owed.read_text(), f"sd w1:p1 s1 {now} sent\n")
+
+    def test_a_switch_after_a_two_field_mark_is_owed_when_its_mark_fails(self):
+        old = int(time.time()) - 100
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        (state / "rc-pending").write_text(f"{old} 42\n")
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        try:
+            self.sync("elsewhere", code=1, FAKE_SWITCH_LOCKS=str(state))
+        finally:
+            state.chmod(0o755)
+        self.assertEqual(self.mark(), f"{old} 42 {ONE}\n")
+        result = self.sync("elsewhere")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_a_mark_that_is_no_mark_is_replaced_and_owes_nothing(self):
+        # Empty, one field, or words: none names a switch or an account.
+        state = self.script.parent / "state"
+        state.mkdir(exist_ok=True)
+        self.publish(ONE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        for text, since in (("", "0"), ("12\n", "12"), ("x y z\n", "0"), (f"x 7 {ONE} more\n", "x")):
+            with self.subTest(text=text):
+                (state / "rc-pending").write_text(text)
+                self.sync("elsewhere")
+                if since == "x":  # it names the active account: left alone
+                    self.assertEqual(self.mark(), text)
+                else:
+                    self.assertRegex(self.mark(), rf"^{since} \d+ {ONE}\n$")
+                self.assertEqual(self.called("herdr"), [])
+
+    def test_the_hub_owes_rc_when_a_step_after_auto_s_switch_fails(self):
+        # Step: auto switched, then `cswap list` failed and the run exited
+        # before the mark. Recovery: the mark from before auto names the
+        # old account; the next sync owes.
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        self.sync("holder", code=1, FAKE_AUTO_TO="2", FAKE_AUTO_RC="0", FAKE_LIST_FAIL_AFTER_SWITCH="1")
+        self.assertRegex(self.mark() or "", rf"^0 \d+ {ONE}\n$")
+        self.assertEqual(self.called("herdr"), [])
+        result = self.sync("holder")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+
+    def test_a_mark_that_cannot_be_written_fails_a_sync_with_no_switch(self):
+        # No switch, and the mark cannot name the active account: said
+        # now, exit 1, not at the switch that would find no mark. The
+        # lock opens (it is there), the folder takes no new file.
+        self.publish(ONE)
+        state = self.tmp / "local-cswap/state"
+        state.mkdir(exist_ok=True)
+        (state / "rc-lock").touch()
+        state.chmod(0o500)
+        try:
+            result = self.sync("elsewhere", code=1)
+        finally:
+            state.chmod(0o755)
+        self.assertIn("one step failed: cswap sync mark", result.stdout)
+        # No state folder at all: the lock does not open, and that is
+        # the failure named.
+        shutil.rmtree(state)
+        state.write_text("a file where the folder goes\n")
+        result = self.sync("elsewhere", code=1)
+        self.assertIn("one step failed: cswap sync lock", result.stdout)
+
+    def test_a_long_owed_pane_is_dropped_and_an_unreadable_list_keeps_it(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
+        self.sync("elsewhere")
+        self.owe("sd w1:p1 s1 1000\n", 1000)
+        self.env["FAKE_HERDR"] = str(self.tmp / "missing.json")
+        executable(self.stubs / "herdr", "#!/bin/sh\necho '{not json'\n")
+        result = self.sync("elsewhere")
+        self.assertIn("gave no agent list this can parse", result.stdout)
+        self.assertEqual(self.owed(), ["w1:p1"])
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere")
+        self.assertIn("reconnect: w1:p1 was owed for a switch that is no longer current", result.stdout)
+        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.owed(), [])
+
+    def test_cron_s_path_without_herdr_finds_it_in_a_fallback_dir(self):
+        self.publish(THREE)
+        brew = self.tmp / "brew-bin"
+        brew.mkdir()
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED], where=brew)
+        self.sync("elsewhere", CSWAP_HERDR_DIRS=f"{self.tmp}/none {brew}")
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
+
+    def test_no_herdr_is_one_skip_line_and_the_switch_stands(self):
+        self.publish(THREE)
+        result = self.sync("elsewhere")
+        self.assertEqual(self.active(), 3)
+        self.assertEqual([l for l in result.stdout.splitlines() if l.startswith("reconnect")],
+                         ["reconnect: skipped: no herdr on PATH"])
+        # Only a switch writes the mark: a sync with no herdr keeps it,
+        # as a switch may have rewritten it meanwhile (sd:9427 review).
+        self.assertTrue((self.script.parent / "state/rc-pending").exists())
+
+    def test_a_herdr_that_does_not_answer_is_one_skip_line(self):
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        result = self.sync("elsewhere", FAKE_HERDR_DOWN="1")
+        self.assertEqual(self.prompts(), [])
+        self.assertIn("reconnect: skipped: herdr agent list did not answer", result.stdout)
+        self.assertEqual(result.stdout.count("reconnect:"), 1)
 
 
 class TheRetiredAgent(Machine):

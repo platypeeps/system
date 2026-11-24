@@ -85,6 +85,28 @@ class Bounded(unittest.TestCase):
         self.assertEqual(result.stderr, "timed out after 1s: sleep 30\n")
         self.assertLess(time.monotonic() - started, 10)
 
+    def test_a_subsecond_bound_expires_on_time(self):
+        # sd:9427 review: perl's alarm took the integer part, so a bound
+        # of 0.6 s armed alarm(0), which sets no timer: the command ran
+        # unbounded. 1.5 s rounded down to 1 s as well.
+        for bound, at_most in (("0.001", 1.0), ("0.600", 1.5), ("1.500", 2.4)):
+            started = time.monotonic()
+            result = shell(f"st_bounded {bound} sleep 30")
+            took = time.monotonic() - started
+            self.assertEqual(result.returncode, 124, bound)
+            self.assertLess(took, at_most, bound)
+            self.assertGreater(took, float(bound) - 0.1, bound)
+
+    def test_a_whole_or_large_bound_runs_the_command_to_its_end(self):
+        # sd:9427 class pass: the fractional timer was only proven under
+        # a second. Whole seconds keep the core alarm; the shipped bounds
+        # (2700 s, 3000 s) and larger ones must not read as expired.
+        for bound in ("1", "2700", "3000", "86400", "200000000", "2700.5"):
+            started = time.monotonic()
+            result = shell(f"st_bounded {bound} sh -c 'sleep 0.3; exit 3'")
+            self.assertEqual((result.returncode, result.stderr), (3, ""), bound)
+            self.assertLess(time.monotonic() - started, 5, bound)
+
     def test_a_command_that_ignores_term_is_killed_after_the_grace(self):
         started = time.monotonic()
         result = shell("ST_BOUNDED_GRACE=1 st_bounded 1 sh -c 'trap \"\" TERM; sleep 30'")
