@@ -298,6 +298,15 @@ class CronJobFromRepoExample(Case):
         self.assertEqual(self.seeded(job).read_text(),
                          (self.examples / f"{job}.job").read_text())
 
+    def test_a_hub_profile_that_drops_the_needs_sweep_installs_none(self):
+        """Lane review: a `!name` line opts out of it, as of a fleet job."""
+        (self.profiles / "personal.cron").write_text(f"{OTHER_JOB}\n!needs-sweep-nightly\n")
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertNotIn("install needs-sweep-nightly", self.cron_calls(), out)
+        self.assertFalse(self.seeded("needs-sweep-nightly").exists(), out)
+
     def test_a_satellite_profile_gets_no_needs_sweep(self):
         (self.profiles / "personal.satellite").write_text("hub.example.test\n")
         result = self.run_script("update", "cron", "--apply")

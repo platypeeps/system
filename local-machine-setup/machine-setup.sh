@@ -2570,8 +2570,9 @@ stage_cron() {
   fi
   hub_ask
   # A hub profile wants the role jobs that run from their example as well:
-  # no profile line names them, so the hub ran no needs sweep (sd:10411).
-  jobs=$( { manifest cron; printf '%s\n' "$repo_jobs"; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; elif plain_hub; then printf '%s\n' $SD_HUB_ROLE_SEEDED; fi; } | awk 'NF && !seen[$0]++')
+  # no profile line named them, so the hub ran no needs sweep (sd:10411).
+  # A `!name` line drops one, as it drops a fleet job.
+  jobs=$( { manifest cron; printf '%s\n' "$repo_jobs"; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; elif plain_hub; then printf '%s\n' $SD_HUB_ROLE_SEEDED | drop_negated "$(profile_drops "$PROFILE" cron)"; fi; } | awk 'NF && !seen[$0]++')
   # A retired job stays out of every machine's wanted list, even where a
   # profile or a host folder written before the retirement still names it:
   # the sweep below left those running, and verify read them ok (sd:3155).
