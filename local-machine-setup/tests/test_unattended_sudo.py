@@ -243,10 +243,12 @@ class DeferredCommands(unittest.TestCase):
         """sudo_run is not the only writer, so the class is read from the
         code: sweep_step defers the command it ran, and the Spotlight read
         defers its fix, which can be a Full Disk Access grant with no
-        command to paste at all. A fourth writer fails here and gets the
-        same reading."""
+        command to paste at all. The Unity module defers the brew stage,
+        which downloads the pkg again: the one it fetched is gone
+        (sd:10302). A fifth writer fails here and gets the same reading."""
         writers = re.findall(r'^\s*DEFERRED="\$DEFERRED(.*)$', self.source, re.M)
         self.assertEqual(["    $shown",
+                          "    sh $DIR/machine-setup.sh update brew --apply",
                           "    $SPOTLIGHT_FIX  (Spotlight exclusions)",
                           "    $*"], writers)
 
