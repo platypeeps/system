@@ -215,7 +215,10 @@ It prints one row per call, with its region, in local time.
 `UNEXPECTED` marks a call by anyone but `AGENT_USER`.
 `UNLOGGED` marks a command whose output skips `ssm-output/` in `AUDIT_BUCKET`, the one prefix the instance role may write.
 It also marks one with no object under `ssm-output/<command id>/<instance id>/` for each instance it names.
+A command sent to tag targets, or to both ids and targets, is always `UNLOGGED`: the event does not name whose output to look for.
 A command still running, or one that printed nothing, shows as `UNLOGGED` too; review it by hand.
+CloudTrail delivers an event up to 15 minutes late, so a clean review does not cover the last 15 minutes.
+The review covers `SendCommand` and sessions only; associations and automations are not read.
 Either exits 1. `TUNNEL` marks a port-forwarding session: CloudTrail shows who and when, no log shows what ran inside.
 
 ### Deploying with an existing instance role

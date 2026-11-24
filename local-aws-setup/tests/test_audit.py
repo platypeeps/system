@@ -453,6 +453,46 @@ class EventsCase(Case):
                     self.assertEqual(rest[rest.index("--bucket") + 1], BUCKET)
                     self.assertEqual(rest[rest.index("--max-items") + 1], "1")
 
+    def test_a_command_whose_targets_cannot_be_named_is_unlogged(self):
+        # Only explicit instance ids say whose output to look for; one object
+        # under the command id proves nothing about the other targets.
+        tag = [{"Key": "tag:role", "Values": ["web"]}]
+        cases = {
+            "tag targets": {"targets": tag},
+            "ids and tag targets": {"instanceIds": ["i-1"], "targets": tag},
+            "targets not a list": {"instanceIds": ["i-1"], "targets": "all"},
+            "no ids": {},
+            "empty ids": {"instanceIds": []},
+            "ids a string": {"instanceIds": "i-1"},
+            "one id malformed": {"instanceIds": ["i-1", "i-1/../i-2"]},
+            "one id not a string": {"instanceIds": ["i-1", None]},
+        }
+        for why, params in cases.items():
+            with self.subTest(why=why):
+                box, done = self.review([event("SendCommand", outputS3BucketName=BUCKET,
+                                               outputS3KeyPrefix="ssm-output", **params)])
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("UNLOGGED", done.stdout)
+                self.assertEqual(self.listed(box), [])
+
+    def test_output_is_listed_only_in_this_accounts_bucket(self):
+        box, done = self.review([event("SendCommand", instanceIds=["i-1"],
+                                       outputS3BucketName=BUCKET,
+                                       outputS3KeyPrefix="ssm-output")])
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        (rest,) = self.listed(box)
+        self.assertEqual(rest[rest.index("--expected-bucket-owner") + 1], ACCOUNT_ID)
+
+    def test_a_cut_short_history_is_an_error_not_a_clean_review(self):
+        for token in ("abc", "", None):
+            with self.subTest(token=token):
+                _, done = self.review([], first=[
+                    {"match": ["lookup-events", "StartSession"],
+                     "stdout": json.dumps({"Events": [], "NextToken": token})}])
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertNotIn("flagged", done.stdout)
+                self.assertIn("incomplete", done.stderr)
+
     def test_a_command_without_a_usable_id_is_unlogged_unlisted(self):
         for response in (None, {}, {"command": {}}, {"command": {"commandId": "../x"}},
                          {"command": "x"}):

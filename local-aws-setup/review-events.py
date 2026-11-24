@@ -8,7 +8,8 @@ reaches an instance prints one row, oldest first, in local time:
   UNLOGGED    a SendCommand whose output does not go to ssm-output/ in the
               audit bucket, the one prefix the instance role may write, or
               whose output is not there: no object under
-              <prefix>/<command id>/<instance id>/ for each instance named
+              <prefix>/<command id>/<instance id>/ for each instance named;
+              a command sent to tag targets names none, so it is UNLOGGED
   TUNNEL      a port-forwarding session: CloudTrail has who and when, no log
               has what ran inside it
 
@@ -73,6 +74,10 @@ def lookup(args, region, name, start):
                "--start-time", start)
     if not isinstance(page, dict) or not isinstance(page.get("Events"), list):
         raise Malformed("lookup-events output has no Events list")
+    # The CLI follows every page itself; a token left over means it did not,
+    # and the events after it were never read.
+    if "NextToken" in page:
+        raise Malformed("lookup-events output is incomplete: it stops at a NextToken")
     return page["Events"]
 
 
@@ -81,9 +86,11 @@ def saved(args, record, params, prefix):
 
     The requested destination proves nothing: the upload can fail or never
     run. The deployer may not write the bucket, so an object there was put
-    by an instance role. A command named by tag targets needs one object
-    under its command id. A command id or instance id that is not the shape
-    SSM gives is never put into a listing and counts as unsaved.
+    by an instance role. Only a list of instance ids says whose output to
+    look for: a command sent to tag targets, to nobody named, or to both ids
+    and targets counts as unsaved, since one object under the command id says
+    nothing of the other targets. A command id or instance id that is not
+    the shape SSM gives is never put into a listing and counts as unsaved.
     """
     response = record.get("responseElements")
     command = response.get("command") if isinstance(response, dict) else None
@@ -92,16 +99,15 @@ def saved(args, record, params, prefix):
         return False
     base = "%s/%s/" % (prefix.rstrip("/"), command_id)
     instances = params.get("instanceIds")
-    if instances:
-        if not isinstance(instances, list) or not all(
-                isinstance(i, str) and INSTANCE_ID.fullmatch(i) for i in instances):
-            return False
-        keys = [base + i + "/" for i in instances]
-    else:
-        keys = [base]
-    for key in keys:
+    if (params.get("targets") or not isinstance(instances, list) or not instances
+            or not all(isinstance(i, str) and INSTANCE_ID.fullmatch(i) for i in instances)):
+        return False
+    for key in sorted({base + i + "/" for i in instances}):
+        # --expected-bucket-owner: a bucket of that name in another account
+        # is no evidence; its refusal ends the review.
         page = aws(args, args.region, "the output under %s" % key, "s3api", "list-objects-v2",
-                   "--bucket", args.bucket, "--prefix", key, "--max-items", "1")
+                   "--bucket", args.bucket, "--expected-bucket-owner", args.account,
+                   "--prefix", key, "--max-items", "1")
         if not isinstance(page, dict):
             raise Malformed("list-objects-v2 output is not an object")
         if not (isinstance(page.get("Contents"), list) and page["Contents"]):
