@@ -71,6 +71,15 @@ RELEASE_BIN="${MACHINE_SETUP_RELEASE_BIN:-$HOME/.local/bin}"
 RELEASE_STATE="$STATE_DIR/release"
 RELEASE_BASE="${MACHINE_SETUP_RELEASE_BASE:-https://github.com}"
 
+# The .unity kind's modules install into the unity cask's editor under
+# UNITY_ROOT, from Unity's download site (sd:10302). The overrides exist
+# for the tests, which stub curl, pkgutil and sudo on PATH.
+UNITY_ROOT="${MACHINE_SETUP_UNITY_ROOT:-/Applications/Unity}"
+UNITY_BASE="${MACHINE_SETUP_UNITY_BASE:-https://download.unity3d.com/download_unity}"
+# Unity Technologies' Apple team: a module pkg's Developer ID Installer
+# certificate must name it; the company in the name varies (SF, ApS).
+UNITY_TEAM=9QW8UQUTAA
+
 # `release` runs right after `brew`: later stages may run what it installs,
 # such as the fnm the tooling stage asks for node.
 # `sd` runs before `agents`: the dashboard opens the
@@ -81,7 +90,7 @@ STAGES="brew release shell appstore bin dotfiles envs prompts repos tmpdisk cron
 # The verbs dispatch accepts, in help's order. Help and the no-arg usage print
 # this list; three hand copies of it disagreed (sd:3548).
 VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt promote"
-KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node npm mailto release sdconfig"
+KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node npm mailto release sdconfig unity"
 
 # Directories that hold credentials in the clear and are created world-readable
 # by the tools that own them. Codex snapshots the whole shell environment —
@@ -978,6 +987,7 @@ stage_brew() {
   # moved by hand, or before this check existed.
   claude_quarantine || note_failure "brew stage: claude keeps com.apple.quarantine; launchd jobs would wait on a Gatekeeper prompt" 1
   codex_quarantine || note_failure "brew stage: codex keeps com.apple.quarantine; launchd jobs would wait on a Gatekeeper prompt" 1
+  unity_modules "$installed_casks"
 
   if ! pins=$(stale_pins); then
     note_failure "brew stage: brew could not list its pins; none unpinned" 1
@@ -1021,6 +1031,110 @@ stage_brew() {
   mosh_firewall
   tailscale_cli_link
   tailscale_daemon_match || :
+}
+
+# The .unity kind: editor modules Homebrew has no cask for, such as Mac
+# IL2CPP (sd:10302). A line is `<receipt> <installer>`: the module is ok
+# when the receipt com.unity3d.<receipt>-<version> is there and its first
+# file is too; else --apply installs UnitySetup-<installer>-Support-for-
+# Editor-<version>.pkg for the unity cask's version and changeset. The
+# weekly upgrade moves the cask; the next run installs the modules of the
+# new version. Pass the installed casks, one per line.
+unity_modules() { # installed casks
+  um_mods=$(manifest unity)
+  [ -n "$um_mods" ] || return 0
+  if ! printf '%s\n' "$1" | grep -qx unity; then
+    echo "  MISSING unity modules: the unity cask is not installed; the next run installs them"
+    return 0
+  fi
+  if ! um_v=$(bound_step 120 brew list --cask --versions unity 2>/dev/null); then
+    note_failure "brew stage: brew could not read the unity cask's version; no Unity module installed" 1
+    return 0
+  fi
+  um_ver=$(printf '%s\n' "$um_v" | sed -n 's/^unity \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*[abfp][0-9][0-9]*\),\([0-9a-f]\{12\}\)$/\1/p')
+  um_cs=$(printf '%s\n' "$um_v" | sed -n 's/^unity [^,]*,\([0-9a-f]\{12\}\)$/\1/p')
+  if [ -z "$um_ver" ] || [ -z "$um_cs" ] || [ "$(printf '%s\n' "$um_v" | grep -c '^')" -ne 1 ]; then
+    note_failure "brew stage: cannot read the unity cask's version '$um_v' (want unity <version>,<changeset>); no Unity module installed" 1
+    return 0
+  fi
+  if [ ! -d "$UNITY_ROOT/Unity-$um_ver/Unity.app" ]; then
+    note_failure "brew stage: no Unity $um_ver editor at $UNITY_ROOT/Unity-$um_ver; no Unity module installed" 1
+    return 0
+  fi
+  # A here-document, not a pipe: DEFERRED must outlive the loop.
+  while read -r um_id um_stem um_rest; do
+    if [ -n "$um_rest" ] || ! printf '%s\n' "$um_id" | grep -Eqx '[A-Za-z0-9]+' ||
+       ! printf '%s\n' "$um_stem" | grep -Eqx '[A-Za-z0-9]+(-[A-Za-z0-9]+)*'; then
+      note_failure "unity: cannot read the line '$um_id $um_stem${um_rest:+ $um_rest}' (want <receipt> <installer>, as MacStandaloneSupportIL2CPP Mac-IL2CPP)" 1
+      continue
+    fi
+    um_pkg="com.unity3d.$um_id-$um_ver"
+    if unity_module_present "$um_pkg"; then
+      echo "  ok      unity $um_id $um_ver"
+      continue
+    fi
+    echo "  MISSING unity $um_id $um_ver"
+    um_url="$UNITY_BASE/$um_cs/MacEditorTargetInstaller/UnitySetup-$um_stem-Support-for-Editor-$um_ver.pkg"
+    um_shown="unity_module_install $um_pkg $um_url"
+    if [ "$APPLY" -ne 1 ]; then
+      printf '  [dry-run] %s\n' "$um_shown"
+    elif um_ask=; sudo -n true 2>/dev/null || { askpass_ready && um_ask=1; } || sudo -v; then
+      # The nightly run has no terminal: sudo reads the password through
+      # sudo-askpass.sh, as the weekly upgrade's casks do (sd:6312).
+      um_rc=0
+      unity_module_install "$um_pkg" "$um_url" "$um_ask" || um_rc=$?
+      [ "$um_rc" -eq 0 ] || note_failure "$um_shown" "$um_rc"
+    else
+      # The download is gone by the time the operator reads this, so the
+      # command to paste is the stage that fetches and installs it.
+      DEFERRED="$DEFERRED    sh $DIR/machine-setup.sh update brew --apply
+"
+      printf '  DEFER   needs sudo: install %s\n' "$um_pkg"
+    fi
+  done <<EOF
+$um_mods
+EOF
+}
+
+# 0 when the receipt is there and the first file it lists is on disk: a
+# reinstall of the editor at one version deletes the files, not the receipt.
+unity_module_present() { # package id
+  up_info=$(pkgutil --pkg-info "$1" 2>/dev/null) || return 1
+  up_loc=$(printf '%s\n' "$up_info" | sed -n 's/^location: //p')
+  up_file=$(pkgutil --only-files --files "$1" 2>/dev/null | sed -n 1p)
+  [ -n "$up_file" ] && [ -e "/${up_loc%/}/$up_file" ]
+}
+
+# Downloads the pkg, checks it carries Unity's Developer ID Installer
+# signature, installs it, and fails unless the receipt is there after.
+unity_module_install() { # package id, url, [1: sudo through askpass]
+  ui_tmp=$(mktemp -d) || return 1
+  ui_rc=0
+  unity_module_fetch "$1" "$2" "${3:-}" || ui_rc=$?
+  rm -rf "$ui_tmp"
+  return "$ui_rc"
+}
+
+unity_module_fetch() { # package id, url, askpass (into $ui_tmp)
+  if ! bound_step 3600 curl -fsSL --max-time 3600 -o "$ui_tmp/m.pkg" "$2"; then
+    echo "  unity: cannot download $2"
+    return 1
+  fi
+  if ! ui_sig=$(pkgutil --check-signature "$ui_tmp/m.pkg" 2>&1) ||
+     ! printf '%s\n' "$ui_sig" | grep -Eq "^[[:space:]]*1\. Developer ID Installer: [^()]+ \($UNITY_TEAM\)$"; then
+    echo "  unity: $2 is not signed by Unity's Developer ID Installer ($UNITY_TEAM); not installed"
+    return 1
+  fi
+  if [ -n "$3" ]; then
+    bound_step 1800 env SUDO_ASKPASS="$DIR/sudo-askpass.sh" sudo -A installer -pkg "$ui_tmp/m.pkg" -target / || return 1
+  else
+    bound_step 1800 sudo installer -pkg "$ui_tmp/m.pkg" -target / || return 1
+  fi
+  if ! unity_module_present "$1"; then
+    echo "  unity: the installer finished, but $1 is not installed"
+    return 1
+  fi
+  echo "  installed unity $1"
 }
 
 # A brew upgrade replaces tailscale's binary under a running tailscaled,
@@ -10318,6 +10432,8 @@ environment:
                           brew info shows need sudo (space-separated)
   MACHINE_SETUP_RELEASE_BIN  release: where the bins go (default ~/.local/bin)
   MACHINE_SETUP_RELEASE_BASE  tests only: the URL that stands in for https://github.com
+  MACHINE_SETUP_UNITY_ROOT    tests only: the folder that stands in for /Applications/Unity
+  MACHINE_SETUP_UNITY_BASE    tests only: the URL that stands in for Unity's download site
   MACHINE_SETUP_TMPDISK_MB  tmpdisk: the RAM disk's size in MiB; unset turns
                           the stage off (sd:7092)
   MACHINE_SETUP_TMPDISK_VOLUMES  tests only: the folder that stands in for /Volumes
