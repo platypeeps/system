@@ -36,6 +36,9 @@ nothing is mailed (sd:3454). A clean run prints no such line.
   - a codex child that dyld aborted because the codex sandbox blocked its
     library (`parentProc` codex, `blocked by sandbox`) is its own finding,
     not an app crash
+  - a `gtimeout` or `timeout` report whose signal came from its own pid
+    is left out: GNU timeout raises its crashed child's signal on itself,
+    and the child's own report still counts
 - every `$SYSTEM_TOOLS_LABEL_PREFIX.*` (default `local.system-tools.*`)
   LaunchAgent: loaded, and last exit code clean
 - disk0 SMART status

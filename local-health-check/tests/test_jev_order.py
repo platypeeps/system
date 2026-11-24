@@ -611,6 +611,37 @@ esac
         self.assertIn("Finder(1) ", out, "an app under /System/ still counts (lane review)")
         self.assertIn("my-cli(1) ", out, "a tool on a redacted volume still counts (lane review)")
 
+    def test_a_timeout_re_raising_its_childs_signal_is_no_crash(self):
+        """sd:10335: GNU timeout raises its child's death signal on itself,
+        so a crashed child left a second report from gtimeout. Its own
+        signal (byPid is its pid) is that echo; the child still counts, and
+        so does a timeout another process signalled, or a crash of one."""
+        reports = self.tmp / "reports-timeout"
+        reports.mkdir()
+        head = '{"app_name":"gtimeout","bug_type":"309"}\n'
+        def body(path, pid, by_pid, by_proc):
+            return (head + '{\n  "pid" : ' + pid + ',\n  "procPath" : "' + path + '",\n'
+                    '  "termination" : {"flags":0,"code":5,"namespace":"SIGNAL",'
+                    '"indicator":"Trace\\/BPT trap: 5","byProc":"' + by_proc
+                    + '","byPid":' + by_pid + '}\n}\n')
+        for name, text in (
+                ("gtimeout", body(r"\/opt\/homebrew\/*\/gtimeout", "41577", "41577", "gtimeout")),
+                ("timeout", body(r"\/usr\/local\/*\/timeout", "512", "512", "timeout")),
+                ("example-child", body(r"\/Users\/USER\/*\/example-child", "41579", "41580",
+                                       "exc handler")),
+                ("Killed-Timeout", body(r"\/opt\/homebrew\/*\/gtimeout", "700", "701", "kill")),
+                ("Self-Raiser", body(r"\/opt\/homebrew\/*\/gtimeout-like", "800", "800",
+                                     "gtimeout-like"))):
+            (reports / (name + stamped(hours=1) + ".ips")).write_text(text)
+        out = self.run_check("timeout", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                             verb="run")["out"]
+        crashes = [l for l in out.splitlines() if l.startswith("- app crash report(s)")]
+        self.assertEqual(len(crashes), 1, out)
+        self.assertNotIn("gtimeout(", crashes[0])
+        self.assertNotIn(" timeout(", crashes[0])
+        for name in ("example-child", "Killed-Timeout", "Self-Raiser"):
+            self.assertIn(name + "(1) ", crashes[0])
+
     def test_codex_sandbox_library_block_is_its_own_finding(self):
         """sd:6729: a codex child that dyld aborts at launch because the codex
         sandbox blocked its library is that defect, not an app crash. The same

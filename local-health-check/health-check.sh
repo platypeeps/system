@@ -257,10 +257,20 @@ recent_report() { # <file> <cutoff or empty> <mtime days>
 # path with no .app/ in it is a daemon.
 SYSTEM_PROC_RE='"procPath"[[:space:]]*:[[:space:]]*"\\?/(System|usr\\?/libexec|Volumes\\?/VOLUME\\?/\*\\?/[^"/\\]+\.framework)\\?/'
 SYSTEM_APP_RE='"procPath"[[:space:]]*:[[:space:]]*"[^"]*\.app\\?/'
+# GNU timeout raises its child's death signal on itself, so a crashed child
+# leaves a second report from (g)timeout (sd:10335). That signal, sent by its
+# own pid, is the echo; the child's report counts.
+TIMEOUT_PROC_RE='"procPath"[[:space:]]*:[[:space:]]*"[^"]*\\?/g?timeout"'
+self_signalled() { # <file>: the termination's byPid is the report's pid
+  _p=$(sed -En 's/^[[:space:]]*"pid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$1" 2>/dev/null | head -n 1)
+  _b=$(sed -En 's/.*"byPid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$1" 2>/dev/null | head -n 1)
+  [ -n "$_p" ] && [ "$_p" = "$_b" ]
+}
 crash_report() { # <file>
   _h=$(head -n 1 "$1" 2>/dev/null)
   ! printf '%s\n' "$_h" | grep -Eq '"is_simulated"[[:space:]]*:[[:space:]]*1([^0-9]|$)' || return 1
   ! grep -Eq "$SYSTEM_PROC_RE" "$1" 2>/dev/null || grep -Eq "$SYSTEM_APP_RE" "$1" 2>/dev/null || return 1
+  ! grep -Eq "$TIMEOUT_PROC_RE" "$1" 2>/dev/null || ! self_signalled "$1" || return 1
   _t=$(printf '%s\n' "$_h" | sed -En 's/.*"bug_type"[[:space:]]*:[[:space:]]*"?([0-9]+).*/\1/p')
   [ -z "$_t" ] || [ "$_t" = 309 ] || [ "$_t" = 109 ]
 }
