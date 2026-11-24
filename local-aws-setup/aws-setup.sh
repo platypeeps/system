@@ -1490,6 +1490,24 @@ for t in trails:
         sys.exit(print("already receives trail %s" % name) or 1)
 '
 
+# Whether an existing bucket's policy (get-bucket-policy's answer on stdin)
+# is the one `audit` writes (argv[1]); prints why not and exits 1.
+# argv: the policy audit would write.
+POLICY_NOT_OURS='
+import json, sys
+try:
+    wanted = json.loads(sys.argv[1])
+    held = json.load(sys.stdin)
+    held = json.loads(held["Policy"]) if isinstance(held.get("Policy"), str) else None
+except (ValueError, KeyError, AttributeError, TypeError):
+    held = None
+if held is None:
+    sys.exit(print("has a policy that could not be read") or 1)
+if held != wanted:
+    sys.exit(print("has a policy audit did not write; it may let another writer in, "
+                   "a trail in another account, say, that the new policy would cut off") or 1)
+'
+
 # Each step is a create-if-missing or a put that sets the same value again,
 # so a run cut short anywhere is finished by running it again.
 cmd_audit() {
@@ -1553,6 +1571,20 @@ cmd_audit() {
       "${PYTHON:-python3}" -c "$OTHER_TRAIL_WRITES" "$AUDIT_BUCKET" "$trail_arn") ||
       die "bucket $AUDIT_BUCKET $other (seen in $region); the new policy would cut it off, so stop or move it by hand"
   done
+  # describe-trails sees this account's trails only. A trail in another
+  # account can write here only through the bucket policy, so a policy
+  # audit did not write is refused rather than replaced.
+  if [ "$bucket_missing" = 0 ]; then
+    if held=$(admin s3api get-bucket-policy --bucket "$AUDIT_BUCKET" \
+        --expected-bucket-owner "$ACCOUNT_ID" --output json 2>&1); then
+      why=$(printf '%s' "$held" | "${PYTHON:-python3}" -c "$POLICY_NOT_OURS" \
+        "$(audit_bucket_policy "$trail_arn")") ||
+        die "bucket $AUDIT_BUCKET $why; merge or remove it by hand"
+    else
+      aws_error_is NoSuchBucketPolicy GetBucketPolicy "$held" ||
+        die "could not read the policy of bucket $AUDIT_BUCKET: $held"
+    fi
+  fi
   if [ "$bucket_missing" = 1 ]; then
     if [ "$AGENT_REGION" = us-east-1 ]; then
       admin_mutate s3api create-bucket --bucket "$AUDIT_BUCKET" >/dev/null ||

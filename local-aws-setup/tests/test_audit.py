@@ -73,6 +73,10 @@ class Case(unittest.TestCase):
         box.rule("get-trail-status", stdout=HEALTHY)
         # No other trail writes to the bucket unless a case says so.
         box.rule("describe-trails", stdout=json.dumps({"trailList": []}))
+        # An existing bucket has no policy unless a case says so.
+        box.rule("get-bucket-policy", exit=254,
+                 stderr="An error occurred (NoSuchBucketPolicy) when calling "
+                        "the GetBucketPolicy operation: The bucket policy does not exist")
         return box
 
     def status(self, box, **answer):
@@ -281,6 +285,75 @@ class AuditCase(Case):
                                      "get-trail"])
         read = rests[[r[1:2] for r in rests].index(["get-bucket-lifecycle-configuration"])]
         self.assertEqual(read[read.index("--expected-bucket-owner") + 1], ACCOUNT_ID)
+
+    def kept(self):
+        """An existing bucket and trail, as a second run finds them."""
+        box = self.box()
+        box.rule("get-trail", stdout=trail())
+        box.rule("get-event-selectors", stdout=GOOD_SELECTORS)
+        return box
+
+    def policy(self, box, **answer):
+        box.scenario["rules"].insert(0, {"match": ["get-bucket-policy"], **answer})
+
+    def ours(self):
+        """The policy a first audit run put on the bucket."""
+        box = self.fresh()
+        self.assertEqual(box.run("audit", "x").returncode, 0)
+        rests = self.rests(box)
+        put = next(r for r in rests if r[1:2] == ["put-bucket-policy"])
+        return put[put.index("--policy") + 1]
+
+    def test_a_bucket_policy_audit_did_not_write_is_refused_before_any_write(self):
+        # The new policy lets only this account's trail write, so a trail in
+        # another account delivering here would be cut off; describe-trails
+        # in this account cannot see it, but the policy that lets it in can.
+        mine = json.loads(self.ours())
+        other = json.loads(json.dumps(mine).replace(ACCOUNT_ID, "999988887777"))
+        both = dict(mine, Statement=mine["Statement"] + other["Statement"][:2])
+        bad = {
+            "another account's trail": json.dumps({"Policy": json.dumps(other)}),
+            "ours plus another account's trail": json.dumps({"Policy": json.dumps(both)}),
+            "policy not a string": json.dumps({"Policy": mine}),
+            "no policy key": json.dumps({}),
+            "policy not json": json.dumps({"Policy": "{"}),
+            "not json": "Policy",
+            "empty": "",
+        }
+        for why, answer in bad.items():
+            with self.subTest(why=why):
+                box = self.kept()
+                self.policy(box, stdout=answer)
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("bucket %s" % BUCKET, done.stderr)
+                self.assertEqual(done.stderr.count("\n"), 1, done.stderr)
+                names = [r[1] for r in self.rests(box) if len(r) > 1]
+                self.assertIn("get-bucket-policy", names)
+                self.assertFalse([n for n in names if n.startswith(("put-", "create-", "start-"))],
+                                 names)
+
+    def test_the_policy_audit_wrote_is_kept(self):
+        mine = self.ours()
+        box = self.kept()
+        # S3 answers with the stored text; spacing may differ.
+        self.policy(box, stdout=json.dumps({"Policy": json.dumps(json.loads(mine))}))
+        done = box.run("audit", "x")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        read = next(r for r in self.rests(box) if r[1:2] == ["get-bucket-policy"])
+        self.assertEqual(read[read.index("--expected-bucket-owner") + 1], ACCOUNT_ID)
+
+    def test_a_bucket_policy_read_that_fails_otherwise_is_refused(self):
+        for err in ("An error occurred (AccessDenied) when calling the GetBucketPolicy "
+                    "operation: NoSuchBucketPolicy",
+                    "NoSuchBucketPolicy"):
+            with self.subTest(err=err):
+                box = self.kept()
+                self.policy(box, exit=254, stderr=err)
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                names = [r[1] for r in self.rests(box) if len(r) > 1]
+                self.assertNotIn("put-bucket-policy", names)
 
     def test_a_missing_bucket_has_no_lifecycle_to_read(self):
         box = self.fresh()
