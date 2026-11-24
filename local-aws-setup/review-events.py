@@ -1,11 +1,14 @@
 """Review the SSM calls that reach a deployment, from CloudTrail's event history.
 
-aws-setup.sh `events` runs this with the admin profile. Each call that reaches
-an instance prints one row, oldest first, in local time:
+aws-setup.sh `events` runs this with the admin profile. Event history is kept
+per region, so it reads every region the account has enabled. Each call that
+reaches an instance prints one row, oldest first, in local time:
 
   UNEXPECTED  made by anyone but the deployer user of this account
   UNLOGGED    a SendCommand whose output does not go to ssm-output/ in the
-              audit bucket, the one prefix the instance role may write
+              audit bucket, the one prefix the instance role may write, or
+              whose output is not there: no object under
+              <prefix>/<command id>/<instance id>/ for each instance named
   TUNNEL      a port-forwarding session: CloudTrail has who and when, no log
               has what ran inside it
 
@@ -15,6 +18,7 @@ history cannot be read or is not the shape CloudTrail documents.
 import argparse
 import datetime
 import json
+import re
 import subprocess
 import sys
 
@@ -24,6 +28,9 @@ TUNNEL = "AWS-StartPortForwardingSession"
 # The instance role may write only <bucket>/ssm-output/*; output under any
 # other key is never written, so it counts as unlogged.
 OUTPUT_PREFIX = "ssm-output"
+REGION = re.compile(r"[a-z]{2}(-[a-z]+)+-[0-9]{1,2}")
+COMMAND_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+INSTANCE_ID = re.compile(r"(i|mi)-[0-9a-f]{1,17}")
 
 
 class Malformed(Exception):
@@ -36,23 +43,70 @@ def clean(value):
     return "".join(c if c.isprintable() else "?" for c in text)[:120] or "-"
 
 
-def lookup(args, name, start):
+def aws(args, region, what, *argv):
+    """One admin call's JSON answer; a failed call ends the review."""
     done = subprocess.run(
-        ["aws", "--profile", args.profile, "--region", args.region,
-         "cloudtrail", "lookup-events",
-         "--lookup-attributes", "AttributeKey=EventName,AttributeValue=" + name,
-         "--start-time", start, "--output", "json"],
+        ["aws", "--profile", args.profile, "--region", region, *argv, "--output", "json"],
         capture_output=True, text=True)
     if done.returncode != 0:
         sys.stderr.write(done.stderr)
-        raise SystemExit("review-events: could not read %s events" % name)
+        raise SystemExit("review-events: could not read %s" % what)
     try:
-        page = json.loads(done.stdout)
+        return json.loads(done.stdout)
     except ValueError:
-        raise Malformed("lookup-events output is not JSON")
+        raise Malformed("%s output is not JSON" % argv[1])
+
+
+def regions(args):
+    names = aws(args, args.region, "the enabled regions", "ec2", "describe-regions",
+                "--query", "Regions[].RegionName")
+    if (not isinstance(names, list) or not all(
+            isinstance(n, str) and REGION.fullmatch(n) for n in names)
+            or args.region not in names):
+        raise Malformed("describe-regions gave no region list with %s in it" % args.region)
+    return sorted(set(names))
+
+
+def lookup(args, region, name, start):
+    page = aws(args, region, "%s events in %s" % (name, region), "cloudtrail", "lookup-events",
+               "--lookup-attributes", "AttributeKey=EventName,AttributeValue=" + name,
+               "--start-time", start)
     if not isinstance(page, dict) or not isinstance(page.get("Events"), list):
         raise Malformed("lookup-events output has no Events list")
     return page["Events"]
+
+
+def saved(args, record, params, prefix):
+    """True when the bucket holds output for every instance the command named.
+
+    The requested destination proves nothing: the upload can fail or never
+    run. The deployer may not write the bucket, so an object there was put
+    by an instance role. A command named by tag targets needs one object
+    under its command id. A command id or instance id that is not the shape
+    SSM gives is never put into a listing and counts as unsaved.
+    """
+    response = record.get("responseElements")
+    command = response.get("command") if isinstance(response, dict) else None
+    command_id = command.get("commandId") if isinstance(command, dict) else None
+    if not isinstance(command_id, str) or not COMMAND_ID.fullmatch(command_id):
+        return False
+    base = "%s/%s/" % (prefix.rstrip("/"), command_id)
+    instances = params.get("instanceIds")
+    if instances:
+        if not isinstance(instances, list) or not all(
+                isinstance(i, str) and INSTANCE_ID.fullmatch(i) for i in instances):
+            return False
+        keys = [base + i + "/" for i in instances]
+    else:
+        keys = [base]
+    for key in keys:
+        page = aws(args, args.region, "the output under %s" % key, "s3api", "list-objects-v2",
+                   "--bucket", args.bucket, "--prefix", key, "--max-items", "1")
+        if not isinstance(page, dict):
+            raise Malformed("list-objects-v2 output is not an object")
+        if not (isinstance(page.get("Contents"), list) and page["Contents"]):
+            return False
+    return True
 
 
 def record_of(item):
@@ -79,7 +133,7 @@ def record_of(item):
 
 def review(args, items):
     rows = []
-    for name, item in items:
+    for region, name, item in items:
         record, who, moment, params = record_of(item)
         # Each lookup asks for one name; anything else in its answer is not
         # what was asked for, and would count an event twice.
@@ -94,7 +148,8 @@ def review(args, items):
         prefix = params.get("outputS3KeyPrefix")
         under = isinstance(prefix, str) and (
             prefix == OUTPUT_PREFIX or prefix.startswith(OUTPUT_PREFIX + "/"))
-        if name == "SendCommand" and not (args.bucket and output == args.bucket and under):
+        if name == "SendCommand" and not (args.bucket and output == args.bucket and under
+                                          and saved(args, record, params, prefix)):
             flags.append("UNLOGGED")
         if params.get("documentName") == TUNNEL:
             flags.append("TUNNEL")
@@ -102,15 +157,15 @@ def review(args, items):
             or params.get("sessionId")
         if record.get("errorCode"):
             flags.append("error=" + clean(record["errorCode"]))
-        rows.append((moment, name, who.get("arn") or who.get("userName") or who.get("type"),
-                     target, flags))
+        rows.append((moment, region, name,
+                     who.get("arn") or who.get("userName") or who.get("type"), target, flags))
     rows.sort(key=lambda row: row[0])
     flagged = 0
-    for moment, name, actor, target, flags in rows:
+    for moment, region, name, actor, target, flags in rows:
         if {"UNEXPECTED", "UNLOGGED"} & set(flags):
             flagged += 1
-        print("%s  %-16s %-34s %s %s" % (
-            moment.astimezone().strftime("%Y-%m-%d %H:%M %Z"), clean(name),
+        print("%s  %-14s %-16s %-34s %s %s" % (
+            moment.astimezone().strftime("%Y-%m-%d %H:%M %Z"), region, clean(name),
             clean(actor), clean(target), " ".join(flags)))
     print("%d events, %d flagged" % (len(rows), flagged))
     return 1 if flagged else 0
@@ -125,7 +180,8 @@ def main():
     start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=args.hours)
     start = start.strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        items = [(name, item) for name in NAMES for item in lookup(args, name, start)]
+        items = [(region, name, item) for region in regions(args) for name in NAMES
+                 for item in lookup(args, region, name, start)]
         return review(args, items)
     except Malformed as error:
         sys.stderr.write("review-events: malformed CloudTrail history: %s\n" % error)

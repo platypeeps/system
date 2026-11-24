@@ -28,12 +28,16 @@ def trail(**changed):
     return json.dumps({k: v for k, v in made.items() if v is not ...})
 
 
+COMMAND_ID = "0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e"
+SAVED = json.dumps({"Contents": [{"Key": "ssm-output/x/i-1/awsrunShellScript/0/stdout"}]})
+
+
 TAMPER = ("s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
           "s3:PutLifecycleConfiguration", "s3:PutBucketVersioning")
 
 
 def event(name, user="deployer", account=ACCOUNT_ID, kind="IAMUser",
-          when="2026-11-23T10:00:00Z", **params):
+          when="2026-11-23T10:00:00Z", response=..., **params):
     record = {
         "eventSource": "ssm.amazonaws.com",
         "eventName": name,
@@ -42,6 +46,10 @@ def event(name, user="deployer", account=ACCOUNT_ID, kind="IAMUser",
                          "arn": "arn:aws:iam::%s:user/%s" % (account, user)},
         "requestParameters": params,
     }
+    if response is ... and name == "SendCommand":
+        response = {"command": {"commandId": COMMAND_ID}}
+    if response is not ...:
+        record["responseElements"] = response
     return {"EventName": name, "CloudTrailEvent": json.dumps(record)}
 
 
@@ -374,10 +382,98 @@ class AuditCase(Case):
 
 
 class EventsCase(Case):
-    def review(self, events, *args, **account):
+    def review(self, events, *args, regions=("eu-west-1",), first=(), **account):
         box = self.box(AGENT_USER="deployer", **account)
-        box.rule("lookup-events", stdout=json.dumps({"Events": events}))
+        for rule in first:
+            box.rule(*rule.pop("match"), **rule)
+        box.rule("describe-regions", stdout=json.dumps(list(regions)))
+        box.rule("lookup-events", region="eu-west-1", stdout=json.dumps({"Events": events}))
+        box.rule("lookup-events", stdout=json.dumps({"Events": []}))
+        box.rule("list-objects-v2", stdout=SAVED)
         return box, box.run("events", "x", *args, TZ="America/Denver")
+
+    def listed(self, box):
+        return [r for r in self.rests(box) if r[1:2] == ["list-objects-v2"]]
+
+    def test_every_enabled_region_is_reviewed(self):
+        intruder = event("StartSession", user="intruder", target="i-0123456789abcdef0")
+        box, done = self.review([], regions=("eu-west-1", "us-west-2"), first=[
+            {"match": ["lookup-events", "StartSession"], "region": "us-west-2",
+             "stdout": json.dumps({"Events": [intruder]})}])
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        rows = [line for line in done.stdout.splitlines() if "StartSession" in line]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("UNEXPECTED", rows[0])
+        self.assertIn("us-west-2", rows[0])
+        looked = {c["region"] for c in box.calls() if c["rest"][1:2] == ["lookup-events"]}
+        self.assertEqual(looked, {"eu-west-1", "us-west-2"})
+
+    def test_a_failed_region_list_is_an_error_not_a_clean_review(self):
+        _, done = self.review([], first=[
+            {"match": ["describe-regions"], "exit": 254, "stderr": "AccessDenied"}])
+        self.assertEqual(done.returncode, 1)
+        self.assertNotIn("flagged", done.stdout)
+        self.assertIn("regions", done.stderr)
+
+    def test_a_malformed_region_list_fails(self):
+        for bad in ([], "eu-west-1", [1], ["../etc"], ["us-west-2"], {"Regions": []}):
+            with self.subTest(bad=bad):
+                box, done = self.review([], first=[
+                    {"match": ["describe-regions"], "stdout": json.dumps(bad)}])
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("malformed", done.stderr)
+                self.assertFalse([r for r in self.rests(box) if r[1:2] == ["lookup-events"]])
+
+    def test_a_command_whose_output_never_arrived_is_unlogged(self):
+        for answer in ({}, {"Contents": []}, {"KeyCount": 0}):
+            with self.subTest(answer=answer):
+                _, done = self.review([event("SendCommand", instanceIds=["i-1"],
+                                             outputS3BucketName=BUCKET,
+                                             outputS3KeyPrefix="ssm-output")],
+                                      first=[{"match": ["list-objects-v2"],
+                                              "stdout": json.dumps(answer)}])
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("UNLOGGED", done.stdout)
+
+    def test_each_instance_needs_its_own_saved_output(self):
+        for prefix in ("ssm-output", "ssm-output/"):
+            with self.subTest(prefix=prefix):
+                missing = "ssm-output/%s/i-2/" % COMMAND_ID
+                box, done = self.review([event("SendCommand", instanceIds=["i-1", "i-2"],
+                                               outputS3BucketName=BUCKET,
+                                               outputS3KeyPrefix=prefix)],
+                                        first=[{"match": ["list-objects-v2", missing],
+                                                "stdout": json.dumps({})}])
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("UNLOGGED", done.stdout)
+                listed = self.listed(box)
+                self.assertEqual(sorted(r[r.index("--prefix") + 1] for r in listed),
+                                 ["ssm-output/%s/i-1/" % COMMAND_ID, missing])
+                for rest in listed:
+                    self.assertEqual(rest[rest.index("--bucket") + 1], BUCKET)
+                    self.assertEqual(rest[rest.index("--max-items") + 1], "1")
+
+    def test_a_command_without_a_usable_id_is_unlogged_unlisted(self):
+        for response in (None, {}, {"command": {}}, {"command": {"commandId": "../x"}},
+                         {"command": "x"}):
+            with self.subTest(response=response):
+                box, done = self.review([event("SendCommand", instanceIds=["i-1"],
+                                               response=response,
+                                               outputS3BucketName=BUCKET,
+                                               outputS3KeyPrefix="ssm-output")])
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("UNLOGGED", done.stdout)
+                self.assertEqual(self.listed(box), [])
+
+    def test_a_failed_output_listing_is_an_error_not_a_clean_review(self):
+        for answer in ({"exit": 254, "stderr": "AccessDenied"}, {"stdout": "not json"}):
+            with self.subTest(answer=answer):
+                _, done = self.review([event("SendCommand", instanceIds=["i-1"],
+                                             outputS3BucketName=BUCKET,
+                                             outputS3KeyPrefix="ssm-output")],
+                                      first=[{"match": ["list-objects-v2"], **answer}])
+                self.assertEqual(done.returncode, 1)
+                self.assertNotIn("0 flagged", done.stdout)
 
     def test_logged_commands_and_own_sessions_pass(self):
         box, done = self.review([
@@ -455,6 +551,7 @@ class EventsCase(Case):
                     {"Events": [{"CloudTrailEvent": json.dumps(["list"])}]}, ["top"]):
             with self.subTest(bad=bad):
                 box = self.box(AGENT_USER="deployer")
+                box.rule("describe-regions", stdout=json.dumps(["eu-west-1"]))
                 box.rule("lookup-events", stdout=json.dumps(bad))
                 done = box.run("events", "x")
                 self.assertEqual(done.returncode, 1)
@@ -462,6 +559,7 @@ class EventsCase(Case):
 
     def test_a_failed_lookup_is_an_error_not_a_clean_review(self):
         box = self.box(AGENT_USER="deployer")
+        box.rule("describe-regions", stdout=json.dumps(["eu-west-1"]))
         box.rule("lookup-events", exit=254, stderr="AccessDenied")
         done = box.run("events", "x")
         self.assertEqual(done.returncode, 1)

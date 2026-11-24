@@ -1,0 +1,17 @@
+fix(aws-setup): events reads every region and checks saved output
+
+Review round 1 of build/sd-1744 found two blockers in the events
+review that this branch carries from build/sd-1735 (sd:10057).
+
+CloudTrail event history is per region, and events read only
+AGENT_REGION. An SSM call in any other region went unseen, and the
+review still said clean. events now lists the enabled regions with
+ec2 describe-regions and looks up each one. A failed or malformed
+region list ends the review with exit 1. Each row names its region.
+
+UNLOGGED trusted the requested S3 destination as proof that output
+was saved. A SendCommand now also needs an object under
+<prefix>/<command id>/<instance id>/ for each instance it names, or
+under <prefix>/<command id>/ for tag targets. A command id or
+instance id not in the SSM shape counts as unsaved and is never
+listed. A failed listing is an error, not a clean review.

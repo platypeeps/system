@@ -210,8 +210,12 @@ Review the calls with the deployer's account file:
 ./aws-setup.sh events sandbox-deployer 168    # last week; at most 2160
 ```
 
-It reads CloudTrail's 90-day event history as the admin profile and prints one row per call, in local time.
-`UNEXPECTED` marks a call by anyone but `AGENT_USER`; `UNLOGGED` marks a command whose output skips `ssm-output/` in `AUDIT_BUCKET`, the one prefix the instance role may write.
+It reads CloudTrail's 90-day event history in every region the account has enabled, as the admin profile.
+It prints one row per call, with its region, in local time.
+`UNEXPECTED` marks a call by anyone but `AGENT_USER`.
+`UNLOGGED` marks a command whose output skips `ssm-output/` in `AUDIT_BUCKET`, the one prefix the instance role may write.
+It also marks one with no object under `ssm-output/<command id>/<instance id>/` for each instance it names.
+A command still running, or one that printed nothing, shows as `UNLOGGED` too; review it by hand.
 Either exits 1. `TUNNEL` marks a port-forwarding session: CloudTrail shows who and when, no log shows what ran inside.
 
 ### Deploying with an existing instance role

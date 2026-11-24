@@ -205,6 +205,9 @@ def main():
 
     joined = " ".join(rest)
     for rule in scenario.get("rules", []):
+        # A rule may name a region: lookups are per region.
+        if rule.get("region") not in (None, options.get("region")):
+            continue
         if all(token in joined for token in rule["match"]):
             done(rule.get("stdout", ""), rule.get("exit", 0), rule.get("stderr", ""))
     done()
