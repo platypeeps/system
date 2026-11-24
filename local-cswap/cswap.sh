@@ -789,14 +789,12 @@ reconnect() {
 
 # A switch and its mark go under RC_LOCK: a pass that ran between them
 # sent /rc for the older mark under the new account (sd:9427 review).
-# 0: go on, locked, or unlocked when RC_LOCK does not open, as then the
-# mark fails too and the next sync owes; 1: another sync's pass holds
-# it, so no switch this run.
-switch_lock() {
-  local rc=0
-  rc_lock || rc=$?
-  ((rc != 1))
-}
+# No lock, no switch and no mark write, whatever the reason: a sync
+# that went on unlocked could still write over a newer mark, and a
+# pane got /rc twice (sd:9427 class pass). 0: locked; 1: another
+# sync's pass holds it, the next run tries again; 2: RC_LOCK does not
+# open, and the caller fails the sync so it shows.
+switch_lock() { rc_lock; }
 
 # The epoch of the current switch mark, or nothing when there is none
 # or it is older than RC_OWED_FOR. Only rows of this switch may take a
@@ -901,13 +899,13 @@ reconnect_pass() {
 # is written only when it differs (one database row per write), and is
 # compared on every run, so a failed write is retried by the next one.
 lead() {
-  local rc=0 json active row number uuid locked=""
+  local rc=0 json active row number uuid lock=0
   # Every mark write goes under the reconnect lock, with the account
   # read there: a sync that read it before another's switch wrote its
   # mark over the new one, and each pane got a second /rc (sd:9427
   # review). Held, this sync writes no mark; the next one does.
-  if switch_lock; then
-    locked=1
+  switch_lock || lock=$?
+  if ((lock == 0)); then
     # Before auto can switch, a mark that names no account gains the
     # active one: only then does a lost mark show (owe_missed). A list
     # that fails here fails below too.
@@ -917,8 +915,11 @@ lead() {
     fi
     # shellcheck disable=SC2086 # deliberate word splitting of the configured flags
     st_bounded 120 "$CSWAP_BIN" auto --once $CSWAP_AUTO_ARGS --strategy consume-first 9>&- || rc=$?
-  else
+  elif ((lock == 1)); then
     echo "leads: auto waits: another sync is reconnecting; the next run tries again"
+    rc=2
+  else
+    echo "leads: auto skipped: could not open $RC_LOCK"
     rc=2
   fi
   json=$(accounts) || fail list "cswap list --json failed"
@@ -926,7 +927,7 @@ lead() {
   read -r number uuid <<<"$active"
   set -- "$number" "$uuid"
   [[ "$2" =~ $UUID_RE ]] || fail list "account $1 has no organizationUuid"
-  if [[ -n "$locked" ]]; then
+  if ((lock == 0)); then
     if [[ "$rc" == 0 ]]; then owe_rc "$2"; else owe_missed "$2"; fi
   fi
   exec 9>&-
@@ -943,6 +944,7 @@ lead() {
     0 | 2 | 3) ;;
     *) fail auto "cswap auto exited $rc; account $1 stays published" ;;
   esac
+  ((lock != 2)) || fail lock "could not open $RC_LOCK; no switch and no /rc until it opens"
 }
 
 # A read the hub refused for this machine's sd_db build: the follow job has
@@ -998,10 +1000,13 @@ follow() {
   rm -f "$REFUSALS" 2>/dev/null || :
   # The account is read and the mark written under the reconnect lock
   # (see lead).
-  if ! switch_lock; then
+  local lock=0
+  switch_lock || lock=$?
+  if ((lock == 1)); then
     echo "following the hub: another sync is reconnecting; the next run checks the account"
     return 0
   fi
+  ((lock == 0)) || fail lock "could not open $RC_LOCK; nothing switched and no /rc until it opens"
   json=$(accounts) || fail list "cswap list --json failed; nothing switched"
   active=$(pick active <<<"$json") || fail list "cswap names no single active account; nothing switched"
   number=$(pick number "$want" <<<"$json") || rc=$?

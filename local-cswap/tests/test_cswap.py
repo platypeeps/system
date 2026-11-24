@@ -670,12 +670,12 @@ class APinFollow(Machine):
         self.assertIn("SD_REPORT_ATTENTION: data safe, one step failed: cswap sync read",
                       result.stdout)
         self.assertEqual(self.called("cswap switch"), [])
-        # A good read still switches: a count it cannot clear only fails
-        # sooner. The switch's /rc mark cannot be written either, so that
-        # run fails too (sd:9427 review).
+        # A good read does not switch here: with no state folder the
+        # reconnect lock does not open, and no lock means no switch
+        # (sd:9427 class pass). The run fails, so it shows.
         result = self.sync("elsewhere", code=1)
-        self.assertEqual(self.active(), 3)
-        self.assertIn("one step failed: cswap sync mark", result.stdout)
+        self.assertEqual(self.active(), 1)
+        self.assertIn("one step failed: cswap sync lock", result.stdout)
 
     def test_another_read_failure_still_fails_at_once(self):
         self.publish(THREE)
@@ -1163,6 +1163,39 @@ class RemoteControlReconnects(Machine):
                         fcntl.flock(held, fcntl.LOCK_EX)
                         self.sync(fence)
                     self.assertEqual(mark.read_text(), mark_text)
+
+    def test_a_lock_that_does_not_open_switches_and_marks_nothing(self):
+        # sd:9427 class pass (cswap.sh:1015, :916, :930): a lock that
+        # did not open let the sync go on unlocked, so two such syncs
+        # could still write over a newer switch mark and send /rc
+        # twice. No lock now means no switch and no mark write: the
+        # sync fails, and the next one that opens the lock does both.
+        now = int(time.time())
+        state = self.script.parent / "state"
+        cases = [("elsewhere", {}, f"{now} 1 {TWO}\n"),
+                 ("elsewhere", {}, "1000 1\n"),
+                 ("holder", {"FAKE_AUTO_TO": "3", "FAKE_AUTO_RC": "0"}, f"{now} 1 {TWO}\n"),
+                 ("holder", {"FAKE_AUTO_TO": "3", "FAKE_AUTO_RC": "0"}, "1000 1\n"),
+                 ("holder", {}, f"{now} 1 {TWO}\n")]
+        for fence, extra, mark_text in cases:
+            with self.subTest(fence=fence, extra=extra, mark=mark_text):
+                shutil.rmtree(state, ignore_errors=True)
+                (state / "rc-lock").mkdir(parents=True)  # opens for no write
+                (state / "rc-pending").write_text(mark_text)
+                self.accounts([(1, ONE), (2, TWO), (3, THREE)], active=1)
+                self.publish(THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                result = self.sync(fence, code=1, **extra)
+                self.assertEqual(self.called("cswap switch") + self.called("cswap auto"), [],
+                                 result.stdout)
+                self.assertEqual(self.active(), 1)
+                self.assertEqual((state / "rc-pending").read_text(), mark_text)
+                self.assertEqual(self.called("herdr"), [], result.stdout)
+                self.assertIn("one step failed: cswap sync lock", result.stdout)
+        shutil.rmtree(state)
+        self.publish(THREE)
+        self.sync("elsewhere")
+        self.assertEqual(self.active(), 3)
 
     def test_no_sync_deletes_a_switch_mark(self):
         # Review on sd:9427 (cswap.sh:348): the expiry branch deleted
@@ -2126,11 +2159,24 @@ class RemoteControlReconnects(Machine):
 
     def test_a_mark_that_cannot_be_written_fails_a_sync_with_no_switch(self):
         # No switch, and the mark cannot name the active account: said
-        # now, exit 1, not at the switch that would find no mark.
+        # now, exit 1, not at the switch that would find no mark. The
+        # lock opens (it is there), the folder takes no new file.
         self.publish(ONE)
-        (self.tmp / "local-cswap/state").write_text("a file where the folder goes\n")
-        result = self.sync("elsewhere", code=1)
+        state = self.tmp / "local-cswap/state"
+        state.mkdir(exist_ok=True)
+        (state / "rc-lock").touch()
+        state.chmod(0o500)
+        try:
+            result = self.sync("elsewhere", code=1)
+        finally:
+            state.chmod(0o755)
         self.assertIn("one step failed: cswap sync mark", result.stdout)
+        # No state folder at all: the lock does not open, and that is
+        # the failure named.
+        shutil.rmtree(state)
+        state.write_text("a file where the folder goes\n")
+        result = self.sync("elsewhere", code=1)
+        self.assertIn("one step failed: cswap sync lock", result.stdout)
 
     def test_a_long_owed_pane_is_dropped_and_an_unreadable_list_keeps_it(self):
         self.publish(THREE)
