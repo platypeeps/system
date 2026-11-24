@@ -259,18 +259,32 @@ SYSTEM_PROC_RE='"procPath"[[:space:]]*:[[:space:]]*"\\?/(System|usr\\?/libexec|V
 SYSTEM_APP_RE='"procPath"[[:space:]]*:[[:space:]]*"[^"]*\.app\\?/'
 # GNU timeout raises its child's death signal on itself, so a crashed child
 # leaves a second report from (g)timeout (sd:10335). That signal, sent by its
-# own pid, is the echo; the child's report counts.
+# own pid, is the echo only when a child's report names that pid as its
+# parent the same day: then the child's report counts. With none, the
+# timeout's counts.
 TIMEOUT_PROC_RE='"procPath"[[:space:]]*:[[:space:]]*"[^"]*\\?/g?timeout"'
-self_signalled() { # <file>: the termination's byPid is the report's pid
+echoed_child() { # <file>: byPid is the report's pid, and a child report names it
   _p=$(sed -En 's/^[[:space:]]*"pid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$1" 2>/dev/null | head -n 1)
   _b=$(sed -En 's/.*"byPid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$1" 2>/dev/null | head -n 1)
-  [ -n "$_p" ] && [ "$_p" = "$_b" ]
+  [ -n "$_p" ] && [ "$_p" = "$_b" ] || return 1
+  for _d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
+    [ -d "$_d" ] || continue
+    # A child's report from the same day: an older one names a reused pid.
+    _c=$(find "$_d" -maxdepth 1 -name '*.ips' -exec grep -El \
+      "\"parentPid\"[[:space:]]*:[[:space:]]*$_p([^0-9]|\$)" {} + 2>/dev/null) || :
+    while IFS= read -r _f; do
+      [ -n "$_f" ] && recent_report "$_f" "$CUT_DAY" 1 && return 0
+    done <<EOF
+$_c
+EOF
+  done
+  return 1
 }
 crash_report() { # <file>
   _h=$(head -n 1 "$1" 2>/dev/null)
   ! printf '%s\n' "$_h" | grep -Eq '"is_simulated"[[:space:]]*:[[:space:]]*1([^0-9]|$)' || return 1
   ! grep -Eq "$SYSTEM_PROC_RE" "$1" 2>/dev/null || grep -Eq "$SYSTEM_APP_RE" "$1" 2>/dev/null || return 1
-  ! grep -Eq "$TIMEOUT_PROC_RE" "$1" 2>/dev/null || ! self_signalled "$1" || return 1
+  ! grep -Eq "$TIMEOUT_PROC_RE" "$1" 2>/dev/null || ! echoed_child "$1" || return 1
   _t=$(printf '%s\n' "$_h" | sed -En 's/.*"bug_type"[[:space:]]*:[[:space:]]*"?([0-9]+).*/\1/p')
   [ -z "$_t" ] || [ "$_t" = 309 ] || [ "$_t" = 109 ]
 }
