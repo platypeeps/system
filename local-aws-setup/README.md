@@ -39,6 +39,7 @@ takes. `<config>` is `$SYSTEM_TOOLS_CONFIG` (default `~/.config/system`);
 | `POLICY_NAME` | managed policy name in this account; overrides the shared `POLICY_NAME` in `<config>/aws-setup/.env` (default `agent-base`) |
 | `EXTRA_POLICIES` | space-separated supplemental managed policy names; default empty |
 | `PASS_ROLE_ARNS` | exact same-account instance role ARNs; sandbox only, passed to EC2 only; default empty |
+| `AUDIT_BUCKET` | bucket for the CloudTrail trail and SSM command output; every level denies cleaning it; default empty |
 
 A typical setup: `dev` (operator, profile `agent-dev`) and `sandbox`
 (sandbox, profile `agent-sandbox`). The account files are the source of
@@ -175,6 +176,54 @@ Terminate the instance, then clean up managed resources.
 No level may snapshot a managed disk first: a snapshot is a copy of the deployment the agent could read.
 `ec2:ModifyInstanceAttribute` stays explicitly denied. Teardown does not require changing disk deletion settings.
 IAM self-management stays denied; an admin applies policy updates before the agent performs teardown.
+
+### Deployment audit trail
+
+A shell on a deployment leaves its record only outside the instance.
+Set the same `AUDIT_BUCKET` in every account file of that AWS account, then run `apply` for each.
+Every rendered policy then denies writing, deleting versions, expiring or unversioning that bucket.
+Use a bucket for nothing else: `audit` rewrites its whole bucket policy.
+
+```sh
+DRY_RUN=1 ./aws-setup.sh audit sandbox-deployer
+./aws-setup.sh audit sandbox-deployer
+```
+
+`audit` creates the bucket if missing, versions it and blocks public access.
+It keeps a multi-region trail, `AUDIT_TRAIL` (default `deployment-audit`), with log file validation.
+An existing trail of that name must match the one `audit` creates, or `audit` refuses before any write.
+It checks the bucket, no key prefix, the home region and account, multi-region, log file validation, and management write events.
+It refuses advanced event selectors rather than read them. A rerun finishes a run cut short.
+An existing bucket gets its public access block, versioning and policy set again on every run.
+It must have no enabled lifecycle rule that expires objects or old versions, or `audit` refuses before any write.
+No other trail in any enabled region may write to the bucket: the policy `audit` sets would cut it off, so `audit` refuses before any write.
+Its bucket policy must be absent or the one `audit` writes: a trail in another account writes only through that policy, so `audit` refuses any other.
+After `start-logging`, `audit` reads the trail status and fails unless it is logging with no log or digest delivery error.
+The trail records management events, so `SendCommand`, `StartSession` and `TerminateSession` land there.
+One management-event trail per account is free; the bucket costs its storage.
+
+CloudTrail hides `SendCommand` parameters. Command output is not saved yet: the deployment
+wrapper starts saving it only when its own item, sd:10253, lands. From then on it passes
+`--output-s3-bucket-name <AUDIT_BUCKET> --output-s3-key-prefix ssm-output`.
+The instance role, not the deployer, writes that output: grant it `s3:PutObject` on `arn:aws:s3:::<AUDIT_BUCKET>/ssm-output/*`.
+
+Review the calls with the deployer's account file:
+
+```sh
+./aws-setup.sh events sandbox-deployer        # last 24 hours
+./aws-setup.sh events sandbox-deployer 168    # last week; at most 2160
+```
+
+It reads CloudTrail's 90-day event history in every region the account has enabled, as the admin profile.
+It prints one row per call, with its region, in local time.
+`UNEXPECTED` marks a call by anyone but `AGENT_USER`.
+`UNLOGGED` marks a command whose output skips `ssm-output/` in `AUDIT_BUCKET`, the one prefix the instance role may write.
+It also marks one with no object under `ssm-output/<command id>/<instance id>/` for each instance it names; a folder marker (a key ending in `/`) or a key outside that prefix does not count.
+A command sent to tag targets, or to both ids and targets, is always `UNLOGGED`: the event does not name whose output to look for.
+A command still running, or one that printed nothing, shows as `UNLOGGED` too; review it by hand.
+CloudTrail delivers an event up to 15 minutes late, so a clean review does not cover the last 15 minutes.
+The review covers `SendCommand` and sessions only; associations and automations are not read.
+Either exits 1. `TUNNEL` marks a port-forwarding session: CloudTrail shows who and when, no log shows what ran inside.
 
 ### Deploying with an existing instance role
 
@@ -391,7 +440,7 @@ aws logout --profile default
 - **Add a service** as its own statement function with specific actions, and
   a matching `expect` line so `simulate` and `check` cover it.
 - **Audit** with CloudTrail in each account:
-  `userIdentity.userName = agent`.
+  `userIdentity.userName = agent`; for deployments, `events` (see "Deployment audit trail").
 
 ## Why a user per account
 
