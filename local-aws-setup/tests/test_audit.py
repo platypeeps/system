@@ -16,6 +16,18 @@ TRAIL_ARN = "arn:aws:cloudtrail:eu-west-1:%s:trail/deployment-audit" % ACCOUNT_I
 GOOD_SELECTORS = json.dumps({"EventSelectors": [
     {"ReadWriteType": "All", "IncludeManagementEvents": True, "DataResources": [],
      "ExcludeManagementEventSources": []}]})
+
+
+def trail(**changed):
+    """get-trail's Trail object for a trail as `audit` creates it."""
+    made = {"Name": "deployment-audit", "S3BucketName": BUCKET, "TrailARN": TRAIL_ARN,
+            "HomeRegion": "eu-west-1", "IsMultiRegionTrail": True,
+            "LogFileValidationEnabled": True, "IsOrganizationTrail": False,
+            "IncludeGlobalServiceEvents": True}
+    made.update(changed)
+    return json.dumps({k: v for k, v in made.items() if v is not ...})
+
+
 TAMPER = ("s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
           "s3:PutLifecycleConfiguration", "s3:PutBucketVersioning")
 
@@ -136,7 +148,7 @@ class AuditCase(Case):
 
     def test_a_second_run_creates_nothing_and_keeps_the_trail_running(self):
         box = self.box()
-        box.rule("get-trail", stdout=BUCKET)
+        box.rule("get-trail", stdout=trail())
         box.rule("get-event-selectors", stdout=GOOD_SELECTORS)
         done = box.run("audit", "x")
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -147,7 +159,7 @@ class AuditCase(Case):
 
     def test_a_trail_that_writes_elsewhere_is_refused(self):
         box = self.box()
-        box.rule("get-trail", stdout="somebody-elses-bucket")
+        box.rule("get-trail", stdout=trail(S3BucketName="somebody-elses-bucket"))
         done = box.run("audit", "x")
         self.assertEqual(done.returncode, 1)
         self.assertIn("writes to somebody-elses-bucket", done.stderr)
@@ -169,7 +181,7 @@ class AuditCase(Case):
         for selectors in bad:
             with self.subTest(selectors=selectors):
                 box = self.box()
-                box.rule("get-trail", stdout=BUCKET)
+                box.rule("get-trail", stdout=trail())
                 box.rule("get-event-selectors",
                          stdout=selectors if isinstance(selectors, str) else json.dumps(selectors))
                 done = box.run("audit", "x")
@@ -178,11 +190,40 @@ class AuditCase(Case):
                 names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
                 self.assertEqual(names, ["head-bucket", "get-trail", "get-event-selectors"])
 
+    def test_a_trail_unlike_the_one_audit_creates_is_refused_before_any_write(self):
+        # Every property a new trail gets is demanded of an existing one.
+        other_home = TRAIL_ARN.replace("eu-west-1", "us-west-2")
+        bad = {
+            "single region": trail(IsMultiRegionTrail=False),
+            "region flag missing": trail(IsMultiRegionTrail=...),
+            "no log file validation": trail(LogFileValidationEnabled=False),
+            "validation flag missing": trail(LogFileValidationEnabled=...),
+            "validation flag a string": trail(LogFileValidationEnabled="true"),
+            "key prefix the bucket policy does not allow": trail(S3KeyPrefix="logs"),
+            "homed in another region": trail(TrailARN=other_home, HomeRegion="us-west-2"),
+            "another account's trail": trail(TrailARN=TRAIL_ARN.replace(ACCOUNT_ID, "999988887777")),
+            "organization trail": trail(IsOrganizationTrail=True),
+            "bucket name missing": trail(S3BucketName=...),
+            "not an object": json.dumps([BUCKET]),
+            "not json": BUCKET,
+            "empty": "",
+        }
+        for why, answer in bad.items():
+            with self.subTest(why=why):
+                box = self.box()
+                box.rule("get-trail", stdout=answer)
+                box.rule("get-event-selectors", stdout=GOOD_SELECTORS)
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("trail deployment-audit", done.stderr)
+                names = [r[1] for r in self.rests(box) if r[:1] in (["s3api"], ["cloudtrail"])]
+                self.assertEqual(names, ["head-bucket", "get-trail"])
+
     def test_a_trail_recording_management_writes_is_kept(self):
         for kind in ("All", "WriteOnly"):
             with self.subTest(kind=kind):
                 box = self.box()
-                box.rule("get-trail", stdout=BUCKET)
+                box.rule("get-trail", stdout=trail())
                 box.rule("get-event-selectors", stdout=json.dumps({"EventSelectors": [
                     {"ReadWriteType": "ReadOnly", "IncludeManagementEvents": True},
                     {"ReadWriteType": kind, "IncludeManagementEvents": True,

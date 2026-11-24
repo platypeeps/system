@@ -84,9 +84,10 @@ usage: aws-setup.sh accounts | test
             policies. Exits 1 on any mismatch.
   audit     as ADMIN_PROFILE, keep AUDIT_BUCKET (versioned, private) and
             the multi-region CloudTrail trail AUDIT_TRAIL writing to it, and
-            start the trail. Safe to rerun; refuses, before any write, a
-            trail that writes to another bucket or drops management write
-            events. DRY_RUN=1 prints the writes.
+            start the trail. Safe to rerun; refuses, before any write, an
+            existing trail that differs from the one it creates (bucket,
+            key prefix, home region, multi-region, log file validation,
+            management write events). DRY_RUN=1 prints the writes.
   events    review SSM SendCommand, StartSession, ResumeSession and
             TerminateSession events of the last [hours] (default 24, at
             most 2160) as ADMIN_PROFILE. Run it with the deployer's account
@@ -1347,6 +1348,36 @@ audit_bucket_policy() {
 EOF
 }
 
+# What an existing trail (get-trail's Trail object on stdin) lacks of the one
+# `audit` creates; prints the first difference and exits 1, or exits 0.
+# argv: the audit bucket, the trail ARN `audit` would create.
+TRAIL_UNLIKE_OURS='
+import json, sys
+bucket, arn = sys.argv[1:3]
+try:
+    trail = json.load(sys.stdin)
+except ValueError:
+    trail = None
+if not isinstance(trail, dict) or not isinstance(trail.get("S3BucketName"), str):
+    sys.exit(print("could not be read: get-trail gave no trail object") or 1)
+if trail["S3BucketName"] != bucket:
+    sys.exit(print("writes to %s, not %s" % (trail["S3BucketName"], bucket)) or 1)
+# is True: a missing flag or a string is not the property.
+checks = (
+    # The bucket policy names this ARN as aws:SourceArn; a trail homed in
+    # another region or account has another one, and its writes are denied.
+    (trail.get("TrailARN") == arn, "is not %s (homed in another region or account)" % arn),
+    (trail.get("IsMultiRegionTrail") is True, "is not a multi-region trail"),
+    (trail.get("LogFileValidationEnabled") is True, "has log file validation off"),
+    # The bucket policy allows AWSLogs/<account>/ only.
+    (not trail.get("S3KeyPrefix"), "writes under a key prefix the bucket policy does not allow"),
+    (trail.get("IsOrganizationTrail") in (None, False), "is an organization trail"),
+)
+for holds, why in checks:
+    if not holds:
+        sys.exit(print(why) or 1)
+'
+
 # Exit 0 when get-event-selectors output (stdin) records SSM's management
 # write events: a basic selector with IncludeManagementEvents true, ReadWrite
 # All or WriteOnly, not excluding ssm. Advanced selectors are refused rather
@@ -1393,14 +1424,15 @@ cmd_audit() {
   fi
   trail_missing=0
   if current=$(admin cloudtrail get-trail --name "$AUDIT_TRAIL" \
-      --query Trail.S3BucketName --output text 2>&1); then
-    [ "$current" = "$AUDIT_BUCKET" ] ||
-      die "trail $AUDIT_TRAIL writes to $current, not $AUDIT_BUCKET; rename AUDIT_TRAIL or repoint the trail by hand"
+      --query Trail --output json 2>&1); then
+    unlike=$(printf '%s' "$current" |
+      "${PYTHON:-python3}" -c "$TRAIL_UNLIKE_OURS" "$AUDIT_BUCKET" "$trail_arn") ||
+      die "trail $AUDIT_TRAIL $unlike; rename AUDIT_TRAIL or change the trail by hand"
     selectors=$(admin cloudtrail get-event-selectors --trail-name "$AUDIT_TRAIL" --output json) ||
       die "could not read the event selectors of trail $AUDIT_TRAIL"
     printf '%s' "$selectors" | "${PYTHON:-python3}" -c "$RECORDS_SSM_WRITES" ||
       die "trail $AUDIT_TRAIL does not record management write events from SSM; give it a basic selector with IncludeManagementEvents=true and ReadWriteType All or WriteOnly"
-    echo "trail $AUDIT_TRAIL writes to $AUDIT_BUCKET and records management writes"
+    echo "trail $AUDIT_TRAIL matches what audit creates: $AUDIT_BUCKET, multi-region, validated, management writes"
   else
     case "$current" in
       *TrailNotFoundException*) trail_missing=1 ;;

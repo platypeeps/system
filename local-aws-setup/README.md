@@ -191,8 +191,10 @@ DRY_RUN=1 ./aws-setup.sh audit sandbox-deployer
 
 `audit` creates the bucket if missing, versions it and blocks public access.
 It keeps a multi-region trail, `AUDIT_TRAIL` (default `deployment-audit`), with log file validation.
-It refuses, before any write, a trail of that name that writes to another bucket or drops management write events.
+An existing trail of that name must match the one `audit` creates, or `audit` refuses before any write.
+It checks the bucket, no key prefix, the home region and account, multi-region, log file validation, and management write events.
 It refuses advanced event selectors rather than read them. A rerun finishes a run cut short.
+An existing bucket gets its public access block, versioning and policy set again on every run; `audit` does not read its lifecycle rules.
 The trail records management events, so `SendCommand`, `StartSession` and `TerminateSession` land there.
 One management-event trail per account is free; the bucket costs its storage.
 
