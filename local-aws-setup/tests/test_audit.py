@@ -70,6 +70,8 @@ class Case(unittest.TestCase):
                         "the GetBucketLifecycleConfiguration operation")
         # A started trail delivers until a case says otherwise.
         box.rule("get-trail-status", stdout=HEALTHY)
+        # No other trail writes to the bucket unless a case says so.
+        box.rule("describe-trails", stdout=json.dumps({"trailList": []}))
         return box
 
     def status(self, box, **answer):
@@ -150,7 +152,8 @@ class AuditCase(Case):
         self.assertEqual(done.returncode, 0, done.stderr)
         rests = self.rests(box)
         names = [r[1] for r in rests if r[:1] in (["s3api"], ["cloudtrail"])]
-        self.assertEqual(names, ["head-bucket", "get-trail", "create-bucket",
+        self.assertEqual(names, ["head-bucket", "get-trail", "describe-trails",
+                                 "create-bucket",
                                  "put-public-access-block", "put-bucket-versioning",
                                  "put-bucket-policy", "create-trail", "start-logging",
                                  "get-trail-status"])
@@ -406,6 +409,35 @@ class AuditCase(Case):
         done = box.run("audit", "x")
         self.assertEqual(done.returncode, 1, done.stdout)
         self.assertIn("cannot use bucket", done.stderr)
+
+    def test_another_trail_writing_to_the_bucket_is_refused_before_any_write(self):
+        old = "arn:aws:cloudtrail:eu-west-1:%s:trail/old-audit" % ACCOUNT_ID
+        for listing in ({"trailList": [{"Name": "old-audit", "TrailARN": old,
+                                        "S3BucketName": BUCKET}]},
+                        {"trailList": "x"}, {}, {"trailList": ["x"]}):
+            with self.subTest(listing=listing):
+                box = self.fresh()
+                box.scenario["rules"].insert(0, {"match": ["describe-trails"],
+                                                 "stdout": json.dumps(listing)})
+                done = box.run("audit", "x")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                names = [r[1] for r in self.rests(box) if len(r) > 1]
+                self.assertNotIn("put-bucket-policy", names)
+                self.assertNotIn("create-bucket", names)
+        box = self.fresh()
+        box.scenario["rules"].insert(0, {"match": ["describe-trails"],
+                                         "exit": 254, "stderr": "AccessDenied"})
+        self.assertEqual(box.run("audit", "x").returncode, 1)
+
+    def test_this_trail_and_other_buckets_trails_are_fine(self):
+        other = "arn:aws:cloudtrail:eu-west-1:%s:trail/other" % ACCOUNT_ID
+        box = self.fresh()
+        box.scenario["rules"].insert(0, {"match": ["describe-trails"], "stdout": json.dumps(
+            {"trailList": [{"Name": "deployment-audit", "TrailARN": TRAIL_ARN,
+                            "S3BucketName": BUCKET},
+                           {"Name": "other", "TrailARN": other,
+                            "S3BucketName": "example-other-bucket"}]})})
+        self.assertEqual(box.run("audit", "x").returncode, 0)
 
     def test_the_trail_status_is_read_after_logging_starts(self):
         box = self.fresh()

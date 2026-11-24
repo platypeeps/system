@@ -196,6 +196,7 @@ It checks the bucket, no key prefix, the home region and account, multi-region, 
 It refuses advanced event selectors rather than read them. A rerun finishes a run cut short.
 An existing bucket gets its public access block, versioning and policy set again on every run.
 It must have no enabled lifecycle rule that expires objects or old versions, or `audit` refuses before any write.
+No other trail in the home region may write to the bucket: the policy `audit` sets would cut it off, so `audit` refuses before any write.
 After `start-logging`, `audit` reads the trail status and fails unless it is logging with no log or digest delivery error.
 The trail records management events, so `SendCommand`, `StartSession` and `TerminateSession` land there.
 One management-event trail per account is free; the bucket costs its storage.

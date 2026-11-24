@@ -1461,6 +1461,25 @@ for key in ("LatestDeliveryError", "LatestDigestDeliveryError"):
         sys.exit(print("reports %s %s" % (key, json.dumps(error)[:200])) or 1)
 '
 
+# Another trail that writes to the audit bucket (describe-trails output on
+# stdin): prints it and exits 1, or exits 0. argv: the bucket, this trail's
+# ARN. A listing that is not a list of trail objects exits 1.
+OTHER_TRAIL_WRITES='
+import json, sys
+bucket, arn = sys.argv[1:3]
+try:
+    doc = json.load(sys.stdin)
+except ValueError:
+    doc = None
+trails = doc.get("trailList") if isinstance(doc, dict) else None
+if not isinstance(trails, list) or not all(isinstance(t, dict) for t in trails):
+    sys.exit(print("could not be checked: describe-trails gave no trail list") or 1)
+for t in trails:
+    if t.get("S3BucketName") == bucket and t.get("TrailARN") != arn:
+        name = json.dumps(str(t.get("TrailARN") or t.get("Name") or ""))[:200]
+        sys.exit(print("already receives trail %s" % name) or 1)
+'
+
 # Each step is a create-if-missing or a put that sets the same value again,
 # so a run cut short anywhere is finished by running it again.
 cmd_audit() {
@@ -1509,6 +1528,13 @@ cmd_audit() {
       die "could not read trail $AUDIT_TRAIL: $current"
     trail_missing=1
   fi
+  # The bucket policy below lets only $trail_arn write, so another trail
+  # writing here (an old AUDIT_TRAIL, say) would stop delivering.
+  trails=$(admin cloudtrail describe-trails --output json 2>&1) ||
+    die "could not list the trails of $ACCOUNT_ID: $trails"
+  other=$(printf '%s' "$trails" |
+    "${PYTHON:-python3}" -c "$OTHER_TRAIL_WRITES" "$AUDIT_BUCKET" "$trail_arn") ||
+    die "bucket $AUDIT_BUCKET $other; the new policy would cut it off, so stop or move it by hand"
   if [ "$bucket_missing" = 1 ]; then
     if [ "$AGENT_REGION" = us-east-1 ]; then
       admin_mutate s3api create-bucket --bucket "$AUDIT_BUCKET" >/dev/null ||
