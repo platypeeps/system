@@ -16,8 +16,9 @@ from datetime import date
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
 LIB = FOLDER.parent / "lib"
 
-# The first doctor run warns of an unlinked keg and exits BREW_FIRST_RC; the
-# second prints BREW_RECHECK and exits BREW_RECHECK_RC. The unlinked keg is
+# The first doctor run warns of an unlinked keg in Homebrew's text of
+# 2026-11-25, a blank line before the keg list (sd:10699), and exits
+# BREW_FIRST_RC; the second prints BREW_RECHECK and exits BREW_RECHECK_RC. The unlinked keg is
 # BREW_UNLINKED, example-keg by default; `list` exits BREW_LIST_RC. `info` exits BREW_INFO_RC, or ends
 # itself with a TERM when that is "term"; `info --json=v2` prints BREW_INFO_JSON.
 BREW_STUB = r"""#!/bin/sh
@@ -25,7 +26,9 @@ case "$1" in
   doctor)
     n=$(cat "$COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$COUNT"
     if [ "$n" -eq 1 ]; then
-      printf 'Warning: You have unlinked kegs in your Cellar.\nRun `brew link` on these:\n  %b\n\n' \
+      printf 'Warning: You have unlinked kegs in your Cellar.\n%s\n%s\n\nRun `brew link` on these:\n  %b\n\n' \
+        'Leaving kegs unlinked can lead to build-trouble and cause formulae that depend on' \
+        'those kegs to fail to run properly once built.' \
         "${BREW_UNLINKED:-example-keg}" >&2
       exit "${BREW_FIRST_RC:-1}"
     fi

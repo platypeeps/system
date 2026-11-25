@@ -11,9 +11,12 @@
 # they agree.
 
 # st_unlinked_kegs FILE: print each unlinked keg in doctor output FILE, one per
-# line. Prints nothing, and succeeds, when the output lists none.
+# line. Prints nothing, and succeeds, when the output lists none. The block
+# runs to the next Warning: line: Homebrew puts blank lines before the list
+# (sd:10699).
 st_unlinked_kegs() {
-    sed -n '/You have unlinked kegs/,/^$/p' "$1" | grep '^  [a-z0-9]' | tr -d ' ' || true
+    awk '/^Warning:/ { inblk = /^Warning: You have unlinked kegs/; next }
+      inblk && /^  [a-z0-9]/ { sub(/^ +/, ""); sub(/ +$/, ""); print }' "$1"
 }
 
 # st_drop_platform_warning [FILE]: print doctor output FILE, or stdin, less
