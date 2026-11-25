@@ -72,6 +72,12 @@ RC_OWED_FOR=1800
 # bounded by what is left of it, and a pane not reached stays owed
 # (sd:9282 lane review, sd:9427). Tests set CSWAP_RC_BUDGET.
 RC_BUDGET="${CSWAP_RC_BUDGET:-60}"
+# The whole sync, reconnect included, ends by this many seconds from
+# its start: 30 s under JOB_TIMEOUT (5m) (sd:10687 lane review).
+RC_SYNC_LIMIT="${CSWAP_RC_SYNC_LIMIT:-270}"
+# Which herdr session goes first this sync; it moves on every sync,
+# so a slow session cannot keep the later ones from their turn.
+RC_TURN="$ROOT/state/rc-turn"
 # The most milliseconds the last checks before the keys may take, from
 # the screen read to the end of the session get (sd:9427 class pass).
 # Four herdr calls and a python clock read each: 1000 ms sent nothing
@@ -791,7 +797,7 @@ for s in json.load(sys.stdin)["sessions"]:
 # it held skips, and every owed row and pending mark stays for the next
 # sync.
 reconnect() {
-  local rc=0 session sessions end
+  local rc=0 session sessions end limit list turn i
   rc_lock || rc=$?
   if ((rc == 2)); then
     echo "reconnect: skipped: could not open $RC_LOCK; the next sync tries again"
@@ -803,9 +809,11 @@ reconnect() {
   fi
   # Each session's pass gets its own budget, so a slow session cannot
   # starve the next; all of them, the session list included, end by
-  # twice the budget, so they and the auto tick (120 s) stay inside
-  # JOB_TIMEOUT (5m) (sd:10687 review).
-  end=$(($(date +%s) + 2 * RC_BUDGET))
+  # twice the budget and by RC_SYNC_LIMIT from the sync's start, so
+  # the auto tick and the publish before them still fit JOB_TIMEOUT.
+  limit=$((RC_SYNC_LIMIT - SECONDS))
+  ((limit < 2 * RC_BUDGET)) || limit=$((2 * RC_BUDGET))
+  end=$(($(date +%s) + limit))
   RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
   # No current switch and no unsent row: nothing to ask herdr. Sent
   # rows stay until the next switch, so they ask nothing (sd:10687).
@@ -814,7 +822,13 @@ reconnect() {
       [[ -n "$(current_since 2>/dev/null)" ]]; then
     sessions=$(herdr_sessions)
   fi
-  for session in $sessions; do
+  # shellcheck disable=SC2206 # session names hold no blanks (herdr_sessions)
+  list=($sessions)
+  turn=$(cat "$RC_TURN" 2>/dev/null) || turn=0
+  [[ "$turn" =~ ^[0-9]{1,9}$ ]] || turn=0
+  echo $(((turn + 1) % 1000000)) >"$RC_TURN" 2>/dev/null || true
+  for ((i = 0; i < ${#list[@]}; i++)); do
+    session=${list[(turn + i) % ${#list[@]}]}
     export HERDR_SESSION="$session"
     RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
     ((RC_DEADLINE <= end)) || RC_DEADLINE=$end

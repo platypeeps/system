@@ -195,6 +195,9 @@ def agent(row):
             "agent_session": se is not None and {"agent": a, "kind": "id", "value": se}}
 if args[:2] == ["agent", "list"]:
     import time
+    if os.environ.get("FAKE_LIST_LOG"):
+        with open(os.environ["FAKE_LIST_LOG"], "a") as f:
+            f.write((os.environ.get("HERDR_SESSION") or "") + "\n")
     # A switch by another sync that lands while this list runs.
     if os.environ.get("FAKE_SWITCH_DURING_LIST"):
         switch(os.environ["FAKE_SWITCH_DURING_LIST"])
@@ -1114,6 +1117,33 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere", CSWAP_RC_BUDGET="3", FAKE_HERDR_LIST_SLOW="30",
                   FAKE_HERDR_SESSIONS="a b c d")
         self.assertLess(time.monotonic() - start, 8)
+
+    def test_reconnect_ends_inside_the_sync_limit(self):
+        # sd:10687 lane review: the auto tick and the publish can use
+        # most of JOB_TIMEOUT first, so reconnect ends by the time the
+        # sync has left, not only by twice its budget.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        start = time.monotonic()
+        self.sync("elsewhere", CSWAP_RC_BUDGET="4", CSWAP_RC_SYNC_LIMIT="2",
+                  FAKE_HERDR_LIST_SLOW="30", FAKE_HERDR_SESSIONS="a b")
+        self.assertLess(time.monotonic() - start, 6)
+
+    def test_each_sync_starts_from_the_next_session(self):
+        # sd:10687 lane review: with the sessions always asked in one
+        # order, slow early sessions kept the last from its turn until
+        # its switch expired. The first session moves on every sync.
+        self.publish(THREE)
+        self.panes()
+        log = self.calls.with_name("lists")
+        firsts = []
+        for account in (TWO, THREE, ONE):
+            self.publish(account)
+            log.write_text("")
+            self.sync("elsewhere", FAKE_HERDR_SESSIONS="a b c",
+                      FAKE_LIST_LOG=str(log))
+            firsts.append((log.read_text().split() or [None])[0])
+        self.assertEqual(firsts, ["a", "b", "c"])
 
     def test_session_names_compare_as_text(self):
         # sd:10687 review: awk compared session names as numbers, so a
