@@ -30,7 +30,7 @@ if [ -n "$PROFILE" ] && [ -f "$CONF_DIR/maintenance.$PROFILE.conf" ]; then
   PROFILE_CONF="$CONF_DIR/maintenance.$PROFILE.conf"
 fi
 
-usage() { echo "usage: $(basename "$0") run|check|uv-prune|uv-prune-plist|move|test" >&2; exit 1; }
+usage() { echo "usage: $(basename "$0") run|check|probe|uv-prune|uv-prune-plist|move|test" >&2; exit 1; }
 
 LABEL_PREFIX="$(st_label_prefix)"
 UV_PRUNE_LABEL="$LABEL_PREFIX.uv-cache-prune"
@@ -187,9 +187,11 @@ uv_prune_resume() {
   rm -f "$UV_PRUNE_STATE"
 }
 
+PROBE=0
 case "${1:-}" in
   run)   APPLY=1 ;;
   check) APPLY=0 ;;
+  probe) APPLY=1; PROBE=1 ;;
   uv-prune)
     rc=0; uv_prune || rc=$?
     exit "$rc"
@@ -222,7 +224,7 @@ case "${1:-}" in
     ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: maintenance.sh run|check|uv-prune|uv-prune-plist|move|test
+usage: maintenance.sh run|check|probe|uv-prune|uv-prune-plist|move|test
 
   run    run all checks, apply the safe fixes (rotate oversized logs; docker
          system prune on Sundays; remove exited docker containers, run
@@ -235,6 +237,12 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|move|test
          Today; nothing is mailed.
   check  read-only: run all checks and print findings and would-be fixes
          without changing anything.
+  probe  sample free space once per filesystem the disk| lines name (what
+         the disk-probe cron job runs every 15 minutes). Healthy: one line
+         per filesystem, nothing else. Below a threshold: the safe cleanup
+         of `run` (containers, caches, build output, session logs; no
+         updates), under maintenance-nightly's lock, then free bytes before
+         and after; still below, an SD_REPORT_ATTENTION line.
   uv-prune
          prune uv's cache (what the uv-cache-prune login agent runs;
          `run` runs it nightly too).
@@ -268,7 +276,9 @@ directives, # comments allowed; a leading ~/ expands to $HOME:
 
   disk|<path>|<min-free-percent>      free space on the filesystem of <path>
                                       (a low one names the 5 largest entries
-                                      directly under <path>)
+                                      directly under <path>); two paths on one
+                                      filesystem are one check, at the higher
+                                      threshold
   cert|<pem>|<warn-days>              x509 expiry within <warn-days>
   mount|<path>                        path is a mounted volume
   process|<name>|<label>              process is running (pgrep -x)
@@ -311,6 +321,15 @@ KEYS="$TMPD/keys"           # what each finding is, for the report's reason
 finding() { echo "- $1" >> "$FINDINGS"; echo "${2:-$1}" >> "$KEYS"; }
 action()  { echo "- $1" >> "$ACTIONS"; }
 
+# attention: one SD_REPORT_ATTENTION line per finding key; see the report's
+# end for how the ingest folds them.
+attention() {
+  [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ] || return 0
+  awk -v p="SD_REPORT_ATTENTION: maintenance on $(hostname -s): " '
+    /^[ \t]/ { sub(/^[ \t]+/, ""); if (NF) print p h " " $0; next }
+    NF { h = $0; print p $0 }' "$KEYS"
+}
+
 expand() {
   # shellcheck disable=SC2088  # matching a literal leading ~/ on purpose
   case "$1" in
@@ -321,16 +340,60 @@ expand() {
 
 # --- conf-driven checks ------------------------------------------------
 
-check_disk() { # path min-free-percent
-  used=$(df -P "$1" 2>/dev/null | awk 'NR==2 { gsub("%",""); print $5 }')
-  if [ -z "$used" ]; then
-    finding "disk: cannot stat filesystem of $1"
-    return 0
-  fi
-  free=$((100 - used))
-  if [ "$free" -lt "$2" ]; then
-    finding "disk: only ${free}% free on $1 (threshold ${2}%)$(largest "$1")" "disk: under ${2}% free on $1"
-  fi
+# disk|<path>|<pct> lines collect here, and are checked together after the
+# conf: two paths on one filesystem are one sample (sd:10426).
+DISKS="$TMPD/disks"
+: > "$DISKS"
+disk_add() { # path min-free-percent
+  case "$2" in
+    ''|*[!0-9]*) finding "conf: bad disk threshold in $conf_name line $lineno: $raw"; return 0 ;;
+  esac
+  [ "$2" -le 100 ] || { finding "conf: bad disk threshold in $conf_name line $lineno: $raw"; return 0; }
+  printf '%s\t%s\n' "$2" "$1" >> "$DISKS"
+}
+
+# df_line PATH: "<free %>\t<available KB>\t<mount point>", or nothing when
+# df cannot stat it. Capacity is the first N% field after three numbers, so
+# a filesystem name or mount point with a space in it still parses.
+df_line() {
+  df -Pk "$1" 2>/dev/null | awk 'NR == 2 {
+    for (i = 5; i <= NF; i++)
+      if ($i ~ /^[0-9]+%$/ && $(i-1) ~ /^[0-9]+$/ && $(i-2) ~ /^[0-9]+$/ && $(i-3) ~ /^[0-9]+$/) break
+    if (i > NF) exit
+    m = $(i+1); for (j = i + 2; j <= NF; j++) m = m " " $j
+    c = $i; sub("%", "", c)
+    printf "%d\t%s\t%s\n", 100 - c, $(i-1), m }'
+}
+
+# disk_sample: one line per filesystem, in conf order, as
+# "low|ok\t<free %>\t<free bytes>\t<threshold>\t<path>", the path the
+# first that names it and the threshold the highest; "error\t-\t-\t-\t<path>"
+# for a path df cannot stat. One df per path, and no du.
+disk_sample() {
+  while IFS="$(printf '\t')" read -r pct path; do
+    line=$(df_line "$path")
+    if [ -z "$line" ]; then printf 'error\t%s\n' "$path"; else printf '%s\t%s\t%s\n' "$pct" "$line" "$path"; fi
+  done < "$DISKS" | awk -F '\t' '
+    { n++ }
+    $1 == "error" { p = $2; for (i = 3; i <= NF; i++) p = p "\t" $i; out[n] = "error\t-\t-\t-\t" p; next }
+    { p = $5; for (i = 6; i <= NF; i++) p = p "\t" $i
+      if ($4 in at) { n--; if ($1 + 0 > t[at[$4]]) t[at[$4]] = $1 + 0; next }
+      at[$4] = n; t[n] = $1 + 0; free[n] = $2; kb[n] = $3; path[n] = p }
+    END { for (i = 1; i <= n; i++)
+            if (i in out) print out[i]
+            else printf "%s\t%d\t%.0f\t%d\t%s\n", (free[i] < t[i] ? "low" : "ok"), free[i], kb[i] * 1024, t[i], path[i] }'
+}
+
+# disk_report: the nightly check. A low filesystem is one finding, and one
+# bounded du names its largest entries (sd:8799).
+disk_report() {
+  disk_sample > "$TMPD/disk.now"
+  while IFS="$(printf '\t')" read -r state free bytes pct path; do
+    case "$state" in
+      error) finding "disk: cannot stat filesystem of $path" ;;
+      low)   finding "disk: only ${free}% free on $path (threshold ${pct}%)$(largest "$path")" "disk: under ${pct}% free on $path" ;;
+    esac
+  done < "$TMPD/disk.now"
 }
 
 # largest PATH: "; largest: a 12G, b 3.1G, ..." for the 5 biggest entries
@@ -450,8 +513,10 @@ read_conf() { # file
     a1=${rest%%|*}; rest2=${rest#*|}
     a2=${rest2%%|*}; a3=${rest2#*|}
     a1=$(expand "$a1")
+    # A probe reads only the disk lines; the nightly run checks the rest.
+    [ "$PROBE" -eq 0 ] || [ "$kind" = disk ] || continue
     case "$kind" in
-      disk)    check_disk "$a1" "$a2" ;;
+      disk)    disk_add "$a1" "$a2" ;;
       cert)    check_cert "$a1" "$a2" ;;
       mount)   check_mount "$a1" ;;
       process) check_process "$a1" "$a2" ;;
@@ -467,6 +532,53 @@ if [ -n "$PROFILE_CONF" ]; then
   read_conf "$PROFILE_CONF"
 fi
 
+# The probe (sd:10426): one sample per filesystem. Healthy, it prints that
+# and stops: no du, no update, no cleanup. Under pressure it runs only the
+# safe cleanup below, under maintenance-nightly's own lock so the two never
+# clean at once, and remeasures at the end.
+# ponytail: a cleanup that frees too little runs again each 15 minutes;
+# add a back-off if that churn shows in the job log.
+if [ "$PROBE" -eq 0 ]; then
+  disk_report
+else
+  disk_sample > "$TMPD/disk.before"
+  while IFS="$(printf '\t')" read -r state free bytes pct path; do
+    if [ "$state" = error ]; then
+      finding "disk: cannot stat filesystem of $path"
+    else
+      echo "disk: ${free}% free ($bytes bytes) on $path (threshold ${pct}%)"
+    fi
+  done < "$TMPD/disk.before"
+  [ -s "$DISKS" ] || [ -s "$FINDINGS" ] || finding "disk: no disk| line to probe"
+  # A probe that measured no filesystem is a failed run, never a pass.
+  if ! grep -q '^low' "$TMPD/disk.before"; then
+    if [ -s "$FINDINGS" ]; then
+      echo "findings (need a human):"
+      cat "$FINDINGS"
+      attention
+    fi
+    grep -q '^ok' "$TMPD/disk.before" || exit 1
+    exit 0
+  fi
+  lock="$DIR/../local-cron-jobs/logs/.maintenance-nightly.flock"
+  exec 9>>"$lock" || { echo "maintenance.sh probe: cannot open the lock file $lock" >&2; exit 1; }
+  taken=0
+  # shellcheck disable=SC2016 # perl source
+  perl -e 'use Fcntl ":flock"; open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX|LOCK_NB) or exit 1; exit 0' || taken=$?
+  if [ "$taken" -eq 1 ]; then
+    echo "disk: below threshold, and maintenance-nightly holds its lock; its cleanup runs now"
+    if [ -s "$FINDINGS" ]; then
+      echo "findings (need a human):"
+      cat "$FINDINGS"
+      attention
+    fi
+    exit 0
+  elif [ "$taken" -ne 0 ]; then
+    echo "maintenance.sh probe: could not take the lock on $lock (perl exit $taken)" >&2
+    exit 1
+  fi
+fi
+
 # --- built-in checks ---------------------------------------------------
 
 # softwareupdate and mas can hang on a night macOS stops answering permission
@@ -476,124 +588,127 @@ exec 3>&2
 # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
 ST_STEP_FD3=1
 
-# `run` installs what is pending (sd:6927) as root through sudo -A, which
-# asks machine-setup's askpass for the Keychain item's password (sd:6312).
-# Without the item sudo refuses, and the update stays a finding with
-# sudo's reason. An update that needs a restart stays a finding: a restart
-# is the operator's call.
-SUDO_ASKPASS="$DIR/../local-machine-setup/sudo-askpass.sh"
-export SUDO_ASKPASS
+# A probe runs none of this: only the safe cleanup below (sd:10426).
+if [ "$PROBE" -eq 0 ]; then
+  # `run` installs what is pending (sd:6927) as root through sudo -A, which
+  # asks machine-setup's askpass for the Keychain item's password (sd:6312).
+  # Without the item sudo refuses, and the update stays a finding with
+  # sudo's reason. An update that needs a restart stays a finding: a restart
+  # is the operator's call.
+  SUDO_ASKPASS="$DIR/../local-machine-setup/sudo-askpass.sh"
+  export SUDO_ASKPASS
 
-# Pending macOS updates. softwareupdate needs the network and ~10-60s.
-SU="$TMPD/su"
-if st_step 300 softwareupdate -l > "$SU" 2>&1; then :; fi
-if grep -q '^\* Label' "$SU"; then
-  # One line per update, "restart <label>" or "- <label>": the Title line
-  # under a label says "Action: restart" when it needs one.
-  awk '/^\* Label: / { if (l != "") print r " " l; l = substr($0, 10); r = "-"; next }
-       l != "" && /Action: restart/ { r = "restart" }
-       END { if (l != "") print r " " l }' "$SU" > "$TMPD/su.labels"
-  : > "$TMPD/su.left"
-  while read -r act label; do
-    if [ "$APPLY" -eq 1 ] && [ "$act" != restart ]; then
-      if st_step 1800 sudo -A softwareupdate -i "$label" > "$TMPD/su.out" 2>&1; then
-        action "installed macOS update $label"
-        continue
+  # Pending macOS updates. softwareupdate needs the network and ~10-60s.
+  SU="$TMPD/su"
+  if st_step 300 softwareupdate -l > "$SU" 2>&1; then :; fi
+  if grep -q '^\* Label' "$SU"; then
+    # One line per update, "restart <label>" or "- <label>": the Title line
+    # under a label says "Action: restart" when it needs one.
+    awk '/^\* Label: / { if (l != "") print r " " l; l = substr($0, 10); r = "-"; next }
+         l != "" && /Action: restart/ { r = "restart" }
+         END { if (l != "") print r " " l }' "$SU" > "$TMPD/su.labels"
+    : > "$TMPD/su.left"
+    while read -r act label; do
+      if [ "$APPLY" -eq 1 ] && [ "$act" != restart ]; then
+        if st_step 1800 sudo -A softwareupdate -i "$label" > "$TMPD/su.out" 2>&1; then
+          action "installed macOS update $label"
+          continue
+        fi
+        finding "macOS update install failed: $label: $(grep -v '^\[step ' "$TMPD/su.out" | tail -1)" \
+          "macOS update install failed: $label"
       fi
-      finding "macOS update install failed: $label: $(grep -v '^\[step ' "$TMPD/su.out" | tail -1)" \
-        "macOS update install failed: $label"
+      echo "    $label" >> "$TMPD/su.left"
+    done < "$TMPD/su.labels"
+    if [ -s "$TMPD/su.left" ]; then
+      finding "macOS updates pending:"
+      tee -a "$KEYS" < "$TMPD/su.left" >> "$FINDINGS"
     fi
-    echo "    $label" >> "$TMPD/su.left"
-  done < "$TMPD/su.labels"
-  if [ -s "$TMPD/su.left" ]; then
-    finding "macOS updates pending:"
-    tee -a "$KEYS" < "$TMPD/su.left" >> "$FINDINGS"
+  elif ! grep -q 'No new software available' "$SU"; then
+    finding "softwareupdate check failed: $(grep -v '^\[step ' "$SU" | tail -1)"
   fi
-elif ! grep -q 'No new software available' "$SU"; then
-  finding "softwareupdate check failed: $(grep -v '^\[step ' "$SU" | tail -1)"
-fi
 
-# Pending App Store updates. A check that failed or timed out found nothing,
-# which is not the same as nothing pending.
-if command -v mas >/dev/null 2>&1; then
-  MAS="$TMPD/mas"
-  mas_rc=0
-  st_step 120 mas outdated > "$MAS" 2>/dev/null || mas_rc=$?
-  if [ "$mas_rc" -eq 0 ] && [ "$APPLY" -eq 1 ] && [ -s "$MAS" ]; then
-    # One app at a time, by the id in the first field (sd:7188): an update
-    # storedownloadd never finishes holds mas at 0% until its bound, and
-    # with all apps in one call every other app waited behind it.
-    # ponytail: 600 s per app, enough for an Xcode-sized download; a night
-    # with more than about ten stuck apps reaches the job's 2 h limit.
-    # MAINTENANCE_MAS_BOUND is for the tests.
-    mas_bound=${MAINTENANCE_MAS_BOUND:-600}
-    # MAINTENANCE_APPLICATIONS_DIR is for the tests too.
-    mas_apps=${MAINTENANCE_APPLICATIONS_DIR:-/Applications}
-    # The apps it may quit, by id, are the operator's list (sd:7330).
-    st_mas_bad_ids > "$TMPD/mas.bad"
-    while IFS= read -r bad; do
-      finding "MAS_QUIT_APP_IDS in shared.env: not an App Store id: $bad"
-    done < "$TMPD/mas.bad"
-    while IFS= read -r app; do
-      id=$(echo "$app" | awk '{ print $1 }')
-      # No id would make `mas upgrade` take every app at once again.
-      case $id in ''|*[!0-9]*) continue ;; esac
-      name=$(echo "$app" | sed -e 's/^ *[0-9]* *//' -e 's/ *([^()]*)$//')
-      # A running app makes the installer ask, and no one answers under
-      # launchd (sd:7330): one the operator listed quits first, and opens
-      # again after.
-      quit_rc=0
-      st_mas_quit "$mas_apps" "$id" "$name" || quit_rc=$?
-      if [ "$quit_rc" -eq 1 ]; then
-        finding "App Store upgrade skipped: $name: it did not quit within ${ST_MAS_QUIT_WAIT:-15} s" \
-          "App Store upgrade skipped: $name"
-      elif [ "$quit_rc" -ne 0 ]; then
-        # Not listed: a TERM can lose its unsaved state.
-        finding "App Store upgrade skipped: $name is running; quit it and the next run upgrades it" \
-          "App Store upgrade skipped: $name"
-      # mas upgrades as root and reads SUDO_UID for whose apps they are.
-      elif ! st_step "$mas_bound" sudo -A mas upgrade "$id" < /dev/null > "$TMPD/mas.out" 2>&1; then
-        finding "App Store upgrade failed: $name: $(grep -v '^\[step ' "$TMPD/mas.out" | tail -1)" \
-          "App Store upgrade failed: $name"
-      fi
-      st_mas_reopen || finding "App Store app not reopened: $name" "App Store app not reopened: $name"
-    done < "$MAS"
-    mv "$MAS" "$MAS.before"
+  # Pending App Store updates. A check that failed or timed out found nothing,
+  # which is not the same as nothing pending.
+  if command -v mas >/dev/null 2>&1; then
+    MAS="$TMPD/mas"
+    mas_rc=0
     st_step 120 mas outdated > "$MAS" 2>/dev/null || mas_rc=$?
-    # An app the check no longer lists by id was upgraded. mas pads its
-    # columns to the longest name listed, so a line can change while its
-    # app stays pending. A failed check lists nothing and proves nothing.
-    if [ "$mas_rc" -eq 0 ]; then
+    if [ "$mas_rc" -eq 0 ] && [ "$APPLY" -eq 1 ] && [ -s "$MAS" ]; then
+      # One app at a time, by the id in the first field (sd:7188): an update
+      # storedownloadd never finishes holds mas at 0% until its bound, and
+      # with all apps in one call every other app waited behind it.
+      # ponytail: 600 s per app, enough for an Xcode-sized download; a night
+      # with more than about ten stuck apps reaches the job's 2 h limit.
+      # MAINTENANCE_MAS_BOUND is for the tests.
+      mas_bound=${MAINTENANCE_MAS_BOUND:-600}
+      # MAINTENANCE_APPLICATIONS_DIR is for the tests too.
+      mas_apps=${MAINTENANCE_APPLICATIONS_DIR:-/Applications}
+      # The apps it may quit, by id, are the operator's list (sd:7330).
+      st_mas_bad_ids > "$TMPD/mas.bad"
+      while IFS= read -r bad; do
+        finding "MAS_QUIT_APP_IDS in shared.env: not an App Store id: $bad"
+      done < "$TMPD/mas.bad"
       while IFS= read -r app; do
         id=$(echo "$app" | awk '{ print $1 }')
+        # No id would make `mas upgrade` take every app at once again.
         case $id in ''|*[!0-9]*) continue ;; esac
-        awk -v id="$id" '$1 == id { found = 1 } END { exit !found }' "$MAS" ||
-          echo "- upgraded App Store app $app"
-      done < "$MAS.before" >> "$ACTIONS"
+        name=$(echo "$app" | sed -e 's/^ *[0-9]* *//' -e 's/ *([^()]*)$//')
+        # A running app makes the installer ask, and no one answers under
+        # launchd (sd:7330): one the operator listed quits first, and opens
+        # again after.
+        quit_rc=0
+        st_mas_quit "$mas_apps" "$id" "$name" || quit_rc=$?
+        if [ "$quit_rc" -eq 1 ]; then
+          finding "App Store upgrade skipped: $name: it did not quit within ${ST_MAS_QUIT_WAIT:-15} s" \
+            "App Store upgrade skipped: $name"
+        elif [ "$quit_rc" -ne 0 ]; then
+          # Not listed: a TERM can lose its unsaved state.
+          finding "App Store upgrade skipped: $name is running; quit it and the next run upgrades it" \
+            "App Store upgrade skipped: $name"
+        # mas upgrades as root and reads SUDO_UID for whose apps they are.
+        elif ! st_step "$mas_bound" sudo -A mas upgrade "$id" < /dev/null > "$TMPD/mas.out" 2>&1; then
+          finding "App Store upgrade failed: $name: $(grep -v '^\[step ' "$TMPD/mas.out" | tail -1)" \
+            "App Store upgrade failed: $name"
+        fi
+        st_mas_reopen || finding "App Store app not reopened: $name" "App Store app not reopened: $name"
+      done < "$MAS"
+      mv "$MAS" "$MAS.before"
+      st_step 120 mas outdated > "$MAS" 2>/dev/null || mas_rc=$?
+      # An app the check no longer lists by id was upgraded. mas pads its
+      # columns to the longest name listed, so a line can change while its
+      # app stays pending. A failed check lists nothing and proves nothing.
+      if [ "$mas_rc" -eq 0 ]; then
+        while IFS= read -r app; do
+          id=$(echo "$app" | awk '{ print $1 }')
+          case $id in ''|*[!0-9]*) continue ;; esac
+          awk -v id="$id" '$1 == id { found = 1 } END { exit !found }' "$MAS" ||
+            echo "- upgraded App Store app $app"
+        done < "$MAS.before" >> "$ACTIONS"
+      fi
+    fi
+    if [ "$mas_rc" -ne 0 ]; then
+      finding "App Store update check failed (mas outdated exit $mas_rc)"
+    elif [ -s "$MAS" ]; then
+      finding "App Store updates pending:"
+      # mas pads its columns to the longest name listed; a key that kept the
+      # padding moved when another app left the list (sd:7199).
+      sed -e 's/^ *//' -e 's/  */ /g' -e 's/^/    /' "$MAS" | tee -a "$KEYS" >> "$FINDINGS"
     fi
   fi
-  if [ "$mas_rc" -ne 0 ]; then
-    finding "App Store update check failed (mas outdated exit $mas_rc)"
-  elif [ -s "$MAS" ]; then
-    finding "App Store updates pending:"
-    # mas pads its columns to the longest name listed; a key that kept the
-    # padding moved when another app left the list (sd:7199).
-    sed -e 's/^ *//' -e 's/  */ /g' -e 's/^/    /' "$MAS" | tee -a "$KEYS" >> "$FINDINGS"
-  fi
-fi
 
-# Weekly docker prune, Sundays only: unused containers and dangling images.
-# Volumes are NEVER pruned — several local services keep state in them.
-if [ "$(date +%u)" = "7" ]; then
-  if docker info >/dev/null 2>&1; then
-    if [ "$APPLY" -eq 1 ]; then
-      reclaimed=$(docker system prune -f 2>&1 | tail -1)
-      action "docker system prune: $reclaimed"
+  # Weekly docker prune, Sundays only: unused containers and dangling images.
+  # Volumes are NEVER pruned — several local services keep state in them.
+  if [ "$(date +%u)" = "7" ]; then
+    if docker info >/dev/null 2>&1; then
+      if [ "$APPLY" -eq 1 ]; then
+        reclaimed=$(docker system prune -f 2>&1 | tail -1)
+        action "docker system prune: $reclaimed"
+      else
+        action "[dry-run] would run docker system prune -f (Sunday)"
+      fi
     else
-      action "[dry-run] would run docker system prune -f (Sunday)"
+      action "docker prune skipped — daemon not running"
     fi
-  else
-    action "docker prune skipped — daemon not running"
   fi
 fi
 
@@ -868,6 +983,23 @@ if [ -x "$S4S" ]; then
 fi
 
 # --- report ------------------------------------------------------------
+if [ "$PROBE" -eq 1 ]; then
+  disk_sample > "$TMPD/disk.after"
+  while IFS="$(printf '\t')" read -r state free bytes pct path; do
+    [ "$state" = low ] || continue
+    now=$(awk -F '\t' -v p="$path" '{ q = $5; for (i = 6; i <= NF; i++) q = q "\t" $i } q == p { print; exit }' "$TMPD/disk.after")
+    now_state=$(printf '%s' "$now" | cut -f1)
+    now_free=$(printf '%s' "$now" | cut -f2)
+    now_bytes=$(printf '%s' "$now" | cut -f3)
+    if [ -z "$now_state" ] || [ "$now_state" = error ]; then
+      finding "disk: cannot stat filesystem of $path after safe cleanup"
+      continue
+    fi
+    action "disk: free on $path: $bytes -> $now_bytes bytes (${free}% -> ${now_free}%, threshold ${pct}%)"
+    [ "$now_state" = low ] || continue
+    finding "disk: only ${now_free}% free on $path after safe cleanup (threshold ${pct}%)" "disk: under ${pct}% free on $path"
+  done < "$TMPD/disk.before"
+fi
 
 if [ -s "$FINDINGS" ]; then
   echo "findings (need a human):"
@@ -890,11 +1022,7 @@ fi
 # older one on this host, with the exceptions local-cron-jobs/README.md names
 # (pack sd:4641). The host stays in each line, as every host files under the
 # one job name.
-if [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ]; then
-  awk -v p="SD_REPORT_ATTENTION: maintenance on $(hostname -s): " '
-    /^[ \t]/ { sub(/^[ \t]+/, ""); if (NF) print p h " " $0; next }
-    NF { h = $0; print p $0 }' "$KEYS"
-fi
+attention
 
 # The uv skip streak, persisted once the report above is out (sd:9377).
 if [ -n "${UV_SKIPS_NEXT:-}" ]; then
