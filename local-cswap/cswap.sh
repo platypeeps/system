@@ -801,7 +801,9 @@ reconnect() {
     echo "reconnect: skipped: another sync is reconnecting; the next sync tries again"
     return 0
   fi
-  # One budget for the whole sync, every session's pass in it.
+  # The session list, then each session's pass, gets its own budget:
+  # a slow session cannot starve the next (sd:10687 review). Two
+  # sessions and the auto tick (120 s) stay inside JOB_TIMEOUT (5m).
   RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
   # No current switch and no unsent row: nothing to ask herdr. Sent
   # rows stay until the next switch, so they ask nothing (sd:10687).
@@ -812,6 +814,7 @@ reconnect() {
   fi
   for session in $sessions; do
     export HERDR_SESSION="$session"
+    RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
     LISTED="" PANES="" AGENTS=""
     reconnect_pass
   done

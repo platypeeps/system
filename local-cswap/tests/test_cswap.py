@@ -198,7 +198,9 @@ if args[:2] == ["agent", "list"]:
     # A switch by another sync that lands while this list runs.
     if os.environ.get("FAKE_SWITCH_DURING_LIST"):
         switch(os.environ["FAKE_SWITCH_DURING_LIST"])
-    time.sleep(float(os.environ.get("FAKE_HERDR_LIST_SLOW") or 0))
+    # FAKE_HERDR_LIST_SLOW_IN: the one session whose list is slow.
+    if os.environ.get("FAKE_HERDR_LIST_SLOW_IN") in (None, os.environ.get("HERDR_SESSION")):
+        time.sleep(float(os.environ.get("FAKE_HERDR_LIST_SLOW") or 0))
     if os.environ.get("FAKE_HERDR_DOWN"):
         print("herdr: server not running", file=sys.stderr)
         sys.exit(1)
@@ -1044,9 +1046,21 @@ class RemoteControlReconnects(Machine):
                 self.assertLess(time.monotonic() - start, 6)
                 self.assertEqual(self.prompts(), [])
                 self.assertEqual(self.owed(), ["w1:p1"])
-        # One budget for the sync (sd:10687 review): the second session's
-        # pass finds it spent and asks herdr nothing.
-        self.assertEqual(len(self.called("herdr agent list")), 1)
+        # Each running session (default, sd) gets its own budget and
+        # at most one bounded list (sd:10687 review).
+        self.assertLessEqual(len(self.called("herdr agent list")), 2)
+
+    def test_a_slow_herdr_session_does_not_starve_the_next(self):
+        # sd:10687 review: with one budget for the sync, a default
+        # session whose list hangs spent it all, every sync, and sd's
+        # panes never got /rc. Each session gets its own budget.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        start = time.monotonic()
+        result = self.sync("elsewhere", CSWAP_RC_BUDGET="4", CSWAP_RC_GAP_MS="1000",
+                           FAKE_HERDR_LIST_SLOW="30", FAKE_HERDR_LIST_SLOW_IN="default")
+        self.assertLess(time.monotonic() - start, 20)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
 
     def test_two_switches_in_one_second_each_owe_their_panes(self):
         # Owed rows carry their switch's second: a second switch within
