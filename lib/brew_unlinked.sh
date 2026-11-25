@@ -11,12 +11,14 @@
 # they agree.
 
 # st_unlinked_kegs FILE: print each unlinked keg in doctor output FILE, one per
-# line. Prints nothing, and succeeds, when the output lists none. The block
-# runs to the next Warning: line: Homebrew puts blank lines before the list
-# (sd:10699).
+# line. Prints nothing, and succeeds, when the output lists none. The list is
+# the indented lines right after `Run \`brew link\` on these:`: Homebrew puts
+# blank lines before it (sd:10699) and an indented support-tier URL after it.
 st_unlinked_kegs() {
-    awk '/^Warning:/ { inblk = /^Warning: You have unlinked kegs/; next }
-      inblk && /^  [a-z0-9]/ { sub(/^ +/, ""); sub(/ +$/, ""); print }' "$1"
+    awk '/^Warning:/ { inblk = /^Warning: You have unlinked kegs/; inlist = 0; next }
+      inblk && /^Run `brew link` on these:/ { inlist = 1; next }
+      inlist && /^  [a-z0-9]/ { sub(/^ +/, ""); sub(/ +$/, ""); print; next }
+      { inlist = 0 }' "$1"
 }
 
 # st_drop_platform_warning [FILE]: print doctor output FILE, or stdin, less
@@ -30,15 +32,18 @@ st_drop_platform_warning() {
 
 # st_drop_unlinked_keg KEG [FILE]: print doctor output FILE, or stdin, less
 # KEG's line in the unlinked kegs warning, and less the warning when it lists
-# no other keg. KEG matches a whole line, never a part of one.
+# no other keg. KEG matches a whole line, never a part of one. The warning
+# ends with its list, read as st_unlinked_kegs reads it.
 st_drop_unlinked_keg() {
     st_keg_line="  $1"; shift
     awk -v k="$st_keg_line" '
-      function flush() { if (keep) printf "%s", buf; buf = ""; inblk = 0 }
+      function flush() { if (keep) printf "%s", buf; buf = ""; inblk = inlist = 0 }
       /^Warning:/ { flush(); inblk = /^Warning: You have unlinked kegs/; keep = 0 }
+      inlist && !/^  [a-z0-9]/ { flush() }
       !inblk { print; next }
-      $0 == k { next }
-      /^  [^ ]/ { keep = 1 }
+      /^Run `brew link` on these:/ { inlist = 1 }
+      inlist && $0 == k { next }
+      inlist && /^  [a-z0-9]/ { keep = 1 }
       { buf = buf $0 "\n" }
       END { flush() }' "$@"
 }

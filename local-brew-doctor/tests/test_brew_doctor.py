@@ -160,6 +160,22 @@ class BrewDoctorTest(unittest.TestCase):
         self.assertNotIn("SD_REPORT_ATTENTION", run.stdout)
         self.assertNotIn("link rust", self.links.read_text())
 
+    def test_support_tier_footer_is_no_keg(self):
+        """Homebrew ends with a support-tier URL; the lane review saw it
+        read as a second keg, so the rust warning stayed (sd:10699)."""
+        footer = "\\n\\nThis is a Tier 2 configuration:\\n  https://docs.brew.sh/Support-Tiers#tier-2"
+        run = self.run_doctor(BREW_UNLINKED="rust" + footer, BREW_LIST_RC="0")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("brew doctor: clean", run.stdout)
+        self.assertNotIn("https", run.stdout)
+        doctor = self.tmp / "doctor"
+        doctor.write_text("Warning: You have unlinked kegs in your Cellar.\n\n"
+                          "Run `brew link` on these:\n  example-keg\n\n"
+                          "This is a Tier 2 configuration:\n  https://docs.brew.sh/Support-Tiers#tier-2\n")
+        kegs = subprocess.run(["sh", "-c", f'. "{LIB}/brew_unlinked.sh"; st_unlinked_kegs "$1"', "sh", str(doctor)],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(kegs.stdout, "example-keg\n")
+
     def test_rust_on_purpose_leaves_other_unlinked_kegs_reported(self):
         recheck = ("Warning: You have unlinked kegs in your Cellar.\n"
                    "Run `brew link` on these:\n  rust\n  other-keg\n\n")
