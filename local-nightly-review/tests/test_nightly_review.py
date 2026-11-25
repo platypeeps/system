@@ -6,12 +6,14 @@ with the pack's `bin/sd-db` (SD_PACK_ROOT, the pinned pack in the gate), sets
 first on PATH. Nothing reaches the real model, launchd or the live database.
 """
 
+import fcntl
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import date
 from pathlib import Path
@@ -101,13 +103,14 @@ class NightlyReview(unittest.TestCase):
         return len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
 
     def file_earlier(self, name, subjects):
-        """File a nightly batch from an earlier day, as the job would have."""
+        """File a nightly batch from an earlier day through the job's own
+        `batch` step, so it carries what the pack wants (sd:10422)."""
+        reply = self.tmp / f"{name}.reply"
+        reply.write_text(json.dumps({"questions": [{"subject": subject, "text": f"Do {subject}", "evidence": []}
+                                                   for subject in subjects]}))
         path = self.tmp / f"{name}.json"
-        path.write_text(json.dumps({
-            "schema": 1, "queue": "nightly", "batch": name, "title": f"Nightly review {name}",
-            "source": "system@0000000", "mode": "open", "limit": 5,
-            "questions": [{"subject": subject, "text": f"Do {subject}", "options": ["Approve", "Reject"]}
-                          for subject in subjects]}))
+        subprocess.run([sys.executable, str(FOLDER / "nightly_review.py"), "batch", str(reply), str(path),
+                        name, "system@0000000"], check=True)
         self.pack(PACK, "sd-db", "review", "file", str(path))
         return next(found for found in self.batches() if found["header"]["batch"] == name)
 
@@ -502,6 +505,59 @@ class NightlyReview(unittest.TestCase):
         today = next(found for found in self.batches() if found["header"]["batch"] == self.today)
         self.assertEqual([q["subject"] for q in today["questions"]], ["ops:stale-service"])
         self.assertIn("dropped lane:repeat-blocker", result.stdout)
+
+    # ------------------------------------------------------------ overlap
+
+    def hold_lock(self):
+        # The lock sits beside the batch in the bulk root, so a run from any checkout, a
+        # worktree's too, meets the scheduled one there (sd:10418 review).
+        lock = self.bulk / "system" / "nightly-review" / ".nightly-review.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock, "a")
+        self.addCleanup(handle.close)
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+
+    def test_two_overlapping_runs_file_one_batch_and_call_the_model_once(self):
+        # sd:10418: a hand run beside the 06:15 one called the model twice. The first run's model
+        # waits for a file; the second run starts meanwhile and must add no model call.
+        self.reply.write_text(json.dumps(SUGGESTIONS))
+        gate = self.tmp / "go"
+        slow = self.bin / "claude"
+        slow.write_text(FAKE_CLAUDE.replace(
+            "cat > \"$CLAUDE_STDIN\"\n",
+            "cat > \"$CLAUDE_STDIN\"\nwhile [ ! -e \"$GATE\" ]; do sleep 0.1; done\n"))
+        env = dict(self.env, GATE=str(gate))
+        first = subprocess.Popen(["sh", str(SCRIPT), "run"], env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
+        self.addCleanup(lambda: first.poll() is None and first.kill())
+        for _ in range(600):
+            if self.stdin.exists():
+                break
+            time.sleep(0.1)
+        second = subprocess.run(["sh", str(SCRIPT), "run"], env=env, capture_output=True, text=True,
+                                timeout=120, stdin=subprocess.DEVNULL)
+        gate.touch()
+        out, err = first.communicate(timeout=120)
+        self.assertEqual(first.returncode, 0, out + err)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertIn("another run holds", second.stdout)
+        self.assertEqual(self.model_runs(), 1)
+        self.assertEqual(len(self.batches()), 1)
+
+    def test_a_held_lock_skips_a_run_from_any_checkout_cron_or_hand(self):
+        # A run in another checkout holds the bulk root's lock: this one, by hand or
+        # under cron-jobs.sh (whose own lock is per checkout), calls no model.
+        self.hold_lock()
+        for cron in ("", "nightly-review"):
+            with self.subTest(cron=cron):
+                self.env["CRON_JOBS_RUN"] = cron
+                result = self.run_job()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("another run holds", result.stdout)
+                self.assertEqual(self.model_runs(), 0)
+                self.assertFalse(self.batch.exists())
+                self.assertEqual(self.batches(), [])
 
     # ------------------------------------------------------------ the entrypoint
 

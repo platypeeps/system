@@ -195,14 +195,34 @@ def agent(row):
             "agent_session": se is not None and {"agent": a, "kind": "id", "value": se}}
 if args[:2] == ["agent", "list"]:
     import time
+    if os.environ.get("FAKE_LIST_LOG"):
+        with open(os.environ["FAKE_LIST_LOG"], "a") as f:
+            f.write((os.environ.get("HERDR_SESSION") or "") + "\n")
     # A switch by another sync that lands while this list runs.
     if os.environ.get("FAKE_SWITCH_DURING_LIST"):
         switch(os.environ["FAKE_SWITCH_DURING_LIST"])
-    time.sleep(float(os.environ.get("FAKE_HERDR_LIST_SLOW") or 0))
+    # FAKE_HERDR_LIST_SLOW_IN: the one session whose list is slow.
+    if os.environ.get("FAKE_HERDR_LIST_SLOW_IN") in (None, os.environ.get("HERDR_SESSION")):
+        time.sleep(float(os.environ.get("FAKE_HERDR_LIST_SLOW") or 0))
     if os.environ.get("FAKE_HERDR_DOWN"):
         print("herdr: server not running", file=sys.stderr)
         sys.exit(1)
     print(json.dumps({"id": "cli:agent:list", "result": {"agents": [agent(r) for r in panes]}}))
+elif args[:3] == ["session", "list", "--json"]:
+    # The running sessions, FAKE_HERDR_SESSIONS (default "default sd");
+    # FAKE_HERDR_SESSIONS_DOWN: no answer.
+    # FAKE_HERDR_DOWN: no server runs, so none is listed running.
+    if os.environ.get("FAKE_HERDR_SESSIONS_DOWN"):
+        sys.exit(1)
+    import time
+    time.sleep(float(os.environ.get("FAKE_HERDR_SESSIONS_SLOW") or 0))
+    # FAKE_HERDR_SESSIONS_RAW: the answer, as given.
+    if "FAKE_HERDR_SESSIONS_RAW" in os.environ:
+        print(os.environ["FAKE_HERDR_SESSIONS_RAW"])
+        sys.exit(0)
+    names = [] if os.environ.get("FAKE_HERDR_DOWN") else os.environ.get("FAKE_HERDR_SESSIONS", "default sd").split()
+    print(json.dumps({"sessions": [{"name": n, "running": True} for n in names]
+                      + [{"name": "stopped", "running": False}]}))
 elif args[:2] == ["agent", "get"]:
     import time
     # A switch by another sync that lands during the pass.
@@ -1035,7 +1055,21 @@ class RemoteControlReconnects(Machine):
                 self.assertLess(time.monotonic() - start, 6)
                 self.assertEqual(self.prompts(), [])
                 self.assertEqual(self.owed(), ["w1:p1"])
-        self.assertEqual(len(self.called("herdr agent list")), 1)
+        # Each running session (default, sd) gets its own budget and
+        # at most one bounded list (sd:10687 review).
+        self.assertLessEqual(len(self.called("herdr agent list")), 2)
+
+    def test_a_slow_herdr_session_does_not_starve_the_next(self):
+        # sd:10687 review: with one budget for the sync, a default
+        # session whose list hangs spent it all, every sync, and sd's
+        # panes never got /rc. Each session gets its own budget.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        start = time.monotonic()
+        result = self.sync("elsewhere", CSWAP_RC_BUDGET="4", CSWAP_RC_GAP_MS="1000",
+                           FAKE_HERDR_LIST_SLOW="30", FAKE_HERDR_LIST_SLOW_IN="default")
+        self.assertLess(time.monotonic() - start, 20)
+        self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
 
     def test_two_switches_in_one_second_each_owe_their_panes(self):
         # Owed rows carry their switch's second: a second switch within
@@ -1063,6 +1097,143 @@ class RemoteControlReconnects(Machine):
                 self.sync("elsewhere", **extra)
                 self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
                 self.assertEqual(self.owed(), [])
+
+    def test_every_running_herdr_session_is_asked(self):
+        # sd:10687: the operator's own panes run in herdr's default
+        # session, builders in sd; a sync asked sd only, and no
+        # interactive pane got /rc. With no HERDR_SESSION a sync asks
+        # each running session; a session list that does not answer
+        # asks sd, as before.
+        for session, extra in (("default", {}), ("sd", {}),
+                               ("sd", {"FAKE_HERDR_SESSIONS_DOWN": "1"})):
+            with self.subTest(session=session, extra=extra):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                result = self.sync("elsewhere", FAKE_HERDR_SESSION=session, **extra)
+                self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+                self.assertEqual(self.owed(), [])
+
+    def test_every_reconnect_pass_ends_by_twice_the_budget(self):
+        # sd:10687 review: each session's pass had its own budget, so
+        # many slow sessions plus the auto tick could pass the job's 5
+        # minute limit. All passes together end by twice the budget.
+        # Twice 6 s is 12; one budget per pass is at least 30. The 20 s
+        # bound leaves 8 s for a loaded gate: 8 under twice 3 s failed
+        # at 9.8 s under load 40 (sd:10699 lane).
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        start = time.monotonic()
+        self.sync("elsewhere", CSWAP_RC_BUDGET="6", FAKE_HERDR_LIST_SLOW="60",
+                  FAKE_HERDR_SESSIONS="a b c d")
+        self.assertLess(time.monotonic() - start, 20)
+
+    def test_reconnect_ends_inside_the_sync_limit(self):
+        # sd:10687 lane review: the auto tick and the publish can use
+        # most of JOB_TIMEOUT first, so reconnect ends by the time the
+        # sync has left, not only by twice its budget.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        start = time.monotonic()
+        self.sync("elsewhere", CSWAP_RC_BUDGET="4", CSWAP_RC_SYNC_LIMIT="2",
+                  FAKE_HERDR_LIST_SLOW="30", FAKE_HERDR_SESSIONS="a b")
+        self.assertLess(time.monotonic() - start, 6)
+
+    def test_the_session_list_ends_inside_the_sync_limit(self):
+        # sd:10689: the session list was bounded by the pass budget
+        # (60 s), not by what the sync had left, so a slow list could
+        # run past RC_SYNC_LIMIT.
+        self.publish(THREE)
+        self.panes()
+        start = time.monotonic()
+        self.sync("elsewhere", CSWAP_RC_SYNC_LIMIT="2", FAKE_HERDR_SESSIONS_SLOW="30")
+        self.assertLess(time.monotonic() - start, 8)
+
+    def test_each_sync_starts_from_the_next_session(self):
+        # sd:10687 lane review: with the sessions always asked in one
+        # order, slow early sessions kept the last from its turn until
+        # its switch expired. The first session moves on every sync.
+        self.publish(THREE)
+        self.panes()
+        log = self.calls.with_name("lists")
+        firsts = []
+        for account in (TWO, THREE, ONE):
+            self.publish(account)
+            log.write_text("")
+            self.sync("elsewhere", FAKE_HERDR_SESSIONS="a b c",
+                      FAKE_LIST_LOG=str(log))
+            firsts.append((log.read_text().split() or [None])[0])
+        self.assertEqual(firsts, ["a", "b", "c"])
+
+    def test_a_sync_with_no_time_left_lists_no_session(self):
+        # sd:10687 lane review: the session list ran even with the sync
+        # past its limit, so it could still pass JOB_TIMEOUT.
+        self.publish(THREE)
+        self.panes()
+        out = self.sync("elsewhere", CSWAP_RC_SYNC_LIMIT="0")
+        self.assertNotIn("herdr session list --json", self.calls.read_text())
+        self.assertIn("no time left", out.stdout)
+
+    def test_a_fallback_sync_does_not_move_the_turn(self):
+        # sd:10687 lane review: a sync whose session list failed asked
+        # sd alone but moved the turn, so with listing and fallback syncs
+        # in turn the same session went first every listing sync.
+        self.panes()
+        log = self.calls.with_name("lists")
+        firsts = []
+        for account, down in ((TWO, False), (THREE, True), (ONE, False)):
+            self.publish(account)
+            log.write_text("")
+            extra = {"FAKE_HERDR_SESSIONS_DOWN": "1"} if down else {}
+            self.sync("elsewhere", FAKE_HERDR_SESSIONS="a b",
+                      FAKE_LIST_LOG=str(log), **extra)
+            if not down:
+                firsts.append((log.read_text().split() or [None])[0])
+        self.assertEqual(firsts, ["a", "b"])
+
+    def test_a_malformed_session_entry_drops_only_itself(self):
+        # sd:10689: one entry that was no object raised in the session
+        # list's reader, so every session fell back to sd and the sync
+        # printed a traceback. A bad entry is skipped; a list of no
+        # readable shape asks sd, with no traceback.
+        good = '{"name": "default", "running": true}'
+        for raw, session in (('{"sessions": [null, 7, "x", {"name": 3}, %s]}' % good, "default"),
+                             ('{"sessions": [{"name": "a\\nb", "running": true}, %s]}' % good,
+                              "default"),
+                             ('{"sessions": null}', "sd"), ('[1]', "sd"), ('not json', "sd"),
+                             ('', "sd")):
+            with self.subTest(raw=raw):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                result = self.sync("elsewhere", FAKE_HERDR_SESSION=session,
+                                   FAKE_HERDR_SESSIONS_RAW=raw)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"],
+                                 result.stdout)
+
+    def test_an_expired_row_lists_no_session(self):
+        # sd:10689: an unsent row of a switch older than RC_OWED_FOR, in
+        # a session that stopped, made each sync list herdr's sessions;
+        # no pass of that session ever ran to drop it. With no current
+        # switch every unsent row is stale: it goes, and nothing lists.
+        old = int(time.time()) - 3600
+        owed = self.owe("stopped w1:p1 s1 %d\nsd w2:p1 s2 %d sent\n" % (old, old), old)
+        self.publish(ONE)
+        self.panes()
+        for _ in range(2):
+            self.sync("elsewhere")
+            self.assertNotIn("herdr session list --json", self.calls.read_text())
+        self.assertEqual(owed.read_text(), "sd w2:p1 s2 %d sent\n" % old)
+
+    def test_session_names_compare_as_text(self):
+        # sd:10687 review: awk compared session names as numbers, so a
+        # sync over session 1 read session 01's owed row as its own,
+        # found no such pane and dropped it.
+        now = int(time.time())
+        owed = self.owe("01 w1:p1 s1 %d\n" % now, now)
+        self.publish(ONE)
+        self.panes()
+        self.sync("elsewhere", HERDR_SESSION="1", FAKE_HERDR_SESSION="1")
+        self.assertEqual(owed.read_text(), "01 w1:p1 s1 %d\n" % now)
 
     def test_a_pane_owed_in_another_herdr_session_outlives_this_sync(self):
         # sd:9427 blocker (cswap.sh:409): the owed list kept no herdr
@@ -1219,6 +1390,7 @@ class RemoteControlReconnects(Machine):
         # Review on sd:9427: a switch during the list must not be marked
         # listed by that list; the next sync lists again for it.
         mark = self.script.parent / "state/rc-pending"
+        self.env["FAKE_HERDR_SESSIONS"] = "sd"
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
         self.sync("elsewhere", FAKE_SWITCH_DURING_LIST=str(mark))
@@ -1452,7 +1624,16 @@ class RemoteControlReconnects(Machine):
             "dialog-cursor-below": (f"{DROP_LINE}\n" + box(empty) + "\n ❯ 1. Yes\n   2. No", False),
             "dialog-rule-below": (f"{DROP_LINE}\n" + box(empty) + f"\n{RULE}\n Bash command", False),
             "dialog-typed-rule-below": (f"{DROP_LINE}\n" + box(empty) + f"\n{TYPED_RULE}\n Bash", False),
-            "dialog-long-below": (f"{DROP_LINE}\n" + box(empty) + "\n line" * 5, False),
+            "dialog-long-below": (f"{DROP_LINE}\n" + box(empty) + "\n line" * 9, False),
+            # sd:10687: the operator's status line takes three lines; with
+            # the mode line and Claude's right-aligned hints the footer
+            # was six (read 2026-11-25), and every pane waited.
+            "footer-status-lines": (f"{DROP_LINE}\n" + box(empty)
+                                    + "\n  Context \u2588\u2591 11% \u2502 Cache expired"
+                                    "\n  Tokens 1.9M (in: 42, out: 8k) \u2502 grinch"
+                                    "\n  \u23f5\u23f5 auto mode on (shift+tab to cycle)"
+                                    "\n" + " " * 60 + "new task? /clear to save 101.5k tokens"
+                                    "\n" + " " * 80 + "/rc failed", True),
             # Footer lines Claude draws below the box still send.
             "footer-mode": (f"{DROP_LINE}\n" + box(empty) + "\n  ⏵⏵ auto mode on (shift+tab to cycle)",
                             True),
@@ -1627,8 +1808,9 @@ class RemoteControlReconnects(Machine):
         # sd:9427 review, class pass: no later pass enters a /rc left in
         # a box, so a pass whose budget ran out between the typing and
         # the enter stranded it there. The typing waits unless the
-        # budget left covers the enter's gap. The stub clock leaves 2 s
-        # at the get before the typing, under the 5 s gap.
+        # budget left covers the enter's gap. The stub clock leaves 20 s
+        # at the get before the typing, under the 30 s gap. A 2 s margin
+        # ran out under a loaded gate, so each get here takes 1.5 s.
         clock = self.tmp / "clock"
         executable(self.stubs / "date", '#!/bin/sh\n'
                    'if [ "$1" = +%s ] && [ -f "$FAKE_CLOCK" ]; then\n'
@@ -1637,10 +1819,10 @@ class RemoteControlReconnects(Machine):
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         result = self.sync("elsewhere", FAKE_CLOCK=str(clock), FAKE_CLOCK_JUMP_GET="2",
-                           FAKE_CLOCK_JUMP="58", CSWAP_RC_GAP_MS="5000")
+                           FAKE_CLOCK_JUMP="40", CSWAP_RC_GAP_MS="30000", FAKE_HERDR_GET_SLOW="1.5")
         self.assertEqual(self.called("herdr agent send-keys"), [], result.stdout)
         self.assertEqual(self.owed(), ["w1:p1"], result.stdout)
-        self.assertIn("reconnect: the 60s budget leaves no 5000 ms for the enter after /rc to w1:p1; "
+        self.assertIn("reconnect: the 60s budget leaves no 30000 ms for the enter after /rc to w1:p1; "
                       "still owed", result.stdout)
 
     def test_a_failed_herdr_call_is_named_as_the_cause(self):
@@ -1722,7 +1904,8 @@ class RemoteControlReconnects(Machine):
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
         # Fold-in: a list that failed at the switch owed nothing, and the
-        # next sync (no switch) never asked again.
+        # next sync (no switch) never asked again. One herdr session runs.
+        self.env["FAKE_HERDR_SESSIONS"] = "sd"
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("elsewhere", FAKE_HERDR_DOWN="1")
@@ -1730,9 +1913,10 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         # The mark stays for other herdr sessions, but sd listed once:
-        # a later sync with nothing owed asks herdr nothing.
+        # a later sync with nothing owed asks no herdr server; the
+        # session list reads only herdr's files.
         self.sync("elsewhere")
-        self.assertEqual(self.called("herdr"), [])
+        self.assertEqual(self.called("herdr agent"), [])
 
     def test_a_list_that_is_not_the_agent_list_is_a_parse_failure(self):
         self.publish(THREE)
@@ -2111,11 +2295,12 @@ class RemoteControlReconnects(Machine):
         # is listed already and no pane is owed a second time.
         now = int(time.time())
         owed = self.owe(f"sd w1:p1 s1 {now} sent\n", now)
+        self.env["FAKE_HERDR_SESSIONS"] = "sd"
         self.publish(ONE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED], ["w1:p2", "claude", "idle", "s2", DROPPED])
         self.sync("elsewhere")
         self.assertEqual(self.mark(), f"{now} 42 {ONE}\n")
-        self.assertEqual(self.called("herdr"), [])
+        self.assertEqual(self.called("herdr agent"), [])
         self.assertEqual(owed.read_text(), f"sd w1:p1 s1 {now} sent\n")
 
     def test_a_switch_after_a_two_field_mark_is_owed_when_its_mark_fails(self):
@@ -2181,20 +2366,18 @@ class RemoteControlReconnects(Machine):
         result = self.sync("elsewhere", code=1)
         self.assertIn("one step failed: cswap sync lock", result.stdout)
 
-    def test_a_long_owed_pane_is_dropped_and_an_unreadable_list_keeps_it(self):
+    def test_a_long_owed_pane_is_dropped_with_no_herdr_call(self):
+        # sd:10689: a row of an expired switch goes with no herdr call,
+        # so an unreadable herdr list no longer keeps it.
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
         self.sync("elsewhere")
         self.owe("sd w1:p1 s1 1000\n", 1000)
-        self.env["FAKE_HERDR"] = str(self.tmp / "missing.json")
-        executable(self.stubs / "herdr", "#!/bin/sh\necho '{not json'\n")
-        result = self.sync("elsewhere")
-        self.assertIn("gave no agent list this can parse", result.stdout)
-        self.assertEqual(self.owed(), ["w1:p1"])
-        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        executable(self.stubs / "herdr",
+                   "#!/bin/sh\necho \"herdr $*\" >>\"$FAKE_CALLS\"\necho '{not json'\n")
         result = self.sync("elsewhere")
         self.assertIn("reconnect: w1:p1 was owed for a switch that is no longer current", result.stdout)
-        self.assertEqual(self.prompts(), [])
+        self.assertEqual(self.called("herdr"), [])
         self.assertEqual(self.owed(), [])
 
     def test_cron_s_path_without_herdr_finds_it_in_a_fallback_dir(self):

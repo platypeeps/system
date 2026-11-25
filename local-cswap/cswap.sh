@@ -72,6 +72,12 @@ RC_OWED_FOR=1800
 # bounded by what is left of it, and a pane not reached stays owed
 # (sd:9282 lane review, sd:9427). Tests set CSWAP_RC_BUDGET.
 RC_BUDGET="${CSWAP_RC_BUDGET:-60}"
+# The whole sync, reconnect included, ends by this many seconds from
+# its start: 30 s under JOB_TIMEOUT (5m) (sd:10687 lane review).
+RC_SYNC_LIMIT="${CSWAP_RC_SYNC_LIMIT:-270}"
+# Which herdr session goes first this sync; it moves on every sync,
+# so a slow session cannot keep the later ones from their turn.
+RC_TURN="$ROOT/state/rc-turn"
 # The most milliseconds the last checks before the keys may take, from
 # the screen read to the end of the session get (sd:9427 class pass).
 # Four herdr calls and a python clock read each: 1000 ms sent nothing
@@ -81,10 +87,13 @@ RC_GAP_MS="${CSWAP_RC_GAP_MS:-5000}"
 RC_DEADLINE=""
 HERDR_DIRS="${CSWAP_HERDR_DIRS-$HOME/.local/bin /opt/homebrew/bin /usr/local/bin}"
 HERDR=""
-# Every herdr call targets the session local-herdr starts (sd unless
-# HERDR_SESSION says), not herdr's default: cron found no panes there,
-# and its empty list cleared a pending switch. A socket path inherited
-# from another session's pane would override the name, so it goes.
+# A reconnect asks every running herdr session in turn, by name: the
+# operator's own panes run in herdr's default session, builders in the
+# sd one local-herdr starts (sd:10687). HERDR_SESSION names one session
+# only. Each session keeps its own rows and listing, so an empty one
+# clears no other's switch. A socket path inherited from another
+# session's pane would override the name, so it goes.
+HERDR_ONLY="${HERDR_SESSION:-}"
 export HERDR_SESSION="${HERDR_SESSION:-sd}"
 unset HERDR_SOCKET_PATH
 AGENTS=""
@@ -335,8 +344,9 @@ else:
     # old empty box with a permission dialog drawn below it waits. Below
     # the bottom rule only a short footer may follow (status line, mode
     # line): no box-drawing line, numbered option or dialog hint.
-    # ponytail: footer read by shape and a cap of 3 lines; a longer
-    # custom status line waits, and gets /rc once it fits.
+    # ponytail: footer read by shape and a cap of 8 lines (a 3-line
+    # status line, the mode line and hints made 6, sd:10687); a longer
+    # one waits, and gets /rc once it fits.
     def footer(text):
         t = text.strip()
         return not ("─" <= t[:1] <= "╿" or re.match(r"(❯|>)?\s*\d+[.)]\s", t)
@@ -347,7 +357,7 @@ else:
     # #70122): Claude lists matching slash commands below the box, so
     # no cap on the footer there; a dialog line still waits.
     typed = sys.argv[1] == "typed"
-    one_box = one_box and (typed or len(tail) <= 3) and all(footer(t) for t in tail)
+    one_box = one_box and (typed or len(tail) <= 8) and all(footer(t) for t in tail)
     # Empty is a match, never what is left after deleting (sd:9427 class
     # pass): the line is exactly ❯ and its NBSP, plus at most dim text (a
     # prompt suggestion). No strip, as a draft can be blanks of any kind,
@@ -469,12 +479,12 @@ owe_missed() {
 # session's rows for the switch at $1; none if unreadable.
 kept_rows() {
   [[ -e "$RC_OWED" ]] || return 0
-  awk -v hs="$HERDR_SESSION" -v since="$1" '(NF == 4 || NF == 5 && ($5 == "sent" || $5 == "done")) && ($1 != hs || $4 == since)' "$RC_OWED"
+  awk -v hs="$HERDR_SESSION" -v since="$1" '(NF == 4 || NF == 5 && ($5 == "sent" || $5 == "done")) && ($1 "" != hs "" || $4 == since)' "$RC_OWED"
 }
 
 # Whether RC_OWED owes a pane of this herdr session.
 owes_here() {
-  awk -v hs="$HERDR_SESSION" 'NF == 4 && $1 == hs { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null
+  awk -v hs="$HERDR_SESSION" 'NF == 4 && $1 "" == hs "" { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null
 }
 
 # A pending switch to this herdr session's owed panes, once herdr lists
@@ -514,7 +524,7 @@ list_owed() {
   fi
   # The rows go by the environment: BSD awk refuses a newline in -v.
   fresh=$(RC_KEPT="$kept" awk -v hs="$HERDR_SESSION" -v since="$since" '
-    BEGIN { n = split(ENVIRON["RC_KEPT"], r, "\n"); for (i = 1; i <= n; i++) { split(r[i], w, " "); if (w[1] == hs) owed[w[2]] = 1 } }
+    BEGIN { n = split(ENVIRON["RC_KEPT"], r, "\n"); for (i = 1; i <= n; i++) { split(r[i], w, " "); if (w[1] "" == hs "") owed[w[2]] = 1 } }
     NF == 3 && $2 != "?" && !($1 in owed) { print hs, $1, $2, since }' <<<"$PANES")
   unknown=$(awk 'NF == 3 && $2 == "?" { printf "%s%s", sep, $1; sep = ", " }' <<<"$PANES")
   # Each write in a group is chained: a group's status is its last
@@ -770,10 +780,32 @@ rc_lock() {
   return 1
 }
 
-# One reconnect pass under RC_LOCK; a sync that finds it held skips,
-# and every owed row and pending mark stays for the next sync.
+# The herdr sessions to ask, one name a line: HERDR_ONLY, else every
+# running session `herdr session list` names; sd when it does not answer
+# or reads as no list. An entry that is no object, or names no session
+# as one word, is skipped alone (sd:10689). The list is bounded by the
+# time the sync has left, $1 (sd:10689).
+herdr_sessions() {
+  local bin names
+  [[ -z "$HERDR_ONLY" ]] || { echo "$HERDR_ONLY"; return 0; }
+  bin=$(herdr_bin) && names=$(RC_DEADLINE=$1 rc_step 20 "$bin" session list --json | python3 -I -c '
+import json, sys
+try:
+    sessions = json.load(sys.stdin).get("sessions")
+except (ValueError, AttributeError):
+    sessions = None
+for s in sessions if isinstance(sessions, list) else ():
+    name = s.get("name") if isinstance(s, dict) else None
+    if isinstance(name, str) and name.split() == [name] and s.get("running") is True:
+        print(name)') && [[ -n "$names" ]] || names=sd
+  echo "$names"
+}
+
+# One reconnect pass per herdr session under RC_LOCK; a sync that finds
+# it held skips, and every owed row and pending mark stays for the next
+# sync.
 reconnect() {
-  local rc=0
+  local rc=0 session sessions end limit list turn i cur stale pane
   rc_lock || rc=$?
   if ((rc == 2)); then
     echo "reconnect: skipped: could not open $RC_LOCK; the next sync tries again"
@@ -783,7 +815,61 @@ reconnect() {
     echo "reconnect: skipped: another sync is reconnecting; the next sync tries again"
     return 0
   fi
-  reconnect_pass
+  # Each session's pass gets its own budget, so a slow session cannot
+  # starve the next; all of them, the session list included, end by
+  # twice the budget and by RC_SYNC_LIMIT from the sync's start, so
+  # the auto tick and the publish before them still fit JOB_TIMEOUT.
+  limit=$((RC_SYNC_LIMIT - SECONDS))
+  ((limit < 2 * RC_BUDGET)) || limit=$((2 * RC_BUDGET))
+  end=$(($(date +%s) + limit))
+  # With no time left, ask nothing this sync; owed rows stay owed. The
+  # session list (20 s) started with any left still ends inside the
+  # 30 s RC_SYNC_LIMIT keeps under JOB_TIMEOUT (sd:10687 lane review).
+  if ((limit <= 0)); then
+    echo "reconnect: skipped: the sync has no time left; the next sync tries again"
+    exec 9>&-
+    return 0
+  fi
+  RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
+  # Only a current switch asks herdr's sessions. With none, every
+  # unsent row is stale: it goes here, as a session that stopped runs
+  # no pass to drop its rows, and they made each sync list (sd:10689).
+  # Sent rows stay until the next switch, so they ask nothing
+  # (sd:10687). A mark that does not read keeps every row.
+  sessions=$HERDR_SESSION
+  if cur=$(current_since 2>/dev/null); then
+    if [[ -n "$cur" ]]; then
+      sessions=$(herdr_sessions "$end")
+    elif stale=$(awk 'NF == 4 { print $2 }' "$RC_OWED" 2>/dev/null) && [[ -n "$stale" ]]; then
+      if { awk 'NF != 4' "$RC_OWED" >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
+        while read -r pane; do
+          echo "reconnect: $pane was owed for a switch that is no longer current; not owed"
+        done <<<"$stale"
+      else
+        rm -f "$RC_OWED.new" 2>/dev/null || :
+        echo "reconnect: could not drop stale rows from $RC_OWED; the next sync tries again"
+      fi
+    fi
+  fi
+  # shellcheck disable=SC2206 # session names hold no blanks (herdr_sessions)
+  list=($sessions)
+  turn=0
+  # Only a sync that asks several sessions moves the turn: one that fell
+  # back to a single session moved it too, so the same session could go
+  # first on every listing sync (sd:10687 lane review).
+  if ((${#list[@]} > 1)); then
+    turn=$(cat "$RC_TURN" 2>/dev/null) || turn=0
+    [[ "$turn" =~ ^[0-9]{1,9}$ ]] || turn=0
+    echo $(((turn + 1) % 1000000)) >"$RC_TURN" 2>/dev/null || true
+  fi
+  for ((i = 0; i < ${#list[@]}; i++)); do
+    session=${list[(turn + i) % ${#list[@]}]}
+    export HERDR_SESSION="$session"
+    RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
+    ((RC_DEADLINE <= end)) || RC_DEADLINE=$end
+    LISTED="" PANES="" AGENTS=""
+    reconnect_pass
+  done
   exec 9>&-
 }
 
@@ -827,7 +913,6 @@ commit_sent() { mv "$RC_OWED.sent" "$RC_OWED" 2>/dev/null; }
 # Send /rc to each owed pane that may have it; keep the rest owed.
 reconnect_pass() {
   local hs pane session since action screen verdict plan cur keep="" mine=0 rc
-  RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
   list_owed
   owes_here || return 0
   herdr_panes || return 0
@@ -841,13 +926,13 @@ reconnect_pass() {
   plan=$(awk -v hs="$HERDR_SESSION" -v cur="$cur" '
     FILENAME == "-" { if (NF == 3) { status[$1 " " $2] = $3; if ($2 == "?") unknown[$1] = 1 }; next }
     NF == 5 && ($5 == "sent" || $5 == "done") && $4 ~ /^[0-9]+$/ {
-      if ($1 != hs) print "other", $0
+      if ($1 "" != hs "") print "other", $0
       else if ($4 != cur) next
       else print "sent", $0
       next
     }
     NF != 4 || $4 !~ /^[0-9]+$/ { next }
-    $1 != hs { print "other", $0; next }
+    $1 "" != hs "" { print "other", $0; next }
     $4 != cur { print "stale", $0; next }
     !(($2 " " $3) in status) && !($2 in unknown) { print "gone", $0; next }
     status[$2 " " $3] == "idle" || status[$2 " " $3] == "done" { print "try", $0; next }

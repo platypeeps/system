@@ -701,6 +701,18 @@ if sys.argv[4:5] in (["denied"], ["denied-all"]):
     w.os.killpg = deny
     if sys.argv[4] == "denied-all":
         w.os.kill = deny
+if sys.argv[4:5] == ["slow-kill"]:
+    # A loaded machine (sd:10696): the group reads alive for 1.5 s after
+    # SIGKILL, longer than the 1 s SIGTERM bound the driver sets.
+    import signal, time
+    real, killed = w.os.killpg, []
+    def slow(pid, sig):
+        if sig == signal.SIGKILL:
+            killed.append(time.monotonic())
+        if sig == 0 and killed and time.monotonic() - killed[0] < 1.5:
+            return
+        real(pid, sig)
+    w.os.killpg = slow
 try:
     w.start_headless("sd")
 except w.Fail as exc:
@@ -752,6 +764,17 @@ class TestStartHeadless(HerdrCase):
         self.assertIn("the server was killed", proc.stderr)
         self.assertLess(elapsed, 10)
         self.assertFalse(self.server_alive())
+
+    def test_a_slow_sigkill_on_a_loaded_machine_is_still_a_kill(self) -> None:
+        # sd:10696: at load5 44 the SIGKILL wait shared the 1 s SIGTERM
+        # bound and read "did not end after SIGKILL". SIGKILL cannot be
+        # ignored, so its wait has a bound of its own.
+        (self.fixture / "server-stays-down").write_text("")
+        (self.fixture / "server-ignores-term").write_text("")
+        proc, elapsed = self.start("slow-kill")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("the server was killed", proc.stderr)
+        self.assertLess(elapsed, 10)
 
     def test_a_denied_process_group_fails_by_name_not_stopped(self) -> None:
         # system sd:7925: with killpg denied, the server alone was

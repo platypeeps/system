@@ -381,6 +381,17 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("same head", rule)
         self.assertIn("fix commit", rule)
 
+    def test_the_second_pr_rule_names_the_p1_exception(self):
+        # sd:10421: the pack lets a P1 item open its own branch beside the bundle
+        # (sd:9700, `--reason p1`), but the prompt still named only two reasons.
+        source = (FOLDER / "prompt/shared.md").read_text()
+        rule = next(line for line in source.splitlines() if line.startswith("A second PR needs"))
+        self.assertIn("three reasons", rule)
+        self.assertIn("a P1 item", rule)
+        refusal = next(line for line in source.splitlines() if "refuses a second open branch" in line)
+        self.assertIn("`p1`", refusal)
+        self.assertIn("state-move|in-lane|p1", refusal)
+
     def test_the_round_three_rule_asks_for_a_recorded_ruling_per_item(self):
         # sd:10204: rounds counted per build run let one item pass 20 review rounds; a
         # lane blocker was retried with no ruling, and a parked one came back twice.
