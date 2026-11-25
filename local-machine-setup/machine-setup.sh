@@ -4702,7 +4702,7 @@ stage_tmpdisk() {
   fi
   case $TMPDISK_MB in
     *[!0-9]*|0*)
-      echo "  DIFFERS MACHINE_SETUP_TMPDISK_MB='$TMPDISK_MB' is not a size in MiB; set a whole number such as 4096"
+      echo "  DIFFERS MACHINE_SETUP_TMPDISK_MB='$TMPDISK_MB' is not a size in MiB; set a whole number such as 16384"
       return 0 ;;
   esac
   # Dry runs too: a read while another run sits between two steps sees
