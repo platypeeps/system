@@ -781,15 +781,23 @@ rc_lock() {
 }
 
 # The herdr sessions to ask, one name a line: HERDR_ONLY, else every
-# running session `herdr session list` names; sd when it does not answer.
+# running session `herdr session list` names; sd when it does not answer
+# or reads as no list. An entry that is no object, or names no session
+# as one word, is skipped alone (sd:10689). The list is bounded by the
+# time the sync has left, $1 (sd:10689).
 herdr_sessions() {
   local bin names
   [[ -z "$HERDR_ONLY" ]] || { echo "$HERDR_ONLY"; return 0; }
-  bin=$(herdr_bin) && names=$(rc_step 20 "$bin" session list --json | python3 -I -c '
+  bin=$(herdr_bin) && names=$(RC_DEADLINE=$1 rc_step 20 "$bin" session list --json | python3 -I -c '
 import json, sys
-for s in json.load(sys.stdin)["sessions"]:
-    if s.get("running") and isinstance(s.get("name"), str) and s["name"].split() == [s["name"]]:
-        print(s["name"])') && [[ -n "$names" ]] || names=sd
+try:
+    sessions = json.load(sys.stdin).get("sessions")
+except (ValueError, AttributeError):
+    sessions = None
+for s in sessions if isinstance(sessions, list) else ():
+    name = s.get("name") if isinstance(s, dict) else None
+    if isinstance(name, str) and name.split() == [name] and s.get("running") is True:
+        print(name)') && [[ -n "$names" ]] || names=sd
   echo "$names"
 }
 
@@ -797,7 +805,7 @@ for s in json.load(sys.stdin)["sessions"]:
 # it held skips, and every owed row and pending mark stays for the next
 # sync.
 reconnect() {
-  local rc=0 session sessions end limit list turn i
+  local rc=0 session sessions end limit list turn i cur stale pane
   rc_lock || rc=$?
   if ((rc == 2)); then
     echo "reconnect: skipped: could not open $RC_LOCK; the next sync tries again"
@@ -823,12 +831,25 @@ reconnect() {
     return 0
   fi
   RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
-  # No current switch and no unsent row: nothing to ask herdr. Sent
-  # rows stay until the next switch, so they ask nothing (sd:10687).
+  # Only a current switch asks herdr's sessions. With none, every
+  # unsent row is stale: it goes here, as a session that stopped runs
+  # no pass to drop its rows, and they made each sync list (sd:10689).
+  # Sent rows stay until the next switch, so they ask nothing
+  # (sd:10687). A mark that does not read keeps every row.
   sessions=$HERDR_SESSION
-  if awk 'NF == 4 { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null ||
-      [[ -n "$(current_since 2>/dev/null)" ]]; then
-    sessions=$(herdr_sessions)
+  if cur=$(current_since 2>/dev/null); then
+    if [[ -n "$cur" ]]; then
+      sessions=$(herdr_sessions "$end")
+    elif stale=$(awk 'NF == 4 { print $2 }' "$RC_OWED" 2>/dev/null) && [[ -n "$stale" ]]; then
+      if { awk 'NF != 4' "$RC_OWED" >"$RC_OWED.new" && mv "$RC_OWED.new" "$RC_OWED"; } 2>/dev/null; then
+        while read -r pane; do
+          echo "reconnect: $pane was owed for a switch that is no longer current; not owed"
+        done <<<"$stale"
+      else
+        rm -f "$RC_OWED.new" 2>/dev/null || :
+        echo "reconnect: could not drop stale rows from $RC_OWED; the next sync tries again"
+      fi
+    fi
   fi
   # shellcheck disable=SC2206 # session names hold no blanks (herdr_sessions)
   list=($sessions)
