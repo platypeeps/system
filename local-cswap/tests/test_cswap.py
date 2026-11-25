@@ -1145,6 +1145,32 @@ class RemoteControlReconnects(Machine):
             firsts.append((log.read_text().split() or [None])[0])
         self.assertEqual(firsts, ["a", "b", "c"])
 
+    def test_a_sync_with_no_time_left_lists_no_session(self):
+        # sd:10687 lane review: the session list ran even with the sync
+        # past its limit, so it could still pass JOB_TIMEOUT.
+        self.publish(THREE)
+        self.panes()
+        out = self.sync("elsewhere", CSWAP_RC_SYNC_LIMIT="0")
+        self.assertNotIn("herdr session list --json", self.calls.read_text())
+        self.assertIn("no time left", out.stdout)
+
+    def test_a_fallback_sync_does_not_move_the_turn(self):
+        # sd:10687 lane review: a sync whose session list failed asked
+        # sd alone but moved the turn, so with listing and fallback syncs
+        # in turn the same session went first every listing sync.
+        self.panes()
+        log = self.calls.with_name("lists")
+        firsts = []
+        for account, down in ((TWO, False), (THREE, True), (ONE, False)):
+            self.publish(account)
+            log.write_text("")
+            extra = {"FAKE_HERDR_SESSIONS_DOWN": "1"} if down else {}
+            self.sync("elsewhere", FAKE_HERDR_SESSIONS="a b",
+                      FAKE_LIST_LOG=str(log), **extra)
+            if not down:
+                firsts.append((log.read_text().split() or [None])[0])
+        self.assertEqual(firsts, ["a", "b"])
+
     def test_session_names_compare_as_text(self):
         # sd:10687 review: awk compared session names as numbers, so a
         # sync over session 1 read session 01's owed row as its own,

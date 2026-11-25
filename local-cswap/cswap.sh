@@ -814,6 +814,14 @@ reconnect() {
   limit=$((RC_SYNC_LIMIT - SECONDS))
   ((limit < 2 * RC_BUDGET)) || limit=$((2 * RC_BUDGET))
   end=$(($(date +%s) + limit))
+  # With no time left, ask nothing this sync; owed rows stay owed. The
+  # session list (20 s) started with any left still ends inside the
+  # 30 s RC_SYNC_LIMIT keeps under JOB_TIMEOUT (sd:10687 lane review).
+  if ((limit <= 0)); then
+    echo "reconnect: skipped: the sync has no time left; the next sync tries again"
+    exec 9>&-
+    return 0
+  fi
   RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
   # No current switch and no unsent row: nothing to ask herdr. Sent
   # rows stay until the next switch, so they ask nothing (sd:10687).
@@ -824,9 +832,15 @@ reconnect() {
   fi
   # shellcheck disable=SC2206 # session names hold no blanks (herdr_sessions)
   list=($sessions)
-  turn=$(cat "$RC_TURN" 2>/dev/null) || turn=0
-  [[ "$turn" =~ ^[0-9]{1,9}$ ]] || turn=0
-  echo $(((turn + 1) % 1000000)) >"$RC_TURN" 2>/dev/null || true
+  turn=0
+  # Only a sync that asks several sessions moves the turn: one that fell
+  # back to a single session moved it too, so the same session could go
+  # first on every listing sync (sd:10687 lane review).
+  if ((${#list[@]} > 1)); then
+    turn=$(cat "$RC_TURN" 2>/dev/null) || turn=0
+    [[ "$turn" =~ ^[0-9]{1,9}$ ]] || turn=0
+    echo $(((turn + 1) % 1000000)) >"$RC_TURN" 2>/dev/null || true
+  fi
   for ((i = 0; i < ${#list[@]}; i++)); do
     session=${list[(turn + i) % ${#list[@]}]}
     export HERDR_SESSION="$session"
