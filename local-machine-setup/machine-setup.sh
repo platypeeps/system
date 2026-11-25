@@ -5623,9 +5623,12 @@ cmd_capture() {
   # machine's <profile>.cron would duplicate a fleet line in a per-machine
   # file, and capture rewrites that file wholesale.
   # The role jobs too, which the stage adds itself: a captured line would
-  # outlive a later `!` line (sd:10427).
+  # outlive a later `!` line (sd:10427). Not one the profile names itself:
+  # a standby's own build-dispatch line must outlive the role (review).
   hub_ask
-  { common_manifest cron; repo_cron_jobs; cat "$tmp/host.cron"; role_cron_jobs; } | sort -u > "$tmp/common.cron"
+  { common_manifest cron; repo_cron_jobs; cat "$tmp/host.cron"
+    role_cron_jobs | drop_negated "$(profile_entries "$PROFILE" cron)" exact
+  } | sort -u > "$tmp/common.cron"
   comm -23 "$tmp/have.cron" "$tmp/common.cron" > "$tmp/out.cron"
 
   if command -v mas >/dev/null 2>&1; then

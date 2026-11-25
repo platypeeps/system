@@ -357,6 +357,28 @@ class CronJobFromRepoExample(Case):
         self.assertIn("own-job", cron)
         self.assertNotIn(job, cron)
 
+    def test_capture_on_a_promoted_standby_keeps_its_own_role_lines(self):
+        """Review: a satellite's profile names build-dispatch, its own tick;
+        while it holds the role, capture dropped that line, so the
+        hand-back left its dispatcher stopped."""
+        (self.profiles / "personal.agent").write_text("# a standby: no sd agent\n")
+        (self.profiles / "personal.cron").write_text("build-dispatch\n")
+        pack = self.base / "pack"
+        write_exec(pack / "bin/sd-db", "#!/bin/sh\necho 'fence: holder: standby'\n")
+        db = self.home / ".local/share/sd/sd.db"
+        db.parent.mkdir(parents=True)
+        db.touch()
+        self.jobs.mkdir(parents=True)
+        # own-job keeps the roster from being empty, which capture refuses.
+        for job in ("build-dispatch", "sd-db-backup", "own-job"):
+            (self.jobs / f"{job}.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+            self.install_plist(job)
+        result = self.run_script("capture", "--apply", SD_PACK_ROOT=str(pack))
+        cron = (self.profiles / "personal.cron").read_text()
+        self.assertIn("own-job", cron, result.stdout + result.stderr)
+        self.assertIn("build-dispatch", cron, result.stdout + result.stderr)
+        self.assertNotIn("sd-db-backup", cron)
+
     def test_a_profile_dropping_its_last_job_still_sweeps(self):
         """sd:10427: the stage returned at "no jobs in this profile" before
         the sweep, so an installed job with no file stayed unreported."""
