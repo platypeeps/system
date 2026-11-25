@@ -1044,6 +1044,8 @@ class RemoteControlReconnects(Machine):
                 self.assertLess(time.monotonic() - start, 6)
                 self.assertEqual(self.prompts(), [])
                 self.assertEqual(self.owed(), ["w1:p1"])
+        # One budget for the sync (sd:10687 review): the second session's
+        # pass finds it spent and asks herdr nothing.
         self.assertEqual(len(self.called("herdr agent list")), 1)
 
     def test_two_switches_in_one_second_each_owe_their_panes(self):

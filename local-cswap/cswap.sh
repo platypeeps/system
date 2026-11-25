@@ -779,7 +779,7 @@ rc_lock() {
 herdr_sessions() {
   local bin names
   [[ -z "$HERDR_ONLY" ]] || { echo "$HERDR_ONLY"; return 0; }
-  bin=$(herdr_bin) && names=$(st_step 20 "$bin" session list --json 9>&- | python3 -I -c '
+  bin=$(herdr_bin) && names=$(rc_step 20 "$bin" session list --json | python3 -I -c '
 import json, sys
 for s in json.load(sys.stdin)["sessions"]:
     if s.get("running") and isinstance(s.get("name"), str) and s["name"].split() == [s["name"]]:
@@ -801,9 +801,13 @@ reconnect() {
     echo "reconnect: skipped: another sync is reconnecting; the next sync tries again"
     return 0
   fi
-  # No current switch and no owed row: nothing to ask herdr.
+  # One budget for the whole sync, every session's pass in it.
+  RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
+  # No current switch and no unsent row: nothing to ask herdr. Sent
+  # rows stay until the next switch, so they ask nothing (sd:10687).
   sessions=$HERDR_SESSION
-  if [[ -s "$RC_OWED" || -n "$(current_since 2>/dev/null)" ]]; then
+  if awk 'NF == 4 { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null ||
+      [[ -n "$(current_since 2>/dev/null)" ]]; then
     sessions=$(herdr_sessions)
   fi
   for session in $sessions; do
@@ -854,7 +858,6 @@ commit_sent() { mv "$RC_OWED.sent" "$RC_OWED" 2>/dev/null; }
 # Send /rc to each owed pane that may have it; keep the rest owed.
 reconnect_pass() {
   local hs pane session since action screen verdict plan cur keep="" mine=0 rc
-  RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
   list_owed
   owes_here || return 0
   herdr_panes || return 0
