@@ -249,8 +249,12 @@ def session_running(session: str) -> bool:
 # How long a headless server gets to read `running` in `session list`. One
 # came up at once on the 0.9.5 binary; a large restored session takes longer.
 SERVER_START_SECONDS = 10.0
-# How long each of SIGTERM and SIGKILL gets to end a server that never came up.
+# How long SIGTERM gets to end a server that never came up.
 SERVER_STOP_SECONDS = 5.0
+# How long SIGKILL gets. It cannot be ignored, so only a loaded machine
+# delays the exit; a bound of its own keeps a short SIGTERM bound from
+# reading a slow kill as a failed one (sd:10696).
+SERVER_KILL_SECONDS = 5.0
 # How much of the server log's end a refusal quotes.
 SERVER_LOG_TAIL = 4096
 
@@ -355,7 +359,8 @@ def stop_server(proc: subprocess.Popen) -> str:
     SIGTERM outlives a server that obeys it, or one that had exited
     (sd:7954)."""
     exited = proc.poll() is not None
-    for sig, done in ((signal.SIGTERM, "stopped"), (signal.SIGKILL, "killed")):
+    for sig, done, bound in ((signal.SIGTERM, "stopped", SERVER_STOP_SECONDS),
+                             (signal.SIGKILL, "killed", SERVER_KILL_SECONDS)):
         try:
             signal_group(proc, sig)
         except ProcessLookupError:
@@ -366,7 +371,7 @@ def stop_server(proc: subprocess.Popen) -> str:
                 proc.send_signal(signal.SIGKILL)
             return (f"killpg denied ({exc.strerror}); the server's group could not be "
                     f"stopped (pid {proc.pid})")
-        if group_ended(proc, SERVER_STOP_SECONDS):
+        if group_ended(proc, bound):
             return f"the server had exited; its group was {done}" if exited else f"the server was {done}"
     return f"the server's group (pid {proc.pid}) did not end after SIGKILL"
 
