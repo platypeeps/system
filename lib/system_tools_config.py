@@ -102,11 +102,17 @@ def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
 def _shell_word(text: str, home: str) -> str | None:
     """The value `.` assigns from `text`, the part after `=` (sd:10423).
 
-    The value ends at the first unquoted blank, so an inline `# comment`
-    is dropped; quotes join and are removed, a backslash escapes one
-    character (inside double quotes only `$`, `` ` ``, `"`, `\\`), and
-    `$HOME`, `${HOME}` and a leading unquoted `~/` expand outside single
-    quotes. None for an unclosed quote, which `.` refuses."""
+    An unquoted blank ends the value only before `# comment` or the line
+    end. Elsewhere, as read_env did before, leading blanks drop and inner
+    ones stay, for a Python-only reader whose path holds a space (`.`
+    refuses that line). Quotes join and are removed, a backslash escapes
+    one character (inside double quotes only `$`, `` ` ``, `"`, `\\`),
+    and `$HOME`, `${HOME}` and a leading unquoted `~/` expand outside
+    single quotes. None for an unclosed quote, which `.` refuses."""
+    if text[:1] in (" ", "\t"):
+        text = text.lstrip(" \t")
+        if text.startswith("#"):
+            return ""
     out: list[str] = []
     if text == "~" or text.startswith(("~/", "~ ", "~\t")):
         out.append(home)
@@ -135,7 +141,10 @@ def _shell_word(text: str, home: str) -> str | None:
         elif char == "'" and not quote:
             quote = "'"
         elif char in " \t" and not quote:
-            break
+            rest = text[i:].lstrip(" \t")
+            if not rest or rest.startswith("#"):
+                break
+            out.append(char)
         else:
             out.append(char)
         i += 1

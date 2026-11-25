@@ -167,6 +167,19 @@ class EnvFile(unittest.TestCase):
         from sd_db import config as twin
         self.assertEqual(twin.read_env("home", self.envv), expected)
 
+    def test_python_keeps_an_unquoted_path_with_spaces(self):
+        # sd:10423 review: `.` refuses such a line, but a Python-only
+        # reader (agent-meter's ledger) read it whole before; a word
+        # break must not cut it. Only a blank before `#` ends it.
+        (self.conf / "meter").mkdir(parents=True)
+        (self.conf / "meter/.env").write_text(
+            "AGENT_METER_FILE=$HOME/my ledger/meter.jsonl\n"
+            "N=two  words # note\nT=a b\t\nL= /lead\n")
+        home = self.envv["HOME"]
+        self.assertEqual(stc.read_env("meter", self.envv),
+                         {"AGENT_METER_FILE": f"{home}/my ledger/meter.jsonl",
+                          "N": "two  words", "T": "a b", "L": "/lead"})
+
     def test_python_absent_is_empty(self):
         self.assertEqual(stc.read_env("nothing", self.envv), {})
 
