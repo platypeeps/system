@@ -319,6 +319,58 @@ class CronJobFromRepoExample(Case):
         self.assertIn(f"  DIFFERS {job} — has a job file", out, out + result.stderr)
         self.assertIn(f"cron-jobs.sh uninstall {job}", out)
 
+    def test_doctor_checks_the_hub_seeded_needs_sweep_is_loaded(self):
+        """sd:10427: the cron stage installs it on a plain hub, so doctor
+        checks it too; it read the profile and the repo roster alone."""
+        out = self.run_script("doctor").stdout
+        self.assertIn(f"  WARN    not loaded: {fixture_config.LABEL_PREFIX}"
+                      ".cron.needs-sweep-nightly", out)
+
+    def test_doctor_skips_a_dropped_needs_sweep(self):
+        (self.profiles / "personal.cron").write_text(f"{OTHER_JOB}\n!needs-sweep-nightly\n")
+        out = self.run_script("doctor").stdout
+        self.assertNotIn("needs-sweep-nightly", out)
+
+    def test_candidates_counts_the_hub_seeded_needs_sweep_as_listed(self):
+        """sd:10427: a `.` mark asked for a profile line the stage does
+        not need."""
+        write_exec(self.root / "local-cron-jobs/cron-jobs.sh",
+                   "#!/bin/sh\n[ \"$1\" = list ] || exit 0\n"
+                   "printf 'JOB SCHEDULE\\nneeds-sweep-nightly x\\n'\n")
+        out = self.run_script("candidates", "cron").stdout
+        self.assertIn("  + needs-sweep-nightly", out, out)
+
+    def test_capture_leaves_the_hub_seeded_needs_sweep_out(self):
+        """sd:10427: a captured line outlives a later `!` line, since the
+        profile's own entries are not dropped by it."""
+        job = "needs-sweep-nightly"
+        self.jobs.mkdir(parents=True)
+        (self.jobs / f"{job}.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+        (self.jobs / "own-job.job").write_text('JOB_SCHEDULE="0 4 * * *"\n')
+        for name in (job, "own-job"):
+            self.install_plist(name)
+        # The agent roster is refused, as no agent is installed here; the
+        # cron roster is written all the same.
+        result = self.run_script("capture", "--apply")
+        self.assertNotIn("personal.cron —", result.stdout, result.stderr)
+        cron = (self.profiles / "personal.cron").read_text()
+        self.assertIn("own-job", cron)
+        self.assertNotIn(job, cron)
+
+    def test_a_profile_dropping_its_last_job_still_sweeps(self):
+        """sd:10427: the stage returned at "no jobs in this profile" before
+        the sweep, so an installed job with no file stayed unreported."""
+        (self.profiles / "personal.cron").write_text(
+            "".join(f"!{j}\n" for j in (FLEET_JOB, "machine-health-hourly",
+                                        "needs-sweep-nightly")))
+        self.install_plist("gone-job")
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertIn("  no jobs in this profile", out)
+        self.assertIn("  EXTRA   gone-job", out, out)
+        self.assertIn("uninstall gone-job", self.cron_calls())
+
     def test_a_satellite_profile_gets_no_needs_sweep(self):
         (self.profiles / "personal.satellite").write_text("hub.example.test\n")
         result = self.run_script("update", "cron", "--apply")
