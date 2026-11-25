@@ -181,15 +181,40 @@ class EnvFile(unittest.TestCase):
                           "N": "two  words", "T": "a b", "L": "/lead"})
 
     def test_python_keeps_what_sourcing_does_not_assign(self):
-        # `.` leaves these unset (a background job, a pipeline, a syntax
-        # error), so only Python reads them: the text stays whole, as
-        # before sd:10423. A `;` after one still ends it.
+        # `.` leaves these unset (a syntax error, a second word), so
+        # only Python reads them: the text stays whole, as before
+        # sd:10423. A `;` after one still ends it.
         (self.conf / "odd").mkdir(parents=True)
-        (self.conf / "odd/.env").write_text(
-            "U=http://example.test/?a=1&b=2\nP=a|b\nG=a(b)\nW=x y; Z=1\n")
+        (self.conf / "odd/.env").write_text("G=a(b)\nW=x y; Z=1\n")
         self.assertEqual(stc.read_env("odd", self.envv),
-                         {"U": "http://example.test/?a=1&b=2", "P": "a|b",
-                          "G": "a(b)", "W": "x y", "Z": "1"})
+                         {"G": "a(b)", "W": "x y", "Z": "1"})
+
+    def test_python_refuses_a_redirection_pipe_or_background(self):
+        # sd:10423 lead ruling: a misread sends agent-meter to the
+        # default ledger, so an unquoted < > | & or a skipped || branch
+        # refuses the line by file, line and name instead of guessing.
+        (self.conf / "bad").mkdir(parents=True)
+        env = self.conf / "bad/.env"
+        cases = [
+            ("AGENT_METER_FILE=/tmp/meter.jsonl 2>/dev/null", "AGENT_METER_FILE"),
+            ("X=1 >/dev/null; AGENT_METER_FILE=/tmp/meter.jsonl", "X"),
+            ("X=1 || AGENT_METER_FILE=/tmp/meter.jsonl", "X"),
+            ("U=http://example.test/?a=1&b=2", "U"),
+            ("P=a|b", "P"),
+            ("I=a<b", "I"),
+            ("X=1 && Y=2 &", "Y"),
+            ("2>/dev/null AGENT_METER_FILE=/tmp/meter.jsonl", "AGENT_METER_FILE"),
+        ]
+        for text, name in cases:
+            with self.subTest(text=text):
+                env.write_text("# head\n" + text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.read_env("bad", self.envv)
+                self.assertIn(f"{env}:2: {name}:", str(caught.exception))
+                self.assertIsInstance(caught.exception, ValueError)
+        env.write_text("Q='a|b>c&d'\nR=\"x<y\"\nS=a\\&b\nT=1 && V=2\n")
+        self.assertEqual(stc.read_env("bad", self.envv),
+                         {"Q": "a|b>c&d", "R": "x<y", "S": "a&b", "T": "1", "V": "2"})
 
     def test_python_absent_is_empty(self):
         self.assertEqual(stc.read_env("nothing", self.envv), {})
@@ -348,9 +373,7 @@ class CronJobDirs(unittest.TestCase):
         ("X=1;export CRON_JOBS_HOST=mini; Y=2", "mini"),
         ("X=1 && CRON_JOBS_HOST=mini", "mini"),
         ("CRON_JOBS_HOST=mini&&X=1", "mini"),
-        ("CRON_JOBS_HOST=mini || CRON_JOBS_HOST=other", "mini"),
-        ("CRON_JOBS_HOST=mini >/dev/null", "mini"),
-        ("CRON_JOBS_HOST=mini</dev/null", "mini"),
+        # `||`, `<` and `>` refuse instead: see EnvFile (lead ruling).
         ('CRON_JOBS_HOST="mini;x&&y>z"', "mini;x&&y>z"),
         ("CRON_JOBS_HOST='mini;x'", "mini;x"),
         ("CRON_JOBS_HOST=mini\\;x", "mini;x"),

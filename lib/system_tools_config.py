@@ -84,43 +84,71 @@ def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.is_file():
         return values
-    for line in path.read_text(encoding="utf-8").splitlines():
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for number, line in enumerate(lines, 1):
         while line := line.strip():  # one pass per `;` or `&&` statement
             if line.startswith("#"):
                 break
             if line.startswith("export "):
                 line = line[len("export "):].lstrip()
             key, sep, value = line.partition("=")
-            if not sep or not key.strip().isidentifier():
+            key = key.strip()
+            if sep and (op := next((c for c in _REFUSED if c in key), "")):
+                # `2>/dev/null X=1` still assigns X when sourced.
+                raise _refused(path, number, key.split()[-1], op)
+            if not sep or not key.isidentifier():
                 break
-            value, line = _shell_word(value, home)
+            try:
+                value, line = _shell_word(value, home)
+            except _Operator as e:
+                raise _refused(path, number, key, str(e)) from None
             if value is not None:
-                values[key.strip()] = value
+                values[key] = value
     return values
 
 
+class EnvFileError(ValueError):
+    """An env file line `.` would read past what this parser models."""
+
+
+class _Operator(Exception):
+    pass
+
+
+def _refused(path: Path, number: int, key: str, op: str) -> EnvFileError:
+    # Names no value: an env file may hold a secret.
+    return EnvFileError(
+        f"{path}:{number}: {key}: an unquoted {op!r} (redirection, pipe, "
+        "|| or background job) is not read; quote it or drop it")
+
+
 _BLANK = " \t"
-#: Unquoted operators `.` assigns across: after `;` and `&&` the next
-#: statement runs; `||` skips it; `<` and `>` open a redirection.
-#: ponytail: the rest of a line is dropped after a redirection or `||`;
-#: read on to the next `;` if a config ever chains past one.
-_ENDS = {";": True, "&&": True, "||": False, "<": False, ">": False}
+#: Unquoted operators that end a value; the next statement is read too.
+_ENDS = (";", "&&")
+#: Unquoted characters read_env_file refuses rather than model: a
+#: redirection, a pipe, a skipped `||` branch or a background job.
+_REFUSED = "<>|&"
 
 
 def _operator(text: str, i: int) -> str:
-    return next((op for op in _ENDS if text.startswith(op, i)), "")
+    """The operator at `i`; raises `_Operator` for a refused one."""
+    op = next((op for op in _ENDS if text.startswith(op, i)), "")
+    if not op and text[i:i + 1] and text[i] in _REFUSED:
+        raise _Operator(text[i:i + 2] if text.startswith("||", i) else text[i])
+    return op
 
 
 def _shell_word(text: str, home: str) -> tuple[str | None, str]:
     """The value `.` assigns from `text`, the part after `=`, and the
     text of the line's next statement, `""` when none (sd:10423).
 
-    An unquoted `;`, `&&`, `||`, `<` or `>` ends the value, and so does
-    an unquoted blank before one of them, `# comment` or the line end.
-    Any other unquoted blank stays, and leading blanks drop, as read_env
-    did before: `.` assigns nothing from such a line, nor from one with a
-    lone `&`, `|` or a parenthesis, so only a Python reader sees it and
-    its path may hold a space. Quotes join and are removed, a backslash
+    An unquoted `;` or `&&` ends the value, and so does an unquoted blank
+    before one of them, `# comment` or the line end; an unquoted `<`,
+    `>`, `|` or `&` raises `_Operator` (refused, not modelled). Any other
+    unquoted blank stays, and leading blanks drop, as read_env did
+    before: `.` assigns nothing from such a line, nor from one with a
+    parenthesis, so only a Python reader sees it and its path may hold a
+    space. Quotes join and are removed, a backslash
     escapes one character (inside double quotes only `$`, `` ` ``, `"`,
     `\\`), and `$HOME`, `${HOME}` and a leading unquoted `~/` expand
     outside single quotes. A None value for an unclosed quote, which `.`
@@ -159,7 +187,7 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str]:
         elif char == "'":
             quote = "'"
         elif op := _operator(text, i):
-            return "".join(out), text[i + len(op):] if _ENDS[op] else ""
+            return "".join(out), text[i + len(op):]
         elif char in _BLANK:
             rest = text[i:].lstrip(_BLANK)
             if not rest or rest.startswith("#"):
