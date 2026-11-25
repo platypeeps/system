@@ -1117,12 +1117,15 @@ class RemoteControlReconnects(Machine):
         # sd:10687 review: each session's pass had its own budget, so
         # many slow sessions plus the auto tick could pass the job's 5
         # minute limit. All passes together end by twice the budget.
+        # Twice 6 s is 12; one budget per pass is at least 30. The 20 s
+        # bound leaves 8 s for a loaded gate: 8 under twice 3 s failed
+        # at 9.8 s under load 40 (sd:10699 lane).
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         start = time.monotonic()
-        self.sync("elsewhere", CSWAP_RC_BUDGET="3", FAKE_HERDR_LIST_SLOW="30",
+        self.sync("elsewhere", CSWAP_RC_BUDGET="6", FAKE_HERDR_LIST_SLOW="60",
                   FAKE_HERDR_SESSIONS="a b c d")
-        self.assertLess(time.monotonic() - start, 8)
+        self.assertLess(time.monotonic() - start, 20)
 
     def test_reconnect_ends_inside_the_sync_limit(self):
         # sd:10687 lane review: the auto tick and the publish can use
