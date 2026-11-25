@@ -31,11 +31,13 @@ reads only the conf's `disk|` lines and samples each filesystem once.
   build output, expired session logs), with no update and no Sunday prune.
   Then it records free bytes before and after.
 - Still below after that: an `SD_REPORT_ATTENTION` line.
+- A path df cannot stat, a bad threshold or no `disk|` line needs
+  attention too; a probe that measured no filesystem exits 1.
 
 | Step | State moved | Failure | Recovery | Test |
 | --- | --- | --- | --- | --- |
-| Sample | Nothing | df cannot stat a path | Named; no cleanup for it | `test_a_bad_threshold_or_unknown_path_is_named` |
-| Lock | Nothing | maintenance-nightly holds it | Skip; the nightly cleans | `test_a_probe_skips_while_the_nightly_run_holds_its_lock` |
+| Sample | Nothing | df cannot stat a path, a bad threshold, or no disk line | Attention line; exit 1 when no filesystem was measured | `test_a_probe_that_measures_nothing_fails_and_needs_attention`, `test_one_failed_path_beside_a_healthy_one_needs_attention` |
+| Lock | Nothing | maintenance-nightly holds it | Skip; the nightly cleans; a failed path still needs attention | `test_a_probe_skips_while_the_nightly_run_holds_its_lock`, `test_a_held_lock_still_names_a_path_that_failed` |
 | Clean | Caches removed | Stopped halfway | The lock frees on exit; the next probe cleans again | `test_a_probe_under_pressure_cleans_and_records_free_bytes` |
 | Remeasure | Nothing | Too little freed | Attention line | `test_a_probe_that_cleans_too_little_needs_attention` |
 

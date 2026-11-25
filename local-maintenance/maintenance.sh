@@ -321,6 +321,15 @@ KEYS="$TMPD/keys"           # what each finding is, for the report's reason
 finding() { echo "- $1" >> "$FINDINGS"; echo "${2:-$1}" >> "$KEYS"; }
 action()  { echo "- $1" >> "$ACTIONS"; }
 
+# attention: one SD_REPORT_ATTENTION line per finding key; see the report's
+# end for how the ingest folds them.
+attention() {
+  [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ] || return 0
+  awk -v p="SD_REPORT_ATTENTION: maintenance on $(hostname -s): " '
+    /^[ \t]/ { sub(/^[ \t]+/, ""); if (NF) print p h " " $0; next }
+    NF { h = $0; print p $0 }' "$KEYS"
+}
+
 expand() {
   # shellcheck disable=SC2088  # matching a literal leading ~/ on purpose
   case "$1" in
@@ -535,16 +544,22 @@ else
   disk_sample > "$TMPD/disk.before"
   while IFS="$(printf '\t')" read -r state free bytes pct path; do
     if [ "$state" = error ]; then
-      echo "disk: cannot stat filesystem of $path"
+      finding "disk: cannot stat filesystem of $path"
     else
       echo "disk: ${free}% free ($bytes bytes) on $path (threshold ${pct}%)"
     fi
   done < "$TMPD/disk.before"
-  if [ -s "$FINDINGS" ]; then
-    echo "findings (need a human):"
-    cat "$FINDINGS"
+  [ -s "$DISKS" ] || [ -s "$FINDINGS" ] || finding "disk: no disk| line to probe"
+  # A probe that measured no filesystem is a failed run, never a pass.
+  if ! grep -q '^low' "$TMPD/disk.before"; then
+    if [ -s "$FINDINGS" ]; then
+      echo "findings (need a human):"
+      cat "$FINDINGS"
+      attention
+    fi
+    grep -q '^ok' "$TMPD/disk.before" || exit 1
+    exit 0
   fi
-  grep -q '^low' "$TMPD/disk.before" || exit 0
   lock="$DIR/../local-cron-jobs/logs/.maintenance-nightly.flock"
   exec 9>>"$lock" || { echo "maintenance.sh probe: cannot open the lock file $lock" >&2; exit 1; }
   taken=0
@@ -552,12 +567,16 @@ else
   perl -e 'use Fcntl ":flock"; open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX|LOCK_NB) or exit 1; exit 0' || taken=$?
   if [ "$taken" -eq 1 ]; then
     echo "disk: below threshold, and maintenance-nightly holds its lock; its cleanup runs now"
+    if [ -s "$FINDINGS" ]; then
+      echo "findings (need a human):"
+      cat "$FINDINGS"
+      attention
+    fi
     exit 0
   elif [ "$taken" -ne 0 ]; then
     echo "maintenance.sh probe: could not take the lock on $lock (perl exit $taken)" >&2
     exit 1
   fi
-  : > "$FINDINGS"; : > "$KEYS"
 fi
 
 # --- built-in checks ---------------------------------------------------
@@ -1003,11 +1022,7 @@ fi
 # older one on this host, with the exceptions local-cron-jobs/README.md names
 # (pack sd:4641). The host stays in each line, as every host files under the
 # one job name.
-if [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ]; then
-  awk -v p="SD_REPORT_ATTENTION: maintenance on $(hostname -s): " '
-    /^[ \t]/ { sub(/^[ \t]+/, ""); if (NF) print p h " " $0; next }
-    NF { h = $0; print p $0 }' "$KEYS"
-fi
+attention
 
 # The uv skip streak, persisted once the report above is out (sd:9377).
 if [ -n "${UV_SKIPS_NEXT:-}" ]; then

@@ -88,11 +88,42 @@ class DiskProbeTest(Harness):
         self.assertEqual(self.logged("brew"), [])
         self.assertIn("maintenance-nightly holds its lock", run.stdout)
 
-    def test_a_bad_threshold_or_unknown_path_is_named(self):
-        run = self.maintenance(f"disk|{self.first}|ten\n", "probe")
-        self.assertIn(f"conf: bad disk threshold in maintenance.conf line 1: disk|{self.first}|ten", run.stdout)
-        self.assertEqual(self.logged("df"), [])
-        _stub(self.bin / "df", "exit 1\n")
-        run = self.maintenance(f"disk|{self.first}|10\n", "probe")
-        self.assertIn(f"disk: cannot stat filesystem of {self.first}", run.stdout)
-        self.assertEqual(self.logged("brew"), [])
+    def test_a_held_lock_still_names_a_path_that_failed(self):
+        missing = self.tmp / "missing"
+        _stub(self.bin / "df", 'case "$2" in *missing) exit 1 ;; esac\n'
+              'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"\n'
+              'echo "/dev/disk3s5 1000 950 50 95% /"\n')
+        with open(self.lock_dir / ".maintenance-nightly.flock", "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            run = self.maintenance(f"disk|{self.first}|10\ndisk|{missing}|10\n", "probe")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(self.attention(run),
+                         [f"SD_REPORT_ATTENTION: maintenance on fixturehost: disk: cannot stat filesystem of {missing}"])
+
+    def test_a_probe_that_measures_nothing_fails_and_needs_attention(self):
+        # sd:10426 review: every check failing printed a line and exited 0, a pass.
+        cases = (
+            ("bad threshold", f"disk|{self.first}|ten\n", "exit 0\n",
+             f"conf: bad disk threshold in maintenance.conf line 1: disk|{self.first}|ten"),
+            ("no stat", f"disk|{self.first}|10\n", "exit 1\n", f"disk: cannot stat filesystem of {self.first}"),
+            ("no disk line", "# nothing\n", "exit 0\n", "disk: no disk| line to probe"),
+        )
+        for name, conf, df, finding in cases:
+            with self.subTest(name):
+                _stub(self.bin / "df", df)
+                run = self.maintenance(conf, "probe")
+                self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+                self.assertIn(f"- {finding}", run.stdout)
+                self.assertEqual(self.attention(run), [f"SD_REPORT_ATTENTION: maintenance on fixturehost: {finding}"])
+                self.assertEqual(self.logged("brew"), [])
+
+    def test_one_failed_path_beside_a_healthy_one_needs_attention(self):
+        self.used.write_text("50\n")
+        missing = self.tmp / "missing"
+        _stub(self.bin / "df", 'case "$2" in *missing) exit 1 ;; esac\n'
+              'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"\n'
+              'echo "/dev/disk3s5 1000 500 500 50% /"\n')
+        run = self.maintenance(f"disk|{self.first}|10\ndisk|{missing}|10\n", "probe")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(self.attention(run),
+                         [f"SD_REPORT_ATTENTION: maintenance on fixturehost: disk: cannot stat filesystem of {missing}"])
