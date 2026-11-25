@@ -176,6 +176,24 @@ class BrewDoctorTest(unittest.TestCase):
                               capture_output=True, text=True, timeout=30)
         self.assertEqual(kegs.stdout, "example-keg\n")
 
+    def drop_keg(self, text, keg="rust"):
+        doctor = self.tmp / "doctor"
+        doctor.write_text(text)
+        return subprocess.run(["sh", "-c", f'. "{LIB}/brew_unlinked.sh"; st_drop_unlinked_keg "$1" "$2"',
+                               "sh", keg, str(doctor)], capture_output=True, text=True, timeout=30).stdout
+
+    def test_dropped_last_warning_takes_the_footer_with_it(self):
+        """The footer after a dropped last warning read as the text of the
+        warning before it in the report (sd:10734)."""
+        other = "Warning: Some other finding.\n  example-path\n\n"
+        footer = "This is a Tier 2 configuration:\n  https://docs.brew.sh/Support-Tiers#tier-2\n"
+        unlinked = "Warning: You have unlinked kegs in your Cellar.\n\nRun `brew link` on these:\n  rust\n\n"
+        self.assertEqual(self.drop_keg(other + unlinked + footer), other)
+        kept = "Warning: You have unlinked kegs in your Cellar.\n\nRun `brew link` on these:\n  other-keg\n\n"
+        self.assertEqual(self.drop_keg(other + unlinked.replace("  rust\n", "  rust\n  other-keg\n") + footer),
+                         other + kept + footer)
+        self.assertEqual(self.drop_keg(unlinked + other + footer), other + footer)
+
     def test_rust_on_purpose_leaves_other_unlinked_kegs_reported(self):
         recheck = ("Warning: You have unlinked kegs in your Cellar.\n"
                    "Run `brew link` on these:\n  rust\n  other-keg\n\n")
