@@ -174,7 +174,7 @@ class EnvFile(unittest.TestCase):
         (self.conf / "meter").mkdir(parents=True)
         (self.conf / "meter/.env").write_text(
             "AGENT_METER_FILE=$HOME/my ledger/meter.jsonl\n"
-            "N=two  words # note\nT=a b\t\nL= /lead\n")
+            "N=two  words\nT=a b\t\nL= /lead\n")
         home = self.envv["HOME"]
         self.assertEqual(stc.read_env("meter", self.envv),
                          {"AGENT_METER_FILE": f"{home}/my ledger/meter.jsonl",
@@ -195,14 +195,36 @@ class EnvFile(unittest.TestCase):
                 self.assertNotIn("s3cr3t", message)
                 self.assertNotIn("t0k", message)
 
+    def test_a_multi_word_value_reads_as_before_or_refuses(self):
+        # Review: `.` assigns nothing from an unquoted multi-word value,
+        # so only Python reads it; it must read as it did before
+        # sd:10423, whole, or refuse by name, never a shorter path.
+        (self.conf / "meter").mkdir(parents=True)
+        env = self.conf / "meter/.env"
+        for text in ("AGENT_METER_FILE=$HOME/my ledger #2/meter.jsonl",
+                     "AGENT_METER_FILE=$HOME/my ledger;2/meter.jsonl",
+                     "AGENT_METER_FILE=$HOME/my ledger && b/meter.jsonl",
+                     'AGENT_METER_FILE=$HOME/my "led" ger/meter.jsonl',
+                     "AGENT_METER_FILE=$HOME/my led\\ger/meter.jsonl",
+                     "AGENT_METER_FILE=$HOME/my ledger # note"):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.read_env("meter", self.envv)
+                self.assertIn(f"{env}:1: AGENT_METER_FILE:", str(caught.exception))
+        env.write_text("A=$HOME/my ledger/meter.jsonl\nB=  x  y  \nC=x y\t\n")
+        home = self.envv["HOME"]
+        self.assertEqual(stc.read_env("meter", self.envv),
+                         {"A": f"{home}/my ledger/meter.jsonl", "B": "x  y", "C": "x y"})
+
     def test_python_keeps_what_sourcing_does_not_assign(self):
         # `.` leaves these unset (a syntax error, a second word), so
         # only Python reads them: the text stays whole, as before
-        # sd:10423. A `;` after one still ends it.
+        # sd:10423; a multi-word one with a `;` refuses (see above).
         (self.conf / "odd").mkdir(parents=True)
-        (self.conf / "odd/.env").write_text("G=a(b)\nW=x y; Z=1\n")
+        (self.conf / "odd/.env").write_text("G=a(b)\nW=x y\n")
         self.assertEqual(stc.read_env("odd", self.envv),
-                         {"G": "a(b)", "W": "x y", "Z": "1"})
+                         {"G": "a(b)", "W": "x y"})
 
     def test_python_refuses_a_redirection_pipe_or_background(self):
         # sd:10423 lead ruling: a misread sends agent-meter to the

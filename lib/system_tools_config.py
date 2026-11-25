@@ -97,13 +97,20 @@ def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
                 # `2>/dev/null X=1` still assigns X when sourced. The
                 # text before `=` is named only when it ends in a name.
                 name = key.split()[-1] if key.split() else ""
-                raise _refused(path, number, name if name.isidentifier() else "", op)
+                raise _refused(path, number, name if name.isidentifier() else "",
+                               _OPERATOR % op)
             if not sep or not key.isidentifier():
                 break
+            raw = value
             try:
-                value, line = _shell_word(value, home)
+                value, line, several = _shell_word(value, home)
             except _Operator as e:
-                raise _refused(path, number, key, str(e)) from None
+                raise _refused(path, number, key, _OPERATOR % e) from None
+            if several and value != _legacy_value(raw, home):
+                # `.` assigns nothing from a multi-word value, so only a
+                # Python reader sees it: read it as before sd:10423 or
+                # refuse, never a shorter path.
+                raise _refused(path, number, key, _SEVERAL)
             if value is not None:
                 values[key] = value
     return values
@@ -117,11 +124,30 @@ class _Operator(Exception):
     pass
 
 
-def _refused(path: Path, number: int, key: str, op: str) -> EnvFileError:
+_OPERATOR = ("an unquoted %r (redirection, pipe, || or background job) "
+             "is not read; quote it or drop it")
+_SEVERAL = ("an unquoted value of several words with a comment, operator, "
+            "quote or backslash is not read; quote the whole value")
+
+
+def _refused(path: Path, number: int, key: str, reason: str) -> EnvFileError:
     # Names no value: an env file may hold a secret.
-    return EnvFileError(
-        f"{path}:{number}: {key + ': ' if key else ''}an unquoted {op!r} (redirection, pipe, "
-        "|| or background job) is not read; quote it or drop it")
+    return EnvFileError(f"{path}:{number}: {key + ': ' if key else ''}{reason}")
+
+
+def _legacy_value(text: str, home: str) -> str:
+    """The value read_env read before sd:10423: the rest of the line,
+    stripped, one pair of matching outer quotes dropped, `$HOME` and a
+    leading `~/` expanded outside single quotes."""
+    value = text.strip()
+    quote = value[0] if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"" else ""
+    if quote:
+        value = value[1:-1]
+    if quote != "'":
+        value = _HOME.sub(lambda _: home, value)
+        if not quote and (value == "~" or value.startswith("~/")):
+            value = home + value[1:]
+    return value
 
 
 _BLANK = " \t"
@@ -140,9 +166,10 @@ def _operator(text: str, i: int) -> str:
     return op
 
 
-def _shell_word(text: str, home: str) -> tuple[str | None, str]:
-    """The value `.` assigns from `text`, the part after `=`, and the
-    text of the line's next statement, `""` when none (sd:10423).
+def _shell_word(text: str, home: str) -> tuple[str | None, str, bool]:
+    """The value `.` assigns from `text`, the part after `=`, the text
+    of the line's next statement, `""` when none (sd:10423), and
+    whether an unquoted inner blank made it several words.
 
     An unquoted `;` or `&&` ends the value, and so does an unquoted blank
     before one of them, `# comment` or the line end; an unquoted `<`,
@@ -150,7 +177,8 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str]:
     unquoted blank stays, and leading blanks drop, as read_env did
     before: `.` assigns nothing from such a line, nor from one with a
     parenthesis, so only a Python reader sees it and its path may hold a
-    space. Quotes join and are removed, a backslash
+    space; read_env_file refuses such a value unless it reads as it did
+    before sd:10423. Quotes join and are removed, a backslash
     escapes one character (inside double quotes only `$`, `` ` ``, `"`,
     `\\`), and `$HOME`, `${HOME}` and a leading unquoted `~/` expand
     outside single quotes. A None value for an unclosed quote, which `.`
@@ -158,8 +186,9 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str]:
     if text[:1] in tuple(_BLANK):
         text = text.lstrip(_BLANK)
         if text.startswith("#"):
-            return "", ""
+            return "", "", False
     out: list[str] = []
+    several = False
     if text == "~" or text.startswith(("~/", "~ ", "~\t", "~;")):
         out.append(home)
         text = text[1:]
@@ -189,17 +218,18 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str]:
         elif char == "'":
             quote = "'"
         elif op := _operator(text, i):
-            return "".join(out), text[i + len(op):]
+            return "".join(out), text[i + len(op):], several
         elif char in _BLANK:
             rest = text[i:].lstrip(_BLANK)
             if not rest or rest.startswith("#"):
                 break
             if not _operator(rest, 0):
                 out.append(char)
+                several = True
         else:
             out.append(char)
         i += 1
-    return (None if quote else "".join(out)), ""
+    return (None if quote else "".join(out)), "", several
 
 
 def setting(name: str, saved: dict[str, str], environ: dict[str, str] | None = None) -> str | None:
