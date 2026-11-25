@@ -94,8 +94,10 @@ def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
             key, sep, value = line.partition("=")
             key = key.strip()
             if sep and (op := next((c for c in _REFUSED if c in key), "")):
-                # `2>/dev/null X=1` still assigns X when sourced.
-                raise _refused(path, number, key.split()[-1], op)
+                # `2>/dev/null X=1` still assigns X when sourced. The
+                # text before `=` is named only when it ends in a name.
+                name = key.split()[-1] if key.split() else ""
+                raise _refused(path, number, name if name.isidentifier() else "", op)
             if not sep or not key.isidentifier():
                 break
             try:
@@ -118,7 +120,7 @@ class _Operator(Exception):
 def _refused(path: Path, number: int, key: str, op: str) -> EnvFileError:
     # Names no value: an env file may hold a secret.
     return EnvFileError(
-        f"{path}:{number}: {key}: an unquoted {op!r} (redirection, pipe, "
+        f"{path}:{number}: {key + ': ' if key else ''}an unquoted {op!r} (redirection, pipe, "
         "|| or background job) is not read; quote it or drop it")
 
 

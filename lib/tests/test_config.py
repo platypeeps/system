@@ -180,6 +180,21 @@ class EnvFile(unittest.TestCase):
                          {"AGENT_METER_FILE": f"{home}/my ledger/meter.jsonl",
                           "N": "two  words", "T": "a b", "L": "/lead"})
 
+    def test_a_refusal_names_no_private_text(self):
+        # Review: the word before `=` is operator text, not always a
+        # name; only an identifier may reach the message.
+        (self.conf / "bad").mkdir(parents=True)
+        env = self.conf / "bad/.env"
+        for text in ("Y s3cr3t>t0k=1", "s3cr3t|t0k=1", "s3cr3t&t0k=1"):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.read_env("bad", self.envv)
+                message = str(caught.exception)
+                self.assertIn(f"{env}:1:", message)
+                self.assertNotIn("s3cr3t", message)
+                self.assertNotIn("t0k", message)
+
     def test_python_keeps_what_sourcing_does_not_assign(self):
         # `.` leaves these unset (a syntax error, a second word), so
         # only Python reads them: the text stays whole, as before
