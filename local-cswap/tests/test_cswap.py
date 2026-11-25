@@ -203,6 +203,15 @@ if args[:2] == ["agent", "list"]:
         print("herdr: server not running", file=sys.stderr)
         sys.exit(1)
     print(json.dumps({"id": "cli:agent:list", "result": {"agents": [agent(r) for r in panes]}}))
+elif args[:3] == ["session", "list", "--json"]:
+    # The running sessions, FAKE_HERDR_SESSIONS (default "default sd");
+    # FAKE_HERDR_SESSIONS_DOWN: no answer.
+    # FAKE_HERDR_DOWN: no server runs, so none is listed running.
+    if os.environ.get("FAKE_HERDR_SESSIONS_DOWN"):
+        sys.exit(1)
+    names = [] if os.environ.get("FAKE_HERDR_DOWN") else os.environ.get("FAKE_HERDR_SESSIONS", "default sd").split()
+    print(json.dumps({"sessions": [{"name": n, "running": True} for n in names]
+                      + [{"name": "stopped", "running": False}]}))
 elif args[:2] == ["agent", "get"]:
     import time
     # A switch by another sync that lands during the pass.
@@ -1064,6 +1073,21 @@ class RemoteControlReconnects(Machine):
                 self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
                 self.assertEqual(self.owed(), [])
 
+    def test_every_running_herdr_session_is_asked(self):
+        # sd:10687: the operator's own panes run in herdr's default
+        # session, builders in sd; a sync asked sd only, and no
+        # interactive pane got /rc. With no HERDR_SESSION a sync asks
+        # each running session; a session list that does not answer
+        # asks sd, as before.
+        for session, extra in (("default", {}), ("sd", {}),
+                               ("sd", {"FAKE_HERDR_SESSIONS_DOWN": "1"})):
+            with self.subTest(session=session, extra=extra):
+                self.publish(ONE if self.active() == 3 else THREE)
+                self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+                result = self.sync("elsewhere", FAKE_HERDR_SESSION=session, **extra)
+                self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
+                self.assertEqual(self.owed(), [])
+
     def test_a_pane_owed_in_another_herdr_session_outlives_this_sync(self):
         # sd:9427 blocker (cswap.sh:409): the owed list kept no herdr
         # session, so a cron sync over sd read a pane owed in session
@@ -1219,6 +1243,7 @@ class RemoteControlReconnects(Machine):
         # Review on sd:9427: a switch during the list must not be marked
         # listed by that list; the next sync lists again for it.
         mark = self.script.parent / "state/rc-pending"
+        self.env["FAKE_HERDR_SESSIONS"] = "sd"
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "working", "s1", DROPPED])
         self.sync("elsewhere", FAKE_SWITCH_DURING_LIST=str(mark))
@@ -1452,7 +1477,16 @@ class RemoteControlReconnects(Machine):
             "dialog-cursor-below": (f"{DROP_LINE}\n" + box(empty) + "\n ❯ 1. Yes\n   2. No", False),
             "dialog-rule-below": (f"{DROP_LINE}\n" + box(empty) + f"\n{RULE}\n Bash command", False),
             "dialog-typed-rule-below": (f"{DROP_LINE}\n" + box(empty) + f"\n{TYPED_RULE}\n Bash", False),
-            "dialog-long-below": (f"{DROP_LINE}\n" + box(empty) + "\n line" * 5, False),
+            "dialog-long-below": (f"{DROP_LINE}\n" + box(empty) + "\n line" * 9, False),
+            # sd:10687: the operator's status line takes three lines; with
+            # the mode line and Claude's right-aligned hints the footer
+            # was six (read 2026-11-25), and every pane waited.
+            "footer-status-lines": (f"{DROP_LINE}\n" + box(empty)
+                                    + "\n  Context \u2588\u2591 11% \u2502 Cache expired"
+                                    "\n  Tokens 1.9M (in: 42, out: 8k) \u2502 grinch"
+                                    "\n  \u23f5\u23f5 auto mode on (shift+tab to cycle)"
+                                    "\n" + " " * 60 + "new task? /clear to save 101.5k tokens"
+                                    "\n" + " " * 80 + "/rc failed", True),
             # Footer lines Claude draws below the box still send.
             "footer-mode": (f"{DROP_LINE}\n" + box(empty) + "\n  ⏵⏵ auto mode on (shift+tab to cycle)",
                             True),
@@ -1722,7 +1756,8 @@ class RemoteControlReconnects(Machine):
 
     def test_a_herdr_down_at_the_switch_is_asked_again(self):
         # Fold-in: a list that failed at the switch owed nothing, and the
-        # next sync (no switch) never asked again.
+        # next sync (no switch) never asked again. One herdr session runs.
+        self.env["FAKE_HERDR_SESSIONS"] = "sd"
         self.publish(THREE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
         self.sync("elsewhere", FAKE_HERDR_DOWN="1")
@@ -1730,9 +1765,10 @@ class RemoteControlReconnects(Machine):
         self.sync("elsewhere")
         self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"])
         # The mark stays for other herdr sessions, but sd listed once:
-        # a later sync with nothing owed asks herdr nothing.
+        # a later sync with nothing owed asks no herdr server; the
+        # session list reads only herdr's files.
         self.sync("elsewhere")
-        self.assertEqual(self.called("herdr"), [])
+        self.assertEqual(self.called("herdr agent"), [])
 
     def test_a_list_that_is_not_the_agent_list_is_a_parse_failure(self):
         self.publish(THREE)
@@ -2111,11 +2147,12 @@ class RemoteControlReconnects(Machine):
         # is listed already and no pane is owed a second time.
         now = int(time.time())
         owed = self.owe(f"sd w1:p1 s1 {now} sent\n", now)
+        self.env["FAKE_HERDR_SESSIONS"] = "sd"
         self.publish(ONE)
         self.panes(["w1:p1", "claude", "idle", "s1", DROPPED], ["w1:p2", "claude", "idle", "s2", DROPPED])
         self.sync("elsewhere")
         self.assertEqual(self.mark(), f"{now} 42 {ONE}\n")
-        self.assertEqual(self.called("herdr"), [])
+        self.assertEqual(self.called("herdr agent"), [])
         self.assertEqual(owed.read_text(), f"sd w1:p1 s1 {now} sent\n")
 
     def test_a_switch_after_a_two_field_mark_is_owed_when_its_mark_fails(self):

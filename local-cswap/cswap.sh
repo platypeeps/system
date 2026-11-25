@@ -81,10 +81,13 @@ RC_GAP_MS="${CSWAP_RC_GAP_MS:-5000}"
 RC_DEADLINE=""
 HERDR_DIRS="${CSWAP_HERDR_DIRS-$HOME/.local/bin /opt/homebrew/bin /usr/local/bin}"
 HERDR=""
-# Every herdr call targets the session local-herdr starts (sd unless
-# HERDR_SESSION says), not herdr's default: cron found no panes there,
-# and its empty list cleared a pending switch. A socket path inherited
-# from another session's pane would override the name, so it goes.
+# A reconnect asks every running herdr session in turn, by name: the
+# operator's own panes run in herdr's default session, builders in the
+# sd one local-herdr starts (sd:10687). HERDR_SESSION names one session
+# only. Each session keeps its own rows and listing, so an empty one
+# clears no other's switch. A socket path inherited from another
+# session's pane would override the name, so it goes.
+HERDR_ONLY="${HERDR_SESSION:-}"
 export HERDR_SESSION="${HERDR_SESSION:-sd}"
 unset HERDR_SOCKET_PATH
 AGENTS=""
@@ -335,8 +338,9 @@ else:
     # old empty box with a permission dialog drawn below it waits. Below
     # the bottom rule only a short footer may follow (status line, mode
     # line): no box-drawing line, numbered option or dialog hint.
-    # ponytail: footer read by shape and a cap of 3 lines; a longer
-    # custom status line waits, and gets /rc once it fits.
+    # ponytail: footer read by shape and a cap of 8 lines (a 3-line
+    # status line, the mode line and hints made 6, sd:10687); a longer
+    # one waits, and gets /rc once it fits.
     def footer(text):
         t = text.strip()
         return not ("─" <= t[:1] <= "╿" or re.match(r"(❯|>)?\s*\d+[.)]\s", t)
@@ -347,7 +351,7 @@ else:
     # #70122): Claude lists matching slash commands below the box, so
     # no cap on the footer there; a dialog line still waits.
     typed = sys.argv[1] == "typed"
-    one_box = one_box and (typed or len(tail) <= 3) and all(footer(t) for t in tail)
+    one_box = one_box and (typed or len(tail) <= 8) and all(footer(t) for t in tail)
     # Empty is a match, never what is left after deleting (sd:9427 class
     # pass): the line is exactly ❯ and its NBSP, plus at most dim text (a
     # prompt suggestion). No strip, as a draft can be blanks of any kind,
@@ -770,10 +774,24 @@ rc_lock() {
   return 1
 }
 
-# One reconnect pass under RC_LOCK; a sync that finds it held skips,
-# and every owed row and pending mark stays for the next sync.
+# The herdr sessions to ask, one name a line: HERDR_ONLY, else every
+# running session `herdr session list` names; sd when it does not answer.
+herdr_sessions() {
+  local bin names
+  [[ -z "$HERDR_ONLY" ]] || { echo "$HERDR_ONLY"; return 0; }
+  bin=$(herdr_bin) && names=$(st_step 20 "$bin" session list --json 9>&- | python3 -I -c '
+import json, sys
+for s in json.load(sys.stdin)["sessions"]:
+    if s.get("running") and isinstance(s.get("name"), str) and s["name"].split() == [s["name"]]:
+        print(s["name"])') && [[ -n "$names" ]] || names=sd
+  echo "$names"
+}
+
+# One reconnect pass per herdr session under RC_LOCK; a sync that finds
+# it held skips, and every owed row and pending mark stays for the next
+# sync.
 reconnect() {
-  local rc=0
+  local rc=0 session sessions
   rc_lock || rc=$?
   if ((rc == 2)); then
     echo "reconnect: skipped: could not open $RC_LOCK; the next sync tries again"
@@ -783,7 +801,16 @@ reconnect() {
     echo "reconnect: skipped: another sync is reconnecting; the next sync tries again"
     return 0
   fi
-  reconnect_pass
+  # No current switch and no owed row: nothing to ask herdr.
+  sessions=$HERDR_SESSION
+  if [[ -s "$RC_OWED" || -n "$(current_since 2>/dev/null)" ]]; then
+    sessions=$(herdr_sessions)
+  fi
+  for session in $sessions; do
+    export HERDR_SESSION="$session"
+    LISTED="" PANES="" AGENTS=""
+    reconnect_pass
+  done
   exec 9>&-
 }
 
