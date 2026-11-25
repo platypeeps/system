@@ -301,6 +301,34 @@ class CronJobDirs(unittest.TestCase):
         self.assertEqual(self.twin.cron_job_dirs(env)[0], self.jobs / "mini")
         self.assertEqual(stc.cron_job_dirs({**env, "CRON_JOBS_HOST": "studio"})[0], self.jobs / "studio")
 
+    #: .env lines and the CRON_JOBS_HOST `.` leaves; pack sd:10424's
+    #: dashboard reader takes the same cases (sd:10423).
+    HOST_LINES = [
+        ("CRON_JOBS_HOST=mini # this machine", "mini"),
+        ("CRON_JOBS_HOST=mini\t# tab", "mini"),
+        ('CRON_JOBS_HOST="mini" # quoted', "mini"),
+        ("CRON_JOBS_HOST='mini' # single", "mini"),
+        ('CRON_JOBS_HOST="mini # kept"', "mini # kept"),
+        ("CRON_JOBS_HOST=mini#kept", "mini#kept"),
+        ("CRON_JOBS_HOST=mi'ni'\"x\"", "minix"),
+        ("CRON_JOBS_HOST=mini\\ two", "mini two"),
+        ('CRON_JOBS_HOST="m\\"i"', 'm"i'),
+        ("export CRON_JOBS_HOST=mini  # export", "mini"),
+        ("CRON_JOBS_HOST=  # nothing", ""),
+        ("CRON_JOBS_HOST=mïni # non-ASCII", "mïni"),
+    ]
+
+    def test_an_inline_comment_ends_the_value_as_sourcing_does(self):
+        base = self.cases()[2]
+        for line, expected in self.HOST_LINES:
+            with self.subTest(line=line):
+                (self.conf / "cron-jobs/.env").write_text(line + "\n", encoding="utf-8")
+                done = shell('st_source_env cron-jobs; printf "%s" "$CRON_JOBS_HOST"', base)
+                self.assertEqual(done.stdout, expected, "the fixture disagrees with sh")
+                self.assertEqual(stc.read_env("cron-jobs", base)["CRON_JOBS_HOST"], expected)
+                if expected:
+                    self.assertEqual(stc.cron_job_dirs(base)[0], self.jobs / expected.lower())
+
     def test_an_exported_empty_value_beats_the_file(self):
         # sd:3964: cron-jobs.sh keeps an exported empty value (st_source_env),
         # so the file's host and extra folder must not come back here. The

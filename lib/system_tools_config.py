@@ -67,8 +67,9 @@ _HOME = re.compile(r"\$\{HOME\}|\$HOME(?![A-Za-z0-9_])")
 def read_env(tool: str, environ: dict[str, str] | None = None) -> dict[str, str]:
     """`KEY=value` lines from <config>/<tool>/.env; `{}` when it is absent.
 
-    Blank lines, comments and an `export ` prefix are allowed; one layer of
-    matching quotes is removed. `$HOME`, `${HOME}` and a leading `~/` expand
+    Blank lines, comments and an `export ` prefix are allowed; a value is
+    read as `.` reads one word (`_shell_word`), so an inline `# comment`
+    ends it. `$HOME`, `${HOME}` and a leading `~/` expand
     as they do when `st_source_env` sources the file, except inside single
     quotes; no other variable expands (sd:1868).
     """
@@ -92,16 +93,53 @@ def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
         key, sep, value = line.partition("=")
         if not sep or not key.strip().isidentifier():
             continue
-        value = value.strip()
-        quote = value[0] if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"" else ""
-        if quote:
-            value = value[1:-1]
-        if quote != "'":
-            value = _HOME.sub(lambda _: home, value)
-            if not quote and (value == "~" or value.startswith("~/")):
-                value = home + value[1:]
-        values[key.strip()] = value
+        value = _shell_word(value, home)
+        if value is not None:
+            values[key.strip()] = value
     return values
+
+
+def _shell_word(text: str, home: str) -> str | None:
+    """The value `.` assigns from `text`, the part after `=` (sd:10423).
+
+    The value ends at the first unquoted blank, so an inline `# comment`
+    is dropped; quotes join and are removed, a backslash escapes one
+    character (inside double quotes only `$`, `` ` ``, `"`, `\\`), and
+    `$HOME`, `${HOME}` and a leading unquoted `~/` expand outside single
+    quotes. None for an unclosed quote, which `.` refuses."""
+    out: list[str] = []
+    if text == "~" or text.startswith(("~/", "~ ", "~\t")):
+        out.append(home)
+        text = text[1:]
+    i, quote = 0, ""
+    while i < len(text):
+        char = text[i]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+            else:
+                out.append(char)
+        elif char == "\\" and i + 1 < len(text):
+            following = text[i + 1]
+            if quote and following not in '$`"\\':
+                out.append(char)
+            else:
+                out.append(following)
+            i += 1
+        elif char == "$" and (match := _HOME.match(text, i)):
+            out.append(home)
+            i = match.end()
+            continue
+        elif char == '"':
+            quote = "" if quote else '"'
+        elif char == "'" and not quote:
+            quote = "'"
+        elif char in " \t" and not quote:
+            break
+        else:
+            out.append(char)
+        i += 1
+    return None if quote else "".join(out)
 
 
 def setting(name: str, saved: dict[str, str], environ: dict[str, str] | None = None) -> str | None:
