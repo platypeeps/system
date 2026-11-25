@@ -1104,6 +1104,17 @@ class RemoteControlReconnects(Machine):
                 self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
                 self.assertEqual(self.owed(), [])
 
+    def test_every_reconnect_pass_ends_by_twice_the_budget(self):
+        # sd:10687 review: each session's pass had its own budget, so
+        # many slow sessions plus the auto tick could pass the job's 5
+        # minute limit. All passes together end by twice the budget.
+        self.publish(THREE)
+        self.panes(["w1:p1", "claude", "idle", "s1", DROPPED])
+        start = time.monotonic()
+        self.sync("elsewhere", CSWAP_RC_BUDGET="3", FAKE_HERDR_LIST_SLOW="30",
+                  FAKE_HERDR_SESSIONS="a b c d")
+        self.assertLess(time.monotonic() - start, 8)
+
     def test_session_names_compare_as_text(self):
         # sd:10687 review: awk compared session names as numbers, so a
         # sync over session 1 read session 01's owed row as its own,

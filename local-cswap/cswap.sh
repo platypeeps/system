@@ -791,7 +791,7 @@ for s in json.load(sys.stdin)["sessions"]:
 # it held skips, and every owed row and pending mark stays for the next
 # sync.
 reconnect() {
-  local rc=0 session sessions
+  local rc=0 session sessions end
   rc_lock || rc=$?
   if ((rc == 2)); then
     echo "reconnect: skipped: could not open $RC_LOCK; the next sync tries again"
@@ -801,9 +801,11 @@ reconnect() {
     echo "reconnect: skipped: another sync is reconnecting; the next sync tries again"
     return 0
   fi
-  # The session list, then each session's pass, gets its own budget:
-  # a slow session cannot starve the next (sd:10687 review). Two
-  # sessions and the auto tick (120 s) stay inside JOB_TIMEOUT (5m).
+  # Each session's pass gets its own budget, so a slow session cannot
+  # starve the next; all of them, the session list included, end by
+  # twice the budget, so they and the auto tick (120 s) stay inside
+  # JOB_TIMEOUT (5m) (sd:10687 review).
+  end=$(($(date +%s) + 2 * RC_BUDGET))
   RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
   # No current switch and no unsent row: nothing to ask herdr. Sent
   # rows stay until the next switch, so they ask nothing (sd:10687).
@@ -815,6 +817,7 @@ reconnect() {
   for session in $sessions; do
     export HERDR_SESSION="$session"
     RC_DEADLINE=$(($(date +%s) + RC_BUDGET))
+    ((RC_DEADLINE <= end)) || RC_DEADLINE=$end
     LISTED="" PANES="" AGENTS=""
     reconnect_pass
   done
