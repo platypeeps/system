@@ -6,12 +6,14 @@ with the pack's `bin/sd-db` (SD_PACK_ROOT, the pinned pack in the gate), sets
 first on PATH. Nothing reaches the real model, launchd or the live database.
 """
 
+import fcntl
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import date
 from pathlib import Path
@@ -502,6 +504,56 @@ class NightlyReview(unittest.TestCase):
         today = next(found for found in self.batches() if found["header"]["batch"] == self.today)
         self.assertEqual([q["subject"] for q in today["questions"]], ["ops:stale-service"])
         self.assertIn("dropped lane:repeat-blocker", result.stdout)
+
+    # ------------------------------------------------------------ overlap
+
+    LOCK = FOLDER.parent / "local-cron-jobs" / "logs" / ".nightly-review.flock"
+
+    def hold_lock(self):
+        handle = open(self.LOCK, "a")
+        self.addCleanup(handle.close)
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+
+    def test_two_overlapping_runs_file_one_batch_and_call_the_model_once(self):
+        # sd:10418: a hand run beside the 06:15 one called the model twice. The first run's model
+        # waits for a file; the second run starts meanwhile and must add no model call.
+        self.reply.write_text(json.dumps(SUGGESTIONS))
+        gate = self.tmp / "go"
+        slow = self.bin / "claude"
+        slow.write_text(FAKE_CLAUDE.replace(
+            "cat > \"$CLAUDE_STDIN\"\n",
+            "cat > \"$CLAUDE_STDIN\"\nwhile [ ! -e \"$GATE\" ]; do sleep 0.1; done\n"))
+        env = dict(self.env, GATE=str(gate))
+        first = subprocess.Popen(["sh", str(SCRIPT), "run"], env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
+        self.addCleanup(lambda: first.poll() is None and first.kill())
+        for _ in range(600):
+            if self.stdin.exists():
+                break
+            time.sleep(0.1)
+        second = subprocess.run(["sh", str(SCRIPT), "run"], env=env, capture_output=True, text=True,
+                                timeout=120, stdin=subprocess.DEVNULL)
+        gate.touch()
+        out, err = first.communicate(timeout=120)
+        self.assertEqual(first.returncode, 0, out + err)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertIn("another run holds", second.stdout)
+        self.assertEqual(self.model_runs(), 1)
+        self.assertEqual(len(self.batches()), 1)
+
+    def test_a_held_lock_skips_a_hand_run_but_not_the_runners_own(self):
+        self.hold_lock()
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.model_runs(), 0)
+        self.assertEqual(self.batches(), [])
+        # Under cron-jobs.sh the runner holds this lock for the job, and says so in CRON_JOBS_RUN.
+        self.env["CRON_JOBS_RUN"] = "nightly-review"
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.model_runs(), 1)
+        self.assertEqual(len(self.batches()), 1)
 
     # ------------------------------------------------------------ the entrypoint
 

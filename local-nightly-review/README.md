@@ -60,6 +60,10 @@ into this machine's `<config>/cron-jobs/jobs/<host>/` on the hub, then run
 The bulk root is `sd config get sd.bulk_storage_root`. `SD_PACK_ROOT` names the
 pack, and `CLAUDE_BIN` names the claude binary.
 
+A hand run takes the cron job's lock, `local-cron-jobs/logs/.nightly-review.flock`,
+so it never overlaps the 06:15 run: while another run holds it, a run prints
+one line and exits 0 with no model call (sd:10418).
+
 ## Failures
 
 A failed step stops the run with a non-zero exit, and the cron job reports it.
@@ -68,6 +72,7 @@ suggestions writes the file, files nothing and exits 0.
 
 | Step | State moved | Failure | Recovery | Test |
 | --- | --- | --- | --- | --- |
+| Lock | Nothing | A second run starts while one holds the lock | It exits 0 with no model call; the first files once | `test_two_overlapping_runs_file_one_batch_and_call_the_model_once` |
 | Settings | Nothing | Bulk root unset, or its volume not mounted | Exit 1 before the model | `test_no_bulk_storage_root_fails_before_the_model`, `test_an_unmounted_bulk_storage_root_fails_before_the_model` |
 | Apply | Tasks and closes, in the pack | A pack without `sd-db review` | Exit non-zero before the model; nothing filed | `test_a_pack_without_review_fails_before_the_model` |
 | Rejections | Nothing | `sd store items` or an export fails | Exit non-zero before the model | `test_a_failed_read_of_earlier_rejections_fails_before_the_model` |
