@@ -85,36 +85,52 @@ def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
     if not path.is_file():
         return values
     for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export "):].lstrip()
-        key, sep, value = line.partition("=")
-        if not sep or not key.strip().isidentifier():
-            continue
-        value = _shell_word(value, home)
-        if value is not None:
-            values[key.strip()] = value
+        while line := line.strip():  # one pass per `;` or `&&` statement
+            if line.startswith("#"):
+                break
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            key, sep, value = line.partition("=")
+            if not sep or not key.strip().isidentifier():
+                break
+            value, line = _shell_word(value, home)
+            if value is not None:
+                values[key.strip()] = value
     return values
 
 
-def _shell_word(text: str, home: str) -> str | None:
-    """The value `.` assigns from `text`, the part after `=` (sd:10423).
+_BLANK = " \t"
+#: Unquoted operators `.` assigns across: after `;` and `&&` the next
+#: statement runs; `||` skips it; `<` and `>` open a redirection.
+#: ponytail: the rest of a line is dropped after a redirection or `||`;
+#: read on to the next `;` if a config ever chains past one.
+_ENDS = {";": True, "&&": True, "||": False, "<": False, ">": False}
 
-    An unquoted blank ends the value only before `# comment` or the line
-    end. Elsewhere, as read_env did before, leading blanks drop and inner
-    ones stay, for a Python-only reader whose path holds a space (`.`
-    refuses that line). Quotes join and are removed, a backslash escapes
-    one character (inside double quotes only `$`, `` ` ``, `"`, `\\`),
-    and `$HOME`, `${HOME}` and a leading unquoted `~/` expand outside
-    single quotes. None for an unclosed quote, which `.` refuses."""
-    if text[:1] in (" ", "\t"):
-        text = text.lstrip(" \t")
+
+def _operator(text: str, i: int) -> str:
+    return next((op for op in _ENDS if text.startswith(op, i)), "")
+
+
+def _shell_word(text: str, home: str) -> tuple[str | None, str]:
+    """The value `.` assigns from `text`, the part after `=`, and the
+    text of the line's next statement, `""` when none (sd:10423).
+
+    An unquoted `;`, `&&`, `||`, `<` or `>` ends the value, and so does
+    an unquoted blank before one of them, `# comment` or the line end.
+    Any other unquoted blank stays, and leading blanks drop, as read_env
+    did before: `.` assigns nothing from such a line, nor from one with a
+    lone `&`, `|` or a parenthesis, so only a Python reader sees it and
+    its path may hold a space. Quotes join and are removed, a backslash
+    escapes one character (inside double quotes only `$`, `` ` ``, `"`,
+    `\\`), and `$HOME`, `${HOME}` and a leading unquoted `~/` expand
+    outside single quotes. A None value for an unclosed quote, which `.`
+    refuses."""
+    if text[:1] in tuple(_BLANK):
+        text = text.lstrip(_BLANK)
         if text.startswith("#"):
-            return ""
+            return "", ""
     out: list[str] = []
-    if text == "~" or text.startswith(("~/", "~ ", "~\t")):
+    if text == "~" or text.startswith(("~/", "~ ", "~\t", "~;")):
         out.append(home)
         text = text[1:]
     i, quote = 0, ""
@@ -138,17 +154,22 @@ def _shell_word(text: str, home: str) -> str | None:
             continue
         elif char == '"':
             quote = "" if quote else '"'
-        elif char == "'" and not quote:
+        elif quote:
+            out.append(char)
+        elif char == "'":
             quote = "'"
-        elif char in " \t" and not quote:
-            rest = text[i:].lstrip(" \t")
+        elif op := _operator(text, i):
+            return "".join(out), text[i + len(op):] if _ENDS[op] else ""
+        elif char in _BLANK:
+            rest = text[i:].lstrip(_BLANK)
             if not rest or rest.startswith("#"):
                 break
-            out.append(char)
+            if not _operator(rest, 0):
+                out.append(char)
         else:
             out.append(char)
         i += 1
-    return None if quote else "".join(out)
+    return (None if quote else "".join(out)), ""
 
 
 def setting(name: str, saved: dict[str, str], environ: dict[str, str] | None = None) -> str | None:

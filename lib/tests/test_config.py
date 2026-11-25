@@ -180,6 +180,17 @@ class EnvFile(unittest.TestCase):
                          {"AGENT_METER_FILE": f"{home}/my ledger/meter.jsonl",
                           "N": "two  words", "T": "a b", "L": "/lead"})
 
+    def test_python_keeps_what_sourcing_does_not_assign(self):
+        # `.` leaves these unset (a background job, a pipeline, a syntax
+        # error), so only Python reads them: the text stays whole, as
+        # before sd:10423. A `;` after one still ends it.
+        (self.conf / "odd").mkdir(parents=True)
+        (self.conf / "odd/.env").write_text(
+            "U=http://example.test/?a=1&b=2\nP=a|b\nG=a(b)\nW=x y; Z=1\n")
+        self.assertEqual(stc.read_env("odd", self.envv),
+                         {"U": "http://example.test/?a=1&b=2", "P": "a|b",
+                          "G": "a(b)", "W": "x y", "Z": "1"})
+
     def test_python_absent_is_empty(self):
         self.assertEqual(stc.read_env("nothing", self.envv), {})
 
@@ -329,6 +340,21 @@ class CronJobDirs(unittest.TestCase):
         ("export CRON_JOBS_HOST=mini  # export", "mini"),
         ("CRON_JOBS_HOST=  # nothing", ""),
         ("CRON_JOBS_HOST=mïni # non-ASCII", "mïni"),
+        # Operators `.` honours and assigns across (review round 3).
+        ("CRON_JOBS_HOST=mini;", "mini"),
+        ("CRON_JOBS_HOST=mini ; X=1", "mini"),
+        ("CRON_JOBS_HOST=mini;# note", "mini"),
+        ("X=1; CRON_JOBS_HOST=mini", "mini"),
+        ("X=1;export CRON_JOBS_HOST=mini; Y=2", "mini"),
+        ("X=1 && CRON_JOBS_HOST=mini", "mini"),
+        ("CRON_JOBS_HOST=mini&&X=1", "mini"),
+        ("CRON_JOBS_HOST=mini || CRON_JOBS_HOST=other", "mini"),
+        ("CRON_JOBS_HOST=mini >/dev/null", "mini"),
+        ("CRON_JOBS_HOST=mini</dev/null", "mini"),
+        ('CRON_JOBS_HOST="mini;x&&y>z"', "mini;x&&y>z"),
+        ("CRON_JOBS_HOST='mini;x'", "mini;x"),
+        ("CRON_JOBS_HOST=mini\\;x", "mini;x"),
+        ("CRON_JOBS_HOST=mini; CRON_JOBS_HOST=later", "later"),
     ]
 
     def test_an_inline_comment_ends_the_value_as_sourcing_does(self):
