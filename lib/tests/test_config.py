@@ -1,6 +1,7 @@
 """The shared config location: lib/config.sh and lib/system_tools_config.py agree."""
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -212,6 +213,36 @@ class EnvFile(unittest.TestCase):
                 self.assertTrue(message.startswith(f"{env}:{line}: {name}an un"), message)
                 for private in ("privateToken", "abc", "hidden", "first", "ni"):
                     self.assertNotIn(private, message.replace(str(env), ""))
+
+    def test_a_python_only_reader_never_takes_a_shorter_value(self):
+        # Review class: where the shell reading and the reading from
+        # before sd:10423 differ, a file no shell sources (agent-meter's)
+        # refuses by name; `sourced=False` asks for that.
+        (self.conf / "meter").mkdir(parents=True)
+        env = self.conf / "meter/.env"
+        for text in ("AGENT_METER_FILE=/tmp/Release #1/meter.jsonl",
+                     "AGENT_METER_FILE=/tmp/Release; archive/meter.jsonl",
+                     "AGENT_METER_FILE=/tmp/Release;",
+                     "AGENT_METER_FILE=/tmp/Release && X=1",
+                     "AGENT_METER_FILE=/tmp/Release # note",
+                     "AGENT_METER_FILE=/tmp/Re'lea'se",
+                     "AGENT_METER_FILE=/tmp/Re\\ lease",
+                     'AGENT_METER_FILE="/tmp/Release" # note',
+                     'AGENT_METER_FILE="/tmp/Re\\"lease"',
+                     "AGENT_METER_FILE=  # nothing",
+                     "AGENT_METER_FILE=~;",
+                     "X=1; AGENT_METER_FILE=/tmp/Release"):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.read_env("meter", self.envv, sourced=False)
+                self.assertRegex(str(caught.exception), rf"^{re.escape(str(env))}:1: (AGENT_METER_FILE|X): ")
+        home = self.envv["HOME"]
+        env.write_text("A=$HOME/x\nB='two words'\nC=\"$HOME/q\"\nD=~/t\n"
+                       "E=\nexport F=1\nG=a b\nH=a#b\n")
+        self.assertEqual(stc.read_env("meter", self.envv, sourced=False),
+                         {"A": f"{home}/x", "B": "two words", "C": f"{home}/q",
+                          "D": f"{home}/t", "E": "", "F": "1", "G": "a b", "H": "a#b"})
 
     def test_a_multi_word_value_reads_as_before_or_refuses(self):
         # Review: `.` assigns nothing from an unquoted multi-word value,

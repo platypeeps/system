@@ -64,20 +64,22 @@ def config_dir(tool: str, environ: dict[str, str] | None = None) -> Path:
 _HOME = re.compile(r"\$\{HOME\}|\$HOME(?![A-Za-z0-9_])")
 
 
-def read_env(tool: str, environ: dict[str, str] | None = None) -> dict[str, str]:
+def read_env(tool: str, environ: dict[str, str] | None = None,
+             sourced: bool = True) -> dict[str, str]:
     """`KEY=value` lines from <config>/<tool>/.env; `{}` when it is absent.
 
     Blank lines, comments and an `export ` prefix are allowed; a value is
     read as `.` reads one word (`_shell_word`), so an inline `# comment`
     ends it. `$HOME`, `${HOME}` and a leading `~/` expand
     as they do when `st_source_env` sources the file, except inside single
-    quotes; no other variable expands (sd:1868).
+    quotes; no other variable expands (sd:1868). `sourced=False` is for a
+    file no shell sources: see `read_env_file`.
     """
     env = os.environ if environ is None else environ
-    return read_env_file(config_dir(tool, environ) / ".env", env)
+    return read_env_file(config_dir(tool, environ) / ".env", env, sourced)
 
 
-def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
+def read_env_file(path: Path, env: dict[str, str], sourced: bool = True) -> dict[str, str]:
     """`read_env`'s parser for any env file; `{}` when it is absent.
     `env` supplies the HOME the file's `$HOME` and `~/` expand to.
 
@@ -85,7 +87,8 @@ def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
     an unquoted `<`, `>`, `|` or `&` on a line that assigns, a quote
     left open, and a value whose shell reading differs from the one
     read before sd:10423 when no shell assigns it: one of several
-    unquoted words."""
+    unquoted words, or any in a file a Python tool alone reads
+    (`sourced=False`), where the old reading was the only one."""
     home = env.get("HOME") or os.path.expanduser("~")
     values: dict[str, str] = {}
     if not path.is_file():
@@ -113,7 +116,7 @@ def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
                 raise _refused(path, number, name, _UNCLOSED)
             if not assigns:
                 continue
-            if several and value != _legacy_value(raw, home):
+            if (several or not sourced) and value != _legacy_value(raw, home):
                 raise _refused(path, number, name, _TWO_WAYS)
             values[key] = value
     return values
