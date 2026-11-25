@@ -473,12 +473,12 @@ owe_missed() {
 # session's rows for the switch at $1; none if unreadable.
 kept_rows() {
   [[ -e "$RC_OWED" ]] || return 0
-  awk -v hs="$HERDR_SESSION" -v since="$1" '(NF == 4 || NF == 5 && ($5 == "sent" || $5 == "done")) && ($1 != hs || $4 == since)' "$RC_OWED"
+  awk -v hs="$HERDR_SESSION" -v since="$1" '(NF == 4 || NF == 5 && ($5 == "sent" || $5 == "done")) && ($1 "" != hs "" || $4 == since)' "$RC_OWED"
 }
 
 # Whether RC_OWED owes a pane of this herdr session.
 owes_here() {
-  awk -v hs="$HERDR_SESSION" 'NF == 4 && $1 == hs { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null
+  awk -v hs="$HERDR_SESSION" 'NF == 4 && $1 "" == hs "" { found = 1 } END { exit !found }' "$RC_OWED" 2>/dev/null
 }
 
 # A pending switch to this herdr session's owed panes, once herdr lists
@@ -518,7 +518,7 @@ list_owed() {
   fi
   # The rows go by the environment: BSD awk refuses a newline in -v.
   fresh=$(RC_KEPT="$kept" awk -v hs="$HERDR_SESSION" -v since="$since" '
-    BEGIN { n = split(ENVIRON["RC_KEPT"], r, "\n"); for (i = 1; i <= n; i++) { split(r[i], w, " "); if (w[1] == hs) owed[w[2]] = 1 } }
+    BEGIN { n = split(ENVIRON["RC_KEPT"], r, "\n"); for (i = 1; i <= n; i++) { split(r[i], w, " "); if (w[1] "" == hs "") owed[w[2]] = 1 } }
     NF == 3 && $2 != "?" && !($1 in owed) { print hs, $1, $2, since }' <<<"$PANES")
   unknown=$(awk 'NF == 3 && $2 == "?" { printf "%s%s", sep, $1; sep = ", " }' <<<"$PANES")
   # Each write in a group is chained: a group's status is its last
@@ -874,13 +874,13 @@ reconnect_pass() {
   plan=$(awk -v hs="$HERDR_SESSION" -v cur="$cur" '
     FILENAME == "-" { if (NF == 3) { status[$1 " " $2] = $3; if ($2 == "?") unknown[$1] = 1 }; next }
     NF == 5 && ($5 == "sent" || $5 == "done") && $4 ~ /^[0-9]+$/ {
-      if ($1 != hs) print "other", $0
+      if ($1 "" != hs "") print "other", $0
       else if ($4 != cur) next
       else print "sent", $0
       next
     }
     NF != 4 || $4 !~ /^[0-9]+$/ { next }
-    $1 != hs { print "other", $0; next }
+    $1 "" != hs "" { print "other", $0; next }
     $4 != cur { print "stale", $0; next }
     !(($2 " " $3) in status) && !($2 in unknown) { print "gone", $0; next }
     status[$2 " " $3] == "idle" || status[$2 " " $3] == "done" { print "try", $0; next }

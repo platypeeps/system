@@ -1104,6 +1104,17 @@ class RemoteControlReconnects(Machine):
                 self.assertEqual(self.prompts(), ["herdr agent send-keys w1:p1 enter"], result.stdout)
                 self.assertEqual(self.owed(), [])
 
+    def test_session_names_compare_as_text(self):
+        # sd:10687 review: awk compared session names as numbers, so a
+        # sync over session 1 read session 01's owed row as its own,
+        # found no such pane and dropped it.
+        now = int(time.time())
+        owed = self.owe("01 w1:p1 s1 %d\n" % now, now)
+        self.publish(ONE)
+        self.panes()
+        self.sync("elsewhere", HERDR_SESSION="1", FAKE_HERDR_SESSION="1")
+        self.assertEqual(owed.read_text(), "01 w1:p1 s1 %d\n" % now)
+
     def test_a_pane_owed_in_another_herdr_session_outlives_this_sync(self):
         # sd:9427 blocker (cswap.sh:409): the owed list kept no herdr
         # session, so a cron sync over sd read a pane owed in session
