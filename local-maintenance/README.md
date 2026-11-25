@@ -12,11 +12,37 @@ rotation, the prunes, the build output) happen automatically.
 ```sh
 ./maintenance.sh check   # read-only: print findings and would-be fixes
 ./maintenance.sh run     # apply safe fixes, report findings (cron entrypoint)
+./maintenance.sh probe   # free space now; safe cleanup only when low
 ./maintenance.sh uv-prune  # prune uv's cache (the login agent's entrypoint)
 ./maintenance.sh uv-prune-plist  # print that login agent's plist
 ./maintenance.sh move <path> [folder]  # put a path on the bulk SSD, then link it
 ./maintenance.sh test    # run the unit tests
 ```
+
+## Low-disk probe
+
+The `disk-probe` cron job runs `probe` every 15 minutes (sd:10426). It
+reads only the conf's `disk|` lines and samples each filesystem once.
+
+- Healthy: it prints one line per filesystem with its free bytes and stops.
+  No du, no update, no cleanup.
+- Below a threshold: it takes `maintenance-nightly`'s lock and runs the
+  cleanup `run` runs (exited containers, the brew, npm and uv caches, idle
+  build output, expired session logs), with no update and no Sunday prune.
+  Then it records free bytes before and after.
+- Still below after that: an `SD_REPORT_ATTENTION` line.
+- A path df cannot stat, a bad threshold or no `disk|` line needs
+  attention too; a probe that measured no filesystem exits 1.
+
+| Step | State moved | Failure | Recovery | Test |
+| --- | --- | --- | --- | --- |
+| Sample | Nothing | df cannot stat a path, a bad threshold, or no disk line | Attention line; exit 1 when no filesystem was measured | `test_a_probe_that_measures_nothing_fails_and_needs_attention`, `test_one_failed_path_beside_a_healthy_one_needs_attention` |
+| Lock | Nothing | maintenance-nightly holds it | Skip; the nightly cleans; a failed path still needs attention | `test_a_probe_skips_while_the_nightly_run_holds_its_lock`, `test_a_held_lock_still_names_a_path_that_failed` |
+| Clean | Caches removed | Stopped halfway | The lock frees on exit; the next probe cleans again | `test_a_probe_under_pressure_cleans_and_records_free_bytes` |
+| Remeasure | Nothing | Too little freed | Attention line | `test_a_probe_that_cleans_too_little_needs_attention` |
+
+While a probe cleans, the cron runner skips a `maintenance-nightly` run
+that starts then; the next night runs it.
 
 ## Move a path to the bulk storage root
 
@@ -71,7 +97,7 @@ to `$HOME`:
 
 | Directive | Meaning |
 | --- | --- |
-| `disk\|<path>\|<pct>` | filesystem of `<path>` has at least `<pct>`% free |
+| `disk\|<path>\|<pct>` | filesystem of `<path>` has at least `<pct>`% free; paths on one filesystem are one check, at the higher `<pct>` |
 | `cert\|<pem>\|<days>` | x509 cert not expiring within `<days>` |
 | `mount\|<path>` | volume is mounted |
 | `process\|<name>\|<label>` | process running (`pgrep -x`) |

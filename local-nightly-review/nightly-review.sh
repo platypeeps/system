@@ -25,7 +25,8 @@ nightly-review.sh — the nightly review job: suggestions to approve in the dash
 
 Usage: nightly-review.sh <command>
 
-  run    1. apply: `sd-db review apply nightly` files a task for each approval,
+  run    Takes the bulk root's lock first; a run that finds it held exits 0.
+         1. apply: `sd-db review apply nightly` files a task for each approval,
             expires suggestions unruled after 7 days, and closes settled batches;
             `sd-db review priorities` applies priority rulings, closes items
             unranked 30 days, and files one batch of P1-P4 questions.
@@ -47,6 +48,23 @@ claude binary (default: claude on PATH).
 USAGE
 }
 
+# Every run, by hand or by cron, from any checkout, takes one lock beside the
+# batch in the bulk root, so two runs never overlap, call the model twice or
+# write one day's batch twice (sd:10418). The cron runner's own lock is per
+# checkout, so a worktree's run would miss it. Held: skip, exit 0. A
+# filesystem that cannot lock is an error, never "held".
+take_lock() { # lock file
+  exec 9>>"$1" || { echo "nightly-review: cannot open the lock file $1" >&2; return 1; }
+  taken=0
+  # shellcheck disable=SC2016 # perl source
+  perl -e 'use Fcntl ":flock"; open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX|LOCK_NB) and exit 0; exit($!{EWOULDBLOCK} ? 1 : 3)' || taken=$?
+  case "$taken" in
+    0) return 0 ;;
+    1) echo "nightly-review: another run holds $1; this one does nothing"; exit 0 ;;
+    *) echo "nightly-review: could not take the lock on $1 (perl exit $taken)" >&2; return 1 ;;
+  esac
+}
+
 run() {
   today=$(date +%F)
   bulk=$("$PACK/bin/sd" config get sd.bulk_storage_root) || {
@@ -61,6 +79,7 @@ run() {
   }
   batch="$bulk/system/nightly-review/$today.json"
   mkdir -p "$(dirname "$batch")"
+  take_lock "$(dirname "$batch")/.nightly-review.lock" || return 1
 
   st_step 120 "$PACK/bin/sd-db" review apply "$QUEUE"
   # The pack's priority sweep (pack sd:6726): rulings, stale closes, questions.
