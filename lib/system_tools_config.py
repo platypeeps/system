@@ -79,7 +79,13 @@ def read_env(tool: str, environ: dict[str, str] | None = None) -> dict[str, str]
 
 def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
     """`read_env`'s parser for any env file; `{}` when it is absent.
-    `env` supplies the HOME the file's `$HOME` and `~/` expand to."""
+    `env` supplies the HOME the file's `$HOME` and `~/` expand to.
+
+    Raises `EnvFileError` for a line it will not guess at (sd:10423):
+    an unquoted `<`, `>`, `|` or `&` on a line that assigns, a quote
+    left open, and a value whose shell reading differs from the one
+    read before sd:10423 when no shell assigns it: one of several
+    unquoted words."""
     home = env.get("HOME") or os.path.expanduser("~")
     values: dict[str, str] = {}
     if not path.is_file():
@@ -91,28 +97,25 @@ def read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
                 break
             if line.startswith("export "):
                 line = line[len("export "):].lstrip()
-            key, sep, value = line.partition("=")
+            key, sep, raw = line.partition("=")
             key = key.strip()
-            if sep and (op := next((c for c in _REFUSED if c in key), "")):
-                # `2>/dev/null X=1` still assigns X when sourced. The
-                # text before `=` is named only when it ends in a name.
-                name = key.split()[-1] if key.split() else ""
-                raise _refused(path, number, name if name.isidentifier() else "",
-                               _OPERATOR % op)
-            if not sep or not key.isidentifier():
-                break
-            raw = value
+            assigns = bool(sep) and key.isidentifier()
+            # Only a name sh assigns at a statement's start is named.
+            name = key if assigns and _NAME.fullmatch(key) else ""
             try:
-                value, line, several = _shell_word(value, home)
+                value, line, several = _shell_word(raw if assigns else line, home)
             except _Operator as e:
-                raise _refused(path, number, key, _OPERATOR % e) from None
+                if not sep:
+                    break  # the rest of the line assigns nothing
+                raise _refused(path, number, name, _OPERATOR % str(e)) from None
+            if value is None:
+                # The next lines would be read from inside the quote.
+                raise _refused(path, number, name, _UNCLOSED)
+            if not assigns:
+                continue
             if several and value != _legacy_value(raw, home):
-                # `.` assigns nothing from a multi-word value, so only a
-                # Python reader sees it: read it as before sd:10423 or
-                # refuse, never a shorter path.
-                raise _refused(path, number, key, _SEVERAL)
-            if value is not None:
-                values[key] = value
+                raise _refused(path, number, name, _TWO_WAYS)
+            values[key] = value
     return values
 
 
@@ -124,15 +127,18 @@ class _Operator(Exception):
     pass
 
 
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _OPERATOR = ("an unquoted %r (redirection, pipe, || or background job) "
              "is not read; quote it or drop it")
-_SEVERAL = ("an unquoted value of several words with a comment, operator, "
-            "quote or backslash is not read; quote the whole value")
+_UNCLOSED = "an unclosed quote is not read; close it on this line"
+_TWO_WAYS = ("an unquoted or partly quoted value reads two ways (a comment, "
+             "operator, quote or backslash in it); quote the whole value")
 
 
-def _refused(path: Path, number: int, key: str, reason: str) -> EnvFileError:
-    # Names no value: an env file may hold a secret.
-    return EnvFileError(f"{path}:{number}: {key + ': ' if key else ''}{reason}")
+def _refused(path: Path, number: int, name: str, reason: str) -> EnvFileError:
+    # Names no value and no text but a variable name sh assigns: an env
+    # file may hold a secret.
+    return EnvFileError(f"{path}:{number}: {name + ': ' if name else ''}{reason}")
 
 
 def _legacy_value(text: str, home: str) -> str:

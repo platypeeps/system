@@ -1,7 +1,6 @@
 """The shared config location: lib/config.sh and lib/system_tools_config.py agree."""
 
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -180,20 +179,39 @@ class EnvFile(unittest.TestCase):
                          {"AGENT_METER_FILE": f"{home}/my ledger/meter.jsonl",
                           "N": "two  words", "T": "a b", "L": "/lead"})
 
-    def test_a_refusal_names_no_private_text(self):
-        # Review: the word before `=` is operator text, not always a
-        # name; only an identifier may reach the message.
+    def test_a_refusal_names_only_an_assigned_variable(self):
+        # Review class: the refusal named text the parser had not
+        # established as an assignment's variable. A word inside a
+        # quoted argument, a continuation line of an open quote and a
+        # name sh would not assign never reach the message.
         (self.conf / "bad").mkdir(parents=True)
         env = self.conf / "bad/.env"
-        for text in ("Y s3cr3t>t0k=1", "s3cr3t|t0k=1", "s3cr3t&t0k=1"):
+        for text, read in ((": 'abc& privateToken=hidden'", {}),
+                           ("X=1; : 'abc& privateToken=hidden'", {"X": "1"}),
+                           ("X=1 && : 'abc& privateToken=hidden'", {"X": "1"}),
+                           (": \"${U:=http://example.test/?a=1&b=2}\"", {}),
+                           ("echo hi; X=1", {"X": "1"}),
+                           ("echo a | cat\nX=1", {"X": "1"})):
             with self.subTest(text=text):
                 env.write_text(text + "\n")
+                self.assertEqual(stc.read_env("bad", self.envv), read)
+        for text, line, name in (
+                (": abc& privateToken=hidden", 1, ""),
+                ("2>/dev/null AGENT_METER_FILE=/tmp/meter.jsonl", 1, ""),
+                ("true >/dev/null; AGENT_METER_FILE=/tmp/meter.jsonl", 1, ""),
+                ("[ -n \"$X\" ] || X=1", 1, ""),
+                ("m\u00efni=a|privateToken", 1, ""),
+                ("A=\"first\nprivateToken=a|b\"\nB=1", 1, "A: "),
+                ("echo \"first\nprivateToken=a|b\"\nB=1", 1, ""),
+                ("B=1\nit's privateToken", 2, "")):
+            with self.subTest(text=text):
+                env.write_text(text + "\n", encoding="utf-8")
                 with self.assertRaises(stc.EnvFileError) as caught:
                     stc.read_env("bad", self.envv)
                 message = str(caught.exception)
-                self.assertIn(f"{env}:1:", message)
-                self.assertNotIn("s3cr3t", message)
-                self.assertNotIn("t0k", message)
+                self.assertTrue(message.startswith(f"{env}:{line}: {name}an un"), message)
+                for private in ("privateToken", "abc", "hidden", "first", "ni"):
+                    self.assertNotIn(private, message.replace(str(env), ""))
 
     def test_a_multi_word_value_reads_as_before_or_refuses(self):
         # Review: `.` assigns nothing from an unquoted multi-word value,
@@ -240,7 +258,6 @@ class EnvFile(unittest.TestCase):
             ("P=a|b", "P"),
             ("I=a<b", "I"),
             ("X=1 && Y=2 &", "Y"),
-            ("2>/dev/null AGENT_METER_FILE=/tmp/meter.jsonl", "AGENT_METER_FILE"),
         ]
         for text, name in cases:
             with self.subTest(text=text):
