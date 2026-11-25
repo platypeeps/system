@@ -507,10 +507,12 @@ class NightlyReview(unittest.TestCase):
 
     # ------------------------------------------------------------ overlap
 
-    LOCK = FOLDER.parent / "local-cron-jobs" / "logs" / ".nightly-review.flock"
-
     def hold_lock(self):
-        handle = open(self.LOCK, "a")
+        # The lock sits beside the batch in the bulk root, so a run from any checkout, a
+        # worktree's too, meets the scheduled one there (sd:10418 review).
+        lock = self.bulk / "system" / "nightly-review" / ".nightly-review.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock, "a")
         self.addCleanup(handle.close)
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return handle
@@ -542,18 +544,19 @@ class NightlyReview(unittest.TestCase):
         self.assertEqual(self.model_runs(), 1)
         self.assertEqual(len(self.batches()), 1)
 
-    def test_a_held_lock_skips_a_hand_run_but_not_the_runners_own(self):
+    def test_a_held_lock_skips_a_run_from_any_checkout_cron_or_hand(self):
+        # A run in another checkout holds the bulk root's lock: this one, by hand or
+        # under cron-jobs.sh (whose own lock is per checkout), calls no model.
         self.hold_lock()
-        result = self.run_job()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.model_runs(), 0)
-        self.assertEqual(self.batches(), [])
-        # Under cron-jobs.sh the runner holds this lock for the job, and says so in CRON_JOBS_RUN.
-        self.env["CRON_JOBS_RUN"] = "nightly-review"
-        result = self.run_job()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.model_runs(), 1)
-        self.assertEqual(len(self.batches()), 1)
+        for cron in ("", "nightly-review"):
+            with self.subTest(cron=cron):
+                self.env["CRON_JOBS_RUN"] = cron
+                result = self.run_job()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("another run holds", result.stdout)
+                self.assertEqual(self.model_runs(), 0)
+                self.assertFalse(self.batch.exists())
+                self.assertEqual(self.batches(), [])
 
     # ------------------------------------------------------------ the entrypoint
 
