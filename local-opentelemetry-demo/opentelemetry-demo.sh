@@ -70,15 +70,34 @@ require_cluster() {
   cluster_exists || die "cluster '$CLUSTER_NAME' not found - run '$0 start' first"
 }
 
+# A pid file holds two lines: the forward's pid and its kubectl arguments
+# (sd:10434). The pid counts only while that process still runs those exact
+# arguments; a reused pid, a one-line file from an older run, or a value that
+# is not a plain number never gets a signal.
+# forward_pid <pid-file>: print the recorded pid if it is still the forward.
+forward_pid() {
+  [ -f "$1" ] || return 1
+  _fp_pid=$(sed -n 1p "$1")
+  _fp_args=$(sed -n 2p "$1")
+  case "$_fp_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$_fp_args" ] || return 1
+  _fp_cmd=$(ps -ww -o args= -p "$_fp_pid" 2>/dev/null) || return 1
+  case "$_fp_cmd" in
+    "kubectl $_fp_args"|*"/kubectl $_fp_args") echo "$_fp_pid" ;;
+    *) return 1 ;;
+  esac
+}
+
 # pid_running <pid-file>
 pid_running() {
-  [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null
+  forward_pid "$1" >/dev/null
 }
 
 # stop_forward <pid-file> <label>
 stop_forward() {
-  if pid_running "$1"; then
-    kill "$(cat "$1")" 2>/dev/null || true
+  # ponytail: ps then kill leaves a tiny reuse window; no portable fix in sh.
+  if _sf_pid=$(forward_pid "$1"); then
+    kill "$_sf_pid" 2>/dev/null || true
     echo "$2 port-forward stopped"
   else
     echo "$2 port-forward not running"
@@ -94,11 +113,11 @@ svc_exists() {
 # start_forward <pid-file> <log-file> <namespace> <svc> <ports> <label> <url>
 start_forward() {
   _pid=$1; _log=$2; _ns=$3; _svc=$4; _ports=$5; _label=$6; _url=$7
-  if pid_running "$_pid"; then
-    kill "$(cat "$_pid")" 2>/dev/null || true
+  if _old=$(forward_pid "$_pid"); then
+    kill "$_old" 2>/dev/null || true
   fi
   kubectl --context "$CONTEXT" -n "$_ns" port-forward "svc/$_svc" "$_ports" > "$_log" 2>&1 &
-  echo $! > "$_pid"
+  printf '%s\n%s\n' "$!" "--context $CONTEXT -n $_ns port-forward svc/$_svc $_ports" > "$_pid"
   echo "$_label port-forward: $_url (log: $_log)"
 }
 
@@ -357,17 +376,17 @@ cmd_status() {
   echo
   echo "=== port-forwards ==="
   if pid_running "$PID_FILE"; then
-    echo "frontend-proxy: running, pid $(cat "$PID_FILE"), http://localhost:8080"
+    echo "frontend-proxy: running, pid $(forward_pid "$PID_FILE"), http://localhost:8080"
   else
     echo "frontend-proxy: not running"
   fi
   if pid_running "$MCP_PID_FILE"; then
-    echo "prometheus-mcp-server: running, pid $(cat "$MCP_PID_FILE"), http://127.0.0.1:$MCP_LOCAL_PORT/mcp"
+    echo "prometheus-mcp-server: running, pid $(forward_pid "$MCP_PID_FILE"), http://127.0.0.1:$MCP_LOCAL_PORT/mcp"
   else
     echo "prometheus-mcp-server: not running"
   fi
   if pid_running "$K8S_PID_FILE"; then
-    echo "kubernetes-mcp-server: running, pid $(cat "$K8S_PID_FILE"), http://127.0.0.1:$K8S_LOCAL_PORT/mcp"
+    echo "kubernetes-mcp-server: running, pid $(forward_pid "$K8S_PID_FILE"), http://127.0.0.1:$K8S_LOCAL_PORT/mcp"
   else
     echo "kubernetes-mcp-server: not running"
   fi
