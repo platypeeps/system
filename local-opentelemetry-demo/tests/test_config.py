@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -129,6 +130,80 @@ class DemoConfig(unittest.TestCase):
         self.env["OPENAI_API_KEY"] = "k"
         done = self.run_verb("mcp-install", expect=1)
         self.assertIn("AURA_CHART_DIR is not set", done.stderr)
+
+    def spawn(self, *argv):
+        proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        return proc
+
+    def test_stop_spares_a_process_that_reused_the_recorded_pid(self):
+        # sd:10434. A pid file outlives its forward; the pid can belong to
+        # another process by the time stop runs.
+        other = self.spawn("sleep", "30")
+        forward = ("--context kind-otel-demo -n otel-demo port-forward "
+                   "svc/frontend-proxy 8080:8080")
+        (self.folder / ".port-forward.pid").write_text(f"{other.pid}\n{forward}\n")
+        (self.folder / ".mcp-port-forward.pid").write_text(f"{other.pid}\n")
+        done = self.run_verb("stop", expect=0)
+        self.assertIn("frontend-proxy port-forward not running", done.stdout)
+        self.assertIsNone(other.poll(), "stop signaled an unrelated process")
+        self.assertFalse((self.folder / ".port-forward.pid").exists())
+
+    def sleeping_kubectl(self):
+        stub = self.root / "bin" / "kubectl"
+        stub.write_text(STUB.replace("exit 0", """\
+case "$5" in port-forward) trap 'kill $!; exit 0' TERM; sleep 30 & wait ;; esac
+exit 0"""), encoding="utf-8")
+        return stub
+
+    def assert_ends(self, pid):
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        self.fail("the forward is still running")
+
+    def test_stop_ends_a_forward_from_a_one_line_pid_file(self):
+        # Review of sd:10434: pid files written before the change hold only
+        # the pid; a live forward named by one must still end.
+        stub = self.sleeping_kubectl()
+        forward = self.spawn("/bin/sh", str(stub), "--context", "kind-otel-demo",
+                             "-n", "otel-demo", "port-forward",
+                             "svc/frontend-proxy", "8080:8080")
+        time.sleep(0.3)
+        (self.folder / ".port-forward.pid").write_text(f"{forward.pid}\n")
+        done = self.run_verb("stop", expect=0)
+        self.assertIn("frontend-proxy port-forward stopped", done.stdout)
+        forward.wait(timeout=5)  # the test is its parent: reap, then it is gone
+
+    def test_start_replaces_a_forward_from_a_one_line_pid_file(self):
+        # A missed old forward would keep the port, and its replacement
+        # could not bind.
+        stub = self.sleeping_kubectl()
+        old = self.spawn("/bin/sh", str(stub), "--context", "kind-otel-demo",
+                         "-n", "default", "port-forward",
+                         "svc/prometheus-mcp-server", "18081:8080")
+        time.sleep(0.3)
+        (self.folder / ".mcp-port-forward.pid").write_text(f"{old.pid}\n")
+        self.env.update(OTLP_EXPORT_URL="https://otlp.example.invalid/otel",
+                        OTLP_EXPORT_AUTH="k")
+        self.run_verb("start", expect=0)
+        old.wait(timeout=5)
+        self.run_verb("stop", expect=0)
+
+    def test_stop_ends_the_forward_it_started(self):
+        self.sleeping_kubectl()
+        self.env.update(OTLP_EXPORT_URL="https://otlp.example.invalid/otel",
+                        OTLP_EXPORT_AUTH="k")
+        self.run_verb("start", expect=0)
+        pid = int((self.folder / ".port-forward.pid").read_text().split()[0])
+        os.kill(pid, 0)
+        done = self.run_verb("stop", expect=0)
+        self.assertIn("frontend-proxy port-forward stopped", done.stdout)
+        self.assert_ends(pid)
 
     def test_repo_start_needs_the_demo_checkout(self):
         done = self.run_verb("repo-start", expect=1)
