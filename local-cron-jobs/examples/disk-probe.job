@@ -1,0 +1,8 @@
+# Low-disk probe (local-maintenance, sd:10426): every 15 minutes, sample
+# free space once per filesystem the maintenance conf's disk| lines name.
+# Healthy, it prints that and stops. Below a threshold it runs only the
+# safe cleanup, under maintenance-nightly's lock, and records free bytes
+# before and after; still low, the run's report needs attention.
+JOB_SCHEDULE="*/15 * * * *"
+JOB_TIMEOUT="45m"
+JOB_COMMAND="sh \"$ROOT/../local-maintenance/maintenance.sh\" probe"
