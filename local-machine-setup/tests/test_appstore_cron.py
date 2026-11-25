@@ -71,6 +71,13 @@ class StageTest(unittest.TestCase):
         # add a MISSING line to each case below.
         (self.folder / "examples/profiles/common.cron").write_text(
             "# no fleet jobs in these cases\n")
+        # The fixture profile is a plain hub, which wants the seeded role
+        # jobs too (sd:10411); tests/test_fleet_component.py covers them.
+        script = self.folder / "machine-setup.sh"
+        text, n = re.subn(r'^SD_HUB_ROLE_SEEDED="[^"]*"', 'SD_HUB_ROLE_SEEDED=""',
+                          script.read_text(), count=1, flags=re.M)
+        self.assertEqual(n, 1)
+        script.write_text(text)
         self.config_root = fixture_config.copy_config(base)
         self.profiles = self.config_root / "machine-setup/profiles"
         self.jobs = self.config_root / "cron-jobs/jobs"
