@@ -33,13 +33,18 @@ st_drop_platform_warning() {
 # st_drop_unlinked_keg KEG [FILE]: print doctor output FILE, or stdin, less
 # KEG's line in the unlinked kegs warning, and less the warning when it lists
 # no other keg. KEG matches a whole line, never a part of one. The warning
-# ends with its list, read as st_unlinked_kegs reads it.
+# ends with its list, read as st_unlinked_kegs reads it. A dropped warning
+# takes the text after its list, to the next warning, with it, as
+# st_drop_platform_warning does: Homebrew's support-tier footer after it
+# read as part of the warning before it (sd:10734).
 st_drop_unlinked_keg() {
     st_keg_line="  $1"; shift
     awk -v k="$st_keg_line" '
-      function flush() { if (keep) printf "%s", buf; buf = ""; inblk = inlist = 0 }
-      /^Warning:/ { flush(); inblk = /^Warning: You have unlinked kegs/; keep = 0 }
+      function flush() { if (keep) printf "%s", buf; else if (inblk) drop = 1
+                         buf = ""; inblk = inlist = 0 }
+      /^Warning:/ { flush(); drop = 0; inblk = /^Warning: You have unlinked kegs/; keep = 0 }
       inlist && !/^  [a-z0-9]/ { flush() }
+      drop { next }
       !inblk { print; next }
       /^Run `brew link` on these:/ { inlist = 1 }
       inlist && $0 == k { next }
