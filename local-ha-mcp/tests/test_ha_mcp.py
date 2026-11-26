@@ -12,7 +12,6 @@ MCP handshake or fails as mcp-remote does, and a curl. Nothing reaches a
 network; the token is a fake.
 """
 
-import os
 import pathlib
 import shutil
 import subprocess
