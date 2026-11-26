@@ -103,13 +103,14 @@ class NightlyReview(unittest.TestCase):
         return len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
 
     def file_earlier(self, name, subjects):
-        """File a nightly batch from an earlier day, as the job would have."""
+        """File a nightly batch from an earlier day through the job's own
+        `batch` step, so it carries what the pack wants (sd:10422)."""
+        reply = self.tmp / f"{name}.reply"
+        reply.write_text(json.dumps({"questions": [{"subject": subject, "text": f"Do {subject}", "evidence": []}
+                                                   for subject in subjects]}))
         path = self.tmp / f"{name}.json"
-        path.write_text(json.dumps({
-            "schema": 1, "queue": "nightly", "batch": name, "title": f"Nightly review {name}",
-            "source": "system@0000000", "mode": "open", "limit": 5,
-            "questions": [{"subject": subject, "text": f"Do {subject}", "options": ["Approve", "Reject"]}
-                          for subject in subjects]}))
+        subprocess.run([sys.executable, str(FOLDER / "nightly_review.py"), "batch", str(reply), str(path),
+                        name, "system@0000000"], check=True)
         self.pack(PACK, "sd-db", "review", "file", str(path))
         return next(found for found in self.batches() if found["header"]["batch"] == name)
 
