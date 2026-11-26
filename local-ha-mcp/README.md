@@ -8,6 +8,7 @@ without the connection going stale.
 ```sh
 ./ha-mcp.sh          # serve (the default; what an MCP client invokes)
 ./ha-mcp.sh check    # handshake + tools/list, prints server version and count
+./ha-mcp.sh status   # one line and convention 6's exit code, for local-health-check
 ./ha-mcp.sh --help
 ```
 
@@ -16,7 +17,8 @@ without the connection going stale.
 ```
 server : home-assistant 1.26.0
 tools  : 22
-url    : http://homeassistant.local:8123/mcp_server/sse
+url    : http://homeassistant.local:8123/mcp_server/sse (through relay http://127.0.0.1:52731/mcp_server/sse)
+node   : /opt/homebrew/bin/node v26.13.1
 OK
 ```
 
@@ -76,6 +78,24 @@ no arguments and expects a live stdio server; printing usage would break it.
   or the environment; `serve` and `check` fail naming whichever is missing.
   The workflow dashboard's Home page reads the same two values for its
   `GET /api/states` call (the pack's `dashboard/docs/pages/home.md`).
+- **Node never talks to the LAN; a relay under Apple's python does.**
+  Home Assistant is a same-link peer, which macOS's Privacy > Local Network
+  permission gates. It refused node, Homebrew's and nodejs.org's notarized
+  build alike, from a terminal too, so every call failed with
+  `EHOSTUNREACH` while curl to the same host answered (sd:10894). Apple's
+  own binaries (`/usr/bin/python3`, curl, nc, ssh) reach it, and loopback
+  is never gated. So each verb starts `relay.py` under `/usr/bin/python3`
+  on a free `127.0.0.1` port, copies each connection to `HA_MCP_URL`'s
+  host and port, and points `mcp-remote` at the loopback URL. The relay
+  watches the bridge's process and exits within a second of it, however
+  the bridge ends; no launchd job runs it. Only an `http://` URL is
+  relayed: TLS checks the certificate against the host name, so an
+  `https://` URL goes to the bridge as it is, and Local Network blocking
+  then applies to it.
+- `status` names the cause: a host the relay cannot reach does not answer,
+  unless `/usr/bin/curl` gets an HTTP answer from it; then Local Network
+  refuses the relay's python. The nightly `local-health-check` sweep runs
+  `status` and reports exit 1 as a finding.
 - `npx -y` re-resolves the package on each launch. It is cached after the first
   run; install `mcp-remote` globally if start-up latency ever matters.
 - `mcp-proxy` was tried first and did not work: its cached
