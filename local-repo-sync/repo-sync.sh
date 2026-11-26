@@ -872,34 +872,52 @@ refresh_one() {
 # refresh, and only git's stderr named it (sd:10796). Removing it is the
 # operator's step: the checkout guard refuses an agent's rm. Prints
 # nothing when there is no lock.
+# The rm line asks for a delete, so each reading under it is a positive
+# answer, never a silence (review): lsof -V says in words that no process
+# has the file open, where -t turns warnings off and exits 1 on an error
+# as on no match; the lock is this user's, since lsof lists no other
+# user's processes; it is INDEX_LOCK_STALE_MIN old, since a git between
+# its writes holds a lock with no file open; and it is the same file
+# after the lookup as before. Anything else names the check and no rm.
+INDEX_LOCK_STALE_MIN=10
+index_lock_stat() { # file: `<mtime> <uid>`, or nothing
+  il_s=$(stat -c '%Y %u' "$1" 2>/dev/null || stat -f '%m %u' "$1" 2>/dev/null) || il_s=
+  case $il_s in *[!0-9\ ]* | '' | *' '*' '* | ' '* | *' ') ;; *' '*) printf '%s\n' "$il_s" ;; esac
+}
 index_lock_note() { # checkout
   il_lock=$(git -C "$1" rev-parse --git-path index.lock 2>/dev/null) || return 0
   case $il_lock in /*) ;; *) il_lock="$1/$il_lock" ;; esac
   [ -e "$il_lock" ] || return 0
-  il_mt=$(stat -c %Y "$il_lock" 2>/dev/null || stat -f %m "$il_lock" 2>/dev/null) || il_mt=
-  case $il_mt in ''|*[!0-9]*) printf '; %s is there' "$il_lock" ;;
-    *) il_when=$(date -r "$il_mt" '+%Y-%m-%d %H:%M %Z' 2>/dev/null ||
-         date -d "@$il_mt" '+%Y-%m-%d %H:%M %Z' 2>/dev/null) || il_when='an unknown time'
-       printf '; %s from %s, %s min old' "$il_lock" "$il_when" "$(( ($(date +%s) - il_mt) / 60 ))" ;;
-  esac
-  il_q=$(printf '%s' "$il_lock" | sed "s/'/'\\\\''/g")
-  # lsof exits 1 on an error as on no match: only exit 1 with no output
-  # at all is "no holder"; any other answer gives no rm line, since a
-  # live git may hold the lock (sd:10796 review).
-  if ! command -v lsof >/dev/null 2>&1; then
-    printf '; no lsof to tell whether a process holds it; check for a running git there before removing it'
-    return 0
+  il_stat=$(index_lock_stat "$il_lock")
+  il_mt=${il_stat% *}
+  il_age=
+  if [ -z "$il_stat" ]; then
+    printf '; %s is there' "$il_lock"
+  else
+    il_when=$(date -r "$il_mt" '+%Y-%m-%d %H:%M %Z' 2>/dev/null ||
+      date -d "@$il_mt" '+%Y-%m-%d %H:%M %Z' 2>/dev/null) || il_when='an unknown time'
+    il_age=$(( ($(date +%s) - il_mt) / 60 ))
+    printf '; %s from %s, %s min old' "$il_lock" "$il_when" "$il_age"
   fi
+  il_q=$(printf '%s' "$il_lock" | sed "s/'/'\\\\''/g")
   il_rc=0
   # lsof's own stderr joins its answer; the bound's step lines do not.
   # shellcheck disable=SC2016 # the child expands its own argument
-  il_out=$(bound_step 10 sh -c 'lsof -t -- "$1" 2>&1' sh "$il_lock" 2>/dev/null) || il_rc=$?
-  case $il_rc:$il_out in
-    0:*[!0-9[:space:]]* | 0:) ;;
-    0:*) printf '; held by pid %s: let it end, then refresh again' "$(printf '%s' "$il_out" | tr '\n' ' ' | sed 's/ $//')"; return 0 ;;
-    1:) printf "; no process holds it: rm '%s', then refresh again" "$il_q"; return 0 ;;
-  esac
-  printf "; could not tell whether a process holds it; check: lsof '%s'" "$il_q"
+  il_out=$(bound_step 10 sh -c 'lsof -V -F p -- "$1" 2>&1' sh "$il_lock" 2>/dev/null) || il_rc=$?
+  il_pids=$(printf '%s\n' "$il_out" | sed -n 's/^p\([0-9][0-9]*\)$/\1/p' | tr '\n' ' ' | sed 's/ $//')
+  if [ "$il_rc" = 0 ] && [ -n "$il_pids" ]; then
+    printf '; held by pid %s: let it end, then refresh again' "$il_pids"
+  elif [ "$il_rc" != 1 ] || [ "$il_out" != "lsof: no file use located: $il_lock" ]; then
+    printf "; could not tell whether a process holds it; check: lsof '%s'" "$il_q"
+  elif [ -z "$il_stat" ] || [ "${il_stat#* }" != "$(id -u)" ]; then
+    printf "; it is not this user's, or could not be read, and lsof lists this user's processes alone; check: sudo lsof '%s'" "$il_q"
+  elif [ "$(index_lock_stat "$il_lock")" != "$il_stat" ]; then
+    printf '; it changed during the check, so a git runs there: let it end, then refresh again'
+  elif [ "$il_age" -lt "$INDEX_LOCK_STALE_MIN" ]; then
+    printf '; lsof finds no process holding it, yet it is under %s min old and a git may run there: refresh again later' "$INDEX_LOCK_STALE_MIN"
+  else
+    printf "; lsof finds no process holding it: rm '%s', then refresh again" "$il_q"
+  fi
 }
 
 # Moves checkout $1 to commit $2, detached, as `refresh` or `follow` ($3),

@@ -692,10 +692,14 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(before, f.head(repo))
         self.assertEqual("untracked here\n", (repo / "later").read_text())
 
-    def test_a_stale_index_lock_is_named_with_its_age_and_remedy(self):
-        """sd:10796: a 0-byte index.lock no process held stopped the
-        switch, and the flag line named only the switch; git's stderr
-        held the cause."""
+    # lsof -V's own words for "no process has it open"; the last argument
+    # is the file.
+    LSOF_NONE = ('#!/bin/sh\nfor a; do f=$a; done\n'
+                 'echo "lsof: no file use located: $f" >&2\nexit 1\n')
+
+    def locked_refresh(self, lsof=None, age=2 * 3600, stubs=None):
+        """A refresh whose switch a 0-byte index.lock stops: the flag
+        line, the lock and the fixture. `lsof` is the stub's text."""
         f = self.fixture()
         repo = f.repo()
         f.pin(repo)
@@ -703,47 +707,70 @@ class RefreshTest(unittest.TestCase):
         f.advance_origin(repo)
         lock = repo / ".git" / "index.lock"
         lock.write_text("")
-        old = time.time() - 2 * 3600
-        os.utime(lock, (old, old))
+        then = time.time() - age
+        os.utime(lock, (then, then))
+        for name, text in {"lsof": lsof or self.LSOF_NONE, **(stubs or {})}.items():
+            (f.bin / name).write_text(text)
+            (f.bin / name).chmod(0o755)
 
         result = f.run("refresh", expect=1)
 
         flagged = [line for line in result.stdout.splitlines()
                    if "failed: switch" in line]
         self.assertEqual(1, len(flagged), result.stdout)
-        self.assertIn(f"{lock} from ", flagged[0])
-        self.assertIn("120 min old", flagged[0])
-        self.assertIn(f"rm '{lock}'", flagged[0])
         self.assertEqual(before, f.head(repo))
         self.assertTrue(lock.exists())
+        return flagged[0], lock
 
-    def test_a_failed_holder_lookup_names_no_rm(self):
-        """sd:10796 review: lsof exits 1 on an error as on no match, and
-        a lookup that failed told the operator to remove a lock a live
-        git may hold. Only a clean "no match" earns the rm line."""
+    def test_a_stale_index_lock_is_named_with_its_age_and_remedy(self):
+        """sd:10796: a 0-byte index.lock no process held stopped the
+        switch, and the flag line named only the switch; git's stderr
+        held the cause."""
+        line, lock = self.locked_refresh()
+        self.assertIn(f"{lock} from ", line)
+        self.assertIn("120 min old", line)
+        self.assertIn(f"lsof finds no process holding it: rm '{lock}'", line)
+
+    def test_a_held_index_lock_names_its_pids_and_no_rm(self):
+        line, lock = self.locked_refresh(lsof="#!/bin/sh\nprintf 'p41\\nf3\\np57\\nf4\\n'\n")
+        self.assertIn("held by pid 41 57: let it end", line)
+        self.assertNotIn("rm '", line)
+
+    def test_only_proof_of_a_stale_lock_earns_the_rm_line(self):
+        """sd:10796 review, the class: the rm line asks the operator to
+        delete a lock, so every reading it rests on must be a positive
+        answer. A lookup that failed, said nothing, could not see the
+        holder, or read another lock than the one named gives no rm."""
+        touch = '#!/bin/sh\nfor a; do f=$a; done\n%s\necho "lsof: no file use located: $f" >&2\nexit 1\n'
+        other_uid = ('#!/bin/sh\ncase "$*" in *index.lock*) ;; *) exit 1 ;; esac\n'
+                     f'echo "{int(time.time()) - 7200} 4242"\n')
         cases = {
-            "error": "#!/bin/sh\necho 'lsof: WARNING: can't stat()' >&2\nexit 1\n",
-            "odd exit": "#!/bin/sh\nexit 2\n",
+            # lsof -t turns warnings off, so an error looked like no match.
+            "silent exit 1": dict(lsof="#!/bin/sh\nexit 1\n"),
+            "error text": dict(lsof="#!/bin/sh\necho 'lsof: status error' >&2\nexit 1\n"),
+            "odd exit": dict(lsof="#!/bin/sh\nexit 2\n"),
+            "not found": dict(lsof="#!/bin/sh\nexit 127\n"),
+            "exit 0, no pid": dict(lsof="#!/bin/sh\nexit 0\n"),
+            "exit 0, no number": dict(lsof="#!/bin/sh\necho pabc\n"),
+            "another file named": dict(
+                lsof='#!/bin/sh\necho "lsof: no file use located: /elsewhere" >&2\nexit 1\n'),
+            # A git that just took the lock, or wrote it between the reads.
+            "a minute old": dict(age=60),
+            "from the future": dict(age=-3600),
+            "rewritten during the lookup": dict(lsof=touch % 'touch "$f"'),
+            "replaced during the lookup": dict(
+                lsof=touch % 'rm "$f"; : > "$f"; touch -t 202001010000 "$f"'),
+            # lsof lists this user's processes alone.
+            "another user's lock": dict(stubs={"stat": other_uid}),
+            "no stat answer": dict(stubs={"stat": "#!/bin/sh\nexit 1\n"}),
+            "a stat answer that is no number": dict(
+                stubs={"stat": "#!/bin/sh\necho 'x y'\n"}),
         }
-        for name, stub in cases.items():
+        for name, case in cases.items():
             with self.subTest(name):
-                f = self.fixture()
-                repo = f.repo()
-                f.pin(repo)
-                f.advance_origin(repo)
-                lock = repo / ".git" / "index.lock"
-                lock.write_text("")
-                (f.bin / "lsof").write_text(stub)
-                (f.bin / "lsof").chmod(0o755)
-
-                result = f.run("refresh", expect=1)
-
-                flagged = [line for line in result.stdout.splitlines()
-                           if "failed: switch" in line]
-                self.assertEqual(1, len(flagged), result.stdout)
-                self.assertNotIn("rm '", flagged[0])
-                self.assertIn(f"could not tell whether a process holds it; check: lsof '{lock}'",
-                              flagged[0])
+                line, lock = self.locked_refresh(**case)
+                self.assertIn(f"{lock}", line)
+                self.assertNotIn("rm '", line)
 
     def test_an_ignored_file_origin_now_tracks_fails_the_refresh(self):
         """NEW. `git switch` overwrites an ignored file by default. Refresh
