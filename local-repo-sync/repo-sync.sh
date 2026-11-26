@@ -867,6 +867,31 @@ refresh_one() {
   printf '%s\n' "$r_dir${US}origin/$r_def" >> "$TMPD/plan"
 }
 
+# After a failed switch: name the checkout's index.lock, if one is there,
+# with its time, its age and its holder. A stale one stopped every
+# refresh, and only git's stderr named it (sd:10796). Removing it is the
+# operator's step: the checkout guard refuses an agent's rm. Prints
+# nothing when there is no lock.
+index_lock_note() { # checkout
+  il_lock=$(git -C "$1" rev-parse --git-path index.lock 2>/dev/null) || return 0
+  case $il_lock in /*) ;; *) il_lock="$1/$il_lock" ;; esac
+  [ -e "$il_lock" ] || return 0
+  il_mt=$(stat -c %Y "$il_lock" 2>/dev/null || stat -f %m "$il_lock" 2>/dev/null) || il_mt=
+  case $il_mt in ''|*[!0-9]*) printf '; %s is there' "$il_lock" ;;
+    *) il_when=$(date -r "$il_mt" '+%Y-%m-%d %H:%M %Z' 2>/dev/null ||
+         date -d "@$il_mt" '+%Y-%m-%d %H:%M %Z' 2>/dev/null) || il_when='an unknown time'
+       printf '; %s from %s, %s min old' "$il_lock" "$il_when" "$(( ($(date +%s) - il_mt) / 60 ))" ;;
+  esac
+  il_q=$(printf '%s' "$il_lock" | sed "s/'/'\\\\''/g")
+  if ! command -v lsof >/dev/null 2>&1; then
+    printf "; no lsof to name its holder: if no git runs there, rm '%s'" "$il_q"
+  elif il_pids=$(bound_step 10 lsof -t -- "$il_lock" 2>/dev/null) && [ -n "$il_pids" ]; then
+    printf '; held by pid %s: let it end, then refresh again' "$(printf '%s' "$il_pids" | tr '\n' ' ' | sed 's/ $//')"
+  else
+    printf "; no process holds it: rm '%s', then refresh again" "$il_q"
+  fi
+}
+
 # Moves checkout $1 to commit $2, detached, as `refresh` or `follow` ($3),
 # which reports "$4: <old> -> <new>". Then `make setup` in the pack, and the
 # migrate steps when lib/sd_db's SCHEMA_VERSION changed. Returns 1 when a
@@ -886,7 +911,7 @@ pin_move() {
   # An ignored file is often local config or data; git overwrites one that
   # the target commit tracks unless told not to, and then refuses the switch.
   if ! git -C "$m_dir" switch -q --detach --no-overwrite-ignore "$m_rev"; then
-    flag "!!! failed: switch to $m_rev in $m_dir; HEAD is now $(git -C "$m_dir" rev-parse --short HEAD)"
+    flag "!!! failed: switch to $m_rev in $m_dir; HEAD is now $(git -C "$m_dir" rev-parse --short HEAD)$(index_lock_note "$m_dir")"
     return 1
   fi
   m_new=$(git -C "$m_dir" rev-parse --short HEAD)

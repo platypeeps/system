@@ -692,6 +692,31 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(before, f.head(repo))
         self.assertEqual("untracked here\n", (repo / "later").read_text())
 
+    def test_a_stale_index_lock_is_named_with_its_age_and_remedy(self):
+        """sd:10796: a 0-byte index.lock no process held stopped the
+        switch, and the flag line named only the switch; git's stderr
+        held the cause."""
+        f = self.fixture()
+        repo = f.repo()
+        f.pin(repo)
+        before = f.head(repo)
+        f.advance_origin(repo)
+        lock = repo / ".git" / "index.lock"
+        lock.write_text("")
+        old = time.time() - 2 * 3600
+        os.utime(lock, (old, old))
+
+        result = f.run("refresh", expect=1)
+
+        flagged = [line for line in result.stdout.splitlines()
+                   if "failed: switch" in line]
+        self.assertEqual(1, len(flagged), result.stdout)
+        self.assertIn(f"{lock} from ", flagged[0])
+        self.assertIn("120 min old", flagged[0])
+        self.assertIn(f"rm '{lock}'", flagged[0])
+        self.assertEqual(before, f.head(repo))
+        self.assertTrue(lock.exists())
+
     def test_an_ignored_file_origin_now_tracks_fails_the_refresh(self):
         """NEW. `git switch` overwrites an ignored file by default. Refresh
         must not: a local config or data file is often ignored, and origin
