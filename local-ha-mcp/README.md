@@ -8,6 +8,7 @@ without the connection going stale.
 ```sh
 ./ha-mcp.sh          # serve (the default; what an MCP client invokes)
 ./ha-mcp.sh check    # handshake + tools/list, prints server version and count
+./ha-mcp.sh status   # one line and convention 6's exit code, for local-health-check
 ./ha-mcp.sh --help
 ```
 
@@ -76,6 +77,22 @@ no arguments and expects a live stdio server; printing usage would break it.
   or the environment; `serve` and `check` fail naming whichever is missing.
   The workflow dashboard's Home page reads the same two values for its
   `GET /api/states` call (the pack's `dashboard/docs/pages/home.md`).
+- **The bridge runs nodejs.org's node, not Homebrew's.** macOS's Privacy >
+  Local Network permission gates Home Assistant, a same-link peer, and keys
+  its grant to the binary's signer. Homebrew's node is ad-hoc signed, so each
+  rebuild lost the grant and every call failed with `EHOSTUNREACH` while curl
+  to the same host answered (sd:10894). nodejs.org signs each release with
+  the Node.js Foundation's Developer ID (team `HX7739G8FX`), so one grant
+  holds across upgrades. machine-setup's tooling stage installs it with fnm
+  and, for a `.node` line such as `26 link`, links `~/.local/bin/node` to
+  it; that link is the default node here, and `HA_MCP_NODE` overrides it.
+  Grant it once under System Settings > Privacy & Security > Local
+  Network, where `node` is listed after its first attempt, such as
+  `./ha-mcp.sh check`.
+- `status` names that cause: when node gets `EHOSTUNREACH` and
+  `/usr/bin/curl` gets an HTTP answer from the same host, its line says
+  Local Network blocks the node. The nightly `local-health-check` sweep
+  runs it and reports exit 1 as a finding.
 - `npx -y` re-resolves the package on each launch. It is cached after the first
   run; install `mcp-remote` globally if start-up latency ever matters.
 - `mcp-proxy` was tried first and did not work: its cached

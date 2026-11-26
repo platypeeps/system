@@ -393,6 +393,10 @@ case "$SUITE_LEG" in
     # codebase-memory-mcp.sh takes only `run`, which launchd calls; the
     # suite is named directly. It stubs the binary, so Linux runs it.
     run_suite codebase-memory-mcp "$PYTHON" local-codebase-memory-mcp/tests/test_codebase_memory_mcp.py -v
+    # ha-mcp.sh serves on a bare call, so a `test` verb would be one
+    # more word an MCP client could hit; the suite is named directly. It
+    # stubs npx, node and curl, so Linux runs it.
+    run_suite ha-mcp "$PYTHON" local-ha-mcp/tests/test_ha_mcp.py -v
     run_suite obsidian-review sh local-obsidian-review/obsidian-review.sh test
     run_suite weekly-digest sh local-weekly-digest/weekly-digest.sh test -v
     run_suite workspace-mcp sh local-workspace-mcp/workspace-mcp.sh test -v
