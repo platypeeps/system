@@ -717,6 +717,34 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(before, f.head(repo))
         self.assertTrue(lock.exists())
 
+    def test_a_failed_holder_lookup_names_no_rm(self):
+        """sd:10796 review: lsof exits 1 on an error as on no match, and
+        a lookup that failed told the operator to remove a lock a live
+        git may hold. Only a clean "no match" earns the rm line."""
+        cases = {
+            "error": "#!/bin/sh\necho 'lsof: WARNING: can't stat()' >&2\nexit 1\n",
+            "odd exit": "#!/bin/sh\nexit 2\n",
+        }
+        for name, stub in cases.items():
+            with self.subTest(name):
+                f = self.fixture()
+                repo = f.repo()
+                f.pin(repo)
+                f.advance_origin(repo)
+                lock = repo / ".git" / "index.lock"
+                lock.write_text("")
+                (f.bin / "lsof").write_text(stub)
+                (f.bin / "lsof").chmod(0o755)
+
+                result = f.run("refresh", expect=1)
+
+                flagged = [line for line in result.stdout.splitlines()
+                           if "failed: switch" in line]
+                self.assertEqual(1, len(flagged), result.stdout)
+                self.assertNotIn("rm '", flagged[0])
+                self.assertIn(f"could not tell whether a process holds it; check: lsof '{lock}'",
+                              flagged[0])
+
     def test_an_ignored_file_origin_now_tracks_fails_the_refresh(self):
         """NEW. `git switch` overwrites an ignored file by default. Refresh
         must not: a local config or data file is often ignored, and origin

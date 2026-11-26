@@ -883,13 +883,23 @@ index_lock_note() { # checkout
        printf '; %s from %s, %s min old' "$il_lock" "$il_when" "$(( ($(date +%s) - il_mt) / 60 ))" ;;
   esac
   il_q=$(printf '%s' "$il_lock" | sed "s/'/'\\\\''/g")
+  # lsof exits 1 on an error as on no match: only exit 1 with no output
+  # at all is "no holder"; any other answer gives no rm line, since a
+  # live git may hold the lock (sd:10796 review).
   if ! command -v lsof >/dev/null 2>&1; then
-    printf "; no lsof to name its holder: if no git runs there, rm '%s'" "$il_q"
-  elif il_pids=$(bound_step 10 lsof -t -- "$il_lock" 2>/dev/null) && [ -n "$il_pids" ]; then
-    printf '; held by pid %s: let it end, then refresh again' "$(printf '%s' "$il_pids" | tr '\n' ' ' | sed 's/ $//')"
-  else
-    printf "; no process holds it: rm '%s', then refresh again" "$il_q"
+    printf '; no lsof to tell whether a process holds it; check for a running git there before removing it'
+    return 0
   fi
+  il_rc=0
+  # lsof's own stderr joins its answer; the bound's step lines do not.
+  # shellcheck disable=SC2016 # the child expands its own argument
+  il_out=$(bound_step 10 sh -c 'lsof -t -- "$1" 2>&1' sh "$il_lock" 2>/dev/null) || il_rc=$?
+  case $il_rc:$il_out in
+    0:*[!0-9[:space:]]* | 0:) ;;
+    0:*) printf '; held by pid %s: let it end, then refresh again' "$(printf '%s' "$il_out" | tr '\n' ' ' | sed 's/ $//')"; return 0 ;;
+    1:) printf "; no process holds it: rm '%s', then refresh again" "$il_q"; return 0 ;;
+  esac
+  printf "; could not tell whether a process holds it; check: lsof '%s'" "$il_q"
 }
 
 # Moves checkout $1 to commit $2, detached, as `refresh` or `follow` ($3),
