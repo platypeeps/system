@@ -79,10 +79,6 @@ UNITY_BASE="${MACHINE_SETUP_UNITY_BASE:-https://download.unity3d.com/download_un
 # Unity Technologies' Apple team: a module pkg's Developer ID Installer
 # certificate must name it; the company in the name varies (SF, ApS).
 UNITY_TEAM=9QW8UQUTAA
-# The Node.js Foundation's Apple team: a node the .node `link` points at
-# must carry its Developer ID. macOS keys a Local Network grant to the
-# signer, so a grant given to that node outlives each upgrade (sd:10894).
-NODE_TEAM=HX7739G8FX
 
 # `release` runs right after `brew`: later stages may run what it installs,
 # such as the fnm the tooling stage asks for node.
@@ -3011,10 +3007,6 @@ stage_services() {
 # then point at fnm's newest installed node of that major, where launchd and
 # cron jobs find it (cron-jobs.sh puts ~/.local/bin on JOB_PATH). One line
 # may; with two, no link changes. A file there that is not a link stays.
-# fnm installs nodejs.org's own builds; a node not signed by NODE_TEAM, or
-# one codesign cannot verify, moves no link (sd:10894): the ha-mcp bridge
-# runs this node, and a Homebrew node's ad-hoc identity loses its Local
-# Network grant at each rebuild.
 node_link() {
   nl_major=$(manifest node | awk '$2 == "link" { print $1 }')
   [ -n "$nl_major" ] || return 0
@@ -3041,15 +3033,6 @@ node_link() {
   nl_dir=${nl_node%/node}
   if [ "$nl_dir" = "$nl_node" ] || [ ! -x "$nl_node" ]; then
     note_failure "node link $nl_major: fnm names no node for $nl_v; no link changed" 1
-    return 0
-  fi
-  if ! codesign --verify --strict "$nl_node" >/dev/null 2>&1; then
-    note_failure "node link $nl_major: $nl_v's node has no signature codesign verifies; no link changed" 1
-    return 0
-  fi
-  nl_team=$(codesign -dv "$nl_node" 2>&1 | sed -n 's/^TeamIdentifier=//p')
-  if [ "$nl_team" != "$NODE_TEAM" ]; then
-    note_failure "node link $nl_major: $nl_v's node is signed by team ${nl_team:-unknown}, not the Node.js Foundation's $NODE_TEAM; no link changed" 1
     return 0
   fi
   nl_ok=1
