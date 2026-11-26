@@ -120,9 +120,15 @@ OPENCODE_READ_DENY = ["*" + rule[5:-1].removeprefix("//**/").removeprefix("~/").
 #: The CLAUDE.local.md block keys every auto repo shares (sd:3030); other keys stay per repo.
 #: A value holds no quote or backslash, so it is written double-quoted as is.
 SHARED_LOCAL_KEYS = {
+    # Scope sentences, operator 2026-11-26: reviews kept blocking on odd setups.
     "threat-model": "One operator on their own machines. Out of scope: a hostile local user, "
                     "a hostile program on PATH, and two concurrent runs of one manual command. "
-                    "Flag defects that hurt that operator.",
+                    "Flag defects that hurt that operator. Personal use: a finding blocks only "
+                    "when it breaks the operator's real setup or a normal path (a config they "
+                    "have, a common error, data loss, a leaked secret); unusual configurations, "
+                    "rare timing, odd environments and hypothetical setups are advisory. A public "
+                    "site also blocks defects that real visitors, payments or the internet reach; "
+                    "its rare edge cases, exotic clients and hypothetical infrastructure stay advisory.",
 }
 LOCAL_START = "<!-- SD-AI-COMMAND-PACK:LOCAL:START -->"
 LOCAL_END = "<!-- SD-AI-COMMAND-PACK:LOCAL:END -->"
