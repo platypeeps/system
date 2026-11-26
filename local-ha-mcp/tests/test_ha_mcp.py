@@ -67,6 +67,12 @@ case "$NPX_MODE" in
   registry)
     echo "npm error network request to https://registry.npmjs.org/mcp-remote failed, reason: connect EHOSTUNREACH 192.0.2.20:443" >&2
     exit 1 ;;
+  wrongid)
+    # Both replies, under ids the probe never sent.
+    printf '%s\n' '{"jsonrpc":"2.0","id":7,"result":{"serverInfo":{"name":"x","version":"1"}}}' \
+      '{"jsonrpc":"2.0","id":8,"result":{"tools":[{"name":"a"}]}}'
+    cat >/dev/null
+    exit 0 ;;
   malformed)
     printf '%s\n' '[1, 2]' '"text"' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":"not an object"}}' \
       '{"jsonrpc":"2.0","id":2,"result":["not", "an", "object"]}'
@@ -86,8 +92,11 @@ done
 
 NODE = "#!/bin/sh\necho v26.0.0\n"
 
-# Prints $CURL_CODE as -w '%{http_code}' does; 000 is no answer, exit 7.
+# Prints $CURL_BODY, unless -o sends it elsewhere, then $CURL_CODE as
+# -w '\n%{http_code}' does; 000 is no answer, exit 7. The defaults are
+# Home Assistant's answer to /api/ with no token.
 CURL = r"""#!/bin/sh
+case " $* " in *" -o "*) ;; *) printf '%s\n' "$CURL_BODY" ;; esac
 printf '%s' "$CURL_CODE"
 [ "$CURL_CODE" != 000 ] || exit 7
 """
@@ -96,6 +105,15 @@ printf '%s' "$CURL_CODE"
 MODE_RELAY = r"""#!/bin/sh
 "$TEST_PYTHON" -c 'import os; print("relaymode=%o" % (os.fstat(2).st_mode & 0o777))' >> "$NPX_LOG"
 exec "$TEST_PYTHON" "$@"
+"""
+
+# mktemp failing as on a full or read-only disk: no path, exit 1.
+# MKTEMP_FAIL=file fails a file, dir a folder; anything else is mktemp.
+FAILING_MKTEMP = r"""#!/bin/sh
+case "$MKTEMP_FAIL:$1" in
+  file:|file:-t|dir:-d) echo "mktemp: mkstemp failed: Read-only file system" >&2; exit 1 ;;
+esac
+exec /usr/bin/mktemp "$@"
 """
 
 # Marks that something ran it, then fails: no relay may start.
@@ -174,15 +192,16 @@ class Bridge(unittest.TestCase):
             "TEST_PYTHON": sys.executable,
             "NPX_LOG": str(self.log),
             "NPX_MODE": "ok",
-            "CURL_CODE": "200",
+            "CURL_CODE": "401",
+            "CURL_BODY": "401: Unauthorized",
             **extra,
         }
         return {k: v for k, v in env.items() if v is not None}
 
-    def run_script(self, *args, **extra):
+    def run_script(self, *args, cwd=None, **extra):
         return subprocess.run(["sh", str(self.base / "local-ha-mcp/ha-mcp.sh"), *args], env=self.env(**extra),
                               capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
-                              preexec_fn=lambda: os.umask(0o022))
+                              preexec_fn=lambda: os.umask(0o022), cwd=cwd)
 
     def out(self, result):
         return result.stdout + result.stderr
@@ -295,7 +314,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual(result.returncode, 1, self.out(result))
         first = self.first(result)
         self.assertIn("Local Network", first)
-        self.assertIn("curl gets HTTP 200", first)
+        self.assertIn("curl gets HTTP 401", first)
         self.assertNotIn(TOKEN, self.out(result))
 
     def test_status_of_a_bridge_that_never_answers_ends_inside_the_sweep_bound(self):
@@ -326,6 +345,66 @@ class Bridge(unittest.TestCase):
         else:
             os.kill(child, signal.SIGKILL)
             self.fail("the stalled bridge's child outlived status")
+
+    def test_an_answer_that_is_not_home_assistant_is_not_local_network(self):
+        """A proxy or another server on the port answers curl too (round 3)."""
+        write_exec(self.base / "refused-python", REFUSED_RELAY)
+        for code, body in (("200", "<html>a proxy</html>"), ("502", "Bad Gateway")):
+            with self.subTest(code):
+                result = self.run_script("status", NPX_MODE="fetch", HA_MCP_PYTHON=str(self.base / "refused-python"),
+                                         CURL_CODE=code, CURL_BODY=body)
+                self.assertEqual(result.returncode, 1, self.out(result))
+                self.assertNotIn("Local Network", self.out(result))
+                self.assertIn("Home Assistant does not answer at 127.0.0.1", self.first(result))
+
+    def test_replies_count_only_under_the_ids_the_probe_sent(self):
+        result = self.run_script("status", NPX_MODE="wrongid")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn("no handshake or no tool list", self.first(result))
+
+    def test_a_failed_mktemp_fails_cleanly_and_spares_the_cwd(self):
+        """A failed mktemp left an empty path; the trap then removed ./.err (round 3).
+
+        macOS mktemp ignores an unwritable TMPDIR, so a stub fails instead.
+        """
+        write_exec(self.stubs / "mktemp", FAILING_MKTEMP)
+        cwd = self.base / "cwd"
+        cwd.mkdir()
+        names = (".err", ".relay", ".done", "url")
+        for verb, fail in (("check", "file"), ("status", "file"), ("check", "dir"), ("status", "dir"),
+                           ("serve", "dir")):
+            with self.subTest(verb=verb, fail=fail):
+                for name in names:
+                    (cwd / name).write_text("keep")
+                result = self.run_script(verb, cwd=cwd, MKTEMP_FAIL=fail)
+                self.assertEqual(result.returncode, 1, self.out(result))
+                self.assertEqual([(cwd / n).read_text() if (cwd / n).exists() else None for n in names],
+                                 ["keep"] * len(names))
+                self.assertIn(f"cannot make a temporary {'file' if fail == 'file' else 'folder'}", self.out(result))
+                self.assertFalse(self.log.exists(), "the bridge ran with no probe files")
+
+    def test_serve_starts_when_stderr_is_a_socket_it_cannot_reopen(self):
+        """An MCP launcher can hand fd 2 over as a socket (round 3).
+
+        macOS reopens /dev/fd/2 on a socket; Linux refuses it, and so does
+        a sandboxed launcher, with Operation not permitted. sandbox-exec
+        denies /dev/fd here to stand in for both: serve must inherit fd 2.
+        """
+        ours, theirs = socket.socketpair()
+        self.addCleanup(ours.close)
+        deny = '(version 1)(allow default)(deny file-read* file-write* (regex #"^/dev/fd/"))'
+        with theirs:
+            result = subprocess.run(["sandbox-exec", "-p", deny, "sh", str(self.base / "local-ha-mcp/ha-mcp.sh"),
+                                     "serve"], env=self.env(NPX_MODE="fetch"), stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=theirs.fileno(), timeout=60)
+        ours.settimeout(5)
+        said = ours.recv(65536).decode(errors="replace")
+
+        self.assertEqual(result.returncode, 0, said)
+        port = self.assert_loopback_relay(self.bridge_url())
+        self.assertEqual(self.logged("body"), [BODY], self.log.read_text())
+        self.assert_closes(port)
 
     def test_a_registry_failure_is_not_called_local_network(self):
         result = self.run_script("status", NPX_MODE="registry", CURL_CODE="200")

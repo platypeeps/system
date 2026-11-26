@@ -147,15 +147,25 @@ resolve_node() {
 # process, so the relay watches that pid and exits within a second of the
 # bridge, however it ends; check and status also stop it on exit. A fifo
 # hands back the rewritten URL: a relay that dies first closes it, and the
-# read ends with nothing, never a wait. $1 is where the relay's stderr goes.
-# HA_MCP_PYTHON exists for the tests.
-start_relay() { # stderr file
+# read ends with nothing, never a wait. The relay inherits this function's
+# stderr: reopening /dev/stderr fails where fd 2 is a socket an MCP launcher
+# gave, with Operation not permitted (round 3). Every caller tests the
+# return, so set -e is off here, and each step's failure is checked: an
+# empty RELAY_DIR would put the fifo at /url. On a failure RELAY_CAUSE says
+# why. HA_MCP_PYTHON exists for the tests.
+start_relay() {
   HA_MCP_URL_DIRECT="$HA_MCP_URL"
   case "$HA_MCP_URL" in http://*) ;; *) return 0 ;; esac
-  RELAY_DIR="$(mktemp -d)"
-  mkfifo "$RELAY_DIR/url"
+  RELAY_CAUSE="cannot make a temporary folder for the relay (mktemp failed)"
+  RELAY_DIR="$(mktemp -d)" || return 1
+  [ -n "$RELAY_DIR" ] || return 1
+  RELAY_CAUSE="the relay did not start under ${HA_MCP_PYTHON:-/usr/bin/python3}"
+  if ! mkfifo "$RELAY_DIR/url"; then
+    rm -rf "$RELAY_DIR"
+    return 1
+  fi
   "${HA_MCP_PYTHON:-/usr/bin/python3}" "$DIR/relay.py" "$HA_MCP_URL" "$$" \
-    >"$RELAY_DIR/url" 2>"$1" &
+    >"$RELAY_DIR/url" &
   RELAY_PID=$!
   relay_url=""
   read -r relay_url <"$RELAY_DIR/url" || true
@@ -190,8 +200,8 @@ serve() {
   require_token
   require_url
   resolve_node
-  if ! start_relay /dev/stderr; then
-    echo "ha-mcp.sh: the relay did not start under ${HA_MCP_PYTHON:-/usr/bin/python3}" >&2
+  if ! start_relay; then
+    echo "ha-mcp.sh: $RELAY_CAUSE" >&2
     exit 1
   fi
   echo "ha-mcp.sh: node $("$NODE_BIN" -v) at $NODE_BIN" >&2
@@ -210,11 +220,18 @@ serve() {
 # the npm registry, on a cold cache, before mcp-remote reads stdin at all.
 # So the bridge runs under st_bounded, in a process group of its own, and
 # the whole group ends two seconds after the wait does (round 1 review).
+# Every caller tests the return, so set -e is off: a failed mktemp is
+# checked here, or the paths below would be ./.err and the like, which the
+# trap then removes from the caller's folder (round 3).
 probe() { # seconds
-  PROBE_OUT="$(mktemp)"
+  RELAY_PID=""
+  PROBE_OUT="$(mktemp)" || PROBE_OUT=""
+  if [ -z "$PROBE_OUT" ]; then
+    PROBE_CAUSE="cannot make a temporary file for the probe (mktemp failed)"
+    return 1
+  fi
   PROBE_ERR="$PROBE_OUT.err"
   RELAY_ERR="$PROBE_OUT.relay"
-  RELAY_PID=""
   trap 'rm -f "$PROBE_OUT" "$PROBE_ERR" "$PROBE_OUT.done" "$RELAY_ERR"; [ -z "$RELAY_PID" ] || kill "$RELAY_PID" 2>/dev/null || true' EXIT
   # The bridge's argv carries the bearer token, and st_bounded names it on
   # stderr at a timeout: every file the probe writes is the owner's alone,
@@ -223,8 +240,8 @@ probe() { # seconds
     PROBE_CAUSE="cannot make the probe's private files under ${TMPDIR:-/tmp}"
     return 1
   fi
-  if ! start_relay "$RELAY_ERR"; then
-    PROBE_CAUSE="the relay did not start under ${HA_MCP_PYTHON:-/usr/bin/python3}"
+  if ! start_relay 2>"$RELAY_ERR"; then
+    PROBE_CAUSE="$RELAY_CAUSE"
     return 1
   fi
   PROBE_CAUSE=""
@@ -271,9 +288,10 @@ with open(os.environ["OUT"], errors="replace") as replies:
         result = msg.get("result") if isinstance(msg, dict) else None
         if not isinstance(result, dict):
             continue
-        if isinstance(result.get("serverInfo"), dict):
+        # The ids the probe gave initialize and tools/list.
+        if msg.get("id") == 1 and isinstance(result.get("serverInfo"), dict):
             server = result["serverInfo"]
-        if isinstance(result.get("tools"), list):
+        if msg.get("id") == 2 and isinstance(result.get("tools"), list):
             tools = result["tools"]
 if server is None or tools is None:
     sys.exit(1)
@@ -285,9 +303,11 @@ print("tools  : %d" % len(tools))
 # One line naming why a probe failed. The relay's and the bridge's stderr
 # are read, and never printed: the bridge's can echo the request. A bridge
 # st_bounded ended stalled. A host the relay cannot reach is down, unless
-# /usr/bin/curl, another Apple binary, gets an HTTP answer from it: then
-# macOS's Local Network permission refuses the relay's python, as it
-# refused node. Only the relay's line counts: the bridge talks to
+# /usr/bin/curl, another Apple binary, gets Home Assistant's own answer
+# from it: then macOS's Local Network permission refuses the relay's
+# python, as it refused node. /api/ with no token is `401: Unauthorized`
+# from Home Assistant; any other answer is another server or a proxy
+# (round 3). No token goes to curl: its argv is public. Only the relay's line counts: the bridge talks to
 # loopback, so an EHOSTUNREACH of its own is npm's registry, not Home
 # Assistant. HA_MCP_CURL exists for the tests.
 probe_cause() {
@@ -301,9 +321,10 @@ probe_cause() {
   elif grep -qE '^npm (error|ERR!)' "$PROBE_ERR" 2>/dev/null; then
     echo "npx could not fetch or start mcp-remote@${MCP_REMOTE_VERSION} (npm failed); run ha-mcp.sh check by hand"
   elif grep -q 'cannot reach' "$RELAY_ERR" 2>/dev/null; then
-    code=$("${HA_MCP_CURL:-/usr/bin/curl}" -sS -o /dev/null --max-time 5 -w '%{http_code}' "$origin/" 2>/dev/null) || code=000
-    case "$code" in
-      [1-5][0-9][0-9])
+    answer=$("${HA_MCP_CURL:-/usr/bin/curl}" -sS --max-time 5 -w '\n%{http_code}' "$origin/api/" 2>/dev/null) || answer=""
+    code=$(printf '%s\n' "$answer" | tail -n 1)
+    case "$code:$answer" in
+      '401:401: Unauthorized'*|200:*'"API running.'*)
         echo "macOS Local Network refuses ${HA_MCP_PYTHON:-/usr/bin/python3} the host: the relay cannot reach ${origin#*://} while curl gets HTTP $code; allow it under System Settings > Privacy & Security > Local Network" ;;
       *)
         echo "Home Assistant does not answer at ${origin#*://}" ;;
