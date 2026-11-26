@@ -15,9 +15,8 @@ execs the bridge in its own process, so the bridge is that parent.
 A connection it cannot open upstream prints one `cannot reach` line on
 stderr. Standard library only; Python 3.9 (the CommandLineTools python).
 
-An https url is relayed as plain TCP too, so TLS passes through, but the
-client then checks the certificate against 127.0.0.1; Home Assistant on
-the LAN serves http.
+http only: TLS checks the certificate against the host name, which the
+rewrite replaces, so ha-mcp.sh sends an https url to the bridge as it is.
 """
 
 import asyncio
@@ -25,15 +24,14 @@ import os
 import sys
 from urllib.parse import urlsplit, urlunsplit
 
-DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def target(url):
-    """(host, port) the url names; the scheme's port when it names none."""
+    """(host, port) an http url names; port 80 when it names none."""
     parts = urlsplit(url)
-    if parts.scheme not in DEFAULT_PORTS or not parts.hostname:
-        raise ValueError(f"want an http:// or https:// url with a host, got {url!r}")
-    return parts.hostname, parts.port or DEFAULT_PORTS[parts.scheme]
+    if parts.scheme != "http" or not parts.hostname:
+        raise ValueError(f"want an http:// url with a host, got {url!r}")
+    return parts.hostname, parts.port or 80
 
 
 def rewrite(url, port):

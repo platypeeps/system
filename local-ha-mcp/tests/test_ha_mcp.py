@@ -42,6 +42,9 @@ BODY = "home-assistant-example"
 NPX = r"""#!/bin/sh
 echo "url=$3 node=$(command -v node)" >> "$NPX_LOG"
 case "$NPX_MODE" in
+  modes)
+    # The modes of the files its stdout (fd 3 here) and stderr reach.
+    "$TEST_PYTHON" -c 'import os; print("outmode=%o errmode=%o" % (os.fstat(3).st_mode & 0o777, os.fstat(2).st_mode & 0o777))' 3>&1 >> "$NPX_LOG" ;;
   ehost)
     echo "fetch failed: connect EHOSTUNREACH 192.0.2.10:8123" >&2
     exit 1 ;;
@@ -87,6 +90,18 @@ NODE = "#!/bin/sh\necho v26.0.0\n"
 CURL = r"""#!/bin/sh
 printf '%s' "$CURL_CODE"
 [ "$CURL_CODE" != 000 ] || exit 7
+"""
+
+# The real relay, after logging the mode of the file its stderr reaches.
+MODE_RELAY = r"""#!/bin/sh
+"$TEST_PYTHON" -c 'import os; print("relaymode=%o" % (os.fstat(2).st_mode & 0o777))' >> "$NPX_LOG"
+exec "$TEST_PYTHON" "$@"
+"""
+
+# Marks that something ran it, then fails: no relay may start.
+NO_RELAY = r"""#!/bin/sh
+echo "relay ran" > "$NPX_LOG.relay"
+exit 1
 """
 
 # A relay that macOS refused the LAN: it hands out a URL, and its first
@@ -166,7 +181,8 @@ class Bridge(unittest.TestCase):
 
     def run_script(self, *args, **extra):
         return subprocess.run(["sh", str(self.base / "local-ha-mcp/ha-mcp.sh"), *args], env=self.env(**extra),
-                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
+                              preexec_fn=lambda: os.umask(0o022))
 
     def out(self, result):
         return result.stdout + result.stderr
@@ -316,7 +332,30 @@ class Bridge(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, self.out(result))
         self.assertNotIn("Local Network", self.out(result))
-        self.assertIn("no handshake or no tool list", self.first(result))
+        self.assertIn("npx could not fetch or start mcp-remote", self.first(result))
+
+    def test_every_file_the_token_can_reach_is_private(self):
+        """st_bounded names the command, bearer header too, in a timeout (round 2)."""
+        write_exec(self.base / "mode-python", MODE_RELAY)
+
+        result = self.run_script("check", NPX_MODE="modes", HA_MCP_PYTHON=str(self.base / "mode-python"))
+
+        self.assertEqual(result.returncode, 0, self.out(result))
+        self.assertEqual((self.logged("outmode"), self.logged("errmode"), self.logged("relaymode")),
+                         (["600"], ["600"], ["600"]))
+
+    def test_an_https_url_goes_to_the_bridge_unchanged_with_no_relay(self):
+        """A relay would rewrite the host, and TLS checks the name (round 2)."""
+        write_exec(self.base / "no-relay", NO_RELAY)
+        url = "https://ha.example.test/mcp_server/sse"
+        for verb, mode in (("check", "ok"), ("serve", "silent")):
+            with self.subTest(verb):
+                self.log.unlink(missing_ok=True)
+                result = self.run_script(verb, NPX_MODE=mode, HA_MCP_URL=url,
+                                         HA_MCP_PYTHON=str(self.base / "no-relay"))
+                self.assertEqual(result.returncode, 0, self.out(result))
+                self.assertEqual(self.bridge_url(), url)
+                self.assertFalse((self.base / "npx.log.relay").exists(), "an https URL started a relay")
 
     def test_a_malformed_reply_is_a_failed_probe_not_a_traceback(self):
         result = self.run_script("status", NPX_MODE="malformed")
@@ -362,12 +401,10 @@ class Rewrite(unittest.TestCase):
     def setUp(self):
         self.relay = load_relay()
 
-    def test_the_target_takes_the_url_port_or_the_scheme_default(self):
+    def test_the_target_takes_the_url_port_or_80(self):
         cases = {
             "http://ha.example.test:8123/mcp_server/sse": ("ha.example.test", 8123),
             "http://ha.example.test/mcp_server/sse": ("ha.example.test", 80),
-            "https://ha.example.test/mcp_server/sse": ("ha.example.test", 443),
-            "https://192.0.2.10:8443/mcp_server/sse": ("192.0.2.10", 8443),
         }
         for url, want in cases.items():
             with self.subTest(url):
@@ -376,11 +413,10 @@ class Rewrite(unittest.TestCase):
     def test_the_rewrite_keeps_scheme_path_and_query(self):
         self.assertEqual(self.relay.rewrite("http://ha.example.test:8123/mcp_server/sse?x=1", 40001),
                          "http://127.0.0.1:40001/mcp_server/sse?x=1")
-        self.assertEqual(self.relay.rewrite("https://ha.example.test/mcp_server/sse", 40002),
-                         "https://127.0.0.1:40002/mcp_server/sse")
 
     def test_a_url_with_no_host_or_another_scheme_is_refused(self):
-        for url in ("ws://ha.example.test/mcp_server/sse", "http:///mcp_server/sse", "ha.example.test:8123"):
+        for url in ("https://ha.example.test/mcp_server/sse", "ws://ha.example.test/mcp_server/sse",
+                    "http:///mcp_server/sse", "ha.example.test:8123"):
             with self.subTest(url):
                 with self.assertRaises(ValueError):
                     self.relay.target(url)
@@ -390,8 +426,9 @@ class Handshake(unittest.TestCase):
     """relay.py binds port 0, prints its URL, and serves on that port."""
 
     def test_the_first_line_names_the_port_it_listens_on(self):
+        upstream = free_port()  # loopback: the probe below opens no outbound connection
         proc = subprocess.Popen([sys.executable, str(FOLDER / "relay.py"),
-                                 "http://192.0.2.10:8123/mcp_server/sse", str(os.getpid())],
+                                 f"http://127.0.0.1:{upstream}/mcp_server/sse", str(os.getpid())],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         self.addCleanup(proc.wait)
         self.addCleanup(proc.kill)
@@ -400,7 +437,7 @@ class Handshake(unittest.TestCase):
 
         parts = urlsplit(line)
         self.assertEqual((parts.scheme, parts.hostname, parts.path), ("http", "127.0.0.1", "/mcp_server/sse"))
-        self.assertNotEqual(parts.port, 8123)
+        self.assertNotEqual(parts.port, upstream)
         self.assertTrue(listening(parts.port), line)
 
     def test_a_relay_whose_parent_is_already_gone_exits(self):

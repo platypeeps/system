@@ -88,9 +88,10 @@ no arguments and expects a live stdio server; printing usage would break it.
   on a free `127.0.0.1` port, copies each connection to `HA_MCP_URL`'s
   host and port, and points `mcp-remote` at the loopback URL. The relay
   watches the bridge's process and exits within a second of it, however
-  the bridge ends; no launchd job runs it. Keep `HA_MCP_URL` on `http://`:
-  an `https://` URL is relayed too, but the client then checks the
-  certificate against `127.0.0.1`.
+  the bridge ends; no launchd job runs it. Only an `http://` URL is
+  relayed: TLS checks the certificate against the host name, so an
+  `https://` URL goes to the bridge as it is, and Local Network blocking
+  then applies to it.
 - `status` names the cause: a host the relay cannot reach does not answer,
   unless `/usr/bin/curl` gets an HTTP answer from it; then Local Network
   refuses the relay's python. The nightly `local-health-check` sweep runs

@@ -74,8 +74,8 @@ environment (<config>/ha-mcp/.env, or already exported; the environment wins;
                        Normally exported by ~/.config/shell/env.sh.
   HA_MCP_URL           required. The SSE endpoint, e.g.
                        http://homeassistant.local:8123/mcp_server/sse.
-                       Keep it http: the relay rewrites the host to
-                       127.0.0.1, which an https certificate does not name.
+                       An https URL goes to the bridge as it is, with no
+                       relay, so Local Network blocking applies to it.
   MCP_REMOTE_VERSION   default 0.8.3
   HA_MCP_NODE          node binary to run the bridge with. Default: the first
                        `node` on PATH. npx is invoked from beside it and that
@@ -139,8 +139,9 @@ resolve_node() {
 # So relay.py runs under /usr/bin/python3 on a free 127.0.0.1 port, copies
 # each connection to HA_MCP_URL's host:port, and mcp-remote talks to the
 # loopback port. Plain TCP: Home Assistant ignores the Host header the
-# rewrite changes. An https URL is relayed too, but the client then checks
-# the certificate against 127.0.0.1, so keep the LAN endpoint on http.
+# rewrite changes. Only an http URL is relayed: TLS checks the certificate
+# against the host name the rewrite replaces, so an https URL goes to the
+# bridge as it is, as before the relay, and Local Network applies to it.
 #
 # The relay's parent is this shell, and serve execs the bridge in this same
 # process, so the relay watches that pid and exits within a second of the
@@ -149,6 +150,8 @@ resolve_node() {
 # read ends with nothing, never a wait. $1 is where the relay's stderr goes.
 # HA_MCP_PYTHON exists for the tests.
 start_relay() { # stderr file
+  HA_MCP_URL_DIRECT="$HA_MCP_URL"
+  case "$HA_MCP_URL" in http://*) ;; *) return 0 ;; esac
   RELAY_DIR="$(mktemp -d)"
   mkfifo "$RELAY_DIR/url"
   "${HA_MCP_PYTHON:-/usr/bin/python3}" "$DIR/relay.py" "$HA_MCP_URL" "$$" \
@@ -158,7 +161,7 @@ start_relay() { # stderr file
   read -r relay_url <"$RELAY_DIR/url" || true
   rm -rf "$RELAY_DIR"
   case "$relay_url" in
-    http://127.0.0.1:*|https://127.0.0.1:*) HA_MCP_URL_DIRECT="$HA_MCP_URL"; HA_MCP_URL="$relay_url" ;;
+    http://127.0.0.1:*) HA_MCP_URL="$relay_url" ;;
     *)
       kill "$RELAY_PID" 2>/dev/null || true
       RELAY_PID=""
@@ -213,6 +216,13 @@ probe() { # seconds
   RELAY_ERR="$PROBE_OUT.relay"
   RELAY_PID=""
   trap 'rm -f "$PROBE_OUT" "$PROBE_ERR" "$PROBE_OUT.done" "$RELAY_ERR"; [ -z "$RELAY_PID" ] || kill "$RELAY_PID" 2>/dev/null || true' EXIT
+  # The bridge's argv carries the bearer token, and st_bounded names it on
+  # stderr at a timeout: every file the probe writes is the owner's alone,
+  # made before anything writes it (mktemp's PROBE_OUT already is).
+  if ! (umask 077 && : >"$PROBE_ERR" && : >"$RELAY_ERR"); then
+    PROBE_CAUSE="cannot make the probe's private files under ${TMPDIR:-/tmp}"
+    return 1
+  fi
   if ! start_relay "$RELAY_ERR"; then
     PROBE_CAUSE="the relay did not start under ${HA_MCP_PYTHON:-/usr/bin/python3}"
     return 1
@@ -288,6 +298,8 @@ probe_cause() {
   origin=$(printf '%s\n' "$HA_MCP_URL_DIRECT" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://[^/]+).*#\1#')
   if grep -q "^timed out after ${PROBE_BOUND}s" "$PROBE_ERR" 2>/dev/null; then
     echo "the bridge did not finish within ${PROBE_BOUND}s (npx or mcp-remote stalled); ended it"
+  elif grep -qE '^npm (error|ERR!)' "$PROBE_ERR" 2>/dev/null; then
+    echo "npx could not fetch or start mcp-remote@${MCP_REMOTE_VERSION} (npm failed); run ha-mcp.sh check by hand"
   elif grep -q 'cannot reach' "$RELAY_ERR" 2>/dev/null; then
     code=$("${HA_MCP_CURL:-/usr/bin/curl}" -sS -o /dev/null --max-time 5 -w '%{http_code}' "$origin/" 2>/dev/null) || code=000
     case "$code" in
@@ -310,7 +322,11 @@ check() {
     exit 1
   fi
   printf '%s\n' "$result"
-  echo "url    : $HA_MCP_URL_DIRECT (through relay $HA_MCP_URL)"
+  if [ "$HA_MCP_URL" = "$HA_MCP_URL_DIRECT" ]; then
+    echo "url    : $HA_MCP_URL (no relay: not http)"
+  else
+    echo "url    : $HA_MCP_URL_DIRECT (through relay $HA_MCP_URL)"
+  fi
   echo "node   : $NODE_BIN $("$NODE_BIN" -v)"
   echo "OK"
 }
