@@ -416,6 +416,30 @@ class CronJobFromRepoExample(Case):
         self.assertIn("  MISSING hub fence", out, out + result.stderr)
         self.assertNotIn("uninstall sd-db-backup", self.cron_calls(), out)
 
+    def test_an_unreadable_fence_keeps_a_listed_build_dispatch(self):
+        """sd:10774: on a standby whose profile lists build-dispatch, an
+        unread fence read as "not the holder", and the pack guard
+        uninstalled the role's dispatcher until the next run."""
+        (self.profiles / "personal.agent").write_text("# a standby: no sd agent\n")
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+        (self.profiles / "personal.cron").write_text("build-dispatch\nown-job\n")
+        pack = self.base / "pack"
+        write_exec(pack / "bin/sd-db", "#!/bin/sh\nexit 1\n")
+        db = self.home / ".local/share/sd/sd.db"
+        db.parent.mkdir(parents=True)
+        db.touch()
+        self.jobs.mkdir(parents=True)
+        for job in ("build-dispatch", "sd-db-backup", "own-job"):
+            (self.jobs / f"{job}.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+            self.install_plist(job)
+        result = self.run_script("update", "cron", "--apply",
+                                 SD_PACK_ROOT=str(pack))
+        out = result.stdout
+        self.assertIn("  MISSING hub fence", out, out + result.stderr)
+        calls = self.cron_calls()
+        self.assertNotIn("uninstall build-dispatch", calls, out)
+        self.assertNotIn("uninstall sd-db-backup", calls, out)
+
     def test_a_satellite_profile_gets_no_needs_sweep(self):
         (self.profiles / "personal.satellite").write_text("hub.example.test\n")
         result = self.run_script("update", "cron", "--apply")

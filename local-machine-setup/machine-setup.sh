@@ -3676,6 +3676,9 @@ dispatch_pack_why() {
 dispatch_pack_ok() {
   if plain_hub || hub_holder; then return 0; fi
   dispatch_pack_held "not installed; move the pack, then rerun" && return 0
+  # An unread fence is no answer: a standby that holds the role runs the
+  # dispatcher on any pack, so this run leaves it alone (sd:10774).
+  [ "${HUB_FENCE:-}" != unread ] || return 1
   dp_plist="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.build-dispatch.plist"
   if [ -f "$dp_plist" ] && cron_plist_ours "$dp_plist" build-dispatch 2>/dev/null; then
     echo "  EXTRA   build-dispatch — installed on that pack, where its tick dispatches nothing; uninstalled"

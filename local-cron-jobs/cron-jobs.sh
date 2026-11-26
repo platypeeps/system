@@ -9,7 +9,7 @@
 # by CRON_JOBS_EXTRA_DIRS (see below), as sourced shell vars. <config> is
 # ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}.
 # The repository ships no jobs; examples/ holds sample job files to copy.
-#   JOB_SCHEDULE   5-field cron, LOCAL time (supported: * N a,b,c */N), or
+#   JOB_SCHEDULE   5-field cron, LOCAL time (supported: * N a,b,c */N, each N in its field's range), or
 #                  "manual": no calendar, it runs only when kickstarted
 #   JOB_PROMPT     prompt or /skill invocation passed to `claude -p`
 #   JOB_COMMAND    alternative to JOB_PROMPT: plain shell command run via
@@ -372,8 +372,12 @@ is_loaded() { launchctl print "$DOMAIN/$(label_for "$1")" >/dev/null 2>&1; }
 # Supports per field: "*", a number, a comma list, or "*/N".
 # Emits the cross-product of minute x hour x (day|weekday|month) entries.
 
-expand_field() { # value, max (exclusive upper bound for */N stepping), min
-  local val="$1" max="$2" min="$3" step i out
+# Fails on a value outside min..top (top defaults to max - 1; weekday
+# takes 7 for Sunday): launchd never fires a plist that names minute 60
+# or month 13, and plutil -lint reads it fine (sd:10805). Under
+# calendar_xml's set -f; IFS ends with its `$( )`.
+expand_field() { # value, max (exclusive upper bound for */N stepping), min, [top]
+  local val="$1" max="$2" min="$3" top="${4:-$(($2 - 1))}" step i out n
   case "$val" in
     "*")
       echo ""
@@ -389,6 +393,13 @@ expand_field() { # value, max (exclusive upper bound for */N stepping), min
       echo "${out%,}"
       ;;
     *)
+      IFS=','
+      for n in $val; do
+        case "$n" in '' | *[!0-9]*) return 1 ;; esac
+        # Decimal: a leading zero is no octal here, and no overflow.
+        n="${n#"${n%%[!0]*}"}"
+        [ ${#n} -le 2 ] && [ "${n:-0}" -ge "$min" ] && [ "${n:-0}" -le "$top" ] || return 1
+      done
       echo "$val"
       ;;
   esac
@@ -404,11 +415,13 @@ calendar_xml() { # cron expression -> StartCalendarInterval plist XML
   set -- $cron
   c_min="$1" c_hour="$2" c_dom="$3" c_mon="$4" c_dow="$5"
   local mins hours doms mons dows
-  mins="$(expand_field "$c_min" 60 0)"
-  hours="$(expand_field "$c_hour" 24 0)"
-  doms="$(expand_field "$c_dom" 32 1)"
-  mons="$(expand_field "$c_mon" 13 1)"
-  dows="$(expand_field "$c_dow" 7 0)"
+  mins="$(expand_field "$c_min" 60 0)" && hours="$(expand_field "$c_hour" 24 0)" &&
+    doms="$(expand_field "$c_dom" 32 1)" && mons="$(expand_field "$c_mon" 13 1)" &&
+    dows="$(expand_field "$c_dow" 7 0 7)" || {
+    [ "$had_noglob" = 1 ] || set +f
+    echo "ERROR: JOB_SCHEDULE '$cron' has a value outside its field (minute 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7)" >&2
+    return 1
+  }
 
   # Cross-product of the five fields. Splitting is done by setting IFS to a
   # comma and leaving the expansions unquoted on purpose; "x" stands for a

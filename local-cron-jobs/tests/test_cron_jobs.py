@@ -5879,6 +5879,28 @@ class ManualScheduleTest(unittest.TestCase):
         config = plistlib.loads(self.plist.read_bytes())
         self.assertEqual(config["StartCalendarInterval"], [{"Minute": 5, "Hour": 3}])
 
+    def test_an_out_of_range_field_is_refused(self):
+        """sd:10805: a number outside its field passed to the plist, which
+        launchd never fires; each field, alone and in a list."""
+        for cron in ("60 3 * * *", "5,60 3 * * *", "5 24 * * *",
+                     "5 1,24 * * *", "5 3 0 * *", "5 3 1,0 * *",
+                     "5 3 * 13 *", "5 3 * 1,13 *", "5 3 * * 8",
+                     "5 3 * * 1,8", "5 3 * * x", "5 3 1,,2 * *"):
+            with self.subTest(cron=cron):
+                self.fx.write_job("demo", f'JOB_SCHEDULE="{cron}"\nJOB_COMMAND="true"\n')
+                result = self.run_script("install", "demo")
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(f"JOB_SCHEDULE '{cron}'", result.stderr)
+                self.assertFalse(self.plist.exists(), cron)
+
+    def test_every_edge_of_each_field_installs(self):
+        """sd:10805: the range check keeps both ends, and weekday 7."""
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0,59 0,23 1,31 1,12 0,7"\nJOB_COMMAND="true"\n')
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        config = plistlib.loads(self.plist.read_bytes())
+        self.assertEqual(32, len(config["StartCalendarInterval"]))
+
     def test_list_and_status_say_manual(self):
         self.assertEqual(self.run_script("install", "demo").returncode, 0)
         listed = self.run_script("list")
