@@ -2569,10 +2569,16 @@ stage_cron() {
     sweep=0
   fi
   hub_ask
+  # Without the fence's answer the sweep cannot tell a role job from a
+  # dropped one; the next run sweeps once it reads (review).
+  if [ "${HUB_FENCE:-}" = unread ]; then
+    echo "  MISSING hub fence — sd-db fence could not be read; only retired jobs are uninstalled this run"
+    sweep=0
+  fi
   # A hub profile wants the role jobs that run from their example as well:
   # no profile line named them, so the hub ran no needs sweep (sd:10411).
   # A `!name` line drops one, as it drops a fleet job.
-  jobs=$( { manifest cron; printf '%s\n' "$repo_jobs"; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; elif plain_hub; then printf '%s\n' $SD_HUB_ROLE_SEEDED | drop_negated "$(profile_drops "$PROFILE" cron)"; fi; } | awk 'NF && !seen[$0]++')
+  jobs=$( { manifest cron; printf '%s\n' "$repo_jobs"; printf '%s\n' "$host_jobs"; role_cron_jobs; } | awk 'NF && !seen[$0]++')
   # A retired job stays out of every machine's wanted list, even where a
   # profile or a host folder written before the retirement still names it:
   # the sweep below left those running, and verify read them ok (sd:3155).
@@ -2595,10 +2601,9 @@ stage_cron() {
   done
   # grep exits 1 when every wanted job is retired; the check below reports that.
   jobs=$(printf '%s\n' "$jobs" | grep -vxF "$retired" || :)
-  if [ -z "$jobs" ]; then
-    echo "  no jobs in this profile"
-    return 0
-  fi
+  # No return here: the sweep below still reports what is installed
+  # (sd:10427).
+  [ -n "$jobs" ] || echo "  no jobs in this profile"
   # Absence is not the only way a job can be wrong. This used to install only
   # when the plist FILE was missing, so a plist whose content had gone stale
   # reported ok forever — all 9 jobs here read healthy while every one carried
@@ -2610,7 +2615,8 @@ stage_cron() {
   # file, ended the run before every later stage (sd:2538). The sweep's own
   # ownership test decides; only a plist proven another installer's (exit 1) is
   # skipped, so an unreadable one under a wanted name keeps the reinstall.
-  echo "$jobs" | while read -r j; do
+  printf '%s' "${jobs:+$jobs
+}" | while read -r j; do
     # The agents stage's guard: skipped, and left to the satellite stage's
     # EXTRA when one is here, so the sweep below keeps it too.
     if sd_hub_only "$LABEL_PREFIX.cron.$j" && is_satellite && ! hub_holder; then
@@ -3619,9 +3625,14 @@ is_satellite() {
 hub_holder() {
   if [ -z "${HUB_HOLDER:-}" ]; then
     HUB_HOLDER=no
-    if [ ! -e "$SD_HUB_CONFIG" ] && [ -f "$SD_DB" ] &&
-       hr_fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>/dev/null); then
-      case "$hr_fence" in *"fence: holder:"*) HUB_HOLDER=yes ;; esac
+    if [ ! -e "$SD_HUB_CONFIG" ] && [ -f "$SD_DB" ]; then
+      # A fence that cannot be read is no answer: HUB_FENCE=unread lets
+      # the cron sweep keep the role's jobs (review).
+      if hr_fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>/dev/null); then
+        case "$hr_fence" in *"fence: holder:"*) HUB_HOLDER=yes ;; esac
+      else
+        HUB_FENCE=unread
+      fi
     fi
   fi
   [ "$HUB_HOLDER" = yes ]
@@ -3634,6 +3645,17 @@ hub_role() { ! sd_in_profile && hub_holder; }
 plain_hub() { sd_in_profile && ! is_satellite; }
 # Ask the fence once, in the main shell, before any pipeline.
 hub_ask() { plain_hub || hub_holder || :; }
+# The role jobs a machine runs on top of its profile's: the role's while it
+# holds it, the seeded ones less its `!` lines on a plain hub (sd:10411).
+# The one list for the cron stage, doctor, candidates and capture
+# (sd:10427). Call hub_ask first.
+role_cron_jobs() {
+  if hub_role; then
+    hub_role_labels cron
+  elif plain_hub; then
+    printf '%s\n' $SD_HUB_ROLE_SEEDED | drop_negated "$(profile_drops "$PROFILE" cron)"
+  fi
+}
 # Whether the pack holds SD_DISPATCH_PACK_MIN, the commit that scopes
 # build dispatch to its lane host (pack sd:7933): lib/dispatch_pack.sh,
 # which cron-jobs.sh reads before each tick too. With an argument, a
@@ -5611,7 +5633,13 @@ cmd_capture() {
   # what it names on every machine, so writing those names into this
   # machine's <profile>.cron would duplicate a fleet line in a per-machine
   # file, and capture rewrites that file wholesale.
-  { common_manifest cron; repo_cron_jobs; cat "$tmp/host.cron"; } | sort -u > "$tmp/common.cron"
+  # The role jobs too, which the stage adds itself: a captured line would
+  # outlive a later `!` line (sd:10427). Not one the profile names itself:
+  # a standby's own build-dispatch line must outlive the role (review).
+  hub_ask
+  { common_manifest cron; repo_cron_jobs; cat "$tmp/host.cron"
+    role_cron_jobs | drop_negated "$(profile_entries "$PROFILE" cron)" exact
+  } | sort -u > "$tmp/common.cron"
   comm -23 "$tmp/have.cron" "$tmp/common.cron" > "$tmp/out.cron"
 
   if command -v mas >/dev/null 2>&1; then
@@ -6456,7 +6484,8 @@ candidates_cron() {
     echo
     return 0
   fi
-  cand_listed=$( { manifest cron; repo_cron_jobs; } | sort -u)
+  hub_ask
+  cand_listed=$( { manifest cron; repo_cron_jobs; role_cron_jobs; } | sort -u)
   cand_all=$(discover_cron_jobs)
   cand_have=0
   cand_in=0
@@ -7579,7 +7608,8 @@ cmd_doctor() {
       echo "  WARN    cannot list this host's cron jobs (cron-jobs/jobs/<host>/); only the profile's are checked"
       dr_host=
     fi
-    jobs=$( { manifest cron; repo_cron_jobs; printf '%s\n' "$dr_host"; } | awk 'NF && !seen[$0]++' \
+    hub_ask
+    jobs=$( { manifest cron; repo_cron_jobs; printf '%s\n' "$dr_host"; role_cron_jobs; } | awk 'NF && !seen[$0]++' \
       | { grep -vxF "$(retired_cron_jobs)" || :; } | awk -v p="$LABEL_PREFIX.cron." '{ print p $0 }')
     for label in $labels $jobs; do
       # The cron and agents stages' guard: a satellite never loads these, so
