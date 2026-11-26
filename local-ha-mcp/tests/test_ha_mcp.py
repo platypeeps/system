@@ -413,6 +413,17 @@ class Bridge(unittest.TestCase):
         self.assertNotIn("Local Network", self.out(result))
         self.assertIn("npx could not fetch or start mcp-remote", self.first(result))
 
+    def test_a_denied_process_group_is_named_not_called_a_missing_handshake(self):
+        """Lane review: a sandbox that denies setpgid makes st_bounded run
+        nothing and exit 125; check named a missing handshake instead."""
+        result = self.run_script("check", PERL5LIB=str(LIB / "tests" / "denied_group"),
+                                 PERL5OPT="-MDeniedGroup")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn("process group", self.first(result))
+        self.assertNotIn("no handshake", self.out(result))
+        self.assertNotIn(TOKEN, self.out(result))
+
     def test_every_file_the_token_can_reach_is_private(self):
         """st_bounded names the command, bearer header too, in a timeout (round 2)."""
         write_exec(self.base / "mode-python", MODE_RELAY)

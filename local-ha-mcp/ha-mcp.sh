@@ -318,6 +318,8 @@ probe_cause() {
   origin=$(printf '%s\n' "$HA_MCP_URL_DIRECT" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://[^/]+).*#\1#')
   if grep -q "^timed out after ${PROBE_BOUND}s" "$PROBE_ERR" 2>/dev/null; then
     echo "the bridge did not finish within ${PROBE_BOUND}s (npx or mcp-remote stalled); ended it"
+  elif grep -q '^st_bounded: process group denied' "$PROBE_ERR" 2>/dev/null; then
+    echo "the bridge did not start: this process may not make a process group (a sandbox denies setpgid), so the bound ran nothing"
   elif grep -qE '^npm (error|ERR!)' "$PROBE_ERR" 2>/dev/null; then
     echo "npx could not fetch or start mcp-remote@${MCP_REMOTE_VERSION} (npm failed); run ha-mcp.sh check by hand"
   elif grep -q 'cannot reach' "$RELAY_ERR" 2>/dev/null; then
