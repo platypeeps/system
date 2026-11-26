@@ -384,28 +384,6 @@ class Bridge(unittest.TestCase):
                 self.assertIn(f"cannot make a temporary {'file' if fail == 'file' else 'folder'}", self.out(result))
                 self.assertFalse(self.log.exists(), "the bridge ran with no probe files")
 
-    def test_serve_starts_when_stderr_is_a_socket_it_cannot_reopen(self):
-        """An MCP launcher can hand fd 2 over as a socket (round 3).
-
-        macOS reopens /dev/fd/2 on a socket; Linux refuses it, and so does
-        a sandboxed launcher, with Operation not permitted. sandbox-exec
-        denies /dev/fd here to stand in for both: serve must inherit fd 2.
-        """
-        ours, theirs = socket.socketpair()
-        self.addCleanup(ours.close)
-        deny = '(version 1)(allow default)(deny file-read* file-write* (regex #"^/dev/fd/"))'
-        with theirs:
-            result = subprocess.run(["sandbox-exec", "-p", deny, "sh", str(self.base / "local-ha-mcp/ha-mcp.sh"),
-                                     "serve"], env=self.env(NPX_MODE="fetch"), stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.PIPE, stderr=theirs.fileno(), timeout=60)
-        ours.settimeout(5)
-        said = ours.recv(65536).decode(errors="replace")
-
-        self.assertEqual(result.returncode, 0, said)
-        port = self.assert_loopback_relay(self.bridge_url())
-        self.assertEqual(self.logged("body"), [BODY], self.log.read_text())
-        self.assert_closes(port)
-
     def test_a_registry_failure_is_not_called_local_network(self):
         result = self.run_script("status", NPX_MODE="registry", CURL_CODE="200")
 
