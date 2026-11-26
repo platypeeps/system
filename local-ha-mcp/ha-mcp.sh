@@ -34,6 +34,8 @@ DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
 # shellcheck source=../lib/config.sh
 . "$DIR/../lib/config.sh"
+# shellcheck source=../lib/bounded.sh
+. "$DIR/../lib/bounded.sh"
 
 # <config>/ha-mcp/.env provides defaults only -- values already in the
 # environment win.
@@ -197,11 +199,14 @@ serve() {
 }
 
 # Runs the bridge once with initialize and tools/list on its stdin, for at
-# most $1 seconds; its stdout lands in $PROBE_OUT, its stderr in $PROBE_ERR.
+# most $1 seconds plus two, and a second's grace; its stdout lands in $PROBE_OUT, its stderr in $PROBE_ERR.
 # mcp-remote exits when its stdin closes, so stdin stays open until the tool
 # list arrives, the bridge has exited, or the time runs out. A fixed wait
 # made every run, good or bad, take that long, and the health check's sweep
-# allows a status 30 seconds.
+# allows a status 30 seconds. Closing stdin is not enough: npx can stall in
+# the npm registry, on a cold cache, before mcp-remote reads stdin at all.
+# So the bridge runs under st_bounded, in a process group of its own, and
+# the whole group ends two seconds after the wait does (round 1 review).
 probe() { # seconds
   PROBE_OUT="$(mktemp)"
   PROBE_ERR="$PROBE_OUT.err"
@@ -213,6 +218,7 @@ probe() { # seconds
     return 1
   fi
   PROBE_CAUSE=""
+  PROBE_BOUND=$(($1 + 2))
   {
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"ha-mcp-check","version":"1"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
@@ -227,7 +233,9 @@ probe() { # seconds
       waited=$((waited + 1))
     done
   } | {
-    "$NPX_BIN" -y "mcp-remote@${MCP_REMOTE_VERSION}" "$HA_MCP_URL" \
+    # shellcheck disable=SC2034 # st_bounded reads it
+    ST_BOUNDED_GRACE=1
+    st_bounded "$PROBE_BOUND" "$NPX_BIN" -y "mcp-remote@${MCP_REMOTE_VERSION}" "$HA_MCP_URL" \
       --header "Authorization: Bearer ${HA_TOKEN}" \
       --transport sse-only --allow-http >"$PROBE_OUT" 2>"$PROBE_ERR" || true
     : > "$PROBE_OUT.done"
@@ -235,43 +243,52 @@ probe() { # seconds
 }
 
 # The server and tool-count lines of a probe that got both, or exit 1.
+# A reply of another shape is no answer, never a traceback; the server's
+# name and version are the server's text, so each unprintable character
+# in them becomes `?` and neither can add a line or move the terminal.
 probe_result() {
   OUT="$PROBE_OUT" python3 -c '
 import json, os, sys
+def text(value):
+    return "".join(c if c.isprintable() else "?" for c in str(value))[:80]
 server = tools = None
-for line in open(os.environ["OUT"]):
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        msg = json.loads(line)
-    except ValueError:
-        continue
-    result = msg.get("result") or {}
-    if "serverInfo" in result:
-        server = result["serverInfo"]
-    if "tools" in result:
-        tools = result["tools"]
-if server is None or not isinstance(tools, list):
+with open(os.environ["OUT"], errors="replace") as replies:
+    for line in replies:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        result = msg.get("result") if isinstance(msg, dict) else None
+        if not isinstance(result, dict):
+            continue
+        if isinstance(result.get("serverInfo"), dict):
+            server = result["serverInfo"]
+        if isinstance(result.get("tools"), list):
+            tools = result["tools"]
+if server is None or tools is None:
     sys.exit(1)
-print("server : %s %s" % (server.get("name"), server.get("version")))
+print("server : %s %s" % (text(server.get("name")), text(server.get("version"))))
 print("tools  : %d" % len(tools))
-'
+' 2>/dev/null
 }
 
 # One line naming why a probe failed. The relay's and the bridge's stderr
-# are read, and never printed: the bridge's can echo the request. A host
-# the relay cannot reach is down, unless /usr/bin/curl, another Apple
-# binary, gets an HTTP answer from it: then macOS's Local Network
-# permission refuses the relay's python, as it refused node. HA_MCP_CURL
-# exists for the tests.
+# are read, and never printed: the bridge's can echo the request. A bridge
+# st_bounded ended stalled. A host the relay cannot reach is down, unless
+# /usr/bin/curl, another Apple binary, gets an HTTP answer from it: then
+# macOS's Local Network permission refuses the relay's python, as it
+# refused node. Only the relay's line counts: the bridge talks to
+# loopback, so an EHOSTUNREACH of its own is npm's registry, not Home
+# Assistant. HA_MCP_CURL exists for the tests.
 probe_cause() {
   if [ -n "$PROBE_CAUSE" ]; then
     echo "$PROBE_CAUSE"
     return
   fi
   origin=$(printf '%s\n' "$HA_MCP_URL_DIRECT" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://[^/]+).*#\1#')
-  if grep -q 'cannot reach' "$RELAY_ERR" 2>/dev/null || grep -q EHOSTUNREACH "$PROBE_ERR" 2>/dev/null; then
+  if grep -q "^timed out after ${PROBE_BOUND}s" "$PROBE_ERR" 2>/dev/null; then
+    echo "the bridge did not finish within ${PROBE_BOUND}s (npx or mcp-remote stalled); ended it"
+  elif grep -q 'cannot reach' "$RELAY_ERR" 2>/dev/null; then
     code=$("${HA_MCP_CURL:-/usr/bin/curl}" -sS -o /dev/null --max-time 5 -w '%{http_code}' "$origin/" 2>/dev/null) || code=000
     case "$code" in
       [1-5][0-9][0-9])

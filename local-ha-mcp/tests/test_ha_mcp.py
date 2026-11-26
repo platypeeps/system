@@ -54,11 +54,27 @@ case "$NPX_MODE" in
   silent)
     cat >/dev/null
     exit 0 ;;
+  stall)
+    # A registry stall before mcp-remote reads stdin: EOF changes nothing,
+    # and a grandchild holds on too.
+    sleep 120 &
+    echo $! > "$NPX_LOG.child"
+    wait
+    exit 0 ;;
+  registry)
+    echo "npm error network request to https://registry.npmjs.org/mcp-remote failed, reason: connect EHOSTUNREACH 192.0.2.20:443" >&2
+    exit 1 ;;
+  malformed)
+    printf '%s\n' '[1, 2]' '"text"' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":"not an object"}}' \
+      '{"jsonrpc":"2.0","id":2,"result":["not", "an", "object"]}'
+    cat >/dev/null
+    exit 0 ;;
 esac
+SERVER_NAME=${SERVER_NAME:-home-assistant}
 while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*)
-      echo '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"home-assistant","version":"1.0"},"capabilities":{"tools":{}}}}' ;;
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"'"$SERVER_NAME"'","version":"1.0"},"capabilities":{"tools":{}}}}' ;;
     *'"method":"tools/list"'*)
       echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"},{"name":"b"}]}}' ;;
   esac
@@ -273,6 +289,49 @@ class Bridge(unittest.TestCase):
         self.assertEqual(result.returncode, 1, self.out(result))
         self.assertIn(f"no handshake or no tool list from {self.url}", self.first(result))
         self.assertLess(time.monotonic() - started, 30)
+
+    def test_status_ends_a_bridge_that_ignores_stdin_inside_the_sweep_bound(self):
+        """A cold npm cache can stall npx before mcp-remote reads stdin (round 1)."""
+        started = time.monotonic()
+        result = self.run_script("status", NPX_MODE="stall")
+        took = time.monotonic() - started
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertLess(took, 30)
+        self.assertIn("did not finish", self.first(result))
+        child = int((self.base / "npx.log.child").read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.2)
+        else:
+            os.kill(child, signal.SIGKILL)
+            self.fail("the stalled bridge's child outlived status")
+
+    def test_a_registry_failure_is_not_called_local_network(self):
+        result = self.run_script("status", NPX_MODE="registry", CURL_CODE="200")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertNotIn("Local Network", self.out(result))
+        self.assertIn("no handshake or no tool list", self.first(result))
+
+    def test_a_malformed_reply_is_a_failed_probe_not_a_traceback(self):
+        result = self.run_script("status", NPX_MODE="malformed")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertNotIn("Traceback", self.out(result))
+        self.assertIn("no handshake or no tool list", self.first(result))
+
+    def test_a_server_name_cannot_add_a_line(self):
+        result = self.run_script("check", SERVER_NAME="evil\\nOK\\u001b[2J")
+
+        self.assertEqual(result.returncode, 0, self.out(result))
+        self.assertEqual(result.stdout.count("\n"), 5, result.stdout)
+        self.assertNotIn("\x1b", result.stdout)
+        self.assertIn("server : evil?OK?[2J 1.0", result.stdout)
 
     def test_check_names_the_cause_on_stderr(self):
         result = self.run_script("check", NPX_MODE="ehost")
