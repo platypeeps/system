@@ -53,8 +53,13 @@ usage: ha-mcp.sh [serve|check|status|-h]
           naming the cause on stderr.
   status  the same probe, one line: 0 healthy, 3 nothing to check (no
           HA_MCP_URL or HA_TOKEN), 1 broken, with the cause on the line, such
-          as macOS Local Network refusing the node.
+          as a host that does not answer or macOS Local Network refusing it.
           local-health-check reads these codes.
+
+Each verb starts relay.py under Apple's /usr/bin/python3 on a free
+127.0.0.1 port and points mcp-remote there: macOS's Local Network privacy
+refuses node the LAN, and loopback is never gated. The relay ends with the
+bridge.
 
 Unlike the other multi-action tools in this repo, a bare invocation does NOT
 print usage and exit 1: an MCP client runs the command with no arguments and
@@ -66,45 +71,28 @@ environment (<config>/ha-mcp/.env, or already exported; the environment wins;
   HA_TOKEN             required. Home Assistant long-lived access token.
                        Normally exported by ~/.config/shell/env.sh.
   HA_MCP_URL           required. The SSE endpoint, e.g.
-                       http://homeassistant.local:8123/mcp_server/sse
+                       http://homeassistant.local:8123/mcp_server/sse;
+                       http only, since the relay rewrites the host.
   MCP_REMOTE_VERSION   default 0.8.3
-  HA_MCP_NODE          node binary to run the bridge with. Default:
-                       ~/.local/bin/node, the nodejs.org build machine-setup
-                       links for a `.node` `<major> link` line, else the first
+  HA_MCP_NODE          node binary to run the bridge with. Default: the first
                        `node` on PATH. npx is invoked from beside it and that
                        directory is prepended to PATH, so one Node serves the
-                       whole call -- see resolve_node() for why that matters.
+                       whole call.
 
-Needs `npx` (Node). --allow-http is passed because the endpoint is plain HTTP
+Needs `npx` (Node) and /usr/bin/python3. --allow-http is passed because the endpoint is plain HTTP
 on the LAN, so the bearer token crosses the network in clear. That is not new:
 the direct SSE client config this replaced sent the same token the same way.
 HELPEOF
 }
 
-# Pin the Node that runs the bridge.
-#
-# Home Assistant is a same-link peer, which macOS's Privacy > Local Network
-# permission gates, and macOS keys that grant to the binary's code signature.
-# A node the grant does not cover fails with
-#
-#   fetch failed: connect EHOSTUNREACH <ha-host>:8123
-#
-# while curl to the same host returns 200, because the gateway and everything
-# routed through it stay reachable. Homebrew's node is ad-hoc signed with an
-# identifier built from its build hash, so each rebuild or upgrade is a new
-# binary to macOS and silently loses the grant (sd:10894). nodejs.org's
-# builds carry the Node.js Foundation's Developer ID, one signer for every
-# version, so a grant given once holds across upgrades. machine-setup's
-# tooling stage installs them with fnm and, for a `.node` `<major> link`
-# line, links ~/.local/bin/node to the newest; that link is the default.
+# The Node that runs the bridge.
 #
 # `npx` is not a binary -- it is a `#!/usr/bin/env node` script, so the
 # interpreter is whatever PATH resolves at spawn time. Resolving Node once,
-# here, and putting its folder first on PATH keeps the binary that a
-# permission was granted to the binary that actually runs.
+# here, and putting its folder first on PATH makes one Node serve the whole
+# call. Any Node works: the relay below keeps Node off the LAN.
 #
 # HA_MCP_NODE overrides the choice (give it the node binary, not a directory).
-OFFICIAL_NODE="$HOME/.local/bin/node"
 resolve_node() {
   if [ -n "${HA_MCP_NODE:-}" ]; then
     NODE_BIN="$HA_MCP_NODE"
@@ -112,14 +100,11 @@ resolve_node() {
       echo "ha-mcp.sh: HA_MCP_NODE is not an executable: $NODE_BIN" >&2
       exit 1
     fi
-  elif [ -x "$OFFICIAL_NODE" ]; then
-    NODE_BIN="$OFFICIAL_NODE"
   else
     NODE_BIN="$(command -v node 2>/dev/null || true)"
     if [ -z "$NODE_BIN" ]; then
-      echo "ha-mcp.sh: no $OFFICIAL_NODE and no node on PATH: add a \`<major> link\`" >&2
-      echo "  line to the machine-setup profile's .node file and run" >&2
-      echo "  machine-setup.sh update tooling --apply, or set HA_MCP_NODE." >&2
+      echo "ha-mcp.sh: node not found on PATH. Install Node (brew install node)," >&2
+      echo "  or set HA_MCP_NODE to the binary to use." >&2
       exit 1
     fi
   fi
@@ -135,6 +120,46 @@ resolve_node() {
   # has to win there too -- otherwise the pin holds for one hop and is lost.
   PATH="$NODE_DIR:$PATH"
   export PATH
+}
+
+# Start the loopback relay and point HA_MCP_URL at it (sd:10894).
+#
+# Home Assistant is a same-link peer, which macOS's Privacy > Local Network
+# permission gates. It refused node -- Homebrew's, and nodejs.org's notarized
+# build too, from a terminal as well as from Claude Code -- so every bridge
+# call failed with
+#
+#   fetch failed: connect EHOSTUNREACH <ha-host>:8123
+#
+# while curl to the same host returned 200. Apple's own binaries
+# (/usr/bin/python3, curl, nc, ssh) reach it, and loopback is never gated.
+# So relay.py runs under /usr/bin/python3 on a free 127.0.0.1 port, copies
+# each connection to HA_MCP_URL's host:port, and mcp-remote talks to the
+# loopback port. Plain TCP: the URL is http, and Home Assistant ignores the
+# Host header the rewrite changes.
+#
+# The relay's parent is this shell, and serve execs the bridge in this same
+# process, so the relay watches that pid and exits within a second of the
+# bridge, however it ends; check and status also stop it on exit. A fifo
+# hands back the rewritten URL: a relay that dies first closes it, and the
+# read ends with nothing, never a wait. $1 is where the relay's stderr goes.
+# HA_MCP_PYTHON exists for the tests.
+start_relay() { # stderr file
+  RELAY_DIR="$(mktemp -d)"
+  mkfifo "$RELAY_DIR/url"
+  "${HA_MCP_PYTHON:-/usr/bin/python3}" "$DIR/relay.py" "$HA_MCP_URL" "$$" \
+    >"$RELAY_DIR/url" 2>"$1" &
+  RELAY_PID=$!
+  relay_url=""
+  read -r relay_url <"$RELAY_DIR/url" || true
+  rm -rf "$RELAY_DIR"
+  case "$relay_url" in
+    http://127.0.0.1:*) HA_MCP_URL_DIRECT="$HA_MCP_URL"; HA_MCP_URL="$relay_url" ;;
+    *)
+      kill "$RELAY_PID" 2>/dev/null || true
+      RELAY_PID=""
+      return 1 ;;
+  esac
 }
 
 require_token() {
@@ -158,6 +183,10 @@ serve() {
   require_token
   require_url
   resolve_node
+  if ! start_relay /dev/stderr; then
+    echo "ha-mcp.sh: the relay did not start under ${HA_MCP_PYTHON:-/usr/bin/python3}" >&2
+    exit 1
+  fi
   echo "ha-mcp.sh: node $("$NODE_BIN" -v) at $NODE_BIN" >&2
   exec "$NPX_BIN" -y "mcp-remote@${MCP_REMOTE_VERSION}" "$HA_MCP_URL" \
     --header "Authorization: Bearer ${HA_TOKEN}" \
@@ -174,15 +203,24 @@ serve() {
 probe() { # seconds
   PROBE_OUT="$(mktemp)"
   PROBE_ERR="$PROBE_OUT.err"
-  trap 'rm -f "$PROBE_OUT" "$PROBE_ERR" "$PROBE_OUT.done"' EXIT
+  RELAY_ERR="$PROBE_OUT.relay"
+  RELAY_PID=""
+  trap 'rm -f "$PROBE_OUT" "$PROBE_ERR" "$PROBE_OUT.done" "$RELAY_ERR"; [ -z "$RELAY_PID" ] || kill "$RELAY_PID" 2>/dev/null || true' EXIT
+  if ! start_relay "$RELAY_ERR"; then
+    PROBE_CAUSE="the relay did not start under ${HA_MCP_PYTHON:-/usr/bin/python3}"
+    return 1
+  fi
+  PROBE_CAUSE=""
   {
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"ha-mcp-check","version":"1"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
     printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
     # `"tools":[` is the tool list; initialize's capabilities hold `"tools":{`.
+    # A relay that could not reach the host ends the wait too.
     waited=0
     while [ "$waited" -lt "$1" ] && [ ! -e "$PROBE_OUT.done" ] \
-        && ! grep -q '"tools":\[' "$PROBE_OUT"; do
+        && ! grep -q '"tools":\[' "$PROBE_OUT" \
+        && ! grep -q 'cannot reach' "$RELAY_ERR" 2>/dev/null; do
       sleep 1
       waited=$((waited + 1))
     done
@@ -219,23 +257,28 @@ print("tools  : %d" % len(tools))
 '
 }
 
-# One line naming why a probe failed. Only the bridge's stderr is read, and
-# never printed: it can echo the request. EHOSTUNREACH with a host that
-# answers curl is macOS refusing this node the LAN. /usr/bin/curl is an
-# Apple binary, which that permission leaves alone; a Homebrew curl is
-# gated like node. HA_MCP_CURL exists for the tests.
+# One line naming why a probe failed. The relay's and the bridge's stderr
+# are read, and never printed: the bridge's can echo the request. A host
+# the relay cannot reach is down, unless /usr/bin/curl, another Apple
+# binary, gets an HTTP answer from it: then macOS's Local Network
+# permission refuses the relay's python, as it refused node. HA_MCP_CURL
+# exists for the tests.
 probe_cause() {
-  origin=$(printf '%s\n' "$HA_MCP_URL" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://[^/]+).*#\1#')
-  if grep -q EHOSTUNREACH "$PROBE_ERR" 2>/dev/null; then
+  if [ -n "$PROBE_CAUSE" ]; then
+    echo "$PROBE_CAUSE"
+    return
+  fi
+  origin=$(printf '%s\n' "$HA_MCP_URL_DIRECT" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://[^/]+).*#\1#')
+  if grep -q 'cannot reach' "$RELAY_ERR" 2>/dev/null || grep -q EHOSTUNREACH "$PROBE_ERR" 2>/dev/null; then
     code=$("${HA_MCP_CURL:-/usr/bin/curl}" -sS -o /dev/null --max-time 5 -w '%{http_code}' "$origin/" 2>/dev/null) || code=000
     case "$code" in
       [1-5][0-9][0-9])
-        echo "macOS Local Network blocks $NODE_BIN: node gets EHOSTUNREACH from $origin while curl gets HTTP $code; allow it under System Settings > Privacy & Security > Local Network" ;;
+        echo "macOS Local Network refuses ${HA_MCP_PYTHON:-/usr/bin/python3} the host: the relay cannot reach ${origin#*://} while curl gets HTTP $code; allow it under System Settings > Privacy & Security > Local Network" ;;
       *)
-        echo "Home Assistant does not answer at $origin (node: EHOSTUNREACH; curl: no answer)" ;;
+        echo "Home Assistant does not answer at ${origin#*://}" ;;
     esac
   else
-    echo "no handshake or no tool list from $HA_MCP_URL"
+    echo "no handshake or no tool list from $HA_MCP_URL_DIRECT"
   fi
 }
 
@@ -243,13 +286,12 @@ check() {
   require_token
   require_url
   resolve_node
-  probe 25
-  if ! result="$(probe_result)"; then
+  if ! probe 25 || ! result="$(probe_result)"; then
     echo "ha-mcp check: FAILED -- $(probe_cause)" >&2
     exit 1
   fi
   printf '%s\n' "$result"
-  echo "url    : $HA_MCP_URL"
+  echo "url    : $HA_MCP_URL_DIRECT (through relay $HA_MCP_URL)"
   echo "node   : $NODE_BIN $("$NODE_BIN" -v)"
   echo "OK"
 }
@@ -266,8 +308,7 @@ status() {
     exit 3
   fi
   resolve_node
-  probe 20
-  if result="$(probe_result)"; then
+  if probe 20 && result="$(probe_result)"; then
     echo "ha-mcp: ok, $(printf '%s\n' "$result" | sed -n 's/^tools  : //p') tools through $NODE_BIN"
     exit 0
   fi

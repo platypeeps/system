@@ -17,7 +17,8 @@ without the connection going stale.
 ```
 server : home-assistant 1.26.0
 tools  : 22
-url    : http://homeassistant.local:8123/mcp_server/sse
+url    : http://homeassistant.local:8123/mcp_server/sse (through relay http://127.0.0.1:52731/mcp_server/sse)
+node   : /opt/homebrew/bin/node v26.13.1
 OK
 ```
 
@@ -77,22 +78,21 @@ no arguments and expects a live stdio server; printing usage would break it.
   or the environment; `serve` and `check` fail naming whichever is missing.
   The workflow dashboard's Home page reads the same two values for its
   `GET /api/states` call (the pack's `dashboard/docs/pages/home.md`).
-- **The bridge runs nodejs.org's node, not Homebrew's.** macOS's Privacy >
-  Local Network permission gates Home Assistant, a same-link peer, and keys
-  its grant to the binary's signer. Homebrew's node is ad-hoc signed, so each
-  rebuild lost the grant and every call failed with `EHOSTUNREACH` while curl
-  to the same host answered (sd:10894). nodejs.org signs each release with
-  the Node.js Foundation's Developer ID (team `HX7739G8FX`), so one grant
-  holds across upgrades. machine-setup's tooling stage installs it with fnm
-  and, for a `.node` line such as `26 link`, links `~/.local/bin/node` to
-  it; that link is the default node here, and `HA_MCP_NODE` overrides it.
-  Grant it once under System Settings > Privacy & Security > Local
-  Network, where `node` is listed after its first attempt, such as
-  `./ha-mcp.sh check`.
-- `status` names that cause: when node gets `EHOSTUNREACH` and
-  `/usr/bin/curl` gets an HTTP answer from the same host, its line says
-  Local Network blocks the node. The nightly `local-health-check` sweep
-  runs it and reports exit 1 as a finding.
+- **Node never talks to the LAN; a relay under Apple's python does.**
+  Home Assistant is a same-link peer, which macOS's Privacy > Local Network
+  permission gates. It refused node, Homebrew's and nodejs.org's notarized
+  build alike, from a terminal too, so every call failed with
+  `EHOSTUNREACH` while curl to the same host answered (sd:10894). Apple's
+  own binaries (`/usr/bin/python3`, curl, nc, ssh) reach it, and loopback
+  is never gated. So each verb starts `relay.py` under `/usr/bin/python3`
+  on a free `127.0.0.1` port, copies each connection to `HA_MCP_URL`'s
+  host and port, and points `mcp-remote` at the loopback URL. The relay
+  watches the bridge's process and exits within a second of it, however
+  the bridge ends; no launchd job runs it. `HA_MCP_URL` must be `http://`.
+- `status` names the cause: a host the relay cannot reach does not answer,
+  unless `/usr/bin/curl` gets an HTTP answer from it; then Local Network
+  refuses the relay's python. The nightly `local-health-check` sweep runs
+  `status` and reports exit 1 as a finding.
 - `npx -y` re-resolves the package on each launch. It is cached after the first
   run; install `mcp-remote` globally if start-up latency ever matters.
 - `mcp-proxy` was tried first and did not work: its cached
