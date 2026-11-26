@@ -16,8 +16,9 @@ from datetime import date
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
 LIB = FOLDER.parent / "lib"
 
-# The first doctor run warns of an unlinked keg and exits BREW_FIRST_RC; the
-# second prints BREW_RECHECK and exits BREW_RECHECK_RC. The unlinked keg is
+# The first doctor run warns of an unlinked keg in Homebrew's text of
+# 2026-11-25, a blank line before the keg list (sd:10699), and exits
+# BREW_FIRST_RC; the second prints BREW_RECHECK and exits BREW_RECHECK_RC. The unlinked keg is
 # BREW_UNLINKED, example-keg by default; `list` exits BREW_LIST_RC. `info` exits BREW_INFO_RC, or ends
 # itself with a TERM when that is "term"; `info --json=v2` prints BREW_INFO_JSON.
 BREW_STUB = r"""#!/bin/sh
@@ -25,7 +26,9 @@ case "$1" in
   doctor)
     n=$(cat "$COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$COUNT"
     if [ "$n" -eq 1 ]; then
-      printf 'Warning: You have unlinked kegs in your Cellar.\nRun `brew link` on these:\n  %b\n\n' \
+      printf 'Warning: You have unlinked kegs in your Cellar.\n%s\n%s\n\nRun `brew link` on these:\n  %b\n\n' \
+        'Leaving kegs unlinked can lead to build-trouble and cause formulae that depend on' \
+        'those kegs to fail to run properly once built.' \
         "${BREW_UNLINKED:-example-keg}" >&2
       exit "${BREW_FIRST_RC:-1}"
     fi
@@ -156,6 +159,40 @@ class BrewDoctorTest(unittest.TestCase):
         self.assertIn("brew doctor: clean", run.stdout)
         self.assertNotIn("SD_REPORT_ATTENTION", run.stdout)
         self.assertNotIn("link rust", self.links.read_text())
+
+    def test_support_tier_footer_is_no_keg(self):
+        """Homebrew ends with a support-tier URL; the lane review saw it
+        read as a second keg, so the rust warning stayed (sd:10699)."""
+        footer = "\\n\\nThis is a Tier 2 configuration:\\n  https://docs.brew.sh/Support-Tiers#tier-2"
+        run = self.run_doctor(BREW_UNLINKED="rust" + footer, BREW_LIST_RC="0")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("brew doctor: clean", run.stdout)
+        self.assertNotIn("https", run.stdout)
+        doctor = self.tmp / "doctor"
+        doctor.write_text("Warning: You have unlinked kegs in your Cellar.\n\n"
+                          "Run `brew link` on these:\n  example-keg\n\n"
+                          "This is a Tier 2 configuration:\n  https://docs.brew.sh/Support-Tiers#tier-2\n")
+        kegs = subprocess.run(["sh", "-c", f'. "{LIB}/brew_unlinked.sh"; st_unlinked_kegs "$1"', "sh", str(doctor)],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(kegs.stdout, "example-keg\n")
+
+    def drop_keg(self, text, keg="rust"):
+        doctor = self.tmp / "doctor"
+        doctor.write_text(text)
+        return subprocess.run(["sh", "-c", f'. "{LIB}/brew_unlinked.sh"; st_drop_unlinked_keg "$1" "$2"',
+                               "sh", keg, str(doctor)], capture_output=True, text=True, timeout=30).stdout
+
+    def test_dropped_last_warning_takes_the_footer_with_it(self):
+        """The footer after a dropped last warning read as the text of the
+        warning before it in the report (sd:10734)."""
+        other = "Warning: Some other finding.\n  example-path\n\n"
+        footer = "This is a Tier 2 configuration:\n  https://docs.brew.sh/Support-Tiers#tier-2\n"
+        unlinked = "Warning: You have unlinked kegs in your Cellar.\n\nRun `brew link` on these:\n  rust\n\n"
+        self.assertEqual(self.drop_keg(other + unlinked + footer), other)
+        kept = "Warning: You have unlinked kegs in your Cellar.\n\nRun `brew link` on these:\n  other-keg\n\n"
+        self.assertEqual(self.drop_keg(other + unlinked.replace("  rust\n", "  rust\n  other-keg\n") + footer),
+                         other + kept + footer)
+        self.assertEqual(self.drop_keg(unlinked + other + footer), other + footer)
 
     def test_rust_on_purpose_leaves_other_unlinked_kegs_reported(self):
         recheck = ("Warning: You have unlinked kegs in your Cellar.\n"
