@@ -393,6 +393,29 @@ class CronJobFromRepoExample(Case):
         self.assertIn("  EXTRA   gone-job", out, out)
         self.assertIn("uninstall gone-job", self.cron_calls())
 
+    def test_an_unreadable_fence_sweeps_no_hub_job(self):
+        """Review: on a promoted standby with an empty roster, a fence
+        that cannot be read read as "not the holder", and the sweep
+        uninstalled the hub's backup job."""
+        (self.profiles / "personal.agent").write_text("# a standby: no sd agent\n")
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+        (self.profiles / "personal.cron").write_text(
+            "".join(f"!{j}\n" for j in (FLEET_JOB, "machine-health-hourly",
+                                        "needs-sweep-nightly")))
+        pack = self.base / "pack"
+        write_exec(pack / "bin/sd-db", "#!/bin/sh\nexit 1\n")
+        db = self.home / ".local/share/sd/sd.db"
+        db.parent.mkdir(parents=True)
+        db.touch()
+        self.jobs.mkdir(parents=True)
+        (self.jobs / "sd-db-backup.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+        self.install_plist("sd-db-backup")
+        result = self.run_script("update", "cron", "--apply",
+                                 SD_PACK_ROOT=str(pack))
+        out = result.stdout
+        self.assertIn("  MISSING hub fence", out, out + result.stderr)
+        self.assertNotIn("uninstall sd-db-backup", self.cron_calls(), out)
+
     def test_a_satellite_profile_gets_no_needs_sweep(self):
         (self.profiles / "personal.satellite").write_text("hub.example.test\n")
         result = self.run_script("update", "cron", "--apply")

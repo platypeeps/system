@@ -2569,6 +2569,12 @@ stage_cron() {
     sweep=0
   fi
   hub_ask
+  # Without the fence's answer the sweep cannot tell a role job from a
+  # dropped one; the next run sweeps once it reads (review).
+  if [ "${HUB_FENCE:-}" = unread ]; then
+    echo "  MISSING hub fence — sd-db fence could not be read; only retired jobs are uninstalled this run"
+    sweep=0
+  fi
   # A hub profile wants the role jobs that run from their example as well:
   # no profile line named them, so the hub ran no needs sweep (sd:10411).
   # A `!name` line drops one, as it drops a fleet job.
@@ -3619,9 +3625,14 @@ is_satellite() {
 hub_holder() {
   if [ -z "${HUB_HOLDER:-}" ]; then
     HUB_HOLDER=no
-    if [ ! -e "$SD_HUB_CONFIG" ] && [ -f "$SD_DB" ] &&
-       hr_fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>/dev/null); then
-      case "$hr_fence" in *"fence: holder:"*) HUB_HOLDER=yes ;; esac
+    if [ ! -e "$SD_HUB_CONFIG" ] && [ -f "$SD_DB" ]; then
+      # A fence that cannot be read is no answer: HUB_FENCE=unread lets
+      # the cron sweep keep the role's jobs (review).
+      if hr_fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>/dev/null); then
+        case "$hr_fence" in *"fence: holder:"*) HUB_HOLDER=yes ;; esac
+      else
+        HUB_FENCE=unread
+      fi
     fi
   fi
   [ "$HUB_HOLDER" = yes ]
