@@ -126,7 +126,8 @@ SHARED_LOCAL_KEYS = {
                     "Flag defects that hurt that operator. Personal use: a finding blocks only "
                     "when it breaks the operator's real setup or a normal path (a config they "
                     "have, a common error, data loss, a leaked secret); unusual configurations, "
-                    "rare timing, odd environments and hypothetical setups are advisory. A public "
+                    "rare timing, odd environments and hypothetical setups are advisory, except "
+                    "that data loss or a leaked secret always blocks. A public "
                     "site also blocks defects that real visitors, payments or the internet reach; "
                     "its rare edge cases, exotic clients and hypothetical infrastructure stay advisory.",
 }
