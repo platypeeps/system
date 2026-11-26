@@ -85,16 +85,20 @@ def read_env_file(path: Path, env: dict[str, str], sourced: bool = True) -> dict
 
     Raises `EnvFileError` for a line it will not guess at (sd:10423):
     an unquoted `<`, `>`, `|` or `&` on a line that assigns, a quote
-    left open, and a value whose shell reading differs from the one
-    read before sd:10423 when no shell assigns it: one of several
-    unquoted words, or any in a file a Python tool alone reads
-    (`sourced=False`), where the old reading was the only one."""
+    left open, a statement `.` continues on the next line (a trailing
+    `\\` or `&&`), and an assignment `.` may skip: after `&&` that
+    follows a command or a command substitution, or, in a file a
+    shell sources, one of several unquoted words, which `.` sets for
+    the second word alone. In a file a Python tool alone reads
+    (`sourced=False`) any value whose shell reading differs from the
+    one read before sd:10423 refuses, since that was its only reading."""
     home = env.get("HOME") or os.path.expanduser("~")
     values: dict[str, str] = {}
     if not path.is_file():
         return values
     lines = path.read_text(encoding="utf-8").splitlines()
     for number, line in enumerate(lines, 1):
+        may_skip = False  # the statement follows `&&` after one that may fail
         while line := line.strip():  # one pass per `;` or `&&` statement
             if line.startswith("#"):
                 break
@@ -105,18 +109,32 @@ def read_env_file(path: Path, env: dict[str, str], sourced: bool = True) -> dict
             assigns = bool(sep) and key.isidentifier()
             # Only a name sh assigns at a statement's start is named.
             name = key if assigns and _NAME.fullmatch(key) else ""
+            text = raw if assigns else line
             try:
-                value, line, several = _shell_word(raw if assigns else line, home)
+                value, line, several, op = _shell_word(text, home)
             except _Operator as e:
                 if not sep:
                     break  # the rest of the line assigns nothing
                 raise _refused(path, number, name, _OPERATOR % str(e)) from None
+            except _Joined:
+                raise _refused(path, number, name, _JOINED) from None
             if value is None:
                 # The next lines would be read from inside the quote.
                 raise _refused(path, number, name, _UNCLOSED)
+            if op == "&&" and (not line.strip() or line.lstrip().startswith("#")):
+                # `.` reads the next line as this `&&`'s right side.
+                raise _refused(path, number, name, _JOINED)
+            if assigns and may_skip:
+                raise _refused(path, number, name, _SKIPPED)
+            if assigns and several and sourced:
+                # `.` runs the second word with the value set for it alone.
+                raise _refused(path, number, name, _SKIPPED)
+            consumed = text[:len(text) - len(line)]
+            may_skip = op == "&&" and (
+                may_skip or not assigns or "$(" in consumed or "`" in consumed)
             if not assigns:
                 continue
-            if (several or not sourced) and value != _legacy_value(raw, home):
+            if not sourced and value != _legacy_value(raw, home):
                 raise _refused(path, number, name, _TWO_WAYS)
             values[key] = value
     return values
@@ -130,10 +148,18 @@ class _Operator(Exception):
     pass
 
 
+class _Joined(Exception):
+    """An unquoted trailing backslash: `.` joins the next line."""
+
+
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _OPERATOR = ("an unquoted %r (redirection, pipe, || or background job) "
              "is not read; quote it or drop it")
 _UNCLOSED = "an unclosed quote is not read; close it on this line"
+_JOINED = ("a statement continued on the next line is not read; "
+           "put it on one line")
+_SKIPPED = ("an assignment `.` may skip (after a failing && or before a "
+            "command word) is not read; give it a line of its own, quoted")
 _TWO_WAYS = ("an unquoted or partly quoted value reads two ways (a comment, "
              "operator, quote or backslash in it); quote the whole value")
 
@@ -175,10 +201,12 @@ def _operator(text: str, i: int) -> str:
     return op
 
 
-def _shell_word(text: str, home: str) -> tuple[str | None, str, bool]:
+def _shell_word(text: str, home: str) -> tuple[str | None, str, bool, str]:
     """The value `.` assigns from `text`, the part after `=`, the text
     of the line's next statement, `""` when none (sd:10423), and
-    whether an unquoted inner blank made it several words.
+    whether an unquoted inner blank made it several words, and the
+    operator that ended it (`;`, `&&` or `""`). A trailing unquoted
+    backslash raises `_Joined`.
 
     An unquoted `;` or `&&` ends the value, and so does an unquoted blank
     before one of them, `# comment` or the line end; an unquoted `<`,
@@ -186,8 +214,8 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str, bool]:
     unquoted blank stays, and leading blanks drop, as read_env did
     before: `.` assigns nothing from such a line, nor from one with a
     parenthesis, so only a Python reader sees it and its path may hold a
-    space; read_env_file refuses such a value unless it reads as it did
-    before sd:10423. Quotes join and are removed, a backslash
+    space; read_env_file refuses such a value in a sourced file, and
+    elsewhere unless it reads as it did before sd:10423. Quotes join and are removed, a backslash
     escapes one character (inside double quotes only `$`, `` ` ``, `"`,
     `\\`), and `$HOME`, `${HOME}` and a leading unquoted `~/` expand
     outside single quotes. A None value for an unclosed quote, which `.`
@@ -195,7 +223,7 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str, bool]:
     if text[:1] in tuple(_BLANK):
         text = text.lstrip(_BLANK)
         if text.startswith("#"):
-            return "", "", False
+            return "", "", False, ""
     out: list[str] = []
     several = False
     if text == "~" or text.startswith(("~/", "~ ", "~\t", "~;")):
@@ -209,6 +237,8 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str, bool]:
                 quote = ""
             else:
                 out.append(char)
+        elif char == "\\" and i + 1 == len(text):
+            raise _Joined
         elif char == "\\" and i + 1 < len(text):
             following = text[i + 1]
             if quote and following not in '$`"\\':
@@ -227,7 +257,7 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str, bool]:
         elif char == "'":
             quote = "'"
         elif op := _operator(text, i):
-            return "".join(out), text[i + len(op):], several
+            return "".join(out), text[i + len(op):], several, op
         elif char in _BLANK:
             rest = text[i:].lstrip(_BLANK)
             if not rest or rest.startswith("#"):
@@ -238,7 +268,7 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str, bool]:
         else:
             out.append(char)
         i += 1
-    return (None if quote else "".join(out)), "", several
+    return (None if quote else "".join(out)), "", several, ""
 
 
 def setting(name: str, saved: dict[str, str], environ: dict[str, str] | None = None) -> str | None:

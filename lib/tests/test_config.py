@@ -176,7 +176,7 @@ class EnvFile(unittest.TestCase):
             "AGENT_METER_FILE=$HOME/my ledger/meter.jsonl\n"
             "N=two  words\nT=a b\t\nL= /lead\n")
         home = self.envv["HOME"]
-        self.assertEqual(stc.read_env("meter", self.envv),
+        self.assertEqual(stc.read_env("meter", self.envv, sourced=False),
                          {"AGENT_METER_FILE": f"{home}/my ledger/meter.jsonl",
                           "N": "two  words", "T": "a b", "L": "/lead"})
 
@@ -259,21 +259,25 @@ class EnvFile(unittest.TestCase):
             with self.subTest(text=text):
                 env.write_text(text + "\n")
                 with self.assertRaises(stc.EnvFileError) as caught:
-                    stc.read_env("meter", self.envv)
+                    stc.read_env("meter", self.envv, sourced=False)
                 self.assertIn(f"{env}:1: AGENT_METER_FILE:", str(caught.exception))
         env.write_text("A=$HOME/my ledger/meter.jsonl\nB=  x  y  \nC=x y\t\n")
         home = self.envv["HOME"]
-        self.assertEqual(stc.read_env("meter", self.envv),
+        self.assertEqual(stc.read_env("meter", self.envv, sourced=False),
                          {"A": f"{home}/my ledger/meter.jsonl", "B": "x  y", "C": "x y"})
 
     def test_python_keeps_what_sourcing_does_not_assign(self):
         # `.` leaves these unset (a syntax error, a second word), so
-        # only Python reads them: the text stays whole, as before
-        # sd:10423; a multi-word one with a `;` refuses (see above).
+        # a Python-only reader keeps the text whole, as before
+        # sd:10423; a multi-word one with a `;` refuses (see above),
+        # and in a sourced file a second word refuses too.
         (self.conf / "odd").mkdir(parents=True)
         (self.conf / "odd/.env").write_text("G=a(b)\nW=x y\n")
-        self.assertEqual(stc.read_env("odd", self.envv),
+        self.assertEqual(stc.read_env("odd", self.envv, sourced=False),
                          {"G": "a(b)", "W": "x y"})
+        with self.assertRaises(stc.EnvFileError) as caught:
+            stc.read_env("odd", self.envv)
+        self.assertIn(":2: W: ", str(caught.exception))
 
     def test_python_refuses_a_redirection_pipe_or_background(self):
         # sd:10423 lead ruling: a misread sends agent-meter to the
@@ -300,6 +304,34 @@ class EnvFile(unittest.TestCase):
         env.write_text("Q='a|b>c&d'\nR=\"x<y\"\nS=a\\&b\nT=1 && V=2\n")
         self.assertEqual(stc.read_env("bad", self.envv),
                          {"Q": "a|b>c&d", "R": "x<y", "S": "a&b", "T": "1", "V": "2"})
+
+    def test_an_assignment_sourcing_skips_refuses(self):
+        # Review: `.` skips these assignments, so a Python reader that
+        # took them pointed cron_job_dirs at another host's folder and
+        # machine setup swept this host's jobs. Each refuses instead;
+        # the lines `.` does assign still read, checked against sh.
+        (self.conf / "cron-jobs").mkdir(parents=True)
+        env = self.conf / "cron-jobs/.env"
+        refused = [
+            ('[ -n "$H" ] && CRON_JOBS_HOST=other', "CRON_JOBS_HOST: "),
+            ("X=$(false) && CRON_JOBS_HOST=other", "CRON_JOBS_HOST: "),
+            ("false &&\nCRON_JOBS_HOST=other", ""),
+            ("false && # note\nCRON_JOBS_HOST=other", ""),
+            ("CRON_JOBS_HOST=other true", "CRON_JOBS_HOST: "),
+            ("CRON_JOBS_HOST=oth\\\ner", "CRON_JOBS_HOST: "),
+        ]
+        for text, name in refused:
+            with self.subTest(text=text):
+                env.write_text("# head\n" + text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.cron_job_dirs(self.envv)
+                self.assertIn(f"{env}:2: {name}", str(caught.exception))
+        for text in ("X=1 && CRON_JOBS_HOST=other", "false; CRON_JOBS_HOST=other"):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                done = shell(f'. "{env}"; printf %s "$CRON_JOBS_HOST"', self.envv)
+                self.assertEqual(done.stdout, "other")
+                self.assertEqual(stc.read_env("cron-jobs", self.envv)["CRON_JOBS_HOST"], "other")
 
     def test_python_absent_is_empty(self):
         self.assertEqual(stc.read_env("nothing", self.envv), {})
