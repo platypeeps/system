@@ -29,12 +29,16 @@ TOKEN = "example-token-not-real"
 
 # Logs the node PATH resolves and its own path, then answers initialize and
 # tools/list until stdin closes; NPX_MODE=ehost fails as mcp-remote does
-# when macOS refuses node the LAN.
+# when macOS refuses node the LAN, and NPX_MODE=silent answers nothing.
 NPX = r"""#!/bin/sh
 echo "npx=$0 node=$(command -v node)" >> "$NPX_LOG"
 if [ "$NPX_MODE" = ehost ]; then
   echo "fetch failed: connect EHOSTUNREACH 192.0.2.10:8123" >&2
   exit 1
+fi
+if [ "$NPX_MODE" = silent ]; then
+  cat >/dev/null
+  exit 0
 fi
 while IFS= read -r line; do
   case "$line" in
@@ -155,6 +159,14 @@ class Bridge(unittest.TestCase):
         self.assertEqual(result.returncode, 1, self.out(result))
         self.assertIn("Home Assistant does not answer at http://192.0.2.10:8123", self.first(result))
         self.assertNotIn("Local Network", self.out(result))
+
+    def test_status_of_a_bridge_that_never_answers_ends_inside_the_sweep_bound(self):
+        started = time.monotonic()
+        result = self.run_script("status", NPX_MODE="silent")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn(f"no handshake or no tool list from {URL}", self.first(result))
+        self.assertLess(time.monotonic() - started, 30)
 
     def test_check_names_the_cause_too(self):
         result = self.run_script("check", NPX_MODE="ehost")
