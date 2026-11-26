@@ -253,7 +253,7 @@ class Bridge(unittest.TestCase):
         self.assertIn(f"Home Assistant does not answer at 127.0.0.1:{closed}", self.first(result))
         self.assertNotIn("Local Network", self.out(result))
 
-    def test_status_names_local_network_when_the_relay_is_refused_and_curl_is_not(self):
+    def test_status_names_local_network_when_curl_reaches_the_host(self):
         write_exec(self.base / "refused-python", REFUSED_RELAY)
 
         result = self.run_script("status", NPX_MODE="fetch", HA_MCP_PYTHON=str(self.base / "refused-python"))
