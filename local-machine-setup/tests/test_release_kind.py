@@ -121,6 +121,21 @@ esac
 exit 0
 """
 
+# `codesign --verify --strict <path>` passes and `codesign -dv <path>` names
+# $CODESIGN_TEAM as the TeamIdentifier; an empty $CODESIGN_TEAM is an
+# unsigned binary, which fails --verify as the real codesign does.
+CODESIGN_STUB = r"""#!/bin/sh
+case "$1" in
+  --verify)
+    [ -n "$CODESIGN_TEAM" ] && exit 0
+    echo "code object is not signed at all" >&2; exit 1 ;;
+  -dv)
+    echo "Identifier=node" >&2
+    echo "TeamIdentifier=${CODESIGN_TEAM:-not set}" >&2; exit 0 ;;
+esac
+exit 1
+"""
+
 TOOL = "#!/bin/sh\necho example {}\n"
 
 
@@ -921,6 +936,11 @@ class NodeLink(Case):
                 write_exec(bindir / name, f"#!/bin/sh\necho {v}\n")
         self.fnm_have = "24.3.0 26.0.0 26.1.0"
         (self.profiles / "personal.node").write_text("24\n26 link\n")
+        write_exec(self.stubs / "codesign", CODESIGN_STUB)
+        self.node_team = "HX7739G8FX"
+
+    def run_verb(self, *args, **extra):
+        return super().run_verb(*args, **{"CODESIGN_TEAM": self.node_team, **extra})
 
     def target(self, version, name):
         return str(self.base / "fnm/node-versions" / f"v{version}" / "installation/bin" / name)
@@ -986,6 +1006,31 @@ class NodeLink(Case):
         self.assertEqual(result.returncode, 1, self.out(result))
         self.assertIn("node link 26: fnm names no node for v26.1.0; no link changed", result.stdout)
         self.assertIn("fnm exec --using=v26.1.0 -- sh -c command -v node", self.urls())
+        self.assertFalse(self.bin.exists())
+
+    def test_a_node_another_team_signed_moves_no_link(self):
+        """A Local Network grant follows the signer, so only nodejs.org's (sd:10894)."""
+        self.bin.mkdir(parents=True)
+        for n in ("node", "npm", "npx"):
+            (self.bin / n).symlink_to(self.target("26.0.0", n))
+        self.node_team = "EXAMPLE123"
+
+        result = self.run_verb("update", "tooling", "--apply")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn("node link 26: v26.1.0's node is signed by team EXAMPLE123, not the "
+                      "Node.js Foundation's HX7739G8FX; no link changed", result.stdout)
+        self.assertEqual(self.links(), {n: self.target("26.0.0", n) for n in ("node", "npm", "npx")})
+
+    def test_a_node_whose_signature_does_not_verify_moves_no_link(self):
+        self.node_team = ""
+
+        dry = self.run_verb("update", "tooling")
+        result = self.run_verb("update", "tooling", "--apply")
+
+        self.assertIn("node link 26: v26.1.0's node has no signature codesign verifies; "
+                      "no link changed", dry.stdout, self.out(dry))
+        self.assertEqual(result.returncode, 1, self.out(result))
         self.assertFalse(self.bin.exists())
 
     def test_a_file_that_is_not_a_link_is_left_alone(self):
