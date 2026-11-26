@@ -71,8 +71,9 @@ environment (<config>/ha-mcp/.env, or already exported; the environment wins;
   HA_TOKEN             required. Home Assistant long-lived access token.
                        Normally exported by ~/.config/shell/env.sh.
   HA_MCP_URL           required. The SSE endpoint, e.g.
-                       http://homeassistant.local:8123/mcp_server/sse;
-                       http only, since the relay rewrites the host.
+                       http://homeassistant.local:8123/mcp_server/sse.
+                       Keep it http: the relay rewrites the host to
+                       127.0.0.1, which an https certificate does not name.
   MCP_REMOTE_VERSION   default 0.8.3
   HA_MCP_NODE          node binary to run the bridge with. Default: the first
                        `node` on PATH. npx is invoked from beside it and that
@@ -135,8 +136,9 @@ resolve_node() {
 # (/usr/bin/python3, curl, nc, ssh) reach it, and loopback is never gated.
 # So relay.py runs under /usr/bin/python3 on a free 127.0.0.1 port, copies
 # each connection to HA_MCP_URL's host:port, and mcp-remote talks to the
-# loopback port. Plain TCP: the URL is http, and Home Assistant ignores the
-# Host header the rewrite changes.
+# loopback port. Plain TCP: Home Assistant ignores the Host header the
+# rewrite changes. An https URL is relayed too, but the client then checks
+# the certificate against 127.0.0.1, so keep the LAN endpoint on http.
 #
 # The relay's parent is this shell, and serve execs the bridge in this same
 # process, so the relay watches that pid and exits within a second of the
@@ -154,7 +156,7 @@ start_relay() { # stderr file
   read -r relay_url <"$RELAY_DIR/url" || true
   rm -rf "$RELAY_DIR"
   case "$relay_url" in
-    http://127.0.0.1:*) HA_MCP_URL_DIRECT="$HA_MCP_URL"; HA_MCP_URL="$relay_url" ;;
+    http://127.0.0.1:*|https://127.0.0.1:*) HA_MCP_URL_DIRECT="$HA_MCP_URL"; HA_MCP_URL="$relay_url" ;;
     *)
       kill "$RELAY_PID" 2>/dev/null || true
       RELAY_PID=""

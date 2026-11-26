@@ -14,6 +14,8 @@ reaches is a local HTTP server. The token is a fake.
 """
 
 import http.server
+import importlib.util
+import os
 import pathlib
 import shutil
 import signal
@@ -286,6 +288,69 @@ class Bridge(unittest.TestCase):
                 result = self.run_script("status", **extra)
                 self.assertEqual(result.returncode, 3, self.out(result))
                 self.assertFalse(self.log.exists(), "status ran the bridge with nothing to check")
+
+
+def load_relay():
+    spec = importlib.util.spec_from_file_location("ha_mcp_relay", FOLDER / "relay.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class Rewrite(unittest.TestCase):
+    """relay.py's target and loopback URL for each URL shape."""
+
+    def setUp(self):
+        self.relay = load_relay()
+
+    def test_the_target_takes_the_url_port_or_the_scheme_default(self):
+        cases = {
+            "http://ha.example.test:8123/mcp_server/sse": ("ha.example.test", 8123),
+            "http://ha.example.test/mcp_server/sse": ("ha.example.test", 80),
+            "https://ha.example.test/mcp_server/sse": ("ha.example.test", 443),
+            "https://192.0.2.10:8443/mcp_server/sse": ("192.0.2.10", 8443),
+        }
+        for url, want in cases.items():
+            with self.subTest(url):
+                self.assertEqual(self.relay.target(url), want)
+
+    def test_the_rewrite_keeps_scheme_path_and_query(self):
+        self.assertEqual(self.relay.rewrite("http://ha.example.test:8123/mcp_server/sse?x=1", 40001),
+                         "http://127.0.0.1:40001/mcp_server/sse?x=1")
+        self.assertEqual(self.relay.rewrite("https://ha.example.test/mcp_server/sse", 40002),
+                         "https://127.0.0.1:40002/mcp_server/sse")
+
+    def test_a_url_with_no_host_or_another_scheme_is_refused(self):
+        for url in ("ws://ha.example.test/mcp_server/sse", "http:///mcp_server/sse", "ha.example.test:8123"):
+            with self.subTest(url):
+                with self.assertRaises(ValueError):
+                    self.relay.target(url)
+
+
+class Handshake(unittest.TestCase):
+    """relay.py binds port 0, prints its URL, and serves on that port."""
+
+    def test_the_first_line_names_the_port_it_listens_on(self):
+        proc = subprocess.Popen([sys.executable, str(FOLDER / "relay.py"),
+                                 "http://192.0.2.10:8123/mcp_server/sse", str(os.getpid())],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+
+        line = proc.stdout.readline().strip()
+
+        parts = urlsplit(line)
+        self.assertEqual((parts.scheme, parts.hostname, parts.path), ("http", "127.0.0.1", "/mcp_server/sse"))
+        self.assertNotEqual(parts.port, 8123)
+        self.assertTrue(listening(parts.port), line)
+
+    def test_a_relay_whose_parent_is_already_gone_exits(self):
+        result = subprocess.run([sys.executable, str(FOLDER / "relay.py"),
+                                 "http://192.0.2.10:8123/mcp_server/sse", "1"],
+                                capture_output=True, text=True, timeout=10)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":

@@ -14,12 +14,31 @@ to the url's host:port. It exits once its parent is gone: ha-mcp.sh
 execs the bridge in its own process, so the bridge is that parent.
 A connection it cannot open upstream prints one `cannot reach` line on
 stderr. Standard library only; Python 3.9 (the CommandLineTools python).
+
+An https url is relayed as plain TCP too, so TLS passes through, but the
+client then checks the certificate against 127.0.0.1; Home Assistant on
+the LAN serves http.
 """
 
 import asyncio
 import os
 import sys
 from urllib.parse import urlsplit, urlunsplit
+
+DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def target(url):
+    """(host, port) the url names; the scheme's port when it names none."""
+    parts = urlsplit(url)
+    if parts.scheme not in DEFAULT_PORTS or not parts.hostname:
+        raise ValueError(f"want an http:// or https:// url with a host, got {url!r}")
+    return parts.hostname, parts.port or DEFAULT_PORTS[parts.scheme]
+
+
+def rewrite(url, port):
+    """The url with its host and port replaced by 127.0.0.1:port."""
+    return urlunsplit(urlsplit(url)._replace(netloc=f"127.0.0.1:{port}"))
 
 
 async def pipe(reader, writer):
@@ -36,8 +55,8 @@ async def pipe(reader, writer):
         writer.close()
 
 
-async def serve(parts, parent):
-    host, port = parts.hostname, parts.port or 80
+async def serve(url, parent):
+    host, port = target(url)
 
     async def handle(client_reader, client_writer):
         try:
@@ -50,8 +69,7 @@ async def serve(parts, parent):
                              return_exceptions=True)
 
     server = await asyncio.start_server(handle, "127.0.0.1", 0)
-    local = server.sockets[0].getsockname()[1]
-    print(urlunsplit(parts._replace(netloc=f"127.0.0.1:{local}")), flush=True)
+    print(rewrite(url, server.sockets[0].getsockname()[1]), flush=True)
     async with server:
         while os.getppid() == parent:
             await asyncio.sleep(1)
@@ -60,13 +78,14 @@ async def serve(parts, parent):
 def main():
     if len(sys.argv) != 3:
         sys.exit("usage: relay.py <url> <parent pid>")
-    parts = urlsplit(sys.argv[1])
-    if parts.scheme != "http" or not parts.hostname:
-        sys.exit(f"ha-mcp relay: want an http:// url with a host, got {parts.scheme or 'no'} scheme")
-    parent = int(sys.argv[2])
+    url, parent = sys.argv[1], int(sys.argv[2])
+    try:
+        target(url)
+    except ValueError as err:
+        sys.exit(f"ha-mcp relay: {err}")
     if os.getppid() != parent:
         sys.exit("ha-mcp relay: parent already gone")
-    asyncio.run(serve(parts, parent))
+    asyncio.run(serve(url, parent))
 
 
 if __name__ == "__main__":
