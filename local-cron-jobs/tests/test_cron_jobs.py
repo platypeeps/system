@@ -2909,7 +2909,7 @@ class HostJobsTest(unittest.TestCase):
         environment.pop("CRON_JOBS_EXIT_TIMEOUT")
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
                                   "JOB_COMMAND='trap \"\" TERM; kill -TERM "
-                                  "$(ps -o ppid= -p $PPID); sleep 14'\n")
+                                  "$(ps -o ppid= -p $PPID); sleep 30'\n")
         run = {**environment, "PATH": self.fx.path(), "SD_REPORT_BIN": "/usr/bin/true",
                "XPC_SERVICE_NAME": f"{LABEL_PREFIX}.cron.demo"}
         log_path = self.fx.folder / "logs" / "demo.log"
@@ -2918,7 +2918,9 @@ class HostJobsTest(unittest.TestCase):
         with open(log_path, "a") as out:
             subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
                            env=run, stdout=out, stderr=out, timeout=60)
-        self.assertLess(time.monotonic() - started, 13)
+        # A 10 s grace ends near 10 s; the job sleeps 30, so a 30 s
+        # grace runs past the 20 s bound. The gap absorbs load (sd:10723).
+        self.assertLess(time.monotonic() - started, 20)
         log = log_path.read_text()
         self.assertIn("grace 30s cut to 10s", log)
         self.assertIn("the job still runs 10s after TERM", log)
