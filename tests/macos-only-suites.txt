@@ -16,3 +16,7 @@ lib-mas-app python3 lib/tests/macos/test_mas_app.py -v
 # pseudo-terminal: a stub table cannot show what they do with a window width.
 # The rest of local-fseventsd's suite is portable and runs in the tools leg.
 fseventsd-macos python3 local-fseventsd/tests/macos/test_live_daemon.py -v
+
+# sandbox-exec denies /dev/fd so ha-mcp.sh serve must inherit a socket stderr.
+# The rest of local-ha-mcp's suite is portable and runs in tests/ci-native.sh.
+ha-mcp-macos python3 local-ha-mcp/tests/macos/test_sandbox_stderr.py -v
