@@ -438,6 +438,29 @@ class MeterRun(unittest.TestCase):
         self.assertEqual(self.lines(), [])
         self.assertTrue((config / "agent-meter" / "meter.jsonl").is_file())
 
+    def test_a_ledger_line_that_reads_two_ways_refuses_by_name(self):
+        """sd:10423 review: no shell sources this .env, so a value the
+        shell-word reader would cut (` #`, `;`) is never taken short:
+        the run refuses, naming the variable, and writes no ledger."""
+        config = Path(self.tmp.name) / "config"
+        (config / "agent-meter").mkdir(parents=True)
+        short = Path(self.tmp.name) / "Release"
+        for tail in (" #1/meter.jsonl", "; archive/meter.jsonl"):
+            with self.subTest(tail=tail):
+                (config / "agent-meter" / ".env").write_text(
+                    f"AGENT_METER_FILE={short}{tail}\n", encoding="utf-8")
+                env = dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config),
+                           PATH=os.pathsep.join([str(self.bin), os.environ.get("PATH", "/usr/bin:/bin")]),
+                           CODEX_HOME=str(self.codex_home), CSWAP_BIN=str(self.cswap),
+                           CSWAP_FIXTURE=str(self.cswap_fixture))
+                env.pop("AGENT_METER_FILE", None)
+                done = subprocess.run([sys.executable, str(SCRIPT), "--no-db", "--timeout", "10"],
+                                      capture_output=True, text=True, env=env, timeout=60)
+                self.assertNotEqual(done.returncode, 0, done.stdout)
+                self.assertIn(".env:1: AGENT_METER_FILE: ", done.stderr)
+                self.assertFalse(short.exists())
+                self.assertFalse((config / "agent-meter" / "meter.jsonl").exists())
+
     def test_one_refused_window_costs_that_window_and_the_other_two_land(self):
         """A percentage a source reports outside 0..100 is refused by the
         library; the refusal is one `errors` entry and the run goes on."""

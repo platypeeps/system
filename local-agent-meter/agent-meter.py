@@ -101,8 +101,17 @@ DEFAULT_OUT = str(system_tools_config.config_dir(TOOL) / "meter.jsonl")
 
 
 def default_out():
-    """AGENT_METER_FILE, exported (an empty value too) or from <config>/agent-meter/.env, else DEFAULT_OUT."""
-    return system_tools_config.setting("AGENT_METER_FILE", system_tools_config.read_env(TOOL)) or DEFAULT_OUT
+    """AGENT_METER_FILE, exported (an empty value too) or from <config>/agent-meter/.env, else DEFAULT_OUT.
+    An exported value wins without reading the file, so a line it refuses
+    stops no run that overrides it."""
+    return system_tools_config.setting("AGENT_METER_FILE", saved_env("AGENT_METER_FILE")) or DEFAULT_OUT
+
+
+def saved_env(name):
+    """The tool's .env, or `{}` when `name` is exported and wins anyway."""
+    return {} if name in os.environ else system_tools_config.read_env(TOOL, sourced=False)
+
+
 PROVIDERS = ["claude", "codex"]
 # launchd runs with a minimal PATH that finds neither Homebrew nor ~/.local
 BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
@@ -390,7 +399,7 @@ def read_one(provider, accounts, accounts_error, now, cap=None, fixed=None):
         # Only twilio reads it, and a .env that does not read costs this
         # row alone (sd:9718 review).
         try:
-            env = {**system_tools_config.read_env(TOOL), **os.environ}
+            env = {**saved_env("TWILIO_ENV_FILE"), **os.environ}
         except (OSError, ValueError) as e:
             return usage_sources.reading(provider, "unknown", "none",
                                          error="agent-meter .env does not read: %s" % type(e).__name__)

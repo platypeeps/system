@@ -2763,6 +2763,31 @@ class MeterEnv(unittest.TestCase):
         self.assertEqual((twilio["status"], twilio["error"]),
                          ("unknown", "agent-meter .env does not read: UnicodeDecodeError"))
 
+    def test_an_exported_value_wins_over_a_refused_env_line(self):
+        # Review on sd:10423: a saved ledger path the reader now refuses
+        # stopped the run even with AGENT_METER_FILE exported, and cost
+        # twilio its row with TWILIO_ENV_FILE exported. An exported
+        # value wins over the file, so the file is not read for it.
+        meter = load_meter()
+        config = Path(tempfile.mkdtemp(prefix="meter-config."))
+        self.addCleanup(lambda: __import__("shutil").rmtree(config))
+        (config / "agent-meter").mkdir()
+        (config / "agent-meter/.env").write_text(
+            f"AGENT_METER_FILE={config}/Release #1/meter.jsonl\n")
+        ledger, twilio_file = str(config / "exported.jsonl"), str(config / "twilio.env")
+        seen = {}
+        with mock.patch.dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config),
+                             AGENT_METER_FILE=ledger, TWILIO_ENV_FILE=twilio_file), \
+                mock.patch.object(meter.usage_sources, "read_provider",
+                                  side_effect=lambda name, env, *rest: seen.update(env) or {}):
+            self.assertEqual(meter.default_out(), ledger)
+            meter.read_one("twilio", None, None, NOW)
+        self.assertEqual(seen.get("TWILIO_ENV_FILE"), twilio_file)
+        with mock.patch.dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config)):
+            os.environ.pop("AGENT_METER_FILE", None)
+            with self.assertRaises(meter.system_tools_config.EnvFileError):
+                meter.default_out()
+
     def test_an_unreadable_env_costs_the_usage_run_only_twilios_row(self):
         # Review on sd:9718: the parser's --out default read the same
         # .env before dispatch, so the run wrote no row at all.

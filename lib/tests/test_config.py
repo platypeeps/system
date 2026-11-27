@@ -167,6 +167,172 @@ class EnvFile(unittest.TestCase):
         from sd_db import config as twin
         self.assertEqual(twin.read_env("home", self.envv), expected)
 
+    def test_python_keeps_an_unquoted_path_with_spaces(self):
+        # sd:10423 review: `.` refuses such a line, but a Python-only
+        # reader (agent-meter's ledger) read it whole before; a word
+        # break must not cut it. Only a blank before `#` ends it.
+        (self.conf / "meter").mkdir(parents=True)
+        (self.conf / "meter/.env").write_text(
+            "AGENT_METER_FILE=$HOME/my ledger/meter.jsonl\n"
+            "N=two  words\nT=a b\t\nL= /lead\n")
+        home = self.envv["HOME"]
+        self.assertEqual(stc.read_env("meter", self.envv, sourced=False),
+                         {"AGENT_METER_FILE": f"{home}/my ledger/meter.jsonl",
+                          "N": "two  words", "T": "a b", "L": "/lead"})
+
+    def test_a_refusal_names_only_an_assigned_variable(self):
+        # Review class: the refusal named text the parser had not
+        # established as an assignment's variable. A word inside a
+        # quoted argument, a continuation line of an open quote and a
+        # name sh would not assign never reach the message.
+        (self.conf / "bad").mkdir(parents=True)
+        env = self.conf / "bad/.env"
+        for text, read in ((": 'abc& privateToken=hidden'", {}),
+                           ("X=1; : 'abc& privateToken=hidden'", {"X": "1"}),
+                           ("X=1 && : 'abc& privateToken=hidden'", {"X": "1"}),
+                           (": \"${U:=http://example.test/?a=1&b=2}\"", {}),
+                           ("echo hi; X=1", {"X": "1"}),
+                           ("echo a | cat\nX=1", {"X": "1"})):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                self.assertEqual(stc.read_env("bad", self.envv), read)
+        for text, line, name in (
+                (": abc& privateToken=hidden", 1, ""),
+                ("2>/dev/null AGENT_METER_FILE=/tmp/meter.jsonl", 1, ""),
+                ("true >/dev/null; AGENT_METER_FILE=/tmp/meter.jsonl", 1, ""),
+                ("[ -n \"$X\" ] || X=1", 1, ""),
+                ("m\u00efni=a|privateToken", 1, ""),
+                ("A=\"first\nprivateToken=a|b\"\nB=1", 1, "A: "),
+                ("echo \"first\nprivateToken=a|b\"\nB=1", 1, ""),
+                ("B=1\nit's privateToken", 2, "")):
+            with self.subTest(text=text):
+                env.write_text(text + "\n", encoding="utf-8")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.read_env("bad", self.envv)
+                message = str(caught.exception)
+                self.assertTrue(message.startswith(f"{env}:{line}: {name}an un"), message)
+                for private in ("privateToken", "abc", "hidden", "first", "ni"):
+                    self.assertNotIn(private, message.replace(str(env), ""))
+
+    def test_a_python_only_reader_never_takes_a_shorter_value(self):
+        # Review class: where the shell reading and the reading from
+        # before sd:10423 differ, a file no shell sources (agent-meter's)
+        # refuses by name; `sourced=False` asks for that.
+        (self.conf / "meter").mkdir(parents=True)
+        env = self.conf / "meter/.env"
+        for text in ("AGENT_METER_FILE=/tmp/Release #1/meter.jsonl",
+                     "AGENT_METER_FILE=/tmp/Release; archive/meter.jsonl",
+                     "AGENT_METER_FILE=/tmp/Release;",
+                     "AGENT_METER_FILE=/tmp/Release && X=1",
+                     "AGENT_METER_FILE=/tmp/Release # note",
+                     "AGENT_METER_FILE=/tmp/Re'lea'se",
+                     "AGENT_METER_FILE=/tmp/Re\\ lease",
+                     'AGENT_METER_FILE="/tmp/Release" # note',
+                     'AGENT_METER_FILE="/tmp/Re\\"lease"',
+                     "AGENT_METER_FILE=  # nothing",
+                     "AGENT_METER_FILE=~;",
+                     "X=1; AGENT_METER_FILE=/tmp/Release"):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.read_env("meter", self.envv, sourced=False)
+                self.assertRegex(str(caught.exception), rf"^{re.escape(str(env))}:1: (AGENT_METER_FILE|X): ")
+        home = self.envv["HOME"]
+        env.write_text("A=$HOME/x\nB='two words'\nC=\"$HOME/q\"\nD=~/t\n"
+                       "E=\nexport F=1\nG=a b\nH=a#b\n")
+        self.assertEqual(stc.read_env("meter", self.envv, sourced=False),
+                         {"A": f"{home}/x", "B": "two words", "C": f"{home}/q",
+                          "D": f"{home}/t", "E": "", "F": "1", "G": "a b", "H": "a#b"})
+
+    def test_a_multi_word_value_reads_as_before_or_refuses(self):
+        # Review: `.` assigns nothing from an unquoted multi-word value,
+        # so only Python reads it; it must read as it did before
+        # sd:10423, whole, or refuse by name, never a shorter path.
+        (self.conf / "meter").mkdir(parents=True)
+        env = self.conf / "meter/.env"
+        for text in ("AGENT_METER_FILE=$HOME/my ledger #2/meter.jsonl",
+                     "AGENT_METER_FILE=$HOME/my ledger;2/meter.jsonl",
+                     "AGENT_METER_FILE=$HOME/my ledger && b/meter.jsonl",
+                     'AGENT_METER_FILE=$HOME/my "led" ger/meter.jsonl',
+                     "AGENT_METER_FILE=$HOME/my led\\ger/meter.jsonl",
+                     "AGENT_METER_FILE=$HOME/my ledger # note"):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.read_env("meter", self.envv, sourced=False)
+                self.assertIn(f"{env}:1: AGENT_METER_FILE:", str(caught.exception))
+        env.write_text("A=$HOME/my ledger/meter.jsonl\nB=  x  y  \nC=x y\t\n")
+        home = self.envv["HOME"]
+        self.assertEqual(stc.read_env("meter", self.envv, sourced=False),
+                         {"A": f"{home}/my ledger/meter.jsonl", "B": "x  y", "C": "x y"})
+
+    def test_python_keeps_what_sourcing_does_not_assign(self):
+        # `.` leaves these unset (a syntax error, a second word), so
+        # a Python-only reader keeps the text whole, as before
+        # sd:10423; a multi-word one with a `;` refuses (see above),
+        # and in a sourced file a second word refuses too.
+        (self.conf / "odd").mkdir(parents=True)
+        (self.conf / "odd/.env").write_text("G=a(b)\nW=x y\n")
+        self.assertEqual(stc.read_env("odd", self.envv, sourced=False),
+                         {"G": "a(b)", "W": "x y"})
+        with self.assertRaises(stc.EnvFileError) as caught:
+            stc.read_env("odd", self.envv)
+        self.assertIn(":2: W: ", str(caught.exception))
+
+    def test_python_refuses_a_redirection_pipe_or_background(self):
+        # sd:10423 lead ruling: a misread sends agent-meter to the
+        # default ledger, so an unquoted < > | & or a skipped || branch
+        # refuses the line by file, line and name instead of guessing.
+        (self.conf / "bad").mkdir(parents=True)
+        env = self.conf / "bad/.env"
+        cases = [
+            ("AGENT_METER_FILE=/tmp/meter.jsonl 2>/dev/null", "AGENT_METER_FILE"),
+            ("X=1 >/dev/null; AGENT_METER_FILE=/tmp/meter.jsonl", "X"),
+            ("X=1 || AGENT_METER_FILE=/tmp/meter.jsonl", "X"),
+            ("U=http://example.test/?a=1&b=2", "U"),
+            ("P=a|b", "P"),
+            ("I=a<b", "I"),
+            ("X=1 && Y=2 &", "Y"),
+        ]
+        for text, name in cases:
+            with self.subTest(text=text):
+                env.write_text("# head\n" + text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.read_env("bad", self.envv)
+                self.assertIn(f"{env}:2: {name}:", str(caught.exception))
+                self.assertIsInstance(caught.exception, ValueError)
+        env.write_text("Q='a|b>c&d'\nR=\"x<y\"\nS=a\\&b\nT=1 && V=2\n")
+        self.assertEqual(stc.read_env("bad", self.envv),
+                         {"Q": "a|b>c&d", "R": "x<y", "S": "a&b", "T": "1", "V": "2"})
+
+    def test_an_assignment_sourcing_skips_refuses(self):
+        # Review: `.` skips these assignments, so a Python reader that
+        # took them pointed cron_job_dirs at another host's folder and
+        # machine setup swept this host's jobs. Each refuses instead;
+        # the lines `.` does assign still read, checked against sh.
+        (self.conf / "cron-jobs").mkdir(parents=True)
+        env = self.conf / "cron-jobs/.env"
+        refused = [
+            ('[ -n "$H" ] && CRON_JOBS_HOST=other', "CRON_JOBS_HOST: "),
+            ("X=$(false) && CRON_JOBS_HOST=other", "CRON_JOBS_HOST: "),
+            ("false &&\nCRON_JOBS_HOST=other", ""),
+            ("false && # note\nCRON_JOBS_HOST=other", ""),
+            ("CRON_JOBS_HOST=other true", "CRON_JOBS_HOST: "),
+            ("CRON_JOBS_HOST=oth\\\ner", "CRON_JOBS_HOST: "),
+        ]
+        for text, name in refused:
+            with self.subTest(text=text):
+                env.write_text("# head\n" + text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.cron_job_dirs(self.envv)
+                self.assertIn(f"{env}:2: {name}", str(caught.exception))
+        for text in ("X=1 && CRON_JOBS_HOST=other", "false; CRON_JOBS_HOST=other"):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                done = shell(f'. "{env}"; printf %s "$CRON_JOBS_HOST"', self.envv)
+                self.assertEqual(done.stdout, "other")
+                self.assertEqual(stc.read_env("cron-jobs", self.envv)["CRON_JOBS_HOST"], "other")
+
     def test_python_absent_is_empty(self):
         self.assertEqual(stc.read_env("nothing", self.envv), {})
 
@@ -300,6 +466,47 @@ class CronJobDirs(unittest.TestCase):
         self.assertEqual(stc.cron_job_dirs(env)[0], self.jobs / "mini")
         self.assertEqual(self.twin.cron_job_dirs(env)[0], self.jobs / "mini")
         self.assertEqual(stc.cron_job_dirs({**env, "CRON_JOBS_HOST": "studio"})[0], self.jobs / "studio")
+
+    #: .env lines and the CRON_JOBS_HOST `.` leaves; pack sd:10424's
+    #: dashboard reader takes the same cases (sd:10423).
+    HOST_LINES = [
+        ("CRON_JOBS_HOST=mini # this machine", "mini"),
+        ("CRON_JOBS_HOST=mini\t# tab", "mini"),
+        ('CRON_JOBS_HOST="mini" # quoted', "mini"),
+        ("CRON_JOBS_HOST='mini' # single", "mini"),
+        ('CRON_JOBS_HOST="mini # kept"', "mini # kept"),
+        ("CRON_JOBS_HOST=mini#kept", "mini#kept"),
+        ("CRON_JOBS_HOST=mi'ni'\"x\"", "minix"),
+        ("CRON_JOBS_HOST=mini\\ two", "mini two"),
+        ('CRON_JOBS_HOST="m\\"i"', 'm"i'),
+        ("export CRON_JOBS_HOST=mini  # export", "mini"),
+        ("CRON_JOBS_HOST=  # nothing", ""),
+        ("CRON_JOBS_HOST=mïni # non-ASCII", "mïni"),
+        # Operators `.` honours and assigns across (review round 3).
+        ("CRON_JOBS_HOST=mini;", "mini"),
+        ("CRON_JOBS_HOST=mini ; X=1", "mini"),
+        ("CRON_JOBS_HOST=mini;# note", "mini"),
+        ("X=1; CRON_JOBS_HOST=mini", "mini"),
+        ("X=1;export CRON_JOBS_HOST=mini; Y=2", "mini"),
+        ("X=1 && CRON_JOBS_HOST=mini", "mini"),
+        ("CRON_JOBS_HOST=mini&&X=1", "mini"),
+        # `||`, `<` and `>` refuse instead: see EnvFile (lead ruling).
+        ('CRON_JOBS_HOST="mini;x&&y>z"', "mini;x&&y>z"),
+        ("CRON_JOBS_HOST='mini;x'", "mini;x"),
+        ("CRON_JOBS_HOST=mini\\;x", "mini;x"),
+        ("CRON_JOBS_HOST=mini; CRON_JOBS_HOST=later", "later"),
+    ]
+
+    def test_an_inline_comment_ends_the_value_as_sourcing_does(self):
+        base = self.cases()[2]
+        for line, expected in self.HOST_LINES:
+            with self.subTest(line=line):
+                (self.conf / "cron-jobs/.env").write_text(line + "\n", encoding="utf-8")
+                done = shell('st_source_env cron-jobs; printf "%s" "$CRON_JOBS_HOST"', base)
+                self.assertEqual(done.stdout, expected, "the fixture disagrees with sh")
+                self.assertEqual(stc.read_env("cron-jobs", base)["CRON_JOBS_HOST"], expected)
+                if expected:
+                    self.assertEqual(stc.cron_job_dirs(base)[0], self.jobs / expected.lower())
 
     def test_an_exported_empty_value_beats_the_file(self):
         # sd:3964: cron-jobs.sh keeps an exported empty value (st_source_env),
