@@ -807,52 +807,21 @@ class NightlyBackupGradeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
         self.assertIn(self.SAFE, log)
 
-    def test_the_nas_copy_runs_each_pair_under_a_wall_bound(self):
-        """REGRESSION (sd:9070): the copy of the whole backup root ran to
-        the 2 h job limit and failed the run. Each pair now ends at a wall
-        bound, which mirror-sync reports as a share that did not answer
-        (75): a warning. The example's bulk pairs fit inside 2 h."""
+    def test_the_job_copies_the_snapshot_folder_and_nothing_else(self):
+        """REGRESSION (sd:10899): the bulk copy of Backup ran in this
+        job's process group; on 2026-11-26 it held the run to the 2 h
+        limit after the snapshot was verified and on the NAS. The job now
+        runs mirror-sync once, for the snapshot pair it names; a bulk
+        run here hangs, so a job that still ran one would time out."""
         fx = Fixture()
         self.addCleanup(fx.destroy)
         mirror = fx.tmp / "local-mirror-sync/mirror-sync.sh"
         mirror.parent.mkdir(parents=True)
-        seen = fx.tmp / "bound"
-        # The snapshot step (a named pair) passes; the bulk list records
-        # its bound and hits it.
-        mirror.write_text('#!/bin/sh\n[ -z "$MIRROR_SYNC_PAIRS" ] || exit 0\n'
-                          f'printf %s "$MIRROR_SYNC_PAIR_BOUND" > "{seen}"\nexit 75\n')
-        sd_db = fx.home / "repos/platypeeps/sd-workflow/bin/sd-db"
-        sd_db.parent.mkdir(parents=True)
-        sd_db.write_text("#!/bin/sh\nexit 0\n")
-        sd_db.chmod(0o755)
-        fx.write_job(self.JOB.stem, self.JOB.read_text())
-        result = fx.exec_job(self.JOB.stem, {
-            "SD_DB_PYTHON": "true", "SD_DB_BACKUP_DESTINATION": str(fx.tmp / "backups"),
-            "SD_DB_BACKUP_NAS_FOLDER": str(fx.tmp / "nas")})
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        bound = int(seen.read_text() or 0)
-        pairs = [line for line in (FOLDER.parent / "local-mirror-sync/mirrors-nas.conf.example")
-                 .read_text().splitlines() if line and not line.startswith("#")]
-        self.assertGreater(bound, 0)
-        # Two hours less ten minutes for the snapshot and the probes.
-        self.assertLessEqual(bound * len(pairs), 2 * 3600 - 600)
-
-    def test_the_snapshot_leaves_when_the_bulk_copy_hits_the_bound(self):
-        """REGRESSION (sd:9070 lane review): an installed list with the one
-        pair Backup -> NAS Backup hit the 3000 s bound, and the job passed
-        with the night's snapshot still on this machine. The job copies
-        the snapshot folder itself first, unbounded, from a pair it names;
-        only the bulk list runs under the bound."""
-        fx = Fixture()
-        self.addCleanup(fx.destroy)
-        mirror = fx.tmp / "local-mirror-sync/mirror-sync.sh"
-        mirror.parent.mkdir(parents=True)
-        # A named pair is copied unless it runs under a bound; the bulk
-        # list always hits the bound (75).
+        calls = fx.tmp / "calls"
         mirror.write_text(
             '#!/bin/sh\n'
-            '[ -n "$MIRROR_SYNC_PAIRS" ] && [ -z "$MIRROR_SYNC_PAIR_BOUND" ] || exit 75\n'
-            f'printf %s "$MIRROR_SYNC_PAIRS" > "{fx.tmp / "pair"}"\n'
+            f'printf "%s|%s\\n" "${{MIRROR_SYNC_CONF:-}}" "$MIRROR_SYNC_PAIRS" >> "{calls}"\n'
+            '[ -n "$MIRROR_SYNC_PAIRS" ] || { sleep 30; exit 0; }\n'
             'src=${MIRROR_SYNC_PAIRS%%|*}; rest=${MIRROR_SYNC_PAIRS#*|}; dst=${rest%%|*}\n'
             'mkdir -p "$dst" && cp -R "$src/." "$dst/"\n')
         sd_db = fx.home / "repos/platypeeps/sd-workflow/bin/sd-db"
@@ -867,14 +836,13 @@ class NightlyBackupGradeTest(unittest.TestCase):
         fx.write_job(self.JOB.stem, self.JOB.read_text())
         result = fx.exec_job(self.JOB.stem, {
             "SD_DB_PYTHON": "true", "SD_DB_BACKUP_DESTINATION": str(backups),
-            "SD_DB_BACKUP_NAS_FOLDER": str(nas)})
+            "SD_DB_BACKUP_NAS_FOLDER": str(nas), "CRON_JOBS_JOB_TIMEOUT": "10s"}, timeout=40)
         log = (fx.folder / "logs" / f"{self.JOB.stem}.log").read_text()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr + log)
         self.assertTrue((nas / "sd-backups/2026-01-01T021000/db.sqlite").is_file(), log)
         self.assertNotIn(SKIPPED, log)
-        self.assertIn("snapshot copied", log)
-        # The runner journal locks stay off the NAS (sd:6048).
-        self.assertTrue((fx.tmp / "pair").read_text().endswith("|runner-journal/*.lock"))
+        self.assertEqual(calls.read_text(),
+                         f"|{backups}|{nas}/sd-backups|runner-journal/*.lock\n")
 
     def test_the_example_bulk_pair_leaves_the_snapshot_folder_out(self):
         """sd:9070: the job copies sd-backups itself, so the example's one
@@ -887,6 +855,85 @@ class NightlyBackupGradeTest(unittest.TestCase):
     def test_without_a_nas_folder_the_job_is_the_snapshot_alone(self):
         result, log = self.run_job(0, 4, nas=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(self.SAFE, log)
+
+
+class NasBulkCopyJobTest(unittest.TestCase):
+    """mirror-sync-nas copies the rest of Backup to the NAS (sd:10899).
+
+    It ran inside sd-db-backup until a slow share held that job to its
+    2 h limit; apart, a slow share fails this job alone. A share that
+    does not answer (75) warns and passes; any other failure fails the
+    run, graded data safe: the folder is still on the local disk.
+    """
+
+    JOB = EXAMPLES / "mirror-sync-nas.job"
+    SAFE = "SD_REPORT_ATTENTION: data safe, one step failed: NAS copy"
+
+    def run_job(self, preflight_rc=0, mirror_rc=0, nas=True):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        mirror = fx.tmp / "local-mirror-sync/mirror-sync.sh"
+        mirror.parent.mkdir(parents=True)
+        self.calls = fx.tmp / "calls"
+        mirror.write_text(
+            '#!/bin/sh\n'
+            'printf "%s %s %s %s\\n" "$MIRROR_SYNC_CONF" "$MIRROR_SYNC_ADDITIVE" '
+            f'"$MIRROR_SYNC_PAIR_BOUND" "$*" >> "{self.calls}"\n'
+            f'exit {mirror_rc}\n')
+        python = fx.tmp / "preflight"
+        python.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" > "{fx.tmp / "preflight.args"}"\n'
+                          f'exit {preflight_rc}\n')
+        python.chmod(0o755)
+        self.preflight_args = fx.tmp / "preflight.args"
+        fx.write_job(self.JOB.stem, self.JOB.read_text())
+        env = {"SD_DB_PYTHON": str(python)}
+        if nas:
+            env["SD_DB_BACKUP_NAS_FOLDER"] = str(fx.tmp / "nas")
+        self.nas = fx.tmp / "nas"
+        result = fx.exec_job(self.JOB.stem, env)
+        return result, (fx.folder / "logs" / f"{self.JOB.stem}.log").read_text().splitlines()
+
+    def test_the_copy_is_the_bulk_list_additive_and_bounded(self):
+        result, _log = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        conf, additive, bound, verb = self.calls.read_text().split()
+        self.assertEqual((conf, additive, verb), ("mirrors-nas.conf", "1", "sync"))
+        pairs = [line for line in (FOLDER.parent / "local-mirror-sync/mirrors-nas.conf.example")
+                 .read_text().splitlines() if line and not line.startswith("#")]
+        self.assertGreater(int(bound), 0)
+        # The runner's default 2 h limit, less ten minutes for the probes.
+        self.assertLessEqual(int(bound) * len(pairs), 2 * 3600 - 600)
+
+    def test_the_preflight_checks_the_nas_folder_first(self):
+        result, log = self.run_job(preflight_rc=4)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertIn(f"--destination {self.nas}", self.preflight_args.read_text())
+        self.assertFalse(self.calls.exists())
+        self.assertIn(self.SAFE, log)
+
+    def test_a_share_that_does_not_answer_warns_and_passes(self):
+        result, log = self.run_job(mirror_rc=75)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("warning: Backup copy to the NAS did not finish (bound or share)", log)
+        self.assertNotIn(self.SAFE, log)
+
+    def test_a_failed_copy_fails_the_run_graded_data_safe(self):
+        result, log = self.run_job(mirror_rc=1)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(self.SAFE, log)
+
+    def test_without_a_nas_folder_the_run_fails_naming_it(self):
+        """Review (sd:10899): a plain hub seeds this job from the example.
+        Passing with nothing copied hid a hub that never set the folder;
+        the run fails, naming the variable and both remedies."""
+        result, log = self.run_job(nas=False)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse(self.calls.exists())
+        text = "\n".join(log)
+        self.assertIn("SD_DB_BACKUP_NAS_FOLDER is not set", text)
+        self.assertIn("env.sh", text)
+        self.assertIn("mirror-sync-nas.job", text)
         self.assertNotIn(self.SAFE, log)
 
 

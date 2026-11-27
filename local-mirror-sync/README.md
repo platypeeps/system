@@ -56,7 +56,7 @@ which files a failure report that Today shows.
 |---|---|---|---|
 | `mirrors.conf` | iCloud and `/Volumes/local` | `mirror-sync-nightly` | 03:30 daily |
 | `mirrors-repos.conf` | `/Volumes/local` | `repos-mirror` | 04:30 and 16:30 |
-| `mirrors-nas.conf` | the NAS, `/Volumes/Offsite` | `sd-db-backup`, after its snapshot | 02:10 daily |
+| `mirrors-nas.conf` | the NAS, `/Volumes/Offsite` | `mirror-sync-nas` | 05:20 daily |
 | `mirrors-nas-hourly.conf` | the NAS, `Backup/sd-backups-hourly` | `sd-db-backup-hourly`, after its snapshot | :50 hourly |
 
 `sd-db-backup-hourly` (`local-cron-jobs`) snapshots the sd database into
@@ -80,17 +80,16 @@ two lists on 2026-09-23: `mirrors-weekly.conf`, and `mirrors-offsite.conf`,
 which copied the repo fleet to the NAS over SMB at about 80 minutes per no-op
 pass.
 
-**`mirrors-nas.conf` is the off-machine copy.** `sd-db-backup` copies
-`/Volumes/local/Backup` to the NAS share's `Backup` folder (the
-`--destination` in its job file) once a day, right
-after its snapshot and only if the snapshot succeeded. A separate schedule
-would not order them: after a night asleep, launchd runs missed jobs
-together at wake. That
-folder holds the nightly `sd-db-backup` snapshot, in `sd-backups/`; the
-job copies that folder first, in its own unbounded step from a pair it
-names (`MIRROR_SYNC_PAIRS`), and then runs this list with each pair under
-a 3000 s wall bound, so a slow bulk copy never keeps the snapshot on the
-machine (sd:9070). It runs additive, like
+**`mirrors-nas.conf` is the off-machine copy.** The `mirror-sync-nas`
+job copies `/Volumes/local/Backup` to the NAS share's `Backup` folder
+(`SD_DB_BACKUP_NAS_FOLDER`) once a day, after offsite-verify's preflight,
+each pair under a 3000 s wall bound. That folder holds the nightly
+`sd-db-backup` snapshot, in `sd-backups/`, which this list leaves out:
+`sd-db-backup` copies it itself, right after the snapshot and only if
+the snapshot succeeded, from a pair it names (`MIRROR_SYNC_PAIRS`), so
+no copy reads a half-written snapshot (sd:9070). The bulk copy ran in
+`sd-db-backup` too until a slow share held that job to its 2 h limit
+and failed a night whose snapshot was safe on the NAS (sd:10899). It runs additive, like
 `repos-mirror`: the NAS folder already holds `sd-backups/` history, which
 an exact mirror would delete. It keeps no overwrite store: a file the pass
 overwrites on the NAS is gone (operator decision, 2026-09-26). The only thing this
@@ -299,10 +298,14 @@ reads a file it replaces, and on an evicted one that read fails with
 "Resource deadlock avoided"; the pair then aborts at that file. `-W` does not
 prevent it (sd:1947). On that error `sync` lists, by dry run, the files the
 pair is about to update, asks `brctl download` for the evicted ones among
-them and waits for them. The wait is bounded per pair by
-`MIRROR_SYNC_MATERIALIZE_WAIT` seconds in total (default 300). It logs each
-downloaded file and runs the pair once more. Nothing is deleted. A file still
-evicted after the wait fails the pair by name. The dry run lists a
+them and waits for them. The downloads and the wait share one bound per
+pair, `MIRROR_SYNC_MATERIALIZE_WAIT` seconds in total (default 300). It logs
+each downloaded file and runs the pair once more. Nothing is deleted. A file
+still evicted after the wait is named on stderr and left as it is: the retry
+excludes it, without `--delete-excluded`, so the rest of the pair is copied.
+The pass then prints one `SD_REPORT_ATTENTION` line per such destination,
+which Reports shows, and the next pass asks for the file again (sd:10898).
+The dry run lists a
 non-ASCII name with octal escapes (`\#342\#200\#224` for an em dash);
 `sync` decodes them before it looks for the file (sd:3404).
 

@@ -481,6 +481,17 @@ class Promote(PromoteCase):
         self.run_promote("--apply")
         self.assertIn(f"{PREFIX}.cron.needs-sweep-nightly", self.installed())
 
+    def test_a_standby_needs_no_nas_bulk_copy_job(self):
+        """Review (sd:10899): mirror-sync-nas copies the hub's own
+        /Volumes/local/Backup, which a standby lacks, as the iCloud
+        mirror does. It is no role job: a standby set up before it
+        reads ready, and promote installs no copy of it."""
+        out = self.run_promote().stdout
+        self.assertNotIn("mirror-sync-nas", out)
+        self.assertNotIn("NOT-READY", out)
+        self.run_promote("--apply")
+        self.assertNotIn(f"{PREFIX}.cron.mirror-sync-nas", self.installed())
+
     def test_a_standby_without_a_builder_job_file_is_not_ready(self):
         (self.config / "cron-jobs/jobs/night-build.job").unlink()
         self.assertIn("NOT-READY no job file night-build.job", self.run_promote().stdout)
@@ -797,7 +808,9 @@ class Promote(PromoteCase):
         """Hand-back step 2: its profile lists the role, and the fence, not the profile, says it holds it."""
         self.hub_profile()
         self.run_promote("--apply")
-        self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
+        # A plain hub also seeds its NAS bulk copy, no role job (sd:10899).
+        self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]
+                                + [f"{PREFIX}.cron.mirror-sync-nas"]), self.installed())
         self.assertEqual(1, len(self.calls("prove")))
         self.assertIsNone(self.marker_step())
 
