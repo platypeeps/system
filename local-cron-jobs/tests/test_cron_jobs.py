@@ -5900,6 +5900,24 @@ class ManualScheduleTest(unittest.TestCase):
         return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), *args],
                               env=base, capture_output=True, text=True, timeout=60)
 
+    def run_bounded(self, *args, seconds=20):
+        """run_script in its own process group, killed whole past the
+        bound: a looping subshell keeps the pipes open after its parent
+        dies. Returns (None, ...) when the bound ran out."""
+        env = {"PATH": self.fx.path(stub_bin(self.fx.tmp)), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "CRON_TEST_HELD": "0", "CRON_TEST_RUNS": "0",
+               "CRON_TEST_BOOTSTRAP_COUNT": str(self.fx.tmp / "bootstrap-count")}
+        proc = subprocess.Popen(["sh", str(self.fx.folder / "cron-jobs.sh"), *args], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                start_new_session=True)
+        try:
+            out, err = proc.communicate(timeout=seconds)
+            return proc.returncode, out, err
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            out, err = proc.communicate()
+            return None, out, err
+
     def test_install_writes_a_plist_with_no_calendar_and_no_run_at_load(self):
         result = self.run_script("install", "demo")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -5928,6 +5946,39 @@ class ManualScheduleTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn(f"JOB_SCHEDULE '{cron}'", result.stderr)
                 self.assertFalse(self.plist.exists(), cron)
+
+    def test_a_step_that_never_ends_the_field_is_refused(self):
+        """sd:10772 review: `*/0` added 0 to the field each pass, so the
+        render never ended, and `list`, install and promote readiness hung
+        (an attended run has no bound). A step that is no whole number
+        from 1, or text before the slash, is refused, and fast."""
+        for cron in ("*/0 3 * * *", "5 */00 * * *", "*/x 3 * * *",
+                     "*/ 3 * * *", "*/-1 3 * * *", "5/2 3 * * *",
+                     "5 3 * * */0", "*/999999999999 3 * * *"):
+            with self.subTest(cron=cron):
+                self.fx.write_job("demo", f'JOB_SCHEDULE="{cron}"\nJOB_COMMAND="true"\n')
+                for verb in (("list",), ("list", "demo"), ("install", "demo")):
+                    rc, out, err = self.run_bounded(*verb)
+                    self.assertIsNotNone(rc, f"{' '.join(verb)} hung on {cron!r}")
+                    self.assertEqual(rc, 1, out + err)
+                    self.assertIn(f"JOB_SCHEDULE '{cron}'", err)
+                self.assertFalse(self.plist.exists(), cron)
+        # The cross-product too: every field stepped by 1 is 3.7 million
+        # entries, which the shell loop renders for hours.
+        for cron in ("*/1 */1 */1 */1 */1", "*/1 */1 1,2 * *"):
+            with self.subTest(cron=cron):
+                self.fx.write_job("demo", f'JOB_SCHEDULE="{cron}"\nJOB_COMMAND="true"\n')
+                rc, out, err = self.run_bounded("list", "demo")
+                self.assertIsNotNone(rc, f"list hung on {cron!r}")
+                self.assertEqual(rc, 1, out + err)
+                self.assertIn(f"JOB_SCHEDULE '{cron}' names", err)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="*/1 */1 * * *"\nJOB_COMMAND="true"\n')
+        rc, out, err = self.run_bounded("list", "demo")
+        self.assertEqual(rc, 0, out + err)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="*/15 */6 * * */2"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        config = plistlib.loads(self.plist.read_bytes())
+        self.assertEqual(4 * 4 * 4, len(config["StartCalendarInterval"]))
 
     def test_every_edge_of_each_field_installs(self):
         """sd:10805: the range check keeps both ends, and weekday 7."""

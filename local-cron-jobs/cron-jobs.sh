@@ -9,7 +9,7 @@
 # by CRON_JOBS_EXTRA_DIRS (see below), as sourced shell vars. <config> is
 # ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}.
 # The repository ships no jobs; examples/ holds sample job files to copy.
-#   JOB_SCHEDULE   5-field cron, LOCAL time (supported: * N a,b,c */N, each N in its field's range), or
+#   JOB_SCHEDULE   5-field cron, LOCAL time (supported: * N a,b,c */N, each N in its field's range, step N from 1, at most 1440 entries), or
 #                  "manual": no calendar, it runs only when kickstarted
 #   JOB_PROMPT     prompt or /skill invocation passed to `claude -p`
 #   JOB_COMMAND    alternative to JOB_PROMPT: plain shell command run via
@@ -373,7 +373,8 @@ is_loaded() { launchctl print "$DOMAIN/$(label_for "$1")" >/dev/null 2>&1; }
 # Supports per field: "*", a number, a comma list, or "*/N".
 # Emits the cross-product of minute x hour x (day|weekday|month) entries.
 
-# Fails on a value outside min..top (top defaults to max - 1; weekday
+# Fails on a step that is not `*/N` with N from 1, and on a value outside
+# min..top (top defaults to max - 1; weekday
 # takes 7 for Sunday): launchd never fires a plist that names minute 60
 # or month 13, and plutil -lint reads it fine (sd:10805). Under
 # calendar_xml's set -f; IFS ends with its `$( )`.
@@ -384,7 +385,12 @@ expand_field() { # value, max (exclusive upper bound for */N stepping), min, [to
       echo ""
       ;;
     */*)
-      step="${val#*/}"
+      # Only `*/N`, N a whole number from 1: a step of 0, a negative or
+      # an empty one never reached max, so the render looped for ever,
+      # and list, install and promote readiness hung (sd:10772 review).
+      # Text before the slash was dropped, so `5/2` read as `*/2`.
+      case "$val" in "*/"*) ;; *) return 1 ;; esac
+      step="$(decimal "${val#\*/}" 999999999)" && [ "$step" -ge 1 ] || return 1
       i="$min"
       out=""
       while [ "$i" -lt "$max" ]; do
@@ -420,9 +426,21 @@ calendar_xml() { # cron expression -> StartCalendarInterval plist XML
     doms="$(expand_field "$c_dom" 32 1)" && mons="$(expand_field "$c_mon" 13 1)" &&
     dows="$(expand_field "$c_dow" 7 0 7)" || {
     [ "$had_noglob" = 1 ] || set +f
-    echo "ERROR: JOB_SCHEDULE '$cron' has a value outside its field (minute 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7)" >&2
+    echo "ERROR: JOB_SCHEDULE '$cron' has a value outside its field (minute 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7) or a step other than */N, N from 1" >&2
     return 1
   }
+  # The entries are the fields' cross-product, rendered one by one: every
+  # field stepped by 1 is 3.7 million, which ran for hours (sd:10772
+  # review). At most one a minute for a day; a field that is `*` adds none.
+  local count=1 f
+  for f in "$mins" "$hours" "$doms" "$mons" "$dows"; do
+    [ -z "$f" ] || count=$((count * ($(printf '%s' "$f" | tr -cd ',' | wc -c) + 1)))
+  done
+  if [ "$count" -gt 1440 ]; then
+    [ "$had_noglob" = 1 ] || set +f
+    echo "ERROR: JOB_SCHEDULE '$cron' names $count calendar entries; launchd takes at most 1440 here" >&2
+    return 1
+  fi
 
   # Cross-product of the five fields. Splitting is done by setting IFS to a
   # comma and leaving the expansions unquoted on purpose; "x" stands for a

@@ -499,8 +499,13 @@ class Promote(PromoteCase):
         the hub. hub-ready asks `cron-jobs.sh list <job>` for each."""
         job = self.config / "cron-jobs/jobs/night-build.job"
         good = job.read_text()
+        # A step that never ends the render, or a cross-product it renders
+        # for hours, hung an attended promote: bound_step skips its bound
+        # there (sd:10772 review).
         for text, why in ((good + "exit 0\n", "ended before its end"),
-                          (good + 'JOB_SCHEDULE="0 25 * * *"\n', "JOB_SCHEDULE '0 25 * * *'")):
+                          (good + 'JOB_SCHEDULE="0 25 * * *"\n', "JOB_SCHEDULE '0 25 * * *'"),
+                          (good + 'JOB_SCHEDULE="*/0 3 * * *"\n', "JOB_SCHEDULE '*/0 3 * * *'"),
+                          (good + 'JOB_SCHEDULE="*/1 */1 */1 */1 */1"\n', "names 3749760 calendar")):
             with self.subTest(why=why):
                 job.write_text(text)
                 out = self.run_promote().stdout
