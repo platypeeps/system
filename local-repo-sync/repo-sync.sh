@@ -869,9 +869,10 @@ refresh_one() {
 
 # After a failed switch: name the checkout's index.lock, if one is there,
 # with its time, its age and its holder. A stale one stopped every
-# refresh, and only git's stderr named it (sd:10796). Removing it is the
-# operator's step: the checkout guard refuses an agent's rm. Prints
-# nothing when there is no lock.
+# refresh, and only git's stderr named it (sd:10796). Prints nothing
+# when there is no lock. With $2 = clear, a lock proven stale is removed
+# and the note says so, and it returns 3: naming it alone left the
+# serving build two days behind (sd:10847).
 # The rm line asks for a delete, so each reading under it is a positive
 # answer, never a silence (review): lsof -V says in words that no process
 # has the file open, where -t turns warnings off and exits 1 on an error
@@ -884,7 +885,7 @@ index_lock_stat() { # file: `<mtime> <uid>`, or nothing
   il_s=$(stat -c '%Y %u' "$1" 2>/dev/null || stat -f '%m %u' "$1" 2>/dev/null) || il_s=
   case $il_s in *[!0-9\ ]* | '' | *' '*' '* | ' '* | *' ') ;; *' '*) printf '%s\n' "$il_s" ;; esac
 }
-index_lock_note() { # checkout
+index_lock_note() { # checkout [clear]
   il_lock=$(git -C "$1" rev-parse --git-path index.lock 2>/dev/null) || return 0
   case $il_lock in /*) ;; *) il_lock="$1/$il_lock" ;; esac
   [ -e "$il_lock" ] || return 0
@@ -915,6 +916,9 @@ index_lock_note() { # checkout
     printf '; it changed during the check, so a git runs there: let it end, then refresh again'
   elif [ "$il_age" -lt "$INDEX_LOCK_STALE_MIN" ]; then
     printf '; lsof finds no process holding it, yet it is under %s min old and a git may run there: refresh again later' "$INDEX_LOCK_STALE_MIN"
+  elif [ "${2:-}" = clear ] && rm -f -- "$il_lock" && [ ! -e "$il_lock" ]; then
+    printf '; lsof finds no process holding it: removed %s' "$il_lock"
+    return 3
   else
     printf "; lsof finds no process holding it: rm '%s', then refresh again" "$il_q"
   fi
@@ -939,8 +943,18 @@ pin_move() {
   # An ignored file is often local config or data; git overwrites one that
   # the target commit tracks unless told not to, and then refuses the switch.
   if ! git -C "$m_dir" switch -q --detach --no-overwrite-ignore "$m_rev"; then
-    flag "!!! failed: switch to $m_rev in $m_dir; HEAD is now $(git -C "$m_dir" rev-parse --short HEAD)$(index_lock_note "$m_dir")"
-    return 1
+    m_lrc=0
+    m_note=$(index_lock_note "$m_dir" clear) || m_lrc=$?
+    if [ "$m_lrc" != 3 ]; then
+      flag "!!! failed: switch to $m_rev in $m_dir; HEAD is now $(git -C "$m_dir" rev-parse --short HEAD)$m_note"
+      return 1
+    fi
+    # Once only: a second failure has another cause.
+    echo "switch to $m_rev in $m_dir failed${m_note}; switching again"
+    if ! git -C "$m_dir" switch -q --detach --no-overwrite-ignore "$m_rev"; then
+      flag "!!! failed: switch to $m_rev in $m_dir after removing its stale index.lock; HEAD is now $(git -C "$m_dir" rev-parse --short HEAD)$(index_lock_note "$m_dir")"
+      return 1
+    fi
   fi
   m_new=$(git -C "$m_dir" rev-parse --short HEAD)
   if [ "$(git -C "$m_dir" rev-parse HEAD)" = "$m_old" ]; then
