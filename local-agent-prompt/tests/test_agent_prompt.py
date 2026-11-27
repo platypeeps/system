@@ -490,11 +490,12 @@ class SharedPolicy(unittest.TestCase):
         self.assertIn("1 build bundle per repo", line)
         self.assertNotIn("3 per repo", line)
 
-    def test_builder_cap_is_eight_per_machine(self):
-        # sd:9939: the machine cap is 8 since pack sd:9891 (operator 2026-11-21).
+    def test_builder_cap_is_four_per_machine(self):
+        # sd:10911: the machine cap is 4 since 2026-11-26 (operator; was 8, sd:9939).
         source = (FOLDER / "prompt/shared.md").read_text()
         line = next((l for l in source.splitlines() if "code-writing builders" in l), "")
-        self.assertIn("at most 8 code-writing builders", line)
+        self.assertIn("at most 4 code-writing builders", line)
+        self.assertIn("`sd.machine_cap`", line)
 
     def test_tests_and_runs_write_to_the_system_disk(self):
         # sd:8243: operator ruling 2026-11-09; a NAS share is no place for test or run output.

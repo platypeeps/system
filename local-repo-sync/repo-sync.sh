@@ -867,6 +867,59 @@ refresh_one() {
   printf '%s\n' "$r_dir${US}origin/$r_def" >> "$TMPD/plan"
 }
 
+# After a failed switch: name the checkout's index.lock, if one is there,
+# with its time, its age and its holder. A stale one stopped every
+# refresh, and only git's stderr named it (sd:10796). Removing it is the
+# operator's step: the checkout guard refuses an agent's rm. Prints
+# nothing when there is no lock.
+# The rm line asks for a delete, so each reading under it is a positive
+# answer, never a silence (review): lsof -V says in words that no process
+# has the file open, where -t turns warnings off and exits 1 on an error
+# as on no match; the lock is this user's, since lsof lists no other
+# user's processes; it is INDEX_LOCK_STALE_MIN old, since a git between
+# its writes holds a lock with no file open; and it is the same file
+# after the lookup as before. Anything else names the check and no rm.
+INDEX_LOCK_STALE_MIN=10
+index_lock_stat() { # file: `<mtime> <uid>`, or nothing
+  il_s=$(stat -c '%Y %u' "$1" 2>/dev/null || stat -f '%m %u' "$1" 2>/dev/null) || il_s=
+  case $il_s in *[!0-9\ ]* | '' | *' '*' '* | ' '* | *' ') ;; *' '*) printf '%s\n' "$il_s" ;; esac
+}
+index_lock_note() { # checkout
+  il_lock=$(git -C "$1" rev-parse --git-path index.lock 2>/dev/null) || return 0
+  case $il_lock in /*) ;; *) il_lock="$1/$il_lock" ;; esac
+  [ -e "$il_lock" ] || return 0
+  il_stat=$(index_lock_stat "$il_lock")
+  il_mt=${il_stat% *}
+  il_age=
+  if [ -z "$il_stat" ]; then
+    printf '; %s is there' "$il_lock"
+  else
+    il_when=$(date -r "$il_mt" '+%Y-%m-%d %H:%M %Z' 2>/dev/null ||
+      date -d "@$il_mt" '+%Y-%m-%d %H:%M %Z' 2>/dev/null) || il_when='an unknown time'
+    il_age=$(( ($(date +%s) - il_mt) / 60 ))
+    printf '; %s from %s, %s min old' "$il_lock" "$il_when" "$il_age"
+  fi
+  il_q=$(printf '%s' "$il_lock" | sed "s/'/'\\\\''/g")
+  il_rc=0
+  # lsof's own stderr joins its answer; the bound's step lines do not.
+  # shellcheck disable=SC2016 # the child expands its own argument
+  il_out=$(bound_step 10 sh -c 'lsof -V -F p -- "$1" 2>&1' sh "$il_lock" 2>/dev/null) || il_rc=$?
+  il_pids=$(printf '%s\n' "$il_out" | sed -n 's/^p\([0-9][0-9]*\)$/\1/p' | tr '\n' ' ' | sed 's/ $//')
+  if [ "$il_rc" = 0 ] && [ -n "$il_pids" ]; then
+    printf '; held by pid %s: let it end, then refresh again' "$il_pids"
+  elif [ "$il_rc" != 1 ] || [ "$il_out" != "lsof: no file use located: $il_lock" ]; then
+    printf "; could not tell whether a process holds it; check: lsof '%s'" "$il_q"
+  elif [ -z "$il_stat" ] || [ "${il_stat#* }" != "$(id -u)" ]; then
+    printf "; it is not this user's, or could not be read, and lsof lists this user's processes alone; check: sudo lsof '%s'" "$il_q"
+  elif [ "$(index_lock_stat "$il_lock")" != "$il_stat" ]; then
+    printf '; it changed during the check, so a git runs there: let it end, then refresh again'
+  elif [ "$il_age" -lt "$INDEX_LOCK_STALE_MIN" ]; then
+    printf '; lsof finds no process holding it, yet it is under %s min old and a git may run there: refresh again later' "$INDEX_LOCK_STALE_MIN"
+  else
+    printf "; lsof finds no process holding it: rm '%s', then refresh again" "$il_q"
+  fi
+}
+
 # Moves checkout $1 to commit $2, detached, as `refresh` or `follow` ($3),
 # which reports "$4: <old> -> <new>". Then `make setup` in the pack, and the
 # migrate steps when lib/sd_db's SCHEMA_VERSION changed. Returns 1 when a
@@ -886,7 +939,7 @@ pin_move() {
   # An ignored file is often local config or data; git overwrites one that
   # the target commit tracks unless told not to, and then refuses the switch.
   if ! git -C "$m_dir" switch -q --detach --no-overwrite-ignore "$m_rev"; then
-    flag "!!! failed: switch to $m_rev in $m_dir; HEAD is now $(git -C "$m_dir" rev-parse --short HEAD)"
+    flag "!!! failed: switch to $m_rev in $m_dir; HEAD is now $(git -C "$m_dir" rev-parse --short HEAD)$(index_lock_note "$m_dir")"
     return 1
   fi
   m_new=$(git -C "$m_dir" rev-parse --short HEAD)

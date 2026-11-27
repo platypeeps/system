@@ -298,6 +298,18 @@ class CronJobFromRepoExample(Case):
         self.assertEqual(self.seeded(job).read_text(),
                          (self.examples / f"{job}.job").read_text())
 
+    def test_a_hub_profile_installs_the_nas_bulk_copy_with_no_profile_line(self):
+        """Review (sd:10899): the bulk NAS copy left sd-db-backup for its
+        own job, which no hub profile names. A plain hub seeds and
+        installs it, as it does the needs sweep."""
+        job = "mirror-sync-nas"
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertIn(f"install {job}", self.cron_calls(), out)
+        self.assertEqual(self.seeded(job).read_text(),
+                         (self.examples / f"{job}.job").read_text())
+
     def test_a_hub_profile_that_drops_the_needs_sweep_installs_none(self):
         """Lane review: a `!name` line opts out of it, as of a fleet job."""
         (self.profiles / "personal.cron").write_text(f"{OTHER_JOB}\n!needs-sweep-nightly\n")
@@ -318,6 +330,127 @@ class CronJobFromRepoExample(Case):
         out = result.stdout
         self.assertIn(f"  DIFFERS {job} — has a job file", out, out + result.stderr)
         self.assertIn(f"cron-jobs.sh uninstall {job}", out)
+
+    def test_doctor_checks_the_hub_seeded_needs_sweep_is_loaded(self):
+        """sd:10427: the cron stage installs it on a plain hub, so doctor
+        checks it too; it read the profile and the repo roster alone."""
+        out = self.run_script("doctor").stdout
+        self.assertIn(f"  WARN    not loaded: {fixture_config.LABEL_PREFIX}"
+                      ".cron.needs-sweep-nightly", out)
+
+    def test_doctor_skips_a_dropped_needs_sweep(self):
+        (self.profiles / "personal.cron").write_text(f"{OTHER_JOB}\n!needs-sweep-nightly\n")
+        out = self.run_script("doctor").stdout
+        self.assertNotIn("needs-sweep-nightly", out)
+
+    def test_candidates_counts_the_hub_seeded_needs_sweep_as_listed(self):
+        """sd:10427: a `.` mark asked for a profile line the stage does
+        not need."""
+        write_exec(self.root / "local-cron-jobs/cron-jobs.sh",
+                   "#!/bin/sh\n[ \"$1\" = list ] || exit 0\n"
+                   "printf 'JOB SCHEDULE\\nneeds-sweep-nightly x\\n'\n")
+        out = self.run_script("candidates", "cron").stdout
+        self.assertIn("  + needs-sweep-nightly", out, out)
+
+    def test_capture_leaves_the_hub_seeded_needs_sweep_out(self):
+        """sd:10427: a captured line outlives a later `!` line, since the
+        profile's own entries are not dropped by it."""
+        job = "needs-sweep-nightly"
+        self.jobs.mkdir(parents=True)
+        (self.jobs / f"{job}.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+        (self.jobs / "own-job.job").write_text('JOB_SCHEDULE="0 4 * * *"\n')
+        for name in (job, "own-job"):
+            self.install_plist(name)
+        # The agent roster is refused, as no agent is installed here; the
+        # cron roster is written all the same.
+        result = self.run_script("capture", "--apply")
+        self.assertNotIn("personal.cron —", result.stdout, result.stderr)
+        cron = (self.profiles / "personal.cron").read_text()
+        self.assertIn("own-job", cron)
+        self.assertNotIn(job, cron)
+
+    def test_capture_on_a_promoted_standby_keeps_its_own_role_lines(self):
+        """Review: a satellite's profile names build-dispatch, its own tick;
+        while it holds the role, capture dropped that line, so the
+        hand-back left its dispatcher stopped."""
+        (self.profiles / "personal.agent").write_text("# a standby: no sd agent\n")
+        (self.profiles / "personal.cron").write_text("build-dispatch\n")
+        pack = self.base / "pack"
+        write_exec(pack / "bin/sd-db", "#!/bin/sh\necho 'fence: holder: standby'\n")
+        db = self.home / ".local/share/sd/sd.db"
+        db.parent.mkdir(parents=True)
+        db.touch()
+        self.jobs.mkdir(parents=True)
+        # own-job keeps the roster from being empty, which capture refuses.
+        for job in ("build-dispatch", "sd-db-backup", "own-job"):
+            (self.jobs / f"{job}.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+            self.install_plist(job)
+        result = self.run_script("capture", "--apply", SD_PACK_ROOT=str(pack))
+        cron = (self.profiles / "personal.cron").read_text()
+        self.assertIn("own-job", cron, result.stdout + result.stderr)
+        self.assertIn("build-dispatch", cron, result.stdout + result.stderr)
+        self.assertNotIn("sd-db-backup", cron)
+
+    def test_a_profile_dropping_its_last_job_still_sweeps(self):
+        """sd:10427: the stage returned at "no jobs in this profile" before
+        the sweep, so an installed job with no file stayed unreported."""
+        (self.profiles / "personal.cron").write_text(
+            "".join(f"!{j}\n" for j in (FLEET_JOB, "machine-health-hourly",
+                                        "needs-sweep-nightly", "mirror-sync-nas")))
+        self.install_plist("gone-job")
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertIn("  no jobs in this profile", out)
+        self.assertIn("  EXTRA   gone-job", out, out)
+        self.assertIn("uninstall gone-job", self.cron_calls())
+
+    def test_an_unreadable_fence_sweeps_no_hub_job(self):
+        """Review: on a promoted standby with an empty roster, a fence
+        that cannot be read read as "not the holder", and the sweep
+        uninstalled the hub's backup job."""
+        (self.profiles / "personal.agent").write_text("# a standby: no sd agent\n")
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+        (self.profiles / "personal.cron").write_text(
+            "".join(f"!{j}\n" for j in (FLEET_JOB, "machine-health-hourly",
+                                        "needs-sweep-nightly")))
+        pack = self.base / "pack"
+        write_exec(pack / "bin/sd-db", "#!/bin/sh\nexit 1\n")
+        db = self.home / ".local/share/sd/sd.db"
+        db.parent.mkdir(parents=True)
+        db.touch()
+        self.jobs.mkdir(parents=True)
+        (self.jobs / "sd-db-backup.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+        self.install_plist("sd-db-backup")
+        result = self.run_script("update", "cron", "--apply",
+                                 SD_PACK_ROOT=str(pack))
+        out = result.stdout
+        self.assertIn("  MISSING hub fence", out, out + result.stderr)
+        self.assertNotIn("uninstall sd-db-backup", self.cron_calls(), out)
+
+    def test_an_unreadable_fence_keeps_a_listed_build_dispatch(self):
+        """sd:10774: on a standby whose profile lists build-dispatch, an
+        unread fence read as "not the holder", and the pack guard
+        uninstalled the role's dispatcher until the next run."""
+        (self.profiles / "personal.agent").write_text("# a standby: no sd agent\n")
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+        (self.profiles / "personal.cron").write_text("build-dispatch\nown-job\n")
+        pack = self.base / "pack"
+        write_exec(pack / "bin/sd-db", "#!/bin/sh\nexit 1\n")
+        db = self.home / ".local/share/sd/sd.db"
+        db.parent.mkdir(parents=True)
+        db.touch()
+        self.jobs.mkdir(parents=True)
+        for job in ("build-dispatch", "sd-db-backup", "own-job"):
+            (self.jobs / f"{job}.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+            self.install_plist(job)
+        result = self.run_script("update", "cron", "--apply",
+                                 SD_PACK_ROOT=str(pack))
+        out = result.stdout
+        self.assertIn("  MISSING hub fence", out, out + result.stderr)
+        calls = self.cron_calls()
+        self.assertNotIn("uninstall build-dispatch", calls, out)
+        self.assertNotIn("uninstall sd-db-backup", calls, out)
 
     def test_a_satellite_profile_gets_no_needs_sweep(self):
         (self.profiles / "personal.satellite").write_text("hub.example.test\n")
