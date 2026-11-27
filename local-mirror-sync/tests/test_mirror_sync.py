@@ -616,6 +616,18 @@ if "--dry-run" in args:
     sys.exit(0)
 dst = args[-1].rstrip("/")
 evicted = set(lines("dataless"))
+# Anchored --exclude-from patterns name files the pass leaves alone. As in
+# openrsync, a backslash escapes only in a pattern with a wildcard.
+import re
+excluded = set()
+for i, arg in enumerate(args[:-1]):
+    if arg == "--exclude-from":
+        for pattern in open(args[i + 1]).read().splitlines():
+            if pattern.startswith("/"):
+                if re.search(r"[[*?]", pattern):
+                    pattern = re.sub(r"\\\\(.)", r"\\1", pattern)
+                excluded.add(pattern[1:])
+changed = [name for name in changed if name not in excluded]
 for name in changed:
     if os.path.join(dst, name) in evicted:
         print("rsync(2): error: " + name + ": mmap: Resource deadlock avoided", file=sys.stderr)
@@ -778,9 +790,28 @@ class EvictedDestination(FakeTools):
 
         result = self.sync(ST_BOUNDED_GRACE="1")
 
-        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"brctl download failed: {evicted}", result.stderr)
         self.assertIn(f"still evicted after 2s: {evicted}", result.stderr)
+
+    def test_downloads_share_one_wall_bound(self) -> None:
+        """sd:10898: each brctl call had its own bound, so a hung brctl
+        held the pair once per evicted file. One bound covers them all."""
+        names = [f"vault/n{i}.md" for i in range(5)]
+        for name in names:
+            self.write(self.source / name, "new\n")
+            self.write(self.mirror / name, "old\n")
+        evicted = [f"{self.mirror}/{name}" for name in names]
+        self.state_file("changed", names)
+        self.state_file("dataless", evicted)
+        self.state_file("stuck", evicted)
+        self.state_file("brctlblock", ["1"])
+
+        result = self.sync(ST_BOUNDED_GRACE="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len((self.state / "brctl.log").read_text().splitlines()), 1)
+        self.assertIn(f"no time left to ask for the rest: {self.mirror}", result.stderr)
 
     def test_only_evicted_files_the_pass_would_update_are_downloaded(self) -> None:
         self.write(self.mirror / "untouched.txt", "stays evicted\n")
@@ -793,18 +824,54 @@ class EvictedDestination(FakeTools):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.state / "brctl.log").read_text(), f"download {evicted}\n")
 
-    def test_a_file_that_stays_evicted_fails_the_pair_by_name(self) -> None:
+    def test_a_file_that_stays_evicted_is_left_and_the_rest_copied(self) -> None:
+        """sd:10898: 168 files iCloud kept evicted past the wait failed the
+        whole pair every night. The retry leaves them alone, keeps them
+        (no --delete-excluded), and the pass names them for Reports."""
         evicted = f"{self.mirror}/vault/.gitignore"
-        self.state_file("changed", ["vault/.gitignore"])
+        self.write(self.source / "vault" / "new.md", "new\n")
+        self.state_file("changed", ["vault/.gitignore", "vault/new.md"])
         self.state_file("dataless", [evicted])
         self.state_file("stuck", [evicted])
 
         result = self.sync()
 
-        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"still evicted after 2s: {evicted}", result.stderr)
-        self.assertIn(f"{self.source} (rsync error)", result.stdout)
-        self.assertEqual(len(self.rsync_runs()), 1)
+        runs = self.rsync_runs()
+        self.assertEqual(len(runs), 2)
+        self.assertIn("--delete-excluded", runs[0])
+        self.assertNotIn("--delete-excluded", runs[1])
+        self.assertIn("--delete ", runs[1])
+        self.assertIn(
+            "SD_REPORT_ATTENTION: evicted iCloud files left as they were, "
+            f"the next pass asks again: 1 in {self.mirror}",
+            result.stdout,
+        )
+
+    def test_a_wildcard_name_that_stays_evicted_is_excluded_literally(self) -> None:
+        names = ["notes/x[1] *.md", "notes/a\\b.md"]
+        for name in names:
+            self.write(self.source / name, "new\n")
+            self.write(self.mirror / name, "old\n")
+        evicted = [f"{self.mirror}/{name}" for name in names]
+        self.state_file("changed", names)
+        self.state_file("dataless", evicted)
+        self.state_file("stuck", evicted)
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"2 in {self.mirror}", result.stdout)
+
+    def test_a_pair_without_evicted_files_reports_nothing(self) -> None:
+        self.state_file("changed", ["vault/.gitignore"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("SD_REPORT_ATTENTION", result.stdout)
+        self.assertIn("--delete-excluded", self.rsync_runs()[0])
 
     def test_the_wait_is_bounded_in_seconds_not_in_passes(self) -> None:
         # sd:5064: each pass stats every pending file, so counting passes let
@@ -818,7 +885,7 @@ class EvictedDestination(FakeTools):
 
         result = self.sync(MS_STAT_DELAY="2.5")
 
-        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"still evicted after 2s: {evicted}", result.stderr)
         self.assertEqual((self.state / "stat.log").read_text().splitlines(), [evicted, evicted])
 

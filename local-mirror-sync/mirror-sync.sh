@@ -110,7 +110,9 @@ before any pair runs. A run folder whose name is not a real date and time
 MIRROR_SYNC_MATERIALIZE_WAIT (seconds, default 300) bounds the wait for
 evicted iCloud destination files: on "Resource deadlock avoided" sync asks
 brctl to download the ones the pair is about to update, then retries the
-pair once. A pair whose only errors are source files that vanished mid-pass
+pair once. A file still evicted at the bound is left as it is: the retry
+excludes it, and the pass prints an SD_REPORT_ATTENTION line naming the
+count per destination; the next pass asks for it again. A pair whose only errors are source files that vanished mid-pass
 counts as mirrored. A pair whose only errors are opens that failed with
 "Interrupted system call" is tried once more.
 
@@ -469,7 +471,11 @@ EXCLUDES=$(mktemp)
 # destination files it is waiting on.
 ERRS=$(mktemp)
 PENDING=$(mktemp)
-trap 'rm -f "$FAILLOG" "$EXCLUDES" "$ERRS" "$PENDING" "$PENDING.listed"' EXIT INT TERM
+# The evicted files a retry leaves alone, as anchored exclude patterns, and
+# one line per pair that left any, for the report at the end (sd:10898).
+EVICTED=$(mktemp)
+STALELOG=$(mktemp)
+trap 'rm -f "$FAILLOG" "$EXCLUDES" "$ERRS" "$PENDING" "$PENDING.listed" "$EVICTED" "$STALELOG"' EXIT INT TERM
 
 # -rlptgo is -a without -D: sockets, fifos and devices are skipped, not
 # copied. openrsync recreates a socket with mkstempsock, which fails on the
@@ -563,9 +569,9 @@ ICON_CR="$(printf 'Icon\015')"
 pair_rsync() {
   prc=0
   # shellcheck disable=SC2086
-  $BOUND_RUN rsync $RSYNC_FLAGS "$@" --exclude .DS_Store --exclude '._*' \
+  $BOUND_RUN rsync $PAIR_FLAGS "$@" --exclude .DS_Store --exclude '._*' \
     --exclude "$ICON_CR" --exclude .tmp.drivedownload \
-    --exclude-from "$EXCLUDES" "$src_arg" "$dst/" 2>"$ERRS" || prc=$?
+    --exclude-from "$EXCLUDES" --exclude-from "$EVICTED" "$src_arg" "$dst/" 2>"$ERRS" || prc=$?
   cat "$ERRS" >&2
   return "$prc"
 }
@@ -578,8 +584,12 @@ pair_rsync() {
 # So ask iCloud for the evicted files this pair is about to update, and only
 # those, wait for them, and let the caller retry once. Nothing is deleted: a
 # pass with a backup root still keeps the bytes it replaces. It fails, naming
-# the files, when there is nothing to ask for, no brctl to ask with, or a file
-# is still evicted after MIRROR_SYNC_MATERIALIZE_WAIT seconds (default 300).
+# the files, when there is nothing to ask for or no brctl to ask with.
+# MIRROR_SYNC_MATERIALIZE_WAIT (seconds, default 300) bounds the downloads
+# and the wait together. A file still evicted then is left as it is: the
+# retry excludes it, so the rest of the pair is copied, and the pass names
+# it in an SD_REPORT_ATTENTION line. iCloud left 168 vault files evicted
+# past the wait, and the whole pair failed every night (sd:10898).
 MATERIALIZE_WAIT="${MIRROR_SYNC_MATERIALIZE_WAIT:-300}"
 case "$MATERIALIZE_WAIT" in
   ''|*[!0-9]*) echo "!!! refusing: MIRROR_SYNC_MATERIALIZE_WAIT must be a whole number of seconds, got '$MATERIALIZE_WAIT'" >&2; exit 1 ;;
@@ -636,13 +646,20 @@ materialize_pending() {
     sed 's/^/      /' "$PENDING" >&2
     return 1
   fi
-  while IFS= read -r f; do
-    echo "--- downloading evicted destination file: $f"
-    st_bounded "$MATERIALIZE_WAIT" brctl download "$f" < /dev/null || echo "!!! brctl download failed: $f" >&2
-  done < "$PENDING"
   # Wall time, not a count of passes: each pass stats every pending file, so
-  # a long list waited many times MATERIALIZE_WAIT (sd:5064).
+  # a long list waited many times MATERIALIZE_WAIT (sd:5064). The clock
+  # starts before the downloads: one bound per brctl call let a hung brctl
+  # hold the pair that many times over.
   start=$(date +%s)
+  while IFS= read -r f; do
+    remain=$(( MATERIALIZE_WAIT - ($(date +%s) - start) ))
+    if [ "$remain" -le 0 ]; then
+      echo "!!! no time left to ask for the rest: $dst" >&2
+      break
+    fi
+    echo "--- downloading evicted destination file: $f"
+    st_bounded "$remain" brctl download "$f" < /dev/null || echo "!!! brctl download failed: $f" >&2
+  done < "$PENDING"
   while :; do
     left=""
     while IFS= read -r f; do
@@ -657,7 +674,17 @@ materialize_pending() {
     sleep 1
   done
   printf '%s' "$left" | sed "s/^/!!! still evicted after ${MATERIALIZE_WAIT}s: /" >&2
-  return 1
+  # Anchored at the transfer root, so the pattern names this file alone.
+  # rsync reads a backslash as an escape only in a pattern with a wildcard
+  # character, so escape only such a name.
+  printf '%s' "$left" | while IFS= read -r f; do
+    rel="${f#"$dst"/}"; [ "$rel" != "$f" ] || rel=$(basename "$f")
+    case "$rel" in
+      *[][*?]*) printf '/%s\n' "$rel" | sed 's/[][*?\\]/\\&/g' ;;
+      *) printf '/%s\n' "$rel" ;;
+    esac
+  done > "$EVICTED"
+  return 0
 }
 
 # A live tree loses files while a pass reads it: a cron job's attempt file, a
@@ -840,6 +867,8 @@ pairs | while IFS='|' read -r src dst excl; do
         echo "$dst (cannot write)" >> "$FAILLOG"; continue
       fi ;;
   esac
+  : > "$EVICTED"
+  PAIR_FLAGS="$RSYNC_FLAGS"
   if [ -n "$KEEP" ]; then
     set -- --backup --backup-dir "$KEEP"
   else
@@ -855,6 +884,9 @@ pairs | while IFS='|' read -r src dst excl; do
       # A fresh backup directory: openrsync's --backup-dir fails with
       # "mk_backup_dir: File exists" on the one the first try made.
       [ -z "$KEEP" ] || set -- --backup --backup-dir "$KEEP.retry"
+      # --delete-excluded would delete the files the retry leaves alone;
+      # --delete alone never deletes an excluded file.
+      [ ! -s "$EVICTED" ] || PAIR_FLAGS=$(printf '%s\n' "$RSYNC_FLAGS" | sed 's/ --delete-excluded//')
       echo "--- retrying after download: $src"
       rc=0
       pair_rsync "$@" || rc=$?
@@ -887,12 +919,17 @@ pairs | while IFS='|' read -r src dst excl; do
   elif [ "$rc" -ne 0 ]; then
     echo "!!! rsync failed: $src" >&2
     echo "$src (rsync error)" >> "$FAILLOG"
+  elif [ -s "$EVICTED" ]; then
+    echo "$(grep -c . "$EVICTED") in $dst" >> "$STALELOG"
   fi
 done
 
 prune_replaced
 
 echo "----------------------------------------"
+while IFS= read -r line; do
+  echo "SD_REPORT_ATTENTION: evicted iCloud files left as they were, the next pass asks again: $line"
+done < "$STALELOG"
 if [ -s "$FAILLOG" ]; then
   echo "failed: $(wc -l < "$FAILLOG" | tr -d ' ') pair(s)"
   sed 's/^/  /' "$FAILLOG"

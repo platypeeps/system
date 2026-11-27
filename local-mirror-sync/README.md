@@ -299,10 +299,14 @@ reads a file it replaces, and on an evicted one that read fails with
 "Resource deadlock avoided"; the pair then aborts at that file. `-W` does not
 prevent it (sd:1947). On that error `sync` lists, by dry run, the files the
 pair is about to update, asks `brctl download` for the evicted ones among
-them and waits for them. The wait is bounded per pair by
-`MIRROR_SYNC_MATERIALIZE_WAIT` seconds in total (default 300). It logs each
-downloaded file and runs the pair once more. Nothing is deleted. A file still
-evicted after the wait fails the pair by name. The dry run lists a
+them and waits for them. The downloads and the wait share one bound per
+pair, `MIRROR_SYNC_MATERIALIZE_WAIT` seconds in total (default 300). It logs
+each downloaded file and runs the pair once more. Nothing is deleted. A file
+still evicted after the wait is named on stderr and left as it is: the retry
+excludes it, without `--delete-excluded`, so the rest of the pair is copied.
+The pass then prints one `SD_REPORT_ATTENTION` line per such destination,
+which Reports shows, and the next pass asks for the file again (sd:10898).
+The dry run lists a
 non-ASCII name with octal escapes (`\#342\#200\#224` for an em dash);
 `sync` decodes them before it looks for the file (sd:3404).
 
