@@ -3599,11 +3599,13 @@ SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # off the list: they pause until the hub returns (#31095). build-dispatch is off it too: each lane host
 # runs its own tick for its own lanes (sd:7932); the role still moves it.
 SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve google-workspace-mcp cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.mirror-sync-nas cron.shadow-sync-nightly cron.workspace-mcp-watch cron.night-build cron.needs-sweep-nightly"
-# Role jobs whose bundled example runs as it is: a standby set up before
-# one joined the role has no job file, and step 8's cron stage seeds it
-# from local-cron-jobs/examples, so readiness counts the example. The
-# other role jobs need the machine's own file (sd:9764 review).
-SD_HUB_ROLE_SEEDED="needs-sweep-nightly"
+# Hub jobs whose bundled example runs as it is: a plain hub installs them
+# with no profile line, seeded from local-cron-jobs/examples. A role job
+# here also reads ready on a standby with no job file, since step 8's cron
+# stage seeds it; the other role jobs need the machine's own file
+# (sd:9764 review). mirror-sync-nas left sd-db-backup, which every hub
+# profile names, for its own job, which none does (sd:10899).
+SD_HUB_ROLE_SEEDED="needs-sweep-nightly mirror-sync-nas"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
@@ -3686,15 +3688,17 @@ dispatch_pack_ok() {
   fi
   return 1
 }
-# The hub-role labels: the hub-only list but the iCloud mirror, which copies
-# the hub's own folders, which a satellite lacks, plus build-dispatch: a
+# The hub-role labels: the hub-only list but the iCloud mirror and the NAS
+# bulk copy, which copy the hub's own folders, which a satellite lacks; a
+# standby's sd-db-backup copies its own snapshot folder (sd:10899). Plus
+# build-dispatch: a
 # standby whose profile lacks it still builds the hub's lanes, and the
 # hand-back stops it before the snapshot, as its claims write the
 # database (sd:7932). `agent` prints labels, `cron` job names.
-SD_HUB_ROLE_EXCEPT="cron.mirror-sync-nightly"
+SD_HUB_ROLE_EXCEPT="cron.mirror-sync-nightly cron.mirror-sync-nas"
 hub_role_labels() { # agent|cron
   for hr in $SD_HUB_ONLY_AGENTS cron.build-dispatch; do
-    [ "$hr" != "$SD_HUB_ROLE_EXCEPT" ] || continue
+    case " $SD_HUB_ROLE_EXCEPT " in *" $hr "*) continue ;; esac
     case "$1:$hr" in
       cron:cron.*) echo "${hr#cron.}" ;;
       agent:cron.*) ;;

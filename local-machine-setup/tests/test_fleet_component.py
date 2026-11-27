@@ -298,6 +298,18 @@ class CronJobFromRepoExample(Case):
         self.assertEqual(self.seeded(job).read_text(),
                          (self.examples / f"{job}.job").read_text())
 
+    def test_a_hub_profile_installs_the_nas_bulk_copy_with_no_profile_line(self):
+        """Review (sd:10899): the bulk NAS copy left sd-db-backup for its
+        own job, which no hub profile names. A plain hub seeds and
+        installs it, as it does the needs sweep."""
+        job = "mirror-sync-nas"
+        result = self.run_script("update", "cron", "--apply")
+        out = result.stdout
+        self.assertEqual(result.returncode, 0, out + result.stderr)
+        self.assertIn(f"install {job}", self.cron_calls(), out)
+        self.assertEqual(self.seeded(job).read_text(),
+                         (self.examples / f"{job}.job").read_text())
+
     def test_a_hub_profile_that_drops_the_needs_sweep_installs_none(self):
         """Lane review: a `!name` line opts out of it, as of a fleet job."""
         (self.profiles / "personal.cron").write_text(f"{OTHER_JOB}\n!needs-sweep-nightly\n")
@@ -384,7 +396,7 @@ class CronJobFromRepoExample(Case):
         the sweep, so an installed job with no file stayed unreported."""
         (self.profiles / "personal.cron").write_text(
             "".join(f"!{j}\n" for j in (FLEET_JOB, "machine-health-hourly",
-                                        "needs-sweep-nightly")))
+                                        "needs-sweep-nightly", "mirror-sync-nas")))
         self.install_plist("gone-job")
         result = self.run_script("update", "cron", "--apply")
         out = result.stdout

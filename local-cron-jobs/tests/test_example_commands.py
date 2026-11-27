@@ -923,11 +923,18 @@ class NasBulkCopyJobTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(self.SAFE, log)
 
-    def test_without_a_nas_folder_nothing_is_copied(self):
+    def test_without_a_nas_folder_the_run_fails_naming_it(self):
+        """Review (sd:10899): a plain hub seeds this job from the example.
+        Passing with nothing copied hid a hub that never set the folder;
+        the run fails, naming the variable and both remedies."""
         result, log = self.run_job(nas=False)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertFalse(self.calls.exists())
-        self.assertIn("SD_DB_BACKUP_NAS_FOLDER is empty: nothing to copy", log)
+        text = "\n".join(log)
+        self.assertIn("SD_DB_BACKUP_NAS_FOLDER is not set", text)
+        self.assertIn("env.sh", text)
+        self.assertIn("mirror-sync-nas.job", text)
+        self.assertNotIn(self.SAFE, log)
 
 
 # A pack `sd` that fails with LOCKED_RC and the given message for its first

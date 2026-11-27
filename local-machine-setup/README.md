@@ -438,7 +438,7 @@ Design and failure table: `docs/work/2026-10-10-hub-failover/design.md`.
 
 The hub role is a state, not a profile.
 A satellite holds it while it has no `hub.json`, has a local `sd.db`, and the pack's `sd-db fence` reads `holder`.
-While it holds the role, the `sd`, `cron` and `agents` stages add the hub's agents and jobs (`SD_HUB_ONLY_AGENTS`, less the iCloud mirror, plus `build-dispatch`) on top of its own profile.
+While it holds the role, the `sd`, `cron` and `agents` stages add the hub's agents and jobs (`SD_HUB_ONLY_AGENTS`, less the iCloud mirror and the NAS bulk copy `mirror-sync-nas`, which copy the hub's own folders, plus `build-dispatch`) on top of its own profile.
 A plist comes from the config folder's `launchagents/`, else from `examples/launchagents/`; job files come from the satellite's own `cron-jobs/jobs/`.
 The role is the sd services and backups, the `google-workspace-mcp` agent and its watch job, and the builder jobs `night-build` and `build-dispatch` (sd:5986).
 The hub's other host jobs, such as mail intake, briefs, home prep and HOA, do not move: they pause until the hub returns.

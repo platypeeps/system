@@ -11,7 +11,10 @@
 # order launchd runs missed jobs in at wake.
 #
 # SD_DB_BACKUP_NAS_FOLDER names the share's backup folder, the same
-# setting sd-db-backup reads; empty, the job copies nothing and says so.
+# setting sd-db-backup reads. A plain hub installs this job from the
+# example with no profile line (machine-setup's SD_HUB_ROLE_SEEDED), so
+# an unset folder fails the run by name: a pass that copied nothing hid
+# a hub with no off-machine copy of Backup.
 # offsite-verify's preflight shows the folder is on the expected share
 # before anything is written. The copy is additive, each pair under a
 # 3000 s wall bound (MIRROR_SYNC_PAIR_BOUND).
@@ -27,5 +30,5 @@ JOB_SCHEDULE="20 5 * * *"
 MIRROR_SYNC_NAS_FOLDER="${SD_DB_BACKUP_NAS_FOLDER-}"
 MIRROR_SYNC_NAS_COPY="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$MIRROR_SYNC_NAS_FOLDER\" && env MIRROR_SYNC_CONF=mirrors-nas.conf MIRROR_SYNC_ADDITIVE=1 MIRROR_SYNC_PAIR_BOUND=3000 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync"
 JOB_COMMAND="{ $MIRROR_SYNC_NAS_COPY || { rc=\$?; [ \$rc -ne 75 ] || { echo 'warning: Backup copy to the NAS did not finish (bound or share)'; exit 0; }; echo 'SD_REPORT_ATTENTION: data safe, one step failed: NAS copy'; exit \$rc; }; }"
-[ -n "$MIRROR_SYNC_NAS_FOLDER" ] || JOB_COMMAND="echo 'SD_DB_BACKUP_NAS_FOLDER is empty: nothing to copy'"
+[ -n "$MIRROR_SYNC_NAS_FOLDER" ] || JOB_COMMAND="echo 'mirror-sync-nas: SD_DB_BACKUP_NAS_FOLDER is not set: export it in ~/.config/shell/env.sh, or set it in a copy of local-cron-jobs/examples/mirror-sync-nas.job in <config>/cron-jobs/jobs/' >&2; exit 1"
 unset MIRROR_SYNC_NAS_FOLDER MIRROR_SYNC_NAS_COPY
