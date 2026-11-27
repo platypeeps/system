@@ -492,6 +492,26 @@ class Promote(PromoteCase):
         self.run_promote("--apply")
         self.assertNotIn(f"{PREFIX}.cron.mirror-sync-nas", self.installed())
 
+    def test_a_role_job_install_cannot_install_is_not_ready(self):
+        """sd:10772: hub-ready took a role job's file for the job, so one
+        whose file runs `exit 0`, or whose JOB_SCHEDULE install refuses,
+        read ok, and the cron stage failed it only after promote moved
+        the hub. hub-ready asks `cron-jobs.sh list <job>` for each."""
+        job = self.config / "cron-jobs/jobs/night-build.job"
+        good = job.read_text()
+        for text, why in ((good + "exit 0\n", "ended before its end"),
+                          (good + 'JOB_SCHEDULE="0 25 * * *"\n', "JOB_SCHEDULE '0 25 * * *'")):
+            with self.subTest(why=why):
+                job.write_text(text)
+                out = self.run_promote().stdout
+                self.assertIn("NOT-READY job file night-build does not load: ERROR:", out)
+                self.assertIn(why, out)
+                self.assertNotIn("ok      job file night-build\n", out)
+                self.run_promote("--apply", expect=1)
+                self.assertEqual([], self.moved())
+        job.write_text(good)
+        self.assertIn("ok      job file night-build\n", self.run_promote().stdout)
+
     def test_a_standby_without_a_builder_job_file_is_not_ready(self):
         (self.config / "cron-jobs/jobs/night-build.job").unlink()
         self.assertIn("NOT-READY no job file night-build.job", self.run_promote().stdout)

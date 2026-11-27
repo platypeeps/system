@@ -28,7 +28,7 @@
 #                  plus EXIT_REPORT_ROOM.
 #
 # Usage:
-#   cron-jobs.sh list                     jobs, schedules, installed/loaded state, folder
+#   cron-jobs.sh list [job]               jobs, schedules, installed/loaded state, folder
 #   cron-jobs.sh install <job>|--all      generate plist, load into launchd
 #                                        (--all = every defined job; refused
 #                                        where machine-setup records a profile)
@@ -2201,16 +2201,48 @@ cmd_uninstall() {
   echo "uninstalled: $job"
 }
 
+# Load one job and render its plist to a scratch folder, as install does;
+# nothing else is written. Its own subshell: a job file that runs `exit 0`
+# ended list there, with exit 0, and a JOB_SCHEDULE install refuses listed
+# fine, so promote readiness read ok for a job install trips on (sd:10772).
+# errexit stays on inside, as install has it: set +e around the capture.
+job_loads() { # job
+  local tmp out rc
+  tmp="$(mktemp -d)" || return 1
+  set +e
+  out="$( (set -e; AGENT_DIR="$tmp"; load_job "$1" >/dev/null
+    write_plist "$1" >/dev/null || exit 1; echo reached) )"
+  rc=$?
+  set -e
+  rm -rf "$tmp"
+  if [ "$rc" != 0 ]; then
+    echo "ERROR: job $1 does not load or render (exit $rc)" >&2; return 1
+  fi
+  [ "$out" = reached ] || {
+    echo "ERROR: $(job_file "$1") ended before its end (an exit in the job file); install would leave it uninstalled" >&2
+    return 1
+  }
+}
+
+# With a job: the file the lookup picks, then whether it loads as install
+# loads it; exits 1 when not. Read only.
+cmd_list_one() { # job
+  echo "file: $(job_file "$1")"
+  job_loads "$1"
+}
+
 cmd_list() {
-  local job state
+  local job state rc=0
   printf "%-28s %-18s %-10s %-16s %s\n" "JOB" "SCHEDULE (local)" "INSTALLED" "FROM" "PROMPT"
   [ -n "$(all_jobs)" ] ||
     echo "cron-jobs.sh: no jobs in $JOBS_DIR or $HOST_JOBS_DIR; copy one from $ROOT/examples/ to start" >&2
   for job in $(all_jobs); do
+    job_loads "$job" || { rc=1; continue; }
     load_job "$job"
     if is_loaded "$job"; then state="loaded"; elif [ -f "$(plist_for "$job")" ]; then state="stale"; else state="no"; fi
     printf "%-28s %-18s %-10s %-16s %.60s\n" "$job" "$JOB_SCHEDULE" "$state" "$(job_origin "$job")" "${JOB_PROMPT:-$JOB_COMMAND}"
   done
+  return $rc
 }
 
 # The last outcome this job's own log recorded, "done" or "FAILED", for any
@@ -2487,10 +2519,10 @@ each_or_one() { # cmd, target
 }
 
 # One usage line for help and the no-arg error, so neither drifts (sd:3541).
-USAGE="usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|exec <job>|status [job]|logs <job> [lines]|watchdog|test"
+USAGE="usage: cron-jobs.sh list [job]|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|exec <job>|status [job]|logs <job> [lines]|watchdog|test"
 
 case "${1:-}" in
-  list)      cmd_list ;;
+  list)      if [ -n "${2:-}" ]; then cmd_list_one "$2"; else cmd_list; fi ;;
   watchdog)  cmd_watchdog ;;
   install)   [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh install <job>|--all" >&2; exit 1; }
              each_or_one cmd_install "$2" ;;
@@ -2511,7 +2543,10 @@ case "${1:-}" in
     echo "$USAGE"
     cat <<'HELPEOF'
 
-  list         jobs, schedules, installed state, the folder each came from
+  list         jobs, schedules, installed state, the folder each came from;
+               exits 1, naming it, for a job install could not install.
+               With <job>: `file: <path>` the lookup picks, then exits 1
+               unless the job loads and renders as install does. Read only.
   install      generate plist + load into launchd (<job>, or --all for
                every job in the job directories: shared plus this host's)
   verify       compare each installed plist against what the generator

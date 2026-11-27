@@ -9232,14 +9232,31 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
     fi
   done
   if hr_jobs=$(defined_cron_jobs); then
+    # A file is not a job: the cron stage installs each one after promote
+    # has moved the hub, and one whose file runs `exit 0`, or whose
+    # schedule install refuses, failed only there (sd:10772). `list <job>`
+    # loads and renders it as install does and changes nothing; a seeded
+    # job is asked from the examples folder its file is copied from.
     for hr_job in $(hub_role_labels cron); do
       if printf '%s\n' "$hr_jobs" | grep -qxF "$hr_job"; then
-        echo "  ok      job file $hr_job"
+        hr_from=
       elif printf '%s\n' $SD_HUB_ROLE_SEEDED | grep -qxF "$hr_job" &&
           [ -f "$ROOT/local-cron-jobs/examples/$hr_job.job" ]; then
-        echo "  ok      job file $hr_job (seeded from local-cron-jobs/examples at promote)"
+        hr_from="$ROOT/local-cron-jobs/examples"
       else
         echo "  NOT-READY no job file $hr_job.job in $(st_config_dir cron-jobs)/jobs"
+        continue
+      fi
+      hr_lrc=0
+      hr_out=$(bound_step 30 env ${hr_from:+CRON_JOBS_EXTRA_DIRS="$hr_from"} \
+        "$ROOT/local-cron-jobs/cron-jobs.sh" list "$hr_job" 2>&1 </dev/null) || hr_lrc=$?
+      if [ "$hr_lrc" != 0 ]; then
+        hr_err=$(printf '%s\n' "$hr_out" | grep -m1 'ERROR' || :)
+        echo "  NOT-READY job file $hr_job does not load: ${hr_err:-cron-jobs.sh list $hr_job exited $hr_lrc}"
+      elif [ -n "$hr_from" ]; then
+        echo "  ok      job file $hr_job (seeded from local-cron-jobs/examples at promote)"
+      else
+        echo "  ok      job file $hr_job"
       fi
     done
   else

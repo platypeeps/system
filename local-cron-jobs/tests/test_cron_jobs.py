@@ -1113,6 +1113,26 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
         self.assertEqual(rows, ["demo", "private"])
         self.assertIn("0 4 * * *", out, "the overriding definition is not the one listed")
 
+    def test_list_reports_a_job_install_cannot_install(self):
+        """sd:10772: list sourced each job in its own shell, so a job file
+        that ran `exit 0` ended the listing with exit 0, and a JOB_SCHEDULE
+        install refuses listed fine. Promote readiness asks list."""
+        self.fx.write_job("early", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\nexit 0\n')
+        self.fx.write_job("late", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.fx.write_job("odd", 'JOB_SCHEDULE="0 25 * * *"\nJOB_COMMAND="true"\n')
+        result = self.run_script("list")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        rows = [line.split()[0] for line in result.stdout.splitlines()[1:]]
+        self.assertEqual(rows, ["late"])
+        self.assertIn("early.job ended before its end", result.stderr)
+        self.assertIn("JOB_SCHEDULE '0 25 * * *'", result.stderr)
+        for job, rc in (("early", 1), ("odd", 1), ("late", 0)):
+            one = self.run_script("list", job)
+            self.assertEqual(one.returncode, rc, one.stdout + one.stderr)
+            self.assertIn(f"file: {self.fx.jobs / (job + '.job')}\n", one.stdout)
+        installed = self.fx.home / "Library" / "LaunchAgents"
+        self.assertEqual(list(installed.glob("*.plist")), [], "list wrote a plist")
+
     def test_env_file_supplies_the_extra_dirs(self):
         # launchd starts `exec` with only PATH and HOME, so the scheduled run
         # learns the extra directories from .env.
