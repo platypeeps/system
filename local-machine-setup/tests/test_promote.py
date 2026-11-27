@@ -496,6 +496,43 @@ class Promote(PromoteCase):
         (self.config / "cron-jobs/jobs/night-build.job").unlink()
         self.assertIn("NOT-READY no job file night-build.job", self.run_promote().stdout)
 
+    def test_a_standby_runs_the_shared_shadow_sync_job(self):
+        """sd:10433: a standby's own shadow-sync-nightly.job overrides the
+        shared hourly job with its lock retries, so alerts went a day stale
+        after promotion. A copy in a folder of its own is NOT-READY."""
+        self.assertIn("ok      shadow-sync-nightly runs the shared job file", self.run_promote().stdout)
+        host = self.config / "cron-jobs/jobs" / "standby-host"
+        extra = self.tmp / "extra-jobs"
+        for folder, env in ((host, {"CRON_JOBS_HOST": "standby-host"}),
+                            (extra, {"CRON_JOBS_EXTRA_DIRS": str(extra)})):
+            with self.subTest(folder=folder.name):
+                folder.mkdir()
+                own = folder / "shadow-sync-nightly.job"
+                own.write_text('JOB_SCHEDULE="20 2 * * *"\nJOB_COMMAND="true"\n')
+                out = self.run_promote(**env).stdout
+                self.assertIn(f"NOT-READY {own} overrides the shared hourly job; remove the host copy", out)
+                self.assertNotIn("runs the shared job file", out)
+                self.run_promote("--apply", expect=1, **env)
+                self.assertEqual([], self.moved())
+                shutil.rmtree(folder)
+
+    def test_each_shadow_sync_remedy_ends_ready(self):
+        """Review: promotion needs a shadow-sync-nightly job file, and the
+        standby writes none of its own, so every remedy must name the shared
+        copy: README step 2, and the override line when no shared file is
+        there to fall back on."""
+        readme = (SCRIPT.parent / "README.md").read_text()
+        step2 = readme.split("\n2. On the standby", 1)[1].split("\n3. ", 1)[0]
+        self.assertIn("local-cron-jobs/examples/shadow-sync-nightly.job", step2)
+        shared = self.config / "cron-jobs/jobs"
+        (shared / "shadow-sync-nightly.job").unlink()
+        host = shared / "standby-host"
+        host.mkdir()
+        (host / "shadow-sync-nightly.job").write_text('JOB_SCHEDULE="20 2 * * *"\nJOB_COMMAND="true"\n')
+        out = self.run_promote(CRON_JOBS_HOST="standby-host").stdout
+        self.assertIn(f"remove the host copy, and copy local-cron-jobs/examples/shadow-sync-nightly.job "
+                      f"to {shared}/", out)
+
     def test_readiness_reads_no_login(self):
         """#31094: the logins wait for a promotion, so hub-ready names none."""
         out = self.run_promote().stdout
