@@ -42,10 +42,14 @@ case "$1" in
 esac
 """
 
+# `dirs` is asked of a copy of the real script beside the stub: the
+# folder lookup is cron-jobs.sh's own (sd:10797). Every other call logs.
 CRON_JOBS_STUB = r"""#!/bin/sh
+[ "$1" != dirs ] || exec sh "$(dirname "$0")/cron-jobs-real.sh" dirs
 printf '%s\n' "$*" >> "$CRON_LOG"
 exit 0
 """
+REAL_CRON_JOBS = pathlib.Path(__file__).resolve().parents[2] / "local-cron-jobs/cron-jobs.sh"
 
 
 def write_exec(path, body):
@@ -64,6 +68,7 @@ class StageTest(unittest.TestCase):
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copytree(LIB, repo / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         write_exec(repo / "local-cron-jobs/cron-jobs.sh", CRON_JOBS_STUB)
+        shutil.copy(REAL_CRON_JOBS, repo / "local-cron-jobs/cron-jobs-real.sh")
         # The cron stage reads the repository's own examples/profiles/common.cron
         # as a roster (sd:8607). These cases are about this machine's roster
         # and the sweep, so the copy here names no job; tests/test_fleet_component.py
@@ -138,9 +143,8 @@ class StageTest(unittest.TestCase):
         }))
 
     def break_discovery(self):
-        """Make the host job listing fail the way a broken python3 or lib does."""
-        (self.folder.parent / "lib/system_tools_config.py").write_text(
-            "raise ImportError('broken for the test')\n")
+        """Make the host job listing fail the way a cron-jobs.sh that cannot answer does."""
+        (self.folder.parent / "local-cron-jobs/cron-jobs-real.sh").write_text("exit 1\n")
 
     def lock_host_folder(self):
         """An unreadable host folder: a glob would read it as empty."""

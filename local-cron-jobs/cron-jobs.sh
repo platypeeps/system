@@ -29,6 +29,7 @@
 #
 # Usage:
 #   cron-jobs.sh list [job]               jobs, schedules, installed/loaded state, folder
+#   cron-jobs.sh dirs                     the job folders, in lookup order
 #   cron-jobs.sh install <job>|--all      generate plist, load into launchd
 #                                        (--all = every defined job; refused
 #                                        where machine-setup records a profile)
@@ -2231,6 +2232,18 @@ cmd_list_one() { # job
   job_loads "$1"
 }
 
+# The job folders, one per line, in lookup order: machine-setup asks this
+# rather than model the .env and host rules a second time (sd:10797). A
+# name holding a newline would read as two folders, so it is refused.
+cmd_dirs() {
+  local nl='
+'
+  case "$EXTRA_JOB_DIRS$HOST_JOBS_DIR$JOBS_DIR" in
+    *"$nl"*) echo "cron-jobs.sh: a job folder name holds a newline; rename it" >&2; return 1 ;;
+  esac
+  job_dirs
+}
+
 cmd_list() {
   local job state rc=0
   printf "%-28s %-18s %-10s %-16s %s\n" "JOB" "SCHEDULE (local)" "INSTALLED" "FROM" "PROMPT"
@@ -2519,10 +2532,11 @@ each_or_one() { # cmd, target
 }
 
 # One usage line for help and the no-arg error, so neither drifts (sd:3541).
-USAGE="usage: cron-jobs.sh list [job]|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|exec <job>|status [job]|logs <job> [lines]|watchdog|test"
+USAGE="usage: cron-jobs.sh list [job]|dirs|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|exec <job>|status [job]|logs <job> [lines]|watchdog|test"
 
 case "${1:-}" in
   list)      if [ -n "${2:-}" ]; then cmd_list_one "$2"; else cmd_list; fi ;;
+  dirs)      cmd_dirs ;;
   watchdog)  cmd_watchdog ;;
   install)   [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh install <job>|--all" >&2; exit 1; }
              each_or_one cmd_install "$2" ;;
@@ -2547,6 +2561,7 @@ case "${1:-}" in
                exits 1, naming it, for a job install could not install.
                With <job>: `file: <path>` the lookup picks, then exits 1
                unless the job loads and renders as install does. Read only.
+  dirs         the job folders, one per line, in lookup order
   install      generate plist + load into launchd (<job>, or --all for
                every job in the job directories: shared plus this host's)
   verify       compare each installed plist against what the generator

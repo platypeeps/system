@@ -512,6 +512,29 @@ class Promote(PromoteCase):
         job.write_text(good)
         self.assertIn("ok      job file night-build\n", self.run_promote().stdout)
 
+    def test_role_jobs_come_from_the_folders_cron_jobs_reads(self):
+        """sd:10797: hub-ready, no_standby and job_destination found job
+        files through a Python copy of the lookup, which reads the .env
+        as text: a CRON_JOBS_EXTRA_DIRS built from another variable named
+        a folder the copy missed, so a host copy of shadow-sync read ok
+        and the hourly root came from the shared file, not the job that
+        runs. The job reads $BASE from the .env, as its run does."""
+        extra = self.tmp / "extra-jobs"
+        extra.mkdir()
+        env_file = self.config / "cron-jobs" / ".env"
+        env_file.write_text(f'BASE="{self.tmp}"\nCRON_JOBS_EXTRA_DIRS="$BASE/extra-jobs"\n')
+        self.addCleanup(env_file.unlink, missing_ok=True)
+        own = extra / "shadow-sync-nightly.job"
+        own.write_text('JOB_SCHEDULE="20 2 * * *"\nJOB_COMMAND="true"\n')
+        other = self.tmp / "other-backups" / "sd-backups-hourly"
+        other.parent.mkdir()
+        hourly = (self.config / "cron-jobs/jobs/sd-db-backup-hourly.job").read_text()
+        (extra / "sd-db-backup-hourly.job").write_text(
+            hourly + 'SD_DB_BACKUP_HOURLY_DESTINATION="$BASE/other-backups/sd-backups-hourly"\n')
+        out = self.run_promote().stdout
+        self.assertIn(f"NOT-READY {own} overrides the shared hourly job", out)
+        self.assertIn(f"ok      hourly backup root: {other}\n", out)
+
     def test_a_standby_without_a_builder_job_file_is_not_ready(self):
         (self.config / "cron-jobs/jobs/night-build.job").unlink()
         self.assertIn("NOT-READY no job file night-build.job", self.run_promote().stdout)

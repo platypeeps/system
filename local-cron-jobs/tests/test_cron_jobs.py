@@ -1133,6 +1133,20 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
         installed = self.fx.home / "Library" / "LaunchAgents"
         self.assertEqual(list(installed.glob("*.plist")), [], "list wrote a plist")
 
+    def test_dirs_names_the_folders_the_shell_reads(self):
+        """sd:10797: machine-setup modelled this lookup in Python, which
+        reads .env as text; the shell expands another variable."""
+        (self.fx.conf_dir / ".env").write_text(
+            f'BASE="{self.fx.tmp}"\nCRON_JOBS_EXTRA_DIRS="$BASE/private-jobs" # mine\n')
+        result = self.run_script("dirs", env={"CRON_JOBS_HOST": "Mini"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(),
+                         [str(self.extra), str(self.fx.jobs / "mini"), str(self.fx.jobs)])
+        bad = self.run_script("dirs", env={"CRON_JOBS_EXTRA_DIRS": "/a\nb"})
+        self.assertEqual(bad.returncode, 1, bad.stdout)
+        self.assertEqual(bad.stdout, "")
+        self.assertIn("newline", bad.stderr)
+
     def test_env_file_supplies_the_extra_dirs(self):
         # launchd starts `exec` with only PATH and HOME, so the scheduled run
         # learns the extra directories from .env.
