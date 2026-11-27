@@ -917,18 +917,31 @@ mark_profile_formulae() {
 # With the dependents check off, an install upgrades a dependency and
 # leaves each dependent linked to the old library: simdjson 5.3.0 removed
 # libsimdjson.37, and node aborted in dyld at load (sd:10895). Fails, naming
-# each formula with a missing library, or when brew gives no answer. No
-# reinstall here: one with no bottle would build in the nightly run.
+# each formula with a library it cannot load, or when brew gives no answer.
+# No reinstall here: one with no bottle would build in the nightly run.
 linkage_check() {
   lc_rc=0
   lc_out=$(bound_step 600 brew linkage --test 2>&1) || lc_rc=$?
-  # One `==> Checking NAME linkage` heading per keg, then its missing ones.
-  lc_names=$(printf '%s\n' "$lc_out" | awk '/^==> Checking .* linkage$/ { name = $3; next }
-      /^Missing libraries:/ && !(name in seen) { seen[name]; print (name == "" ? "?" : name) }' | tr '\n' ' ' | sed 's/ $//')
+  # Per keg, a `==> Checking NAME linkage` heading, then `Label:` blocks of
+  # `  item` lines. Only two labels mean a file dyld cannot find
+  # (linkage_checker.rb broken_library_linkage?): `Broken dependencies`, a
+  # dependency's library gone (simdjson's), and `Missing libraries`, one no
+  # keg owns. --test exits 1 on its other labels too, such as undeclared
+  # dependencies, which load.
+  lc_found=$(printf '%s\n' "$lc_out" | awk '
+      /^==> Checking .* linkage$/ { name = $3; on = 0; next }
+      /^[^ ].*:$/ { on = ($0 == "Missing libraries:" || $0 == "Broken dependencies:")
+                    if (on && !(name in seen)) { seen[name]; print "N " (name == "" ? "?" : name) }
+                    next }
+      /^[^ ]/ { on = 0 }
+      on && /^  / { sub(/^ +/, ""); print "L " $0 }')
+  lc_names=$(printf '%s\n' "$lc_found" | sed -n 's/^N //p' | tr '\n' ' ' | sed 's/ $//')
   if [ -n "$lc_names" ]; then
-    printf '%s\n' "$lc_out" | grep '^  */' | sed 's/^ */  missing /'
+    printf '%s\n' "$lc_found" | sed -n 's/^L /  missing /p'
     note_failure "brew stage: $lc_names cannot load a library a dependency upgrade moved; run: brew reinstall $lc_names" 1
-  elif [ "$lc_rc" -ne 0 ]; then
+  # Exit 1 with a keg heading and no error is an answer: findings that load.
+  elif [ "$lc_rc" -ne 0 ] && { [ "$lc_rc" -ne 1 ] || printf '%s\n' "$lc_out" | grep -q '^Error:' \
+      || ! printf '%s\n' "$lc_out" | grep -q '^==> Checking .* linkage$'; }; then
     note_failure "brew stage: brew linkage --test gave no answer after an install; dependents unchecked" "$lc_rc"
   else
     echo "  ok      every formula loads its libraries"

@@ -1163,6 +1163,49 @@ class BrewStageTest(unittest.TestCase):
         self.assertIn("FAILED  brew stage: node cannot load a library a dependency upgrade moved; "
                       "run: brew reinstall node (exit 1)", result.stdout)
 
+    def test_a_dependency_s_removed_library_fails_the_stage(self):
+        """sd:10895 review: brew files simdjson's removed library under
+        `Broken dependencies` (linkage_checker.rb dylib_to_dep), not
+        `Missing libraries`; read as no answer, it hid the formula."""
+        self.missing_formula()
+        linkage = ("==> Checking example-dep linkage\nUndeclared dependencies with linkage:\n  example-lib\n"
+                   "==> Checking node linkage\nBroken dependencies:\n"
+                   "  /opt/homebrew/opt/simdjson/lib/libsimdjson.37.dylib (simdjson)\n"
+                   "Unwanted system libraries:\n  /usr/lib/libexample.dylib\n")
+
+        result = self.run_verb("update", "brew", "--apply", LINKAGE=linkage, LINKAGE_RC="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("  missing /opt/homebrew/opt/simdjson/lib/libsimdjson.37.dylib (simdjson)\n", result.stdout)
+        self.assertNotIn("missing example-lib", result.stdout)
+        self.assertNotIn("missing /usr/lib/libexample.dylib", result.stdout)
+        self.assertIn("FAILED  brew stage: node cannot load a library a dependency upgrade moved; "
+                      "run: brew reinstall node (exit 1)", result.stdout)
+        self.assertNotIn("gave no answer", result.stdout)
+
+    def test_linkage_findings_that_load_pass_the_stage(self):
+        """sd:10895 review: --test exits 1 on any label, undeclared and
+        indirect dependencies too; those load, so no failure."""
+        self.missing_formula()
+        linkage = ("==> Checking example-dep linkage\nUndeclared dependencies with linkage:\n  example-lib\n"
+                   "==> Checking node linkage\nIndirect dependencies with linkage:\n  example-other\n")
+
+        result = self.run_verb("update", "brew", "--apply", LINKAGE=linkage, LINKAGE_RC="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  ok      every formula loads its libraries\n", result.stdout)
+
+    def test_a_linkage_check_that_errors_is_no_answer(self):
+        """Exit 1 from an error, not from findings, checked nothing."""
+        self.missing_formula()
+        linkage = "==> Checking example-dep linkage\nError: example failure\n"
+
+        result = self.run_verb("update", "brew", "--apply", LINKAGE=linkage, LINKAGE_RC="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED  brew stage: brew linkage --test gave no answer after an install; "
+                      "dependents unchecked (exit 1)", result.stdout)
+
     def test_a_linkage_check_with_no_answer_fails_the_stage(self):
         """A failed probe is no "all loads" (sd:3536)."""
         self.missing_formula()
