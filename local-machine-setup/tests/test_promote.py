@@ -516,6 +516,23 @@ class Promote(PromoteCase):
                 self.assertEqual([], self.moved())
                 shutil.rmtree(folder)
 
+    def test_each_shadow_sync_remedy_ends_ready(self):
+        """Review: promotion needs a shadow-sync-nightly job file, and the
+        standby writes none of its own, so every remedy must name the shared
+        copy: README step 2, and the override line when no shared file is
+        there to fall back on."""
+        readme = (SCRIPT.parent / "README.md").read_text()
+        step2 = readme.split("\n2. On the standby", 1)[1].split("\n3. ", 1)[0]
+        self.assertIn("local-cron-jobs/examples/shadow-sync-nightly.job", step2)
+        shared = self.config / "cron-jobs/jobs"
+        (shared / "shadow-sync-nightly.job").unlink()
+        host = shared / "standby-host"
+        host.mkdir()
+        (host / "shadow-sync-nightly.job").write_text('JOB_SCHEDULE="20 2 * * *"\nJOB_COMMAND="true"\n')
+        out = self.run_promote(CRON_JOBS_HOST="standby-host").stdout
+        self.assertIn(f"remove the host copy, and copy local-cron-jobs/examples/shadow-sync-nightly.job "
+                      f"to {shared}/", out)
+
     def test_readiness_reads_no_login(self):
         """#31094: the logins wait for a promotion, so hub-ready names none."""
         out = self.run_promote().stdout

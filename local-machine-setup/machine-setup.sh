@@ -9253,10 +9253,14 @@ for d in stc.cron_job_dirs():
     if (d / "shadow-sync-nightly.job").is_file():
         print(d / "shadow-sync-nightly.job")
         break'); then
-    if [ "$hr_ss" = "$(st_config_dir cron-jobs)/jobs/shadow-sync-nightly.job" ]; then
+    hr_shared="$(st_config_dir cron-jobs)/jobs"
+    if [ "$hr_ss" = "$hr_shared/shadow-sync-nightly.job" ]; then
       echo "  ok      shadow-sync-nightly runs the shared job file"
-    elif [ -n "$hr_ss" ]; then
+    elif [ -n "$hr_ss" ] && [ -f "$hr_shared/shadow-sync-nightly.job" ]; then
       echo "  NOT-READY $hr_ss overrides the shared hourly job; remove the host copy"
+    elif [ -n "$hr_ss" ]; then
+      # Removing the copy alone leaves no job file: name the shared one too.
+      echo "  NOT-READY $hr_ss overrides the shared hourly job; remove the host copy, and copy local-cron-jobs/examples/shadow-sync-nightly.job to $hr_shared/"
     fi
   else
     echo "  NOT-READY the shadow-sync-nightly job file could not be looked up"

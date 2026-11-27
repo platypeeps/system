@@ -455,6 +455,7 @@ Get the standby ready, once:
 1. On the hub, run `sd config set sd.hub_name <hub MagicDNS name>`: the name in every satellite's `hub.json`.
 2. On the standby, write its own hub-role job files: `sd-db-backup`, `sd-db-backup-hourly` and `offsite-verify`.
    Write no `shadow-sync-nightly` of its own: the shared hourly job, with its lock retries, runs once the role is held; `hub-ready` reads `NOT-READY` for a host copy.
+   Promotion needs that shared file: if the config folder's `cron-jobs/jobs/` lacks `shadow-sync-nightly.job`, copy `local-cron-jobs/examples/shadow-sync-nightly.job` there.
    The hourly job sets `SD_DB_BACKUP_HOURLY_DESTINATION` to a folder on this machine; the nightly job sets `SD_DB_BACKUP_DESTINATION` the same way.
    Both keep their NAS copy, one folder to one folder, run additive (`MIRROR_SYNC_ADDITIVE=1`), as the hub's hourly copy is: `mirrors-nas-hourly.conf` pairs the hourly folder with the NAS's `sd-backups-hourly`, and `mirrors-nas.conf` pairs the nightly `sd-backups` folder with the NAS's `sd-backups`; without the nightly copy, offsite-verify fails the promoted hub's nightly check after 36 h.
    Never pair a parent folder with the NAS share: a pass with `--delete` trims the share to the source and deletes its other folders. `hub-ready` reads `NOT-READY` for a NAS pair whose destination holds a folder its source lacks.
