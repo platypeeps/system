@@ -9245,6 +9245,22 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
   else
     echo "  NOT-READY the cron-jobs folders could not be read"
   fi
+  # sd:10433: a promoted hub runs the shared hourly shadow-sync job with its
+  # lock retries; a standby's own copy wins cron-jobs.sh's lookup (job_file)
+  # and ran daily, leaving alerts a day stale. A missing one reads above.
+  if hr_ss=$(PYTHONPATH="$ROOT/lib" python3 -c 'import system_tools_config as stc
+for d in stc.cron_job_dirs():
+    if (d / "shadow-sync-nightly.job").is_file():
+        print(d / "shadow-sync-nightly.job")
+        break'); then
+    if [ "$hr_ss" = "$(st_config_dir cron-jobs)/jobs/shadow-sync-nightly.job" ]; then
+      echo "  ok      shadow-sync-nightly runs the shared job file"
+    elif [ -n "$hr_ss" ]; then
+      echo "  NOT-READY $hr_ss overrides the shared hourly job; remove the host copy"
+    fi
+  else
+    echo "  NOT-READY the shadow-sync-nightly job file could not be looked up"
+  fi
   hr_dest=$(hourly_destination) || hr_dest=
   hr_rc=0
   [ -z "$hr_dest" ] || bound_step 10 test -d "$(dirname "$hr_dest")" 2>/dev/null || hr_rc=$?
