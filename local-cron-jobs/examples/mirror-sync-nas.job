@@ -1,0 +1,31 @@
+# Nightly additive copy of the USB disk's Backup folder to the NAS, its
+# own job since sd:10899. sd-db-backup ran it after the snapshot, in one
+# process group: on 2026-11-26 the snapshot and its NAS copy were done,
+# the bulk copy was still running, and the job's 2 h limit failed the
+# whole run as data at risk. Apart, a slow share fails this job alone.
+#
+# The snapshot folder is not this job's: sd-db-backup copies sd-backups
+# to the NAS itself, right after the snapshot, and the pair list leaves
+# it out (`/sd-backups` in mirrors-nas.conf; local-mirror-sync has the
+# example). So this copy never reads a half-written snapshot, whatever
+# order launchd runs missed jobs in at wake.
+#
+# SD_DB_BACKUP_NAS_FOLDER names the share's backup folder, the same
+# setting sd-db-backup reads; empty, the job copies nothing and says so.
+# offsite-verify's preflight shows the folder is on the expected share
+# before anything is written. The copy is additive, each pair under a
+# 3000 s wall bound (MIRROR_SYNC_PAIR_BOUND).
+#
+# A share that does not answer, or a pair at the bound, exits 75: the
+# run warns and passes, and the next night's additive copy goes on
+# (sd:8549, sd:9070). Any other failure fails the run, graded data
+# safe: the folder is still on the USB disk and in iCloud.
+#
+# 05:20, after mirror-sync-nightly (03:30) has written Backup/Documents
+# and after nas-full-copy's 23:00 to 05:00 window on the same share.
+JOB_SCHEDULE="20 5 * * *"
+MIRROR_SYNC_NAS_FOLDER="${SD_DB_BACKUP_NAS_FOLDER-}"
+MIRROR_SYNC_NAS_COPY="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$MIRROR_SYNC_NAS_FOLDER\" && env MIRROR_SYNC_CONF=mirrors-nas.conf MIRROR_SYNC_ADDITIVE=1 MIRROR_SYNC_PAIR_BOUND=3000 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync"
+JOB_COMMAND="{ $MIRROR_SYNC_NAS_COPY || { rc=\$?; [ \$rc -ne 75 ] || { echo 'warning: Backup copy to the NAS did not finish (bound or share)'; exit 0; }; echo 'SD_REPORT_ATTENTION: data safe, one step failed: NAS copy'; exit \$rc; }; }"
+[ -n "$MIRROR_SYNC_NAS_FOLDER" ] || JOB_COMMAND="echo 'SD_DB_BACKUP_NAS_FOLDER is empty: nothing to copy'"
+unset MIRROR_SYNC_NAS_FOLDER MIRROR_SYNC_NAS_COPY

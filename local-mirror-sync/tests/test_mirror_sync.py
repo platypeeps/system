@@ -2946,6 +2946,7 @@ class ConfigDirTest(Fixture):
 
 
 FIXTURE_JOBS = FOLDER / "tests" / "fixtures" / "jobs"
+CRON_EXAMPLES = FOLDER.parent / "local-cron-jobs" / "examples"
 
 
 def _shipped_and_local(name: str) -> list[Path]:
@@ -3111,11 +3112,13 @@ class NasCopy(unittest.TestCase):
     CONFS = _shipped_and_local(CONF_NAME)
     JOBS = FIXTURE_JOBS
 
-    def job(self, name: str) -> tuple[str, str]:
+    def job(self, name: str, jobs: Path | None = None) -> tuple[str, str]:
+        jobs = jobs or self.JOBS
         run = subprocess.run(
-            ["/bin/bash", "-c", f'. "{self.JOBS / (name + ".job")}"; printf "%s\\n%s" "$JOB_SCHEDULE" "$JOB_COMMAND"'],
+            ["/bin/bash", "-c", f'. "{jobs / (name + ".job")}"; printf "%s\\n%s" "$JOB_SCHEDULE" "$JOB_COMMAND"'],
             capture_output=True, text=True,
-            env=dict(os.environ, HOME="/home/operator", ROOT=str(self.JOBS.parent)),
+            env=dict(os.environ, HOME="/home/operator", ROOT=str(jobs.parent),
+                     SD_DB_BACKUP_NAS_FOLDER="/Volumes/Offsite/Backup"),
         )
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         schedule, command = run.stdout.split("\n", 1)
@@ -3141,11 +3144,18 @@ class NasCopy(unittest.TestCase):
         # The NAS Backup already holds sd-backups/ history the USB disk does
         # not have; an exact mirror would delete it on its first pass. The
         # operator wants no "replaced" folder on the NAS (2026-09-26).
-        _schedule, command = self.job("sd-db-backup")
-        self.assertIn("MIRROR_SYNC_ADDITIVE=1", command)
-        self.assertNotIn("MIRROR_SYNC_BACKUP_ROOT", command)
-        self.assertNotIn("replaced", command)
+        # The snapshot copy and the bulk copy are two jobs (sd:10899).
+        for jobs, name in ((self.JOBS, "sd-db-backup"), (CRON_EXAMPLES, "sd-db-backup"),
+                           (CRON_EXAMPLES, "mirror-sync-nas")):
+            with self.subTest(job=f"{jobs.name}/{name}"):
+                _schedule, command = self.job(name, jobs)
+                self.assertIn("MIRROR_SYNC_ADDITIVE=1", command)
+                self.assertNotIn("MIRROR_SYNC_BACKUP_ROOT", command)
+                self.assertNotIn("replaced", command)
+        _schedule, command = self.job("mirror-sync-nas", CRON_EXAMPLES)
         self.assertIn(f"MIRROR_SYNC_CONF={self.CONF_NAME} ", command)
+        _schedule, command = self.job("sd-db-backup", CRON_EXAMPLES)
+        self.assertNotIn("MIRROR_SYNC_CONF", command)
 
     def test_the_copy_runs_only_after_the_snapshot_succeeded(self) -> None:
         # A separate schedule does not order them: after a night asleep,
