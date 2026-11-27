@@ -914,6 +914,40 @@ mark_profile_formulae() {
   run_step 300 brew tab --installed-on-request $mp_names
 }
 
+# With the dependents check off, an install upgrades a dependency and
+# leaves each dependent linked to the old library: simdjson 5.3.0 removed
+# libsimdjson.37, and node aborted in dyld at load (sd:10895). Fails, naming
+# each formula with a library it cannot load, or when brew gives no answer.
+# No reinstall here: one with no bottle would build in the nightly run.
+linkage_check() {
+  lc_rc=0
+  lc_out=$(bound_step 600 brew linkage --test 2>&1) || lc_rc=$?
+  # Per keg, a `==> Checking NAME linkage` heading, then `Label:` blocks of
+  # `  item` lines. Only two labels mean a file dyld cannot find
+  # (linkage_checker.rb broken_library_linkage?): `Broken dependencies`, a
+  # dependency's library gone (simdjson's), and `Missing libraries`, one no
+  # keg owns. --test exits 1 on its other labels too, such as undeclared
+  # dependencies, which load.
+  lc_found=$(printf '%s\n' "$lc_out" | awk '
+      /^==> Checking .* linkage$/ { name = $3; on = 0; next }
+      /^[^ ].*:$/ { on = ($0 == "Missing libraries:" || $0 == "Broken dependencies:")
+                    if (on && !(name in seen)) { seen[name]; print "N " (name == "" ? "?" : name) }
+                    next }
+      /^[^ ]/ { on = 0 }
+      on && /^  / { sub(/^ +/, ""); print "L " $0 }')
+  lc_names=$(printf '%s\n' "$lc_found" | sed -n 's/^N //p' | tr '\n' ' ' | sed 's/ $//')
+  if [ -n "$lc_names" ]; then
+    printf '%s\n' "$lc_found" | sed -n 's/^L /  missing /p'
+    note_failure "brew stage: $lc_names cannot load a library a dependency upgrade moved; run: brew reinstall $lc_names" 1
+  # Exit 1 with a keg heading and no error is an answer: findings that load.
+  elif [ "$lc_rc" -ne 0 ] && { [ "$lc_rc" -ne 1 ] || printf '%s\n' "$lc_out" | grep -q '^Error:' \
+      || ! printf '%s\n' "$lc_out" | grep -q '^==> Checking .* linkage$'; }; then
+    note_failure "brew stage: brew linkage --test gave no answer after an install; dependents unchecked" "$lc_rc"
+  else
+    echo "  ok      every formula loads its libraries"
+  fi
+}
+
 stage_brew() {
   echo "== brew"
   command -v brew >/dev/null 2>&1 || {
@@ -953,18 +987,24 @@ stage_brew() {
     HOMEBREW_NO_AUTO_UPDATE=1
     HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1
     export HOMEBREW_NO_AUTO_UPDATE HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK
-    manifest brew | while read -r f; do
-      # shellcheck disable=SC2046 # `state name [installed]`, one word each
-      set -- $(formula_state "$formulae" "$f")
-      case $1 in
-        ok) if [ "$3" = "${f##*/}" ]; then echo "  ok      $f"; else echo "  ok      $f ($3)"; fi ;;
-        bottle) echo "  MISSING $f"
-                run bound_step 1800 brew install "$f" ;;
-        source) echo "  DIFFERS $f needs a source build; the weekly upgrade installs it" ;;
-        *) echo "  MISSING $f"
-           note_failure "brew stage: brew could not tell whether $f is installed or pours from a bottle; not installed" 1 ;;
-      esac
-    done
+    manifest brew | {
+      sb_tried=""
+      while read -r f; do
+        # shellcheck disable=SC2046 # `state name [installed]`, one word each
+        set -- $(formula_state "$formulae" "$f")
+        case $1 in
+          ok) if [ "$3" = "${f##*/}" ]; then echo "  ok      $f"; else echo "  ok      $f ($3)"; fi ;;
+          bottle) echo "  MISSING $f"
+                  [ "$APPLY" -ne 1 ] || sb_tried=1
+                  run bound_step 1800 brew install "$f" ;;
+          source) echo "  DIFFERS $f needs a source build; the weekly upgrade installs it" ;;
+          *) echo "  MISSING $f"
+             note_failure "brew stage: brew could not tell whether $f is installed or pours from a bottle; not installed" 1 ;;
+        esac
+      done
+      # A failed install may have upgraded a dependency all the same.
+      [ -z "$sb_tried" ] || linkage_check
+    }
   )
 
   installed_casks=$(printf '%s\n' "$installed_casks" | sort)

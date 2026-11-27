@@ -97,6 +97,13 @@ which status turns into an attention line, not a failed nightly. The sweep then
 installs each profile formula still missing. That step and `brew upgrade` each
 have a 6 h bound: twice one `brew install node` on an Intel Mac with no bottles
 (3 h). The weekly job's `JOB_TIMEOUT` must exceed the bounds it can hit.
+The brew stage installs with brew's dependents check off, so an install
+can upgrade a library under a dependent that still links the old one. After
+an install it runs `brew linkage --test` and fails, naming each formula
+with a `Broken dependencies` or `Missing libraries` entry, a library dyld
+cannot find, and the `brew reinstall` that fixes it (sd:10895). Its other
+labels, such as undeclared dependencies, load and pass; an `Error:` or a
+run with no keg heading is no answer and fails.
 When `rustup` is on PATH, the sweep runs `rustup update stable --no-self-update`
 under a 600 s bound: brew upgrades rustup itself, and nothing else moved the
 stable toolchain (sd:7230). No outdated list tracks it, so a quiet week runs
