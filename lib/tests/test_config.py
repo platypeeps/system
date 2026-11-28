@@ -1,6 +1,7 @@
 """The shared config location: lib/config.sh and lib/system_tools_config.py agree."""
 
 import os
+import random
 import re
 import subprocess
 import sys
@@ -213,6 +214,118 @@ class EnvFile(unittest.TestCase):
                 self.assertTrue(message.startswith(f"{env}:{line}: {name}an un"), message)
                 for private in ("privateToken", "abc", "hidden", "first", "ni"):
                     self.assertNotIn(private, message.replace(str(env), ""))
+
+    def test_a_command_substitution_is_one_word(self):
+        # sd:10773: a `;` inside `$(...)` or backticks ended the
+        # statement, so the next word read as a variable: it took a
+        # value and a refusal named it. The substitution is one word;
+        # a refusal names the variable it assigns.
+        (self.conf / "sub").mkdir(parents=True)
+        env = self.conf / "sub/.env"
+        for text in ("A=$(x; privateToken=y|z)",
+                     "A=`x; privateToken=y|z`",
+                     "A=$(echo ')'; privateToken=y|z)",
+                     "A=\"$(echo \")\"; privateToken=y|z)\"",
+                     "A=$( (x); privateToken=y|z)",
+                     "A=$(x; privateToken=y",
+                     # Review: a comment hides its `)`, quote and
+                     # operator from sh; text after it is no statement.
+                     "A=$(x #) ; privateToken=y|z",
+                     "A=$(x #it's) ; privateToken=y|z",
+                     "A=$(x;#a|b) ; privateToken=y|z",
+                     "A=$( (x #)) ; privateToken=y|z",
+                     # Review class: every shape where the first `)`
+                     # the scanner met was not the one sh closes at.
+                     "A=$( (x)#) ; privateToken=y|z",
+                     "A=$(echo ${x%)}; privateToken=y|z)",
+                     "A=$(echo \"${x:-\")\"}\"; privateToken=y|z)",
+                     "A=\"$(echo ${x%\")\"}; privateToken=y|z)\"",
+                     "A=$(echo \"$(echo \")\")\"; privateToken=y|z)",
+                     "A=$(echo \"`echo \")\"`\"; privateToken=y|z)",
+                     "A=$(echo $'\\''; privateToken=y|z #')",
+                     "A=$(case x in x) : ; privateToken=y|z ;; esac)",
+                     "A=$(echo `echo \\)`; privateToken=y|z)",
+                     # dash stops at the open quote; bash reads on.
+                     "A=`echo '`; privateToken=y #'`"):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.read_env("sub", self.envv)
+                message = str(caught.exception).replace(str(env), "")
+                self.assertRegex(message, "^:1: A: an? ")
+                for private in ("privateToken", "echo", "esac"):
+                    self.assertNotIn(private, message)
+        for text, read in (("A=$(x; B=y)", {"A": "$(x; B=y)"}),
+                           ("A=`x; B=y`; C=1", {"A": "`x; B=y`", "C": "1"}),
+                           ("A=\"$(x; B=y)\"", {"A": "$(x; B=y)"}),
+                           ("A=$(a && b); C=1", {"A": "$(a && b)", "C": "1"}),
+                           ("A=$(echo $#); C=1", {"A": "$(echo $#)", "C": "1"}),
+                           ("A=$(echo a#b); C=1", {"A": "$(echo a#b)", "C": "1"}),
+                           ("A=$(echo \"$(echo \")\")\"); C=1",
+                            {"A": "$(echo \"$(echo \")\")\")", "C": "1"}),
+                           ("A=$(grep 'a|b' \"$HOME/x\"); C=1",
+                            {"A": "$(grep 'a|b' \"$HOME/x\")", "C": "1"}),
+                           ("A=`grep 'a|b' x`; C=1", {"A": "`grep 'a|b' x`", "C": "1"})):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                self.assertEqual(stc.read_env("sub", self.envv), read)
+                done = shell(f'. "{env}" 2>/dev/null; printf %s "$C"', self.envv)
+                self.assertEqual(done.stdout, read.get("C", ""))
+        env.write_text("A=$(x; B=y) && C=1\n")
+        with self.assertRaises(stc.EnvFileError) as caught:
+            stc.read_env("sub", self.envv)
+        self.assertIn(f"{env}:1: C: ", str(caught.exception))
+
+    def test_a_substitution_ends_where_sh_ends_it_or_refuses(self):
+        # Review class: the scanner chose a substitution's end by its
+        # own partial grammar. Over built bodies, nested and holding a
+        # `)` in each place sh allows one, the line reads as sh reads
+        # it (A whole, C set, nothing from inside) or refuses naming A.
+        safe = ("a", "')'", "'a;b|c)'", '")"', "\\)", '"a\\")"', "a#b", "$#",
+                "; ( : a ) ; :", "&& : b", "; b=1 :", "`: \\)`", "`: ')'`",
+                "\"`: ')'`\"")
+        hazards = ("${x%)}", '"${x:-)}"', "$')'", "; case x in x) : ;; esac",
+                   "#)", "; : #')'")
+
+        def body(rnd, depth):
+            parts, unread = [":"], False
+            for _ in range(rnd.randint(1, 4)):
+                pick = rnd.random()
+                if depth and pick < 0.3:
+                    inner, inner_unread = body(rnd, depth - 1)
+                    parts.append(rnd.choice(('$(%s)', '"$(%s)"', '"x$(%s))"')) % inner)
+                    unread = unread or inner_unread
+                elif pick < 0.45:
+                    parts.append(rnd.choice(hazards))
+                    unread = True
+                else:
+                    parts.append(rnd.choice(safe))
+            return " ".join(parts), unread
+
+        (self.conf / "sub").mkdir(parents=True)
+        env = self.conf / "sub/.env"
+        rnd = random.Random(10773)
+        read = refused = 0
+        for _ in range(300):
+            inner, unread = body(rnd, 3)
+            value = rnd.choice(('$(%s; privateToken=1)', '"$(%s; privateToken=1)"')) % inner
+            text = f"A={value} ; C=1"
+            env.write_text(text + "\n")
+            with self.subTest(text=text):
+                if unread:
+                    refused += 1
+                    with self.assertRaises(stc.EnvFileError) as caught:
+                        stc.read_env("sub", self.envv)
+                    message = str(caught.exception).replace(str(env), "")
+                    self.assertRegex(message, "^:1: A: a command substitution holding")
+                    self.assertNotIn("privateToken", message)
+                    continue
+                read += 1
+                self.assertEqual(stc.read_env("sub", self.envv),
+                                 {"A": value.strip('"'), "C": "1"})
+                done = shell(f'. "{env}" 2>/dev/null; printf %s "$C$privateToken"', self.envv)
+                self.assertEqual(done.stdout, "1")
+        self.assertGreater(min(read, refused), 50)
 
     def test_a_python_only_reader_never_takes_a_shorter_value(self):
         # Review class: where the shell reading and the reading from
