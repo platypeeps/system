@@ -97,6 +97,22 @@ def image(key, value):
 APFS_CONTAINER = "EF57347C-0000-11AA-AA11-00306543ECAC"
 APFS_VOLUME = "41504653-0000-11AA-AA11-00306543ECAC"
 
+MARKERS = {".fseventsd", ".metadata_never_index", ".tmpdisk-ready"}
+# FAKE_LATE names a folder a consumer makes at the first read of an
+# unmarked disk: one that read the mark before the stage took it away.
+late = os.environ.get("FAKE_LATE")
+if late and tool == "hdiutil" and args[:1] == ["info"] and not (state_file.parent / "late.log").exists():
+    for item in images:
+        mount = pathlib.Path(item["mount"]) if item.get("mount") else None
+        if mount and mount.is_dir() and not (mount / ".tmpdisk-ready").exists():
+            try:
+                (mount / late).mkdir()
+                outcome = "made"
+            except OSError:
+                outcome = "refused"
+            (state_file.parent / "late.log").write_text(outcome)
+            break
+
 if tool == "hdiutil" and args[:2] == ["info", "-plist"]:
     out = []
     for item in images:
@@ -107,7 +123,10 @@ if tool == "hdiutil" and args[:2] == ["info", "-plist"]:
                 entities.append({"content-hint": APFS_VOLUME, "dev-entry": item["vol"]})
         if item.get("mount"):
             entities[-1]["mount-point"] = item["mount"]
-        out.append({"image-path": item.get("path") or f"ram://{item['sectors']}", "system-entities": entities})
+        entry = {"image-path": item.get("path") or f"ram://{item['sectors']}", "system-entities": entities}
+        if item.get("pid"):
+            entry["hdid-pid"] = item["pid"]
+        out.append(entry)
     sys.stdout.buffer.write(plistlib.dumps({"images": out}))
 elif tool == "hdiutil" and args[:2] == ["attach", "-nomount"]:
     dev = f"/dev/disk{state['next']}"
@@ -117,6 +136,12 @@ elif tool == "hdiutil" and args[:2] == ["attach", "-nomount"]:
 elif tool == "hdiutil" and args[0] == "detach":
     item = image("dev", args[1])
     if item.get("mount"):
+        # What a detach destroys beyond the stage's markers.
+        lost = sorted(set(os.listdir(item["mount"])) - MARKERS)
+        if lost:
+            with open(state_file.parent / "lost.log", "a") as log:
+                log.write("\n".join(lost) + "\n")
+        os.chmod(item["mount"], 0o755)
         shutil.rmtree(item["mount"])
     shutil.rmtree(stash / item["dev"].rsplit("/", 1)[1], ignore_errors=True)
     images.remove(item)
@@ -175,11 +200,17 @@ class TmpdiskTest(unittest.TestCase):
         self.stubs.mkdir()
         for name in ("hdiutil", "diskutil"):
             write_stub(self.stubs, name, f"#!{sys.executable}\n{FAKE}")
+        # The helper's RSS and the disk's use, in KiB, from FAKE_RSS and
+        # FAKE_USED; unset, the read fails as a missing helper would.
+        write_stub(self.stubs, "ps", '#!/bin/sh\n[ -n "$FAKE_RSS" ] || exit 1\necho "  $FAKE_RSS"\n')
+        write_stub(self.stubs, "df", '#!/bin/sh\n[ -n "$FAKE_USED" ] || exit 1\n'
+                   'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"\n'
+                   'echo "/dev/disk1s1 65536 $FAKE_USED 1 1% $3"\n')
         self.lock = self.state / "tmpdisk.lock"
         self.record = self.state / "tmpdisk.device"
         fixture_config.seal(self, self.stubs)
 
-    def run_stage(self, *flags, mb=str(MB), fail="", fail_nth="", hide_volume="", code=0):
+    def run_stage(self, *flags, mb=str(MB), fail="", fail_nth="", hide_volume="", code=0, rss="", used="", late=""):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -192,6 +223,10 @@ class TmpdiskTest(unittest.TestCase):
             "FAKE_FAIL_NTH": fail_nth,
             "FAKE_HIDE_VOLUME": hide_volume,
             "FAKE_LOCK": str(self.lock),
+            "FAKE_RSS": rss,
+            "FAKE_USED": used,
+            "FAKE_LATE": late,
+            "MACHINE_SETUP_TMPDISK_GRACE": "0",
         }
         if mb is not None:
             env["MACHINE_SETUP_TMPDISK_MB"] = mb
@@ -216,12 +251,12 @@ class TmpdiskTest(unittest.TestCase):
     def mutations(self):
         return [call for call in self.calls() if not call.startswith("hdiutil info")]
 
-    def add_image(self, sectors=SECTORS, mount=None, path=None, name="sd-tmp", fs="apfs"):
+    def add_image(self, sectors=SECTORS, mount=None, path=None, name="sd-tmp", fs="apfs", pid=None):
         state = json.loads(self.disks.read_text())
         dev = f"/dev/disk{state['next']}"
         state["next"] += 1
         item = {"dev": dev, "sectors": sectors, "mount": str(mount) if mount else None,
-                "path": path, "name": name, "fs": fs}
+                "path": path, "name": name, "fs": fs, "pid": pid}
         if fs == "apfs":
             item["vol"] = f"/dev/disk{state.get('cnext', 1)}s1"
             state["cnext"] = state.get("cnext", 1) + 1
@@ -426,11 +461,128 @@ exec /bin/mv "$@"
         self.assertIn(theirs, [image["dev"] for image in self.images()])
         self.assert_ready()
 
-    def test_the_stage_detaches_only_after_its_own_failed_erase(self):
+    def test_the_stage_detaches_only_its_failed_erase_or_a_recycle(self):
         text = SCRIPT.read_text()
         body = text[text.index("TMPDISK_NAME=sd-tmp"):text.index("do_stages() {")]
-        self.assertEqual(body.count("hdiutil detach \"$"), 1, "a second detach path")
+        self.assertEqual(body.count("hdiutil detach \"$"), 2, "a third detach path")
         self.assertNotIn("tmpdisk.device", text)
+
+    # A RAM disk's helper keeps freed pages (sd:10992).
+
+    def bloated_disk(self):
+        dev = self.add_image(mount=self.mount, pid=4242)
+        for name in (".fseventsd/no_log", ".metadata_never_index", ".tmpdisk-ready"):
+            (self.mount / name).touch()
+        return dev
+
+    # 60 MiB resident, 1 MiB used: 59 MiB freed, over half of 64.
+    BLOATED = {"rss": str(60 * 1024), "used": "1024"}
+
+    def test_freed_pages_over_half_the_disk_make_it_again_when_idle(self):
+        dev = self.bloated_disk()
+        lines = self.run_stage(**self.BLOATED)
+        self.assertEqual(lines[0], f"  DIFFERS {self.mount}: its helper holds 59 MiB its files no longer use; "
+                         "the stage makes it again while no consumer folder is on it")
+        self.assertEqual(self.mutations(), [], "a dry run changed a disk")
+        self.run_stage("--apply", **self.BLOATED)
+        self.assertEqual(self.mutations(), [
+            f"hdiutil detach {dev}",
+            f"hdiutil attach -nomount ram://{SECTORS}",
+            "diskutil erasevolume APFS sd-tmp /dev/disk11",
+            f"diskutil unmount {self.mount}",
+            "diskutil mount /dev/disk2s1",
+        ])
+        self.assertEqual([image["dev"] for image in self.images()], ["/dev/disk11"])
+        self.assert_ready()
+
+    def test_freed_pages_under_half_the_disk_are_left(self):
+        self.bloated_disk()
+        lines = self.run_stage("--apply", rss=str(30 * 1024), used="1024")
+        self.assertRegex(lines[0], r"^  ok      ")
+        self.assertEqual(self.mutations(), [])
+
+    def test_an_unreadable_helper_size_is_left(self):
+        self.bloated_disk()
+        self.run_stage("--apply", used="1024")
+        self.assertEqual(self.mutations(), [])
+
+    def test_a_disk_with_a_consumer_folder_keeps_its_mark(self):
+        self.bloated_disk()
+        (self.mount / "sd-local-gate-1-example").mkdir()
+        lines = self.run_stage("--apply", **self.BLOATED)
+        self.assertIn(self.held, lines)
+        self.assertEqual(self.mutations(), [])
+        self.assertTrue((self.mount / ".tmpdisk-ready").is_file())
+
+    @property
+    def held(self):
+        return f"  SKIP    {self.mount} holds an entry the stage did not write; the next run makes it again"
+
+    def test_a_hidden_entry_keeps_the_disk(self):
+        # plain ls hides a dot name; the recycle would destroy it.
+        self.bloated_disk()
+        (self.mount / ".sd-cache").write_text("x")
+        lines = self.run_stage("--apply", **self.BLOATED)
+        self.assertIn(self.held, lines)
+        self.assertEqual(self.mutations(), [])
+        self.assertTrue((self.mount / ".sd-cache").is_file())
+
+    def test_a_name_with_a_newline_is_not_taken_for_markers(self):
+        self.bloated_disk()
+        (self.mount / ".fseventsd\n.tmpdisk-ready").mkdir()
+        lines = self.run_stage("--apply", **self.BLOATED)
+        self.assertIn(self.held, lines)
+        self.assertEqual(self.mutations(), [])
+
+    def test_an_unreadable_root_counts_as_in_use(self):
+        self.bloated_disk()
+        self.mount.chmod(0o300)
+        self.addCleanup(self.mount.chmod, 0o755)
+        lines = self.run_stage("--apply", **self.BLOATED)
+        self.assertIn(self.held, lines)
+        self.assertEqual(self.mutations(), [])
+
+    def test_a_late_consumer_cannot_claim_the_disk_before_its_detach(self):
+        # It read the mark before the stage took it away, and makes its
+        # folder after the wait: the closed root refuses it.
+        self.bloated_disk()
+        self.run_stage("--apply", late="sd-local-gate-2-example", **self.BLOATED)
+        self.assertEqual((self.fake / "late.log").read_text(), "refused")
+        self.assertFalse((self.fake / "lost.log").exists(), "the detach destroyed a consumer's folder")
+        self.assert_ready()
+
+    def test_stopped_after_the_root_closed_the_next_run_opens_and_marks_it(self):
+        self.bloated_disk()
+        (self.mount / ".tmpdisk-ready").unlink()
+        self.mount.chmod(0o555)
+        self.addCleanup(lambda: self.mount.exists() and self.mount.chmod(0o755))
+        self.run_stage("--apply")
+        self.assertTrue(os.access(self.mount, os.W_OK))
+        self.assert_ready()
+
+    def test_a_consumer_that_arrives_in_the_wait_keeps_the_disk(self):
+        # The sleep stub plays a gate that read the mark before it went.
+        self.bloated_disk()
+        write_stub(self.stubs, "sleep", f'#!/bin/sh\nmkdir "{self.mount}/sd-tests-1-example"\n')
+        lines = self.run_stage("--apply", **self.BLOATED)
+        self.assertIn(f"  SKIP    a consumer took {self.mount} during the wait; the next run makes it again", lines)
+        self.assertEqual(self.mutations(), [])
+        self.assertTrue((self.mount / ".tmpdisk-ready").is_file())
+
+    def test_a_refused_detach_fails_and_restores_the_mark(self):
+        dev = self.bloated_disk()
+        lines = self.run_stage("--apply", fail="detach", code=1, **self.BLOATED)
+        self.assertIn(f"  FAILED  hdiutil detach {dev} (exit 1)", lines)
+        self.assertTrue((self.mount / ".tmpdisk-ready").is_file())
+        self.assertEqual([image["dev"] for image in self.images()], [dev])
+        self.assertNotIn("hdiutil attach", "\n".join(self.calls()))
+
+    def test_stopped_after_the_detach_the_next_run_makes_the_disk(self):
+        self.bloated_disk()
+        self.run_stage("--apply", fail="attach", code=1, **self.BLOATED)
+        self.assertEqual(self.images(), [])
+        self.run_stage("--apply")
+        self.assert_ready()
 
     def test_stopped_after_erase_the_markers_are_written_and_mounted(self):
         self.add_image(mount=self.mount)

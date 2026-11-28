@@ -4726,16 +4726,28 @@ if not stat.S_ISREG(mode(os.path.join(sys.argv[1], "com.googlecode.iterm2.plist"
 # volume hdiutil does not list is drift of unknown file system, HFS+ or an
 # APFS volume the lookup missed (sd:7645): the stage takes its ready mark
 # away and leaves the disk for the operator to detach.
+#
+# A RAM disk's helper keeps every page ever written: deleted files free
+# none back, so the hub's 16 GiB disk held 15.5 GB resident with 1.4 GB
+# in use, and swap grew to 6 GB (sd:10992). When the helper holds more
+# than half the disk beyond what its files use, the stage makes the disk
+# again, the second detach: of the device it found at the mount point in
+# this run, read again just before. It does so only while the disk holds
+# no consumer folder (a name without a leading dot), takes the ready mark
+# away first, waits TMPDISK_GRACE seconds for a consumer that read the
+# mark, and looks again; a busy disk keeps its mark for the next run.
 TMPDISK_NAME=sd-tmp
 TMPDISK_VOLUMES="${MACHINE_SETUP_TMPDISK_VOLUMES:-/Volumes}"
 TMPDISK_MB="${MACHINE_SETUP_TMPDISK_MB:-}"
 TMPDISK_MARKERS=".fseventsd/no_log .metadata_never_index"
+TMPDISK_GRACE="${MACHINE_SETUP_TMPDISK_GRACE:-5}"
+case $TMPDISK_GRACE in ''|*[!0-9]*) TMPDISK_GRACE=5 ;; esac
 # A symlink whose target is the holder's pid: `ln -s` makes it with its
 # pid in one step, so no contender ever reads a lock with no pid.
 TMPDISK_LOCK="$STATE_DIR/tmpdisk.lock"
 
-# One line per disk image: device, sectors, mount point or `-`, and its
-# APFS volume or `-`. An image from a file prints `file` as its sectors,
+# One line per disk image: device, sectors, mount point or `-`, its
+# APFS volume or `-`, and its helper's pid or `-`. An image from a file prints `file` as its sectors,
 # so it is never the RAM disk. An APFS erase makes a synthesized
 # container and volume that hdiutil lists under the ram:// image; the
 # volume, not the device, is what `diskutil mount` takes. The device is
@@ -4757,8 +4769,10 @@ for image in plistlib.loads(sys.stdin.buffer.read()).get("images", []):
     volumes = sorted((e for e in entities if e.get("content-hint") == APFS_VOLUME),
                      key=lambda e: not e.get("mount-point"))
     if devs:
+        pid = image.get("hdid-pid")
         print(devs[0], sectors, mounts[0] if mounts else "-",
-              volumes[0].get("dev-entry") or "-" if volumes else "-", sep="\t")
+              volumes[0].get("dev-entry") or "-" if volumes else "-",
+              pid if isinstance(pid, int) and pid > 0 else "-", sep="\t")
 '
 }
 
@@ -4807,7 +4821,8 @@ tmpdisk_lock() {
 # then marks the volume ready. A busy volume fails
 # the unmount and stays as it was; the next run tries again.
 tmpdisk_remount() { # mount, APFS volume device
-  { mkdir -p "$1/.fseventsd" && : > "$1/.fseventsd/no_log" && : > "$1/.metadata_never_index"; } ||
+  # A recycle stopped after it closed the root left it without write bits.
+  { chmod ug+w "$1" && mkdir -p "$1/.fseventsd" && : > "$1/.fseventsd/no_log" && : > "$1/.metadata_never_index"; } ||
     { note_failure "write the markers in $1" 1; return 1; }
   tmpdisk_step 60 diskutil unmount "$1" || return 1
   tmpdisk_step 60 diskutil mount "$2" || return 1
@@ -4850,6 +4865,72 @@ tmpdisk_create() { # mount, sectors
   echo "  created $1 — RAM disk $td_dev, $TMPDISK_MB MiB, FSEvents log and Spotlight off"
 }
 
+# MiB the helper holds beyond what the disk's files use; empty when a
+# read fails, so an unknown size never makes the disk again.
+tmpdisk_freed() { # mount, helper pid
+  case $2 in ''|*[!0-9]*) return 0 ;; esac
+  td_rss=$(ps -o rss= -p "$2" 2>/dev/null | tr -d ' ') || return 0
+  td_used=$(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $3 }') || return 0
+  case $td_rss in ''|*[!0-9]*) return 0 ;; esac
+  case $td_used in ''|*[!0-9]*) return 0 ;; esac
+  echo $(((td_rss - td_used) / 1024))
+}
+
+# True while the disk holds any entry but the stage's own markers, or
+# its root cannot be read. A glob, not ls: ls hides dot names, and a
+# name with a newline would split into lines that look like markers.
+tmpdisk_in_use() { # mount
+  [ -r "$1" ] && [ -x "$1" ] || return 0
+  for td_entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    [ -e "$td_entry" ] || [ -L "$td_entry" ] || continue
+    case ${td_entry##*/} in
+      .fseventsd|.metadata_never_index|.tmpdisk-ready) ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Gives the root its write bits and the ready mark back.
+tmpdisk_reopen() { # mount
+  chmod ug+w "$1" && : > "$1/.tmpdisk-ready" || { note_failure "mark $1 ready again" 1; return 1; }
+}
+
+# Makes the disk again to give its freed pages back (sd:10992). After the
+# wait the root loses its write bits, so a consumer that read the mark
+# but made no folder yet cannot make one on a disk about to go; one that
+# did is seen by the last look, just before the detach.
+tmpdisk_recycle() { # mount, device, sectors
+  if tmpdisk_in_use "$1"; then
+    echo "  SKIP    $1 holds an entry the stage did not write; the next run makes it again"
+    return 0
+  fi
+  rm -f "$1/.tmpdisk-ready" || { note_failure "remove $1/.tmpdisk-ready" 1; return 1; }
+  sleep "$TMPDISK_GRACE"
+  # Unmarked and closed from here: a stop leaves a disk the next run's
+  # remount opens and marks again.
+  chmod a-w "$1" || { note_failure "close $1 to new folders" 1; tmpdisk_reopen "$1" || :; return 1; }
+  if ! td_now=$(tmpdisk_images); then
+    note_failure "hdiutil info -plist: the RAM disk's state is unknown" 1
+    return 1
+  fi
+  td_same=$(printf '%s\n' "$td_now" | awk -F '\t' -v m="$1" -v d="$2" -v s="$3" '$1 == d && $2 == s && $3 == m')
+  if [ -z "$td_same" ]; then
+    note_failure "$2 is no longer the RAM disk at $1" 1
+    return 1
+  fi
+  if tmpdisk_in_use "$1"; then
+    tmpdisk_reopen "$1" || return 1
+    echo "  SKIP    a consumer took $1 during the wait; the next run makes it again"
+    return 0
+  fi
+  if ! tmpdisk_step 60 hdiutil detach "$2"; then
+    [ ! -d "$1/.fseventsd" ] || tmpdisk_reopen "$1" || :
+    return 1
+  fi
+  tmpdisk_create "$1" "$3"
+}
+
 stage_tmpdisk() {
   echo "== tmpdisk"
   if [ -z "$TMPDISK_MB" ]; then
@@ -4888,6 +4969,7 @@ tmpdisk_locked() {
     td_dev=$(printf '%s\n' "$td_at" | cut -f1)
     td_have=$(printf '%s\n' "$td_at" | cut -f2)
     td_vol=$(printf '%s\n' "$td_at" | cut -f4)
+    td_pid=$(printf '%s\n' "$td_at" | cut -f5)
     if [ "$td_have" = file ]; then
       echo "  DIFFERS $td_mnt exists and is not a RAM disk; move it away, then rerun"
       return 0
@@ -4919,8 +5001,14 @@ tmpdisk_locked() {
     elif [ ! -f "$td_mnt/.tmpdisk-ready" ]; then
       echo "  DIFFERS $td_mnt has not been mounted since its markers were written; the stage mounts it again"
     else
-      echo "  ok      $td_mnt — RAM disk $td_dev, $TMPDISK_MB MiB, FSEvents log and Spotlight off"
       td_action=none
+      td_freed=$(tmpdisk_freed "$td_mnt" "$td_pid")
+      if [ -n "$td_freed" ] && [ "$td_freed" -gt $((TMPDISK_MB / 2)) ]; then
+        echo "  DIFFERS $td_mnt: its helper holds $td_freed MiB its files no longer use; the stage makes it again while no consumer folder is on it"
+        td_action=recycle
+      else
+        echo "  ok      $td_mnt — RAM disk $td_dev, $TMPDISK_MB MiB, FSEvents log and Spotlight off"
+      fi
     fi
   elif [ -e "$td_mnt" ]; then
     echo "  DIFFERS $td_mnt exists and is not a RAM disk; move it away, then rerun"
@@ -4940,6 +5028,7 @@ tmpdisk_locked() {
     case $td_action in
       create)  say "hdiutil attach -nomount ram://$td_sectors; diskutil erasevolume APFS $TMPDISK_NAME <device>; markers; mount its volume again" ;;
       remount) say "write the markers in $td_mnt; diskutil unmount and mount it again" ;;
+      recycle) say "while no consumer folder is on it: remove $td_mnt/.tmpdisk-ready; hdiutil detach $td_dev; make it again" ;;
     esac
     return 0
   fi
@@ -4948,6 +5037,7 @@ tmpdisk_locked() {
     remount)
       tmpdisk_remount "$td_mnt" "$td_vol" || return 1
       echo "  mounted $td_mnt again with its markers" ;;
+    recycle) tmpdisk_recycle "$td_mnt" "$td_dev" "$td_sectors" || return 1 ;;
   esac
 }
 
@@ -10647,6 +10737,8 @@ environment:
   MACHINE_SETUP_TMPDISK_MB  tmpdisk: the RAM disk's size in MiB; unset turns
                           the stage off (sd:7092)
   MACHINE_SETUP_TMPDISK_VOLUMES  tests only: the folder that stands in for /Volumes
+  MACHINE_SETUP_TMPDISK_GRACE  tests only: seconds the stage waits after it
+                          unmarks the RAM disk to make it again (default 5)
   MACHINE_SETUP_BULK_NAS  bulkmove: the NAS share's mount point; a satellite
                           moves its local bulk storage to repo-storage there
                           (sd:8242); unset turns the stage off
