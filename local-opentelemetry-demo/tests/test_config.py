@@ -7,6 +7,7 @@ this checkout.
 
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -53,12 +54,43 @@ class DemoConfig(unittest.TestCase):
             STUB_LOG=str(self.log),
             SYSTEM_TOOLS_CONFIG=str(self.root / "config"),
         )
+        # Runs before tmp.cleanup: a forward a verb left in the background
+        # must not write into the folder while it is removed (sd:11000).
+        self.groups = []
+        self.addCleanup(self.end_verb_groups)
+
+    def end_verb_groups(self):
+        """Kill each verb's process group and wait until it is empty."""
+        for pgid in self.groups:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                try:
+                    os.killpg(pgid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"process group {pgid} outlived SIGKILL")
 
     def run_verb(self, *args, expect):
-        done = subprocess.run(
+        proc = subprocess.Popen(
             ["/bin/sh", str(self.folder / ENTRYPOINT.name), *args],
-            capture_output=True, text=True, input="", env=self.env, timeout=60,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=self.env,
+            start_new_session=True,
         )
+        self.groups.append(proc.pid)
+        try:
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            self.fail(f"{args} timed out: {out}{err}")
+        done = subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
         self.assertEqual(done.returncode, expect, done.stdout + done.stderr)
         return done
 
@@ -193,6 +225,29 @@ exit 0"""), encoding="utf-8")
         self.run_verb("start", expect=0)
         old.wait(timeout=5)
         self.run_verb("stop", expect=0)
+
+    def test_cleanup_ends_a_forward_start_left_running(self):
+        # sd:11000: start returns with its forwards in the background; a
+        # slow one wrote into the folder while cleanup removed it.
+        # The mark lives outside the cleanup stack that doCleanups empties.
+        outside = Path(tempfile.mkdtemp())
+        try:
+            self.start_then_clean_up(outside / "late-write")
+        finally:
+            shutil.rmtree(outside)
+
+    def start_then_clean_up(self, mark):
+        stub = self.root / "bin" / "kubectl"
+        stub.write_text(STUB.replace("exit 0", """\
+case "$5" in port-forward) sleep 1; touch "$STUB_MARK" ;; esac
+exit 0"""), encoding="utf-8")
+        self.env.update(STUB_MARK=str(mark),
+                        OTLP_EXPORT_URL="https://otlp.example.invalid/otel",
+                        OTLP_EXPORT_AUTH="k")
+        self.run_verb("start", expect=0)
+        self.doCleanups()
+        time.sleep(2)
+        self.assertFalse(mark.exists(), "a forward outlived the test")
 
     def test_stop_ends_the_forward_it_started(self):
         self.sleeping_kubectl()
