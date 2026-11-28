@@ -697,16 +697,17 @@ class RefreshTest(unittest.TestCase):
     LSOF_NONE = ('#!/bin/sh\nfor a; do f=$a; done\n'
                  'echo "lsof: no file use located: $f" >&2\nexit 1\n')
 
-    def locked_refresh(self, lsof=None, age=2 * 3600, stubs=None):
-        """A refresh whose switch a 0-byte index.lock stops: the flag
-        line, the lock and the fixture. `lsof` is the stub's text."""
+    def locked_refresh(self, lsof=None, age=2 * 3600, stubs=None, content=""):
+        """A refresh whose switch an index.lock stops (0 bytes unless
+        `content`): the flag line, the lock and the fixture. `lsof` is
+        the stub's text."""
         f = self.fixture()
         repo = f.repo()
         f.pin(repo)
         before = f.head(repo)
         f.advance_origin(repo)
         lock = repo / ".git" / "index.lock"
-        lock.write_text("")
+        lock.write_text(content)
         then = time.time() - age
         os.utime(lock, (then, then))
         for name, text in {"lsof": lsof or self.LSOF_NONE, **(stubs or {})}.items():
@@ -722,14 +723,62 @@ class RefreshTest(unittest.TestCase):
         self.assertTrue(lock.exists())
         return flagged[0], lock
 
-    def test_a_stale_index_lock_is_named_with_its_age_and_remedy(self):
-        """sd:10796: a 0-byte index.lock no process held stopped the
-        switch, and the flag line named only the switch; git's stderr
-        held the cause."""
-        line, lock = self.locked_refresh()
-        self.assertIn(f"{lock} from ", line)
-        self.assertIn("120 min old", line)
-        self.assertIn(f"lsof finds no process holding it: rm '{lock}'", line)
+    def test_a_stale_index_lock_is_removed_and_the_switch_retried(self):
+        """sd:10847: a 0-byte index.lock no process held failed every
+        refresh for two days; naming it (sd:10796) left the serving
+        build behind. A lock proven stale is removed, the switch runs
+        once more, and the report names the lock it removed."""
+        f = self.fixture()
+        repo = f.repo()
+        f.pin(repo)
+        new = f.advance_origin(repo)
+        lock = repo / ".git" / "index.lock"
+        lock.write_text("")
+        then = time.time() - 2 * 3600
+        os.utime(lock, (then, then))
+        (f.bin / "lsof").write_text(self.LSOF_NONE)
+        (f.bin / "lsof").chmod(0o755)
+
+        result = f.run("refresh")
+
+        self.assertEqual(new, f.head(repo))
+        self.assertFalse(lock.exists())
+        self.assertIn(f"removed {lock}; switching again", result.stdout)
+        self.assertIn("120 min old", result.stdout)
+        self.assertNotIn("failed: switch", result.stdout)
+
+    def test_a_retried_switch_that_fails_again_is_flagged(self):
+        """sd:10847: the retry runs once; a second failure flags the
+        switch and moves nothing."""
+        f = self.fixture()
+        repo = f.repo()
+        f.pin(repo)
+        before = f.head(repo)
+        f.advance_origin(repo, path="later", content="from origin\n")
+        (repo / "later").write_text("untracked here\n")
+        lock = repo / ".git" / "index.lock"
+        lock.write_text("")
+        then = time.time() - 2 * 3600
+        os.utime(lock, (then, then))
+        (f.bin / "lsof").write_text(self.LSOF_NONE)
+        (f.bin / "lsof").chmod(0o755)
+
+        result = f.run("refresh", expect=1)
+
+        flagged = [line for line in result.stdout.splitlines()
+                   if "failed: switch" in line]
+        self.assertEqual(1, len(flagged), result.stdout)
+        self.assertIn("after removing its stale index.lock", flagged[0])
+        self.assertEqual(before, f.head(repo))
+        self.assertEqual(1, result.stdout.count(f"removed {lock}"))
+
+    def test_a_stale_lock_with_content_is_kept(self):
+        """sd:10847 lead review: a lock git wrote an index into holds a
+        change it never renamed into place; removing it loses that.
+        Only a 0-byte lock is removed; this one is named for a hand rm."""
+        line, lock = self.locked_refresh(content="DIRC pending index\n")
+        self.assertIn("rm '", line)
+        self.assertNotIn("removed", line)
 
     def test_a_held_index_lock_names_its_pids_and_no_rm(self):
         line, lock = self.locked_refresh(lsof="#!/bin/sh\nprintf 'p41\\nf3\\np57\\nf4\\n'\n")
