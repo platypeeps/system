@@ -129,6 +129,10 @@ mounted() { # path fstype
   mount | awk -v needle=" on $1 ($2," 'index($0, needle) { found = 1 } END { exit !found }'
 }
 
+# The source's own top-level .versions, in any case: a case-insensitive
+# share folds .Versions into the copy's backups, where the prune deletes.
+source_versions() { (cd "$SRC" && find . -mindepth 1 -maxdepth 1 -iname .versions); }
+
 # Every source name, one per line in byte order, without the volume's own
 # folders. A newline in a name travels as \001, so each name stays one line;
 # next_chunk's caller turns the chunk back into NUL-separated names for -0.
@@ -143,7 +147,8 @@ list_source() ( # file
   LC_ALL=C; export LC_ALL
   a=$(printf '\001')
   (cd "$SRC" && find . -mindepth 1 \( -path ./.Spotlight-V100 -o -path ./.Trashes \
-      -o -path ./.fseventsd -o -path ./.TemporaryItems -o -path ./.DocumentRevisions-V100 \) \
+      -o -path ./.fseventsd -o -path ./.TemporaryItems -o -path ./.DocumentRevisions-V100 \
+      -o -ipath ./.versions \) \
       -prune -o -name "*$a*" -prune -exec sh -c 'printf "%s\0" "$@" >&3' sh {} + \
       -o -type l -exec sh -c 'for f; do [ -e "$f" ] || printf "%s\0" "$f"; done >&4' sh {} + -false \
       -o -print0) > "$1.find" 3> "$1.refused" 4> "$1.dead" \
@@ -159,6 +164,8 @@ list_source() ( # file
     echo "left out $(tr -cd '\0' < "$1.refused" | wc -c | tr -d ' ') names that hold a 0x01 byte; the first:" >&2
     tr '\0\n' '\n\037' < "$1.refused" | head -n 3 | cat -v >&2
   fi
+  # Made after the run's own check: never copied into the share's backups.
+  [ -z "$(source_versions)" ] || echo "left out the source's own .versions: the share keeps the copy's backups there" >&2
   if [ -s "$1.dead" ]; then
     echo "left out $(tr -cd '\0' < "$1.dead" | wc -c | tr -d ' ') links whose target is missing; the first:" >&2
     tr '\0\n' '\n\037' < "$1.dead" | head -n 3 | cat -v >&2
@@ -255,7 +262,7 @@ secs=$(( deadline - $(date +%s) ))
 
 stamp=$(date +%Y-%m-%dT%H%M%S)
 # A source .versions would land in the share's backups and be pruned.
-if [ -e "$SRC/.versions" ] || [ -L "$SRC/.versions" ]; then
+if [ -n "$(source_versions)" ]; then
   say "refused: $SRC/.versions exists; it would mix with $VERSIONS, the copy's backups"
   exit 1
 fi
@@ -267,18 +274,24 @@ case "$cutoff" in
   *) say "refused: no prune cutoff for $KEEP_VERSION_DAYS days ('$cutoff')"; exit 1 ;;
 esac
 # The prune reads the share, so it runs under timeout like rsync: a stalled
-# share held it past 05:00. Exit 3: a .versions without the marker (or a
-# link); 4: the marker could not be written; 1: a folder was not removed.
+# share held it past 05:00. Exit 3: a .versions that holds names but no
+# marker (or a link); 4: the marker could not be written; 1: a folder was
+# not removed. It prints "marked" once the marker is there: without that
+# line rsync must not run, as --backup-dir would make an unmarked .versions
+# or write into another's. An empty unmarked .versions is a first run
+# stopped before its marker; it holds no data, so this run takes it.
 # ponytail: 600 s bound; a share that slow fails rsync's bound too.
 bound=$secs; [ "$bound" -le 600 ] || bound=600
 prune_out=$("$TIMEOUT" --kill-after=30 "$bound" sh -c '
   v=$1 cutoff=$2 mark=$1/$3
   if [ -L "$v" ]; then exit 3; fi
+  if [ -e "$v" ] && [ ! -f "$mark" ]; then rmdir "$v" 2>/dev/null || exit 3; fi
   if [ ! -e "$v" ]; then
     mkdir "$v" || exit 4
     : > "$mark" || { rmdir "$v"; exit 4; }
   fi
   [ -f "$mark" ] || exit 3
+  echo marked
   pruned=0 rc=0
   for old in "$v"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
     [ -d "$old" ] && [ ! -L "$old" ] || continue
@@ -288,6 +301,11 @@ prune_out=$("$TIMEOUT" --kill-after=30 "$bound" sh -c '
   echo "pruned $pruned"
   exit "$rc"' sh "$VERSIONS" "$cutoff" "$VERSIONS_MARK")
 prune_rc=$?
+case $prune_rc in 3|4) ;; *)
+  printf '%s\n' "$prune_out" | grep -qx marked || {
+    say "refused: $VERSIONS did not answer the marker check (rc=$prune_rc, bound ${bound}s); no copy without it"
+    exit 1; } ;;
+esac
 case $prune_rc in
   0|1)
     pruned=$(printf '%s\n' "$prune_out" | sed -n 's/^pruned //p')

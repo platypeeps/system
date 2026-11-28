@@ -3666,10 +3666,14 @@ class NasFullCopy(unittest.TestCase):
                                    '[ "$code" -eq 0 ] || [ -z "${STUB_ERR:-}" ] || printf "%s\\n" "$STUB_ERR" >&2\n'
                                    '[ -z "${STUB_TERM_PARENT:-}" ] || kill -TERM "$PPID"\n'
                                    'exit "$code"\n')
-        # STUB_PRUNE_RC: the bounded prune (`timeout ... sh -c`) exits with it, as a stalled share would.
-        self.stub(stubs / "timeout", '#!/bin/sh\nshift 2\n'
-                                     '[ -z "${STUB_PRUNE_RC:-}" ] || [ "$1" != sh ] || exit "$STUB_PRUNE_RC"\n'
-                                     'exec "$@"\n')
+        # The bounded marker check and prune is `timeout ... sh -c`.
+        # STUB_PRUNE_SKIP: it exits with that code before it runs, a share that never answers.
+        # STUB_PRUNE_RC: it runs, then exits with that code, a stall after the marker check.
+        # STUB_PRUNE_MAKES: that folder appears first, after the run's own source check.
+        self.stub(stubs / "timeout", '#!/bin/sh\nshift 2\n[ "$1" = sh ] || exec "$@"\n'
+                                     '[ -z "${STUB_PRUNE_MAKES:-}" ] || mkdir -p "$STUB_PRUNE_MAKES"\n'
+                                     '[ -z "${STUB_PRUNE_SKIP:-}" ] || exit "$STUB_PRUNE_SKIP"\n'
+                                     '"$@"; rc=$?\nexit "${STUB_PRUNE_RC:-$rc}"\n')
         self.stub(stubs / "caffeinate", '#!/bin/sh\nshift\nexec "$@"\n')
         # `sd reports brief add ... <file>`: one line per call, then the brief's text, so a test reads both.
         self.stub(stubs / "sd", '#!/bin/sh\nfor last; do :; done\nprintf "%s\\n" "$*" >> "$STUB_NOTIFIED"\n'
@@ -3915,6 +3919,44 @@ class NasFullCopy(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("refused: could not create", result.stdout)
         self.assertFalse((self.dst / ".versions").exists())
+        self.assertFalse(self.calls.exists())
+
+    def test_a_first_run_stopped_before_the_marker_does_not_block_the_next(self) -> None:
+        """Review round 3 of sd:10993: a stall between mkdir and the marker
+        left an unmarked .versions, which refused every later run."""
+        (self.dst / ".versions").mkdir()
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.dst / ".versions/.nas-full-copy-versions").is_file())
+        self.assertTrue(self.calls.exists())
+
+    def test_a_share_that_never_answers_the_marker_check_gets_no_copy(self) -> None:
+        # rsync's --backup-dir would make an unmarked .versions, or write
+        # into one that is not this copy's.
+        for code in ("124", "137", "2"):
+            with self.subTest(code=code):
+                result = self.run_copy(STUB_PRUNE_SKIP=code)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("refused:", result.stdout)
+                self.assertFalse(self.calls.exists())
+                self.assertFalse((self.dst / ".versions").exists())
+        again = self.run_copy()
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+
+    def test_a_source_versions_folder_made_after_the_check_is_not_copied(self) -> None:
+        # Copied, it would sit in the share's .versions, where the prune deletes.
+        self.tree("a")
+        result = self.run_copy(STUB_PRUNE_MAKES=str(self.src / ".Versions/2000-01-01"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([name for name in self.lists()[0] if "ersions" in name], [])
+        self.assertIn("left out", (self.log_dir / sorted(p.name for p in self.log_dir.glob("*.err"))[0]).read_text())
+
+    def test_a_source_versions_folder_in_another_case_is_refused(self) -> None:
+        # A case-insensitive share folds .Versions into .versions.
+        self.tree(".Versions/2000-01-01/f")
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("refused:", result.stdout)
         self.assertFalse(self.calls.exists())
 
     def test_a_prune_the_share_stalls_is_bounded_and_the_copy_goes_on(self) -> None:

@@ -376,8 +376,12 @@ restorable; each run removes the date folders there older than
 the same kind of time bound as rsync. The run refuses when the source has
 its own `.versions`, or when the share's `.versions` lacks the
 `.nas-full-copy-versions` marker the first run writes: either would put
-mirrored data where the prune deletes. Restore a file by copying it back
-from its folder.
+mirrored data where the prune deletes. The listing also leaves a source
+`.versions`, in any case, out of the copy. An empty unmarked `.versions` is
+a first run stopped before its marker, and the next run takes it. When the
+share does not answer the marker check in time, the run fails without
+copying: rsync would make an unmarked folder. Restore a file by copying it
+back from its folder.
 `NAS_COPY_EXCLUDE` names folders, relative to the source and comma-separated,
 that the copy leaves out, such as regenerable output rsync timed out on
 (sd:8932). Set the two volumes in
