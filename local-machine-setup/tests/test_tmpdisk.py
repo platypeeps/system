@@ -97,6 +97,22 @@ def image(key, value):
 APFS_CONTAINER = "EF57347C-0000-11AA-AA11-00306543ECAC"
 APFS_VOLUME = "41504653-0000-11AA-AA11-00306543ECAC"
 
+MARKERS = {".fseventsd", ".metadata_never_index", ".tmpdisk-ready"}
+# FAKE_LATE names a folder a consumer makes at the first read of an
+# unmarked disk: one that read the mark before the stage took it away.
+late = os.environ.get("FAKE_LATE")
+if late and tool == "hdiutil" and args[:1] == ["info"] and not (state_file.parent / "late.log").exists():
+    for item in images:
+        mount = pathlib.Path(item["mount"]) if item.get("mount") else None
+        if mount and mount.is_dir() and not (mount / ".tmpdisk-ready").exists():
+            try:
+                (mount / late).mkdir()
+                outcome = "made"
+            except OSError:
+                outcome = "refused"
+            (state_file.parent / "late.log").write_text(outcome)
+            break
+
 if tool == "hdiutil" and args[:2] == ["info", "-plist"]:
     out = []
     for item in images:
@@ -120,6 +136,12 @@ elif tool == "hdiutil" and args[:2] == ["attach", "-nomount"]:
 elif tool == "hdiutil" and args[0] == "detach":
     item = image("dev", args[1])
     if item.get("mount"):
+        # What a detach destroys beyond the stage's markers.
+        lost = sorted(set(os.listdir(item["mount"])) - MARKERS)
+        if lost:
+            with open(state_file.parent / "lost.log", "a") as log:
+                log.write("\n".join(lost) + "\n")
+        os.chmod(item["mount"], 0o755)
         shutil.rmtree(item["mount"])
     shutil.rmtree(stash / item["dev"].rsplit("/", 1)[1], ignore_errors=True)
     images.remove(item)
@@ -188,7 +210,7 @@ class TmpdiskTest(unittest.TestCase):
         self.record = self.state / "tmpdisk.device"
         fixture_config.seal(self, self.stubs)
 
-    def run_stage(self, *flags, mb=str(MB), fail="", fail_nth="", hide_volume="", code=0, rss="", used=""):
+    def run_stage(self, *flags, mb=str(MB), fail="", fail_nth="", hide_volume="", code=0, rss="", used="", late=""):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -203,6 +225,7 @@ class TmpdiskTest(unittest.TestCase):
             "FAKE_LOCK": str(self.lock),
             "FAKE_RSS": rss,
             "FAKE_USED": used,
+            "FAKE_LATE": late,
             "MACHINE_SETUP_TMPDISK_GRACE": "0",
         }
         if mb is not None:
@@ -487,9 +510,55 @@ exec /bin/mv "$@"
         self.bloated_disk()
         (self.mount / "sd-local-gate-1-example").mkdir()
         lines = self.run_stage("--apply", **self.BLOATED)
-        self.assertIn(f"  SKIP    {self.mount} holds a consumer folder; the next run makes it again", lines)
+        self.assertIn(self.held, lines)
         self.assertEqual(self.mutations(), [])
         self.assertTrue((self.mount / ".tmpdisk-ready").is_file())
+
+    @property
+    def held(self):
+        return f"  SKIP    {self.mount} holds an entry the stage did not write; the next run makes it again"
+
+    def test_a_hidden_entry_keeps_the_disk(self):
+        # plain ls hides a dot name; the recycle would destroy it.
+        self.bloated_disk()
+        (self.mount / ".sd-cache").write_text("x")
+        lines = self.run_stage("--apply", **self.BLOATED)
+        self.assertIn(self.held, lines)
+        self.assertEqual(self.mutations(), [])
+        self.assertTrue((self.mount / ".sd-cache").is_file())
+
+    def test_a_name_with_a_newline_is_not_taken_for_markers(self):
+        self.bloated_disk()
+        (self.mount / ".fseventsd\n.tmpdisk-ready").mkdir()
+        lines = self.run_stage("--apply", **self.BLOATED)
+        self.assertIn(self.held, lines)
+        self.assertEqual(self.mutations(), [])
+
+    def test_an_unreadable_root_counts_as_in_use(self):
+        self.bloated_disk()
+        self.mount.chmod(0o300)
+        self.addCleanup(self.mount.chmod, 0o755)
+        lines = self.run_stage("--apply", **self.BLOATED)
+        self.assertIn(self.held, lines)
+        self.assertEqual(self.mutations(), [])
+
+    def test_a_late_consumer_cannot_claim_the_disk_before_its_detach(self):
+        # It read the mark before the stage took it away, and makes its
+        # folder after the wait: the closed root refuses it.
+        self.bloated_disk()
+        self.run_stage("--apply", late="sd-local-gate-2-example", **self.BLOATED)
+        self.assertEqual((self.fake / "late.log").read_text(), "refused")
+        self.assertFalse((self.fake / "lost.log").exists(), "the detach destroyed a consumer's folder")
+        self.assert_ready()
+
+    def test_stopped_after_the_root_closed_the_next_run_opens_and_marks_it(self):
+        self.bloated_disk()
+        (self.mount / ".tmpdisk-ready").unlink()
+        self.mount.chmod(0o555)
+        self.addCleanup(lambda: self.mount.exists() and self.mount.chmod(0o755))
+        self.run_stage("--apply")
+        self.assertTrue(os.access(self.mount, os.W_OK))
+        self.assert_ready()
 
     def test_a_consumer_that_arrives_in_the_wait_keeps_the_disk(self):
         # The sleep stub plays a gate that read the mark before it went.

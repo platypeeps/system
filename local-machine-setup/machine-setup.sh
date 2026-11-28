@@ -4821,7 +4821,8 @@ tmpdisk_lock() {
 # then marks the volume ready. A busy volume fails
 # the unmount and stays as it was; the next run tries again.
 tmpdisk_remount() { # mount, APFS volume device
-  { mkdir -p "$1/.fseventsd" && : > "$1/.fseventsd/no_log" && : > "$1/.metadata_never_index"; } ||
+  # A recycle stopped after it closed the root left it without write bits.
+  { chmod ug+w "$1" && mkdir -p "$1/.fseventsd" && : > "$1/.fseventsd/no_log" && : > "$1/.metadata_never_index"; } ||
     { note_failure "write the markers in $1" 1; return 1; }
   tmpdisk_step 60 diskutil unmount "$1" || return 1
   tmpdisk_step 60 diskutil mount "$2" || return 1
@@ -4875,27 +4876,40 @@ tmpdisk_freed() { # mount, helper pid
   echo $(((td_rss - td_used) / 1024))
 }
 
-# True while a consumer folder is on the disk, or the read fails: plain
-# ls hides the markers, and every consumer name has no leading dot.
+# True while the disk holds any entry but the stage's own markers, or
+# its root cannot be read. A glob, not ls: ls hides dot names, and a
+# name with a newline would split into lines that look like markers.
 tmpdisk_in_use() { # mount
-  td_entries=$(ls "$1" 2>/dev/null) || return 0
-  [ -n "$td_entries" ]
+  [ -r "$1" ] && [ -x "$1" ] || return 0
+  for td_entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    [ -e "$td_entry" ] || [ -L "$td_entry" ] || continue
+    case ${td_entry##*/} in
+      .fseventsd|.metadata_never_index|.tmpdisk-ready) ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
 }
 
-# Makes the disk again to give its freed pages back (sd:10992).
+# Gives the root its write bits and the ready mark back.
+tmpdisk_reopen() { # mount
+  chmod ug+w "$1" && : > "$1/.tmpdisk-ready" || { note_failure "mark $1 ready again" 1; return 1; }
+}
+
+# Makes the disk again to give its freed pages back (sd:10992). After the
+# wait the root loses its write bits, so a consumer that read the mark
+# but made no folder yet cannot make one on a disk about to go; one that
+# did is seen by the last look, just before the detach.
 tmpdisk_recycle() { # mount, device, sectors
   if tmpdisk_in_use "$1"; then
-    echo "  SKIP    $1 holds a consumer folder; the next run makes it again"
+    echo "  SKIP    $1 holds an entry the stage did not write; the next run makes it again"
     return 0
   fi
   rm -f "$1/.tmpdisk-ready" || { note_failure "remove $1/.tmpdisk-ready" 1; return 1; }
   sleep "$TMPDISK_GRACE"
-  if tmpdisk_in_use "$1"; then
-    : > "$1/.tmpdisk-ready" || { note_failure "mark $1 ready again" 1; return 1; }
-    echo "  SKIP    a consumer took $1 during the wait; the next run makes it again"
-    return 0
-  fi
-  # Unmarked from here: a stop leaves a disk the next run mounts again.
+  # Unmarked and closed from here: a stop leaves a disk the next run's
+  # remount opens and marks again.
+  chmod a-w "$1" || { note_failure "close $1 to new folders" 1; tmpdisk_reopen "$1" || :; return 1; }
   if ! td_now=$(tmpdisk_images); then
     note_failure "hdiutil info -plist: the RAM disk's state is unknown" 1
     return 1
@@ -4905,8 +4919,13 @@ tmpdisk_recycle() { # mount, device, sectors
     note_failure "$2 is no longer the RAM disk at $1" 1
     return 1
   fi
+  if tmpdisk_in_use "$1"; then
+    tmpdisk_reopen "$1" || return 1
+    echo "  SKIP    a consumer took $1 during the wait; the next run makes it again"
+    return 0
+  fi
   if ! tmpdisk_step 60 hdiutil detach "$2"; then
-    [ ! -d "$1/.fseventsd" ] || : > "$1/.tmpdisk-ready" || :
+    [ ! -d "$1/.fseventsd" ] || tmpdisk_reopen "$1" || :
     return 1
   fi
   tmpdisk_create "$1" "$3"
