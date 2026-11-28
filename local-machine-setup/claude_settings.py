@@ -402,16 +402,21 @@ def hub_address(path):
         return None, f"{path} address is not an IP"
 
 
-def _key(name):
-    return "(?:" + re.escape(name) + '|"' + re.escape(name) + "\"|'" + re.escape(name) + "')"
+#: What the profile owns, as key paths: a table or key under one of these goes,
+#: whether a header, a key in a parent table or a root dotted key sets it.
+HUB_PATHS = (("permissions", HUB_PROFILE), ("features", "network_proxy"),
+             ("sandbox_workspace_write", "network_access"), ("default_permissions",))
+KEY_LINE = re.compile(r"\s*(" + TOML_DOTTED + r")\s*=")
+HEADER_KEY = re.compile(r"\s*\[\[?\s*(" + TOML_DOTTED + r")")
 
 
-#: The tables the profile owns: [permissions.sd-hub...] and [features.network_proxy...].
-HUB_HEADER = re.compile(r"\s*\[\[?\s*(?:" + _key("permissions") + r"\s*\.\s*" + _key(HUB_PROFILE)
-                        + "|" + _key("features") + r"\s*\.\s*" + _key("network_proxy") + r")\s*[.\]]")
-SANDBOX_HEADER = re.compile(r"\s*\[\s*" + _key("sandbox_workspace_write") + r"\s*\]")
-ROOT_PERMISSIONS = re.compile(r"\s*" + _key("default_permissions") + r"\s*=")
-NETWORK_ACCESS = re.compile(r"\s*" + _key("network_access") + r"\s*=")
+def toml_path(dotted):
+    """The segments of a dotted key, quotes taken off."""
+    return tuple(key[1:-1] if key[:1] in "\"'" else key for key in re.findall(TOML_KEY, dotted))
+
+
+def hub_owned(path):
+    return any(path[:len(owned)] == owned for owned in HUB_PATHS)
 
 
 def hub_wanted(config, address):
@@ -427,6 +432,17 @@ def hub_wanted(config, address):
     return want
 
 
+def hub_holds(before, after, address):
+    """AFTER is BEFORE with the profile in; an empty [sandbox_workspace_write]
+    counts as none, as a header left by its one dropped key or a dropped root
+    dotted key leaves the one or the other."""
+    want, got = hub_wanted(before, address), dict(after)
+    for config in (want, got):
+        if config.get("sandbox_workspace_write") == {}:
+            del config["sandbox_workspace_write"]
+    return want == got
+
+
 def codex_hub_gap(text, address):
     """'' when config.toml holds the profile for ADDRESS; else MISSING, STALE or DIFFERS."""
     if tomllib is None:
@@ -436,7 +452,7 @@ def codex_hub_gap(text, address):
     except tomllib.TOMLDecodeError:
         return "DIFFERS codex config.toml does not parse; sd-hub profile not checked"
     try:
-        if hub_wanted(config, address) == config:
+        if hub_holds(config, config, address):
             return ""
     except (AttributeError, TypeError):
         return "DIFFERS codex config.toml holds permissions or features in a shape this cannot merge; set it by hand"
@@ -449,11 +465,13 @@ def codex_hub_merge(text, address):
     """The source wins: the profile's tables go to the end, the default to the root."""
     if '"""' in text or "'''" in text:
         sys.exit("claude_settings.py: config.toml has a multi-line string; set the sd-hub profile by hand")
-    kept, ours, sandbox, root = [], False, False, True
+    kept, table, ours = [], (), False
     for line in text.splitlines(keepends=True):
         if TOML_HEADER.match(line):
-            ours, sandbox, root = bool(HUB_HEADER.match(line)), bool(SANDBOX_HEADER.match(line)), False
-        if ours or (root and ROOT_PERMISSIONS.match(line)) or (sandbox and NETWORK_ACCESS.match(line)):
+            table = toml_path(HEADER_KEY.match(line).group(1))
+            ours = hub_owned(table)
+        key = KEY_LINE.match(line)
+        if ours or (key and hub_owned(table + toml_path(key.group(1)))):
             continue
         kept.append(line)
     first = next((i for i, line in enumerate(kept) if TOML_HEADER.match(line)), len(kept))
@@ -542,7 +560,7 @@ def main(argv):
         elif gap:
             merged = codex_hub_merge(text, address)
             try:
-                holds = tomllib.loads(merged) == hub_wanted(tomllib.loads(text), address)
+                holds = hub_holds(tomllib.loads(text), tomllib.loads(merged), address)
             except tomllib.TOMLDecodeError:
                 holds = False
             if not holds:

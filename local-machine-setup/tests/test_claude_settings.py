@@ -452,10 +452,32 @@ class CodexHubProfile(unittest.TestCase):
         self.assertEqual(config["permissions"]["workspace"], {"network": {"enabled": True}})
         self.assertEqual(sorted(config["permissions"]), ["sd-hub", "workspace"])
 
+    def test_an_owned_key_set_outside_its_own_table_is_replaced(self):
+        # Review: `[features] network_proxy = true`, Codex's flag form, made the
+        # merge refuse. Every form that sets a key the profile owns goes.
+        want = {"enabled": True, "enable_socks5": True, "domains": {"192.0.2.10": "allow"}}
+        for text in ("[features]\nnetwork_proxy = true\nother = true\n",
+                     "features.network_proxy = true\n",
+                     "features.network_proxy.enabled = false\n",
+                     '[features]\n"network_proxy" = true\n',
+                     "[permissions]\nsd-hub = { network = { enabled = false } }\n",
+                     "permissions.sd-hub.network.enabled = false\n",
+                     '[permissions."sd-hub".network]\nenabled = false\n',
+                     "sandbox_workspace_write.network_access = true\n",
+                     '[sandbox_workspace_write]\n"network_access" = true\nwritable_roots = []\n',
+                     '\'default_permissions\' = "workspace"\n'):
+            with self.subTest(text=text):
+                result = self.merge(text)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config = tomllib.loads(self.config.read_text())
+                self.assertEqual(config["default_permissions"], "sd-hub")
+                self.assertEqual(config["permissions"]["sd-hub"]["network"], want)
+                self.assertEqual(config["features"]["network_proxy"], {"enabled": True})
+                self.assertNotIn("network_access", config.get("sandbox_workspace_write", {}))
+                self.assertEqual(config["features"].get("other"), True if "other" in text else None)
+
     def test_a_shape_the_line_scan_cannot_rewrite_is_refused_and_left_alone(self):
-        for text in ("[features]\nnetwork_proxy = true\n",
-                     'permissions.sd-hub.network.enabled = false\n',
-                     'x = """\n[permissions.sd-hub]\n"""\n',
+        for text in ('x = """\n[permissions.sd-hub]\n"""\n',
                      "permissions = 1\n"):
             with self.subTest(text=text):
                 result = self.merge(text)
