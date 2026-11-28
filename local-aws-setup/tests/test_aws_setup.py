@@ -1048,6 +1048,35 @@ class ExtraPolicyCase(unittest.TestCase):
         self.assertEqual(decision(self, policy, "ssm:StartSession", prefix + "instance/probe",
                                   {**resource, "ssm:SessionDocumentAccessCheck": "false"}), "implicitDeny")
 
+    def test_instance_role_example_reads_only_its_own_staged_archive(self):
+        # The host fetches its archive by key with its own credentials, so
+        # no presigned URL sits in SSM command history (sd:10983).
+        values = {"STAGING_BUCKET": "example-staging", "DEPLOYMENT": "example-one",
+                  "AUDIT_BUCKET": "example-audit"}
+        raw = (HERE.parent / "accounts" / "instance-role-policy.json.example").read_text()
+        self.assertEqual(set(re.findall(r"{{([A-Z_]+)}}", raw)), set(values))
+        for name, value in values.items():
+            raw = raw.replace("{{" + name + "}}", value)
+        policy = json.loads(raw)
+        decision = LifecycleCase.decision
+        own = "arn:aws:s3:::example-staging/world-simulator-deploy/example-one/"
+        for action, arn, want in [
+            ("s3:GetObject", own + "0123456789abcdef0123456789abcdef.tar.gz", "allowed"),
+            ("s3:PutObject", "arn:aws:s3:::example-audit/ssm-output/cmd/i-probe/stdout", "allowed"),
+            # Another deployment's archive, a sibling name, the bucket root.
+            ("s3:GetObject", "arn:aws:s3:::example-staging/world-simulator-deploy/example-two/a.tar.gz", "implicitDeny"),
+            ("s3:GetObject", "arn:aws:s3:::example-staging/world-simulator-deploy/example-one-x/a.tar.gz", "implicitDeny"),
+            ("s3:GetObject", "arn:aws:s3:::example-staging/other/a.tar.gz", "implicitDeny"),
+            ("s3:GetObject", "arn:aws:s3:::example-audit/ssm-output/cmd/i-probe/stdout", "implicitDeny"),
+            # Read only: the deployer stages and deletes; the host never writes there.
+            ("s3:PutObject", own + "a.tar.gz", "implicitDeny"),
+            ("s3:DeleteObject", own + "a.tar.gz", "implicitDeny"),
+            ("s3:GetObjectVersion", own + "a.tar.gz", "implicitDeny"),
+            ("s3:ListBucket", "arn:aws:s3:::example-staging", "implicitDeny"),
+        ]:
+            with self.subTest(action=action, arn=arn):
+                self.assertEqual(decision(self, policy, action, arn, {}), want)
+
     def test_agent_ssm_deny_example_overrides_deployment_grants(self):
         # The agent user holds this beside anything else attached; the deployer never does (sd:2851).
         deny = json.loads((HERE.parent / "accounts" / "agent-ssm-deny.json.example").read_text())
