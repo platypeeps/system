@@ -205,9 +205,101 @@ exit 0"""), encoding="utf-8")
         self.assertIn("frontend-proxy port-forward stopped", done.stdout)
         self.assert_ends(pid)
 
+    def context_stubs(self, current="operator-ctx"):
+        """Stubs that keep a current context the way a kubeconfig does.
+
+        kind create cluster makes its context current, as the real one does.
+        STUB_FAIL names one tool that exits 1 on its cluster call.
+        """
+        self.ctx = self.root / "current-context"
+        self.ctx.write_text(current, encoding="utf-8")
+        body = """#!/bin/sh
+echo "$(basename "$0") $*" >> "$STUB_LOG"
+case "$(basename "$0") $*" in
+  "kind get clusters") [ -n "$STUB_NO_CLUSTER" ] || echo otel-demo ;;
+  "kind create cluster"*) printf kind-otel-demo > "$STUB_CTX" ;;
+  "kubectl config current-context")
+    [ -s "$STUB_CTX" ] || exit 1; cat "$STUB_CTX"; echo ;;
+  "kubectl config use-context "*) printf %s "$3" > "$STUB_CTX" ;;
+  "kubectl config unset current-context") : > "$STUB_CTX" ;;
+  "kubectl config "*) ;;
+  "helm repo "*) ;;
+  *) [ "$STUB_FAIL" = "$(basename "$0")" ] && exit 1 ;;
+esac
+exit 0
+"""
+        for tool in ("kind", "kubectl", "helm"):
+            (self.root / "bin" / tool).write_text(body, encoding="utf-8")
+        self.env.update(STUB_CTX=str(self.ctx),
+                        OTLP_EXPORT_URL="https://otlp.example.invalid/otel",
+                        OTLP_EXPORT_AUTH="k", OPENAI_API_KEY="k",
+                        AURA_CHART_DIR=str(self.root),
+                        AURA_VALUES_FILE=str(self.root / "values.yaml"))
+
+    def assert_demo_targeted(self):
+        for line in self.log.read_text(encoding="utf-8").splitlines():
+            tool, _, rest = line.partition(" ")
+            if tool == "kind" or rest.startswith(("config ", "repo ")):
+                continue
+            flag = "--kube-context" if tool == "helm" else "--context"
+            self.assertIn(f"{flag} kind-otel-demo", line)
+
+    def test_verbs_keep_the_operators_context(self):
+        # sd:10436: start, upgrade and mcp-install ran use-context first,
+        # so a failed helm call left the operator on the demo cluster.
+        cases = (("start", "", 0, True), ("start", "helm", 1, True),
+                 ("start", "", 0, False), ("upgrade", "", 0, False),
+                 ("upgrade", "helm", 1, False), ("mcp-install", "", 0, False),
+                 ("mcp-install", "helm", 1, False))
+        for verb, fail, rc, fresh in cases:
+            with self.subTest(verb=verb, fail=fail, fresh=fresh):
+                self.context_stubs()
+                self.log.unlink(missing_ok=True)
+                self.env["STUB_FAIL"] = fail
+                self.env["STUB_NO_CLUSTER"] = "1" if fresh else ""
+                self.run_verb(verb, expect=rc)
+                self.run_verb("stop", expect=0)
+                self.assertEqual(self.ctx.read_text(encoding="utf-8"),
+                                 "operator-ctx")
+                self.assert_demo_targeted()
+
+    def test_start_on_a_kubeconfig_with_no_current_context(self):
+        self.context_stubs(current="")
+        self.env["STUB_NO_CLUSTER"] = "1"
+        self.run_verb("start", expect=0)
+        self.assertEqual(self.ctx.read_text(encoding="utf-8"), "")
+
+    def test_failed_cluster_create_keeps_the_operators_context(self):
+        self.context_stubs()
+        self.env.update(STUB_NO_CLUSTER="1", STUB_FAIL="kind")
+        (self.root / "bin" / "kind").write_text(
+            '#!/bin/sh\ncase "$*" in "create cluster"*)\n'
+            '  printf kind-otel-demo > "$STUB_CTX"; exit 1 ;; esac\n',
+            encoding="utf-8")
+        self.run_verb("start", expect=1)
+        self.assertEqual(self.ctx.read_text(encoding="utf-8"), "operator-ctx")
+
     def test_repo_start_needs_the_demo_checkout(self):
         done = self.run_verb("repo-start", expect=1)
         self.assertIn("OTEL_DEMO_REPO is not set", done.stderr)
+
+    def test_repo_start_keeps_a_failed_start_and_its_output(self):
+        # sd:10435: the tee pipe returned 0 when make failed.
+        repo = self.root / "demo"
+        repo.mkdir()
+        make = self.root / "bin" / "make"
+        make.write_text('#!/bin/sh\necho "make-output $*"\n'
+                        'exit "${STUB_RC:-0}"\n', encoding="utf-8")
+        make.chmod(0o755)
+        self.env["OTEL_DEMO_REPO"] = str(repo)
+        for rc in (17, 0):
+            with self.subTest(rc=rc):
+                self.env["STUB_RC"] = str(rc)
+                done = self.run_verb("repo-start", expect=rc)
+                self.assertIn("make-output start", done.stdout)
+                out = self.folder / "opentelemetry-demo-output.txt"
+                self.assertIn("make-output start",
+                              out.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

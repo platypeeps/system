@@ -23,7 +23,8 @@ if [ "$1" = build ]; then
   mkdir -p target/release
   printf '#!/bin/sh\\necho built-aura\\n' > target/release/aura
 fi
-exit 0
+echo "cargo-output"
+exit "${STUB_RC:-0}"
 """
 
 BREW = """#!/bin/sh
@@ -117,6 +118,18 @@ class FromCheckout(unittest.TestCase):
         self.assertTrue(
             line.startswith(f"{self.repo} | run --bin aura -- webserver --config "),
             line)
+
+    def test_server_repo_keeps_a_failed_start_and_its_output(self):
+        # sd:10435: the tee pipe returned 0 when cargo failed.
+        for rc in (17, 0):
+            with self.subTest(rc=rc):
+                self.env["STUB_RC"] = str(rc)
+                done = self.run_aura("server-repo")
+                self.assertEqual(done.returncode, rc, done.stderr)
+                self.assertIn("cargo-output", done.stdout)
+                out = self.entrypoint.parent / "aura-output.txt"
+                self.assertIn("cargo-output",
+                              out.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
