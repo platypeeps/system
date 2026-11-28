@@ -369,10 +369,15 @@ rsync exit 24, or exit 23 when every error line names a file in the chunk
 that is gone from the source, moves the cursor and logs the names in the
 `.err` (sd:7321). Any other error fails the chunk as before.
 A file rsync would overwrite on the share moves first to
-`<NAS_COPY_DST>/.versions/<run date>/`, under its own relative path, so the
-earlier version of a changed vault attachment stays restorable; each run
-removes the dated folders there older than `NAS_COPY_KEEP_VERSION_DAYS`
-(default 30) (sd:10993). Restore one by copying it back from that folder.
+`<NAS_COPY_DST>/.versions/<run date>/<attempt>/`, under its own relative
+path, so the earlier version of a changed vault attachment stays
+restorable; each run removes the date folders there older than
+`NAS_COPY_KEEP_VERSION_DAYS` (default 30, at most 3650) (sd:10993), under
+the same kind of time bound as rsync. The run refuses when the source has
+its own `.versions`, or when the share's `.versions` lacks the
+`.nas-full-copy-versions` marker the first run writes: either would put
+mirrored data where the prune deletes. Restore a file by copying it back
+from its folder.
 `NAS_COPY_EXCLUDE` names folders, relative to the source and comma-separated,
 that the copy leaves out, such as regenerable output rsync timed out on
 (sd:8932). Set the two volumes in

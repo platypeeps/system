@@ -3666,7 +3666,10 @@ class NasFullCopy(unittest.TestCase):
                                    '[ "$code" -eq 0 ] || [ -z "${STUB_ERR:-}" ] || printf "%s\\n" "$STUB_ERR" >&2\n'
                                    '[ -z "${STUB_TERM_PARENT:-}" ] || kill -TERM "$PPID"\n'
                                    'exit "$code"\n')
-        self.stub(stubs / "timeout", '#!/bin/sh\nshift 2\nexec "$@"\n')
+        # STUB_PRUNE_RC: the bounded prune (`timeout ... sh -c`) exits with it, as a stalled share would.
+        self.stub(stubs / "timeout", '#!/bin/sh\nshift 2\n'
+                                     '[ -z "${STUB_PRUNE_RC:-}" ] || [ "$1" != sh ] || exit "$STUB_PRUNE_RC"\n'
+                                     'exec "$@"\n')
         self.stub(stubs / "caffeinate", '#!/bin/sh\nshift\nexec "$@"\n')
         # `sd reports brief add ... <file>`: one line per call, then the brief's text, so a test reads both.
         self.stub(stubs / "sd", '#!/bin/sh\nfor last; do :; done\nprintf "%s\\n" "$*" >> "$STUB_NOTIFIED"\n'
@@ -3773,6 +3776,7 @@ class NasFullCopy(unittest.TestCase):
 
     def test_a_volume_that_is_in_the_mount_table_is_copied(self) -> None:
         dst = self.work / "Backup.NAS"
+        dst.mkdir()  # a mounted share exists
         self.mount_table(f"/dev/disk1s1 on {self.src} (apfs, local, journaled)",
                          f"//host/share on {dst} (smbfs, nodev, nosuid)")
         result = self.run_copy(NAS_COPY_SKIP_MOUNT_CHECK=None, NAS_COPY_DST=str(dst))
@@ -3810,40 +3814,117 @@ class NasFullCopy(unittest.TestCase):
         os.utime(self.dst / "vault/a.png", (0, 0))
         (self.dst / "same").write_text("same")
         os.utime(self.dst / "same", ns=(os.stat(self.src / "same").st_mtime_ns,) * 2)
+        result = self.run_copy(NAS_COPY_RSYNC=self.real_rsync())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.dst / "vault/a.png").read_text(), "vault/a.png")
+        dated = [path.name for path in (self.dst / ".versions").iterdir() if path.is_dir()]
+        self.assertEqual(len(dated), 1, dated)
+        self.assertRegex(dated[0], r"^\d{4}-\d{2}-\d{2}$")
+        runs = list((self.dst / ".versions" / dated[0]).iterdir())
+        self.assertEqual(len(runs), 1, runs)
+        self.assertEqual((runs[0] / "vault/a.png").read_text(), "before")
+        self.assertFalse((runs[0] / "same").exists(), "an unchanged file is not versioned")
+
+    def real_rsync(self) -> str:
         real = shutil.which("rsync")
         # openrsync starts its receiver as `rsync` from PATH: not the stub.
         (self.stubs / "rsync").unlink()
-        result = self.run_copy(NAS_COPY_RSYNC=real)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual((self.dst / "vault/a.png").read_text(), "vault/a.png")
-        dated = [path.name for path in (self.dst / ".versions").iterdir()]
-        self.assertEqual(len(dated), 1, dated)
-        self.assertRegex(dated[0], r"^\d{4}-\d{2}-\d{2}$")
-        kept = self.dst / ".versions" / dated[0]
-        self.assertEqual((kept / "vault/a.png").read_text(), "before")
-        self.assertFalse((kept / "same").exists(), "an unchanged file is not versioned")
+        return real
+
+    def test_a_second_run_the_same_date_keeps_the_first_runs_backup(self) -> None:
+        """Review of sd:10993: one folder per date let the second run's
+        backup of a file replace the first run's, the only older copy."""
+        self.tree("f")
+        (self.dst / "f").write_text("v0")
+        os.utime(self.dst / "f", (0, 0))
+        real = self.real_rsync()
+        first = self.run_copy(NAS_COPY_RSYNC=real)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        (self.src / "f").write_text("v2")
+        os.utime(self.src / "f", (86400, 86400))
+        second = self.run_copy(NAS_COPY_RSYNC=real)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        kept = sorted(path.read_text() for path in (self.dst / ".versions").glob("*/*/f"))
+        self.assertEqual(kept, ["f", "v0"], "both earlier versions stay")
 
     def test_version_folders_older_than_30_days_are_pruned(self) -> None:
-        versions = self.dst / ".versions"
+        versions = self.owned_versions()
         recent = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
         for name in ("2000-01-01", recent, "keep-me"):
             (versions / name).mkdir(parents=True)
             (versions / name / "f").write_text(name)
         result = self.run_copy()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(sorted(path.name for path in versions.iterdir()), [recent, "keep-me"])
+        self.assertEqual(sorted(path.name for path in versions.iterdir()),
+                         [".nas-full-copy-versions", recent, "keep-me"])
         self.assertIn("pruned 1 version folders older than 30 days", result.stdout)
         call = self.calls.read_text().split()
         self.assertIn("--backup", call)
         self.assertTrue(any(word.startswith(f"--backup-dir={versions}/") for word in call), call)
 
+    def owned_versions(self) -> Path:
+        versions = self.dst / ".versions"
+        versions.mkdir()
+        (versions / ".nas-full-copy-versions").write_text("")
+        return versions
+
     def test_a_bad_keep_setting_is_refused_before_anything_is_pruned(self) -> None:
+        # 999999999999 days put the cutoff in year 1993525 and pruned
+        # yesterday's folder (review of sd:10993).
+        recent = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        for keep in ("0", "007", "x", "1 2", "999999999999", "3651"):
+            with self.subTest(keep=keep):
+                shutil.rmtree(self.dst / ".versions", ignore_errors=True)
+                self.forget_calls()
+                (self.owned_versions() / recent).mkdir()
+                result = self.run_copy(NAS_COPY_KEEP_VERSION_DAYS=keep)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("NAS_COPY_KEEP_VERSION_DAYS", result.stdout)
+                self.assertTrue((self.dst / ".versions" / recent).is_dir())
+                self.assertFalse(self.calls.exists())
+
+    def test_a_versions_folder_this_copy_did_not_make_is_refused(self) -> None:
+        """Review of sd:10993: a source's own .versions, copied to the share
+        before, sat where the prune deletes dated folders."""
         (self.dst / ".versions/2000-01-01").mkdir(parents=True)
-        result = self.run_copy(NAS_COPY_KEEP_VERSION_DAYS="0")
+        (self.dst / ".versions/2000-01-01/f").write_text("mirrored data")
+        result = self.run_copy()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("NAS_COPY_KEEP_VERSION_DAYS", result.stdout)
-        self.assertTrue((self.dst / ".versions/2000-01-01").is_dir())
+        self.assertIn("refused:", result.stdout)
+        self.assertEqual((self.dst / ".versions/2000-01-01/f").read_text(), "mirrored data")
         self.assertFalse(self.calls.exists())
+
+    def test_a_source_with_its_own_versions_folder_is_refused(self) -> None:
+        self.tree(".versions/2000-01-01/f", "a")
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"refused: {self.src}/.versions", result.stdout)
+        self.assertFalse(self.calls.exists())
+        self.assertFalse((self.dst / ".versions").exists())
+
+    def test_a_first_run_marks_the_versions_folder_as_its_own(self) -> None:
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.dst / ".versions/.nas-full-copy-versions").is_file())
+
+    def test_a_share_that_refuses_the_marker_is_refused_and_left_clean(self) -> None:
+        # A .versions left without its marker would refuse every later run.
+        self.dst.chmod(0o555)
+        self.addCleanup(self.dst.chmod, 0o755)
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("refused: could not create", result.stdout)
+        self.assertFalse((self.dst / ".versions").exists())
+        self.assertFalse(self.calls.exists())
+
+    def test_a_prune_the_share_stalls_is_bounded_and_the_copy_goes_on(self) -> None:
+        """Review of sd:10993: the prune ran unbounded on the share, so a
+        stalled NAS held the run past 05:00 before rsync's own bound."""
+        self.owned_versions()
+        result = self.run_copy(STUB_PRUNE_RC="124")
+        self.assertIn("SD_REPORT_ATTENTION: nas-full-copy: the version prune timed out", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.calls.exists(), "the copy still runs")
 
     def test_a_log_folder_outside_the_source_is_not_excluded(self) -> None:
         self.tree("repo-storage/system/nas-full-copy/x")
@@ -4136,6 +4217,7 @@ class NasFullCopy(unittest.TestCase):
 
     def test_a_share_gone_before_a_retry_is_refused(self) -> None:
         dst = self.work / "Backup.NAS"
+        dst.mkdir()  # a mounted share exists
         mounts = self.work / "mounts"
         mounts.write_text(f"/dev/disk1s1 on {self.src} (apfs, local, journaled)\n"
                           f"//host/share on {dst} (smbfs, nodev, nosuid)\n")
