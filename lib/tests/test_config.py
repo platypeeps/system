@@ -214,6 +214,38 @@ class EnvFile(unittest.TestCase):
                 for private in ("privateToken", "abc", "hidden", "first", "ni"):
                     self.assertNotIn(private, message.replace(str(env), ""))
 
+    def test_a_command_substitution_is_one_word(self):
+        # sd:10773: a `;` inside `$(...)` or backticks ended the
+        # statement, so the next word read as a variable: it took a
+        # value and a refusal named it. The substitution is one word;
+        # a refusal names the variable it assigns.
+        (self.conf / "sub").mkdir(parents=True)
+        env = self.conf / "sub/.env"
+        for text in ("A=$(x; privateToken=y|z)",
+                     "A=`x; privateToken=y|z`",
+                     "A=$(echo ')'; privateToken=y|z)",
+                     "A=\"$(echo \")\"; privateToken=y|z)\"",
+                     "A=$( (x); privateToken=y|z)",
+                     "A=$(x; privateToken=y"):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                with self.assertRaises(stc.EnvFileError) as caught:
+                    stc.read_env("sub", self.envv)
+                message = str(caught.exception)
+                self.assertTrue(message.startswith(f"{env}:1: A: an un"), message)
+                self.assertNotIn("privateToken", message)
+        for text, read in (("A=$(x; B=y)", {"A": "$(x; B=y)"}),
+                           ("A=`x; B=y`; C=1", {"A": "`x; B=y`", "C": "1"}),
+                           ("A=\"$(x; B=y)\"", {"A": "$(x; B=y)"}),
+                           ("A=$(a && b); C=1", {"A": "$(a && b)", "C": "1"})):
+            with self.subTest(text=text):
+                env.write_text(text + "\n")
+                self.assertEqual(stc.read_env("sub", self.envv), read)
+        env.write_text("A=$(x; B=y) && C=1\n")
+        with self.assertRaises(stc.EnvFileError) as caught:
+            stc.read_env("sub", self.envv)
+        self.assertIn(f"{env}:1: C: ", str(caught.exception))
+
     def test_a_python_only_reader_never_takes_a_shorter_value(self):
         # Review class: where the shell reading and the reading from
         # before sd:10423 differ, a file no shell sources (agent-meter's)

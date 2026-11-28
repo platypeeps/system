@@ -155,7 +155,8 @@ class _Joined(Exception):
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _OPERATOR = ("an unquoted %r (redirection, pipe, || or background job) "
              "is not read; quote it or drop it")
-_UNCLOSED = "an unclosed quote is not read; close it on this line"
+_UNCLOSED = ("an unclosed quote or command substitution is not read; "
+             "close it on this line")
 _JOINED = ("a statement continued on the next line is not read; "
            "put it on one line")
 _SKIPPED = ("an assignment `.` may skip (after a failing && or before a "
@@ -201,6 +202,38 @@ def _operator(text: str, i: int) -> str:
     return op
 
 
+def _substitution(text: str, i: int) -> int:
+    """The index past the `$(...)` or backquoted command substitution
+    at `i`, so a `;` or `&&` in it ends no statement (sd:10773); -1
+    when it stays open. Its quotes and nested parentheses are followed;
+    an unquoted `<`, `>`, `|` or `&` in it raises `_Operator`."""
+    tick = text[i] == "`"
+    j, depth, quote = i + (1 if tick else 2), 1, ""
+    while j < len(text):
+        char = text[j]
+        if quote == "'":
+            quote = "" if char == "'" else quote
+        elif char == "\\":
+            j += 1
+        elif char == '"':
+            quote = "" if quote else '"'
+        elif quote:
+            pass
+        elif char == "'":
+            quote = "'"
+        elif tick and char == "`":
+            return j + 1
+        elif not tick and char in "()":
+            depth += 1 if char == "(" else -1
+            if not depth:
+                return j + 1
+        else:
+            j += len(_operator(text, j)) or 1  # `&&` is one operator
+            continue
+        j += 1
+    return -1
+
+
 def _shell_word(text: str, home: str) -> tuple[str | None, str, bool, str]:
     """The value `.` assigns from `text`, the part after `=`, the text
     of the line's next statement, `""` when none (sd:10423), and
@@ -218,8 +251,9 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str, bool, str]:
     elsewhere unless it reads as it did before sd:10423. Quotes join and are removed, a backslash
     escapes one character (inside double quotes only `$`, `` ` ``, `"`,
     `\\`), and `$HOME`, `${HOME}` and a leading unquoted `~/` expand
-    outside single quotes. A None value for an unclosed quote, which `.`
-    refuses."""
+    outside single quotes. A `$(...)` or backquoted command substitution
+    stays as written (`_substitution`). A None value for an unclosed
+    quote or substitution, which `.` refuses."""
     if text[:1] in tuple(_BLANK):
         text = text.lstrip(_BLANK)
         if text.startswith("#"):
@@ -249,6 +283,13 @@ def _shell_word(text: str, home: str) -> tuple[str | None, str, bool, str]:
         elif char == "$" and (match := _HOME.match(text, i)):
             out.append(home)
             i = match.end()
+            continue
+        elif char == "`" or text.startswith("$(", i):
+            end = _substitution(text, i)
+            if end < 0:
+                return None, "", several, ""
+            out.append(text[i:end])  # kept as text: its output is not run
+            i = end
             continue
         elif char == '"':
             quote = "" if quote else '"'
