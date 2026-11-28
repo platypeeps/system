@@ -76,7 +76,7 @@ class DemoConfig(unittest.TestCase):
             else:
                 self.fail(f"process group {pgid} outlived SIGKILL")
 
-    def run_verb(self, *args, expect):
+    def run_verb(self, *args, expect, timeout=60):
         proc = subprocess.Popen(
             ["/bin/sh", str(self.folder / ENTRYPOINT.name), *args],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -85,10 +85,12 @@ class DemoConfig(unittest.TestCase):
         )
         self.groups.append(proc.pid)
         try:
-            out, err = proc.communicate(timeout=60)
+            out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            out, err = proc.communicate()
+            # The whole group: a child left in the background holds the
+            # pipes, and a wait for them never ends.
+            os.killpg(proc.pid, signal.SIGKILL)
+            out, err = proc.communicate(timeout=30)
             self.fail(f"{args} timed out: {out}{err}")
         done = subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
         self.assertEqual(done.returncode, expect, done.stdout + done.stderr)
@@ -248,6 +250,17 @@ exit 0"""), encoding="utf-8")
         self.doCleanups()
         time.sleep(2)
         self.assertFalse(mark.exists(), "a forward outlived the test")
+
+    def test_a_verb_that_times_out_fails_and_does_not_hang(self):
+        # Review of sd:11000: the timeout killed only the verb's shell;
+        # a background child kept the pipes open, so the wait hung.
+        stub = self.root / "bin" / "kind"
+        stub.write_text("#!/bin/sh\nsleep 30 &\nsleep 30\n", encoding="utf-8")
+        started = time.monotonic()
+        with self.assertRaises(AssertionError) as caught:
+            self.run_verb("status", expect=3, timeout=1)
+        self.assertIn("timed out", str(caught.exception))
+        self.assertLess(time.monotonic() - started, 15)
 
     def test_stop_ends_the_forward_it_started(self):
         self.sleeping_kubectl()
