@@ -15,6 +15,10 @@ comments and every line outside the block stay as they are.
 `codex-missing FILE ENDPOINT PROTOCOL` and `codex-merge` hold the [otel] table of
 codex's config.toml at the hub's exporter (sd:6944); the source wins, the rest stays.
 
+`codex-hub-missing FILE HUB_JSON` and `codex-hub-merge` hold codex's sd-hub
+permissions profile, which lets the sandbox reach only the IP hub.json's
+`address` names (sd:10754); the source wins, the rest stays.
+
 `pref-missing FILE KEY VALUE` and `pref-merge FILE KEY VALUE` hold one
 top-level KEY of an app's JSON settings at a JSON VALUE (the macos stage
 turns self-update off with them, sd:3062). Unlike the baseline, a KEY set to
@@ -363,6 +367,121 @@ def toml_holds(before, text, block):
     return new == old
 
 
+#: The Codex permissions profile that lets a satellite's sandbox reach the sd hub and
+#: nothing else (sd:10754): its SOCKS5 proxy allows only the IP hub.json's `address`
+#: names. Codex 0.171 checks the host, not the port, and refuses the hub's tailnet name
+#: as private, so sd dials the IP (pack sd:10979). No local binding: loopback stays shut.
+HUB_PROFILE = "sd-hub"
+
+
+def codex_hub(address):
+    """The tables the profile is, for one validated IP."""
+    return (f"[features.network_proxy]\nenabled = true\n\n"
+            f"[permissions.{HUB_PROFILE}.filesystem]\n"
+            '":root" = "read"\n":workspace_roots" = "write"\n":tmpdir" = "write"\n":slash_tmp" = "write"\n\n'
+            f"[permissions.{HUB_PROFILE}.network]\nenabled = true\nenable_socks5 = true\n\n"
+            f'[permissions.{HUB_PROFILE}.network.domains]\n"{address}" = "allow"\n')
+
+
+def hub_address(path):
+    """(address, why): hub.json's `address` as an IP, or None and the reason."""
+    import ipaddress
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return None, f"no {path}"
+    except (OSError, ValueError) as error:
+        return None, f"{path} does not read ({error.__class__.__name__})"
+    address = data.get("address") if isinstance(data, dict) else None
+    if address is None:
+        return None, f"{path} names no address"
+    try:
+        return str(ipaddress.ip_address(address)), ""
+    except (TypeError, ValueError):
+        return None, f"{path} address is not an IP"
+
+
+#: What the profile owns, as key paths: a table or key under one of these goes,
+#: whether a header, a key in a parent table or a root dotted key sets it.
+HUB_PATHS = (("permissions", HUB_PROFILE), ("features", "network_proxy"),
+             ("sandbox_workspace_write", "network_access"), ("default_permissions",))
+KEY_LINE = re.compile(r"\s*(" + TOML_DOTTED + r")\s*=")
+HEADER_KEY = re.compile(r"\s*\[\[?\s*(" + TOML_DOTTED + r")")
+
+
+def toml_path(dotted):
+    """The segments of a dotted key, quotes taken off."""
+    return tuple(key[1:-1] if key[:1] in "\"'" else key for key in re.findall(TOML_KEY, dotted))
+
+
+def hub_owned(path):
+    return any(path[:len(owned)] == owned for owned in HUB_PATHS)
+
+
+def hub_wanted(config, address):
+    """CONFIG as the profile wants it: its own tables, the default and no network_access."""
+    import copy
+    want = copy.deepcopy(config)
+    block = tomllib.loads(codex_hub(address))
+    want["default_permissions"] = HUB_PROFILE
+    want.setdefault("permissions", {})[HUB_PROFILE] = block["permissions"][HUB_PROFILE]
+    want.setdefault("features", {})["network_proxy"] = block["features"]["network_proxy"]
+    if isinstance(want.get("sandbox_workspace_write"), dict):
+        want["sandbox_workspace_write"].pop("network_access", None)
+    return want
+
+
+def hub_holds(before, after, address):
+    """AFTER is BEFORE with the profile in; an empty [sandbox_workspace_write]
+    counts as none, as a header left by its one dropped key or a dropped root
+    dotted key leaves the one or the other."""
+    want, got = hub_wanted(before, address), dict(after)
+    for config in (want, got):
+        if config.get("sandbox_workspace_write") == {}:
+            del config["sandbox_workspace_write"]
+    return want == got
+
+
+def codex_hub_gap(text, address):
+    """'' when config.toml holds the profile for ADDRESS; else MISSING, STALE or DIFFERS."""
+    if tomllib is None:
+        return "DIFFERS codex config.toml sd-hub profile needs Python 3.11+ (tomllib); set it by hand"
+    try:
+        config = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return "DIFFERS codex config.toml does not parse; sd-hub profile not checked"
+    try:
+        if hub_holds(config, config, address):
+            return ""
+    except (AttributeError, TypeError):
+        return "DIFFERS codex config.toml holds permissions or features in a shape this cannot merge; set it by hand"
+    profiles = config.get("permissions")
+    return ("STALE" if isinstance(profiles, dict) and HUB_PROFILE in profiles else "MISSING") \
+        + f" codex config.toml {HUB_PROFILE} profile (only {address})"
+
+
+def codex_hub_merge(text, address):
+    """The source wins: the profile's tables go to the end, the default to the root."""
+    if '"""' in text or "'''" in text:
+        sys.exit("claude_settings.py: config.toml has a multi-line string; set the sd-hub profile by hand")
+    kept, table, ours = [], (), False
+    for line in text.splitlines(keepends=True):
+        if TOML_HEADER.match(line):
+            table = toml_path(HEADER_KEY.match(line).group(1))
+            ours = hub_owned(table)
+        key = KEY_LINE.match(line)
+        if ours or (key and hub_owned(table + toml_path(key.group(1)))):
+            continue
+        kept.append(line)
+    first = next((i for i, line in enumerate(kept) if TOML_HEADER.match(line)), len(kept))
+    head, tail = "".join(kept[:first]), "".join(kept[first:])
+    head = head.rstrip("\n") + "\n" if head.strip() else ""
+    head += f'default_permissions = "{HUB_PROFILE}"\n' + ("\n" if tail else "")
+    tail = tail.rstrip("\n")
+    return head + tail + ("\n\n" if tail else "") + codex_hub(address)
+
+
 def pref_gap(text, key, value):
     """'' when KEY holds VALUE; else what the file has instead."""
     config = load_jsonc(text) if text.strip() else {}
@@ -422,6 +541,30 @@ def main(argv):
             merged = codex_merge(text, block)
             if codex_gap(merged, block) or not toml_holds(text, merged, block):
                 sys.exit("claude_settings.py: the merged config.toml does not hold [otel]; set it by hand")
+            write(path, merged)
+        return
+    if argv[:1] in (["codex-hub-missing"], ["codex-hub-merge"]):
+        verb, path, hub_json = argv
+        address, why = hub_address(hub_json)
+        if address is None:
+            if verb == "codex-hub-merge":
+                sys.exit(f"claude_settings.py: {why}")
+            print(f"SKIP {why}")
+            return
+        text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+        gap = codex_hub_gap(text, address)
+        if verb == "codex-hub-missing":
+            print(gap)
+        elif gap.startswith("DIFFERS"):
+            sys.exit(f"claude_settings.py: {gap}")
+        elif gap:
+            merged = codex_hub_merge(text, address)
+            try:
+                holds = hub_holds(tomllib.loads(text), tomllib.loads(merged), address)
+            except tomllib.TOMLDecodeError:
+                holds = False
+            if not holds:
+                sys.exit("claude_settings.py: the merged config.toml does not hold only the sd-hub profile; set it by hand")
             write(path, merged)
         return
     verb, path, *extra = argv

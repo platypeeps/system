@@ -613,6 +613,34 @@ node_versions() {
 24}"
 }
 
+# The node versions managed checkouts pin in .node-version, as `<version>
+# <repo>` lines, each version once (sd:10878): node_versions keeps majors,
+# so any 26.x passed for a 26.13.1 pin, and every shell in that checkout
+# said the pin was not installed. Only a first line of digits and dots,
+# up to three parts and a leading v, counts: an alias such as lts/* is
+# fnm's to resolve, and a pin is passed to fnm install. Fails when the
+# repository list does not answer.
+node_pins() {
+  np_rows=$(bound_step 60 "$SD_PACK_ROOT/bin/sd-db" repo list --managed 2>/dev/null </dev/null) || return 1
+  # `sd-db: <path>  <remote>  ...`: two spaces between fields.
+  printf '%s\n' "$np_rows" | sed -n 's/^sd-db: //p' | while IFS= read -r np_row; do
+    np_repo=${np_row%%  *}
+    # shellcheck disable=SC2088 # a literal ~ in a value, expanded here
+    case $np_repo in "~/"*) np_dir="$HOME/${np_repo#\~/}" ;; *) np_dir=$np_repo ;; esac
+    [ -f "$np_dir/.node-version" ] || continue
+    np_v=$(sed -n '1{s/[[:space:]]//g;s/^v//;p;}' "$np_dir/.node-version" 2>/dev/null) || continue
+    case $np_v in ''|*[!0-9.]*|.*|*.|*..*|*.*.*.*) continue ;; esac
+    printf '%s %s\n' "$np_v" "$np_repo"
+  done | awk '!seen[$1]++'
+}
+
+# Whether fnm ls output $1 holds node pin $2: that version exactly, or for
+# a pin of fewer parts, a version under it.
+node_pin_have() { # fnm ls output, pin
+  printf '%s\n' "$1" | grep -oE 'v[0-9]+(\.[0-9]+)*' |
+    awk -v p="v$2" '$0 == p || index($0, p ".") == 1 { f = 1 } END { exit !f }'
+}
+
 # The bin folder of the node that installs the .npm CLIs: Homebrew's, of the
 # first node formula the brew manifest lists. Every Homebrew node keeps its
 # globals under $(brew --prefix), whose bin is on PATH in every shell; an fnm
@@ -3400,6 +3428,19 @@ stage_tooling() {
           ;;
       esac
     done
+    if pins=$(node_pins); then
+      printf '%s\n' "$pins" | while read -r pv pr; do
+        [ -n "$pv" ] || continue
+        if node_pin_have "$have" "$pv"; then
+          echo "  ok      node $pv (fnm, pinned by $pr/.node-version)"
+        else
+          echo "  MISSING node $pv (fnm, pinned by $pr/.node-version)"
+          run fnm install "$pv"
+        fi
+      done
+    else
+      echo "  SKIP    node pins: sd-db repo list --managed failed"
+    fi
     node_link
   else
     echo "  SKIP    fnm not installed (brew stage provides it)"
@@ -4057,6 +4098,13 @@ stage_satellite() {
   fi
   set -- --hub "$host"
   [ -z "$port" ] || set -- "$@" --port "$port"
+  # The hub's tailnet IP goes in hub.json beside the name: sd dials it, and
+  # the Codex sandbox lets only it through (sd:10754). No answer passes no
+  # --address, and the pack keeps the one hub.json holds.
+  if command -v tailscale >/dev/null 2>&1 && sa_ip=$(bound_step 30 tailscale ip -4 "$host" 2>/dev/null); then
+    sa_ip=$(printf '%s\n' "$sa_ip" | sed -n 1p)
+    [ -z "$sa_ip" ] || set -- "$@" --address "$sa_ip"
+  fi
   if [ "$APPLY" -eq 1 ]; then set -- "$@" --apply; fi
   # On a build mismatch the remedy is `repo-sync.sh follow`, which moves the
   # pack to the hub's pin. No source checkout is named: self-install (sd:2802)
@@ -4069,6 +4117,29 @@ stage_satellite() {
     printf '%s\n' "$out" | sed 's/^/          /'
     echo "  DIFFERS sd_db satellite check failed under $SD_DB_PYTHON (exit $rc)"
   fi
+  stage_satellite_codex
+}
+
+# Codex's sandbox reaches the hub and nothing else: a permissions profile
+# whose SOCKS5 proxy allows only the IP hub.json's `address` names, the one
+# sd dials, read after the run above wrote it (sd:10754). Codex 0.171 checks
+# the host, not the port; loopback stays shut. The rest of the file stays.
+stage_satellite_codex() {
+  sc_toml="$HOME/.codex/config.toml"
+  command -v codex >/dev/null 2>&1 && [ -f "$sc_toml" ] || return 0
+  sc_gap=$(python3 "$DIR/claude_settings.py" codex-hub-missing "$sc_toml" "$SD_HUB_CONFIG" 2>/dev/null) \
+    || sc_gap="DIFFERS codex config.toml does not read; sd-hub profile not checked"
+  case $sc_gap in
+    '') echo "  ok      codex config.toml sd-hub profile" ;;
+    SKIP*) echo "  SKIP    codex sd-hub profile: ${sc_gap#SKIP }" ;;
+    DIFFERS*) echo "  $sc_gap" ;;
+    *)
+      case $sc_gap in MISSING*) echo "  $sc_gap" ;; *) echo "  STALE   ${sc_gap#STALE }" ;; esac
+      if run_ok backup_file "$sc_toml"; then
+        run python3 "$DIR/claude_settings.py" codex-hub-merge "$sc_toml" "$SD_HUB_CONFIG"
+      fi
+      ;;
+  esac
 }
 
 # Root-owned one-off system state, formerly checklist-only. Needs sudo, so
@@ -7624,6 +7695,15 @@ cmd_doctor() {
         echo "  ok      fnm node $v installed"
       else
         echo "  WARN    fnm node $v missing — run: fnm install $v"
+      fi
+    done
+    dn_have=$(fnm ls 2>/dev/null || :)
+    node_pins 2>/dev/null | while read -r pv pr; do
+      [ -n "$pv" ] || continue
+      if node_pin_have "$dn_have" "$pv"; then
+        echo "  ok      fnm node $pv installed, pinned by $pr/.node-version"
+      else
+        echo "  WARN    fnm node $pv missing, pinned by $pr/.node-version — run: fnm install $pv"
       fi
     done
   fi

@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 import unittest
 
 from tests import fixture_config
@@ -460,6 +461,67 @@ class TheSatellite(Case):
             "print('  ok      pack satellite source=%s args=%s' % (os.environ.get('SD_DB_SOURCE_CHECKOUT'), ' '.join(sys.argv[1:])))\n")
         out = self.run_stage("satellite", "--apply", SD_DB_PYTHON=sys.executable, SD_PACK_ROOT=pack)
         self.assertIn("  ok      pack satellite source=None args=--hub hub.example.test --apply", out)
+
+    def test_the_hubs_tailnet_ip_goes_to_the_pack_as_its_address(self):
+        # sd:10754: sd dials the IP, the one the Codex sandbox lets through.
+        (self.profiles / "work.satellite").write_text("hub.example.test\n")
+        log = self.root / "tailscale.log"
+        write_stub(self.fixture.stubs, "tailscale",
+                   f'echo "$*" >> "{log}"\n[ "$1" = ip ] && printf "192.0.2.10\\n2001:db8::1\\n"\nexit 0\n')
+        pack = self.root / "pack"
+        (pack / "lib/sd_db").mkdir(parents=True)
+        (pack / "lib/sd_db/__init__.py").write_text("")
+        (pack / "lib/sd_db/satellite.py").write_text(
+            "import sys\nprint('  ok      pack satellite args=%s' % ' '.join(sys.argv[1:]))\n")
+        out = self.run_stage("satellite", "--apply", SD_DB_PYTHON=sys.executable, SD_PACK_ROOT=pack)
+        self.assertIn("  ok      pack satellite args=--hub hub.example.test --address 192.0.2.10 --apply", out)
+        self.assertEqual(log.read_text().splitlines(), ["ip -4 hub.example.test"])
+
+    def codex_satellite(self, *flags, address="192.0.2.10"):
+        """The stage with codex installed and hub.json as the pack wrote it."""
+        write_stub(self.fixture.stubs, "codex", "exit 0\n")
+        self.hub_json.parent.mkdir(parents=True, exist_ok=True)
+        self.hub_json.write_text(json.dumps({"hub": "hub.example.test", "port": 8769, "address": address}))
+        return self.jev_satellite(*flags)
+
+    def test_codex_gets_a_profile_that_allows_only_the_hub_address(self):
+        codex = self.fixture.home / ".codex/config.toml"
+        codex.parent.mkdir(parents=True)
+        before = ('model = "gpt-5"\nsandbox_mode = "workspace-write"\n\n'
+                  "[sandbox_workspace_write]\nnetwork_access = true\n\n[tui]\nnotifications = true\n")
+        codex.write_text(before)
+        line = "  MISSING codex config.toml sd-hub profile (only 192.0.2.10)"
+        self.assertEqual(markers(self.codex_satellite()), [line])
+        self.assertEqual(codex.read_text(), before)
+        self.assertEqual(markers(self.codex_satellite("--apply")), [line])
+        config = tomllib.loads(codex.read_text())
+        self.assertEqual(config["default_permissions"], "sd-hub")
+        self.assertEqual(config["permissions"]["sd-hub"]["network"],
+                         {"enabled": True, "enable_socks5": True, "domains": {"192.0.2.10": "allow"}})
+        self.assertNotIn("allow_local_binding", config["permissions"]["sd-hub"]["network"])
+        self.assertEqual(config["features"], {"network_proxy": {"enabled": True}})
+        self.assertEqual(config["sandbox_workspace_write"], {})
+        self.assertEqual((config["model"], config["tui"]), ("gpt-5", {"notifications": True}))
+        out = self.codex_satellite("--apply")
+        self.assertEqual(markers(out), [])
+        self.assertIn("  ok      codex config.toml sd-hub profile", out)
+        # A new hub address replaces the old one: one allowed host, always.
+        self.assertEqual(markers(self.codex_satellite("--apply", address="198.51.100.7")),
+                         ["  STALE   codex config.toml sd-hub profile (only 198.51.100.7)"])
+        domains = tomllib.loads(codex.read_text())["permissions"]["sd-hub"]["network"]["domains"]
+        self.assertEqual(domains, {"198.51.100.7": "allow"})
+
+    def test_no_usable_hub_address_leaves_codex_alone(self):
+        codex = self.fixture.home / ".codex/config.toml"
+        codex.parent.mkdir(parents=True)
+        codex.write_text('model = "gpt-5"\n')
+        for address, why in ((None, "names no address"), ("hub.example.test", "address is not an IP"),
+                             ('192.0.2.1" = "allow"\n"x', "address is not an IP"), (["192.0.2.1"], "address is not an IP")):
+            with self.subTest(address=address):
+                out = self.codex_satellite("--apply", address=address)
+                self.assertEqual(markers(out), [])
+                self.assertIn(f"  SKIP    codex sd-hub profile: {self.hub_json} {why}", out)
+                self.assertEqual(codex.read_text(), 'model = "gpt-5"\n')
 
     def test_a_pack_without_lib_sd_db_runs_no_installed_copy(self):
         # sd:3279: with no lib/sd_db/__init__.py the import would fall through to a

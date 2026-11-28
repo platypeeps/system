@@ -27,7 +27,9 @@ LIB = FOLDER.parent / "lib"
 FNM_STUB = r"""#!/bin/sh
 echo "fnm $*" >> "$CALL_LOG"
 if [ "$1" = ls ]; then
-  for v in $FNM_HAVE; do echo "* v$v.0.0"; done
+  for v in $FNM_HAVE; do
+    case $v in *.*.*) echo "* v$v" ;; *) echo "* v$v.0.0" ;; esac
+  done
 fi
 exit 0
 """
@@ -149,6 +151,55 @@ class NodeVersions(Case):
         self.assertIn("  WARN    fnm node 18 missing — run: fnm install 18", out)
         self.assertIn("  ok      fnm node 20 installed", out)
         self.assertIn("  WARN    fnm node 24 missing — run: fnm install 24", out)
+
+
+class NodePins(Case):
+    """sd:10878: a managed checkout's .node-version pins an exact node.
+    node_versions keeps majors, so any 26.x passed for a 26.13.1 pin and
+    every shell in that checkout printed that the pin was not installed."""
+
+    def setUp(self):
+        super().setUp()
+        self.pack = self.base / "pack"
+        rows = []
+        for name, pin in (("web", "v26.13.1\n"), ("api", "26.13.1\n"),
+                          ("odd", "lts/*\n"), ("evil", "26.1;touch x\n"),
+                          ("plain", None)):
+            repo = self.base / "repos" / name
+            repo.mkdir(parents=True)
+            if pin is not None:
+                (repo / ".node-version").write_text(pin)
+            rows.append(f"sd-db: {repo}  git@example.test:o/{name}.git  managed")
+        write_exec(self.pack / "bin/sd-db",
+                   "#!/bin/sh\n[ \"$*\" = \"repo list --managed\" ] || exit 2\n"
+                   + "".join(f"echo '{r}'\n" for r in rows))
+
+    def run_pins(self, *args, **kw):
+        return self.run_script(*args, SD_PACK_ROOT=str(self.pack), **kw)
+
+    def test_tooling_installs_a_missing_exact_pin_once(self):
+        result = self.run_pins("update", "tooling", "--apply", fnm_have="18 20 24 26")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("fnm install 26.13.1", self.calls("fnm install"))
+        self.assertEqual(1, self.calls("fnm install").count("fnm install 26.13.1"))
+        self.assertIn("  MISSING node 26.13.1 (fnm, pinned by ", result.stdout)
+        self.assertNotIn("lts", " ".join(self.calls("fnm install")))
+        self.assertNotIn("touch", " ".join(self.calls("fnm install")))
+
+    def test_an_installed_pin_is_ok(self):
+        out = self.run_pins("update", "tooling", fnm_have="18 20 24 26.13.1").stdout
+        self.assertIn("  ok      node 26.13.1 (fnm, pinned by ", out)
+        self.assertNotIn("MISSING node 26.13.1", out)
+
+    def test_doctor_warns_on_a_missing_pin(self):
+        out = self.run_pins("doctor", fnm_have="18 20 24 26").stdout
+        self.assertIn("  WARN    fnm node 26.13.1 missing, pinned by ", out)
+        self.assertIn("run: fnm install 26.13.1", out)
+
+    def test_a_failed_repo_list_says_so(self):
+        write_exec(self.pack / "bin/sd-db", "#!/bin/sh\nexit 1\n")
+        out = self.run_pins("update", "tooling", fnm_have="18 20 24").stdout
+        self.assertIn("  SKIP    node pins: sd-db repo list --managed failed", out)
 
 
 class MailtoHandler(Case):
