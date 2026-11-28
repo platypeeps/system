@@ -118,6 +118,8 @@ def read_env_file(path: Path, env: dict[str, str], sourced: bool = True) -> dict
                 raise _refused(path, number, name, _OPERATOR % str(e)) from None
             except _Joined:
                 raise _refused(path, number, name, _JOINED) from None
+            except _Unread:
+                raise _refused(path, number, name, _UNREAD) from None
             if value is None:
                 # The next lines would be read from inside the quote.
                 raise _refused(path, number, name, _UNCLOSED)
@@ -148,6 +150,10 @@ class _Operator(Exception):
     pass
 
 
+class _Unread(Exception):
+    """A command substitution whose end this parser will not guess."""
+
+
 class _Joined(Exception):
     """An unquoted trailing backslash: `.` joins the next line."""
 
@@ -157,6 +163,8 @@ _OPERATOR = ("an unquoted %r (redirection, pipe, || or background job) "
              "is not read; quote it or drop it")
 _UNCLOSED = ("an unclosed quote or command substitution is not read; "
              "close it on this line")
+_UNREAD = ("a command substitution holding a # comment, ${...}, $'...', "
+           "case or an open quote is not read; simplify it")
 _JOINED = ("a statement continued on the next line is not read; "
            "put it on one line")
 _SKIPPED = ("an assignment `.` may skip (after a failing && or before a "
@@ -202,31 +210,61 @@ def _operator(text: str, i: int) -> str:
     return op
 
 
+#: A `#` after one of these starts a comment, which hides a `)`.
+_TOKEN_START = " \t;&|()<>"
+_CASE = re.compile(r"(?<![A-Za-z0-9_])case(?![A-Za-z0-9_])")
+
+
 def _substitution(text: str, i: int) -> int:
     """The index past the `$(...)` or backquoted command substitution
     at `i`, so a `;` or `&&` in it ends no statement (sd:10773); -1
-    when it stays open, as a `# comment` in `$(...)` leaves it. Its
-    quotes and nested parentheses are followed;
-    an unquoted `<`, `>`, `|` or `&` in it raises `_Operator`."""
+    when it stays open on this line.
+
+    The end is the one sh finds, or the line refuses: text past a
+    wrong end would read as statements, and a refusal could name a
+    word of it. A backquoted one ends at its first unescaped
+    backquote, in a quote too. In `$(...)`, quotes, nested
+    parentheses and nested substitutions (in double quotes too) are
+    followed, and what may hold a `)` that closes nothing raises
+    `_Unread`: a `# comment`, `${...}`, `$'...'` and `case`; so does
+    a backquoted one that ends inside a quote. An
+    unquoted `<`, `>`, `|` or `&` raises `_Operator`, so a here-document
+    does too."""
     tick = text[i] == "`"
     j, depth, quote = i + (1 if tick else 2), 1, ""
     while j < len(text):
         char = text[j]
+        if char == "`" and tick:
+            if quote:
+                raise _Unread  # a quote left open: sh may stop at it
+            return j + 1
         if quote == "'":
             quote = "" if char == "'" else quote
         elif char == "\\":
             j += 1
+        elif tick:
+            # Quotes only tell a quoted operator from a real one.
+            if char in "'\"" and quote in ("", char):
+                quote = "" if quote else char
+            elif not quote:
+                j += len(_operator(text, j)) or 1
+                continue
+        elif text.startswith(("${", "$'"), j):
+            raise _Unread
+        elif char == "`" or text.startswith("$(", j):
+            j = _substitution(text, j)
+            if j < 0:
+                return -1
+            continue
         elif char == '"':
             quote = "" if quote else '"'
         elif quote:
             pass
         elif char == "'":
             quote = "'"
-        elif tick and char == "`":
-            return j + 1
-        elif not tick and char == "#" and text[j - 1] in " \t(;&|":
-            return -1  # sh reads the rest of the line, `)` too, as a comment
-        elif not tick and char in "()":
+        elif (char == "#" and text[j - 1] in _TOKEN_START) or _CASE.match(text, j):
+            raise _Unread
+        elif char in "()":
             depth += 1 if char == "(" else -1
             if not depth:
                 return j + 1
