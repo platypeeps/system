@@ -334,9 +334,15 @@ case "$1" in
     export AURA_CUSTOM_EVENTS=true
     export AURA_EMIT_REASONING=true
     cd "$AURA_REPO"
-    cargo run --bin aura -- webserver \
-      --config "${CONFIG_PATH:-$DEFAULT_CONFIG}" \
-      2>&1 | tee "$DIR/aura-output.txt"
+    # POSIX sh has no pipefail: carry cargo's own exit past tee
+    # (sd:10435). cargo runs with fds 3 and 4 closed, so a process it
+    # leaves behind cannot hold the status pipe open.
+    { rc=$( { { cargo run --bin aura -- webserver \
+                  --config "${CONFIG_PATH:-$DEFAULT_CONFIG}" \
+                  2>&1 3>&- 4>&- && s=0 || s=$?
+              echo "$s" >&3; } |
+            tee "$DIR/aura-output.txt" >&4; } 3>&1 ); } 4>&1
+    exit "${rc:-1}"
     ;;
   cli)
     HOST="${HOST:-127.0.0.1}"
