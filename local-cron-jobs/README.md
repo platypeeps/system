@@ -8,6 +8,8 @@ Desktop, no open terminal, no cloud routine required. Each job is a headless
 
 ```sh
 ./cron-jobs.sh list                    # jobs, schedules, installed state, FROM folder
+./cron-jobs.sh list <job>              # the file it loads; exit 1 unless install could install it
+./cron-jobs.sh dirs                    # the job folders, in lookup order
 ./cron-jobs.sh install <job>|--all     # generate plist + load into launchd
 ./cron-jobs.sh verify <job>|--all      # installed plist still matches the generator
 ./cron-jobs.sh uninstall <job>|--all   # unload + remove plist

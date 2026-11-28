@@ -49,6 +49,7 @@ class CaptureBackup(unittest.TestCase):
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copytree(FOLDER.parent / "lib", self.folder.parent / "lib",
                         ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        fixture_config.copy_cron_jobs(self.folder.parent)
         self.config_root = fixture_config.copy_capture_config(base)
         self.profiles = self.config_root / "machine-setup/profiles"
         self.brew = self.profiles / "personal.brew"

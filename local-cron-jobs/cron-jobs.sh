@@ -9,7 +9,7 @@
 # by CRON_JOBS_EXTRA_DIRS (see below), as sourced shell vars. <config> is
 # ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}.
 # The repository ships no jobs; examples/ holds sample job files to copy.
-#   JOB_SCHEDULE   5-field cron, LOCAL time (supported: * N a,b,c */N, each N in its field's range), or
+#   JOB_SCHEDULE   5-field cron, LOCAL time (supported: * N a,b,c */N, each N in its field's range, step N from 1, at most 1440 entries), or
 #                  "manual": no calendar, it runs only when kickstarted
 #   JOB_PROMPT     prompt or /skill invocation passed to `claude -p`
 #   JOB_COMMAND    alternative to JOB_PROMPT: plain shell command run via
@@ -28,7 +28,8 @@
 #                  plus EXIT_REPORT_ROOM.
 #
 # Usage:
-#   cron-jobs.sh list                     jobs, schedules, installed/loaded state, folder
+#   cron-jobs.sh list [job]               jobs, schedules, installed/loaded state, folder
+#   cron-jobs.sh dirs                     the job folders, in lookup order
 #   cron-jobs.sh install <job>|--all      generate plist, load into launchd
 #                                        (--all = every defined job; refused
 #                                        where machine-setup records a profile)
@@ -372,7 +373,8 @@ is_loaded() { launchctl print "$DOMAIN/$(label_for "$1")" >/dev/null 2>&1; }
 # Supports per field: "*", a number, a comma list, or "*/N".
 # Emits the cross-product of minute x hour x (day|weekday|month) entries.
 
-# Fails on a value outside min..top (top defaults to max - 1; weekday
+# Fails on a step that is not `*/N` with N from 1, and on a value outside
+# min..top (top defaults to max - 1; weekday
 # takes 7 for Sunday): launchd never fires a plist that names minute 60
 # or month 13, and plutil -lint reads it fine (sd:10805). Under
 # calendar_xml's set -f; IFS ends with its `$( )`.
@@ -383,7 +385,12 @@ expand_field() { # value, max (exclusive upper bound for */N stepping), min, [to
       echo ""
       ;;
     */*)
-      step="${val#*/}"
+      # Only `*/N`, N a whole number from 1: a step of 0, a negative or
+      # an empty one never reached max, so the render looped for ever,
+      # and list, install and promote readiness hung (sd:10772 review).
+      # Text before the slash was dropped, so `5/2` read as `*/2`.
+      case "$val" in "*/"*) ;; *) return 1 ;; esac
+      step="$(decimal "${val#\*/}" 999999999)" && [ "$step" -ge 1 ] || return 1
       i="$min"
       out=""
       while [ "$i" -lt "$max" ]; do
@@ -419,9 +426,21 @@ calendar_xml() { # cron expression -> StartCalendarInterval plist XML
     doms="$(expand_field "$c_dom" 32 1)" && mons="$(expand_field "$c_mon" 13 1)" &&
     dows="$(expand_field "$c_dow" 7 0 7)" || {
     [ "$had_noglob" = 1 ] || set +f
-    echo "ERROR: JOB_SCHEDULE '$cron' has a value outside its field (minute 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7)" >&2
+    echo "ERROR: JOB_SCHEDULE '$cron' has a value outside its field (minute 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7) or a step other than */N, N from 1" >&2
     return 1
   }
+  # The entries are the fields' cross-product, rendered one by one: every
+  # field stepped by 1 is 3.7 million, which ran for hours (sd:10772
+  # review). At most one a minute for a day; a field that is `*` adds none.
+  local count=1 f
+  for f in "$mins" "$hours" "$doms" "$mons" "$dows"; do
+    [ -z "$f" ] || count=$((count * ($(printf '%s' "$f" | tr -cd ',' | wc -c) + 1)))
+  done
+  if [ "$count" -gt 1440 ]; then
+    [ "$had_noglob" = 1 ] || set +f
+    echo "ERROR: JOB_SCHEDULE '$cron' names $count calendar entries; launchd takes at most 1440 here" >&2
+    return 1
+  fi
 
   # Cross-product of the five fields. Splitting is done by setting IFS to a
   # comma and leaving the expansions unquoted on purpose; "x" stands for a
@@ -2201,16 +2220,60 @@ cmd_uninstall() {
   echo "uninstalled: $job"
 }
 
+# Load one job and render its plist to a scratch folder, as install does;
+# nothing else is written. Its own subshell: a job file that runs `exit 0`
+# ended list there, with exit 0, and a JOB_SCHEDULE install refuses listed
+# fine, so promote readiness read ok for a job install trips on (sd:10772).
+# errexit stays on inside, as install has it: set +e around the capture.
+job_loads() { # job
+  local tmp out rc
+  tmp="$(mktemp -d)" || return 1
+  set +e
+  out="$( (set -e; AGENT_DIR="$tmp"; load_job "$1" >/dev/null
+    write_plist "$1" >/dev/null || exit 1; echo reached) )"
+  rc=$?
+  set -e
+  rm -rf "$tmp"
+  if [ "$rc" != 0 ]; then
+    echo "ERROR: job $1 does not load or render (exit $rc)" >&2; return 1
+  fi
+  [ "$out" = reached ] || {
+    echo "ERROR: $(job_file "$1") ended before its end (an exit in the job file); install would leave it uninstalled" >&2
+    return 1
+  }
+}
+
+# With a job: the file the lookup picks, then whether it loads as install
+# loads it; exits 1 when not. Read only.
+cmd_list_one() { # job
+  echo "file: $(job_file "$1")"
+  job_loads "$1"
+}
+
+# The job folders, one per line, in lookup order: machine-setup asks this
+# rather than model the .env and host rules a second time (sd:10797). A
+# name holding a newline would read as two folders, so it is refused.
+cmd_dirs() {
+  local nl='
+'
+  case "$EXTRA_JOB_DIRS$HOST_JOBS_DIR$JOBS_DIR" in
+    *"$nl"*) echo "cron-jobs.sh: a job folder name holds a newline; rename it" >&2; return 1 ;;
+  esac
+  job_dirs
+}
+
 cmd_list() {
-  local job state
+  local job state rc=0
   printf "%-28s %-18s %-10s %-16s %s\n" "JOB" "SCHEDULE (local)" "INSTALLED" "FROM" "PROMPT"
   [ -n "$(all_jobs)" ] ||
     echo "cron-jobs.sh: no jobs in $JOBS_DIR or $HOST_JOBS_DIR; copy one from $ROOT/examples/ to start" >&2
   for job in $(all_jobs); do
+    job_loads "$job" || { rc=1; continue; }
     load_job "$job"
     if is_loaded "$job"; then state="loaded"; elif [ -f "$(plist_for "$job")" ]; then state="stale"; else state="no"; fi
     printf "%-28s %-18s %-10s %-16s %.60s\n" "$job" "$JOB_SCHEDULE" "$state" "$(job_origin "$job")" "${JOB_PROMPT:-$JOB_COMMAND}"
   done
+  return $rc
 }
 
 # The last outcome this job's own log recorded, "done" or "FAILED", for any
@@ -2487,10 +2550,11 @@ each_or_one() { # cmd, target
 }
 
 # One usage line for help and the no-arg error, so neither drifts (sd:3541).
-USAGE="usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|exec <job>|status [job]|logs <job> [lines]|watchdog|test"
+USAGE="usage: cron-jobs.sh list [job]|dirs|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|exec <job>|status [job]|logs <job> [lines]|watchdog|test"
 
 case "${1:-}" in
-  list)      cmd_list ;;
+  list)      if [ -n "${2:-}" ]; then cmd_list_one "$2"; else cmd_list; fi ;;
+  dirs)      cmd_dirs ;;
   watchdog)  cmd_watchdog ;;
   install)   [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh install <job>|--all" >&2; exit 1; }
              each_or_one cmd_install "$2" ;;
@@ -2511,7 +2575,11 @@ case "${1:-}" in
     echo "$USAGE"
     cat <<'HELPEOF'
 
-  list         jobs, schedules, installed state, the folder each came from
+  list         jobs, schedules, installed state, the folder each came from;
+               exits 1, naming it, for a job install could not install.
+               With <job>: `file: <path>` the lookup picks, then exits 1
+               unless the job loads and renders as install does. Read only.
+  dirs         the job folders, one per line, in lookup order
   install      generate plist + load into launchd (<job>, or --all for
                every job in the job directories: shared plus this host's)
   verify       compare each installed plist against what the generator

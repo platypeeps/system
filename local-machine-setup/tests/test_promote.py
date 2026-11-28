@@ -492,6 +492,54 @@ class Promote(PromoteCase):
         self.run_promote("--apply")
         self.assertNotIn(f"{PREFIX}.cron.mirror-sync-nas", self.installed())
 
+    def test_a_role_job_install_cannot_install_is_not_ready(self):
+        """sd:10772: hub-ready took a role job's file for the job, so one
+        whose file runs `exit 0`, or whose JOB_SCHEDULE install refuses,
+        read ok, and the cron stage failed it only after promote moved
+        the hub. hub-ready asks `cron-jobs.sh list <job>` for each."""
+        job = self.config / "cron-jobs/jobs/night-build.job"
+        good = job.read_text()
+        # A step that never ends the render, or a cross-product it renders
+        # for hours, hung an attended promote: bound_step skips its bound
+        # there (sd:10772 review).
+        for text, why in ((good + "exit 0\n", "ended before its end"),
+                          (good + 'JOB_SCHEDULE="0 25 * * *"\n', "JOB_SCHEDULE '0 25 * * *'"),
+                          (good + 'JOB_SCHEDULE="*/0 3 * * *"\n', "JOB_SCHEDULE '*/0 3 * * *'"),
+                          (good + 'JOB_SCHEDULE="*/1 */1 */1 */1 */1"\n', "names 3749760 calendar")):
+            with self.subTest(why=why):
+                job.write_text(text)
+                out = self.run_promote().stdout
+                self.assertIn("NOT-READY job file night-build does not load: ERROR:", out)
+                self.assertIn(why, out)
+                self.assertNotIn("ok      job file night-build\n", out)
+                self.run_promote("--apply", expect=1)
+                self.assertEqual([], self.moved())
+        job.write_text(good)
+        self.assertIn("ok      job file night-build\n", self.run_promote().stdout)
+
+    def test_role_jobs_come_from_the_folders_cron_jobs_reads(self):
+        """sd:10797: hub-ready, no_standby and job_destination found job
+        files through a Python copy of the lookup, which reads the .env
+        as text: a CRON_JOBS_EXTRA_DIRS built from another variable named
+        a folder the copy missed, so a host copy of shadow-sync read ok
+        and the hourly root came from the shared file, not the job that
+        runs. The job reads $BASE from the .env, as its run does."""
+        extra = self.tmp / "extra-jobs"
+        extra.mkdir()
+        env_file = self.config / "cron-jobs" / ".env"
+        env_file.write_text(f'BASE="{self.tmp}"\nCRON_JOBS_EXTRA_DIRS="$BASE/extra-jobs"\n')
+        self.addCleanup(env_file.unlink, missing_ok=True)
+        own = extra / "shadow-sync-nightly.job"
+        own.write_text('JOB_SCHEDULE="20 2 * * *"\nJOB_COMMAND="true"\n')
+        other = self.tmp / "other-backups" / "sd-backups-hourly"
+        other.parent.mkdir()
+        hourly = (self.config / "cron-jobs/jobs/sd-db-backup-hourly.job").read_text()
+        (extra / "sd-db-backup-hourly.job").write_text(
+            hourly + 'SD_DB_BACKUP_HOURLY_DESTINATION="$BASE/other-backups/sd-backups-hourly"\n')
+        out = self.run_promote().stdout
+        self.assertIn(f"NOT-READY {own} overrides the shared hourly job", out)
+        self.assertIn(f"ok      hourly backup root: {other}\n", out)
+
     def test_a_standby_without_a_builder_job_file_is_not_ready(self):
         (self.config / "cron-jobs/jobs/night-build.job").unlink()
         self.assertIn("NOT-READY no job file night-build.job", self.run_promote().stdout)

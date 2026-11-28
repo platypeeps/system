@@ -44,8 +44,9 @@ class Case(unittest.TestCase):
         self.folder = repo / "local-machine-setup"
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copytree(LIB, repo / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        fixture_config.copy_cron_jobs(repo)
         self.retired = repo / "local-cron-jobs/retired-jobs.txt"
-        self.retired.parent.mkdir(parents=True)
+        self.retired.parent.mkdir(parents=True, exist_ok=True)
         self.retired.write_text("# job  why\nold-job  replaced\n")
         self.config = fixture_config.copy_capture_config(self.base)
         self.profiles = self.config / "machine-setup/profiles"
