@@ -1101,16 +1101,19 @@ run_bounded() { # job, seconds, command...
 # passes it on to the job's group, and wait the grace period for it; a job
 # still running then is named in the log. The perl is a zombie once it
 # exits, as this shell is in its trap and reaps nothing, so `ps` and not
-# `kill -0` tells whether it is gone.
+# `kill -0` tells whether it is gone. The wait ends on the clock, not a
+# count of polls: under load each poll ran long, and a 10 s grace took 15 s
+# of launchd's 20 s ExitTimeOut (sd:10299). The +1 keeps a whole grace
+# despite date's one-second steps; ExitTimeOut leaves room past it.
 stop_workload() { # job
-  local pid tries=0 grace="${SHUTDOWN_GRACE:-$JOB_GRACE}"
+  local pid end grace="${SHUTDOWN_GRACE:-$JOB_GRACE}"
   pid="$(pgrep -P "$$" -x perl 2>/dev/null | head -n 1)" || true
   [ -n "$pid" ] || return 0
   kill -TERM "$pid" 2>/dev/null || true
-  while [ "$tries" -lt "$((grace * 10))" ]; do
+  end=$(($(date +%s) + grace + 1))
+  while [ "$(date +%s)" -lt "$end" ]; do
     case "$(ps -o stat= -p "$pid" 2>/dev/null)" in '' | Z*) return 0 ;; esac
     sleep 0.1
-    tries=$((tries + 1))
   done
   echo "[$1] $(date '+%Y-%m-%dT%H:%M:%S%z') the job still runs ${grace}s after TERM (perl pid $pid); its end goes unreported"
 }

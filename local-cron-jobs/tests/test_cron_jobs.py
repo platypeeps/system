@@ -2948,16 +2948,39 @@ class HostJobsTest(unittest.TestCase):
                "XPC_SERVICE_NAME": f"{LABEL_PREFIX}.cron.demo"}
         log_path = self.fx.folder / "logs" / "demo.log"
         log_path.parent.mkdir(exist_ok=True)
+        with open(log_path, "a") as out:
+            subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                           env=run, stdout=out, stderr=out, timeout=60)
+        # The log names the grace the runner chose; elapsed time measured
+        # load, not that choice (sd:10299).
+        log = log_path.read_text()
+        self.assertIn("grace 30s cut to 10s", log)
+        self.assertIn("the job still runs 10s after TERM", log)
+
+    def test_the_shutdown_wait_keeps_to_the_clock_under_load(self):
+        """sd:10299. The wait counted polls of 0.1 s; under load each poll
+        ran long, and a 10 s grace took 15 s. A slow `ps` stands in for
+        the load: the wait still ends near its grace."""
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
+                                  "CRON_JOBS_TIMEOUT_GRACE=3\n"
+                                  "JOB_COMMAND='trap \"\" TERM; kill -TERM "
+                                  "$(ps -o ppid= -p $PPID); sleep 30'\n")
+        slow = self.fx.tmp / "slow"
+        slow.mkdir()
+        (slow / "ps").write_text('#!/bin/sh\nsleep 0.5\nexec /bin/ps "$@"\n')
+        (slow / "ps").chmod(0o755)
+        run = {**self.env(), "PATH": self.fx.path(slow),
+               "SD_REPORT_BIN": "/usr/bin/true"}
+        run.pop("XPC_SERVICE_NAME", None)
+        log_path = self.fx.folder / "logs" / "demo.log"
+        log_path.parent.mkdir(exist_ok=True)
         started = time.monotonic()
         with open(log_path, "a") as out:
             subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
                            env=run, stdout=out, stderr=out, timeout=60)
-        # A 10 s grace ends near 10 s; the job sleeps 30, so a 30 s
-        # grace runs past the 20 s bound. The gap absorbs load (sd:10723).
-        self.assertLess(time.monotonic() - started, 20)
-        log = log_path.read_text()
-        self.assertIn("grace 30s cut to 10s", log)
-        self.assertIn("the job still runs 10s after TERM", log)
+        # Counting 30 polls of 0.6 s takes 18 s; the clock ends near 4 s.
+        self.assertLess(time.monotonic() - started, 12)
+        self.assertIn("the job still runs 3s after TERM", log_path.read_text())
 
     def test_a_grace_that_is_not_a_number_is_refused(self):
         self.fx.write_job("demo", "CRON_JOBS_TIMEOUT_GRACE=soon\n" + self.JOB.format("true"))
