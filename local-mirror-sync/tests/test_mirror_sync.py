@@ -13,6 +13,7 @@ not open, and counts that do not match the manifest.
 
 from __future__ import annotations
 
+import datetime
 import errno
 import hashlib
 import importlib.util
@@ -3798,6 +3799,51 @@ class NasFullCopy(unittest.TestCase):
         self.assertIn("-0", call)
         self.assertEqual(self.lists(), [["a", "d", "d/b", "repo-storage", "repo-storage/system"]],
                          "volume folders and the log folder stay out")
+
+    def test_an_overwritten_file_keeps_its_prior_bytes_under_versions(self) -> None:
+        """sd:10993: the copy overwrote a changed vault attachment on the
+        share and kept no earlier version; rsync now moves the old file
+        into .versions/<run date>/ first. Runs the real rsync."""
+        self.tree("vault/a.png", "same")
+        (self.dst / "vault").mkdir()
+        (self.dst / "vault/a.png").write_text("before")
+        os.utime(self.dst / "vault/a.png", (0, 0))
+        (self.dst / "same").write_text("same")
+        os.utime(self.dst / "same", ns=(os.stat(self.src / "same").st_mtime_ns,) * 2)
+        real = shutil.which("rsync")
+        # openrsync starts its receiver as `rsync` from PATH: not the stub.
+        (self.stubs / "rsync").unlink()
+        result = self.run_copy(NAS_COPY_RSYNC=real)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.dst / "vault/a.png").read_text(), "vault/a.png")
+        dated = [path.name for path in (self.dst / ".versions").iterdir()]
+        self.assertEqual(len(dated), 1, dated)
+        self.assertRegex(dated[0], r"^\d{4}-\d{2}-\d{2}$")
+        kept = self.dst / ".versions" / dated[0]
+        self.assertEqual((kept / "vault/a.png").read_text(), "before")
+        self.assertFalse((kept / "same").exists(), "an unchanged file is not versioned")
+
+    def test_version_folders_older_than_30_days_are_pruned(self) -> None:
+        versions = self.dst / ".versions"
+        recent = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        for name in ("2000-01-01", recent, "keep-me"):
+            (versions / name).mkdir(parents=True)
+            (versions / name / "f").write_text(name)
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(sorted(path.name for path in versions.iterdir()), [recent, "keep-me"])
+        self.assertIn("pruned 1 version folders older than 30 days", result.stdout)
+        call = self.calls.read_text().split()
+        self.assertIn("--backup", call)
+        self.assertTrue(any(word.startswith(f"--backup-dir={versions}/") for word in call), call)
+
+    def test_a_bad_keep_setting_is_refused_before_anything_is_pruned(self) -> None:
+        (self.dst / ".versions/2000-01-01").mkdir(parents=True)
+        result = self.run_copy(NAS_COPY_KEEP_VERSION_DAYS="0")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("NAS_COPY_KEEP_VERSION_DAYS", result.stdout)
+        self.assertTrue((self.dst / ".versions/2000-01-01").is_dir())
+        self.assertFalse(self.calls.exists())
 
     def test_a_log_folder_outside_the_source_is_not_excluded(self) -> None:
         self.tree("repo-storage/system/nas-full-copy/x")

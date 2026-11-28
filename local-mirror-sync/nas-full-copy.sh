@@ -10,7 +10,9 @@
 #   not one rsync -r from the top: rsync looks up every name on the share,
 #   about 14 h for 2.29M names, so each night ran out near the same 30% of
 #   the tree (sd:7088). A pass now spans nights; a cursor marks its place.
-# - Additive: no --delete, so nothing on the NAS is ever removed.
+# - Additive: no --delete, so no file on the NAS is removed. A file rsync
+#   would overwrite moves first to <dst>/.versions/<run date>/; folders there
+#   older than NAS_COPY_KEEP_VERSION_DAYS (30) go (sd:10993).
 # - Refuses (exit 1, cron failure notification) when either volume is not
 #   mounted, so a missing NAS never fills the system disk under /Volumes.
 # - Retries a failed rsync up to 3 times, 5 minutes apart, while more than
@@ -47,6 +49,8 @@ environment (exported, or in <config>/mirror-sync/.env; see .env.example):
                               a folder inside the source is excluded from the copy
   NAS_COPY_EXCLUDE            comma-separated folders, relative to the
                               source, left out of the copy (default none)
+  NAS_COPY_KEEP_VERSION_DAYS  days a replaced file stays under
+                              $NAS_COPY_DST/.versions/<date>/ (default 30)
   NAS_COPY_TIMEOUT, NAS_COPY_RSYNC, NAS_COPY_HOUR, NAS_COPY_SECONDS,
   NAS_COPY_SKIP_MOUNT_CHECK, NAS_COPY_RETRY_WAIT, NAS_COPY_CHUNK   test hooks
 
@@ -89,6 +93,11 @@ RETRIES=3
 RETRY_WAIT="${NAS_COPY_RETRY_WAIT:-300}"
 TIMEOUT="${NAS_COPY_TIMEOUT:-/opt/homebrew/bin/timeout}"
 RSYNC="${NAS_COPY_RSYNC:-/usr/bin/rsync}"
+VERSIONS="$DST/.versions"
+KEEP_VERSION_DAYS="${NAS_COPY_KEEP_VERSION_DAYS:-30}"
+case "$KEEP_VERSION_DAYS" in
+  ''|*[!0-9]*|0*) echo "[nas-full-copy] refused: NAS_COPY_KEEP_VERSION_DAYS='$KEEP_VERSION_DAYS' is not a whole number of days above 0"; exit 1 ;;
+esac
 
 say() { echo "[nas-full-copy] $(date '+%Y-%m-%dT%H:%M:%S%z') $*"; }
 
@@ -235,6 +244,23 @@ secs=$(( deadline - $(date +%s) ))
 [ "$secs" -gt 300 ] || { say "skipped: only ${secs}s left in the window"; exit 0; }
 
 stamp=$(date +%Y-%m-%dT%H%M%S)
+# The run's start date names its version folder, so a run past midnight
+# keeps one folder. ponytail: a second run the same date replaces a file's
+# earlier backup from that date; per-run folders if that ever matters.
+backup_dir="$VERSIONS/${stamp%%T*}"
+# Dated names only, compared as YYYYMMDD numbers (date -d: GNU, the gate).
+cutoff=$(date -v-"${KEEP_VERSION_DAYS}"d +%Y%m%d 2>/dev/null \
+  || date -d "-$KEEP_VERSION_DAYS days" +%Y%m%d)
+pruned=0
+for old in "$VERSIONS"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
+  [ -d "$old" ] && [ ! -L "$old" ] || continue
+  [ "$(printf '%s' "${old##*/}" | tr -d -)" -lt "$cutoff" ] || continue
+  if rm -rf "$old"; then pruned=$(( pruned + 1 )); else
+    say "could not prune $old"
+    echo "SD_REPORT_ATTENTION: nas-full-copy: version folder $old was not pruned"
+  fi
+done
+[ "$pruned" -eq 0 ] || say "pruned $pruned version folders older than $KEEP_VERSION_DAYS days"
 find "$LOG_DIR" -type f -name '*.log*' -mtime +"$KEEP_LOG_DAYS" -delete 2>/dev/null
 find "$LOG_DIR" -type f -name '*.err' -mtime +"$KEEP_LOG_DAYS" -delete 2>/dev/null
 
@@ -269,7 +295,9 @@ while :; do
     # stopped the whole 2026-09-28 run (openrsync aborts on any error).
     # No -p: the SMB share keeps no modes, so -p re-set every file's mode each
     # night (134k of 187k changes on 2026-10-10) and the window closed before new files.
+    # --backup-dir keeps the file rsync replaces, the only earlier version.
     caffeinate -i "$TIMEOUT" --kill-after=120 "$secs" "$RSYNC" -lt -0 --files-from="$chunk.0" \
+      --backup --backup-dir="$backup_dir" \
       --itemize-changes --stats "$SRC/" "$DST/" >> "$log" 2> "$chunk.stderr"
     rc=$?
     cat "$chunk.stderr" >> "$err"
