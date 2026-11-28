@@ -226,7 +226,13 @@ class EnvFile(unittest.TestCase):
                      "A=$(echo ')'; privateToken=y|z)",
                      "A=\"$(echo \")\"; privateToken=y|z)\"",
                      "A=$( (x); privateToken=y|z)",
-                     "A=$(x; privateToken=y"):
+                     "A=$(x; privateToken=y",
+                     # Review: a comment hides its `)`, quote and
+                     # operator from sh; text after it is no statement.
+                     "A=$(x #) ; privateToken=y|z",
+                     "A=$(x #it's) ; privateToken=y|z",
+                     "A=$(x;#a|b) ; privateToken=y|z",
+                     "A=$( (x #)) ; privateToken=y|z"):
             with self.subTest(text=text):
                 env.write_text(text + "\n")
                 with self.assertRaises(stc.EnvFileError) as caught:
@@ -237,7 +243,9 @@ class EnvFile(unittest.TestCase):
         for text, read in (("A=$(x; B=y)", {"A": "$(x; B=y)"}),
                            ("A=`x; B=y`; C=1", {"A": "`x; B=y`", "C": "1"}),
                            ("A=\"$(x; B=y)\"", {"A": "$(x; B=y)"}),
-                           ("A=$(a && b); C=1", {"A": "$(a && b)", "C": "1"})):
+                           ("A=$(a && b); C=1", {"A": "$(a && b)", "C": "1"}),
+                           ("A=$(echo $#); C=1", {"A": "$(echo $#)", "C": "1"}),
+                           ("A=$(echo a#b); C=1", {"A": "$(echo a#b)", "C": "1"})):
             with self.subTest(text=text):
                 env.write_text(text + "\n")
                 self.assertEqual(stc.read_env("sub", self.envv), read)

@@ -205,7 +205,8 @@ def _operator(text: str, i: int) -> str:
 def _substitution(text: str, i: int) -> int:
     """The index past the `$(...)` or backquoted command substitution
     at `i`, so a `;` or `&&` in it ends no statement (sd:10773); -1
-    when it stays open. Its quotes and nested parentheses are followed;
+    when it stays open, as a `# comment` in `$(...)` leaves it. Its
+    quotes and nested parentheses are followed;
     an unquoted `<`, `>`, `|` or `&` in it raises `_Operator`."""
     tick = text[i] == "`"
     j, depth, quote = i + (1 if tick else 2), 1, ""
@@ -223,6 +224,8 @@ def _substitution(text: str, i: int) -> int:
             quote = "'"
         elif tick and char == "`":
             return j + 1
+        elif not tick and char == "#" and text[j - 1] in " \t(;&|":
+            return -1  # sh reads the rest of the line, `)` too, as a comment
         elif not tick and char in "()":
             depth += 1 if char == "(" else -1
             if not depth:
