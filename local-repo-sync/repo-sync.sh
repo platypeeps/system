@@ -916,7 +916,9 @@ index_lock_note() { # checkout [clear]
     printf '; it changed during the check, so a git runs there: let it end, then refresh again'
   elif [ "$il_age" -lt "$INDEX_LOCK_STALE_MIN" ]; then
     printf '; lsof finds no process holding it, yet it is under %s min old and a git may run there: refresh again later' "$INDEX_LOCK_STALE_MIN"
-  elif [ "${2:-}" = clear ] && rm -f -- "$il_lock" && [ ! -e "$il_lock" ]; then
+  # Only an empty lock goes: one with content may hold an index git
+  # wrote but never renamed into place (lead review).
+  elif [ "${2:-}" = clear ] && [ ! -s "$il_lock" ] && rm -f -- "$il_lock" && [ ! -e "$il_lock" ]; then
     printf '; lsof finds no process holding it: removed %s' "$il_lock"
     return 3
   else
