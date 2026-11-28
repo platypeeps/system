@@ -4098,6 +4098,13 @@ stage_satellite() {
   fi
   set -- --hub "$host"
   [ -z "$port" ] || set -- "$@" --port "$port"
+  # The hub's tailnet IP goes in hub.json beside the name: sd dials it, and
+  # the Codex sandbox lets only it through (sd:10754). No answer passes no
+  # --address, and the pack keeps the one hub.json holds.
+  if command -v tailscale >/dev/null 2>&1 && sa_ip=$(bound_step 30 tailscale ip -4 "$host" 2>/dev/null); then
+    sa_ip=$(printf '%s\n' "$sa_ip" | sed -n 1p)
+    [ -z "$sa_ip" ] || set -- "$@" --address "$sa_ip"
+  fi
   if [ "$APPLY" -eq 1 ]; then set -- "$@" --apply; fi
   # On a build mismatch the remedy is `repo-sync.sh follow`, which moves the
   # pack to the hub's pin. No source checkout is named: self-install (sd:2802)
@@ -4110,6 +4117,29 @@ stage_satellite() {
     printf '%s\n' "$out" | sed 's/^/          /'
     echo "  DIFFERS sd_db satellite check failed under $SD_DB_PYTHON (exit $rc)"
   fi
+  stage_satellite_codex
+}
+
+# Codex's sandbox reaches the hub and nothing else: a permissions profile
+# whose SOCKS5 proxy allows only the IP hub.json's `address` names, the one
+# sd dials, read after the run above wrote it (sd:10754). Codex 0.171 checks
+# the host, not the port; loopback stays shut. The rest of the file stays.
+stage_satellite_codex() {
+  sc_toml="$HOME/.codex/config.toml"
+  command -v codex >/dev/null 2>&1 && [ -f "$sc_toml" ] || return 0
+  sc_gap=$(python3 "$DIR/claude_settings.py" codex-hub-missing "$sc_toml" "$SD_HUB_CONFIG" 2>/dev/null) \
+    || sc_gap="DIFFERS codex config.toml does not read; sd-hub profile not checked"
+  case $sc_gap in
+    '') echo "  ok      codex config.toml sd-hub profile" ;;
+    SKIP*) echo "  SKIP    codex sd-hub profile: ${sc_gap#SKIP }" ;;
+    DIFFERS*) echo "  $sc_gap" ;;
+    *)
+      case $sc_gap in MISSING*) echo "  $sc_gap" ;; *) echo "  STALE   ${sc_gap#STALE }" ;; esac
+      if run_ok backup_file "$sc_toml"; then
+        run python3 "$DIR/claude_settings.py" codex-hub-merge "$sc_toml" "$SD_HUB_CONFIG"
+      fi
+      ;;
+  esac
 }
 
 # Root-owned one-off system state, formerly checklist-only. Needs sudo, so

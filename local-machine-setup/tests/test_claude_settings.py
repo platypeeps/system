@@ -10,7 +10,9 @@ import pathlib
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
+import tomllib
 import unittest
 
 from tests import fixture_config
@@ -423,6 +425,65 @@ class OpencodeReadDeny(SyntheticHome):
 
         self.assertIn("DIFFERS opencode.json has its own permission block", out)
         self.assertEqual(self.config.read_text(), own)
+
+
+class CodexHubProfile(unittest.TestCase):
+    """codex-hub-merge (sd:10754): the profile, the default, nothing else of the file's."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.config = pathlib.Path(self.tmp.name) / "config.toml"
+        self.hub_json = pathlib.Path(self.tmp.name) / "hub.json"
+        self.hub_json.write_text('{"hub": "hub.example.test", "port": 8769, "address": "192.0.2.10"}')
+
+    def merge(self, text):
+        self.config.write_text(text)
+        return subprocess.run([sys.executable, str(FOLDER / "claude_settings.py"), "codex-hub-merge",
+                               str(self.config), str(self.hub_json)], capture_output=True, text=True)
+
+    def test_an_other_default_and_a_non_ascii_value_are_kept_as_the_source_wants(self):
+        result = self.merge('default_permissions = "workspace"\nmodel = "gpt-5 ünïcode"\n\n'
+                            '[permissions.workspace.network]\nenabled = true\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = tomllib.loads(self.config.read_text())
+        self.assertEqual(config["default_permissions"], "sd-hub")
+        self.assertEqual(config["model"], "gpt-5 ünïcode")
+        self.assertEqual(config["permissions"]["workspace"], {"network": {"enabled": True}})
+        self.assertEqual(sorted(config["permissions"]), ["sd-hub", "workspace"])
+
+    def test_an_owned_key_set_outside_its_own_table_is_replaced(self):
+        # Review: `[features] network_proxy = true`, Codex's flag form, made the
+        # merge refuse. Every form that sets a key the profile owns goes.
+        want = {"enabled": True, "enable_socks5": True, "domains": {"192.0.2.10": "allow"}}
+        for text in ("[features]\nnetwork_proxy = true\nother = true\n",
+                     "features.network_proxy = true\n",
+                     "features.network_proxy.enabled = false\n",
+                     '[features]\n"network_proxy" = true\n',
+                     "[permissions]\nsd-hub = { network = { enabled = false } }\n",
+                     "permissions.sd-hub.network.enabled = false\n",
+                     '[permissions."sd-hub".network]\nenabled = false\n',
+                     "sandbox_workspace_write.network_access = true\n",
+                     '[sandbox_workspace_write]\n"network_access" = true\nwritable_roots = []\n',
+                     '\'default_permissions\' = "workspace"\n'):
+            with self.subTest(text=text):
+                result = self.merge(text)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config = tomllib.loads(self.config.read_text())
+                self.assertEqual(config["default_permissions"], "sd-hub")
+                self.assertEqual(config["permissions"]["sd-hub"]["network"], want)
+                self.assertEqual(config["features"]["network_proxy"], {"enabled": True})
+                self.assertNotIn("network_access", config.get("sandbox_workspace_write", {}))
+                self.assertEqual(config["features"].get("other"), True if "other" in text else None)
+
+    def test_a_shape_the_line_scan_cannot_rewrite_is_refused_and_left_alone(self):
+        for text in ('x = """\n[permissions.sd-hub]\n"""\n',
+                     "permissions = 1\n"):
+            with self.subTest(text=text):
+                result = self.merge(text)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("by hand", result.stderr)
+                self.assertEqual(self.config.read_text(), text)
 
 
 if __name__ == "__main__":
