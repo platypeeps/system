@@ -922,8 +922,8 @@ index_lock_note() { # checkout
 
 # Moves checkout $1 to commit $2, detached, as `refresh` or `follow` ($3),
 # which reports "$4: <old> -> <new>". Then `make setup` in the pack, and the
-# migrate steps when lib/sd_db's SCHEMA_VERSION changed. Returns 1 when a
-# step failed.
+# migrate steps when lib/sd_db's SCHEMA_VERSION changed. Returns 2 when
+# only make setup failed, the checkout moved; 1 when another step failed.
 pin_move() {
   m_dir=$1; m_rev=$2
   m_old=$(git -C "$m_dir" rev-parse HEAD)
@@ -955,7 +955,7 @@ pin_move() {
     if ! make -C "$m_dir" setup; then
       flag "!!! failed: make setup; the checkout is at $m_new, rerun: make -C $m_dir setup"
       unlinked_python_hint
-      m_rc=1
+      m_rc=2
     fi
   fi
   m_s_old=$(pin_schema "$m_dir" "$m_old")
@@ -1506,9 +1506,14 @@ refresh() {
       r_failed=$((r_failed + 1)) r_hub_failed=$((r_hub_failed + 1))
     else
       while IFS=$US read -r r_dir r_rev <&3; do
-        if ! pin_move "$r_dir" "$r_rev" refresh refreshed; then
+        # 2 is a failed make setup after the switch: sd-serve runs the
+        # checkout's lib/, so the hub serves the new HEAD and hub-pin must
+        # name it; withholding it refused the satellites for hours (sd:10986).
+        r_rc=0
+        pin_move "$r_dir" "$r_rev" refresh refreshed || r_rc=$?
+        if [ "$r_rc" -ne 0 ]; then
           r_failed=$((r_failed + 1))
-          if hub_checkout "$r_dir" > /dev/null; then r_hub_failed=$((r_hub_failed + 1)); fi
+          if [ "$r_rc" -ne 2 ] && hub_checkout "$r_dir" > /dev/null; then r_hub_failed=$((r_hub_failed + 1)); fi
         fi
         echo
       done 3< "$TMPD/plan"

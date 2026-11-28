@@ -484,13 +484,33 @@ class HubPushTest(unittest.TestCase):
         self.assertTrue((f.launchd / SERVE).exists())
         self.assertEqual((f.head(system), f.head(pack)), f.hub_pin(system))
 
-    def test_a_failed_pack_setup_still_withholds_the_hub_pin(self):
-        """PIN (sd:3710). A failed make setup leaves what the pack serves
-        unknown, so the hub's own failure still publishes nothing."""
+    def test_a_failed_pack_setup_still_publishes_the_hub_pin(self):
+        """NEW (sd:10986). sd-serve runs the checkout's lib/, not what make
+        setup installs, so after a failed setup the hub serves the moved
+        HEAD; withholding hub-pin refused every satellite for hours."""
         f = self.fixture()
-        system, _ = self.pinned_pair(f)
+        system, pack = self.pinned_pair(f)
 
-        f.run("refresh", expect=1, extra_env={"MAKE_RC": "2"})
+        result = f.run("refresh", expect=1, extra_env={"MAKE_RC": "2"})
+
+        self.assertEqual((f.head(system), f.head(pack)), f.hub_pin(system))
+        self.assertIn(f"make -C {pack} setup", result.stdout)
+        self.assertIn("refresh : 1 step(s) failed", result.stdout)
+
+    def test_a_failed_pack_switch_still_withholds_the_hub_pin(self):
+        """PIN (sd:3710). A switch that fails leaves the pack's HEAD
+        unknown, so the hub publishes nothing."""
+        f = self.fixture()
+        system, pack = self.pinned_pair(f)
+        # An ignored file the target commit tracks: --no-overwrite-ignore
+        # refuses the switch.
+        (pack / ".git" / "info" / "exclude").write_text("blocker\n")
+        (pack / "blocker").write_text("local\n")
+        f.advance_origin(pack, path="blocker")
+
+        result = f.run("refresh", expect=1)
+
+        self.assertIn(f"switch to origin/main in {pack}", result.stdout)
 
         self.assertIsNone(f.hub_pin(system))
 
