@@ -200,6 +200,7 @@ class AwsConfigCaptureTest(unittest.TestCase):
         # capture lists host cron jobs through lib/, and stops when it cannot.
         shutil.copytree(FOLDER.parent / "lib", self.folder.parent / "lib",
                         ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        fixture_config.copy_cron_jobs(self.folder.parent)
         self.config_root = fixture_config.copy_capture_config(base)
         self.dotfiles = self.config_root / "machine-setup/dotfiles"
         self.home = base / "home"

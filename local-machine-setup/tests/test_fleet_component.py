@@ -46,10 +46,14 @@ COPIED = ("local-machine-setup", "lib", "local-cron-jobs",
 FLEET_JOB = "fseventsd-hourly"
 OTHER_JOB = "volume-probe-hourly"
 
+# `dirs` is asked of a copy of the real script beside the stub: the
+# folder lookup is cron-jobs.sh's own (sd:10797). Every other call logs.
 CRON_JOBS_STUB = r"""#!/bin/sh
+[ "$1" != dirs ] || exec sh "$(dirname "$0")/cron-jobs-real.sh" dirs
 printf '%s\n' "$*" >> "$CRON_LOG"
 exit 0
 """
+REAL_CRON_JOBS = pathlib.Path(__file__).resolve().parents[2] / "local-cron-jobs/cron-jobs.sh"
 
 # Nothing is loaded, so a job with a current plist still reads UNLOADED;
 # every call is logged.
@@ -117,6 +121,7 @@ class Case(unittest.TestCase):
         # The cron stage's installer, so no case reaches launchd; the job
         # examples beside it stay the repository's own.
         write_exec(self.root / "local-cron-jobs/cron-jobs.sh", CRON_JOBS_STUB)
+        shutil.copy(REAL_CRON_JOBS, self.root / "local-cron-jobs/cron-jobs-real.sh")
         fixture_config.seal(self, self.stubs)
 
     def run_script(self, *args, **extra):
@@ -151,9 +156,8 @@ class Case(unittest.TestCase):
         return path
 
     def break_job_listing(self):
-        """Make the job file listing fail, as a broken python3 or lib does."""
-        (self.root / "lib/system_tools_config.py").write_text(
-            "raise ImportError('broken for the test')\n")
+        """Make the job file listing fail, as a cron-jobs.sh that cannot answer does."""
+        (self.root / "local-cron-jobs/cron-jobs-real.sh").write_text("exit 1\n")
 
 
 class EnvFromRepoExample(Case):

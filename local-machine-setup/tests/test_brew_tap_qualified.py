@@ -73,6 +73,7 @@ class TapQualifiedFormula(unittest.TestCase):
                         ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copytree(LIB, repo / "lib",
                         ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        fixture_config.copy_cron_jobs(repo)
 
         self.config_root = fixture_config.copy_config(base)
         self.profiles = self.config_root / "machine-setup/profiles"

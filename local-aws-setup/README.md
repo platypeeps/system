@@ -207,6 +207,24 @@ wrapper starts saving it only when its own item, sd:10253, lands. From then on i
 `--output-s3-bucket-name <AUDIT_BUCKET> --output-s3-key-prefix ssm-output`.
 The instance role, not the deployer, writes that output: grant it `s3:PutObject` on `arn:aws:s3:::<AUDIT_BUCKET>/ssm-output/*`.
 
+### Instance role grants
+
+This tool creates and changes no role; an administrator attaches these grants.
+Start from `accounts/instance-role-policy.json.example` and replace each `{{...}}` placeholder:
+
+| Placeholder | Value |
+|---|---|
+| `AUDIT_BUCKET` | The account file's `AUDIT_BUCKET` |
+| `STAGING_BUCKET` | The deployment's `DEPLOY_STAGING_S3_BUCKET` |
+| `DEPLOYMENT` | The deployment's name, the folder under `world-simulator-deploy/` |
+
+The host fetches its staged archive by key with its own role credentials.
+So no presigned URL, which anyone holding it may use, sits in SSM command history.
+The grant is `s3:GetObject` on that one deployment's folder: no write, delete, list or old version.
+Give each deployment its own role, so one host cannot read another's archive while it is staged.
+A shared role would need `*` for `DEPLOYMENT`, and every host could then read every staged archive.
+A bucket encrypted with a customer-managed KMS key also needs `kms:Decrypt` on that key.
+
 Review the calls with the deployer's account file:
 
 ```sh

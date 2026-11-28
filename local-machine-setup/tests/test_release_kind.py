@@ -174,6 +174,7 @@ class Case(unittest.TestCase):
         self.folder = self.repo / "local-machine-setup"
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copytree(LIB, self.repo / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        fixture_config.copy_cron_jobs(self.repo)
         self.config = fixture_config.copy_capture_config(self.base)
         self.profiles = self.config / "machine-setup/profiles"
         self.home = self.base / "home"

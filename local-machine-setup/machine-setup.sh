@@ -2440,40 +2440,25 @@ local_blocks() {
   done
 }
 
-# Jobs only this machine sees: those in its own folder, cron-jobs/jobs/<host>/.
-# No profile names them, since a profile is shared between machines; where
-# they live says they belong here. CRON_JOBS_EXTRA_DIRS is not included: those
-# folders only define jobs, and the profile picks which of them run (sd:2221).
-# The folder comes from cron_job_dirs in lib/system_tools_config.py, so the
-# host rule is not repeated here. A folder that does not exist lists nothing;
-# one that cannot be read, or a python3 or lib that fails, exits non-zero,
-# because a caller that sweeps must not read a failure as "no host jobs".
-# os.listdir, not os.path.lexists first: lexists reads a PermissionError on
-# an ancestor folder as "absent", which failed open the same way.
-host_cron_jobs() {
-  PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
-dirs = stc.cron_job_dirs()
-host = dirs[-2] if len(dirs) > 1 and dirs[-2].parent == dirs[-1] else None
-names = []
-if host is not None:
-    try:
-        names = os.listdir(host)
-    except FileNotFoundError:
-        pass
-for name in sorted(names):
-    if name.endswith(".job"):
-        print(name[:-4])'
-}
+# The folders cron-jobs.sh reads job files from, in its lookup order, one
+# per line: the extra dirs, this host's folder, then the shared one. Asked
+# of the script, not modelled: a Python copy of the lookup read the
+# cron-jobs .env as text, so a CRON_JOBS_EXTRA_DIRS the shell builds from
+# another variable named folders the copy missed (sd:10797). Fails when
+# the script cannot answer, so no caller guesses a folder.
+cron_job_folders() { "$ROOT/local-cron-jobs/cron-jobs.sh" dirs </dev/null; }
 
-# Every job a job file defines, in any folder cron-jobs.sh reads: the extra
-# dirs, this host's folder and the shared one. capture adopts only these
-# (sd:3106): a retired or deleted job leaves its plist installed, and a profile
-# naming it reads STALE in the cron stage every night, since verify cannot
-# render a job with no file. Exits non-zero when a folder cannot be read.
-defined_cron_jobs() {
-  PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
+# The job names the folders on stdin define, sorted, once each. A folder
+# that does not exist lists nothing; one that cannot be read exits
+# non-zero, because a caller that sweeps must not read a failure as "no
+# jobs". os.listdir, not os.path.lexists first: lexists reads a
+# PermissionError on an ancestor folder as "absent", which failed open.
+job_names_in() {
+  python3 -c 'import os, sys
 names = set()
-for d in stc.cron_job_dirs():
+for d in sys.stdin.read().split("\n"):
+    if not d:
+        continue
     try:
         listed = os.listdir(d)
     except FileNotFoundError:
@@ -2483,14 +2468,48 @@ for name in sorted(names):
     print(name)'
 }
 
+# Jobs only this machine sees: those in its own folder, cron-jobs/jobs/<host>/.
+# No profile names them, since a profile is shared between machines; where
+# they live says they belong here. CRON_JOBS_EXTRA_DIRS is not included: those
+# folders only define jobs, and the profile picks which of them run (sd:2221).
+# The host folder is the one before the shared folder, inside it; with no
+# host name cron-jobs.sh lists none. Fails as cron_job_folders and
+# job_names_in do.
+host_cron_jobs() {
+  hcj_dirs=$(cron_job_folders) || return 1
+  hcj_shared=$(printf '%s\n' "$hcj_dirs" | tail -n 1)
+  hcj_host=$(printf '%s\n' "$hcj_dirs" | tail -n 2 | head -n 1)
+  [ "$hcj_host" != "$hcj_shared" ] && [ "$(dirname "$hcj_host")" = "$hcj_shared" ] || return 0
+  printf '%s\n' "$hcj_host" | job_names_in
+}
+
+# Every job a job file defines, in any folder cron-jobs.sh reads: the extra
+# dirs, this host's folder and the shared one. capture adopts only these
+# (sd:3106): a retired or deleted job leaves its plist installed, and a profile
+# naming it reads STALE in the cron stage every night, since verify cannot
+# render a job with no file. Exits non-zero when a folder cannot be read.
+defined_cron_jobs() {
+  dcj_dirs=$(cron_job_folders) || return 1
+  printf '%s\n' "$dcj_dirs" | job_names_in
+}
+
 # Where a job file this stage seeds belongs: <config>/cron-jobs/jobs, the
-# last folder cron-jobs.sh reads, so the host and config rules stay in
-# lib/system_tools_config.py alone. The shared folder and not this host's:
+# last folder cron-jobs.sh reads. The shared folder and not this host's:
 # a job that comes from the repository is no machine's own. Exits non-zero
-# when python3 or the lib cannot answer, so no caller guesses a path.
+# when cron-jobs.sh cannot answer, so no caller guesses a path.
 cron_jobs_dir() {
-  PYTHONPATH="$ROOT/lib" python3 -c 'import system_tools_config as stc
-print(stc.cron_job_dirs()[-1])'
+  cjd_dirs=$(cron_job_folders) || return 1
+  printf '%s\n' "$cjd_dirs" | tail -n 1
+}
+
+# The file that defines a job: the first regular <job>.job in cron-jobs.sh's
+# folders, as its job_file picks it. Prints nothing when no folder holds
+# one; fails when the folders cannot be asked.
+cron_job_file() { # job
+  cjf_dirs=$(cron_job_folders) || return 1
+  printf '%s\n' "$cjf_dirs" | while IFS= read -r cjf_d; do
+    if [ -f "$cjf_d/$1.job" ]; then printf '%s\n' "$cjf_d/$1.job"; break; fi
+  done
 }
 
 # Did local-cron-jobs write this plist? The <prefix>.cron.<name> label does not
@@ -2593,13 +2612,10 @@ stage_cron() {
     echo "  MISSING job file list — could not read a cron-jobs folder; only retired jobs are uninstalled this run"
     sweep=0
   else
-    # No arm for a failing cron_jobs_dir: it cannot fail where
-    # defined_cron_jobs succeeded (sd:8616). Both run python3 with the same
-    # PYTHONPATH and both call stc.cron_job_dirs(), so a missing python3, a
-    # broken lib or a config folder that will not resolve stops this one
-    # first; the only failure of its own is a PermissionError from
-    # os.listdir, which leaves cron_jobs_dir working.
-    seed_dir=$(cron_jobs_dir)
+    # Both ask `cron-jobs.sh dirs`, so one that cannot answer stops
+    # defined_cron_jobs first (sd:8616); should the second ask fail, no
+    # job is seeded this run rather than one seeded to a guessed path.
+    seed_dir=$(cron_jobs_dir) || seed_dir=""
   fi
   # Read apart from the list below: a failed read must not reach the sweep as
   # "no fleet job" (sd:8616), and a command substitution drops the status.
@@ -8972,12 +8988,7 @@ rm_target() { # path allowed-root
 # subshell where set -e is off (an `if`, left of `||`), bash 5 goes on
 # after a failed `.` or command and prints what it read so far.
 job_destination() { # job, variable
-  jd_file=$(PYTHONPATH="$ROOT/lib" python3 -c 'import sys, system_tools_config as stc
-for d in stc.cron_job_dirs():
-    f = d / (sys.argv[1] + ".job")
-    if f.is_file():
-        print(f)
-        break' "$1") || { echo "job $1: its job folders could not be read" >&2; return 1; }
+  jd_file=$(cron_job_file "$1") || { echo "job $1: its job folders could not be read" >&2; return 1; }
   [ -n "$jd_file" ] || return 0
   # The job's ROOT is local-cron-jobs, as cron-jobs.sh sets it.
   # The child checks for a newline, exit 3, before `$()` strips a trailing
@@ -8989,10 +9000,15 @@ for d in stc.cron_job_dirs():
   # printed `reached:$` for a job that named its root.
   case $2 in ''|[0-9]*|*[!A-Za-z0-9_]*) echo "job_destination: bad name $2" >&2; return 1 ;; esac
   jd_rc=0
+  # The cron-jobs .env is sourced first, as cron-jobs.sh exports it to
+  # the run: a destination built from one of its values read empty
+  # (sd:10797).
+  jd_lib="$ROOT/lib/config.sh"
   # shellcheck disable=SC2016 # the child expands its own arguments
-  jd_value=$(ROOT="$ROOT/local-cron-jobs" sh -ec "$2=''"'; . "$1" >/dev/null 2>&1 </dev/null
+  jd_value=$(ROOT="$ROOT/local-cron-jobs" sh -ec "$2=''"'; . "$2"; st_source_env cron-jobs >/dev/null 2>&1 </dev/null
+    . "$1" >/dev/null 2>&1 </dev/null
     case "${'"$2"'}" in *"
-"*) exit 3 ;; esac; printf "reached:%s" "${'"$2"'}"' sh "$jd_file") || jd_rc=$?
+"*) exit 3 ;; esac; printf "reached:%s" "${'"$2"'}"' sh "$jd_file" "$jd_lib") || jd_rc=$?
   case $jd_rc:$jd_value in
     0:reached:*) printf '%s\n' "${jd_value#reached:}" ;;
     3:*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; return 1 ;;
@@ -9054,15 +9070,8 @@ STANDBY_JOBS="sd-db-backup sd-db-backup-hourly offsite-verify shadow-sync-nightl
 no_standby() {
   [ ! -f "$PROMOTE_MARKER" ] && [ ! -f "$UNDO_MARKER" ] && [ ! -e "$DRILL_HOME" ] || return 1
   ! hub_holder || return 1
-  ns_jobs=$(PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
-for d in stc.cron_job_dirs()[:-1]:
-    try:
-        listed = os.listdir(d)
-    except FileNotFoundError:
-        continue
-    for n in listed:
-        if n.endswith(".job"):
-            print(n[:-4])') || return 1
+  ns_dirs=$(cron_job_folders) || return 1
+  ns_jobs=$(printf '%s\n' "$ns_dirs" | sed '$d' | job_names_in) || return 1
   for ns_job in $STANDBY_JOBS; do
     ! printf '%s\n' "$ns_jobs" | grep -qxF "$ns_job" || return 1
   done
@@ -9262,18 +9271,51 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
     fi
   done
   if hr_jobs=$(defined_cron_jobs); then
+    # A file is not a job: the cron stage installs each one after promote
+    # has moved the hub, and one whose file runs `exit 0`, or whose
+    # schedule install refuses, failed only there (sd:10772). `list <job>`
+    # loads and renders it as install does and changes nothing; a seeded
+    # job is asked from the examples folder its file is copied from.
     for hr_job in $(hub_role_labels cron); do
       if printf '%s\n' "$hr_jobs" | grep -qxF "$hr_job"; then
-        echo "  ok      job file $hr_job"
+        hr_from=
       elif printf '%s\n' $SD_HUB_ROLE_SEEDED | grep -qxF "$hr_job" &&
           [ -f "$ROOT/local-cron-jobs/examples/$hr_job.job" ]; then
-        echo "  ok      job file $hr_job (seeded from local-cron-jobs/examples at promote)"
+        hr_from="$ROOT/local-cron-jobs/examples"
       else
         echo "  NOT-READY no job file $hr_job.job in $(st_config_dir cron-jobs)/jobs"
+        continue
+      fi
+      hr_lrc=0
+      hr_out=$(bound_step 30 env ${hr_from:+CRON_JOBS_EXTRA_DIRS="$hr_from"} \
+        "$ROOT/local-cron-jobs/cron-jobs.sh" list "$hr_job" 2>&1 </dev/null) || hr_lrc=$?
+      if [ "$hr_lrc" != 0 ]; then
+        hr_err=$(printf '%s\n' "$hr_out" | grep -m1 'ERROR' || :)
+        echo "  NOT-READY job file $hr_job does not load: ${hr_err:-cron-jobs.sh list $hr_job exited $hr_lrc}"
+      elif [ -n "$hr_from" ]; then
+        echo "  ok      job file $hr_job (seeded from local-cron-jobs/examples at promote)"
+      else
+        echo "  ok      job file $hr_job"
       fi
     done
   else
     echo "  NOT-READY the cron-jobs folders could not be read"
+  fi
+  # sd:10433: a promoted hub runs the shared hourly shadow-sync job with its
+  # lock retries; a standby's own copy wins cron-jobs.sh's lookup (job_file)
+  # and ran daily, leaving alerts a day stale. A missing one reads above.
+  if hr_ss=$(cron_job_file shadow-sync-nightly); then
+    hr_shared="$(st_config_dir cron-jobs)/jobs"
+    if [ "$hr_ss" = "$hr_shared/shadow-sync-nightly.job" ]; then
+      echo "  ok      shadow-sync-nightly runs the shared job file"
+    elif [ -n "$hr_ss" ] && [ -f "$hr_shared/shadow-sync-nightly.job" ]; then
+      echo "  NOT-READY $hr_ss overrides the shared hourly job; remove the host copy"
+    elif [ -n "$hr_ss" ]; then
+      # Removing the copy alone leaves no job file: name the shared one too.
+      echo "  NOT-READY $hr_ss overrides the shared hourly job; remove the host copy, and copy local-cron-jobs/examples/shadow-sync-nightly.job to $hr_shared/"
+    fi
+  else
+    echo "  NOT-READY the shadow-sync-nightly job file could not be looked up"
   fi
   hr_dest=$(hourly_destination) || hr_dest=
   hr_rc=0

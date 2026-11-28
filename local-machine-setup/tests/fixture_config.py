@@ -61,6 +61,14 @@ STALL = ('stall() {\n'
 STALL_BOUND = 30
 
 
+def copy_cron_jobs(repo):
+    """The real local-cron-jobs/cron-jobs.sh in a copied repo: machine-setup
+    asks it for the job folders (sd:10797); it needs only the repo's lib/."""
+    target = pathlib.Path(repo) / "local-cron-jobs"
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy(HERE.parents[1] / "local-cron-jobs" / "cron-jobs.sh", target / "cron-jobs.sh")
+
+
 def copy_config(base):
     """A writable copy of the fixture config under `base`; returns its root."""
     target = pathlib.Path(base) / "config"

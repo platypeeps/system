@@ -305,13 +305,34 @@ llm_wrapper_set() {
     "$(cksum < "$LLM_WRAPPER" | cut -d' ' -f1)"
 }
 
+# kind create cluster makes its context current; every call here names
+# the context itself, so put the operator's back (sd:10436). Undo only a
+# switch to the demo context, so a change made meanwhile in another shell
+# stays. An interrupt restores it too.
+restore_context() {
+  [ "$(kubectl config current-context 2>/dev/null)" = "$CONTEXT" ] || return 0
+  if [ -n "$_prev_ctx" ]; then
+    kubectl config use-context "$_prev_ctx" >/dev/null
+  else
+    kubectl config unset current-context >/dev/null
+  fi
+}
+
+create_cluster() {
+  _prev_ctx=$(kubectl config current-context 2>/dev/null) || _prev_ctx=
+  trap 'restore_context; exit 130' INT TERM HUP
+  kind create cluster --name "$CLUSTER_NAME" && _cc_rc=0 || _cc_rc=$?
+  trap - INT TERM HUP
+  restore_context
+  return "$_cc_rc"
+}
+
 # ------------------------------------------------------------- subcommands ---
 
 cmd_start() {
   if ! cluster_exists; then
-    kind create cluster --name "$CLUSTER_NAME"
+    create_cluster
   fi
-  kubectl config use-context "$CONTEXT"
 
   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts >/dev/null 2>&1 || true
   helm repo update open-telemetry >/dev/null
@@ -347,7 +368,6 @@ cmd_stop() {
 
 cmd_upgrade() {
   require_cluster
-  kubectl config use-context "$CONTEXT"
   helm repo update open-telemetry >/dev/null
   ensure_export_secret
   ensure_llm_wrapper
@@ -406,7 +426,6 @@ cmd_status() {
 
 cmd_mcp_install() {
   require_cluster
-  kubectl config use-context "$CONTEXT"
 
   helm --kube-context "$CONTEXT" upgrade --install kubernetes-mcp-server \
     oci://ghcr.io/containers/charts/kubernetes-mcp-server \
@@ -610,7 +629,13 @@ cmd_repo_start() {
   require_var OTEL_DEMO_REPO
   [ -d "$DEMO_REPO" ] || die "demo repo not found at $DEMO_REPO"
   cd "$DEMO_REPO"
-  make start 2>&1 | tee "$BASE/opentelemetry-demo-output.txt"
+  # POSIX sh has no pipefail: carry make's own exit past tee (sd:10435).
+  # make runs with fds 3 and 4 closed, so a daemon it leaves behind cannot
+  # hold the status pipe open.
+  { _rs_rc=$( { { make start 2>&1 3>&- 4>&- && _rs_s=0 || _rs_s=$?
+                echo "$_rs_s" >&3; } |
+              tee "$BASE/opentelemetry-demo-output.txt" >&4; } 3>&1 ); } 4>&1
+  return "${_rs_rc:-1}"
 }
 
 cmd_repo_stop() {
