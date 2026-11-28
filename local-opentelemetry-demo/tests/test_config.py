@@ -209,6 +209,24 @@ exit 0"""), encoding="utf-8")
         done = self.run_verb("repo-start", expect=1)
         self.assertIn("OTEL_DEMO_REPO is not set", done.stderr)
 
+    def test_repo_start_keeps_a_failed_start_and_its_output(self):
+        # sd:10435: the tee pipe returned 0 when make failed.
+        repo = self.root / "demo"
+        repo.mkdir()
+        make = self.root / "bin" / "make"
+        make.write_text('#!/bin/sh\necho "make-output $*"\n'
+                        'exit "${STUB_RC:-0}"\n', encoding="utf-8")
+        make.chmod(0o755)
+        self.env["OTEL_DEMO_REPO"] = str(repo)
+        for rc in (17, 0):
+            with self.subTest(rc=rc):
+                self.env["STUB_RC"] = str(rc)
+                done = self.run_verb("repo-start", expect=rc)
+                self.assertIn("make-output start", done.stdout)
+                out = self.folder / "opentelemetry-demo-output.txt"
+                self.assertIn("make-output start",
+                              out.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -610,7 +610,13 @@ cmd_repo_start() {
   require_var OTEL_DEMO_REPO
   [ -d "$DEMO_REPO" ] || die "demo repo not found at $DEMO_REPO"
   cd "$DEMO_REPO"
-  make start 2>&1 | tee "$BASE/opentelemetry-demo-output.txt"
+  # POSIX sh has no pipefail: carry make's own exit past tee (sd:10435).
+  # make runs with fds 3 and 4 closed, so a daemon it leaves behind cannot
+  # hold the status pipe open.
+  { _rs_rc=$( { { make start 2>&1 3>&- 4>&- && _rs_s=0 || _rs_s=$?
+                echo "$_rs_s" >&3; } |
+              tee "$BASE/opentelemetry-demo-output.txt" >&4; } 3>&1 ); } 4>&1
+  return "${_rs_rc:-1}"
 }
 
 cmd_repo_stop() {
