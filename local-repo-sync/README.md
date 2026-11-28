@@ -637,7 +637,8 @@ list, and `terra` is the one that reads a single conf instead of layering on
   stays and is reported as above.
 - A `refresh` or `follow` switch that an `index.lock` stops names the
   lock, its age and its holder (sd:10796). When `lsof` proves no process
-  holds it and it is 10 minutes old or more, the switch removes it, says
-  so, and switches once more (sd:10847); otherwise the lock stays.
+  holds it, it is 10 minutes old or more and it is empty, the switch
+  removes it, says so, and switches once more (sd:10847); otherwise the
+  lock stays and is named for a hand `rm`.
 - The old script also had a commented-out `git log --since=` block writing to a
   `github-commit-audit/output` folder. It was dead and is not carried over.
